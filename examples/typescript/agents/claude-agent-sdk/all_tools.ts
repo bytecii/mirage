@@ -14,8 +14,8 @@
 
 // Drive every Mirage tool through the Claude Agent SDK.
 //
-// Gives a Sonnet agent a task that exercises all six tools the Mirage
-// MCP server exposes (execute_command, read, write, edit, ls, grep)
+// Gives a Sonnet agent a task that exercises every tool the Mirage
+// MCP server exposes (shell, read, write, edit, ls, grep, glob)
 // against a RAM-backed workspace, prints each tool call, and verifies
 // the final file contents.
 //
@@ -26,7 +26,7 @@
 import { config as loadEnv } from 'dotenv'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { MountMode, OpsRegistry, RAMResource, Workspace } from '@struktoai/mirage-node'
+import { MountMode, OpsRegistry, RAMVFS, Workspace } from '@struktoai/mirage-node'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { buildOptions } from '@struktoai/mirage-agents/claude-agent-sdk'
 
@@ -41,14 +41,15 @@ Use exactly one mirage tool per step and do them in order:
 3. Use the read tool on '/notes.txt'.
 4. Use the edit tool on '/notes.txt' to replace 'beta' with 'BETA'.
 5. Use the grep tool to search for 'a' in '/notes.txt'.
-6. Use the execute_command tool to run: cat /notes.txt | sort | wc -l
+6. Use the shell tool to run: cat /notes.txt | sort | wc -l
+7. Use the glob tool to find '*.txt' under '/'.
 Briefly report what each step returned.`
 
 const EXPECTED = new Set(
-  ['execute_command', 'read', 'write', 'edit', 'ls', 'grep'].map((n) => `mcp__mirage__${n}`),
+  ['shell', 'read', 'write', 'edit', 'ls', 'grep', 'glob'].map((n) => `mcp__mirage__${n}`),
 )
 
-const ram = new RAMResource()
+const ram = new RAMVFS()
 const ops = new OpsRegistry()
 for (const op of ram.ops()) ops.register(op)
 const ws = new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops })
@@ -77,12 +78,12 @@ console.log('\n=== tools used ===')
 console.log(used)
 const missing = [...EXPECTED].filter((t) => !used.includes(t))
 console.log(
-  'all six tools exercised:',
+  'every tool exercised:',
   missing.length === 0,
   '| missing:',
   missing.length > 0 ? missing : 'none',
 )
 
-const final = await ws.fs.readFileText('/notes.txt')
+const final = await ws.vfs.cat('/notes.txt')
 console.log('\n=== /notes.txt final content (from the Mirage workspace) ===')
 console.log(final)

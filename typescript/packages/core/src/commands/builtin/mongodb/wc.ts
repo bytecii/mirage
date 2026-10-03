@@ -15,25 +15,41 @@
 import type { MongoDBAccessor } from '../../../accessor/mongodb.ts'
 import { countDocuments } from '../../../core/mongodb/client.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
-import { MONGODB_IO } from './io.ts'
+import { IO } from './io.ts'
 import { streamAny } from '../../../core/mongodb/read.ts'
+import { documentsExist } from '../../../core/mongodb/readdir.ts'
 import { detectScope } from '../../../core/mongodb/scope.ts'
-import { ScopeLevel } from '../../../core/mongodb/types.ts'
 import { type ByteSource, IOResult } from '../../../io/types.ts'
-import { type PathSpec, ResourceName } from '../../../types.ts'
+import { type PathSpec, VFSName } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { formatRecords } from '../utils/output.ts'
-import { formatWcLines, wcGeneric, type WcRow } from '../generic/wc.ts'
+import {
+  formatCountRows,
+  parseFlags as parseWcFlags,
+  wcGeneric,
+  type WcRow,
+} from '../generic/wc.ts'
 
-const resolveGlob = resolveGlobOf(MONGODB_IO)
+const ENC = new TextEncoder()
+
+const resolveGlob = resolveGlobOf(IO)
 
 function documentsScope(p: PathSpec): { database: string; name: string } | null {
   const scope = detectScope(p)
-  if (scope.level === ScopeLevel.DOCUMENTS && scope.database !== null && scope.name !== null) {
-    return { database: scope.database, name: scope.name }
+  if (scope.kind === 'documents') {
+    return { database: scope.slots.database ?? '', name: scope.slots.name ?? '' }
   }
   return null
+}
+
+// The count answers 0 for a collection that does not exist, and for one the
+// mount's `databases` leaves out, so the fast path runs only when every
+// operand is one the mount can see; the generic reports the rest.
+async function allExist(accessor: MongoDBAccessor, paths: readonly PathSpec[]): Promise<boolean> {
+  for (const p of paths) {
+    if (!(await documentsExist(accessor, detectScope(p), p.virtual))) return false
+  }
+  return true
 }
 
 async function wcCommand(
@@ -42,26 +58,33 @@ async function wcCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  const f = opts.flags
+  const parsed = parseWcFlags(opts.flags)
+  if (typeof parsed === 'string') {
+    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(parsed) })]
+  }
   const resolved =
     paths.length > 0 ? await resolveGlob(accessor, paths, opts.index ?? undefined) : []
   // Line counts on collections come from a server-side countDocuments
   // instead of reading every document. -l only (default prints words and
   // bytes too, which needs the content).
   const countOnly =
-    f.args_l === true && f.w !== true && f.c !== true && f.m !== true && f.L !== true
-  if (countOnly && resolved.length > 0 && resolved.every((p) => documentsScope(p) !== null)) {
+    parsed.lines && !parsed.words && !parsed.bytes && !parsed.chars && !parsed.maxLineLength
+  if (
+    countOnly &&
+    resolved.length > 0 &&
+    resolved.every((p) => documentsScope(p) !== null) &&
+    (await allExist(accessor, resolved))
+  ) {
     const rows: WcRow[] = []
     let total = 0
     for (const p of resolved) {
       const scope = documentsScope(p)
       if (scope === null) continue
       const count = await countDocuments(accessor, scope.database, scope.name)
-      rows.push({ values: [count], label: p.virtual })
+      rows.push({ values: [count], label: p.rawPath })
       total += count
     }
-    if (resolved.length > 1) rows.push({ values: [total], label: 'total' })
-    const out: ByteSource = formatRecords(formatWcLines(rows))
+    const out: ByteSource | null = formatCountRows(rows, [total], resolved.length, parsed.total)
     return [out, new IOResult()]
   }
   return wcGeneric(resolved, texts, opts, (p) => streamAny(accessor, p, opts.index ?? undefined))
@@ -69,7 +92,7 @@ async function wcCommand(
 
 export const MONGODB_WC = command({
   name: 'wc',
-  resource: ResourceName.MONGODB,
+  vfs: VFSName.MONGODB,
   spec: specOf('wc'),
   fn: wcCommand,
 })

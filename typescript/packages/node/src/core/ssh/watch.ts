@@ -54,6 +54,7 @@ async function* descend(
       yield* descend(sftp, root, child)
       continue
     }
+    // Checkpoints persist this spelling as part of the fingerprint.
     const modified = new Date(entry.attrs.mtime * 1000).toISOString()
     yield {
       virtual: child,
@@ -84,7 +85,7 @@ class SSHWalk {
   }
 
   async *walk(root: PathSpec): AsyncGenerator<WalkEntry> {
-    const prefix = mountPrefixOf(root.virtual, root.resourcePath)
+    const prefix = mountPrefixOf(root.virtual, root.vfsPath)
     const sftp = await this.accessor.sftp()
     const start = `/${stripSlash(root.mountPath)}`
     for await (const entry of descend(sftp, this.accessor.config.root ?? '/', start)) {

@@ -12,13 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { EXTERNAL_COMMANDS } from '../constants.ts'
 import { Runtime } from '../base.ts'
 import { LINE_EXECUTOR, type LineExecutor } from '../mixin.ts'
 import type { RunResult, RuntimeOptions } from '../types.ts'
 import { BASE_CONFIG_KEYS, type NormalizedSandboxConfig, type SandboxConfig } from './config.ts'
 
 /**
- * A runtime that runs whole lines inside a sandbox the user runs.
+ * A runtime that executes programs in a sandbox the user runs.
+ *
+ * Captures default to unresolved program names. An explicit "*"
+ * delegates whole shell lines.
  *
  * Mirage never creates, provisions, or deletes sandboxes: you bring
  * your own (a running container, a live Daytona or E2B sandbox) and
@@ -54,7 +58,7 @@ export abstract class RemoteSandbox<C extends SandboxConfig = SandboxConfig>
     options: RuntimeOptions<C> | Record<string, unknown> = {},
     configKeys?: readonly string[],
   ) {
-    super(options as RuntimeOptions, ['*'], configKeys ?? BASE_CONFIG_KEYS)
+    super(options as RuntimeOptions, [EXTERNAL_COMMANDS], configKeys ?? BASE_CONFIG_KEYS)
     // The sandbox refinement of the base's coerced copy: the shared
     // collection fields are always present (env).
     const config = this.config as C
@@ -74,14 +78,39 @@ export abstract class RemoteSandbox<C extends SandboxConfig = SandboxConfig>
     stdin: Uint8Array | null,
     env: Record<string, string>,
     cwd: string,
+    signal?: AbortSignal,
   ): Promise<RunResult> {
+    await this.ensureConnected(signal)
+    const merged = { ...this.config.env, ...env }
+    return this.execLine(line, stdin, merged, cwd, signal)
+  }
+
+  protected async ensureConnected(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
     this.connecting ??= this.connect().catch((err: unknown) => {
       this.connecting = null
       throw err
     })
-    await this.connecting
-    const merged = { ...this.config.env, ...env }
-    return this.execLine(line, stdin, merged, cwd)
+    await this.waitFor(this.connecting, signal)
+    signal?.throwIfAborted()
+  }
+
+  /** Cancel this caller's wait without cancelling a shared connection. */
+  protected async waitFor<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal === undefined) return await operation
+    let onAbort: () => void = () => undefined
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        onAbort = () => {
+          reject(new DOMException('execute aborted', 'AbortError'))
+        }
+        operation.then(resolve, reject)
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+      })
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+    }
   }
 
   /** Attach to the user's live sandbox, failing loud if absent. */
@@ -93,6 +122,7 @@ export abstract class RemoteSandbox<C extends SandboxConfig = SandboxConfig>
     stdin: Uint8Array | null,
     env: Record<string, string>,
     cwd: string,
+    signal?: AbortSignal,
   ): Promise<RunResult>
 
   /** Release provider client resources; the sandbox itself is the user's. */

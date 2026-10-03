@@ -19,7 +19,7 @@ Needs macOS 15.4+ and macFUSE 5.x with its FSKit module enabled. Run it:
 
 It mounts, exercises reads and writes, and shows the two things that will
 bite you. Reads: FSKit clamps every read to the size reported at lookup, so
-API-backed resources whose file sizes are unknown before a read mount with
+API-backed mounts whose file sizes are unknown before a read mount with
 a warning and their files read as empty. Writes: the metadata surface
 (create/mkdir/rename/unlink) works because mirage installs macFUSE's
 Darwin-only callbacks (mirage/fuse/darwin.py), and appends to existing
@@ -37,15 +37,15 @@ from typing import Callable
 
 from mirage import Mount, MountBackend, MountMode, Workspace
 from mirage.fuse.backend import check_sizes
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
 CONTENT = b'{"messages": 2}\n'
 
 
-class SizeUnknownRAM(RAMResource):
-    """A resource that cannot size its files, like Slack or Gmail."""
+class SizeUnknownRAM(RAMVFS):
+    """A VFS that cannot size its files, like Slack or Gmail."""
 
-    SIZES_ALWAYS_KNOWN = False
+    sizes_always_known = False
 
 
 def attempt(fn: Callable[[], object]) -> str:
@@ -65,7 +65,7 @@ def attempt(fn: Callable[[], object]) -> str:
 
 
 def show_size_warning() -> None:
-    """Show the mount-time warning for a size-unknown resource.
+    """Show the mount-time warning for a size-unknown VFS.
 
     The warning is demonstrated through ``check_sizes`` directly (the same
     guard every fskit mount path runs) rather than a second kernel mount,
@@ -74,7 +74,7 @@ def show_size_warning() -> None:
     """
     print("=== the size warning ===")
     ws = Workspace({"/api": Mount(SizeUnknownRAM(), mode=MountMode.READ)})
-    check_sizes(MountBackend.FSKIT, ws.ops, "")
+    check_sizes(MountBackend.FSKIT, ws.vfs, "")
     print("  FSKit has no direct_io: a read is clamped to the size stat")
     print("  reported at lookup, and that clamp is never refreshed. A")
     print("  size-unknown file mounts anyway, stats as 0, and reads as")
@@ -86,15 +86,18 @@ def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="  warning: %(message)s")
     show_size_warning()
 
-    data = RAMResource()
+    data = RAMVFS()
     data._store.dirs.add("/")
     data._store.files["/api.json"] = CONTENT
     data._store.files["/existing.txt"] = b"old\n"
 
-    with Workspace({
-            "/data":
-            Mount(data, mode=MountMode.WRITE, backend=MountBackend.FSKIT),
-    }) as ws:
+    with Workspace(
+        {
+            "/data": Mount(
+                data, mode=MountMode.WRITE, backend=MountBackend.FSKIT
+            ),
+        }
+    ) as ws:
         mp = ws.fuse_mountpoints["/data"]
         print(f"=== mounted at {mp} ===")
 
@@ -117,16 +120,25 @@ def main() -> None:
         print("  the two agree, which is what fskit needs sizes for\n")
 
         print("=== writes: metadata plus appends ===")
-        print("  append to existing -> " +
-              attempt(lambda: open(f"{mp}/existing.txt", "ab").write(b"x\n")))
-        print("  unlink existing    -> " +
-              attempt(lambda: os.unlink(f"{mp}/existing.txt")))
-        print("  create new file    -> " +
-              attempt(lambda: open(f"{mp}/new.txt", "wb").close()))
-        print("  mkdir              -> " +
-              attempt(lambda: os.mkdir(f"{mp}/sub")))
-        print("  rename             -> " +
-              attempt(lambda: os.rename(f"{mp}/api.json", f"{mp}/moved.json")))
+        print(
+            "  append to existing -> "
+            + attempt(lambda: open(f"{mp}/existing.txt", "ab").write(b"x\n"))
+        )
+        print(
+            "  unlink existing    -> "
+            + attempt(lambda: os.unlink(f"{mp}/existing.txt"))
+        )
+        print(
+            "  create new file    -> "
+            + attempt(lambda: open(f"{mp}/new.txt", "wb").close())
+        )
+        print(
+            "  mkdir              -> " + attempt(lambda: os.mkdir(f"{mp}/sub"))
+        )
+        print(
+            "  rename             -> "
+            + attempt(lambda: os.rename(f"{mp}/api.json", f"{mp}/moved.json"))
+        )
         payload = b"fresh\n"
         with open(f"{mp}/new.txt", "wb") as out:
             out.write(payload)

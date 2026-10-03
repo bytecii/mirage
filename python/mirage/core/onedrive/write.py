@@ -12,29 +12,23 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import time
-
 from mirage.accessor.onedrive import OneDriveAccessor
 from mirage.cache.context import invalidate_after_write
-from mirage.core.msgraph.drive_ops import (SIMPLE_UPLOAD_MAX,
-                                           upload_session_write)
-from mirage.core.onedrive.client import graph_put_bytes, item_url, split_path
-from mirage.observe.context import record
+from mirage.core.msgraph.drive import write_item
+from mirage.core.onedrive.client import drive_loc
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
 
 
-async def write_bytes(accessor: OneDriveAccessor, path: PathSpec,
-                      data: bytes) -> None:
-    prefix, stripped = split_path(path)
-    config = accessor.config
-    start_ms = int(time.monotonic() * 1000)
-    if len(data) <= SIMPLE_UPLOAD_MAX:
-        url = item_url(config, "/" + stripped, action="/content")
-        await graph_put_bytes(config, url, data)
-    else:
-        session_url = item_url(config,
-                               "/" + stripped,
-                               action="/createUploadSession")
-        await upload_session_write(config, session_url, data)
-    record("write", stripped, "onedrive", len(data), start_ms)
+async def write_bytes(
+    accessor: OneDriveAccessor, path: PathSpec, data: bytes
+) -> None:
+    timer = start_op()
+    await write_item(
+        accessor.config,
+        drive_loc(accessor.config, path.vfs_path),
+        data,
+        session=accessor.pool,
+    )
+    record("write", path.virtual, "onedrive", len(data), timer)
     await invalidate_after_write(path)

@@ -12,9 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { describe, expect, it } from 'vitest'
-import { command, crossCommand, RegisteredCommand } from './config.ts'
-import { CommandSpec, Operand } from './spec/types.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { command, RegisteredCommand } from './config.ts'
+import { specOf } from './spec/builtins.ts'
+import { CommandSpec, Operand, Option } from './spec/types.ts'
 
 const STUB_SPEC = new CommandSpec({ rest: new Operand({ type: 'path' }) })
 const STUB_FN = () => Promise.resolve([null, { exitCode: 0 } as never] as [null, never])
@@ -24,60 +25,90 @@ describe('RegisteredCommand', () => {
     const rc = new RegisteredCommand({
       name: 'cat',
       spec: STUB_SPEC,
-      resource: 'ram',
+      vfs: 'ram',
       fn: STUB_FN,
     })
     expect(rc.filetype).toBeNull()
     expect(rc.write).toBe(false)
-    expect(rc.provisionFn).toBeNull()
     expect(rc.aggregate).toBeNull()
-    expect(rc.src).toBeNull()
-    expect(rc.dst).toBeNull()
   })
 })
 
 describe('command()', () => {
-  it('returns one RegisteredCommand per resource when given a single string', () => {
-    const out = command({ name: 'cat', resource: 'ram', spec: STUB_SPEC, fn: STUB_FN })
+  it('lets a declared --version reach the handler', async () => {
+    const fn = vi.fn(STUB_FN)
+    const [rc] = command({
+      name: 'custom',
+      vfs: null,
+      spec: new CommandSpec({ options: [new Option({ long: '--version' })] }),
+      fn,
+    })
+    if (rc === undefined) throw new Error('expected a registered command')
+    await rc.fn({} as never, [], [], {
+      stdin: null,
+      flags: { version: true },
+      filetypeFns: null,
+      cwd: '/',
+    })
+    expect(fn).toHaveBeenCalledOnce()
+  })
+
+  // jq answers --help where its loop reaches it (OWN_OPTION_LOOP); a command
+  // that only borrows the name gets the wrapper's answer.
+  it.each([
+    ["jq's own grammar", specOf('jq'), 1],
+    ['a borrowed jq name', STUB_SPEC, 0],
+  ])('hands --help to the handler for %s', async (_, spec, calls) => {
+    const fn = vi.fn(STUB_FN)
+    const [rc] = command({ name: 'jq', vfs: null, spec, fn })
+    if (rc === undefined) throw new Error('expected a registered command')
+    await rc.fn({} as never, [], [], {
+      stdin: null,
+      flags: { help: true },
+      filetypeFns: null,
+      cwd: '/',
+    })
+    expect(fn).toHaveBeenCalledTimes(calls)
+  })
+
+  it('returns one RegisteredCommand per VFS when given a single string', () => {
+    const out = command({ name: 'cat', vfs: 'ram', spec: STUB_SPEC, fn: STUB_FN })
     expect(out).toHaveLength(1)
     expect(out[0]?.name).toBe('cat')
-    expect(out[0]?.resource).toBe('ram')
+    expect(out[0]?.vfs).toBe('ram')
   })
 
-  it('returns one RegisteredCommand per resource when given an array', () => {
-    const out = command({ name: 'cat', resource: ['ram', 'disk'], spec: STUB_SPEC, fn: STUB_FN })
+  it('returns one RegisteredCommand per VFS when given an array', () => {
+    const out = command({ name: 'cat', vfs: ['ram', 'disk'], spec: STUB_SPEC, fn: STUB_FN })
     expect(out).toHaveLength(2)
-    expect(out.map((r) => r.resource)).toEqual(['ram', 'disk'])
+    expect(out.map((r) => r.vfs)).toEqual(['ram', 'disk'])
   })
 
-  it('passes through filetype, provision, aggregate, write', () => {
-    const prov = () => 'p'
+  it('passes through filetype, aggregate, write', () => {
     const agg = () => new Uint8Array(0)
     const out = command({
       name: 'cat',
-      resource: 'ram',
+      vfs: 'ram',
       spec: STUB_SPEC,
       fn: STUB_FN,
       filetype: '.json',
-      provision: prov,
       aggregate: agg,
       write: true,
     })
     expect(out[0]?.filetype).toBe('.json')
-    expect(out[0]?.provisionFn).toBe(prov)
     expect(out[0]?.aggregate).toBe(agg)
     expect(out[0]?.write).toBe(true)
   })
 
-  it('accepts resource=null for general commands', () => {
-    const out = command({ name: 'echo', resource: null, spec: STUB_SPEC, fn: STUB_FN })
-    expect(out[0]?.resource).toBeNull()
+  it('accepts VFS=null for general commands', () => {
+    const out = command({ name: 'echo', vfs: null, spec: STUB_SPEC, fn: STUB_FN })
+    expect(out[0]?.vfs).toBeNull()
   })
 
   it('keeps the spec epilog when injecting --help / --version', async () => {
     const out = command({
       name: 'gws',
-      resource: 'gdrive',
+      vfs: 'gdrive',
       spec: new CommandSpec({ epilog: 'Services:\n  drive' }),
       fn: STUB_FN,
     })
@@ -92,14 +123,5 @@ describe('command()', () => {
     })
     if (result === null) throw new Error('expected result')
     expect(new TextDecoder().decode(result[0] as Uint8Array)).toContain('Services:\n  drive\n')
-  })
-})
-
-describe('crossCommand()', () => {
-  it('encodes resource as "src->dst" and stores src/dst', () => {
-    const rc = crossCommand({ name: 'cp', src: 'ram', dst: 'disk', spec: STUB_SPEC, fn: STUB_FN })
-    expect(rc.resource).toBe('ram->disk')
-    expect(rc.src).toBe('ram')
-    expect(rc.dst).toBe('disk')
   })
 })

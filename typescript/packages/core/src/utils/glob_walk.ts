@@ -14,7 +14,8 @@
 
 import { dotglobActive, pathAllowed } from '../context/session_context.ts'
 import type { ChildMounts } from '../ops/types.ts'
-import { PathSpec } from '../types.ts'
+import { type FileStat, FileType, PathSpec } from '../types.ts'
+import { isFsError } from './errors.ts'
 import { fnmatch } from './fnmatch.ts'
 import { rekey } from './key_prefix.ts'
 import { rstripSlash } from './slash.ts'
@@ -22,12 +23,144 @@ import { compareCodePoints } from './sort.ts'
 
 export const GLOB_CHARS = ['*', '?', '[']
 
+function isoDay(year: number, month: number, date: number): string {
+  const mm = String(month).padStart(2, '0')
+  const dd = String(date).padStart(2, '0')
+  return `${String(year)}-${mm}-${dd}`
+}
+
+function isValidDate(year: number, month: number, date: number): boolean {
+  if (month < 1 || month > 12 || date < 1) return false
+  const d = new Date(Date.UTC(year, month - 1, date))
+  return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === date
+}
+
+function parseFixedInt(s: string | undefined, expectedLength: number): number | null {
+  if (s?.length !== expectedLength || !/^\d+$/.test(s)) return null
+  return Number.parseInt(s, 10)
+}
+
+/**
+ * Whether a glob names a date range a windowed lister can move to.
+ *
+ * The kit's `patternKinds` table holds one of these per kind: a glob it
+ * answers true for reaches the lister and bypasses the index, and any other
+ * glob is filtered out of the ordinary cached listing.
+ */
+export function hasGlobSpan(pattern: string): boolean {
+  return globSpan(pattern) !== null
+}
+
+/**
+ * Whether a glob starts with literal text a query can narrow on.
+ *
+ * The `patternKinds` twin of `hasGlobSpan` for a backend whose window is a
+ * row cap rather than a date range: the literal prefix becomes a prefix match
+ * in the query, so the cap covers the region the line named instead of the
+ * head of the table.
+ */
+export function hasGlobPrefix(pattern: string): boolean {
+  return globPrefix(pattern) !== ''
+}
+
+/**
+ * The literal text a glob starts with, before its first metacharacter.
+ *
+ * A quoted glob character travels under a private mark and stands for that
+ * character literally, so the marks are restored here: `'*'ab*` asks for
+ * names starting with a real star.
+ */
+export function globPrefix(pattern: string | null | undefined): string {
+  if (!pattern) return ''
+  let metaIndex = -1
+  for (const ch of GLOB_CHARS) {
+    const idx = pattern.indexOf(ch)
+    if (idx !== -1 && (metaIndex === -1 || idx < metaIndex)) metaIndex = idx
+  }
+  if (metaIndex === -1) return ''
+  return unmarkGlobs(pattern.slice(0, metaIndex))
+}
+
+/**
+ * The literal prefix a glob puts on the stem of a leaf name.
+ *
+ * A leaf is a stem plus one of the renderer's suffixes, so a literal that has
+ * run into a suffix says nothing about the stem and the part that ran in is
+ * dropped: `12*.md` narrows to `12`, and `doc-1.m*` narrows to `doc-1` rather
+ * than asking for stems that start `doc-1.m`. Only a tail that spells the head
+ * of a suffix is dropped, which is what keeps a stem that contains a dot:
+ * `acct.2026*` narrows to `acct.2026`, where cutting at the first dot would
+ * narrow to `acct` and let the rows nobody asked for eat the window.
+ */
+export function globStemPrefix(pattern: string | null | undefined, suffixes: string[]): string {
+  const literal = globPrefix(pattern)
+  let reached = 0
+  for (const suffix of suffixes) {
+    for (let size = 1; size <= suffix.length; size += 1) {
+      if (literal.endsWith(suffix.slice(0, size))) reached = Math.max(reached, size)
+    }
+  }
+  return literal.slice(0, literal.length - reached)
+}
+
+/**
+ * The half-open range of dates a date-prefixed glob asks for.
+ *
+ * The literal prefix before the first metacharacter is read as a year, a
+ * month or a day, so `2026-*` spans a year and `2026-01-05*` one day. This is
+ * what lets a windowed listing honour a glob instead of filtering its own
+ * window: the backend moves the window to the span the line named. Dates are
+ * floating `YYYY-MM-DD`, since a caller bucketing in a named time zone has to
+ * build its own instants from them; UTC instants would shift the window by
+ * the offset.
+ */
+export function globSpan(pattern: string | null | undefined): [string, string] | null {
+  return literalSpan(globPrefix(pattern))
+}
+
+/**
+ * The half-open range of dates a literal year, month or day names.
+ *
+ * The reading `globSpan` applies to a glob's literal prefix, for a caller
+ * that cuts the prefix first; separators trailing the literal are ignored.
+ */
+export function literalSpan(literal: string): [string, string] | null {
+  if (literal === '') return null
+  const parts = literal.replace(/[_-]+$/, '').split('-')
+  if (parts.length === 1) {
+    const year = parseFixedInt(parts[0], 4)
+    if (year === null) return null
+    return [isoDay(year, 1, 1), isoDay(year + 1, 1, 1)]
+  }
+  if (parts.length === 2) {
+    const year = parseFixedInt(parts[0], 4)
+    const month = parseFixedInt(parts[1], 2)
+    if (year === null || month === null) return null
+    if (!isValidDate(year, month, 1)) return null
+    if (month === 12) return [isoDay(year, month, 1), isoDay(year + 1, 1, 1)]
+    return [isoDay(year, month, 1), isoDay(year, month + 1, 1)]
+  }
+  if (parts.length === 3) {
+    const year = parseFixedInt(parts[0], 4)
+    const month = parseFixedInt(parts[1], 2)
+    const date = parseFixedInt(parts[2], 2)
+    if (year === null || month === null || date === null) return null
+    if (!isValidDate(year, month, date)) return null
+    const next = new Date(Date.UTC(year, month - 1, date) + 86400000)
+    return [
+      isoDay(year, month, date),
+      isoDay(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate()),
+    ]
+  }
+  return null
+}
+
 // A quoted glob character keeps travelling as a character, under a
 // private mark, because bash tracks quoting per character and not per
 // word: `'*'?.txt` still globs, on the `?` alone, and matches only a
 // name starting with a literal star. A mark is one character wide, so
 // every length relation between a spec's virtual, directory,
-// resourcePath and rawPath keeps holding, and no mark is a glob
+// vfsPath and rawPath keeps holding, and no mark is a glob
 // character, so `hasGlob` already answers "does this word still glob".
 // The marks are Unicode noncharacters, permanently unassigned and never
 // valid interchange text -- the same impossible input `brace.ts` assumes
@@ -109,7 +242,7 @@ function unmarkSpec(spec: PathSpec): PathSpec {
   return new PathSpec({
     virtual: unmarkGlobs(spec.virtual),
     directory: unmarkGlobs(spec.directory),
-    resourcePath: unmarkGlobs(spec.resourcePath),
+    vfsPath: unmarkGlobs(spec.vfsPath),
     rawPath: unmarkGlobs(spec.rawPath),
     pattern: spec.pattern === null ? null : unmarkGlobs(spec.pattern),
     resolved: spec.resolved,
@@ -135,7 +268,7 @@ export function literalWord(item: string | PathSpec): string | PathSpec {
   return new PathSpec({
     virtual: spec.virtual,
     directory: spec.directory,
-    resourcePath: spec.resourcePath,
+    vfsPath: spec.vfsPath,
     rawPath: spec.rawPath,
     pattern: null,
     resolved: true,
@@ -196,6 +329,47 @@ function isMissingDir(err: unknown): boolean {
 // directory-shaped spec (`PathSpec.dir`) asks for matches alone, so an empty
 // list means nothing matched -- what a caller merging these matches with
 // another source needs, since only it can tell whether the union is empty.
+// The namespace's stat of what an owed name points at, resolved through
+// the workspace: null when the link dangles or loops.
+export type TargetStat = (virtual: string) => Promise<FileStat | null>
+
+// Whether a match is a directory, the way a trailing slash asks. A name
+// the namespace owes the directory (a nested mount root or a link) is no
+// backend's to stat: the namespace answers for it through `targetStat`,
+// which follows a link and stats what it reaches, so a link to a
+// directory is kept and a link to a file or to nothing is dropped, bash's
+// own rule for `*/`. Without that door the owed name is kept, and without
+// a stat door every match is kept, since nothing can tell them apart.
+// Otherwise one stat per match, served from the index the readdir just
+// filled.
+async function isDirectory<A, I>(
+  stat: ((accessor: A, path: PathSpec, index?: I) => Promise<FileStat>) | undefined,
+  accessor: A,
+  match: PathSpec,
+  index: I | undefined,
+  children: ChildMounts | undefined,
+  targetStat: TargetStat | undefined,
+): Promise<boolean> {
+  if (stat === undefined) return true
+  const trimmed = rstripSlash(match.virtual)
+  const cut = trimmed.lastIndexOf('/')
+  const parent = trimmed.slice(0, cut + 1)
+  const name = trimmed.slice(cut + 1)
+  if (children?.(parent).includes(name) === true) {
+    if (targetStat === undefined) return true
+    const target = await targetStat(trimmed)
+    return target?.type === FileType.DIRECTORY
+  }
+  let row: FileStat
+  try {
+    row = await stat(accessor, match, index)
+  } catch (err) {
+    if (isFsError(err)) return false
+    throw err
+  }
+  return row.type === FileType.DIRECTORY
+}
+
 export async function resolveGlobWith<A, I>(
   readdir: (accessor: A, path: PathSpec, index?: I) => Promise<string[]>,
   accessor: A,
@@ -203,6 +377,8 @@ export async function resolveGlobWith<A, I>(
   index: I | undefined,
   cap?: number,
   children?: ChildMounts,
+  stat?: (accessor: A, path: PathSpec, index?: I) => Promise<FileStat>,
+  targetStat?: TargetStat,
 ): Promise<PathSpec[]> {
   const result: PathSpec[] = []
   for (const p of paths) {
@@ -211,15 +387,50 @@ export async function resolveGlobWith<A, I>(
       continue
     }
     if (p.pattern !== null && p.pattern !== '') {
+      // A trailing slash asks for directories only, and every match keeps
+      // one (`*/` -> `sub/`), the same rule the shell tier applies in
+      // workspace/expand/globs.ts. The slash is not part of the spelling
+      // to rebuild, so it comes off the word here and goes back on each
+      // match; the literal answer to a zero-match glob is still the word
+      // as typed (#1065).
+      const dirsOnly = p.rawPath.endsWith('/') && p.rawPath !== p.virtual
+      const word = dirsOnly
+        ? new PathSpec({
+            virtual: p.virtual,
+            directory: p.directory,
+            vfsPath: p.vfsPath,
+            pattern: p.pattern,
+            resolved: p.resolved,
+            rawPath: rstripSlash(p.rawPath),
+          })
+        : p
       // The hidden filter sits here, in the one loop every backend's
       // resolveGlob runs through, because per-backend glob modules bind
       // raw readdirs that never pass the command-door guard. It runs
       // before the empty-match test so an all-hidden match set reads as
       // no matches and falls back to the literal word, exactly what bash
       // prints when nothing matched.
-      const matched = (await expandPattern(readdir, accessor, p, index, children)).filter((m) =>
+      let matched = (await expandPattern(readdir, accessor, word, index, children)).filter((m) =>
         pathAllowed(m.virtual),
       )
+      if (dirsOnly) {
+        const kept: PathSpec[] = []
+        for (const m of matched) {
+          if (await isDirectory(stat, accessor, m, index, children, targetStat)) {
+            kept.push(
+              new PathSpec({
+                virtual: m.virtual,
+                directory: m.directory,
+                vfsPath: m.vfsPath,
+                pattern: m.pattern,
+                resolved: m.resolved,
+                rawPath: `${m.rawPath}/`,
+              }),
+            )
+          }
+        }
+        matched = kept
+      }
       // Dir-shaped specs keep the empty result, which is what a caller
       // that has to merge these matches with another source asks for.
       if (matched.length === 0 && isWordShaped(p)) {
@@ -230,7 +441,7 @@ export async function resolveGlobWith<A, I>(
             new PathSpec({
               virtual: p.virtual,
               directory: p.directory,
-              resourcePath: p.resourcePath,
+              vfsPath: p.vfsPath,
               pattern: null,
               resolved: true,
               rawPath: p.rawPath,
@@ -277,8 +488,8 @@ export async function expandPattern<A, I>(
   index?: I,
   children?: ChildMounts,
 ): Promise<PathSpec[]> {
-  const prefix = path.virtual.slice(0, rstripSlash(path.virtual).length - path.resourcePath.length)
-  const segments = path.resourcePath === '' ? [] : path.resourcePath.split('/')
+  const prefix = path.virtual.slice(0, rstripSlash(path.virtual).length - path.vfsPath.length)
+  const segments = path.vfsPath === '' ? [] : path.vfsPath.split('/')
   // Two spec shapes reach resolvers: a full pattern path (classify), where
   // the pattern is already the last segment, and a directory-shaped spec
   // (PathSpec.dir), where the pattern applies to the directory's entries.
@@ -295,7 +506,18 @@ export async function expandPattern<A, I>(
     const nextLevel: string[] = []
     const matcher = globPattern(seg)
     for (const parent of level) {
-      const spec = PathSpec.fromStrPath(parent, rekey(path.virtual, path.resourcePath, parent))
+      // Directory-shaped, carrying the segment as the pattern: a backend
+      // whose listing for this level is a bounded window moves the window to
+      // what the glob asks for instead of filtering its own (gcal, gdocs and
+      // the dated-message channels). Every other readdir reads the directory
+      // off the same spec and ignores the field. A literal segment carries
+      // none, so it keeps its warm listing.
+      const spec = new PathSpec({
+        virtual: parent,
+        directory: parent,
+        vfsPath: rekey(path.virtual, path.vfsPath, parent),
+        pattern: hasGlob(seg) ? seg : null,
+      })
       let entries: string[]
       try {
         entries = await readdir(accessor, spec, index)
@@ -303,9 +525,11 @@ export async function expandPattern<A, I>(
         if (!isMissingDir(err)) throw err
         entries = []
       }
+      // A cold listing marks a folder with a trailing slash (box, gdrive,
+      // dropbox); the marker is not part of the name.
       for (const e of entries) {
-        const name = rstripSlash(e).split('/').pop() ?? ''
-        if (globNameMatches(name, matcher)) nextLevel.push(e)
+        const entry = rstripSlash(e)
+        if (globNameMatches(entry.split('/').pop() ?? '', matcher)) nextLevel.push(entry)
       }
       if (children !== undefined) {
         // A nested mount root or a link is a real child of this parent
@@ -321,9 +545,7 @@ export async function expandPattern<A, I>(
     level = [...new Set(nextLevel)].sort(compareCodePoints)
     if (level.length === 0) return []
   }
-  const matches = level.map((e) =>
-    PathSpec.fromStrPath(e, rekey(path.virtual, path.resourcePath, e)),
-  )
+  const matches = level.map((e) => PathSpec.fromStrPath(e, rekey(path.virtual, path.vfsPath, e)))
   // A typed word (raw differs from virtual) spells its matches; the
   // dir-shaped specs internal expansions build (PathSpec.dir) have no typed
   // form and keep the resolved virtual.
@@ -335,7 +557,7 @@ export async function expandPattern<A, I>(
       new PathSpec({
         virtual: m.virtual,
         directory: m.directory,
-        resourcePath: m.resourcePath,
+        vfsPath: m.vfsPath,
         pattern: m.pattern,
         resolved: m.resolved,
         rawPath: spellMatch(raw, m.virtual, walked),

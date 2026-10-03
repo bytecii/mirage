@@ -1,0 +1,447 @@
+{
+  "cases": [
+    {
+      "id": "syntax_missing_quote_0",
+      "seq": 510100,
+      "command": "echo '{\"description\":\"Master\\'s; echo UNEXPECTED\"}'",
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `\"'\n"
+      }
+    },
+    {
+      "id": "syntax_missing_quote_1",
+      "seq": 510101,
+      "command": "echo '{\"description\":\"Master\\'s\"}'",
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `\"'\n"
+      }
+    },
+    {
+      "id": "syntax_missing_quote_2",
+      "seq": 510102,
+      "command": "echo safe; echo '{\"description\":\"Master\\'s; touch /data/unexpected\"}'",
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `\"'\n"
+      }
+    },
+    {
+      "id": "syntax_missing_quote_3",
+      "seq": 510103,
+      "command": "echo \"$(touch /data/unexpected)\" '{\"description\":\"Master\\'s\"}'",
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `\"'\n"
+      }
+    },
+    {
+      "id": "syntax_associative_key_with_spaces",
+      "seq": 510104,
+      "command": "declare -A m; m[two words]=v; echo \"${m[two words]}\"; declare -p m",
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "expect": {
+        "exit": 0,
+        "stdout": "v\ndeclare -A m=([\"two words\"]=\"v\" )\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "syntax_unclosed_single",
+      "seq": 1338200,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo 'abc",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `''\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "syntax_unclosed_double",
+      "seq": 1338201,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo \"abc",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `\"'\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "syntax_unclosed_ansi",
+      "seq": 1338202,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo $'abc",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `''\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "syntax_unclosed_escaped_single",
+      "seq": 1338203,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo $'abc\\'",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `''\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "syntax_unclosed_escaped_double",
+      "seq": 1338204,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo \"abc\\\"",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `\"'\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "syntax_unclosed_nested",
+      "seq": 1338205,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo \"$(echo 'abc)",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `''\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "syntax_unclosed_multiline",
+      "seq": 1338206,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo 'abc\ndef",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `''\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "syntax_unclosed_test_single",
+      "seq": 1338207,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "[ 'abc",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `''\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "syntax_unclosed_test_double",
+      "seq": 1338208,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "[ \"abc",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "mirage: unexpected EOF while looking for matching `\"'\n"
+      },
+      "flags": []
+    }
+  ]
+}

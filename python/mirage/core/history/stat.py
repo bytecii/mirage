@@ -15,13 +15,15 @@
 from mirage.accessor.history import HistoryAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.history.read import read
-from mirage.types import FileStat, PathSpec
-from mirage.utils.filetype import guess_type
+from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.filetype import content_type_for_path
 
 
-async def stat(accessor: HistoryAccessor,
-               path: PathSpec,
-               index: IndexCacheStore = NULL_INDEX) -> FileStat:
+async def stat(
+    accessor: HistoryAccessor,
+    path: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+) -> FileStat:
     """Stat the rendered histfile.
 
     Args:
@@ -37,5 +39,6 @@ async def stat(accessor: HistoryAccessor,
         name=".bash_history",
         size=len(data),
         modified=None,
-        type=guess_type(".bash_history"),
+        type=FileType.FILE,
+        content=content_type_for_path(".bash_history"),
     )

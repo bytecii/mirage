@@ -75,10 +75,9 @@ def test_known_keys_keep_their_captured_values():
 
 def test_cache_entry_bytes_become_a_blob_reference():
     state = _state()
-    state[StateKey.CACHE][CacheKey.ENTRIES] = [{
-        "key": "/a",
-        CacheKey.DATA: b"hello"
-    }]
+    state[StateKey.CACHE][CacheKey.ENTRIES] = [
+        {"key": "/a", CacheKey.DATA: b"hello"}
+    ]
 
     manifest, blobs = split_manifest_and_blobs(state)
 
@@ -91,11 +90,13 @@ def test_cache_entry_bytes_become_a_blob_reference():
 
 def test_job_streams_become_blob_references_and_empty_becomes_text():
     state = _state()
-    state[StateKey.JOBS] = [{
-        JobKey.ID: 1,
-        JobKey.STDOUT: b"out",
-        JobKey.STDERR: b"",
-    }]
+    state[StateKey.JOBS] = [
+        {
+            JobKey.ID: 1,
+            JobKey.STDOUT: b"out",
+            JobKey.STDERR: b"",
+        }
+    ]
 
     manifest, blobs = split_manifest_and_blobs(state)
 
@@ -104,20 +105,20 @@ def test_job_streams_become_blob_references_and_empty_becomes_text():
     assert job[JobKey.STDERR] == ""
 
 
-def test_mount_resource_state_is_rewritten_not_passed_through():
+def test_mount_vfs_state_is_rewritten_not_passed_through():
     state = _state()
-    state[StateKey.MOUNTS] = [{
-        MountKey.INDEX: 0,
-        MountKey.PREFIX: "/m",
-        MountKey.RESOURCE_STATE: {
-            "type": "ram",
-            "files": {
-                "/a.txt": b"hi"
+    state[StateKey.MOUNTS] = [
+        {
+            MountKey.INDEX: 0,
+            MountKey.PREFIX: "/m",
+            MountKey.VFS_STATE: {
+                "type": "ram",
+                "files": {"/a.txt": b"hi"},
             },
-        },
-    }]
+        }
+    ]
 
     manifest, blobs = split_manifest_and_blobs(state)
 
-    files = manifest[StateKey.MOUNTS][0][MountKey.RESOURCE_STATE]["files"]
+    files = manifest[StateKey.MOUNTS][0][MountKey.VFS_STATE]["files"]
     assert blobs[files["/a.txt"][BLOB_REF_KEY]] == b"hi"

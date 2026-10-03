@@ -4,7 +4,7 @@ import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
 import { FileStat, FileType } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/utils/errors'
-import { guessType } from '@struktoai/mirage-core/utils/filetype'
+import { contentTypeForPath } from '@struktoai/mirage-core/utils/filetype'
 import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { stripSlash } from '@struktoai/mirage-core/utils/slash'
 import type { NextcloudAccessor } from '../../accessor/nextcloud.ts'
@@ -15,7 +15,7 @@ export async function stat(
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   const raw = rawPathOf(path)
   const key = stripSlash(raw)
   if (key === '') return new FileStat({ name: '/', type: FileType.DIRECTORY })
@@ -35,7 +35,8 @@ export async function stat(
         name: entry.name,
         size: entry.size ?? null,
         modified: entry.remoteTime || null,
-        type: guessType(entry.name),
+        type: FileType.FILE,
+        content: contentTypeForPath(entry.name),
       })
     }
     const parent = virtualKey.slice(0, virtualKey.lastIndexOf('/')) || '/'
@@ -71,7 +72,8 @@ function fileStat(key: string, raw: string, metadata: Metadata): FileStat {
     name: key.split('/').pop() ?? key,
     size: metadata.contentLength !== null ? Number(metadata.contentLength) : null,
     modified: metadata.lastModified,
-    type: guessType(raw),
+    type: FileType.FILE,
+    content: contentTypeForPath(raw),
     fingerprint: etag,
     extra: etag !== null && etag !== '' ? { etag } : {},
   })

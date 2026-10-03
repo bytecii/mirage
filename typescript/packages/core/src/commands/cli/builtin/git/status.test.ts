@@ -30,9 +30,8 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { IOResult } from '../../../../io/types.ts'
 import { OpsRegistry } from '../../../../ops/registry.ts'
-import { RAMResource } from '../../../../resource/ram/ram.ts'
-import { createShellParser } from '../../../../shell/syntax/parse.ts'
-import type { ShellParser } from '../../../../shell/types.ts'
+import { RAMVFS } from '../../../../vfs/ram/ram.ts'
+import { createShellParser, type ShellParser } from '../../../../shell/parse/index.ts'
 import { MountMode } from '../../../../types.ts'
 import { Workspace } from '../../../../workspace/workspace/workspace.ts'
 import { GIT } from './index.ts'
@@ -86,9 +85,9 @@ async function stage(setup: Setup): Promise<[Workspace, string]> {
   execFileSync('bash', [BUILDER, repo], { stdio: 'ignore' })
   setup(repo)
 
-  const ram = new RAMResource()
+  const ram = new RAMVFS()
   const registry = new OpsRegistry()
-  registry.registerResource(ram)
+  registry.registerVfs(ram)
   const ws = new Workspace(
     { '/repo': ram },
     { mode: MountMode.WRITE, ops: registry, shellParser: parser },
@@ -121,10 +120,10 @@ function git(repo: string, args: string[]): string {
 }
 
 /** Both answers to the same `git status` spelling, mirage's first. */
-async function both(setup: Setup, spelling: string[]): Promise<[string, string]> {
+async function both(setup: Setup, spelling: string[], sub = ''): Promise<[string, string]> {
   const [ws, repo] = await stage(setup)
-  const result = await ws.execute(`git -C /repo status ${spelling.join(' ')}`)
-  return [DEC.decode(result.stdout), git(repo, ['status', ...spelling])]
+  const result = await ws.shell(`git -C ${join('/repo', sub)} status ${spelling.join(' ')}`)
+  return [DEC.decode(result.stdout), git(join(repo, sub), ['status', ...spelling])]
 }
 
 // Every spelling git offers for the same report, so a divergence in one format
@@ -269,6 +268,15 @@ const STATES: [string, Setup][] = [
     },
   ],
   [
+    'non-ASCII paths with core.quotePath off',
+    (r) => {
+      put(r, 'ünïcødé.txt', 'x\n')
+      git(r, ['mv', 'letters.txt', 'lëtters.txt'])
+      put(r, 'tab\there.txt', 'x\n')
+      git(r, ['config', 'core.quotePath', 'false'])
+    },
+  ],
+  [
     'a detached HEAD',
     (r) => {
       git(r, ['checkout', '-q', 'HEAD~1'])
@@ -290,6 +298,21 @@ describe('git status against the real binary', () => {
   )
   it.each(rows)('matches on %s', async (_name, setup, spelling) => {
     const [mine, theirs] = await both(setup, [...spelling])
+    expect(mine).toBe(theirs)
+  })
+})
+
+// The human formats name every path from where git runs; porcelain is left to
+// the top-level run above, since it never does.
+describe('git status from a subdirectory against the real binary', () => {
+  const rows = STATES.flatMap(([name, setup]) =>
+    [[], ['-s'], ['-uall']].map(
+      (spelling) =>
+        [`${name} / git -C docs status ${spelling.join(' ')}`, setup, spelling] as const,
+    ),
+  )
+  it.each(rows)('matches on %s', async (_name, setup, spelling) => {
+    const [mine, theirs] = await both(setup, [...spelling], 'docs')
     expect(mine).toBe(theirs)
   })
 })

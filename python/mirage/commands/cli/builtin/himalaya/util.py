@@ -16,18 +16,25 @@ import json
 import posixpath
 from email.policy import SMTP
 
-from mirage.commands.cli.builtin.himalaya.builder import (Attachment, Compose,
-                                                          Source, build,
-                                                          read_body,
-                                                          split_addresses)
-from mirage.commands.cli.builtin.himalaya.deliver import (deliver,
-                                                          save_sent_copy)
+from mirage.commands.cli.builtin.himalaya.builder import (
+    Attachment,
+    Compose,
+    Source,
+    build,
+    read_body,
+    split_addresses,
+)
+from mirage.commands.cli.builtin.himalaya.deliver import (
+    deliver,
+    save_sent_copy,
+)
 from mirage.commands.cli.types import CLIDoors
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.email.config import EmailConfig
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.utils.errors import fs_strerror
 from mirage.utils.filetype import mime_type_for
 
 
@@ -46,8 +53,9 @@ def first_text(texts: tuple[str, ...], label: str) -> str:
     return texts[0]
 
 
-async def load_attachments(doors: CLIDoors | None,
-                           paths: list[PathSpec]) -> tuple[Attachment, ...]:
+async def load_attachments(
+    doors: CLIDoors | None, paths: list[PathSpec]
+) -> tuple[Attachment, ...]:
     """Read --attach files through the workspace dispatcher.
 
     An account CLI has no mount of its own; an attachment is an
@@ -71,14 +79,18 @@ async def load_attachments(doors: CLIDoors | None,
     for spec in paths:
         try:
             data, _ = await doors.dispatch("read", spec)
-        except FileNotFoundError:
-            raise ValueError(f"read attachment {spec.virtual}: "
-                             "No such file or directory") from None
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            raise ValueError(
+                f"read attachment {spec.virtual}: {fs_strerror(exc)}"
+            ) from None
         filename = posixpath.basename(spec.virtual.rstrip("/")) or "attachment"
         attachments.append(
-            Attachment(filename=filename,
-                       content_type=mime_type_for(filename),
-                       data=data if isinstance(data, bytes) else bytes(data)))
+            Attachment(
+                filename=filename,
+                content_type=mime_type_for(filename),
+                data=data if isinstance(data, bytes) else bytes(data),
+            )
+        )
     return tuple(attachments)
 
 
@@ -143,7 +155,9 @@ async def route(
         "to": message["To"],
         "subject": message["Subject"],
     }
-    out = json.dumps(result, ensure_ascii=False,
-                     separators=(",", ":")).encode()
+    out = json.dumps(
+        result, ensure_ascii=False, separators=(",", ":")
+    ).encode()
     return yield_bytes(out), IOResult(
-        stderr=warning.encode() if warning else None)
+        stderr=warning.encode() if warning else None
+    )

@@ -21,8 +21,6 @@ from opendal.types import Metadata
 from mirage.core.opendal.types import OperatorAccessor
 from mirage.types import PathSpec, WalkEntry
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.watch.base import DeltaHook
-from mirage.watch.delta import ListingDeltaHook
 from mirage.watch.fingerprint import stat_fingerprint
 
 
@@ -44,8 +42,8 @@ class OpendalWalk:
 
     def __init__(self, accessor: OperatorAccessor) -> None:
         """Args:
-            accessor (OperatorAccessor): Backend handle exposing an
-                opendal operator.
+        accessor (OperatorAccessor): Backend handle exposing an
+            opendal operator.
         """
         self._accessor = accessor
 
@@ -55,8 +53,8 @@ class OpendalWalk:
         Args:
             root (PathSpec): Watch root (mount-virtual path).
         """
-        prefix = mount_prefix_of(root.virtual, root.resource_path)
-        base = root.resource_path.strip("/")
+        prefix = mount_prefix_of(root.virtual, root.vfs_path)
+        base = root.vfs_path.strip("/")
         list_path = base + "/" if base else "/"
         op = self._accessor.operator()
         try:
@@ -68,30 +66,40 @@ class OpendalWalk:
             if not relative or relative == list_path:
                 continue
             is_dir = relative.endswith("/")
-            resource_rel = relative.rstrip("/")
-            virtual = (prefix.rstrip("/") + "/" +
-                       resource_rel if prefix else "/" + resource_rel)
+            vfs_rel = relative.rstrip("/")
+            virtual = (
+                prefix.rstrip("/") + "/" + vfs_rel if prefix else "/" + vfs_rel
+            )
             if is_dir:
                 yield WalkEntry(virtual=virtual, is_dir=True, fingerprint=None)
                 continue
             meta = entry.metadata
-            if meta is None or (meta.etag is None
-                                and meta.last_modified is None
-                                and meta.content_length is None):
-                meta = await self._stat(op, resource_rel)
-            modified = meta.last_modified.isoformat() \
-                if meta and meta.last_modified else None
+            if meta is None or (
+                meta.etag is None
+                and meta.last_modified is None
+                and meta.content_length is None
+            ):
+                meta = await self._stat(op, vfs_rel)
+            modified = (
+                meta.last_modified.isoformat()
+                if meta and meta.last_modified
+                else None
+            )
             size = meta.content_length if meta else None
-            fingerprint = stat_fingerprint(meta.etag if meta else None,
-                                           modified, size)
-            yield WalkEntry(virtual=virtual,
-                            is_dir=False,
-                            fingerprint=fingerprint,
-                            size=size,
-                            modified=modified)
+            fingerprint = stat_fingerprint(
+                meta.etag if meta else None, modified, size
+            )
+            yield WalkEntry(
+                virtual=virtual,
+                is_dir=False,
+                fingerprint=fingerprint,
+                size=size,
+                modified=modified,
+            )
 
-    async def _stat(self, op: opendal.AsyncOperator,
-                    key: str) -> Metadata | None:
+    async def _stat(
+        self, op: opendal.AsyncOperator, key: str
+    ) -> Metadata | None:
         """Fetch one entry's metadata when the listing omitted it.
 
         Args:
@@ -104,13 +112,3 @@ class OpendalWalk:
             # Deleted between the listing and the stat; the next pull
             # reports the DELETE from the snapshot diff.
             return None
-
-
-def build_delta_hook(accessor: OperatorAccessor) -> DeltaHook:
-    """Build a delta hook for any opendal-backed accessor.
-
-    Args:
-        accessor (OperatorAccessor): Backend handle exposing an opendal
-            operator.
-    """
-    return ListingDeltaHook(OpendalWalk(accessor))

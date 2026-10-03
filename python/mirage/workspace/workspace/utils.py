@@ -14,8 +14,7 @@
 
 from typing import Any
 
-from mirage.resource.history import HISTORY_PREFIX
-from mirage.workspace.session import Session
+from mirage.workspace.session import SessionState
 from mirage.workspace.session.session import vars_from_env
 
 
@@ -32,9 +31,10 @@ def command_name(command: str) -> str:
     return words[0] if words else ""
 
 
-def fork_for_call(session: Session, cwd: str | None,
-                  env: dict[str, str] | None) -> Session:
-    """Session a single ``execute`` call runs in.
+def fork_for_call(
+    session: SessionState, cwd: str | None, env: dict[str, str] | None
+) -> SessionState:
+    """Session a single ``shell`` call runs in.
 
     A per-call ``cwd``/``env`` runs in an ephemeral clone, matching a
     bash subshell: ``cd`` and ``export`` inside the line do not leak
@@ -42,7 +42,7 @@ def fork_for_call(session: Session, cwd: str | None,
     session is used as is.
 
     Args:
-        session (Session): the persistent session for the call.
+        session (SessionState): the persistent session for the call.
         cwd (str | None): per-call working directory override.
         env (dict[str, str] | None): per-call environment overrides,
             layered on top of the session's env.
@@ -55,23 +55,3 @@ def fork_for_call(session: Session, cwd: str | None,
     if env is not None:
         overrides["vars"] = {**session.vars, **vars_from_env(env)}
     return session.fork(**overrides)
-
-
-def infrastructure_prefixes(implicit_root: bool) -> set[str]:
-    """Mount prefixes a session is always allowed to touch.
-
-    The implicit scratch root (where text-processing commands like
-    ``wc`` without a path argument resolve), the device mount, and the
-    history view are infrastructure: they hold no user credentials, and
-    rejecting them would break common shell idioms or the history
-    builtin. A user-defined root mount is NOT infrastructure; sessions
-    must be granted ``/`` explicitly to touch it.
-
-    Args:
-        implicit_root (bool): whether the root mount was synthesized
-            because no resource claimed ``/``.
-    """
-    prefixes = {"/dev", HISTORY_PREFIX}
-    if implicit_root:
-        prefixes.add("/")
-    return prefixes

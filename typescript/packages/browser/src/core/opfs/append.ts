@@ -12,25 +12,25 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { record } from '@struktoai/mirage-core/observe/context'
-import { ResourceName } from '@struktoai/mirage-core/types'
+import { record, startOp } from '@struktoai/mirage-core/observe/context'
+import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { OPFSAccessor } from '../../accessor/opfs.ts'
-import { destError, resolveFileHandle, toWritableChunk } from './utils.ts'
+import { openError, resolveFileHandle, toWritableChunk } from './utils.ts'
 
 export async function appendBytes(
   accessor: OPFSAccessor,
   p: PathSpec,
   data: Uint8Array,
 ): Promise<void> {
-  const root = accessor.rootHandle
-  const start = performance.now()
-  const virtual = p.mountPath
+  const root = await accessor.root()
+  const timer = startOp()
+  const key = p.mountPath
   let handle: FileSystemFileHandle
   try {
-    handle = await resolveFileHandle(root, virtual, { create: true })
+    handle = await resolveFileHandle(root, key, { create: true })
   } catch (err) {
-    throw destError(err, p)
+    throw await openError(root, key, err, p)
   }
   const existing = await handle.getFile()
   const existingBytes = new Uint8Array(await existing.arrayBuffer())
@@ -40,5 +40,5 @@ export async function appendBytes(
   const writable = await handle.createWritable()
   await writable.write(toWritableChunk(merged))
   await writable.close()
-  record('append', virtual, ResourceName.OPFS, data.byteLength, start)
+  record('append', p.virtual, VFSName.OPFS, data.byteLength, timer)
 }

@@ -15,6 +15,7 @@
 import asyncio
 
 from mirage.io.types import IOResult
+from mirage.types import Refusal
 
 
 def test_default_exit_code():
@@ -36,10 +37,12 @@ def test_merge_combines_stderr():
 def test_merge_combines_cache():
 
     async def _run():
-        a = IOResult(cache=["/a"])
-        b = IOResult(cache=["/b"])
+        a = IOResult(cache=["/a"], renames=[("/dst", "/dst~")])
+        b = IOResult(cache=["/b"], renames=[("/src", "/dst")], exit_code=1)
         merged = await a.merge(b)
         assert merged.cache == ["/a", "/b"]
+        assert merged.renames == [("/dst", "/dst~"), ("/src", "/dst")]
+        assert merged.exit_code == 1
 
     asyncio.run(_run())
 
@@ -101,5 +104,19 @@ def test_chain_of_merges_stays_fresh_end_to_end():
         top = await IOResult().merge(step)
         origin.exit_code = 3
         assert top.exit_code == 3
+
+    asyncio.run(_run())
+
+
+def test_merge_keeps_the_latest_refusal():
+
+    async def _run():
+        refused = Refusal(kind="deny", reason="no deletes", policy="Rule")
+        merged = await IOResult(refusal=refused).merge(IOResult())
+        assert merged.refusal == refused
+        later = Refusal(kind="pending", reason="sign-off", ask_id="a1")
+        merged = await IOResult(refusal=refused).merge(IOResult(refusal=later))
+        assert merged.refusal == later
+        assert (await IOResult().merge(IOResult())).refusal is None
 
     asyncio.run(_run())

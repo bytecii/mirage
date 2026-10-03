@@ -12,21 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { record } from '../../observe/context.ts'
+import { record, startOp } from '../../observe/context.ts'
 import type { RAMAccessor } from '../../accessor/ram.ts'
-import { ResourceName, type PathSpec } from '../../types.ts'
-import { norm, nowIso } from './utils.ts'
+import { VFSName, type PathSpec } from '../../types.ts'
+import { nowIso } from '../../utils/dates.ts'
+import { norm } from '../../utils/path.ts'
 import { invalidateAfterWrite } from '../../cache/context.ts'
-import { checkDestParents } from './dest.ts'
+import { checkDestParents, checkWriteTarget } from './dest.ts'
 
 export async function appendBytes(
   accessor: RAMAccessor,
   path: PathSpec,
   data: Uint8Array,
 ): Promise<void> {
-  const start = performance.now()
+  const timer = startOp()
   const p = norm(path.mountPath)
   checkDestParents(accessor, path, p)
+  checkWriteTarget(accessor, path, p)
   const existing = accessor.store.files.get(p)
   if (existing) {
     const combined = new Uint8Array(existing.byteLength + data.byteLength)
@@ -37,7 +39,7 @@ export async function appendBytes(
     accessor.store.files.set(p, data)
   }
   accessor.store.modified.set(p, nowIso())
-  record('append', p, ResourceName.RAM, data.byteLength, start)
+  record('append', path.virtual, VFSName.RAM, data.byteLength, timer)
   await invalidateAfterWrite(path)
   return Promise.resolve()
 }

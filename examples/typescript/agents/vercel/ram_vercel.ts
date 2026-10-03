@@ -15,7 +15,7 @@
 import { config as loadEnv } from 'dotenv'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { MountMode, OpsRegistry, RAMResource, Workspace } from '@struktoai/mirage-node'
+import { MountMode, OpsRegistry, RAMVFS, Workspace } from '@struktoai/mirage-node'
 import { generateText, stepCountIs } from 'ai'
 import { openai } from '@ai-sdk/openai'
 import { mirageTools } from '@struktoai/mirage-agents/vercel'
@@ -25,7 +25,7 @@ loadEnv({
   path: resolve(dirname(fileURLToPath(import.meta.url)), '../../../../.env.development'),
 })
 
-const ram = new RAMResource()
+const ram = new RAMVFS()
 const ops = new OpsRegistry()
 for (const op of ram.ops()) ops.register(op)
 const ws = new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops })
@@ -34,7 +34,7 @@ const system = buildSystemPrompt({
   mountInfo: { '/': 'In-memory filesystem (read/write)' },
   extraInstructions:
     'All file paths start from /. Use the execute tool to run shell commands ' +
-    'and the readFile/writeFile/editFile/ls tools for direct file operations.',
+    'and the read/write/edit/ls/grep/glob tools for direct file operations.',
 })
 
 const task =
@@ -54,7 +54,7 @@ console.log(text)
 console.log(`\n--- ${String(steps.length)} step(s) ---`)
 
 console.log('\n--- Verifying files in workspace ---')
-const findAll = await ws.execute('find / -type f')
+const findAll = await ws.shell('find / -type f')
 const paths = findAll.stdoutText
   .trim()
   .split('\n')
@@ -62,6 +62,6 @@ const paths = findAll.stdoutText
 console.log(paths.join('\n'))
 
 for (const path of paths) {
-  const content = await ws.fs.readFileText(path)
+  const content = await ws.vfs.cat(path)
   console.log(`cat ${path}:\n${content}`)
 }

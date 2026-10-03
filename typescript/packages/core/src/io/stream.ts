@@ -12,22 +12,47 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { KeyLock } from '../cache/lock.ts'
+import { SharedInput } from './async_line_iterator.ts'
 import { CachableAsyncIterator } from './cachable_iterator.ts'
-import { type ByteSource, type IOResult, materialize } from './types.ts'
+import type { ByteSource, IOResult } from './types.ts'
 
-export async function* mergeStdoutStderr(
-  stdout: ByteSource | null,
-  io: IOResult,
-): AsyncIterable<Uint8Array> {
-  const stderrBytes = await materialize(io.stderr)
-  if (stderrBytes.byteLength > 0) yield stderrBytes
-  io.stderr = null
-  if (stdout === null) return
-  if (stdout instanceof Uint8Array) {
-    if (stdout.byteLength > 0) yield stdout
-    return
+/**
+ * One lazy byte cursor shared by commands inheriting an input descriptor.
+ * Serializing reads prevents concurrent consumers from replaying bytes or
+ * pulling the source simultaneously. A consumer stopping early leaves the
+ * cursor open; byte-sized pulls preserve the unread suffix for its successor.
+ */
+export class SharedStdin implements AsyncIterable<Uint8Array> {
+  private chunks: AsyncIterator<Uint8Array> | null
+  private buffer: Uint8Array = new Uint8Array()
+  private pos = 0
+  private readonly lock = new KeyLock()
+
+  constructor(source: ByteSource) {
+    this.chunks = ensureStream(source)[Symbol.asyncIterator]()
   }
-  for await (const chunk of stdout) yield chunk
+
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array, undefined> {
+    return {
+      next: () =>
+        this.lock.withLock('read', async () => {
+          while (this.pos >= this.buffer.byteLength) {
+            if (this.chunks === null) return { done: true, value: undefined }
+            const step = await this.chunks.next()
+            if (step.done === true) {
+              this.chunks = null
+              return { done: true, value: undefined }
+            }
+            this.buffer = step.value
+            this.pos = 0
+          }
+          const chunk = this.buffer.subarray(this.pos, this.pos + 1)
+          this.pos += 1
+          return { done: false, value: chunk }
+        }),
+    }
+  }
 }
 
 export function wrapCachableStreams(
@@ -87,7 +112,27 @@ export async function closeQuietly(stream: ByteSource | null): Promise<void> {
   }
 }
 
-export async function* asyncChain(...streams: (ByteSource | null)[]): AsyncIterable<Uint8Array> {
+/** Discard failed reads without changing normal early-consumer close semantics. */
+export async function discardStreams(...streams: (ByteSource | null)[]): Promise<void> {
+  for (const stream of new Set(streams)) {
+    if (stream instanceof CachableAsyncIterator || stream instanceof SharedInput) {
+      await stream.discard()
+    } else {
+      await closeQuietly(stream)
+    }
+  }
+}
+
+export async function discardIo(io: IOResult): Promise<void> {
+  await discardStreams(
+    ...Object.values(io.reads),
+    ...Object.values(io.writes),
+    io.stdout,
+    io.stderr,
+  )
+}
+
+export async function* asyncChain(streams: Iterable<ByteSource | null>): AsyncIterable<Uint8Array> {
   for (const stream of streams) {
     if (stream === null) continue
     if (stream instanceof Uint8Array) {
@@ -103,15 +148,10 @@ export async function* yieldBytes(data: Uint8Array): AsyncIterable<Uint8Array> {
   yield data
 }
 
-// eslint-disable-next-line require-yield -- mirrors Python's unreachable `yield b""` for generator contract
-export async function* quietMatch(
-  stream: AsyncIterable<Uint8Array>,
-  io: IOResult,
-): AsyncIterable<Uint8Array> {
-  for await (const _chunk of stream) {
-    void _chunk
-    io.exitCode = 0
-    return
-  }
-  io.exitCode = 1
+/**
+ * Present a byte source as a stream. An iterable is returned as itself, so
+ * closing the consumer closes its source; bytes become a one-chunk stream.
+ */
+export function ensureStream(src: ByteSource): AsyncIterable<Uint8Array> {
+  return src instanceof Uint8Array ? yieldBytes(src) : src
 }

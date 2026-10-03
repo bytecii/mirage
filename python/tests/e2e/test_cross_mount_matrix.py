@@ -13,8 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-import os
-import uuid
 from contextlib import ExitStack
 
 import pytest
@@ -23,17 +21,11 @@ from mirage.core.ram.mkdir import mkdir as mem_mkdir
 from mirage.core.ram.write import write_bytes as mem_write
 from mirage.core.redis.mkdir import mkdir as redis_mkdir
 from mirage.core.redis.write import write_bytes as redis_write
-from mirage.resource.disk import DiskResource
-from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
-from mirage.resource.ram import RAMResource
-from mirage.resource.redis import RedisResource
-from mirage.resource.s3 import S3Config, S3Resource
 from mirage.types import MountMode, PathSpec
 from mirage.workspace import Workspace
-from tests.e2e.gdrive_mock import FakeGDrive, patch_gdrive
+from tests.e2e.gdrive_mock import patch_gdrive
+from tests.e2e.mounts import REDIS_URL, MountState, build_mount
 from tests.e2e.s3_mock import patch_s3_multi
-
-REDIS_URL = os.environ.get("REDIS_URL", "")
 
 WRITABLE = {"ram", "disk", "redis", "s3"}
 
@@ -63,77 +55,18 @@ def _supports_delete(ptype: str) -> bool:
     return ptype in WRITABLE
 
 
-def _make_s3_resource(bucket: str) -> S3Resource:
-    config = S3Config(bucket=bucket,
-                      region="us-east-1",
-                      aws_access_key_id="testing",
-                      aws_secret_access_key="testing")
-    return S3Resource(config)
-
-
-def _make_redis_resource(prefix: str) -> RedisResource:
-    return RedisResource(url=REDIS_URL, key_prefix=prefix)
-
-
-def _make_gdrive_resource() -> GoogleDriveResource:
-    config = GoogleDriveConfig(
-        client_id="fake-id",
-        client_secret="fake-secret",
-        refresh_token="fake-refresh",
-    )
-    return GoogleDriveResource(config)
-
-
-class _MountState:
-
-    def __init__(self, ptype: str, mount_path: str, idx: int) -> None:
-        self.ptype = ptype
-        self.mount_path = mount_path
-        self.idx = idx
-        self.disk_root = None
-        self.s3_bucket: str | None = None
-        self.gdrive: FakeGDrive | None = None
-        self.redis_prefix: str | None = None
-        self.resource = None
-        self.accessor = None
-
-
-def _build_mount(ptype: str, mount_path: str, tmp_path,
-                 idx: int) -> _MountState:
-    state = _MountState(ptype, mount_path, idx)
-    if ptype == "ram":
-        state.resource = RAMResource()
-        state.accessor = state.resource.accessor
-    elif ptype == "disk":
-        root = tmp_path / f"disk{idx}"
-        root.mkdir()
-        state.disk_root = root
-        state.resource = DiskResource(root=str(root))
-    elif ptype == "redis":
-        prefix = f"mirage:test:{uuid.uuid4().hex}:{idx}:"
-        state.redis_prefix = prefix
-        state.resource = _make_redis_resource(prefix)
-    elif ptype == "s3":
-        state.s3_bucket = f"test-bucket-{idx}"
-        state.resource = _make_s3_resource(state.s3_bucket)
-    elif ptype == "gdrive":
-        state.gdrive = FakeGDrive()
-        state.resource = _make_gdrive_resource()
-    else:
-        raise ValueError(f"unknown resource: {ptype}")
-    return state
-
-
-async def _populate_file_async(state: _MountState, name: str,
-                               content: bytes) -> None:
+async def _populate_file_async(
+    state: MountState, name: str, content: bytes
+) -> None:
     if state.ptype == "ram":
         parts = ("/" + name).strip("/").split("/")
         for i in range(1, len(parts)):
             d = "/" + "/".join(parts[:i])
             if d not in state.accessor.store.dirs:
                 await mem_mkdir(state.accessor, PathSpec.from_str_path(d))
-        await mem_write(state.accessor, PathSpec.from_str_path("/" + name),
-                        content)
+        await mem_write(
+            state.accessor, PathSpec.from_str_path("/" + name), content
+        )
     elif state.ptype == "disk":
         full = state.disk_root / name
         full.parent.mkdir(parents=True, exist_ok=True)
@@ -143,16 +76,19 @@ async def _populate_file_async(state: _MountState, name: str,
         if len(parts) > 1:
             # mkdir -p the parent chain, like the disk branch above: plain
             # mkdir refuses a directory that is already there (GNU).
-            await redis_mkdir(state.resource.accessor,
-                              PathSpec.from_str_path("/" +
-                                                     "/".join(parts[:-1])),
-                              parents=True)
-        await redis_write(state.resource.accessor,
-                          PathSpec.from_str_path("/" + name), content)
+            await redis_mkdir(
+                state.vfs.accessor,
+                PathSpec.from_str_path("/" + "/".join(parts[:-1])),
+                parents=True,
+            )
+        await redis_write(
+            state.vfs.accessor, PathSpec.from_str_path("/" + name), content
+        )
 
 
-def _populate_file(state: _MountState, name: str, content: bytes,
-                   buckets: dict) -> None:
+def _populate_file(
+    state: MountState, name: str, content: bytes, buckets: dict
+) -> None:
     if state.ptype in ("ram", "disk", "redis"):
         asyncio.run(_populate_file_async(state, name, content))
     elif state.ptype == "s3":
@@ -161,8 +97,7 @@ def _populate_file(state: _MountState, name: str, content: bytes,
         state.gdrive.add_file(name, content)
 
 
-async def _ls_for_index(ws: Workspace, state: "_MountState",
-                        name: str) -> None:
+async def _ls_for_index(ws: Workspace, state: MountState, name: str) -> None:
     mount_path = state.mount_path
     parts = name.strip("/").split("/")
     for i in range(len(parts)):
@@ -172,14 +107,14 @@ async def _ls_for_index(ws: Workspace, state: "_MountState",
         # write path that would normally invalidate the parent listing, so a
         # previously warmed (now stale) index entry must be dropped before the
         # ls re-lists it.
-        await state.resource.index.invalidate_dir(path)
-        await ws.execute(f"ls {path}")
+        await ws.mount(mount_path).index_store.invalidate_dir(path)
+        await ws.shell(f"ls {path}")
 
 
 class CrossMountEnv:
-
-    def __init__(self, ws: Workspace, m1: _MountState, m2: _MountState,
-                 buckets: dict) -> None:
+    def __init__(
+        self, ws: Workspace, m1: MountState, m2: MountState, buckets: dict
+    ) -> None:
         self.ws = ws
         self.m1 = m1
         self.m2 = m2
@@ -202,19 +137,19 @@ class CrossMountEnv:
     def run(self, cmd: str) -> str:
 
         async def _inner():
-            io = await self.ws.execute(cmd)
+            io = await self.ws.shell(cmd)
             return await io.stdout_str()
 
         return asyncio.run(_inner())
 
     def exit(self, cmd: str) -> int:
-        io = asyncio.run(self.ws.execute(cmd))
+        io = asyncio.run(self.ws.shell(cmd))
         return io.exit_code
 
     def cleanup_redis(self) -> None:
         for state in (self.m1, self.m2):
             if state.ptype == "redis":
-                asyncio.run(state.resource._store.clear())
+                asyncio.run(state.vfs._store.clear())
 
 
 def _pair_id(pair: tuple[str, str]) -> str:
@@ -237,13 +172,13 @@ def cross(request, tmp_path):
     pair = request.param
     p1_type, p2_type = pair
 
-    m1 = _build_mount(p1_type, "/m1", tmp_path, 1)
-    m2 = _build_mount(p2_type, "/m2", tmp_path, 2)
+    m1 = build_mount(p1_type, "/m1", tmp_path, 1)
+    m2 = build_mount(p2_type, "/m2", tmp_path, 2)
 
     ws = Workspace(
         {
-            "/m1": (m1.resource, MountMode.WRITE),
-            "/m2": (m2.resource, MountMode.WRITE),
+            "/m1": (m1.vfs, MountMode.WRITE),
+            "/m2": (m2.vfs, MountMode.WRITE),
         },
         mode=MountMode.WRITE,
     )
@@ -263,9 +198,9 @@ def cross(request, tmp_path):
     if "gdrive" in pair:
         gd_pairs = []
         if m1.ptype == "gdrive":
-            gd_pairs.append((m1.resource._token_manager, m1.gdrive))
+            gd_pairs.append((m1.vfs._token_manager, m1.gdrive))
         if m2.ptype == "gdrive":
-            gd_pairs.append((m2.resource._token_manager, m2.gdrive))
+            gd_pairs.append((m2.vfs._token_manager, m2.gdrive))
         stack.enter_context(patch_gdrive(*gd_pairs))
 
     with stack:
@@ -334,7 +269,8 @@ def test_cp_cross(cross):
         assert cross.run("cat /m2/dst.txt") == "hello\n"
     else:
         assert code != 0, (
-            f"cp into read-only {cross.dst_type} should have failed")
+            f"cp into read-only {cross.dst_type} should have failed"
+        )
 
 
 def test_mv_cross(cross):
@@ -347,7 +283,8 @@ def test_mv_cross(cross):
     else:
         assert code != 0, (
             f"mv with read-only end ({cross.src_type}->{cross.dst_type}) "
-            "should have failed")
+            "should have failed"
+        )
 
 
 def test_cp_recursive_cross(cross):
@@ -356,12 +293,14 @@ def test_cp_recursive_cross(cross):
     code = cross.exit("cp -r /m1/tree /m2/copied")
     if _supports_write(cross.dst_type):
         assert code == 0, (
-            f"cp -r failed for {cross.src_type}->{cross.dst_type}")
+            f"cp -r failed for {cross.src_type}->{cross.dst_type}"
+        )
         assert cross.run("cat /m2/copied/a.txt") == "aaa\n"
         assert cross.run("cat /m2/copied/sub/b.txt") == "bbb\n"
     else:
         assert code != 0, (
-            f"cp -r into read-only {cross.dst_type} should have failed")
+            f"cp -r into read-only {cross.dst_type} should have failed"
+        )
 
 
 def test_mv_recursive_cross(cross):
@@ -370,11 +309,13 @@ def test_mv_recursive_cross(cross):
     code = cross.exit("mv /m1/tree /m2/moved")
     if _supports_write(cross.dst_type) and _supports_delete(cross.src_type):
         assert code == 0, (
-            f"mv -r failed for {cross.src_type}->{cross.dst_type}")
+            f"mv -r failed for {cross.src_type}->{cross.dst_type}"
+        )
         assert cross.run("cat /m2/moved/a.txt") == "aaa\n"
         assert cross.run("cat /m2/moved/sub/b.txt") == "bbb\n"
         assert cross.exit("cat /m1/tree/a.txt") != 0
     else:
         assert code != 0, (
             f"mv -r with read-only end ({cross.src_type}->{cross.dst_type}) "
-            "should have failed")
+            "should have failed"
+        )

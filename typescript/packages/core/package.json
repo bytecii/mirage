@@ -1,12 +1,12 @@
 {
   "name": "@struktoai/mirage-core",
-  "version": "0.0.5",
+  "version": "0.0.7-alpha.2",
   "description": "A Unified Virtual Filesystem For AI Agents",
   "keywords": [
     "bash",
     "fuse",
     "typescript",
-    "vfs",
+    "workspace",
     "ai-agents",
     "agent-sandbox",
     "langchain",
@@ -32,7 +32,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=20.10.0"
+    "node": ">=20.18.1 <21 || >=22"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -40,6 +40,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./shell/parse": {
+      "types": "./dist/shell/parse/index.d.ts",
+      "import": "./dist/shell/parse/index.js"
+    },
+    "./runtime/js/quickjs": {
+      "types": "./dist/runtime/js/quickjs/runtime.d.ts",
+      "import": "./dist/runtime/js/quickjs/runtime.js"
+    },
+    "./runtime/python/pyodide": {
+      "types": "./dist/runtime/python/pyodide/runtime.d.ts",
+      "import": "./dist/runtime/python/pyodide/runtime.js"
     },
     "./*": {
       "types": "./dist/*.d.ts",
@@ -51,42 +63,50 @@
     "dist"
   ],
   "scripts": {
-    "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "build": "node scripts/embed-runtime.mjs && node scripts/clean.mjs && tsc -p tsconfig.build.json",
+    "test": "node scripts/embed-runtime.mjs && vitest run",
+    "typecheck": "node scripts/embed-runtime.mjs && tsc --noEmit",
+    "prepare": "node scripts/embed-runtime.mjs"
   },
   "devDependencies": {
-    "@pydantic/monty": "0.0.19",
+    "@modelcontextprotocol/server": "^2.3.0",
+    "@pydantic/monty": "1.0.0",
     "@qdrant/js-client-rest": "^1.18.0",
     "chromadb": "^3.4.3",
-    "pyodide": "^0.29.3",
-    "quickjs-emscripten": "^0.31.0",
+    "pyodide": "^314.0.5",
+    "quickjs-emscripten": "^0.32.0",
     "tree-sitter-bash": "^0.25.1",
     "typescript": "^6.0.0",
-    "vitest": "^3.2.6"
+    "@types/node": "^22.0.0",
+    "@types/sha.js": "^2.4.4",
+    "vitest": "^4.1.11",
+    "e2b": "^2.45.0"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/client": "^2.3.0",
     "@octokit/core": "^7.0.7",
     "@octokit/plugin-retry": "^8.1.1",
     "@octokit/plugin-throttling": "^11.0.5",
     "@octokit/request-error": "^7.1.1",
     "bson": "^6.10.4",
     "isomorphic-git": "^1.38.1",
-    "jq-wasm": "1.1.0-jq-1.8.1",
+    "jq-wasm": "3.0.0-jq-1.8.2",
     "modern-tar": "^0.8.4",
+    "pako": "^3.0.2",
+    "sha.js": "^2.4.12",
     "uuid": "^14.0.1",
-    "web-tree-sitter": "^0.26.8",
+    "web-tree-sitter": "^0.26.13",
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@pydantic/monty": ">=0.0.19",
+    "@pydantic/monty": "^1.0.0",
     "@qdrant/js-client-rest": "^1.18.0",
     "chromadb": "^3.4.3",
-    "pyodide": "^0.29.0",
-    "quickjs-emscripten": "^0.31.0",
-    "redis": "^5.0.0"
+    "pyodide": "^0.29.0 || ^314.0.0",
+    "quickjs-emscripten": "^0.31.0 || ^0.32.0",
+    "redis": "^5.0.0",
+    "e2b": "^2.45.0"
   },
   "peerDependenciesMeta": {
     "@qdrant/js-client-rest": {
@@ -105,6 +125,9 @@
       "optional": true
     },
     "quickjs-emscripten": {
+      "optional": true
+    },
+    "e2b": {
       "optional": true
     }
   }

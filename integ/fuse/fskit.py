@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-"""Mount one RAM resource over macFUSE's FSKit backend and read it back.
+"""Mount one RAM VFS over macFUSE's FSKit backend and read it back.
 
 Separate from integ/fuse/fuse.py because neither scenario there can run here:
 the sizeless probe is refused by the fskit size guard by design, and the
@@ -28,20 +28,20 @@ import time
 from typing import Callable
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
 CONTENT = b'{"messages": 2}\n'
 EXISTING = b"old\n"
 
 
-def wait_store(resource: RAMResource, path: str, want: bytes) -> bool:
+def wait_store(vfs: RAMVFS, path: str, want: bytes) -> bool:
     """Poll the backing store until it holds the expected bytes.
 
     The FSKit shim flushes kernel writes lazily (WRITE arrives after close,
     with no FLUSH), so the store lags the kernel view briefly.
 
     Args:
-        resource (RAMResource): the mounted resource.
+        vfs (RAMVFS): the mounted VFS.
         path (str): store path to watch.
         want (bytes): expected content.
 
@@ -49,7 +49,7 @@ def wait_store(resource: RAMResource, path: str, want: bytes) -> bool:
         bool: True when the store matched within the window.
     """
     for _ in range(50):
-        if resource._store.files.get(path) == want:
+        if vfs._store.files.get(path) == want:
             return True
         time.sleep(0.2)
     return False
@@ -92,9 +92,11 @@ def describe(mountpoint: str) -> None:
         mountpoint (str): the mountpoint to describe.
     """
     print(f"# mountpoint: {mountpoint}")
-    print(f"# exists={os.path.exists(mountpoint)} "
-          f"isdir={os.path.isdir(mountpoint)} "
-          f"ismount={os.path.ismount(mountpoint)}")
+    print(
+        f"# exists={os.path.exists(mountpoint)} "
+        f"isdir={os.path.isdir(mountpoint)} "
+        f"ismount={os.path.ismount(mountpoint)}"
+    )
     print(f"# mount row: {mount_line(mountpoint) or '(not in mount table)'}")
     try:
         print(f"# listdir: {sorted(os.listdir(mountpoint))}")
@@ -131,10 +133,9 @@ def sh(script: str) -> str:
     Returns:
         str: "ok" on exit 0, else the first stderr line or the exit code.
     """
-    proc = subprocess.run(["/bin/sh", "-c", script],
-                          capture_output=True,
-                          text=True,
-                          timeout=60)
+    proc = subprocess.run(
+        ["/bin/sh", "-c", script], capture_output=True, text=True, timeout=60
+    )
     if proc.returncode == 0:
         return "ok"
     detail = proc.stderr.strip().splitlines()
@@ -142,15 +143,18 @@ def sh(script: str) -> str:
 
 
 def main() -> None:
-    data = RAMResource()
+    data = RAMVFS()
     data._store.dirs.add("/")
     data._store.files["/api.json"] = CONTENT
     data._store.files["/existing.txt"] = EXISTING
 
-    with Workspace({
-            "/data":
-            Mount(data, mode=MountMode.WRITE, backend=MountBackend.FSKIT),
-    }) as ws:
+    with Workspace(
+        {
+            "/data": Mount(
+                data, mode=MountMode.WRITE, backend=MountBackend.FSKIT
+            ),
+        }
+    ) as ws:
         mp = ws.fuse_mountpoints["/data"]
         describe(mp)
         line = mount_line(mp)
@@ -184,8 +188,9 @@ def main() -> None:
         # When a macFUSE release starts delivering real bytes, this turns
         # False and the truth check flags it; flip the expectation and
         # delete the caveat.
-        new_file_store_zeroed = wait_store(data, "/new.txt",
-                                           b"\x00" * len(b"fresh\n"))
+        new_file_store_zeroed = wait_store(
+            data, "/new.txt", b"\x00" * len(b"fresh\n")
+        )
 
         result = {
             # Volatile, reported but never asserted.
@@ -202,7 +207,7 @@ def main() -> None:
             "cat": body.decode().strip(),
             # FSKit has no direct_io equivalent, so a read is driven entirely
             # by the size stat reports. These two agreeing is what the
-            # SIZES_ALWAYS_KNOWN guard exists to guarantee.
+            # sizes_always_known guard exists to guarantee.
             "size": stat_size,
             "read_bytes": len(body),
             "write_in_place": in_place,

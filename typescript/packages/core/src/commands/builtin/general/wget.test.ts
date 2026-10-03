@@ -14,7 +14,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { materialize } from '../../../io/types.ts'
-import { RAMResource } from '../../../resource/ram/ram.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import { GENERAL_WGET } from './wget.ts'
 
 const ENC = new TextEncoder()
@@ -41,10 +41,10 @@ async function runWget(
   exitCode: number
   writes: Record<string, Uint8Array | AsyncIterable<Uint8Array>>
 }> {
-  const resource = new RAMResource()
+  const vfs = new RAMVFS()
   const cmd = GENERAL_WGET[0]
   if (cmd === undefined) throw new Error('wget not registered')
-  const result = await cmd.fn((resource as { accessor?: unknown }).accessor as never, [], texts, {
+  const result = await cmd.fn((vfs as { accessor?: unknown }).accessor as never, [], texts, {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -141,4 +141,21 @@ describe('wget', () => {
     expect(r.exitCode).toBe(4)
     expect(r.err).toContain('failed: Connection refused.')
   })
+})
+
+it('writes -O - to stdout without recording a file write', async () => {
+  const original = globalThis.fetch
+  try {
+    mockFetch('page')
+    const result = await runWget(['http://x.test/'], { args_O: '-', q: true })
+    expect(result.out).toBe('page')
+    expect(result.exitCode).toBe(0)
+    expect(result.writes).toEqual({})
+    mockFetch('missing', 404)
+    const failed = await runWget(['http://x.test/index.html'], { q: true })
+    expect(failed.exitCode).toBe(8)
+    expect(failed.writes).toEqual({})
+  } finally {
+    globalThis.fetch = original
+  }
 })

@@ -19,7 +19,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 from pydantic_ai_backends import create_console_toolset
 
-from mirage import MountMode, RAMResource, Workspace
+from mirage import RAMVFS, MountMode, Workspace
 from mirage.agents.pydantic_ai.backend import PydanticAIWorkspace
 
 
@@ -30,7 +30,7 @@ class Deps:
 
 @pytest.fixture
 def workspace():
-    return Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    return Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
 
 
 @pytest.fixture
@@ -50,6 +50,7 @@ def test_agent_write_and_read(backend):
 
 def test_agent_ls(backend, workspace):
     import asyncio
+
     asyncio.run(backend.awrite("/data/file.txt", "hello"))
 
     agent = Agent(
@@ -63,6 +64,7 @@ def test_agent_ls(backend, workspace):
 
 def test_agent_edit(backend):
     import asyncio
+
     asyncio.run(backend.awrite("/code.py", "x = 1\ny = 2\n"))
 
     agent = Agent(
@@ -76,6 +78,7 @@ def test_agent_edit(backend):
 
 def test_agent_grep(backend):
     import asyncio
+
     asyncio.run(backend.awrite("/hello.txt", "hello world\ngoodbye world\n"))
 
     agent = Agent(
@@ -89,10 +92,12 @@ def test_agent_grep(backend):
 
 def test_no_real_filesystem(backend, workspace):
     import asyncio
+
     asyncio.run(backend.awrite("/test.txt", "in-memory content"))
 
-    content = asyncio.run(workspace.ops.read("/test.txt"))
+    content = asyncio.run(workspace.vfs.read("/test.txt"))
     assert content == b"in-memory content"
 
     import os
+
     assert not os.path.exists("/test.txt")

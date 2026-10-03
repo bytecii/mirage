@@ -19,22 +19,20 @@ import pytest_asyncio
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.core.redis.copy import copy
-from mirage.resource.redis.store import RedisStore
 from mirage.types import PathSpec
+from mirage.vfs.redis.store import RedisStore
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
 
 
 def spec(path: str) -> PathSpec:
-    return PathSpec(resource_path=path.lstrip("/"),
-                    virtual=path,
-                    directory=path)
+    return PathSpec(vfs_path=path.lstrip("/"), virtual=path, directory=path)
 
 
 @pytest_asyncio.fixture()
-async def accessor():
-    store = RedisStore(url=REDIS_URL, key_prefix="test:copy:")
+async def accessor(redis_prefix):
+    store = RedisStore(url=REDIS_URL, key_prefix=redis_prefix)
     await store.clear()
     await store.add_dir("/")
     await store.add_dir("/dir")

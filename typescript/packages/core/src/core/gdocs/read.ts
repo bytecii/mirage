@@ -12,44 +12,60 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GDocsAccessor } from '../../accessor/gdocs.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { entryOrWarm } from '../../cache/index/warm.ts'
-import { PathSpec } from '../../types.ts'
+import { record, startOp } from '../../observe/context.ts'
+import type { PathSpec } from '../../types.ts'
 import { docsBase, type TokenManager, googleGet } from '../google/client.ts'
-import { readdir } from './readdir.ts'
-import { rstripSlash } from '../../utils/slash.ts'
-import { eisdir, enoent } from '../../utils/errors.ts'
+import { resolveAppEntry } from '../google/entry.ts'
+import { MIME } from './constants.ts'
+import { makeFilename } from '../../vfs/gdocs/doc_entry.ts'
+import { makeRead } from '../hierarchy/read.ts'
+import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { compactJsonBytes } from '../render/json.ts'
+import { detectScope } from './scope.ts'
 
+const TABS_CONTENT_PARAM = 'true'
+
+/**
+ * Fetch full document JSON, every tab included.
+ *
+ * `documents.get` fills the singleton fields from the first tab and leaves
+ * `tabs` empty unless asked otherwise, so without `includeTabsContent` a
+ * multi-tab document renders as tab 1 and the rest are absent rather than
+ * truncated. Asking for it moves the content under `tabs[]` and leaves
+ * `body` empty, which is the shape the VFS prompt documents.
+ */
 export async function readDoc(tm: TokenManager, docId: string): Promise<Uint8Array> {
   const url = `${docsBase(tm)}/documents/${docId}`
-  const data = await googleGet(tm, url)
+  const data = await googleGet(tm, url, { includeTabsContent: TABS_CONTENT_PARAM })
   return compactJsonBytes(data)
 }
 
-export async function read(
+async function readFile(
   accessor: GDocsAccessor,
+  match: ScopeMatch,
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<Uint8Array> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const key = path.resourcePath
-  if (index === undefined) throw enoent(path.virtual)
-  const virtualKey = prefix !== '' ? `${prefix}/${key}` : `/${key}`
-  const parentKey = rstripSlash(virtualKey).replace(/\/[^/]+$/, '') || '/'
-  const entry = await entryOrWarm(
+  const entry = await resolveAppEntry(
+    accessor.tokenManager,
+    match,
+    path,
     index,
-    virtualKey,
-    parentKey !== virtualKey
-      ? () => readdir(accessor, PathSpec.fromStrPath(parentKey, mountKey(parentKey, prefix)), index)
-      : null,
+    MIME,
+    'gdocs/file',
+    makeFilename,
   )
-  if (entry === null) throw enoent(path.virtual)
-  if (entry.resourceType === 'gdocs/directory') throw eisdir(path.virtual)
-  return readDoc(accessor.tokenManager, entry.id)
+  const timer = startOp()
+  const data = await readDoc(accessor.tokenManager, entry.id)
+  record('read', path.virtual, 'gdocs', data.length, timer, {
+    fingerprint: entry.remoteTime !== '' ? entry.remoteTime : null,
+  })
+  return data
 }
+
+export const read = makeRead<GDocsAccessor>(detectScope, { file: readFile })
 
 export async function* stream(
   accessor: GDocsAccessor,

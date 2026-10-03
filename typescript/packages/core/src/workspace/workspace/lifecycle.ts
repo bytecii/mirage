@@ -13,23 +13,27 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { FileCache } from '../../cache/file/mixin.ts'
-import type { Resource } from '../../resource/base.ts'
+import type { BaseVFS } from '../../vfs/base.ts'
 import type { JobTable } from '../../shell/job_table/index.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import type { WorkspaceStateStore } from '../store/base.ts'
+import { ABORT_JOIN_MS } from '../abort.ts'
 import type { WatchManager } from './watch.ts'
 
 export interface CloseDeps {
   watch: WatchManager
-  cache: FileCache & Resource
+  cache: FileCache & BaseVFS
   ownsStateStore: boolean
   stateStore: WorkspaceStateStore
   closers: (() => Promise<void>)[]
   jobTable: JobTable
   registry: MountRegistry
-  opened: Set<Resource>
-  openOrder: Resource[]
-  sharedResources: Set<Resource>
+  sharedMounts: Set<BaseVFS>
+  /** Delete the workspace's state from its store before the store closes. */
+  dropState: boolean
+  workspaceId: string
+  /** The stores the workspace's state lives in, however they were wired. */
+  planes: { clear(): Promise<void> }[]
 }
 
 /**
@@ -38,57 +42,65 @@ export interface CloseDeps {
  * `workspace/lifecycle.py`.
  *
  * Order matters: the watch runtime goes first (it reads mounts), then
- * background jobs, then in-flight cache drains settle, then the state
- * store if this workspace built it, then the runtime closers, and
- * finally every resource not shared with a sibling workspace.
+ * background jobs, then the runtime closers (their journals still write
+ * to mounts), then in-flight cache drains settle, then the state store if
+ * this workspace built it, and finally every VFS not shared with a
+ * sibling workspace.
  */
 export async function closeWorkspace(deps: CloseDeps): Promise<void> {
-  await deps.watch.detach()
-  // Settle jobs rather than merely aborting them: killAll records the
-  // outcome and finishes each console, which is what releases a reader
-  // parked on waitFinished; a bare abort leaves the job RUNNING with no
-  // ending chunk and that reader waits forever. It never joins the
-  // runner, so this cannot block shutdown on a job mid-write, and it
-  // happens before any resource closes so a job cannot keep touching one
-  // that is already gone.
-  await deps.jobTable.killAll()
-  await deps.jobTable.closeConsoles()
-  const drainTasks = [...(deps.cache.drainTasks?.values() ?? [])]
-  for (const task of drainTasks) {
-    await task
-  }
-  // Per-plane stores from the provider close through it below; a
-  // caller-passed provider (or direct store override) may be shared
-  // with sibling workspaces, so only its owner closes it.
-  if (deps.ownsStateStore) {
-    await deps.stateStore.close()
-  }
-  try {
-    await deps.cache.clear()
-  } finally {
-    // The workspace builds its own cache, so it always closes it: a
-    // `cache: {type: redis}` config leaves it holding a client that
-    // nothing else would release, and clear() above connects to it.
-    // Mirrors the try/finally pairing in Python's `close_async`.
-    await deps.cache.close()
-  }
-  for (const fn of deps.closers.splice(0)) {
-    try {
-      await fn()
-    } catch {
-      // keep tearing down; swallow subsystem-cleanup failures
+  const failures: unknown[] = []
+  const settle = async (work: (() => Promise<unknown>)[]): Promise<void> => {
+    const outcomes = await Promise.allSettled(work.map(async (fn) => fn()))
+    for (const outcome of outcomes) {
+      if (outcome.status === 'rejected') failures.push(outcome.reason)
     }
   }
-  const toClose = new Set<Resource>(deps.openOrder)
-  for (const mount of deps.registry.allMounts()) {
-    toClose.add(mount.resource)
+  await settle([() => deps.watch.detach()])
+  await settle([() => deps.jobTable.killAll()])
+  try {
+    deps.jobTable.processes.stop()
+  } catch (err) {
+    failures.push(err)
   }
-  for (const r of toClose) {
-    // Resources reused from another live workspace (copy() / load
-    // resource overrides) stay open here; their origin closes them.
-    if (deps.sharedResources.has(r)) continue
-    await r.close()
+  for (const closer of deps.closers.splice(0)) await settle([closer])
+  await settle([
+    async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          deps.jobTable.processes.drain(),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, ABORT_JOIN_MS)
+          }),
+        ])
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+  ])
+  await settle([() => deps.jobTable.closeConsoles()])
+  await settle([...deps.registry.retiringMounts.values()].map((task) => () => task))
+  await settle([...(deps.cache.drainTasks?.values() ?? [])].map((task) => () => task))
+  const mounts = new Set(deps.registry.allMounts().map((mount) => mount.vfs))
+  await settle(
+    [...mounts].filter((vfs) => !deps.sharedMounts.has(vfs)).map((vfs) => () => vfs.close()),
+  )
+  const stores = new Set(deps.registry.allMounts().map((mount) => mount.indexStore))
+  await settle([...stores].map((store) => () => store.close()))
+  // Nothing writes the state any more, so it can go before its store
+  // closes. A failed drop must not skip the rest of teardown; it is raised
+  // with the other failures once everything is released.
+  if (deps.dropState) {
+    await settle([
+      async () => {
+        for (const plane of deps.planes) await plane.clear()
+        await deps.stateStore.drop(deps.workspaceId)
+      },
+    ])
   }
-  deps.opened.clear()
-  deps.openOrder.length = 0
+  if (deps.ownsStateStore) await settle([() => deps.stateStore.close()])
+  await settle([() => deps.cache.clear()])
+  await settle([() => deps.cache.close()])
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) throw new AggregateError(failures, 'workspace teardown failed')
 }

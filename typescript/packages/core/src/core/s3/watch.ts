@@ -31,6 +31,7 @@ interface ListedObject {
 
 function isoOf(value: Date | string | undefined): string | null {
   if (value === undefined) return null
+  // Checkpoints persist this spelling as part of the fallback fingerprint.
   return value instanceof Date ? value.toISOString() : value
 }
 
@@ -56,7 +57,7 @@ export class S3Walk {
 
   async *walk(root: PathSpec): AsyncGenerator<WalkEntry> {
     const config = this.accessor.config
-    const prefix = mountPrefixOf(root.virtual, root.resourcePath)
+    const prefix = mountPrefixOf(root.virtual, root.vfsPath)
     const stem = rstripSlash(s3Key(rawPathOf(root), config))
     const base = stem !== '' ? `${stem}/` : ''
     const files: string[] = []

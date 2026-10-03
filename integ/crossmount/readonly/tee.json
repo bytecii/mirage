@@ -5,13 +5,29 @@
       "seq": 771,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "command": "echo x | tee /ro/x.txt",
       "expect": {
         "exit": 1,
-        "stdout": "",
-        "stderr": "tee: read-only mount at /ro/\n"
+        "stdout": "x\n",
+        "stderr": "tee: /ro/x.txt: Read-only file system\n"
+      }
+    },
+    {
+      "id": "xro_tee_without_operands_copies_stdin",
+      "seq": 1231044,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cd /ro && printf 'x\\n' | tee",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\n",
+        "stderr": ""
       }
     }
   ]

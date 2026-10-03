@@ -1,0 +1,3454 @@
+{
+  "suite": "workspace-lifecycle",
+  "description": "Live host API transitions driven by shared JSON settings. Python, Node and the browser workspace wrapper run the same scenarios; the browser wrapper is exercised under Node with its WASM shell parser.",
+  "cases": [
+    {
+      "id": "empty_workspace_add_remove_and_remount",
+      "settings": {
+        "mode": "write",
+        "mounts": {}
+      },
+      "steps": [
+        {
+          "op": "readdir",
+          "path": "/",
+          "expect": {
+            "value": ["/.bash_history", "/dev", "/usr"]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "mount",
+          "path": "/data",
+          "vfs": "ram",
+          "config": {},
+          "mode": "write",
+          "expect": {
+            "value": "/data/"
+          }
+        },
+        {
+          "op": "write",
+          "path": "/data/file.txt",
+          "data": "first\n"
+        },
+        {
+          "op": "read",
+          "path": "/data/file.txt",
+          "expect": {
+            "value": "first\n"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/data"
+        },
+        {
+          "op": "readdir",
+          "path": "/",
+          "expect": {
+            "value": ["/.bash_history", "/dev", "/usr"]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "mount",
+          "path": "/data",
+          "vfs": "ram",
+          "config": {},
+          "mode": "write",
+          "expect": {
+            "value": "/data/"
+          }
+        },
+        {
+          "op": "read",
+          "path": "/data/file.txt",
+          "expect": {
+            "errno": "ENOENT"
+          }
+        },
+        {
+          "op": "write",
+          "path": "/data/file.txt",
+          "data": "replacement\n"
+        },
+        {
+          "op": "exec",
+          "command": "cat /data/file.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "replacement\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/data"
+        },
+        {
+          "op": "readdir",
+          "path": "/",
+          "expect": {
+            "value": ["/.bash_history", "/dev", "/usr"]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "removing_one_ram_preserves_its_peer",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/a": {
+            "vfs": "ram",
+            "config": {}
+          },
+          "/b": {
+            "vfs": "ram",
+            "config": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "write",
+          "path": "/b/file.txt",
+          "data": "surviving\n"
+        },
+        {
+          "op": "unmount",
+          "path": "/a"
+        },
+        {
+          "op": "read",
+          "path": "/b/file.txt",
+          "expect": {
+            "value": "surviving\n"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "cat /b/file.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "surviving\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/b"
+        },
+        {
+          "op": "readdir",
+          "path": "/",
+          "expect": {
+            "value": ["/.bash_history", "/dev", "/usr"]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "all_user_mounts_hidden_then_removed",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/a": {
+            "vfs": "ram",
+            "config": {}
+          },
+          "/b": {
+            "vfs": "ram",
+            "config": {}
+          }
+        },
+        "profiles": {
+          "default": {
+            "paths": {
+              "hide": ["/a", "/b"]
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/a"
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/b"
+        },
+        {
+          "op": "readdir",
+          "path": "/",
+          "expect": {
+            "value": ["/.bash_history", "/dev", "/usr"]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "mount",
+          "path": "/a",
+          "vfs": "ram",
+          "config": {},
+          "mode": "write",
+          "expect": {
+            "value": "/a/"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/a"
+        },
+        {
+          "op": "readdir",
+          "path": "/",
+          "expect": {
+            "value": ["/.bash_history", "/dev", "/usr"]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "explicit_root_keeps_its_files",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/": {
+            "vfs": "ram",
+            "config": {}
+          },
+          "/data": {
+            "vfs": "ram",
+            "config": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "write",
+          "path": "/note.txt",
+          "data": "root data\n"
+        },
+        {
+          "op": "write",
+          "path": "/data/file.txt",
+          "data": "child\n"
+        },
+        {
+          "op": "unmount",
+          "path": "/data"
+        },
+        {
+          "op": "read",
+          "path": "/note.txt",
+          "expect": {
+            "value": "root data\n"
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nnote.txt\nusr\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "mount",
+          "path": "/data",
+          "vfs": "ram",
+          "config": {},
+          "mode": "write",
+          "expect": {
+            "value": "/data/"
+          }
+        },
+        {
+          "op": "write",
+          "path": "/data/file.txt",
+          "data": "new child\n"
+        },
+        {
+          "op": "read",
+          "path": "/note.txt",
+          "expect": {
+            "value": "root data\n"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/data"
+        },
+        {
+          "op": "read",
+          "path": "/note.txt",
+          "expect": {
+            "value": "root data\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nested_mount_survives_parent_removal",
+      "settings": {
+        "mode": "write",
+        "mounts": {}
+      },
+      "steps": [
+        {
+          "op": "mount",
+          "path": "/parent",
+          "vfs": "ram",
+          "config": {},
+          "mode": "write",
+          "expect": {
+            "value": "/parent/"
+          }
+        },
+        {
+          "op": "mount",
+          "path": "/parent/child",
+          "vfs": "ram",
+          "config": {},
+          "mode": "write",
+          "expect": {
+            "value": "/parent/child/"
+          }
+        },
+        {
+          "op": "write",
+          "path": "/parent/file.txt",
+          "data": "parent\n"
+        },
+        {
+          "op": "write",
+          "path": "/parent/child/file.txt",
+          "data": "child\n"
+        },
+        {
+          "op": "unmount",
+          "path": "/parent"
+        },
+        {
+          "op": "read",
+          "path": "/parent/child/file.txt",
+          "expect": {
+            "value": "child\n"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /parent",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "child\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/parent/child"
+        },
+        {
+          "op": "read",
+          "path": "/parent/file.txt",
+          "expect": {
+            "errno": "ENOENT"
+          }
+        },
+        {
+          "op": "readdir",
+          "path": "/",
+          "expect": {
+            "value": ["/.bash_history", "/dev", "/usr"]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "default_mode_and_lifecycle_refusals",
+      "settings": {
+        "mode": "write",
+        "mounts": {}
+      },
+      "steps": [
+        {
+          "op": "mount",
+          "path": "/data",
+          "vfs": "ram",
+          "config": {},
+          "expect": {
+            "value": "/data/"
+          }
+        },
+        {
+          "op": "write",
+          "path": "/data/file.txt",
+          "data": "refused",
+          "expect": {
+            "errno": "EROFS"
+          }
+        },
+        {
+          "op": "mount",
+          "path": "data/",
+          "vfs": "ram",
+          "config": {},
+          "expect": {
+            "error": "duplicate mount prefix"
+          }
+        },
+        {
+          "op": "mounts",
+          "expect": {
+            "value": ["/", "/.bash_history/", "/data/", "/dev/", "/usr/bin/"]
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/data"
+        },
+        {
+          "op": "unmount",
+          "path": "/",
+          "expect": {
+            "error": "root"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/dev",
+          "expect": {
+            "error": "reserved"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/.bash_history",
+          "expect": {
+            "error": "history"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/missing",
+          "expect": {
+            "error": "no mount"
+          }
+        },
+        {
+          "op": "readdir",
+          "path": "/",
+          "expect": {
+            "value": ["/.bash_history", "/dev", "/usr"]
+          }
+        },
+        {
+          "op": "stat",
+          "path": "/",
+          "expect": {
+            "value": {
+              "type": "directory",
+              "size": null
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "close"
+        },
+        {
+          "op": "close"
+        },
+        {
+          "op": "mount",
+          "path": "/late",
+          "vfs": "ram",
+          "config": {},
+          "expect": {
+            "error": "Workspace is closed"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/late",
+          "expect": {
+            "error": "Workspace is closed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cli-registration-runtime-switch-and-removal",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/work": {
+            "vfs": "ram",
+            "config": {}
+          }
+        },
+        "runtimes": ["workspace"]
+      },
+      "steps": [
+        {
+          "op": "clis",
+          "expect": {
+            "value": []
+          }
+        },
+        {
+          "op": "exec",
+          "command": "probe",
+          "expect": {
+            "value": {
+              "exit_code": 127,
+              "stdout": "",
+              "stderr": "probe: command not found\n"
+            }
+          }
+        },
+        {
+          "op": "add_runtime",
+          "name": "monty",
+          "expect": {
+            "value": "monty"
+          }
+        },
+        {
+          "op": "register_cli",
+          "name": "probe",
+          "script": {
+            "source": "print('python', argv[0], argv[1])",
+            "language": "python"
+          },
+          "runtime": "monty"
+        },
+        {
+          "op": "exec",
+          "command": "probe one",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "python probe one\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "type -t probe",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "file\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "which probe",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "/usr/bin/probe\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "register_cli",
+          "name": "probe",
+          "script": {
+            "source": "print('wrong')",
+            "language": "python"
+          },
+          "expect": {
+            "error": "already installed"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "probe two",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "python probe two\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unregister_cli",
+          "name": "probe"
+        },
+        {
+          "op": "clis",
+          "expect": {
+            "value": []
+          }
+        },
+        {
+          "op": "exec",
+          "command": "probe",
+          "expect": {
+            "value": {
+              "exit_code": 127,
+              "stdout": "",
+              "stderr": "probe: command not found\n"
+            }
+          }
+        },
+        {
+          "op": "unregister_cli",
+          "name": "probe",
+          "expect": {
+            "error": "not installed"
+          }
+        },
+        {
+          "op": "register_cli",
+          "name": "probe",
+          "script": {
+            "source": "console.log('js', scriptArgs[0], scriptArgs[1]);",
+            "language": "js"
+          },
+          "runtime": "quickjs"
+        },
+        {
+          "op": "exec",
+          "command": "probe unavailable",
+          "expect": {
+            "value": {
+              "exit_code": 127,
+              "stderr_contains": "unknown runtime"
+            }
+          }
+        },
+        {
+          "op": "add_runtime",
+          "name": "quickjs",
+          "expect": {
+            "value": "quickjs"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "probe three",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "js probe three\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "add_runtime",
+          "name": "quickjs",
+          "expect": {
+            "error": "duplicate runtime entry"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "probe four",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "js probe four\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unregister_cli",
+          "name": "probe"
+        },
+        {
+          "op": "register_cli",
+          "name": "probe",
+          "script": {
+            "source": "print('back', argv[1])",
+            "language": "python"
+          },
+          "runtime": "monty"
+        },
+        {
+          "op": "exec",
+          "command": "probe five",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "back five\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unregister_cli",
+          "name": "probe"
+        },
+        {
+          "op": "register_cli",
+          "name": "probe",
+          "script": {
+            "source": "console.log('wrong')",
+            "language": "js"
+          },
+          "runtime": "monty"
+        },
+        {
+          "op": "exec",
+          "command": "probe",
+          "expect": {
+            "value": {
+              "exit_code": 127,
+              "stderr_contains": "does not run js scripts"
+            }
+          }
+        },
+        {
+          "op": "unregister_cli",
+          "name": "probe"
+        },
+        {
+          "op": "register_cli",
+          "name": "probe",
+          "script": {
+            "source": "console.log('default js')",
+            "language": "js"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "probe",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "default js\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unregister_cli",
+          "name": "probe"
+        },
+        {
+          "op": "runtimes",
+          "expect": {
+            "value": ["workspace", "monty", "quickjs"]
+          }
+        },
+        {
+          "op": "register_cli",
+          "name": "probe",
+          "script": {
+            "source": "print('kept', argv[1])",
+            "language": "python"
+          },
+          "runtime": "monty"
+        },
+        {
+          "op": "exec",
+          "command": "which python3",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "/usr/bin/python3\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "remove_runtime",
+          "name": "monty"
+        },
+        {
+          "op": "runtimes",
+          "expect": {
+            "value": ["workspace", "quickjs"]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "which python3",
+          "expect": {
+            "value": {
+              "exit_code": 1,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "probe gone",
+          "expect": {
+            "value": {
+              "exit_code": 127,
+              "stderr_contains": "unknown runtime"
+            }
+          }
+        },
+        {
+          "op": "remove_runtime",
+          "name": "monty",
+          "expect": {
+            "error": "no runtime entry: 'monty'"
+          }
+        },
+        {
+          "op": "remove_runtime",
+          "name": "workspace",
+          "expect": {
+            "error": "cannot remove the workspace runtime"
+          }
+        },
+        {
+          "op": "add_runtime",
+          "name": "monty",
+          "expect": {
+            "value": "monty"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "which python3",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "/usr/bin/python3\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "probe back",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "kept back\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unregister_cli",
+          "name": "probe"
+        },
+        {
+          "op": "exec",
+          "command": "echo intact",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "intact\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "coded-policy-registration-removal-and-warm-reads",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/work": {
+            "vfs": "ram",
+            "config": {}
+          }
+        },
+        "runtimes": ["workspace"]
+      },
+      "steps": [
+        {
+          "op": "write",
+          "path": "/work/data",
+          "data": "kept"
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "value": "kept"
+          }
+        },
+        {
+          "op": "register_policy",
+          "id": "first",
+          "commands": ["echo"],
+          "paths": ["/work/data"],
+          "reason": "first gate"
+        },
+        {
+          "op": "exec",
+          "command": "echo blocked",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "echo: Permission denied\n",
+              "refusal": "first gate"
+            }
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "errno": "EACCES"
+          }
+        },
+        {
+          "op": "register_policy",
+          "id": "second",
+          "commands": ["echo"],
+          "reason": "second gate"
+        },
+        {
+          "op": "exec",
+          "command": "echo blocked",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "echo: Permission denied\n",
+              "refusal": "first gate"
+            }
+          }
+        },
+        {
+          "op": "unregister_policy",
+          "id": "first",
+          "expect": {
+            "value": true
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "value": "kept"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo blocked",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "echo: Permission denied\n",
+              "refusal": "second gate"
+            }
+          }
+        },
+        {
+          "op": "unregister_policy",
+          "id": "first",
+          "expect": {
+            "value": false
+          }
+        },
+        {
+          "op": "unregister_policy",
+          "id": "second",
+          "expect": {
+            "value": true
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo restored",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "restored\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "value": "kept"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls -1 /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\nwork\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "register_policy",
+          "id": "first",
+          "commands": ["echo"],
+          "reason": "replacement gate"
+        },
+        {
+          "op": "exec",
+          "command": "echo blocked",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "echo: Permission denied\n",
+              "refusal": "replacement gate"
+            }
+          }
+        },
+        {
+          "op": "unregister_policy",
+          "id": "first",
+          "expect": {
+            "value": true
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo restored",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "restored\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "profile-policy-runtime-switch-and-cache-invalidation",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/work": {
+            "vfs": "ram",
+            "config": {}
+          }
+        },
+        "runtimes": ["workspace"]
+      },
+      "steps": [
+        {
+          "op": "write",
+          "path": "/work/data",
+          "data": "visible"
+        },
+        {
+          "op": "exec",
+          "command": "echo before",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "before\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "policy": {
+              "script": {
+                "source": "def pre_command(ctx):\n    if ctx['command']['name'] == 'echo':\n        return {'deny': 'python gate'}\n",
+                "language": "python"
+              },
+              "runtime": "monty"
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo blocked",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "echo: Permission denied\n",
+              "refusal": "python gate"
+            }
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "value": "visible"
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "policy": {
+              "script": {
+                "source": "function preCommand(ctx) { if (ctx.command.name === 'echo') return {deny: 'js gate'}; return null; }",
+                "language": "js"
+              },
+              "runtime": "quickjs"
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo blocked",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "echo: Permission denied\n",
+              "refusal": "js gate"
+            }
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "value": "visible"
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "policy": {
+              "script": {
+                "source": "def pre_command(ctx):\n    if ctx['command']['name'] == 'echo':\n        return {'deny': 'python gate'}\n",
+                "language": "python"
+              },
+              "runtime": "missing-lifecycle-engine"
+            }
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "errno": "EACCES"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo blocked",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "refusal_contains": "missing-lifecycle-engine"
+            }
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "policy": {
+              "script": {
+                "source": "def pre_command(ctx):\n    if ctx['command']['name'] == 'echo':\n        return {'deny': 'python gate'}\n",
+                "language": "python"
+              },
+              "runtime": "monty"
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo blocked",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "echo: Permission denied\n",
+              "refusal": "python gate"
+            }
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "policy": {
+              "script": {
+                "source": "def pre_ops(ctx):\n    if ctx['op']['path'] == '/work/data':\n        return {'deny': 'op gate'}\n",
+                "language": "python"
+              },
+              "runtime": "monty"
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo allowed",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "allowed\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "errno": "EACCES"
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {}
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "value": "visible"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo after",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "after\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "policy": {
+              "script": {
+                "source": "function preCommand(ctx) { if (ctx.command.name === 'echo') return {deny: 'js gate'}; return null; }",
+                "language": "js"
+              },
+              "runtime": "quickjs"
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo again",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "echo: Permission denied\n",
+              "refusal": "js gate"
+            }
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {}
+        },
+        {
+          "op": "exec",
+          "command": "echo done",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "done\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mount-mode-transitions-preserve-data-and-session-caps",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/work": {
+            "vfs": "ram",
+            "config": {}
+          }
+        },
+        "runtimes": ["monty", "workspace"]
+      },
+      "steps": [
+        {
+          "op": "write",
+          "path": "/work/run.py",
+          "data": "print('ran')\n"
+        },
+        {
+          "op": "write",
+          "path": "/work/data",
+          "data": "one"
+        },
+        {
+          "op": "set_mode",
+          "path": "work/",
+          "mode": "read"
+        },
+        {
+          "op": "write",
+          "path": "/work/data",
+          "data": "wrong",
+          "expect": {
+            "errno": "EROFS"
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "value": "one"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "python3 /work/run.py",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "python3: /work/run.py: not in EXEC mode\n"
+            }
+          }
+        },
+        {
+          "op": "set_mode",
+          "path": "/work",
+          "mode": "write"
+        },
+        {
+          "op": "write",
+          "path": "/work/data",
+          "data": "two"
+        },
+        {
+          "op": "exec",
+          "command": "python3 /work/run.py",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "python3: /work/run.py: not in EXEC mode\n"
+            }
+          }
+        },
+        {
+          "op": "set_mode",
+          "path": "/work/",
+          "mode": "exec"
+        },
+        {
+          "op": "exec",
+          "command": "python3 /work/run.py",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "ran\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "session",
+          "id": "limited",
+          "profile": {
+            "mounts": {
+              "/work": {
+                "mode": "read"
+              }
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "python3 /work/run.py",
+          "session": "limited",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "python3: /work/run.py: not in EXEC mode\n"
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo wrong > /work/data",
+          "session": "limited",
+          "expect": {
+            "value": {
+              "exit_code": 1,
+              "stderr_contains": "Read-only file system"
+            }
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "mounts": {
+              "/work": {
+                "mode": "exec"
+              }
+            }
+          },
+          "session": "limited"
+        },
+        {
+          "op": "exec",
+          "command": "python3 /work/run.py",
+          "session": "limited",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "ran\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "set_mode",
+          "path": "/work",
+          "mode": "read"
+        },
+        {
+          "op": "exec",
+          "command": "python3 /work/run.py",
+          "session": "limited",
+          "expect": {
+            "value": {
+              "exit_code": 126,
+              "stdout": "",
+              "stderr": "python3: /work/run.py: not in EXEC mode\n"
+            }
+          }
+        },
+        {
+          "op": "set_mode",
+          "path": "/work/missing",
+          "mode": "write",
+          "expect": {
+            "errno": "ENOENT"
+          }
+        },
+        {
+          "op": "write",
+          "path": "/work/data",
+          "data": "wrong",
+          "expect": {
+            "errno": "EROFS"
+          }
+        },
+        {
+          "op": "set_mode",
+          "path": "/work",
+          "mode": "exec"
+        },
+        {
+          "op": "exec",
+          "command": "python3 /work/run.py",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "ran\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "read",
+          "path": "/work/data",
+          "expect": {
+            "value": "two"
+          }
+        }
+      ]
+    },
+    {
+      "id": "live-hide-patterns-session-isolation-and-state",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/work": {
+            "vfs": "ram",
+            "config": {}
+          }
+        },
+        "runtimes": ["workspace"]
+      },
+      "steps": [
+        {
+          "op": "session",
+          "id": "viewer"
+        },
+        {
+          "op": "exec",
+          "command": "mkdir -p /work/aaa/nested /work/bbb",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "write",
+          "path": "/work/aaa/a.txt",
+          "data": "text",
+          "session": "viewer"
+        },
+        {
+          "op": "write",
+          "path": "/work/aaa/keep.md",
+          "data": "markdown",
+          "session": "viewer"
+        },
+        {
+          "op": "write",
+          "path": "/work/aaa/nested/deep.txt",
+          "data": "deep",
+          "session": "viewer"
+        },
+        {
+          "op": "write",
+          "path": "/work/bbb/a.txt",
+          "data": "other",
+          "session": "viewer"
+        },
+        {
+          "op": "exec",
+          "command": "cd /work; export SAVED=yes; keep() { echo function; }",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "session",
+          "id": "peer"
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "mounts": {
+              "/work": {
+                "paths": {
+                  "hide": ["/work/aaa/*.txt"]
+                }
+              }
+            },
+            "cwd": "/",
+            "env": {
+              "SAVED": "reset"
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "exec",
+          "command": "pwd; echo $SAVED; keep",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "/work\nyes\nfunction\n",
+              "stderr": ""
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "read",
+          "path": "/work/aaa/a.txt",
+          "expect": {
+            "errno": "ENOENT"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "read",
+          "path": "/work/aaa/nested/deep.txt",
+          "expect": {
+            "errno": "ENOENT"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "write",
+          "path": "/work/aaa/new.txt",
+          "data": "wrong",
+          "expect": {
+            "errno": "EACCES"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "read",
+          "path": "/work/aaa/keep.md",
+          "expect": {
+            "value": "markdown"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "read",
+          "path": "/work/bbb/a.txt",
+          "expect": {
+            "value": "other"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "exec",
+          "command": "ls -1 /work/aaa",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "keep.md\nnested\n",
+              "stderr": ""
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "exec",
+          "command": "cat /work/aaa/a.txt",
+          "session": "peer",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "text",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "paths": {
+              "hide": ["/work/aaa"]
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "exec",
+          "command": "ls -1 /work",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "bbb\n",
+              "stderr": ""
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "stat",
+          "path": "/work/aaa",
+          "expect": {
+            "errno": "ENOENT"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "paths": {
+              "hide": ["/work"]
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "exec",
+          "command": "ls -1 /",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "dev\nusr\n",
+              "stderr": ""
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "set_profile",
+          "profile": {},
+          "session": "viewer"
+        },
+        {
+          "op": "read",
+          "path": "/work/aaa/a.txt",
+          "expect": {
+            "value": "text"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "read",
+          "path": "/work/aaa/nested/deep.txt",
+          "expect": {
+            "value": "deep"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "exec",
+          "command": "pwd; echo $SAVED; keep",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "/work\nyes\nfunction\n",
+              "stderr": ""
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "mounts": {
+              "/work": {
+                "paths": {
+                  "hide": ["/work/aaa/*.txt"]
+                }
+              }
+            }
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "set_profile",
+          "profile": "missing-profile",
+          "expect": {
+            "error": "unknown profile"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "read",
+          "path": "/work/aaa/a.txt",
+          "expect": {
+            "errno": "ENOENT"
+          },
+          "session": "viewer"
+        },
+        {
+          "op": "set_profile",
+          "profile": {},
+          "session": "viewer"
+        },
+        {
+          "op": "read",
+          "path": "/work/aaa/a.txt",
+          "expect": {
+            "value": "text"
+          },
+          "session": "viewer"
+        }
+      ]
+    },
+    {
+      "id": "closed-workspace-rejects-lifecycle-mutations",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/work": {
+            "vfs": "ram",
+            "config": {}
+          }
+        },
+        "runtimes": ["workspace"]
+      },
+      "steps": [
+        {
+          "op": "register_cli",
+          "name": "probe",
+          "script": {
+            "source": "print('installed')",
+            "language": "python"
+          },
+          "runtime": "monty"
+        },
+        {
+          "op": "close"
+        },
+        {
+          "op": "register_cli",
+          "name": "late",
+          "script": {
+            "source": "print('late')",
+            "language": "python"
+          },
+          "expect": {
+            "error": "Workspace is closed"
+          }
+        },
+        {
+          "op": "unregister_cli",
+          "name": "probe",
+          "expect": {
+            "error": "Workspace is closed"
+          }
+        },
+        {
+          "op": "add_runtime",
+          "name": "monty",
+          "expect": {
+            "error": "Workspace is closed"
+          }
+        },
+        {
+          "op": "remove_runtime",
+          "name": "monty",
+          "expect": {
+            "error": "Workspace is closed"
+          }
+        },
+        {
+          "op": "set_mode",
+          "path": "/work",
+          "mode": "exec",
+          "expect": {
+            "error": "Workspace is closed"
+          }
+        },
+        {
+          "op": "set_profile",
+          "profile": {},
+          "expect": {
+            "error": "Workspace is closed"
+          }
+        },
+        {
+          "op": "close"
+        }
+      ]
+    },
+    {
+      "id": "remount_evicts_the_previous_vfs_cached_bytes",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "cached-ram",
+            "config": {
+              "files": {
+                "/file.txt": "old account\n"
+              }
+            }
+          },
+          "/database": {
+            "vfs": "cached-ram",
+            "config": {
+              "files": {
+                "/file.txt": "peer\n"
+              }
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "cat /data/file.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "old account\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "cached",
+          "path": "/data/file.txt",
+          "expect": {
+            "value": "old account\n"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "cat /database/file.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "peer\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "cached",
+          "path": "/database/file.txt",
+          "expect": {
+            "value": "peer\n"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/data"
+        },
+        {
+          "op": "cached",
+          "path": "/data/file.txt",
+          "expect": {
+            "value": null
+          }
+        },
+        {
+          "op": "cached",
+          "path": "/database/file.txt",
+          "expect": {
+            "value": "peer\n"
+          }
+        },
+        {
+          "op": "mount",
+          "path": "/data",
+          "vfs": "cached-ram",
+          "config": {
+            "files": {
+              "/file.txt": "new account\n"
+            }
+          },
+          "expect": {
+            "value": "/data/"
+          }
+        },
+        {
+          "op": "read",
+          "path": "/data/file.txt",
+          "expect": {
+            "value": "new account\n"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "cat /data/file.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "new account\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "cached",
+          "path": "/data/file.txt",
+          "expect": {
+            "value": "new account\n"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/data"
+        },
+        {
+          "op": "mount",
+          "path": "/data",
+          "vfs": "cached-ram",
+          "config": {
+            "files": {}
+          },
+          "expect": {
+            "value": "/data/"
+          }
+        },
+        {
+          "op": "read",
+          "path": "/data/file.txt",
+          "expect": {
+            "errno": "ENOENT"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "cat /database/file.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "peer\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "new_mount_discards_shadowed_ancestor_cache",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/parent": {
+            "vfs": "cached-ram",
+            "config": {
+              "files": {
+                "/child/file": "ancestor",
+                "/peer": "peer"
+              }
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "cat /parent/child/file",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "ancestor",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "cached",
+          "path": "/parent/child/file",
+          "expect": {
+            "value": "ancestor"
+          }
+        },
+        {
+          "op": "mount",
+          "path": "/parent/child",
+          "vfs": "cached-ram",
+          "config": {
+            "files": {
+              "/file": "child"
+            }
+          },
+          "expect": {
+            "value": "/parent/child/"
+          }
+        },
+        {
+          "op": "read",
+          "path": "/parent/child/file",
+          "expect": {
+            "value": "child"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "cat /parent/child/file",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "child",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "cached",
+          "path": "/parent/child/file",
+          "expect": {
+            "value": "child"
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/parent/child"
+        },
+        {
+          "op": "exec",
+          "command": "cat /parent/child/file",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "ancestor",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "read",
+          "path": "/parent/peer",
+          "expect": {
+            "value": "peer"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metadata_globs_follow_dynamic_mount_ownership",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/parent": {
+            "vfs": "cached-ram",
+            "config": {
+              "files": {
+                "/child/stale.txt": "ancestor\n"
+              }
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "mkdir -p /parent/child; ls /parent/child",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "stale.txt\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "mount",
+          "path": "/parent/child",
+          "vfs": "cached-ram",
+          "mode": "write",
+          "config": {
+            "files": {
+              "/fresh.txt": "child\n"
+            }
+          },
+          "expect": {
+            "value": "/parent/child/"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "touch /parent/child/*.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "chmod 600 /parent/child/*.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "chown 123 /parent/child/*.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "chgrp 456 /parent/child/*.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ls /parent/child; stat -c '%a %u %g' /parent/child/fresh.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "fresh.txt\n600 123 456\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unmount",
+          "path": "/parent/child"
+        },
+        {
+          "op": "exec",
+          "command": "cat /parent/child/stale.txt",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "ancestor\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "checkout_cannot_smuggle_a_variable_past_the_session_gate",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "config": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "export SECRET=leak",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "snapshot"
+        },
+        {
+          "op": "exec",
+          "command": "unset SECRET; echo \"[$SECRET]\"",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "[]\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "register_policy",
+          "id": "gate",
+          "vars": ["SECRET"],
+          "reason": "no secrets in the shell"
+        },
+        {
+          "op": "checkout",
+          "expect": {
+            "errno": "EACCES",
+            "error_contains": "no secrets in the shell"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo \"[$SECRET]\"",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "[]\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "unregister_policy",
+          "id": "gate",
+          "expect": {
+            "value": true
+          }
+        },
+        {
+          "op": "checkout"
+        },
+        {
+          "op": "exec",
+          "command": "echo \"[$SECRET]\"",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "[leak]\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "closing_a_session_drops_its_jobs",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/a": {
+            "vfs": "ram",
+            "config": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "sleep 30 & jobs | tail -n 1 | cut -d ' ' -f 1",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "[1]\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "session",
+          "id": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "sleep 30 & sleep 30 & jobs | tail -n 1 | cut -d ' ' -f 1",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "[2]\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "jobs | wc -l",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "2\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "close_session",
+          "id": "agent"
+        },
+        {
+          "op": "session",
+          "id": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "jobs | wc -l",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "0\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "sleep 30 & jobs | tail -n 1 | cut -d ' ' -f 1",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "[1]\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "wait %2 2>/dev/null; echo code=$?",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "code=127\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "jobs | wc -l",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "1\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "process_scopes_reach_other_sessions_as_the_profile_says",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/a": {
+            "vfs": "ram",
+            "config": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "sleep 30 &",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "session",
+          "id": "peer"
+        },
+        {
+          "op": "exec",
+          "command": "ps | grep -c 'sleep 30$'",
+          "expect": {
+            "value": {
+              "exit_code": 1,
+              "stdout": "0\n",
+              "stderr": ""
+            }
+          },
+          "session": "peer"
+        },
+        {
+          "op": "session",
+          "id": "audit",
+          "profile": {
+            "processes": {
+              "list": "workspace"
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "ps | grep -c 'sleep 30$'",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "1\n",
+              "stderr": ""
+            }
+          },
+          "session": "audit"
+        },
+        {
+          "op": "exec",
+          "command": "kill $(ps | grep 'sleep 30$' | cut -f1) 2>&1 | sed 's/[0-9][0-9]*/PID/'",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "bash: kill: (PID) - Operation not permitted\n",
+              "stderr": ""
+            }
+          },
+          "session": "audit"
+        },
+        {
+          "op": "session",
+          "id": "ops",
+          "profile": {
+            "processes": "workspace"
+          }
+        },
+        {
+          "op": "exec",
+          "command": "kill $(ps | grep 'sleep 30$' | cut -f1); echo rc=$?",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "rc=0\n",
+              "stderr": ""
+            }
+          },
+          "session": "ops"
+        }
+      ]
+    },
+    {
+      "id": "process_max_refuses_a_fork_past_the_cap",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/a": {
+            "vfs": "ram",
+            "config": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "session",
+          "id": "capped",
+          "profile": {
+            "processes": {
+              "max": 2
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "(sleep 30 & echo in); echo sub=$?",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "sub=254\n",
+              "stderr": "bash: fork: Resource temporarily unavailable\n"
+            }
+          },
+          "session": "capped"
+        },
+        {
+          "op": "exec",
+          "command": "sleep 30 & echo one",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "one\n",
+              "stderr": ""
+            }
+          },
+          "session": "capped"
+        },
+        {
+          "op": "exec",
+          "command": "echo x | cat; echo no",
+          "expect": {
+            "value": {
+              "exit_code": 254,
+              "stdout": "",
+              "stderr": "bash: fork: Resource temporarily unavailable\n"
+            }
+          },
+          "session": "capped"
+        },
+        {
+          "op": "exec",
+          "command": "echo $?",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "254\n",
+              "stderr": ""
+            }
+          },
+          "session": "capped"
+        },
+        {
+          "op": "exec",
+          "command": "kill %1",
+          "expect": {"value": {"exit_code": 0, "stdout": "", "stderr": ""}},
+          "session": "capped"
+        },
+        { "op": "drain_processes" },
+        {
+          "op": "exec",
+          "command": "(echo sub)",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "sub\n",
+              "stderr": ""
+            }
+          },
+          "session": "capped"
+        },
+        {
+          "op": "session",
+          "id": "loop",
+          "profile": {
+            "processes": {
+              "max": 3
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "n=0; while true; do sleep 30 & n=$((n+1)); done; echo no",
+          "expect": {
+            "value": {
+              "exit_code": 254,
+              "stdout": "",
+              "stderr": "bash: fork: Resource temporarily unavailable\n"
+            }
+          },
+          "session": "loop"
+        },
+        {
+          "op": "exec",
+          "command": "echo $n",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "2\n",
+              "stderr": ""
+            }
+          },
+          "session": "loop"
+        }
+      ]
+    },
+    {
+      "id": "same_session_lines_run_one_at_a_time",
+      "settings": {
+        "mode": "write",
+        "mounts": {}
+      },
+      "steps": [
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "for f in A1 A2 A3; do sleep 0.01; echo \"A:$f\"; done"
+            },
+            {
+              "op": "exec",
+              "command": "eval 'for f in B1 B2 B3; do sleep 0.01; echo \"B:$f\"; done'"
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 0,
+                "stdout": "A:A1\nA:A2\nA:A3\n",
+                "stderr": ""
+              },
+              {
+                "exit_code": 0,
+                "stdout": "B:B1\nB:B2\nB:B3\n",
+                "stderr": ""
+              }
+            ]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo $f",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "B3\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "session",
+          "id": "other"
+        },
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "f=default; sleep 0.05; echo $f"
+            },
+            {
+              "op": "exec",
+              "command": "f=other; echo $f",
+              "session": "other"
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 0,
+                "stdout": "default\n",
+                "stderr": ""
+              },
+              {
+                "exit_code": 0,
+                "stdout": "other\n",
+                "stderr": ""
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "top_level_line_respects_host_spawn_process_cap",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "session",
+          "id": "capped",
+          "profile": {
+            "processes": {
+              "max": 1
+            }
+          }
+        },
+        {
+          "op": "spawn",
+          "argv": ["sleep", "30"],
+          "session": "capped",
+          "expect": {
+            "value": 1
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo leaked > /data/file",
+          "session": "capped",
+          "expect": {
+            "value": {
+              "exit_code": 254,
+              "stdout": "",
+              "stderr": "bash: fork: Resource temporarily unavailable\n"
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "test ! -e /data/file",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "close_session",
+          "id": "capped"
+        }
+      ]
+    },
+    {
+      "id": "cpu_arithmetic_cancels_before_tail_write",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram", "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "true",
+          "expect": {"value": {"exit_code": 0}}
+        },
+        {
+          "op": "exec",
+          "command": "for ((i=0;i<9000;i++)); do :; done; echo BAD > /data/late",
+          "cancel_after_ms": 20,
+          "expect": {
+            "value": {
+              "aborted": true
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "test ! -e /data/late",
+          "expect": {
+            "value": {
+              "exit_code": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "cpu_nested_eval_cancels_before_tail_write",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram", "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "true",
+          "expect": {"value": {"exit_code": 0}}
+        },
+        {
+          "op": "exec",
+          "command": "for ((i=0;i<9000;i++)); do eval ':'; done; echo BAD > /data/late",
+          "cancel_after_ms": 20,
+          "expect": {
+            "value": {
+              "aborted": true
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "test ! -e /data/late",
+          "expect": {
+            "value": {
+              "exit_code": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "cpu_pipeline_cancels_before_tail_write",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram", "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "true",
+          "expect": {"value": {"exit_code": 0}}
+        },
+        {
+          "op": "exec",
+          "command": "for ((i=0;i<9000;i++)); do echo hi | cat > /dev/null; done; echo BAD > /data/late",
+          "cancel_after_ms": 20,
+          "expect": {
+            "value": {
+              "aborted": true
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "test ! -e /data/late",
+          "expect": {
+            "value": {
+              "exit_code": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "background_nested_eval_survives_foreground_abort",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram", "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "true",
+          "expect": {"value": {"exit_code": 0}}
+        },
+        {
+          "op": "exec",
+          "command": "(sleep 0.08; eval 'echo alive > /data/background') & for ((i=0;i<9000;i++)); do :; done",
+          "cancel_after_ms": 20,
+          "expect": {
+            "value": {
+              "aborted": true
+            }
+          }
+        },
+        {
+          "op": "drain_processes"
+        },
+        {
+          "op": "exec",
+          "command": "cat /data/background",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "alive\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "cpu_work_yields_to_an_independent_session",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram", "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "session",
+          "id": "other"
+        },
+        {
+          "op": "exec",
+          "command": "true",
+          "expect": {"value": {"exit_code": 0}}
+        },
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "for ((i=0;i<3000;i++)); do :; done; echo done > /data/long"
+            },
+            {
+              "op": "exec",
+              "command": "test ! -e /data/long",
+              "session": "other"
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 0
+              },
+              {
+                "exit_code": 0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "per_call_env_and_cwd_stay_with_the_call",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "sleep 0.01; eval 'echo $LABEL'; echo $(echo $LABEL)",
+              "env": {
+                "LABEL": "left"
+              }
+            },
+            {
+              "op": "exec",
+              "command": "eval 'echo $LABEL'; sleep 0.02; echo $(echo $LABEL)",
+              "env": {
+                "LABEL": "right"
+              }
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 0,
+                "stdout": "left\nleft\n",
+                "stderr": ""
+              },
+              {
+                "exit_code": 0,
+                "stdout": "right\nright\n",
+                "stderr": ""
+              }
+            ]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo ${LABEL-unset}",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "unset\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "mkdir -p /data/async-a /data/async-b",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "sleep 0.01; eval 'pwd'; printf 'left\\n' > value; cat value",
+              "cwd": "/data/async-a"
+            },
+            {
+              "op": "exec",
+              "command": "eval 'pwd'; printf 'right\\n' > value; sleep 0.02; cat value",
+              "cwd": "/data/async-b"
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 0,
+                "stdout": "/data/async-a\nleft\n",
+                "stderr": ""
+              },
+              {
+                "exit_code": 0,
+                "stdout": "/data/async-b\nright\n",
+                "stderr": ""
+              }
+            ]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "cat /data/async-a/value /data/async-b/value; pwd",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "left\nright\n/\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "concurrent_lines_keep_their_writes_and_failures",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "printf 'left\\n' > /data/async-left; cat /data/async-left"
+            },
+            {
+              "op": "exec",
+              "command": "printf 'right\\n' > /data/async-right; cat /data/async-right"
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 0,
+                "stdout": "left\n",
+                "stderr": ""
+              },
+              {
+                "exit_code": 0,
+                "stdout": "right\n",
+                "stderr": ""
+              }
+            ]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "cat /data/async-left /data/async-right",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "left\nright\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "sleep 0.01; echo left; exit 7"
+            },
+            {
+              "op": "exec",
+              "command": "sleep 0.02; echo right"
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 7,
+                "stdout": "left\n",
+                "stderr": ""
+              },
+              {
+                "exit_code": 0,
+                "stdout": "right\n",
+                "stderr": ""
+              }
+            ]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "echo alive",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "alive\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "sessions_meet_and_run_their_own_exit_traps",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "session",
+          "id": "peer"
+        },
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "echo left > /data/rendezvous-left; for i in $(seq 500); do [ -f /data/rendezvous-right ] && break; sleep 0.01; done; cat /data/rendezvous-right"
+            },
+            {
+              "op": "exec",
+              "command": "echo right > /data/rendezvous-right; for i in $(seq 500); do [ -f /data/rendezvous-left ] && break; sleep 0.01; done; cat /data/rendezvous-left",
+              "session": "peer"
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 0,
+                "stdout": "right\n",
+                "stderr": ""
+              },
+              {
+                "exit_code": 0,
+                "stdout": "left\n",
+                "stderr": ""
+              }
+            ]
+          }
+        },
+        {
+          "op": "concurrent",
+          "steps": [
+            {
+              "op": "exec",
+              "command": "bash -c 'trap \"sleep .01; echo $LABEL > /data/trap-left\" EXIT; echo body:$LABEL'",
+              "env": {
+                "LABEL": "left"
+              }
+            },
+            {
+              "op": "exec",
+              "command": "bash -c 'trap \"sleep .01; echo $LABEL > /data/trap-right\" EXIT; echo body:$LABEL'",
+              "env": {
+                "LABEL": "right"
+              },
+              "session": "peer"
+            }
+          ],
+          "expect": {
+            "value": [
+              {
+                "exit_code": 0,
+                "stdout": "body:left\n",
+                "stderr": ""
+              },
+              {
+                "exit_code": 0,
+                "stdout": "body:right\n",
+                "stderr": ""
+              }
+            ]
+          }
+        },
+        {
+          "op": "exec",
+          "command": "cat /data/trap-left /data/trap-right; trap -p",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "left\nright\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

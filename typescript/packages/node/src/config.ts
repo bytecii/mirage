@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { parseCommandLimits } from '@struktoai/mirage-core/policy/builtin/output_cap'
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -19,45 +20,60 @@ import { parse as parseYaml } from 'yaml'
 import type { CacheConfig } from '@struktoai/mirage-core/cache/file/config'
 import type { IndexConfig, RedisIndexConfig } from '@struktoai/mirage-core/cache/index/config'
 import { CLISpec } from '@struktoai/mirage-core/commands/cli/types'
-import type { GuardSpec } from '@struktoai/mirage-core/policy/index'
-import type { Resource } from '@struktoai/mirage-core/resource/base'
-import type { RuntimeEntry } from '@struktoai/mirage-core/runtime/base'
-import { ScriptSource } from '@struktoai/mirage-core/runtime/policy/index'
-import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
+import { Runtime, type RuntimeEntry } from '@struktoai/mirage-core/runtime/base'
+import { ScriptSource } from '@struktoai/mirage-core/runtime/routing/index'
+import { buildRuntime, checkRuntimeOptions } from '@struktoai/mirage-core/runtime/table'
+import type { RuntimeOptions } from '@struktoai/mirage-core/runtime/types'
 import {
-  ConsistencyPolicy,
+  EnvVarSchema,
+  SecretSourceSchema,
+  type EnvEntries,
+  type SecretEntries,
+} from '@struktoai/mirage-core/secrets/config'
+import {
+  type ReadSpec,
   KERNEL_BACKENDS,
-  Limit,
   MountBackend,
   MountMode,
-  OnExceed,
+  ReadPolicy,
+  parseMountMode,
 } from '@struktoai/mirage-core/types'
+import { Mount } from '@struktoai/mirage-core/workspace/mount/spec'
+import {
+  coerceReadPolicy,
+  resolveReadSpec,
+} from '@struktoai/mirage-core/workspace/mount/read_policy'
 import { snakeToCamel } from '@struktoai/mirage-core/utils/normalize'
+import { parseSessionProfile, type SessionProfile } from '@struktoai/mirage-core/policy/profile'
+import type { ResolvedSource } from '@struktoai/mirage-core/secrets/types'
 import type { WorkspaceStateStore } from '@struktoai/mirage-core/workspace/store/base'
 import { RAMWorkspaceStateStore } from '@struktoai/mirage-core/workspace/store/ram'
 import { S3WorkspaceStateStore } from '@struktoai/mirage-core/workspace/store/s3'
 import type { WorkspaceOptions } from '@struktoai/mirage-core/workspace/workspace/workspace'
-import { normalizeS3Config } from './resource/s3/config.ts'
-import { isModulePath, loadAttr, splitRef } from './resource/loader.ts'
-import { buildResource } from './resource/registry.ts'
+import { normalizeS3Config } from './vfs/s3/config.ts'
+import { isModulePath, loadAttr, splitRef } from './vfs/loader.ts'
+// The config door is a workspace entry point of its own (the daemon
+// builds from here), so it arms the builtin secrets sources like the
+// node Workspace module does.
+import {
+  configHoldsPointer,
+  resolveConfigSecrets,
+  resolveSourcesFor,
+} from '@struktoai/mirage-core/secrets/sources'
+import './secrets/constants.ts'
+import { buildVfs } from './vfs/registry.ts'
 import { RedisConsoleStore } from './shell/console/redis/index.ts'
 import { DiskWorkspaceStateStore } from './workspace/store/disk.ts'
 import { RedisWorkspaceStateStore } from './workspace/store/redis.ts'
-import type { S3Config } from './resource/s3/config.ts'
+import type { S3Config } from './vfs/s3/config.ts'
 import { JobConsole } from '@struktoai/mirage-core/shell/console/index'
 import type { ConsoleFactory } from '@struktoai/mirage-core/shell/job_table/index'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
-const VALID_MODES = new Set<string>([MountMode.READ, MountMode.WRITE, MountMode.EXEC])
-
 function coerceMountMode(value: string | undefined, fallback: MountMode): MountMode {
   if (value === undefined) return fallback
-  const lower = value.toLowerCase()
-  if (!VALID_MODES.has(lower)) throw new Error(`invalid mount mode: ${value}`)
-  return lower as MountMode
+  return parseMountMode(value.toLowerCase())
 }
-
-const VALID_CONSISTENCY = new Set<string>([ConsistencyPolicy.LAZY, ConsistencyPolicy.ALWAYS])
 
 /** True for the docker-style single-line script path form (.py/.js/.mjs). */
 function isScriptPath(value: string): boolean {
@@ -80,11 +96,37 @@ function loadScriptSource(value: string): ScriptSource {
   return new ScriptSource(readFileSync(path, 'utf-8'), language, path.endsWith('.mjs'))
 }
 
-function buildRuntimeEntries(entries: unknown[]): RuntimeEntry[] {
+type RuntimeClass = new (options?: RuntimeOptions<never>) => Runtime
+
+/**
+ * Load the `Runtime` subclass a `source:Class` reference names.
+ *
+ * The runtime twin of the `vfs:` and `cli:` reference forms: a
+ * deployment ships a runtime as a file and names it from yaml with no
+ * host program calling `registerRuntime`. The class is constructed with
+ * the uniform `(captures, config, script)` options like a builtin, so
+ * the entry's other keys reach it unchanged. Mirrors `_runtime_class` in
+ * `mirage/config.py`.
+ */
+async function loadRuntimeClass(ref: string): Promise<RuntimeClass> {
+  const loaded = await loadAttr(ref)
+  if (typeof loaded !== 'function' || !(loaded.prototype instanceof Runtime)) {
+    throw new Error(`${JSON.stringify(ref)} is not a Runtime subclass`)
+  }
+  return loaded as RuntimeClass
+}
+
+/**
+ * Turn config runtime entries into workspace runtime entries: names, or
+ * mappings carrying a name plus the uniform runtime options. A name is a
+ * registered runtime or a `source:Class` reference to a `Runtime`
+ * subclass.
+ */
+async function buildRuntimeEntries(entries: unknown[]): Promise<RuntimeEntry[]> {
   const out: RuntimeEntry[] = []
   for (const entry of entries) {
     if (typeof entry === 'string') {
-      out.push(buildRuntime(entry))
+      out.push(entry.includes(':') ? new (await loadRuntimeClass(entry))() : buildRuntime(entry))
       continue
     }
     if (!isPlainObject(entry)) throw new Error('runtime entry must be a name or a mapping')
@@ -97,25 +139,19 @@ function buildRuntimeEntries(entries: unknown[]): RuntimeEntry[] {
     }
     const withScript: Record<string, unknown> =
       script !== undefined ? { ...options, script: loadScriptSource(script) } : options
+    if (name.includes(':')) {
+      // The key check `buildRuntime` runs for a name: the base
+      // constructor ignores a key it does not read, so without it a typo
+      // would leave the runtime on its defaults where Python's
+      // `**options` refuses the entry.
+      const cls = await loadRuntimeClass(name)
+      checkRuntimeOptions(name, withScript)
+      out.push(new cls(withScript as RuntimeOptions<never>))
+      continue
+    }
     out.push(buildRuntime(name, withScript))
   }
   return out
-}
-
-function coerceConsistency(value: string | undefined): ConsistencyPolicy {
-  if (value === undefined) return ConsistencyPolicy.LAZY
-  const lower = value.toLowerCase()
-  if (!VALID_CONSISTENCY.has(lower)) throw new Error(`invalid consistency: ${value}`)
-  return lower as ConsistencyPolicy
-}
-
-const VALID_ON_EXCEED = new Set<string>([OnExceed.ERROR, OnExceed.TRUNCATE])
-
-function coerceOnExceed(value: string): OnExceed {
-  if (!VALID_ON_EXCEED.has(value.toLowerCase())) {
-    throw new Error(`invalid onExceed: ${value}`)
-  }
-  return value.toLowerCase() as OnExceed
 }
 
 function camelizeKeys(obj: Record<string, unknown>): Record<string, unknown> {
@@ -138,18 +174,20 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // which is the same portability break pointing the other way.
 //
 // `mounts.*.config` is the one block with no table, because Python types
-// it as a bare dict and validates it in the resource's own model. Do not
+// it as a bare dict and validates it in the VFS's own model. Do not
 // generalize that to every credential-carrying block: an s3 store group
 // has a strict Python model (`S3StoreBlock`, extra="forbid"), so it is
 // tabled here like the rest.
 const TOP_LEVEL_KEYS = [
   'mounts',
+  'command_limits',
   'clis',
   'runtimes',
-  'policy',
-  'guards',
+  'route_policy',
+  'profiles',
+  'profile',
   'mode',
-  'consistency',
+  'read',
   'default_session_id',
   'default_agent_id',
   'workspace_id',
@@ -157,15 +195,23 @@ const TOP_LEVEL_KEYS = [
   'index',
   'store',
   'console',
+  'env',
+  'secrets',
 ] as const
 const MOUNT_KEYS = [
-  'resource',
+  'vfs',
   'mode',
   'config',
   'command_limits',
   'backend',
   'mountpoint',
+  'read',
+  'ttl',
 ] as const
+// A source instance is a type beside a config, the way a mount is. Its
+// `config:` block has no table for the same reason `mounts.*.config`
+// has none: each source owns its own model and validates there.
+const SOURCE_KEYS = ['source', 'config'] as const
 const CACHE_KEYS: Record<string, readonly string[]> = {
   ram: ['type', 'limit', 'max_drain_bytes'],
   redis: ['type', 'limit', 'max_drain_bytes', 'url', 'key_prefix'],
@@ -213,7 +259,6 @@ const PLAIN_STORE_GROUP_KEYS: Record<string, readonly string[]> = Object.fromEnt
   Object.entries(STORE_GROUP_KEYS).filter(([type]) => type !== 's3'),
 )
 const CLI_KEYS: readonly string[] = ['cli', 'script', 'runtime', 'config']
-const GUARD_KEYS = ['reason', 'commands', 'paths'] as const
 
 // A store group whose `type` names a backend carries that backend's own
 // spellings: `aws_access_key_id` is `accessKeyId`, not `awsAccessKeyId`,
@@ -318,31 +363,94 @@ function validateStoreBlock(value: unknown): void {
   }
 }
 
+/** A raw block's `config`, or an empty mapping when it is absent or not one. */
+function asConfig(value: unknown): Readonly<Record<string, unknown>> {
+  return isPlainObject(value) ? value : {}
+}
+
+/**
+ * Refuse a mount block whose read policy and bound disagree.
+ *
+ * Both rules live at the config door rather than in the mount-time
+ * verdict: once a ReadSpec exists its ttl has already defaulted, so
+ * `bounded` written without a bound is indistinguishable from `read:`
+ * left out entirely. Python refuses the same pair in `MountBlock`'s
+ * model validator, which is the same door.
+ */
+function validateReadBlock(prefix: string, block: Record<string, unknown>): void {
+  // Coerce once, then apply both dependent-key rules to the normalised
+  // value. Comparing the raw one let `read: BOUNDED` -- a spelling both
+  // languages accept -- skip the bound rule that Python enforces.
+  const declared = block.read ?? undefined
+  const policy = declared === undefined ? undefined : coerceReadPolicy(declared)
+  const ttl = block.ttl ?? undefined
+  // The bound's type is judged whatever `read:` says, and before the
+  // dependent-key rules, because that is where Python judges it: a
+  // field validator, which runs ahead of the model validator carrying
+  // those rules. Left until after them, `ttl: "30"` with no `read:`
+  // came back naming the missing policy on one host and the unusable
+  // bound on the other.
+  if (ttl !== undefined && (typeof ttl !== 'number' || !Number.isInteger(ttl))) {
+    throw new Error(`mount \`${prefix}\`: ttl must be whole seconds, got ${JSON.stringify(ttl)}`)
+  }
+  if (ttl !== undefined && policy === undefined) {
+    throw new Error(`mount \`${prefix}\`: ttl pins the read bound; it takes read: bounded`)
+  }
+  if (policy === ReadPolicy.BOUNDED && ttl === undefined) {
+    throw new Error(`mount \`${prefix}\`: read: bounded needs a bound; set ttl:`)
+  }
+  if (ttl !== undefined && ttl < 1) {
+    throw new Error(`mount \`${prefix}\`: ttl must be at least 1 second, got ${String(ttl)}`)
+  }
+}
+
 /**
  * Reject any key no Python config model declares, before normalization
  * folds snake_case into camelCase and the distinction is gone.
  */
 function validateConfigKeys(raw: Record<string, unknown>): void {
   rejectUnknownKeys(raw, TOP_LEVEL_KEYS, 'config')
+  parseCommandLimits(raw.command_limits)
+  // At the sync door, as Python's WorkspaceConfig validator is, so the CLI
+  // refuses a bad value before it POSTs the document to the daemon.
+  if (raw.read !== undefined && raw.read !== null) resolveReadSpec(raw.read, undefined)
   if (isPlainObject(raw.mounts)) {
     for (const [prefix, block] of Object.entries(raw.mounts)) {
       if (!isPlainObject(block)) throw new Error(`mount \`${prefix}\` must be a mapping`)
       rejectUnknownKeys(block, MOUNT_KEYS, `mount \`${prefix}\``)
+      validateReadBlock(prefix, block)
+      parseCommandLimits(block.command_limits)
     }
   }
   if (isPlainObject(raw.clis)) {
     for (const [name, block] of Object.entries(raw.clis)) {
       if (!isPlainObject(block)) throw new Error(`cli \`${name}\` must be a mapping`)
       rejectUnknownKeys(block, CLI_KEYS, `cli \`${name}\``)
+      // A pointer may only fill a config that a model validates, because
+      // the model is what a snapshot redacts by. A script's config is
+      // opaque: nothing declares which key is a credential, so the
+      // snapshot captures it verbatim, and a pointer resolved into it
+      // would be written out as the value it fetched. Refused here, on
+      // the block, so every door that reads a config inherits the rule.
+      if (typeof block.script === 'string' && configHoldsPointer(asConfig(block.config))) {
+        throw new Error(
+          `clis entry '${name}': a script's config is opaque and a pointer in it would be ` +
+            'written into every snapshot; read the credential from a managed env var instead',
+        )
+      }
     }
   }
-  if (raw.guards !== undefined && raw.guards !== null) {
-    if (!Array.isArray(raw.guards)) throw new Error('config `guards` must be a list')
-    for (const entry of raw.guards) {
-      if (!isPlainObject(entry)) throw new Error('each guard must be a mapping with a `reason`')
-      // A typo like `path:` would widen the guard into an
-      // unconditional denial rather than fail.
-      rejectUnknownKeys(entry, GUARD_KEYS, 'guard')
+  // The profiles validate through the core's own validators (the same
+  // shape the SDK and REST take), so a typo like `path:` on a deny rule
+  // fails here rather than widening the rule.
+  if (raw.profiles !== undefined && raw.profiles !== null) {
+    parseProfiles(raw.profiles)
+  }
+  if (raw.profile !== undefined && raw.profile !== null) {
+    if (typeof raw.profile !== 'string') throw new Error('profile must be a string')
+    const known = isPlainObject(raw.profiles) ? Object.keys(raw.profiles) : []
+    if (!known.includes(raw.profile)) {
+      throw new Error(`unknown profile ${JSON.stringify(raw.profile)}`)
     }
   }
   validateTypedBlock(raw.cache, CACHE_KEYS, 'cache')
@@ -350,14 +458,61 @@ function validateConfigKeys(raw: Record<string, unknown>): void {
   validateTypedBlock(raw.console, CONSOLE_KEYS, 'console')
   validateConsoleValues(raw.console)
   validateStoreBlock(raw.store)
+  validateEnvBlock(raw.env)
+  validateSecretsBlock(raw.secrets)
+}
+
+/**
+ * The source table: one map, instance name -> declaration. Blocks
+ * validate through the core schema (the same one the workspace applies
+ * at build), so a pointer at a source that cannot bootstrap another
+ * fails at load naming the instance. The block travels raw: an
+ * instance name must not be camelized, and a source's own config keys
+ * are snake_case for the same reason a mount's are.
+ */
+function validateSecretsBlock(value: unknown): void {
+  if (value === undefined || value === null) return
+  if (!isPlainObject(value)) throw new Error('config `secrets` must be a mapping')
+  for (const [name, block] of Object.entries(value)) {
+    if (!isPlainObject(block)) throw new Error(`config \`secrets.${name}\` must be a mapping`)
+    rejectUnknownKeys(block, SOURCE_KEYS, `config \`secrets.${name}\``)
+    const parsed = SecretSourceSchema.safeParse(block)
+    if (!parsed.success) {
+      const detail = parsed.error.issues[0]?.message ?? parsed.error.message
+      throw new Error(`config \`secrets.${name}\`: ${detail}`)
+    }
+  }
+}
+
+/**
+ * The env block: one map, name -> entry. Entries validate through the
+ * core schema (the same one `varsFromEntries` applies at build), so a
+ * bad entry fails at load naming the variable, and the block travels
+ * raw -- variable names must not be camelized and a literal's text must
+ * arrive verbatim.
+ */
+function validateEnvBlock(value: unknown): void {
+  if (value === undefined || value === null) return
+  if (!isPlainObject(value)) throw new Error('config `env` must be a mapping')
+  for (const [name, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') continue
+    if (!isPlainObject(entry)) {
+      throw new Error(`config \`env.${name}\` must be a string or a mapping`)
+    }
+    const parsed = EnvVarSchema.safeParse(entry)
+    if (!parsed.success) {
+      const detail = parsed.error.issues[0]?.message ?? parsed.error.message
+      throw new Error(`config \`env.${name}\`: ${detail}`)
+    }
+  }
 }
 
 // Workspace YAML uses Python's snake_case keys (default_session_id, the
 // cache/index key_prefix/max_drain_bytes, ...). TS code stays camelCase, so
 // normalize at the boundary: camelize the top-level keys plus the cache and
 // index blocks. Mounts are left untouched on purpose, their `config:` blocks
-// carry resource credentials whose snake_case keys (aws_access_key_id, ...)
-// are consumed downstream as-is, and command_limits is camelized later.
+// carry VFS credentials whose snake_case keys (aws_access_key_id, ...)
+// are consumed downstream as-is, and command_limits is parsed separately.
 function normalizeConfigKeys(raw: Record<string, unknown>): Record<string, unknown> {
   const out = camelizeKeys(raw)
   if (isPlainObject(out.cache)) out.cache = camelizeKeys(out.cache)
@@ -391,58 +546,46 @@ function normalizeConfigKeys(raw: Record<string, unknown>): Record<string, unkno
   return out
 }
 
-// Workspace YAML uses Python's snake_case keys (command_limits, max_lines,
-// on_exceed, ...). The in-memory config stays camelCase, so normalize each
-// block's keys at the boundary before constructing the limit.
-function parseLimits(
-  raw: Record<string, Record<string, unknown>> | undefined,
-): Record<string, Limit> {
-  const out: Record<string, Limit> = {}
-  for (const [cmd, rawBlock] of Object.entries(raw ?? {})) {
-    const block = camelizeKeys(rawBlock) as RawLimitBlock
-    out[cmd] = new Limit({
-      ...(block.maxBytes !== undefined ? { maxBytes: block.maxBytes } : {}),
-      ...(block.maxLines !== undefined ? { maxLines: block.maxLines } : {}),
-      ...(block.timeoutSeconds !== undefined ? { timeoutSeconds: block.timeoutSeconds } : {}),
-      ...(block.onExceed !== undefined ? { onExceed: coerceOnExceed(block.onExceed) } : {}),
-    })
+/**
+ * Validate the `profiles:` block: every entry through the core profile
+ * validator, so a misspelled field is a load error rather than a
+ * first-session one. A profile is the whole document it runs under, so
+ * there is no chain to resolve here.
+ */
+function parseProfiles(raw: unknown): Record<string, SessionProfile> {
+  if (!isPlainObject(raw)) throw new Error('config `profiles` must be a mapping')
+  const out: Record<string, SessionProfile> = {}
+  for (const [name, block] of Object.entries(raw)) {
+    // A path-form script stays the string the config wrote: the check
+    // door validates shape only, and runs before `absolutizeScripts`
+    // has rebased the path onto the config file's directory, so reading
+    // it here would resolve against the process cwd. The workspace door
+    // (`toWorkspaceOptions`) loads it, the python loader's split.
+    out[name] = parseSessionProfile(block, `profile \`${name}\``)
   }
   return out
 }
 
-// Mirrors Python's GuardBlock: reason is required, commands/paths are
-// optional string lists. Compiled by the workspace into declarative
-// admission policies (see core policy/spec.ts).
-function parseGuards(entries: unknown): GuardSpec[] {
-  if (!Array.isArray(entries)) throw new Error('config `guards` must be a list')
-  return entries.map((entry) => {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      throw new Error('each guard must be a mapping with a `reason`')
-    }
-    const block = entry as Record<string, unknown>
-    // Mirror Python's extra="forbid": a typo like `path:` silently
-    // widening the guard into an unconditional denial must fail loud.
-    for (const key of Object.keys(block)) {
-      if (key !== 'reason' && key !== 'commands' && key !== 'paths') {
-        throw new Error(`unknown guard key \`${key}\` (allowed: reason, commands, paths)`)
-      }
-    }
-    const reason = block.reason
-    if (typeof reason !== 'string' || reason === '') {
-      throw new Error('each guard needs a non-empty string `reason`')
-    }
-    for (const key of ['commands', 'paths']) {
-      const v = block[key]
-      if (v !== undefined && (!Array.isArray(v) || v.some((s) => typeof s !== 'string'))) {
-        throw new Error(`guard \`${key}\` must be a list of strings`)
-      }
-    }
-    return {
-      reason,
-      ...(block.commands !== undefined ? { commands: block.commands as string[] } : {}),
-      ...(block.paths !== undefined ? { paths: block.paths as string[] } : {}),
-    }
-  })
+/**
+ * Load each profile's path-form policy into a ScriptSource.
+ *
+ * By this door the path is absolute for a file config (the check door
+ * rebased it onto the config file's directory); an object config's
+ * relative path resolves against the process cwd, as in Python. Code
+ * that passes a loaded ScriptSource is left alone.
+ */
+function loadProfileScripts(
+  profiles: Record<string, SessionProfile>,
+): Record<string, SessionProfile> {
+  const out: Record<string, SessionProfile> = {}
+  for (const [name, profile] of Object.entries(profiles)) {
+    const policy = profile.policy
+    out[name] =
+      policy != null && typeof policy.script === 'string'
+        ? { ...profile, policy: { ...policy, script: loadScriptSource(policy.script) } }
+        : profile
+  }
+  return out
 }
 
 const VAR_RE = /\$\{([A-Z_][A-Z0-9_]*)\}/g
@@ -462,10 +605,16 @@ function walkInterpolate(v: unknown, env: Record<string, string>, missing: strin
     return v.map((item) => walkInterpolate(item, env, missing))
   }
   if (v !== null && typeof v === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      out[k] = walkInterpolate(val, env, missing)
-    }
+    // fromEntries, not keyed assignment: this copy walks the whole
+    // config, so a `__proto__` key anywhere in it (a source instance,
+    // a source's own config field) would assign through the prototype
+    // setter and vanish before anything downstream saw it.
+    const out = Object.fromEntries(
+      Object.entries(v as Record<string, unknown>).map(([k, val]) => [
+        k,
+        walkInterpolate(val, env, missing),
+      ]),
+    )
     return out
   }
   return v
@@ -481,21 +630,22 @@ export function interpolateEnv<T>(value: T, env: Record<string, string>): T {
   return out as T
 }
 
-interface RawLimitBlock {
-  maxBytes?: number | null
-  maxLines?: number | null
-  timeoutSeconds?: number | null
-  onExceed?: string
-}
-
 export interface MountBlock {
-  resource: string
+  vfs: string
   mode?: string
   config?: Record<string, unknown>
   command_limits?: Record<string, Record<string, unknown>>
-  /** vfs (default), fuse, or fskit. Mirrors Python's MountBlock.backend. */
+  /** workspace (default), fuse, or fskit. Mirrors Python's MountBlock.backend. */
   backend?: string
   mountpoint?: string
+  /**
+   * How cached bytes for this mount are revalidated, and the bound that
+   * goes with `bounded`. The bound lives only here, where no other `ttl`
+   * does: at workspace level it would sit beside `index: {ttl:}` and mean
+   * a different thing.
+   */
+  read?: string
+  ttl?: number
 }
 
 interface RamIndexBlock {
@@ -590,13 +740,17 @@ interface CLIBlock {
 }
 
 export interface WorkspaceConfigRaw {
+  commandLimits?: unknown
   mounts: Record<string, MountBlock>
   clis?: Record<string, CLIBlock> | null
   runtimes?: (string | Record<string, unknown>)[] | null
-  policy?: string | null
-  guards?: unknown[] | null
+  routePolicy?: string | null
+  /** The profiles (`profiles:`); every entry validated by parseProfiles. */
+  profiles?: unknown
+  /** Which profile shapes a session created without one. */
+  profile?: unknown
   mode?: string
-  consistency?: string
+  read?: string
   defaultSessionId?: string
   defaultAgentId?: string
   workspaceId?: string
@@ -616,6 +770,21 @@ export interface WorkspaceConfigRaw {
    * ConsoleBlock.
    */
   console?: RamConsoleBlock | RedisConsoleBlock | null
+  /**
+   * The environment plane: one map, name -> entry. A bare string is
+   * the literal short form; a mapping is an env entry, either a
+   * literal with attrs or a managed pointer (`from`/`ref`/`key`/
+   * `fetch`). Validated by `validateEnvBlock`, translated by the
+   * workspace.
+   */
+  env?: Record<string, unknown> | null
+  /**
+   * The source table: one map, instance name -> declaration, spelled
+   * the way `mounts:` is. A managed env entry's `from` names an
+   * instance here, or a source directly when the deployment has one
+   * account of it and nothing to configure.
+   */
+  secrets?: Record<string, unknown> | null
 }
 
 function readProcessEnv(): Record<string, string> {
@@ -664,32 +833,58 @@ export function loadWorkspaceConfig(
 }
 
 /**
- * Resolve relative script paths against the config file's directory.
+ * Resolve relative script paths and code refs against the config file's
+ * directory.
  *
- * A path-form `script`/`policy` in a config file means "next to the
- * file" (the docker build-context model), never "wherever the server
- * happens to run". In-memory object configs are untouched.
+ * A path-form `script`/`route_policy`, a `cli: ./tool.mjs:TREE`, a
+ * `vfs: ./wiki.mjs:WikiVFS` and a runtime entry's
+ * `name: ./box.mjs:EchoBox` in a config file all mean "next to the file"
+ * (the docker build-context model), never "wherever the server happens
+ * to run". In-memory object configs are untouched. Exported so
+ * the CLI applies the same rebase to a `load`/`clone` override, which is
+ * read without validation and so cannot go through
+ * `checkWorkspaceConfigFile`; mirrors `_absolutize_scripts` in
+ * `mirage/config.py`.
  */
-function absolutizeScripts(raw: Record<string, unknown>, base: string): void {
-  const policy = raw.policy
+export function absolutizeScripts(raw: Record<string, unknown>, base: string): void {
+  const policy = raw.route_policy
   if (typeof policy === 'string' && isScriptPath(policy) && !isAbsolute(policy.trim())) {
-    raw.policy = join(base, policy.trim())
+    raw.route_policy = join(base, policy.trim())
   }
   if (Array.isArray(raw.runtimes)) {
-    for (const entry of raw.runtimes) {
-      if (isPlainObject(entry)) absolutizeScriptKey(entry, base)
-    }
+    raw.runtimes.forEach((entry: unknown, i: number) => {
+      if (isPlainObject(entry)) {
+        absolutizeScriptKey(entry, base)
+        absolutizeCodeRef(entry, 'name', base)
+      } else if (typeof entry === 'string') {
+        ;(raw.runtimes as unknown[])[i] = rebaseCodeRef(entry, base)
+      }
+    })
   }
   if (isPlainObject(raw.clis)) {
     for (const block of Object.values(raw.clis)) {
       if (!isPlainObject(block)) continue
       absolutizeScriptKey(block, base)
-      absolutizeCliRef(block, base)
+      absolutizeCodeRef(block, 'cli', base)
+    }
+  }
+  if (isPlainObject(raw.mounts)) {
+    for (const block of Object.values(raw.mounts)) {
+      if (isPlainObject(block)) absolutizeCodeRef(block, 'vfs', base)
+    }
+  }
+  if (isPlainObject(raw.profiles)) {
+    for (const block of Object.values(raw.profiles)) {
+      // A profile's policy block carries its program the way a clis
+      // entry does, so its `script` rebases the same way.
+      if (isPlainObject(block) && isPlainObject(block.policy)) {
+        absolutizeScriptKey(block.policy, base)
+      }
     }
   }
 }
 
-/** Rebase one runtimes/clis entry's relative `script` path onto `base`. */
+/** Rebase one runtimes/clis/policy entry's relative `script` path onto `base`. */
 function absolutizeScriptKey(entry: Record<string, unknown>, base: string): void {
   const script = entry.script
   if (typeof script === 'string' && isScriptPath(script) && !isAbsolute(script.trim())) {
@@ -698,21 +893,34 @@ function absolutizeScriptKey(entry: Record<string, unknown>, base: string): void
 }
 
 /**
- * Rebase one `clis` entry's path-form `cli` reference onto `base`.
+ * Rebase a path-form colon reference under `key` onto `base`.
  *
- * `cli: ./tool.mjs:TREE` means "next to the config file", the same
- * build-context rule `script:` follows; without this the pointer reaches
- * `loadAttr` relative and resolves against the server process's cwd. A
- * package specifier (`my-clis:JIRA`) is left alone: Node resolves it,
- * not the filesystem. The split is `splitRef`/`isModulePath`, the same
- * pair `loadAttr` uses, so the two cannot disagree about what a path is.
+ * `cli: ./tool.mjs:TREE`, `vfs: ./wiki.mjs:WikiVFS` and a
+ * runtime entry's `name: ./box.mjs:EchoBox` all mean "next to the config
+ * file", the same build-context rule `script:` follows; without this the
+ * pointer reaches `loadAttr` relative and
+ * resolves against the server process's cwd. A package specifier
+ * (`my-clis:JIRA`) is left alone: Node resolves it, not the filesystem.
+ * The split is `splitRef`/`isModulePath`, the same pair `loadAttr` uses,
+ * so the two cannot disagree about what a path is.
  */
-function absolutizeCliRef(entry: Record<string, unknown>, base: string): void {
-  const ref = entry.cli
-  if (typeof ref !== 'string' || !ref.includes(':')) return
+function absolutizeCodeRef(entry: Record<string, unknown>, key: string, base: string): void {
+  const ref = entry[key]
+  if (typeof ref === 'string') entry[key] = rebaseCodeRef(ref, base)
+}
+
+/**
+ * `ref` with a relative path-form source rebased onto `base`. Anything
+ * that is not a relative path-form reference (a bare name, a package
+ * specifier, an absolute path) comes back unchanged, so the bare string
+ * runtime entry (`- ./box.mjs:EchoBox` beside `- monty`) reads the same
+ * way the keyed forms do.
+ */
+function rebaseCodeRef(ref: string, base: string): string {
+  if (!ref.includes(':')) return ref
   const [source, attr] = splitRef(ref)
-  if (!isModulePath(source) || isAbsolute(source)) return
-  entry.cli = `${join(base, source)}:${attr}`
+  if (!isModulePath(source) || isAbsolute(source)) return ref
+  return `${join(base, source)}:${attr}`
 }
 
 /**
@@ -743,15 +951,19 @@ export function loadWorkspaceConfigFile(
 }
 
 export interface WorkspaceArgs {
-  resources: Record<string, [Resource, MountMode, Record<string, Limit>]>
+  // A `Mount` rather than a tuple: the read policy has to reach the
+  // workspace, and every consumer that flattened the tuple would have
+  // dropped it. `Mount` is core's own carrier and already holds mode and
+  // commandLimits.
+  mounts: Record<string, Mount>
   /**
    * Exactly what `new Workspace` takes, minus the two the loader always
    * resolves. Spelling the fields out here instead is what once dropped
-   * `clis` and `guards` on the way to the daemon: a config knob was
+   * `clis` and the deny rules on the way to the daemon: a config knob was
    * parsed and validated, then discarded by a list nobody remembered to
    * extend.
    */
-  options: WorkspaceOptions & { mode: MountMode; consistency: ConsistencyPolicy }
+  options: WorkspaceOptions & { mode: MountMode; read: ReadSpec }
   kernelMounts: Record<string, [MountBackend, string | undefined]>
 }
 
@@ -849,26 +1061,47 @@ function buildStateStore(block: StoreBlock | null | undefined): WorkspaceStateSt
 
 export async function configToWorkspaceArgs(cfg: WorkspaceConfigRaw): Promise<WorkspaceArgs> {
   const wsMode = coerceMountMode(cfg.mode, MountMode.WRITE)
-  const consistency = coerceConsistency(cfg.consistency)
-  const resources: Record<string, [Resource, MountMode, Record<string, Limit>]> = {}
+  const defaultRead = resolveReadSpec(cfg.read, undefined)
+  const mounts: Record<string, Mount> = {}
   const kernelMounts: Record<string, [MountBackend, string | undefined]> = {}
+  // Built before the mounts, because a mount's config may point at one:
+  // `resolveConfigSecrets` inside `buildVfs` fetches through these.
+  const blocks = [...Object.values(cfg.mounts), ...Object.values(cfg.clis ?? {})]
+  const sources = await resolveSourcesFor(
+    cfg.secrets,
+    blocks.map((block) => block.config ?? {}),
+  )
   for (const [prefix, block] of Object.entries(cfg.mounts)) {
-    const r = await buildResource(block.resource, block.config ?? {})
+    const r = await buildVfs(block.vfs, block.config ?? {}, sources)
     const m = coerceMountMode(block.mode, wsMode)
-    resources[prefix] = [r, m, parseLimits(block.command_limits)]
-    const backend = (block.backend ?? MountBackend.VFS) as MountBackend
+    // Already validated by the sync door (validateReadBlock).
+    const read = block.read === undefined ? defaultRead : resolveReadSpec(block.read, block.ttl)
+    mounts[prefix] = new Mount(r, {
+      mode: m,
+      read,
+      commandLimits: parseCommandLimits(block.command_limits),
+      vfsRef: block.vfs,
+    })
+    const backend = (block.backend ?? MountBackend.WORKSPACE) as MountBackend
     if (KERNEL_BACKENDS.includes(backend)) kernelMounts[prefix] = [backend, block.mountpoint]
   }
   const index = buildIndex(cfg.index)
   const stateStore = buildStateStore(cfg.store)
   const cliEntries =
-    cfg.clis !== undefined && cfg.clis !== null ? await buildCliEntries(cfg.clis) : undefined
+    cfg.clis !== undefined && cfg.clis !== null
+      ? await buildCliEntries(cfg.clis, sources)
+      : undefined
+  const runtimeEntries =
+    cfg.runtimes !== undefined && cfg.runtimes !== null
+      ? await buildRuntimeEntries(cfg.runtimes)
+      : undefined
   const consoleFactory = buildConsoleFactory(cfg.console)
   return {
-    resources,
+    mounts,
     options: {
       mode: wsMode,
-      consistency,
+      commandLimits: parseCommandLimits(cfg.commandLimits),
+      read: defaultRead,
       ...(cfg.defaultSessionId !== undefined ? { sessionId: cfg.defaultSessionId } : {}),
       ...(cfg.defaultAgentId !== undefined ? { agentId: cfg.defaultAgentId } : {}),
       ...(cfg.workspaceId !== undefined ? { workspaceId: cfg.workspaceId } : {}),
@@ -880,16 +1113,26 @@ export async function configToWorkspaceArgs(cfg: WorkspaceConfigRaw): Promise<Wo
       // sets beside the same store.
       ...(stateStore !== undefined ? { store: stateStore, ownsStore: true } : {}),
       ...(consoleFactory !== undefined ? { consoleFactory } : {}),
-      ...(cfg.runtimes !== undefined && cfg.runtimes !== null
-        ? { runtimes: buildRuntimeEntries(cfg.runtimes) }
+      ...(runtimeEntries !== undefined ? { runtimes: runtimeEntries } : {}),
+      ...(cfg.routePolicy !== undefined && cfg.routePolicy !== null
+        ? { routePolicy: loadScriptSource(cfg.routePolicy) }
         : {}),
-      ...(cfg.policy !== undefined && cfg.policy !== null
-        ? { policy: loadScriptSource(cfg.policy) }
+      ...(cfg.profiles !== undefined && cfg.profiles !== null
+        ? { profiles: loadProfileScripts(parseProfiles(cfg.profiles)) }
         : {}),
-      ...(cfg.guards !== undefined && cfg.guards !== null
-        ? { guards: parseGuards(cfg.guards) }
+      ...(cfg.profile !== undefined && cfg.profile !== null
+        ? { profile: cfg.profile as string }
         : {}),
       ...(cliEntries !== undefined ? { clis: cliEntries } : {}),
+      // Passed through as-is: this door resolves mounts, and
+      // env-plane fetching is async at command time, so no fetching
+      // here (the workspace translates and validates sources).
+      ...(cfg.env !== undefined && cfg.env !== null ? { env: cfg.env as EnvEntries } : {}),
+      // Same reason: building a source reads its bootstrap pointers,
+      // which the workspace does once, before its first fetch.
+      ...(cfg.secrets !== undefined && cfg.secrets !== null
+        ? { secrets: cfg.secrets as SecretEntries }
+        : {}),
     },
     kernelMounts,
   }
@@ -948,6 +1191,7 @@ function asCliSpec(value: unknown, name: string, ref: string): CLISpec {
 
 async function buildCliEntries(
   clis: Record<string, CLIBlock>,
+  sources?: Readonly<Record<string, ResolvedSource>>,
 ): Promise<Record<string, [string | CLISpec, Record<string, unknown> | null]>> {
   const out: Record<string, [string | CLISpec, Record<string, unknown> | null]> = {}
   for (const [name, block] of Object.entries(clis as Record<string, unknown>)) {
@@ -976,12 +1220,14 @@ async function buildCliEntries(
     if (block.config !== undefined && !isPlainObject(block.config)) {
       throw new Error(`clis entry '${name}': config must be a mapping`)
     }
-    // A `cli` value carrying a colon points at code the way `resource:`
-    // never does: `./tool.mjs:TALLY` (a file) or `my-clis:JIRA` (a
-    // package specifier). A bare name stays a name for the workspace to
-    // resolve against the registered specs. Mirrors the `":" in name`
-    // branch of Python's `cli_spec_for`, one layer up: `cliSpecFor`
-    // lives in core, which has no filesystem and is synchronous.
+    // A `cli` value carrying a colon points at code: `./tool.mjs:TALLY`
+    // (a file) or `my-clis:JIRA` (a package specifier). A bare name stays
+    // a name for the workspace to resolve against the registered specs.
+    // Mirrors the `":" in name` branch of Python's `cli_spec_for`, one
+    // layer up: `cliSpecFor` lives in core, which has no filesystem and
+    // is synchronous. A `vfs:` value reads the same way, resolved by
+    // `buildVfs` rather than here, because a mount block reaches the
+    // registry and a `clis` block does not.
     const entry = hasScript
       ? new CLISpec({
           name,
@@ -989,7 +1235,13 @@ async function buildCliEntries(
           runtime: block.runtime ?? null,
         })
       : await resolveCliRef(block.cli as string, name)
-    out[name] = [entry, block.config ?? {}]
+    // A CLI credential reads a pointer the way a mount's does: the
+    // account CLI's `config_model` is the same model a VFS
+    // parses, so it must receive the credential, not the pointer.
+    out[name] = [
+      entry,
+      await resolveConfigSecrets(block.config ?? {}, sources, `clis.${name}.config`),
+    ]
   }
   return out
 }

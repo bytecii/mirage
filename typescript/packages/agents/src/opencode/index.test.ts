@@ -15,13 +15,14 @@
 import { describe, expect, it } from 'vitest'
 import type { ToolResult } from '@opencode-ai/plugin'
 import { OpsRegistry } from '@struktoai/mirage-core/ops/registry'
-import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { MountMode } from '@struktoai/mirage-core/types'
 import { Workspace } from '@struktoai/mirage-node'
+import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
 import { mirageTools, miragePlugin } from './index.ts'
 
 function mkWs(): Workspace {
-  const ram = new RAMResource()
+  const ram = new RAMVFS()
   const ops = new OpsRegistry()
   for (const op of ram.ops()) ops.register(op)
   return new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops })
@@ -43,7 +44,7 @@ async function callTool(t: unknown, input: unknown): Promise<ToolResult> {
 describe('opencode mirageTools.read', () => {
   it('reads a text file', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/notes.txt', 'hello')
+    await ws.vfs.write('/notes.txt', 'hello')
     const out = await callTool(mirageTools(ws).read, { filePath: '/notes.txt' })
     expect(out).toBe('hello')
   })
@@ -55,14 +56,14 @@ describe('opencode mirageTools.read', () => {
 
   it('returns binary stub for non-text files', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/blob.bin', new Uint8Array([0, 1, 2, 3]))
+    await ws.vfs.write('/blob.bin', new Uint8Array([0, 1, 2, 3]))
     const out = await callTool(mirageTools(ws).read, { filePath: '/blob.bin' })
     expect(out).toContain('Binary file')
   })
 
   it('attaches PDFs for multimodal models', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/paper.pdf', new Uint8Array([0x25, 0x50, 0x44, 0x46]))
+    await ws.vfs.write('/paper.pdf', new Uint8Array([0x25, 0x50, 0x44, 0x46]))
     const out = await callTool(mirageTools(ws).read, { filePath: '/paper.pdf' })
     expect(out).toMatchObject({
       attachments: [
@@ -81,57 +82,57 @@ describe('opencode mirageTools.write', () => {
     const ws = mkWs()
     const out = await callTool(mirageTools(ws).write, { filePath: '/out.txt', content: 'data' })
     expect(out).toContain('/out.txt')
-    expect(await ws.fs.readFileText('/out.txt')).toBe('data')
+    expect(await ws.vfs.cat('/out.txt')).toBe('data')
   })
 
   it('creates missing parent directories', async () => {
     const ws = mkWs()
     await callTool(mirageTools(ws).write, { filePath: '/a/b/c.txt', content: 'x' })
-    expect(await ws.fs.readFileText('/a/b/c.txt')).toBe('x')
+    expect(await ws.vfs.cat('/a/b/c.txt')).toBe('x')
   })
 
   it('rejects an overwrite after the file changed since the session read it', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/out.txt', 'original')
+    await ws.vfs.write('/out.txt', 'original')
     const tools = mirageTools(ws)
     await callTool(tools.read, { filePath: '/out.txt' })
-    await ws.fs.writeFile('/out.txt', 'changed elsewhere')
+    await ws.vfs.write('/out.txt', 'changed elsewhere')
 
     const out = await callTool(tools.write, { filePath: '/out.txt', content: 'replacement' })
 
     expect(out).toContain('File changed since it was last read')
-    expect(await ws.fs.readFileText('/out.txt')).toBe('changed elsewhere')
+    expect(await ws.vfs.cat('/out.txt')).toBe('changed elsewhere')
   })
 
   it('can disable stale write protection', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/out.txt', 'original')
+    await ws.vfs.write('/out.txt', 'original')
     const tools = mirageTools(ws, { staleWriteProtection: false })
     await callTool(tools.read, { filePath: '/out.txt' })
-    await ws.fs.writeFile('/out.txt', 'changed elsewhere')
+    await ws.vfs.write('/out.txt', 'changed elsewhere')
 
     await callTool(tools.write, { filePath: '/out.txt', content: 'replacement' })
 
-    expect(await ws.fs.readFileText('/out.txt')).toBe('replacement')
+    expect(await ws.vfs.cat('/out.txt')).toBe('replacement')
   })
 })
 
 describe('opencode mirageTools.edit', () => {
   it('replaces single occurrence', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'foo bar baz')
+    await ws.vfs.write('/f.txt', 'foo bar baz')
     const out = await callTool(mirageTools(ws).edit, {
       filePath: '/f.txt',
       oldString: 'bar',
       newString: 'BAR',
     })
     expect(out).toContain('1 occurrence')
-    expect(await ws.fs.readFileText('/f.txt')).toBe('foo BAR baz')
+    expect(await ws.vfs.cat('/f.txt')).toBe('foo BAR baz')
   })
 
   it('rejects multiple occurrences without replaceAll', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'aa aa')
+    await ws.vfs.write('/f.txt', 'aa aa')
     const out = await callTool(mirageTools(ws).edit, {
       filePath: '/f.txt',
       oldString: 'aa',
@@ -142,7 +143,7 @@ describe('opencode mirageTools.edit', () => {
 
   it('replaces all when replaceAll is true', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'aa aa')
+    await ws.vfs.write('/f.txt', 'aa aa')
     const out = await callTool(mirageTools(ws).edit, {
       filePath: '/f.txt',
       oldString: 'aa',
@@ -150,12 +151,12 @@ describe('opencode mirageTools.edit', () => {
       replaceAll: true,
     })
     expect(out).toContain('2 occurrences')
-    expect(await ws.fs.readFileText('/f.txt')).toBe('X X')
+    expect(await ws.vfs.cat('/f.txt')).toBe('X X')
   })
 
   it('returns error when string not found', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'hello')
+    await ws.vfs.write('/f.txt', 'hello')
     const out = await callTool(mirageTools(ws).edit, {
       filePath: '/f.txt',
       oldString: 'world',
@@ -166,10 +167,10 @@ describe('opencode mirageTools.edit', () => {
 
   it('rejects an edit after the file changed since the session read it', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'original')
+    await ws.vfs.write('/f.txt', 'original')
     const tools = mirageTools(ws)
     await callTool(tools.read, { filePath: '/f.txt' })
-    await ws.fs.writeFile('/f.txt', 'changed elsewhere')
+    await ws.vfs.write('/f.txt', 'changed elsewhere')
 
     const out = await callTool(tools.edit, {
       filePath: '/f.txt',
@@ -178,15 +179,15 @@ describe('opencode mirageTools.edit', () => {
     })
 
     expect(out).toContain('File changed since it was last read')
-    expect(await ws.fs.readFileText('/f.txt')).toBe('changed elsewhere')
+    expect(await ws.vfs.cat('/f.txt')).toBe('changed elsewhere')
   })
 })
 
 describe('opencode mirageTools.ls', () => {
   it('lists entries with trailing slash for dirs', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/a.txt', 'a')
-    await ws.fs.mkdir('/d')
+    await ws.vfs.write('/a.txt', 'a')
+    await ws.vfs.mkdir('/d')
     const out = await callTool(mirageTools(ws).ls, { path: '/' })
     if (typeof out !== 'string') throw new Error('expected text output')
     const entries = out.split('\n').sort()
@@ -211,9 +212,9 @@ describe('opencode mirageTools.bash', () => {
 describe('opencode mirageTools.glob', () => {
   it('finds files matching a name pattern', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/a.ts', '')
-    await ws.fs.writeFile('/b.ts', '')
-    await ws.fs.writeFile('/c.md', '')
+    await ws.vfs.write('/a.ts', '')
+    await ws.vfs.write('/b.ts', '')
+    await ws.vfs.write('/c.md', '')
     const out = await callTool(mirageTools(ws).glob, { pattern: '*.ts' })
     expect(out).toContain('/a.ts')
     expect(out).toContain('/b.ts')
@@ -224,8 +225,8 @@ describe('opencode mirageTools.glob', () => {
 describe('opencode mirageTools.grep', () => {
   it('finds text matches across files', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/a.txt', 'hello world')
-    await ws.fs.writeFile('/b.txt', 'goodbye')
+    await ws.vfs.write('/a.txt', 'hello world')
+    await ws.vfs.write('/b.txt', 'goodbye')
     const out = await callTool(mirageTools(ws).grep, { pattern: 'hello' })
     expect(out).toContain('/a.txt')
     expect(out).toContain('hello')
@@ -254,8 +255,8 @@ describe('opencode resolver (per-session workspace)', () => {
   it('routes each session to its own workspace', async () => {
     const wsA = mkWs()
     const wsB = mkWs()
-    await wsA.fs.writeFile('/note.txt', 'alice')
-    await wsB.fs.writeFile('/note.txt', 'bob')
+    await wsA.vfs.write('/note.txt', 'alice')
+    await wsB.vfs.write('/note.txt', 'bob')
     const tools = mirageTools((ctx) => (ctx.sessionID === 'a' ? wsA : wsB))
 
     const exec = (t: unknown) =>
@@ -269,7 +270,7 @@ describe('opencode resolver (per-session workspace)', () => {
 
   it('keeps stale-read state isolated between sessions sharing a workspace', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/note.txt', 'one')
+    await ws.vfs.write('/note.txt', 'one')
     const tools = mirageTools(ws)
     const exec = (t: unknown) =>
       (t as { execute: (a: unknown, c: unknown) => Promise<string> }).execute
@@ -281,6 +282,33 @@ describe('opencode resolver (per-session workspace)', () => {
     const out = await exec(tools.write)({ filePath: '/note.txt', content: 'three' }, ctxA)
 
     expect(out).toContain('File changed since it was last read')
-    expect(await ws.fs.readFileText('/note.txt')).toBe('two')
+    expect(await ws.vfs.cat('/note.txt')).toBe('two')
+  })
+})
+
+async function guardedWs(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/': new RAMVFS(), '/vault': new RAMVFS() },
+    {
+      mode: MountMode.WRITE,
+      profiles: { guarded: parseSessionProfile({ paths: { hide: ['/vault'] } }) },
+    },
+  )
+  await ws.shell('echo key > /vault/key.txt')
+  ws.createSession('agent', { profile: 'guarded' })
+  return ws
+}
+
+describe('opencode mirageTools sessionId', () => {
+  it('acts as the session, under its profile', async () => {
+    const ws = await guardedWs()
+    const tools = mirageTools(ws, { sessionId: 'agent' })
+    const read = await callTool(tools.read, { filePath: '/vault/key.txt' })
+    const listed = await callTool(tools.ls, { path: '/' })
+    const ran = await callTool(tools.bash, { command: 'cat /vault/key.txt' })
+    expect(read).toEqual(expect.stringMatching(/^Error: /))
+    expect(listed).not.toEqual(expect.stringContaining('vault'))
+    expect(ran).toEqual(expect.stringContaining('No such file or directory'))
+    await ws.close()
   })
 })

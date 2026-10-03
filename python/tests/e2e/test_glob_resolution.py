@@ -14,9 +14,9 @@
 
 import pytest
 
-from mirage.resource.gcs import GCSConfig, GCSResource
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
+from mirage.vfs.gcs import GCSVFS, GCSConfig
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 from .conftest import make_s3_ws, patch_async_session
@@ -42,9 +42,9 @@ def gcs_ws():
         access_key_id="GOOG_FAKE",
         secret_access_key="fake_secret",
     )
-    resource = GCSResource(config)
+    vfs = GCSVFS(config)
     return Workspace(
-        {"/gcs": (resource, MountMode.WRITE)},
+        {"/gcs": (vfs, MountMode.WRITE)},
         mode=MountMode.WRITE,
     )
 
@@ -58,15 +58,15 @@ def multi_ws():
     )
     return Workspace(
         {
-            "/gcs": (GCSResource(config), MountMode.WRITE),
-            "/tmp": (RAMResource(), MountMode.WRITE),
+            "/gcs": (GCSVFS(config), MountMode.WRITE),
+            "/tmp": (RAMVFS(), MountMode.WRITE),
         },
         mode=MountMode.WRITE,
     )
 
 
 async def _run(ws, cmd):
-    io = await ws.execute(cmd)
+    io = await ws.shell(cmd)
     return await io.stdout_str(), io
 
 
@@ -84,7 +84,8 @@ async def test_s3_echo_glob_expands(s3_ws):
 async def test_s3_for_loop_glob(s3_ws):
     with patch_async_session(S3_OBJECTS):
         out, io = await _run(
-            s3_ws, "for f in /data/data/*.txt; do echo file:$f; done")
+            s3_ws, "for f in /data/data/*.txt; do echo file:$f; done"
+        )
     assert io.exit_code == 0
     assert "file:/data/data/report.txt" in out
     assert "file:/data/data/notes.txt" in out
@@ -111,7 +112,8 @@ async def test_gcs_echo_glob_expands(gcs_ws):
 async def test_gcs_for_loop_glob(gcs_ws):
     with patch_async_session(S3_OBJECTS):
         out, io = await _run(
-            gcs_ws, "for f in /gcs/data/*.txt; do echo file:$f; done")
+            gcs_ws, "for f in /gcs/data/*.txt; do echo file:$f; done"
+        )
     assert io.exit_code == 0
     assert "report.txt" in out
     assert "notes.txt" in out
@@ -142,7 +144,7 @@ async def test_s3_glob_no_match_keeps_literal(s3_ws):
 @pytest.mark.asyncio
 async def test_cross_mount_cp_with_gcs(multi_ws):
     with patch_async_session(S3_OBJECTS):
-        await multi_ws.execute("cp /gcs/data/report.txt /tmp/r.txt")
+        await multi_ws.shell("cp /gcs/data/report.txt /tmp/r.txt")
         out, io = await _run(multi_ws, "cat /tmp/r.txt")
     assert "line1" in out
     assert io.exit_code == 0

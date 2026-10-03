@@ -12,26 +12,34 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { afterAll, describe, expect, it } from 'vitest'
+import { WorkspaceBinding } from '../../binding.ts'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { BridgeDispatchFn } from '../../types.ts'
 import { MontyRuntime } from './index.ts'
-import { PyodideRuntime } from '../pyodide.ts'
+import { MontyUnavailableError } from './errors.ts'
+import { PyodideRuntime } from '../pyodide/runtime.ts'
 import { buildRuntime } from '../../table.ts'
 import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
-import { RAMResource } from '../../../resource/ram/ram.ts'
-import { MountMode } from '../../../types.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
+import { ContentType, FileStat, FileType, MountMode, PathSpec } from '../../../types.ts'
 import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { PrefixResolver } from '../../resolver.ts'
 
-function makeBridge(seed: Record<string, Uint8Array>): {
+function makeBridge(
+  seed: Record<string, Uint8Array>,
+  opts: { appendOp?: boolean } = {},
+): {
   dispatch: BridgeDispatchFn
   files: Map<string, Uint8Array>
   writes: [string, Uint8Array][]
   mutations: string[]
+  appends: [string, Uint8Array][]
 } {
   const files = new Map(Object.entries(seed))
+  const dirs = new Set<string>()
   const writes: [string, Uint8Array][] = []
   const mutations: string[] = []
+  const appends: [string, Uint8Array][] = []
   const dispatch: BridgeDispatchFn = (op, path, bytes, dst) => {
     if (op === 'read') {
       const data = files.get(path)
@@ -48,8 +56,35 @@ function makeBridge(seed: Record<string, Uint8Array>): {
       writes.push([path, data])
       return Promise.resolve(undefined)
     }
+    if (op === 'create') {
+      files.set(path, new Uint8Array())
+      return Promise.resolve(undefined)
+    }
+    if (op === 'truncate') {
+      files.set(path, new Uint8Array())
+      return Promise.resolve(undefined)
+    }
+    if (op === 'append') {
+      if (opts.appendOp === false) {
+        // What a backend without the op really rejects with (S3
+        // registers write but not append).
+        return Promise.reject(
+          Object.assign(new Error("no op 'append'"), { code: 'ENOTSUP', op: 'append' }),
+        )
+      }
+      const data = bytes ?? new Uint8Array()
+      const cur = files.get(path) ?? new Uint8Array()
+      const merged = new Uint8Array(cur.length + data.length)
+      merged.set(cur, 0)
+      merged.set(data, cur.length)
+      files.set(path, merged)
+      appends.push([path, data])
+      return Promise.resolve(undefined)
+    }
     if (op === 'mkdir' || op === 'rmdir' || op === 'unlink') {
       if (op === 'unlink') files.delete(path)
+      if (op === 'mkdir') dirs.add(path)
+      if (op === 'rmdir') dirs.delete(path)
       mutations.push(`${op} ${path}`)
       return Promise.resolve(undefined)
     }
@@ -62,18 +97,40 @@ function makeBridge(seed: Record<string, Uint8Array>): {
       mutations.push(`rename ${path} ${dst ?? ''}`)
       return Promise.resolve(undefined)
     }
-    const prefix = path
-    const entries: { path: string; size: number; isDir: boolean }[] = []
-    for (const [p, content] of files) {
-      if (p.startsWith(prefix)) {
-        const rest = p.slice(prefix.length)
-        if (!rest.includes('/')) entries.push({ path: p, size: content.length, isDir: false })
+    // The door builds each row from a name plus one stat, so the double
+    // answers both.
+    if (op === 'stat') {
+      if (dirs.has(path))
+        return Promise.resolve(new FileStat({ name: path, type: FileType.DIRECTORY }))
+      const found = files.get(path)
+      if (found === undefined) {
+        return Promise.reject(Object.assign(new Error(path), { code: 'ENOENT' }))
       }
+      return Promise.resolve(
+        new FileStat({
+          name: path,
+          size: found.length,
+          type: FileType.FILE,
+          content: ContentType.TEXT,
+        }),
+      )
     }
-    if (entries.length === 0) return Promise.reject(new Error(`no such dir: ${prefix}`))
+    const prefix = path
+    const entries: string[] = []
+    for (const p of files.keys()) {
+      if (p.startsWith(prefix) && !p.slice(prefix.length).includes('/')) entries.push(p)
+    }
+    // A directory the run itself made lists slash-marked, the way
+    // slash-marking backends answer their listings.
+    for (const d of dirs) {
+      if (d.startsWith(prefix) && !d.slice(prefix.length).includes('/')) entries.push(d + '/')
+    }
+    if (entries.length === 0 && !dirs.has(prefix.replace(/\/$/, ''))) {
+      return Promise.reject(Object.assign(new Error(`no such dir: ${prefix}`), { code: 'ENOENT' }))
+    }
     return Promise.resolve(entries)
   }
-  return { dispatch, files, writes, mutations }
+  return { dispatch, files, writes, mutations, appends }
 }
 
 function run(
@@ -90,11 +147,12 @@ const text = (b: Uint8Array | null): string => (b === null ? '' : new TextDecode
 describe('MontyRuntime', () => {
   const runtimes: MontyRuntime[] = []
   const make = (
-    dispatch?: Parameters<MontyRuntime['attach']>[0],
+    dispatch?: WorkspaceBinding['dispatch'],
     listMounts: () => string[] = () => [],
   ): MontyRuntime => {
     const rt = new MontyRuntime()
-    if (dispatch !== undefined) rt.attach(dispatch, new PrefixResolver(listMounts))
+    if (dispatch !== undefined)
+      rt.bind(new WorkspaceBinding(dispatch, new PrefixResolver(listMounts)))
     runtimes.push(rt)
     return rt
   }
@@ -232,130 +290,40 @@ describe('MontyRuntime', () => {
   }, 30_000)
 
   it('mutating os.environ cannot reach the host env', async () => {
-    // The callback hands back a copy, like python's
-    // OSAccess(environ=dict(environ)).
+    // The callback hands back a copy, like python's MontyFs, which
+    // keeps dict(environ).
     const code = "import os\nos.environ['K'] = 'guest'\nprint(os.getenv('K'))"
     const result = await run(make(), code, [], { K: 'v' })
     expect([result.exitCode, text(result.stdout)]).toEqual([0, 'v\n'])
   }, 30_000)
 
-  it('reads a virtual file through the bridge via pathlib', async () => {
-    const { dispatch } = makeBridge({ '/s3/a.txt': new TextEncoder().encode('virtual') })
-    const rt = make(dispatch)
-    const result = await run(
-      rt,
-      "from pathlib import Path\nprint(Path('/s3/a.txt').read_text().upper())",
-    )
-    expect(result.exitCode).toBe(0)
-    expect(text(result.stdout)).toBe('VIRTUAL\n')
-  }, 30_000)
-
-  it('writes flush back through the bridge', async () => {
-    const { dispatch, writes } = makeBridge({ '/s3/seed.txt': new Uint8Array([1]) })
-    const rt = make(dispatch)
-    const result = await run(rt, "from pathlib import Path\nPath('/s3/out.txt').write_text('data')")
-    expect(result.exitCode).toBe(0)
-    expect(writes).toHaveLength(1)
-    expect(writes[0]?.[0]).toBe('/s3/out.txt')
-    expect(text(writes[0]?.[1] ?? new Uint8Array())).toBe('data')
-  }, 30_000)
-
-  // The bridge already carried these ops for the other runtimes; the
-  // monty callback declined them, so a mkdir or unlink on a mounted
-  // path died inside the sandbox's own in-memory tree and never
-  // reached the mount. The python runtime routes all four.
-  it('mkdir, rmdir and unlink route to the bridge', async () => {
-    const { dispatch, mutations, files } = makeBridge({ '/s3/a.txt': new Uint8Array([1]) })
-    const rt = make(dispatch)
-    const result = await run(
-      rt,
-      "from pathlib import Path\nPath('/s3/sub').mkdir()\nPath('/s3/a.txt').unlink()\nPath('/s3/sub').rmdir()",
-    )
-    expect(result.exitCode).toBe(0)
-    expect(mutations).toEqual(['mkdir /s3/sub', 'unlink /s3/a.txt', 'rmdir /s3/sub'])
-    expect(files.has('/s3/a.txt')).toBe(false)
-  }, 30_000)
-
-  it('unlink after rename reaches the mount', async () => {
-    const { dispatch, mutations, files } = makeBridge({ '/s3/a.txt': new Uint8Array([1]) })
-    const rt = make(dispatch)
-    const result = await run(
-      rt,
-      "from pathlib import Path\nPath('/s3/a.txt').rename('/s3/b.txt')\nPath('/s3/b.txt').unlink()",
-    )
-    expect(result.exitCode).toBe(0)
-    expect(mutations).toEqual(['rename /s3/a.txt /s3/b.txt', 'unlink /s3/b.txt'])
-    expect(files.has('/s3/b.txt')).toBe(false)
-  }, 30_000)
-
-  it('rename carries both paths to the bridge', async () => {
-    const { dispatch, mutations, files } = makeBridge({ '/s3/a.txt': new Uint8Array([1]) })
-    const rt = make(dispatch)
-    const result = await run(rt, "from pathlib import Path\nPath('/s3/a.txt').rename('/s3/b.txt')")
-    expect(result.exitCode).toBe(0)
-    expect(mutations).toEqual(['rename /s3/a.txt /s3/b.txt'])
-    expect(files.has('/s3/b.txt')).toBe(true)
-  }, 30_000)
-
-  // The dispatcher resolves the mount from the source alone and reads
-  // the destination against that same backend, so a cross-mount rename
-  // would drop the source and write the target into the wrong store.
-  it('a rename across two mounts is refused, not dispatched', async () => {
-    const { dispatch, mutations, files } = makeBridge({ '/a/f.txt': new Uint8Array([1]) })
-    const rt = make(dispatch, () => ['/a/', '/b/'])
-    const result = await run(rt, "from pathlib import Path\nPath('/a/f.txt').rename('/b/f.txt')")
-    expect(result.exitCode).toBe(1)
-    expect(mutations).toEqual([])
-    expect(files.has('/a/f.txt')).toBe(true)
-  }, 30_000)
-
-  it('a rename inside one mount still dispatches', async () => {
-    const { dispatch, mutations } = makeBridge({ '/a/f.txt': new Uint8Array([1]) })
-    const rt = make(dispatch, () => ['/a/', '/b/'])
-    const result = await run(rt, "from pathlib import Path\nPath('/a/f.txt').rename('/a/g.txt')")
-    expect(result.exitCode).toBe(0)
-    expect(mutations).toEqual(['rename /a/f.txt /a/g.txt'])
-  }, 30_000)
-
-  it('a rename leaving the mount view never reaches the bridge', async () => {
+  it('a rename leaving the mount view raises EXDEV without dispatching', async () => {
+    // The door refuses a pair on different mounts before dispatching,
+    // and a destination outside the view is the same boundary.
     const { dispatch, mutations } = makeBridge({ '/s3/a.txt': new Uint8Array([1]) })
     const rt = make(dispatch, () => ['/s3/'])
-    await run(rt, "from pathlib import Path\nPath('/s3/a.txt').rename('/etc/b.txt')")
+    const result = await run(
+      rt,
+      'from pathlib import Path\n' +
+        'try:\n' +
+        "    Path('/s3/a.txt').rename('/etc/b.txt')\n" +
+        'except OSError as exc:\n' +
+        "    print('typed:', exc)\n",
+    )
+    expect(result.exitCode).toBe(0)
+    expect(text(result.stdout)).toContain('Errno 18')
     expect(mutations).toEqual([])
-  }, 30_000)
-
-  it('iterdir lists a virtual directory', async () => {
-    const { dispatch } = makeBridge({
-      '/s3/a.txt': new Uint8Array([1]),
-      '/s3/b.txt': new Uint8Array([2]),
-    })
-    const rt = make(dispatch)
-    const result = await run(
-      rt,
-      "from pathlib import Path\nprint(sorted(str(p) for p in Path('/s3').iterdir()))",
-    )
-    expect(result.exitCode).toBe(0)
-    expect(text(result.stdout)).toBe("['/s3/a.txt', '/s3/b.txt']\n")
-  }, 30_000)
-
-  it('exists/is_file answer from the bridge', async () => {
-    const { dispatch } = makeBridge({ '/s3/a.txt': new Uint8Array([1]) })
-    const rt = make(dispatch)
-    const result = await run(
-      rt,
-      "from pathlib import Path\nprint(Path('/s3/a.txt').is_file(), Path('/s3/nope').exists())",
-    )
-    expect(result.exitCode).toBe(0)
-    expect(text(result.stdout)).toBe('True False\n')
   }, 30_000)
 
   it('host filesystem stays invisible', async () => {
+    // A path outside the view is refused with python's own
+    // FileNotFoundError — the python host answers this exact type.
     const result = await run(
       make(),
       "from pathlib import Path\nprint(Path('/etc/passwd').read_text())",
     )
     expect(result.exitCode).toBe(1)
-    expect(text(result.stderr)).toContain('Error')
+    expect(text(result.stderr)).toContain('FileNotFoundError')
   }, 30_000)
 
   it('eval keeps state per session id', async () => {
@@ -365,6 +333,52 @@ describe('MontyRuntime', () => {
     expect(result.status).toBe('complete')
     expect(text(result.stdout)).toBe('42\n')
   }, 30_000)
+
+  it('inherits context cwd and honors an explicit run cwd', async () => {
+    const rt = new MontyRuntime()
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { mode: MountMode.EXEC, shellParser: await getTestParser(), runtimes: [rt, 'workspace'] },
+    )
+    try {
+      expect((await ws.shell('mkdir /data/sub; cd /data')).exitCode).toBe(0)
+      const code = 'import os; print(os.getcwd())'
+      expect(text((await run(rt, code)).stdout)).toBe('/data\n')
+      const explicit = await rt.run({
+        code,
+        args: [],
+        env: {},
+        stdin: null,
+        cwd: PathSpec.fromStrPath('/data/sub'),
+      })
+      expect(text(explicit.stdout)).toBe('/data/sub\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('seeds eval cwd once per session', async () => {
+    const rt = new MontyRuntime()
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { mode: MountMode.EXEC, shellParser: await getTestParser(), runtimes: [rt, 'workspace'] },
+    )
+    try {
+      expect(
+        (await ws.shell('mkdir /data/sub; echo child > /data/sub/item; cd /data')).exitCode,
+      ).toBe(0)
+      expect((await rt.eval('import os; os.getcwd()')).value).toBe('/data')
+      const first = await rt.eval('import os; os.getcwd()', { session: 'a' })
+      expect(first.exitCode, text(first.stderr)).toBe(0)
+      expect(first.value).toBe('/data')
+      expect((await ws.shell('cd /')).exitCode).toBe(0)
+      expect((await rt.eval("open('sub/item').read()", { session: 'a' })).value).toBe('child\n')
+      expect((await rt.eval('import os; os.getcwd()', { session: 'b' })).value).toBe('/')
+      expect((await rt.eval('import os; os.getcwd()')).value).toBe('/')
+    } finally {
+      await ws.close()
+    }
+  })
 
   it('eval returns the last expression with inputs bound', async () => {
     const rt = make()
@@ -377,22 +391,6 @@ describe('MontyRuntime', () => {
     const rt = make()
     const result = await rt.eval("{'deny': 'no', 'nested': [{'k': 1}]}")
     expect(result.value).toEqual({ deny: 'no', nested: [{ k: 1 }] })
-  }, 30_000)
-
-  it('a missing virtual file raises a typed FileNotFoundError in the guest', async () => {
-    const { dispatch } = makeBridge({})
-    const rt = make(dispatch)
-    const result = await run(
-      rt,
-      'from pathlib import Path\n' +
-        'try:\n' +
-        "    Path('/ram/nope.txt').read_text()\n" +
-        'except FileNotFoundError as exc:\n' +
-        "    print('typed:', exc)\n",
-    )
-    expect(result.exitCode).toBe(0)
-    expect(text(result.stdout)).toContain('typed:')
-    expect(text(result.stdout)).toContain('/ram/nope.txt')
   }, 30_000)
 
   it('a failed mutation raises the typed guest exception, not a bare Error', async () => {
@@ -456,12 +454,142 @@ describe('MontyRuntime', () => {
     expect(text(ok.stdout)).toBe('2\n')
   }, 30_000)
 
-  it('paths outside the live mount view never reach the bridge', async () => {
-    const { dispatch } = makeBridge({ '/etc/passwd': new TextEncoder().encode('leak') })
+  it('an append carries the delta, never the whole file', async () => {
+    // Monty hands the append hook the new text alone; re-sending the
+    // accumulated content would make a write loop quadratic against
+    // the backend (python's test_monty_append_sends_only_the_new_bytes).
+    const { dispatch, appends, writes, files } = makeBridge({
+      '/s3/log.txt': new TextEncoder().encode('a'),
+    })
+    const result = await run(
+      make(dispatch),
+      "for part in ['b', 'c', 'd']:\n" +
+        "    with open('/s3/log.txt', 'a') as f:\n" +
+        '        f.write(part)',
+    )
+    expect(result.exitCode).toBe(0)
+    expect(text(files.get('/s3/log.txt') ?? new Uint8Array())).toBe('abcd')
+    expect(appends.map(([p, b]) => [p, text(b)])).toEqual([
+      ['/s3/log.txt', 'b'],
+      ['/s3/log.txt', 'c'],
+      ['/s3/log.txt', 'd'],
+    ])
+    expect(writes).toEqual([])
+  }, 30_000)
+
+  it('append falls back to whole-file writes when the mount has no append op', async () => {
+    const { dispatch, appends, writes, files } = makeBridge(
+      { '/s3/log.txt': new TextEncoder().encode('a') },
+      { appendOp: false },
+    )
     const rt = make(dispatch, () => ['/s3/'])
-    const result = await run(rt, "from pathlib import Path\nprint(Path('/etc/passwd').read_text())")
+    const result = await run(
+      rt,
+      "for part in ['b', 'c']:\n" +
+        "    with open('/s3/log.txt', 'a') as f:\n" +
+        '        f.write(part)',
+    )
+    expect(result.exitCode).toBe(0)
+    expect(appends).toEqual([])
+    expect(text(files.get('/s3/log.txt') ?? new Uint8Array())).toBe('abc')
+    // One failed probe per mount, then whole-content writes.
+    expect(writes.map(([p, b]) => [p, text(b)])).toEqual([
+      ['/s3/log.txt', 'ab'],
+      ['/s3/log.txt', 'abc'],
+    ])
+  }, 30_000)
+
+  it('mkdir on a file raises even under exist_ok', async () => {
+    // exist_ok forgives a directory, never a file — pathlib's own rule
+    // (python's test_monty_mkdir_on_a_file_raises_even_under_exist_ok).
+    const { dispatch, mutations } = makeBridge({ '/s3/a.txt': new Uint8Array([1]) })
+    const rt = make(dispatch, () => ['/s3/'])
+    const result = await run(rt, "from pathlib import Path\nPath('/s3/a.txt').mkdir(exist_ok=True)")
     expect(result.exitCode).toBe(1)
-    expect(text(result.stdout)).not.toContain('leak')
+    expect(text(result.stderr)).toContain('FileExistsError')
+    expect(mutations).toEqual([])
+  }, 30_000)
+
+  it('refuses a path no mount serves, as python does', async () => {
+    // The only filesystem a guest sees is the workspace's: with nothing
+    // mounted at /tmp, a directory cannot be made there and a file
+    // cannot be written, and a probe answers False.
+    for (const code of [
+      "from pathlib import Path\nPath('/tmp').mkdir()",
+      "open('/tmp/x.txt', 'w').write('hi')",
+    ]) {
+      const result = await run(make(), code)
+      expect(result.exitCode).toBe(1)
+      expect(text(result.stderr)).toContain(
+        'FileNotFoundError: [Errno 2] No such file or directory',
+      )
+    }
+    const probe = await run(make(), "from pathlib import Path\nprint(Path('/tmp').exists())")
+    expect(probe.exitCode).toBe(0)
+    expect(text(probe.stdout)).toBe('False\n')
+  }, 30_000)
+
+  it('serves the host clock: naive now, aware now, and today', async () => {
+    const result = await run(
+      make(),
+      'from datetime import datetime, date, timezone\n' +
+        'n = datetime.now()\n' +
+        'print(n.year >= 2025, n.tzinfo)\n' +
+        'a = datetime.now(timezone.utc)\n' +
+        'print(a.tzinfo)\n' +
+        't = date.today()\n' +
+        'print(t.year >= 2025)',
+    )
+    expect(result.exitCode).toBe(0)
+    expect(text(result.stdout)).toBe('True None\nUTC\nTrue\n')
+  }, 30_000)
+
+  it('resolve and absolute answer lexically, a str like python', async () => {
+    const result = await run(
+      make(),
+      'from pathlib import Path\n' +
+        "r = Path('rel/x.txt').resolve()\n" +
+        'print(type(r).__name__, r)\n' +
+        "a = Path('/abs/y.txt').absolute()\n" +
+        'print(type(a).__name__, a)',
+    )
+    expect(result.exitCode).toBe(0)
+    expect(text(result.stdout)).toBe('str /rel/x.txt\nstr /abs/y.txt\n')
+  }, 30_000)
+
+  it('a dead worker maps to exit 1 with a note, and eval propagates it', async () => {
+    // python's MontyCrashedError cannot be constructed from python
+    // (the engine seals it), so this mapping is pinned here only; the
+    // JS class is public and a fake pool injects the rejection.
+    const monty = (await import('@pydantic/monty')) as unknown as {
+      MontyCrashedError: new (message: string, options?: { timedOut?: boolean }) => Error
+    }
+    const crashed = (boom: Error) => ({
+      checkout: () =>
+        Promise.resolve({
+          workerPid: undefined,
+          feedRun: () => Promise.reject(boom),
+          close: () => Promise.resolve(),
+        }),
+      close: () => Promise.resolve(),
+    })
+    const rt = make()
+    ;(rt as unknown as { execution: { pool: unknown } }).execution.pool = crashed(
+      new monty.MontyCrashedError('worker gone', { timedOut: false }),
+    )
+    const dead = await run(rt, 'print(1)')
+    expect(dead.exitCode).toBe(1)
+    expect(text(dead.stderr)).toBe('monty: worker crashed\n')
+
+    const timedOut = make()
+    ;(timedOut as unknown as { execution: { pool: unknown } }).execution.pool = crashed(
+      new monty.MontyCrashedError('watchdog', { timedOut: true }),
+    )
+    const late = await run(timedOut, 'print(1)')
+    expect(late.exitCode).toBe(1)
+    expect(text(late.stderr)).toBe('monty: worker timed out\n')
+    // eval mirrors python's: the crash propagates to the caller.
+    await expect(timedOut.eval('1')).rejects.toBeInstanceOf(monty.MontyCrashedError)
   }, 30_000)
 
   it('has the monty name', () => {
@@ -470,44 +598,73 @@ describe('MontyRuntime', () => {
 })
 
 describe('Workspace with the monty runtime', () => {
-  it('python3 reads a virtualized file end to end', async () => {
-    const parser = await getTestParser()
-    const data = new RAMResource()
+  it('reports an unavailable version runtime as command not found', async () => {
+    const runtime = new MontyRuntime()
+    vi.spyOn(runtime, 'version').mockRejectedValue(
+      new MontyUnavailableError('install @pydantic/monty'),
+    )
     const ws = new Workspace(
-      { '/data': data },
-      { mode: MountMode.EXEC, shellParser: parser, runtimes: ['monty', 'vfs'] },
+      { '/data': new RAMVFS() },
+      { shellParser: await getTestParser(), runtimes: [runtime, 'workspace'] },
     )
-    await ws.execute('echo virtual-content > /data/a.txt')
-    const io = await ws.execute(
-      'python3 -c "from pathlib import Path; print(Path(\'/data/a.txt\').read_text().strip().upper())"',
+    try {
+      const io = await ws.shell('python3 --version')
+      expect(io.exitCode).toBe(127)
+      expect(new TextDecoder().decode(io.stdout)).toBe('')
+      expect(new TextDecoder().decode(io.stderr)).toBe('python3: install @pydantic/monty\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('does not print Mirage versions for unbound interpreter commands', async () => {
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { shellParser: await getTestParser(), runtimes: ['workspace'] },
     )
-    expect(new TextDecoder().decode(io.stderr)).toBe('')
-    expect(io.exitCode).toBe(0)
-    expect(new TextDecoder().decode(io.stdout)).toBe('VIRTUAL-CONTENT\n')
-    const io2 = await ws.execute(
-      "python3 -c \"from pathlib import Path; Path('/data/out.txt').write_text('from-monty')\"",
+    try {
+      for (const name of ['python3', 'python', 'node', 'js']) {
+        const io = await ws.shell(`${name} --version`)
+        expect(io.exitCode).toBe(127)
+        expect(new TextDecoder().decode(io.stdout)).toBe('')
+        expect(new TextDecoder().decode(io.stderr)).toBe(`${name}: command not found\n`)
+      }
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('reports the guest Python version for --version and -V', async () => {
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { shellParser: await getTestParser(), runtimes: ['monty', 'workspace'] },
     )
-    expect(io2.exitCode).toBe(0)
-    const io3 = await ws.execute('cat /data/out.txt')
-    expect(new TextDecoder().decode(io3.stdout)).toBe('from-monty')
-    await ws.close()
-  }, 60_000)
+    try {
+      for (const line of ['python3 --version', 'python -V', 'python3 -VV']) {
+        const io = await ws.shell(line)
+        expect(io.exitCode).toBe(0)
+        expect(new TextDecoder().decode(io.stdout)).toBe('Python 3.14.0 (monty)\n')
+        expect(new TextDecoder().decode(io.stderr)).toBe('')
+      }
+    } finally {
+      await ws.close()
+    }
+  })
 })
 
 describe('monty unavailable', () => {
   it('handlePython maps MontyUnavailableError to exit 127', async () => {
-    const { handlePython } = await import('../../../workspace/executor/python/handle.ts')
+    const { handlePython } = await import('../../../commands/builtin/general/python.ts')
     const { MontyUnavailableError } = await import('./index.ts')
-    const runtime = {
-      name: 'monty',
-      captures: ['python3', 'python'],
-      language: 'python' as const,
-      reach: 'vfs' as const,
-      config: {},
-      attach: () => undefined,
-      run: () => Promise.reject(new MontyUnavailableError('install @pydantic/monty')),
-      close: () => Promise.resolve(),
+    class UnavailableMonty extends MontyRuntime {
+      override run(): Promise<never> {
+        return Promise.reject(new MontyUnavailableError('install @pydantic/monty'))
+      }
+      override version(): Promise<never> {
+        return this.run()
+      }
     }
+    const runtime = new UnavailableMonty()
     const dispatch = (() => Promise.reject(new Error('unused'))) as never
     const [, io] = await handlePython(
       dispatch,
@@ -543,11 +700,11 @@ describe('python3 option table (CPython-pinned)', () => {
   async function run(line: string) {
     const parser = await getTestParser()
     const ws = new Workspace(
-      { '/': new RAMResource() },
-      { mode: MountMode.EXEC, shellParser: parser, runtimes: ['monty', 'vfs'] },
+      { '/': new RAMVFS() },
+      { mode: MountMode.EXEC, shellParser: parser, runtimes: ['monty', 'workspace'] },
     )
     try {
-      return await ws.execute(line)
+      return await ws.shell(line)
     } finally {
       await ws.close()
     }
@@ -556,12 +713,12 @@ describe('python3 option table (CPython-pinned)', () => {
   it('takes -u before a script as a flag, not as the script', async () => {
     const parser = await getTestParser()
     const ws = new Workspace(
-      { '/': new RAMResource() },
-      { mode: MountMode.EXEC, shellParser: parser, runtimes: ['monty', 'vfs'] },
+      { '/': new RAMVFS() },
+      { mode: MountMode.EXEC, shellParser: parser, runtimes: ['monty', 'workspace'] },
     )
     try {
-      await ws.execute("printf 'print(42)\\n' > /s.py")
-      const io = await ws.execute('python3 -u /s.py')
+      await ws.shell("printf 'print(42)\\n' > /s.py")
+      const io = await ws.shell('python3 -u /s.py')
       expect(io.exitCode).toBe(0)
       expect(new TextDecoder().decode(io.stdout)).toBe('42\n')
     } finally {
@@ -586,12 +743,12 @@ describe('python3 option table (CPython-pinned)', () => {
   it('sets argv[0] to the script as typed', async () => {
     const parser = await getTestParser()
     const ws = new Workspace(
-      { '/': new RAMResource() },
-      { mode: MountMode.EXEC, shellParser: parser, runtimes: ['monty', 'vfs'] },
+      { '/': new RAMVFS() },
+      { mode: MountMode.EXEC, shellParser: parser, runtimes: ['monty', 'workspace'] },
     )
     try {
-      await ws.execute("printf 'print(argv[0])\\n' > /s.py")
-      const io = await ws.execute('python3 /s.py')
+      await ws.shell("printf 'print(argv[0])\\n' > /s.py")
+      const io = await ws.shell('python3 /s.py')
       expect(new TextDecoder().decode(io.stdout)).toBe('/s.py\n')
     } finally {
       await ws.close()

@@ -14,11 +14,10 @@
 
 import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../ops/registry.ts'
-import { RAMResource } from '../resource/ram/ram.ts'
+import { RAMVFS } from '../vfs/ram/ram.ts'
 import { FileType, MountMode } from '../types.ts'
 import { getTestParser, stderrStr, stdoutStr } from '../workspace/fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace/workspace.ts'
-import { QuickJsRuntime } from './js/quickjs.ts'
 import { MontyRuntime } from './python/monty/index.ts'
 
 // One world, three surfaces, one door: the TS half of the conformance
@@ -41,40 +40,49 @@ import { MontyRuntime } from './python/monty/index.ts'
 async function structureWorld(): Promise<Workspace> {
   const parser = await getTestParser()
   const ops = new OpsRegistry()
-  const base = new RAMResource()
-  const inner = new RAMResource()
-  ops.registerResource(base)
-  ops.registerResource(inner)
+  const base = new RAMVFS()
+  const inner = new RAMVFS()
+  ops.registerVfs(base)
+  ops.registerVfs(inner)
   const ws = new Workspace(
     {},
-    { mode: MountMode.EXEC, ops, shellParser: parser, runtimes: [new MontyRuntime(), 'vfs'] },
+    { mode: MountMode.EXEC, ops, shellParser: parser, runtimes: [new MontyRuntime(), 'workspace'] },
   )
   ws.addMount('/base', base, MountMode.WRITE)
   ws.addMount('/base/inner', inner, MountMode.WRITE)
-  // Seeded through the fs facade, not the shell: a shell line would be
+  // Seeded through the op facade, not the shell: a shell line would be
   // recorded into /.bash_history, which every session may read, and the
   // scoped-world tests would then find the seed line instead of a leak.
-  await ws.fs.writeFile('/base/a.txt', 'top')
-  await ws.fs.writeFile('/base/inner/deep.txt', 'needle')
+  await ws.vfs.write('/base/a.txt', 'top')
+  await ws.vfs.write('/base/inner/deep.txt', 'needle')
   return ws
 }
 
+/**
+ * Two mounts, a profile that hides the second.
+ *
+ * `/open` (`pub.txt`) is reachable by session `agent`; `/closed`
+ * (`sec.txt`) is hidden from it. A hide, not an omitted mount: a profile
+ * narrows what it names and a mount it never names keeps its own mode,
+ * so hiding is how a deployment puts a mount out of reach, and it
+ * answers ENOENT rather than a refusal naming what the profile cannot see.
+ */
 async function scopedWorld(): Promise<Workspace> {
   const parser = await getTestParser()
   const ops = new OpsRegistry()
-  const open = new RAMResource()
-  const closed = new RAMResource()
-  ops.registerResource(open)
-  ops.registerResource(closed)
+  const open = new RAMVFS()
+  const closed = new RAMVFS()
+  ops.registerVfs(open)
+  ops.registerVfs(closed)
   const ws = new Workspace(
     {},
-    { mode: MountMode.EXEC, ops, shellParser: parser, runtimes: [new MontyRuntime(), 'vfs'] },
+    { mode: MountMode.EXEC, ops, shellParser: parser, runtimes: [new MontyRuntime(), 'workspace'] },
   )
   ws.addMount('/open', open, MountMode.WRITE)
   ws.addMount('/closed', closed, MountMode.WRITE)
-  await ws.fs.writeFile('/open/pub.txt', 'public')
-  await ws.fs.writeFile('/closed/sec.txt', 'SECRET-xyz')
-  ws.createSession('agent', { mounts: ['/open'] })
+  await ws.vfs.write('/open/pub.txt', 'public')
+  await ws.vfs.write('/closed/sec.txt', 'SECRET-xyz')
+  ws.createSession('agent', { profile: { paths: { hide: ['/closed'] } } })
   return ws
 }
 
@@ -83,13 +91,9 @@ async function run(
   line: string,
   sessionId?: string,
 ): Promise<[number, string, string]> {
-  const io = await ws.execute(line, sessionId !== undefined ? { sessionId } : undefined)
+  const io = await ws.shell(line, sessionId !== undefined ? { sessionId } : undefined)
   return [io.exitCode, stdoutStr(io), stderrStr(io)]
 }
-
-// ts monty's iterdir yields plain strings where py monty yields Path
-// objects; `str(p)` reads the entry either way.
-const LIST_BASE = `python3 -c "from pathlib import Path; print(sorted(str(p) for p in Path('/base').iterdir()))"`
 
 // ── Group 1: nested mount + namespace link are visible to every surface ──
 
@@ -119,52 +123,18 @@ describe('structure world', () => {
     }
   })
 
-  it('guest lists the child mount', async () => {
-    const ws = await structureWorld()
-    try {
-      const [code, out, err] = await run(ws, LIST_BASE)
-      expect(code, err).toBe(0)
-      expect(out).toContain('inner')
-    } finally {
-      await ws.close()
-    }
-  })
-
-  it('guest lists the namespace link', async () => {
-    const ws = await structureWorld()
-    try {
-      expect((await run(ws, 'ln -s /base/inner /base/lnk'))[0]).toBe(0)
-      const [code, out, err] = await run(ws, LIST_BASE)
-      expect(code, err).toBe(0)
-      expect(out).toContain('lnk')
-    } finally {
-      await ws.close()
-    }
-  })
-
-  it('guest reads through a link by exact path', async () => {
-    const ws = await structureWorld()
-    try {
-      expect((await run(ws, 'ln -s /base/inner /base/lnk'))[0]).toBe(0)
-      const [code, out, err] = await run(
-        ws,
-        `python3 -c "from pathlib import Path; print(Path('/base/lnk/deep.txt').read_text())"`,
-      )
-      expect(code, err).toBe(0)
-      expect(out).toContain('needle')
-    } finally {
-      await ws.close()
-    }
-  })
-
   it('link ancestors synthesize on every surface', async () => {
-    // ln permits /ghost/deep/lnk with no backend serving /ghost; its
-    // ancestors synthesize exactly as nested mount prefixes do, so
-    // `ls /` shows the way in and a guest walk from the root reaches
-    // the link.
+    // ln refuses /ghost/deep/lnk with no backend serving /ghost
+    // (symlink(2)'s ENOENT), but a node table restored from an older
+    // snapshot can still hold one; its ancestors synthesize exactly as
+    // nested mount prefixes do, so `ls /` shows the way in and a guest
+    // walk from the root reaches the link.
     const ws = await structureWorld()
     try {
-      expect((await run(ws, 'ln -s /base/a.txt /ghost/deep/lnk'))[0]).toBe(0)
+      const [refused, , why] = await run(ws, 'ln -s /base/a.txt /ghost/deep/lnk')
+      expect(refused).toBe(1)
+      expect(why).toContain('No such file or directory')
+      await ws.namespace.symlink('/ghost/deep/lnk', '/base/a.txt', 0)
       const stat = await ws.stat('/ghost')
       expect((stat as { type: FileType | null }).type).toBe(FileType.DIRECTORY)
       const [code, out] = await run(ws, 'ls /')
@@ -189,18 +159,23 @@ describe('structure world', () => {
     // reporting the operand missing.
     const parser = await getTestParser()
     const ops = new OpsRegistry()
-    const base = new RAMResource()
-    const deep = new RAMResource()
-    ops.registerResource(base)
-    ops.registerResource(deep)
+    const base = new RAMVFS()
+    const deep = new RAMVFS()
+    ops.registerVfs(base)
+    ops.registerVfs(deep)
     const ws = new Workspace(
       {},
-      { mode: MountMode.EXEC, ops, shellParser: parser, runtimes: [new MontyRuntime(), 'vfs'] },
+      {
+        mode: MountMode.EXEC,
+        ops,
+        shellParser: parser,
+        runtimes: [new MontyRuntime(), 'workspace'],
+      },
     )
     ws.addMount('/base', base, MountMode.WRITE)
     ws.addMount('/ghost/deep', deep, MountMode.WRITE)
-    await ws.fs.writeFile('/base/a.txt', 'top')
-    await ws.fs.writeFile('/ghost/deep/x.txt', 'inside')
+    await ws.vfs.write('/base/a.txt', 'top')
+    await ws.vfs.write('/ghost/deep/x.txt', 'inside')
     try {
       const [rCode, rOut] = await run(ws, 'ls -R /ghost')
       expect(rCode).toBe(0)
@@ -210,24 +185,6 @@ describe('structure world', () => {
       const [dCode, dOut] = await run(ws, 'ls -d /ghost')
       expect(dCode).toBe(0)
       expect(dOut.trim()).toBe('/ghost')
-    } finally {
-      await ws.close()
-    }
-  })
-
-  // ── Group 2: a structure-only directory stats as a directory ──
-
-  it('the door stats a structure-only directory', async () => {
-    const ws = await structureWorld()
-    try {
-      const stat = await ws.stat('/base/inner')
-      expect((stat as { type: FileType | null }).type).toBe(FileType.DIRECTORY)
-      const [code, out, err] = await run(
-        ws,
-        `python3 -c "from pathlib import Path; print(Path('/base/inner').is_dir())"`,
-      )
-      expect(code, err).toBe(0)
-      expect(out).toContain('True')
     } finally {
       await ws.close()
     }
@@ -243,19 +200,23 @@ describe('scoped world', () => {
     'grep -r SECRET /closed',
     'find /closed',
     'du /closed',
-  ])('an explicit operand at the boundary is denied: %s', async (line) => {
+  ])('an explicit operand at the boundary reads as absent: %s', async (line) => {
+    // The wording is the whole point: "not allowed" would confirm that
+    // something is there, so a hide answers what an agent would see for
+    // any path that was never mounted.
     const ws = await scopedWorld()
     try {
       const [code, , err] = await run(ws, line, 'agent')
       expect(code).not.toBe(0)
-      expect(err).toContain('not allowed')
+      expect(err).toContain('No such file or directory')
       expect(err).toContain('/closed')
+      expect(err).not.toContain('not allowed')
     } finally {
       await ws.close()
     }
   })
 
-  it('a scoped session cannot learn an ungranted name from the root listing', async () => {
+  it('a scoped session cannot learn a hidden name from the root listing', async () => {
     const ws = await scopedWorld()
     try {
       const [code, out] = await run(ws, 'ls /', 'agent')
@@ -267,9 +228,9 @@ describe('scoped world', () => {
     }
   })
 
-  it('a link below an ungranted mount stays out of a scoped listing', async () => {
+  it('a link below a hidden mount stays out of a scoped listing', async () => {
     // The link's path discloses the same name childMountNames already
-    // filters, so the same grant filters it; the unrestricted view
+    // filters, so the same hide filters it; the unrestricted view
     // keeps the link.
     const ws = await scopedWorld()
     try {
@@ -303,30 +264,35 @@ describe('scoped world', () => {
   it.each([
     ['find /base', 'leftover'],
     ['grep -r SHADOWED /base', 'SHADOWED-xyz'],
-  ])('a fan-out hides shadowed keys when no descendant is granted: %s', async (line, needle) => {
-    // The parent backend holds a key under the ungranted mount's
-    // prefix (seeded before that mount exists, so dispatch lands it
-    // in the parent). With no allowed descendant the fan-out must
-    // still engage: skipping it hands the walk to single-mount
-    // dispatch, which serves the shadowed key that path dispatch
-    // itself refuses.
+  ])('a fan-out hides shadowed keys when the descendant is hidden: %s', async (line, needle) => {
+    // The parent backend holds a key under the hidden mount's prefix
+    // (seeded before that mount exists, so dispatch lands it in the
+    // parent). With no visible descendant the fan-out must still
+    // engage: skipping it hands the walk to single-mount dispatch,
+    // which serves the shadowed key that path dispatch itself
+    // refuses.
     const parser = await getTestParser()
     const ops = new OpsRegistry()
-    const base = new RAMResource()
-    const inner = new RAMResource()
-    ops.registerResource(base)
-    ops.registerResource(inner)
+    const base = new RAMVFS()
+    const inner = new RAMVFS()
+    ops.registerVfs(base)
+    ops.registerVfs(inner)
     const ws = new Workspace(
       {},
-      { mode: MountMode.EXEC, ops, shellParser: parser, runtimes: [new MontyRuntime(), 'vfs'] },
+      {
+        mode: MountMode.EXEC,
+        ops,
+        shellParser: parser,
+        runtimes: [new MontyRuntime(), 'workspace'],
+      },
     )
     ws.addMount('/base', base, MountMode.WRITE)
-    await ws.fs.writeFile('/base/a.txt', 'top')
-    await ws.fs.mkdir('/base/inner')
-    await ws.fs.writeFile('/base/inner/leftover.txt', 'SHADOWED-xyz')
+    await ws.vfs.write('/base/a.txt', 'top')
+    await ws.vfs.mkdir('/base/inner')
+    await ws.vfs.write('/base/inner/leftover.txt', 'SHADOWED-xyz')
     ws.addMount('/base/inner', inner, MountMode.WRITE)
-    await ws.fs.writeFile('/base/inner/deep.txt', 'needle')
-    ws.createSession('agent', { mounts: ['/base'] })
+    await ws.vfs.write('/base/inner/deep.txt', 'needle')
+    ws.createSession('agent', { profile: { paths: { hide: ['/base/inner'] } } })
     try {
       const [, out] = await run(ws, line, 'agent')
       expect(out).not.toContain(needle)
@@ -336,7 +302,7 @@ describe('scoped world', () => {
     }
   })
 
-  it('a confined guest cannot read an ungranted mount', async () => {
+  it('a confined guest cannot read a hidden mount', async () => {
     const ws = await scopedWorld()
     try {
       const [code, out] = await run(
@@ -351,7 +317,7 @@ describe('scoped world', () => {
     }
   })
 
-  it('a confined guest cannot write an ungranted mount', async () => {
+  it('a confined guest cannot write a hidden mount', async () => {
     const ws = await scopedWorld()
     try {
       await run(
@@ -359,6 +325,8 @@ describe('scoped world', () => {
         `python3 -c "from pathlib import Path; Path('/closed/planted.txt').write_text('X')"`,
         'agent',
       )
+      // Read back through the unrestricted default session: the
+      // confined one cannot see the mount at all.
       const [code, out] = await run(ws, 'ls /closed')
       expect(code).toBe(0)
       expect(out).not.toContain('planted.txt')
@@ -382,60 +350,4 @@ describe('scoped world', () => {
       await ws.close()
     }
   })
-})
-
-// ── Group 5: an exclusive open refuses an existing file (R7a) ──
-//
-// The python half runs the same world over the real qjs-wasi engine
-// and CPython-wasm (test_conformance_worlds.py, guarded); this half
-// runs it over the synthesized quickjs shim, which consumes
-// `OpenMode.exclusive` for the refusal. monty has no spelling for the
-// fact: it refuses mode 'x' outright ("exclusive creation mode is not
-// supported").
-
-async function exclusiveWorld(): Promise<Workspace> {
-  const parser = await getTestParser()
-  const ops = new OpsRegistry()
-  const w = new RAMResource()
-  ops.registerResource(w)
-  const ws = new Workspace(
-    {},
-    { mode: MountMode.EXEC, ops, shellParser: parser, runtimes: [new QuickJsRuntime(), 'vfs'] },
-  )
-  ws.addMount('/w', w, MountMode.WRITE)
-  await ws.fs.writeFile('/w/keep.txt', 'keep')
-  return ws
-}
-
-describe('exclusive-open world', () => {
-  it("a js guest's 'wx' refuses an existing file and leaves it untouched", async () => {
-    const ws = await exclusiveWorld()
-    try {
-      const [code, out, err] = await run(
-        ws,
-        "js -e \"console.log(std.open('/w/keep.txt', 'wx') === null ? 'refused' : 'OPENED')\"",
-      )
-      expect(code, err).toBe(0)
-      expect(out).toContain('refused')
-      const [, keep] = await run(ws, 'cat /w/keep.txt')
-      expect(keep).toBe('keep')
-    } finally {
-      await ws.close()
-    }
-  }, 60_000)
-
-  it("a js guest's 'wx' creates a missing file", async () => {
-    const ws = await exclusiveWorld()
-    try {
-      const [code, , err] = await run(
-        ws,
-        "js -e \"const f = std.open('/w/made.txt', 'wx'); f.puts('made'); f.close()\"",
-      )
-      expect(code, err).toBe(0)
-      const [, made] = await run(ws, 'cat /w/made.txt')
-      expect(made).toBe('made')
-    } finally {
-      await ws.close()
-    }
-  }, 60_000)
 })

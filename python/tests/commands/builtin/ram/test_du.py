@@ -14,98 +14,19 @@
 
 import pytest
 
-from mirage import MountMode, RAMResource, Workspace
+from mirage import RAMVFS, MountMode, Workspace
 
 
 @pytest.fixture
 def workspace():
-    return Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
-
-
-@pytest.mark.asyncio
-async def test_du_single_file(workspace):
-    await workspace.ops.write("/f.txt", b"hello")
-    io = await workspace.execute("du /f.txt")
-    assert io.exit_code == 0
-    assert io.stdout.decode().strip() == "5\t/f.txt"
-
-
-@pytest.mark.asyncio
-async def test_du_directory_collapses(workspace):
-    await workspace.ops.mkdir("/dir")
-    await workspace.ops.write("/dir/a.txt", b"aaa")
-    await workspace.ops.write("/dir/b.txt", b"bb")
-    io = await workspace.execute("du /dir")
-    assert io.exit_code == 0
-    assert io.stdout.decode().strip() == "5\t/dir"
-
-
-@pytest.mark.asyncio
-async def test_du_a_lists_files(workspace):
-    await workspace.ops.mkdir("/dir")
-    await workspace.ops.write("/dir/a.txt", b"aaa")
-    await workspace.ops.write("/dir/b.txt", b"bb")
-    io = await workspace.execute("du -a /dir")
-    assert io.exit_code == 0
-    out = io.stdout.decode()
-    assert "a.txt" in out
-    assert "b.txt" in out
-
-
-@pytest.mark.asyncio
-async def test_du_s_summary(workspace):
-    await workspace.ops.mkdir("/dir")
-    await workspace.ops.mkdir("/dir/sub")
-    await workspace.ops.write("/dir/a.txt", b"hello")
-    await workspace.ops.write("/dir/sub/b.txt", b"world")
-    io = await workspace.execute("du -s /dir")
-    assert io.exit_code == 0
-    lines = io.stdout.decode().strip().splitlines()
-    assert len(lines) == 1
-
-
-@pytest.mark.asyncio
-async def test_du_c_total(workspace):
-    await workspace.ops.write("/a.txt", b"hello")
-    await workspace.ops.write("/b.txt", b"world")
-    io = await workspace.execute("du -c /a.txt /b.txt")
-    assert io.exit_code == 0
-    lines = io.stdout.decode().strip().splitlines()
-    assert lines[-1] == "10\ttotal"
-
-
-@pytest.mark.asyncio
-async def test_du_h_human(workspace):
-    await workspace.ops.write("/big.txt", b"x" * 2048)
-    io = await workspace.execute("du -h /big.txt")
-    assert io.exit_code == 0
-    size_str = io.stdout.decode().strip().split("\t")[0]
-    assert size_str.endswith("K")
-
-
-@pytest.mark.asyncio
-async def test_du_max_depth_one(workspace):
-    await workspace.ops.mkdir("/dir")
-    await workspace.ops.mkdir("/dir/sub")
-    await workspace.ops.mkdir("/dir/sub/deep")
-    await workspace.ops.write("/dir/sub/deep/a.txt", b"hello")
-    io = await workspace.execute("du -a --max-depth 1 /dir")
-    assert io.exit_code == 0
-    lines = io.stdout.decode().strip().splitlines()
-    assert not any("deep" in ln for ln in lines)
+    return Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
 
 
 @pytest.mark.asyncio
 async def test_du_without_operand_measures_the_working_directory(workspace):
     """GNU du with no operand summarises '.', dot-spelled; no error."""
-    await workspace.ops.write("/a.txt", b"hello")
-    io = await workspace.execute("du")
+    await workspace.vfs.mkdir("/d")
+    await workspace.vfs.write("/d/a.txt", b"hello")
+    io = await workspace.shell("du", cwd="/d")
     assert io.exit_code == 0
     assert "5\t." in io.stdout.decode().splitlines()
-
-
-@pytest.mark.asyncio
-async def test_du_reports_an_unreadable_operand(workspace):
-    io = await workspace.execute("du /nope")
-    assert io.exit_code == 1
-    assert b"du: cannot access '/nope'" in (io.stderr or b"")

@@ -15,7 +15,8 @@
 import { HttpNotionTransport } from '../../../../core/notion/client.ts'
 import type { NotionConfig } from '../../../../core/notion/config.ts'
 import { IOResult, type ByteSource } from '../../../../io/types.ts'
-import { FlagView } from '../../../spec/types.ts'
+import { FlagView } from '../../../spec/flag_view.ts'
+import type { FlagValue } from '../../../spec/types.ts'
 import type { CommandFnResult } from '../../../config.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 
@@ -24,7 +25,7 @@ const CHECKED = '✓'
 
 export function notionTransport(
   config: unknown,
-  flags?: Record<string, string | boolean | number | string[]>,
+  bag?: Record<string, FlagValue>,
 ): HttpNotionTransport {
   const cfg = config as NotionConfig
   // --notion-version is upstream's per-invocation override of the header, and
@@ -32,7 +33,10 @@ export function notionTransport(
   // omitted it, so a verb reads one flag and never the environment. Every verb
   // passes its flags here rather than building a transport of its own, or the
   // override would work on whichever verbs remembered it.
-  const version = flags === undefined ? undefined : new FlagView(flags).asStr('notion_version')
+  const flagVersion = bag === undefined ? undefined : new FlagView(bag).asStr('notion_version')
+  // An empty flag falls back to the config's own pin, exactly as python's
+  // `notion_config` returns `inv.config` untouched for an empty --notion-version.
+  const version = flagVersion !== undefined && flagVersion !== '' ? flagVersion : cfg.apiVersion
   return new HttpNotionTransport({
     apiKey: cfg.apiKey,
     ...(cfg.baseUrl !== undefined && cfg.baseUrl !== '' ? { baseUrl: cfg.baseUrl } : {}),
@@ -172,12 +176,6 @@ export function parseJsonText(text: string, flag: string): Record<string, unknow
     throw new Error(`${flag} must be a JSON object`)
   }
   return parsed as Record<string, unknown>
-}
-
-export function parseJsonFlag(value: unknown, flag: string): Record<string, unknown> {
-  if (value === undefined || value === null || value === '') return {}
-  if (typeof value !== 'string') throw new Error(`${flag} must be a JSON string`)
-  return parseJsonText(value, flag)
 }
 
 export function usageError(err: unknown): CommandFnResult {

@@ -15,14 +15,12 @@
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
-from dulwich.object_store import BaseObjectStore, iter_tree_contents
+from dulwich.object_store import BaseObjectStore
 from dulwich.objects import Blob, Commit, ObjectID
 
 from mirage.commands.cli.builtin.git.format import short
 
 ROOT_COMMIT = "(root-commit) "
-CREATE = "create"
-DELETE = "delete"
 # git's diffstat geometry for piped output: 80 columns total, binary
 # sniffing over the first 8000 bytes, and the 3/8 cap that splits the
 # line between the name column and the +/- graph (diff.c show_stats).
@@ -44,29 +42,13 @@ class FileStat:
         old_size (int): byte length of the old blob, 0 when created.
         new_size (int): byte length of the new blob, 0 when deleted.
     """
+
     path: str
     insertions: int
     deletions: int
     binary: bool
     old_size: int
     new_size: int
-
-
-def tree_entries(store: BaseObjectStore,
-                 tree: bytes | None) -> dict[bytes, tuple[int, bytes]]:
-    """Every blob a tree holds, keyed by repository-relative path.
-
-    Args:
-        store (BaseObjectStore): the object database.
-        tree (bytes | None): the tree id, None for the empty tree a
-            root commit diffs against.
-    """
-    if tree is None:
-        return {}
-    return {
-        entry.path: (entry.mode, entry.sha)
-        for entry in iter_tree_contents(store, ObjectID(tree))
-    }
 
 
 def _blob_data(store: BaseObjectStore, sha: bytes | None) -> bytes:
@@ -97,9 +79,11 @@ def _count_lines(old_data: bytes, new_data: bytes) -> tuple[int, int]:
         old_data (bytes): the old side's bytes.
         new_data (bytes): the new side's bytes.
     """
-    matcher = SequenceMatcher(a=old_data.splitlines(keepends=True),
-                              b=new_data.splitlines(keepends=True),
-                              autojunk=False)
+    matcher = SequenceMatcher(
+        a=old_data.splitlines(keepends=True),
+        b=new_data.splitlines(keepends=True),
+        autojunk=False,
+    )
     insertions = 0
     deletions = 0
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -110,8 +94,11 @@ def _count_lines(old_data: bytes, new_data: bytes) -> tuple[int, int]:
     return insertions, deletions
 
 
-def diffstat(store: BaseObjectStore, before: dict[bytes, tuple[int, bytes]],
-             after: dict[bytes, tuple[int, bytes]]) -> list[FileStat]:
+def diffstat(
+    store: BaseObjectStore,
+    before: dict[bytes, tuple[int, bytes]],
+    after: dict[bytes, tuple[int, bytes]],
+) -> list[FileStat]:
     """Per-path change counts between two trees, in path order.
 
     A binary file (NUL in the first 8000 bytes of either side, git's
@@ -133,19 +120,24 @@ def diffstat(store: BaseObjectStore, before: dict[bytes, tuple[int, bytes]],
         new_sha = None if new is None else new[1]
         old_data = _blob_data(store, old_sha)
         new_data = _blob_data(store, new_sha)
-        binary = (b"\0" in old_data[:BINARY_SNIFF]
-                  or b"\0" in new_data[:BINARY_SNIFF])
+        binary = (
+            b"\0" in old_data[:BINARY_SNIFF]
+            or b"\0" in new_data[:BINARY_SNIFF]
+        )
         if binary or old_sha == new_sha:
             insertions, deletions = 0, 0
         else:
             insertions, deletions = _count_lines(old_data, new_data)
         stats.append(
-            FileStat(path=path.decode("utf-8", errors="replace"),
-                     insertions=insertions,
-                     deletions=deletions,
-                     binary=binary,
-                     old_size=len(old_data),
-                     new_size=len(new_data)))
+            FileStat(
+                path=path.decode("utf-8", errors="replace"),
+                insertions=insertions,
+                deletions=deletions,
+                binary=binary,
+                old_size=len(old_data),
+                new_size=len(new_data),
+            )
+        )
     return stats
 
 
@@ -174,7 +166,7 @@ def _stat_name(path: str, name_width: int) -> str:
     """
     if len(path) <= name_width:
         return path
-    tail = path[-(name_width - len(ELLIPSIS)):]
+    tail = path[-(name_width - len(ELLIPSIS)) :]
     slash = tail.find("/")
     if slash != -1:
         tail = tail[slash:]
@@ -196,13 +188,26 @@ def stat_table(stats: list[FileStat], width: int = STAT_WIDTH) -> list[str]:
     if not stats:
         return []
     max_len = max(len(stat.path) for stat in stats)
-    max_change = max((stat.insertions + stat.deletions
-                      for stat in stats if not stat.binary),
-                     default=0)
-    number_width = len(str(max_change)) if max_change else 1
-    bin_width = max((len(f"Bin {stat.old_size} -> {stat.new_size} bytes") - 4
-                     for stat in stats if stat.binary),
-                    default=0)
+    max_change = max(
+        (
+            stat.insertions + stat.deletions
+            for stat in stats
+            if not stat.binary
+        ),
+        default=0,
+    )
+    number_width = max(
+        len(str(max_change)) if max_change else 1,
+        3 if any(stat.binary for stat in stats) else 1,
+    )
+    bin_width = max(
+        (
+            len(f"Bin {stat.old_size} -> {stat.new_size} bytes") - 4
+            for stat in stats
+            if stat.binary
+        ),
+        default=0,
+    )
     width = max(width, 16 + 6 + number_width)
     graph_width = max_change if max_change > bin_width else bin_width
     name_width = max_len
@@ -220,8 +225,10 @@ def stat_table(stats: list[FileStat], width: int = STAT_WIDTH) -> list[str]:
     for stat in stats:
         name = _stat_name(stat.path, name_width)
         if stat.binary:
-            lines.append(f" {name:<{name_width}} | "
-                         f"Bin {stat.old_size} -> {stat.new_size} bytes")
+            lines.append(
+                f" {name:<{name_width}} | "
+                f"Bin {stat.old_size} -> {stat.new_size} bytes"
+            )
             continue
         total_insertions += stat.insertions
         total_deletions += stat.deletions
@@ -239,7 +246,8 @@ def stat_table(stats: list[FileStat], width: int = STAT_WIDTH) -> list[str]:
                 added = total - removed
         graph = f" {'+' * added}{'-' * removed}" if change else ""
         lines.append(
-            f" {name:<{name_width}} | {change:>{number_width}}{graph}")
+            f" {name:<{name_width}} | {change:>{number_width}}{graph}"
+        )
     lines.append(stat_line(len(stats), total_insertions, total_deletions))
     return lines
 
@@ -276,53 +284,26 @@ def stat_line(files: int, insertions: int, deletions: int) -> str:
     return ", ".join(parts)
 
 
-def mode_lines(before: dict[bytes, tuple[int, bytes]],
-               after: dict[bytes, tuple[int, bytes]]) -> list[str]:
-    """The ``create mode`` / ``delete mode`` lines, in git's order.
-
-    Args:
-        before (dict): the parent tree, path to (mode, blob id).
-        after (dict): the new tree, path to (mode, blob id).
-    """
-    lines = []
-    for path in sorted(set(after) - set(before)):
-        mode = after[path][0]
-        lines.append(f" {CREATE} mode {mode:06o} "
-                     f"{path.decode('utf-8', errors='replace')}")
-    for path in sorted(set(before) - set(after)):
-        mode = before[path][0]
-        lines.append(f" {DELETE} mode {mode:06o} "
-                     f"{path.decode('utf-8', errors='replace')}")
-    return lines
-
-
-def report(store: BaseObjectStore, commit: Commit, branch: str | None,
-           before: dict[bytes, tuple[int, bytes]],
-           after: dict[bytes, tuple[int,
-                                    bytes]], width: int, root: bool) -> bytes:
+def report(
+    commit: Commit, branch: str | None, changes: bytes, width: int, root: bool
+) -> bytes:
     """What ``git commit`` prints once the commit exists.
 
-    The counts come from ``diffstat``, so a binary file adds to the
-    file total but zero lines, exactly as git reports it.
+    The title line, then the counts and ``--summary`` lines that
+    ``commit_summary`` renders for the change the commit records.
 
     Args:
-        store (BaseObjectStore): the object database.
         commit (Commit): the commit just written.
         branch (str | None): the branch it landed on, None when
             detached.
-        before (dict): the parent tree, path to (mode, blob id).
-        after (dict): the new tree, path to (mode, blob id).
+        changes (bytes): the rendered counts and summary lines.
         width (int): how many hex digits to abbreviate the id to.
         root (bool): whether this is the repository's first commit.
     """
-    stats = diffstat(store, before, after)
     title = commit.message.decode("utf-8", errors="replace").split("\n")[0]
     where = branch if branch is not None else "detached HEAD"
     marker = ROOT_COMMIT if root else ""
-    lines = [f"[{where} {marker}{short(commit.id, width)}] {title}"]
-    if stats:
-        insertions = sum(stat.insertions for stat in stats)
-        deletions = sum(stat.deletions for stat in stats)
-        lines.append(stat_line(len(stats), insertions, deletions))
-    lines.extend(mode_lines(before, after))
-    return "".join(f"{line}\n" for line in lines).encode()
+    return (
+        f"[{where} {marker}{short(commit.id, width)}] {title}\n".encode()
+        + changes
+    )

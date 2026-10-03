@@ -12,193 +12,144 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { ExitSignal } from '../../shell/errors.ts'
-import { executeChildShell, finishShell } from '../executor/traps.ts'
-import type { ShellVar } from '../../shell/variable.ts'
 import { sessionEntry, setSessionEntry } from '../session/session.ts'
 import { seedVar, setAttr } from '../session/state.ts'
-import { VarAttr } from '../../shell/variable.ts'
-import type { Runtime } from '../../runtime/base.ts'
-import type { PolicyDecision } from '../../runtime/policy/index.ts'
-import { mergeSignals } from '../abort.ts'
-import { type ByteSource, IOResult, materialize } from '../../io/types.ts'
-import type { Resource } from '../../resource/base.ts'
-import { encodeText } from '../../shell/bytes.ts'
-import type { CallStack } from '../../shell/call_stack.ts'
+import { TempEnv, VarAttr } from '../../shell/variable.ts'
 import {
-  ProcessSubDirection,
+  redirectPathsFor,
+  runWithAdmission,
+  runWithOpPolicies,
+} from '../../context/session_context.ts'
+import type { Runtime } from '../../runtime/base.ts'
+import type { RouteDecision } from '../../runtime/routing/index.ts'
+import { guardDispatch, mergeSignals } from '../abort.ts'
+import { type ByteSource, IOResult, materialize } from '../../io/types.ts'
+import { DevVFS } from '../../vfs/dev/dev.ts'
+import { encodeText } from '../../shell/bytes.ts'
+import { CallStack } from '../../shell/call_stack.ts'
+import {
   getCommandName,
   getParts,
   getProcessSubBody,
   getProcessSubDirection,
   getText,
   splitEnvPrefix,
-} from '../../shell/syntax/helpers.ts'
+} from '../../shell/helpers.ts'
 import type { JobTable } from '../../shell/job_table/index.ts'
-import { NodeType as NT, ShellBuiltin as SB } from '../../shell/types.ts'
+import { ExitSignal } from '../../shell/errors.ts'
+import { NodeType as NT, ProcessSubDirection } from '../../shell/types.ts'
 import { PathSpec, wordText } from '../../types.ts'
-import { classifyBarePath } from '../expand/classify/index.ts'
 import { Argv, expandArgv } from '../expand/argv.ts'
 import { expandBoundaryGlobs } from '../expand/globs.ts'
-import { type ExecuteFn, expandNode } from '../expand/node.ts'
+import { type ExecuteFn, expandNode, childLine } from '../expand/node.ts'
+import { claimantFor, evaluatedFrom } from './occurrence.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
-import { handleCommand } from '../executor/command.ts'
-import { pathFlagScopes, positionalScopes } from '../executor/command/routing.ts'
-import { toScope } from '../executor/builtins/scope.ts'
+import { runExternal } from '../executor/command/external.ts'
+import { handleCommand } from '../executor/command/command.ts'
+import type { ExecuteNodeOpts } from '../executor/jobs.ts'
 import {
   type AliasMark,
   aliasCommandText,
-  handleAlias,
-  handleUnalias,
-} from '../executor/builtins/alias.ts'
-import { handleExecCommand } from '../executor/builtins/exec_cmd.ts'
-import { findSyntaxError } from '../../shell/syntax/parse.ts'
-import { resolvePath } from '../../utils/path.ts'
-import { runWithTimeout } from '../../commands/builtin/utils/limit.ts'
-import { PolicyDenied, resolveLimit } from '../../policy/index.ts'
-import { BreakSignal, ContinueSignal } from '../executor/control.ts'
+  expandingAliases,
+} from '../executor/builtins/alias/index.ts'
+import { findSyntaxError, syntaxErrorMessage, type ShellParser } from '../../shell/parse/index.ts'
+import { INTERPRETER_NAMES } from '../lookup/constants.ts'
+import { guardIO, runWithTimeout } from '../../commands/builtin/utils/limit.ts'
+import {
+  PolicyDenied,
+  resolveLimit,
+  resolveProducer,
+  type Claimant,
+  type HandOff,
+} from '../../policy/index.ts'
 import { traceCommand } from '../../shell/xtrace.ts'
+import { Channel, type JobConsole } from '../../shell/console/index.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import {
   acceptsLine,
   followPaths,
-  handleBash,
-  handleExecPath,
-  handleCd,
-  handleCommandBuiltin,
-  handleType,
-  handleWhich,
-  handleEcho,
-  handleEnv,
-  handleEval,
-  handleExport,
-  handleHistory,
   handleChgrp,
-  handleDf,
   handleChmod,
   handleChown,
-  handleLet,
+  handleDf,
+  handleExecPath,
+  handleGetfattr,
   handleLn,
-  handleLocal,
-  handleMan,
-  handleMapfile,
-  handlePrintenv,
-  handlePrintf,
-  handleRead,
   handleReadlink,
+  handleSetfattr,
   handleTouch,
-  handleExit,
-  handleGetopts,
-  handleReturn,
-  handleSet,
-  handleShift,
-  handleShopt,
-  handleSleep,
-  handleSource,
-  handleTest,
-  handleTimeout,
-  handleTrap,
-  handleUmask,
-  handleUnset,
-  handleWhoami,
-  handleXargs,
-  linkFlags,
+  followDirectoryLinks,
   prepareMv,
+  settleMoves,
   stripLinkOperands,
 } from '../executor/builtins/index.ts'
+import { BUILTINS } from '../executor/builtins/table.ts'
 import { globPattern } from '../../utils/glob_walk.ts'
 import { CycleError } from '../../utils/path.ts'
 import type { Namespace } from '../mount/namespace/namespace.ts'
 import type { MountRegistry } from '../mount/registry.ts'
-import { SLASH_KEEPS_LAST, UNSUPPORTED_BUILTINS, followsLastComponent } from '../route/index.ts'
-import type { Session } from '../session/session.ts'
-import { homeDir, logicalCwd } from '../session/shell_dirs.ts'
+import {
+  Consumer,
+  lookup,
+  runtimeRefused,
+  SLASH_KEEPS_LAST,
+  UNSUPPORTED_BUILTINS,
+  followsLastComponent,
+  lsLinkMode,
+} from '../lookup/index.ts'
+import { Admitted, admit } from './admission.ts'
+import type { SessionState } from '../session/session.ts'
 import { ensureVarVisible, sessionView } from '../session/state.ts'
 import { preSessionGate } from '../../policy/index.ts'
 import { ExecutionNode } from '../types.ts'
+import { concat } from '../../io/cachable_iterator.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
 
-// Parse the optional numeric level of `break`/`continue`.
-function loopLevels(args: readonly string[]): number {
-  const first = args[0]
-  if (first !== undefined && /^\d+$/.test(first) && parseInt(first, 10) > 0) {
-    return parseInt(first, 10)
+/**
+ * Await an expansion of the command's own words; an `ExitSignal` it raises
+ * names the command, whose redirects bash had not applied. Mirrors Python's
+ * _own_words.
+ */
+async function ownWords<T>(node: TSNodeLike, pending: Promise<T>): Promise<T> {
+  try {
+    return await pending
+  } catch (err) {
+    if (err instanceof ExitSignal) err.expanding = node.id ?? null
+    throw err
   }
-  return 1
-}
-
-// Split leading -L/-P option flags (clusters like -LP, and a `--`
-// terminator) from the operands. Shared by `cd` (which also takes -e -@)
-// and `pwd`, so the last-wins rule -- `pwd -L -P` is physical, `pwd -P
-// -L` logical -- has one implementation. A bare `-` is an operand (`cd`'s
-// OLDPWD shorthand), not an option. `bad` is the first unknown character.
-function splitModeOptions(
-  args: (string | PathSpec)[],
-  letters = 'LPe@',
-  // The mode to assume when the line names neither, which is what
-  // `set -P` changes for the whole session.
-  fallback = false,
-): {
-  operands: (string | PathSpec)[]
-  bad: string | null
-  physical: boolean
-} {
-  const operands: (string | PathSpec)[] = []
-  let parsing = true
-  let physical = fallback
-  for (const arg of args) {
-    const s = arg instanceof PathSpec ? arg.virtual : arg
-    if (parsing) {
-      if (s === '--') {
-        parsing = false
-        continue
-      }
-      if (s !== '-' && s.length >= 2 && s.startsWith('-')) {
-        let bad: string | null = null
-        for (const c of s.slice(1)) {
-          if (!letters.includes(c)) {
-            bad = c
-            break
-          }
-        }
-        if (bad !== null) return { operands, bad, physical }
-        for (const c of s.slice(1)) {
-          if (c === 'P') physical = true
-          else if (c === 'L') physical = false
-        }
-        continue
-      }
-      parsing = false
-    }
-    operands.push(arg)
-  }
-  return { operands, bad: null, physical }
 }
 
 export async function executeCommand(
   recurse: (
     n: TSNodeLike,
-    s: Session,
+    s: SessionState,
     i: ByteSource | null,
     cs: CallStack | null,
+    opts?: ExecuteNodeOpts,
   ) => Promise<Result>,
   dispatch: DispatchFn,
   registry: MountRegistry,
   namespace: Namespace,
   executeFn: ExecuteFn,
   node: TSNodeLike,
-  session: Session,
+  session: SessionState,
   stdinIn: ByteSource | null,
   callStack: CallStack | null,
   jobTable: JobTable | null,
-  ensureOpen?: (resource: Resource) => Promise<void>,
   runtimeBindings?: Record<string, Runtime>,
-  routingDecision?: PolicyDecision,
+  routingDecision?: RouteDecision,
   signal?: AbortSignal,
-  // Parse one line into a tree; only alias expansion needs it. Absent
-  // means an alias is stored and printed but never expanded.
-  reparse?: (line: string) => TSNodeLike,
+  // The shell parser; only alias expansion needs it. Absent means an
+  // alias is stored and printed but never expanded.
+  parser?: ShellParser,
+  // The agent the line is attributed to, which an approval request names.
+  agentId = '',
+  // The line's hand-off, which its gate claims on and runs on.
+  handed?: HandOff,
+  // Where a command that runs statements of its own (a function body, a
+  // nested shell) writes them as they finish.
+  sink?: JobConsole,
 ): Promise<Result> {
   const name = getCommandName(node)
   const [assignmentNodes, nonPrefixParts] = splitEnvPrefix(getParts(node))
@@ -212,7 +163,7 @@ export async function executeCommand(
   // inside a function still means the function's argument.
   const headNode = nonPrefixParts[0]
   if (
-    reparse !== undefined &&
+    parser !== undefined &&
     Object.keys(session.aliases).length > 0 &&
     headNode?.type === NT.COMMAND_NAME &&
     headNode.namedChildren[0]?.type === NT.WORD
@@ -222,18 +173,27 @@ export async function executeCommand(
     const source = getText(node)
     const base = node.startIndex ?? 0
     const rest = source.slice((headNode.endIndex ?? 0) - base)
-    const rewritten = aliasCommandText(session, head, rest, mark)
-    if (rewritten !== null) {
-      const line = source.slice(0, (headNode.startIndex ?? 0) - base) + rewritten
-      const ast = reparse(line)
-      const offending = findSyntaxError(ast as Parameters<typeof findSyntaxError>[0])
+    const rewrite = aliasCommandText(session, head, rest, mark)
+    if (rewrite !== null) {
+      const [rewritten, texts] = rewrite
+      let at = (headNode.startIndex ?? 0) - base
+      const line = source.slice(0, at) + rewritten
+      const ast = parser.parse(line)
+      const own = new Map<string, readonly [number, number]>()
+      for (const [alias, text] of texts) {
+        own.set(alias, [at, at + text.length])
+        at += text.length
+      }
+      const reparse = (text: string): TSNodeLike => parser.parse(text)
+      const offending = findSyntaxError(
+        ast,
+        reparse,
+        expandingAliases(session),
+        own,
+        parser.sourceOffsets(line, ast),
+      )
       if (offending !== null) {
-        const snippet = offending.trim()
-        const errBytes = new TextEncoder().encode(
-          snippet.length > 0
-            ? `mirage: syntax error near '${snippet}'\n`
-            : 'mirage: syntax error in command\n',
-        )
+        const errBytes = new TextEncoder().encode(syntaxErrorMessage(offending, ast))
         return [
           null,
           new IOResult({ exitCode: 2, stderr: errBytes }),
@@ -241,10 +201,27 @@ export async function executeCommand(
         ]
       }
       session.aliasStack.push(head)
+      // The rewritten line is read from this node, so it runs as a line
+      // of its own under the word that named it: each invocation of one
+      // alias is a place of its own on the line (`c && c` asks twice, as
+      // its spelled-out form does), and what its gates claim is the
+      // line's again at its end. Run on the line's own hand-off, both
+      // reads stood at the same offsets of the same text and the second
+      // ran on the first's nod.
+      const expansion = handed === undefined ? null : evaluatedFrom(node, handed)
       try {
-        return await recurse(ast, session, stdinIn, callStack)
+        // In the caller's frame, as Python's line root has one: the
+        // alias's text is the caller's own line.
+        return await recurse(
+          ast,
+          session,
+          stdinIn,
+          callStack ?? new CallStack(),
+          expansion === null ? undefined : { handed: expansion },
+        )
       } finally {
         session.aliasStack.pop()
+        if (expansion !== null) registry.decisions.handUp(session.sessionId, expansion)
       }
     }
   }
@@ -260,12 +237,15 @@ export async function executeCommand(
     const firstVal = valNodes[0]
     const v =
       firstVal !== undefined
-        ? await expandNode(
-            firstVal,
-            session,
-            executeFn,
-            callStack,
-            sessionView(session, registry.policies),
+        ? await ownWords(
+            node,
+            expandNode(
+              firstVal,
+              session,
+              executeFn,
+              callStack,
+              sessionView(session, registry.policies),
+            ),
           )
         : rawVal
     prefixAssignments.push([key, v])
@@ -274,9 +254,9 @@ export async function executeCommand(
   for (const [k, v] of prefixAssignments) {
     // The hidden gate runs first, as in setVar: calling a hidden name
     // "readonly" would leak that it exists. Both branches below write
-    // session.env raw (a function-call prefix on purpose never
-    // restores), so ungated they would let a narrowed session clobber
-    // the host's value.
+    // session.env raw (an `export` inside a function keeps its prefix
+    // past the call), so ungated they would let a narrowed session
+    // clobber the host's value.
     try {
       ensureVarVisible(session, k)
       // ...and `preSession` right after, with the value, because a
@@ -318,21 +298,30 @@ export async function executeCommand(
     return [null, new IOResult(), new ExecutionNode({ command: cmdLabel, exitCode: 0 })]
   }
 
-  const isFunctionCall = name !== '' && session.functions[name] !== undefined
-  const savedEnvOverrides = new Map<string, ShellVar | null>()
-  for (const [k, v] of prefixAssignments) {
-    if (!isFunctionCall) savedEnvOverrides.set(k, sessionEntry(session.vars, k) ?? null)
-    // Exported for the duration, which is the whole point of the form:
-    // `TOKEN=x printenv TOKEN` prints `x` because bash puts a prefix
-    // assignment in the *command's environment*, not merely in the
-    // shell. Seeding it plain left it invisible to every reader of
-    // `envSnapshot` — the command's own env, an installed CLI, a guest
-    // runtime — once that view narrowed to the exported set. The saved
-    // record is put back below, so the attribute does not outlive the
-    // command; a function call deliberately saves nothing and keeps the
-    // assignment, as bash does.
-    seedVar(session, k, v)
-    setAttr(session, k, VarAttr.Export)
+  const savedEnvOverrides = new TempEnv()
+  // Seeded once the command's words are expanded, since bash expands them
+  // with the values from before the assignment: `x=new echo $x` prints the
+  // old x and `IFS=, cmd $v` splits on the old IFS.
+  const seedPrefix = (command: string): void => {
+    for (const [k, v] of prefixAssignments) {
+      if (!savedEnvOverrides.has(k)) {
+        savedEnvOverrides.set(k, sessionEntry(session.vars, k) ?? null)
+      }
+      // Exported for the duration, which is the whole point of the form:
+      // `TOKEN=x printenv TOKEN` prints `x` because bash puts a prefix
+      // assignment in the *command's environment*, not merely in the
+      // shell. Seeding it plain left it invisible to every reader of
+      // `envSnapshot` — the command's own env, an installed CLI, a guest
+      // runtime — once that view narrowed to the exported set. The saved
+      // record is put back below, so neither the value nor the attribute
+      // outlives the command.
+      seedVar(session, k, v)
+      setAttr(session, k, VarAttr.Export)
+    }
+    // A function runs with the prefix as its temporary environment, a
+    // scope under its own locals: `unset` inside reveals the caller's
+    // value and `export` keeps the name.
+    if (session.functions[command] !== undefined) session.localFrames.push(savedEnvOverrides)
   }
 
   try {
@@ -349,12 +338,17 @@ export async function executeCommand(
       stdinIn,
       callStack,
       jobTable,
-      ensureOpen,
       runtimeBindings,
       routingDecision,
       signal,
+      agentId,
+      handed,
+      seedPrefix,
+      sink,
     )
   } finally {
+    const frames = session.localFrames
+    if (frames[frames.length - 1] === savedEnvOverrides) frames.pop()
     for (const [k, prev] of savedEnvOverrides) {
       if (prev === null) {
         // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
@@ -369,161 +363,186 @@ export async function executeCommand(
 async function runCommandBody(
   recurse: (
     n: TSNodeLike,
-    s: Session,
+    s: SessionState,
     i: ByteSource | null,
     cs: CallStack | null,
   ) => Promise<Result>,
   dispatch: DispatchFn,
   registry: MountRegistry,
   namespace: Namespace,
-  executeFn: ExecuteFn,
+  executeFnIn: ExecuteFn,
   node: TSNodeLike,
   parts: TSNodeLike[],
   name: string,
-  session: Session,
+  session: SessionState,
   stdinIn: ByteSource | null,
   callStack: CallStack | null,
   jobTable: JobTable | null,
-  ensureOpen?: (resource: Resource) => Promise<void>,
   runtimeBindings?: Record<string, Runtime>,
-  routingDecision?: PolicyDecision,
+  routingDecision?: RouteDecision,
   signalIn?: AbortSignal,
+  agentId = '',
+  handed?: HandOff,
+  seedPrefix?: (command: string) => void,
+  sink?: JobConsole,
 ): Promise<Result> {
-  let stdin = stdinIn
+  const stdin = stdinIn
   // A background job's kill channel rides the session; fold it in so
   // builtins (sleep) and the mount layer observe the kill.
   const signal = mergeSignals(signalIn, session.abortSignal)
+  // The command's place on the line, as the pass computed it, and the
+  // door its nested evaluations re-enter through: a word that runs a
+  // line (eval, source, xargs) is bound to this node, and a substitution
+  // names its own node when it calls, so every nested line stands under
+  // the node its text came from.
+  const claimant = claimantFor(node, handed)
+  const executeFn: ExecuteFn = (cmd, opts) => executeFnIn(cmd, { node, ...opts })
 
-  if (node.parent?.type !== NT.REDIRECTED_STATEMENT) {
-    for (const child of node.namedChildren) {
-      if (child.type === NT.HERESTRING_REDIRECT) {
-        for (const sc of child.namedChildren) {
-          const content = await expandNode(
-            sc,
-            session,
-            executeFn,
-            callStack,
-            sessionView(session, registry.policies),
-          )
-          stdin = encodeText(`${content}\n`)
-          break
-        }
-      }
-    }
-  }
-
-  const procSubParts: Uint8Array[] = []
+  // Input substitutions are buffered virtual files, not host pipes. Each
+  // operand has its own lifetime; they never consume the caller's stdin.
+  let dev: DevVFS | null = null
+  const procSubInputs: (readonly [string, number])[] = []
   const procSubStderr: Uint8Array[] = []
   const cleanParts: TSNodeLike[] = []
-  for (const p of parts) {
-    if (p.type === NT.PROCESS_SUBSTITUTION) {
+  try {
+    for (const p of parts) {
+      if (p.type !== NT.PROCESS_SUBSTITUTION) {
+        cleanParts.push(p)
+        continue
+      }
       if (getProcessSubDirection(p) === ProcessSubDirection.OUTPUT) {
-        const err = new TextEncoder().encode('mirage: unsupported: process substitution >(...)\n')
+        const err = encodeText('mirage: unsupported: process substitution >(...)\n')
         return [
           null,
           new IOResult({ exitCode: 2, stderr: err }),
-          new ExecutionNode({
-            command: name === '' ? 'process_sub' : name,
-            exitCode: 2,
-            stderr: err,
-          }),
+          new ExecutionNode({ command: name || 'process_sub', exitCode: 2, stderr: err }),
         ]
       }
+      if (dev === null) {
+        const [candidate] = registry.resolve('/dev/null')
+        if (!(candidate instanceof DevVFS)) throw new Error('missing device filesystem')
+        dev = candidate
+      }
+      const [path, allocation] = dev.allocateInput()
+      procSubInputs.push([path, allocation])
       const inner = getProcessSubBody(p)
       if (inner !== '') {
-        const io = await executeChildShell(executeFn, session, inner)
-        procSubParts.push(await materialize(io.stdout))
-        const stderr = await materialize(io.stderr)
-        if (stderr.byteLength > 0) procSubStderr.push(stderr)
+        const io = await childLine(session, executeFn, inner, p, callStack)
+        dev.setInput(path, allocation, await materialize(io.stdout))
+        procSubStderr.push(await materialize(io.stderr))
       }
-      continue
+      cleanParts.push({ type: NT.WORD, text: path, children: [], namedChildren: [] })
     }
-    cleanParts.push(p)
-  }
-  if (procSubParts.length > 0 && stdin === null) {
-    let total = 0
-    for (const c of procSubParts) total += c.byteLength
-    const merged = new Uint8Array(total)
-    let off = 0
-    for (const c of procSubParts) {
-      merged.set(c, off)
-      off += c.byteLength
+
+    const argv = await ownWords(
+      node,
+      expandArgv(
+        cleanParts,
+        session,
+        executeFn,
+        callStack,
+        registry,
+        namespace,
+        sessionView(session, registry.policies),
+        routingDecision,
+      ),
+    )
+    seedPrefix?.(argv.name)
+
+    // Limits resolve against the expanded name, so `$CMD`-style
+    // invocations get their real command's policy.
+    // Mount, CLI and external dispatch own their resolved deadlines.
+    const consumer = lookup(argv.name, session, registry, routingDecision)
+    const ownsDeadline =
+      !argv.name.includes('/') &&
+      (consumer === Consumer.EXTERNAL ||
+        consumer === Consumer.MOUNT ||
+        consumer === Consumer.CLI ||
+        INTERPRETER_NAMES.has(argv.name))
+    const resolved =
+      argv.name !== '' && !ownsDeadline
+        ? resolveLimit(argv.name, [], null, null, registry.commandLimits, session.commandLimits)
+        : null
+    const timeout = resolved !== null ? resolved.timeoutSeconds : null
+    // Capture xtrace before the body runs so `set -x` itself is not
+    // traced (bash enables tracing only for the following commands). A body
+    // that writes as it runs is traced before it starts.
+    let xtrace = session.shellOptions.xtrace === true && argv.name !== ''
+    if (xtrace && sink !== undefined) {
+      await sink.emit(Channel.STDERR, traceCommand([argv.name, ...argv.args]))
+      xtrace = false
     }
-    stdin = merged
+    const [rawStdout, io, execNode] = await runWithTimeout(
+      runArgv(
+        recurse,
+        dispatch,
+        registry,
+        namespace,
+        executeFn,
+        argv,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        runtimeBindings,
+        routingDecision,
+        signal,
+        node.startPosition?.row ?? 0,
+        agentId,
+        redirectPathsFor(node),
+        claimant,
+        sink,
+      ),
+      timeout,
+      argv.name !== '' ? argv.name : '?',
+    )
+    let stdout = rawStdout
+    if (io.producer === null && argv.name !== '') {
+      // Builtins and other non-mount routes return no rider; stamp the
+      // expanded name here so postExecute policies keyed on a command
+      // (echo, printf, ...) still see it.
+      io.producer = { command: argv.name, prefixes: [], declared: null }
+    }
+    if (!io.outputFinalized) {
+      io.outputFinalized = true
+      if (
+        session.terminalOutput &&
+        (session.execStdout === null || session.execStdout === '&1') &&
+        io.producer !== null
+      ) {
+        const bound = resolveProducer(
+          io.producer,
+          (prefix, name) => registry.limitOverride(prefix, name),
+          registry.commandLimits,
+          session.commandLimits,
+        )
+        stdout = guardIO(stdout, io, bound, io.producer.command)
+        execNode.exitCode = io.exitCode
+      }
+    }
+    if (procSubStderr.length > 0) {
+      const stderr = await materialize(io.stderr)
+      io.stderr = concat([...procSubStderr, stderr])
+      execNode.stderr = io.stderr
+    }
+    if (xtrace) {
+      const existing = await materialize(io.stderr)
+      io.stderr = concat([traceCommand([argv.name, ...argv.args]), existing])
+    }
+    return [
+      procSubInputs.length > 0 && stdout !== null ? await materialize(stdout) : stdout,
+      io,
+      execNode,
+    ]
+  } finally {
+    for (const [path, allocation] of procSubInputs) dev?.releaseInput(path, allocation)
   }
-
-  const argv = await expandArgv(
-    cleanParts,
-    session,
-    executeFn,
-    callStack,
-    registry,
-    namespace,
-    sessionView(session, registry.policies),
-  )
-
-  // Limits resolve against the expanded name, so `$CMD`-style
-  // invocations get their real command's policy.
-  const resolved = argv.name !== '' ? resolveLimit(argv.name) : null
-  const timeout = resolved !== null ? resolved.timeoutSeconds : null
-  // Capture xtrace before the body runs so `set -x` itself is not
-  // traced (bash enables tracing only for the following commands).
-  const xtrace = session.shellOptions.xtrace === true
-  const [stdout, io, execNode] = await runWithTimeout(
-    runArgv(
-      recurse,
-      dispatch,
-      registry,
-      namespace,
-      executeFn,
-      argv,
-      session,
-      stdin,
-      callStack,
-      jobTable,
-      ensureOpen,
-      runtimeBindings,
-      routingDecision,
-      signal,
-      node.startPosition?.row ?? 0,
-    ),
-    timeout,
-    argv.name !== '' ? argv.name : '?',
-  )
-  if (io.producer === null && argv.name !== '') {
-    // Builtins and other non-mount routes return no rider; stamp the
-    // expanded name here so postExecute policies keyed on a command
-    // (echo, printf, ...) still see it.
-    io.producer = { command: argv.name, prefixes: [], declared: null }
-  }
-  if (procSubStderr.length > 0) {
-    const stderr = await materialize(io.stderr)
-    io.stderr = concatBytes([...procSubStderr, stderr])
-    execNode.stderr = io.stderr
-  }
-  if (xtrace && argv.name !== '') {
-    const existing = await materialize(io.stderr)
-    io.stderr = concatBytes([traceCommand([argv.name, ...argv.args]), existing])
-  }
-  return [stdout, io, execNode]
-}
-
-function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
-  let total = 0
-  for (const chunk of chunks) total += chunk.byteLength
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    out.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return out
 }
 
 async function runArgv(
   recurse: (
     n: TSNodeLike,
-    s: Session,
+    s: SessionState,
     i: ByteSource | null,
     cs: CallStack | null,
   ) => Promise<Result>,
@@ -532,24 +551,32 @@ async function runArgv(
   namespace: Namespace,
   executeFn: ExecuteFn,
   argv: Argv,
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null,
   callStack: CallStack | null,
   jobTable: JobTable | null,
-  ensureOpen?: (resource: Resource) => Promise<void>,
   runtimeBindings?: Record<string, Runtime>,
-  routingDecision?: PolicyDecision,
+  routingDecision?: RouteDecision,
   signal?: AbortSignal,
   // The command's line within its parse, which only `alias` reads: a
   // definition remembers where it was made so a use on the same line
   // does not see it, as bash's line reader would not.
   row = 0,
+  // The agent the line is attributed to, which an approval request names.
+  agentId = '',
+  // The statement's expanded redirect targets, judged with the line
+  // because their I/O runs on the shell's own fds outside the admitted
+  // command's gate window.
+  redirects: readonly PathSpec[] = [],
+  // The line's hand-off, which its gate claims on and runs on.
+  claimant: Claimant | null = null,
+  sink?: JobConsole,
 ): Promise<Result> {
   const name = argv.name
 
   // A glob whose directory holds a child mount cannot be pushed down to
   // one backend: the mount root is a child of that directory but its keys
-  // live in another resource, so the backend reports "no such file" for a
+  // live in another VFS, so the backend reports "no such file" for a
   // name its own listing shows. Expanding such a word here lets the
   // matches route per mount. It has to happen before the admission
   // policies below, not just before the follow policy: a word left
@@ -557,7 +584,10 @@ async function runArgv(
   // MountRootPolicy cannot recognize a mount root inside one, so
   // `tar -cf out.tar /base/*` would archive a whole backend the same
   // operand typed by hand is refused for.
-  const boundary = await expandBoundaryGlobs(argv.operands, registry, namespace)
+  const refusedExternal = runtimeRefused(name, session, registry, routingDecision)
+  const boundary = refusedExternal
+    ? [...argv.operands]
+    : await expandBoundaryGlobs(argv.operands, registry, namespace)
   const expandedWords = boundary.map(wordText)
   // Compared as words, not as a count: a glob that matches exactly one
   // name (`du /base/i*` where only the mount root matches) is still an
@@ -568,61 +598,152 @@ async function runArgv(
     expandedWords.length !== typedWords.length ||
     expandedWords.some((w, i) => w !== typedWords[i])
   ) {
-    argv = new Argv(argv.name, expandedWords, boundary)
+    argv = new Argv(argv.name, expandedWords, boundary, argv.prefix)
   }
 
-  const args = [...argv.args]
-  let operands = [...argv.operands]
-
-  // Admission policies. The one chokepoint every command class passes
-  // through: shell builtins, namespace-routed commands (touch/chmod/
-  // ln -s), job builtins, shell functions, and mount commands all
-  // route below, so the hook must fire here, not in handleCommand.
-  // Paths are the operands as typed plus path-valued flags (shuf -o
-  // DEST); refusals win over flag parsing, routing, and runtime
-  // placement.
+  // Visibility and admission. The one chokepoint every command class
+  // passes through: shell builtins, namespace-routed commands (touch/
+  // chmod/ln -s), job builtins, shell functions, and mount commands all
+  // route below, so the gate must fire here, not in handleCommand.
+  // Checked ahead of the BUILTINS table, which runs before lookup(); the
+  // enumerators read the same visibility filter through layers().
+  // Refusals win over flag parsing, routing, and runtime placement.
+  let admitted: Admitted | null = null
   if (name !== '') {
-    const scopes: PathSpec[] = []
-    for (const p of operands) {
-      if (p instanceof PathSpec) scopes.push(p)
-    }
-    scopes.push(...pathFlagScopes(name, args, session.cwd))
-    if (name.includes('/')) {
-      // A slash-carrying head word is a file the line executes (the
-      // path-execution branch below), and it lives in argv[0], not the
-      // operands, so a path-pattern guard would never see it without
-      // this row.
-      scopes.unshift(toScope(resolvePath(name, session.cwd)))
-    }
-    const deny = await registry.policies.preCommand({
-      command: name,
-      paths: scopes,
-      operands: positionalScopes(name, args, session.cwd, operands),
-      argv: args,
-      cwd: session.cwd,
+    const verdict = await admit(
+      name,
+      [...argv.args],
+      [...argv.operands],
+      session,
       registry,
-    })
-    if (deny !== null) {
-      const err = new TextEncoder().encode(deny.message)
-      const exitCode = deny.exitCode ?? 1
+      namespace,
+      agentId,
+      stdin,
+      redirects,
+      signal,
+      claimant,
+    )
+    if (!(verdict instanceof Admitted)) {
       return [
         null,
-        new IOResult({ exitCode, stderr: err }),
+        new IOResult({
+          exitCode: verdict.exitCode,
+          stderr: verdict.stderr,
+          refusal: verdict.refusal,
+        }),
         new ExecutionNode({
-          command: [name, ...args].join(' '),
-          stderr: err,
-          exitCode,
+          command: [name, ...argv.args].join(' '),
+          stderr: verdict.stderr,
+          exitCode: verdict.exitCode,
+          refused: true,
         }),
       ]
     }
+    admitted = verdict
   }
+
+  // The admitted command's gate is bound for its run and handed back
+  // after, so its own I/O can ask about the entries the gate did not see
+  // and a nested line binds its own (see `Admitted`). The workspace's
+  // policies bind in the same window, whether or not a gate judged the
+  // line, so the command tier's policy guard can fire preOps for the
+  // backend I/O a handler performs.
+  const route = () =>
+    routeArgv(
+      recurse,
+      dispatch,
+      registry,
+      namespace,
+      executeFn,
+      argv,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      runtimeBindings,
+      routingDecision,
+      signal,
+      row,
+      agentId,
+      claimant?.line ?? null,
+      sink,
+    )
+  const gated = admitted
+  if (gated === null) return runWithOpPolicies(registry.policies, route)
+  return runWithOpPolicies(registry.policies, () => runWithAdmission(gated, route))
+}
+
+// Drop the refusal lines the command tier already wrote.
+//
+// A mount-mode refusal names the mount, not the operand, so the line the
+// node table wrote for a refused link is the very line Mount.executeCmd
+// writes for the backend operands beside it on the same mount, and
+// `rm dlink file` would say it twice. Compared on the trimmed text, so a
+// trailing-newline difference between the two renderers cannot defeat
+// it. Mirrors Python's unsaid.
+export function unsaid(lines: readonly string[], said: Uint8Array): string[] {
+  if (said.byteLength === 0) return [...lines]
+  const spoken = new Set(
+    new TextDecoder()
+      .decode(said)
+      .split('\n')
+      .map((t) => t.trim()),
+  )
+  return lines.filter((line) => !spoken.has(line.trim()))
+}
+
+async function routeArgv(
+  recurse: (
+    n: TSNodeLike,
+    s: SessionState,
+    i: ByteSource | null,
+    cs: CallStack | null,
+  ) => Promise<Result>,
+  dispatchIn: DispatchFn,
+  registry: MountRegistry,
+  namespace: Namespace,
+  executeFn: ExecuteFn,
+  argv: Argv,
+  session: SessionState,
+  stdin: ByteSource | null,
+  callStack: CallStack | null,
+  jobTable: JobTable | null,
+  runtimeBindings: Record<string, Runtime> | undefined,
+  routingDecision: RouteDecision | undefined,
+  signal: AbortSignal | undefined,
+  row: number,
+  agentId: string,
+  handed: HandOff | null,
+  sink?: JobConsole,
+): Promise<Result> {
+  // The half of `runArgv` past the gate, split out so the gate's verdict
+  // can be bound around it.
+  // Every handler below reaches the op door through this one function,
+  // so a line whose caller was already released starts no further op
+  // between its operands (`rm l1 l2` with the first unlink held past
+  // the grace). Python needs nothing here: its cancelled task never
+  // reaches the next operand.
+  const dispatch = guardDispatch(dispatchIn, mergeSignals(signal, session.abortSignal))
+  const name = argv.name
+  const args = [...argv.args]
+  let operands = [...argv.operands]
 
   // Path execution: bash hands a slash-carrying head word to the
   // loader, never to command lookup: no builtin, function, or CLI can
   // claim it. After the admission gate so a policy sees the line like
   // any other.
   if (name.includes('/')) {
-    return handleExecPath(dispatch, executeFn, name, args, session, stdin)
+    return handleExecPath(
+      dispatch,
+      executeFn,
+      name,
+      args,
+      session,
+      registry,
+      namespace,
+      stdin,
+      sink,
+    )
   }
 
   // Unsupported bash builtins. Constructs the parser accepts but the
@@ -637,257 +758,30 @@ async function runArgv(
     ]
   }
 
-  // Shell builtins
-  // `set -P` (`set -o physical`) is the session-wide version of the
-  // per-command flag, and GNU applies it to both `cd` and `pwd`.
-  const shellPhysical = session.shellOptions.physical === true
-
-  if (name === SB.PWD) {
-    const { bad: pwdBad, physical: pwdPhysical } = splitModeOptions(operands, 'LP', shellPhysical)
-    if (pwdBad !== null) {
-      const err = new TextEncoder().encode(
-        `pwd: -${pwdBad}: invalid option\npwd: usage: pwd [-LP]\n`,
-      )
-      return [
-        null,
-        new IOResult({ exitCode: 2, stderr: err }),
-        new ExecutionNode({ command: 'pwd', exitCode: 2, stderr: err }),
-      ]
-    }
-    // GNU ignores operands entirely: `pwd extra` still prints the cwd.
-    const cwd = pwdPhysical ? session.cwd : logicalCwd(session)
-    const out = new TextEncoder().encode(`${cwd}\n`)
-    return [out, new IOResult(), new ExecutionNode({ command: 'pwd', exitCode: 0 })]
+  const consumer = lookup(name, session, registry, routingDecision)
+  if (consumer === Consumer.EXTERNAL) {
+    return runExternal(argv, stdin, session, registry, routingDecision, signal)
   }
 
-  if (name === SB.CD) {
-    const {
-      operands: cdOperands,
-      bad,
-      physical,
-    } = splitModeOptions(operands, 'LPe@', shellPhysical)
-    const links = namespace.symlinkTargets()
-    if (bad !== null) {
-      const err = new TextEncoder().encode(
-        `cd: -${bad}: invalid option\ncd: usage: cd [-L|[-P [-e]] [-@]] [dir]\n`,
-      )
-      return [
-        null,
-        new IOResult({ exitCode: 2, stderr: err }),
-        new ExecutionNode({ command: 'cd', exitCode: 2, stderr: err }),
-      ]
-    }
-    if (cdOperands.length > 1) {
-      const err = new TextEncoder().encode('cd: too many arguments\n')
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr: err }),
-        new ExecutionNode({ command: 'cd', exitCode: 1, stderr: err }),
-      ]
-    }
-    if (cdOperands.length === 0) {
-      const home = homeDir(session)
-      if (home === null) {
-        const err = new TextEncoder().encode('cd: HOME not set\n')
-        return [
-          null,
-          new IOResult({ exitCode: 1, stderr: err }),
-          new ExecutionNode({ command: 'cd', exitCode: 1, stderr: err }),
-        ]
-      }
-      return handleCd(
-        dispatch,
-        (p) => registry.isMountRoot(p),
-        home,
-        session,
-        false,
-        null,
-        links,
-        physical,
-      )
-    }
-    const raw = cdOperands[0]
-    const rawStr = raw instanceof PathSpec ? raw.virtual : String(raw)
-    if (rawStr === '-') {
-      const old = session.env.OLDPWD
-      if (!old) {
-        const err = new TextEncoder().encode('cd: OLDPWD not set\n')
-        return [
-          null,
-          new IOResult({ exitCode: 1, stderr: err }),
-          new ExecutionNode({ command: 'cd -', exitCode: 1, stderr: err }),
-        ]
-      }
-      return handleCd(
-        dispatch,
-        (p) => registry.isMountRoot(p),
-        old,
-        session,
-        true,
-        null,
-        links,
-        physical,
-      )
-    }
-    let path: string | PathSpec
-    let cdpathTarget: string
-    if (raw instanceof PathSpec) {
-      path = raw
-      cdpathTarget = raw.rawPath
-    } else if (rawStr.startsWith('/')) {
-      path = rawStr
-      cdpathTarget = rawStr
-    } else {
-      path = classifyBarePath(rawStr, registry, session.cwd)
-      cdpathTarget = rawStr
-    }
-    return handleCd(
-      dispatch,
-      (p) => registry.isMountRoot(p),
-      path,
-      session,
-      false,
-      cdpathTarget,
-      links,
-      physical,
-    )
-  }
-
-  if (name === SB.TRUE) {
-    return [null, new IOResult(), new ExecutionNode({ command: 'true', exitCode: 0 })]
-  }
-
-  if (name === SB.COLON) {
-    return [null, new IOResult(), new ExecutionNode({ command: ':', exitCode: 0 })]
-  }
-
-  if (name === SB.FALSE) {
-    return [
-      null,
-      new IOResult({ exitCode: 1 }),
-      new ExecutionNode({ command: 'false', exitCode: 1 }),
-    ]
-  }
-
-  if (name === SB.EVAL) return handleEval(executeFn, args, session)
-  if (name === SB.BASH || name === SB.SH) {
-    return handleBash(dispatch, executeFn, args, session, stdin, name)
-  }
-  if (name === SB.EXPORT)
-    return handleExport(args, session, sessionView(session, registry.policies))
-  if (name === SB.UNSET) return handleUnset(args, session, sessionView(session, registry.policies))
-  if (name === SB.LOCAL) return handleLocal(args, session, sessionView(session, registry.policies))
-  if (name === SB.PRINTENV) {
-    return handlePrintenv(args.length > 0 ? (args[0] ?? null) : null, session)
-  }
-  if (name === SB.ENV) return handleEnv(executeFn, args, session, stdin)
-  if (name === SB.WHOAMI) return handleWhoami(namespace)
-  if (name === SB.MAN) return handleMan(args, session, registry)
-  if (name === SB.HISTORY) return handleHistory(registry, args, session)
-  if (name === SB.SET) return handleSet(args, session, callStack)
-  if (name === SB.SHIFT) {
-    return handleShift(args, callStack, session)
-  }
-  if (name === SB.GETOPTS) {
-    return handleGetopts(args, session, callStack, sessionView(session, registry.policies))
-  }
-  if (name === SB.TRAP) return handleTrap(args, session)
-  if (name === SB.LET) {
-    return handleLet(args, session, sessionView(session, registry.policies))
-  }
-  if (name === SB.UMASK) return handleUmask(args, session)
-  if (name === SB.SHOPT) return handleShopt(args, session)
-  if (name === SB.ALIAS) return handleAlias(args, session, [session.parseCurrent, row])
-  if (name === SB.UNALIAS) return handleUnalias(args, session)
-  if (name === SB.EXEC) {
-    // The redirect-only form is intercepted where redirects are applied;
-    // a bare `exec` here has none, and `exec cmd` is the
-    // process-replacement form this refuses.
-    return handleExecCommand(args, session)
-  }
-  if (name === SB.MAPFILE || name === SB.READARRAY) {
-    return handleMapfile(
-      args,
+  // Shell builtins. One lookup: every executor-run builtin word maps to
+  // a handler that takes the whole invocation, so the arms live beside
+  // their workers (builtins/<word>/) rather than here. Job builtins and
+  // the interpreters are not in the table; they route below.
+  const builtin = BUILTINS.get(name)
+  if (builtin !== undefined) {
+    return builtin({
+      argv,
       session,
       stdin,
+      callStack,
+      signal,
+      row,
+      dispatch,
+      registry,
+      namespace,
       executeFn,
-      sessionView(session, registry.policies),
-      name,
-    )
-  }
-  if (name === SB.TEST || name === SB.BRACKET || name === SB.DOUBLE_BRACKET) {
-    let testArgs = [...operands]
-    const testName = name === SB.BRACKET ? '[' : 'test'
-    if (name === SB.BRACKET) {
-      const last = testArgs[testArgs.length - 1]
-      if (last !== undefined && wordText(last) === ']') {
-        testArgs = testArgs.slice(0, -1)
-      } else {
-        const err = new TextEncoder().encode("[: missing `]'\n")
-        return [
-          null,
-          new IOResult({ exitCode: 2, stderr: err }),
-          new ExecutionNode({ command: '[', exitCode: 2, stderr: err }),
-        ]
-      }
-    }
-    return handleTest(dispatch, namespace, testArgs, session, testName)
-  }
-  if (name === SB.ECHO) {
-    return handleEcho(args)
-  }
-  if (name === SB.PRINTF) {
-    return handlePrintf(args, session, sessionView(session, registry.policies))
-  }
-  if (name === SB.SLEEP) return handleSleep(args, signal)
-  if (name === SB.READ) {
-    return handleRead(args, session, stdin, sessionView(session, registry.policies))
-  }
-  if (name === SB.SOURCE || name === SB.DOT) {
-    const target = operands[0] ?? ''
-    // Positional parameters keep the words as typed, so a path operand
-    // contributes its spelling, not its resolved mount path.
-    const sourceArgs = operands.slice(1).map((o) => wordText(o))
-    return handleSource(dispatch, executeFn, target, session, sourceArgs)
-  }
-  if (name === SB.RETURN) {
-    return handleReturn(args, session, callStack)
-  }
-  if (name === SB.EXIT) {
-    try {
-      return handleExit(args, session)
-    } catch (err) {
-      if (!(err instanceof ExitSignal)) throw err
-      // Explicit exit runs cleanup before function locals unwind.
-      const [stdout, io] = await finishShell(executeFn, session, [
-        err.stdout,
-        new IOResult({ exitCode: err.exitCode, stderr: err.stderr }),
-        new ExecutionNode({ command: 'exit', exitCode: err.exitCode }),
-      ])
-      throw new ExitSignal(io.exitCode, await materialize(io.stderr), await materialize(stdout))
-    }
-  }
-  if (name === SB.BREAK) throw new BreakSignal(null, new IOResult(), loopLevels(args))
-  if (name === SB.CONTINUE) throw new ContinueSignal(null, new IOResult(), loopLevels(args))
-
-  if (name === SB.COMMAND) {
-    return handleCommandBuiltin(executeFn, args, session, registry, stdin)
-  }
-
-  if (name === SB.TYPE) {
-    return handleType(args, session, registry)
-  }
-
-  if (name === SB.WHICH) {
-    return handleWhich(args, session, registry)
-  }
-
-  if (name === SB.XARGS) {
-    return handleXargs(executeFn, args, session, stdin)
-  }
-
-  if (name === SB.TIMEOUT) {
-    return handleTimeout(executeFn, args, session)
+      ...(sink === undefined ? {} : { sink }),
+    })
   }
 
   // Pathname resolution (POSIX): every component of an operand but the
@@ -896,39 +790,40 @@ async function runArgv(
   // (open(2) rather than lstat(2)) or an operand typed with a trailing
   // slash, which POSIX reads as `dlink/.`. This runs ahead of every
   // handler below because the kernel resolves a path before the syscall,
-  // not inside it.
+  // not inside it. An operand a link loop stands in comes back refused
+  // (`walkError`) rather than failing the line: the command meets ELOOP at
+  // its op and words it per operand.
   if (namespace.nodes.size > 0 && operands.length > 0) {
-    try {
-      operands = followPaths(
-        namespace,
-        operands,
-        followsLastComponent(name, argv.words),
-        !SLASH_KEEPS_LAST.has(name),
-      )
-    } catch (err) {
-      if (err instanceof CycleError) {
-        const errBytes = new TextEncoder().encode(
-          `${name}: ${err.path}: Too many levels of symbolic links\n`,
-        )
-        return [
-          null,
-          new IOResult({ exitCode: 1, stderr: errBytes }),
-          new ExecutionNode({ command: name, exitCode: 1, stderr: errBytes }),
-        ]
-      }
-      throw err
-    }
+    const lsMode = name === 'ls' ? lsLinkMode(argv.words) : null
+    operands = followPaths(
+      namespace,
+      operands,
+      lsMode !== null ? lsMode === 'all' : followsLastComponent(name, argv.words),
+      !SLASH_KEEPS_LAST.has(name),
+    )
+    // ls resolves a command-line link only when it leads to a directory, and
+    // only a stat can tell where it leads.
+    if (lsMode === 'directory') operands = await followDirectoryLinks(namespace, dispatch, operands)
     argv = argv.withOperands(operands)
   }
 
   // Symlinks are namespace-backed: not bash builtins, not mount commands.
   // They mutate the addressing layer. `readlink -f/-e/-m` is canonicalization,
   // which falls through to the mount command.
-  if (name === 'ln' && linkFlags(operands, 'sfnvrT').has('s')) {
+  if (name === 'ln') {
     return await handleLn(namespace, dispatch, session, operands)
   }
   if (name === 'readlink') {
     return await handleReadlink(namespace, dispatch, session, operands)
+  }
+
+  // Extended attributes: the door's node table and the backend's own
+  // facts; they read -h themselves.
+  if (name === 'getfattr') {
+    return await handleGetfattr(dispatch, session, operands)
+  }
+  if (name === 'setfattr') {
+    return await handleSetfattr(dispatch, session, operands)
   }
 
   // Metadata commands (namespace-routed: resolve-then-setattr with
@@ -946,7 +841,7 @@ async function runArgv(
     return handleTouch(namespace, dispatch, session, operands)
   }
 
-  // Capacity (registry-routed: enumerates mounts, reports per-mount statfs;
+  // Capacity (registry-routed: enumerates mounts, reports per-mount capacity;
   // never fabricates numbers).
   if (name === 'df') {
     return handleDf(registry, session, dispatch, operands)
@@ -954,8 +849,7 @@ async function runArgv(
 
   // Symlink-aware dispatch: reads follow links (open(2)); rm/mv act on
   // the link entry itself (lstat semantics).
-  let postUnlink: string | null = null
-  let postRename: [string, string] | null = null
+  let linkErrors: string[] = []
   let dispatchArgv = argv
   if (namespace.nodes.size > 0) {
     try {
@@ -969,16 +863,30 @@ async function runArgv(
         (name === 'rm' || name === 'unlink') &&
         acceptsLine(name, argv.args, operands, session.cwd)
       ) {
-        const [rest, removed] = await stripLinkOperands(namespace, operands)
+        const [rest, handled, stripErrors] = await stripLinkOperands(
+          name,
+          dispatch,
+          namespace,
+          operands,
+          argv.args,
+          session.cwd,
+        )
         operands = rest
-        if (removed > 0 && !rest.some((a) => a instanceof PathSpec)) {
-          return [null, new IOResult(), new ExecutionNode({ command: name, exitCode: 0 })]
+        linkErrors = stripErrors
+        if (handled > 0 && !rest.some((a) => a instanceof PathSpec)) {
+          if (linkErrors.length === 0) {
+            return [null, new IOResult(), new ExecutionNode({ command: name, exitCode: 0 })]
+          }
+          const err = new TextEncoder().encode(linkErrors.join(''))
+          return [
+            null,
+            new IOResult({ exitCode: 1, stderr: err }),
+            new ExecutionNode({ command: name, exitCode: 1, stderr: err }),
+          ]
         }
       } else if (name === 'mv') {
-        const prepared = await prepareMv(namespace, dispatch, operands)
+        const prepared = await prepareMv(namespace, dispatch, operands, argv.args, session.cwd)
         operands = prepared.items
-        postUnlink = prepared.postUnlink
-        postRename = prepared.postRename
         if (prepared.early !== null) return prepared.early
       }
     } catch (err) {
@@ -1007,11 +915,14 @@ async function runArgv(
     stdin,
     callStack,
     jobTable,
-    ensureOpen,
     runtimeBindings,
     namespace,
     routingDecision,
+    agentId,
+    executeFn,
+    handed ?? null,
     signal,
+    sink,
   )
 
   if (io.exitCode === 0 && namespace.nodes.size > 0) {
@@ -1022,6 +933,11 @@ async function runArgv(
       // table matches the pattern itself.
       for (const item of operands) {
         if (!(item instanceof PathSpec)) continue
+        // The walk refused it, so rm removed nothing there (-f only
+        // silenced the refusal), and the empty name's `virtual` is the
+        // working directory: purging under it dropped every link the
+        // directory held.
+        if (item.walkError !== null) continue
         // A trailing slash asked for the directory, and rm refused (or -f
         // silenced the refusal). Nothing was removed, so nothing may be
         // purged: dropping the node here deleted the very link the slash
@@ -1038,8 +954,21 @@ async function runArgv(
         }
       }
     }
-    if (postUnlink !== null) await namespace.unlink(postUnlink)
-    if (postRename !== null) await namespace.rename(postRename[0], postRename[1])
+  }
+  if (name === 'mv' && io.renames.length > 0) await settleMoves(namespace, io.renames)
+  if (linkErrors.length > 0) {
+    // A refused link operand fails the line the way a refused backend
+    // operand does: its lines lead (they were reported first) and any
+    // success stays a partial one. Merged after the bookkeeping above
+    // so the operands the backend did remove still shed their node
+    // meta.
+    const enc = new TextEncoder()
+    const tail = io.stderr instanceof Uint8Array ? io.stderr : new Uint8Array(0)
+    io.stderr = concat([enc.encode(unsaid(linkErrors, tail).join('')), tail])
+    if (io.exitCode === 0) io.exitCode = 1
+    const nodeTail = execNode.stderr
+    execNode.stderr = concat([enc.encode(unsaid(linkErrors, nodeTail).join('')), nodeTail])
+    if (execNode.exitCode === 0) execNode.exitCode = 1
   }
   return [stdout, io, execNode]
 }

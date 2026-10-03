@@ -10,7 +10,7 @@ daemon over HTTP and auto-spawns one on first use if none is running.
 cat > workspace.yaml <<'YAML'
 mounts:
   /:
-    resource: ram
+    vfs: ram
     mode: WRITE
 YAML
 
@@ -18,7 +18,7 @@ YAML
 mirage workspace create ./workspace.yaml --id myws
 
 # Run a command in it
-mirage execute -w myws -c 'echo hello'
+mirage shell -w myws -c 'echo hello'
 
 # Inspect / clean up
 mirage workspace list
@@ -29,7 +29,7 @@ mirage workspace delete myws
 mirage daemon stop
 ```
 
-Other command groups: `session`, `provision`, `daemon`, plus
+Other command groups: `session`, `daemon`, plus
 `workspace clone|snapshot|load`. Run `mirage <command> --help` for details.
 
 ## Environment variables

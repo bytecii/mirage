@@ -12,8 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { Dirent } from 'node:fs'
 import type { DiskAccessor } from '../../accessor/disk.ts'
-import { readdir as fsReaddir } from 'node:fs/promises'
 import { IndexEntry, ResourceType } from '@struktoai/mirage-core/cache/index/config'
 import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
 import type { PathSpec } from '@struktoai/mirage-core/types'
@@ -21,15 +21,23 @@ import { enoent, enotdir } from '@struktoai/mirage-core/utils/errors'
 import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
-import { norm, resolveSafe } from './utils.ts'
+import { diskError } from './errors.ts'
+import { folderVersion, wallNs } from './listing_version.ts'
+import { norm, readEntries, resolveInside } from './utils.ts'
 
 export async function readdir(
   accessor: DiskAccessor,
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<string[]> {
-  const virtual = path.pattern !== null ? path.directory : path.mountPath
-  const mountPrefix = mountPrefixOf(path.virtual, path.resourcePath)
+  // A pattern spec addresses the directory whose entries the glob filters,
+  // and the rest of this function works in mount-relative space, so the
+  // directory has to be read off `dir` rather than off the virtual
+  // `directory` string (python strips the prefix by hand for the same
+  // reason).
+  const target = path.pattern !== null ? path.dir : path
+  const virtual = target.mountPath
+  const mountPrefix = mountPrefixOf(target.virtual, target.vfsPath)
   // Canonical key: no trailing slash (except root), or the same dir
   // indexes under two keys and cache hits return doubled-slash entries.
   const virtualKey = rstripSlash(mountPrefix + virtual) || '/'
@@ -39,10 +47,16 @@ export async function readdir(
       return cached.entries
     }
   }
-  const full = resolveSafe(accessor.root, virtual)
-  let entries: string[]
+  const full = await resolveInside(accessor.root, path, virtual)
+  let entries: Dirent[]
+  let version: string | null = null
   try {
-    entries = await fsReaddir(full)
+    // The version is read before the scan: a change landing during the scan
+    // then leaves the stored version behind the folder's, and the next check
+    // re-lists instead of serving rows that missed it.
+    if (accessor.folderVersions) version = await folderVersion(full, wallNs())
+    // A host symlink is not an entry of the mount (see resolveInside).
+    entries = await readEntries(full)
   } catch (err) {
     // The kernel already separates ENOENT (a component does not exist) from
     // ENOTDIR (a component exists but is not a directory); keep that split
@@ -51,22 +65,22 @@ export async function readdir(
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOTDIR') throw enotdir(path)
     if (code === 'ENOENT') throw enoent(path)
-    throw err
+    throw diskError(err, path)
   }
   const base = norm(virtual)
   const dirPrefix = base === '/' ? '/' : `${base}/`
-  const sorted = [...entries].sort(compareCodePoints)
-  const virtualEntries = sorted.map((e) => `${mountPrefix}${dirPrefix}${e}`)
+  const sorted = [...entries].sort((a, b) => compareCodePoints(a.name, b.name))
+  const virtualEntries = sorted.map((e) => `${mountPrefix}${dirPrefix}${e.name}`)
   if (index !== undefined) {
-    const indexEntries: [string, IndexEntry][] = sorted.map((name) => [
-      name,
+    const indexEntries: [string, IndexEntry][] = sorted.map((entry) => [
+      entry.name,
       new IndexEntry({
-        id: `${dirPrefix}${name}`,
-        name,
-        resourceType: ResourceType.FILE,
+        id: `${dirPrefix}${entry.name}`,
+        name: entry.name,
+        resourceType: entry.isDirectory() ? ResourceType.FOLDER : ResourceType.FILE,
       }),
     ])
-    await index.setDir(virtualKey, indexEntries)
+    await index.setDir(virtualKey, indexEntries, null, { version })
   }
   return virtualEntries
 }

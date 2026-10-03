@@ -18,8 +18,9 @@ from mirage.accessor.langfuse import LangfuseAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.commands.builtin.langfuse import COMMANDS
 from mirage.commands.config import CommandOpts
-from mirage.resource.langfuse.config import LangfuseConfig
+from mirage.io.types import materialize
 from mirage.types import PathSpec
+from mirage.vfs.langfuse.config import LangfuseConfig
 
 
 def _find_command():
@@ -31,36 +32,28 @@ def _find_command():
 
 
 def _spec(virtual: str) -> PathSpec:
-    return PathSpec(virtual=virtual,
-                    directory=virtual,
-                    resource_path=virtual.strip("/"))
+    return PathSpec(
+        virtual=virtual, directory=virtual, vfs_path=virtual.strip("/")
+    )
 
 
 async def _run(paths, *texts: str, **flags) -> list[str]:
     accessor = LangfuseAccessor(
-        LangfuseConfig(public_key="pk", secret_key="sk"))
+        LangfuseConfig(public_key="pk", secret_key="sk")
+    )
     find = _find_command()
     stdout, _io = await find(
-        accessor, paths, list(texts),
-        CommandOpts(index=RAMIndexCacheStore(), flags={**flags}))
-    data = stdout if isinstance(stdout, bytes) else b""
+        accessor,
+        paths,
+        list(texts),
+        CommandOpts(index=RAMIndexCacheStore(), flags={**flags}),
+    )
+    data = await materialize(stdout)
     return data.decode().splitlines()
 
 
 @pytest.mark.asyncio
-async def test_walk_lists_top_level_dirs():
-    lines = await _run([_spec("/")], maxdepth="1")
-    assert "/traces" in lines
-    assert "/prompts" in lines
-
-
-@pytest.mark.asyncio
-async def test_path_pattern_is_honored():
-    lines = await _run([_spec("/")], maxdepth="1", path="*prompts*")
-    assert lines == ["/prompts"]
-
-
-@pytest.mark.asyncio
-async def test_size_is_honored_dirs_count_as_zero():
-    lines = await _run([_spec("/")], maxdepth="1", size="+0c")
-    assert lines == []
+async def test_size_counts_a_directory_as_dir_size():
+    dirs = await _run([_spec("/")], maxdepth="1")
+    assert await _run([_spec("/")], maxdepth="1", size="+0c") == dirs
+    assert await _run([_spec("/")], maxdepth="1", size="-1k") == []

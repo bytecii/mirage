@@ -1,3 +1,4 @@
+import type { Descriptor, StreamOwner } from '../../shell/descriptors.ts'
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,12 +13,39 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { SHELL_ARGV0 } from '../../shell/constants.ts'
-import type { AsyncLineIterator } from '../../io/async_line_iterator.ts'
+import {
+  DEFAULT_PROCESS_PERMISSIONS,
+  parseProcessPermissions,
+  type ProcessPermissions,
+} from '../../process/config.ts'
+import type { Limit } from '../../types.ts'
+import type { SharedInput } from '../../io/async_line_iterator.ts'
+import { parseCommandLimits, commandLimitsToJSON } from '../../policy/builtin/output_cap.ts'
+import {
+  BIN_PREFIX,
+  IFS_DEFAULT,
+  RANDOM,
+  RANDOM_UNSET,
+  SHELL_ARGV0,
+} from '../../shell/constants.ts'
+import { EnvVarSchema, type EnvEntries } from '../../secrets/config.ts'
 import type { ShellArray } from '../../shell/array.ts'
-import type { ShellVar } from '../../shell/variable.ts'
+import type { ManagedRef, ShellVar } from '../../shell/variable.ts'
 import { attrsFromLetters, makeVar, storedAttrs, VarAttr, withValue } from '../../shell/variable.ts'
-import type { HiddenPaths, HiddenVars, MountMode } from '../../types.ts'
+import type { AdmissionRules, Decision, HideReason, ProfileScript } from '../../policy/types.ts'
+import {
+  commandsFromJSON,
+  commandsToJSON,
+  decisionFromJSON,
+  decisionToJSON,
+  scriptFromJSON,
+  scriptToJSON,
+  type CommandsJSON,
+  type DecisionJSON,
+  type ScriptJSON,
+} from './serialize.ts'
+import type { HiddenPaths, HiddenVars, ShowEntry, ShownPaths } from '../../types.ts'
+import type { MountMode } from '../../types.ts'
 
 /**
  * What a child shell gets its own copy of, and the parent gets back
@@ -26,35 +54,43 @@ import type { HiddenPaths, HiddenVars, MountMode } from '../../types.ts'
  * field the other leaks, and adding a field here is a compile error
  * until `snapshot` and `restore` both carry it. `lastExitCode` is
  * deliberately absent: `$?` after a child shell is the child's status,
- * which is the one thing it reports back. `sourceDepth` is here because a
- * child shell starts outside any `source` its caller is inside.
+ * which is the one thing it reports back. `functionNames` is here because a
+ * child shell starts outside every function and `source` its caller is
+ * inside.
  */
 export interface ChildShellState {
   cwd: string
   logicalCwd: string | undefined
-  sourceDepth: number
-  exitTrap: string | null
-  exitTrapInherited: boolean
-  evalDepth: number
-  runningExitTrap: boolean
+  functionNames: readonly string[] | null
   vars: Record<string, ShellVar>
   functions: Record<string, unknown>
   readonlyFunctions: Set<string>
   shellOptions: Record<string, boolean>
   positionalArgs: string[]
   scriptName: string | null
+  exitTrap: string | null
+  exitTrapInherited: boolean
+  trapStatus: number | null
   lastBgJobId: number | null
   getoptsPos: number
   getoptsOptind: number | null
   shopts: Record<string, boolean>
   aliases: Record<string, string>
   umask: number
+  descriptors: Map<number, Descriptor>
   execStdout: string | null
   execStdoutAppend: boolean
+  execStdoutInput: SharedInput | null
   execStderr: string | null
   execStderrAppend: boolean
-  execStdin: Uint8Array | null
-  execOpened: Set<string>
+  execStderrInput: SharedInput | null
+  execStdin: SharedInput | null
+  execStdinUnreadable: boolean
+  execStdinIdentity: string | null
+  randomState: number | null
+  randomSeed: string | null
+  randomLast: number
+  pipeStatus: readonly number[]
 }
 
 /**
@@ -124,7 +160,47 @@ export interface SessionInit {
    * session door for vars), fork carries them, toJSON serializes.
    */
   hiddenPaths?: HiddenPaths | null
+  /**
+   * The show half of the path axis: re-opened subtrees and per-subtree
+   * modes, resolved against hiddenPaths by anchor depth.
+   */
+  shownPaths?: ShownPaths | null
   hiddenVars?: HiddenVars | null
+  /**
+   * The operator's reasons for grouped hides: never rendered to the
+   * agent (a reason on ENOENT would confirm the path exists),
+   * persisted so the host's read-back doors survive a restart.
+   */
+  hideReasons?: readonly HideReason[]
+  /**
+   * The session's own command tier (`profiles.<n>.commands` tightened
+   * by the inline document): allow patterns, ask and deny rules. A
+   * durable restriction like hiddenPaths, so it persists.
+   */
+  commands?: AdmissionRules | null
+  /**
+   * The profile's per-command script, evaluated by ScriptPolicy at the
+   * admission gate. A durable restriction like commands, so it
+   * persists.
+   */
+  script?: ProfileScript | null
+  /**
+   * The name of the profile the session runs under, null for an
+   * unrestricted session. What an owner-rendering command prints as the
+   * group. Stamped by the profile like script, so it persists.
+   */
+  profile?: string | null
+  commandLimits?: Readonly<Record<string, Limit>>
+  processes?: ProcessPermissions
+  processId?: number | null
+  shellPid?: number | null
+  processDepth?: number
+  /**
+   * The host's standing answers to asked lines (design 3.9): session
+   * state like functions and cwd, persisted, read and written through
+   * the manager by id so a fork shares them, never another session's.
+   */
+  decisions?: readonly Decision[]
   generation?: number
   pipelineTimeoutSeconds?: number | null
   lastBgJobId?: number | null
@@ -175,6 +251,124 @@ export function varsFromDict(
   return out
 }
 
+/**
+ * Variable records for a workspace env block.
+ *
+ * The declaration side of the env plane: a bare string is the literal
+ * short form (exported, like `varsFromEnv`), a mapping is coerced
+ * through `EnvVarSchema`, and a managed entry becomes bash's third
+ * state -- exported, unset -- carrying the pointer as `ManagedRef`.
+ * After this translation the session vars are the only truth the fill
+ * step reads.
+ */
+export function varsFromEntries(entries: EnvEntries): Record<string, ShellVar> {
+  const out = ownRecord<ShellVar>()
+  for (const [name, rawEntry] of Object.entries(entries)) {
+    const entry = EnvVarSchema.parse(typeof rawEntry === 'string' ? { value: rawEntry } : rawEntry)
+    const attrs = new Set<VarAttr>()
+    if (entry.from !== undefined) {
+      const managed: ManagedRef = {
+        source: entry.from,
+        ref: entry.ref,
+        key: entry.key ?? name,
+        eager: entry.fetch === 'eager',
+      }
+      attrs.add(VarAttr.Export)
+      if (entry.readonly) attrs.add(VarAttr.Readonly)
+      out[name] = { value: null, attrs, managed }
+      continue
+    }
+    if (entry.export) attrs.add(VarAttr.Export)
+    if (entry.readonly) attrs.add(VarAttr.Readonly)
+    out[name] = makeVar(entry.value ?? null, attrs)
+  }
+  return out
+}
+
+/** The wire shape `varsToFields` writes and `varsFromFields` reads. */
+export interface VarFields {
+  env?: Record<string, string>
+  var_attrs?: Record<string, string>
+  managed?: Record<string, { from: string; ref: string; key: string; fetch?: string }>
+}
+
+/**
+ * The stored shape of a bare variable table.
+ *
+ * The three keys a stored session writes (`toJSON`): `env` holds the
+ * plain scalars, `var_attrs` the letter clusters, `managed` the
+ * pointers -- and a managed name serializes as its pointer, never its
+ * value, the same rule the session codec states. This exists for the
+ * workspace env template, a variable table with no session around it,
+ * so a snapshot or copy can carry the declaration.
+ */
+export function varsToFields(table: Record<string, ShellVar>): VarFields {
+  const managed = ownRecord<ManagedRef>()
+  const env = ownRecord<string>()
+  const letters = ownRecord<string>()
+  for (const [name, v] of Object.entries(table)) {
+    if (v.managed !== undefined) managed[name] = v.managed
+    if (v.attrs.size > 0) letters[name] = storedAttrs(v)
+  }
+  for (const [name, v] of Object.entries(table)) {
+    if (typeof v.value === 'string' && !Object.hasOwn(managed, name)) env[name] = v.value
+  }
+  const fields: VarFields = { env, var_attrs: letters }
+  if (Object.keys(managed).length > 0) {
+    const refs = ownRecord<{ from: string; ref: string; key: string; fetch?: string }>()
+    for (const [name, ref] of Object.entries(managed)) {
+      const entry: { from: string; ref: string; key: string; fetch?: string } = {
+        from: ref.source,
+        ref: ref.ref,
+        key: ref.key,
+      }
+      if (ref.eager) entry.fetch = 'eager'
+      refs[name] = entry
+    }
+    fields.managed = refs
+  }
+  return fields
+}
+
+/**
+ * The variable table a `varsToFields` payload restores.
+ *
+ * `varsFromDict` reads the two plain halves; each managed name then
+ * restores declared-but-unfetched, its value forced back to null so a
+ * payload that smuggles one in is discarded rather than trusted --
+ * exactly how `fromJSON` restores a stored session's vars.
+ */
+export function varsFromFields(data: VarFields): Record<string, ShellVar> {
+  return restoredVars(data.env ?? {}, data.var_attrs ?? {}, data.managed)
+}
+
+/**
+ * The restore side of `toJSON`'s three env keys. A managed name
+ * restores declared-but-unfetched: the value is forced back to null,
+ * because a stored session must never carry the plaintext, so one a
+ * tampered payload smuggles into `env` is discarded rather than
+ * trusted.
+ */
+function restoredVars(
+  env: Record<string, string>,
+  attrs: Record<string, string> | undefined,
+  managed:
+    | Record<string, { from: string; ref: string; key: string; fetch?: string }>
+    | null
+    | undefined,
+): Record<string, ShellVar> {
+  const out = attrs === undefined ? varsFromEnv(env) : varsFromDict(env, attrs)
+  for (const [name, m] of Object.entries(managed ?? {})) {
+    const base = sessionEntry(out, name) ?? makeVar(null, new Set([VarAttr.Export]))
+    setSessionEntry(out, name, {
+      value: null,
+      attrs: base.attrs,
+      managed: { source: m.from, ref: m.ref, key: m.key, eager: m.fetch === 'eager' },
+    })
+  }
+  return out
+}
+
 /** Copy a variable store deeply enough that a child cannot write back. */
 function copyVars(vars: Record<string, ShellVar>): Record<string, ShellVar> {
   const out = ownRecord<ShellVar>()
@@ -189,7 +383,19 @@ function copyVars(vars: Record<string, ShellVar>): Record<string, ShellVar> {
   return out
 }
 
-export class Session {
+/**
+ * Opaque per-line identity for status writes, minted once per
+ * `execute()` and carried on the line's abort frame so every statement
+ * it runs stamps the same one.
+ */
+export type StatusWriter = symbol
+
+/** A fresh line identity. */
+export function newStatusWriter(): StatusWriter {
+  return Symbol('line')
+}
+
+export class SessionState {
   sessionId: string
   cwd: string
   // The spelling `cd` arrived at: `..` simplified textually, symlinks
@@ -213,25 +419,57 @@ export class Session {
   // frozen things in bash, and each refuses in its own voice.
   readonlyFunctions: Set<string>
   lastExitCode: number
+  // `${PIPESTATUS[@]}`: the exit status of every segment of the last
+  // pipeline, where a simple command is a one-segment pipeline. Written
+  // only through `recordStatus` (`executor/statement.ts`), the one door
+  // `$?` goes through as well, so the two can never disagree.
+  // Empty in a fresh shell, as bash's is: the first `${PIPESTATUS[*]}`
+  // expands to nothing until a statement records one.
+  pipeStatus: readonly number[] = []
+  // `${FUNCNAME[@]}`: the function frames on the call stack, innermost
+  // first, a sourced file as `source` (`CallStack.functionNames`). Written
+  // where a frame is pushed and popped, and answered by the arrays view
+  // before the store, so an assignment to it is ignored. Null once
+  // `unset FUNCNAME` has made it an ordinary name, as bash's unset does for
+  // the rest of the shell.
+  functionNames: readonly string[] | null = []
+  // A pipeline's per-segment statuses, parked by `handlePipe` for the
+  // statement boundary that closes it to claim. Null between them.
+  pipeStatusPending: readonly number[] | null = null
+  // Which line stamped the three fields above, so an aborted line only
+  // puts back what it overwrote. Two `execute()` calls can share one
+  // session, and an abort restoring its snapshot over a concurrent
+  // line's finished status would resurrect a value that line already
+  // superseded. Runtime identity, never serialized: a restored snapshot
+  // has no line running on it.
+  statusWriter: StatusWriter | null = null
+  // `$RANDOM`'s generator state and the seed word it last consumed
+  // (`session/rng.ts`). A child shell reseeds, as bash's does, and the
+  // parent gets its own state back (`snapshot` / `restore`).
+  randomState: number | null = null
+  randomSeed: string | null = null
+  randomLast = 0
+  // Scoped by the executing node so diagnostics follow its redirections.
+  diagnostics: (string | Uint8Array)[] = []
   positionalArgs: string[]
   // What `$0` expands to. Null is the shell itself; a nested `bash`/`sh`
   // sets it to the script file it is running, or to the name given after
   // `-c`, and restores it afterwards.
   scriptName: string | null
+  // The `trap ... EXIT` action, run when this shell ends; "" is an
+  // ignored EXIT. A child shell sees its parent's action (`trap -p`
+  // lists it) with `exitTrapInherited` set, and runs none until it
+  // registers its own. Live shell state: a session store keeps none.
+  exitTrap: string | null = null
+  exitTrapInherited = false
+  // The status the shell is ending with while its EXIT action runs: a
+  // bare `exit` in the action keeps it, as bash's does.
+  trapStatus: number | null = null
   shellOptions: Record<string, boolean>
   // Transient `set -e` marker: true when the failure just returned
   // came from a short-circuited &&/|| branch or a `!`-negated command,
   // which bash exempts from errexit. Reset on every node execution.
   errexitImmune: boolean
-  exitTrap: string | null = null
-  exitTrapInherited = false
-  evalDepth = 0
-  runningExitTrap = false
-  // Depth of nested `source`/`.` execution: `return` is legal and the
-  // program loop absorbs its signal only while a file is being sourced.
-  sourceDepth = 0
-  stdinBuffer: AsyncLineIterator | null = null
-  stdinSource: unknown = null
   // Variables shadowed by `local` / `declare` in the running function; a
   // null value means the caller had no variable of that name. One stack,
   // not one per container: a local shadows the whole record, so its
@@ -258,8 +496,6 @@ export class Session {
   // `x=abc` exits 0).
   cmdsubSeq = 0
   cmdsubStatus = 0
-  // Diagnostics collected by the current AST node's word expansions.
-  cmdsubStderr: Uint8Array = new Uint8Array()
   // `shopt` options, kept apart from `set -o` ones (bash keeps two
   // vocabularies). Only names set away from their default are stored.
   shopts: Record<string, boolean> = {}
@@ -271,22 +507,57 @@ export class Session {
   aliasStack: string[] = []
   parseSeq = 0
   parseCurrent = 0
+  // The owner of this session's terminal streams, which an `exec` copy of
+  // one names (`exec 3>&1`), and whether a line of the session is running,
+  // whose outermost program routes what was written to them. Each fork gets
+  // its own: a child shell writing to its parent's terminal is writing to a
+  // stream it did not open. Mirrors Python's terminal and _line_open.
+  readonly terminal: StreamOwner = Symbol('terminal')
+  lineOpen = false
   // File-creation mask. bash's default for a fresh shell.
   umask = 0o022
   // `exec` redirect-only state: where the shell's own stdout, stderr and
   // stdin point after a bare `exec > file`. Null is the terminal; `""`
-  // is a closed descriptor whose writes drop; `execOpened` names targets
-  // already truncated so a later statement appends.
+  // is a closed descriptor whose writes drop. `execStdin` is the one
+  // descriptor an `exec <` opened: every statement after it reads on
+  // from where the one before stopped, across lines and into a child
+  // shell, which shares it as bash's fork shares fd 0. `execStdoutInput`
+  // and `execStderrInput` are the read end a stream holds after `exec
+  // 1<f` or `exec 1<&0`, which a dup shares the offset of.
+  descriptors = new Map<number, Descriptor>()
   execStdout: string | null = null
   execStdoutAppend = false
+  execStdoutInput: SharedInput | null = null
   execStderr: string | null = null
   execStderrAppend = false
-  execStdin: Uint8Array | null = null
-  execOpened = new Set<string>()
+  execStderrInput: SharedInput | null = null
+  execStdin: SharedInput | null = null
+  execStdinUnreadable = false
+  // What fd 0 holds when it is not its own read end: CLOSED after `exec
+  // <&-`, a writing stream's identity after `exec 0<&1`, so a later dup
+  // from fd 0 copies that (`exec 2<&0` then writes to stdout) or is
+  // refused (`0: Bad file descriptor`); null for the read end itself.
+  execStdinIdentity: string | null = null
   localFrames: Map<string, ShellVar | null>[] = []
+  // The caller's `RANDOM` marker for every frame that shadows the name,
+  // innermost last: a local `RANDOM` is an ordinary variable for the
+  // function's extent, and the generator resumes when it returns.
+  localRandom: (string | null)[] = []
   mountModes: ReadonlyMap<string, MountMode> | null
   hiddenPaths: HiddenPaths | null
+  shownPaths: ShownPaths | null
   hiddenVars: HiddenVars | null
+  hideReasons: readonly HideReason[]
+  commands: AdmissionRules | null
+  script: ProfileScript | null
+  profile: string | null
+  commandLimits: Readonly<Record<string, Limit>>
+  terminalOutput = true
+  processes: ProcessPermissions
+  processId: number | null
+  shellPid: number | null
+  processDepth: number
+  decisions: readonly Decision[]
   generation: number
   pipelineTimeoutSeconds: number | null
   lastBgJobId: number | null
@@ -306,7 +577,18 @@ export class Session {
     this.shellOptions = init.shellOptions ?? {}
     this.mountModes = init.mountModes ?? null
     this.hiddenPaths = init.hiddenPaths ?? null
+    this.shownPaths = init.shownPaths ?? null
     this.hiddenVars = init.hiddenVars ?? null
+    this.hideReasons = init.hideReasons ?? []
+    this.commands = init.commands ?? null
+    this.script = init.script ?? null
+    this.processId = init.processId ?? null
+    this.shellPid = init.shellPid ?? null
+    this.processDepth = init.processDepth ?? 0
+    this.profile = init.profile ?? null
+    this.commandLimits = { ...init.commandLimits }
+    this.processes = parseProcessPermissions(init.processes ?? DEFAULT_PROCESS_PERMISSIONS)
+    this.decisions = init.decisions ?? []
     this.generation = init.generation ?? 0
     this.pipelineTimeoutSeconds = init.pipelineTimeoutSeconds ?? null
     this.lastBgJobId = init.lastBgJobId ?? null
@@ -318,6 +600,15 @@ export class Session {
     // rather than every string.
     if (!Object.hasOwn(this.vars, 'PWD'))
       this.vars.PWD = makeVar(this.cwd, new Set([VarAttr.Export]))
+    // bash starts with a PATH when the environment gives it none, and does
+    // not export it: `env` does not list it and a child process, such as a
+    // host interpreter, keeps its own. The one directory here is where
+    // every program's file is.
+    if (!Object.hasOwn(this.vars, 'PATH')) this.vars.PATH = makeVar(BIN_PREFIX, new Set())
+    // bash sets IFS at startup and never exports it, so a fresh shell reads
+    // `${#IFS}` as 3 and `OLDIFS=$IFS ... IFS=$OLDIFS` puts the default
+    // back rather than an empty IFS that splits nothing.
+    if (!Object.hasOwn(this.vars, 'IFS')) this.vars.IFS = makeVar(IFS_DEFAULT, new Set())
   }
 
   /**
@@ -336,13 +627,13 @@ export class Session {
    * persistent session's old directory from `pwd`. `??` cannot express
    * this, since the value being chosen is `undefined`.
    */
-  fork(overrides: Partial<SessionInit> = {}): Session {
+  fork(overrides: Partial<SessionInit> = {}): SessionState {
     const movedTo = 'logicalCwd' in overrides ? undefined : overrides.cwd
     const vars = overrides.vars ?? copyVars(this.vars)
     // $PWD names where the session is, so it follows the move even when
     // the caller also supplied variables to layer on.
     if (movedTo !== undefined) vars.PWD = makeVar(movedTo, new Set([VarAttr.Export]))
-    const forked = new Session({
+    const forked = new SessionState({
       sessionId: overrides.sessionId ?? this.sessionId,
       cwd: overrides.cwd ?? this.cwd,
       logicalCwd: movedTo !== undefined ? undefined : (overrides.logicalCwd ?? this.logicalCwd),
@@ -356,11 +647,26 @@ export class Session {
       shellOptions: overrides.shellOptions ?? { ...this.shellOptions },
       mountModes: overrides.mountModes ?? this.mountModes,
       hiddenPaths: overrides.hiddenPaths ?? this.hiddenPaths,
+      shownPaths: overrides.shownPaths ?? this.shownPaths,
       hiddenVars: overrides.hiddenVars ?? this.hiddenVars,
+      hideReasons: overrides.hideReasons ?? this.hideReasons,
+      commands: overrides.commands ?? this.commands,
+      script: overrides.script ?? this.script,
+      profile: overrides.profile ?? this.profile,
+      commandLimits: overrides.commandLimits ?? this.commandLimits,
+      processes: overrides.processes ?? this.processes,
+      processId: overrides.processId ?? this.processId,
+      shellPid: overrides.shellPid ?? this.shellPid,
+      processDepth: overrides.processDepth ?? this.processDepth,
+      decisions: overrides.decisions ?? this.decisions,
       generation: overrides.generation ?? this.generation,
       pipelineTimeoutSeconds: overrides.pipelineTimeoutSeconds ?? this.pipelineTimeoutSeconds,
       lastBgJobId: overrides.lastBgJobId ?? this.lastBgJobId,
     })
+    if (this.randomSeed === RANDOM_UNSET) forked.randomSeed = RANDOM_UNSET
+    forked.terminalOutput = this.terminalOutput
+    forked.pipeStatus = [...this.pipeStatus]
+    forked.functionNames = this.functionNames
     forked.exitTrap = this.exitTrap
     forked.exitTrapInherited = this.exitTrapInherited
     forked.getoptsPos = this.getoptsPos
@@ -372,12 +678,16 @@ export class Session {
     forked.aliases = { ...this.aliases }
     forked.aliasMarks = new Map(this.aliasMarks)
     forked.umask = this.umask
+    forked.descriptors = new Map(this.descriptors)
     forked.execStdout = this.execStdout
     forked.execStdoutAppend = this.execStdoutAppend
+    forked.execStdoutInput = this.execStdoutInput
     forked.execStderr = this.execStderr
     forked.execStderrAppend = this.execStderrAppend
+    forked.execStderrInput = this.execStderrInput
     forked.execStdin = this.execStdin
-    forked.execOpened = new Set(this.execOpened)
+    forked.execStdinUnreadable = this.execStdinUnreadable
+    forked.execStdinIdentity = this.execStdinIdentity
     return forked
   }
 
@@ -445,71 +755,108 @@ export class Session {
    * their null prototype across the round trip.
    */
   snapshot(): ChildShellState {
-    return {
+    const saved: ChildShellState = {
       cwd: this.cwd,
       logicalCwd: this.logicalCwd,
-      sourceDepth: this.sourceDepth,
-      exitTrap: this.exitTrap,
-      exitTrapInherited: this.exitTrapInherited,
-      evalDepth: this.evalDepth,
-      runningExitTrap: this.runningExitTrap,
+      functionNames: this.functionNames,
       vars: copyVars(this.vars),
       functions: ownRecord(this.functions),
       readonlyFunctions: new Set(this.readonlyFunctions),
       shellOptions: { ...this.shellOptions },
       positionalArgs: [...this.positionalArgs],
       scriptName: this.scriptName,
+      exitTrap: this.exitTrap,
+      exitTrapInherited: this.exitTrapInherited,
+      trapStatus: this.trapStatus,
       lastBgJobId: this.lastBgJobId,
       getoptsPos: this.getoptsPos,
       getoptsOptind: this.getoptsOptind,
       shopts: { ...this.shopts },
       aliases: { ...this.aliases },
       umask: this.umask,
+      descriptors: new Map(this.descriptors),
       execStdout: this.execStdout,
       execStdoutAppend: this.execStdoutAppend,
+      execStdoutInput: this.execStdoutInput,
       execStderr: this.execStderr,
       execStderrAppend: this.execStderrAppend,
+      execStderrInput: this.execStderrInput,
       execStdin: this.execStdin,
-      execOpened: new Set(this.execOpened),
+      execStdinUnreadable: this.execStdinUnreadable,
+      execStdinIdentity: this.execStdinIdentity,
+      randomState: this.randomState,
+      randomSeed: this.randomSeed,
+      randomLast: this.randomLast,
+      // Every pipeline segment sees the statuses of the pipeline before
+      // this one, however many statements of its own it runs.
+      pipeStatus: [...this.pipeStatus],
     }
+    // A child shell reseeds `$RANDOM`, as bash's does: the generator
+    // starts fresh, and the seed word follows the stored value so an
+    // assignment the parent made is not replayed as a reseed. `unset
+    // RANDOM` stays unset.
+    if (this.randomSeed !== RANDOM_UNSET) {
+      const word = this.vars[RANDOM]?.value
+      this.randomSeed = typeof word === 'string' ? word : null
+      this.randomState = null
+      this.randomLast = 0
+    }
+    return saved
   }
 
   /** Put back a snapshot, ending a child shell. */
   restore(state: ChildShellState): void {
     this.cwd = state.cwd
     this.logicalCwd = state.logicalCwd
-    this.sourceDepth = state.sourceDepth
-    this.exitTrap = state.exitTrap
-    this.exitTrapInherited = state.exitTrapInherited
-    this.evalDepth = state.evalDepth
-    this.runningExitTrap = state.runningExitTrap
+    this.functionNames = state.functionNames
     this.vars = state.vars
     this.functions = state.functions
     this.readonlyFunctions = state.readonlyFunctions
     this.shellOptions = state.shellOptions
     this.positionalArgs = state.positionalArgs
     this.scriptName = state.scriptName
+    this.exitTrap = state.exitTrap
+    this.exitTrapInherited = state.exitTrapInherited
+    this.trapStatus = state.trapStatus
     this.lastBgJobId = state.lastBgJobId
     this.getoptsPos = state.getoptsPos
     this.getoptsOptind = state.getoptsOptind
     this.shopts = state.shopts
     this.aliases = state.aliases
     this.umask = state.umask
+    this.descriptors = state.descriptors
     this.execStdout = state.execStdout
     this.execStdoutAppend = state.execStdoutAppend
+    this.execStdoutInput = state.execStdoutInput
     this.execStderr = state.execStderr
     this.execStderrAppend = state.execStderrAppend
+    this.execStderrInput = state.execStderrInput
     this.execStdin = state.execStdin
-    this.execOpened = state.execOpened
+    this.execStdinUnreadable = state.execStdinUnreadable
+    this.execStdinIdentity = state.execStdinIdentity
+    this.randomState = state.randomState
+    this.randomSeed = state.randomSeed
+    this.randomLast = state.randomLast
+    this.pipeStatus = state.pipeStatus
   }
 
   /**
    * The durable-field payload persisted by SessionStore and snapshots.
-   * Keys are snake_case, byte-identical to Python's `Session.to_dict`,
+   * Keys are snake_case, byte-identical to Python's `SessionState.to_dict`,
    * so both languages can share one store (a py daemon creates the
    * session, a node kernel tier binds it).
    */
   toJSON(): Record<string, unknown> {
+    // A managed name serializes as its pointer, never its value: a
+    // stored session may leak only where a secret lives. `env` skips
+    // the name (the fetched plaintext must not land in the record)
+    // while `var_attrs` keeps its letters, so a payload with the
+    // `managed` key stripped still restores the name as
+    // attributed-unset rather than dropping it.
+    const managed = ownRecord<ManagedRef>()
+    for (const [name, v] of Object.entries(this.vars)) {
+      if (v.managed !== undefined) managed[name] = v.managed
+    }
     // `env` is every scalar and `var_attrs` the letters set on the names
     // that carry any, rather than one key holding both: `env` is the
     // shape an embedder writes and the other language reads, so it stays
@@ -517,10 +864,14 @@ export class Session {
     // the second key a reload could only guess, and guessing "exported"
     // turned every plain `X=hello` into an exported one on the first
     // round trip.
+    const scalars = ownRecord<string>()
+    for (const [name, value] of Object.entries(this.env)) {
+      if (!Object.hasOwn(managed, name)) scalars[name] = value
+    }
     const data: Record<string, unknown> = {
       session_id: this.sessionId,
       cwd: this.cwd,
-      env: { ...this.env },
+      env: scalars,
       created_at: this.createdAt,
       generation: this.generation,
     }
@@ -535,6 +886,15 @@ export class Session {
     // attribute was cleared) serialize as a process environment, so the
     // reload re-exported everything it held.
     data.var_attrs = letters
+    if (Object.keys(managed).length > 0) {
+      const refs = ownRecord<Record<string, string>>()
+      for (const [name, ref] of Object.entries(managed)) {
+        const entry: Record<string, string> = { from: ref.source, ref: ref.ref, key: ref.key }
+        if (ref.eager) entry.fetch = 'eager'
+        refs[name] = entry
+      }
+      data.managed = refs
+    }
     if (this.mountModes !== null) {
       data.mount_modes = Object.fromEntries(this.mountModes)
     }
@@ -544,12 +904,33 @@ export class Session {
         patterns: [...(this.hiddenPaths.patterns ?? [])],
       }
     }
+    if (this.shownPaths !== null) {
+      data.shown_paths = {
+        entries: this.shownPaths.entries.map((e) =>
+          e.mode == null ? { path: e.path } : { path: e.path, mode: e.mode },
+        ),
+      }
+    }
+    if (this.hideReasons.length > 0) {
+      data.hide_reasons = this.hideReasons.map((g) => ({
+        patterns: [...g.patterns],
+        reason: g.reason,
+      }))
+    }
     if (this.hiddenVars !== null) {
       data.hidden_vars = {
         names: [...(this.hiddenVars.names ?? [])],
         patterns: [...(this.hiddenVars.patterns ?? [])],
       }
     }
+    if (this.commands !== null) data.commands = commandsToJSON(this.commands)
+    if (this.script !== null) data.script = scriptToJSON(this.script)
+    if (Object.keys(this.commandLimits).length > 0)
+      data.command_limits = commandLimitsToJSON(this.commandLimits)
+    if (JSON.stringify(this.processes) !== JSON.stringify(DEFAULT_PROCESS_PERMISSIONS))
+      data.processes = this.processes
+    if (this.profile !== null) data.profile = this.profile
+    if (this.decisions.length > 0) data.decisions = this.decisions.map(decisionToJSON)
     return data
   }
 
@@ -558,13 +939,22 @@ export class Session {
     cwd?: string
     env?: Record<string, string>
     var_attrs?: Record<string, string>
+    managed?: Record<string, { from: string; ref: string; key: string; fetch?: string }> | null
     created_at?: number
     mount_modes?: Record<string, MountMode> | null
     hidden_paths?: { paths?: string[]; patterns?: string[] } | null
+    shown_paths?: { entries?: { path: string; mode?: MountMode }[] } | null
+    hide_reasons?: { patterns?: string[]; reason?: string }[] | null
     hidden_vars?: { names?: string[]; patterns?: string[] } | null
+    commands?: CommandsJSON | null
+    script?: ScriptJSON | null
+    profile?: string | null
+    command_limits?: unknown
+    processes?: ProcessPermissions
+    decisions?: DecisionJSON[] | null
     generation?: number
-  }): Session {
-    return new Session({
+  }): SessionState {
+    return new SessionState({
       sessionId: data.session_id,
       ...(data.cwd !== undefined ? { cwd: data.cwd } : {}),
       // No `var_attrs` at all means the payload is a bare process
@@ -572,13 +962,8 @@ export class Session {
       // hand-built -- so every name in it is exported, which is what a
       // process environment means. With the key present the attributes
       // were recorded and are restored as they were written.
-      ...(data.env !== undefined || data.var_attrs !== undefined
-        ? {
-            vars:
-              data.var_attrs === undefined
-                ? varsFromEnv(data.env ?? {})
-                : varsFromDict(data.env ?? {}, data.var_attrs),
-          }
+      ...(data.env !== undefined || data.var_attrs !== undefined || data.managed != null
+        ? { vars: restoredVars(data.env ?? {}, data.var_attrs, data.managed) }
         : {}),
       ...(data.created_at !== undefined ? { createdAt: data.created_at } : {}),
       ...(data.generation !== undefined ? { generation: data.generation } : {}),
@@ -587,10 +972,29 @@ export class Session {
         data.hidden_paths != null
           ? { paths: data.hidden_paths.paths ?? [], patterns: data.hidden_paths.patterns ?? [] }
           : null,
+      shownPaths:
+        data.shown_paths != null
+          ? {
+              entries: (data.shown_paths.entries ?? []).map((e): ShowEntry => ({
+                path: e.path,
+                mode: e.mode ?? null,
+              })),
+            }
+          : null,
       hiddenVars:
         data.hidden_vars != null
           ? { names: data.hidden_vars.names ?? [], patterns: data.hidden_vars.patterns ?? [] }
           : null,
+      hideReasons:
+        data.hide_reasons != null
+          ? data.hide_reasons.map((g) => ({ patterns: g.patterns ?? [], reason: g.reason ?? '' }))
+          : [],
+      commands: data.commands != null ? commandsFromJSON(data.commands) : null,
+      script: data.script != null ? scriptFromJSON(data.script) : null,
+      profile: data.profile ?? null,
+      commandLimits: parseCommandLimits(data.command_limits),
+      processes: parseProcessPermissions(data.processes ?? DEFAULT_PROCESS_PERMISSIONS),
+      decisions: data.decisions != null ? data.decisions.map(decisionFromJSON) : [],
     })
   }
 }

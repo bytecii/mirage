@@ -12,38 +12,52 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 
 from mirage.io import CachableAsyncIterator, IOResult
-from mirage.io.types import ByteSource, materialize
+from mirage.io.async_line_iterator import SharedInput
+from mirage.io.types import ByteSource, materialize  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
 
-async def merge_stdout_stderr(
-    stdout: ByteSource | None,
-    io: IOResult,
-) -> AsyncIterator[bytes]:
-    """Stream stdout chunks with stderr prepended (for `cmd 2>&1 | next`).
+class SharedStdin:
+    """One lazy byte cursor shared by commands inheriting an input descriptor.
 
-    Emits stderr first (was conceptually produced before/around stdout
-    output), then streams stdout chunk-by-chunk without materializing.
-    Clears io.stderr after consumption so the pipeline's stderr
-    accumulator does not double-emit it.
+    Reads are serialized, including source pulls, so concurrent consumers
+    neither replay bytes nor advance the source simultaneously. A consumer
+    stopping early leaves the cursor open for the next one. Byte-sized pulls
+    preserve the unread suffix when a command such as ``head -c 1`` exits.
+
+    Args:
+        source (ByteSource): the inherited input, still unread.
     """
-    stderr_bytes = await materialize(io.stderr)
-    if stderr_bytes:
-        yield stderr_bytes
-    io.stderr = None
-    if stdout is None:
-        return
-    if isinstance(stdout, bytes):
-        if stdout:
-            yield stdout
-        return
-    async for chunk in stdout:
-        yield chunk
+
+    def __init__(self, source: ByteSource) -> None:
+        self._chunks: AsyncIterator[bytes] | None = ensure_stream(source)
+        self._buffer = b""
+        self._pos = 0
+        self._lock = asyncio.Lock()
+
+    def __aiter__(self) -> "SharedStdin":
+        return self
+
+    async def __anext__(self) -> bytes:
+        async with self._lock:
+            while self._pos >= len(self._buffer):
+                if self._chunks is None:
+                    raise StopAsyncIteration
+                try:
+                    self._buffer = await anext(self._chunks)
+                except StopAsyncIteration:
+                    self._chunks = None
+                    raise
+                self._pos = 0
+            chunk = self._buffer[self._pos : self._pos + 1]
+            self._pos += 1
+            return chunk
 
 
 def wrap_cachable_streams(
@@ -53,7 +67,8 @@ def wrap_cachable_streams(
     for path in io.cache:
         stream = io.reads.get(path) or io.writes.get(path)
         if stream is not None and not isinstance(
-                stream, (bytes, CachableAsyncIterator)):
+            stream, (bytes, CachableAsyncIterator)
+        ):
             ci = CachableAsyncIterator(stream)
             if path in io.reads:
                 io.reads[path] = ci
@@ -89,7 +104,7 @@ async def drain(stream: ByteSource | None) -> None:
 async def close_quietly(stream: ByteSource | None) -> None:
     """Best-effort close on an async generator stream.
 
-    Calls the underlying Python `aclose()` protocol. Ensures resource
+    Calls the underlying Python `aclose()` protocol. Ensures VFS
     cleanup (HTTP connections, file handles) fires promptly instead of
     waiting for GC. Harmless on exhausted streams and on bytes/None.
     """
@@ -106,7 +121,24 @@ async def close_quietly(stream: ByteSource | None) -> None:
         logger.debug("stream closer failed: %s", exc)
 
 
-async def async_chain(*streams: ByteSource | None, ) -> AsyncIterator[bytes]:
+async def discard_streams(*streams: ByteSource | None) -> None:
+    """Discard failed reads without changing normal early-close behavior."""
+    for stream in streams:
+        if isinstance(stream, (CachableAsyncIterator, SharedInput)):
+            await stream.discard()
+        else:
+            await close_quietly(stream)
+
+
+async def discard_io(io: IOResult) -> None:
+    await discard_streams(
+        *io.reads.values(), *io.writes.values(), io.stdout, io.stderr
+    )
+
+
+async def async_chain(
+    streams: Iterable[ByteSource | None],
+) -> AsyncIterator[bytes]:
     for stream in streams:
         if stream is None:
             continue
@@ -119,7 +151,8 @@ async def async_chain(*streams: ByteSource | None, ) -> AsyncIterator[bytes]:
 
 
 async def chain_cachables(
-        *iters: CachableAsyncIterator) -> AsyncIterator[bytes]:
+    *iters: CachableAsyncIterator,
+) -> AsyncIterator[bytes]:
     """Chain cachable iterators, replaying already-buffered chunks.
 
     Pulls each iterator live so a downstream early exit (e.g. head)
@@ -154,13 +187,16 @@ async def yield_bytes(data: bytes) -> AsyncIterator[bytes]:
     yield data
 
 
-async def quiet_match(
-    stream: AsyncIterator[bytes],
-    io: IOResult,
-) -> AsyncIterator[bytes]:
-    async for _ in stream:
-        io.exit_code = 0
-        return
-    io.exit_code = 1
-    return
-    yield b""
+def ensure_stream(src: ByteSource) -> AsyncIterator[bytes]:
+    """Present a byte source as a stream.
+
+    An iterator is returned as itself, so closing the consumer closes
+    its source; bytes become a one-chunk stream.
+
+    Args:
+        src (ByteSource): Bytes or an async byte iterator.
+
+    Returns:
+        AsyncIterator[bytes]: ``src`` itself, or ``yield_bytes(src)``.
+    """
+    return yield_bytes(src) if isinstance(src, bytes) else src

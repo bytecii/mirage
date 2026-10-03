@@ -19,15 +19,16 @@ import pytest
 import pytest_asyncio
 import redis.asyncio as aioredis
 
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.store.redis import RedisWorkspaceStateStore
 
 REDIS_URL = os.environ.get("REDIS_URL")
 
-pytestmark = pytest.mark.skipif(REDIS_URL is None,
-                                reason="REDIS_URL not configured")
+pytestmark = pytest.mark.skipif(
+    REDIS_URL is None, reason="REDIS_URL not configured"
+)
 
 
 @pytest.fixture
@@ -62,10 +63,9 @@ async def test_key_layout_scoped_by_workspace(prefix, store):
 
 @pytest.mark.asyncio
 async def test_meta_visible_across_providers(prefix, store):
-    await store.set_meta("ws1", {
-        "workspace_id": "ws1",
-        "default_session_id": "default"
-    })
+    await store.set_meta(
+        "ws1", {"workspace_id": "ws1", "default_session_id": "default"}
+    )
     sibling = RedisWorkspaceStateStore(url=REDIS_URL, key_prefix=prefix)
     try:
         meta = await sibling.load_meta("ws1")
@@ -85,12 +85,12 @@ async def test_cas_set_meta_create_race_one_winner(prefix, store):
         mine = {
             "workspace_id": "ws1",
             "default_session_id": "a",
-            "generation": 1
+            "generation": 1,
         }
         theirs = {
             "workspace_id": "ws1",
             "default_session_id": "b",
-            "generation": 1
+            "generation": 1,
         }
         assert await store.cas_set_meta("ws1", mine, 0) is True
         assert await sibling.cas_set_meta("ws1", theirs, 0) is False
@@ -114,12 +114,14 @@ async def test_cas_set_meta_stale_generation_conflicts(store):
 @pytest.mark.asyncio
 async def test_replace_meta_serializes_over_the_wire(store):
     await store.set_meta(
-        "ws1", {
+        "ws1",
+        {
             "workspace_id": "ws1",
             "default_session_id": "old",
             "created_at": 1.0,
             "generation": 4,
-        })
+        },
+    )
     written = await store.replace_meta("ws1", {"default_session_id": "new"})
     assert written["generation"] == 5
     assert written["created_at"] == 1.0
@@ -133,10 +135,12 @@ async def test_workspace_discovery_and_session_sharing(prefix):
     with only the store config + workspace id finds its default
     session and reads its session table."""
     store_a = RedisWorkspaceStateStore(url=REDIS_URL, key_prefix=prefix)
-    ws = Workspace({"/data": RAMResource()},
-                   mode=MountMode.EXEC,
-                   workspace_id="agent-ws",
-                   store=store_a)
+    ws = Workspace(
+        {"/data": RAMVFS()},
+        mode=MountMode.EXEC,
+        workspace_id="agent-ws",
+        store=store_a,
+    )
     store_b = RedisWorkspaceStateStore(url=REDIS_URL, key_prefix=prefix)
     try:
         ws.create_session("narrow", mounts={"/data": "read"})
@@ -152,3 +156,20 @@ async def test_workspace_discovery_and_session_sharing(prefix):
         await ws.close()
         await store_a.close()
         await store_b.close()
+
+
+@pytest.mark.asyncio
+async def test_drop_deletes_every_key_of_the_workspace(prefix, store):
+    await store.sessions("ws1").set("s1", {"session_id": "s1"})
+    await store.namespace("ws1").set("/a", {"mode": 0o600})
+    await store.observer("ws1").append("d/s1.jsonl", b"{}\n")
+    await store.set_meta("ws1", {"workspace_id": "ws1"})
+    await store.set_meta("ws2", {"workspace_id": "ws2"})
+    await store.drop("ws1")
+    client = aioredis.from_url(REDIS_URL)
+    keys = {key.decode() async for key in client.scan_iter(f"{prefix}*")}
+    meta = await client.hget(f"{prefix}workspaces", "ws1")
+    await client.aclose()
+    assert [key for key in keys if key.startswith(f"{prefix}ws1:")] == []
+    assert meta is None
+    assert await store.load_meta("ws2") is not None

@@ -13,18 +13,19 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
-import { enoent, isWalkError } from '../../../utils/errors.ts'
-import { mountAllowed } from '../../../context/session_context.ts'
+import { enoent, isMissError, isWalkError } from '../../../utils/errors.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import type { MountView } from '../../../ops/types.ts'
 import { fnmatch } from '../../../utils/fnmatch.ts'
 import { formatRecords } from '../utils/output.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
+
+const UNOPENABLE_MARK = '  [error opening dir]'
 
 interface TreeOpts {
   showHidden: boolean
@@ -50,17 +51,17 @@ interface TreeOpts {
 // Session-filtered, because a crossing entry is drawn from the mount
 // table alone: its row is synthesized as a directory without asking any
 // backend, so the dispatcher never gets the chance to refuse it and an
-// ungranted mount's name would reach the drawing. `ls` filters the same
-// fact through `childMountNames`. Note this is the opposite of what `du`
-// wants from the same view: there an ungranted mount still shadows the
-// parent's keys, so its prefix must stay in the list even though the
-// walk never enters it.
+// hidden mount's name would reach the drawing. `ls` filters the same
+// fact through `childMountNames`. `tree` names the boundary rather than
+// avoiding it, so it reads the visible list; `du` reads the other one
+// from the same view, because there a hidden mount still shadows the
+// parent's keys and its prefix has to stay.
 function childMounts(mounts: MountView | null, directory: string): string[] {
   if (mounts === null) return []
   const base = rstripSlash(directory) || '/'
-  return mounts.descendants(directory).filter((root) => {
+  return mounts.visibleDescendants(directory).filter((root) => {
     const parent = root.slice(0, root.lastIndexOf('/')) || '/'
-    return parent === base && mountAllowed(root)
+    return parent === base
   })
 }
 
@@ -73,17 +74,33 @@ async function walkTree(
   lines: string[],
   treeOpts: TreeOpts,
   depth: number,
-): Promise<{ dirs: number; files: number; failed: boolean }> {
+): Promise<{ dirs: number; files: number; failed: boolean; unopened: number }> {
+  // `unopened` counts the directories in this subtree (itself included)
+  // that could not be opened (a rule refused them below the operand): the
+  // caller marks such a child inline the way GNU does and the run exits 2.
   let dirs = 0
   let files = 0
+  let unopened = 0
+  // The mount table is read before the backend, not merged after it. A
+  // directory that exists only because mounts sit under it (`/repos` when
+  // `/repos/alpha` is mounted) has no backend to list it, so the readdir
+  // throws and a merge below it never runs: `tree` reported the one path
+  // whose children it could name for certain as unopenable.
+  const nested = childMounts(treeOpts.mounts, path.virtual)
   let entries: string[]
   try {
     entries = await readdir(path)
   } catch (err) {
     if (!isWalkError(err)) throw err
-    return { dirs, files, failed: true }
+    // An absence only. A directory the backend refused (EACCES, ENOTSUP) is
+    // there and holds data, so it stays a warning and an unopened row even
+    // when mounts sit under it; swallowing that to draw the children would
+    // report a readable tree that is not.
+    if (nested.length === 0 || !isMissError(err)) {
+      return { dirs, files, failed: true, unopened: 1 }
+    }
+    entries = []
   }
-  const nested = childMounts(treeOpts.mounts, path.virtual)
   if (nested.length > 0) entries = [...new Set([...entries, ...nested])]
   entries.sort(compareCodePoints)
   const filtered: { spec: PathSpec; name: string; isDir: boolean; crossing: boolean }[] = []
@@ -96,7 +113,7 @@ async function walkTree(
       virtual: childPath,
       directory: childPath,
       resolved: false,
-      resourcePath: mountKey(childPath, mountPrefixOf(path.virtual, path.resourcePath)),
+      vfsPath: mountKey(childPath, mountPrefixOf(path.virtual, path.vfsPath)),
     })
     const crossing = nested.includes(childPath) && treeOpts.crossReaddir !== null
     let isDir: boolean
@@ -128,12 +145,13 @@ async function walkTree(
       dirs += 1
       if (treeOpts.maxDepth !== null && depth + 1 >= treeOpts.maxDepth) continue
       const nextPrefix = prefix + (last ? '    ' : '|   ')
-      // Past a mount root the subtree belongs to another resource, so the
+      // Past a mount root the subtree belongs to another VFS, so the
       // rest of this branch reads through the dispatcher. Deeper mounts
       // under it need no second switch: the dispatcher already routes
       // every path to its owner.
       const subReaddir = entry.crossing ? (treeOpts.crossReaddir ?? readdir) : readdir
       const subStat = entry.crossing ? (treeOpts.crossStat ?? stat) : stat
+      const own = lines.length - 1
       const child = await walkTree(
         subReaddir,
         subStat,
@@ -143,19 +161,31 @@ async function walkTree(
         treeOpts,
         depth + 1,
       )
+      if (child.failed) {
+        // GNU marks a directory it could not open inline, on the
+        // directory's own line, and still counts it.
+        lines[own] = `${lines[own] ?? ''}${UNOPENABLE_MARK}`
+      }
       dirs += child.dirs
       files += child.files
+      unopened += child.unopened
     } else {
       files += 1
     }
   }
-  return { dirs, files, failed: false }
+  return { dirs, files, failed: false, unopened }
 }
 
 function treeSummary(dirs: number, files: number, dirsOnly: boolean): string {
   const dirWord = dirs === 1 ? 'directory' : 'directories'
   if (dirsOnly) return `${String(dirs)} ${dirWord}`
   return `${String(dirs)} ${dirWord}, ${String(files)} ${files === 1 ? 'file' : 'files'}`
+}
+
+// List a mount point -x keeps the walk out of: empty, the way GNU tree draws
+// a directory on another filesystem.
+function notCrossed(): Promise<string[]> {
+  return Promise.resolve([])
 }
 
 export async function treeGeneric(
@@ -173,7 +203,7 @@ export async function treeGeneric(
             virtual: opts.cwd,
             directory: opts.cwd,
             resolved: false,
-            resourcePath: mountKey(opts.cwd, opts.mountPrefix ?? ''),
+            vfsPath: mountKey(opts.cwd, opts.mountPrefix ?? ''),
           }),
         ]
   const depthRaw = fl.asStr('L') ?? null
@@ -188,7 +218,12 @@ export async function treeGeneric(
     dirsOnly: fl.asBool('d'),
     matchPattern: matchRaw,
     mounts: opts.ns?.mounts ?? null,
-    crossReaddir: readdirPath === undefined ? null : (p: PathSpec) => readdirPath(p.virtual),
+    crossReaddir:
+      readdirPath === undefined
+        ? null
+        : fl.asBool('x')
+          ? notCrossed
+          : (p: PathSpec) => readdirPath(p.virtual),
     crossStat:
       statPath === undefined
         ? null
@@ -225,12 +260,12 @@ export async function treeGeneric(
     if (opts.statPath !== undefined) {
       const start = await opts.statPath(p.virtual)
       if (start === null) {
-        lines[before] = `${label}  [error opening dir]`
+        lines[before] = `${label}${UNOPENABLE_MARK}`
         anyError = true
         continue
       }
       if (start.type !== FileType.DIRECTORY) {
-        lines[before] = `${label}  [error opening dir]`
+        lines[before] = `${label}${UNOPENABLE_MARK}`
         totalFiles += 1
         continue
       }
@@ -238,13 +273,16 @@ export async function treeGeneric(
     const counts = await walkTree(readdir, stat, p, '', lines, treeOpts, 0)
     if (counts.failed && lines.length === before + 1) {
       // The root could not be opened (GNU marks it inline and exits 2).
-      lines[before] = `${label}  [error opening dir]`
+      lines[before] = `${label}${UNOPENABLE_MARK}`
       anyError = true
     } else if (lines.length > before + 1) {
       // GNU counts the root as a directory once it has any listed entry.
       totalDirs += counts.dirs + 1
       totalFiles += counts.files
     }
+    // A directory below the root it could not open is marked inline and
+    // makes the run exit 2, as GNU does, with nothing on stderr.
+    if (counts.unopened > 0) anyError = true
   }
   lines.push('', treeSummary(totalDirs, totalFiles, treeOpts.dirsOnly))
   const out: ByteSource = formatRecords(lines)

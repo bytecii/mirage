@@ -12,11 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.accessor.base import Accessor
+from mirage.accessor.base import SessionAccessor
 from mirage.core.discord.config import DiscordConfig
+from mirage.core.time_range import TimeRange
 
 
-class DiscordAccessor(Accessor):
-
-    def __init__(self, config: DiscordConfig) -> None:
+class DiscordAccessor(SessionAccessor):
+    def __init__(
+        self, config: DiscordConfig, time_range: TimeRange = TimeRange()
+    ) -> None:
+        super().__init__()
         self.config = config
+        self.time_range = time_range

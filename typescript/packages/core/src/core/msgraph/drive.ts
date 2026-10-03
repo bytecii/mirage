@@ -12,15 +12,22 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { invalidateAfterWrite } from '../../cache/context.ts'
+import { enotsup } from '../../utils/errors.ts'
 import { IndexEntry, ResourceType } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { buildTree, emitStartPath, keep, type PredNode } from '../../commands/builtin/find_eval.ts'
-import { record, recordingActive, recordStream, revisionFor } from '../../observe/context.ts'
-import type { FindOptions } from '../../resource/base.ts'
-import { FileStat, FileType, PathSpec } from '../../types.ts'
+import {
+  record,
+  recordStream,
+  recordingActive,
+  revisionFor,
+  startOp,
+} from '../../observe/context.ts'
+import type { FindOptions } from '../../vfs/base.ts'
+import { FileStat, FileType, type PathSpec } from '../../types.ts'
 import { enoent, listingError } from '../../utils/errors.ts'
-import { guessType } from '../../utils/filetype.ts'
+import { contentTypeForPath } from '../../utils/filetype.ts'
+import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import { windowFor } from '../../utils/ranges.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import type { MsGraphConfigResolved } from './config.ts'
@@ -39,6 +46,7 @@ import {
   uploadChunk,
 } from './client.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
+import { DIR_SIZE } from '../../utils/stat_view.ts'
 
 const SIMPLE_UPLOAD_MAX = 4 * 1024 * 1024
 const UPLOAD_CHUNK = 10 * 327680
@@ -89,8 +97,7 @@ export class DriveLoc {
   }
 
   parent(): string {
-    const index = this.path.lastIndexOf('/')
-    return index < 0 ? '' : this.path.slice(0, index)
+    return parentPath(this.path)
   }
 
   reference(folder = ''): string {
@@ -98,15 +105,27 @@ export class DriveLoc {
   }
 }
 
-function baseName(path: string): string {
+export function parentPath(path: string): string {
+  const index = path.lastIndexOf('/')
+  return index < 0 ? '' : path.slice(0, index)
+}
+
+export function baseName(path: string): string {
   const stripped = rstripSlash(path)
   const index = stripped.lastIndexOf('/')
   return index < 0 ? stripped : stripped.slice(index + 1)
 }
 
-function virtSpec(loc: DriveLoc): PathSpec {
-  const stripped = stripSlash(loc.virtual)
-  return PathSpec.fromStrPath(stripped !== '' ? `/${stripped}` : '/', stripped)
+// The directory a listing names: a glob operand lists the folder it sits in.
+export function directoryPath(path: PathSpec): PathSpec {
+  return path.pattern !== null ? path.dir : path
+}
+
+// The mount-absolute key the index files a listing or an entry under.
+export function virtualKey(path: PathSpec): string {
+  const target = directoryPath(path)
+  const prefix = mountPrefixOf(target.virtual, target.vfsPath)
+  return target.vfsPath !== '' ? `${prefix}/${target.vfsPath}` : prefix !== '' ? prefix : '/'
 }
 
 function asString(value: unknown): string | null {
@@ -176,25 +195,35 @@ export async function copyTree(
   dst: DriveLoc,
 ): Promise<void> {
   const conflict = await copyOnce(config, src, dst)
-  if (conflict === null) {
-    await invalidateAfterWrite(virtSpec(dst))
-    return
+  if (conflict === null) return
+  // Status, not just code: `copyOnce` reports a monitor-reported failure
+  // as 500 and a thrown conflict as 409, so re-raising `conflict` as it
+  // arrived made the same refusal carry a different status depending on
+  // which of the two paths produced it. Python's `copy_tree` states the
+  // status outright (500 for a non-conflict code, 409 for the mixed
+  // file/folder refusal), and is the correct side.
+  if (conflict.code !== 'nameAlreadyExists') {
+    throw new GraphError(500, conflict.code, conflict.message)
   }
-  if (conflict.code !== 'nameAlreadyExists') throw conflict
   const srcItem = await graphGet(config, src.item())
   const dstItem = await graphGet(config, dst.item())
   if (isFolder(srcItem) && isFolder(dstItem)) {
+    // GNU cp -r merges into an existing directory; Graph never merges
+    // folders, so recurse per child instead.
     for (const child of await graphList(config, src.item('/children'))) {
       const name = asString(child.name) ?? ''
       await copyTree(config, src.child(name), dst.child(name))
     }
     return
   }
-  if (isFolder(srcItem) || isFolder(dstItem)) throw conflict
+  if (isFolder(srcItem) || isFolder(dstItem)) {
+    throw new GraphError(409, conflict.code, conflict.message)
+  }
   await graphDelete(config, dst.item())
   const secondConflict = await copyOnce(config, src, dst)
-  if (secondConflict !== null) throw secondConflict
-  await invalidateAfterWrite(virtSpec(dst))
+  if (secondConflict !== null) {
+    throw new GraphError(500, secondConflict.code, secondConflict.message)
+  }
 }
 
 export async function renameReplace(
@@ -296,7 +325,8 @@ function entryStat(item: Record<string, unknown>): FileStat {
   }
   return new FileStat({
     name,
-    type: guessType(name),
+    type: FileType.FILE,
+    content: contentTypeForPath(name),
     size: asNumber(item.size),
     modified: asString(item.lastModifiedDateTime),
     fingerprint: asString(item.cTag),
@@ -318,12 +348,22 @@ function currentVersionId(versions: Record<string, unknown>[]): string | null {
   return current === null ? null : asString(current.id)
 }
 
+// The item's cTag, current version and download URL, in one GET. Callers
+// fetch this before the bytes and download from the URL it returns. Graph can
+// change the item between the two requests, and in this order a change can
+// only pair an older token with newer bytes, which the next freshness probe
+// sees as stale; the other order would label old bytes with the new token and
+// serve them as fresh. `versions` also expands the version history for the
+// current revision, which only a snapshot needs; without it the revision is
+// null. Every shell line records, so only reads outside one (FUSE, a runtime's
+// guest, the ops facade) skip it.
 async function captureItemMetadata(
   config: MsGraphConfigResolved,
   loc: DriveLoc,
+  versions: boolean,
 ): Promise<[string | null, string | null, string | null]> {
-  const item = await graphGet(config, loc.item(), { $expand: 'versions' })
-  const versions = Array.isArray(item.versions)
+  const item = await graphGet(config, loc.item(), versions ? { $expand: 'versions' } : undefined)
+  const history = Array.isArray(item.versions)
     ? item.versions.filter(
         (value): value is Record<string, unknown> =>
           value !== null && typeof value === 'object' && !Array.isArray(value),
@@ -331,7 +371,7 @@ async function captureItemMetadata(
     : []
   return [
     asString(item.cTag),
-    currentVersionId(versions),
+    currentVersionId(history),
     asString(item['@microsoft.graph.downloadUrl']),
   ]
 }
@@ -340,14 +380,13 @@ export async function readItem(
   config: MsGraphConfigResolved,
   loc: DriveLoc,
   virtual: string,
-  label: string,
   backend: string,
   offset = 0,
   size: number | null = null,
 ): Promise<Uint8Array> {
   const pinned = revisionFor(virtual)
   const window = windowFor(offset, size)
-  const startMs = performance.now()
+  const timer = startOp()
   let fingerprint: string | null = null
   let revision: string | null = pinned
   try {
@@ -358,17 +397,19 @@ export async function readItem(
         loc.item(`/versions/${encodeURIComponent(pinned)}/content`),
         window,
       )
-    } else if (recordingActive()) {
+    } else {
       let downloadUrl: string | null
-      ;[fingerprint, revision, downloadUrl] = await captureItemMetadata(config, loc)
+      ;[fingerprint, revision, downloadUrl] = await captureItemMetadata(
+        config,
+        loc,
+        recordingActive(),
+      )
       data =
         downloadUrl === null
           ? await graphGetBytes(config, loc.item('/content'), window)
           : await graphGetBytes(config, downloadUrl, window, false)
-    } else {
-      data = await graphGetBytes(config, loc.item('/content'), window)
     }
-    record('read', label, backend, data.length, startMs, { fingerprint, revision })
+    record('read', virtual, backend, data.length, timer, { fingerprint, revision })
     return data
   } catch (error) {
     if (error instanceof GraphError && error.status === 404) throw enoent(virtual)
@@ -380,11 +421,10 @@ export async function* streamItem(
   config: MsGraphConfigResolved,
   loc: DriveLoc,
   virtual: string,
-  label: string,
   backend: string,
 ): AsyncIterable<Uint8Array> {
   const pinned = revisionFor(virtual)
-  const rec = recordStream('read', label, backend)
+  const rec = recordStream('read', virtual, backend)
   let url = loc.item('/content')
   let auth = true
   try {
@@ -393,7 +433,7 @@ export async function* streamItem(
       if (rec !== null) rec.revision = pinned
     } else if (rec !== null) {
       let downloadUrl: string | null
-      ;[rec.fingerprint, rec.revision, downloadUrl] = await captureItemMetadata(config, loc)
+      ;[rec.fingerprint, rec.revision, downloadUrl] = await captureItemMetadata(config, loc, true)
       if (downloadUrl !== null) {
         url = downloadUrl
         auth = false
@@ -419,29 +459,6 @@ async function* iterTree(
     yield [childLoc.virtual, child, folder]
     if (folder) yield* iterTree(config, childLoc)
   }
-}
-
-export async function duTreeTotal(config: MsGraphConfigResolved, loc: DriveLoc): Promise<number> {
-  let total = 0
-  for await (const [, item, folder] of iterTree(config, loc)) {
-    if (!folder) total += asNumber(item.size) ?? 0
-  }
-  return total
-}
-
-export async function duTreeEntries(
-  config: MsGraphConfigResolved,
-  loc: DriveLoc,
-): Promise<[[string, number][], number]> {
-  const entries: [string, number][] = []
-  let total = 0
-  for await (const [relative, item, folder] of iterTree(config, loc)) {
-    if (folder) continue
-    const size = asNumber(item.size) ?? 0
-    entries.push([`/${relative}`, size])
-    total += size
-  }
-  return [entries, total]
 }
 
 // Walk knobs for callers that stack findItems under synthetic namespace
@@ -493,7 +510,7 @@ export async function findItems(
       isEmpty: options.empty === true ? (folder ? folderChildCount(item) === 0 : size === 0) : null,
     }
     if (!keep(entry, tree, options.minDepth)) continue
-    const effective = folder ? 0 : size
+    const effective = folder ? DIR_SIZE : size
     if (options.minSize != null && effective < options.minSize) continue
     if (options.maxSize != null && effective > options.maxSize) continue
     results.push(entry.key)
@@ -513,11 +530,18 @@ export async function findItems(
   return results.sort(compareCodePoints)
 }
 
+// One bounded page, not graphList: the answer is a yes/no, and graphList
+// follows every @odata.nextLink, so asking it made a large folder download
+// its whole listing to produce one boolean. $top through that helper is
+// worse rather than better -- it only shrinks each page, so the walk pages
+// more times, not fewer -- which is why this sends the request itself.
+// $select drops a driveItem payload this never reads.
 export async function driveRootEmpty(
   config: MsGraphConfigResolved,
   loc: DriveLoc,
 ): Promise<boolean> {
-  return (await graphList(config, loc.item('/children'))).length === 0
+  const page = await graphGet(config, loc.item('/children'), { $top: 1, $select: 'id' })
+  return !(Array.isArray(page.value) && page.value.length > 0)
 }
 
 async function itemOrNull(
@@ -618,11 +642,11 @@ export async function statItem(
       const entry = lookup.entry
       return new FileStat({
         name: entry.name,
-        type:
-          entry.resourceType === ResourceType.FOLDER ? FileType.DIRECTORY : guessType(entry.name),
+        type: entry.resourceType === ResourceType.FOLDER ? FileType.DIRECTORY : FileType.FILE,
+        content: entry.resourceType === ResourceType.FOLDER ? null : contentTypeForPath(entry.name),
         size: entry.size,
         modified: entry.remoteTime || null,
-        fingerprint: asString(entry.extra.ctag),
+        fingerprint: entry.resourceType === ResourceType.FOLDER ? null : asString(entry.extra.ctag),
         extra: entry.extra,
       })
     }
@@ -635,5 +659,43 @@ export async function statItem(
   } catch (error) {
     if (error instanceof GraphError && error.status === 404) throw enoent(path)
     throw error
+  }
+}
+
+// Graph has no cheap HEAD for an item, so existence is a stat that tolerates
+// ENOENT. Both drive backends address items differently but probe
+// identically, so only their stat is injected.
+export function makeExists<A>(
+  stat: (accessor: A, path: PathSpec, index?: IndexCacheStore) => Promise<unknown>,
+): (accessor: A, path: PathSpec, index?: IndexCacheStore) => Promise<boolean> {
+  return async (accessor, path, index) => {
+    try {
+      await stat(accessor, path, index)
+      return true
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 'ENOENT') return false
+      throw error
+    }
+  }
+}
+
+// Graph exposes no truncate, so the whole item is rewritten. A missing item
+// truncates to a fresh one, matching `open(path, "w")`.
+export function makeTruncate<A>(
+  read: (accessor: A, path: PathSpec) => Promise<Uint8Array>,
+  write: (accessor: A, path: PathSpec, data: Uint8Array) => Promise<void>,
+): (accessor: A, path: PathSpec, length: number, noCreate?: boolean) => Promise<void> {
+  return async (accessor, path, length, noCreate = false) => {
+    if (noCreate) throw enotsup('msgraph', 'truncate --no-create', path)
+    let data: Uint8Array
+    try {
+      data = await read(accessor, path)
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 'ENOENT') throw error
+      data = new Uint8Array()
+    }
+    const resized = new Uint8Array(length)
+    resized.set(data.slice(0, length))
+    await write(accessor, path, resized)
   }
 }

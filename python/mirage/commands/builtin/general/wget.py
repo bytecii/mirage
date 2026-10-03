@@ -13,13 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.general.curl import _resolve_target
-from mirage.commands.builtin.utils.http import HttpConnectError, _http_get
-from mirage.commands.config import CommandOpts
+from mirage.commands.builtin.errors import HttpConnectError, HttpTimeoutError
+from mirage.commands.builtin.general.curl import resolve_target
+from mirage.commands.builtin.utils.http import http_get
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.errors import UsageError
-from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.errors import WALK_ERRORS
@@ -31,13 +31,15 @@ EXIT_GENERIC = 1
 EXIT_NETWORK = 4
 EXIT_SERVER_ERROR = 8
 
-USAGE = ("wget: missing URL\n"
-         "Usage: wget [OPTION]... [URL]...\n"
-         "\n"
-         "Try `wget --help' for more options.")
+USAGE = (
+    "wget: missing URL\n"
+    "Usage: wget [OPTION]... [URL]...\n"
+    "\n"
+    "Try `wget --help' for more options."
+)
 
 
-@command("wget", resource=None, spec=SPECS["wget"])
+@command("wget", vfs=None, spec=SPECS["wget"])
 async def wget(
     accessor: Accessor,
     paths: list[PathSpec],
@@ -52,24 +54,62 @@ async def wget(
     if not texts:
         raise UsageError(USAGE, exit_code=EXIT_GENERIC)
     url = texts[0]
+    timeout = fl.as_float("timeout")
+    if timeout is not None and timeout < 0:
+        raise UsageError(
+            f"wget: --timeout: Negative time period '{timeout:g}'", exit_code=2
+        )
 
     # wget follows redirects unconditionally; it has no -L equivalent.
     try:
-        resp = _http_get(url)
+        resp = await http_get(
+            url, timeout=30 if timeout is None else (timeout or None)
+        )
+    except HttpTimeoutError as exc:
+        err = (
+            b""
+            if q
+            else (
+                f"Connecting to {exc.host}:{exc.port}... "
+                "failed: Connection timed out.\n"
+            ).encode()
+        )
+        return None, IOResult(exit_code=EXIT_NETWORK, stderr=err)
     except HttpConnectError as exc:
-        err = b"" if q else (f"Connecting to {exc.host}:{exc.port}... "
-                             f"failed: Connection refused.\n").encode()
+        err = (
+            b""
+            if q
+            else (
+                f"Connecting to {exc.host}:{exc.port}... "
+                f"failed: Connection refused.\n"
+            ).encode()
+        )
         return None, IOResult(exit_code=EXIT_NETWORK, stderr=err)
 
     # --spider reports its verdict on stderr, not stdout, and inherits the
     # same exit 8 an error status gives a real download.
     if spider:
         if resp.is_error:
-            err = b"" if q else (
-                b"Remote file does not exist -- broken link!!!\n")
+            err = (
+                b""
+                if q
+                else (b"Remote file does not exist -- broken link!!!\n")
+            )
             return None, IOResult(exit_code=EXIT_SERVER_ERROR, stderr=err)
         err = b"" if q else b"Remote file exists.\n"
         return None, IOResult(stderr=err)
+
+    explicit_output = isinstance(args_O, (str, PathSpec)) and bool(args_O)
+    stdout = args_O == "-" or (
+        isinstance(args_O, PathSpec) and args_O.raw_path == "-"
+    )
+    if stdout or (resp.is_error and not explicit_output):
+        err = b""
+        if resp.is_error and not q:
+            err = f"ERROR {resp.status}: {resp.reason}.\n".encode()
+        return (None if resp.is_error else resp.body), IOResult(
+            exit_code=EXIT_SERVER_ERROR if resp.is_error else 0, stderr=err
+        )
 
     dest_raw: str | PathSpec
     if isinstance(args_O, (str, PathSpec)) and args_O:
@@ -77,14 +117,14 @@ async def wget(
     elif paths:
         dest_raw = paths[0]
     else:
-        dest_raw = url.rsplit("/", 1)[-1]
+        dest_raw = url.rsplit("/", 1)[-1] or "index.html"
     dest_str = dest_raw.virtual if isinstance(dest_raw, PathSpec) else dest_raw
 
     # An error status still creates the destination, empty, the way GNU wget
     # truncates the -O target before it learns the response code.
     data = b"" if resp.is_error else resp.body
     if dispatch is not None:
-        scope = _resolve_target(dest_raw, opts.cwd)
+        scope = resolve_target(dest_raw, opts.cwd)
         try:
             await dispatch("write", scope, data=data)
         # WALK_ERRORS is the shared recoverable set (every filesystem error
@@ -100,10 +140,13 @@ async def wget(
             return None, IOResult(exit_code=EXIT_GENERIC, stderr=err)
     if resp.is_error:
         err = b"" if q else (f"ERROR {resp.status}: {resp.reason}.\n").encode()
-        return None, IOResult(exit_code=EXIT_SERVER_ERROR,
-                              stderr=err,
-                              writes={dest_str: data})
+        return None, IOResult(
+            exit_code=EXIT_SERVER_ERROR, stderr=err, writes={dest_str: data}
+        )
     # Real wget puts its progress report on stderr and nothing on stdout.
-    err = b"" if q else (
-        f"'{dest_str}' saved [{len(data)}/{len(data)}]\n").encode()
+    err = (
+        b""
+        if q
+        else (f"'{dest_str}' saved [{len(data)}/{len(data)}]\n").encode()
+    )
     return None, IOResult(stderr=err, writes={dest_str: data})

@@ -13,49 +13,32 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.mongodb import MongoDBAccessor
-from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.cat import cat_generic
-from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.generic_bind.builders.common import \
-    resolve_or_empty
+from mirage.commands.builtin.generic_bind.adapter import (
+    bound_op,
+    resolve_or_empty,
+)
 from mirage.commands.builtin.mongodb.io import IO
-from mirage.commands.config import CommandOpts
-from mirage.commands.registry import command
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.core.mongodb.read import read as mongodb_read
-from mirage.core.mongodb.scope import detect_scope
-from mirage.core.mongodb.stream import read_stream
-from mirage.core.mongodb.types import ScopeLevel
+from mirage.core.mongodb.read import stream_any
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import PathSpec, PolymorphicReadResult
+from mirage.types import PathSpec
 
 
-async def stream_any(accessor: MongoDBAccessor, path: PathSpec, *,
-                     index: IndexCacheStore) -> PolymorphicReadResult:
-    """Read one path by scope: documents stream, everything else renders.
-
-    Mirrors the TS ``streamAny``: a documents scope has a native cursor
-    to stream from, while collection/database renderings materialize.
-
-    Args:
-        accessor (MongoDBAccessor): Backend handle.
-        path (PathSpec): Resolved operand.
-        index (IndexCacheStore): Index cache store.
-    """
-    scope = detect_scope(path)
-    if scope.level == ScopeLevel.DOCUMENTS:
-        return read_stream(accessor, path, index)
-    return await mongodb_read(accessor, path, index)
-
-
-@command("cat", resource="mongodb", spec=SPECS["cat"])
-async def cat(accessor: MongoDBAccessor, paths: list[PathSpec],
-              texts: list[str],
-              opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+@command("cat", vfs="mongodb", spec=SPECS["cat"])
+async def cat(
+    accessor: MongoDBAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
-    return await cat_generic(resolved,
-                             list(texts),
-                             opts,
-                             bound_op(IO.stat, accessor, opts.index),
-                             bound_op(stream_any, accessor, opts.index),
-                             local=IO.local)
+    return await cat_generic(
+        resolved,
+        list(texts),
+        opts,
+        bound_op(IO.stat, accessor, opts.index),
+        bound_op(stream_any, accessor, opts.index),
+        local=IO.local,
+    )

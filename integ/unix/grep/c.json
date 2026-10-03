@@ -221,6 +221,157 @@
       "flags": [
         "c"
       ]
+    },
+    {
+      "id": "grep_prefilter_regex_count",
+      "seq": 1287004,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "seq 1 20000 > /data/prefilter.txt; printf 'NEEDLE\\nneedle\\nother\\nneedleX\\n' >> /data/prefilter.txt; grep -c 'nee.le' /data/prefilter.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      },
+      "flags": [
+        "c"
+      ]
+    },
+    {
+      "id": "grep_prefilter_optional_suffix",
+      "seq": 1287005,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "seq 1 20000 > /data/prefilter.txt; printf 'NEEDLE\\nneedle\\nother\\nneedleX\\n' >> /data/prefilter.txt; grep -cE 'needleX?' /data/prefilter.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      },
+      "flags": [
+        "c",
+        "E"
+      ]
+    },
+    {
+      "id": "grep_prefilter_nullable_alternative",
+      "seq": 1287006,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "seq 1 20000 > /data/prefilter.txt; printf 'NEEDLE\\nneedle\\nother\\nneedleX\\n' >> /data/prefilter.txt; grep -cE 'needle|x*' /data/prefilter.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "20004\n",
+        "stderr": ""
+      },
+      "flags": [
+        "c",
+        "E"
+      ]
+    },
+    {
+      "id": "grep_c_prints_no_context_separator",
+      "seq": 14101401,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/cfgA; printf 'a\\nb\\nc\\n' > /data/cfgA/g1; printf 'x\\na\\ny\\n' > /data/cfgA/g2; printf 'zzz\\n' > /data/cfgA/g0; grep -c -A1 a /data/cfgA/g1 /data/cfgA/g2; echo rc=$?; rm -rf /data/cfgA",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/cfgA/g1:1\n/data/cfgA/g2:1\nrc=0\n",
+        "stderr": ""
+      },
+      "flags": [
+        "c",
+        "A"
+      ]
     }
   ]
 }

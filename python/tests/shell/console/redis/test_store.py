@@ -78,6 +78,18 @@ async def test_wait_wakes_on_append(store):
 
 
 @pytest.mark.asyncio
+async def test_refuses_commands_after_close_instead_of_reconnecting(prefix):
+    s = RedisConsoleStore(url=REDIS_URL, key_prefix=prefix)
+    await s.append(Channel.STDOUT, b"one")
+    await s.clear()
+    await s.close()
+    with pytest.raises(RuntimeError, match="RedisConsoleStore is closed"):
+        await s.append(Channel.STDOUT, b"two")
+    with pytest.raises(RuntimeError, match="RedisConsoleStore is closed"):
+        await s.read_from(0)
+
+
+@pytest.mark.asyncio
 async def test_close_releases_parked_waiter(prefix):
     s = RedisConsoleStore(url=REDIS_URL, key_prefix=prefix)
     waiter = asyncio.create_task(s.wait(0))
@@ -123,7 +135,7 @@ async def test_wire_schema_is_pinned(prefix, store):
     counter = await client.get(f"{prefix}seq")
     await client.aclose()
     assert counter == b"1"
-    (entry_id, fields), = entries
+    ((entry_id, fields),) = entries
     assert entry_id == b"1-0"
     assert fields[b"c"] == b"stdout"
     assert fields[b"d"] == b"payload"
@@ -134,7 +146,8 @@ async def test_wire_schema_is_pinned(prefix, store):
 async def test_wait_finished_joins_late_control(prefix, store):
     reader_store = RedisConsoleStore(url=REDIS_URL, key_prefix=prefix)
     joiner = asyncio.create_task(
-        JobConsole(store=reader_store).wait_finished())
+        JobConsole(store=reader_store).wait_finished()
+    )
     await store.append(Channel.STDOUT, b"still going")
     await asyncio.sleep(0.05)
     assert not joiner.done()

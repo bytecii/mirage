@@ -16,9 +16,22 @@ from collections.abc import Sequence
 
 
 def format_records(records: Sequence[str]) -> bytes:
+    """Records to output bytes, one per line, smuggled bytes put back.
+
+    A line that came through ``decode_line`` holds a byte that is not
+    valid UTF-8 as a surrogate escape, and GNU grep and ripgrep print
+    that byte as itself; a strict encode raised on it, and the
+    ``printable`` step that used to guard against that printed U+FFFD
+    instead. Ordinary text encodes exactly as before.
+
+    Args:
+        records (Sequence[str]): the lines, without terminators.
+    """
     if not records:
         return b""
-    return ("\n".join(records) + "\n").encode()
+    return ("\n".join(records) + "\n").encode(
+        "utf-8", errors="surrogateescape"
+    )
 
 
 def format_optional_records(records: Sequence[str]) -> bytes | None:
@@ -26,10 +39,4 @@ def format_optional_records(records: Sequence[str]) -> bytes | None:
     return output if output else None
 
 
-def format_record_text(records: Sequence[str]) -> str:
-    if not records:
-        return ""
-    return "\n".join(records) + "\n"
-
-
-__all__ = ["format_optional_records", "format_record_text", "format_records"]
+__all__ = ["format_optional_records", "format_records"]

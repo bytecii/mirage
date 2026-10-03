@@ -14,7 +14,11 @@
 
 import { describe, expect, it } from 'vitest'
 import { materialize } from '../../../io/types.ts'
-import { RAMResource } from '../../../resource/ram/ram.ts'
+import { OpsRegistry } from '../../../ops/registry.ts'
+import { MountMode } from '../../../types.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { GENERAL_DATE } from './date.ts'
 
 const DEC = new TextDecoder()
@@ -23,10 +27,10 @@ async function runDate(
   texts: string[] = [],
   flags: Record<string, string | boolean | number | string[]> = {},
 ): Promise<string> {
-  const resource = new RAMResource()
+  const vfs = new RAMVFS()
   const cmd = GENERAL_DATE[0]
   if (cmd === undefined) throw new Error('date not registered')
-  const result = await cmd.fn((resource as { accessor?: unknown }).accessor as never, [], texts, {
+  const result = await cmd.fn((vfs as { accessor?: unknown }).accessor as never, [], texts, {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -39,49 +43,14 @@ async function runDate(
   return DEC.decode(buf)
 }
 
-describe('date', () => {
-  it('-I returns ISO date', async () => {
-    const fixed = '2026-04-21T12:00:00Z'
-    const out = await runDate([], { d: fixed, args_I: true })
-    expect(out).toBe('2026-04-21\n')
-  })
-
-  it('-d with custom format', async () => {
-    const out = await runDate(['+%Y-%m-%d'], { d: '2026-04-21T12:00:00Z', u: true })
-    expect(out).toBe('2026-04-21\n')
-  })
-
-  it('+%H:%M:%S UTC', async () => {
-    const out = await runDate(['+%H:%M:%S'], { d: '2026-04-21T13:45:30Z', u: true })
-    expect(out).toBe('13:45:30\n')
-  })
-
-  it('default format roughly matches "Day Mon DD HH:MM:SS YYYY"', async () => {
-    const out = await runDate([], { d: '2026-04-21T12:00:00', u: true })
-    // Tue Apr 21 12:00:00 UTC 2026
-    expect(out).toMatch(/^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{2} \d{2}:\d{2}:\d{2} (UTC )?2026\n$/)
-  })
-
-  it('-R RFC5322 format', async () => {
-    const out = await runDate([], { d: '2026-04-21T12:00:00Z', u: true, R: true })
-    expect(out).toBe('Tue, 21 Apr 2026 12:00:00 +0000\n')
-  })
-
-  it('+%s seconds since epoch', async () => {
-    const out = await runDate(['+%s'], { d: '2026-04-21T00:00:00Z', u: true })
-    // 2026-04-21T00:00:00Z = 1777305600
-    expect(out.trim()).toBe(String(Math.floor(Date.UTC(2026, 3, 21) / 1000)))
-  })
-})
-
 async function runDateIo(
   texts: string[] = [],
   flags: Record<string, string | boolean | number | string[]> = {},
 ): Promise<[string, string, number]> {
-  const resource = new RAMResource()
+  const vfs = new RAMVFS()
   const cmd = GENERAL_DATE[0]
   if (cmd === undefined) throw new Error('date not registered')
-  const result = await cmd.fn((resource as { accessor?: unknown }).accessor as never, [], texts, {
+  const result = await cmd.fn((vfs as { accessor?: unknown }).accessor as never, [], texts, {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -107,54 +76,191 @@ async function runDateIo(
 describe('date GNU format specifiers', () => {
   const AT = '2026-08-16T13:45:30Z'
 
-  it('+%F renders the ISO date, not the literal', async () => {
-    expect(await runDate(['+%F %T'], { d: AT, u: true })).toBe('2026-08-16 13:45:30\n')
-  })
-
   it('renders 12-hour, quarter, century, and padded-hour forms', async () => {
-    expect(await runDate(['+%r|%q|%C|%h|%k|%l|%P|%R'], { d: AT, u: true })).toBe(
+    expect(await runDate(['+%r|%q|%C|%h|%k|%l|%P|%R'], { date: AT, utc: true })).toBe(
       '01:45:30 PM|3|20|Aug|13| 1|pm|13:45\n',
     )
   })
 
   it('renders week numbers and the ISO week-based year', async () => {
-    expect(await runDate(['+%V|%U|%W|%G|%g'], { d: AT, u: true })).toBe('33|33|32|2026|26\n')
+    expect(await runDate(['+%V|%U|%W|%G|%g'], { date: AT, utc: true })).toBe('33|33|32|2026|26\n')
   })
 
   it('renders C-locale %c, %x, %X and the %n/%t escapes', async () => {
-    expect(await runDate(['+%c|%x|%X|%n|%t'], { d: AT, u: true })).toBe(
+    expect(await runDate(['+%c|%x|%X|%n|%t'], { date: AT, utc: true })).toBe(
       'Sun Aug 16 13:45:30 2026|08/16/26|13:45:30|\n|\t\n',
     )
   })
 
   it('passes an unknown directive through literally, as GNU does', async () => {
-    expect(await runDate(['+%v'], { d: AT, u: true })).toBe('%v\n')
+    expect(await runDate(['+%v'], { date: AT, utc: true })).toBe('%v\n')
   })
 })
 
 describe('date -d expressions', () => {
-  it('handles a relative displacement from an ISO base', async () => {
-    const out = await runDate(['+%F %T'], { d: '2026-08-16 12:00:00 24 hours ago', u: true })
-    expect(out).toBe('2026-08-15 12:00:00\n')
-  })
-
-  it('handles @epoch input', async () => {
-    expect(await runDate(['+%F %T'], { d: '@1755300000', u: true })).toBe('2025-08-15 23:20:00\n')
-  })
-
-  it('normalizes month overflow the way GNU does', async () => {
-    expect(await runDate(['+%F'], { d: '2026-01-31 1 month', u: true })).toBe('2026-03-03\n')
-  })
-
   it('produces a date, never NaN, for a bare relative expression', async () => {
-    const out = await runDate(['+%F'], { d: '24 hours ago', u: true })
+    const out = await runDate(['+%F'], { date: '24 hours ago', utc: true })
     expect(out).toMatch(/^\d{4}-\d{2}-\d{2}\n$/)
   })
 
-  it('refuses an invalid date with GNU wording and exit 1', async () => {
-    const [out, stderr, code] = await runDateIo([], { d: 'not a date' })
-    expect(out).toBe('')
-    expect(stderr).toBe("date: invalid date 'not a date'\n")
-    expect(code).toBe(1)
+  // GNU ACCEPTS an empty (or blank) `-d`, exit 0, at today 00:00:00:
+  // gnulib's parse-datetime sees no component at all and falls through to
+  // "a date with no time". Measured on coreutils 9.4 under
+  // `LC_ALL=C TZ=UTC`. mirage used to answer `date: invalid date ''` and
+  // exit 1. Mirrors test_date.py.
+  it.each(['', '   '])('reads %j as today at midnight', async (d) => {
+    const [out, stderr, code] = await runDateIo(['+%H:%M:%S'], { date: d, utc: true })
+    expect([out, stderr, code]).toEqual(['00:00:00\n', '', 0])
+    const day = await runDate(['+%Y-%m-%d'], { date: d, utc: true })
+    expect(day).toBe(await runDate(['+%Y-%m-%d'], { utc: true }))
+  })
+})
+
+async function runDateEnv(
+  env: Record<string, string>,
+  texts: string[] = [],
+  flags: Record<string, string | boolean | number | string[]> = {},
+): Promise<[string, string, number]> {
+  const vfs = new RAMVFS()
+  const cmd = GENERAL_DATE[0]
+  if (cmd === undefined) throw new Error('date not registered')
+  const result = await cmd.fn((vfs as { accessor?: unknown }).accessor as never, [], texts, {
+    stdin: null,
+    flags,
+    filetypeFns: null,
+    cwd: '/',
+    env,
+  })
+  if (result === null) return ['', '', 0]
+  const [out, io] = result
+  const buf =
+    out === null
+      ? new Uint8Array()
+      : out instanceof Uint8Array
+        ? out
+        : await materialize(out as AsyncIterable<Uint8Array>)
+  const err = io.stderr === null ? new Uint8Array() : await materialize(io.stderr)
+  return [DEC.decode(buf), DEC.decode(err), io.exitCode]
+}
+
+// Pinned against GNU date 9.x on debian:stable-slim with tzdata: the zone
+// is the command environment's TZ, `-u` outranks it, and an instant
+// renders on the calendar day the zone shows (issue #1070). The zone comes
+// from `opts.env` alone: process.env.TZ is never read or written.
+describe('date honors the command environment TZ', () => {
+  it.each([
+    [{ TZ: 'UTC' }, ['+%a %Z'], { date: '@0' }, 'Thu UTC\n'],
+    [{ TZ: 'UTC' }, [], { date: '@0' }, 'Thu Jan  1 00:00:00 UTC 1970\n'],
+  ])('%j %j %j', async (env, texts, flags, expected) => {
+    expect(await runDateEnv(env, texts, flags)).toEqual([expected, '', 0])
+  })
+
+  it('reads each invocation its own zone with no process state between them', async () => {
+    const before = process.env.TZ
+    const results = await Promise.all([
+      runDateEnv({ TZ: 'Asia/Hong_Kong' }, ['+%H %z'], { date: '@0' }),
+      runDateEnv({ TZ: 'UTC' }, ['+%H %z'], { date: '@0' }),
+      runDateEnv({ TZ: 'Asia/Hong_Kong' }, ['+%H %z'], { date: '@0' }),
+      runDateEnv({}, ['+%H %z'], { date: '@0', utc: true }),
+    ])
+    expect(results.map((r) => r[0])).toEqual([
+      '08 +0800\n',
+      '00 +0000\n',
+      '08 +0800\n',
+      '00 +0000\n',
+    ])
+    expect(process.env.TZ).toBe(before)
+  })
+})
+
+it('renders the implicit host zone in explicit and default formats', async () => {
+  const hostZone = new Intl.DateTimeFormat().resolvedOptions().timeZone
+  for (const d of ['@1789430400', '@1767225600']) {
+    for (const format of [[], ['+%Z %z']]) {
+      const implicit = await runDateEnv({}, format, { date: d })
+      expect(implicit).toEqual(await runDateEnv({ TZ: hostZone }, format, { date: d }))
+      expect(implicit[0].trim()).not.toBe('')
+    }
+  }
+})
+
+// `date -d` names the refused expression through gnulib's quote(), so a
+// byte outside 0x20-0x7e comes back escaped rather than interpolated raw.
+// Every row measured against GNU coreutils 9.4 under `LC_ALL=C` with a raw
+// `bytes` argv (`date -d x<B>`). Mirrors test_date.py.
+async function runDateStderr(d: string): Promise<[string, number]> {
+  const vfs = new RAMVFS()
+  const cmd = GENERAL_DATE[0]
+  if (cmd === undefined) throw new Error('date not registered')
+  const result = await cmd.fn((vfs as { accessor?: unknown }).accessor as never, [], [], {
+    stdin: null,
+    flags: { date: d },
+    filetypeFns: null,
+    cwd: '/',
+  })
+  if (result === null) throw new Error('date returned no result')
+  const [, io] = result
+  return [DEC.decode(io.stderr as Uint8Array), io.exitCode]
+}
+
+describe('date quotes the expression it refuses', () => {
+  it.each([
+    ['xé', 'x\\303\\251'],
+    ['x\r', 'x\\r'],
+    ['x\x01', 'x\\001'],
+    ['x\x7f', 'x\\177'],
+    ["x'", "x\\'"],
+    ['x\\', 'x\\\\'],
+  ])('escapes %j in the invalid-date clause', async (value, escaped) => {
+    expect(await runDateStderr(value)).toEqual([`date: invalid date '${escaped}'\n`, 1])
+  })
+})
+
+describe('date output formats through the shell', () => {
+  // GNU's output formats, one per option, measured on coreutils 9.7
+  // (debian:stable-slim): -I[FMT] takes its precision attached or after `=`
+  // and matches it by prefix, --rfc-3339=FMT takes the narrower set, and a
+  // line with no format option prints `%e`, a space-padded day. Mirrors
+  // test_date.py.
+  const AT = '2024-03-05T07:08:09.5Z'
+  const ISO_VALID =
+    "Valid arguments are:\n  - 'hours'\n  - 'minutes'\n  - 'date'\n  - 'seconds'\n  - 'ns'\n" +
+    "Try 'date --help' for more information.\n"
+  const MULTIPLE = 'date: multiple output formats specified\n'
+
+  async function makeWs(): Promise<Workspace> {
+    const parser = await getTestParser()
+    const ram = new RAMVFS()
+    const registry = new OpsRegistry()
+    registry.registerVfs(ram)
+    return new Workspace(
+      { '/ram': ram },
+      { mode: MountMode.WRITE, ops: registry, shellParser: parser },
+    )
+  }
+
+  it.each([
+    [`date -d ${AT} -Ix`, "date: invalid argument 'x' for '--iso-8601'\n" + ISO_VALID],
+    [`date -d ${AT} -Isu`, "date: invalid argument 'su' for '--iso-8601'\n" + ISO_VALID],
+    [`date -d ${AT} --iso-8601=`, "date: ambiguous argument '' for '--iso-8601'\n" + ISO_VALID],
+    [
+      `date -d ${AT} --rfc-3339=hours`,
+      "date: invalid argument 'hours' for '--rfc-3339'\n" +
+        "Valid arguments are:\n  - 'date'\n  - 'seconds'\n  - 'ns'\n" +
+        "Try 'date --help' for more information.\n",
+    ],
+    [
+      `date -d ${AT} --rfc-3339`,
+      "date: option '--rfc-3339' requires an argument\nTry 'date --help' for more information.\n",
+    ],
+    [`date -d ${AT} -I -R`, MULTIPLE],
+    [`date -d ${AT} --rfc-3339=s -Is`, MULTIPLE],
+    [`date -d ${AT} -Is +%Y`, MULTIPLE],
+    [`date -d ${AT} -I -R a b`, MULTIPLE],
+  ])('%s refuses', async (line, err) => {
+    const ws = await makeWs()
+    const io = await ws.shell(line)
+    await ws.close()
+    expect([io.stdoutText, io.stderrText, io.exitCode]).toEqual(['', err, 1])
   })
 })

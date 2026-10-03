@@ -15,12 +15,12 @@
 import { sha1sumGeneric } from '../../generic/sha1sum.ts'
 import { type Builder, dirAwareStream, resolveGlobOf } from '../adapter.ts'
 
-export const SHA1SUM_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'sha1sum',
   read: true,
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return sha1sumGeneric(resolved, opts, dirAwareStream(ops, accessor, idx))
+    return sha1sumGeneric(resolved, opts, dirAwareStream(ops, accessor, opts))
   },
 }

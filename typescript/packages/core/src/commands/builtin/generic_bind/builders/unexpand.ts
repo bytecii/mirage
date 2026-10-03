@@ -15,12 +15,12 @@
 import { unexpandGeneric } from '../../generic/unexpand.ts'
 import { type Builder, dirAwareStream, resolveGlobOf } from '../adapter.ts'
 
-export const UNEXPAND_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'unexpand',
   read: true,
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return unexpandGeneric(resolved, opts, dirAwareStream(ops, accessor, idx))
+    return unexpandGeneric(resolved, opts, dirAwareStream(ops, accessor, opts))
   },
 }

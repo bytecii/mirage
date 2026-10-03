@@ -14,22 +14,54 @@
 
 import logging
 from enum import Enum, auto
+from functools import partial
 
-import tree_sitter
-
+from mirage.context import reset_redirect_paths, set_redirect_paths
 from mirage.io import IOResult
+from mirage.io.async_line_iterator import SharedInput, share
 from mirage.io.stream import materialize
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, DeviceInput
 from mirage.runtime.types import DispatchFn
-from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.bytes import encode_text
 from mirage.shell.call_stack import CallStack
-from mirage.shell.types import Redirect, RedirectKind
-from mirage.types import FileType, PathSpec
+from mirage.shell.console import Channel, JobConsole
+from mirage.shell.constants import (
+    FD_BOTH,
+    FD_CLOSE,
+    FD_STDERR,
+    FD_STDIN,
+    FD_STDOUT,
+)
+from mirage.shell.descriptors import (
+    ENCLOSING,
+    Descriptor,
+    FileDescription,
+    FileInput,
+    Inherited,
+    Recorder,
+    bad_descriptor_line,
+    deliver,
+    unreadable_stdin,
+    unsupported_descriptor,
+)
+from mirage.shell.errors import ExitSignal
+from mirage.shell.helpers import get_text
+from mirage.shell.types import Redirect, RedirectKind, TSNodeLike
+from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.workspace.executor.builtins import _to_scope
-from mirage.workspace.executor.create import create_file
-from mirage.workspace.session import Session
+from mirage.workspace.executor.builtins.exec.constants import (
+    CLOSED,
+    OPEN_FOR_READ_WRITE,
+    OPEN_FOR_READING,
+    TO_STDERR,
+    TO_STDIN,
+    TO_STDOUT,
+)
+from mirage.workspace.executor.control import UNWINDING, carried, take_stderr
+from mirage.workspace.executor.create import write_description
+from mirage.workspace.executor.jobs import drained, pump
+from mirage.workspace.session import SessionState
 from mirage.workspace.types import ExecutionNode
 
 logger = logging.getLogger(__name__)
@@ -40,174 +72,467 @@ class _Fd(Enum):
 
     An enum, not a sentinel object: the same variable also holds a
     virtual path string once a redirect lands, and a member can never
-    collide with one.
+    collide with one. CLOSED is where `>&-` points a descriptor: bytes
+    written there are dropped, and a command whose stdout was closed
+    reports the write failure the way GNU echo does.
     """
+
     TO_STDOUT = auto()
     TO_STDERR = auto()
+    CLOSED = auto()
 
 
 _TO_STDOUT = _Fd.TO_STDOUT
 _TO_STDERR = _Fd.TO_STDERR
+_CLOSED = _Fd.CLOSED
+
+
+class _Unreadable(Enum):
+    """A descriptor a read cannot use: closed, or open for writing only."""
+
+    TOKEN = auto()
+
+
+def _persistently_closed(session: SessionState) -> set[int]:
+    """The descriptors an ``exec`` closed for the shell, which a line's
+    dup from refuses before the command runs.
+
+    Args:
+        session (SessionState): shell session state.
+    """
+    closed: set[int] = set()
+    if session.exec_stdin_identity == CLOSED:
+        closed.add(FD_STDIN)
+    if session.exec_stdout == CLOSED:
+        closed.add(FD_STDOUT)
+    if session.exec_stderr == CLOSED:
+        closed.add(FD_STDERR)
+    return closed
+
+
+def _stdin_dest(session: SessionState) -> _Fd | str:
+    """Where a write through fd 0 lands, read off the shell's bindings.
+
+    Its own read end, a closed descriptor and a file's read end take
+    no write (`echo x >&0` is bash's `write error: Bad file descriptor`
+    with stdin a pipe); a terminal stream dup'd onto it (`exec 0<&1`)
+    writes where that stream goes; a file opened for writing
+    (`exec 0>f`) is the file.
+
+    Args:
+        session (SessionState): shell session state.
+    """
+    identity = session.exec_stdin_identity
+    if (
+        identity is None
+        or identity == CLOSED
+        or identity.startswith(OPEN_FOR_READING)
+    ):
+        return _CLOSED
+    if identity == TO_STDOUT:
+        return _TO_STDOUT
+    if identity == TO_STDERR:
+        return _TO_STDERR
+    return identity
 
 
 async def handle_redirect(
     execute_node,
     dispatch,
-    command: tree_sitter.Node | None,
+    command: TSNodeLike | None,
     redirects: list[Redirect],
-    session: Session,
+    session: SessionState,
     stdin: ByteSource | None = None,
     call_stack: CallStack | None = None,
+    capture_input: bool = False,
+    sink: JobConsole | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
-    """Handle all redirect patterns: >, >>, <, 2>, 2>&1, &>, >&2, <<<.
+    """Apply ordered descriptor bindings for one command and restore them.
 
-    File-descriptor routing follows bash's left-to-right fd table:
-    each redirect updates where fd1/fd2 point at that moment, so
-    `cmd > f 2>&1` sends both streams to f while `cmd 2>&1 > f`
-    sends stderr to the original stdout. Output files are created (and
-    truncated unless appending) when the redirect is processed, even
-    if the stream ends up empty — including the command-less
-    `> file` form (command is None).
+    Descriptors alias shared file descriptions, including read/write offsets.
+    Output opens remain deferred until admission completes: a refused command
+    must not truncate its redirect targets. Consequently an ordinary output
+    open can still fail after the command runs, unlike Bash's open-before-exec.
 
-    A redirect target that cannot be opened is a shell error, not a
-    command error — on both the ``<`` read and the ``>`` write side.
-    bash reports it itself and never names the command, so both paths
-    render ``<target>: <strerror>`` (see ``_redirect_error_line``) and
-    the rest of the line keeps running. bash also stops processing
-    redirects at the first failed open, so later targets are left
-    alone: GNU 5.2.37 answers ``echo x > /nodir/f > /data/out`` with one
-    message and no ``/data/out``, while earlier targets keep the empty
-    file their open already created (``echo y > /data/out2 > /nodir/g``
-    leaves ``/data/out2`` present and empty).
-
-    Deliberate divergence from bash: when both streams route to the
-    same destination they are concatenated stdout-then-stderr, not
-    temporally interleaved (streams are materialized buffers).
-
-    Deliberate divergence from bash: because output files are created
-    in a second pass (after the command runs), an output redirect that
-    precedes a failing ``<`` is not truncated — bash processes
-    redirects strictly left to right, so ``> out < missing`` empties
-    ``out`` before failing. ``< missing > out`` leaves ``out``
-    uncreated on both, which is bash's behavior. For the same reason a
-    command whose ``>`` target is unwritable has already run here,
-    while bash fails at open time and never runs it; the write error
-    and exit 1 are reported either way.
+    Args:
+        execute_node (Callable): executor for the redirected command.
+        dispatch (DispatchFn): workspace operation dispatcher.
+        command (TSNodeLike | None): command, or a redirect-only statement.
+        redirects (list[Redirect]): expanded redirects in source order.
+        session (SessionState): enclosing descriptor bindings.
+        stdin (ByteSource | None): inherited input.
+        call_stack (CallStack | None): function stack.
+        capture_input (bool): capture a redirect-only substitution's input.
+        sink (JobConsole | None): destination for terminal output.
     """
-    cmd_stdin = stdin
+    bad_fd = unsupported_descriptor(redirects)
+    if bad_fd is not None:
+        return _shell_failure(bad_descriptor_line(bad_fd))
+    inputs: dict[int, ByteSource | None | _Unreadable] = {
+        0: share(stdin),
+        1: _Unreadable.TOKEN,
+        2: _Unreadable.TOKEN,
+    }
+    outputs: dict[int, _Fd | FileDescription | Inherited] = {
+        0: _CLOSED,
+        1: _TO_STDOUT,
+        2: _TO_STDERR,
+    }
+    stdin_dest = _stdin_dest(session)
+    outputs[0] = (
+        FileDescription(_ensure_scope(stdin_dest), append=True, opened=True)
+        if isinstance(stdin_dest, str)
+        else stdin_dest
+    )
+    if 0 in session.descriptors and session.descriptors[0].file is not None:
+        outputs[0] = session.descriptors[0].file
+    if isinstance(stdin, FileInput):
+        outputs[0] = stdin.description
+    if isinstance(session.exec_stdin, FileInput):
+        outputs[0] = session.exec_stdin.description
+    for fd, binding, held_input in (
+        (1, session.exec_stdout, session.exec_stdout_input),
+        (2, session.exec_stderr, session.exec_stderr_input),
+    ):
+        if binding is not None and binding.startswith(OPEN_FOR_READING):
+            inputs[fd] = held_input
+        elif binding == TO_STDIN:
+            inputs[fd] = inputs[0]
+    closed = _persistently_closed(session)
+    for fd, descriptor in session.descriptors.items():
+        if fd <= 2:
+            continue
+        inputs[fd] = (
+            descriptor.source
+            if descriptor.source is not None
+            else _Unreadable.TOKEN
+        )
+        outputs[fd] = _descriptor_output(descriptor)
+        if descriptor.identity == CLOSED:
+            closed.add(fd)
+    files: list[FileDescription] = []
     for r in redirects:
-        if r.kind == RedirectKind.STDIN:
-            scope = _ensure_scope(r.target)
+        if r.kind == RedirectKind.AMBIGUOUS:
+            return _shell_failure(
+                f"{_redirect_word(r)}: ambiguous redirect\n".encode()
+            )
+        if r.kind == RedirectKind.UNEXPANDED and isinstance(
+            r.target, ExitSignal
+        ):
+            return _shell_failure(r.target.stderr, r.target.exit_code)
+        if isinstance(r.target, int):
+            if r.target == FD_CLOSE:
+                closed.add(r.fd)
+                inputs[r.fd], outputs[r.fd] = _Unreadable.TOKEN, _CLOSED
+            elif r.target != r.fd:
+                if r.target in closed or r.target not in outputs:
+                    return _shell_failure(bad_descriptor_line(r.target))
+                source = inputs[r.target]
+                if not isinstance(source, _Unreadable):
+                    source = share(source if source is not None else b"")
+                    inputs[r.target] = source
+                inputs[r.fd], outputs[r.fd] = source, outputs[r.target]
+                closed.discard(r.fd)
+            continue
+        fds = [1, 2] if r.fd == FD_BOTH else [r.fd]
+        for fd in fds:
+            closed.discard(fd)
+            inputs[fd], outputs[fd] = _Unreadable.TOKEN, _CLOSED
+        if r.kind in (RedirectKind.HEREDOC, RedirectKind.HERESTRING):
+            data = r.target
+            if isinstance(data, str):
+                if r.kind == RedirectKind.HERESTRING:
+                    if (
+                        len(data) >= 2
+                        and data[0] == data[-1]
+                        and data[0] in "\"'"
+                    ):
+                        data = data[1:-1]
+                    data += "\n"
+                data = encode_text(data)
+            inputs[r.fd] = data if r.fd == 0 else SharedInput(data)
+            continue
+        scope = _ensure_scope(r.target)
+        if r.kind in (RedirectKind.STDIN, RedirectKind.READWRITE):
             try:
-                file_data, _ = await dispatch("read", scope)
+                if (
+                    scope.virtual == "/dev/stdin"
+                    and r.kind == RedirectKind.STDIN
+                ):
+                    inputs[r.fd] = stdin
+                    continue
+                data, _ = await dispatch("read", scope)
+            except FileNotFoundError as exc:
+                if r.kind != RedirectKind.READWRITE:
+                    return _redirect_failure(scope, exc)
+                data = b""
             except FS_ERRORS as exc:
                 return _redirect_failure(scope, exc)
-            cmd_stdin = file_data
-        elif r.kind == RedirectKind.HEREDOC:
-            cmd_stdin = encode_text(r.target) if isinstance(r.target,
-                                                            str) else r.target
-        elif r.kind == RedirectKind.HERESTRING:
-            text = r.target
-            if isinstance(text, str):
-                if text.startswith('"') and text.endswith('"'):
-                    text = text[1:-1]
-                elif text.startswith("'") and text.endswith("'"):
-                    text = text[1:-1]
-                cmd_stdin = encode_text(text + "\n")
+            data = await materialize(data) or b""
+            if r.kind == RedirectKind.READWRITE:
+                file = FileDescription(scope, append=True)
+                file.source = FileInput(file, data)
+                files.append(file)
+                inputs[r.fd], outputs[r.fd] = file.source, file
             else:
-                cmd_stdin = text
-
-    # Before the command, because bash decides an open before it forks:
-    # `set -C; touch marker > existing` creates no marker at all. Running
-    # first and discarding the output afterwards matched the file
-    # contents and nothing else, so a refused redirect still let `rm`
-    # delete its own target -- and then the probe found nothing there
-    # and did not even refuse.
-    refusal = await _noclobber_refusal(dispatch, session, redirects)
+                inputs[r.fd] = (
+                    DeviceInput()
+                    if data == b"" and await _is_device(dispatch, scope)
+                    else data
+                    if r.fd == 0
+                    else SharedInput(data)
+                )
+        else:
+            file = FileDescription(scope, append=r.append)
+            files.append(file)
+            for fd in fds:
+                outputs[fd] = file
+    refusal = await _open_refusal(dispatch, session, redirects)
     if refusal is not None:
         return refusal
+    recorder = Recorder()
+    for file in files:
+        if file.source is None:
+            for fd, channel in ((1, Channel.STDOUT), (2, Channel.STDERR)):
+                if outputs[fd] is file:
+                    file.emit = partial(recorder.emit, channel)
+                    break
+    unwound: Exception | None = None
+    refused = False
+    saved = session.descriptors
+    claimed = {
+        fd for r in redirects for fd in ([1, 2] if r.fd == FD_BOTH else [r.fd])
+    }
+    session.descriptors = dict(saved)
+    for fd in outputs:
+        if fd > 2 or fd in claimed:
+            session.descriptors[fd] = _describe(
+                outputs[fd], inputs[fd], recorder if fd > 2 else None
+            )
+    targets = tuple(
+        _ensure_scope(r.target)
+        for r in redirects
+        if not isinstance(r.target, int)
+        and r.kind not in (RedirectKind.HEREDOC, RedirectKind.HERESTRING)
+    )
+    token = (
+        set_redirect_paths(command.id, targets)
+        if command is not None
+        else None
+    )
+    terminal_output = session.terminal_output
+    session.terminal_output = terminal_output and outputs[1] is _TO_STDOUT
+    enclosing = ENCLOSING.set(recorder)
+    try:
+        if command is None:
+            if capture_input and not isinstance(inputs[0], _Unreadable):
+                await pump(recorder, Channel.STDOUT, inputs[0])
+            io = IOResult()
+        else:
+            _, io, exec_node = await drained(
+                recorder,
+                *await execute_node(
+                    command,
+                    session,
+                    unreadable_stdin()
+                    if isinstance(inputs[0], _Unreadable)
+                    else inputs[0],
+                    call_stack,
+                    sink=recorder,
+                ),
+            )
+            refused = exec_node.refused
+    except UNWINDING as sig:
+        unwound, io = sig, IOResult()
+        # What the command wrote on its way out goes where it writes; an
+        # error expanding its own words came before its redirects.
+        if not (
+            isinstance(sig, ExitSignal)
+            and command is not None
+            and sig.expanding == command.id
+        ):
+            diagnostic = await take_stderr(sig)
+            if diagnostic:
+                await recorder.emit(Channel.STDERR, diagnostic)
+    finally:
+        ENCLOSING.reset(enclosing)
+        for file in files:
+            file.emit = None
+        session.terminal_output = terminal_output
+        if token is not None:
+            reset_redirect_paths(token)
+        for fd in claimed:
+            if fd in saved:
+                session.descriptors[fd] = saved[fd]
+            else:
+                session.descriptors.pop(fd, None)
+    chunks = recorder.chunks
+    if refused:
+        outputs = {0: _CLOSED, 1: _TO_STDOUT, 2: _TO_STDERR}
+        for r in redirects:
+            if isinstance(r.target, int):
+                outputs[r.fd] = outputs.get(r.target, _CLOSED)
+    if (
+        outputs[1] is _CLOSED
+        and command is not None
+        and any(c == Channel.STDOUT for c, _ in chunks)
+    ):
+        chunks.append((Channel.STDERR, _closed_write_line(command)))
+        io.exit_code = 1
 
-    if command is None:
-        stdout_data = b""
-        stderr_data = b""
-        io = IOResult(exit_code=0)
+    def dest(key: Channel | Inherited) -> _Fd | FileDescription | Inherited:
+        if not isinstance(key, Inherited):
+            return outputs[1 if key == Channel.STDOUT else 2]
+        if key.owner is not recorder:
+            return key
+        return _TO_STDOUT if key.channel == Channel.STDOUT else _TO_STDERR
+
+    routed: list[tuple[Channel | Inherited, bytes]] = []
+    write_token = (
+        set_redirect_paths(command.id, targets)
+        if command is not None
+        else None
+    )
+    consumed: set[int] = set()
+    failed_scope: PathSpec | None = None
+    try:
+        if not refused:
+            for file in files:
+                failed_scope = file.scope
+                unique = (
+                    sum(
+                        other.scope.virtual == file.scope.virtual
+                        for other in files
+                    )
+                    == 1
+                )
+                data = (
+                    b"".join(data for key, data in chunks if dest(key) is file)
+                    if unique
+                    else b""
+                )
+                await write_description(dispatch, session, file, data)
+                if unique:
+                    consumed.add(id(file))
+                    if data:
+                        io.writes[file.scope.virtual] = data
+        for key, data in chunks:
+            target = dest(key)
+            if target is _TO_STDOUT:
+                routed.append((Channel.STDOUT, data))
+            elif target is _TO_STDERR:
+                routed.append((Channel.STDERR, data))
+            elif isinstance(target, Inherited):
+                routed.append((target, data))
+            elif (
+                isinstance(target, FileDescription)
+                and id(target) not in consumed
+            ):
+                failed_scope = target.scope
+                await write_description(dispatch, session, target, data)
+                io.writes[target.scope.virtual] = data
+    except FS_ERRORS as exc:
+        assert failed_scope is not None
+        routed.append(
+            (Channel.STDERR, _redirect_error_line(failed_scope, exc))
+        )
+        io.exit_code = 1
+    finally:
+        if write_token is not None:
+            reset_redirect_paths(write_token)
+    stdout: bytes | None = None
+    io.stderr = None
+    kept: list[tuple[Channel, bytes]] = []
+    for key, data in routed:
+        if isinstance(key, Inherited):
+            if not await deliver(sink, key, data):
+                kept.append((key.channel, data))
+        elif sink is not None:
+            await sink.emit(key, data)
+        else:
+            kept.append((key, data))
+    if sink is not None:
+        for channel, data in kept:
+            await sink.emit(channel, data)
     else:
-        stdout, io, _ = await execute_node(command, session, cmd_stdin,
-                                           call_stack)
-        barriered = await apply_barrier(stdout, io, BarrierPolicy.VALUE)
-        if isinstance(barriered, memoryview):
-            barriered = bytes(barriered)
-        stdout_data = await materialize(barriered) or b""
-        stderr_data = await materialize(io.stderr) or b""
+        stdout = b"".join(d for c, d in kept if c == Channel.STDOUT) or None
+        io.stderr = b"".join(d for c, d in kept if c == Channel.STDERR) or None
+    if unwound is not None:
+        raise await carried(unwound, stdout, IOResult(stderr=io.stderr))
+    return (
+        stdout,
+        io,
+        ExecutionNode(
+            command="redirect", exit_code=io.exit_code, refused=refused
+        ),
+    )
 
-    fd1: _Fd | str = _TO_STDOUT
-    fd2: _Fd | str = _TO_STDERR
-    file_bufs: dict[str, bytearray] = {}
-    file_scopes: dict[str, PathSpec] = {}
 
-    for r in redirects:
-        if r.kind in (RedirectKind.STDIN, RedirectKind.HEREDOC,
-                      RedirectKind.HERESTRING):
-            continue
+def _descriptor_output(
+    descriptor: Descriptor,
+) -> _Fd | FileDescription | Inherited:
+    if descriptor.stream is not None:
+        return descriptor.stream
+    if descriptor.file is not None:
+        return descriptor.file
+    if descriptor.identity == TO_STDOUT:
+        return _TO_STDOUT
+    if descriptor.identity == TO_STDERR:
+        return _TO_STDERR
+    if descriptor.identity.startswith("/"):
+        return FileDescription(
+            _ensure_scope(descriptor.identity), append=True, opened=True
+        )
+    return _CLOSED
 
-        # 2>&1 — fd2 follows wherever fd1 points right now
-        if r.kind == RedirectKind.STDERR_TO_STDOUT and isinstance(
-                r.target, int):
-            fd2 = fd1
-            continue
 
-        # >&2 or 1>&2 — fd1 follows wherever fd2 points right now
-        if r.fd == 1 and isinstance(r.target, int) and r.target == 2:
-            fd1 = fd2
-            continue
+def _describe(
+    output: _Fd | FileDescription | Inherited,
+    source: ByteSource | None | _Unreadable,
+    owner: Recorder | None = None,
+) -> Descriptor:
+    """The binding a descriptor holds for the command a level runs.
 
-        # other numeric dups (3>&1, ...) are not simulated
-        if isinstance(r.target, int):
-            continue
+    A copy of the level's own stdout or stderr (``3>&1``) names it
+    through ``owner``, the level, so it keeps reaching that stream when
+    the command rebinds its own (``>f``); fds 1 and 2 stay the command's.
 
-        scope = _ensure_scope(r.target)
-        path = scope.virtual
-        file_scopes[path] = scope
-        if r.append:
-            if path not in file_bufs:
-                file_bufs[path] = bytearray(await
-                                            _read_existing(dispatch, scope))
-        else:
-            file_bufs[path] = bytearray()
-
-        if r.fd == -1:  # &> / &>>
-            fd1 = path
-            fd2 = path
-        elif r.kind == RedirectKind.STDERR:
-            fd2 = path
-        else:
-            fd1 = path
-
-    out_stdout = bytearray()
-    out_stderr = bytearray()
-    for data, dest in ((stdout_data, fd1), (stderr_data, fd2)):
-        if dest is _TO_STDOUT:
-            out_stdout += data
-        elif dest is _TO_STDERR:
-            out_stderr += data
-        elif isinstance(dest, str):
-            file_bufs[dest] += data
-
-    for path, buf in file_bufs.items():
-        data = bytes(buf)
-        scope = file_scopes[path]
-        try:
-            await create_file(dispatch, session, scope, data)
-        except FS_ERRORS as exc:
-            out_stderr += _redirect_error_line(scope, exc)
-            io.exit_code = 1
-            break
-        io.writes[path] = data
-
-    result_stdout = bytes(out_stdout)
-    io.stderr = bytes(out_stderr) if out_stderr else None
-    exec_node = ExecutionNode(command="redirect", exit_code=io.exit_code)
-    return result_stdout if result_stdout else None, io, exec_node
+    Args:
+        output (_Fd | FileDescription | Inherited): where it writes.
+        source (ByteSource | None | _Unreadable): what it reads.
+        owner (Recorder | None): the level, for a descriptor above 2.
+    """
+    if isinstance(output, Inherited):
+        return Descriptor(
+            TO_STDOUT if output.channel == Channel.STDOUT else TO_STDERR,
+            stream=output,
+        )
+    if owner is not None and output in (_TO_STDOUT, _TO_STDERR):
+        channel = Channel.STDOUT if output is _TO_STDOUT else Channel.STDERR
+        return Descriptor(
+            TO_STDOUT if output is _TO_STDOUT else TO_STDERR,
+            stream=Inherited(owner, channel),
+        )
+    if isinstance(output, FileDescription):
+        return Descriptor(
+            (OPEN_FOR_READ_WRITE if isinstance(source, FileInput) else "")
+            + output.scope.virtual,
+            output.append,
+            source if isinstance(source, SharedInput) else None,
+            output,
+        )
+    identity = (
+        TO_STDOUT
+        if output is _TO_STDOUT
+        else TO_STDERR
+        if output is _TO_STDERR
+        else CLOSED
+    )
+    if isinstance(source, SharedInput) and output is _CLOSED:
+        identity = OPEN_FOR_READING
+    return Descriptor(
+        identity, source=source if isinstance(source, SharedInput) else None
+    )
 
 
 def _redirect_error_line(scope: PathSpec, exc: OSError) -> bytes:
@@ -225,7 +550,7 @@ def _redirect_error_line(scope: PathSpec, exc: OSError) -> bytes:
     ``nosuchcmd: command not found`` (bash prints
     ``bash: line 1: nosuchcmd: command not found``) — ``bash:`` is bash's
     ``$0`` and mirage is not bash, and ``line N`` has no meaning for a
-    one-line ``Workspace.execute`` call.
+    one-line ``Workspace.shell`` call.
 
     The label is the target's own spelling, never the exception's message:
     backends raise write failures with prose in ``str(exc)`` (``parent
@@ -241,9 +566,44 @@ def _redirect_error_line(scope: PathSpec, exc: OSError) -> bytes:
     return (f"{label}: {strerror}\n" if strerror else f"{label}\n").encode()
 
 
-def _redirect_failure(scope: PathSpec,
-                      exc: OSError) -> tuple[None, IOResult, ExecutionNode]:
-    """Shell-attributed IOResult for a ``<`` source that cannot be read.
+def _closed_write_line(command: TSNodeLike) -> bytes:
+    """GNU's line for a write onto a closed stdout, in the command's name.
+
+    Args:
+        command (TSNodeLike): the command whose stdout was closed.
+    """
+    words = get_text(command).split()
+    name = words[0] if words else "redirect"
+    return f"{name}: write error: Bad file descriptor\n".encode()
+
+
+def _redirect_word(r: Redirect) -> str:
+    """The redirect's target as typed, for a refusal that names it.
+
+    Args:
+        r (Redirect): the redirect, its target expanded or not.
+    """
+    return (
+        r.target.raw_path if isinstance(r.target, PathSpec) else str(r.target)
+    )
+
+
+def _redirect_failure(
+    scope: PathSpec, exc: OSError
+) -> tuple[None, IOResult, ExecutionNode]:
+    """Shell-attributed IOResult for a redirect target that cannot be opened.
+
+    Args:
+        scope (PathSpec): The redirect target that could not be opened.
+        exc (OSError): The filesystem error raised by the open.
+    """
+    return _shell_failure(_redirect_error_line(scope, exc))
+
+
+def _shell_failure(
+    line: bytes, status: int = 1
+) -> tuple[None, IOResult, ExecutionNode]:
+    """Shell-attributed IOResult that replaces the command's whole run.
 
     bash never runs the command and stops processing redirects at the
     first failure, so this replaces the whole result. Returning an
@@ -253,19 +613,36 @@ def _redirect_failure(scope: PathSpec,
     (``cd /data && cat < missing`` used to report ``cd:``).
 
     Args:
-        scope (PathSpec): The redirect source that could not be read.
-        exc (OSError): The filesystem error raised by the read.
+        line (bytes): the diagnostic, already in the shell's voice.
+        status (int): the status the command fails with.
     """
-    io = IOResult(exit_code=1, stderr=_redirect_error_line(scope, exc))
-    return None, io, ExecutionNode(command="redirect", exit_code=1)
+    io = IOResult(exit_code=status, stderr=line)
+    return None, io, ExecutionNode(command="redirect", exit_code=status)
 
 
-async def _noclobber_refusal(
+async def _is_device(dispatch: DispatchFn, scope: PathSpec) -> bool:
+    """Whether a redirect target is a character device (``/dev/null``).
+
+    Args:
+        dispatch (DispatchFn): VFS op dispatcher.
+        scope (PathSpec): the redirect target.
+    """
+    try:
+        stat, _ = await dispatch("stat", scope)
+    except FS_ERRORS as exc:
+        logger.debug(
+            "stdin device probe failed at %s: %s", scope.raw_path, exc
+        )
+        return False
+    return isinstance(stat, FileStat) and stat.type == FileType.CHAR_DEVICE
+
+
+async def _open_refusal(
     dispatch: DispatchFn,
-    session: Session,
+    session: SessionState,
     redirects: list[Redirect],
 ) -> tuple[None, IOResult, ExecutionNode] | None:
-    """Refuse the whole statement when `set -C` bars one of its opens.
+    """Refuse the whole statement when one of its opens cannot happen.
 
     Returned *instead of* running the command, because that is what bash
     does: it opens every redirect before it forks, so a refusal means
@@ -274,6 +651,16 @@ async def _noclobber_refusal(
     contents, and on `rm f > f` it did not even do that -- the command
     deleted its own target first, so the probe found nothing there and
     let the line succeed.
+
+    Two opens refuse. A target typed with a trailing slash is one
+    whatever is there: open(2) with O_CREAT answers `missing/` and
+    `reg/` alike with EISDIR before looking anything up, so bash prints
+    `missing/: Is a directory` and creates nothing, where writing the
+    normalized name would have left a regular file called `missing`.
+    That test is on the spelling alone and costs no round trip, which is
+    a deliberate divergence for a slashed target under a parent that is
+    itself absent: bash reports the parent first (ENOENT), this reads
+    `Is a directory` too. The other is `set -C`, described next.
 
     `set -C` refuses a truncating open onto anything that already exists
     -- an empty file counts, since the test is existence and not size --
@@ -290,12 +677,11 @@ async def _noclobber_refusal(
     pre-command snapshot passed both and wrote the output. `>>` and `>|`
     never refuse but do create, so they count as opens too.
 
-    The whole scan is skipped unless the option is on, so the ordinary
-    redirect path costs no extra round trip. That leaves
-    `> <a directory>` with the option off silently succeeding, which is
-    a separate pre-existing gap: GNU answers `Is a directory` and exit 1
-    whichever operator asked, and closing it means a stat on every
-    output redirect.
+    The stat is skipped unless the option is on, so the ordinary
+    redirect path costs no extra round trip. A directory typed without
+    a slash needs none here: the open itself answers `Is a directory`,
+    from the kernel on a real filesystem and from the store's own
+    directory table on a keyed one, and the write path renders it.
 
     Targets are stat'd through the op dispatcher rather than a backend,
     so a redirect that lands on another mount is answered by the mount
@@ -303,52 +689,72 @@ async def _noclobber_refusal(
 
     Args:
         dispatch (DispatchFn): op dispatcher.
-        session (Session): the session holding the shell options.
+        session (SessionState): the session holding the shell options.
         redirects (list[Redirect]): the statement's redirects, in the
             order they were written.
 
     Returns:
         The refusal result, or None when every open is allowed.
     """
-    if not session.shell_options.get("noclobber"):
-        return None
+    noclobber = bool(session.shell_options.get("noclobber"))
     opened: set[str] = set()
     pending: list[PathSpec] = []
     for r in redirects:
-        if (r.kind in (RedirectKind.STDIN, RedirectKind.HEREDOC,
-                       RedirectKind.HERESTRING) or isinstance(r.target, int)):
+        if r.kind in (
+            RedirectKind.STDIN,
+            RedirectKind.READWRITE,
+            RedirectKind.HEREDOC,
+            RedirectKind.HERESTRING,
+        ) or isinstance(r.target, int):
             continue
         scope = _ensure_scope(r.target)
+        if scope.raw_path.endswith("/"):
+            earlier = await _apply_pending_opens(dispatch, pending)
+            if earlier is not None:
+                return earlier
+            return _shell_failure(
+                f"{scope.raw_path}: Is a directory\n".encode()
+            )
         path = scope.virtual
         is_dir = False
-        if path in opened:
-            exists = True
-        else:
+        exists = path in opened
+        if noclobber and not exists:
             try:
                 stat, _ = await dispatch("stat", scope)
             except FS_ERRORS as exc:
-                logger.debug("noclobber probe found no target at %s: %s",
-                             scope.raw_path, exc)
+                logger.debug(
+                    "noclobber probe found no target at %s: %s",
+                    scope.raw_path,
+                    exc,
+                )
                 stat = None
             exists = stat is not None
             is_dir = stat is not None and stat.type == FileType.DIRECTORY
-        if exists and not r.append and not r.clobber:
-            await _apply_pending_opens(dispatch, pending)
-            detail = ("Is a directory"
-                      if is_dir else "cannot overwrite existing file")
-            err = f"{scope.raw_path}: {detail}\n".encode()
-            io = IOResult(exit_code=1, stderr=err)
-            return None, io, ExecutionNode(command="redirect", exit_code=1)
+        if noclobber and exists and not r.append and not r.clobber:
+            earlier = await _apply_pending_opens(dispatch, pending)
+            if earlier is not None:
+                return earlier
+            detail = (
+                "Is a directory"
+                if is_dir
+                else "cannot overwrite existing file"
+            )
+            return _shell_failure(f"{scope.raw_path}: {detail}\n".encode())
         # This open succeeds, so the target exists for every redirect
         # after it, and a truncating one leaves it empty to be found.
+        # Without the option nothing was stat'd, so an append target of
+        # unknown standing is not listed: pre-opening it with an empty
+        # write would truncate a file that is there.
         opened.add(path)
-        if not exists or not r.append:
+        if not r.append or (noclobber and not exists):
             pending.append(scope)
     return None
 
 
-async def _apply_pending_opens(dispatch: DispatchFn,
-                               pending: list[PathSpec]) -> None:
+async def _apply_pending_opens(
+    dispatch: DispatchFn,
+    pending: list[PathSpec],
+) -> tuple[None, IOResult, ExecutionNode] | None:
     """Apply the opens a refused statement already performed.
 
     bash opens redirects left to right, so the ones before the refused
@@ -357,37 +763,26 @@ async def _apply_pending_opens(dispatch: DispatchFn,
     targets the scan found absent, or opened for truncation, are listed,
     so an append onto an existing file keeps its bytes.
 
-    A write that fails is logged rather than raised: the failure belongs
-    to that earlier redirect, which bash would have reported instead of
-    the noclobber refusal, and inventing that error here would replace
-    the refusal the caller is about to return.
+    An earlier open that fails is the statement's refusal instead: bash
+    stops at the first open it cannot perform, so ``echo x > /nodir/f >
+    reg/`` reports ``/nodir/f: No such file or directory`` and never
+    reaches the slashed target, and the opens after the failed one are
+    not performed either.
 
     Args:
         dispatch (DispatchFn): op dispatcher.
         pending (list[PathSpec]): targets to create or truncate, in the
             order they were opened.
+
+    Returns:
+        The earlier open's failure, or None when every open went through.
     """
     for scope in pending:
         try:
             await dispatch("write", scope, data=b"")
         except FS_ERRORS as exc:
-            logger.debug("noclobber pre-open write failed for %s: %s",
-                         scope.raw_path, exc)
-
-
-async def _read_existing(dispatch, scope) -> bytes:
-    try:
-        existing, _ = await dispatch("read", scope)
-        if isinstance(existing, bytes):
-            return existing
-    except FS_ERRORS as exc:
-        # appending starts from empty when the target is missing or
-        # unreadable; the write that follows reports the real failure as
-        # a shell-attributed line. Narrower than FS_ERRORS would let a
-        # PermissionError escape to the workspace-level OSError handler,
-        # which kills the rest of the line and misattributes the message.
-        logger.debug("append pre-read failed for %s: %s", scope.raw_path, exc)
-    return b""
+            return _redirect_failure(scope, exc)
+    return None
 
 
 def _ensure_scope(target):

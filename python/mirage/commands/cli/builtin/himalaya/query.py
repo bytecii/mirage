@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 
+from mirage.core.email.client import quote_string
 from mirage.types import JsonValue
 
 # himalaya's search DSL: 3 operators (and, or, not) and 8 conditions
@@ -26,8 +27,16 @@ from mirage.types import JsonValue
 # timestamp, which is why they emit SENTON/SENTBEFORE/SENTSINCE rather
 # than ON/BEFORE/SINCE: imported or delayed mail would otherwise land on
 # the wrong day.
-CONDITIONS = ("date", "before", "after", "from", "to", "subject", "body",
-              "flag")
+CONDITIONS = (
+    "date",
+    "before",
+    "after",
+    "from",
+    "to",
+    "subject",
+    "body",
+    "flag",
+)
 SORT_KINDS = ("date", "from", "to", "subject")
 FLAGS = {
     "seen": "SEEN",
@@ -36,8 +45,20 @@ FLAGS = {
     "draft": "DRAFT",
     "deleted": "DELETED",
 }
-IMAP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
-               "Oct", "Nov", "Dec")
+IMAP_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
 
 
 class QueryError(ValueError):
@@ -66,6 +87,7 @@ class Query:
         sorters (tuple[Sorter, ...]): sorters in declaration order, the
             first being the primary key. Empty means the default order.
     """
+
     criteria: str
     sorters: tuple[Sorter, ...]
 
@@ -109,8 +131,11 @@ def tokenize(source: str) -> list[Token]:
             tokens.append(Token("".join(chars), True))
             continue
         start = index
-        while index < len(source) and not source[index].isspace(
-        ) and source[index] not in "()":
+        while (
+            index < len(source)
+            and not source[index].isspace()
+            and source[index] not in "()"
+        ):
             index += 1
         tokens.append(Token(source[start:index], False))
     return tokens
@@ -120,11 +145,6 @@ def _keyword(token: Token | None) -> str | None:
     if token is None or token.quoted:
         return None
     return token.text.lower()
-
-
-def _quote(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
 
 
 def _imap_date(text: str) -> date:
@@ -154,8 +174,9 @@ class _Parser:
         self.index = 0
 
     def peek(self) -> Token | None:
-        return self.tokens[self.index] if self.index < len(
-            self.tokens) else None
+        return (
+            self.tokens[self.index] if self.index < len(self.tokens) else None
+        )
 
     def take(self) -> Token:
         token = self.peek()
@@ -202,8 +223,10 @@ class _Parser:
         token = self.take()
         word = _keyword(token)
         if word is None or word not in CONDITIONS:
-            raise QueryError(f"expected a condition ({', '.join(CONDITIONS)}) "
-                             f"but found {token.text!r}")
+            raise QueryError(
+                f"expected a condition ({', '.join(CONDITIONS)}) "
+                f"but found {token.text!r}"
+            )
         value = self.take().text
         if word == "date":
             return f"SENTON {_format_date(_imap_date(value))}"
@@ -217,10 +240,12 @@ class _Parser:
         if word == "flag":
             key = FLAGS.get(value.lower())
             if key is None:
-                raise QueryError(f"unknown flag {value!r}, expected one of "
-                                 f"{', '.join(sorted(FLAGS))}")
+                raise QueryError(
+                    f"unknown flag {value!r}, expected one of "
+                    f"{', '.join(sorted(FLAGS))}"
+                )
             return key
-        return f"{word.upper()} {_quote(value)}"
+        return f"{word.upper()} {quote_string(value)}"
 
     def parse_sorters(self) -> tuple[Sorter, ...]:
         self.take()
@@ -240,8 +265,10 @@ class _Parser:
                 descending = order == "desc"
             sorters.append(Sorter(kind, descending))
         if not sorters:
-            raise QueryError(f"expected a sort key "
-                             f"({', '.join(SORT_KINDS)}) after 'order by'")
+            raise QueryError(
+                f"expected a sort key "
+                f"({', '.join(SORT_KINDS)}) after 'order by'"
+            )
         return tuple(sorters)
 
 
@@ -291,8 +318,9 @@ SORT_KEYS: dict[str, Callable[[dict[str, Any]], Any]] = {
 }
 
 
-def sort_headers(headers: list[dict[str, Any]],
-                 sorters: tuple[Sorter, ...]) -> list[dict[str, Any]]:
+def sort_headers(
+    headers: list[dict[str, Any]], sorters: tuple[Sorter, ...]
+) -> list[dict[str, Any]]:
     """Order fetched headers by the query's sorters.
 
     Applied client-side and right to left, so the first sorter ends up
@@ -312,8 +340,9 @@ def sort_headers(headers: list[dict[str, Any]],
     return ordered
 
 
-def uid_budget(page: int, page_size: int, sorters: tuple[Sorter, ...],
-               max_messages: int) -> int:
+def uid_budget(
+    page: int, page_size: int, sorters: tuple[Sorter, ...], max_messages: int
+) -> int:
     """How many of the newest matching UIDs to fetch headers for.
 
     Sorting happens client-side, so a page cannot be served without
@@ -346,4 +375,4 @@ def page_slice(items: list[Any], page: int, page_size: int) -> list[Any]:
         page_size (int): maximum entries per page.
     """
     start = max(page - 1, 0) * page_size
-    return items[start:start + page_size]
+    return items[start : start + page_size]

@@ -12,29 +12,30 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GitHubAccessor } from '../../accessor/github.ts'
+import type { IndexEntry } from '../../cache/index/config.ts'
+import { ListingCheckStore } from '../../cache/index/ram.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { getExtension } from '../../commands/resolve.ts'
-import { readdir as coreReaddir } from './readdir.ts'
-import { rstripSlash, stripSlash } from '../../utils/slash.ts'
+import type { PathSpec } from '../../types.ts'
+import { FileStat, FileType } from '../../types.ts'
 import { enoent } from '../../utils/errors.ts'
+import { contentTypeForPath } from '../../utils/filetype.ts'
+import { fetchHead, GitHubApiError } from './client.ts'
+import { locate, lookupRetrying, pointLookup } from './lookup.ts'
 
-function stripPrefix(path: PathSpec): string {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  let p = path.virtual
-  if (prefix !== '' && p.startsWith(prefix)) {
-    p = p.slice(prefix.length) || '/'
+// Render one tree row as a FileStat, the same from either route.
+function statOf(entry: IndexEntry): FileStat {
+  if (entry.resourceType === 'folder') {
+    return new FileStat({ name: entry.name, type: FileType.DIRECTORY })
   }
-  return p
-}
-
-function guessFileType(name: string): FileType {
-  const ext = getExtension(name)
-  if (ext === 'json') return FileType.JSON
-  if (ext === 'csv') return FileType.CSV
-  return FileType.TEXT
+  return new FileStat({
+    name: entry.name,
+    size: entry.size,
+    type: FileType.FILE,
+    content: contentTypeForPath(entry.name),
+    fingerprint: entry.id,
+    extra: { sha: entry.id },
+  })
 }
 
 export async function stat(
@@ -42,47 +43,48 @@ export async function stat(
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const p = stripPrefix(path)
-  const trimmed = stripSlash(p)
-  if (trimmed === '') {
-    return new FileStat({ name: '/', type: FileType.DIRECTORY })
+  const { prefix, rel, key } = locate(path)
+  if (rel === '') {
+    return new FileStat({
+      name: '/',
+      type: FileType.DIRECTORY,
+      fingerprint: await rootVersion(accessor, index),
+    })
   }
   if (index === undefined) throw enoent(path)
-  const ikey = `${rstripSlash(prefix)}/${trimmed}`
-  let result = await index.get(ikey)
-  if (result.entry === undefined || result.entry === null) {
-    // `ikey` is already mount-absolute, so its parent is too: prepending
-    // the prefix again asks for `/repo/repo`, whose listing never populates
-    // the entry this is here to find. stat then reports ENOENT for a file
-    // that exists, and the read family's implicit-directory probe finds it
-    // in the parent listing and answers EISDIR instead.
-    const parentPath = ikey.includes('/') ? ikey.slice(0, ikey.lastIndexOf('/')) || '/' : '/'
-    try {
-      await coreReaddir(
-        accessor,
-        new PathSpec({
-          virtual: parentPath,
-          directory: parentPath,
-          resolved: false,
-          resourcePath: mountKey(parentPath, prefix),
-        }),
-        index,
-      )
-    } catch {
-      // parent listing failed — fall through
-    }
-    result = await index.get(ikey)
-    if (result.entry === undefined || result.entry === null) throw enoent(path)
+  // A probe through a throwaway index asks for this one path; everything
+  // else answers from the mount's listing, filling it if need be.
+  const found =
+    (await pointLookup(accessor, index, prefix, rel)) ??
+    (await lookupRetrying(accessor, index, prefix, key))
+  if (found.entry === null) throw enoent(path)
+  return statOf(found.entry)
+}
+
+/**
+ * The version of the whole mount: the head commit its ref is at.
+ *
+ * Only the gate's `ListingCheckStore` asks for it, with one shallow request.
+ * Every other index (the mount's own, an undefined index) names no version
+ * and reads nothing, neither the index nor the backend, so a getattr of the
+ * root never pays a check or a store round trip: nothing reads a root
+ * fingerprint off a mount-view stat. Nothing here refills the index: a
+ * refused head names no version rather than falling into a lookup.
+ *
+ * Mirrors Python's `_root_version`.
+ */
+async function rootVersion(
+  accessor: GitHubAccessor,
+  index: IndexCacheStore | undefined,
+): Promise<string | null> {
+  if (!(index instanceof ListingCheckStore)) return null
+  try {
+    return await fetchHead(accessor.transport, accessor.owner, accessor.repo, accessor.ref)
+  } catch (err) {
+    // An answer that refuses the head is no answer about the version, the
+    // way pointRow reads a refusal; anything else propagates.
+    if (!(err instanceof GitHubApiError)) throw err
+    console.warn(`head of ${accessor.owner}/${accessor.repo} not answered: ${String(err)}`)
+    return null
   }
-  if (result.entry.resourceType === 'folder') {
-    return new FileStat({ name: result.entry.name, type: FileType.DIRECTORY })
-  }
-  return new FileStat({
-    name: result.entry.name,
-    size: result.entry.size,
-    type: guessFileType(result.entry.name),
-    fingerprint: result.entry.id,
-    extra: { sha: result.entry.id },
-  })
 }

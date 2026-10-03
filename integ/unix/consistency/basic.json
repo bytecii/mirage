@@ -1,19 +1,24 @@
 {
   "cases": [
     {
-      "id": "consistency_lazy_serves_stale",
+      "id": "read_bounded_serves_stale",
       "seq": 310000,
       "targets": [
         "s3",
         "s3-prefix",
         "hf",
+        "hf-prefix",
         "dropbox",
         "onedrive",
         "sharepoint",
         "sharepoint-prefix",
-        "ssh"
+        "ssh",
+        "hf-hub",
+        "github",
+        "gdrive"
       ],
-      "consistency": "lazy",
+      "read": "bounded",
+      "ttl": 600,
       "scenario": [
         {
           "mutate": {
@@ -41,18 +46,21 @@
       }
     },
     {
-      "id": "consistency_always_revalidates",
+      "id": "read_fresh_revalidates",
       "seq": 310001,
       "targets": [
         "s3",
         "s3-prefix",
-        "dropbox",
         "onedrive",
         "sharepoint",
         "sharepoint-prefix",
-        "ssh"
+        "hf",
+        "hf-prefix",
+        "hf-hub",
+        "github",
+        "gdrive"
       ],
-      "consistency": "always",
+      "read": "fresh",
       "scenario": [
         {
           "mutate": {
@@ -77,7 +85,8 @@
         "exit": 0,
         "stdout": "v1\nv2\n",
         "stderr": ""
-      }
+      },
+      "note": "Narrowed to the backends that may declare `read: fresh` (the S3 family, OneDrive and SharePoint, the Hugging Face buckets, flat and key-prefixed, the Hub repos, whose hf-hub target changes the file by commit, GitHub, whose target changes it by a contents PUT, and Google Drive, whose token is the file's md5): the other two cache reads but stamp no comparable content token, so the mount-time verdict refuses the policy and the workspace never constructs. The bounded control keeps the full list, hf-prefix included so the pair measures the same buckets. The github fake is one shared world, and needs no reset: every scenario starts by writing v1, create or update."
     }
   ]
 }

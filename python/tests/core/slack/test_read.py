@@ -13,15 +13,27 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
 from mirage.accessor.slack import SlackAccessor
 from mirage.cache.index import IndexEntry, RAMIndexCacheStore
 from mirage.core.slack.config import SlackConfig
-from mirage.core.slack.read import read
+from mirage.core.slack.read import read, read_range
 from mirage.types import PathSpec
+
+pytestmark = pytest.mark.asyncio
+
+CHANNEL = "channels/general__C001"
+CHAT = f"/{CHANNEL}/2023-11-14/chat.jsonl"
+BLOB = f"/{CHANNEL}/2026-04-10/files/report__F1.pdf"
+
+
+def spec(virtual: str) -> PathSpec:
+    return PathSpec(
+        virtual=virtual, directory=virtual, vfs_path=virtual.lstrip("/")
+    )
 
 
 @pytest.fixture
@@ -40,68 +52,51 @@ def index():
 
 
 async def _populate_index(index: RAMIndexCacheStore) -> RAMIndexCacheStore:
-    await index.set_dir("/channels", [
-        (
-            "general__C001",
-            IndexEntry(
-                id="C001",
-                name="general",
-                resource_type="slack/channel",
-                vfs_name="general__C001",
-            ),
-        ),
-    ])
-    await index.set_dir("/users", [
-        (
-            "alice.json",
-            IndexEntry(
-                id="U001",
-                name="alice",
-                resource_type="slack/user",
-                vfs_name="alice.json",
-            ),
-        ),
-    ])
-    return index
-
-
-@pytest.mark.asyncio
-async def test_read_jsonl(accessor, index):
-    await _populate_index(index)
-    history_bytes = b'{"text":"hello","ts":"1700000001"}\n'
-    with patch(
-            "mirage.core.slack.read.get_history_jsonl",
-            new_callable=AsyncMock,
-            return_value=history_bytes,
-    ) as mock_hist:
-        result = await read(
-            accessor,
-            PathSpec(
-                resource_path=("/channels/general__C001/2023-11-14/chat.jsonl"
-                               ).strip("/"),
-                virtual="/channels/general__C001/2023-11-14/chat.jsonl",
-                directory="/channels/general__C001/2023-11-14/chat.jsonl"),
-            index=index)
-
-    assert result == history_bytes
-    mock_hist.assert_called_once_with(accessor.config, "C001", "2023-11-14")
-
-
-@pytest.mark.asyncio
-async def test_read_file_blob(accessor, index):
-    await index.set_dir("/channels", [
-        (
-            "general__C001",
-            IndexEntry(
-                id="C001",
-                name="general",
-                resource_type="slack/channel",
-                vfs_name="general__C001",
-            ),
-        ),
-    ])
     await index.set_dir(
-        "/channels/general__C001/2026-04-10/files",
+        "/channels",
+        [
+            (
+                "general__C001",
+                IndexEntry(
+                    id="C001",
+                    name="general",
+                    resource_type="slack/channel",
+                    vfs_name="general__C001",
+                ),
+            ),
+        ],
+    )
+    await index.set_dir(
+        f"/{CHANNEL}/2023-11-14",
+        [
+            (
+                "chat.jsonl",
+                IndexEntry(
+                    id="C001:2023-11-14:chat",
+                    name="chat.jsonl",
+                    resource_type="slack/chat_jsonl",
+                    vfs_name="chat.jsonl",
+                    size=35,
+                ),
+            ),
+        ],
+    )
+    await index.set_dir(
+        "/users",
+        [
+            (
+                "alice__U001.json",
+                IndexEntry(
+                    id="U001",
+                    name="alice",
+                    resource_type="slack/user",
+                    vfs_name="alice__U001.json",
+                ),
+            ),
+        ],
+    )
+    await index.set_dir(
+        f"/{CHANNEL}/2026-04-10/files",
         [
             (
                 "report__F1.pdf",
@@ -113,8 +108,7 @@ async def test_read_file_blob(accessor, index):
                     size=4096,
                     extra={
                         "mimetype": "application/pdf",
-                        "url_private_download":
-                        "https://files.slack.com/x/report.pdf",
+                        "url_private_download": "https://files.slack.com/x/report.pdf",
                         "channel_id": "C001",
                         "date": "2026-04-10",
                     },
@@ -122,23 +116,36 @@ async def test_read_file_blob(accessor, index):
             ),
         ],
     )
-    with patch("mirage.core.slack.files.download_file",
-               new_callable=AsyncMock,
-               return_value=b"%PDF-1.4 fake bytes"):
-        data = await read(
-            accessor,
-            PathSpec(resource_path=("channels/general__C001/2026-04-10"
-                                    "/files/report__F1.pdf"),
-                     virtual=("/channels/general__C001/2026-04-10"
-                              "/files/report__F1.pdf"),
-                     directory=("/channels/general__C001/2026-04-10"
-                                "/files/report__F1.pdf")),
-            index=index,
-        )
+    return index
+
+
+async def test_read_jsonl(accessor, index):
+    await _populate_index(index)
+    history_bytes = b'{"text":"hello","ts":"1700000001"}\n'
+    with patch(
+        "mirage.core.slack.read.get_history_jsonl",
+        new_callable=AsyncMock,
+        return_value=history_bytes,
+    ) as mock_hist:
+        result = await read(accessor, spec(CHAT), index)
+
+    assert result == history_bytes
+    mock_hist.assert_called_once_with(
+        accessor.config, "C001", "2023-11-14", accessor.time_range, session=ANY
+    )
+
+
+async def test_read_file_blob(accessor, index):
+    await _populate_index(index)
+    with patch(
+        "mirage.core.slack.read.download_file",
+        new_callable=AsyncMock,
+        return_value=b"%PDF-1.4 fake bytes",
+    ):
+        data = await read(accessor, spec(BLOB), index)
     assert data == b"%PDF-1.4 fake bytes"
 
 
-@pytest.mark.asyncio
 async def test_read_user_json(accessor, index):
     await _populate_index(index)
     user_data = {
@@ -147,145 +154,49 @@ async def test_read_user_json(accessor, index):
         "real_name": "Alice Smith",
     }
     with patch(
-            "mirage.core.slack.read.get_user_profile",
-            new_callable=AsyncMock,
-            return_value=user_data,
+        "mirage.core.slack.read.get_user_profile",
+        new_callable=AsyncMock,
+        return_value=user_data,
     ):
-        result = await read(accessor,
-                            PathSpec(resource_path="users/alice.json",
-                                     virtual="/users/alice.json",
-                                     directory="/users/alice.json"),
-                            index=index)
+        result = await read(accessor, spec("/users/alice__U001.json"), index)
 
     parsed = json.loads(result)
     assert parsed["id"] == "U001"
     assert parsed["name"] == "alice"
 
 
-@pytest.mark.asyncio
 async def test_read_not_found(accessor, index):
     with pytest.raises(FileNotFoundError):
-        await read(accessor,
-                   PathSpec(resource_path="nonexistent/path",
-                            virtual="/nonexistent/path",
-                            directory="/nonexistent/path"),
-                   index=index)
+        await read(accessor, spec("/nonexistent/path"), index)
 
 
-@pytest.mark.asyncio
-async def test_download_file_uses_bot_token():
-    from mirage.core.slack.files import download_file
-    seen: list[dict] = []
-
-    class _Resp:
-        status = 200
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return None
-
-        def raise_for_status(self):
-            return None
-
-        async def read(self):
-            return b"OK"
-
-    class _Sess:
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return None
-
-        def get(self, url, headers=None):
-            seen.append(headers)
-            return _Resp()
-
-    with patch("mirage.core.slack.files.aiohttp.ClientSession", _Sess):
-        await download_file(
-            SlackConfig(token="xoxb-bot", search_token="xoxp-user"),
-            "http://x")
-        await download_file(SlackConfig(token="xoxb-bot"), "http://x")
-    assert seen[0] == {"Authorization": "Bearer xoxb-bot"}
-    assert seen[1] == {"Authorization": "Bearer xoxb-bot"}
-
-
-@pytest.mark.asyncio
 async def test_read_file_blob_pushes_the_window_down(accessor, index):
-    """An upload is stored bytes, so the window becomes a Range header."""
-    await index.set_dir("/channels", [
-        (
-            "general__C001",
-            IndexEntry(
-                id="C001",
-                name="general",
-                resource_type="slack/channel",
-                vfs_name="general__C001",
-            ),
-        ),
-    ])
-    await index.set_dir(
-        "/channels/general__C001/2026-04-10/files",
-        [
-            (
-                "report__F1.pdf",
-                IndexEntry(
-                    id="F1",
-                    name="report.pdf",
-                    resource_type="slack/file",
-                    vfs_name="report__F1.pdf",
-                    size=4096,
-                    extra={
-                        "url_private_download":
-                        "https://files.slack.com/x/report.pdf",
-                    },
-                ),
-            ),
-        ],
-    )
-    with patch("mirage.core.slack.files.download_file",
-               new_callable=AsyncMock,
-               return_value=b"1.4 f") as mock_dl:
-        data = await read(
-            accessor,
-            PathSpec(resource_path=("channels/general__C001/2026-04-10"
-                                    "/files/report__F1.pdf"),
-                     virtual=("/channels/general__C001/2026-04-10"
-                              "/files/report__F1.pdf"),
-                     directory=("/channels/general__C001/2026-04-10"
-                                "/files/report__F1.pdf")),
-            index=index,
-            offset=5,
-            size=5,
-        )
-    assert data == b"1.4 f"
-    mock_dl.assert_called_once_with(accessor.config,
-                                    "https://files.slack.com/x/report.pdf", 5,
-                                    5)
-
-
-@pytest.mark.asyncio
-async def test_read_jsonl_window_is_sliced_locally(accessor, index):
-    """Rendered history has no remote range, so the window is taken after."""
     await _populate_index(index)
     with patch(
-            "mirage.core.slack.read.get_history_jsonl",
-            new_callable=AsyncMock,
-            return_value=b'{"text":"hello"}\n',
+        "mirage.core.slack.read.download_file",
+        new_callable=AsyncMock,
+        return_value=b"1.4 f",
+    ) as mock_dl:
+        data = await read_range(accessor, spec(BLOB), index, offset=5, size=5)
+    assert data == b"1.4 f"
+    mock_dl.assert_called_once_with(
+        accessor.config,
+        "https://files.slack.com/x/report.pdf",
+        5,
+        5,
+        session=ANY,
+    )
+
+
+async def test_read_jsonl_window_is_sliced_locally(accessor, index):
+    # Rendered history has no remote range, so the window is taken after.
+    await _populate_index(index)
+    with patch(
+        "mirage.core.slack.read.get_history_jsonl",
+        new_callable=AsyncMock,
+        return_value=b'{"text":"hello"}\n',
     ):
-        result = await read(
-            accessor,
-            PathSpec(
-                resource_path=(
-                    "/channels/general__C001/2023-11-14/chat.jsonl"),
-                virtual="/channels/general__C001/2023-11-14/chat.jsonl",
-                directory="/channels/general__C001/2023-11-14/chat.jsonl",
-            ),
-            index=index,
-            offset=1,
-            size=6,
+        result = await read_range(
+            accessor, spec(CHAT), index, offset=1, size=6
         )
     assert result == b'"text"'

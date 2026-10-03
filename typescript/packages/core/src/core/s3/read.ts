@@ -14,8 +14,8 @@
 
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { record, revisionFor } from '../../observe/context.ts'
-import { ResourceName, type PathSpec } from '../../types.ts'
+import { record, revisionFor, startOp } from '../../observe/context.ts'
+import { VFSName, type PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
 import { createS3Client, isNotFoundError, loadS3Module, s3Key, streamToBuffer } from './client.ts'
 import { enoent } from '../../utils/errors.ts'
@@ -50,7 +50,7 @@ export async function read(
   options: S3ReadOptions = {},
 ): Promise<Uint8Array> {
   const virtual = path.virtual
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   const rawPath =
     prefix !== '' && virtual.startsWith(prefix) ? virtual.slice(prefix.length) || '/' : virtual
   // `virtual` retains the mount prefix (e.g. /s3/foo) for snapshot records;
@@ -66,7 +66,7 @@ export async function read(
   }
   const range = rangeHeader(options.offset ?? 0, options.size ?? null)
   if (range !== null) input.Range = range
-  const startMs = performance.now()
+  const timer = startOp()
   try {
     const resp = (await (
       client as unknown as {
@@ -79,10 +79,7 @@ export async function read(
     }
     const bytes = await streamToBuffer(resp.Body)
     const { fingerprint, revision } = fpRevFromS3Response(resp)
-    // Naming the virtual path rather than rawPath keeps the record exact
-    // without consulting the active mount prefix; record() leaves an
-    // already-prefixed path alone.
-    record('read', virtual, ResourceName.S3, bytes.byteLength, startMs, {
+    record('read', virtual, VFSName.S3, bytes.byteLength, timer, {
       fingerprint,
       revision,
     })

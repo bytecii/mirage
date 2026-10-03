@@ -14,8 +14,8 @@
 
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import type { PathSpec } from '../../types.ts'
-import { enoent } from '../../utils/errors.ts'
-import { norm } from './utils.ts'
+import { lookupError } from './dest.ts'
+import { norm } from '../../utils/path.ts'
 
 export interface SetAttrsFields {
   mode?: number
@@ -37,7 +37,7 @@ export function setAttrs(
   const store = accessor.store
   const p = norm(path.mountPath)
   if (!store.files.has(p) && !store.dirs.has(p)) {
-    throw enoent(path)
+    throw lookupError(accessor, path, p)
   }
   const entry = store.attrs.get(p) ?? {}
   if (fields.mode !== undefined) entry.mode = fields.mode

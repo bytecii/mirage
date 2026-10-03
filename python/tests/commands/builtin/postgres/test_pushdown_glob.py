@@ -12,7 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from unittest.mock import AsyncMock, patch
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -23,67 +24,86 @@ from mirage.commands.builtin.postgres.rg import rg
 from mirage.commands.builtin.postgres.tail import tail
 from mirage.commands.config import CommandOpts
 from mirage.io.types import IOResult
-from mirage.resource.postgres.config import PostgresConfig
 from mirage.types import PathSpec
+from mirage.vfs.postgres.config import PostgresConfig
 
 CONCRETE = "/public/tables/books/rows.jsonl"
 GLOB = "/public/tables/*/rows.jsonl"
 
+GENERICS = "mirage.commands.builtin.generic_bind.search._GENERICS"
+RESOLVE = "mirage.commands.builtin.generic_bind.adapter.make_resolve_glob"
+SEARCH_ENTITY = "mirage.core.postgres.search.search_entity"
+
+
+@asynccontextmanager
+async def _fake_acquire():
+    yield MagicMock()
+
 
 @pytest.fixture
 def accessor():
-    return PostgresAccessor(config=PostgresConfig(
-        dsn="postgres://u:p@localhost:5432/db"))
+    a = PostgresAccessor(
+        config=PostgresConfig(dsn="postgres://u:p@localhost:5432/db")
+    )
+    pool = MagicMock()
+    pool.acquire = lambda: _fake_acquire()
+    a.pool = AsyncMock(return_value=pool)
+    return a
 
 
 def _glob_path() -> PathSpec:
     # The dispatcher hands a glob operand through with the trailing segment
     # in `pattern` and the wildcard still in `directory`; detect_scope would
     # otherwise read the "*" as an entity literally named "*".
-    return PathSpec(virtual=GLOB,
-                    directory="/public/tables",
-                    resource_path=GLOB.strip("/"),
-                    pattern="rows.jsonl",
-                    resolved=False)
+    return PathSpec(
+        virtual=GLOB,
+        directory="/public/tables",
+        vfs_path=GLOB.strip("/"),
+        pattern="rows.jsonl",
+        resolved=False,
+    )
 
 
 def _resolved_pair() -> list[PathSpec]:
     return [
-        PathSpec(virtual=p,
-                 directory="/public/tables",
-                 resource_path=p.strip("/")) for p in (
-                     "/public/tables/authors/rows.jsonl",
-                     "/public/tables/books/rows.jsonl",
-                 )
+        PathSpec(virtual=p, directory="/public/tables", vfs_path=p.strip("/"))
+        for p in (
+            "/public/tables/authors/rows.jsonl",
+            "/public/tables/books/rows.jsonl",
+        )
     ]
+
+
+async def _resolve_pair(_accessor, _paths, index=None):
+    return _resolved_pair()
+
+
+def _fake_resolver(resolve):
+    return lambda *_args, **_kwargs: resolve
 
 
 @pytest.mark.asyncio
 async def test_grep_glob_skips_pushdown_and_expands(accessor):
     seen: dict[str, object] = {}
 
-    async def fake_resolve(_accessor, _paths, index=None):
-        return _resolved_pair()
-
     async def fake_generic(paths, _texts, _flags, **_kwargs):
         seen["generic"] = [p.virtual for p in paths]
         return b"", IOResult()
 
-    with patch(
-            "mirage.commands.builtin.postgres.grep.search_entity",
+    with (
+        patch(
+            SEARCH_ENTITY,
             new=AsyncMock(side_effect=AssertionError("pushdown ran on glob")),
-    ), patch(
-            "mirage.commands.builtin.postgres.grep._stat",
-            new=AsyncMock(side_effect=AssertionError("stat ran on glob")),
-    ), patch(
-            "mirage.commands.builtin.postgres.grep.resolve_glob",
-            new=fake_resolve,
-    ), patch(
-            "mirage.commands.builtin.postgres.grep.generic_grep",
-            new=fake_generic,
+        ),
+        patch(
+            RESOLVE,
+            new=_fake_resolver(_resolve_pair),
+        ),
+        patch.dict(GENERICS, {"grep": fake_generic}),
     ):
-        _, io = await grep(accessor, [_glob_path()], ['ada'],
-                           CommandOpts(index=NULL_INDEX))
+        _, io = await grep(
+            accessor, [_glob_path()], ["ada"], CommandOpts(index=NULL_INDEX)
+        )
 
     assert io.exit_code == 0
     assert seen["generic"] == [
@@ -92,76 +112,12 @@ async def test_grep_glob_skips_pushdown_and_expands(accessor):
     ]
 
 
-@pytest.mark.asyncio
-async def test_grep_concrete_path_still_uses_pushdown(accessor):
-    search = AsyncMock(return_value=[])
-    with patch(
-            "mirage.commands.builtin.postgres.grep.search_entity",
-            new=search,
-    ), patch(
-            "mirage.commands.builtin.postgres.grep._stat",
-            new=AsyncMock(),
-    ), patch(
-            "mirage.commands.builtin.postgres.grep.resolve_glob",
-            new=AsyncMock(side_effect=AssertionError("glob ran")),
-    ):
-        _, io = await grep(accessor, [
-            PathSpec(virtual=CONCRETE,
-                     directory='/public/tables/books',
-                     resource_path=CONCRETE.strip('/'))
-        ], ['ada'], CommandOpts(index=NULL_INDEX))
-
-    assert io.exit_code == 1
-    search.assert_awaited_once()
-
-
 def _concrete_path() -> PathSpec:
-    return PathSpec(virtual=CONCRETE,
-                    directory="/public/tables/books",
-                    resource_path=CONCRETE.strip("/"))
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("flags", [
-    {
-        "v": True
-    },
-    {
-        "c": True
-    },
-    {
-        "args_l": True
-    },
-    {
-        "n": True
-    },
-])
-async def test_grep_shaping_flag_skips_pushdown(accessor, flags):
-    # A shaping flag cannot be honored by the ILIKE push-down (which prints
-    # whole matching rows), so the wrapper must defer to the generic scan.
-    seen: dict[str, object] = {}
-
-    async def fake_resolve(_accessor, _paths, index=None):
-        return [_concrete_path()]
-
-    async def fake_generic(paths, _texts, _flags, **_kwargs):
-        seen["generic"] = [p.virtual for p in paths]
-        return b"", IOResult()
-
-    with patch(
-            "mirage.commands.builtin.postgres.grep.search_entity",
-            new=AsyncMock(side_effect=AssertionError("pushdown ran w/ flag")),
-    ), patch(
-            "mirage.commands.builtin.postgres.grep.resolve_glob",
-            new=fake_resolve,
-    ), patch(
-            "mirage.commands.builtin.postgres.grep.generic_grep",
-            new=fake_generic,
-    ):
-        await grep(accessor, [_concrete_path()], ['ada'],
-                   CommandOpts(index=NULL_INDEX, flags={**flags}))
-
-    assert seen["generic"] == [CONCRETE]
+    return PathSpec(
+        virtual=CONCRETE,
+        directory="/public/tables/books",
+        vfs_path=CONCRETE.strip("/"),
+    )
 
 
 @pytest.mark.asyncio
@@ -170,25 +126,30 @@ async def test_grep_regex_pattern_skips_pushdown(accessor):
     # take the generic scan rather than silently mis-matching.
     seen: dict[str, object] = {}
 
-    async def fake_resolve(_accessor, _paths, index=None):
+    async def _resolve_one(_accessor, _paths, index=None):
         return [_concrete_path()]
 
     async def fake_generic(paths, _texts, _flags, **_kwargs):
         seen["generic"] = [p.virtual for p in paths]
         return b"", IOResult()
 
-    with patch(
-            "mirage.commands.builtin.postgres.grep.search_entity",
+    with (
+        patch(
+            SEARCH_ENTITY,
             new=AsyncMock(side_effect=AssertionError("pushdown ran on regex")),
-    ), patch(
-            "mirage.commands.builtin.postgres.grep.resolve_glob",
-            new=fake_resolve,
-    ), patch(
-            "mirage.commands.builtin.postgres.grep.generic_grep",
-            new=fake_generic,
+        ),
+        patch(
+            RESOLVE,
+            new=_fake_resolver(_resolve_one),
+        ),
+        patch.dict(GENERICS, {"grep": fake_generic}),
     ):
-        await grep(accessor, [_concrete_path()], ['a.b'],
-                   CommandOpts(index=NULL_INDEX))
+        await grep(
+            accessor,
+            [_concrete_path()],
+            ["a.b"],
+            CommandOpts(index=NULL_INDEX),
+        )
 
     assert seen["generic"] == [CONCRETE]
 
@@ -197,34 +158,71 @@ async def test_grep_regex_pattern_skips_pushdown(accessor):
 async def test_rg_glob_skips_pushdown_and_expands(accessor):
     seen: dict[str, object] = {}
 
-    async def fake_resolve(_accessor, _paths, index=None):
-        return _resolved_pair()
-
     async def fake_generic(paths, _texts, _flags, **_kwargs):
         seen["generic"] = [p.virtual for p in paths]
         return b"", IOResult()
 
-    with patch(
-            "mirage.commands.builtin.postgres.rg.search_entity",
+    with (
+        patch(
+            SEARCH_ENTITY,
             new=AsyncMock(side_effect=AssertionError("pushdown ran on glob")),
-    ), patch(
-            "mirage.commands.builtin.postgres.rg._stat",
-            new=AsyncMock(side_effect=AssertionError("stat ran on glob")),
-    ), patch(
-            "mirage.commands.builtin.postgres.rg.resolve_glob",
-            new=fake_resolve,
-    ), patch(
-            "mirage.commands.builtin.postgres.rg.generic_rg",
-            new=fake_generic,
+        ),
+        patch(
+            RESOLVE,
+            new=_fake_resolver(_resolve_pair),
+        ),
+        patch.dict(GENERICS, {"rg": fake_generic}),
     ):
-        _, io = await rg(accessor, [_glob_path()], ['ada'],
-                         CommandOpts(index=NULL_INDEX))
+        _, io = await rg(
+            accessor, [_glob_path()], ["ada"], CommandOpts(index=NULL_INDEX)
+        )
 
     assert io.exit_code == 0
     assert seen["generic"] == [
         "/public/tables/authors/rows.jsonl",
         "/public/tables/books/rows.jsonl",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags", [{"follow": True}, {"F": True}])
+async def test_tail_follow_reads_the_relation_whole(accessor, flags):
+    # A follow polls the file as it grows; the pushed-down suffix moves
+    # with the table and has no byte position to measure against, so a
+    # follow goes through tail_generic on the full stream.
+    reached: list[list[PathSpec]] = []
+
+    async def fake_generic(paths, _texts, _opts, _stat, _stream):
+        reached.append(paths)
+        return b"", IOResult()
+
+    concrete = PathSpec(
+        virtual=CONCRETE,
+        directory="/public/tables/books",
+        vfs_path=CONCRETE.strip("/"),
+    )
+    with (
+        patch(
+            "mirage.commands.builtin.postgres.tail.client.count_rows",
+            new=AsyncMock(side_effect=AssertionError("pushdown ran under -f")),
+        ),
+        patch(
+            "mirage.commands.builtin.postgres.tail.resolve_or_empty",
+            new=AsyncMock(return_value=[concrete]),
+        ),
+        patch(
+            "mirage.commands.builtin.postgres.tail.tail_generic",
+            new=fake_generic,
+        ),
+    ):
+        _, io = await tail(
+            accessor,
+            [concrete],
+            [],
+            CommandOpts(index=NULL_INDEX, flags=flags),
+        )
+    assert io.exit_code == 0
+    assert reached == [[concrete]]
 
 
 @pytest.mark.asyncio
@@ -237,18 +235,27 @@ async def test_tail_glob_does_not_query_a_relation_named_star(accessor):
     async def fake_generic(paths, _texts, _opts, _stat, _stream):
         return b"", IOResult()
 
-    with patch(
+    with (
+        patch(
             "mirage.commands.builtin.postgres.tail.client.count_rows",
             new=AsyncMock(side_effect=AssertionError("pushdown ran on glob")),
-    ), patch(
+        ),
+        patch(
             "mirage.commands.builtin.postgres.tail.resolve_or_empty",
             new=lambda _ops, _accessor, _paths, _index: fake_resolve(
-                _accessor, _paths),
-    ), patch(
+                _accessor, _paths
+            ),
+        ),
+        patch(
             "mirage.commands.builtin.postgres.tail.tail_generic",
             new=fake_generic,
+        ),
     ):
-        _, io = await tail(accessor, [_glob_path()], [],
-                           CommandOpts(index=NULL_INDEX, flags={'n': '1'}))
+        _, io = await tail(
+            accessor,
+            [_glob_path()],
+            [],
+            CommandOpts(index=NULL_INDEX, flags={"n": "1"}),
+        )
 
     assert io.exit_code == 0

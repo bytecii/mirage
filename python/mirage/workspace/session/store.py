@@ -17,7 +17,7 @@ from collections.abc import Iterable
 
 from mirage.workspace.record.types import RecordFields
 
-# One session's durable fields: the JSON-able ``Session.to_dict()``
+# One session's durable fields: the JSON-able ``SessionState.to_dict()``
 # payload (session_id, cwd, env, created_at, mount_modes). Volatile
 # shell state (functions, arrays, stdin buffers) never persists.
 # A session's stored shape is one keyed record like any other, so the
@@ -48,8 +48,9 @@ class SessionStore(ABC):
         """Insert or update one session's fields."""
 
     @abstractmethod
-    async def cas_set(self, session_id: str, fields: SessionFields,
-                      expected_generation: int) -> bool:
+    async def cas_set(
+        self, session_id: str, fields: SessionFields, expected_generation: int
+    ) -> bool:
         """Write one session iff its stored generation matches.
 
         Optimistic concurrency for the flush path: the write succeeds

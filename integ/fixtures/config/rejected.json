@@ -1,133 +1,1054 @@
 {
-  "note": "Workspace configs both loaders must refuse. Python forbids extra keys on every config block (config.py's ConfigDict(extra='forbid')); the TypeScript loader mirrors those tables in server/src/config.ts. A config that loads in one language and not the other is the bug this fixture exists to catch, so the spellings here are Python's canonical snake_case ones — a camelCase alias TypeScript would otherwise accept for free is just as unportable as a typo.",
+  "note": "Workspace configs both loaders must refuse. Python forbids extra keys on every config block (config.py's ConfigDict(extra='forbid')); the TypeScript loader mirrors those tables in server/src/config.ts. A config that loads in one language and not the other is the bug this fixture exists to catch, so the spellings here are Python's canonical snake_case ones \u2014 a camelCase alias TypeScript would otherwise accept for free is just as unportable as a typo.",
   "cases": [
     {
       "name": "mount block: mount_point for mountpoint",
-      "config": { "mounts": { "/d": { "resource": "ram", "mount_point": "/mnt/x" } } }
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "mount_point": "/mnt/x"
+          }
+        }
+      }
     },
     {
-      "name": "mount block: resourse for resource",
-      "config": { "mounts": { "/d": { "resourse": "ram" } } }
+      "name": "mount block: resourse for VFS",
+      "config": {
+        "mounts": {
+          "/d": {
+            "resourse": "ram"
+          }
+        }
+      }
     },
     {
-      "name": "top level: consistancy for consistency",
-      "config": { "mounts": { "/d": { "resource": "ram" } }, "consistancy": "lazy" }
+      "name": "mount block: an unknown read policy",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "read": "banana"
+          }
+        }
+      }
+    },
+    {
+      "name": "mount block: ttl without read",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "ttl": 30
+          }
+        }
+      }
+    },
+    {
+      "name": "mount block: bounded without a bound",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "read": "bounded"
+          }
+        }
+      }
+    },
+    {
+      "name": "mount block: a quoted bound",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "read": "bounded",
+            "ttl": "30"
+          }
+        }
+      }
+    },
+    {
+      "name": "mount block: a boolean bound",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "read": "bounded",
+            "ttl": true
+          }
+        }
+      }
+    },
+    {
+      "name": "mount block: a fractional bound",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "read": "bounded",
+            "ttl": 1.5
+          }
+        }
+      }
+    },
+    {
+      "name": "mount block: a zero bound",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "read": "bounded",
+            "ttl": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "mount block: a negative bound",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "read": "bounded",
+            "ttl": -1
+          }
+        }
+      }
     },
     {
       "name": "cache block: limitt for limit",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "cache": { "type": "ram", "limitt": "1MB" }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "cache": {
+          "type": "ram",
+          "limitt": "1MB"
+        }
       }
     },
     {
       "name": "index block: camelCase keyPrefix",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "index": { "type": "redis", "keyPrefix": "x:" }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "index": {
+          "type": "redis",
+          "keyPrefix": "x:"
+        }
       }
     },
     {
       "name": "cache block: camelCase maxDrainBytes",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "cache": { "type": "ram", "maxDrainBytes": 8 }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "cache": {
+          "type": "ram",
+          "maxDrainBytes": 8
+        }
       }
     },
     {
       "name": "clis entry: a cli takes no mode",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "clis": { "sl": { "cli": "slack", "mode": "write" } }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "clis": {
+          "sl": {
+            "cli": "slack",
+            "mode": "write"
+          }
+        }
       }
     },
     {
       "name": "store block: key_prefixx for key_prefix",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "store": { "type": "ram", "key_prefixx": "m:" }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "store": {
+          "type": "ram",
+          "key_prefixx": "m:"
+        }
       }
     },
     {
       "name": "store group: urlz for url",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "store": { "type": "ram", "observer": { "type": "redis", "urlz": "redis://x" } }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "store": {
+          "type": "ram",
+          "observer": {
+            "type": "redis",
+            "urlz": "redis://x"
+          }
+        }
       }
     },
     {
       "name": "cache block: type is the union discriminator, not optional",
-      "config": { "mounts": { "/d": { "resource": "ram" } }, "cache": { "limit": "1MB" } }
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "cache": {
+          "limit": "1MB"
+        }
+      }
     },
     {
       "name": "index block: type is the union discriminator, not optional",
-      "config": { "mounts": { "/d": { "resource": "ram" } }, "index": { "ttl": 5 } }
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "index": {
+          "ttl": 5
+        }
+      }
     },
     {
       "name": "cache block: no such backend",
-      "config": { "mounts": { "/d": { "resource": "ram" } }, "cache": { "type": "memcached" } }
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "cache": {
+          "type": "memcached"
+        }
+      }
     },
     {
       "name": "store block: s3 hosts only the workspace group, never the default",
-      "config": { "mounts": { "/d": { "resource": "ram" } }, "store": { "type": "s3" } }
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "store": {
+          "type": "s3"
+        }
+      }
     },
     {
-      "name": "guard entry: path for paths",
+      "name": "deny rule: path for paths",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "guards": [{ "reason": "no", "path": ["/x"] }]
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "no",
+                  "path": [
+                    "/x"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "deny rule: commands is a list, not a scalar",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "no",
+                  "commands": "rm"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "commands: deny is a list, not a scalar",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": "rm"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: mounts is a mapping, never a bare list",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "mounts": [
+              "/d",
+              7
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: a mount mode is a mode name, not a list",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "mounts": {
+              "/d": {
+                "mode": [
+                  "read"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: the old hidden_paths spelling",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "a": {
+            "hidden_paths": {
+              "paths": [
+                "/x"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: commands block takes no hide arm",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "a": {
+            "commands": {
+              "hide": [
+                "rm"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "commands: allow is a list, not a scalar",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "allow": "ls"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "commands: a blank allow pattern would install every command",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "allow": [
+                "ls",
+                " "
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "ask rule: a blank pattern would ask about every command",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "ask": [
+                ""
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "ask rule: mount is the compiler's field, never typed",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "ask": [
+                {
+                  "reason": "x",
+                  "commands": [
+                    "rm"
+                  ],
+                  "mount": "/d"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "mount section: no allow list, visibility is not per mount",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "mounts": {
+              "/d": {
+                "commands": {
+                  "allow": [
+                    "ls"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: extends is gone, a role is the whole document",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "extends": "gone"
+          }
+        }
       }
     },
     {
       "name": "store s3 group: a typo in a backend key is still a load error",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
         "store": {
           "type": "ram",
-          "workspace": { "type": "s3", "bucket": "b", "endpoint_urll": "http://x" }
+          "workspace": {
+            "type": "s3",
+            "bucket": "b",
+            "endpoint_urll": "http://x"
+          }
         }
       }
     },
     {
       "name": "store s3 group: hosts only sessions+meta, not the namespace plane",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "store": { "type": "ram", "namespace": { "type": "s3", "bucket": "b" } }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "store": {
+          "type": "ram",
+          "namespace": {
+            "type": "s3",
+            "bucket": "b"
+          }
+        }
       }
     },
     {
       "name": "store s3 group: hosts only sessions+meta, not the observer plane",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "store": { "type": "ram", "observer": { "type": "s3", "bucket": "b" } }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "store": {
+          "type": "ram",
+          "observer": {
+            "type": "s3",
+            "bucket": "b"
+          }
+        }
       }
     },
     {
       "name": "console block: unknown key",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "console": { "type": "redis", "prefix": "c:" }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "console": {
+          "type": "redis",
+          "prefix": "c:"
+        }
       }
     },
     {
       "name": "console block: unknown type",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "console": { "type": "disk" }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "console": {
+          "type": "disk"
+        }
       }
     },
     {
       "name": "console block: url not a string",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "console": { "type": "redis", "url": 123 }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "console": {
+          "type": "redis",
+          "url": 123
+        }
       }
     },
     {
       "name": "console block: zero ttl",
       "config": {
-        "mounts": { "/d": { "resource": "ram" } },
-        "console": { "type": "redis", "ttl_seconds": 0 }
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "console": {
+          "type": "redis",
+          "ttl_seconds": 0
+        }
+      }
+    },
+    {
+      "name": "command rule lists commands beside paths",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "x",
+                  "commands": [
+                    "rm",
+                    "mv"
+                  ],
+                  "paths": [
+                    "/d/a"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "command rule maps commands and also lists paths",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "x",
+                  "commands": {
+                    "rm": [
+                      "/d/a"
+                    ]
+                  },
+                  "paths": [
+                    "/d/b"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "command rule names no command and no path",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "x"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "command rule maps a command to no path",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "x",
+                  "commands": {
+                    "rm": []
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "command rule maps a command to a scalar",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "x",
+                  "commands": {
+                    "rm": "/d/a"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "commands: ask is a list, not a scalar",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "ask": "git push"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "command rule: a blank mapping key names no command",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "x",
+                  "commands": {
+                    " ": [
+                      "/d/a"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "command rule: a number is neither a pattern nor a mapping",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                7
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "command rule: reason is a string",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": 1,
+                  "commands": [
+                    "rm"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "command rule: a blank path entry",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "x",
+                  "commands": {
+                    "rm": [
+                      " "
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "top level: there is no workspace permissions block",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "permissions": {
+          "mounts": {
+            "/d": "r"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: extends is gone, so a chain cannot be spelled at all",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "a": {
+            "extends": "b"
+          },
+          "b": {
+            "extends": "a"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: an ask rule follows the same grammar",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "commands": {
+              "ask": [
+                {
+                  "reason": "x",
+                  "commands": [
+                    "rm"
+                  ],
+                  "paths": [
+                    "/d/a"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "mount section: a rule there follows the same grammar",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "mounts": {
+              "/d": {
+                "commands": {
+                  "deny": [
+                    {
+                      "reason": "x",
+                      "commands": {
+                        "rm": []
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "mount block: permissions live in a role, not on a mount",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram",
+            "permissions": {
+              "paths": {
+                "hide": [
+                  "/d/x"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: a path in a mount section must be under that mount",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "mounts": {
+              "/d": {
+                "paths": {
+                  "hide": [
+                    "/other/x"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: a rule path in a mount section must be under it",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "mounts": {
+              "/d": {
+                "commands": {
+                  "deny": [
+                    {
+                      "reason": "x",
+                      "paths": [
+                        "/other/x"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "profile: a relative path is refused, every path is absolute",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "p": {
+            "paths": {
+              "hide": [
+                "secrets/*"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "top level: profile names a role the document does not define",
+      "config": {
+        "mounts": {
+          "/d": {
+            "vfs": "ram"
+          }
+        },
+        "profile": "gone",
+        "profiles": {
+          "p": {
+            "cwd": "/d"
+          }
+        }
       }
     }
   ]

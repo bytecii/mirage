@@ -14,14 +14,12 @@
 
 import pytest
 
-from mirage.core.lancedb.read import read
+from mirage.core.lancedb.tree import read
 from mirage.types import PathSpec
 
 
 def _ps(path: str) -> PathSpec:
-    return PathSpec(virtual=path,
-                    directory=path,
-                    resource_path=path.strip("/"))
+    return PathSpec(virtual=path, directory=path, vfs_path=path.strip("/"))
 
 
 @pytest.mark.asyncio

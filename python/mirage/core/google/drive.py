@@ -17,26 +17,36 @@ import uuid
 from enum import Enum
 from typing import Any
 
-from mirage.core.google.client import (TokenManager, drive_base,
-                                       drive_upload_base, google_delete,
-                                       google_get, google_get_bytes,
-                                       google_patch, google_post,
-                                       google_send_bytes)
+from mirage.core.google.client import (
+    TokenManager,
+    drive_base,
+    drive_upload_base,
+    google_delete,
+    google_get,
+    google_get_bytes,
+    google_patch,
+    google_post,
+    google_send_bytes,
+)
 from mirage.utils.ranges import ByteWindow
 
 
 class GoogleFileSuffix(str, Enum):
     """Rendered vfs filename suffixes; readdir emits only folders and these."""
+
     GDOC = ".gdoc.json"
     GSHEET = ".gsheet.json"
     GSLIDE = ".gslide.json"
     GMAIL = ".gmail.json"
 
 
-FIELDS = ("nextPageToken,"
-          "files(id,name,mimeType,driveId,size,quotaBytesUsed,"
-          "createdTime,modifiedTime,"
-          "owners,capabilities/canEdit,parents)")
+# md5Checksum and headRevisionId are a file's token (`drive_fingerprint`).
+FIELDS = (
+    "nextPageToken,"
+    "files(id,name,mimeType,driveId,size,quotaBytesUsed,"
+    "createdTime,modifiedTime,md5Checksum,headRevisionId,"
+    "owners,capabilities/canEdit,parents)"
+)
 
 # A search across every corpus is answered best-effort, so Drive reports
 # whether it reached them all. The flag is only returned when asked for.
@@ -49,8 +59,6 @@ MIME_TO_EXT = {
     "application/vnd.google-apps.spreadsheet": GoogleFileSuffix.GSHEET.value,
     "application/vnd.google-apps.presentation": GoogleFileSuffix.GSLIDE.value,
 }
-
-WORKSPACE_MIMES = set(MIME_TO_EXT.keys())
 
 
 def escape_query_value(value: str) -> str:
@@ -72,6 +80,7 @@ async def list_files(
     modified_after: str | None = None,
     modified_before: str | None = None,
     name: str | None = None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """List files via Drive API.
 
@@ -88,6 +97,11 @@ async def list_files(
         modified_before (str | None): RFC3339 timestamp; include only files
             with modifiedTime < this.
         name (str | None): exact file name filter.
+        limit (int | None): stop once this many files are in hand and do
+            not request another page. An emptiness probe wants one
+            entry, and ``page_size`` alone cannot express that: it caps
+            the page, not the walk, so a small page turned a listing of
+            a large folder into many requests instead of fewer.
 
     Returns:
         list[dict]: file metadata dicts.
@@ -110,7 +124,7 @@ async def list_files(
         params: dict[str, str | int] = {
             "q": q,
             "fields": FIELDS,
-            "pageSize": page_size,
+            "pageSize": page_size if limit is None else min(page_size, limit),
             "orderBy": "modifiedTime desc",
         }
         if drive_id:
@@ -123,6 +137,8 @@ async def list_files(
         url = f"{drive_base(token_manager)}/files"
         data = await google_get(token_manager, url, params=params)
         files.extend(data.get("files", []))
+        if limit is not None and len(files) >= limit:
+            break
         page_token = data.get("nextPageToken")
         if not page_token:
             break
@@ -264,32 +280,42 @@ async def download_file(
     Returns:
         bytes: file content.
     """
-    url = (f"{drive_base(token_manager)}/files/{file_id}"
-           "?alt=media&supportsAllDrives=true")
+    url = (
+        f"{drive_base(token_manager)}/files/{file_id}"
+        "?alt=media&supportsAllDrives=true"
+    )
     return await google_get_bytes(token_manager, url, window)
 
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
-ITEM_FIELDS = ("id,name,mimeType,driveId,size,quotaBytesUsed,"
-               "createdTime,modifiedTime,parents")
+ITEM_FIELDS = (
+    "id,name,mimeType,driveId,size,quotaBytesUsed,"
+    "createdTime,modifiedTime,md5Checksum,headRevisionId,parents,owners,trashed"
+)
 DEFAULT_UPLOAD_MIME = "application/octet-stream"
 
 
-def _multipart_related(metadata: dict[str, Any], data: bytes,
-                       mime_type: str) -> tuple[bytes, str]:
+def _multipart_related(
+    metadata: dict[str, Any], data: bytes, mime_type: str
+) -> tuple[bytes, str]:
     boundary = uuid.uuid4().hex
     meta = json.dumps(metadata).encode()
     body = (
-        (f"--{boundary}\r\n"
-         "Content-Type: application/json; charset=UTF-8\r\n\r\n").encode() +
-        meta + f"\r\n--{boundary}\r\n"
-        f"Content-Type: {mime_type}\r\n\r\n".encode() + data +
-        f"\r\n--{boundary}--\r\n".encode())
+        (
+            f"--{boundary}\r\n"
+            "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        ).encode()
+        + meta
+        + f"\r\n--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n".encode()
+        + data
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
     return body, f"multipart/related; boundary={boundary}"
 
 
-async def get_file(token_manager: TokenManager,
-                   file_id: str) -> dict[str, Any]:
+async def get_file(
+    token_manager: TokenManager, file_id: str
+) -> dict[str, Any]:
     """Fetch a single file's metadata.
 
     Args:
@@ -300,16 +326,19 @@ async def get_file(token_manager: TokenManager,
         dict: file metadata.
     """
     url = f"{drive_base(token_manager)}/files/{file_id}"
-    return await google_get(token_manager,
-                            url,
-                            params={
-                                "fields": ITEM_FIELDS,
-                                "supportsAllDrives": "true",
-                            })
+    return await google_get(
+        token_manager,
+        url,
+        params={
+            "fields": ITEM_FIELDS,
+            "supportsAllDrives": "true",
+        },
+    )
 
 
-async def create_folder(token_manager: TokenManager, name: str,
-                        parent_id: str) -> dict[str, Any]:
+async def create_folder(
+    token_manager: TokenManager, name: str, parent_id: str
+) -> dict[str, Any]:
     """Create a Drive folder.
 
     Args:
@@ -320,13 +349,19 @@ async def create_folder(token_manager: TokenManager, name: str,
     Returns:
         dict: created folder metadata.
     """
-    url = (f"{drive_base(token_manager)}/files"
-           f"?supportsAllDrives=true&fields={ITEM_FIELDS}")
-    return await google_post(token_manager, url, {
-        "name": name,
-        "mimeType": FOLDER_MIME,
-        "parents": [parent_id],
-    })
+    url = (
+        f"{drive_base(token_manager)}/files"
+        f"?supportsAllDrives=true&fields={ITEM_FIELDS}"
+    )
+    return await google_post(
+        token_manager,
+        url,
+        {
+            "name": name,
+            "mimeType": FOLDER_MIME,
+            "parents": [parent_id],
+        },
+    )
 
 
 async def upload_file(
@@ -354,16 +389,18 @@ async def upload_file(
     metadata = {"name": name, "parents": [parent_id]}
     body, content_type = _multipart_related(metadata, data, mime_type)
     url = f"{drive_upload_base(token_manager)}/files"
-    return await google_send_bytes(token_manager,
-                                   "POST",
-                                   url,
-                                   body,
-                                   content_type,
-                                   params={
-                                       "uploadType": "multipart",
-                                       "supportsAllDrives": "true",
-                                       "fields": ITEM_FIELDS,
-                                   })
+    return await google_send_bytes(
+        token_manager,
+        "POST",
+        url,
+        body,
+        content_type,
+        params={
+            "uploadType": "multipart",
+            "supportsAllDrives": "true",
+            "fields": ITEM_FIELDS,
+        },
+    )
 
 
 async def update_file_content(
@@ -384,16 +421,18 @@ async def update_file_content(
         dict: updated file metadata.
     """
     url = f"{drive_upload_base(token_manager)}/files/{file_id}"
-    return await google_send_bytes(token_manager,
-                                   "PATCH",
-                                   url,
-                                   data,
-                                   mime_type,
-                                   params={
-                                       "uploadType": "media",
-                                       "supportsAllDrives": "true",
-                                       "fields": ITEM_FIELDS,
-                                   })
+    return await google_send_bytes(
+        token_manager,
+        "PATCH",
+        url,
+        data,
+        mime_type,
+        params={
+            "uploadType": "media",
+            "supportsAllDrives": "true",
+            "fields": ITEM_FIELDS,
+        },
+    )
 
 
 async def patch_file(
@@ -427,8 +466,9 @@ async def patch_file(
     return await google_patch(token_manager, url, body or {}, params=params)
 
 
-async def copy_file(token_manager: TokenManager, file_id: str, name: str,
-                    parent_id: str) -> dict[str, Any]:
+async def copy_file(
+    token_manager: TokenManager, file_id: str, name: str, parent_id: str
+) -> dict[str, Any]:
     """Copy a Drive file (regular or google-apps) into a parent folder.
 
     Args:
@@ -440,9 +480,15 @@ async def copy_file(token_manager: TokenManager, file_id: str, name: str,
     Returns:
         dict: created copy's metadata.
     """
-    url = (f"{drive_base(token_manager)}/files/{file_id}/copy"
-           f"?supportsAllDrives=true&fields={ITEM_FIELDS}")
-    return await google_post(token_manager, url, {
-        "name": name,
-        "parents": [parent_id],
-    })
+    url = (
+        f"{drive_base(token_manager)}/files/{file_id}/copy"
+        f"?supportsAllDrives=true&fields={ITEM_FIELDS}"
+    )
+    return await google_post(
+        token_manager,
+        url,
+        {
+            "name": name,
+            "parents": [parent_id],
+        },
+    )

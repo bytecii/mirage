@@ -17,28 +17,33 @@ import git from 'isomorphic-git'
 import { IOResult } from '../../../../io/types.ts'
 import type { SessionView } from '../../../../ops/types.ts'
 import type { CommandFnResult } from '../../../config.ts'
-import { FlagView } from '../../../spec/types.ts'
+import { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
 import { headEntries } from './changes.ts'
 import {
+  AllWithPathsError,
   GitError,
   MissingMessageError,
   NothingToCommitError,
   NoWorkspaceError,
+  PartialCommitError,
+  UnknownSwitchError,
   UnmergedIndexError,
 } from './errors.ts'
-import { readIndex } from './index_file.ts'
+import { stageTracked } from './add.ts'
+import { commitSummary } from './diff_output.ts'
+import { readIndex, updateIndex } from './index_file.ts'
 import { record } from './reflog.ts'
 import { detachHead, readHead, writeRef } from './refs.ts'
-import { opened, repoArgs, type Repo } from './repo.ts'
+import { configBool, repoArgs, type Repo } from './repo.ts'
+import { opened } from './session.ts'
 import { renderReport } from './status.ts'
 import { report } from './summary.ts'
 import type { TreeEntry } from './tree.ts'
 import type { IndexState } from './types.ts'
-import { fatal } from './util.ts'
+import { checkOperands, escaped, fatal, startPoint, switches } from './util.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
-
-const ENC = new TextEncoder()
+import { encodeText } from '../../../../shell/bytes.ts'
 
 // git tags the first commit on a branch so the reflog reads
 // "commit (initial): ..." rather than plain "commit: ...".
@@ -52,7 +57,7 @@ const AUTHOR_EMAIL = 'GIT_AUTHOR_EMAIL'
 const FALLBACK_EMAIL = 'EMAIL'
 
 /** An author string split into the two halves git records separately. */
-interface Identity {
+export interface Identity {
   readonly name: string
   readonly email: string
   /** The `Name <email>` spelling, which is what a reflog line carries. */
@@ -77,7 +82,7 @@ interface Identity {
  * Read through the session plane's door rather than the frozen `inv.env`
  * snapshot, so a hidden name reads as unset exactly as it does in the shell.
  */
-function identity(fl: FlagView, session: SessionView | undefined): Identity {
+export function identity(fl: FlagView, session: SessionView | undefined): Identity {
   const author = fl.asStr('author')
   if (author === undefined || author === '') {
     const name = session?.get(AUTHOR_NAME) ?? null
@@ -135,7 +140,7 @@ async function buildCommit(
   for (const [path, entry] of [...state.entries].sort(([a], [b]) => compareCodePoints(a, b))) {
     const cut = path.lastIndexOf('/')
     const dir = cut === -1 ? '' : path.slice(0, cut)
-    for (let at = dir; at !== ''; ) {
+    for (let at = dir; at !== '';) {
       ensure(at)
       const up = at.lastIndexOf('/')
       at = up === -1 ? '' : at.slice(0, up)
@@ -188,6 +193,11 @@ async function buildCommit(
  * The message must come from `-m`: git would otherwise open an editor, which a
  * mount has no way to offer, and inventing a message would put an unreviewed one
  * into history.
+ *
+ * `-a` restages every tracked path first, as `add -u` would, and the index keeps
+ * that staging only once the commit is written. git's `-a` also resolves
+ * conflicted paths and records a merge commit from `MERGE_HEAD`; this build
+ * writes no merge commits, so an unmerged index is refused with or without `-a`.
  */
 export async function commit(inv: CLIInvocation): Promise<CommandFnResult> {
   const doors = inv.doors ?? {}
@@ -198,11 +208,20 @@ export async function commit(inv: CLIInvocation): Promise<CommandFnResult> {
     if (statPath === undefined || dispatch === undefined) {
       throw new NoWorkspaceError()
     }
+    const texts = [...inv.texts]
+    checkOperands(texts, UnknownSwitchError, escaped(inv.argv), switches(inv))
+    const staging = fl.asBool('all')
+    const named = texts[0]
+    if (named !== undefined)
+      throw staging ? new AllWithPathsError(named) : new PartialCommitError(named)
     const message = fl.asStr('message')
     if (message === undefined || message === '') throw new MissingMessageError()
-    const repo = await opened(fl, doors)
+    const repo = await opened(fl, doors, true)
     const state = await readIndex(repo, dispatch)
     if (state.conflicts.size > 0) throw new UnmergedIndexError()
+    const restaged = staging
+      ? await stageTracked(repo, dispatch, statPath, state, doors.ns?.links ?? null)
+      : null
     const head = await readHead(dispatch, repo.location.gitdir)
     const before = await headEntries(repo)
     const after = indexTree(state)
@@ -215,7 +234,7 @@ export async function commit(inv: CLIInvocation): Promise<CommandFnResult> {
       })
     if (same) {
       throw new NothingToCommitError(
-        await renderReport(repo, dispatch, statPath, head, doors.ns?.links ?? null),
+        await renderReport(repo, dispatch, statPath, head, startPoint(fl), doors.ns?.links ?? null),
       )
     }
     const parents =
@@ -225,9 +244,11 @@ export async function commit(inv: CLIInvocation): Promise<CommandFnResult> {
     const oid = await buildCommit(repo, state, message, who, parents, when)
     if (head.ref !== null) await writeRef(dispatch, repo.location.commondir, head.ref, oid)
     else await detachHead(dispatch, repo.location.gitdir, oid)
+    if (restaged !== null) await updateIndex(repo, restaged[0], restaged[1])
     await record(
       dispatch,
       repo.location.gitdir,
+      repo.location.commondir,
       head.ref,
       parents[0] ?? null,
       oid,
@@ -235,17 +256,20 @@ export async function commit(inv: CLIInvocation): Promise<CommandFnResult> {
       when,
       `commit${before === null ? ROOT_NOTE : ''}: ${message.split('\n')[0] ?? ''}`,
     )
-    const body = await report(
-      repo,
+    const body = report(
       oid,
       message,
       head.branch,
-      before ?? new Map(),
-      after,
+      await commitSummary(
+        repo,
+        before ?? new Map(),
+        after,
+        await configBool(repo, 'core.quotepath', true),
+      ),
       repo.abbrev,
       before === null,
     )
-    return [ENC.encode(body), new IOResult()]
+    return [fl.asBool('quiet') ? null : encodeText(body), new IOResult()]
   } catch (err) {
     if (err instanceof GitError) return fatal(err)
     throw err

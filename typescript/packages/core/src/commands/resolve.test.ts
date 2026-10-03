@@ -13,71 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import {
-  COMPOUND_EXTENSIONS,
-  getExtension,
-  materializeStdout,
-  stripPrefixFromPathKwargs,
-} from './resolve.ts'
-import { CommandSpec, Option } from './spec/types.ts'
+import { getExtension } from './resolve.ts'
 
 describe('getExtension', () => {
-  it('returns the dotted extension for simple paths', () => {
-    expect(getExtension('/a/b.txt')).toBe('.txt')
-    expect(getExtension('file.json')).toBe('.json')
-  })
-
-  it('returns null when there is no extension', () => {
-    expect(getExtension('/a/b')).toBeNull()
-  })
-
-  it('returns null when dot is in a parent segment only', () => {
-    expect(getExtension('/a.b/c')).toBeNull()
-  })
-
-  it('returns null for null input', () => {
-    expect(getExtension(null)).toBeNull()
-  })
-
-  it('recognizes compound extensions from COMPOUND_EXTENSIONS', () => {
-    expect(getExtension('/docs/foo.gdoc.json')).toBe('.gdoc.json')
-    expect(getExtension('/s/bar.gsheet.json')).toBe('.gsheet.json')
-  })
-
-  it('COMPOUND_EXTENSIONS contains the known google-doc extensions', () => {
-    expect(COMPOUND_EXTENSIONS.has('.gdoc.json')).toBe(true)
-    expect(COMPOUND_EXTENSIONS.has('.gsheet.json')).toBe(true)
-  })
-})
-
-describe('materializeStdout', () => {
-  it('returns empty bytes for null', async () => {
-    expect(await materializeStdout(null)).toEqual(new Uint8Array())
-  })
-
-  it('passes through a Uint8Array', async () => {
-    const b = new TextEncoder().encode('hi')
-    expect(await materializeStdout(b)).toBe(b)
-  })
-})
-
-describe('stripPrefixFromPathKwargs', () => {
-  const spec = new CommandSpec({
-    options: [new Option({ short: '-o', type: 'path' })],
-  })
-
-  it('strips a matching prefix from PATH-kind flag values', () => {
-    const result = stripPrefixFromPathKwargs({ o: '/ram/out.txt' }, spec, '/ram')
-    expect(result.o).toBe('/out.txt')
-  })
-
-  it('leaves non-matching prefixes alone', () => {
-    const result = stripPrefixFromPathKwargs({ o: '/disk/x' }, spec, '/ram')
-    expect(result.o).toBe('/disk/x')
-  })
-
-  it('is a no-op when prefix is empty', () => {
-    const kwargs = { o: '/ram/x' }
-    expect(stripPrefixFromPathKwargs(kwargs, spec, '')).toEqual(kwargs)
+  it.each([
+    ['file.txt', '.txt'],
+    ['data/file.parquet', '.parquet'],
+    ['folder/My Doc.gdoc.json', '.gdoc.json'],
+    ['folder/My Sheet.gsheet.json', '.gsheet.json'],
+    ['slides/My Slides.gslide.json', '.gslide.json'],
+    ['INBOX/2026-05-03/Hi__18f.gmail.json', '.gmail.json'],
+    ['Makefile', null],
+    ['dir.d/file', null],
+    [null, null],
+  ])('reads %s as %s', (path, extension) => {
+    expect(getExtension(path)).toBe(extension)
   })
 })

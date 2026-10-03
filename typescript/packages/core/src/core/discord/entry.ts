@@ -37,7 +37,7 @@ export function channelDirname(c: { id: string; name?: string }): string {
 }
 
 export function memberFilename(m: { id: string; name?: string }): string {
-  return `${makeIdName(m.name ?? '', m.id, true)}.json`
+  return makeIdName(m.name ?? '', m.id, true, '.json')
 }
 
 export const DiscordIndexEntry = {
@@ -66,12 +66,15 @@ export const DiscordIndexEntry = {
       ...(size !== undefined ? { size } : {}),
     })
   },
+  // channel_id rides extra so the day and files listers can query the
+  // history API without re-resolving the channel through its parent.
   history(channelId: string, date: string): IndexEntry {
     return new IndexEntry({
       id: `${channelId}:${date}`,
       name: date,
       resourceType: DiscordResourceType.HISTORY,
-      vfsName: `${date}.jsonl`,
+      vfsName: date,
+      extra: { channel_id: channelId },
     })
   },
 }

@@ -12,11 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toIsoZ } from '../../utils/dates.ts'
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, type PathSpec } from '../../types.ts'
-import { guessType } from '../../utils/filetype.ts'
+import { contentTypeForPath } from '../../utils/filetype.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { dbxFetch } from './client.ts'
 import { isNotFound, notFoundError } from './errors.ts'
@@ -31,7 +32,7 @@ function modifiedFromHeader(value: string | null): string | null {
   if (value === null || value === '') return null
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toISOString()
+  return toIsoZ(parsed)
 }
 
 async function directoryStatOrRaise(
@@ -61,7 +62,7 @@ export async function stat(
   // type for every listed entry, so stat returns without a network round-trip.
   // Mirrors Python's mirage/core/databricks_volume/stat.py.
   if (index !== undefined) {
-    const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+    const prefix = mountPrefixOf(path.virtual, path.vfsPath)
     const virtualKey = prefix !== '' ? `${rstripSlash(prefix)}/${stripped}` : `/${stripped}`
     const lookup = await index.get(virtualKey)
     if (lookup.entry !== undefined && lookup.entry !== null) {
@@ -73,7 +74,8 @@ export async function stat(
         name: entry.name,
         size: entry.size ?? null,
         modified: entry.remoteTime !== '' ? entry.remoteTime : null,
-        type: guessType(entry.name),
+        type: FileType.FILE,
+        content: contentTypeForPath(entry.name),
       })
     }
     // Parent was already listed and didn't include this path — it doesn't exist.
@@ -97,5 +99,11 @@ export async function stat(
   const lengthHeader = r.headers.get('content-length')
   const size = lengthHeader !== null && lengthHeader !== '' ? Number(lengthHeader) : null
   const modified = modifiedFromHeader(r.headers.get('last-modified'))
-  return new FileStat({ name, size, modified, type: guessType(name) })
+  return new FileStat({
+    name,
+    size,
+    modified,
+    type: FileType.FILE,
+    content: contentTypeForPath(name),
+  })
 }

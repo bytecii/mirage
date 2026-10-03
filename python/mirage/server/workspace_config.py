@@ -14,10 +14,12 @@
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from mirage.config import load_config
 from mirage.utils.ids import new_workspace_id
-from mirage.workspace.workspace import Workspace
+
+if TYPE_CHECKING:
+    from mirage.workspace.workspace import Workspace
 
 WORKSPACE_CONFIG_CANDIDATES = (
     ".mirage/workspace.yaml",
@@ -28,7 +30,7 @@ WORKSPACE_CONFIG_CANDIDATES = (
     "mirage.yml",
 )
 
-DEFAULT_ENV_NAMES = ("MIRAGE_CONFIG", )
+DEFAULT_ENV_NAMES = ("MIRAGE_CONFIG",)
 
 
 def _require_config(path: Path) -> Path:
@@ -38,10 +40,11 @@ def _require_config(path: Path) -> Path:
 
 
 def resolve_workspace_config(
-        config: str | Path | None = None,
-        cwd: str | Path | None = None,
-        env: dict[str, str] | None = None,
-        env_names: tuple[str, ...] = DEFAULT_ENV_NAMES) -> Path:
+    config: str | Path | None = None,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    env_names: tuple[str, ...] = DEFAULT_ENV_NAMES,
+) -> Path:
     """Find the workspace config a command should load.
 
     An explicit path wins, then the first environment variable that is
@@ -79,10 +82,11 @@ def resolve_workspace_config(
                 return path
     raise FileNotFoundError(
         "No Mirage workspace config found. Pass a config path or set "
-        f"{' or '.join(env_names)}.")
+        f"{' or '.join(env_names)}."
+    )
 
 
-async def build_workspace_from_config(config_path: str | Path) -> Workspace:
+async def build_workspace_from_config(config_path: str | Path) -> "Workspace":
     """Build a workspace from a config file, kernel mounts included.
 
     Args:
@@ -91,7 +95,13 @@ async def build_workspace_from_config(config_path: str | Path) -> Workspace:
     Returns:
         Workspace: the constructed workspace.
     """
-    config = load_config(config_path)
+    # Imported here, as the TypeScript twin awaits mirage-node: a CLI
+    # spawn that only resolves the config path must not load the
+    # workspace.
+    from mirage.config import load_config, resolve_secrets
+    from mirage.workspace.workspace import Workspace
+
+    config = await resolve_secrets(load_config(config_path))
     kwargs = config.to_workspace_kwargs()
     kwargs["workspace_id"] = kwargs.get("workspace_id") or new_workspace_id()
     workspace = Workspace(**kwargs)

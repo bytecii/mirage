@@ -1,24 +1,79 @@
 # The mirage bundle patch. Applied over dsh-base by `dsh --profile <name>`
 # after `dsh plugin --profile <name> add @struktoai/mirage-dsh`: it swaps
 # the filesystem and shell providers for mirage-backed ones, so dsh's file
-# tools and bash tool operate on a workspace of mounted resources instead
+# tools and bash tool operate on a workspace of mounted VFS instead
 # of the host disk.
 #
 # Override the `mirage` row's config in the profile's own cordis.patch.yml
-# to mount real resources (the block form is `resource` registry name,
-# `mode`, and the resource's `config`; `!!js` expressions resolve env vars
+# to mount real VFS (the block form is `vfs` registry name,
+# `mode`, and the VFS's `config`; `!!js` expressions resolve env vars
 # at mount time):
 #
 #   - id: mirage
 #     config:
 #       mounts:
-#         /tmp: { resource: ram, mode: exec }
+#         /tmp: { VFS: ram, mode: exec }
 #         /slack:
-#           resource: slack
+#           VFS: slack
 #           mode: read
 #           config: { token: !!js process.env.SLACK_BOT_TOKEN }
 #       runtimes:
 #         - { name: monty, captures: [python, python3] }
+#
+# A profile may also carry a permission document, which is what turns
+# mirage's allow/ask/deny into a policy for this bundle. Roles go under
+# `profiles`, and `profile` names the one a session gets by default:
+#
+#   - id: mirage
+#     config:
+#       profiles:
+#         agent:
+#           commands:
+#             allow: [cat, ls, grep, rm]
+#             ask:
+#               - { commands: [rm], reason: deletes are reviewed }
+#             deny:
+#               - { commands: [git push], reason: no publishing }
+#       profile: agent
+#
+# An `ask` rule is put to the human through dsh's own approval channel
+# (`ctx.approval`), so the prompt the agent triggers is the one dsh
+# already shows for its escalations. It quotes the line word by word as
+# a shell would read it back, so a name carrying a space or a newline
+# cannot pass itself off in the prompt as two operands or two lines.
+# `allowed-once` runs the line;
+# a rejection, a dismissal and an unanswerable ask all refuse it. With
+# no approval plugin composed the ask has nowhere to go, so it stays a
+# pending record the host answers through `ctx.mirage.decisions`
+# (`pending()`, then `answer(id, outcome, scope)`) — deliberately not a
+# refusal, since rewriting an `ask` rule as a `deny` would change what
+# the document says. A question never outlives the run that raised it:
+# the run's abort signal goes to the channel with the request and bounds
+# the ledger's wait, so a line still unanswered when its timeout expires
+# comes back as the kill, and a yes arriving after that is dropped
+# rather than banked for the next identical line.
+#
+# Two facts about how the mirage providers read the surrounding dsh
+# composition, neither of which needs a row here:
+#
+#   * The standing file policy is enforced, not merely reported. Both
+#     seams narrow every mount grant to read for a `read-only` call
+#     (leaving the null sink writable, as that mode's definition
+#     requires), so dsh-base's `DSH_PERMISSION_MODE=read-only` now
+#     actually confines a mirage world instead of being ignored. The
+#     policy's `workspaceRoot` is a directory on the host and is never
+#     consulted: the mounts and their modes are the boundary here.
+#
+#   * A workdir dsh resolved on its own machine (an unspecified one
+#     comes from the calling session's cwd) names nothing in this world,
+#     so it is ignored in favour of the workspace default rather than
+#     run in a directory the agent cannot reach.
+#
+# ctx.subprocess shares the workspace's argv admission and process supervisor.
+# Termination covers managed Mirage runners. Native OS descendant tracking and
+# PTYs are unsupported; this provider refuses worlds with native/remote reach.
+- id: subprocess
+  disabled: true
 
 # The host filesystem and bash providers step aside; mirage provides the
 # same ctx.fs and ctx.shell seams over the workspace.
@@ -40,15 +95,41 @@
 - id: tool-fs-search
   disabled: true
 
+# Oversized tool results spill to the workspace, not to the host.
+#
+# The spill policy keeps a result over `maxInlineBytes` out of the
+# model's context by saving the full text and replacing the result with
+# a preview plus the locator, telling the model to read or grep it for
+# the rest. dsh-base stores that through `spill-local`, which writes
+# under the host's temporary directory — a path that names nothing in
+# this world, so the recovery the notice invites fails on a file the
+# model cannot open, and an oversized result becomes truncation with a
+# dead pointer. The mirage store writes through the same op door every
+# other effect here passes, so the locator is an ordinary workspace path
+# and the tool that produced the output is the one that can go read it.
+#
+# `dir` moves the artifacts; the default rides the `/tmp` ram mount
+# below. A deployment that wants them out of the agent's reach puts
+# `dir` on a mount the session holds no grant for — mirage has no
+# permission bits to offer, so the mount table is the boundary.
+- id: spill-local
+  disabled: true
+
 - insert:
     - id: mirage
       name: '@struktoai/mirage-dsh/service'
       config:
         mounts:
-          /tmp: { resource: ram, mode: exec }
+          /tmp: { vfs: ram, mode: exec }
 
     - id: mirage-fs
       name: '@struktoai/mirage-dsh/fs'
 
+    - id: mirage-subprocess
+      name: '@struktoai/mirage-dsh/subprocess'
+
     - id: mirage-shell
       name: '@struktoai/mirage-dsh/shell'
+
+    - id: mirage-spill
+      name: '@struktoai/mirage-dsh/spill-store'

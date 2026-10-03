@@ -12,15 +12,18 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { IOResult, type ByteSource } from '../../../io/types.ts'
+import { IOResult } from '../../../io/types.ts'
+import type { SessionView } from '../../../ops/types.ts'
+import type { PolicyDenied } from '../../../policy/errors.ts'
+import type { ArithError } from '../../../shell/errors.ts'
 import { PathSpec, wordText } from '../../../types.ts'
 import { mountKey } from '../../../utils/key_prefix.ts'
 import { resolvePath } from '../../../utils/path.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import type { Namespace } from '../../mount/namespace/namespace.ts'
 import { ExecutionNode } from '../../types.ts'
-
-export type Result = [ByteSource | null, IOResult, ExecutionNode]
+import { COUNT_WORD_RE, IDENTIFIER_RE } from './constants.ts'
+import type { Result } from './types.ts'
 
 const ENC = new TextEncoder()
 
@@ -219,16 +222,16 @@ export async function expandOperands(
     const spec = item instanceof PathSpec ? item : PathSpec.fromStrPath(item)
     if (spec.pattern !== null) {
       const mount = namespace.mountFor(spec.virtual)
-      if (mount.resource.glob !== undefined) {
+      if (mount.hasOp('glob')) {
         const prefix = rstripSlash(mount.prefix)
         const withPrefix = new PathSpec({
           virtual: spec.virtual,
           directory: spec.directory,
           pattern: spec.pattern,
           resolved: spec.resolved,
-          resourcePath: mountKey(spec.virtual, prefix),
+          vfsPath: mountKey(spec.virtual, prefix),
         })
-        const expanded = await mount.resource.glob([withPrefix], prefix)
+        const expanded = await mount.expandGlob([withPrefix], prefix)
         for (const p of expanded) if (p instanceof PathSpec) out.push(p)
         continue
       }
@@ -236,4 +239,95 @@ export async function expandOperands(
     out.push(spec)
   }
   return out
+}
+
+/**
+ * The gated session view this builtin writes through.
+ *
+ * Every session write goes through the workspace's gated view, which is
+ * what makes `preSession` rules enforceable; this used to fall back to
+ * an ungated view over the same session, so a caller that forgot to
+ * thread one silently wrote past every policy. A write reached without
+ * a view is a wiring bug, not a mode, so it throws.
+ */
+export function requireView(state: SessionView | null): SessionView {
+  if (state === null) {
+    throw new Error(
+      "builtin reached a session write without the workspace's gated " +
+        'session view; thread state from the executor arm',
+    )
+  }
+  return state
+}
+
+/** Render a policy denial in the builtin's own voice. */
+export function refusal(cmd: string, err: PolicyDenied): Result {
+  const encoded = new TextEncoder().encode(`${err.message}\n`)
+  return [
+    null,
+    new IOResult({ exitCode: 1, stderr: encoded }),
+    new ExecutionNode({ command: cmd, exitCode: 1, stderr: encoded }),
+  ]
+}
+
+/** Render the shell's own readonly refusal, checked before the door. */
+export function readonlyRefusal(cmd: string, name: string): Result {
+  const encoded = new TextEncoder().encode(`bash: ${name}: readonly variable\n`)
+  return [
+    null,
+    new IOResult({ exitCode: 1, stderr: encoded }),
+    new ExecutionNode({ command: cmd, exitCode: 1, stderr: encoded }),
+  ]
+}
+
+/**
+ * Render the `-i` coercion's arithmetic error as bash does.
+ *
+ * GNU voices it as the evaluator's own line, prefixed by the builtin and
+ * the offending text (`bash: read: 1+: syntax error: operand expected`),
+ * and fails the builtin with 1 while the variable keeps its old value,
+ * which is what the door's copy-then-store already guarantees. A plain
+ * assignment (`n=1+`) is fatal instead and is voiced by the executor
+ * without a builtin name.
+ */
+export function arithRefusal(cmd: string, err: ArithError): Result {
+  const encoded = new TextEncoder().encode(`bash: ${cmd}: ${err.message}\n`)
+  return [
+    null,
+    new IOResult({ exitCode: 1, stderr: encoded }),
+    new ExecutionNode({ command: cmd, exitCode: 1, stderr: encoded }),
+  ]
+}
+
+/** Whether the word is a shell identifier. */
+export function isValidName(name: string): boolean {
+  return IDENTIFIER_RE.test(name)
+}
+
+/**
+ * Whether the word is an optionally signed run of digits, which is what
+ * `shift`, `return` and `exit` accept as their argument.
+ */
+export function isCountWord(word: string): boolean {
+  if (!COUNT_WORD_RE.test(word)) return false
+  const value = BigInt(word.trim())
+  return value >= -(2n ** 63n) && value < 2n ** 63n
+}
+
+/** A shell builtin's diagnostic in bash's voice. Mirrors Python's builtin_error. */
+export function builtinError(name: string, message: string): Uint8Array {
+  return new TextEncoder().encode(`bash: ${name}: ${message}\n`)
+}
+
+/**
+ * The words a numeric builtin reads: a leading `--` ends its options, as
+ * bash's `get_numeric_arg` skips it. Mirrors Python's numeric_operands.
+ */
+export function numericOperands(args: readonly string[]): readonly string[] {
+  return args[0] === '--' ? args.slice(1) : args
+}
+
+/** A count word's value modulo 256, the status bash keeps of it. */
+export function statusOf(word: string): number {
+  return Number(((BigInt(word.trim()) % 256n) + 256n) % 256n)
 }

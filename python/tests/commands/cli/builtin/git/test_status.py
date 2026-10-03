@@ -18,10 +18,12 @@ import pytest
 from dulwich import porcelain
 
 from mirage.commands.cli.builtin.git.status import parse_flags
-from mirage.commands.cli.builtin.git.worktree import (UNTRACKED_ALL,
-                                                      UNTRACKED_NO,
-                                                      UNTRACKED_NORMAL)
-from mirage.commands.spec.types import FlagView
+from mirage.commands.cli.builtin.git.worktree import (
+    UNTRACKED_ALL,
+    UNTRACKED_NO,
+    UNTRACKED_NORMAL,
+)
+from mirage.commands.spec.flag_view import FlagView
 
 CLEAN = b"On branch main\nnothing to commit, working tree clean\n"
 
@@ -33,7 +35,7 @@ async def run(git_ws, line: str) -> bytes:
         git_ws (Workspace): workspace with the repository and CLI.
         line (str): the command line, without the leading directory.
     """
-    result = await git_ws.execute(f"git -C /repo {line}")
+    result = await git_ws.shell(f"git -C /repo {line}")
     assert result.exit_code == 0, result.stderr
     return result.stdout
 
@@ -56,7 +58,8 @@ async def test_an_edited_file_is_unstaged(git_ws, repo_path: Path):
 
 @pytest.mark.asyncio
 async def test_an_edit_of_the_same_length_is_still_found(
-        git_ws, repo_path: Path):
+    git_ws, repo_path: Path
+):
     # The size fast-path cannot see this one, so it is the case that
     # proves the content hash is actually consulted.
     original = (repo_path / "a.txt").read_text(encoding="utf-8")
@@ -73,7 +76,8 @@ async def test_a_staged_edit_is_in_the_left_column(git_ws, repo_path: Path):
 
 @pytest.mark.asyncio
 async def test_staged_then_edited_again_fills_both_columns(
-        git_ws, repo_path: Path):
+    git_ws, repo_path: Path
+):
     (repo_path / "a.txt").write_text("staged\n", encoding="utf-8")
     porcelain.add(str(repo_path), paths=[str(repo_path / "a.txt")])
     (repo_path / "a.txt").write_text("and then some\n", encoding="utf-8")
@@ -100,7 +104,8 @@ async def test_a_new_file_is_untracked(git_ws, repo_path: Path):
 
 @pytest.mark.asyncio
 async def test_an_untracked_directory_collapses_to_one_entry(
-        git_ws, repo_path: Path):
+    git_ws, repo_path: Path
+):
     (repo_path / "sub").mkdir()
     (repo_path / "sub" / "deep.txt").write_text("x\n", encoding="utf-8")
     assert await run(git_ws, "status --porcelain") == b"?? sub/\n"
@@ -110,8 +115,9 @@ async def test_an_untracked_directory_collapses_to_one_entry(
 async def test_untracked_all_names_every_file_inside(git_ws, repo_path: Path):
     (repo_path / "sub").mkdir()
     (repo_path / "sub" / "deep.txt").write_text("x\n", encoding="utf-8")
-    assert await run(git_ws,
-                     "status --porcelain -uall") == b"?? sub/deep.txt\n"
+    assert (
+        await run(git_ws, "status --porcelain -uall") == b"?? sub/deep.txt\n"
+    )
 
 
 @pytest.mark.asyncio
@@ -135,16 +141,19 @@ async def test_an_ignored_file_is_not_untracked(git_ws, repo_path: Path):
 
 @pytest.mark.asyncio
 async def test_a_tracked_file_under_an_ignored_directory_still_compares(
-        git_ws, repo_path: Path):
+    git_ws, repo_path: Path
+):
     # Ignore rules govern untracked files only. Skipping the directory
     # outright would report the tracked file inside it as deleted.
     (repo_path / "vendor").mkdir()
     (repo_path / "vendor" / "kept.txt").write_text("v\n", encoding="utf-8")
-    porcelain.add(str(repo_path),
-                  paths=[str(repo_path / "vendor" / "kept.txt")])
+    porcelain.add(
+        str(repo_path), paths=[str(repo_path / "vendor" / "kept.txt")]
+    )
     (repo_path / ".gitignore").write_text("vendor/\n", encoding="utf-8")
-    (repo_path / "vendor" / "kept.txt").write_text("changed\n",
-                                                   encoding="utf-8")
+    (repo_path / "vendor" / "kept.txt").write_text(
+        "changed\n", encoding="utf-8"
+    )
     lines = (await run(git_ws, "status --porcelain")).splitlines()
     assert b"AM vendor/kept.txt" in lines
 
@@ -166,8 +175,25 @@ async def test_a_move_is_reported_as_a_rename(git_ws, repo_path: Path):
     (repo_path / "b.txt").unlink()
     porcelain.add(str(repo_path), paths=[str(repo_path / "moved.txt")])
     porcelain.remove(str(repo_path), paths=[str(repo_path / "b.txt")])
-    assert await run(git_ws,
-                     "status --porcelain") == b"R  b.txt -> moved.txt\n"
+    assert (
+        await run(git_ws, "status --porcelain") == b"R  b.txt -> moved.txt\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_subdirectory_reads_paths_from_where_git_runs(
+    git_ws, repo_path: Path
+):
+    # Pinned against git 2.54: the human formats name paths from the
+    # invocation directory, so the untracked one git runs in is ./, and
+    # porcelain stays relative to the top.
+    (repo_path / "a.txt").write_text("edited\n", encoding="utf-8")
+    (repo_path / "sub").mkdir()
+    (repo_path / "sub" / "new.txt").write_text("x\n", encoding="utf-8")
+    short = await git_ws.shell("git -C /repo/sub status --short")
+    machine = await git_ws.shell("git -C /repo/sub status --porcelain")
+    assert short.stdout == b" M ../a.txt\n?? ./\n"
+    assert machine.stdout == b" M a.txt\n?? sub/\n"
 
 
 def flags(**raw: object) -> FlagView:
@@ -189,3 +215,24 @@ def test_a_bare_u_means_all():
 
 def test_an_attached_mode_is_taken_as_typed():
     assert parse_flags(flags(untracked_files="no")).untracked == UNTRACKED_NO
+
+
+@pytest.mark.asyncio
+async def test_quote_path_off_prints_non_ascii_as_itself(
+    git_ws, repo_path: Path
+):
+    (repo_path / "é.txt").write_text("x\n", encoding="utf-8")
+    config = repo_path / ".git" / "config"
+    config.write_text(config.read_text() + "[core]\n\tquotePath = false\n")
+    assert await run(git_ws, "status --porcelain") == "?? é.txt\n".encode()
+
+
+@pytest.mark.asyncio
+async def test_a_bad_quote_path_value_is_gits_fatal(git_ws, repo_path: Path):
+    config = repo_path / ".git" / "config"
+    config.write_text(config.read_text() + "[core]\n\tquotePath = junk\n")
+    result = await git_ws.shell("git -C /repo status")
+    assert (result.exit_code, result.stderr) == (
+        128,
+        b"fatal: bad boolean config value 'junk' for 'core.quotepath'\n",
+    )

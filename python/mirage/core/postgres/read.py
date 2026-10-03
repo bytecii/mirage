@@ -12,81 +12,139 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Any
+
 import orjson
 
 from mirage.accessor.postgres import PostgresAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.cache.index import IndexCacheStore
+from mirage.core.hierarchy.read import make_read
+from mirage.core.hierarchy.scope import ScopeMatch
 from mirage.core.postgres import client
-from mirage.core.postgres._schema_json import (build_database_json,
-                                               build_entity_schema_json)
+from mirage.core.postgres._schema_json import (
+    build_database_json,
+    build_entity_schema_json,
+)
 from mirage.core.postgres.scope import detect_scope
 from mirage.core.postgres.semantic import build_entity_semantic_json
+from mirage.core.postgres.stat import stat
 from mirage.types import PathSpec
-from mirage.utils.errors import enoent
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
+from mirage.utils.errors import efbig
 
 
-async def read(
+def _entity_kind(match: ScopeMatch) -> str:
+    return "table" if match.slots["kind"] == "tables" else "view"
+
+
+async def _read_database_json(
     accessor: PostgresAccessor,
+    match: ScopeMatch,
     path: PathSpec,
-    index: IndexCacheStore = NULL_INDEX,
+    index: IndexCacheStore,
+) -> bytes:
+    doc = await build_database_json(accessor)
+    return orjson.dumps(doc, option=orjson.OPT_INDENT_2)
+
+
+async def _read_entity_schema(
+    accessor: PostgresAccessor,
+    match: ScopeMatch,
+    path: PathSpec,
+    index: IndexCacheStore,
+) -> bytes:
+    doc = await build_entity_schema_json(
+        accessor,
+        match.slots["schema"],
+        match.slots["entity"],
+        _entity_kind(match),
+    )
+    return orjson.dumps(doc, option=orjson.OPT_INDENT_2)
+
+
+async def _read_entity_semantic(
+    accessor: PostgresAccessor,
+    match: ScopeMatch,
+    path: PathSpec,
+    index: IndexCacheStore,
+) -> bytes:
+    doc = await build_entity_semantic_json(
+        accessor,
+        match.slots["schema"],
+        match.slots["entity"],
+        _entity_kind(match),
+    )
+    return orjson.dumps(doc, option=orjson.OPT_INDENT_2)
+
+
+async def _read_entity_rows(
+    accessor: PostgresAccessor,
+    match: ScopeMatch,
+    path: PathSpec,
+    index: IndexCacheStore,
+    limit: int | None,
+    offset: int | None,
+) -> bytes:
+    return await read_rows(
+        accessor,
+        match.slots["schema"],
+        match.slots["entity"],
+        path=path,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def row_line(row: dict[str, Any]) -> str:
+    """One row as rows.jsonl spells it.
+
+    Args:
+        row (dict[str, Any]): a canonicalized row.
+    """
+    return orjson.dumps(row, default=str).decode()
+
+
+async def read_rows(
+    accessor: PostgresAccessor,
+    schema: str,
+    entity: str,
     *,
+    path: str | PathSpec,
     limit: int | None = None,
     offset: int | None = None,
 ) -> bytes:
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    raw = path.virtual
-    if prefix and raw.startswith(prefix):
-        raw = raw[len(prefix):] or "/"
-    scope = detect_scope(
-        PathSpec(virtual=raw,
-                 directory=raw,
-                 resource_path=mount_key(raw, prefix)))
+    """Render a relation's rows.jsonl, or the window ``limit``/``offset`` pick.
 
-    if scope.level == "database_json":
-        doc = await build_database_json(accessor)
-        return orjson.dumps(doc, option=orjson.OPT_INDENT_2)
+    The whole file when neither is given, under the size guard: past
+    ``max_read_rows`` rows or ``max_read_bytes`` bytes it raises EFBIG,
+    which a command reports as ``<cmd>: <path>: File too large`` before
+    moving on to its next operand, as for an Airtable table past its cap.
 
-    if scope.level == "entity_schema":
-        kind = "table" if scope.kind == "tables" else "view"
-        doc = await build_entity_schema_json(accessor, scope.schema,
-                                             scope.entity, kind)
-        return orjson.dumps(doc, option=orjson.OPT_INDENT_2)
-
-    if scope.level == "entity_semantic":
-        kind = "table" if scope.kind == "tables" else "view"
-        doc = await build_entity_semantic_json(accessor, scope.schema,
-                                               scope.entity, kind)
-        return orjson.dumps(doc, option=orjson.OPT_INDENT_2)
-
-    if scope.level == "entity_rows":
-        return await _read_rows(accessor,
-                                scope.schema,
-                                scope.entity,
-                                kind=scope.kind,
-                                limit=limit,
-                                offset=offset)
-
-    raise enoent(path)
-
-
-async def _read_rows(accessor: PostgresAccessor, schema: str, entity: str, *,
-                     kind: str, limit: int | None,
-                     offset: int | None) -> bytes:
+    Args:
+        accessor (PostgresAccessor): backend handle.
+        schema (str): the owning schema.
+        entity (str): the table or view.
+        path (str | PathSpec): the rows.jsonl the refusal names.
+        limit (int | None): the window's row count.
+        offset (int | None): the window's first row.
+    """
     cfg = accessor.config
-    if limit is None and offset is None:
+    whole = limit is None and offset is None
+    if whole:
         pool = await accessor.pool()
         async with pool.acquire() as conn:
             rows, width = await client.estimate_size(conn, schema, entity)
-        if (rows > cfg.max_read_rows
-                or rows * max(width, 1) > cfg.max_read_bytes):
-            raise ValueError(
-                f"{schema}/{kind}/{entity}/rows.jsonl too large to read "
-                f"entirely: ~{rows} rows / ~{rows * max(width, 1)} bytes "
-                f"(thresholds: {cfg.max_read_rows} rows / "
-                f"{cfg.max_read_bytes} bytes); use head, tail, wc, grep, "
-                f"or pass limit/offset")
-        effective_limit = rows or cfg.default_row_limit
+        if (
+            rows > cfg.max_read_rows
+            or rows * max(width, 1) > cfg.max_read_bytes
+        ):
+            raise efbig(path)
+        # The estimate only refuses; it never limits. It is planner
+        # statistics, which lag the table (a bulk load before the next
+        # ANALYZE), so taking it as the LIMIT returned fewer rows than
+        # exist, with nothing to say so. One row past the ceiling keeps
+        # the read bounded and refuses a table the estimate undercounted
+        # on the rows it really has.
+        effective_limit = cfg.max_read_rows + 1
         effective_offset = 0
     else:
         effective_limit = limit if limit is not None else cfg.default_row_limit
@@ -94,12 +152,42 @@ async def _read_rows(accessor: PostgresAccessor, schema: str, entity: str, *,
 
     pool = await accessor.pool()
     async with pool.acquire() as conn:
-        data = await client.fetch_rows(conn,
-                                       schema,
-                                       entity,
-                                       limit=effective_limit,
-                                       offset=effective_offset)
+        if whole:
+            data = await client.fetch_bounded_rows(
+                conn,
+                schema,
+                entity,
+                limit=effective_limit,
+                max_bytes=cfg.max_read_bytes,
+            )
+        else:
+            data = await client.fetch_rows(
+                conn,
+                schema,
+                entity,
+                limit=effective_limit,
+                offset=effective_offset,
+            )
+    if data is None or whole and len(data) > cfg.max_read_rows:
+        raise efbig(path)
     if not data:
         return b""
-    lines = [orjson.dumps(r, default=str).decode() for r in data]
-    return ("\n".join(lines) + "\n").encode()
+    body = bytearray()
+    for row in data:
+        line = (row_line(row) + "\n").encode()
+        if whole and len(body) + len(line) > cfg.max_read_bytes:
+            raise efbig(path)
+        body.extend(line)
+    return bytes(body)
+
+
+read = make_read(
+    detect_scope,
+    {
+        "database_json": _read_database_json,
+        "entity_schema": _read_entity_schema,
+        "entity_semantic": _read_entity_semantic,
+    },
+    windowed={"entity_rows": _read_entity_rows},
+    stat=stat,
+)

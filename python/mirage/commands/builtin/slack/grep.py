@@ -13,103 +13,128 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-from dataclasses import replace
 
 from mirage.accessor.slack import SlackAccessor
 from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.grep_helper import pattern_arg
-from mirage.commands.builtin.slack._provision import file_read_provision
+from mirage.commands.builtin.grep_pattern import pattern_arg
+from mirage.commands.builtin.grep_pushdown import (
+    pushdown_operand,
+    text_search_results,
+)
 from mirage.commands.builtin.slack.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_records
-from mirage.commands.config import CommandOpts
-from mirage.commands.registry import command
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
-from mirage.core.slack.formatters import (build_query,
-                                          format_file_grep_results,
-                                          format_grep_results)
+from mirage.commands.spec.flag_view import FlagView
+from mirage.core.slack.formatters import (
+    build_query,
+    format_file_grep_results,
+    format_grep_results,
+)
 from mirage.core.slack.read import read as slack_read
 from mirage.core.slack.readdir import readdir as _readdir
-from mirage.core.slack.scope import coalesce_scopes, detect_scope
-from mirage.core.slack.search import (search_available, search_files,
-                                      search_messages)
+from mirage.core.slack.scope import NATIVE_KINDS, detect_scope, search_target
+from mirage.core.slack.search import (
+    search_available,
+    search_files,
+    search_messages,
+)
 from mirage.core.slack.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
-from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
 
 logger = logging.getLogger(__name__)
 
+# Slack search answers with whole messages and the push-down prints that
+# answer verbatim, so it can stand in for a scan only when the line names one
+# concrete operand and no flag reshapes the output. -w is the exception the
+# provider itself supplies: Slack matches whole words, so a bare literal would
+# under-report and only -w makes the two agree.
+#
+# `coalesce_scopes` used to widen a set of same-channel operands into one
+# channel-wide search, and it is deliberately not consulted here. It cannot
+# answer a line whose operands name two different channels (it returns None
+# and the first operand won anyway), and where it did fold it dropped the
+# date: `build_query` carries only `in:#channel`, so two named days became
+# every day the channel ever had. Reporting messages the line did not ask for
+# is not a better failure than dropping an operand. One operand or the
+# generic scan.
+SEARCH_HONORED = ("w",)
+# rg spells the same flag by its long name.
+RG_SEARCH_HONORED = ("word_regexp",)
+SEARCH_MAX_RESULTS = 100
 
-async def grep_provision(accessor: SlackAccessor, paths: list[PathSpec],
-                         texts: list[str],
-                         opts: CommandOpts) -> ProvisionResult:
-    line = "grep " + " ".join(list(texts) + [str(p) for p in paths])
-    return await file_read_provision(accessor, paths, texts,
-                                     replace(opts, command=line))
 
-
-@command("grep",
-         resource="slack",
-         spec=SPECS["grep"],
-         provision=grep_provision)
-async def grep(accessor: SlackAccessor, paths: list[PathSpec],
-               texts: list[str],
-               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+@command("grep", vfs="slack", spec=SPECS["grep"])
+async def grep(
+    accessor: SlackAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
-    max_count = fl.as_int("m")
 
-    if paths and pattern is not None and "\n" not in pattern:
-        scope = detect_scope(paths[0])
-        if not scope.use_native:
-            scope = coalesce_scopes(paths) or scope
-
-        # Slack search matches whole words while grep matches substrings,
-        # so native results are a strict subset of the real matches for a
-        # bare literal. Only -w makes the two agree; otherwise fall
-        # through to the per-message scan.
-        if (scope.use_native and fl.as_bool("w")
-                and getattr(scope, "target", None) != "files"
-                and search_available(accessor.config)):
-            file_prefix = mount_prefix_of(paths[0].virtual,
-                                          paths[0].resource_path) or ""
-            query = build_query(pattern, scope)
-            target = getattr(scope, "target", None)
-            do_msgs = target in (None, "date", "messages")
-            do_files = target in (None, "date", "files")
+    # Output-shaping flags, a glob operand and a multi-operand line all need
+    # the per-message scan; see SEARCH_HONORED above.
+    operand = pushdown_operand(paths, opts.flags, pattern, SEARCH_HONORED)
+    if pattern is not None and operand is not None and fl.as_bool("w"):
+        match = detect_scope(operand)
+        if (
+            not accessor.time_range.bounded
+            and match.kind in NATIVE_KINDS
+            and search_available(accessor.config)
+        ):
+            target = search_target(match)
+            file_prefix = (
+                mount_prefix_of(operand.virtual, operand.vfs_path) or ""
+            )
+            query = build_query(pattern, target)
+            # Every kind that reaches here searches messages, and each of
+            # them (the root, the containers, a channel, a date dir)
+            # carries files too, so both halves run.
             native_lines: list[str] = []
             err: Exception | None = None
             try:
-                if do_msgs:
-                    raw = await search_messages(accessor.config,
-                                                query,
-                                                count=max_count or 100)
-                    native_lines.extend(
-                        format_grep_results(raw, scope, file_prefix))
-                if do_files:
-                    raw_f = await search_files(accessor.config,
-                                               query,
-                                               count=max_count or 100)
-                    native_lines.extend(
-                        format_file_grep_results(raw_f, scope, file_prefix))
+                raw = await search_messages(
+                    accessor.config,
+                    query,
+                    count=SEARCH_MAX_RESULTS,
+                    session=accessor.pool,
+                )
+                native_lines.extend(
+                    format_grep_results(raw, target, file_prefix)
+                )
+                raw_f = await search_files(
+                    accessor.config,
+                    query,
+                    count=SEARCH_MAX_RESULTS,
+                    session=accessor.pool,
+                )
+                native_lines.extend(
+                    format_file_grep_results(raw_f, target, file_prefix)
+                )
             except Exception as exc:
                 err = exc
             if err is None:
                 if not native_lines:
                     return b"", IOResult(exit_code=1)
-                return format_records(native_lines), IOResult()
-            logger.warning(
-                "slack search push-down failed (%s); "
-                "falling back to per-file scan", err)
+                if text_search_results(native_lines):
+                    return format_records(native_lines), IOResult()
+            if err is not None:
+                logger.warning(
+                    "slack search push-down failed (%s); "
+                    "falling back to per-file scan",
+                    err,
+                )
 
     resolved = await resolve_glob(accessor, paths, opts.index) if paths else []
     return await generic_grep(
         resolved,
         texts,
-        opts.flags,
+        opts,
         readdir=bound_op(_readdir, accessor, opts.index),
         stat=bound_op(_stat, accessor, opts.index),
         read_bytes=bound_op(slack_read, accessor, opts.index),

@@ -12,17 +12,24 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.context import (assert_mount_allowed, get_current_session,
-                            get_current_session_for, reset_current_session,
-                            set_current_session)
+from mirage.context import (
+    get_current_session,
+    get_current_session_for,
+    reset_current_session,
+    set_current_session,
+)
 from mirage.workspace.session.errors import ReadonlyVariableError
 from mirage.workspace.session.manager import SessionManager
-from mirage.workspace.session.profile import SessionProfile
 from mirage.workspace.session.ram import RAMSessionStore
-from mirage.workspace.session.session import Session
-from mirage.workspace.session.state import (ensure_var_visible, env_snapshot,
-                                            exported_names, session_view,
-                                            visible_arrays, visible_env)
+from mirage.workspace.session.session import SessionState
+from mirage.workspace.session.state import (
+    ensure_var_visible,
+    env_snapshot,
+    exported_names,
+    session_view,
+    visible_arrays,
+    visible_env,
+)
 from mirage.workspace.session.store import SessionFields, SessionStore
 
 __all__ = [
@@ -31,17 +38,15 @@ __all__ = [
     "env_snapshot",
     "ensure_var_visible",
     "exported_names",
-    "SessionProfile",
     "session_view",
     "visible_arrays",
     "visible_env",
     "RedisSessionStore",
     "S3SessionStore",
-    "Session",
+    "SessionState",
     "SessionFields",
     "SessionManager",
     "SessionStore",
-    "assert_mount_allowed",
     "get_current_session",
     "get_current_session_for",
     "reset_current_session",
@@ -52,8 +57,10 @@ __all__ = [
 def __getattr__(name: str):
     if name == "RedisSessionStore":
         from mirage.workspace.session.redis import RedisSessionStore
+
         return RedisSessionStore
     if name == "S3SessionStore":
         from mirage.workspace.session.s3 import S3SessionStore
+
         return S3SessionStore
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -13,11 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { runWithSession } from '@struktoai/mirage-core/context/session_context'
+import { classify } from '@struktoai/mirage-core/errors/index'
 import type { OpRecord } from '@struktoai/mirage-core/observe/record'
 import type { Ops } from '@struktoai/mirage-core/ops/ops'
-import type { Session } from '@struktoai/mirage-core/workspace/session/session'
+import type { SessionState } from '@struktoai/mirage-core/workspace/session/session'
 import { type FuseAttr, MountCore } from './core.ts'
 import { classifyError } from './errors.ts'
+
+// setxattr(2)'s flags as the kernel hands them over: linux numbers
+// XATTR_CREATE 1 and XATTR_REPLACE 2, macOS 2 and 4 (its 1 is
+// XATTR_NOFOLLOW, which the kernel has already applied). Mirrors the
+// python adapter.
+const DARWIN = process.platform === 'darwin'
+export const XATTR_CREATE = DARWIN ? 0x2 : 0x1
+export const XATTR_REPLACE = DARWIN ? 0x4 : 0x2
 
 export type { FuseAttr }
 
@@ -31,7 +40,7 @@ export interface MirageFSOptions {
    * travels with it. Enforcement happens inside dispatch/Ops via the
    * session context, so binding at the op entry point is sufficient.
    */
-  session?: Session
+  session?: SessionState
 }
 
 /**
@@ -104,36 +113,15 @@ export class MirageFS {
   }
 
   private getattr(path: string, cb: Cb<FuseAttr>): void {
-    void this.core.getattr(path).then(
-      (attr) => {
-        cb(0, attr)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.getattr(path), cb)
   }
 
   private fgetattr(path: string, fd: number, cb: Cb<FuseAttr>): void {
-    void this.core.fgetattr(path, fd).then(
-      (attr) => {
-        cb(0, attr)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.fgetattr(path, fd), cb)
   }
 
   private readdir(path: string, cb: Cb<string[]>): void {
-    void this.core.readdir(path).then(
-      (names) => {
-        cb(0, names)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.readdir(path), cb)
   }
 
   private read(
@@ -144,23 +132,10 @@ export class MirageFS {
     pos: number,
     cb: (result: number) => void,
   ): void {
-    void this.core.read(path, fd, pos, len).then(
-      (slice) => {
-        buf.set(slice, 0)
-        cb(slice.byteLength)
-      },
-      (err: unknown) => {
-        // A policy refusal must surface as EACCES, never read as an
-        // empty file. Any other failed read reports 0 bytes (EOF): the
-        // kernel has already accepted the open, and short-reading is how
-        // FUSE signals "nothing more here".
-        if ((err as { code?: string }).code === 'EACCES') {
-          cb(classifyError(err))
-          return
-        }
-        cb(0)
-      },
-    )
+    this.respond(this.core.read(path, fd, pos, len), cb, (slice) => {
+      buf.set(slice, 0)
+      cb(slice.byteLength)
+    })
   }
 
   private write(
@@ -172,42 +147,30 @@ export class MirageFS {
     cb: (result: number) => void,
   ): void {
     const data = new Uint8Array(buf.subarray(0, len))
-    void this.core.write(path, fd, data, pos).then(
-      () => {
-        cb(len)
-      },
-      (err: unknown) => {
-        // Same EACCES rule as read: a policy refusal is an errno, any
-        // other failure reports 0 bytes written.
-        if ((err as { code?: string }).code === 'EACCES') {
-          cb(classifyError(err))
-          return
-        }
-        cb(0)
-      },
-    )
+    this.respond(this.core.write(path, fd, data, pos), cb, () => {
+      cb(len)
+    })
+  }
+
+  private respond<T>(
+    pending: Promise<T>,
+    cb: Cb<T>,
+    done = (value: T): void => {
+      if (value === undefined) cb(0)
+      else cb(0, value)
+    },
+  ): void {
+    void pending.then(done, (err: unknown) => {
+      cb(classifyError(err))
+    })
   }
 
   private create(path: string, _mode: number, cb: Cb<number>): void {
-    void this.core.create(path).then(
-      (fh) => {
-        cb(0, fh)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.create(path), cb)
   }
 
   private mkdir(path: string, _mode: number, cb: (code: number) => void): void {
-    void this.core.mkdir(path).then(
-      () => {
-        cb(0)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.mkdir(path), cb)
   }
 
   private readlink(path: string, cb: Cb<string>): void {
@@ -219,58 +182,23 @@ export class MirageFS {
   }
 
   private symlink(src: string, dest: string, cb: (code: number) => void): void {
-    void this.core.symlink(src, dest).then(
-      () => {
-        cb(0)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.symlink(src, dest), cb)
   }
 
   private unlink(path: string, cb: (code: number) => void): void {
-    void this.core.unlink(path).then(
-      () => {
-        cb(0)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.unlink(path), cb)
   }
 
   private rename(src: string, dst: string, cb: (code: number) => void): void {
-    void this.core.rename(src, dst).then(
-      () => {
-        cb(0)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.rename(src, dst), cb)
   }
 
   private rmdir(path: string, cb: (code: number) => void): void {
-    void this.core.rmdir(path).then(
-      () => {
-        cb(0)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.rmdir(path), cb)
   }
 
   private truncate(path: string, size: number, cb: (code: number) => void): void {
-    void this.core.truncate(path, size).then(
-      () => {
-        cb(0)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.truncate(path, size), cb)
   }
 
   private statfs(_path: string, cb: Cb<Record<string, number>>): void {
@@ -302,17 +230,14 @@ export class MirageFS {
     name: string,
     value: Buffer,
     _position: number,
-    _flags: number,
+    flags: number,
     cb: (code: number) => void,
   ): void {
-    this.validate(path, (code) => {
-      if (code !== 0) {
-        cb(code)
-        return
-      }
-      this.core.setxattr(path, name, value)
-      cb(0)
-    })
+    const opts = {
+      create: (flags & XATTR_CREATE) !== 0,
+      replace: (flags & XATTR_REPLACE) !== 0,
+    }
+    this.respond(this.core.setxattr(path, name, value, opts), cb)
   }
 
   private getxattr(
@@ -321,35 +246,25 @@ export class MirageFS {
     _position: number,
     cb: (code: number, value?: Buffer) => void,
   ): void {
-    this.validate(path, (code) => {
-      if (code !== 0) {
-        cb(code)
-        return
-      }
-      // A missing value tells fuse-native to report ENOATTR/ENODATA.
-      cb(0, this.core.getxattr(path, name))
-    })
+    void this.core.getxattr(path, name).then(
+      (value) => {
+        cb(0, Buffer.from(value))
+      },
+      (err: unknown) => {
+        // No value is how fuse-native is told to report ENOATTR (macOS)
+        // or ENODATA (linux) for an attribute that is not set.
+        if (classify(err) === 'NO_XATTR') cb(0)
+        else cb(classifyError(err))
+      },
+    )
   }
 
   private listxattr(path: string, cb: (code: number, list?: string[]) => void): void {
-    this.validate(path, (code) => {
-      if (code !== 0) {
-        cb(code)
-        return
-      }
-      cb(0, this.core.listxattr(path))
-    })
+    this.respond(this.core.listxattr(path), cb)
   }
 
   private removexattr(path: string, name: string, cb: (code: number) => void): void {
-    this.validate(path, (code) => {
-      if (code !== 0) {
-        cb(code)
-        return
-      }
-      this.core.removexattr(path, name)
-      cb(0)
-    })
+    this.respond(this.core.removexattr(path, name), cb)
   }
 
   private validate(path: string, cb: (code: number) => void): void {
@@ -361,37 +276,16 @@ export class MirageFS {
     })
   }
 
-  private open(path: string, _flags: number, cb: Cb<number>): void {
-    void this.core.open(path).then(
-      (fh) => {
-        cb(0, fh)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+  private open(path: string, flags: number, cb: Cb<number>): void {
+    this.respond(this.core.open(path, flags), cb)
   }
 
   private release(_path: string, fd: number, cb: (code: number) => void): void {
-    void this.core.release(fd).then(
-      () => {
-        cb(0)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.release(fd), cb)
   }
 
   private flush(path: string, fd: number, cb: (code: number) => void): void {
-    void this.core.flush(path, fd).then(
-      () => {
-        cb(0)
-      },
-      (err: unknown) => {
-        cb(classifyError(err))
-      },
-    )
+    this.respond(this.core.flush(path, fd), cb)
   }
 
   private fsync(path: string, _datasync: number, fd: number, cb: (code: number) => void): void {

@@ -36,6 +36,77 @@
       "flags": [
         "max-depth"
       ]
+    },
+    {
+      "id": "du_max_depth_quotes_a_multibyte_word",
+      "seq": 323,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "du --max-depth='1é' /data/sub",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "du: invalid maximum depth '1\\303\\251'\nTry 'du --help' for more information.\n"
+      },
+      "flags": [
+        "max-depth"
+      ]
+    },
+    {
+      "id": "du_sizes_depth_and_bare_operand",
+      "seq": 324,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/r10du/d && head -c 4096 /dev/zero > /data/r10du/f && echo hi > /data/r10du/d/g && du -h /data/r10du/f; du -a --max-depth=1 /data/r10du; (cd /data/r10du/d && du; du -a); rm -r /data/r10du",
+      "expect": {
+        "exit": 0,
+        "stdout": "4.0K\t/data/r10du/f\n3\t/data/r10du/d\n4096\t/data/r10du/f\n4099\t/data/r10du\n3\t.\n3\t./g\n3\t.\n",
+        "stderr": ""
+      }
     }
   ]
 }

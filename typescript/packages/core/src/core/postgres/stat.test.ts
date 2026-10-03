@@ -26,8 +26,8 @@ vi.mock('./client.ts', () => ({
 }))
 
 import { PostgresAccessor } from '../../accessor/postgres.ts'
-import { FileType, PathSpec } from '../../types.ts'
-import { resolvePostgresConfig } from '../../resource/postgres/config.ts'
+import { ContentType, FileType, PathSpec } from '../../types.ts'
+import { resolvePostgresConfig } from '../../vfs/postgres/config.ts'
 import type { PgDriver } from './_driver.ts'
 import * as client from './client.ts'
 import { stat } from './stat.ts'
@@ -46,7 +46,7 @@ describe('stat', () => {
   it('marks root as DIRECTORY', async () => {
     const r = await stat(
       makeAccessor(),
-      new PathSpec({ virtual: '/pg/', directory: '/pg/', resourcePath: mountKey('/pg/', '/pg') }),
+      new PathSpec({ virtual: '/pg/', directory: '/pg/', vfsPath: mountKey('/pg/', '/pg') }),
     )
     expect(r.name).toBe('/')
     expect(r.type).toBe(FileType.DIRECTORY)
@@ -58,10 +58,10 @@ describe('stat', () => {
       new PathSpec({
         virtual: '/pg/database.json',
         directory: '/pg/',
-        resourcePath: mountKey('/pg/database.json', '/pg'),
+        vfsPath: mountKey('/pg/database.json', '/pg'),
       }),
     )
-    expect(r.type).toBe(FileType.JSON)
+    expect(r.content).toBe(ContentType.JSON)
     expect(r.name).toBe('database.json')
   })
 
@@ -71,14 +71,14 @@ describe('stat', () => {
       new PathSpec({
         virtual: '/pg/public/tables/users',
         directory: '/pg/public/tables/',
-        resourcePath: mountKey('/pg/public/tables/users', '/pg'),
+        vfsPath: mountKey('/pg/public/tables/users', '/pg'),
       }),
     )
     expect(r.type).toBe(FileType.DIRECTORY)
     expect(r.extra).toEqual({ schema: 'public', kind: 'tables', name: 'users' })
   })
 
-  it('marks rows.jsonl as TEXT with null size (storage size in extra) + fingerprint', async () => {
+  it('marks rows.jsonl as TEXT without fetching planner statistics or content', async () => {
     vi.mocked(client.fetchColumns).mockResolvedValue([
       { name: 'id', type: 'uuid', nullable: false },
     ])
@@ -89,14 +89,15 @@ describe('stat', () => {
       new PathSpec({
         virtual: '/pg/public/tables/users/rows.jsonl',
         directory: '/pg/public/tables/users/',
-        resourcePath: mountKey('/pg/public/tables/users/rows.jsonl', '/pg'),
+        vfsPath: mountKey('/pg/public/tables/users/rows.jsonl', '/pg'),
       }),
     )
-    expect(r.type).toBe(FileType.TEXT)
+    expect(r.content).toBe(ContentType.TEXT)
     expect(r.size).toBeNull()
-    expect(r.extra.size_bytes).toBe(4096)
-    expect(r.fingerprint).toMatch(/^[a-f0-9]{64}$/)
-    expect(r.extra.row_count).toBe(42)
+    expect(r.fingerprint).toBeNull()
+    expect(client.fetchColumns).not.toHaveBeenCalled()
+    expect(client.estimatedRowCount).not.toHaveBeenCalled()
+    expect(client.tableSizeBytes).not.toHaveBeenCalled()
   })
 
   it('throws ENOENT for invalid path', async () => {
@@ -106,7 +107,7 @@ describe('stat', () => {
         new PathSpec({
           virtual: '/pg/public/sequences',
           directory: '/pg/public/',
-          resourcePath: mountKey('/pg/public/sequences', '/pg'),
+          vfsPath: mountKey('/pg/public/sequences', '/pg'),
         }),
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
@@ -119,7 +120,7 @@ describe('stat', () => {
         new PathSpec({
           virtual: '/pg/__nf_missing__.txt',
           directory: '/pg/',
-          resourcePath: mountKey('/pg/__nf_missing__.txt', '/pg'),
+          vfsPath: mountKey('/pg/__nf_missing__.txt', '/pg'),
         }),
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })

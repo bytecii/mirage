@@ -13,10 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { EmailAccessor } from '../../accessor/email.ts'
-import { fetchMessage, listMessageUids, type FetchedMessage } from './client.ts'
-import { dateBucket, sanitize } from './readdir.ts'
+import { fetchMessage, listMessageUids, quoteString, type FetchedMessage } from './client.ts'
+import { dateBucket, msgFilename } from './readdir.ts'
 import { messageJsonText } from './render.ts'
-import type { EmailScope } from './scope.ts'
 
 interface SearchOptions {
   text?: string | null
@@ -28,20 +27,28 @@ interface SearchOptions {
   unseen?: boolean
 }
 
-function buildSearchCriteria(opts: SearchOptions): string {
+/**
+ * Spells the search as one IMAP SEARCH key sequence.
+ *
+ * Every text-valued key carries its value as a quoted string, so a quote
+ * or backslash inside it stays part of the value instead of ending it
+ * early and turning the rest into search keys. Dates are bare atoms, as
+ * the grammar has them.
+ */
+export function buildSearchCriteria(opts: SearchOptions): string {
   const parts: string[] = []
   if (opts.unseen === true) parts.push('UNSEEN')
   if (opts.text !== undefined && opts.text !== null && opts.text !== '') {
-    parts.push(`TEXT "${opts.text}"`)
+    parts.push(`TEXT ${quoteString(opts.text)}`)
   }
   if (opts.subject !== undefined && opts.subject !== null && opts.subject !== '') {
-    parts.push(`SUBJECT "${opts.subject}"`)
+    parts.push(`SUBJECT ${quoteString(opts.subject)}`)
   }
   if (opts.fromAddr !== undefined && opts.fromAddr !== null && opts.fromAddr !== '') {
-    parts.push(`FROM "${opts.fromAddr}"`)
+    parts.push(`FROM ${quoteString(opts.fromAddr)}`)
   }
   if (opts.toAddr !== undefined && opts.toAddr !== null && opts.toAddr !== '') {
-    parts.push(`TO "${opts.toAddr}"`)
+    parts.push(`TO ${quoteString(opts.toAddr)}`)
   }
   if (opts.since !== undefined && opts.since !== null && opts.since !== '') {
     parts.push(`SINCE ${opts.since}`)
@@ -62,23 +69,33 @@ async function searchMessages(
   return listMessageUids(accessor, folder, criteria, maxResults)
 }
 
-function buildVfsPath(prefix: string, folder: string, msg: FetchedMessage): string {
+export function buildVfsPath(prefix: string, folder: string, msg: FetchedMessage): string {
   const dateStr = dateBucket(msg)
-  const subject = sanitize(msg.subject !== '' ? msg.subject : 'No Subject')
-  const filename = `${subject}__${msg.uid}.email.json`
+  // The same builder readdir names the file with, not a second spelling of
+  // it: the subject's budget depends on the uid and the suffix, so a hit
+  // composed here from a bare `sanitize` pointed at a path that does not
+  // exist as soon as a long subject was trimmed differently.
+  const filename = msgFilename(msg.subject !== '' ? msg.subject : 'No Subject', msg.uid)
   return [prefix, folder, dateStr, filename].filter((p) => p !== '').join('/')
 }
 
+/**
+ * Runs a native TEXT search and returns (vfsPath, messageJson) pairs.
+ *
+ * `query` is the substring IMAP is asked for, never a caller's regex: the
+ * server matches it case-insensitively against the raw message, so a grep
+ * hands over the literal every match must contain and runs its real
+ * pattern over the rendered text itself.
+ */
 export async function searchAndFormat(
   accessor: EmailAccessor,
-  scope: EmailScope,
-  pattern: string,
+  folder: string,
+  query: string,
   prefix: string,
   maxResults: number | null = null,
 ): Promise<[string, string][]> {
-  const folder = scope.folder ?? ''
   if (folder === '') return []
-  const uids = await searchMessages(accessor, folder, { text: pattern }, maxResults)
+  const uids = await searchMessages(accessor, folder, { text: query }, maxResults)
   const pairs: [string, string][] = []
   for (const uid of uids) {
     const msg = await fetchMessage(accessor, folder, uid)

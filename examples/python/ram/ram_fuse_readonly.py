@@ -17,13 +17,13 @@ import time
 from pathlib import Path
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DATA_DIR = REPO_ROOT / "data"
 
-resource = RAMResource()
-store = resource._store
+vfs = RAMVFS()
+store = vfs._store
 
 for fpath in sorted(DATA_DIR.iterdir()):
     if fpath.is_file():
@@ -33,8 +33,9 @@ for fpath in sorted(DATA_DIR.iterdir()):
 
 print(f"Seeded {len(store.files)} files from {DATA_DIR}")
 
-with Workspace({"/data/": Mount(resource, backend=MountBackend.FUSE)},
-               mode=MountMode.READ) as ws:
+with Workspace(
+    {"/data/": Mount(vfs, backend=MountBackend.FUSE)}, mode=MountMode.READ
+) as ws:
     time.sleep(1)
     mp = ws.fuse_mountpoint
 
@@ -52,10 +53,11 @@ with Workspace({"/data/": Mount(resource, backend=MountBackend.FUSE)},
     print(f">>>   cat {data_path}/{existing}             # ok")
     print(f">>>   echo hi > {data_path}/new.txt         # EACCES (create)")
     print(
-        f">>>   echo hi > {data_path}/{existing}        # EACCES (overwrite)")
+        f">>>   echo hi > {data_path}/{existing}        # EACCES (overwrite)"
+    )
     print(">>> Press Enter to unmount and exit...")
     input()
 
-    records = ws.ops.records
+    records = ws.vfs.records
     total = sum(r.bytes for r in records)
     print(f"\nStats: {len(records)} ops, {total} bytes transferred")

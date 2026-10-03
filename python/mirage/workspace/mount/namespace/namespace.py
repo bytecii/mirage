@@ -13,14 +13,15 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import base64
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
-from mirage.core.timeutil import epoch_to_iso
-from mirage.resource.base import BaseResource
 from mirage.types import LINK_TARGET_KEY, FileStat, FileType, MountMode
-from mirage.utils.path import glob_prefix_match, resolve_symlinks
+from mirage.utils.dates import epoch_to_iso
+from mirage.utils.path import ancestors, glob_prefix_match, resolve_symlinks
+from mirage.vfs.base import BaseVFS
 from mirage.workspace.mount.mount import MountEntry
 from mirage.workspace.mount.namespace.ram import RAMNamespaceStore
 from mirage.workspace.mount.namespace.store import NamespaceStore, NodeFields
@@ -35,6 +36,12 @@ class NodeMetaKey(StrEnum):
     GID = "gid"
     ATIME = "atime"
     OBSERVED_MTIME = "observed_mtime"
+
+
+# An extended attribute rides a node's flat field set as one field per
+# name, ``xattr:<name>``, its value base64 so every store (a JSON file, a
+# Redis hash, a snapshot) holds the bytes as a string.
+XATTR_FIELD_PREFIX = "xattr:"
 
 
 @dataclass(slots=True)
@@ -60,15 +67,27 @@ class NodeMeta:
     # modified time at all, so `find -mtime` works on mtime-less
     # backends for files written through mirage.
     observed_mtime: float | None = None
+    # Extended attributes a caller set, by name. What a backend reports
+    # about the path is not stored here; the door derives it from stat.
+    xattrs: dict[str, bytes] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
-        return all(getattr(self, key) is None for key in NodeMetaKey)
+        return (
+            all(getattr(self, key) is None for key in NodeMetaKey)
+            and not self.xattrs
+        )
 
     def to_fields(self) -> NodeFields:
-        return {
+        fields: NodeFields = {
             str(key): value
-            for key in NodeMetaKey if (value := getattr(self, key)) is not None
+            for key in NodeMetaKey
+            if (value := getattr(self, key)) is not None
         }
+        for name, value in self.xattrs.items():
+            fields[XATTR_FIELD_PREFIX + name] = base64.b64encode(value).decode(
+                "ascii"
+            )
+        return fields
 
     @classmethod
     def from_fields(cls, entry: NodeFields) -> "NodeMeta":
@@ -86,8 +105,15 @@ class NodeMeta:
             uid=uid if isinstance(uid, (int, str)) else None,
             gid=gid if isinstance(gid, (int, str)) else None,
             atime=atime if isinstance(atime, str) else None,
-            observed_mtime=(float(observed) if isinstance(
-                observed, (int, float)) else None),
+            observed_mtime=(
+                float(observed) if isinstance(observed, (int, float)) else None
+            ),
+            xattrs={
+                key[len(XATTR_FIELD_PREFIX) :]: base64.b64decode(value)
+                for key, value in entry.items()
+                if key.startswith(XATTR_FIELD_PREFIX)
+                and isinstance(value, str)
+            },
         )
 
 
@@ -96,9 +122,11 @@ def link_stat(name: str, meta: NodeMeta) -> FileStat:
 
     Size is the target string's byte length and mode is left unset so
     the formatter supplies 0777, which is what a real symlink inode
-    reports (a link carries no permission bits of its own). Ownership is
-    not in that category: a link has a real uid/gid that ``chown -h``
-    writes and ``ls -l`` shows, so both ride through from the node. The
+    reports (a link carries no permission bits of its own). Ownership
+    and the stamps are not in that category: a link has a real uid/gid
+    that ``chown -h`` writes and ``ls -l`` shows, and real times that
+    ``touch -h`` and a guest's no-follow ``utime`` write, so all four
+    ride through from the node. The
     target rides along in ``extra`` so every surface that has to name it
     (ls -l's ``name -> target``, file's "symbolic link to") reads one
     fact rather than querying the link table a second time.
@@ -115,6 +143,7 @@ def link_stat(name: str, meta: NodeMeta) -> FileStat:
         type=FileType.SYMLINK,
         uid=meta.uid,
         gid=meta.gid,
+        atime=meta.atime,
         extra={LINK_TARGET_KEY: target},
     )
 
@@ -139,10 +168,12 @@ class Namespace:
     link's own parent at resolution time), so ``readlink`` is GNU-faithful.
     """
 
-    def __init__(self,
-                 registry: MountRegistry,
-                 store: NamespaceStore | None = None,
-                 user: str | None = None) -> None:
+    def __init__(
+        self,
+        registry: MountRegistry,
+        store: NamespaceStore | None = None,
+        user: str | None = None,
+    ) -> None:
         self._registry = registry
         self._store = store if store is not None else RAMNamespaceStore()
         self._nodes: dict[str, NodeMeta] = {}
@@ -212,10 +243,9 @@ class Namespace:
         self._nodes = dict(entries)
         self._loaded = True
         await self._resolve_user()
-        await self._store.replace_all({
-            path: meta.to_fields()
-            for path, meta in entries.items()
-        })
+        await self._store.replace_all(
+            {path: meta.to_fields() for path, meta in entries.items()}
+        )
 
     async def close(self) -> None:
         await self._store.close()
@@ -223,7 +253,8 @@ class Namespace:
     def symlink_targets(self) -> dict[str, str]:
         return {
             path: meta.target
-            for path, meta in self._nodes.items() if meta.target is not None
+            for path, meta in self._nodes.items()
+            if meta.target is not None
         }
 
     def has_links(self) -> bool:
@@ -282,6 +313,43 @@ class Namespace:
             meta.mtime = mtime
         await self._store.set(path, meta.to_fields())
 
+    def xattrs(self, path: str) -> dict[str, bytes]:
+        """The extended attributes a caller set on a path, by name.
+
+        Args:
+            path (str): absolute virtual path.
+        """
+        meta = self._nodes.get(path)
+        return dict(meta.xattrs) if meta is not None else {}
+
+    async def set_xattr(self, path: str, name: str, value: bytes) -> None:
+        """Store one extended attribute on a path's node.
+
+        Args:
+            path (str): absolute virtual path.
+            name (str): attribute name.
+            value (bytes): attribute value.
+        """
+        meta = self._nodes.setdefault(path, NodeMeta())
+        meta.xattrs[name] = bytes(value)
+        await self._store.set(path, meta.to_fields())
+
+    async def remove_xattr(self, path: str, name: str) -> None:
+        """Drop one extended attribute, and the node once it holds nothing.
+
+        Args:
+            path (str): absolute virtual path.
+            name (str): attribute name.
+        """
+        meta = self._nodes.get(path)
+        if meta is None or meta.xattrs.pop(name, None) is None:
+            return
+        if meta.is_empty():
+            del self._nodes[path]
+            await self._store.delete([path])
+            return
+        await self._store.set(path, meta.to_fields())
+
     async def drop_attrs(self, path: str, fields: Iterable[str]) -> None:
         """Drop overlay fields that a backend has applied natively.
 
@@ -297,9 +365,9 @@ class Namespace:
         meta = self._nodes.get(path)
         if meta is None:
             return
-        for field in fields:
-            if field != str(NodeMetaKey.TARGET):
-                setattr(meta, field, None)
+        for key in fields:
+            if key != str(NodeMetaKey.TARGET):
+                setattr(meta, key, None)
         if meta.is_empty():
             del self._nodes[path]
             await self._store.delete([path])
@@ -327,9 +395,36 @@ class Namespace:
         await self._store.delete([path])
         return True
 
-    async def clear_times(self,
-                          path: str,
-                          observed: float | None = None) -> None:
+    async def drop_overlays_under(
+        self, paths: list[str], *, excluded: tuple[str, ...] = ()
+    ) -> int:
+        """Drop orphaned overlays in one pass, retaining symlinks.
+
+        Args:
+            paths (list[str]): absolute roots reported gone.
+            excluded (tuple[str, ...]): nested mount roots to preserve.
+
+        Returns:
+            int: number of overlay nodes dropped.
+        """
+        roots = {path.rstrip("/") or "/" for path in paths}
+        protected = {path.rstrip("/") or "/" for path in excluded}
+        doomed = []
+        for key, meta in self._nodes.items():
+            if meta.target is not None:
+                continue
+            lineage = ["/", *ancestors(key), key.rstrip("/") or "/"]
+            if not roots.isdisjoint(lineage) and protected.isdisjoint(lineage):
+                doomed.append(key)
+        for key in doomed:
+            del self._nodes[key]
+        if doomed:
+            await self._store.delete(doomed)
+        return len(doomed)
+
+    async def clear_times(
+        self, path: str, observed: float | None = None
+    ) -> None:
         """Drop overlay times after a content write.
 
         write(2) refreshes mtime, so a stored overlay time would
@@ -414,6 +509,30 @@ class Namespace:
             return path
         return resolve_symlinks(path, targets)
 
+    def follow_parent(self, path: str) -> str:
+        """Return ``path`` with every link above its final name resolved.
+
+        The walk the kernel gives a path before the call sees it: every
+        component but the last is followed, and the last is the op's own
+        to follow or not (stat against lstat). Identity when no link sits
+        above the name, a trailing slash included.
+
+        Args:
+            path (str): absolute virtual path.
+
+        Raises:
+            CycleError: when resolution exceeds the hop limit (ELOOP).
+        """
+        trimmed = path.rstrip("/")
+        parent, _, name = trimmed.rpartition("/")
+        if not name:
+            return path
+        above = parent or "/"
+        resolved = self.follow(above)
+        if resolved == above:
+            return path
+        return resolved.rstrip("/") + path[len(parent) :]
+
     def link_stat_at(self, path: str) -> FileStat | None:
         """lstat a path: the link's own stat, or None when not a link.
 
@@ -440,9 +559,11 @@ class Namespace:
             directory (str): absolute virtual directory path.
         """
         base = directory.rstrip("/") + "/"
-        return [(path, link_stat(path.rsplit("/", 1)[-1], meta))
-                for path, meta in self._nodes.items()
-                if meta.target is not None and path.startswith(base)]
+        return [
+            (path, link_stat(path.rsplit("/", 1)[-1], meta))
+            for path, meta in self._nodes.items()
+            if meta.target is not None and path.startswith(base)
+        ]
 
     def link_stats_under(self, directory: str) -> list[FileStat]:
         """Stat rows for the links living directly under a directory.
@@ -455,36 +576,109 @@ class Namespace:
         Args:
             directory (str): absolute virtual directory path.
         """
-        base = directory.rstrip("/") + "/"
-        out: list[FileStat] = []
-        for path, meta in self._nodes.items():
-            if (meta.target is not None and path.startswith(base)
-                    and "/" not in path[len(base):]):
-                out.append(link_stat(path[len(base):], meta))
-        return out
+        return [
+            link_stat(name, meta)
+            for name, meta in self._links_under(directory)
+        ]
 
-    async def purge_under(self, directory: str) -> int:
+    def link_names_under(self, directory: str) -> set[str]:
+        """The names of the links living directly under a directory.
+
+        What a readdir row's link mark needs, which is a name question
+        rather than a stat one: the door already holds every entry's
+        stat and has only to learn which of those names the node table
+        owns.
+
+        Resolves a link prefix first, because a listing does: a readdir
+        of ``/data/alias`` is dispatched at ``/data/real`` and answers
+        with that directory's entries, so the marks have to come from
+        there too or every link inside an aliased directory reads as
+        whatever its followed stat said. ``link_stats_under`` needs no
+        such resolution: it is handed the path the router already
+        rewrote.
+
+        Args:
+            directory (str): absolute virtual directory path.
+        """
+        return {name for name, _ in self._links_under(self.follow(directory))}
+
+    def _links_under(self, directory: str) -> list[tuple[str, NodeMeta]]:
+        """The links living directly under a directory, as (name, meta).
+
+        Args:
+            directory (str): absolute virtual directory path.
+        """
+        base = directory.rstrip("/") + "/"
+        return [
+            (path[len(base) :], meta)
+            for path, meta in self._nodes.items()
+            if meta.target is not None
+            and path.startswith(base)
+            and "/" not in path[len(base) :]
+        ]
+
+    async def rename_under(self, src: str, dst: str) -> int:
+        """Re-anchor every node below one directory onto another.
+
+        A rename moves a whole subtree, and the node table addresses its
+        entries by absolute path, so a link or an attr overlay below the
+        source names a path that no longer exists once the backend has
+        moved the bytes. No backend can report those entries, which is
+        why nothing below the dispatcher can do this.
+
+        Args:
+            src (str): absolute virtual path being renamed.
+            dst (str): absolute virtual path it becomes.
+
+        Returns:
+            int: number of entries re-anchored.
+        """
+        base = src.rstrip("/") + "/"
+        moved = [
+            (path, meta)
+            for path, meta in self._nodes.items()
+            if path.startswith(base)
+        ]
+        if not moved:
+            return 0
+        landing = dst.rstrip("/")
+        for path, meta in moved:
+            del self._nodes[path]
+        for path, meta in moved:
+            target = f"{landing}/{path[len(base) :]}"
+            self._nodes[target] = meta
+            await self._store.set(target, meta.to_fields())
+        await self._store.delete([path for path, _meta in moved])
+        return len(moved)
+
+    async def purge_under(
+        self, directory: str, keep: frozenset[str] = frozenset()
+    ) -> int:
         """Drop every node entry under a directory (``rm -r`` semantics).
 
         Args:
             directory (str): absolute virtual directory path being removed.
+            keep (frozenset[str]): entries under it that survive.
 
         Returns:
             int: number of entries dropped.
         """
         base = directory.rstrip("/") + "/"
-        doomed = [path for path in self._nodes if path.startswith(base)]
+        doomed = [
+            path
+            for path in self._nodes
+            if path.startswith(base) and path not in keep
+        ]
         for path in doomed:
             del self._nodes[path]
         if doomed:
             await self._store.delete(doomed)
         return len(doomed)
 
-    def resolve(self,
-                path: str,
-                *,
-                follow: bool = True) -> tuple[BaseResource, str, MountMode]:
-        """Map a virtual path to ``(resource, resource_path, mode)``.
+    def resolve(
+        self, path: str, *, follow: bool = True
+    ) -> tuple[BaseVFS, str, MountMode]:
+        """Map a virtual path to ``(VFS, vfs_path, mode)``.
 
         Args:
             path (str): virtual path to resolve.

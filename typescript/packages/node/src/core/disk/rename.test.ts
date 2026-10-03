@@ -22,8 +22,17 @@ import { spec, tmpRoot } from '../../test-utils.ts'
 import { rename } from './rename.ts'
 
 class FakeManager {
+  listingTrusted(_folder: string): boolean {
+    return false
+  }
+
+  probedStat(): null {
+    return null
+  }
+
   writes: string[] = []
   unlinks: string[] = []
+  subtrees: string[] = []
 
   invalidateAfterWrite(path: string | PathSpec): Promise<void> {
     this.writes.push(typeof path === 'string' ? path : path.mountPath)
@@ -35,7 +44,24 @@ class FakeManager {
     return Promise.resolve()
   }
 
+  invalidateAncestors(_path: PathSpec): Promise<void> {
+    return Promise.resolve()
+  }
+
+  invalidateSubtree(path: string | PathSpec): Promise<void> {
+    this.subtrees.push(typeof path === 'string' ? path : path.mountPath)
+    return Promise.resolve()
+  }
+
+  readThrough(_path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array> {
+    return fetch()
+  }
+
   cachedBytes(_path: PathSpec): Promise<Uint8Array | null> {
+    return Promise.resolve(null)
+  }
+
+  cachedSize(_path: PathSpec): Promise<number | null> {
     return Promise.resolve(null)
   }
 }
@@ -71,7 +97,7 @@ describe('core/disk/rename', () => {
     await runWithCacheManager(manager, async () => {
       await rename(accessor, spec('/src'), spec('/dst'))
     })
-    expect(manager.unlinks).toEqual(['/src', '/dst'])
+    expect(manager.subtrees).toEqual(['/src', '/dst'])
     expect(manager.writes).toEqual([])
     expect(await readFile(join(root, 'dst', 'f.txt'), 'utf-8')).toBe('x')
   })

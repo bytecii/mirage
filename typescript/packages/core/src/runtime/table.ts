@@ -12,12 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { EXTERNAL_COMMANDS } from './constants.ts'
 import { Runtime } from './base.ts'
-import { isLineExecutor, type LineExecutor } from './mixin.ts'
-import { QuickJsRuntime } from './js/quickjs.ts'
+import { isProcessExecutor, isLineExecutor, type LineExecutor } from './mixin.ts'
+import { QuickJsRuntime } from './js/quickjs/runtime.ts'
 import { MontyRuntime } from './python/monty/index.ts'
-import { PyodideRuntime } from './python/pyodide.ts'
+import { PyodideRuntime } from './python/pyodide/runtime.ts'
 import type { RuntimeOptions } from './types.ts'
+import { compareCodePoints } from '../utils/sort.ts'
 
 /**
  * The workspace's built-in command engine as a routing marker.
@@ -31,20 +33,20 @@ import type { RuntimeOptions } from './types.ts'
  * pass your own instance to customize it.
  *
  * It is a pure routing marker, so it carries no capability mixin: a
- * line resolved to vfs runs on the workspace executor inline, the path
+ * line resolved to workspace runs on the workspace executor inline, the path
  * the line takes anyway, so there is no interpreter door (run) and no
  * delegate door (runLine) to implement.
  *
  * Constructed like every runtime (captures, config, script), with two
- * vfs readings: captures undefined (the default) keeps the catch-all
+ * workspace readings: captures undefined (the default) keeps the catch-all
  * behavior, an empty array serves nothing (full lockdown); and the
  * config has no fields today, the slot exists for uniformity.
  */
-export class VFSRuntime extends Runtime {
-  readonly name = 'vfs'
-  // A vfs-routed line runs on the workspace executor itself: it IS the
+export class WorkspaceRuntime extends Runtime {
+  readonly name = 'workspace'
+  // A workspace-routed line runs on the workspace executor itself: it IS the
   // gate, so there is no door around it.
-  override readonly reach = 'vfs'
+  override readonly reach = 'workspace'
   // Declaring captures (even empty) turns the catch-all off; the
   // dispatcher reads this bit, not the array's length.
   readonly restricted: boolean
@@ -68,7 +70,7 @@ const NAMED: Record<string, new (options?: RuntimeOptions<never>) => Runtime> = 
     pyodide: PyodideRuntime,
     monty: MontyRuntime,
     quickjs: QuickJsRuntime,
-    vfs: VFSRuntime,
+    workspace: WorkspaceRuntime,
   },
 )
 
@@ -92,7 +94,7 @@ export const DEFAULT_PYTHON = 'pyodide'
  * one js engine, and the builtin command engine. `local`/`wasi` are
  * Python-only.
  */
-export const DEFAULT_ENTRIES: readonly string[] = [DEFAULT_PYTHON, 'quickjs', 'vfs']
+export const DEFAULT_ENTRIES: readonly string[] = [DEFAULT_PYTHON, 'quickjs', 'workspace']
 
 /** Python-only runtime names a cross-language config may carry. */
 const PYTHON_ONLY_HINTS: Record<string, string> = {
@@ -106,16 +108,8 @@ const PYTHON_ONLY_HINTS: Record<string, string> = {
     "'pyodide' (WASM CPython, default), 'monty' (sandboxed), and " +
     "'quickjs' (sandboxed JavaScript)",
   sandlock:
-    "runtime 'sandlock' (the host python3 confined by Landlock and seccomp) " +
-    "is Python-only and Linux-only; TypeScript supports 'smolvm' for a " +
-    "hardware-isolated microVM, 'docker' for a container, 'pyodide' (WASM " +
-    "CPython, default), 'monty' (sandboxed), and 'quickjs' (sandboxed " +
-    'JavaScript)',
-}
-
-/** The runtime classes that capture a command, preference order. */
-export function candidates(command: string): (typeof RUNTIMES)[number][] {
-  return RUNTIMES.filter((cls) => cls.commands.includes(command))
+    "runtime 'sandlock' lives in @struktoai/mirage-node; import that package " +
+    'to register it. Sandlock requires Linux and the sandlock CLI on PATH.',
 }
 
 // Every runtime is constructed the same way; config keys are checked
@@ -125,17 +119,49 @@ export function candidates(command: string): (typeof RUNTIMES)[number][] {
 // literal would silently swallow a typo key without it.
 const ENTRY_KEYS: readonly string[] = ['captures', 'config', 'script']
 
+// The names core ships, frozen before any package or host registers its
+// own, so `registerRuntime` can refuse to shadow one the way the VFS
+// and CLI registries refuse a builtin name.
+const BUILTIN_RUNTIMES: ReadonlySet<string> = new Set(Object.keys(NAMED))
+
 /**
- * Register a runtime class under a config name. Runtime packages
- * extend the table with their own runtimes (e.g. `daytona` from
- * `@struktoai/mirage-node`), mirroring Python's NAMED dict; existing
- * entries are overwritten.
+ * Register a runtime class under a config name. Host-side only, like
+ * `registerVfsFactory` and `registerCliSpec`: the embedding program
+ * calls it, never a line the agent types. Once registered the name works
+ * everywhere a builtin's does: a `runtimes:` entry in workspace config, a
+ * string in `new Workspace(..., { runtimes })`, and `execute({ runtime })`.
+ * Runtime packages use the same door for their own runtimes (`daytona`
+ * from `@struktoai/mirage-node`). Mirrors `register_runtime` in
+ * `mirage/runtime/table.py`: a core builtin cannot be shadowed, and
+ * re-registering any other name replaces it.
  */
 export function registerRuntime(
   name: string,
   cls: new (options?: RuntimeOptions<never>) => Runtime,
 ): void {
+  if (BUILTIN_RUNTIMES.has(name)) throw new Error(`cannot register '${name}': shadows a builtin`)
   NAMED[name] = cls
+}
+
+/** Every name `buildRuntime` can resolve, builtin and registered. */
+export function knownRuntimes(): string[] {
+  return Object.keys(NAMED).sort(compareCodePoints)
+}
+
+/**
+ * Refuse an entry key no runtime takes, naming the entry. Every runtime
+ * is constructed the same way, so this is one check for a builtin, a
+ * registered name and a `source:Class` reference alike: `buildRuntime`
+ * runs it for the names it resolves, and the config loader runs it for
+ * a reference, whose class it constructs itself.
+ */
+export function checkRuntimeOptions(name: string, options: Record<string, unknown>): void {
+  for (const key of Object.keys(options)) {
+    if (!ENTRY_KEYS.includes(key)) {
+      const knownKeys = ENTRY_KEYS.map((k) => `'${k}'`).join(', ')
+      throw new Error(`unknown ${name} runtime option '${key}' (expected: ${knownKeys})`)
+    }
+  }
 }
 
 /**
@@ -152,12 +178,7 @@ export function buildRuntime(name: string, options: Record<string, unknown> = {}
       .join(', ')
     throw new Error(`unknown runtime: '${name}' (expected one of ${known})`)
   }
-  for (const key of Object.keys(options)) {
-    if (!ENTRY_KEYS.includes(key)) {
-      const knownKeys = ENTRY_KEYS.map((k) => `'${k}'`).join(', ')
-      throw new Error(`unknown ${name} runtime option '${key}' (expected: ${knownKeys})`)
-    }
-  }
+  checkRuntimeOptions(name, options)
   return new cls(options as RuntimeOptions<never>)
 }
 
@@ -172,8 +193,8 @@ export function runtimeBindingsFor(
   entries: readonly Runtime[],
   name: string,
 ): Record<string, Runtime> {
-  if (name === 'vfs') {
-    throw new Error(`'vfs' is the default executor, not a runtime you can select`)
+  if (name === 'workspace') {
+    throw new Error(`'workspace' is the default executor, not a runtime you can select`)
   }
   for (const entry of entries) {
     if (entry.name === name) {
@@ -190,8 +211,8 @@ export function runtimeBindingsFor(
 /**
  * Resolve the ordered world into a command -> runtime binding map.
  *
- * A command binds to the FIRST entry that captures it; a default vfs
- * runtime captures nothing, so only a vfs with declared captures
+ * A command binds to the FIRST entry that captures it; a default workspace
+ * runtime captures nothing, so only a workspace entry with declared captures
  * appears in the map. Duplicate names are rejected: a second entry
  * under the same name could never bind anything and always signals a
  * config mistake.
@@ -202,6 +223,13 @@ export function bindCommands(entries: readonly Runtime[]): Record<string, Runtim
   const bindings: Record<string, Runtime> = Object.create(null) as Record<string, Runtime>
   const seen = new Set<string>()
   for (const entry of entries) {
+    if (
+      entry.captures.includes(EXTERNAL_COMMANDS) &&
+      !isLineExecutor(entry) &&
+      !isProcessExecutor(entry)
+    ) {
+      throw new Error('@external requires process or shell execution')
+    }
     if (seen.has(entry.name)) {
       throw new Error(`duplicate runtime entry: '${entry.name}'`)
     }
@@ -216,20 +244,14 @@ export function bindCommands(entries: readonly Runtime[]): Record<string, Runtim
 /**
  * The runtime that runs this entire line, if any.
  *
- * A runtime carrying LineExecutor takes the raw line when it captures
- * one of the line's commands; a "*" capture claims any line. A
- * specific capture beats "*". The vfs runtime never matches here
+ * Only an explicit "*" capture claims a whole line. Named captures
+ * and EXTERNAL_COMMANDS execute individual commands. The workspace runtime never matches here
  * because it carries no capability: the workspace executor IS the
- * path a vfs-resolved line takes anyway, so there is no delegate.
+ * path a workspace-resolved line takes anyway, so there is no delegate.
  */
 export function wholeLineRuntime(
   bindings: Record<string, Runtime | null>,
-  commands: readonly string[],
 ): (Runtime & LineExecutor) | null {
-  for (const command of commands) {
-    const runtime = Object.hasOwn(bindings, command) ? bindings[command] : null
-    if (runtime != null && isLineExecutor(runtime)) return runtime
-  }
   const star = Object.hasOwn(bindings, '*') ? bindings['*'] : null
   if (star != null && isLineExecutor(star)) return star
   return null
@@ -238,13 +260,13 @@ export function wholeLineRuntime(
 /**
  * The runtime that serves commands no entry captures, if any.
  *
- * That is the world's VFSRuntime, unless it declares captures (then it
+ * That is the world's WorkspaceRuntime, unless it declares captures (then it
  * is an ordinary capturer and nothing is catch-all) or it is not among
  * the given entries (refused the line / omitted).
  */
 export function catchAll(entries: readonly Runtime[]): Runtime | null {
   for (const entry of entries) {
-    if (entry instanceof VFSRuntime && !entry.restricted) return entry
+    if (entry instanceof WorkspaceRuntime && !entry.restricted) return entry
   }
   return null
 }

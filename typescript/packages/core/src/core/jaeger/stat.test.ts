@@ -45,10 +45,10 @@ function accessor(transport: JaegerTransport, config: JaegerAccessorConfig = {})
 }
 
 function spec(virtual: string): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath: stripSlash(virtual) })
+  return new PathSpec({ virtual, directory: virtual, vfsPath: stripSlash(virtual) })
 }
 
-import { FileType } from '../../types.ts'
+import { ContentType, FileType } from '../../types.ts'
 import { stat } from './stat.ts'
 
 const SERVICES = { '/api/services': { data: ['checkout'] } }
@@ -93,7 +93,7 @@ describe('jaeger stat', () => {
       spec('/services/checkout/operations.json'),
       new RAMIndexCacheStore(),
     )
-    expect(s.type).toBe(FileType.JSON)
+    expect(s.content).toBe(ContentType.JSON)
   })
 
   it('stats a listed trace', async () => {
@@ -102,7 +102,7 @@ describe('jaeger stat', () => {
       spec(`/services/checkout/traces/${TRACE_A}.json`),
       new RAMIndexCacheStore(),
     )
-    expect(s.type).toBe(FileType.JSON)
+    expect(s.content).toBe(ContentType.JSON)
     expect(s.extra.trace_id).toBe(TRACE_A)
   })
 

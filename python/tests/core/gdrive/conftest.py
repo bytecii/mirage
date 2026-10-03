@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import hashlib
 import itertools
 
 import pytest
@@ -31,7 +32,7 @@ import mirage.core.gdrive.write as write_mod
 from mirage.accessor.gdrive import GDriveAccessor
 from mirage.core.google.client import TokenManager
 from mirage.core.google.config import GoogleConfig
-from mirage.core.google.drive import FOLDER_MIME
+from mirage.core.google.drive import FOLDER_MIME, MIME_TO_EXT
 
 FILE_MIME = "application/octet-stream"
 
@@ -42,13 +43,20 @@ class FakeDrive:
     def __init__(self) -> None:
         self.items: dict[str, dict] = {}
         self._ids = itertools.count(1)
+        # Every `limit` a caller asked for, so a test can pin that an
+        # emptiness probe is bounded. `page_size` cannot express that: it
+        # caps the page, not the walk, so a small page turns a listing of
+        # a large folder into more requests rather than fewer.
+        self.list_limits: list[int | None] = []
 
-    def add(self,
-            name: str,
-            parent: str = "root",
-            mime: str = FILE_MIME,
-            content: bytes = b"",
-            drive_id: str | None = None) -> str:
+    def add(
+        self,
+        name: str,
+        parent: str = "root",
+        mime: str = FILE_MIME,
+        content: bytes = b"",
+        drive_id: str | None = None,
+    ) -> str:
         item_id = f"id{next(self._ids)}"
         self.items[item_id] = {
             "id": item_id,
@@ -69,18 +77,31 @@ class FakeDrive:
         item = self.items[item_id]
         out = {k: v for k, v in item.items() if k != "content"}
         out["size"] = str(len(item["content"]))
+        mime = item["mimeType"]
+        # Drive's own guards, mirrored from integ/server/gws/drive/item.ts:
+        # a folder and a native google-apps file carry neither field. Emitting
+        # them flatly would give every fake item an md5, so steps 2 and 3 of
+        # `drive_fingerprint`'s chain would never execute and the tests that
+        # cover them would pass while proving nothing.
+        if mime != FOLDER_MIME and mime not in MIME_TO_EXT:
+            out["md5Checksum"] = hashlib.md5(item["content"]).hexdigest()
+            out["headRevisionId"] = f"{item_id}-r1"
         return out
 
-    async def list_files(self,
-                         token_manager,
-                         folder_id: str = "root",
-                         drive_id: str | None = None,
-                         mime_type: str | None = None,
-                         trashed: bool = False,
-                         page_size: int = 1000,
-                         modified_after: str | None = None,
-                         modified_before: str | None = None,
-                         name: str | None = None) -> list[dict]:
+    async def list_files(
+        self,
+        token_manager,
+        folder_id: str = "root",
+        drive_id: str | None = None,
+        mime_type: str | None = None,
+        trashed: bool = False,
+        page_size: int = 1000,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+        name: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        self.list_limits.append(limit)
         out = []
         for item in self.items.values():
             if folder_id not in item["parents"]:
@@ -90,31 +111,39 @@ class FakeDrive:
             if mime_type and item["mimeType"] != mime_type:
                 continue
             out.append(self.public(item["id"]))
+            if limit is not None and len(out) >= limit:
+                break
         return out
 
-    async def list_shared_drives(self,
-                                 token_manager,
-                                 page_size: int = 100) -> list[dict]:
+    async def list_shared_drives(
+        self, token_manager, page_size: int = 100
+    ) -> list[dict]:
         return []
 
-    async def create_folder(self, token_manager, name: str,
-                            parent_id: str) -> dict:
+    async def create_folder(
+        self, token_manager, name: str, parent_id: str
+    ) -> dict:
         return self.public(self.folder(name, parent=parent_id))
 
-    async def upload_file(self,
-                          token_manager,
-                          name: str,
-                          parent_id: str,
-                          data: bytes,
-                          mime_type: str = FILE_MIME) -> dict:
+    async def upload_file(
+        self,
+        token_manager,
+        name: str,
+        parent_id: str,
+        data: bytes,
+        mime_type: str = FILE_MIME,
+    ) -> dict:
         return self.public(
-            self.add(name, parent=parent_id, mime=mime_type, content=data))
+            self.add(name, parent=parent_id, mime=mime_type, content=data)
+        )
 
-    async def update_file_content(self,
-                                  token_manager,
-                                  file_id: str,
-                                  data: bytes,
-                                  mime_type: str = FILE_MIME) -> dict:
+    async def update_file_content(
+        self,
+        token_manager,
+        file_id: str,
+        data: bytes,
+        mime_type: str = FILE_MIME,
+    ) -> dict:
         self.items[file_id]["content"] = data
         return self.public(file_id)
 
@@ -122,16 +151,19 @@ class FakeDrive:
         stack = [file_id]
         while stack:
             current = stack.pop()
-            stack.extend(i["id"] for i in self.items.values()
-                         if current in i["parents"])
+            stack.extend(
+                i["id"] for i in self.items.values() if current in i["parents"]
+            )
             self.items.pop(current, None)
 
-    async def patch_file(self,
-                         token_manager,
-                         file_id: str,
-                         body: dict | None = None,
-                         add_parents: str | None = None,
-                         remove_parents: str | None = None) -> dict:
+    async def patch_file(
+        self,
+        token_manager,
+        file_id: str,
+        body: dict | None = None,
+        add_parents: str | None = None,
+        remove_parents: str | None = None,
+    ) -> dict:
         item = self.items[file_id]
         if body:
             item.update(body)
@@ -141,14 +173,18 @@ class FakeDrive:
             item["parents"].remove(remove_parents)
         return self.public(file_id)
 
-    async def copy_file(self, token_manager, file_id: str, name: str,
-                        parent_id: str) -> dict:
+    async def copy_file(
+        self, token_manager, file_id: str, name: str, parent_id: str
+    ) -> dict:
         src = self.items[file_id]
         return self.public(
-            self.add(name,
-                     parent=parent_id,
-                     mime=src["mimeType"],
-                     content=src["content"]))
+            self.add(
+                name,
+                parent=parent_id,
+                mime=src["mimeType"],
+                content=src["content"],
+            )
+        )
 
     async def download_file(self, token_manager, file_id: str) -> bytes:
         return self.items[file_id]["content"]
@@ -167,15 +203,15 @@ _PATCH_TARGETS = {
     resolve_mod: ("list_files", "list_shared_drives", "get_file"),
     readdir_mod: ("list_files", "list_shared_drives"),
     write_mod: ("update_file_content", "upload_file"),
-    mkdir_mod: ("create_folder", ),
-    unlink_mod: ("delete_file", ),
-    rmdir_mod: ("delete_file", ),
-    rm_mod: ("delete_file", ),
+    mkdir_mod: ("create_folder",),
+    unlink_mod: ("delete_file",),
+    rmdir_mod: ("delete_file", "list_files"),
+    rm_mod: ("delete_file",),
     rename_mod: ("delete_file", "list_files", "patch_file"),
-    tree_mod: ("list_files", ),
-    stat_mod: ("get_file", ),
+    tree_mod: ("list_files",),
+    stat_mod: ("get_file",),
     copy_mod: ("copy_file", "create_folder", "delete_file", "list_files"),
-    truncate_mod: ("download_file", ),
+    truncate_mod: ("download_file",),
 }
 
 

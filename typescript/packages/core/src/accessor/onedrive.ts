@@ -16,14 +16,16 @@ import { z } from 'zod'
 import { Accessor } from './base.ts'
 import {
   MSGRAPH_CONFIG_SHAPE,
-  graphApi,
   resolveMsGraphConfig,
   type MsGraphConfig,
   type MsGraphConfigResolved,
 } from '../core/msgraph/config.ts'
-import { DriveLoc } from '../core/msgraph/drive.ts'
-import { type ConfigOf, redactConfigWithSchema, type RedactedConfig } from '../resource/secrets.ts'
-import { normalizeFields } from '../utils/normalize.ts'
+import {
+  type ConfigOf,
+  parseConfigWithSchema,
+  redactConfigWithSchema,
+  type RedactedConfig,
+} from '../vfs/secrets.ts'
 import { stripSlash } from '../utils/slash.ts'
 
 export interface OneDriveConfig extends MsGraphConfig {
@@ -39,9 +41,12 @@ export interface OneDriveConfig extends MsGraphConfig {
 
 const DRIVE_TARGETS = ['driveId', 'siteId', 'groupId', 'userId'] as const
 
+// Names the count and the fields actually set, the way python's
+// `OneDriveConfig` validator does; a fixed message listing all four
+// targets pointed at two the caller never wrote.
 function driveTargetError(named: readonly string[]): string {
   return (
-    `OneDrive config names more than one drive (${named.join(', ')}); ` +
+    `OneDriveConfig names ${String(named.length)} drives (${named.join(', ')}); ` +
     "set exactly one, or none for the signed-in user's drive"
   )
 }
@@ -58,8 +63,9 @@ const OneDriveConfigSchema = z
   // With four fields and a fixed precedence, setting two would make the
   // mount silently address whichever won, which is the kind of
   // misconfiguration that only shows up as a confusing 404.
-  .refine((c) => DRIVE_TARGETS.filter((f) => c[f] !== undefined).length <= 1, {
-    message: driveTargetError(DRIVE_TARGETS),
+  .superRefine((c, ctx) => {
+    const named = DRIVE_TARGETS.filter((f) => c[f] !== undefined)
+    if (named.length > 1) ctx.addIssue({ code: 'custom', message: driveTargetError(named) })
   })
 
 export type OneDriveConfigRedacted = RedactedConfig<
@@ -72,7 +78,7 @@ export function redactOneDriveConfig(config: OneDriveConfig): OneDriveConfigReda
 }
 
 export function normalizeOneDriveConfig(input: Record<string, unknown>): OneDriveConfig {
-  return OneDriveConfigSchema.parse(normalizeFields(input)) as OneDriveConfig
+  return parseConfigWithSchema(OneDriveConfigSchema, input)
 }
 
 export interface OneDriveConfigResolved extends MsGraphConfigResolved {
@@ -109,62 +115,11 @@ function resolveOneDriveConfig(config: OneDriveConfig): OneDriveConfigResolved {
   return resolved
 }
 
-// Exactly one target may be named (resolveOneDriveConfig enforces it), so
-// the arms are alternatives rather than a precedence chain. Naming none
-// means the signed-in user's own drive, which is the only form that works
-// under delegated auth with no extra identifiers.
-export function oneDriveBase(config: OneDriveConfigResolved): string {
-  const api = graphApi(config)
-  if (config.driveId !== null) return `${api}/drives/${encodeURIComponent(config.driveId)}`
-  if (config.siteId !== null) return `${api}/sites/${encodeURIComponent(config.siteId)}/drive`
-  if (config.groupId !== null) return `${api}/groups/${encodeURIComponent(config.groupId)}/drive`
-  if (config.userId !== null) return `${api}/users/${encodeURIComponent(config.userId)}/drive`
-  return `${api}/me/drive`
-}
-
-function encodedPath(path: string): string {
-  return path
-    .split('/')
-    .filter((part) => part !== '')
-    .map(encodeURIComponent)
-    .join('/')
-}
-
-function fullPath(config: OneDriveConfigResolved, path: string): string {
-  const stripped = stripSlash(path)
-  if (config.keyPrefix !== '' && stripped !== '') return `${config.keyPrefix}/${stripped}`
-  return config.keyPrefix || stripped
-}
-
-export function oneDriveItemUrl(config: OneDriveConfigResolved, path: string, action = ''): string {
-  const base = oneDriveBase(config)
-  const full = fullPath(config, path)
-  if (full === '') return `${base}/root${action}`
-  const stem = `${base}/root:/${encodedPath(full)}`
-  return action !== '' ? `${stem}:${action}` : stem
-}
-
-export function oneDriveRefPath(config: OneDriveConfigResolved, folder = ''): string {
-  const base = oneDriveBase(config).slice(graphApi(config).length)
-  const full = fullPath(config, folder)
-  return full !== '' ? `${base}/root:/${encodedPath(full)}` : `${base}/root:`
-}
-
 export class OneDriveAccessor extends Accessor {
   readonly config: OneDriveConfigResolved
 
   constructor(config: OneDriveConfig) {
     super()
     this.config = resolveOneDriveConfig(config)
-  }
-
-  loc(path: string, virtual = path): DriveLoc {
-    return new DriveLoc({
-      drive: '',
-      path: stripSlash(path),
-      virtual: stripSlash(virtual),
-      url: (item, action) => oneDriveItemUrl(this.config, item, action),
-      ref: (folder) => oneDriveRefPath(this.config, folder),
-    })
   }
 }

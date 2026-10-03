@@ -15,259 +15,147 @@
 import type { PathSpec } from '../../../types.ts'
 import type { Accessor } from '../../../accessor/base.ts'
 import { IOResult } from '../../../io/types.ts'
-import { parseDateExpr } from '../../../utils/dates.ts'
+import { parseDateExpr, parsePosixTime } from '../../../utils/dates.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { pureProvision } from '../generic_bind/provision.ts'
-import { extraOperandError } from '../../spec/usage.ts'
-import { CommandName, FlagView } from '../../spec/types.ts'
+import { strftime } from '../utils/strftime.ts'
+import { quoteText } from '../../quote.ts'
+import { extraOperandError, usageExitCode, usageHint } from '../../spec/usage.ts'
+import { UsageError } from '../../errors.ts'
+import { CommandName } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { LOCAL_ZONE, UTC_ZONE, zoneFromEnv } from '../../../utils/timezone.ts'
 
 const ENC = new TextEncoder()
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-const MONTH_NAMES = [
-  'Jan',
-  'Feb',
-  'Mar',
-  'Apr',
-  'May',
-  'Jun',
-  'Jul',
-  'Aug',
-  'Sep',
-  'Oct',
-  'Nov',
-  'Dec',
-]
+// GNU date's output formats (date.c), each chosen by one option: -I takes one
+// per precision, --rfc-3339 one per its narrower set, -R the RFC 5322 line,
+// and a line that chooses none gets the C locale's default (`%e`, so the 5th
+// is " 5"). All of them render through strftime, the path `+FORMAT` takes.
+const ISO_8601_FORMATS: Readonly<Record<string, string>> = {
+  date: '%Y-%m-%d',
+  hours: '%Y-%m-%dT%H%:z',
+  minutes: '%Y-%m-%dT%H:%M%:z',
+  seconds: '%Y-%m-%dT%H:%M:%S%:z',
+  ns: '%Y-%m-%dT%H:%M:%S,%N%:z',
+}
+const RFC_3339_FORMATS: Readonly<Record<string, string>> = {
+  date: '%Y-%m-%d',
+  seconds: '%Y-%m-%d %H:%M:%S%:z',
+  ns: '%Y-%m-%d %H:%M:%S.%N%:z',
+}
+const RFC_EMAIL_FORMAT = '%a, %d %b %Y %H:%M:%S %z'
+const DEFAULT_FORMAT = '%a %b %e %H:%M:%S %Z %Y'
+const MULTIPLE_FORMATS = 'date: multiple output formats specified\n'
+// What setting the clock answers: mirage has none to set, which is what GNU
+// says for a user without the privilege to.
+const CANNOT_SET = 'date: cannot set date: Operation not permitted\n'
 
-function pad2(n: number): string {
-  return String(n).padStart(2, '0')
+// The output formats the line's options choose, one per option. GNU keeps one
+// and refuses a second as it reads it, so any two of -I, -R and --rfc-3339 are
+// `multiple output formats specified`. The parser has already resolved a
+// precision to its whole word (`-Is` is `seconds`). One divergence: the flag
+// bag keeps the last of a REPEATED option, so `date -I -I` prints where GNU
+// refuses it.
+function optionFormats(fl: FlagView): string[] {
+  const formats: string[] = []
+  const iso = fl.raw('iso_8601')
+  if (iso === true) formats.push(ISO_8601_FORMATS.date ?? '')
+  else if (typeof iso === 'string') formats.push(ISO_8601_FORMATS[iso] ?? '')
+  if (fl.asBool('rfc_email')) formats.push(RFC_EMAIL_FORMAT)
+  const rfc3339 = fl.asStr('rfc_3339')
+  if (rfc3339 !== undefined) formats.push(RFC_3339_FORMATS[rfc3339] ?? '')
+  return formats
 }
 
-function pad4(n: number): string {
-  return String(n).padStart(4, '0')
+function multipleFormats(): CommandFnResult {
+  return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(MULTIPLE_FORMATS) })]
 }
 
-function dayOfYear(year: number, month: number, day: number): number {
-  return Math.floor((Date.UTC(year, month, day) - Date.UTC(year, 0, 0)) / 86_400_000)
+// GNU's refusal of a date it cannot read, exit 1.
+function invalidDate(text: string): CommandFnResult {
+  return [
+    null,
+    new IOResult({ exitCode: 1, stderr: ENC.encode(`date: invalid date '${quoteText(text)}'\n`) }),
+  ]
 }
 
-// ISO 8601 week-based year and week number (%G/%g/%V): the week belongs to
-// the year holding its Thursday.
-function isoWeekParts(year: number, month: number, day: number): [number, number] {
-  const dow = new Date(Date.UTC(year, month, day)).getUTCDay()
-  const isoDow = dow === 0 ? 7 : dow
-  const thursday = new Date(Date.UTC(year, month, day + 4 - isoDow))
-  const ty = thursday.getUTCFullYear()
-  const yday = dayOfYear(ty, thursday.getUTCMonth(), thursday.getUTCDate())
-  return [ty, Math.floor((yday - 1) / 7) + 1]
+// GNU's refusal of a non-`+` operand beside `-d`, a usage error.
+function lacksPlusError(operand: string): UsageError {
+  return new UsageError(
+    `date: the argument '${quoteText(operand)}' lacks a leading '+';\n` +
+      'when using an option to specify date(s), any non-option\n' +
+      "argument must be a format string beginning with '+'\n" +
+      usageHint(CommandName.DATE),
+    usageExitCode(CommandName.DATE),
+  )
 }
 
-function strftime(dt: Date, fmt: string, utc: boolean): string {
-  const year = utc ? dt.getUTCFullYear() : dt.getFullYear()
-  const month = utc ? dt.getUTCMonth() : dt.getMonth()
-  const day = utc ? dt.getUTCDate() : dt.getDate()
-  const dow = utc ? dt.getUTCDay() : dt.getDay()
-  const hour = utc ? dt.getUTCHours() : dt.getHours()
-  const minute = utc ? dt.getUTCMinutes() : dt.getMinutes()
-  const second = utc ? dt.getUTCSeconds() : dt.getSeconds()
-  return fmt.replace(/%([aAbBcCdDeFgGhHIjklMmnpPqrRsStTuUVwWxXYyzZ%])/g, (_m, code: string) => {
-    switch (code) {
-      case 'a':
-        return DAY_NAMES[dow] ?? ''
-      case 'A': {
-        const full = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-        return full[dow] ?? ''
-      }
-      case 'b':
-        return MONTH_NAMES[month] ?? ''
-      case 'B': {
-        const full = [
-          'January',
-          'February',
-          'March',
-          'April',
-          'May',
-          'June',
-          'July',
-          'August',
-          'September',
-          'October',
-          'November',
-          'December',
-        ]
-        return full[month] ?? ''
-      }
-      case 'c':
-        // C-locale %c (%a %b %e %H:%M:%S %Y), what glibc renders and what
-        // Python's strftime produces under LC_ALL=C.
-        return `${DAY_NAMES[dow] ?? ''} ${MONTH_NAMES[month] ?? ''} ${String(day).padStart(2, ' ')} ${pad2(hour)}:${pad2(minute)}:${pad2(second)} ${pad4(year)}`
-      case 'C':
-        return pad2(Math.floor(year / 100))
-      case 'd':
-        return pad2(day)
-      case 'D':
-        return `${pad2(month + 1)}/${pad2(day)}/${pad2(year % 100)}`
-      case 'F':
-        return `${pad4(year)}-${pad2(month + 1)}-${pad2(day)}`
-      case 'g':
-        return pad2(isoWeekParts(year, month, day)[0] % 100)
-      case 'G':
-        return pad4(isoWeekParts(year, month, day)[0])
-      case 'h':
-        return MONTH_NAMES[month] ?? ''
-      case 'H':
-        return pad2(hour)
-      case 'k':
-        return String(hour).padStart(2, ' ')
-      case 'l': {
-        const h12l = hour % 12 === 0 ? 12 : hour % 12
-        return String(h12l).padStart(2, ' ')
-      }
-      case 'n':
-        return '\n'
-      case 'P':
-        return hour < 12 ? 'am' : 'pm'
-      case 'q':
-        return String(Math.floor(month / 3) + 1)
-      case 'r': {
-        const h12r = hour % 12 === 0 ? 12 : hour % 12
-        return `${pad2(h12r)}:${pad2(minute)}:${pad2(second)} ${hour < 12 ? 'AM' : 'PM'}`
-      }
-      case 'R':
-        return `${pad2(hour)}:${pad2(minute)}`
-      case 't':
-        return '\t'
-      case 'U':
-        // Week of year, Sunday-first, week 00 before the first Sunday.
-        return pad2(Math.floor((dayOfYear(year, month, day) + 6 - dow) / 7))
-      case 'V':
-        return pad2(isoWeekParts(year, month, day)[1])
-      case 'W':
-        // Week of year, Monday-first.
-        return pad2(Math.floor((dayOfYear(year, month, day) + 6 - ((dow + 6) % 7)) / 7))
-      case 'x':
-        return `${pad2(month + 1)}/${pad2(day)}/${pad2(year % 100)}`
-      case 'X':
-        return `${pad2(hour)}:${pad2(minute)}:${pad2(second)}`
-      case 'I': {
-        const h12 = hour % 12 === 0 ? 12 : hour % 12
-        return pad2(h12)
-      }
-      case 'M':
-        return pad2(minute)
-      case 'm':
-        return pad2(month + 1)
-      case 'Y':
-        return pad4(year)
-      case 'y':
-        return pad2(year % 100)
-      case 'p':
-        return hour < 12 ? 'AM' : 'PM'
-      case 'S':
-        return pad2(second)
-      case 's':
-        return String(Math.floor(dt.getTime() / 1000))
-      case 'z':
-        return utc ? '+0000' : formatTZOffset(dt)
-      case 'Z':
-        return utc ? 'UTC' : ''
-      case 'e':
-        return String(day).padStart(2, ' ')
-      case 'T':
-        return `${pad2(hour)}:${pad2(minute)}:${pad2(second)}`
-      case 'j': {
-        const start = Date.UTC(year, 0, 0)
-        const diff = (utc ? dt.getTime() : Date.UTC(year, month, day)) - start
-        return String(Math.floor(diff / 86_400_000)).padStart(3, '0')
-      }
-      case 'w':
-        return String(dow)
-      case 'u':
-        return String(dow === 0 ? 7 : dow)
-      case '%':
-        return '%'
-      default:
-        return ''
-    }
-  })
-}
-
-function formatTZOffset(dt: Date): string {
-  const offsetMin = -dt.getTimezoneOffset()
-  const sign = offsetMin >= 0 ? '+' : '-'
-  const abs = Math.abs(offsetMin)
-  return `${sign}${pad2(Math.floor(abs / 60))}${pad2(abs % 60)}`
-}
-
-// RFC 5322 (email) date format — e.g. "Mon, 21 Apr 2026 06:34:55 +0000"
-function formatRFC5322(dt: Date, utc: boolean): string {
-  const dow = utc ? dt.getUTCDay() : dt.getDay()
-  const day = utc ? dt.getUTCDate() : dt.getDate()
-  const mon = utc ? dt.getUTCMonth() : dt.getMonth()
-  const year = utc ? dt.getUTCFullYear() : dt.getFullYear()
-  const hour = utc ? dt.getUTCHours() : dt.getHours()
-  const minute = utc ? dt.getUTCMinutes() : dt.getMinutes()
-  const second = utc ? dt.getUTCSeconds() : dt.getSeconds()
-  const tz = utc ? '+0000' : formatTZOffset(dt)
-  return `${DAY_NAMES[dow] ?? ''}, ${pad2(day)} ${MONTH_NAMES[mon] ?? ''} ${pad4(year)} ${pad2(hour)}:${pad2(minute)}:${pad2(second)} ${tz}`
-}
-
+// GNU `date`: the current moment, or the one `-d` names, rendered in the
+// zone the command runs in. The zone is `-u`'s UTC, else the TZ of the
+// command's own environment (`TZ=Asia/Hong_Kong date` and an exported TZ
+// alike, as GNU reads it), else the host's local zone. It is read from
+// `opts.env`, never from process state, so concurrent workspaces cannot
+// move each other's clock. `%Z` is tzdata's abbreviation (`HKT`), as GNU
+// prints it, read from a table generated off zoneinfo since Intl has
+// none; the Python twin reads zoneinfo itself. An operand without `+` sets
+// the clock, GNU's `MMDDhhmm[[CC]YY][.ss]`: mirage has no clock to set, so it
+// prints the date it names and refuses the setting, as GNU does for a user
+// without the privilege. Beside `-d` it is a usage error.
 function dateCommand(
   _accessor: Accessor,
   paths: PathSpec[],
   texts: string[],
   opts: CommandOpts,
 ): CommandFnResult {
-  if (texts.length > 1) throw extraOperandError(CommandName.DATE, texts[1] ?? '')
   const fl = new FlagView(opts.flags, specOf('date'))
-  const u = fl.asBool('u')
-  const d = fl.asStr('d') ?? null
-  // -I is short-only, so it lands on the disambiguated `args_I` dest
-  // (`AMBIGUOUS_NAMES`); a plain `I` key is one the parser never emits.
-  const argsI = fl.asBool('args_I')
-  const R = fl.asBool('R')
+  const u = fl.asBool('utc') || fl.asBool('universal')
+  const d = fl.asStr('date') ?? null
+  const formats = optionFormats(fl)
+  if (formats.length > 1) return multipleFormats()
+  if (texts.length > 1) throw extraOperandError(CommandName.DATE, texts[1] ?? '')
+  let setting = texts[0] ?? null
+  if (setting?.startsWith('+') === true) {
+    if (formats.length > 0) return multipleFormats()
+    formats.push(setting.slice(1))
+    setting = null
+  } else if (setting !== null && d !== null) {
+    throw lacksPlusError(setting)
+  }
+  const named = u ? UTC_ZONE : zoneFromEnv(opts.env)
+  const zone = named ?? LOCAL_ZONE
   let dt: Date
-  if (d !== null) {
-    const parsed = parseDateExpr(d, u)
-    if (parsed === null) {
-      // GNU's refusal, exit 1: a NaN render with exit 0 poisons whatever
-      // consumed it (the 0NaN-NaN-NaN corpus failure).
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr: ENC.encode(`date: invalid date '${d}'\n`) }),
-      ]
-    }
+  if (setting !== null) {
+    const placed = parsePosixTime(setting, zone)
+    if (placed === null) return invalidDate(setting)
+    dt = placed
+  } else if (d !== null && d.trim() === '') {
+    // GNU ACCEPTS an empty (or blank) expression, exit 0: gnulib's
+    // parse-datetime sees no component at all and falls through to "a date
+    // with no time", which is today at midnight. Measured on coreutils
+    // 9.4: `date -d ''` and `date -d '   '` both print today 00:00:00 in
+    // the command's zone.
+    const midnight = parseDateExpr(strftime(new Date(), '%Y-%m-%d', zone), zone)
+    // Today's own ISO date always parses; the fallback is for the type.
+    dt = midnight ?? new Date()
+  } else if (d !== null) {
+    const parsed = parseDateExpr(d, zone)
+    // GNU's refusal, exit 1: a NaN render with exit 0 poisons whatever
+    // consumed it (the 0NaN-NaN-NaN corpus failure).
+    if (parsed === null) return invalidDate(d)
     dt = parsed
   } else {
     dt = new Date()
   }
-  let fmt: string | null = null
-  for (const t of texts) {
-    if (t.startsWith('+')) {
-      fmt = t.slice(1)
-      break
-    }
-  }
-  let result: string
-  if (argsI) {
-    result = strftime(dt, '%Y-%m-%d', u)
-  } else if (R) {
-    result = formatRFC5322(dt, u)
-  } else if (fmt !== null) {
-    result = strftime(dt, fmt, u)
-  } else if (u) {
-    result = strftime(dt, '%a %b %d %H:%M:%S %Z %Y', u)
-  } else {
-    result = strftime(dt, '%a %b %d %H:%M:%S %Y', u)
-  }
-  return [ENC.encode(result + '\n'), new IOResult()]
+  const fmt = formats[0] ?? DEFAULT_FORMAT
+  const out = ENC.encode(strftime(dt, fmt, zone) + '\n')
+  if (setting !== null) return [out, new IOResult({ exitCode: 1, stderr: ENC.encode(CANNOT_SET) })]
+  return [out, new IOResult()]
 }
 
 export const GENERAL_DATE = command({
   name: 'date',
-  resource: null,
+  vfs: null,
   spec: specOf('date'),
   fn: dateCommand,
-  provision: pureProvision,
 })

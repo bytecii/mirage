@@ -18,7 +18,7 @@ import os
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.gmail import GmailConfig, GmailResource
+from mirage.vfs.gmail import GmailConfig, GmailVFS
 
 load_dotenv(".env.development")
 
@@ -27,12 +27,12 @@ config = GmailConfig(
     client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
     refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
 )
-resource = GmailResource(config=config)
+vfs = GmailVFS(config=config)
 
 
 async def show(ws, cmd):
     print(f"\n$ {cmd}")
-    r = await ws.execute(cmd)
+    r = await ws.shell(cmd)
     out = await r.stdout_str()
     err = await r.stderr_str()
     if out:
@@ -44,7 +44,7 @@ async def show(ws, cmd):
 
 
 async def main():
-    ws = Workspace({"/gmail": resource}, mode=MountMode.READ)
+    ws = Workspace({"/gmail": vfs}, mode=MountMode.READ)
 
     out, _, _ = await show(ws, "ls /gmail/INBOX/ | head -5")
     dates = [d for d in out.strip().split("\n") if d]
@@ -61,25 +61,30 @@ async def main():
     assert msg_file, f"date dir should contain a *.gmail.json msg: {entries}"
 
     await show(
-        ws, f'cat "/gmail/INBOX/{first_date}/{msg_file}" '
+        ws,
+        f'cat "/gmail/INBOX/{first_date}/{msg_file}" '
         "| jq '{subject, from: .from.email, "
-        "attachments: [.attachments[].filename]}'")
+        "attachments: [.attachments[].filename]}'",
+    )
 
     # Find a message with attachments: a date-dir entry without the
     # .gmail.json suffix is the attachment folder for the matching message,
     # so "<name>.gmail.json" is its message file.
     print("\n=== finding a message with attachments ===")
     for d in dates:
-        r = await ws.execute(f"ls /gmail/INBOX/{d}")
+        r = await ws.shell(f"ls /gmail/INBOX/{d}")
         items = [e for e in (await r.stdout_str()).strip().split("\n") if e]
-        att_dir = next((e for e in items if not e.endswith(".gmail.json")),
-                       None)
+        att_dir = next(
+            (e for e in items if not e.endswith(".gmail.json")), None
+        )
         if att_dir:
             print(f"FOUND: /gmail/INBOX/{d}/{att_dir}")
             await show(ws, f'ls "/gmail/INBOX/{d}/{att_dir}"')
             await show(
-                ws, f'cat "/gmail/INBOX/{d}/{att_dir}.gmail.json" '
-                "| jq '.attachments'")
+                ws,
+                f'cat "/gmail/INBOX/{d}/{att_dir}.gmail.json" '
+                "| jq '.attachments'",
+            )
             return
     print("(no attachments found in scanned dates)")
 

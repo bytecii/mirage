@@ -15,13 +15,14 @@
 import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
-from mirage.cache.context import invalidate_after_unlink
-from mirage.core.ssh.client import _abs
+from mirage.cache.context import invalidate_subtree
+from mirage.core.ssh.utils import join_root
 from mirage.types import PathSpec
 
 
-async def rename(accessor: SSHAccessor, src_spec: PathSpec,
-                 dst_spec: PathSpec) -> None:
+async def rename(
+    accessor: SSHAccessor, src_spec: PathSpec, dst_spec: PathSpec
+) -> None:
     src = src_spec.mount_path
     dst = dst_spec.mount_path
     config = accessor.config
@@ -29,15 +30,20 @@ async def rename(accessor: SSHAccessor, src_spec: PathSpec,
     # POSIX rename semantics (replace an existing destination); plain SFTP
     # rename refuses to overwrite, so prefer posix-rename@openssh.com.
     try:
-        await sftp.posix_rename(_abs(config, src), _abs(config, dst))
+        await sftp.posix_rename(
+            join_root(config.root, src), join_root(config.root, dst)
+        )
     except asyncssh.SFTPOpUnsupported:
         try:
-            await sftp.rename(_abs(config, src), _abs(config, dst))
+            await sftp.rename(
+                join_root(config.root, src), join_root(config.root, dst)
+            )
         except asyncssh.SFTPNoSuchFile:
             raise FileNotFoundError(src)
     except asyncssh.SFTPNoSuchFile:
         raise FileNotFoundError(src)
-    # The unlink flavor on dst: a rename destroys the destination's previous
-    # identity, so a replaced empty directory loses its cached listing too.
-    await invalidate_after_unlink(dst_spec)
-    await invalidate_after_unlink(src_spec)
+    # Both sides are subtree evictions: a rename destroys the destination's
+    # previous identity and relocates everything under the source, so a
+    # listing or body cached below either name is now stale.
+    await invalidate_subtree(dst_spec)
+    await invalidate_subtree(src_spec)

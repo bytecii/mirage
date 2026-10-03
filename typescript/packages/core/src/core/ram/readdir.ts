@@ -19,7 +19,7 @@ import { IndexEntry, type IndexCacheStore } from '../../cache/index/index.ts'
 import { ResourceType } from '../../cache/index/config.ts'
 import type { PathSpec } from '../../types.ts'
 import { readdirError } from '../../utils/errors.ts'
-import { norm } from './utils.ts'
+import { norm } from '../../utils/path.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 
 export async function readdir(
@@ -27,8 +27,13 @@ export async function readdir(
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<string[]> {
-  const virtual = path.pattern !== null ? path.directory : path.mountPath
-  const mountPrefix = mountPrefixOf(path.virtual, path.resourcePath)
+  // A pattern spec addresses the directory whose entries the glob filters,
+  // and the rest of this function works in mount-relative space, so the
+  // directory has to be read off `dir` rather than off the virtual
+  // `directory` string (python spells it the same way).
+  const target = path.pattern !== null ? path.dir : path
+  const virtual = target.mountPath
+  const mountPrefix = mountPrefixOf(target.virtual, target.vfsPath)
   // Canonical key: no trailing slash (except root), or the same dir
   // indexes under two keys and cache hits return doubled-slash entries.
   const virtualKey = rstripSlash(mountPrefix + virtual) || '/'

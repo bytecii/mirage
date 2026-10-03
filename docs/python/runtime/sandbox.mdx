@@ -1,46 +1,73 @@
 ---
-title: Sandbox
-description: Run captured lines whole inside a sandbox (Docker, smolvm, Daytona, or e2b) you provision yourself.
+title: Overview
+description: Run captured programs inside a sandbox (Docker, Apple Container, smolvm, Daytona, e2b, or any machine over SSH) you provision yourself.
 icon: server
 ---
 
-The `monty`, `wasi`, `sandlock`, and `local` runtimes run `python3` on your
-own machine. A **sandbox runtime** does the opposite: it takes a whole
-command line and runs it inside a separate machine, a local container or
+The `monty`, `wasi`, and `local` runtimes run `python3` on your
+own machine. A **sandbox runtime** does the opposite: it runs selected
+programs inside a separate machine, a local container or
 microVM or a cloud sandbox. Reach for it when a line needs a real OS, heavy
 packages, or a GPU that the in-process interpreters cannot give it.
 
-Four sandbox runtimes ship today, all with the same surface:
+Six sandbox runtimes ship today, all with the same surface:
 
 | Runtime | Connects to | Config |
 | --- | --- | --- |
-| `docker` | A container you started (`docker run`) | `container` |
-| `smolvm` | <img noZoom src="/images/smolvm-logo.svg" alt="" className="inline-block h-4 align-middle mr-1" />A [smolvm](https://smolmachines.com) microVM you started | `machine` |
-| `daytona` | A [Daytona](https://www.daytona.io) sandbox you created | `sandbox_id`, `api_key` |
-| `e2b` | An [e2b](https://e2b.dev) sandbox you created | `sandbox_id`, `api_key` |
+| [`docker`](/python/runtime/sandbox/docker) | A container you started (`docker run`) | `container` |
+| [`apple_container`](/python/runtime/sandbox/apple_container) | A container you started with Apple's [`container`](https://github.com/apple/container), or one per agent | `container`, `containers` |
+| [`smolvm`](/python/runtime/sandbox/smolvm) | A [smolvm](https://smolmachines.com) microVM you started | `machine` |
+| [`daytona`](/python/runtime/sandbox/daytona) | A [Daytona](https://www.daytona.io) sandbox you created | `sandbox_id`, `api_key` |
+| [`e2b`](/python/runtime/sandbox/e2b) | An [E2B](https://e2b.dev) sandbox you created | `sandbox_id`, `api_key` |
+| [`ssh`](/python/runtime/sandbox/ssh) | Any machine running sshd | `host`, `username`, `identity_file` |
 
-`docker` and `smolvm` run on your own machine, Daytona and e2b in the
-cloud. The isolation differs too: a container shares your kernel, while a
-smolvm microVM boots its own.
+`docker`, `apple_container` and `smolvm` run on your own machine, Daytona
+and e2b in the cloud, and `ssh` reaches anything you can already `ssh` into.
+The isolation differs too: a Docker container shares its host's kernel, an
+Apple Container and a smolvm microVM each boot their own, and an ssh machine
+is whatever machine you point it at.
+
+[Sandlock](/python/runtime/sandbox/sandlock) runs arbitrary commands on the
+local Linux host with Landlock and seccomp confinement. It uses the same
+shell and process execution API as smolvm.
+
 
 ## Routing: what goes to the sandbox
 
-A sandbox runtime does not claim every line. Each runtime **captures** a set
-of commands; a captured line runs in the sandbox, everything else stays on
-the local vfs. You list the runtimes in order, and `vfs` is the catch-all:
+Sandbox runtimes default to `captures: ["@external"]`: only program names
+Mirage does not resolve are delegated. Existing Mirage commands, pipes and
+redirects stay in the workspace.
 
 ```yaml
 runtimes:
-  - name: daytona
-    captures: ["python3", "pip"] # these run in the sandbox
-  - vfs                          # ls, grep, cat, ... stay local
+  - name: sandlock
+    captures: ["@external"] # optional: this is the sandbox default
 ```
 
-So `grep`, `cat`, and `ls` run locally as always, while `python3 train.py`
-runs on the cloud box. Mirage never creates, provisions, or deletes
-sandboxes: **you bring your own** (a running container, a live Daytona or
-E2B sandbox), the first captured line connects to it, and every captured
-line execs inside it verbatim.
+Named captures explicitly select a runtime for a program. For example,
+`captures: ["python3", "node", "@external"]` selects native interpreters and
+keeps the external fallback. Without those named captures, Mirage's
+interpreter commands keep their normal runtime bindings.
+Shell builtins such as `cd`, `export`, and `echo` stay in Mirage even when
+named in `captures`.
+
+A named capture is a program: `which gcc` prints `/usr/bin/gcc`, and that
+file's comment names the runtime it runs on. The `@external` fallback takes
+any word, so a name only the fallback would run has no file there: `which`,
+`command -v` and `type` report it missing, as bash does for a name its
+`command_not_found_handle` takes, and running it still delegates.
+
+`python3 job.py | grep error > /logs/errors` delegates only `python3`;
+Mirage executes `grep` and writes the VFS output. An explicit `captures: ["*"]`
+opts into delegating the entire shell line.
+
+A delegated program receives its words the way bash hands them over: every
+unquoted glob is expanded against the workspace first, whatever operand it
+fills, so `python3 job.py *.csv` runs `python3 job.py a.csv b.csv`, and a
+quoted or escaped glob stays literal. Command rules then judge that expanded
+argv: `grep *.txt` is refused when a match that grep reads as a file is protected.
+An interpreter's script is a file operand like any other, so `python3 job.py` is
+judged on `job.py` however it is spelled, and the words after it stay its argv.
 
 ## The workspace inside the sandbox
 
@@ -54,12 +81,13 @@ prefix:
 # sandbox.yaml, inside the sandbox
 mounts:
   /data:
-    resource: s3
+    vfs: s3
     config:
       bucket: my-bucket
       aws_access_key_id: ...
       aws_secret_access_key: ...
-    fuse: /data
+    backend: fuse
+    mountpoint: /data
 ```
 
 ```bash
@@ -79,6 +107,14 @@ mounts fails loud only when a path misses.
 This needs an image with `fuse3` and Mirage plus your backends installed
 (see [The sandbox image](#the-sandbox-image)).
 
+<Note>
+  The `ssh` provider can skip all of this when the files live on the ssh
+  machine itself: mount them over the ssh VFS at a prefix equal to
+  their remote absolute path, and captured lines open them natively with no
+  FUSE and no remote Mirage. See
+  [Skip the FUSE](/python/runtime/sandbox/ssh#skip-the-fuse) on the SSH page.
+</Note>
+
 ## Paths inside the sandbox
 
 Mirage rewrites nothing: the line, its cwd, and every path in it pass
@@ -97,6 +133,17 @@ always matches your code:
 docker build -f docker/sandbox/Dockerfile --target fuse -t mirage-python-fuse .
 ```
 
+<Note>
+  The shared image uses the Python Mirage CLI to serve workspace mounts
+  inside the sandbox. Your host application can use either SDK, including
+  TypeScript; it communicates with the sandbox through the runtime's
+  transport. The image's implementation and the host SDK are independent.
+
+  When building a custom image, install the programs your captured commands
+  need (for example, Node.js for `node`) and serve workspace mounts at the
+  same paths as the host workspace.
+</Note>
+
 By default it installs the `sandbox` extra, every mountable backend plus
 fuse. Narrow it to just the backends you use for a smaller image, or extend
 it as a base:
@@ -106,125 +153,17 @@ docker build -f docker/sandbox/Dockerfile --target fuse \
   --build-arg MIRAGE_EXTRAS=s3,postgres -t mirage-fuse-lean .
 ```
 
-The one image is the shared base for all three providers: run it directly
-under Docker, use it as a Daytona `image`/`snapshot` source, or as an e2b
-template base.
-
-## Docker
-
-Start the container yourself, provision the workspace inside it, then
-point `DockerRuntime` at it. Live FUSE mounts need `--cap-add SYS_ADMIN
---device /dev/fuse` (Linux hosts) and the fuse image:
-
-```bash
-docker run -d --cap-add SYS_ADMIN --device /dev/fuse \
-  --name my-sandbox mirage-python-fuse sleep infinity
-docker cp sandbox.yaml my-sandbox:/tmp/sandbox.yaml # or bake it into the image
-docker exec my-sandbox mirage workspace create /tmp/sandbox.yaml
-```
-
-```python
-from mirage import MountMode, Workspace
-from mirage.accessor.s3 import S3Config
-from mirage.resource.s3.s3 import S3Resource
-from mirage.runtime.sandbox.docker import DockerRuntime
-
-runtime = DockerRuntime(captures=["python3"],
-                        config={"container": "my-sandbox"})
-ws = Workspace({"/data": S3Resource(S3Config(bucket="my-bucket"))},
-               mode=MountMode.EXEC,
-               runtimes=[runtime, "vfs"])
-await ws.execute("python3 job.py", cwd="/data")
-```
-
-Every sandbox runtime takes a `config`: how to reach the sandbox. Each
-provider's config carries exactly the fields that provider needs, and an
-unknown field fails loud. The docker CLI is the transport (Docker Desktop,
-colima, or a podman alias), so there is no SDK and no daemon socket
-wiring; the container gets real stdin and separated stderr. Sizing, GPUs,
-networks, and binds are all yours: pass them to your own `docker run`.
-
-## <img noZoom src="/images/smolvm-logo.svg" alt="" className="inline-block h-5 align-middle mr-2" />smolvm
-
-[smolvm](https://smolmachines.com) boots a hardware-isolated microVM with
-its own guest kernel in under a second, on Hypervisor.framework (macOS),
-KVM (Linux), or WHP (Windows). Create and start the machine yourself,
-provision the workspace inside it, then name it:
-
-```bash
-smolvm machine create --net --name mirage-box --image my-mirage-image
-smolvm machine start --name mirage-box
-smolvm machine exec --name mirage-box -- mirage workspace create /tmp/sandbox.yaml
-```
-
-```python
-from mirage import MountMode, Workspace
-from mirage.runtime.sandbox.smolvm import SmolvmRuntime
-
-runtime = SmolvmRuntime(captures=["python3"],
-                        config={"machine": "mirage-box"})
-ws = Workspace({"/data": ...}, mode=MountMode.EXEC,
-               runtimes=[runtime, "vfs"])
-await ws.execute("python3 job.py", cwd="/data")
-```
-
-The smolvm CLI is the transport, so there is no SDK dependency and no
-extra: the machine gets real stdin and separated stderr, exactly as the
-container does. Host directories reach the guest only if you passed them
-at boot (`--volume`), because the guest runs its own kernel and sees
-nothing of your filesystem otherwise.
-
-Mirage never starts the machine for you. `smolvm machine exec` would boot
-a stopped one on its own, so the first captured line probes `machine
-status` instead and refuses anything but `running`, naming the state:
-`stopped` and `created` point you at `machine start`, `unreachable` means
-the VMM is alive but the guest agent stopped answering, and `frozen` means
-the machine is a fork base whose clones copy-on-write from it, so you want
-a clone rather than the base.
-
-<Note>
-  A machine is one guest. Concurrent captured lines pointed at the same
-  `machine` share its filesystem and process table, so the VM boundary
-  isolates the workload from your host, not two workloads from each
-  other. Give each tenant its own machine when that matters.
-</Note>
-
-## Daytona and e2b
-
-Create the sandbox with the provider's own tooling (dashboard, CLI, or
-SDK), boot it from an image or snapshot carrying the fuse image, provision
-the workspace inside it (the provider's exec or a terminal session), and
-hand mirage the id:
-
-```yaml
-runtimes:
-  - name: daytona
-    captures: ["python3", "pip"]
-    config:
-      sandbox_id: ${DAYTONA_SANDBOX_ID}
-      api_key: ${DAYTONA_API_KEY}
-  - vfs
-```
-
-They need the matching extra:
-
-```bash
-pip install mirage-ai[daytona]   # or mirage-ai[e2b]
-```
-
-Sizing, GPUs, snapshots, and lifecycle (idle-stop, auto-delete) are all
-provider concerns you set when you create the sandbox; mirage never
-touches them. Closing the workspace releases the SDK client and leaves the
-sandbox running. A
-[worked Daytona example](https://github.com/strukto-ai/mirage/tree/main/examples/python/runtimes/daytona)
-covers the one-time snapshot bake, sandbox creation, in-sandbox
-provisioning, and a full read/write round trip.
+The one image is the shared base for every machine provider: run it directly
+under Docker, Apple's `container` (build it with `container build`, same
+flags) or smolvm, use it as a Daytona `image`/`snapshot` source, or use it as
+an E2B template base. Continue with the provider page in the Sandbox
+sidebar for connection and configuration details.
 
 ## Selecting in YAML
 
 Sandbox runtimes are ordinary `runtimes` entries: a name, its captures, and
 a `config` block describing the machine (mirroring a mount's `config`
-block), with `vfs` as the in-process catch-all. Only the selected runtime
+block), with `workspace` as the in-process catch-all. Only the selected runtime
 consumes its entry, so one file stays portable:
 
 ```yaml
@@ -233,11 +172,10 @@ runtimes:
     captures: ["python3"]
     config:
       container: my-sandbox # started with your own `docker run`
-  - vfs
-
+  - workspace
 mounts:
   /data:
-    resource: s3
+    vfs: s3
     config:
       bucket: ${AWS_S3_BUCKET}
       region: ${AWS_DEFAULT_REGION}
@@ -253,31 +191,18 @@ that exceeds `timeout_seconds` answers exit 124; `max_bytes` and `max_lines`
 cap its output the same way. There is no sandbox-specific limit surface.
 
 <Warning>
-**In a sandbox a limit bounds the wait, not the run.** Exit 124 means
-mirage stopped waiting; the command keeps going inside the sandbox. Mirage
-holds only a client, and the process lives in the sandbox's own namespace,
-so dropping that client never signals it — a `docker exec` command is still
-burning CPU after its client is killed. Only the provider's own timeout
-reclaims it, and mirage does not set one today:
+E2B cancellation and command timeouts attempt to kill the command and
+disconnect its output stream. Descendant processes may survive.
 
-- **Docker** has no server-side timeout: a runaway runs until you stop it or
-  the container exits.
-- **e2b** applies its SDK default of 60 seconds, which cuts both ways — a
-  runaway stops there, and so does a legitimate build or query that needs
-  longer.
-- **Daytona** defaults to no timeout, so a runaway keeps running, and
-  billing, until you stop it.
-
-Cancelling a line has the same shape: it releases mirage's side and leaves
-the sandbox side running. Treat `command_limits` here as a bound on
-waiting rather than on execution, and set a lifecycle limit (idle-stop,
-auto-delete) on the sandbox itself.
+Other providers may leave remote commands running after Mirage stops
+waiting. Provider timeouts and sandbox lifecycle limits still apply;
+configure sandbox creation and cleanup in your application.
 </Warning>
 
-## Serving as the policy engine
+## Evaluating route-policy scripts
 
-A sandbox runs whole lines; it does not evaluate expressions, so it cannot
-run [policy scripts](/home/policy-engine). To make one eligible, subclass it
+A sandbox runs programs; it does not evaluate expressions, so it cannot
+run [route-policy scripts](/home/route-policy). To make one eligible, subclass it
 and implement `eval` with your own transport. The
 [docker eval examples](https://github.com/strukto-ai/mirage/tree/main/examples)
 do exactly that by piping a small harness to the container's `python3 -`.

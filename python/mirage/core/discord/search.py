@@ -15,7 +15,9 @@
 from collections.abc import AsyncIterator
 from typing import Any
 
+from mirage.core.api.client import SessionArg
 from mirage.core.discord.config import DiscordConfig
+from mirage.core.discord.entry import snowflake_to_iso
 from mirage.core.discord.paginate import offset_pages
 
 PAGE_SIZE = 25
@@ -40,6 +42,7 @@ async def search_guild_stream(
     query: str,
     channel_id: str | None = None,
     max_pages: int | None = None,
+    session: SessionArg = None,
 ) -> AsyncIterator[list[dict[str, Any]]]:
     """Stream guild-search pages, one flattened batch per round-trip.
 
@@ -49,6 +52,7 @@ async def search_guild_stream(
         query (str): search text (content match).
         channel_id (str | None): filter to specific channel.
         max_pages (int | None): cap on pages fetched.
+        session (SessionArg): pool or live session to ride.
 
     Yields:
         list[dict]: matched message dicts per page (flattened from
@@ -58,13 +62,14 @@ async def search_guild_stream(
     if channel_id:
         base_params["channel_id"] = channel_id
     async for raw in offset_pages(
-            config,
-            f"/guilds/{guild_id}/messages/search",
-            base_params=base_params,
-            items_path=("messages", ),
-            total_key="total_results",
-            page_size=PAGE_SIZE,
-            max_pages=max_pages,
+        config,
+        f"/guilds/{guild_id}/messages/search",
+        base_params=base_params,
+        items_path=("messages",),
+        total_key="total_results",
+        page_size=PAGE_SIZE,
+        max_pages=max_pages,
+        session=session,
     ):
         flat = _flatten_contexts(raw)
         if flat:
@@ -77,6 +82,7 @@ async def search_guild(
     query: str,
     channel_id: str | None = None,
     limit: int = 100,
+    session: SessionArg = None,
 ) -> list[dict[str, Any]]:
     """Search messages in a guild, optionally filtered to one channel.
 
@@ -86,12 +92,15 @@ async def search_guild(
         query (str): search text (content match).
         channel_id (str | None): filter to specific channel.
         limit (int): max results to return.
+        session (SessionArg): pool or live session to ride.
 
     Returns:
         list[dict]: matching messages sorted oldest-first.
     """
     messages: list[dict[str, Any]] = []
-    async for page in search_guild_stream(config, guild_id, query, channel_id):
+    async for page in search_guild_stream(
+        config, guild_id, query, channel_id, session=session
+    ):
         for msg in page:
             messages.append(msg)
             if len(messages) >= limit:
@@ -100,3 +109,42 @@ async def search_guild(
             break
     messages.sort(key=lambda m: int(m.get("id", 0)))
     return messages[:limit]
+
+
+def format_grep_results(
+    messages: list[dict[str, Any]],
+    prefix: str,
+    guild_dirname: str,
+    channel_names: dict[str, str] | None = None,
+) -> list[str]:
+    """Format guild-search hits as grep-style lines.
+
+    Args:
+        messages (list[dict]): Discord message dicts from search_guild.
+        prefix (str): mount prefix, e.g. ``"/discord"``.
+        guild_dirname (str): vfs-safe guild dir name.
+        channel_names (dict[str, str] | None): channel_id → workspace name.
+
+    Returns:
+        list[str]: grep-style lines, one per matched message.
+    """
+    names = channel_names or {}
+    lines: list[str] = []
+    for msg in messages:
+        ts = (msg.get("timestamp") or "")[:10]
+        if not ts:
+            # A hit without a timestamp still has a snowflake id, which
+            # encodes the creation day readdir buckets it under.
+            iso = snowflake_to_iso(str(msg.get("id") or ""))
+            ts = iso[:10] if iso else ""
+        ch_id = msg.get("channel_id", "")
+        ch_name = names.get(ch_id, ch_id)
+        author = msg.get("author", {}).get("username", "?")
+        content = msg.get("content", "").replace("\n", " ")
+        path = (
+            f"{prefix}/{guild_dirname}/channels/{ch_name}/{ts}/chat.jsonl"
+            if ts
+            else f"{prefix}/{guild_dirname}/channels/{ch_name}"
+        )
+        lines.append(f"{path}:[{author}] {content}")
+    return lines

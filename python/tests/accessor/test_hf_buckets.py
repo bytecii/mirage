@@ -14,40 +14,9 @@
 
 import pytest
 
-from mirage.accessor.hf_buckets import HfBucketsAccessor, HfBucketsConfig
-from mirage.resource.secrets import reveal_secret
-
-
-def test_config_defaults():
-    cfg = HfBucketsConfig(bucket="myorg/mybkt")
-    assert cfg.bucket == "myorg/mybkt"
-    assert cfg.namespace == "myorg"
-    assert cfg.bucket_name == "mybkt"
-    assert cfg.token is None
-    assert cfg.endpoint == "https://huggingface.co"
-    assert cfg.timeout == 30
-    assert cfg.key_prefix is None
-
-
-def test_config_immutable():
-    cfg = HfBucketsConfig(bucket="myorg/mybkt")
-    with pytest.raises(Exception):
-        cfg.bucket = "other/other"
-
-
-def test_config_rejects_bad_bucket_format():
-    with pytest.raises(ValueError):
-        HfBucketsConfig(bucket="just-one-segment")
-    with pytest.raises(ValueError):
-        HfBucketsConfig(bucket="too/many/slashes")
-    with pytest.raises(ValueError):
-        HfBucketsConfig(bucket="/leading")
-
-
-def test_config_token_secret():
-    cfg = HfBucketsConfig(bucket="myorg/mybkt", token="hf_abc123")
-    assert reveal_secret(cfg.token) == "hf_abc123"
-    assert "hf_abc123" not in repr(cfg)
+from mirage.accessor.hf_buckets import HfBucketsAccessor
+from mirage.core.hf_hub.client import stall_timeout
+from mirage.vfs.hf_buckets.config import HfBucketsConfig
 
 
 def test_accessor_holds_config():
@@ -62,6 +31,50 @@ def test_bucket_uri():
     assert acc.bucket_uri == "hf://buckets/myorg/mybkt"
 
 
-def test_key_prefix_normalized():
-    cfg = HfBucketsConfig(bucket="myorg/mybkt", key_prefix="/data/sub/")
-    assert cfg.key_prefix == "data/sub/"
+@pytest.mark.asyncio
+async def test_the_accessor_owns_a_pool_that_close_drains():
+    acc = HfBucketsAccessor(HfBucketsConfig(bucket="org/b"))
+    session = acc.pool.get()
+    assert not session.closed
+    await acc.close()
+    assert session.closed
+    # A VFS closes its accessor once; a CLI verb may close one it built
+    # again, which must be harmless.
+    await acc.close()
+
+
+def test_bucket_path_applies_the_key_prefix_once():
+    acc = HfBucketsAccessor(
+        HfBucketsConfig(bucket="org/b", key_prefix="/lead/trail/")
+    )
+    assert acc.bucket_path("a.txt") == "lead/trail/a.txt"
+    assert acc.bucket_path("/sub/a.txt") == "lead/trail/sub/a.txt"
+    assert (
+        HfBucketsAccessor(HfBucketsConfig(bucket="org/b")).bucket_path(
+            "/a.txt"
+        )
+        == "a.txt"
+    )
+    # opendal normalizes its root's empty segments away and the Hub matches
+    # paths exactly, so the direct calls have to agree with the listing.
+    assert (
+        HfBucketsAccessor(
+            HfBucketsConfig(bucket="org/b", key_prefix="a//b")
+        ).bucket_path("/x.txt")
+        == "a/b/x.txt"
+    )
+    assert (
+        HfBucketsAccessor(
+            HfBucketsConfig(bucket="org/b", key_prefix="/")
+        ).bucket_path("/x.txt")
+        == "x.txt"
+    )
+
+
+def test_the_pool_waits_the_configured_timeout_without_progress():
+    assert HfBucketsAccessor(
+        HfBucketsConfig(bucket="o/b")
+    ).pool._timeout == stall_timeout(30)
+    assert HfBucketsAccessor(
+        HfBucketsConfig(bucket="o/b", timeout=5)
+    ).pool._timeout == stall_timeout(5)

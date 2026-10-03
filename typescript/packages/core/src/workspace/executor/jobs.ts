@@ -12,24 +12,63 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ExecutionScope } from '../execution.ts'
+import type { SharedInput } from '../../io/async_line_iterator.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { IOResult } from '../../io/types.ts'
 import { concat } from '../../io/cachable_iterator.ts'
-import { CommandTimeoutError } from '../../commands/builtin/utils/limit.ts'
-import type { CallStack } from '../../shell/call_stack.ts'
-import { ExitSignal } from '../../shell/errors.ts'
+import { CommandTimeoutError } from '../../commands/errors.ts'
+import { CallStack } from '../../shell/call_stack.ts'
+import { FORK_FAILED, FORK_FAILED_STATUS } from '../../shell/constants.ts'
+import { ExitSignal, ReturnSignal } from '../../shell/errors.ts'
+import { isBackgrounded } from '../../shell/helpers.ts'
 import { type Job, JobStatus, type JobTable } from '../../shell/job_table/index.ts'
+import { PipeConsole } from '../../shell/console/pipe.ts'
 import { Channel, type JobConsole } from '../../shell/console/index.ts'
-import { runWithSession } from '../../context/session_context.ts'
+import { isProgramInvocation, runWithSession } from '../../context/session_context.ts'
 import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
-import { mergeSignals } from '../abort.ts'
+import { abortable, mergeSignals } from '../abort.ts'
 import type { SessionView } from '../../ops/types.ts'
-import type { Session } from '../session/session.ts'
+import type { Decisions } from '../../policy/decisions.ts'
+import type { HandOff } from '../../policy/types.ts'
+import type { ProcessInfo, ProcessView } from '../../process/types.ts'
+import type { SessionState } from '../session/session.ts'
+import { occurrenceOf } from '../node/occurrence.ts'
 import { scanOptions } from './builtins/getopt.ts'
+import { failedRead, statementStdin } from './statement.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { ExecutionNode } from '../types.ts'
-import { finishShell } from './traps.ts'
-import type { ExecuteFn, ExecuteNodeFn, ExecutionResult } from './types.ts'
+import { inheritExitTrap } from './traps.ts'
+
+/** Per-call overrides a caller can layer onto the walker's deps. */
+export interface ExecuteNodeOpts {
+  /** @internal Scheduling scope; background jobs create their own. */
+  executionScope?: ExecutionScope
+  sink?: JobConsole
+  signal?: AbortSignal
+  /** The hand-off the subtree runs on: a background job's own. */
+  handed?: HandOff
+  /**
+   * The node is the whole of a child shell (a background job), which runs
+   * its EXIT action when the node ends.
+   */
+  endsShell?: boolean
+  /**
+   * False leaves what expanding the node printed to the caller, which
+   * routes it around the node's redirects.
+   */
+  ownDiagnostics?: boolean
+}
+
+export type ExecuteNodeFn = (
+  node: TSNodeLike,
+  session: SessionState,
+  stdin: ByteSource | null,
+  callStack: CallStack | null,
+  opts?: ExecuteNodeOpts,
+) => Promise<[ByteSource | null, IOResult, ExecutionNode]>
+
+export type JobHandlerResult = [ByteSource | null, IOResult, ExecutionNode]
 
 /**
  * Send a command's output to a console as chunks arrive.
@@ -37,7 +76,8 @@ import type { ExecuteFn, ExecuteNodeFn, ExecutionResult } from './types.ts'
  * Consuming the stream piece by piece rather than materializing it whole
  * is what lets a reader watch a running job. A command that computes its
  * output eagerly still lands in one chunk, because there was nothing to
- * observe before it finished.
+ * observe before it finished. A pipe is drained before the next chunk is
+ * pulled, so a reader that closed stops the source before it fetches more.
  */
 export async function pump(
   console_: JobConsole,
@@ -51,23 +91,68 @@ export async function pump(
   }
   for await (const chunk of stream) {
     if (chunk.byteLength > 0) await console_.emit(channel, chunk)
+    if (!(console_ instanceof PipeConsole)) continue
+    await console_.drain()
+    if (console_.closedReader) return
   }
+}
+
+/**
+ * Write a finished statement's returned output to a sink, its stdout before
+ * its stderr, since one command keeps no order between them; what it already
+ * wrote there as it ran (a function body, a redirected group) came first. A
+ * read its stream fails is the statement's own failure (`failedRead`). The
+ * result carries no output, so nothing lands twice. Mirrors Python's drained.
+ */
+export async function drained(
+  sink: JobConsole,
+  stdout: ByteSource | null,
+  io: IOResult,
+  execNode: ExecutionNode,
+): Promise<[null, IOResult, ExecutionNode]> {
+  try {
+    await pump(sink, Channel.STDOUT, stdout)
+  } catch (err) {
+    await failedRead(io, err, execNode)
+  }
+  const stderr = await io.materializeStderr()
+  if (stderr.byteLength > 0) {
+    await sink.emit(Channel.STDERR, stderr)
+    io.stderr = null
+  }
+  return [null, io, execNode]
 }
 
 export async function handleBackground(
   executeNode: ExecuteNodeFn,
   left: TSNodeLike,
   right: TSNodeLike | null,
-  session: Session,
+  session: SessionState,
   jobTable: JobTable,
   agentId: string | null,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
-  executeFn?: ExecuteFn,
-): Promise<ExecutionResult> {
+  // The line's hand-off and the ledger it lives in. The claims the
+  // line's pass made for the commands inside the job leave that
+  // hand-off for one of the job's own before the job starts
+  // (`Decisions.split`): its gates run after the line has returned, and
+  // its grants have to stay reserved through the line's end whichever
+  // way the line ends, a release for a question left waiting included.
+  // The job's whole subtree runs on that hand-off, the lines it
+  // evaluates included (the walker binds it into their door), and the
+  // job revokes it when it ends.
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
+): Promise<JobHandlerResult> {
   const bgSession = session.fork()
-  bgSession.exitTrapInherited = true
-  bgSession.evalDepth = 1
+  inheritExitTrap(bgSession)
+  // A job is a child shell outside every loop: `{ break; } &` in a loop
+  // refuses, as bash's does.
+  const bgCallStack = (callStack ?? new CallStack()).fork(false)
+  const jobHanded =
+    handed !== null && decisions !== null
+      ? decisions.split(session.sessionId, handed, occurrenceOf(left, handed))
+      : null
 
   const abort = new AbortController()
   // `kill %n` aborts this controller; the signal rides the forked
@@ -81,19 +166,21 @@ export async function handleBackground(
       let stdout: ByteSource | null
       let io: IOResult
       let execNode: ExecutionNode
-      let timedOut = false
       try {
         // The sink is what makes compound bodies stream: each statement
         // writes as it finishes rather than the whole construct landing
         // at the end. The signal is what makes `kill` able to stop the
         // job at all, since a promise cannot be cancelled.
-        ;[stdout, io, execNode] = await executeNode(left, bgSession, null, callStack, {
+        const opts: ExecuteNodeOpts = {
           sink: console_,
           signal: abort.signal,
-        })
+          executionScope: new ExecutionScope(),
+          endsShell: true,
+        }
+        if (jobHanded !== null) opts.handed = jobHanded
+        ;[stdout, io, execNode] = await executeNode(left, bgSession, null, bgCallStack, opts)
       } catch (err) {
         if (err instanceof CommandTimeoutError) {
-          timedOut = true
           const msg = new TextEncoder().encode(`${err.message}\n`)
           stdout = new Uint8Array()
           io = new IOResult({ exitCode: 124, stderr: msg })
@@ -107,12 +194,17 @@ export async function handleBackground(
             stderr: err.stderr,
             exitCode: err.containedCode,
           })
+        } else if (err instanceof ReturnSignal) {
+          stdout = err.stdout
+          io = new IOResult({ exitCode: err.exitCode, stderr: err.stderr })
+          execNode = new ExecutionNode({
+            command: cmdStrInner,
+            stderr: err.stderr,
+            exitCode: err.exitCode,
+          })
         } else {
           throw err
         }
-      }
-      if (!timedOut) {
-        ;[stdout, io, execNode] = await finishShell(executeFn, bgSession, [stdout, io, execNode])
       }
       // Drained inside the rebind: pumping the stream can still run
       // ops that read the ambient session.
@@ -123,24 +215,48 @@ export async function handleBackground(
       }
       return [io, execNode]
     }
-    // Bind the fork where the runtime isolates concurrent async contexts.
-    // Browser nested evaluations carry their Session explicitly; rebinding
-    // the fallback global slot here would expose the fork to the foreground.
-    return asyncContextIsolatesTasks ? runWithSession(bgSession, body) : body()
+    // Task-local bindings keep op doors and host callbacks in the job's
+    // fork. The fallback cannot attribute ambient reads to a task, so
+    // it keeps the outer binding; nested shell evaluations carry the
+    // walker's exact session explicitly on both runtimes.
+    try {
+      return await (asyncContextIsolatesTasks ? runWithSession(bgSession, body) : body())
+    } finally {
+      if (jobHanded !== null && decisions !== null) {
+        await decisions.revoke(session.sessionId, jobHanded)
+      }
+    }
   }
 
   const cmdStr = left.text
   // Non-interactive bash announces nothing on launch ("[1] <pid>" is
   // interactive-only); the job stays discoverable via $! and `jobs`.
-  const job = jobTable.submit({
-    command: cmdStr,
-    run: runBg,
-    abort,
-    cwd: bgSession.cwd,
-    agent: agentId ?? '',
-    sessionId: session.sessionId,
-  })
-  session.lastBgJobId = job.id
+  let job: Job
+  try {
+    job = jobTable.submit({
+      command: cmdStr,
+      run: runBg,
+      abort,
+      cwd: bgSession.cwd,
+      agent: agentId ?? '',
+      sessionId: session.sessionId,
+      parentPid: session.processId,
+      limit: session.processes.max,
+    })
+  } catch (err) {
+    // A submission that fails (a console the table cannot build, a
+    // session at its process cap) starts no runner, so nothing would ever
+    // revoke the job's hand-off: its grants would stay reserved for good,
+    // neither spent nor on offer to any later line.
+    if (jobHanded !== null && decisions !== null) {
+      await decisions.revoke(session.sessionId, jobHanded)
+    }
+    if ((err as { code?: unknown }).code === 'EAGAIN')
+      throw new ExitSignal(FORK_FAILED_STATUS, new TextEncoder().encode(FORK_FAILED))
+    throw err
+  }
+  bgSession.processId = job.process?.info.pid ?? null
+  session.lastBgJobId = job.pid
 
   if (right === null) {
     const tree = new ExecutionNode({
@@ -161,11 +277,57 @@ export async function handleBackground(
   return [rightStdout, rightIo, tree]
 }
 
+/**
+ * Run one statement of a compound body, as a job when it ends in `&`.
+ *
+ * The program loop and the subshell body read the `&` off the token
+ * stream themselves; a loop body, an if/case arm, a brace group or a
+ * function body holds named nodes only, so the statement is asked about
+ * its own terminator. The launch is a statement in its own right and
+ * answers with status 0, as in bash, so `false &` inside a body trips
+ * neither `$?` nor `set -e`. A null `jobTable` means the caller wired no
+ * job plane, which is a programming error once a `&` shows up, not a
+ * reason to run it inline. `bound` is `fd0Binding` as the body started,
+ * so an `exec <` in it replaces `stdin` for the statements after it; a
+ * job still gets the body's own stdin.
+ */
+export function runStatement(
+  executeNode: ExecuteNodeFn,
+  node: TSNodeLike,
+  session: SessionState,
+  stdin: ByteSource | null,
+  bound: readonly [SharedInput | null, boolean],
+  callStack: CallStack | null,
+  jobTable: JobTable | null,
+  agentId: string | null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
+): Promise<JobHandlerResult> {
+  if (!isBackgrounded(node)) {
+    return executeNode(node, session, statementStdin(session, stdin, bound), callStack)
+  }
+  if (jobTable === null) {
+    throw new Error(`\`${node.text} &\` needs a job table; none was wired`)
+  }
+  return handleBackground(
+    executeNode,
+    node,
+    null,
+    session,
+    jobTable,
+    agentId,
+    stdin,
+    callStack,
+    handed,
+    decisions,
+  )
+}
+
 const WAIT_USAGE = 'wait: usage: wait [-fn] [-p var] [id ...]'
 const DISOWN_USAGE = 'disown: usage: disown [-h] [-ar] [jobspec ... | pid ...]'
 const JOB_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-function jobResult(cmdStr: string, msg: string, code: number): ExecutionResult {
+function jobResult(cmdStr: string, msg: string, code: number): JobHandlerResult {
   const err = new TextEncoder().encode(msg)
   return [
     null,
@@ -175,46 +337,60 @@ function jobResult(cmdStr: string, msg: string, code: number): ExecutionResult {
 }
 
 /**
- * The job a `wait`/`disown` operand names, or bash's refusal. A `%N`
- * spec naming no job is `no such job`; a bare number is a pid in bash,
- * and mirage's `$!` yields the job id, so an unknown one is bash's `pid
- * N is not a child of this shell`. Anything else is `not a pid or valid
- * job spec`.
+ * The job list a builtin reads: the calling session's, or the shared
+ * empty id when it runs with no session (a bare table in a test).
  */
-function resolveSpec(jobTable: JobTable, spec: string): [Job | null, string] {
+function sessionOf(session: SessionState | null): string {
+  return session?.sessionId ?? ''
+}
+
+/** The managed runners `ps` and numeric `kill` reach, scoped by the session's profile. */
+function processView(jobTable: JobTable, session: SessionState | null): ProcessView {
+  return session === null
+    ? jobTable.processes.view('')
+    : jobTable.processes.view(session.sessionId, () => session.processes)
+}
+
+/** The job whose number is `jobId`, the one `%N` names. */
+function jobNumbered(jobs: readonly Job[], jobId: number): Job | null {
+  return jobs.find((j) => j.id === jobId) ?? null
+}
+
+/**
+ * The job a `wait`/`disown` operand names, or bash's refusal. A `%N`
+ * spec naming no job is `no such job`; a bare number is a managed PID,
+ * also returned by `$!`, so an unknown one is `pid N is not a child of
+ * this shell`. Anything else is `not a pid or valid job spec`.
+ */
+function resolveSpec(jobs: readonly Job[], spec: string): [Job | null, string] {
   if (spec.startsWith('%')) {
     const raw = spec.slice(1)
-    const job = /^[0-9]+$/.test(raw) ? jobTable.get(Number(raw)) : null
+    const job = /^[0-9]+$/.test(raw) ? jobNumbered(jobs, Number(raw)) : null
     return [job, job !== null ? '' : `${spec}: no such job`]
   }
   if (/^[0-9]+$/.test(spec)) {
-    const job = jobTable.get(Number(spec))
+    const job = jobs.find((j) => j.pid === Number(spec)) ?? null
     return [job, job !== null ? '' : `pid ${spec} is not a child of this shell`]
   }
   return [null, `\`${spec}': not a pid or valid job spec`]
 }
 
 /** Block until the first of several jobs ends, and return it. */
-async function waitFirst(jobTable: JobTable, jobs: Job[], signal?: AbortSignal): Promise<Job> {
+async function waitFirst(jobTable: JobTable, jobs: Job[]): Promise<Job> {
   for (const job of jobs) {
-    if (job.status !== JobStatus.RUNNING) return await jobTable.wait(job.id, signal)
+    if (job.status !== JobStatus.RUNNING) return await jobTable.wait(job.id, job.sessionId)
   }
-  const abort = new AbortController()
-  const waiting = mergeSignals(signal, abort.signal)
-  try {
-    return await Promise.race(jobs.map(async (job) => await jobTable.wait(job.id, waiting)))
-  } finally {
-    abort.abort()
-  }
+  const races = jobs.map(async (job) => await jobTable.wait(job.id, job.sessionId))
+  return await Promise.race(races)
 }
 
 /** Report one finished job's output and status, and reap it. */
-async function adopt(jobTable: JobTable, job: Job, cmdStr: string): Promise<ExecutionResult> {
+async function adopt(jobTable: JobTable, job: Job, cmdStr: string): Promise<JobHandlerResult> {
   const stdout = await job.console.snapshot(Channel.STDOUT)
   const stderr = await job.console.snapshot(Channel.STDERR)
   // Reaped like GNU bash reaps a job waited on by id, so a later bare
   // `wait` does not adopt this console a second time.
-  jobTable.reap(job.id)
+  jobTable.reap(job.id, job.sessionId)
   const io = new IOResult({
     exitCode: job.exitCode,
     stderr: stderr.byteLength > 0 ? stderr : null,
@@ -233,18 +409,17 @@ async function adopt(jobTable: JobTable, job: Job, cmdStr: string): Promise<Exec
  * none is (which is the bare form, since it reports no one job); `-f` is
  * accepted, since a mirage job cannot stop, only end.
  *
- * Deliberate divergence: bash stores a PID in `-p`'s variable. A mirage
- * job is a coroutine with no OS process, so what goes there is the job
- * id, the same number `%N` and `jobs` already name.
+ * `-p` stores the managed PID, matching `$!` and `jobs -p`.
  */
 export async function handleWait(
   jobTable: JobTable,
   parts: string[],
-  _session: Session | null = null,
+  session: SessionState | null = null,
   view: SessionView | null = null,
   signal?: AbortSignal,
-): Promise<ExecutionResult> {
+): Promise<JobHandlerResult> {
   const cmdStr = parts.join(' ')
+  const sid = sessionOf(session)
   let nextJob = false
   let varName: string | null = null
   const specs: string[] = []
@@ -303,8 +478,9 @@ export async function handleWait(
   }
   const errors: string[] = []
   const picked: Job[] = []
+  const visible = jobTable.listJobs(sid)
   for (const spec of specs) {
-    const [job, refusal] = resolveSpec(jobTable, spec)
+    const [job, refusal] = resolveSpec(visible, spec)
     if (job === null) {
       errors.push(`bash: wait: ${refusal}`)
       continue
@@ -314,7 +490,7 @@ export async function handleWait(
   const errText = errors.length > 0 ? errors.join('\n') + '\n' : ''
   const errBytes = errText !== '' ? new TextEncoder().encode(errText) : null
   if (nextJob) {
-    const candidates = specs.length > 0 ? picked : jobTable.listJobs()
+    const candidates = specs.length > 0 ? picked : visible
     if (candidates.length === 0) {
       return [
         null,
@@ -322,8 +498,8 @@ export async function handleWait(
         new ExecutionNode({ command: cmdStr, exitCode: 127 }),
       ]
     }
-    const job = await waitFirst(jobTable, candidates, signal)
-    if (varName !== null && view !== null) await view.set(varName, String(job.id))
+    const job = await abortable(waitFirst(jobTable, candidates), signal)
+    if (varName !== null && view !== null) await view.set(varName, String(job.pid))
     const [stdout, io, node] = await adopt(jobTable, job, cmdStr)
     if (errBytes !== null) {
       const prior = io.stderr instanceof Uint8Array ? io.stderr : new Uint8Array()
@@ -338,15 +514,15 @@ export async function handleWait(
     // by job id, because jobs finish concurrently and completion order
     // is not reproducible. Reaped afterwards so a second `wait` does not
     // print the same output twice.
-    await jobTable.waitAll(signal)
-    const finished = jobTable.listJobs().sort((a, b) => a.id - b.id)
+    await abortable(jobTable.waitAll(sid), signal)
+    const finished = jobTable.listJobs(sid).sort((a, b) => a.id - b.id)
     const outs: Uint8Array[] = []
     const errs: Uint8Array[] = []
     for (const job of finished) {
       outs.push(await job.console.snapshot(Channel.STDOUT))
       errs.push(await job.console.snapshot(Channel.STDERR))
     }
-    jobTable.popCompleted()
+    jobTable.popCompleted(sid)
     const out = concat(outs)
     const err = concat(errs)
     return [
@@ -367,7 +543,7 @@ export async function handleWait(
   let lastCode = 0
   let lastJob: Job | null = null
   for (const job of picked) {
-    const finished = await jobTable.wait(job.id, signal)
+    const finished = await abortable(jobTable.wait(job.id, sid), signal)
     const [stdout, io] = await adopt(jobTable, finished, cmdStr)
     if (stdout instanceof Uint8Array && stdout.byteLength > 0) outs.push(stdout)
     if (io.stderr instanceof Uint8Array && io.stderr.byteLength > 0) errs.push(io.stderr)
@@ -378,7 +554,7 @@ export async function handleWait(
   // same job however many were waited for. Only the no-operand form
   // leaves the variable unset, since it reports no one job.
   if (varName !== null && view !== null && lastJob !== null) {
-    await view.set(varName, String(lastJob.id))
+    await view.set(varName, String(lastJob.pid))
   }
   const out = concat(outs)
   const err = concat(errs)
@@ -399,10 +575,11 @@ export async function handleWait(
 export function handleDisown(
   jobTable: JobTable,
   parts: string[],
-  _session: Session | null = null,
+  session: SessionState | null = null,
   _view: SessionView | null = null,
-): ExecutionResult {
+): JobHandlerResult {
   const cmdStr = parts.join(' ')
+  const sid = sessionOf(session)
   const scan = scanOptions(parts.slice(1), 'arh')
   if (scan.bad !== null) {
     return jobResult(cmdStr, `bash: disown: ${scan.bad}: invalid option\n${DISOWN_USAGE}\n`, 2)
@@ -413,9 +590,10 @@ export function handleDisown(
   const specs = scan.operands
   let targets: Job[] = []
   const errors: string[] = []
+  const jobs = jobTable.listJobs(sid)
   if (specs.length > 0) {
     for (const spec of specs) {
-      const [job] = resolveSpec(jobTable, spec)
+      const [job] = resolveSpec(jobs, spec)
       if (job === null) {
         errors.push(`bash: disown: ${spec}: no such job`)
         continue
@@ -423,9 +601,8 @@ export function handleDisown(
       targets.push(job)
     }
   } else if (allJobs || runningOnly) {
-    targets = runningOnly ? jobTable.runningJobs() : jobTable.listJobs()
+    targets = runningOnly ? jobs.filter((j) => j.status === JobStatus.RUNNING) : jobs
   } else {
-    const jobs = jobTable.listJobs()
     const current = jobs[jobs.length - 1]
     if (current === undefined) {
       return jobResult(cmdStr, 'bash: disown: current: no such job\n', 1)
@@ -433,7 +610,7 @@ export function handleDisown(
     targets = [current]
   }
   if (!keep) {
-    for (const job of targets) jobTable.disown(job.id)
+    for (const job of targets) jobTable.disown(job.id, sid)
   }
   const err = errors.length > 0 ? new TextEncoder().encode(errors.join('\n') + '\n') : null
   const code = errors.length > 0 ? 1 : 0
@@ -450,22 +627,26 @@ export function handleDisown(
 
 /**
  * Foreground a background job: print its command line, then block on it
- * and adopt its output and exit code.
+ * and adopt its output and exit code. With no operand it takes the newest
+ * running job, which is bash's current job; when none runs, it takes the
+ * newest finished one, since a job can end before `fg` runs and its output
+ * is still waiting to be adopted, as `fg %N` would.
  */
 export async function handleFg(
   jobTable: JobTable,
   parts: string[],
-  _session: Session | null = null,
+  session: SessionState | null = null,
   _view: SessionView | null = null,
   signal?: AbortSignal,
-): Promise<ExecutionResult> {
+): Promise<JobHandlerResult> {
   const cmdStr = parts.join(' ')
+  const sid = sessionOf(session)
+  const jobs = jobTable.listJobs(sid)
   let jobId: number
   if (parts.length <= 1) {
-    const running = jobTable.runningJobs()
-    const current = running[running.length - 1]
+    const current = jobs.filter((j) => j.status === JobStatus.RUNNING).at(-1) ?? jobs.at(-1)
     if (current === undefined) {
-      const err = new TextEncoder().encode('fg: current: no such job\n')
+      const err = new TextEncoder().encode('bash: fg: current: no such job\n')
       return [
         null,
         new IOResult({ exitCode: 1, stderr: err }),
@@ -476,8 +657,8 @@ export async function handleFg(
   } else {
     const raw = (parts[1] ?? '').replace(/^%+/, '')
     jobId = Number(raw)
-    if (!Number.isInteger(jobId) || jobTable.get(jobId) === null) {
-      const err = new TextEncoder().encode(`fg: ${parts[1] ?? ''}: no such job\n`)
+    if (!Number.isInteger(jobId) || jobNumbered(jobs, jobId) === null) {
+      const err = new TextEncoder().encode(`bash: fg: ${parts[1] ?? ''}: no such job\n`)
       return [
         null,
         new IOResult({ exitCode: 1, stderr: err }),
@@ -485,11 +666,11 @@ export async function handleFg(
       ]
     }
   }
-  const job = await jobTable.wait(jobId, signal)
+  const job = await abortable(jobTable.wait(jobId, sid), signal)
   const header = new TextEncoder().encode(job.command + '\n')
   const body = await job.console.snapshot(Channel.STDOUT)
   const stderr = await job.console.snapshot(Channel.STDERR)
-  jobTable.reap(jobId)
+  jobTable.reap(jobId, sid)
   const stdout = new Uint8Array(header.byteLength + body.byteLength)
   stdout.set(header, 0)
   stdout.set(body, header.byteLength)
@@ -500,65 +681,149 @@ export async function handleFg(
   return [stdout, io, new ExecutionNode({ command: cmdStr, exitCode: job.exitCode })]
 }
 
+const KILL_USAGE =
+  'kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]'
+
+// The signals a managed runner answers besides the probe (0). Each one ends
+// the runner through its cancellation channel, so the waited status is the
+// managed cancellation's (137) whichever was sent. Stop, continue and the
+// user signals have no managed meaning and are refused as bash refuses a
+// name it does not know.
+const KILL_SIGNALS: Readonly<Record<string, number>> = {
+  HUP: 1,
+  INT: 2,
+  QUIT: 3,
+  KILL: 9,
+  TERM: 15,
+}
+
+// The largest PID operand kill and ps read as a number: the bound both hosts
+// hold exactly (bash's own is intmax_t).
+const MAX_PID_OPERAND = Number.MAX_SAFE_INTEGER
+
+/** bash's sigspec: a number, or a name with or without SIG, any case. */
+function signalNumber(spec: string): number | null {
+  if (/^[0-9]+$/.test(spec)) {
+    const number = Number(spec)
+    return number === 0 || Object.values(KILL_SIGNALS).includes(number) ? number : null
+  }
+  const name = spec.toUpperCase()
+  return KILL_SIGNALS[name.startsWith('SIG') ? name.slice(3) : name] ?? null
+}
+
+/** The managed PID one kill operand names, or bash's refusal. */
+function killPid(jobs: readonly Job[], operand: string): [number | null, string] {
+  if (operand === '') return [null, "`': not a pid or valid job spec"]
+  if (operand.startsWith('%')) {
+    const raw = operand.slice(1)
+    const job = /^[0-9]+$/.test(raw) ? jobNumbered(jobs, Number(raw)) : null
+    return job !== null ? [job.pid, ''] : [null, `${operand}: no such job`]
+  }
+  const digits = operand.startsWith('-') ? operand.slice(1) : operand
+  if (!/^[0-9]+$/.test(digits) || Number(digits) > MAX_PID_OPERAND)
+    return [null, `${operand}: arguments must be process or job IDs`]
+  return [Number(operand), '']
+}
+
+/**
+ * Signal managed runners with bash's kill surface. The signal comes from
+ * `-s`/`-n`, or from the first `-sigspec`; `0` probes and every other
+ * signal cancels the runner. Every operand is tried and each failure is
+ * named in bash's words; the status is 0 when any operand was signalled,
+ * as bash's is. A job spec is `%N`; a negative number is a process group,
+ * which no managed runner leads.
+ */
 export async function handleKill(
   jobTable: JobTable,
   parts: string[],
-  _session: Session | null = null,
+  session: SessionState | null = null,
   _view: SessionView | null = null,
-): Promise<ExecutionResult> {
+): Promise<JobHandlerResult> {
   const cmdStr = parts.join(' ')
-  if (parts.length < 2) {
-    const err = new TextEncoder().encode('kill: usage: kill <job_id>\n')
-    return [
-      null,
-      new IOResult({ exitCode: 1, stderr: err }),
-      new ExecutionNode({ command: cmdStr, exitCode: 1, stderr: err }),
-    ]
+  const sid = sessionOf(session)
+  let signal = KILL_SIGNALS.TERM ?? 15
+  let words = parts.slice(1)
+  let sawSignal = false
+  // The program (`xargs kill`) keeps its bare voice.
+  const voice = session !== null && isProgramInvocation(session) ? '' : 'bash: '
+  while (words.length > 0) {
+    const word = words[0] ?? ''
+    let spec: string
+    if (word === '-s' || word === '-n') {
+      if (words.length < 2)
+        return jobResult(cmdStr, `${voice}kill: ${word}: option requires an argument\n`, 1)
+      spec = words[1] ?? ''
+      words = words.slice(2)
+    } else if (word === '--') {
+      words = words.slice(1)
+      break
+    } else if (word === '-?') {
+      return jobResult(cmdStr, `${KILL_USAGE}\n`, 2)
+    } else if (word.startsWith('-') && word.length > 1 && !sawSignal) {
+      spec = word.slice(1)
+      words = words.slice(1)
+      sawSignal = true
+    } else break
+    const number = signalNumber(spec)
+    if (number === null)
+      return jobResult(cmdStr, `${voice}kill: ${spec}: invalid signal specification\n`, 1)
+    signal = number
   }
-  const raw = (parts[1] ?? '').replace(/^%+/, '')
-  const jobId = Number(raw)
-  if (!Number.isInteger(jobId)) {
-    const err = new TextEncoder().encode(`kill: invalid job id: ${parts[1] ?? ''}\n`)
-    return [
-      null,
-      new IOResult({ exitCode: 1, stderr: err }),
-      new ExecutionNode({ command: cmdStr, exitCode: 1, stderr: err }),
-    ]
+  if (words.length === 0) return jobResult(cmdStr, `${KILL_USAGE}\n`, 2)
+  const processes = processView(jobTable, session)
+  const errors: string[] = []
+  let signalled = false
+  for (const operand of words) {
+    const jobs = jobTable.listJobs(sid)
+    const [pid, refusal] = killPid(jobs, operand)
+    if (pid === null) {
+      errors.push(`${voice}kill: ${refusal}`)
+      continue
+    }
+    let found: boolean
+    try {
+      if (signal === 0) found = processes.probe(pid)
+      else {
+        found = processes.terminate(pid)
+        const job = jobs.find((j) => j.pid === pid)
+        if (found && job !== undefined) await jobTable.kill(job.id, sid)
+      }
+    } catch (err) {
+      if ((err as { code?: unknown }).code !== 'EPERM') throw err
+      errors.push(`${voice}kill: (${String(pid)}) - Operation not permitted`)
+      continue
+    }
+    if (!found) {
+      errors.push(`${voice}kill: (${String(pid)}) - No such process`)
+      continue
+    }
+    signalled = true
   }
-  const killed = await jobTable.kill(jobId)
-  if (!killed) {
-    const err = new TextEncoder().encode(`kill: no such job: ${jobId.toString()}\n`)
-    return [
-      null,
-      new IOResult({ exitCode: 1, stderr: err }),
-      new ExecutionNode({ command: cmdStr, exitCode: 1, stderr: err }),
-    ]
-  }
-  return [null, new IOResult(), new ExecutionNode({ command: cmdStr, exitCode: 0 })]
+  const code = signalled ? 0 : 1
+  const stderr = errors.length > 0 ? new TextEncoder().encode(errors.join('\n') + '\n') : null
+  return [
+    null,
+    new IOResult({ exitCode: code, stderr }),
+    new ExecutionNode({ command: cmdStr, exitCode: code, stderr: stderr ?? new Uint8Array() }),
+  ]
 }
 
 const JOBS_FLAGS: ReadonlySet<string> = new Set('lnprs')
 const JOBS_USAGE = 'jobs: usage: jobs [-lnprs] [jobspec ...] or jobs -x command [args]'
 
-/**
- * One `jobs` line in mirage's own row shape. `-l` inserts the id a
- * second time where GNU prints the process id; mirage jobs have no pid,
- * so the job id stands in and the row stays parseable.
- */
+/** One `jobs` line; `-l` includes the managed PID. */
 function jobRow(job: Job, long: boolean): string {
   const id = job.id.toString()
   return long
-    ? `[${id}] ${id} ${job.status} ${job.command}`
+    ? `[${id}] ${String(job.pid)} ${job.status} ${job.command}`
     : `[${id}] ${job.status} ${job.command}`
 }
 
 /**
  * List jobs, with bash's flags applied to mirage's row shape.
  *
- * Mirage jobs are identified by table id, not pid, and never stop, so
- * two of GNU's flags map onto that model rather than reproducing it:
- * `-p` prints the job id (GNU's pid), and `-s` (stopped only) lists
- * nothing. `-r` keeps the running ones, `-l` adds the id column, and
+ * `-p` prints the managed PID; `-s` lists nothing because suspended
+ * processes are unsupported. `-r` keeps running jobs, `-l` adds the PID, and
  * `-n` lists only the jobs whose status changed since the last `jobs`
  * (which is every completed one not yet reaped, since reaping is what a
  * listing does). A jobspec operand (`%2` or `2`) filters to that job;
@@ -568,10 +833,11 @@ function jobRow(job: Job, long: boolean): string {
 export function handleJobs(
   jobTable: JobTable,
   parts: string[],
-  _session: Session | null = null,
+  session: SessionState | null = null,
   _view: SessionView | null = null,
-): ExecutionResult {
+): JobHandlerResult {
   const cmdStr = parts.join(' ')
+  const sid = sessionOf(session)
   const flags = new Set<string>()
   const specs: string[] = []
   for (const word of parts.slice(1)) {
@@ -591,12 +857,12 @@ export function handleJobs(
       specs.push(word)
     }
   }
-  let jobs = jobTable.listJobs()
+  let jobs = jobTable.listJobs(sid)
   if (specs.length > 0) {
     const picked: Job[] = []
     for (const spec of specs) {
       const raw = spec.replace(/^%+/, '')
-      const job = /^\d+$/.test(raw) ? jobTable.get(Number(raw)) : null
+      const job = /^\d+$/.test(raw) ? jobNumbered(jobs, Number(raw)) : null
       if (job === null) {
         const err = new TextEncoder().encode(`bash: jobs: ${spec}: no such job\n`)
         return [
@@ -613,26 +879,189 @@ export function handleJobs(
   if (flags.has('s')) jobs = []
   if (flags.has('n')) jobs = jobs.filter((j) => j.status !== JobStatus.RUNNING)
   const lines = flags.has('p')
-    ? jobs.map((j) => j.id.toString())
+    ? jobs.map((j) => String(j.pid))
     : jobs.map((j) => jobRow(j, flags.has('l')))
-  jobTable.popCompleted()
+  jobTable.popCompleted(sid)
   const out =
     lines.length > 0 ? new TextEncoder().encode(`${lines.join('\n')}\n`) : new Uint8Array()
   return [out, new IOResult(), new ExecutionNode({ command: cmdStr, exitCode: 0 })]
 }
 
+// procps-ng 4.0.4's usage block, printed under every option error.
+const PS_USAGE =
+  '\nUsage:\n ps [options]\n\n' +
+  " Try 'ps --help <simple|list|output|threads|misc|all>'\n" +
+  "  or 'ps --help <s|l|o|t|m|a>'\n" +
+  ' for additional help text.\n\n' +
+  'For more details see ps(1).\n'
+
+// The -o columns a managed runner can answer, as procps-ng 4.0.4 lays them
+// out: header, width, right-aligned. The last column is never padded.
+const PS_COLUMNS: Readonly<Record<string, readonly [string, number, boolean]>> = {
+  pid: ['PID', 7, true],
+  ppid: ['PPID', 7, true],
+  cmd: ['CMD', 27, false],
+  args: ['COMMAND', 27, false],
+  comm: ['COMMAND', 15, false],
+}
+
+// Letters that select every process: SysV -e/-A/-a/-x, BSD a/x.
+const PS_ALL = new Set(['e', 'A', 'a', 'x'])
+
+/** What a ps line selects and prints. */
+interface PsOptions {
+  readonly pids: ReadonlySet<number>
+  readonly all: boolean
+  readonly columns: readonly (readonly [string, string])[]
+}
+
+/** One `-p` list, refused in procps's words. */
+function psPids(value: string, option: string): number[] {
+  const tokens = value.split(/[\s,]+/).filter((t) => t !== '')
+  if (tokens.length === 0) throw new Error(`list of process IDs must follow ${option}`)
+  return tokens.map((token) => {
+    if (!/^[+-]?[0-9]+$/.test(token)) throw new Error('process ID list syntax error')
+    const number = Number(token)
+    if (number <= 0 || number > MAX_PID_OPERAND) throw new Error('process ID out of range')
+    return number
+  })
+}
+
+/** One `-o` list: `key` or `key=header`, refused in procps's words. */
+function psColumns(value: string, option: string): [string, string][] {
+  if (value.trim() === '') throw new Error(`format specification must follow ${option}`)
+  const columns: [string, string][] = []
+  for (const item of value.split(',')) {
+    if (item.trim() === '') throw new Error('improper format list')
+    for (const token of item.split(/\s+/).filter((t) => t !== '')) {
+      const equal = token.indexOf('=')
+      const key = equal < 0 ? token : token.slice(0, equal)
+      const column = PS_COLUMNS[key]
+      if (column === undefined) throw new Error(`unknown user-defined format specifier "${key}"`)
+      columns.push([key, equal < 0 ? column[0] : token.slice(equal + 1)])
+    }
+  }
+  return columns
+}
+
+/**
+ * Parse the procps selection and output options a runner answers: SysV
+ * letters after one dash, BSD letters with none, and the `--pid`/`--format`
+ * long forms; `-p` and `-o` repeat and accumulate. `-f` and BSD `u`/`w`/`f`
+ * pick a layout the managed rows do not have, so they leave the compact one.
+ */
+function parsePs(words: string[]): PsOptions {
+  const pids = new Set<number>()
+  const columns: [string, string][] = []
+  let all = false
+  let at = 0
+  while (at < words.length) {
+    const word = words[at++] ?? ''
+    if (word.startsWith('--')) {
+      const equal = word.indexOf('=')
+      const option = equal < 0 ? word : word.slice(0, equal)
+      if (option !== '--pid' && option !== '--format') throw new Error('unknown gnu long option')
+      const value = equal < 0 ? (words[at++] ?? '') : word.slice(equal + 1)
+      if (option === '--pid') for (const pid of psPids(value, option)) pids.add(pid)
+      else columns.push(...psColumns(value, option))
+      continue
+    }
+    if (!word.startsWith('-')) {
+      if (!/^[auxwf]+$/.test(word)) throw new Error('unsupported option (BSD syntax)')
+      all ||= /[ax]/.test(word)
+      continue
+    }
+    let letters = word.slice(1)
+    while (letters !== '') {
+      const flag = letters.charAt(0)
+      letters = letters.slice(1)
+      if (PS_ALL.has(flag)) {
+        all = true
+        continue
+      }
+      if (flag === 'f') continue
+      if (flag !== 'p' && flag !== 'o') throw new Error('unsupported SysV option')
+      const value = letters !== '' ? letters : (words[at++] ?? '')
+      letters = ''
+      if (flag === 'p') for (const pid of psPids(value, '-p')) pids.add(pid)
+      else columns.push(...psColumns(value, '-o'))
+    }
+  }
+  return { pids, all, columns }
+}
+
+/** One row in procps's layout: each column padded but the last. */
+function psRow(keys: readonly string[], cells: readonly string[]): string {
+  return keys
+    .map((key, at) => {
+      const [, width, right] = PS_COLUMNS[key] ?? ['', 0, false]
+      const cell = cells[at] ?? ''
+      if (right) return cell.padStart(width)
+      return at === keys.length - 1 ? cell : cell.padEnd(width)
+    })
+    .join(' ')
+}
+
+/** One -o cell for a managed runner. */
+function psCell(key: string, info: ProcessInfo): string {
+  if (key === 'pid') return String(info.pid)
+  if (key === 'ppid') return String(info.parentPid ?? 0)
+  if (key === 'comm') {
+    const head = info.command.split(/\s+/).find((w) => w !== '') ?? ''
+    return (head.split('/').pop() ?? '').slice(0, 15)
+  }
+  return info.command
+}
+
+/**
+ * List managed runners with procps's selection and `-o` columns. A runner
+ * has no CPU, RSS or TTY accounting, so without `-o` the rows stay mirage's
+ * compact `PID<TAB>COMMAND` and never broaden the profile's view. `-o` lays
+ * out the columns a runner can answer the way procps-ng 4.0.4 does; a
+ * header row prints unless every header is empty. Selecting nothing (`-p`
+ * of an absent PID) exits 1, as procps does, and an option error is
+ * procps's message and usage.
+ */
 export function handlePs(
   jobTable: JobTable,
   parts: string[],
-  _session: Session | null = null,
+  session: SessionState | null = null,
   _view: SessionView | null = null,
-): ExecutionResult {
+): JobHandlerResult {
   const cmdStr = parts.join(' ')
-  const lines: string[] = []
-  for (const job of jobTable.runningJobs()) {
-    lines.push(`${job.id.toString()}\t${job.command}`)
+  let options: PsOptions
+  try {
+    options = parsePs(parts.slice(1))
+  } catch (err) {
+    return jobResult(cmdStr, `error: ${(err as Error).message}\n${PS_USAGE}`, 1)
   }
-  const out =
-    lines.length > 0 ? new TextEncoder().encode(`${lines.join('\n')}\n`) : new Uint8Array()
-  return [out, new IOResult(), new ExecutionNode({ command: cmdStr, exitCode: 0 })]
+  const processes = processView(jobTable, session)
+    .list()
+    .filter((info) => options.all || options.pids.size === 0 || options.pids.has(info.pid))
+  let lines: string[]
+  if (options.columns.length > 0) {
+    const keys = options.columns.map(([key]) => key)
+    lines = processes.map((info) =>
+      psRow(
+        keys,
+        keys.map((key) => psCell(key, info)),
+      ),
+    )
+    if (options.columns.some(([, header]) => header !== ''))
+      lines.unshift(
+        psRow(
+          keys,
+          options.columns.map(([, header]) => header),
+        ),
+      )
+  } else {
+    lines = processes.map((info) => `${String(info.pid)}\t${info.command}`)
+  }
+  const code = processes.length > 0 ? 0 : 1
+  const out = new TextEncoder().encode(lines.length > 0 ? lines.join('\n') + '\n' : '')
+  return [
+    out,
+    new IOResult({ exitCode: code }),
+    new ExecutionNode({ command: cmdStr, exitCode: code }),
+  ]
 }

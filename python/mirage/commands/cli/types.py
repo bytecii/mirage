@@ -12,23 +12,28 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Literal, TypeVar
 
 from pydantic import BaseModel
 
 from mirage.commands.cli.compile import validate_cli
-from mirage.commands.spec.types import (CommandSpec, FlagValue,
-                                        ParsedFlagValue, UsageStyle)
-from mirage.io.types import ByteSource
+from mirage.commands.spec.types import (
+    CommandSpec,
+    FlagValue,
+    ParsedFlagValue,
+    UsageStyle,
+)
+from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import NamespaceView, SessionView, StatPath
+from mirage.process.types import ProcessView
 from mirage.runtime.types import DispatchFn, ScriptSource
-from mirage.types import Limit, PathSpec, ResourceName
+from mirage.types import Limit, PathSpec
 
 # The group-level flag bag the walk accumulates, keyed by canonical
 # dashed spelling like ParsedArgs.flags.
-FlagBag = dict[str, ParsedFlagValue]
+WalkFlagBag = dict[str, ParsedFlagValue]
 
 ConfigT = TypeVar("ConfigT")
 
@@ -54,9 +59,10 @@ class CLIDoors:
 
     Args:
         dispatch (DispatchFn | None): the data plane's door, the
-            workspace op dispatcher. Typed loosely on purpose: the
-            DispatchFn Protocol lives in ``workspace.types``, and
-            ``commands`` stays free of a workspace import.
+            workspace op dispatcher. The Protocol is declared in
+            ``runtime.types``, on the consumer side, because the
+            workspace provides the door and everyone else receives one;
+            naming it from here costs no workspace import.
         stat_path (StatPath | None): dispatcher-backed stat that asks
             both channels a backend can answer on.
         ns (NamespaceView | None): the name plane's door, holding the
@@ -75,10 +81,12 @@ class CLIDoors:
             is not a mount, so an account CLI may read it without
             breaking the tier rule.
     """
+
     dispatch: DispatchFn | None = None
     stat_path: StatPath | None = None
     ns: NamespaceView | None = None
     session_view: SessionView | None = None
+    processes: ProcessView | None = None
 
 
 @dataclass(frozen=True)
@@ -115,7 +123,19 @@ class CLIInvocation(Generic[ConfigT]):
         doors (CLIDoors | None): one door per state plane, None outside
             a workspace and for every CLI that reaches a service
             instead of a filesystem.
+        shell (Callable[[str], Awaitable[IOResult]] | None): evaluate a
+            nested line in this invocation's exact session. Host callbacks
+            use this for portable re-entry, including after awaits and in
+            forks. Valid until the handler settles or is cancelled; await
+            each call before returning. None outside a workspace.
+        spec (CLISpec | None): the leaf the line resolved to, the
+            grammar its argv was parsed against. A verb reads it to
+            answer in its original's terms (git names the first switch
+            letter parse-options would not know), so a refusal never
+            restates the options declared one level up. None where no
+            executor built the record.
     """
+
     config: ConfigT
     argv: tuple[str, ...] = ()
     paths: tuple[PathSpec, ...] = ()
@@ -124,6 +144,8 @@ class CLIInvocation(Generic[ConfigT]):
     stdin: ByteSource | None = None
     env: Mapping[str, str] = field(default_factory=dict)
     doors: CLIDoors | None = None
+    spec: "CLISpec | None" = None
+    shell: Callable[[str], Awaitable[IOResult]] | None = None
 
 
 @dataclass(frozen=True)
@@ -169,15 +191,6 @@ class CLISpec(CommandSpec):
         config_model (type[BaseModel] | None): root only. Pydantic model
             validating an installation's config from YAML ``clis:`` or
             ``register_cli``; also the redaction schema for snapshots.
-        serves (tuple[ResourceName, ...]): root only. The resources this
-            CLI's service also backs as mounts. A write verb mutates that
-            service by id, which no vfs path can be derived from, so
-            those mounts drop their cached listings and bodies
-            afterwards: the agent's next ``ls`` shows what it just made
-            and its next ``cat`` shows an edit rather than the pre-write
-            content. Empty for a CLI with no mounted counterpart
-            (``git`` reaches mounts through the op dispatcher, which
-            invalidates per path already).
         script (ScriptSource | None): root only, and the root stands
             alone (no fn, no subcommands: the program re-parses argv
             natively). The program that serves the whole install,
@@ -194,9 +207,13 @@ class CLISpec(CommandSpec):
             message and the exit code sees what it would from the real
             one.
     """
+
     name: str = ""
     aliases: tuple[str, ...] = ()
-    fn: Callable[..., Any] | None = None
+    # Any callable is valid, including stateful callable objects whose
+    # class deliberately has no hash. The handler does not affect the
+    # inherited CommandSpec grammar cached by compile_spec.
+    fn: Callable[..., Any] | None = field(default=None, hash=False)
     subcommands: tuple["CLISpec", ...] = ()
     write: bool = False
     usage_style: UsageStyle = UsageStyle.ARGPARSE
@@ -206,7 +223,6 @@ class CLISpec(CommandSpec):
     # (a collision is legal, a TypeError is not).
     limit: Limit | None = field(default=None, hash=False)
     config_model: type[BaseModel] | None = None
-    serves: tuple[ResourceName, ...] = ()
     script: ScriptSource | None = None
     runtime: str | None = None
 
@@ -237,9 +253,10 @@ class WalkResult:
         stream (Literal["stdout", "stderr"]): where ``output`` goes.
         exit_code (int): exit status for a rendered outcome.
     """
+
     leaf: "CLISpec | None" = None
     path: tuple[str, ...] = ()
-    group_flags: FlagBag = field(default_factory=dict)
+    group_flags: WalkFlagBag = field(default_factory=dict)
     argv: tuple[str, ...] = ()
     output: bytes = b""
     stream: Literal["stdout", "stderr"] = "stdout"

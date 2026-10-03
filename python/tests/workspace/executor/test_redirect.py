@@ -14,17 +14,17 @@
 
 import pytest
 
-from mirage import MountMode, RAMResource, Workspace
+from mirage import RAMVFS, MountMode, Workspace
 
 
 async def _workspace() -> Workspace:
-    ws = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
-    await ws.execute("mkdir -p /data")
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    await ws.shell("mkdir -p /data")
     return ws
 
 
 async def _out(ws: Workspace, cmd: str) -> str:
-    io = await ws.execute(cmd)
+    io = await ws.shell(cmd)
     return (io.stdout or b"").decode()
 
 
@@ -33,7 +33,7 @@ async def test_redirect_target_expands_after_cd_in_list():
     # tree-sitter hoists the trailing redirect over the && list; the
     # target must still expand with the cwd the last command sees.
     ws = await _workspace()
-    await ws.execute("cd /data && echo hi > OUT")
+    await ws.shell("cd /data && echo hi > OUT")
     assert await _out(ws, "cat /data/OUT") == "hi\n"
 
 
@@ -48,16 +48,16 @@ async def test_redirect_captures_only_last_command():
 @pytest.mark.asyncio
 async def test_redirect_short_circuit_and():
     ws = await _workspace()
-    io = await ws.execute("false && echo never > /data/f3")
+    io = await ws.shell("false && echo never > /data/f3")
     assert io.exit_code == 1
-    io = await ws.execute("test -f /data/f3")
+    io = await ws.shell("test -f /data/f3")
     assert io.exit_code == 1
 
 
 @pytest.mark.asyncio
 async def test_redirect_short_circuit_or():
     ws = await _workspace()
-    await ws.execute("false || echo fallback > /data/f4")
+    await ws.shell("false || echo fallback > /data/f4")
     assert await _out(ws, "cat /data/f4") == "fallback\n"
 
 
@@ -67,8 +67,10 @@ async def test_redirect_chain_compounds():
     # chain executes left to right instead of hoisting.
     ws = await _workspace()
     out = await _out(
-        ws, "echo a > /data/c && echo b >> /data/c && cat /data/c"
-        " && wc -l < /data/c")
+        ws,
+        "echo a > /data/c && echo b >> /data/c && cat /data/c"
+        " && wc -l < /data/c",
+    )
     assert out == "a\nb\n2\n"
 
 
@@ -76,14 +78,14 @@ async def test_redirect_chain_compounds():
 async def test_redirect_group_keeps_whole_body():
     # Compound bodies are real bash group redirects, not hoists.
     ws = await _workspace()
-    await ws.execute("{ echo g1; echo g2; } > /data/grp")
+    await ws.shell("{ echo g1; echo g2; } > /data/grp")
     assert await _out(ws, "cat /data/grp") == "g1\ng2\n"
 
 
 @pytest.mark.asyncio
 async def test_redirect_subshell_keeps_whole_body():
     ws = await _workspace()
-    await ws.execute("(echo s1; echo s2) > /data/subq")
+    await ws.shell("(echo s1; echo s2) > /data/subq")
     assert await _out(ws, "cat /data/subq") == "s1\ns2\n"
 
 
@@ -91,23 +93,149 @@ async def test_redirect_subshell_keeps_whole_body():
 async def test_redirect_pipeline_right_side():
     ws = await _workspace()
     out = await _out(
-        ws, "echo x && echo y | tr a-z A-Z > /data/up && cat /data/up")
+        ws, "echo x && echo y | tr a-z A-Z > /data/up && cat /data/up"
+    )
     assert out == "x\nY\n"
 
 
 @pytest.mark.asyncio
 async def test_stdin_redirect_binds_last_command():
     ws = await _workspace()
-    await ws.execute("printf 'l1\\nl2\\n' | tee /data/seed > /dev/null")
+    await ws.shell("printf 'l1\\nl2\\n' | tee /data/seed > /dev/null")
     out = await _out(ws, "echo lead && wc -l < /data/seed")
     assert out == "lead\n2\n"
+
+
+# A trailing redirect binds to the command it follows, whatever the
+# parse wrapped it around: a pipeline in an &&/|| list, a list the parse
+# pulled into a pipeline's first stage, a pipeline pulled in the same way,
+# and a `!`. Every row is GNU bash 5.2 in debian:stable-slim (redirect
+# errors without bash's `bash: line N:` prefix); PS prints $? and
+# PIPESTATUS.
+PS = '; echo "rc=$? ps=${PIPESTATUS[*]}"'
+BINDS = [
+    ("true && printf 'x\\n' | cat < /data/b.txt", "1\n2\n3\n", "", 0),
+    ("true && printf 'x\\n' | wc -l < /dev/null", "0\n", "", 0),
+    ("false || printf 'x\\n' | cat < /dev/null", "", "", 0),
+    ("(cd /data && printf 'x\\n' | cat < b.txt)", "1\n2\n3\n", "", 0),
+    ("true && printf 'x\\n' | cat | cat < /data/b.txt", "1\n2\n3\n", "", 0),
+    ("false && true || printf 'x\\n' | cat < /data/b.txt", "1\n2\n3\n", "", 0),
+    (
+        "true && printf 'x\\n' | cat < /nonexistent" + PS,
+        "rc=1 ps=0 1\n",
+        "/nonexistent: No such file or directory\n",
+        0,
+    ),
+    (
+        "true && printf 'x\\n' | cat < /data/b.txt && echo after",
+        "1\n2\n3\nafter\n",
+        "",
+        0,
+    ),
+    (
+        "f() { true && printf 'x\\n' | cat < /data/b.txt; }; f",
+        "1\n2\n3\n",
+        "",
+        0,
+    ),
+    (
+        "true && { echo e1 >&2; echo o; } | { cat; echo e2 >&2; } 2> /data/e;"
+        " echo ---; cat /data/e",
+        "o\n---\ne2\n",
+        "e1\n",
+        0,
+    ),
+    (
+        "false || { echo e1 >&2; echo o; } | { cat; echo e2 >&2; } 2>&1",
+        "o\ne2\n",
+        "e1\n",
+        0,
+    ),
+    ("true && printf 'x\\n' | cat <<EOF\nH\nEOF", "H\n", "", 0),
+    ("true && { printf 'x\\n' | cat; } < /data/b.txt", "x\n", "", 0),
+    ("true && (printf 'x\\n' | cat) < /data/b.txt", "x\n", "", 0),
+    (
+        "true && printf 'x\\n' | cat < /data/b.txt | tr 3 Z" + PS,
+        "1\n2\nZ\nrc=0 ps=0 0 0\n",
+        "",
+        0,
+    ),
+    (
+        "false && printf 'x\\n' | cat < /data/b.txt | cat" + PS,
+        "rc=1 ps=1\n",
+        "",
+        0,
+    ),
+    (
+        "false && cat <<EOF | tr a-z A-Z\nhi\nEOF\n" + PS[2:],
+        "rc=1 ps=1\n",
+        "",
+        0,
+    ),
+    (
+        "printf 'x\\n' | false && cat < /data/b.txt | tr 1 X" + PS,
+        "rc=1 ps=0 1\n",
+        "",
+        0,
+    ),
+    (
+        "(set -e; false && cat < /data/b.txt | tr 1 X; echo survived)",
+        "survived\n",
+        "",
+        0,
+    ),
+    (
+        "printf 'x\\n' | cat < /data/b.txt | cat" + PS,
+        "1\n2\n3\nrc=0 ps=0 0 0\n",
+        "",
+        0,
+    ),
+    (
+        "! printf 'x\\n' | cat < /data/b.txt | cat" + PS,
+        "1\n2\n3\nrc=1 ps=0 0 0\n",
+        "",
+        0,
+    ),
+    ("! cat < /data/b.txt | tr 1 X" + PS, "X\n2\n3\nrc=1 ps=0 0\n", "", 0),
+    ("! false | true > /dev/null" + PS, "rc=1 ps=1 0\n", "", 0),
+    (
+        "! cat < /nonexistent" + PS,
+        "rc=0 ps=1\n",
+        "/nonexistent: No such file or directory\n",
+        0,
+    ),
+    (
+        "true && { echo e >&2; echo o; } |& cat > /data/p; cat /data/p",
+        "e\no\n",
+        "",
+        0,
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("line,stdout,stderr,code", BINDS)
+async def test_trailing_redirect_binds_to_the_command_it_follows(
+    line, stdout, stderr, code
+):
+    ws = await _workspace()
+    try:
+        await ws.shell("printf '1\\n2\\n3\\n' > /data/b.txt")
+        io = await ws.shell(line)
+        assert (
+            await io.stdout_str(),
+            await io.stderr_str(),
+            io.exit_code,
+        ) == (stdout, stderr, code)
+    finally:
+        await ws.close()
 
 
 @pytest.mark.asyncio
 async def test_fd_table_file_then_merge():
     # `> f 2>&1` — fd2 follows fd1 into the file (canonical idiom).
     ws = await _workspace()
-    io = await ws.execute("{ echo out; ls /data/missing; } > /data/both 2>&1")
+    io = await ws.shell("{ echo out; ls /data/missing; } > /data/both 2>&1")
     assert (io.stdout or b"") == b""
     assert io.stderr is None
     both = await _out(ws, "cat /data/both")
@@ -119,7 +247,7 @@ async def test_fd_table_file_then_merge():
 async def test_fd_table_merge_then_file():
     # `2>&1 > f` — fd2 keeps the ORIGINAL stdout; only stdout hits f.
     ws = await _workspace()
-    io = await ws.execute("{ echo out; ls /data/missing; } 2>&1 > /data/only")
+    io = await ws.shell("{ echo out; ls /data/missing; } 2>&1 > /data/only")
     assert b"missing" in (io.stdout or b"")
     assert await _out(ws, "cat /data/only") == "out\n"
 
@@ -128,7 +256,7 @@ async def test_fd_table_merge_then_file():
 async def test_fd_table_stdout_dup_then_stderr_file():
     # `>&2 2>> f` — fd1 points at the ORIGINAL stderr before fd2 moves.
     ws = await _workspace()
-    io = await ws.execute("echo a >&2 2>> /data/elog")
+    io = await ws.shell("echo a >&2 2>> /data/elog")
     assert (io.stdout or b"") == b""
     assert (io.stderr or b"") == b"a\n"
     assert await _out(ws, "cat /data/elog") == ""
@@ -137,7 +265,7 @@ async def test_fd_table_stdout_dup_then_stderr_file():
 @pytest.mark.asyncio
 async def test_multiple_stdout_redirects_truncate_all_write_last():
     ws = await _workspace()
-    await ws.execute("echo body > /data/m1 > /data/m2")
+    await ws.shell("echo body > /data/m1 > /data/m2")
     assert await _out(ws, "cat /data/m1") == ""
     assert await _out(ws, "cat /data/m2") == "body\n"
 
@@ -145,9 +273,9 @@ async def test_multiple_stdout_redirects_truncate_all_write_last():
 @pytest.mark.asyncio
 async def test_bare_redirect_creates_empty_file():
     ws = await _workspace()
-    io = await ws.execute("> /data/bare")
+    io = await ws.shell("> /data/bare")
     assert io.exit_code == 0
-    io = await ws.execute("test -f /data/bare")
+    io = await ws.shell("test -f /data/bare")
     assert io.exit_code == 0
     assert await _out(ws, "cat /data/bare") == ""
 
@@ -155,17 +283,17 @@ async def test_bare_redirect_creates_empty_file():
 @pytest.mark.asyncio
 async def test_stderr_redirect_creates_file_even_when_empty():
     ws = await _workspace()
-    await ws.execute("echo fine 2> /data/errs")
-    io = await ws.execute("test -f /data/errs")
+    await ws.shell("echo fine 2> /data/errs")
+    io = await ws.shell("test -f /data/errs")
     assert io.exit_code == 0
 
 
 @pytest.mark.asyncio
 async def test_both_redirect_append():
     ws = await _workspace()
-    await ws.execute("echo one &> /data/acc")
-    await ws.execute("ls /data/nope &>> /data/acc")
-    await ws.execute("echo three &>> /data/acc")
+    await ws.shell("echo one &> /data/acc")
+    await ws.shell("ls /data/nope &>> /data/acc")
+    await ws.shell("echo three &>> /data/acc")
     acc = await _out(ws, "cat /data/acc")
     assert acc.startswith("one\n")
     assert acc.endswith("three\n")
@@ -177,7 +305,7 @@ async def test_heredoc_with_file_redirect():
     # `cat <<END > f` — the file redirect parses INSIDE the heredoc
     # node and must still be applied.
     ws = await _workspace()
-    io = await ws.execute("cat <<END > /data/hd\nwritten\nEND")
+    io = await ws.shell("cat <<END > /data/hd\nwritten\nEND")
     assert io.exit_code == 0
     assert (io.stdout or b"") == b""
     assert await _out(ws, "cat /data/hd") == "written\n"
@@ -201,7 +329,7 @@ async def test_stdin_from_process_substitution():
 @pytest.mark.asyncio
 async def test_stdin_missing_source_is_shell_attributed():
     ws = await _workspace()
-    io = await ws.execute("cat < /data/missing")
+    io = await ws.shell("cat < /data/missing")
     assert io.exit_code == 1
     assert (io.stderr or b"") == b"/data/missing: No such file or directory\n"
 
@@ -211,7 +339,7 @@ async def test_stdin_missing_source_does_not_run_command():
     # bash never reaches the command, so `hi` is not printed and the
     # message is not prefixed with the command name.
     ws = await _workspace()
-    io = await ws.execute("echo hi < /data/missing")
+    io = await ws.shell("echo hi < /data/missing")
     assert io.exit_code == 1
     assert (io.stdout or b"") == b""
     assert (io.stderr or b"") == b"/data/missing: No such file or directory\n"
@@ -222,7 +350,7 @@ async def test_stdin_missing_source_keeps_rest_of_line():
     # GNU: `cat < missing; echo next` prints next and exits 0 — the
     # redirect failure is not fatal to the line.
     ws = await _workspace()
-    io = await ws.execute("cat < /data/missing; echo next")
+    io = await ws.shell("cat < /data/missing; echo next")
     assert io.exit_code == 0
     assert (io.stdout or b"") == b"next\n"
     assert (io.stderr or b"") == b"/data/missing: No such file or directory\n"
@@ -231,7 +359,7 @@ async def test_stdin_missing_source_keeps_rest_of_line():
 @pytest.mark.asyncio
 async def test_stdin_missing_source_short_circuits_and():
     ws = await _workspace()
-    io = await ws.execute("cat < /data/missing && echo YES")
+    io = await ws.shell("cat < /data/missing && echo YES")
     assert io.exit_code == 1
     assert (io.stdout or b"") == b""
 
@@ -239,7 +367,7 @@ async def test_stdin_missing_source_short_circuits_and():
 @pytest.mark.asyncio
 async def test_stdin_missing_source_runs_or_branch():
     ws = await _workspace()
-    io = await ws.execute("cat < /data/missing || echo OR")
+    io = await ws.shell("cat < /data/missing || echo OR")
     assert io.exit_code == 0
     assert (io.stdout or b"") == b"OR\n"
 
@@ -249,7 +377,7 @@ async def test_stdin_missing_source_leaves_pipeline_running():
     # GNU: the failing element contributes nothing but `wc -l` still
     # runs, prints 0, and owns the pipeline's exit code.
     ws = await _workspace()
-    io = await ws.execute("cat < /data/missing | wc -l")
+    io = await ws.shell("cat < /data/missing | wc -l")
     assert io.exit_code == 0
     assert (io.stdout or b"").strip() == b"0"
     assert (io.stderr or b"") == b"/data/missing: No such file or directory\n"
@@ -259,7 +387,7 @@ async def test_stdin_missing_source_leaves_pipeline_running():
 async def test_stdin_missing_source_reported_as_typed():
     # GNU reports the target's spelling, not a resolved absolute path.
     ws = await _workspace()
-    io = await ws.execute("cd /data && cat < missing")
+    io = await ws.shell("cd /data && cat < missing")
     assert io.exit_code == 1
     assert (io.stderr or b"") == b"missing: No such file or directory\n"
 
@@ -269,8 +397,8 @@ async def test_stdin_missing_source_stops_at_first_failure():
     # Two `<` redirects, the first missing: bash stops processing
     # redirects there, so exactly one message is emitted.
     ws = await _workspace()
-    await ws.execute("printf PRE > /data/good")
-    io = await ws.execute("cat < /data/missing < /data/good")
+    await ws.shell("printf PRE > /data/good")
+    io = await ws.shell("cat < /data/missing < /data/good")
     assert io.exit_code == 1
     assert (io.stderr or b"") == b"/data/missing: No such file or directory\n"
 
@@ -279,9 +407,9 @@ async def test_stdin_missing_source_stops_at_first_failure():
 async def test_stdin_missing_source_skips_later_output_redirect():
     # `< missing > out` fails before `out` is created, like bash.
     ws = await _workspace()
-    io = await ws.execute("echo hi < /data/missing > /data/late")
+    io = await ws.shell("echo hi < /data/missing > /data/late")
     assert io.exit_code == 1
-    assert (await ws.execute("test -e /data/late")).exit_code == 1
+    assert (await ws.shell("test -e /data/late")).exit_code == 1
 
 
 @pytest.mark.asyncio
@@ -290,7 +418,7 @@ async def test_stdin_missing_source_does_not_prefix_first_word_of_line():
     # OSError handler, which stamped the line's first word onto the
     # message (`cd /data && cat < missing` reported "cd:").
     ws = await _workspace()
-    io = await ws.execute("cd /data && cat < missing")
+    io = await ws.shell("cd /data && cat < missing")
     stderr = (io.stderr or b"").decode()
     assert not stderr.startswith("cd:")
     assert not stderr.startswith("cat:")
@@ -302,7 +430,7 @@ async def test_write_target_unwritable_is_shell_attributed():
     # target, not the command, and not the backend's prose (which used
     # to surface as "echo: parent directory does not exist: /nodir").
     ws = await _workspace()
-    io = await ws.execute("echo x > /nodir/f")
+    io = await ws.shell("echo x > /nodir/f")
     assert io.exit_code == 1
     assert (io.stderr or b"") == b"/nodir/f: No such file or directory\n"
 
@@ -312,7 +440,7 @@ async def test_write_target_unwritable_keeps_rest_of_line():
     # Regression: the write raised with no handler, so the whole line
     # died; GNU prints the error and runs `echo next`.
     ws = await _workspace()
-    io = await ws.execute("echo x > /nodir/f; echo next")
+    io = await ws.shell("echo x > /nodir/f; echo next")
     assert io.exit_code == 0
     assert (io.stdout or b"") == b"next\n"
     assert (io.stderr or b"") == b"/nodir/f: No such file or directory\n"
@@ -321,7 +449,7 @@ async def test_write_target_unwritable_keeps_rest_of_line():
 @pytest.mark.asyncio
 async def test_write_target_unwritable_short_circuits_and():
     ws = await _workspace()
-    io = await ws.execute("echo x > /nodir/f && echo YES")
+    io = await ws.shell("echo x > /nodir/f && echo YES")
     assert io.exit_code == 1
     assert (io.stdout or b"") == b""
 
@@ -329,7 +457,7 @@ async def test_write_target_unwritable_short_circuits_and():
 @pytest.mark.asyncio
 async def test_write_target_unwritable_runs_or_branch():
     ws = await _workspace()
-    io = await ws.execute("echo x > /nodir/f || echo OR")
+    io = await ws.shell("echo x > /nodir/f || echo OR")
     assert io.exit_code == 0
     assert (io.stdout or b"") == b"OR\n"
 
@@ -342,10 +470,10 @@ async def test_write_target_unwritable_stops_at_first_failure():
     #   bash: line 1: /nodir/f: No such file or directory   # rc=1
     #   $ ls /data/out -> No such file or directory
     ws = await _workspace()
-    io = await ws.execute("echo x > /nodir/f > /data/out")
+    io = await ws.shell("echo x > /nodir/f > /data/out")
     assert io.exit_code == 1
     assert (io.stderr or b"") == b"/nodir/f: No such file or directory\n"
-    assert (await ws.execute("test -e /data/out")).exit_code == 1
+    assert (await ws.shell("test -e /data/out")).exit_code == 1
 
 
 @pytest.mark.asyncio
@@ -356,22 +484,238 @@ async def test_write_target_unwritable_keeps_earlier_target():
     #   bash: line 1: /nodir/g: No such file or directory   # rc=1
     #   $ ls -l /data/out2 -> 0 bytes
     ws = await _workspace()
-    io = await ws.execute("echo y > /data/out2 > /nodir/g")
+    io = await ws.shell("echo y > /data/out2 > /nodir/g")
     assert io.exit_code == 1
     assert (io.stderr or b"") == b"/nodir/g: No such file or directory\n"
-    assert (await ws.execute("test -e /data/out2")).exit_code == 0
+    assert (await ws.shell("test -e /data/out2")).exit_code == 0
     assert await _out(ws, "cat /data/out2") == ""
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("line", [
-    "echo x >> /nodir/f",
-    "echo x 2> /nodir/f",
-    "> /nodir/f",
-])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "echo x >> /nodir/f",
+        "echo x 2> /nodir/f",
+        "> /nodir/f",
+    ],
+)
 async def test_write_target_unwritable_same_line_for_every_form(line: str):
     # GNU spells the append, stderr and command-less forms identically.
     ws = await _workspace()
-    io = await ws.execute(line)
+    io = await ws.shell(line)
     assert io.exit_code == 1
     assert (io.stderr or b"") == b"/nodir/f: No such file or directory\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("cat 0<&1; echo rc=$?", ("rc=1\n", "cat: -: Bad file descriptor\n")),
+        ("cat 0<&2; echo rc=$?", ("rc=1\n", "cat: -: Bad file descriptor\n")),
+        ("cat <&-; echo rc=$?", ("rc=1\n", "cat: -: Bad file descriptor\n")),
+        ("true 0<&1; echo rc=$?", ("rc=0\n", "")),
+        ("echo hi 0<&1; echo rc=$?", ("hi\nrc=0\n", "")),
+        (
+            "read x 0<&1; echo rc=$?",
+            ("rc=1\n", "bash: read: read error: 0: Bad file descriptor\n"),
+        ),
+    ],
+)
+async def test_stdin_from_a_closed_or_write_only_descriptor_is_unreadable(
+    line, expected
+):
+    # bash 5.2.37 opens the command all the same and the first read
+    # fails with EBADF; a command that never reads succeeds. GNU cat's
+    # `closing standard input` second line after `<&-` is not rendered.
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        io = await ws.shell(line)
+        assert (await io.stdout_str(), await io.stderr_str()) == expected
+    finally:
+        await ws.close()
+
+
+# Pinned against bash 5.2 on debian:stable-slim: the `&&`/`||` written on
+# a heredoc's operator line wraps the heredoc'd command, as it would any
+# other command. tree-sitter parses that tail inside the heredoc, which
+# used to make `|| echo` a phantom pipe stage: the body was lost and the
+# recovery never ran.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("false <<'EOF' || echo recovered\nignored\nEOF", ("recovered\n", 0)),
+        ("cat <<'EOF' && echo after\nhello\nEOF", ("hello\nafter\n", 0)),
+        ("cat <<EOF 2>/dev/null || echo fb\nhello\nEOF", ("hello\n", 0)),
+        ("true <<'EOF' || echo notrun\nx\nEOF", ("", 0)),
+        ("false <<'EOF' && echo notrun\nx\nEOF", ("", 1)),
+        ("cat <<EOF | tr a-z A-Z && echo done\nabc\nEOF", ("ABC\ndone\n", 0)),
+        ("cat <<EOF | tr a-z A-Z | rev && echo c\nabc\nEOF", ("CBA\nc\n", 0)),
+        (
+            "cat <<EOF | tr a-z A-Z || echo c && echo d\nabc\nEOF",
+            ("ABC\nd\n", 0),
+        ),
+        ("false <<EOF || echo a && echo b\nx\nEOF", ("a\nb\n", 0)),
+        ("true <<EOF || echo a && echo b\nx\nEOF", ("b\n", 0)),
+        ("false <<EOF || echo a || echo b\nx\nEOF", ("a\n", 0)),
+        ("false <<EOF || echo a | tr a A\nx\nEOF", ("A\n", 0)),
+        ("false <<EOF || { echo a; echo b; }\nx\nEOF", ("a\nb\n", 0)),
+        ("false <<EOF || (echo x)\nx\nEOF", ("x\n", 0)),
+        ("false <<EOF || ! true\nx\nEOF", ("", 1)),
+        ("true && cat <<EOF || echo x\nbody\nEOF", ("body\n", 0)),
+        ("cat <<-EOF && echo after\n\thello\n\tEOF", ("hello\nafter\n", 0)),
+        (
+            'x=$(cat <<EOF && echo after\nhello\nEOF\n); echo "[$x]"',
+            ("[hello\nafter]\n", 0),
+        ),
+        ("if false <<EOF || true\nx\nEOF\nthen echo yes; fi", ("yes\n", 0)),
+        ("cat /nonexistent <<EOF 2>/dev/null || echo fb\nx\nEOF", ("fb\n", 0)),
+    ],
+)
+async def test_heredoc_operator_line_list(line, expected):
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        io = await ws.shell(line)
+        assert (await io.stdout_str(), io.exit_code) == expected
+        assert await io.stderr_str() == ""
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_heredoc_file_redirect_then_list():
+    ws = await _workspace()
+    out = await _out(ws, "cat <<EOF > /data/ho && cat /data/ho\ninner\nEOF")
+    assert out == "inner\n"
+
+
+# Pinned against bash 5.2 on debian:stable-slim: a terminator after the
+# operator runs its tail after the heredoc command, an unquoted delimiter
+# ends at a metacharacter, and the bodies of two heredocs on one line
+# follow in source order (issue #1070).
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("cat <<EOF; echo x\nhi\nEOF", ("hi\nx\n", 0)),
+        ("cat <<EOF;echo x\nhi\nEOF", ("hi\nx\n", 0)),
+        ("cat <<EOF>/hs; cat /hs\nhi\nEOF", ("hi\n", 0)),
+        ("cat <<EOF|wc -l\nhi\nEOF", ("1\n", 0)),
+        ("cat <<EOF&&echo x\nhi\nEOF", ("hi\nx\n", 0)),
+        ("cat <<'EOF'; echo x\nhi $HOME\nEOF", ("hi $HOME\nx\n", 0)),
+        ("cat <<A && cat <<B\na\nA\nb\nB", ("a\nb\n", 0)),
+        ("cat <<A | cat <<B\na\nA\nb\nB", ("b\n", 0)),
+        ("cat <<A || cat <<B\na\nA\nb\nB", ("a\n", 0)),
+        ("false <<A || cat <<B\na\nA\nb\nB", ("b\n", 0)),
+        ("cat <<A; cat <<B\na\nA\nb\nB", ("a\nb\n", 0)),
+        ("cat <<A && cat <<B; echo c\na\nA\nb\nB", ("a\nb\nc\n", 0)),
+        ("cat <<A && false <<B || echo no\na\nA\nb\nB", ("a\nno\n", 0)),
+        ("cat <<A | tr a-z A-Z <<B; echo z\na\nA\nb\nB", ("B\nz\n", 0)),
+        (
+            "echo a; cat <<E1 | cat <<E2; echo z\n1\nE1\n2\nE2",
+            ("a\n2\nz\n", 0),
+        ),
+        ("cat <<A && cat <<B\n\na\nA\n\nb\nB", ("\na\n\nb\n", 0)),
+        ("(cat <<EOF)\nhi\nEOF", ("hi\n", 0)),
+        ("{ cat <<EOF; }\nhi\nEOF", ("hi\n", 0)),
+        ("if true; then cat <<EOF; fi\nhi\nEOF", ("hi\n", 0)),
+        ("case x in x) cat <<EOF;; esac\nhi\nEOF", ("hi\n", 0)),
+        ("cat <<EOF; # comment\nhi\nEOF", ("hi\n", 0)),
+        ("cat <<-EOF; echo x\n\thi\n\tEOF", ("hi\nx\n", 0)),
+        ("true; cat <<EOF; echo x\nhi\nEOF", ("hi\nx\n", 0)),
+        ("cat <<EOF; cat <<EOF\na\nEOF\nb\nEOF", ("a\nb\n", 0)),
+        ("cat <<EOF; echo x; echo y\nhi\nEOF", ("hi\nx\ny\n", 0)),
+        ("for i in 1 2; do cat <<EOF; done\n$i\nEOF", ("1\n2\n", 0)),
+        ("f() { cat <<EOF; }; f; f\nhi\nEOF", ("hi\nhi\n", 0)),
+        (
+            'while read l; do echo "[$l]"; done <<EOF; echo done\na\nb\nEOF',
+            ("[a]\n[b]\ndone\n", 0),
+        ),
+        ("false <<EOF; echo $?\nEOF", ("1\n", 0)),
+        ("cat <<EOF; echo x\n  hi\nEOF", ("  hi\nx\n", 0)),
+        ("cat <<EOF;\nhi\nEOF", ("hi\n", 0)),
+        ("cat <<EOF; case y in y) echo z;; esac\nhi\nEOF", ("hi\nz\n", 0)),
+        (
+            "cat <<EOF; for ((i=0;i<2;i++)); do echo $i; done\nhi\nEOF",
+            ("hi\n0\n1\n", 0),
+        ),
+        ("x=1; cat <<EOF; echo $x\n$x\nEOF", ("1\n1\n", 0)),
+    ],
+)
+async def test_heredoc_operator_line_terminators(line, expected):
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        io = await ws.shell(line)
+        assert (await io.stdout_str(), io.exit_code) == expected
+        assert await io.stderr_str() == ""
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_slashed_redirect_target_is_refused_before_the_command():
+    # GNU bash 5.2: open(2) with O_CREAT answers `missing/` with EISDIR
+    # before looking anything up, so the line prints `missing/: Is a
+    # directory`, exits 1, and the command never runs; a plain file
+    # behind the slash gets the same answer and keeps its bytes.
+    ws = await _workspace()
+    await ws.shell("printf y > /data/reg")
+    for line in (
+        "echo hi > /data/missing/",
+        "echo hi >> /data/missing/",
+        "echo hi > /data/reg/",
+        "echo hi >> /data/reg/",
+        "touch /data/marker > /data/missing/",
+    ):
+        io = await ws.shell(line)
+        assert io.exit_code == 1, line
+        target = line.split()[-1]
+        assert io.stderr == f"{target}: Is a directory\n".encode(), line
+    assert (await ws.shell("test -e /data/missing")).exit_code == 1
+    assert (await ws.shell("test -e /data/marker")).exit_code == 1
+    assert await _out(ws, "cat /data/reg") == "y"
+
+
+@pytest.mark.asyncio
+async def test_slashed_redirect_refusal_keeps_the_opens_before_it():
+    # bash opens left to right, so `> a > missing/` has created `a`
+    # (empty) by the time the second open refuses.
+    ws = await _workspace()
+    io = await ws.shell("echo hi > /data/a > /data/missing/")
+    assert io.exit_code == 1
+    assert io.stderr == b"/data/missing/: Is a directory\n"
+    assert await _out(ws, "cat /data/a") == ""
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_failed_open_wins_over_a_later_refusal():
+    # bash stops at the first open it cannot perform, so a redirect under
+    # an absent parent is reported ahead of a slashed or noclobbered
+    # target written after it, and nothing is created.
+    ws = await _workspace()
+    await ws.shell("printf y > /data/reg")
+    for line in (
+        "echo hi > /data/nodir/f > /data/missing/",
+        "set -C; echo hi > /data/nodir/f > /data/reg",
+    ):
+        io = await ws.shell(line)
+        assert io.exit_code == 1, line
+        assert io.stderr == b"/data/nodir/f: No such file or directory\n", line
+    assert (await ws.shell("test -e /data/nodir")).exit_code == 1
+    assert (await ws.shell("test -e /data/missing")).exit_code == 1
+    assert await _out(ws, "cat /data/reg") == "y"
+
+
+@pytest.mark.asyncio
+async def test_stdin_from_a_character_device_leaves_rg_the_cwd():
+    # ripgrep 14.1.1 searches stdin only when a file, FIFO or socket is
+    # attached: /dev/null is neither, so `rg` searches the cwd, while an
+    # empty regular file is still the stdin it searches.
+    ws = await _workspace()
+    await ws.shell("printf 'hit\\n' > /data/x.txt && printf '' > /data/e")
+    assert await _out(ws, "cd /data && rg hit < /dev/null") == "x.txt:hit\n"
+    io = await ws.shell("cd /data && rg hit < /data/e")
+    assert (io.stdout or b"", io.exit_code) == (b"", 1)
+    assert await _out(ws, "cat < /dev/null") == ""

@@ -12,85 +12,172 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import email.utils
 from datetime import datetime, timezone
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.generic_bind.provision import pure_provision
-from mirage.commands.config import CommandOpts
-from mirage.commands.registry import command
+from mirage.commands.builtin.utils.strftime import gnu_strftime
+from mirage.commands.config import CommandOpts, command
+from mirage.commands.errors import UsageError
+from mirage.commands.quote import quote_text
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import CommandName, FlagView
-from mirage.commands.spec.usage import extra_operand_error
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import CommandName
+from mirage.commands.spec.usage import (
+    extra_operand_error,
+    usage_exit_code,
+    usage_hint,
+)
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.utils.dates import parse_date_expr
+from mirage.utils.dates import parse_date_expr, parse_posix_time
+from mirage.utils.timezone import zone_from_env
+
+# GNU date's output formats (date.c), each chosen by one option: -I
+# takes one per precision, --rfc-3339 one per its narrower set, -R the
+# RFC 5322 line, and a line that chooses none gets the C locale's
+# default (`%e`, so the 5th is " 5"). All of them render through
+# gnu_strftime, the path `+FORMAT` takes.
+ISO_8601_FORMATS = {
+    "date": "%Y-%m-%d",
+    "hours": "%Y-%m-%dT%H%:z",
+    "minutes": "%Y-%m-%dT%H:%M%:z",
+    "seconds": "%Y-%m-%dT%H:%M:%S%:z",
+    "ns": "%Y-%m-%dT%H:%M:%S,%N%:z",
+}
+RFC_3339_FORMATS = {
+    "date": "%Y-%m-%d",
+    "seconds": "%Y-%m-%d %H:%M:%S%:z",
+    "ns": "%Y-%m-%d %H:%M:%S.%N%:z",
+}
+RFC_EMAIL_FORMAT = "%a, %d %b %Y %H:%M:%S %z"
+DEFAULT_FORMAT = "%a %b %e %H:%M:%S %Z %Y"
+MULTIPLE_FORMATS = b"date: multiple output formats specified\n"
+# What setting the clock answers: mirage has none to set, which is what
+# GNU says for a user without the privilege to.
+CANNOT_SET = b"date: cannot set date: Operation not permitted\n"
 
 
-def _expand_gnu_only(fmt: str, dt: datetime) -> str:
-    """Expand the directives GNU date implements itself, ahead of strftime.
+def option_formats(fl: FlagView) -> list[str]:
+    """The output formats the line's options choose, one per option.
 
-    ``%q`` (quarter) exists in no C library strftime, so passing it
-    through prints a mangled literal; GNU expands it before formatting
-    and so does this. ``%%`` pairs are stepped over, keeping ``%%q``
-    literal.
+    GNU keeps one and refuses a second as it reads it, so any two of
+    -I, -R and --rfc-3339 are ``multiple output formats specified``.
+    The parser has already resolved a precision to its whole word
+    (``-Is`` is ``seconds``). One divergence: the flag bag keeps the
+    last of a REPEATED option, so ``date -I -I`` prints where GNU
+    refuses it.
 
     Args:
-        fmt (str): the + format as typed.
-        dt (datetime): the moment being rendered.
+        fl (FlagView): spec-bound view over date's flags.
     """
-    out: list[str] = []
-    i = 0
-    while i < len(fmt):
-        if fmt[i] == "%" and i + 1 < len(fmt):
-            nxt = fmt[i + 1]
-            if nxt == "q":
-                out.append(str((dt.month - 1) // 3 + 1))
-            else:
-                out.append(fmt[i:i + 2])
-            i += 2
-            continue
-        out.append(fmt[i])
-        i += 1
-    return "".join(out)
+    formats: list[str] = []
+    iso = fl.raw("iso_8601")
+    if iso is True:
+        formats.append(ISO_8601_FORMATS["date"])
+    elif isinstance(iso, str):
+        formats.append(ISO_8601_FORMATS[iso])
+    if fl.as_bool("rfc_email"):
+        formats.append(RFC_EMAIL_FORMAT)
+    rfc_3339 = fl.as_str("rfc_3339")
+    if rfc_3339 is not None:
+        formats.append(RFC_3339_FORMATS[rfc_3339])
+    return formats
 
 
-@command("date", resource=None, spec=SPECS["date"], provision=pure_provision)
+def invalid_date(text: str) -> tuple[ByteSource | None, IOResult]:
+    """GNU's refusal of a date it cannot read, exit 1.
+
+    Args:
+        text (str): the expression or operand as typed.
+    """
+    return None, IOResult(
+        exit_code=1,
+        stderr=f"date: invalid date '{quote_text(text)}'\n".encode(),
+    )
+
+
+def lacks_plus_error(operand: str) -> UsageError:
+    """GNU's refusal of a non-``+`` operand beside ``-d``, a usage error.
+
+    Args:
+        operand (str): the operand as typed.
+    """
+    return UsageError(
+        f"date: the argument '{quote_text(operand)}' lacks a leading '+';\n"
+        "when using an option to specify date(s), any non-option\n"
+        "argument must be a format string beginning with '+'\n"
+        f"{usage_hint(CommandName.DATE)}",
+        usage_exit_code(CommandName.DATE),
+    )
+
+
+@command("date", vfs=None, spec=SPECS["date"])
 async def date(
     accessor: Accessor,
     paths: list[PathSpec],
     texts: list[str],
     opts: CommandOpts,
 ) -> tuple[ByteSource | None, IOResult]:
+    """GNU ``date``: the current moment, or the one ``-d`` names,
+    rendered in the zone the command runs in.
+
+    The zone is ``-u``'s UTC, else the ``TZ`` of the command's own
+    environment (``TZ=Asia/Hong_Kong date`` and an exported ``TZ``
+    alike, as GNU reads it), else the host's local zone. It is read
+    from ``opts.env``, never from process state, so concurrent
+    workspaces cannot move each other's clock. ``%Z`` is tzdata's
+    abbreviation (``HKT``), as GNU prints it; the TypeScript twin reads
+    the same names from a table generated off zoneinfo, since Intl has
+    none.
+
+    An operand without ``+`` sets the clock, GNU's
+    ``MMDDhhmm[[CC]YY][.ss]``: mirage has no clock to set, so it prints
+    the date it names and refuses the setting, as GNU does for a user
+    without the privilege. Beside ``-d`` it is a usage error.
+    """
     fl = FlagView(opts.flags, spec=SPECS["date"])
-    u = fl.as_bool("u")
-    d = fl.as_str("d")
+    u = fl.as_bool("utc") or fl.as_bool("universal")
+    d = fl.as_str("date")
+    formats = option_formats(fl)
+    if len(formats) > 1:
+        return None, IOResult(exit_code=1, stderr=MULTIPLE_FORMATS)
     if len(texts) > 1:
         raise extra_operand_error(CommandName.DATE, texts[1])
-    if d is not None:
-        parsed_d = parse_date_expr(d, utc=u)
+    setting = texts[0] if texts else None
+    if setting is not None and setting.startswith("+"):
+        if formats:
+            return None, IOResult(exit_code=1, stderr=MULTIPLE_FORMATS)
+        formats.append(setting[1:])
+        setting = None
+    elif setting is not None and d is not None:
+        raise lacks_plus_error(setting)
+    zone = timezone.utc if u else zone_from_env(opts.env)
+    if setting is not None:
+        placed = parse_posix_time(setting, tz=zone)
+        if placed is None:
+            return invalid_date(setting)
+        dt = placed
+    elif d is not None and not d.strip():
+        # GNU ACCEPTS an empty (or blank) expression, exit 0: gnulib's
+        # parse-datetime sees no component at all and falls through to
+        # "a date with no time", which is today at midnight. Measured on
+        # coreutils 9.4: `date -d ''` and `date -d '   '` both print
+        # today 00:00:00 in the command's zone.
+        now = datetime.now(zone)
+        dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif d is not None:
+        parsed_d = parse_date_expr(d, tz=zone)
         if parsed_d is None:
             # GNU's refusal, exit 1: a wrong answer with exit 0 poisons
             # whatever consumed it (the NaN-timestamp corpus failure).
-            return None, IOResult(
-                exit_code=1, stderr=f"date: invalid date '{d}'\n".encode())
+            return invalid_date(d)
         dt = parsed_d
-    elif u:
-        dt = datetime.now(timezone.utc)
     else:
-        dt = datetime.now()
-    fmt: str | None = None
-    for t in texts:
-        if t.startswith("+"):
-            fmt = t[1:]
-            break
-    if fl.as_bool("args_I"):
-        result = dt.strftime("%Y-%m-%d")
-    elif fl.as_bool("R"):
-        result = email.utils.format_datetime(dt)
-    elif fmt is not None:
-        result = dt.strftime(_expand_gnu_only(fmt, dt))
-    else:
-        result = dt.strftime("%a %b %d %H:%M:%S %Z %Y") if u else dt.strftime(
-            "%a %b %d %H:%M:%S %Y")
-    return (result + "\n").encode(), IOResult()
+        dt = datetime.now(zone)
+    if zone is None:
+        dt = dt.astimezone()
+    fmt = formats[0] if formats else DEFAULT_FORMAT
+    out = (gnu_strftime(dt, fmt) + "\n").encode()
+    if setting is not None:
+        return out, IOResult(exit_code=1, stderr=CANNOT_SET)
+    return out, IOResult()

@@ -13,23 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { BaseResource, type Resource } from '../../../resource/base.ts'
+import { BaseVFS } from '../../../vfs/base.ts'
 import { MountMode, PathSpec } from '../../../types.ts'
 import { MountRegistry } from '../../mount/registry.ts'
 import { classifyBarePath } from './path.ts'
 
-class StubResource extends BaseResource implements Resource {
-  readonly kind = 'stub'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
+class StubVFS extends BaseVFS {
+  override readonly name = 'stub'
   override close(): Promise<void> {
     return Promise.resolve()
   }
 }
 
 function setup(): MountRegistry {
-  return new MountRegistry({ '/ram': new StubResource() }, MountMode.WRITE)
+  return new MountRegistry({ '/ram': new StubVFS() }, MountMode.WRITE)
 }
 
 describe('classifyBarePath', () => {

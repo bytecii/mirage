@@ -12,18 +12,28 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Producer } from '../types.ts'
-import { CachableAsyncIterator } from './cachable_iterator.ts'
+import type { PathSpec, Producer, Refusal } from '../types.ts'
+import { CachableAsyncIterator, concat } from './cachable_iterator.ts'
+import { chunks } from './cooperative.ts'
 
 export type ByteSource = Uint8Array | AsyncIterable<Uint8Array>
+
+/**
+ * Standard input redirected from a character device (`< /dev/null`). It reads
+ * as the bytes it holds, like any other stdin, and tells a command that asks
+ * whether a file, FIFO or socket is attached that none is: ripgrep asks before
+ * it searches stdin rather than the working directory
+ * (grep_cli::is_readable_stdin). Mirrors Python's DeviceInput.
+ */
+export class DeviceInput extends Uint8Array {}
 
 export async function materialize(source: ByteSource | null | undefined): Promise<Uint8Array> {
   if (source === null || source === undefined) return new Uint8Array()
   if (source instanceof Uint8Array) return source
   if (source instanceof CachableAsyncIterator) return source.drain()
-  const chunks: Uint8Array[] = []
-  for await (const chunk of source) chunks.push(chunk)
-  return concat(chunks)
+  const parts: Uint8Array[] = []
+  for await (const chunk of chunks(source)) parts.push(chunk)
+  return concat(parts)
 }
 
 /**
@@ -67,41 +77,53 @@ export interface IOResultInit {
   exitCode?: number
   reads?: Record<string, ByteSource>
   writes?: Record<string, ByteSource>
+  /** Completed backend moves, in order, for namespace metadata settlement. */
+  renames?: [string, string][]
   cache?: string[]
   producer?: Producer | null
-  mutated?: boolean | null
+  matchedRuns?: PathSpec[][] | null
+  refusal?: Refusal | null
 }
 
 export class IOResult {
+  // Structured selection before display rendering, for later actions:
+  // one list of rows per start point, in operand order, so a nested or
+  // repeated start point stays its own traversal (GNU walks each to
+  // completion before the next).
+  matchedRuns: PathSpec[][] | null
   stdout: ByteSource | null
   stderr: ByteSource | null
   private _exitCode: number
   reads: Record<string, ByteSource>
   writes: Record<string, ByteSource>
+  renames: [string, string][]
   cache: string[]
   // Provenance of this result (which command, spanning which
-  // mounts); merge keeps the rightmost producer, mirroring whose
-  // stream the shell shows. The workspace boundary hands it to the
-  // policy layer as context. Facts ride the envelope, policy
-  // decisions never do.
+  // mounts); merge keeps the last command for attribution, not
+  // ownership of every byte in a combined result. The workspace boundary hands it to the
+  // policy layer as context. Facts ride the envelope as policy
+  // input; the decision a chain hands down rides beside them as
+  // `refusal`, written after the last hook has spoken.
+  outputFinalized = false
   producer: Producer | null
-  // Whether this run changed service state, when only the handler can
-  // tell. A CLI leaf declares `write` statically because for almost every
-  // verb it is static, but `gh api` carries its method on the line, so a
-  // plain `gh api /user` is a read through a leaf that is declared
-  // writable. null leaves the spec's answer standing.
-  mutated: boolean | null
+  // Why the line did not run, when a policy or an unanswered ask
+  // refused it; null on every ordinary run. stderr stays in bash's
+  // voice, this carries the reason. merge keeps the rightmost record,
+  // as it does the producer.
+  refusal: Refusal | null
   streamSource: IOResult | null
 
   constructor(init: IOResultInit = {}) {
+    this.matchedRuns = init.matchedRuns ?? null
     this.stdout = init.stdout ?? null
     this.stderr = init.stderr ?? null
     this._exitCode = init.exitCode ?? 0
     this.reads = init.reads ?? {}
     this.writes = init.writes ?? {}
     this.cache = init.cache ?? []
+    this.renames = init.renames ?? []
     this.producer = init.producer ?? null
-    this.mutated = init.mutated ?? null
+    this.refusal = init.refusal ?? null
     this.streamSource = null
   }
 
@@ -154,12 +176,16 @@ export class IOResult {
     // firing at drain time) is still visible.
     const result = new IOResult({
       stdout: other.stdout,
+      matchedRuns: other.matchedRuns,
       stderr: mergedStderr,
       reads: { ...this.reads, ...other.reads },
       writes: { ...this.writes, ...other.writes },
       cache: [...this.cache, ...other.cache],
+      renames: [...this.renames, ...other.renames],
       producer: other.producer,
+      refusal: other.refusal ?? this.refusal,
     })
+    result.outputFinalized = other.outputFinalized
     result.streamSource = other
     return result
   }
@@ -167,16 +193,4 @@ export class IOResult {
 
 function decodeBytes(bytes: Uint8Array, errors: 'replace' | 'strict'): string {
   return new TextDecoder('utf-8', { fatal: errors === 'strict' }).decode(bytes)
-}
-
-function concat(chunks: Uint8Array[]): Uint8Array {
-  let total = 0
-  for (const c of chunks) total += c.byteLength
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
 }

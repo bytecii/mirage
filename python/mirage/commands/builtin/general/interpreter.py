@@ -16,12 +16,17 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
 from mirage.commands.builtin.utils.paths import resolve_script
-from mirage.commands.builtin.utils.stream import _read_stdin_async
+from mirage.commands.builtin.utils.stream import read_stdin_async
 from mirage.io.types import ByteSource, CommandOutput, IOResult
 from mirage.runtime.base import Runtime
 from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.python.base import PythonRuntime
-from mirage.runtime.types import DispatchFn, RunArgs, RunResult
+from mirage.runtime.types import (
+    CodeExecution,
+    DispatchFn,
+    ExecPathFn,
+    RunResult,
+)
 from mirage.types import PathSpec
 
 
@@ -40,6 +45,20 @@ def run_output(result: RunResult) -> CommandOutput:
         exit_code=result.exit_code,
         stderr=result.stderr,
     )
+
+
+async def runtime_version(
+    label: str,
+    runtime: Runtime | None,
+    env: dict[str, str] | None,
+    unavailable: str | None,
+) -> CommandOutput:
+    if not isinstance(runtime, LanguageRuntime):
+        hint = unavailable or "command not found"
+        return None, IOResult(
+            exit_code=127, stderr=f"{label}: {hint}\n".encode()
+        )
+    return run_output(await runtime.version(env or {}))
 
 
 # Which of an interpreter's four doors the source came through. The
@@ -96,10 +115,9 @@ class Argv0Rules:
 
 
 # CPython's own four answers, pinned on 3.12.13/3.13.7.
-CPYTHON_ARGV0 = Argv0Rules(payload="-c",
-                           stdin_operand="-",
-                           bare_stdin="",
-                           names_file=True)
+CPYTHON_ARGV0 = Argv0Rules(
+    payload="-c", stdin_operand="-", bare_stdin="", names_file=True
+)
 
 # `-m` is runpy's job on any real CPython: run_module finds the module,
 # runs it under __main__, and alter_sys rewrites sys.argv[0] to the
@@ -126,7 +144,8 @@ MODULE_SOURCE = (
     "if not _found:\n"
     "    sys.stderr.write(_label + ': No module named ' + _name + chr(10))\n"
     "    raise SystemExit(1)\n"
-    "runpy.run_module(_name, run_name='__main__', alter_sys=True)\n")
+    "runpy.run_module(_name, run_name='__main__', alter_sys=True)\n"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +187,7 @@ async def resolve_source(
     module: str | None = None,
     argv0_rules: Argv0Rules = Argv0Rules(),
     skip_line: bool = False,
+    exec_path_allowed: ExecPathFn | None = None,
 ) -> tuple[CommandOutput | None, Source | None]:
     """Resolve what an interpreter command should run, shared by all.
 
@@ -175,6 +195,14 @@ async def resolve_source(
     payload flag wins (-c/-e), else the first operand is the script
     (read through the workspace dispatch), else piped stdin is the
     source. Words after the script pass through verbatim as argv.
+
+    The ``x`` check follows the source's door. A file operand asks
+    ``exec_path_allowed`` about the script's own path, so a session
+    whose only ``x`` grant is one show subtree runs scripts there and
+    nowhere else; inline code (-c/-e), -m and stdin keep the
+    whole-session rule (``exec_allowed``: any ``x`` grant), since no
+    path holds them. Outside a workspace no door is wired and
+    ``exec_allowed`` answers for files too.
 
     Args:
         label (str): the command name used in error messages.
@@ -186,23 +214,22 @@ async def resolve_source(
             reading the script operand.
         cwd (PathSpec | str | None): the session cwd for script
             resolution, as ``CommandOpts.cwd`` carries it.
-        exec_allowed (bool): whether the root mount is in EXEC mode.
+        exec_allowed (bool): whether any mount region is in EXEC mode.
         module (str | None): the -m module name, if given.
         argv0_rules (Argv0Rules): what this interpreter calls itself in
             the doors that carry no file name.
         skip_line (bool): drop the script file's first line (CPython's
             -x). File mode only, which is CPython's own scope: -c, -m
             and stdin are unaffected.
+        exec_path_allowed (ExecPathFn | None): whether code may be
+            loaded from one path, for the file door; None outside a
+            workspace.
 
     Returns:
         tuple[CommandOutput | None, Source | None]: an early
             error result, or the prepared source (exactly one is not
             None).
     """
-    if not exec_allowed:
-        err = f"{label}: root mount '/' is not in EXEC mode\n".encode()
-        return (None, IOResult(exit_code=126, stderr=err)), None
-
     paths = paths or []
     text_list = list(texts)
     code = payload
@@ -243,6 +270,20 @@ async def resolve_source(
         mode = "stdin"
         argv0 = argv0_rules.bare_stdin
 
+    if mode == "file" and script_path is not None:
+        allowed = (
+            exec_path_allowed(script_path.virtual)
+            if exec_path_allowed is not None
+            else exec_allowed
+        )
+        if not allowed:
+            display = script_path.raw_path or script_path.virtual
+            err = f"{label}: {display}: not in EXEC mode\n".encode()
+            return (None, IOResult(exit_code=126, stderr=err)), None
+    elif not exec_allowed:
+        err = f"{label}: root mount '/' is not in EXEC mode\n".encode()
+        return (None, IOResult(exit_code=126, stderr=err)), None
+
     if code is None and script_path is not None:
         if dispatch is None:
             err = f"{label}: no dispatch available to read script\n".encode()
@@ -256,7 +297,7 @@ async def resolve_source(
         if skip_line:
             code = skip_first_line(code)
 
-    stdin_data = await _read_stdin_async(stdin)
+    stdin_data = await read_stdin_async(stdin)
     if code is None:
         if stdin_data:
             code = stdin_data.decode(errors="replace")
@@ -265,12 +306,14 @@ async def resolve_source(
             err = f"{label}: no input\n".encode()
             return (None, IOResult(exit_code=1, stderr=err)), None
 
-    return None, Source(code=code,
-                        args=arg_strs,
-                        stdin=stdin_data,
-                        script_path=script_path,
-                        mode=mode,
-                        argv0=argv0)
+    return None, Source(
+        code=code,
+        args=arg_strs,
+        stdin=stdin_data,
+        script_path=script_path,
+        mode=mode,
+        argv0=argv0,
+    )
 
 
 async def run_code(
@@ -280,6 +323,7 @@ async def run_code(
     flags: dict[str, Any],
     runtime: Runtime | None,
     unavailable: str | None,
+    cwd: PathSpec | None = None,
 ) -> CommandOutput:
     """Run a prepared source on the bound runtime, shared by all.
 
@@ -299,6 +343,7 @@ async def run_code(
             runtime (each runtime reads its own).
         runtime (Runtime | None): the workspace-bound runtime for this
             command; None when no entry captures it.
+        cwd (PathSpec | None): virtual working directory for the guest.
         unavailable (str | None): the dispatcher-recorded reason this
             command has no runtime (a default entry's build error),
             None when nothing captures it at all.
@@ -310,21 +355,32 @@ async def run_code(
         # entry without the interpreter door (not a LanguageRuntime) is
         # refused the same way: there is nothing to run code on.
         hint = unavailable or "command not found"
-        return None, IOResult(exit_code=127,
-                              stderr=f"{label}: {hint}\n".encode())
-    if (prepared.mode == "module" and isinstance(runtime, PythonRuntime)
-            and not runtime.runs_modules):
+        return None, IOResult(
+            exit_code=127, stderr=f"{label}: {hint}\n".encode()
+        )
+    if (
+        prepared.mode == "module"
+        and isinstance(runtime, PythonRuntime)
+        and not runtime.runs_modules
+    ):
         # Exit 1, CPython's code for a `-m` that could not run, but not
         # its "No module named" wording: nothing was searched for, so
         # naming the runtime is the honest report.
-        err = (f"{label}: -m is not supported by the {runtime.name!r} "
-               f"runtime\n").encode()
+        err = (
+            f"{label}: -m is not supported by the {runtime.name!r} runtime\n"
+        ).encode()
         return None, IOResult(exit_code=1, stderr=err)
-    result = await runtime.run(
-        RunArgs(code=prepared.code,
-                args=prepared.args,
-                prog=prepared.argv0,
-                env=env or {},
-                stdin=prepared.stdin,
-                flags=flags))
+    result = await runtime.execute(
+        CodeExecution(
+            language=runtime.language,
+            code=prepared.code,
+            args=prepared.args,
+            prog=prepared.argv0,
+            env=env or {},
+            stdin=prepared.stdin,
+            flags=flags,
+            cwd=cwd,
+            script_path=prepared.script_path,
+        )
+    )
     return run_output(result)

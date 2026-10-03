@@ -1,19 +1,23 @@
 import io
-import posixpath
 import zipfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from mirage.commands.builtin.generic.archive.types import MemberKind
-from mirage.commands.builtin.generic.archive.walk import (OTHER_FILESYSTEM,
-                                                          StatFn, WalkFn,
-                                                          scan_operand)
+from mirage.commands.builtin.generic.archive.walk import (
+    OTHER_FILESYSTEM,
+    StatFn,
+    WalkFn,
+    scan_operand,
+)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import LinkView, MountView
 from mirage.types import PathSpec
+from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.utils.fnmatch import fnmatch
 from mirage.utils.path import respell_one
 
@@ -26,6 +30,22 @@ WARNING_PREFIX = "\tzip warning: "
 # follow prints exactly this too.
 NOT_MATCHED = "name not matched: "
 NOTHING_TO_DO_EXIT = 12
+# Two operands that store under one name refuse the whole run (Info-ZIP's
+# check_dup, ZE_PARMS). -q silences the warning, not the error, and the
+# warning's later lines are indented with spaces under its first.
+REPEATED_EXIT = 16
+REPEATED_ERROR = (
+    "\nzip error: Invalid command arguments "
+    "(cannot repeat names in zip file)\n"
+)
+REPEATED_INDENT = " " * 21
+# An archive zip cannot create ends the run before any member is added,
+# -q or not (Info-ZIP's ZE_CREAT, exit 15). Info-ZIP prints it on stdout
+# like every diagnostic; mirage keeps it on stderr with the rest.
+CREATE_EXIT = 15
+CREATE_ERROR = (
+    "zip I/O error: {0}\nzip error: Could not create output file ({1})\n"
+)
 # Info-ZIP has no mount boundaries to describe, so this borrows GNU
 # tar's --one-file-system wording rather than inventing a second one.
 CROSSING_REASON = OTHER_FILESYSTEM
@@ -63,31 +83,55 @@ class ZipPlan:
         warnings (tuple[str, ...]): stderr lines without their prefix.
         write (bool): whether to write an archive at all. Info-ZIP
             leaves no file behind when nothing matched.
+        repeated (str): the warning for two paths that store under one
+            name, empty when every name is unique.
     """
 
     members: tuple[ZipMember, ...]
     warnings: tuple[str, ...]
     write: bool
+    repeated: str = ""
+
+
+def _full_name(spelled: str, kind: MemberKind) -> str:
+    """The name Info-ZIP forms for a path before it stores it.
+
+    A directory carries the slash zip appends to it before descending,
+    so ``d`` and ``d/`` are one path.
+
+    Args:
+        spelled (str): the path as the operand spelled it.
+        kind (MemberKind): what the entry is.
+    """
+    if kind == "dir" and not spelled.endswith("/"):
+        return spelled + "/"
+    return spelled
+
+
+def _relative(name: str) -> str:
+    name = name.lstrip("/")
+    while name.startswith("./"):
+        name = name[2:]
+    return name
 
 
 def member_name(spelled: str, kind: MemberKind, junk: bool) -> str:
     """The entry name Info-ZIP stores for a path as the operand typed it.
 
-    A leading slash is stripped in silence (unlike tar, which warns), a
-    directory carries a trailing slash, and ``-j`` throws the directory
-    part away entirely.
+    Leading slashes go in silence (unlike tar, which warns), and so does
+    every ``./`` after them: ``zip -r out.zip .`` stores ``a.txt``, not
+    ``./a.txt``, and ``.`` itself, formed as ``./``, names nothing and is
+    not stored. Only that leading run goes, so ``d/./x`` keeps its
+    ``./`` and ``.//x`` stores ``/x``. ``-j`` keeps what follows the last
+    slash, which for a directory is nothing: ``-j`` stores no directory.
 
     Args:
         spelled (str): the path as the operand spelled it.
         kind (MemberKind): what the entry is.
         junk (bool): ``-j``, store the basename only.
     """
-    name = spelled.lstrip("/")
-    if junk:
-        name = posixpath.basename(name.rstrip("/"))
-    if kind == "dir" and name and not name.endswith("/"):
-        return name + "/"
-    return name
+    name = _relative(_full_name(spelled, kind))
+    return name[name.rfind("/") + 1 :] if junk else name
 
 
 def excluded(name: str, patterns: list[str]) -> bool:
@@ -98,13 +142,40 @@ def excluded(name: str, patterns: list[str]) -> bool:
     it, ``*.txt`` takes every ``.txt`` at any depth, and a bare
     ``b.txt`` matches nothing below the top. That is the opposite of
     GNU tar's unanchored ``--exclude``, which is why the two have
-    separate matchers.
+    separate matchers. A pattern loses its leading slashes and ``./``
+    the way a name does, so ``./sub/*`` still takes ``sub/``.
 
     Args:
         name (str): the stored entry name, directories slash-terminated.
         patterns (list[str]): the raw ``-x`` values.
     """
-    return any(fnmatch(name, pattern) for pattern in patterns)
+    return any(fnmatch(name, _relative(pattern)) for pattern in patterns)
+
+
+def _repeated(formed: dict[str, list[str]], junk: bool) -> str:
+    """Info-ZIP's warning for the first name two paths would share.
+
+    ``check_dup`` sorts the stored names and reports the first one
+    reached from two different paths, those two in sorted order.
+
+    Args:
+        formed (dict[str, list[str]]): each stored name, with the
+            distinct full names that would store under it.
+        junk (bool): ``-j``, which Info-ZIP suggests as the cause.
+    """
+    clashes = sorted(name for name, fulls in formed.items() if len(fulls) > 1)
+    if not clashes:
+        return ""
+    name = clashes[0]
+    first, second = sorted(formed[name])[:2]
+    warning = (
+        f"  first full name: {first}\n"
+        f"{REPEATED_INDENT} second full name: {second}\n"
+        f"{REPEATED_INDENT}name in zip file repeated: {name}"
+    )
+    if junk:
+        warning += f"\n{REPEATED_INDENT}this may be a result of using -j"
+    return warning
 
 
 async def plan_zip(
@@ -143,17 +214,33 @@ async def plan_zip(
     """
     members: list[ZipMember] = []
     warnings: list[str] = []
+    formed: dict[str, list[str]] = {}
     for path in paths:
         raw = path.raw_path
+        if path.walk_error is not None:
+            # The walk refused the operand before zip ran (the empty
+            # name, a link loop above the name), which Info-ZIP matches
+            # to nothing, whatever the errno.
+            warnings.append(NOT_MATCHED + raw)
+            continue
         base = path.virtual.rstrip("/") or "/"
-        scan = await scan_operand(path,
-                                  stat=stat,
-                                  walk=walk,
-                                  links=links,
-                                  mounts=mounts,
-                                  dereference=not store_links,
-                                  recurse=recurse)
+        # Info-ZIP walks a bare `.` with an empty prefix, so what it finds
+        # there is named bare: `zip -r out.zip . a.txt` names a.txt once.
+        spelling = "" if raw == "." else raw
+        scan = await scan_operand(
+            path,
+            stat=stat,
+            walk=walk,
+            links=links,
+            mounts=mounts,
+            dereference=not store_links,
+            recurse=recurse,
+        )
         for problem in scan.problems:
+            if problem.unreadable:
+                # Info-ZIP stores the directory it could not open and
+                # says nothing about it (pinned on debian:stable-slim).
+                continue
             shown = respell_one(problem.path, base, raw)
             if problem.fatal:
                 warnings.append(NOT_MATCHED + shown)
@@ -165,27 +252,38 @@ async def plan_zip(
             shown = respell_one(crossing, base, raw)
             warnings.append(f"{shown}: {CROSSING_REASON}")
         for entry in scan.entries:
-            name = member_name(respell_one(entry.name_path, base, raw),
-                               entry.kind, junk)
+            spelled = respell_one(entry.name_path, base, spelling)
+            name = member_name(spelled, entry.kind, junk)
             if not name or excluded(name, exclude):
-                continue
-            # -j has no directory to name, so Info-ZIP drops directory
-            # entries under it entirely rather than storing bare slashes.
-            if junk and entry.kind == "dir":
                 continue
             read = entry.read
             if read is not None and read.virtual == archive.virtual:
                 # Info-ZIP never stores the archive it is writing, and
                 # says nothing about it.
                 continue
+            # One path named twice is stored once; two paths under one
+            # name are the run's error, reported once everything is seen.
+            fulls = formed.setdefault(name, [])
+            full = _full_name(spelled, entry.kind)
+            if full in fulls:
+                continue
+            fulls.append(full)
+            if len(fulls) > 1:
+                continue
             members.append(
-                ZipMember(name=name,
-                          kind=entry.kind,
-                          path=entry.read,
-                          target=entry.target))
-    return ZipPlan(members=tuple(members),
-                   warnings=tuple(warnings),
-                   write=bool(members))
+                ZipMember(
+                    name=name,
+                    kind=entry.kind,
+                    path=entry.read,
+                    target=entry.target,
+                )
+            )
+    return ZipPlan(
+        members=tuple(members),
+        warnings=tuple(warnings),
+        write=bool(members),
+        repeated=_repeated(formed, junk),
+    )
 
 
 def _info(member: ZipMember, size: int) -> zipfile.ZipInfo:
@@ -227,25 +325,40 @@ async def zip_cmd(
     if not paths:
         raise ValueError("zip: usage: zip archive.zip file1 [file2 ...]")
     archive_path = paths[0]
-    plan = await plan_zip(paths[1:],
-                          archive=archive_path,
-                          stat=stat,
-                          walk=walk,
-                          recurse=r,
-                          junk=j,
-                          store_links=y,
-                          exclude=x or [],
-                          links=links,
-                          mounts=mounts)
+    plan = await plan_zip(
+        paths[1:],
+        archive=archive_path,
+        stat=stat,
+        walk=walk,
+        recurse=r,
+        junk=j,
+        store_links=y,
+        exclude=x or [],
+        links=links,
+        mounts=mounts,
+    )
+    if plan.repeated:
+        return None, IOResult(
+            exit_code=REPEATED_EXIT,
+            stderr=_stderr((*plan.warnings, plan.repeated), q)
+            + REPEATED_ERROR.encode(),
+        )
     if not plan.write:
         # Info-ZIP writes no archive when nothing matched, and the error
         # is not a warning: -q does not silence it.
         nothing = f"\nzip error: Nothing to do! ({archive_path.raw_path})\n"
-        return None, IOResult(exit_code=NOTHING_TO_DO_EXIT,
-                              stderr=_stderr(plan.warnings, q) +
-                              nothing.encode())
+        return None, IOResult(
+            exit_code=NOTHING_TO_DO_EXIT,
+            stderr=_stderr(plan.warnings, q) + nothing.encode(),
+        )
     buf = io.BytesIO()
     output_lines: list[str] = []
+    # A member the session may not read (a rule refused it below the
+    # operand) aborts the run with zip's name on the refusal and writes
+    # no archive. Deliberate divergence: Info-ZIP writes the rest, echoes
+    # ``could not open for reading`` beside the adding line, and closes
+    # with a read/skipped summary that needs every member's size and
+    # exit 18; none of that is reproduced.
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for member in plan.members:
             data = b""
@@ -256,10 +369,21 @@ async def zip_cmd(
             zf.writestr(_info(member, len(data)), data)
             output_lines.append(f"  adding: {member.name}")
     archive = buf.getvalue()
-    await write_bytes(archive_path, archive)
+    try:
+        await write_bytes(archive_path, archive)
+    except FS_ERRORS as exc:
+        return None, IOResult(
+            exit_code=CREATE_EXIT,
+            stderr=_stderr(plan.warnings, q)
+            + CREATE_ERROR.format(
+                fs_strerror(exc), archive_path.raw_path
+            ).encode(),
+        )
     stdout = ("\n".join(output_lines) + "\n").encode() if not q else None
-    return stdout, IOResult(writes={archive_path.mount_path: archive},
-                            stderr=_stderr(plan.warnings, q))
+    return stdout, IOResult(
+        writes={archive_path.mount_path: archive},
+        stderr=_stderr(plan.warnings, q),
+    )
 
 
 __all__ = ["plan_zip", "zip_cmd"]
@@ -307,4 +431,5 @@ async def zip_generic(
         y=parsed.store_links,
         x=list(parsed.exclude) or None,
         links=opts.ns.links if opts.ns is not None else None,
-        mounts=opts.ns.mounts if opts.ns is not None else None)
+        mounts=opts.ns.mounts if opts.ns is not None else None,
+    )

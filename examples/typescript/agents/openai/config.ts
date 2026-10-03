@@ -8,8 +8,8 @@ import {
 import {
   MirageEditor,
   MirageShell,
-  mirageExecuteTool,
   mirageReadFileTool,
+  mirageTools,
 } from '@struktoai/mirage-agents/openai'
 
 export function configureOpenAIExample(ws: Workspace, defaultModel: string) {
@@ -30,7 +30,7 @@ export function configureOpenAIExample(ws: Workspace, defaultModel: string) {
     shellTool({ shell: new MirageShell(ws) }),
     applyPatchTool({ editor: new MirageEditor(ws) }),
   ]
-  const compatibleTools = [mirageReadFileTool(ws), mirageExecuteTool(ws)]
+  const compatibleTools = mirageTools(ws)
 
   return {
     model: process.env.OPENAI_MODEL?.trim() || defaultModel,

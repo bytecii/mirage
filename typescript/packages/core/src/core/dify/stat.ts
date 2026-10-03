@@ -14,73 +14,45 @@
 
 import type { DifyAccessor } from '../../accessor/dify.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { enoent } from '../../utils/errors.ts'
-import { rstripSlash } from '../../utils/slash.ts'
+import { ContentType, FileStat, FileType, type PathSpec } from '../../types.ts'
+import { directoryStat } from '../slug_tree/stat.ts'
 import { getDocumentDetail } from './client.ts'
-import { extractDocumentSize } from './tree.ts'
-import { resolvePath } from './path.ts'
+import { DIFY_TREE, epochText, extractDocumentSize } from './tree.ts'
 
 // Index-only stat: never fetches document detail, so `ls` and the plain
 // `find` walk stay cheap (one listing per mount, no per-entry API call).
-// size stays null because the entry size is the uploaded source file
-// (e.g. the original PDF), not the rendered segment text this mount
-// serves (FileStat.size must be render-derived or null, see the
-// CLAUDE.md FUSE rules). The source size remains in extra.source_size.
 export async function statLight(
   accessor: DifyAccessor,
-  path: PathSpec | string,
+  path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
-  const spec = typeof path === 'string' ? PathSpec.fromStrPath(path) : path
-  const resolved = await resolvePath(accessor, spec, index)
-  if (resolved.isDir) {
-    return new FileStat({
-      name: statName(resolved.virtualKey, resolved.mountPrefix),
-      type: FileType.DIRECTORY,
-      extra: { children_count: 0 },
-    })
-  }
-  if (resolved.entry === null) throw enoent(spec.virtual)
-  const extra: Record<string, unknown> = { ...resolved.entry.extra }
-  if (resolved.entry.size !== null) {
-    extra.source_size = resolved.entry.size
-  }
-  const modified = resolved.entry.remoteTime
+  const resolved = await DIFY_TREE.resolve(accessor, path, index)
+  if (resolved.isDir) return directoryStat(resolved)
+  const created = resolved.entry.remoteTime !== '' ? resolved.entry.remoteTime : null
   return new FileStat({
     name: resolved.entry.name,
-    type: FileType.TEXT,
+    type: FileType.FILE,
+    content: ContentType.TEXT,
     size: null,
-    modified: modified !== '' ? modified : null,
+    modified: created,
+    birthtime: created,
     fingerprint: null,
     revision: null,
-    extra,
+    extra: { ...resolved.entry.extra },
   })
 }
 
 export async function stat(
   accessor: DifyAccessor,
-  path: PathSpec | string,
+  path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
-  const spec = typeof path === 'string' ? PathSpec.fromStrPath(path) : path
-  const resolved = await resolvePath(accessor, spec, index)
-  if (resolved.isDir) {
-    return new FileStat({
-      name: statName(resolved.virtualKey, resolved.mountPrefix),
-      type: FileType.DIRECTORY,
-      extra: { children_count: 0 },
-    })
-  }
-  if (resolved.entry === null) throw enoent(spec.virtual)
+  const resolved = await DIFY_TREE.resolve(accessor, path, index)
+  if (resolved.isDir) return directoryStat(resolved)
   const detail = await getDocumentDetail(accessor, resolved.entry.id)
-  const sourceSize = extractDocumentSize(detail) ?? resolved.entry.size
   const extra: Record<string, unknown> = { ...resolved.entry.extra }
   extra.document_id = resolved.entry.id
-  // size stays null: the API reports the uploaded source file's size (e.g.
-  // the original PDF), not the rendered segment text this mount serves
-  // (FileStat.size must be render-derived or null, see the CLAUDE.md FUSE
-  // rules). The source size remains in extra.
+  const sourceSize = extractDocumentSize(detail)
   if (sourceSize !== null) {
     extra.source_size = sourceSize
   }
@@ -90,30 +62,18 @@ export async function stat(
   if ('indexing_status' in detail) {
     extra.indexing_status = detail.indexing_status
   }
+  const created =
+    epochText(detail.created_at) ??
+    (resolved.entry.remoteTime !== '' ? resolved.entry.remoteTime : null)
   return new FileStat({
     name: resolved.entry.name,
-    type: FileType.TEXT,
+    type: FileType.FILE,
+    content: ContentType.TEXT,
     size: null,
-    modified: timestampToZulu(detail.updated_at),
+    modified: epochText(detail.updated_at) ?? created,
+    birthtime: created,
     fingerprint: null,
     revision: null,
     extra,
   })
-}
-
-// Mirrors the Python timestamp_to_zulu over its real domain (the API
-// sends epoch seconds or nothing): second precision and a literal Z,
-// unlike tree.ts's timestampToIso (+millis); strings pass through.
-function timestampToZulu(value: unknown): string | null {
-  if (typeof value === 'number') {
-    return new Date(value * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
-  }
-  return typeof value === 'string' ? value : null
-}
-
-function statName(virtualKey: string, mountPrefix: string): string {
-  const root = rstripSlash(mountPrefix) !== '' ? rstripSlash(mountPrefix) : '/'
-  if (virtualKey === root) return '/'
-  const stripped = rstripSlash(virtualKey)
-  return stripped.split('/').pop() ?? '/'
 }

@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Channel } from '@struktoai/mirage-core/shell/console/index'
+import { concat } from '@struktoai/mirage-core/io/cachable_iterator'
 
 /** Where a spill sink writes: a workspace directory it can create and extend. */
 export interface SpillTarget {
@@ -59,16 +60,6 @@ function totalLength(parts: Uint8Array[]): number {
   return parts.reduce((sum, p) => sum + p.byteLength, 0)
 }
 
-function concat(parts: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(totalLength(parts))
-  let at = 0
-  for (const p of parts) {
-    out.set(p, at)
-    at += p.byteLength
-  }
-  return out
-}
-
 /**
  * Keeps the full, uncapped stdout and stderr of one command in workspace
  * files so a reader can recover output the delta budget dropped.
@@ -88,15 +79,22 @@ export class SpillSink {
   private readonly target: SpillTarget
   private readonly dir: string
   private readonly base: string
+  private readonly onFailure: (err: unknown) => void
   private started = false
   private failed = false
   private stdoutParts: Uint8Array[] = []
   private stderrParts: Uint8Array[] = []
 
-  constructor(target: SpillTarget, dir: string, base: string) {
+  constructor(
+    target: SpillTarget,
+    dir: string,
+    base: string,
+    onFailure: (err: unknown) => void = () => undefined,
+  ) {
     this.target = target
     this.dir = dir
     this.base = base
+    this.onFailure = onFailure
   }
 
   /** Buffer a chunk before spill starts, or append it to the file after. */
@@ -126,7 +124,10 @@ export class SpillSink {
       this.started = true
       this.stdoutParts = []
       this.stderrParts = []
-    } catch {
+    } catch (err) {
+      // Reported, never swallowed: a spill quietly vanishing reads later
+      // as "the harness lost my output" with nothing to explain it.
+      this.onFailure(err)
       this.disable()
     }
   }
@@ -148,7 +149,8 @@ export class SpillSink {
           await this.target.append(this.stdoutPath, data)
         }
       }
-    } catch {
+    } catch (err) {
+      this.onFailure(err)
       this.disable()
     }
   }

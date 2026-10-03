@@ -16,6 +16,10 @@ import type { FastifyInstance } from 'fastify'
 import { Errors } from 'isomorphic-git'
 import { toStateDict } from '@struktoai/mirage-core/workspace/snapshot/state'
 import { Workspace } from '@struktoai/mirage-node'
+import type { SecretEntries } from '@struktoai/mirage-core/secrets/config'
+import { z } from '@struktoai/mirage-core/vfs/secrets'
+import { SecretsError } from '@struktoai/mirage-core/secrets/errors'
+import { VFSConfigError } from '@struktoai/mirage-core/vfs/errors'
 import { cloneWorkspaceWithOverride } from '../clone.ts'
 import type { WorkspaceRegistry } from '../registry.ts'
 import { makeDetail } from '../summary.ts'
@@ -32,7 +36,7 @@ import {
 } from '../version/api.ts'
 import type { VersionBackend } from '../version/backend.ts'
 import { HeadMovedError, NoSuchBranchError } from '../version/errors.ts'
-import { toState } from '../version/stateTree.ts'
+import { toState } from '../version/state_tree.ts'
 import { VersionStore } from '../version/store.ts'
 
 export interface VersionRoutesDeps {
@@ -58,6 +62,12 @@ interface CloneBody {
   sourceId: string
   at?: string
   id?: string
+  /**
+   * A version store holds no `secrets:` block, and the live source may
+   * be gone (a restart), so a historical clone that restores managed
+   * pointers names their declarations here.
+   */
+  secrets?: SecretEntries
 }
 
 interface IdParams {
@@ -77,6 +87,11 @@ interface VersionsQuery {
 export function registerVersionsRoutes(app: FastifyInstance, deps: VersionRoutesDeps): void {
   const openStore = (id: string): Promise<VersionStore> =>
     VersionStore.open(deps.versionBackend, id)
+  // A live workspace's repo is made on first use; one that is not live
+  // (deleted, or not loaded) is only read, so a read never recreates the
+  // repo its delete removed.
+  const existingStore = async (id: string): Promise<VersionStore | null> =>
+    deps.registry.has(id) || (await deps.versionBackend.hasRepo(id)) ? openStore(id) : null
 
   app.post<{ Params: IdParams; Body: CommitBody }>(
     '/v1/workspaces/:id/commit',
@@ -102,8 +117,8 @@ export function registerVersionsRoutes(app: FastifyInstance, deps: VersionRoutes
     '/v1/workspaces/:id/versions',
     async (req) => {
       const branch = req.query.branch ?? 'main'
-      const store = await openStore(req.params.id)
-      if (!(await store.branches()).includes(branch)) return []
+      const store = await existingStore(req.params.id)
+      if (store === null || !(await store.branches()).includes(branch)) return []
       return versionLog(store, branch)
     },
   )
@@ -112,7 +127,8 @@ export function registerVersionsRoutes(app: FastifyInstance, deps: VersionRoutes
     '/v1/workspaces/:id/branch',
     async (req, reply) => {
       const { name, fromBranch } = req.body
-      const store = await openStore(req.params.id)
+      const store = await existingStore(req.params.id)
+      if (store === null) return reply.status(404).send({ detail: 'workspace has no versions' })
       if ((await store.branches()).includes(name)) {
         return reply.status(409).send({ detail: `branch already exists: ${name}` })
       }
@@ -134,7 +150,8 @@ export function registerVersionsRoutes(app: FastifyInstance, deps: VersionRoutes
       const { id } = req.params
       const { a, b } = req.query
       const branch = req.query.branch ?? 'main'
-      const store = await openStore(id)
+      const store = await existingStore(id)
+      if (store === null) return reply.status(404).send({ detail: 'workspace has no versions' })
       const needsLive = a === undefined || b === undefined
       if (needsLive && !deps.registry.has(id)) {
         return reply.status(404).send({ detail: 'workspace not found' })
@@ -174,7 +191,7 @@ export function registerVersionsRoutes(app: FastifyInstance, deps: VersionRoutes
   )
 
   app.post<{ Body: CloneBody }>('/v1/workspaces/clone', async (req, reply) => {
-    const { sourceId, at, id } = req.body
+    const { sourceId, at, id, secrets } = req.body
     if (id !== undefined && deps.registry.has(id)) {
       return reply.status(409).send({ detail: `workspace id already exists: ${id}` })
     }
@@ -184,10 +201,26 @@ export function registerVersionsRoutes(app: FastifyInstance, deps: VersionRoutes
       try {
         const version = await resolveRef(store, at)
         const { entries, meta } = await readVersion(store, version)
-        ws = await Workspace.fromState(toState(entries, meta))
+        // A version store holds no `secrets:` block either. The
+        // request names the declarations when it has them, which is
+        // the only route open once the live source is gone (a
+        // restart); otherwise the live workspace supplies them.
+        const live = deps.registry.has(sourceId) ? deps.registry.get(sourceId).runner.ws : null
+        const declared = secrets ?? (live !== null ? live.declaredSources : undefined)
+        ws = await Workspace.fromState(
+          toState(entries, meta),
+          declared !== undefined ? { secrets: declared } : {},
+        )
       } catch (e) {
         if (e instanceof Errors.NotFoundError) {
           return reply.status(404).send({ detail: `version not found: ${at}` })
+        }
+        if (e instanceof SecretsError || e instanceof z.ZodError || e instanceof VFSConfigError) {
+          // A declarations override the host cannot resolve, or a
+          // block the schema refuses, is a bad request, not a 500.
+          // The python twin catches ValueError for the same pair,
+          // pydantic's ValidationError being one.
+          return reply.status(400).send({ detail: e.message })
         }
         throw e
       }

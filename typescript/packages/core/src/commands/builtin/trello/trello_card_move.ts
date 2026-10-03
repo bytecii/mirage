@@ -13,13 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { TrelloAccessor } from '../../../accessor/trello.ts'
+import { requireMountWritable } from '../../../context/session_context.ts'
 import { cardMove } from '../../../core/trello/client.ts'
 import { normalizeCard } from '../../../core/trello/normalize.ts'
 import { IOResult } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
+import { VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { CommandSpec, Option } from '../../spec/types.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { requireCard, requireList } from './_scope.ts'
 
 const ENC = new TextEncoder()
 
@@ -41,13 +43,18 @@ async function trelloCardMoveCommand(
   if (cardId === undefined || cardId === '') throw new Error('--card_id is required')
   const listId = fl.asStr('list_id')
   if (listId === undefined || listId === '') throw new Error('--list_id is required')
+  // A card write is addressed by id, not path, so only the mount-wide
+  // grant can admit it (a write-granting carve-out names no card).
+  requireMountWritable(opts.mountPrefix ?? '')
+  await requireCard(accessor, cardId)
+  await requireList(accessor, listId)
   const card = await cardMove(accessor.transport, cardId, listId)
   return [ENC.encode(JSON.stringify(normalizeCard(card))), new IOResult()]
 }
 
 export const TRELLO_CARD_MOVE = command({
   name: 'trello card move',
-  resource: ResourceName.TRELLO,
+  vfs: VFSName.TRELLO,
   spec: SPEC,
   fn: trelloCardMoveCommand,
   write: true,

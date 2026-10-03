@@ -12,21 +12,32 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import errno
+import os
+
 from mirage.accessor.base import Accessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.ops.generic.table import OpFn, OpsTable
+from mirage.ops.generic.types import OpFn, OpsTable
 from mirage.ops.registry import RegisteredOp
-from mirage.types import PathSpec
-from mirage.utils.ranges import is_unsatisfiable_range, slice_window
+from mirage.types import FileType, PathSpec
+from mirage.utils.errors import einval, enotsup
+from mirage.utils.glob_walk import make_resolve_glob
+from mirage.utils.ranges import (
+    is_unsatisfiable_range,
+    slice_window,
+    splice_window,
+)
 
 
 def _make_read(fn: OpFn) -> OpFn:
 
-    async def read(accessor: Accessor,
-                   path: PathSpec,
-                   *,
-                   index: IndexCacheStore | None = None,
-                   **kwargs) -> bytes:
+    async def read(
+        accessor: Accessor,
+        path: PathSpec,
+        *,
+        index: IndexCacheStore | None = None,
+        **kwargs,
+    ) -> bytes:
         return await fn(accessor, path, index)
 
     return read
@@ -55,13 +66,15 @@ def _make_ranged_read(table: OpsTable) -> OpFn:
         table (OpsTable): the backend's op table.
     """
 
-    async def read(accessor: Accessor,
-                   path: PathSpec,
-                   *,
-                   index: IndexCacheStore | None = None,
-                   offset: int = 0,
-                   size: int | None = None,
-                   **kwargs) -> bytes:
+    async def read(
+        accessor: Accessor,
+        path: PathSpec,
+        *,
+        index: IndexCacheStore | None = None,
+        offset: int = 0,
+        size: int | None = None,
+        **kwargs,
+    ) -> bytes:
         if size == 0:
             return b""
         whole = not offset and size is None
@@ -81,13 +94,140 @@ def _make_ranged_read(table: OpsTable) -> OpFn:
     return read
 
 
+def _make_glob(table: OpsTable) -> OpFn:
+    # Glob expansion is a walk over readdir, so it is derived here rather
+    # than written per driver: one walker, capped by the table's own
+    # limit, with the table's stat so a trailing slash keeps directories
+    # only. The mount hands it one pattern spec at a time and passes the
+    # rest through, which is what every driver's resolver did with the
+    # list.
+    resolve = make_resolve_glob(
+        table.readdir, table.max_glob_matches, stat=table.stat
+    )
+
+    async def glob(
+        accessor: Accessor,
+        path: PathSpec,
+        *,
+        index: IndexCacheStore = NULL_INDEX,
+        **kwargs,
+    ) -> list[PathSpec]:
+        return await resolve(accessor, [path], index)
+
+    return glob
+
+
 def _make_data_write(fn: OpFn) -> OpFn:
 
-    async def write(accessor: Accessor, path: PathSpec, data: bytes,
-                    **kwargs) -> None:
+    async def write(
+        accessor: Accessor, path: PathSpec, data: bytes, **kwargs
+    ) -> None:
         await fn(accessor, path, data)
 
     return write
+
+
+def _make_emulated_append(
+    stat: OpFn, read_bytes: OpFn, write_bytes: OpFn
+) -> OpFn:
+
+    async def append(
+        accessor: Accessor,
+        path: PathSpec,
+        data: bytes,
+        *,
+        index: IndexCacheStore | None = None,
+        **kwargs,
+    ) -> None:
+        # A zero-byte append is an open for appending with nothing
+        # written after it (`exec >> f`, `: >> f`): it creates a missing
+        # file and leaves an existing one alone. Reading and rewriting
+        # the whole object to add nothing would move it twice and could
+        # put back bytes a concurrent writer had just replaced.
+        if not data:
+            try:
+                found = await stat(accessor, path, index)
+            except FileNotFoundError:
+                await write_bytes(accessor, path, data)
+                return
+            if found.type == FileType.DIRECTORY:
+                raise IsADirectoryError(
+                    errno.EISDIR, os.strerror(errno.EISDIR), path.virtual
+                )
+            return
+        # The read takes the caller's index, like every other read here:
+        # an id-addressed backend (Box, Drive) turns a path into an id
+        # through it, and without one every read is a miss, so each append
+        # would overwrite what the last one wrote.
+        try:
+            existing = await read_bytes(accessor, path, index)
+        except FileNotFoundError:
+            await write_bytes(accessor, path, data)
+            return
+        await write_bytes(accessor, path, existing + data)
+
+    return append
+
+
+def _expect_offset(offset: int, path: PathSpec) -> int:
+    if offset < 0:
+        raise einval(path)
+    return offset
+
+
+def _make_pwrite(fn: OpFn) -> OpFn:
+
+    async def pwrite(
+        accessor: Accessor, path: PathSpec, data: bytes, offset: int, **kwargs
+    ) -> None:
+        await fn(accessor, path, data, _expect_offset(offset, path))
+
+    return pwrite
+
+
+def _make_emulated_pwrite(
+    read_bytes: OpFn, write_bytes: OpFn, stat: OpFn
+) -> OpFn:
+
+    async def pwrite(
+        accessor: Accessor,
+        path: PathSpec,
+        data: bytes,
+        offset: int,
+        *,
+        index: IndexCacheStore | None = None,
+        **kwargs,
+    ) -> None:
+        # The read is this op's own, below the door that judged it a
+        # write: a session that may write a file and not read it still
+        # writes at an offset, as pwrite(2) on a write-only descriptor
+        # does. It takes the caller's index for the reason append does.
+        offset = _expect_offset(offset, path)
+        if not data:
+            # A zero-length pwrite(2) on an existing file changes nothing
+            # and must not read the file back: a concurrent writer's update
+            # between this stat and a would-be write would be clobbered by
+            # the stale contents. A zero-length pwrite on a missing file
+            # creates an empty file (pwrite(2) with O_CREAT semantics).
+            try:
+                found = await stat(accessor, path, index)
+            except FileNotFoundError:
+                await write_bytes(accessor, path, data)
+                return
+            if found.type == FileType.DIRECTORY:
+                raise IsADirectoryError(
+                    errno.EISDIR, os.strerror(errno.EISDIR), path.virtual
+                )
+            return
+        try:
+            existing = await read_bytes(accessor, path, index)
+        except FileNotFoundError:
+            existing = b""
+        await write_bytes(
+            accessor, path, splice_window(existing, offset, data)
+        )
+
+    return pwrite
 
 
 def _make_path_write(fn: OpFn) -> OpFn:
@@ -98,18 +238,23 @@ def _make_path_write(fn: OpFn) -> OpFn:
     return mutate
 
 
-def _make_mkdir_parents(fn: OpFn) -> OpFn:
+def _make_mkdir_parents(fn: OpFn, force_parents: bool = True) -> OpFn:
 
     async def mkdir(accessor: Accessor, path: PathSpec, **kwargs) -> None:
-        await fn(accessor, path, parents=True)
+        await fn(
+            accessor,
+            path,
+            parents=force_parents or kwargs.get("parents") is True,
+        )
 
     return mkdir
 
 
 def _make_rename(fn: OpFn) -> OpFn:
 
-    async def rename(accessor: Accessor, src: PathSpec, dst: PathSpec,
-                     **kwargs) -> None:
+    async def rename(
+        accessor: Accessor, src: PathSpec, dst: PathSpec, **kwargs
+    ) -> None:
         await fn(accessor, src, dst)
 
     return rename
@@ -117,17 +262,29 @@ def _make_rename(fn: OpFn) -> OpFn:
 
 def _make_truncate(fn: OpFn) -> OpFn:
 
-    async def truncate(accessor: Accessor, path: PathSpec, length: int,
-                       **kwargs) -> None:
-        await fn(accessor, path, length)
+    async def truncate(
+        accessor: Accessor,
+        path: PathSpec,
+        length: int,
+        no_create: bool = False,
+        **kwargs,
+    ) -> None:
+        await fn(accessor, path, length, no_create)
 
     return truncate
 
 
 def _make_emulated_truncate(read_bytes: OpFn, write_bytes: OpFn) -> OpFn:
 
-    async def truncate(accessor: Accessor, path: PathSpec, length: int,
-                       **kwargs) -> None:
+    async def truncate(
+        accessor: Accessor,
+        path: PathSpec,
+        length: int,
+        no_create: bool = False,
+        **kwargs,
+    ) -> None:
+        if no_create:
+            raise enotsup("emulated", "truncate --no-create", path)
         try:
             data = await read_bytes(accessor, path, index=NULL_INDEX)
         except FileNotFoundError:
@@ -151,32 +308,46 @@ def _make_set_attrs(fn: OpFn) -> OpFn:
         index: IndexCacheStore | None = None,
         **kwargs,
     ) -> dict[str, int | str]:
-        return await fn(accessor,
-                        path,
-                        mode=mode,
-                        uid=uid,
-                        gid=gid,
-                        atime=atime,
-                        mtime=mtime)
+        return await fn(
+            accessor,
+            path,
+            mode=mode,
+            uid=uid,
+            gid=gid,
+            atime=atime,
+            mtime=mtime,
+        )
 
     return set_attrs
 
 
-def _emit(ops: list[RegisteredOp], resources: list[str], name: str, fn: OpFn,
-          write: bool, filetype: str | None, overrides: set[str]) -> None:
+def _emit(
+    ops: list[RegisteredOp],
+    vfs_names: list[str],
+    name: str,
+    fn: OpFn,
+    write: bool,
+    filetype: str | None,
+    overrides: set[str],
+    ranges: bool = False,
+) -> None:
     if name in overrides:
         return
-    for res in resources:
+    for res in vfs_names:
         ops.append(
-            RegisteredOp(name=name,
-                         resource=res,
-                         filetype=filetype,
-                         fn=fn,
-                         write=write))
+            RegisteredOp(
+                name=name,
+                vfs=res,
+                filetype=filetype,
+                fn=fn,
+                write=write,
+                ranges=ranges,
+            )
+        )
 
 
 def make_generic_ops(
-    resource: str | list[str],
+    vfs: str | list[str],
     table: OpsTable,
     *,
     emulate_truncate: bool = False,
@@ -190,7 +361,10 @@ def make_generic_ops(
     wrappers from the table that already feeds
     ``make_generic_commands``, so a backend declares its core surface
     once. Ops whose table field is None are omitted, mirroring how the
-    command factory skips write commands on read-only backends.
+    command factory skips write commands on read-only backends. A writable
+    table without a native append or pwrite builds them from read and
+    write, which is async but not atomic against concurrent writers, like
+    emulated truncate.
 
     ``index`` is forwarded into read/readdir/stat for every backend, so
     there is deliberately no ``forward_index`` knob here, in either
@@ -202,66 +376,170 @@ def make_generic_ops(
 
     Every op emitted here is filetype-agnostic. To serve one extension
     differently, register a filetype-scoped op on the mount; the mount
-    resolves ``(name, filetype)`` before ``(name, resource)``.
+    resolves ``(name, filetype)`` before ``(name, VFS)``.
 
     Args:
-        resource (str | list[str]): resource name(s) the ops register
+        vfs (str | list[str]): VFS name(s) the ops register
             under; a list fans out one ``RegisteredOp`` per name (the
-            HF family registers one surface for four resources).
+            HF family registers one surface for four VFS).
         table (OpsTable): the backend's IO table (its ``CommandIO``).
         emulate_truncate (bool): synthesize ``truncate`` from
-            ``read_bytes`` + ``write`` for backends with no native
-            partial write (s3/ssh/ram/redis today).
+            ``read_bytes`` + ``write`` for a backend with no native
+            partial write (dropbox is the only one; the rest grew a
+            real ``truncate`` in their table, which wins outright).
         mkdir_parents (bool): forward ``parents=True`` to the core
             mkdir (disk).
         overrides (set[str] | None): op names to skip because the
             backend registers its own irregular wrapper.
     """
-    resources = resource if isinstance(resource, list) else [resource]
+    vfs_names = vfs if isinstance(vfs, list) else [vfs]
     skip = overrides or set()
     ops: list[RegisteredOp] = []
 
-    _emit(ops, resources, "read", _make_ranged_read(table), False, None, skip)
-    _emit(ops, resources, "readdir", _make_read(table.readdir), False, None,
-          skip)
-    _emit(ops, resources, "stat", _make_read(table.stat), False, None, skip)
+    _emit(
+        ops,
+        vfs_names,
+        "read",
+        _make_ranged_read(table),
+        False,
+        None,
+        skip,
+        ranges=table.read_range is not None,
+    )
+    _emit(
+        ops, vfs_names, "readdir", _make_read(table.readdir), False, None, skip
+    )
+    _emit(ops, vfs_names, "stat", _make_read(table.stat), False, None, skip)
+    _emit(ops, vfs_names, "glob", _make_glob(table), False, None, skip)
 
     if table.write is not None:
-        _emit(ops, resources, "write", _make_data_write(table.write), True,
-              None, skip)
+        _emit(
+            ops,
+            vfs_names,
+            "write",
+            _make_data_write(table.write),
+            True,
+            None,
+            skip,
+        )
     if table.append is not None:
-        _emit(ops, resources, "append", _make_data_write(table.append), True,
-              None, skip)
+        _emit(
+            ops,
+            vfs_names,
+            "append",
+            _make_data_write(table.append),
+            True,
+            None,
+            skip,
+        )
+    elif table.write is not None:
+        _emit(
+            ops,
+            vfs_names,
+            "append",
+            _make_emulated_append(table.stat, table.read_bytes, table.write),
+            True,
+            None,
+            skip,
+        )
+    if table.pwrite is not None:
+        _emit(
+            ops,
+            vfs_names,
+            "pwrite",
+            _make_pwrite(table.pwrite),
+            True,
+            None,
+            skip,
+        )
+    elif table.write is not None:
+        _emit(
+            ops,
+            vfs_names,
+            "pwrite",
+            _make_emulated_pwrite(table.read_bytes, table.write, table.stat),
+            True,
+            None,
+            skip,
+        )
     if table.create is not None:
-        _emit(ops, resources, "create", _make_path_write(table.create), True,
-              None, skip)
+        _emit(
+            ops,
+            vfs_names,
+            "create",
+            _make_path_write(table.create),
+            True,
+            None,
+            skip,
+        )
     if table.mkdir is not None:
-        mkdir_fn = (_make_mkdir_parents(table.mkdir)
-                    if mkdir_parents else _make_path_write(table.mkdir))
-        _emit(ops, resources, "mkdir", mkdir_fn, True, None, skip)
+        mkdir_fn = _make_mkdir_parents(table.mkdir, mkdir_parents)
+        _emit(ops, vfs_names, "mkdir", mkdir_fn, True, None, skip)
     if table.unlink is not None:
-        _emit(ops, resources, "unlink", _make_path_write(table.unlink), True,
-              None, skip)
+        _emit(
+            ops,
+            vfs_names,
+            "unlink",
+            _make_path_write(table.unlink),
+            True,
+            None,
+            skip,
+        )
     if table.rmdir is not None:
-        _emit(ops, resources, "rmdir", _make_path_write(table.rmdir), True,
-              None, skip)
+        _emit(
+            ops,
+            vfs_names,
+            "rmdir",
+            _make_path_write(table.rmdir),
+            True,
+            None,
+            skip,
+        )
     if table.rename is not None:
-        _emit(ops, resources, "rename", _make_rename(table.rename), True, None,
-              skip)
+        _emit(
+            ops,
+            vfs_names,
+            "rename",
+            _make_rename(table.rename),
+            True,
+            None,
+            skip,
+        )
 
     if table.truncate is not None:
-        _emit(ops, resources, "truncate", _make_truncate(table.truncate), True,
-              None, skip)
+        _emit(
+            ops,
+            vfs_names,
+            "truncate",
+            _make_truncate(table.truncate),
+            True,
+            None,
+            skip,
+        )
     elif emulate_truncate:
         if table.write is None:
             raise ValueError(
-                "emulate_truncate requires a write op on the table")
-        _emit(ops, resources, "truncate",
-              _make_emulated_truncate(table.read_bytes, table.write), True,
-              None, skip)
+                "emulate_truncate requires a write op on the table"
+            )
+        _emit(
+            ops,
+            vfs_names,
+            "truncate",
+            _make_emulated_truncate(table.read_bytes, table.write),
+            True,
+            None,
+            skip,
+        )
 
     if table.set_attrs is not None:
-        _emit(ops, resources, "setattr", _make_set_attrs(table.set_attrs),
-              True, None, skip)
+        _emit(
+            ops,
+            vfs_names,
+            "setattr",
+            _make_set_attrs(table.set_attrs),
+            True,
+            None,
+            skip,
+        )
 
     return ops

@@ -14,16 +14,22 @@
 
 import re
 
-from mirage.accessor.gridfs import GridFSConfig
-from mirage.core.gridfs.client import (_key, _prefix, _strip_prefix,
-                                       prefix_query)
+from mirage.core.gridfs.client import (
+    _key,
+    _prefix,
+    _strip_prefix,
+    prefix_query,
+)
+from mirage.vfs.gridfs.config import GridFSConfig
 
 
 def _config(key_prefix: str | None = None) -> GridFSConfig:
-    return GridFSConfig(uri="mongodb://localhost:27017",
-                        database="db",
-                        bucket="data",
-                        key_prefix=key_prefix)
+    return GridFSConfig(
+        uri="mongodb://localhost:27017",
+        database="db",
+        bucket="data",
+        key_prefix=key_prefix,
+    )
 
 
 def test_key_without_prefix():

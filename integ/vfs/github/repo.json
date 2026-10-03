@@ -1,0 +1,307 @@
+{
+  "cases": [
+    {
+      "id": "github_ls_root",
+      "seq": 530001,
+      "targets": [
+        "github"
+      ],
+      "command": "ls /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "README.md\ndocs\npyproject.toml\nsrc\ntests\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_cat_readme",
+      "seq": 530002,
+      "targets": [
+        "github"
+      ],
+      "command": "cat /repo/README.md",
+      "expect": {
+        "exit": 0,
+        "stdout": "# repo-v1\n\nFixture repository for the fake GitHub API server.\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_find_name",
+      "seq": 530003,
+      "targets": [
+        "github"
+      ],
+      "command": "find /repo/docs -name '*.md'",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/architecture.md\n/repo/docs/contributing.md\n/repo/docs/release.md\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_wc_tree",
+      "seq": 530004,
+      "targets": [
+        "github"
+      ],
+      "command": "find /repo -type f | wc -l",
+      "expect": {
+        "exit": 0,
+        "stdout": "121\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_grep_search_pushdown",
+      "seq": 530005,
+      "targets": [
+        "github"
+      ],
+      "command": "grep -rlw wombat /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/contributing.md\n/repo/src/cache/step_2.py\n/repo/src/store/step_5.py\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_rg_search_pushdown",
+      "seq": 530006,
+      "targets": [
+        "github"
+      ],
+      "command": "rg -lw wombat /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/contributing.md\n/repo/src/cache/step_2.py\n/repo/src/store/step_5.py\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_grep_search_miss",
+      "seq": 530007,
+      "targets": [
+        "github"
+      ],
+      "command": "grep -rl zzzabsent /repo",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_grep_substring_scans_all",
+      "seq": 530008,
+      "targets": [
+        "github"
+      ],
+      "command": "grep -rl quokka /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/architecture.md\n/repo/docs/release.md\n/repo/src/auth/step_1.py\n/repo/src/route/step_3.py\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_grep_word_uses_search",
+      "seq": 530009,
+      "targets": [
+        "github"
+      ],
+      "command": "grep -rlw quokka /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/architecture.md\n/repo/src/auth/step_1.py\n/repo/src/route/step_3.py\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_rg_substring_scans_all",
+      "seq": 530010,
+      "targets": [
+        "github"
+      ],
+      "command": "rg -l quokka /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/architecture.md\n/repo/docs/release.md\n/repo/src/auth/step_1.py\n/repo/src/route/step_3.py\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_rg_word_uses_search",
+      "seq": 530011,
+      "targets": [
+        "github"
+      ],
+      "command": "rg -lw quokka /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/architecture.md\n/repo/src/auth/step_1.py\n/repo/src/route/step_3.py\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_find_empty",
+      "seq": 530012,
+      "targets": [
+        "github"
+      ],
+      "command": "find /repo -empty",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_find_empty_composes_with_name",
+      "seq": 530013,
+      "targets": [
+        "github"
+      ],
+      "command": "find /repo/docs -name '*.md' -not -empty",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/architecture.md\n/repo/docs/contributing.md\n/repo/docs/release.md\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_find_bang_composes_with_empty",
+      "seq": 530014,
+      "targets": [
+        "github"
+      ],
+      "command": "find /repo/docs -name '*.md' ! -empty",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/docs/architecture.md\n/repo/docs/contributing.md\n/repo/docs/release.md\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_grep_search_keeps_explicit_h",
+      "seq": 530015,
+      "targets": [
+        "github"
+      ],
+      "command": "grep -rhw wombat /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "Run the wombat suite before pushing.\n# wombat invalidates the warm entries\n# wombat compaction pass\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_rg_search_single_hit_is_labelled",
+      "seq": 530016,
+      "targets": [
+        "github"
+      ],
+      "command": "rg -w compaction /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/src/store/step_5.py:# wombat compaction pass\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "github_rm_existing_file_is_refused_not_missing",
+      "seq": 530017,
+      "targets": [
+        "github"
+      ],
+      "command": "rm /repo/README.md; head -n 1 /repo/README.md",
+      "expect": {
+        "exit": 0,
+        "stdout": "# repo-v1\n",
+        "stderr": "rm: cannot remove '/repo/README.md': Read-only file system\n"
+      }
+    },
+    {
+      "id": "github_rm_f_reports_an_existing_file_it_cannot_remove",
+      "seq": 530018,
+      "targets": [
+        "github"
+      ],
+      "command": "rm -f /repo/README.md /repo/nope.md",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: cannot remove '/repo/README.md': Read-only file system\n"
+      }
+    },
+    {
+      "id": "github_rm_missing_file_is_missing",
+      "seq": 530019,
+      "targets": [
+        "github"
+      ],
+      "command": "rm /repo/nope.md",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: cannot remove '/repo/nope.md': No such file or directory\n"
+      }
+    },
+    {
+      "id": "github_unlink_existing_file_is_refused_not_missing",
+      "seq": 530020,
+      "targets": [
+        "github"
+      ],
+      "command": "unlink /repo/README.md",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "unlink: cannot unlink '/repo/README.md': Read-only file system\n"
+      }
+    },
+    {
+      "id": "github_truncated_du_preserves_refused_directory_rows",
+      "seq": 530031,
+      "targets": [
+        "github"
+      ],
+      "session": "sealed",
+      "command": "du /trunc/src 2>/dev/null | grep '/cache$'",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\t/trunc/src/cache\n",
+        "stderr": ""
+      },
+      "note": "A truncated GitHub tree uses the generic folder walk: an unreadable subtree keeps its zero-byte directory row and du exits 1, as GNU coreutils 9.7 does."
+    },
+    {
+      "id": "github_submodule_only_directory_is_an_empty_directory",
+      "seq": 530032,
+      "targets": [
+        "github"
+      ],
+      "command": "du /data/mods; du -a /data/mods; find /data/mods; find /data/mods -empty; ls -A /data/mods; ls -la /data/mods | awk 'NR==1 {print} NR>1 {print $NF}'",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\t/data/mods\n0\t/data/mods\n/data/mods\n/data/mods\ntotal ?\n.\n..\n",
+        "stderr": ""
+      },
+      "note": "data-v1's SUBMODULES puts the gitlink mods/lib in a directory that holds nothing else. The tree drops a gitlink, so mods is an empty directory: du keeps its 0 row with and without -a (bytes, as GNU coreutils 9.7 du -b counts it), find names it and calls it -empty as GNU findutils 4.10.0 does, and ls lists only . and .. under the total ls -la cannot know."
+    },
+    {
+      "id": "github_find_mtime_matches_nothing",
+      "seq": 530033,
+      "targets": [
+        "github"
+      ],
+      "command": "find /repo/docs -mtime -100000; echo rc=$?; find /repo/docs -newermt 2000-01-01 | wc -l",
+      "note": "A git tree carries no timestamp, so every entry's mtime is unknown and a time test keeps none of them, on both hosts. GNU find on a checkout would list every file, each with its checkout time.",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=0\n0\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

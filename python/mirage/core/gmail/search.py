@@ -15,11 +15,14 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from mirage.core.gmail.messages import (_decode_body, _extract_header,
-                                        get_message_processed, get_message_raw,
-                                        list_messages)
-from mirage.core.gmail.readdir import _sanitize
-from mirage.core.gmail.scope import GmailScope
+from mirage.core.gmail.messages import (
+    _decode_body,
+    _extract_header,
+    get_message_processed,
+    get_message_raw,
+    list_messages,
+)
+from mirage.core.gmail.readdir import _msg_filename
 from mirage.core.google.client import TokenManager
 
 EXCERPT_WINDOW = 120
@@ -40,8 +43,9 @@ def _extract_excerpt(text: str, pattern: str) -> str:
     return f"{prefix}{flat[start:end]}{suffix}"
 
 
-def _build_query(pattern: str, label_name: str | None,
-                 date_str: str | None) -> str:
+def _build_query(
+    pattern: str, label_name: str | None, date_str: str | None
+) -> str:
     parts = [pattern]
     if label_name:
         parts.append(f"label:{label_name}")
@@ -93,38 +97,46 @@ async def search_messages(
         snippet = raw.get("snippet", "")
         body_text = _decode_body(raw.get("payload", {}))
         msg_date = _date_from_internal(raw.get("internalDate", "0"))
-        rows.append({
-            "id": mid,
-            "subject": subject,
-            "snippet": snippet,
-            "sender": sender,
-            "date": msg_date,
-            "label": label_name or "",
-            "body_text": body_text,
-        })
+        rows.append(
+            {
+                "id": mid,
+                "subject": subject,
+                "snippet": snippet,
+                "sender": sender,
+                "date": msg_date,
+                "label": label_name or "",
+                "body_text": body_text,
+            }
+        )
     return rows
 
 
 def format_grep_results(
     rows: list[dict[str, Any]],
-    scope: GmailScope,
+    label_name: str | None,
     prefix: str,
     pattern: str = "",
 ) -> list[str]:
     lines: list[str] = []
     for row in rows:
-        label = row.get("label") or scope.label_name or "INBOX"
+        label = row.get("label") or label_name or "INBOX"
         date = row.get("date", "")
         mid = row.get("id", "")
-        subject_clean = _sanitize(row.get("subject") or "No Subject")
-        filename = f"{subject_clean}__{mid}.gmail.json"
+        # The same builder readdir names the file with, not a second
+        # spelling of it: the subject's budget depends on the id and the
+        # suffix, so a hit composed from a bare `_sanitize` pointed at a
+        # path that does not exist once a long subject was trimmed.
+        filename = _msg_filename(row.get("subject") or "No Subject", mid)
         sender = row.get("sender", "?")
         haystack = f"{row.get('subject', '')}\n{row.get('body_text', '')}"
         excerpt = _extract_excerpt(haystack, pattern) if pattern else ""
         if not excerpt:
             excerpt = (row.get("snippet") or "").replace("\n", " ")
-        path = (f"{prefix}/{label}/{date}/{filename}"
-                if date else f"{prefix}/{label}/{filename}")
+        path = (
+            f"{prefix}/{label}/{date}/{filename}"
+            if date
+            else f"{prefix}/{label}/{filename}"
+        )
         lines.append(f"{path}:[{sender}] {excerpt}")
     return lines
 

@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import builtins
 from dataclasses import dataclass
 
 from mirage.errors import FsCondition
@@ -39,41 +40,43 @@ class CPythonError:
 # able to `except`, with CPython-on-Linux numbering. The table is total
 # over the vocabulary; test_errors.py fails a half-added member.
 CPYTHON: dict[FsCondition, CPythonError] = {
-    FsCondition.ENOENT:
-    CPythonError("FileNotFoundError", 2, "No such file or directory"),
-    FsCondition.ENOTDIR:
-    CPythonError("NotADirectoryError", 20, "Not a directory"),
-    FsCondition.EISDIR:
-    CPythonError("IsADirectoryError", 21, "Is a directory"),
-    FsCondition.EEXIST:
-    CPythonError("FileExistsError", 17, "File exists"),
-    FsCondition.EACCES:
-    CPythonError("PermissionError", 13, "Permission denied"),
-    FsCondition.EPERM:
-    CPythonError("PermissionError", 1, "Operation not permitted"),
-    FsCondition.ENOTEMPTY:
-    CPythonError("OSError", 39, "Directory not empty"),
-    FsCondition.EXDEV:
-    CPythonError("OSError", 18, "Invalid cross-device link"),
+    FsCondition.ENOENT: CPythonError(
+        "FileNotFoundError", 2, "No such file or directory"
+    ),
+    FsCondition.ENOTDIR: CPythonError(
+        "NotADirectoryError", 20, "Not a directory"
+    ),
+    FsCondition.EISDIR: CPythonError(
+        "IsADirectoryError", 21, "Is a directory"
+    ),
+    FsCondition.EEXIST: CPythonError("FileExistsError", 17, "File exists"),
+    FsCondition.EACCES: CPythonError(
+        "PermissionError", 13, "Permission denied"
+    ),
+    FsCondition.EPERM: CPythonError(
+        "PermissionError", 1, "Operation not permitted"
+    ),
+    FsCondition.ENOTEMPTY: CPythonError("OSError", 39, "Directory not empty"),
+    FsCondition.EXDEV: CPythonError(
+        "OSError", 18, "Invalid cross-device link"
+    ),
     # pathlib's answer for a cross-mount rename: monty ships no shutil,
     # so guest code writes the copy-and-delete fallback by hand and the
     # errno is what tells it to.
-    FsCondition.CROSS_MOUNT:
-    CPythonError("OSError", 18, "Invalid cross-device link"),
-    FsCondition.ENOTSUP:
-    CPythonError("OSError", 95, "Operation not supported"),
-    FsCondition.ELOOP:
-    CPythonError("OSError", 40, "Too many levels of symbolic links"),
-    FsCondition.EINVAL:
-    CPythonError("OSError", 22, "Invalid argument"),
-    FsCondition.EIO:
-    CPythonError("OSError", 5, "Input/output error"),
-    FsCondition.EBUSY:
-    CPythonError("OSError", 16, "Device or resource busy"),
-    FsCondition.EROFS:
-    CPythonError("OSError", 30, "Read-only file system"),
-    FsCondition.NO_XATTR:
-    CPythonError("OSError", 61, "No data available"),
+    FsCondition.CROSS_MOUNT: CPythonError(
+        "OSError", 18, "Invalid cross-device link"
+    ),
+    FsCondition.ENOTSUP: CPythonError(
+        "OSError", 95, "Operation not supported"
+    ),
+    FsCondition.ELOOP: CPythonError(
+        "OSError", 40, "Too many levels of symbolic links"
+    ),
+    FsCondition.EINVAL: CPythonError("OSError", 22, "Invalid argument"),
+    FsCondition.EIO: CPythonError("OSError", 5, "Input/output error"),
+    FsCondition.EBUSY: CPythonError("OSError", 16, "Device or resource busy"),
+    FsCondition.EROFS: CPythonError("OSError", 30, "Read-only file system"),
+    FsCondition.NO_XATTR: CPythonError("OSError", 61, "No data available"),
 }
 
 
@@ -84,3 +87,25 @@ def cpython_error(condition: FsCondition) -> CPythonError:
         condition (FsCondition): the named condition.
     """
     return CPYTHON[condition]
+
+
+def guest_error(
+    condition: FsCondition, path: str, target: str | None = None
+) -> OSError:
+    """The guest-side exception for one condition, in CPython's shape.
+
+    CPython's own message for it, so guest code reads the same
+    ``[Errno 2] No such file or directory: '/data/x'`` whichever mount
+    refused, and the builtin a guest ``except`` names.
+
+    Args:
+        condition (FsCondition): the named condition.
+        path (str): the path the operation names.
+        target (str | None): a rename's destination, which CPython
+            prints after the source.
+    """
+    row = cpython_error(condition)
+    kind: type[OSError] = getattr(builtins, row.exception)
+    if target is None:
+        return kind(row.errno, row.phrase, path)
+    return kind(row.errno, row.phrase, path, None, target)

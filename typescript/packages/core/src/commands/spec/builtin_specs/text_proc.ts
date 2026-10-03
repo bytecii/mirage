@@ -32,10 +32,10 @@ export const SPECS: Record<string, CommandSpec> = {
     options: [
       new Option({ short: '-f', long: '--prefix', type: 'path' }),
       new Option({ short: '-n', long: '--digits', type: 'str' }),
-      new Option({ short: '-b', long: '--suffix-format', type: 'str' }),
+      new Option({ long: '--silent' }),
       new Option({ short: '-k', long: '--keep-files' }),
       new Option({ short: '-s', long: '--quiet' }),
-      new Option({ long: '--silent' }),
+      new Option({ short: '-b', long: '--suffix-format', type: 'str' }),
       new Option({ long: '--suppress-matched' }),
       new Option({ short: '-z', long: '--elide-empty-files' }),
     ],
@@ -88,8 +88,11 @@ export const SPECS: Record<string, CommandSpec> = {
   }),
   numfmt: new CommandSpec({
     options: [
-      new Option({ long: '--to', type: 'str' }),
-      new Option({ long: '--from', type: 'str' }),
+      // GNU's argmatch tables, in GNU's order: `--to=auto` is not an
+      // output mode, and an unknown word answers with the shared ARGMATCH
+      // refusal (coreutils 9.7).
+      new Option({ long: '--to', type: 'str', choices: ['none', 'si', 'iec', 'iec-i'] }),
+      new Option({ long: '--from', type: 'str', choices: ['none', 'auto', 'si', 'iec', 'iec-i'] }),
       new Option({ long: '--suffix', type: 'str' }),
       new Option({ long: '--grouping' }),
     ],
@@ -133,12 +136,12 @@ export const SPECS: Record<string, CommandSpec> = {
   }),
   shuf: new CommandSpec({
     options: [
-      new Option({ short: '-n', long: '--head-count', type: 'str' }),
+      new Option({ short: '-n', long: '--head-count', type: 'str', multiple: true }),
       new Option({ short: '-e', long: '--echo' }),
       new Option({ short: '-z', long: '--zero-terminated' }),
       new Option({ short: '-r', long: '--repeat' }),
-      new Option({ short: '-i', long: '--input-range', type: 'str' }),
-      new Option({ short: '-o', long: '--output', type: 'path' }),
+      new Option({ short: '-i', long: '--input-range', type: 'str', multiple: true }),
+      new Option({ short: '-o', long: '--output', type: 'path', multiple: true }),
     ],
     rest: new Operand({ type: 'path' }),
   }),
@@ -147,41 +150,50 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-r', long: '--reverse' }),
       new Option({ short: '-n', long: '--numeric-sort' }),
       new Option({ short: '-u', long: '--unique' }),
-      new Option({ short: '-f', long: '--ignore-case' }),
+      new Option({ short: '-b', long: '--ignore-leading-blanks' }),
       new Option({ short: '-k', long: '--key', type: 'str', multiple: true }),
       new Option({ short: '-t', long: '--field-separator', type: 'str' }),
       new Option({ short: '-h', long: '--human-numeric-sort' }),
       new Option({ short: '-V', long: '--version-sort' }),
       new Option({ short: '-s', long: '--stable' }),
-      new Option({ short: '-M', long: '--month-sort' }),
-      new Option({ short: '-b', long: '--ignore-leading-blanks' }),
+      new Option({ short: '-m', long: '--merge' }),
+      new Option({ short: '-f', long: '--ignore-case' }),
       new Option({ short: '-c' }),
+      new Option({ short: '-C' }),
       new Option({ long: '--check', type: 'str', valueOptional: true }),
       new Option({ short: '-d', long: '--dictionary-order' }),
       new Option({ short: '-g', long: '--general-numeric-sort' }),
       new Option({ short: '-i', long: '--ignore-nonprinting' }),
-      new Option({ short: '-m', long: '--merge' }),
-      new Option({ short: '-o', long: '--output', type: 'path' }),
+      new Option({ short: '-M', long: '--month-sort' }),
+      new Option({ short: '-o', long: '--output', type: 'path', multiple: true }),
       new Option({ short: '-z', long: '--zero-terminated' }),
     ],
     rest: new Operand({ type: 'path' }),
   }),
   split: new CommandSpec({
     options: [
-      new Option({ short: '-l', long: '--lines', type: 'str' }),
+      // GNU's obsolete -NUM is a line count (DIGIT_OPTIONS reads its digits
+      // inside a cluster too). One divergence: GNU adds its `Try` hint when a
+      // zero count came as digits (`split -0`) and not for `-l 0`, and the bag
+      // cannot tell the two apart, so both refuse without it.
+      new Option({ short: '-l', long: '--lines', type: 'str', numericShorthand: true }),
       new Option({ short: '-b', long: '--bytes', type: 'str' }),
       new Option({ short: '-n', long: '--number', type: 'str' }),
+      // GNU: -d/-x never take an argument; only --numeric-suffixes= and
+      // --hex-suffixes= carry one, so `-d10` is -d and ten lines.
       new Option({
         short: '-d',
         long: '--numeric-suffixes',
         type: 'str',
         valueOptional: true,
+        shortValue: false,
       }),
       new Option({
         short: '-x',
         long: '--hex-suffixes',
         type: 'str',
         valueOptional: true,
+        shortValue: false,
       }),
       new Option({ short: '-a', long: '--suffix-length', type: 'str' }),
       new Option({ long: '--additional-suffix', type: 'str' }),
@@ -213,7 +225,9 @@ export const SPECS: Record<string, CommandSpec> = {
     ],
     positional: [new Operand({ type: 'str' }), new Operand({ type: 'str' })],
   }),
-  tsort: new CommandSpec({ positional: [new Operand({ type: 'path' })] }),
+  tsort: new CommandSpec({
+    positional: [new Operand({ type: 'path' })],
+  }),
   uniq: new CommandSpec({
     options: [
       new Option({ short: '-c', long: '--count' }),

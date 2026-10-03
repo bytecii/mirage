@@ -12,14 +12,22 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { operandLabel } from '../utils/stream.ts'
+import { stdinStream, stdinStat } from '../utils/stream.ts'
 import { cacheAwareStreamEager } from '../../../cache/read_through.ts'
 import { IOResult } from '../../../io/types.ts'
-import type { FileStat, PathSpec } from '../../../types.ts'
+import { FileType, Limit, type FileStat, type PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { numberFlagError } from '../tail_helper.ts'
+import { numberFlagError, parseByteCount } from '../tail_counts.ts'
+import { CHAR_DEVICE_MAX_BYTES, STDIN_HEADER_NAME } from '../utils/constants.ts'
+import { asyncChain } from '../../../io/stream.ts'
+import { truncateStream } from '../utils/limit.ts'
 import { splitReadable } from '../utils/operands.ts'
 import { resolveSource } from '../utils/stream.ts'
-import type { FlagValue } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { type FlagValue } from '../../spec/types.ts'
+import { specOf } from '../../spec/builtins.ts'
+import { concat } from '../../../io/cachable_iterator.ts'
 
 const ENC = new TextEncoder()
 
@@ -33,32 +41,19 @@ interface HeadFlags {
   zeroTerminated: boolean
 }
 
-function flagString(flags: Record<string, FlagValue>, short: string, long: string): string | null {
-  const value = typeof flags[short] === 'string' ? flags[short] : flags[long]
-  return typeof value === 'string' ? value : null
-}
-
-function parseFlags(flags: Record<string, FlagValue>): HeadFlags | string {
-  const nRaw = flagString(flags, 'n', 'lines')
-  const cRaw = flagString(flags, 'c', 'bytes')
+function parseFlags(bag: Record<string, FlagValue>): HeadFlags | string {
+  const fl = new FlagView(bag, specOf('head'))
+  const nRaw = fl.asStr('lines') ?? null
+  const cRaw = fl.asStr('bytes') ?? null
   const numErr = numberFlagError('head', nRaw, cRaw)
   if (numErr !== null) return numErr
   return {
     lines: nRaw !== null ? Number.parseInt(nRaw, 10) : 10,
-    bytesMode: cRaw !== null ? Number.parseInt(cRaw, 10) : null,
-    quiet: flags.quiet === true || flags.silent === true,
-    verbose: flags.verbose === true,
-    zeroTerminated: flags.zero_terminated === true,
+    bytesMode: cRaw !== null ? parseByteCount(cRaw) : null,
+    quiet: fl.asBool('quiet') || fl.asBool('silent'),
+    verbose: fl.asBool('verbose'),
+    zeroTerminated: fl.asBool('zero_terminated'),
   }
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  if (a.byteLength === 0) return b
-  if (b.byteLength === 0) return a
-  const out = new Uint8Array(a.byteLength + b.byteLength)
-  out.set(a, 0)
-  out.set(b, a.byteLength)
-  return out
 }
 
 /**
@@ -92,7 +87,7 @@ async function* headStream(
     const keep = -bytesMode
     let buf: Uint8Array = new Uint8Array(0)
     for await (const chunk of source) {
-      buf = concat(buf, chunk)
+      buf = concat([buf, chunk])
       if (buf.byteLength > keep) {
         yield buf.subarray(0, buf.byteLength - keep)
         buf = buf.subarray(buf.byteLength - keep)
@@ -105,19 +100,20 @@ async function* headStream(
   if (lines >= 0) {
     if (lines === 0) return
     let emitted = 0
-    let buf: Uint8Array = new Uint8Array(0)
     for await (const chunk of source) {
-      buf = concat(buf, chunk)
-      let nl = buf.indexOf(delimiter)
-      while (nl >= 0 && emitted < lines) {
-        yield buf.subarray(0, nl + 1)
-        buf = buf.subarray(nl + 1)
+      let start = 0
+      while (emitted < lines) {
+        const nl = chunk.indexOf(delimiter, start)
+        if (nl < 0) {
+          if (start < chunk.byteLength) yield chunk.subarray(start)
+          break
+        }
+        yield chunk.subarray(start, nl + 1)
         emitted += 1
-        nl = buf.indexOf(delimiter)
+        if (emitted >= lines) return
+        start = nl + 1
       }
-      if (emitted >= lines) return
     }
-    if (buf.byteLength > 0 && emitted < lines) yield buf
     return
   }
 
@@ -125,7 +121,7 @@ async function* headStream(
   const recent: Uint8Array[] = []
   let buf: Uint8Array = new Uint8Array(0)
   for await (const chunk of source) {
-    buf = concat(buf, chunk)
+    buf = concat([buf, chunk])
     let nl = buf.indexOf(delimiter)
     while (nl >= 0) {
       recent.push(buf.subarray(0, nl + 1))
@@ -162,7 +158,7 @@ async function* headMulti(
     if (p === undefined) continue
     if (showHeaders) {
       const prefix = i > 0 ? '\n' : ''
-      yield ENC.encode(`${prefix}==> ${p.rawPath} <==\n`)
+      yield ENC.encode(`${prefix}==> ${operandLabel(p, STDIN_HEADER_NAME)} <==\n`)
     }
     const source = stream(p)
     for await (const chunk of headStream(source, lines, bytesMode, zeroTerminated)) yield chunk
@@ -176,7 +172,8 @@ export async function headGeneric(
   stat: Stat,
   stream: Stream,
 ): Promise<CommandFnResult> {
-  stream = cacheAwareStreamEager(stream)
+  stat = stdinStat(stat)
+  stream = stdinStream(cacheAwareStreamEager(stream), opts.stdin)
   const parsed = parseFlags(opts.flags)
   if (typeof parsed === 'string') {
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(parsed) })]
@@ -189,9 +186,17 @@ export async function headGeneric(
       stderr: err === '' ? null : ENC.encode(err),
     })
     if (readable.length === 0) return [null, io]
+    const sourceFor = async function* (p: PathSpec): AsyncIterable<Uint8Array> {
+      const source = stream(p)
+      if ((await stat(p)).type === FileType.CHAR_DEVICE && parsed.bytesMode === null) {
+        yield* truncateStream(source, io, new Limit({ maxBytes: CHAR_DEVICE_MAX_BYTES }))
+        return
+      }
+      yield* source
+    }
     return [
       headMulti(
-        stream,
+        sourceFor,
         readable,
         parsed.lines,
         parsed.bytesMode,
@@ -202,11 +207,11 @@ export async function headGeneric(
     ]
   }
   try {
-    const source = resolveSource(opts.stdin, 'head: missing operand')
-    return [
-      headStream(source, parsed.lines, parsed.bytesMode, parsed.zeroTerminated),
-      new IOResult(),
-    ]
+    const source = resolveSource(opts.stdin)
+    const body = headStream(source, parsed.lines, parsed.bytesMode, parsed.zeroTerminated)
+    // -v heads a stdin nobody named with the name it gives `-`.
+    const header = ENC.encode(`==> ${STDIN_HEADER_NAME} <==\n`)
+    return [parsed.verbose && !parsed.quiet ? asyncChain([header, body]) : body, new IOResult()]
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]

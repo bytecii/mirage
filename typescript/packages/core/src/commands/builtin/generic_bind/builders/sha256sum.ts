@@ -15,12 +15,12 @@
 import { sha256sumGeneric } from '../../generic/sha256sum.ts'
 import { type Builder, dirAwareStream, resolveGlobOf } from '../adapter.ts'
 
-export const SHA256SUM_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'sha256sum',
   read: true,
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return sha256sumGeneric(resolved, opts, dirAwareStream(ops, accessor, idx))
+    return sha256sumGeneric(resolved, opts, dirAwareStream(ops, accessor, opts))
   },
 }

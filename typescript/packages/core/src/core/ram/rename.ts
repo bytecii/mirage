@@ -14,11 +14,11 @@
 
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import type { PathSpec } from '../../types.ts'
-import { norm, nowIso } from './utils.ts'
+import { nowIso } from '../../utils/dates.ts'
+import { norm } from '../../utils/path.ts'
 import { rstripSlash } from '../../utils/slash.ts'
-import { enoent } from '../../utils/errors.ts'
-import { checkDestParents } from './dest.ts'
-import { invalidateAfterUnlink } from '../../cache/context.ts'
+import { checkDestParents, lookupError } from './dest.ts'
+import { invalidateSubtree } from '../../cache/context.ts'
 
 function moveAttrs(accessor: RAMAccessor, src: string, dst: string): void {
   const attrs = accessor.store.attrs.get(src)
@@ -76,8 +76,8 @@ export async function rename(accessor: RAMAccessor, src: PathSpec, dst: PathSpec
     accessor.store.modified.set(d, accessor.store.modified.get(s) ?? now)
     accessor.store.modified.delete(s)
     moveAttrs(accessor, s, d)
-    await invalidateAfterUnlink(src)
-    await invalidateAfterUnlink(dst)
+    await invalidateSubtree(src)
+    await invalidateSubtree(dst)
     return Promise.resolve()
   }
   if (accessor.store.dirs.has(s)) {
@@ -87,9 +87,9 @@ export async function rename(accessor: RAMAccessor, src: PathSpec, dst: PathSpec
     accessor.store.modified.delete(s)
     moveAttrs(accessor, s, d)
     moveSubtree(accessor, s, d)
-    await invalidateAfterUnlink(src)
-    await invalidateAfterUnlink(dst)
+    await invalidateSubtree(src)
+    await invalidateSubtree(dst)
     return Promise.resolve()
   }
-  throw enoent(src)
+  throw lookupError(accessor, src, s)
 }

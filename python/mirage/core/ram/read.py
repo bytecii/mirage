@@ -12,22 +12,23 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import time
-
 from mirage.accessor.ram import RAMAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.observe.context import record
+from mirage.core.ram.dest import lookup_error
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.path import norm
 from mirage.utils.ranges import slice_window
 
 
-async def read_bytes(accessor: RAMAccessor,
-                     path_spec: PathSpec,
-                     index: IndexCacheStore = NULL_INDEX,
-                     offset: int = 0,
-                     size: int | None = None) -> bytes:
+async def read_bytes(
+    accessor: RAMAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+    offset: int = 0,
+    size: int | None = None,
+) -> bytes:
     """Read a file, optionally only a byte range of it.
 
     The bytes are already in memory, so the window is a slice rather
@@ -44,22 +45,24 @@ async def read_bytes(accessor: RAMAccessor,
     virtual = path_spec.virtual
     path = path_spec.mount_path
     store = accessor.store
-    start_ms = int(time.monotonic() * 1000)
+    timer = start_op()
     key = norm(path)
     if key not in store.files:
-        raise enoent(virtual)
+        raise lookup_error(store, path_spec, key)
     data = store.files[key]
     if offset or size is not None:
         data = slice_window(data, offset, size)
-    record("read", path, "ram", len(data), start_ms)
+    record("read", virtual, "ram", len(data), timer)
     return data
 
 
-async def read(accessor: RAMAccessor,
-               path: PathSpec,
-               index: IndexCacheStore = NULL_INDEX,
-               offset: int = 0,
-               size: int | None = None) -> bytes:
+async def read(
+    accessor: RAMAccessor,
+    path: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+    offset: int = 0,
+    size: int | None = None,
+) -> bytes:
     try:
         return await read_bytes(accessor, path, index, offset, size)
     except FileNotFoundError as exc:

@@ -12,16 +12,28 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toIsoZ } from '../../utils/dates.ts'
 import { underPath } from '../../utils/key_prefix.ts'
 import { KeyLock } from '../lock.ts'
-import { LookupStatus, type IndexEntry, type ListResult, type LookupResult } from './config.ts'
+import {
+  LookupStatus,
+  ResourceType,
+  type Evicted,
+  type IndexEntry,
+  type ListResult,
+  type LookupResult,
+  type SetDirOptions,
+} from './config.ts'
 import { IndexCacheStore } from './store.ts'
 
 export class RAMIndexCacheStore extends IndexCacheStore {
-  private readonly ttl: number
-  private readonly entries = new Map<string, IndexEntry>()
+  readonly ttl: number
+  private readonly entryMap = new Map<string, IndexEntry>()
   private readonly children = new Map<string, string[]>()
   private readonly expiry = new Map<string, number>()
+  private readonly partial = new Set<string>()
+  private readonly tombstones = new Map<string, Evicted[]>()
+  private readonly versions = new Map<string, string>()
   private readonly lock = new KeyLock()
 
   constructor(options: { ttl?: number } = {}) {
@@ -29,72 +41,224 @@ export class RAMIndexCacheStore extends IndexCacheStore {
     this.ttl = options.ttl ?? 600
   }
 
-  get(resourcePath: string): Promise<LookupResult> {
-    const entry = this.entries.get(resourcePath)
+  seed(
+    entries: ReadonlyMap<string, IndexEntry>,
+    children: ReadonlyMap<string, readonly string[]>,
+    expiresAt: Date,
+    version: string | null = null,
+  ): void {
+    const nowIso = toIsoZ(new Date())
+    for (const [path, entry] of entries) {
+      this.entryMap.set(
+        path,
+        entry.indexTime === '' ? entry.copyWith({ indexTime: nowIso }) : entry,
+      )
+    }
+    for (const [path, keys] of children) {
+      this.children.set(path, [...keys])
+      this.expiry.set(path, expiresAt.getTime())
+      this.partial.delete(path)
+      this.stamp(path, version)
+    }
+  }
+
+  private stamp(vfsPath: string, version: string | null): void {
+    if (version === null) this.versions.delete(vfsPath)
+    else this.versions.set(vfsPath, version)
+  }
+
+  entries(): Promise<Map<string, IndexEntry>> {
+    return Promise.resolve(new Map(this.entryMap))
+  }
+
+  get(vfsPath: string): Promise<LookupResult> {
+    const entry = this.entryMap.get(vfsPath)
     if (entry === undefined) return Promise.resolve({ status: LookupStatus.NOT_FOUND })
     return Promise.resolve({ entry })
   }
 
-  put(resourcePath: string, entry: IndexEntry): Promise<void> {
-    return this.lock.withLock(resourcePath, () => {
+  put(vfsPath: string, entry: IndexEntry): Promise<void> {
+    return this.lock.withLock(vfsPath, () => {
       const stored =
-        entry.indexTime === '' ? entry.copyWith({ indexTime: new Date().toISOString() }) : entry
-      this.entries.set(resourcePath, stored)
+        entry.indexTime === '' ? entry.copyWith({ indexTime: toIsoZ(new Date()) }) : entry
+      this.entryMap.set(vfsPath, stored)
       return Promise.resolve()
     })
   }
 
-  listDir(resourcePath: string): Promise<ListResult> {
-    const exp = this.expiry.get(resourcePath)
+  listDir(vfsPath: string): Promise<ListResult> {
+    const exp = this.expiry.get(vfsPath)
     if (exp === undefined) return Promise.resolve({ status: LookupStatus.NOT_FOUND })
-    if (Date.now() > exp) return Promise.resolve({ status: LookupStatus.EXPIRED })
-    const children = this.children.get(resourcePath) ?? []
-    return Promise.resolve({ entries: children })
+    if (Date.now() >= exp) return Promise.resolve({ status: LookupStatus.EXPIRED })
+    const children = this.children.get(vfsPath) ?? []
+    const version = this.versions.get(vfsPath) ?? null
+    if (this.partial.has(vfsPath)) return Promise.resolve({ partialEntries: children, version })
+    return Promise.resolve({ entries: children, version })
   }
 
   setDir(
-    resourcePath: string,
+    vfsPath: string,
+    entries: readonly [string, IndexEntry][],
+    expiredAt?: Date | null,
+    options: SetDirOptions = {},
+  ): Promise<Evicted[]> {
+    return this.storeDir(
+      vfsPath,
+      entries,
+      expiredAt,
+      false,
+      options.window !== true,
+      options.excluded ?? [],
+      options.version ?? null,
+    )
+  }
+
+  override setPartialDir(
+    vfsPath: string,
     entries: readonly [string, IndexEntry][],
     expiredAt?: Date | null,
   ): Promise<void> {
-    return this.lock.withLock(resourcePath, () => {
+    return this.storeDir(vfsPath, entries, expiredAt, true, false).then(() => undefined)
+  }
+
+  private storeDir(
+    vfsPath: string,
+    entries: readonly [string, IndexEntry][],
+    expiredAt: Date | null | undefined,
+    partial: boolean,
+    evict: boolean,
+    excluded: readonly string[] = [],
+    version: string | null = null,
+  ): Promise<Evicted[]> {
+    return this.lock.withLock(vfsPath, () => {
       const now = Date.now()
       const exp = expiredAt ? expiredAt.getTime() : now + this.ttl * 1000
-      const nowIso = new Date(now).toISOString()
-      const prefix = resourcePath === '/' ? '/' : `${resourcePath}/`
-      const childKeys: string[] = []
+      const nowIso = toIsoZ(new Date(now))
+      const prefix = vfsPath === '/' ? '/' : `${vfsPath}/`
+      const rows = new Map<string, IndexEntry>()
       for (const [name, entry] of entries) {
         const fullPath = prefix + name
         const stored = entry.indexTime === '' ? entry.copyWith({ indexTime: nowIso }) : entry
-        this.entries.set(fullPath, stored)
-        childKeys.push(fullPath)
+        rows.set(fullPath, stored)
       }
-      this.children.set(resourcePath, childKeys)
-      this.expiry.set(resourcePath, exp)
-      return Promise.resolve()
+      const childKeys = [...rows.keys()]
+      // What the last full knowledge named: the current listing, plus a
+      // tombstone an invalidation left (a partial since then cannot have
+      // proven its other children gone).
+      const buried = new Map<string, boolean>()
+      if (!partial) {
+        for (const child of this.tombstones.get(vfsPath) ?? []) buried.set(child.path, child.folder)
+        this.tombstones.delete(vfsPath)
+      }
+      const candidates = new Set([
+        ...(this.children.get(vfsPath) ?? []),
+        ...buried.keys(),
+        ...rows.keys(),
+      ])
+      const gone = evict
+        ? [...candidates]
+            .filter(
+              (key) =>
+                (!rows.has(key) ||
+                  (rows.get(key)?.resourceType === ResourceType.FILE &&
+                    (buried.get(key) === true ||
+                      this.children.has(key) ||
+                      this.entryMap.get(key)?.resourceType === ResourceType.FOLDER))) &&
+                !excluded.some((prefix) => underPath(key, prefix)),
+            )
+            .map((key) => this.evict(key, buried.get(key) ?? false, excluded))
+        : []
+      for (const [path, row] of rows) this.entryMap.set(path, row)
+      this.children.set(vfsPath, childKeys)
+      this.expiry.set(vfsPath, exp)
+      this.stamp(vfsPath, partial ? null : version)
+      if (partial) this.partial.add(vfsPath)
+      else this.partial.delete(vfsPath)
+      return Promise.resolve(gone)
     })
   }
 
-  invalidateDir(resourcePath: string): Promise<void> {
-    for (const child of this.children.get(resourcePath) ?? []) {
-      this.entries.delete(child)
-    }
-    this.expiry.delete(resourcePath)
-    this.children.delete(resourcePath)
+  /** Drop a child a complete listing no longer names. */
+  private evict(key: string, buriedFolder = false, excluded: readonly string[] = []): Evicted {
+    const entry = this.entryMap.get(key)
+    this.entryMap.delete(key)
+    const folder =
+      buriedFolder || this.children.has(key) || entry?.resourceType === ResourceType.FOLDER
+    if (folder) this.dropPrefix(key, false, excluded)
+    return { path: key, folder }
+  }
+
+  invalidateEntry(vfsPath: string): Promise<void> {
+    this.entryMap.delete(vfsPath)
     return Promise.resolve()
   }
 
-  invalidatePrefix(resourcePath: string): Promise<void> {
-    for (const key of [...this.entries.keys()]) {
-      if (underPath(key, resourcePath)) this.entries.delete(key)
+  invalidateDir(vfsPath: string): Promise<void> {
+    // The child list is kept as a tombstone, so the next complete listing can
+    // still tell which children went away.
+    const children = this.children.get(vfsPath)
+    if (children !== undefined) {
+      const buried = new Map(
+        this.partial.has(vfsPath)
+          ? (this.tombstones.get(vfsPath) ?? []).map((child) => [child.path, child.folder])
+          : [],
+      )
+      for (const child of children) {
+        buried.set(
+          child,
+          buried.get(child) === true ||
+            this.children.has(child) ||
+            this.entryMap.get(child)?.resourceType === ResourceType.FOLDER,
+        )
+      }
+      this.tombstones.set(
+        vfsPath,
+        [...buried].map(([path, folder]) => ({ path, folder })),
+      )
+    }
+    for (const child of children ?? []) {
+      this.entryMap.delete(child)
+    }
+    this.expiry.delete(vfsPath)
+    this.children.delete(vfsPath)
+    this.partial.delete(vfsPath)
+    this.versions.delete(vfsPath)
+    return Promise.resolve()
+  }
+
+  // Forgetting what is cached is not evidence that anything went away, so an
+  // existing tombstone survives for the next complete listing.
+  invalidatePrefix(vfsPath: string, excluded: readonly string[] = []): Promise<void> {
+    this.dropPrefix(vfsPath, true, excluded)
+    return Promise.resolve()
+  }
+
+  private dropPrefix(
+    vfsPath: string,
+    keepTombstones = false,
+    excluded: readonly string[] = [],
+  ): void {
+    if (!keepTombstones) {
+      for (const key of [...this.tombstones.keys()]) {
+        if (underPath(key, vfsPath) && !excluded.some((prefix) => underPath(key, prefix)))
+          this.tombstones.delete(key)
+      }
+    }
+    for (const key of [...this.entryMap.keys()]) {
+      if (underPath(key, vfsPath) && !excluded.some((prefix) => underPath(key, prefix)))
+        this.entryMap.delete(key)
     }
     for (const key of [...this.children.keys()]) {
-      if (underPath(key, resourcePath)) this.children.delete(key)
+      if (underPath(key, vfsPath) && !excluded.some((prefix) => underPath(key, prefix)))
+        this.children.delete(key)
     }
     for (const key of [...this.expiry.keys()]) {
-      if (underPath(key, resourcePath)) this.expiry.delete(key)
+      if (underPath(key, vfsPath) && !excluded.some((prefix) => underPath(key, prefix))) {
+        this.expiry.delete(key)
+        this.partial.delete(key)
+        this.versions.delete(key)
+      }
     }
-    return Promise.resolve()
   }
 
   invalidate(): Promise<void> {
@@ -104,10 +268,25 @@ export class RAMIndexCacheStore extends IndexCacheStore {
   }
 
   clear(): Promise<void> {
-    this.entries.clear()
+    this.entryMap.clear()
     this.children.clear()
     this.expiry.clear()
+    this.partial.clear()
+    this.tombstones.clear()
+    this.versions.clear()
     this.lock.clear()
     return Promise.resolve()
   }
 }
+
+/**
+ * The empty, throwaway store the listing gate stats a version through.
+ *
+ * A root stat asks the backend for its head only through this store. Through
+ * any other index it names no version and reads nothing, so a getattr of the
+ * root never sends a request or reads the index; the gate passes this store
+ * to say a request is what it wants.
+ *
+ * Mirrors Python's `ListingCheckStore`.
+ */
+export class ListingCheckStore extends RAMIndexCacheStore {}

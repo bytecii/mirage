@@ -15,7 +15,7 @@
 import json
 
 from mirage.commands.cli.types import CLIInvocation
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.discord.config import DiscordConfig
 from mirage.core.discord.post import send_message
 from mirage.io.stream import yield_bytes
@@ -23,7 +23,7 @@ from mirage.io.types import ByteSource, IOResult
 
 
 async def send(
-        inv: CLIInvocation[DiscordConfig]
+    inv: CLIInvocation[DiscordConfig],
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(inv.flags)
     result = await send_message(
@@ -32,6 +32,7 @@ async def send(
         fl.as_str("text") or "",
         fl.as_str("reply_to"),
     )
-    out = json.dumps(result, ensure_ascii=False,
-                     separators=(",", ":")).encode()
+    out = json.dumps(
+        result, ensure_ascii=False, separators=(",", ":")
+    ).encode()
     return yield_bytes(out), IOResult()

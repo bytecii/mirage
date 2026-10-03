@@ -12,35 +12,36 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from collections.abc import Sequence
+
 from mirage.commands.builtin.generic.crossmount.constants import (
-    CROSS_MOUNT_COMMANDS, RELAY_COMMANDS, STREAM_COMMANDS)
+    CROSS_MOUNT_COMMANDS,
+    RELAY_COMMANDS,
+    STREAM_COMMANDS,
+)
 from mirage.commands.builtin.generic.crossmount.types import Cmd, Strategy
-from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
 from mirage.types import PathSpec
 
 
-def strategy_for(cmd_name: str, flag_kwargs: dict[str, FlagValue]) -> Strategy:
+def strategy_for(cmd_name: str) -> Strategy:
     """Pick the combine strategy for one cross-mount command invocation.
-
-    Flags can flip the strategy: ``sed -i`` edits each operand in place
-    (per-operand independent), so it fans out instead of streaming.
 
     Args:
         cmd_name (str): Command name, must be in CROSS_MOUNT_COMMANDS.
-        flag_kwargs (dict): Flags parsed against the shared command spec.
     """
     if cmd_name in RELAY_COMMANDS:
         return Strategy.RELAY
-    if cmd_name == Cmd.SED and FlagView(flag_kwargs,
-                                        spec=SPECS[Cmd.SED]).as_bool("i"):
-        return Strategy.FANOUT
     if cmd_name in STREAM_COMMANDS:
         return Strategy.STREAM
     return Strategy.FANOUT
 
 
-def is_cross_mount(cmd_name: str, scopes: list[PathSpec], registry) -> bool:
+def is_cross_mount(
+    cmd_name: str,
+    scopes: list[PathSpec],
+    registry,
+    flag_scopes: Sequence[PathSpec] = (),
+) -> bool:
     if cmd_name not in CROSS_MOUNT_COMMANDS or len(scopes) < 2:
         return False
     mounts = set()
@@ -49,4 +50,16 @@ def is_cross_mount(cmd_name: str, scopes: list[PathSpec], registry) -> bool:
         # a scope outside any mount cannot make the command cross-mount
         if m is not None:
             mounts.add(m.prefix)
-    return len(mounts) > 1
+    # A copy of a tree that holds a mount reads both filesystems, the way
+    # GNU cp -r copies across one, even from a single mount's operands.
+    # Only a source counts: the destination (-t's directory, else the last
+    # operand) lands beside a mount and crosses nothing.
+    landing = {s.virtual for s in flag_scopes or scopes[-1:]}
+    return len(mounts) > 1 or (
+        cmd_name == Cmd.CP
+        and any(
+            registry.descendant_mounts(s.virtual)
+            for s in scopes
+            if s.virtual not in landing
+        )
+    )

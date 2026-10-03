@@ -1,0 +1,34 @@
+{
+  "runs": {
+    "typescript": {
+      "command": [
+        "pnpm",
+        "-C",
+        "examples/typescript",
+        "exec",
+        "tsx",
+        "pyodide/env.ts"
+      ]
+    }
+  },
+  "exit": 0,
+  "lines": [
+    "python3 + session env (os.environ passthrough)",
+    "",
+    "=== export FOO=bar; python3 reads os.environ ===",
+    "stdout: bar  (expected: bar)",
+    "",
+    "=== mutations inside python3 do NOT flow back to session.env ===",
+    "stdout: bar  (expected: bar — previous mutation died with the call)",
+    "",
+    "=== isolation across workspaces — each has its own Pyodide ===",
+    "wsA:  alice  (expected: alice)",
+    "wsB:  bob  (expected: bob)",
+    "(each workspace has its own Pyodide → own os.environ → no mixing)",
+    "",
+    "=== host environment is not inherited ===",
+    "host-only value: missing  (expected: missing)",
+    "explicit command value: guest-marker  (expected: guest-marker)",
+    ""
+  ]
+}

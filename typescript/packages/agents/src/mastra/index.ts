@@ -12,160 +12,51 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { gnuDirname } from '@struktoai/mirage-core/utils/path'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
+import { toStandardSchema } from '@mastra/core/schema'
 import { createTool } from '@mastra/core/tools'
-import { z } from 'zod'
+import {
+  EDIT_DESCRIPTION,
+  EDIT_INPUT,
+  GLOB_DESCRIPTION,
+  GLOB_INPUT,
+  GREP_DESCRIPTION,
+  GREP_INPUT,
+  LS_DESCRIPTION,
+  LS_INPUT,
+  READ_DESCRIPTION,
+  READ_INPUT,
+  SHELL_DESCRIPTION,
+  SHELL_INPUT,
+  WRITE_DESCRIPTION,
+  WRITE_INPUT,
+} from '../tool_descriptions.ts'
+import { MirageToolOperations, type MirageToolOperationsOptions } from '../tool_operations.ts'
 
-async function ensureParent(ws: Workspace, path: string): Promise<void> {
-  const parent = gnuDirname(path)
-  if (parent === '/' || parent === '' || parent === '.') return
-  if (await ws.fs.exists(parent)) return
-  await ensureParent(ws, parent)
-  try {
-    await ws.fs.mkdir(parent)
-  } catch (err) {
-    if (!(await ws.fs.exists(parent))) throw err
-  }
-}
-
-export function mirageTools(ws: Workspace) {
+/**
+ * Mirage's tool table as Mastra tools: shell, read, write, edit, ls, grep
+ * and glob, each with the shared input schema and answering
+ * `{ text, isError }` as the MCP tool of the same name does.
+ */
+export function mirageTools(ws: Workspace, options: MirageToolOperationsOptions = {}) {
+  const operations = new MirageToolOperations(ws, options)
+  const mirageTool = (name: string, description: string, input: object) =>
+    createTool({
+      id: `mirage-${name}`,
+      description,
+      inputSchema: toStandardSchema<Record<string, unknown>>(input as never),
+      execute: async (args) => {
+        const result = await operations.call(name, args)
+        return { text: result.content[0]?.text ?? '', isError: result.isError === true }
+      },
+    })
   return {
-    execute: createTool({
-      id: 'mirage-execute',
-      description:
-        'Execute a shell command in the Mirage workspace and return stdout, stderr, and exitCode.',
-      inputSchema: z.object({
-        command: z.string().describe('The shell command to execute.'),
-      }),
-      outputSchema: z.object({
-        stdout: z.string(),
-        stderr: z.string(),
-        exitCode: z.number(),
-      }),
-      execute: async (inputData) => {
-        const { command } = inputData as { command: string }
-        const io = await ws.execute(command)
-        return {
-          stdout: io.stdoutText,
-          stderr: io.stderrText,
-          exitCode: io.exitCode,
-        }
-      },
-    }),
-
-    readFile: createTool({
-      id: 'mirage-read-file',
-      description: 'Read the contents of a file from the Mirage workspace as UTF-8 text.',
-      inputSchema: z.object({
-        path: z.string().describe('Absolute path inside the workspace.'),
-      }),
-      outputSchema: z.object({
-        content: z.string().optional(),
-        error: z.string().optional(),
-      }),
-      execute: async (inputData) => {
-        const { path } = inputData as { path: string }
-        try {
-          const content = await ws.fs.readFileText(path)
-          return { content }
-        } catch (err) {
-          return { error: err instanceof Error ? err.message : String(err) }
-        }
-      },
-    }),
-
-    writeFile: createTool({
-      id: 'mirage-write-file',
-      description:
-        'Write content to a file in the Mirage workspace. Creates missing parent directories.',
-      inputSchema: z.object({
-        path: z.string().describe('Absolute path inside the workspace.'),
-        content: z.string().describe('UTF-8 text content to write.'),
-      }),
-      outputSchema: z.object({ path: z.string() }),
-      execute: async (inputData) => {
-        const { path, content } = inputData as { path: string; content: string }
-        await ensureParent(ws, path)
-        await ws.fs.writeFile(path, content)
-        return { path }
-      },
-    }),
-
-    editFile: createTool({
-      id: 'mirage-edit-file',
-      description:
-        'Replace a string inside an existing file. Errors if the string appears more than once unless replaceAll is true.',
-      inputSchema: z.object({
-        path: z.string().describe('Absolute path of the file to edit.'),
-        oldString: z.string().describe('The exact string to replace.'),
-        newString: z.string().describe('The replacement string.'),
-        replaceAll: z
-          .boolean()
-          .optional()
-          .describe('Replace every occurrence rather than requiring a unique match.'),
-      }),
-      outputSchema: z.object({
-        path: z.string().optional(),
-        occurrences: z.number().optional(),
-        error: z.string().optional(),
-      }),
-      execute: async (inputData) => {
-        const { path, oldString, newString, replaceAll } = inputData as {
-          path: string
-          oldString: string
-          newString: string
-          replaceAll?: boolean
-        }
-        let current: string
-        try {
-          current = await ws.fs.readFileText(path)
-        } catch {
-          return { error: `Error: file '${path}' not found` }
-        }
-        const count = current.split(oldString).length - 1
-        if (count === 0) {
-          return { error: `Error: string not found in file: '${oldString}'` }
-        }
-        if (count > 1 && replaceAll !== true) {
-          return {
-            error: `Error: string '${oldString}' appears ${String(count)} times. Use replaceAll=true`,
-          }
-        }
-        const next =
-          replaceAll === true
-            ? current.split(oldString).join(newString)
-            : current.replace(oldString, newString)
-        await ws.fs.writeFile(path, next)
-        return { path, occurrences: replaceAll === true ? count : 1 }
-      },
-    }),
-
-    ls: createTool({
-      id: 'mirage-ls',
-      description: 'List entries of a directory in the Mirage workspace.',
-      inputSchema: z.object({
-        path: z.string().describe('Absolute directory path inside the workspace.'),
-      }),
-      outputSchema: z.object({
-        files: z.array(z.object({ path: z.string(), is_dir: z.boolean() })).optional(),
-        error: z.string().optional(),
-      }),
-      execute: async (inputData) => {
-        const { path } = inputData as { path: string }
-        let entries: string[]
-        try {
-          entries = await ws.fs.readdir(path)
-        } catch (err) {
-          return { error: err instanceof Error ? err.message : String(err) }
-        }
-        const files: { path: string; is_dir: boolean }[] = []
-        for (const entry of entries) {
-          const isDir = await ws.fs.isDir(entry)
-          files.push({ path: entry, is_dir: isDir })
-        }
-        return { files }
-      },
-    }),
+    shell: mirageTool('shell', SHELL_DESCRIPTION, SHELL_INPUT),
+    read: mirageTool('read', READ_DESCRIPTION, READ_INPUT),
+    write: mirageTool('write', WRITE_DESCRIPTION, WRITE_INPUT),
+    edit: mirageTool('edit', EDIT_DESCRIPTION, EDIT_INPUT),
+    ls: mirageTool('ls', LS_DESCRIPTION, LS_INPUT),
+    grep: mirageTool('grep', GREP_DESCRIPTION, GREP_INPUT),
+    glob: mirageTool('glob', GLOB_DESCRIPTION, GLOB_INPUT),
   }
 }

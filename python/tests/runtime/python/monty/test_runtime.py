@@ -17,12 +17,12 @@ import asyncio
 import pydantic_monty
 import pytest
 
-from mirage.resource.ram import RAMResource
 from mirage.runtime.errors import EvalError
 from mirage.runtime.mixin import EvaluatorMixin
 from mirage.runtime.python import MontyRuntime
 from mirage.runtime.types import RunArgs
-from mirage.types import MountMode
+from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 
@@ -52,7 +52,8 @@ def test_monty_runtime_error_keeps_stdout():
 def test_monty_argv_global():
     runtime = MontyRuntime()
     result = asyncio.run(
-        runtime.run(RunArgs(code="print(argv[1:])", args=["a", "b"])))
+        runtime.run(RunArgs(code="print(argv[1:])", args=["a", "b"]))
+    )
     assert result.exit_code == 0
     assert result.stdout == b"['a', 'b']\n"
 
@@ -62,7 +63,8 @@ def test_monty_argv0_is_prog_when_named():
     # interpreter's own placeholder stands, as `python3 -c` expects.
     runtime = MontyRuntime()
     result = asyncio.run(
-        runtime.run(RunArgs(code="print(argv[0])", args=["a"], prog="pager")))
+        runtime.run(RunArgs(code="print(argv[0])", args=["a"], prog="pager"))
+    )
     assert (result.exit_code, result.stdout) == (0, b"pager\n")
     plain = asyncio.run(runtime.run(RunArgs(code="print(argv[0])")))
     assert plain.stdout == b"main.py\n"
@@ -71,7 +73,8 @@ def test_monty_argv0_is_prog_when_named():
 def test_monty_stdin_global():
     runtime = MontyRuntime()
     result = asyncio.run(
-        runtime.run(RunArgs(code="print(stdin.decode())", stdin=b"piped")))
+        runtime.run(RunArgs(code="print(stdin.decode())", stdin=b"piped"))
+    )
     assert result.exit_code == 0
     assert result.stdout == b"piped\n"
 
@@ -87,8 +90,12 @@ def test_monty_env_isolated_to_run_env():
     runtime = MontyRuntime()
     result = asyncio.run(
         runtime.run(
-            RunArgs(code="import os; print(os.environ.get('MY_VAR', 'unset'))",
-                    env={"MY_VAR": "v1"})))
+            RunArgs(
+                code="import os; print(os.environ.get('MY_VAR', 'unset'))",
+                env={"MY_VAR": "v1"},
+            )
+        )
+    )
     assert result.stdout == b"v1\n"
 
 
@@ -96,49 +103,51 @@ def test_monty_environ_is_a_dict_of_the_run_env():
     # The surface the TS host must match: same nine reads, same output
     # (its bridge answered os.getenv only and raised on os.environ).
     runtime = MontyRuntime()
-    code = "\n".join((
-        "import os",
-        "print(os.environ.get('K'))",
-        "print(os.environ.get('nope', 'dflt'))",
-        "print(os.environ['K'])",
-        "print('K' in os.environ, 'nope' in os.environ)",
-        "print(sorted(os.environ))",
-        "print(sorted(os.environ.items()))",
-        "print(len(os.environ))",
-        "print(type(os.environ).__name__)",
-    ))
+    code = "\n".join(
+        (
+            "import os",
+            "print(os.environ.get('K'))",
+            "print(os.environ.get('nope', 'dflt'))",
+            "print(os.environ['K'])",
+            "print('K' in os.environ, 'nope' in os.environ)",
+            "print(sorted(os.environ))",
+            "print(sorted(os.environ.items()))",
+            "print(len(os.environ))",
+            "print(type(os.environ).__name__)",
+        )
+    )
     result = asyncio.run(
-        runtime.run(RunArgs(code=code, env={
-            "K": "v",
-            "OTHER": "w"
-        })))
+        runtime.run(RunArgs(code=code, env={"K": "v", "OTHER": "w"}))
+    )
     assert result.exit_code == 0
-    assert result.stdout == (b"v\n"
-                             b"dflt\n"
-                             b"v\n"
-                             b"True False\n"
-                             b"['K', 'OTHER']\n"
-                             b"[('K', 'v'), ('OTHER', 'w')]\n"
-                             b"2\n"
-                             b"dict\n")
+    assert result.stdout == (
+        b"v\n"
+        b"dflt\n"
+        b"v\n"
+        b"True False\n"
+        b"['K', 'OTHER']\n"
+        b"[('K', 'v'), ('OTHER', 'w')]\n"
+        b"2\n"
+        b"dict\n"
+    )
 
 
 def test_monty_missing_environ_key_raises_key_error():
     runtime = MontyRuntime()
-    code = ("import os\n"
-            "try:\n"
-            "    os.environ['nope']\n"
-            "except KeyError as e:\n"
-            "    print('KeyError', e)")
+    code = (
+        "import os\n"
+        "try:\n"
+        "    os.environ['nope']\n"
+        "except KeyError as e:\n"
+        "    print('KeyError', e)"
+    )
     result = asyncio.run(runtime.run(RunArgs(code=code, env={"K": "v"})))
     assert (result.exit_code, result.stdout) == (0, b"KeyError 'nope'\n")
 
 
 def test_monty_environ_mutation_cannot_reach_the_host_env():
     runtime = MontyRuntime()
-    code = ("import os\n"
-            "os.environ['K'] = 'guest'\n"
-            "print(os.getenv('K'))")
+    code = "import os\nos.environ['K'] = 'guest'\nprint(os.getenv('K'))"
     result = asyncio.run(runtime.run(RunArgs(code=code, env={"K": "v"})))
     assert (result.exit_code, result.stdout) == (0, b"v\n")
 
@@ -167,6 +176,7 @@ async def test_monty_runs_off_loop_and_cancellation_halts():
 
 def test_monty_missing_extra_raises(monkeypatch):
     import mirage.runtime.python.monty.runtime as monty_module
+
     monkeypatch.setattr(monty_module, "pydantic_monty", None)
     with pytest.raises(ImportError, match="monty' extra"):
         MontyRuntime()
@@ -174,29 +184,28 @@ def test_monty_missing_extra_raises(monkeypatch):
 
 def test_python3_reports_missing_extra(monkeypatch):
     import mirage.runtime.python.monty.runtime as monty_module
+
     monkeypatch.setattr(monty_module, "pydantic_monty", None)
-    ws = Workspace({"/data": RAMResource()}, mode=MountMode.EXEC)
-    io = asyncio.run(ws.execute("python3 -c 'print(1)'"))
+    ws = Workspace({"/data": RAMVFS()}, mode=MountMode.EXEC)
+    io = asyncio.run(ws.shell("python3 -c 'print(1)'"))
     assert io.exit_code == 127
     assert b"monty' extra" in io.stderr
 
 
 def test_workspace_explicit_monty_fails_loud(monkeypatch):
     import mirage.runtime.python.monty.runtime as monty_module
+
     monkeypatch.setattr(monty_module, "pydantic_monty", None)
     with pytest.raises(ImportError, match="monty' extra"):
-        Workspace({"/data": RAMResource()},
-                  mode=MountMode.EXEC,
-                  runtimes=["monty"])
+        Workspace({"/data": RAMVFS()}, mode=MountMode.EXEC, runtimes=["monty"])
 
 
 @pytest.mark.asyncio
 async def test_eval_returns_last_expression_with_inputs():
     runtime = MontyRuntime()
-    result = await runtime.eval("print('hey'); ctx['a'] + 1",
-                                inputs={"ctx": {
-                                    "a": 41
-                                }})
+    result = await runtime.eval(
+        "print('hey'); ctx['a'] + 1", inputs={"ctx": {"a": 41}}
+    )
     assert result.value == 42
     assert result.stdout == b"hey\n"
     assert result.status == "complete"
@@ -212,6 +221,57 @@ async def test_eval_sessions_keep_state_per_id():
     assert other.exit_code == 1
     assert other.stderr is not None and b"NameError" in other.stderr
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_cwd_inherits_context_and_explicit_run_cwd_wins():
+    runtime = MontyRuntime()
+    ws = Workspace(
+        {"/data": RAMVFS()},
+        mode=MountMode.EXEC,
+        runtimes=[runtime, "workspace"],
+    )
+    try:
+        assert (await ws.shell("mkdir /data/sub; cd /data")).exit_code == 0
+        code = "import os; print(os.getcwd())"
+        inherited = await runtime.run(RunArgs(code=code))
+        assert inherited.stdout == b"/data\n"
+        explicit = await runtime.run(
+            RunArgs(code=code, cwd=PathSpec.from_str_path("/data/sub"))
+        )
+        assert explicit.stdout == b"/data/sub\n"
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_eval_cwd_is_seeded_once_per_session():
+    runtime = MontyRuntime()
+    ws = Workspace(
+        {"/data": RAMVFS()},
+        mode=MountMode.EXEC,
+        runtimes=[runtime, "workspace"],
+    )
+    try:
+        assert (
+            await ws.shell(
+                "mkdir /data/sub; echo child > /data/sub/item; cd /data"
+            )
+        ).exit_code == 0
+        assert (await runtime.eval("import os; os.getcwd()")).value == "/data"
+        first = await runtime.eval(
+            "import os; os.chdir('sub'); os.getcwd()", session="a"
+        )
+        assert first.value == "/data/sub"
+        assert (await ws.shell("cd /")).exit_code == 0
+        again = await runtime.eval("open('item').read()", session="a")
+        assert again.value == "child\n"
+        assert (
+            await runtime.eval("import os; os.getcwd()", session="b")
+        ).value == "/"
+        assert (await runtime.eval("import os; os.getcwd()")).value == "/"
+    finally:
+        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -261,36 +321,18 @@ async def test_eval_cancellation_reclaims_the_worker():
     rt = MontyRuntime()
     await rt.eval("x = 1", session="live")
     task = asyncio.ensure_future(
-        rt.eval("n = 0\nwhile True:\n    n = n + 1", session="live"))
+        rt.eval("n = 0\nwhile True:\n    n = n + 1", session="live")
+    )
     await asyncio.sleep(0.3)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     # The killed worker took the session's heap with it, so the id is
     # dropped and the next eval gets a fresh worker rather than a dead one.
-    assert "live" not in rt._eval_sessions
+    assert "live" not in rt._execution._eval_sessions
     again = await rt.eval("6 * 7", session="live")
     assert again.value == 42
     await rt.close()
-
-
-@pytest.mark.asyncio
-async def test_monty_concurrent_first_use_shares_one_pool():
-    """Two cold runs must not each build a pool.
-
-    The loser of the race would be unreachable from close(), leaking
-    its worker subprocesses.
-    """
-    runtime = MontyRuntime()
-    pools: list[object] = []
-
-    async def probe():
-        pool = await runtime._ensure_pool()
-        pools.append(pool)
-
-    await asyncio.gather(probe(), probe(), probe())
-    assert len({id(p) for p in pools}) == 1
-    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -302,7 +344,8 @@ async def test_monty_cancelled_eval_session_releases_its_checkout(monkeypatch):
     itself: one leaked lease would not exhaust a CPU-sized pool, so a
     later eval succeeding proves nothing.
     """
-    import mirage.runtime.python.monty.runtime as monty_mod
+    import mirage.runtime.python.monty.execution as monty_mod
+
     released: list[object] = []
     original = monty_mod._release
 
@@ -313,12 +356,13 @@ async def test_monty_cancelled_eval_session_releases_its_checkout(monkeypatch):
     monkeypatch.setattr(monty_mod, "_release", spy)
     runtime = MontyRuntime()
     task = asyncio.create_task(
-        runtime.eval("i = 0\nwhile True:\n    i += 1", session="s1"))
+        runtime.eval("i = 0\nwhile True:\n    i += 1", session="s1")
+    )
     await asyncio.sleep(0.4)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert "s1" not in runtime._eval_sessions
+    assert "s1" not in runtime._execution._eval_sessions
     assert len(released) == 1, "the cancelled checkout was never released"
     # And the runtime stays usable afterwards.
     result = await runtime.eval("1 + 1", session="s1")
@@ -327,4 +371,62 @@ async def test_monty_cancelled_eval_session_releases_its_checkout(monkeypatch):
 
 
 def test_reach_is_vfs():
-    assert MontyRuntime.reach == "vfs"
+    assert MontyRuntime.reach == "workspace"
+
+
+def test_monty_refuses_a_path_no_mount_serves():
+    # The only filesystem a guest sees is the workspace's: with nothing
+    # mounted, a directory cannot be made and a file cannot be written,
+    # and a probe answers False rather than inventing a scratch tree.
+    runtime = MontyRuntime()
+    for code in (
+        "from pathlib import Path\nPath('/tmp').mkdir()",
+        "open('/tmp/x.txt', 'w').write('hi')",
+    ):
+        result = asyncio.run(runtime.run(RunArgs(code=code)))
+        assert result.exit_code == 1
+        assert b"FileNotFoundError" in result.stderr
+    result = asyncio.run(
+        runtime.run(
+            RunArgs(
+                code="from pathlib import Path\nprint(Path('/tmp').exists())"
+            )
+        )
+    )
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == b"False\n"
+
+
+def test_monty_serves_the_host_clock():
+    # MontyFs leaves these to the engine's host clock; the TS
+    # door answers with DateTime markers, and both hosts must agree a
+    # guest can read a naive local now and an aware UTC now.
+    runtime = MontyRuntime()
+    result = asyncio.run(
+        runtime.run(
+            RunArgs(
+                code="from datetime import datetime, timezone\n"
+                "print(datetime.now().tzinfo)\n"
+                "print(datetime.now(timezone.utc).tzinfo)"
+            )
+        )
+    )
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == b"None\nUTC\n"
+
+
+def test_monty_resolve_answers_a_lexical_str():
+    # No symlinks in the tree, so resolve() is absolute() against '/',
+    # and the answer is a str on both hosts.
+    runtime = MontyRuntime()
+    result = asyncio.run(
+        runtime.run(
+            RunArgs(
+                code="from pathlib import Path\n"
+                "r = Path('rel/x.txt').resolve()\n"
+                "print(type(r).__name__, r)"
+            )
+        )
+    )
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == b"str /rel/x.txt\n"

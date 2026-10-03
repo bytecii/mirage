@@ -18,13 +18,19 @@ from mirage.commands.builtin.generic.comm import comm as generic_comm
 from mirage.commands.builtin.generic.crossmount.types import CrossResult
 from mirage.commands.builtin.generic.crossmount.utils import flat_scopes, relay
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
+from mirage.io.types import ByteSource
 from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec
 
 
-async def run_comm(scopes: list[PathSpec], flag_kwargs: dict[str, FlagValue],
-                   dispatch: DispatchFn) -> CrossResult:
+async def run_comm(
+    scopes: list[PathSpec],
+    flag_kwargs: dict[str, FlagValue],
+    dispatch: DispatchFn,
+    stdin: ByteSource | None = None,
+) -> CrossResult:
     """Compare two sorted files on different mounts via the generic comm.
 
     Pure wiring: both sides are read through dispatch-relayed primitives
@@ -34,12 +40,16 @@ async def run_comm(scopes: list[PathSpec], flag_kwargs: dict[str, FlagValue],
         scopes (list[PathSpec]): The two path operands.
         flag_kwargs (dict): Flags parsed against the shared comm spec.
         dispatch (DispatchFn): Workspace operation dispatcher.
+        stdin (ByteSource | None): The line's input, which a ``-`` or
+            ``/dev/stdin`` operand reads.
     """
     fl = FlagView(flag_kwargs, spec=SPECS["comm"])
-    return await generic_comm(flat_scopes(scopes),
-                              read_bytes=functools.partial(
-                                  relay, dispatch, "read"),
-                              suppress1=fl.as_bool("args_1"),
-                              suppress2=fl.as_bool("2"),
-                              suppress3=fl.as_bool("3"),
-                              check_order=fl.as_bool("check_order"))
+    return await generic_comm(
+        flat_scopes(scopes),
+        stdin=stdin,
+        read_bytes=functools.partial(relay, dispatch, "read"),
+        suppress1=fl.as_bool("args_1"),
+        suppress2=fl.as_bool("2"),
+        suppress3=fl.as_bool("3"),
+        check_order=fl.as_bool("check_order"),
+    )

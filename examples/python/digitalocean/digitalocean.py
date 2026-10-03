@@ -18,9 +18,8 @@ import os
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.digitalocean import (DigitalOceanConfig,
-                                          DigitalOceanResource)
 from mirage.types import PathSpec
+from mirage.vfs.digitalocean import DigitalOceanConfig, DigitalOceanVFS
 
 load_dotenv(".env.development")
 
@@ -30,28 +29,23 @@ config = DigitalOceanConfig(
     access_key_id=os.environ["DO_ACCESS_KEY_ID"],
     secret_access_key=os.environ["DO_SECRET_ACCESS_KEY"],
 )
-resource = DigitalOceanResource(config)
-ws = Workspace({"/do/": resource}, mode=MountMode.READ)
+vfs = DigitalOceanVFS(config)
+ws = Workspace({"/do/": vfs}, mode=MountMode.READ)
 
 
 def ops_summary() -> str:
-    records = ws.ops.records
+    records = ws.vfs.records
     return f"{len(records)} ops, {sum(r.bytes for r in records)} bytes"
 
 
 async def main():
     print(f"=== DigitalOcean Spaces at {config.resolved_endpoint_url()} ===")
 
-    r = await ws.execute("ls /do/")
+    r = await ws.shell("ls /do/")
     print("ls /do/:\n" + await r.stdout_str())
 
-    r = await ws.execute("find /do/ -name '*.json' | head -n 5")
+    r = await ws.shell("find /do/ -name '*.json' | head -n 5")
     print("find *.json:\n" + await r.stdout_str())
-
-    r = await ws.execute("grep -m 1 mirage /do/data/example.jsonl",
-                         provision=True)
-    print(f"plan grep -m 1: network_read={r.network_read} "
-          f"precision={r.precision}")
 
     print(f"\nStats: {ops_summary()}")
 
@@ -59,15 +53,19 @@ async def main():
     # workspace namespace (durable, snapshot-captured) and merge into
     # dispatch-level stat.
     print("=== metadata overlay on /do/data/example.jsonl ===")
-    meta_res = await ws.execute(
+    meta_res = await ws.shell(
         'chmod 640 "/do/data/example.jsonl"'
         ' && chown 500:dev "/do/data/example.jsonl"'
-        ' && touch -t 202601021530 "/do/data/example.jsonl"')
+        ' && touch -t 202601021530 "/do/data/example.jsonl"'
+    )
     print(f"  chmod/chown/touch exit={meta_res.exit_code}")
     meta_st, _ = await ws.dispatch(
-        "stat", PathSpec.from_str_path("/do/data/example.jsonl"))
-    print(f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
-          f"gid={meta_st.gid} mtime={meta_st.modified}")
+        "stat", PathSpec.from_str_path("/do/data/example.jsonl")
+    )
+    print(
+        f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
+        f"gid={meta_st.gid} mtime={meta_st.modified}"
+    )
 
 
 if __name__ == "__main__":

@@ -18,27 +18,26 @@ import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic
 import { PathSpec } from '@struktoai/mirage-core/types'
 import { mountKey } from '@struktoai/mirage-core/utils/key_prefix'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { RedisAccessor } from '../../accessor/redis.ts'
-import { RedisStore } from '../../resource/redis/store.ts'
-import { appendBytes } from './append.ts'
-import { SCOPE_ERROR } from './constants.ts'
-import { copy } from './copy.ts'
-import { create } from './create.ts'
-import { size, entries } from './du/index.ts'
-import { exists } from './exists.ts'
-import { find } from './find.ts'
-import { mkdir } from './mkdir.ts'
-import { mkdirP } from './mkdir_p.ts'
-import { read } from './read.ts'
-import { readdir } from './readdir.ts'
-import { rename } from './rename.ts'
-import { rmR } from './rm.ts'
-import { rmdir } from './rmdir.ts'
-import { stat } from './stat.ts'
-import { stream } from './stream.ts'
-import { truncate } from './truncate.ts'
-import { unlink } from './unlink.ts'
-import { writeBytes } from './write.ts'
+import { RedisAccessor } from '@struktoai/mirage-core/accessor/redis'
+import { RedisStore } from '../../vfs/redis/store.ts'
+import { appendBytes } from '@struktoai/mirage-core/core/redis/append'
+import { SCOPE_ERROR } from '@struktoai/mirage-core/core/redis/constants'
+import { copy } from '@struktoai/mirage-core/core/redis/copy'
+import { create } from '@struktoai/mirage-core/core/redis/create'
+import { size, entries } from '@struktoai/mirage-core/core/redis/du/index'
+import { exists } from '@struktoai/mirage-core/core/redis/exists'
+import { find } from '@struktoai/mirage-core/core/redis/find'
+import { mkdir } from '@struktoai/mirage-core/core/redis/mkdir'
+import { read } from '@struktoai/mirage-core/core/redis/read'
+import { readdir } from '@struktoai/mirage-core/core/redis/readdir'
+import { rename } from '@struktoai/mirage-core/core/redis/rename'
+import { rmR } from '@struktoai/mirage-core/core/redis/rm'
+import { rmdir } from '@struktoai/mirage-core/core/redis/rmdir'
+import { stat } from '@struktoai/mirage-core/core/redis/stat'
+import { stream } from '@struktoai/mirage-core/core/redis/stream'
+import { truncate } from '@struktoai/mirage-core/core/redis/truncate'
+import { unlink } from '@struktoai/mirage-core/core/redis/unlink'
+import { writeBytes } from '@struktoai/mirage-core/core/redis/write'
 
 const resolveGlob = makeResolveGlob(readdir, SCOPE_ERROR)
 
@@ -137,23 +136,19 @@ describe.skipIf(skip)('core/redis ops', () => {
     expect(await exists(acc, spec('/a/b/c'))).toBe(true)
   })
 
-  it('mkdirP creates chain idempotently', async () => {
-    await mkdirP(acc, spec('/x/y'))
-    await mkdirP(acc, spec('/x/y'))
-    expect(await exists(acc, spec('/x/y'))).toBe(true)
-  })
-
   it('rmdir refuses non-empty and removes empty', async () => {
     await mkdir(acc, spec('/dir'))
     await writeBytes(acc, spec('/dir/f'), ENC.encode('.'))
-    await expect(rmdir(acc, spec('/dir'))).rejects.toThrow(/directory not empty/)
+    await expect(rmdir(acc, spec('/dir'))).rejects.toMatchObject({ code: 'ENOTEMPTY' })
+    // The refusal must leave the child addressable, not orphan it.
+    expect(await exists(acc, spec('/dir/f'))).toBe(true)
     await unlink(acc, spec('/dir/f'))
     await rmdir(acc, spec('/dir'))
     expect(await exists(acc, spec('/dir'))).toBe(false)
   })
 
   it('rmdir fails on missing dir', async () => {
-    await expect(rmdir(acc, spec('/ghost'))).rejects.toThrow(/not a directory/)
+    await expect(rmdir(acc, spec('/ghost'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('unlink removes files', async () => {
@@ -284,7 +279,7 @@ describe.skipIf(skip)('core/redis ops', () => {
       directory: '/',
       pattern: '*.txt',
       resolved: false,
-      resourcePath: '*.txt',
+      vfsPath: '*.txt',
     })
     const expanded = await resolveGlob(acc, [patternSpec])
     const names = expanded.map((p) => p.virtual).sort()

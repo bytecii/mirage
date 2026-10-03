@@ -10,6 +10,8 @@ permissions:
       - python/**
       - typescript/**
       - .github/workflows/test_install.yml
+      - .github/actions/setup-node-pnpm/action.yml
+      - .github/actions/setup-uv/action.yml
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -35,6 +37,8 @@ jobs:
               - 'python/**'
               - 'typescript/**'
               - '.github/workflows/test_install.yml'
+              - '.github/actions/setup-node-pnpm/action.yml'
+              - '.github/actions/setup-uv/action.yml'
 
   python-install:
     needs: changes
@@ -43,10 +47,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Its own entry: these installs resolve fresh from PyPI on 3.11 as
+      # well as 3.12, wheels the shared entry never holds. The lock does
+      # not pin a fresh resolution and an entry is never re-saved, so the
+      # key also turns over weekly: a release is cached within the week
+      # rather than fetched on every run until the lock next changes.
+      - name: Name the week's install cache
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: ./.github/actions/setup-uv
         with:
-          enable-cache: true
+          cache-suffix: install-${{ steps.week.outputs.week }}
 
       - name: Base install (no extras) on 3.11 and 3.12
         working-directory: python
@@ -69,13 +82,13 @@ jobs:
           import mirage
 
           async def main():
-              ws = mirage.Workspace({"/ram": mirage.RAMResource()},
+              ws = mirage.Workspace({"/ram": mirage.RAMVFS()},
                                     mode=mirage.MountMode.WRITE)
-              out = await ws.execute("echo hello | wc -c")
+              out = await ws.shell("echo hello | wc -c")
               assert out.exit_code == 0 and out.stdout == b"6\n", out
-              out = await ws.execute("echo hi > /ram/a.txt")
+              out = await ws.shell("echo hi > /ram/a.txt")
               assert out.exit_code == 0, out
-              out = await ws.execute("cat /ram/a.txt")
+              out = await ws.shell("cat /ram/a.txt")
               assert out.exit_code == 0 and out.stdout == b"hi\n", out
               print("OK: core smoke passed on base install")
 
@@ -92,21 +105,21 @@ jobs:
           # extra:module[:python] — each gets its own venv so an extra that
           # silently depends on another extra's packages fails here.
           entries=(
-            "s3:mirage.resource.s3"
-            "ssh:mirage.resource.ssh"
-            "mongodb:mirage.resource.mongodb"
-            "gridfs:mirage.resource.gridfs"
-            "postgres:mirage.resource.postgres"
-            "redis:mirage.resource.redis"
-            "email:mirage.resource.email"
+            "s3:mirage.vfs.s3"
+            "ssh:mirage.vfs.ssh"
+            "mongodb:mirage.vfs.mongodb"
+            "gridfs:mirage.vfs.gridfs"
+            "postgres:mirage.vfs.postgres"
+            "redis:mirage.vfs.redis"
+            "email:mirage.vfs.email"
             "fuse:mirage.fuse.mount"
-            "nextcloud:mirage.resource.nextcloud"
-            "hf:mirage.resource.hf_buckets"
-            "langfuse:mirage.resource.langfuse"
-            "chroma:mirage.resource.chroma"
-            "lancedb:mirage.resource.lancedb"
-            "qdrant:mirage.resource.qdrant"
-            "databricks:mirage.resource.databricks_volume"
+            "nextcloud:mirage.vfs.nextcloud"
+            "hf-buckets:mirage.vfs.hf_buckets"
+            "langfuse:mirage.vfs.langfuse"
+            "chroma:mirage.vfs.chroma"
+            "lancedb:mirage.vfs.lancedb"
+            "qdrant:mirage.vfs.qdrant"
+            "databricks:mirage.vfs.databricks_volume"
             "pydantic-ai:mirage.agents.pydantic_ai"
             "openai:mirage.agents.openai_agents"
             "agno:mirage.agents.agno"
@@ -142,25 +155,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6.0.10
+      - name: Set up Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
         with:
-          version: 10.32.1
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
+          node-version: "24"
 
       - name: Install TypeScript dependencies
         working-directory: typescript
         run: pnpm install --frozen-lockfile
 
-      - name: Build core and node packages
+      - name: Build core, node, and browser packages
         working-directory: typescript
-        run: pnpm -r --filter ./packages/core --filter ./packages/node build
+        run: pnpm -r --filter ./packages/core --filter ./packages/node --filter ./packages/browser build
 
       - name: Pack tarballs
         working-directory: typescript
@@ -168,17 +174,18 @@ jobs:
           mkdir -p "$RUNNER_TEMP/minimal"
           pnpm --filter @struktoai/mirage-core pack --pack-destination "$RUNNER_TEMP/minimal"
           pnpm --filter @struktoai/mirage-node pack --pack-destination "$RUNNER_TEMP/minimal"
+          pnpm --filter @struktoai/mirage-browser pack --pack-destination "$RUNNER_TEMP/minimal"
 
       - name: Install as a bare consumer (no optional peers)
         run: |
           cd "$RUNNER_TEMP/minimal"
           npm init -y > /dev/null
-          npm install ./struktoai-mirage-core-*.tgz ./struktoai-mirage-node-*.tgz
+          npm install ./struktoai-mirage-core-*.tgz ./struktoai-mirage-node-*.tgz ./struktoai-mirage-browser-*.tgz
 
       - name: Verify optional peers stay out of the bare install
         run: |
           cd "$RUNNER_TEMP/minimal"
-          for dep in @lancedb opendal mongodb pg redis ssh2 imapflow mailparser nodemailer @zkochan; do
+          for dep in @lancedb opendal mongodb pg redis ssh2 imapflow mailparser nodemailer @zkochan e2b; do
             if [ -e "node_modules/$dep" ]; then
               echo "FAIL: optional peer $dep leaked into bare install"
               exit 1
@@ -186,18 +193,27 @@ jobs:
           done
           echo "OK: no optional peers in bare install"
 
+      - name: Bundle browser package without E2B
+        working-directory: integ
+        run: node runtime/e2b_install.ts "$RUNNER_TEMP/minimal"
+
       - name: Core workspace smoke test on bare install
         run: |
           cd "$RUNNER_TEMP/minimal"
           node --input-type=module - <<'JS'
-          import { Workspace, RAMResource, MountMode } from '@struktoai/mirage-node'
+          import assert from 'node:assert/strict'
+          import { QuickJsRuntime } from '@struktoai/mirage-core/runtime/js/quickjs'
+          import { PyodideRuntime } from '@struktoai/mirage-core/runtime/python/pyodide'
+          import { Workspace, RAMVFS, MountMode } from '@struktoai/mirage-node'
+          assert.equal(new QuickJsRuntime().name, 'quickjs')
+          assert.equal(new PyodideRuntime().name, 'pyodide')
           const dec = new TextDecoder()
-          const ws = new Workspace({ '/ram': new RAMResource() }, { mode: MountMode.WRITE })
-          let out = await ws.execute('echo hello | wc -c')
+          const ws = new Workspace({ '/ram': new RAMVFS() }, { mode: MountMode.WRITE })
+          let out = await ws.shell('echo hello | wc -c')
           if (out.exitCode !== 0 || dec.decode(out.stdout).trim() !== '6') throw new Error('pipe smoke failed')
-          out = await ws.execute('echo hi > /ram/a.txt')
+          out = await ws.shell('echo hi > /ram/a.txt')
           if (out.exitCode !== 0) throw new Error('write smoke failed')
-          out = await ws.execute('cat /ram/a.txt')
+          out = await ws.shell('cat /ram/a.txt')
           if (out.exitCode !== 0 || dec.decode(out.stdout) !== 'hi\n') throw new Error('read smoke failed')
           console.log('OK: core smoke passed on bare install')
           JS

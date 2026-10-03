@@ -12,40 +12,39 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { loadMailmap, useMailmap } from './mailmap.ts'
+import { dateClock, parseDateMode } from './dates.ts'
+import type { DateMode, MailmapEntry } from './types.ts'
+import git from 'isomorphic-git'
+
 import { IOResult } from '../../../../io/types.ts'
 import type { CommandFnResult } from '../../../config.ts'
-import { FlagView } from '../../../spec/types.ts'
+import { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
 import { GitError } from './errors.ts'
 import {
-  MEDIUM,
   needsDecorations,
   oneline,
-  parsePretty,
   presetBlock,
   renderTemplate,
   type CommitFacts,
   type Decorations,
   type LogFormat,
 } from './format.ts'
-import { decorations, prettyValue } from './history.ts'
-import { treeDiff } from './patch.ts'
-import { commitFacts, opened, type Repo } from './repo.ts'
-import { resolveCommit } from './revparse.ts'
-import { diffstat, statTable } from './summary.ts'
-import { treeEntries, type TreeEntry } from './tree.ts'
-import { checkOperands, fatal, revisionArg } from './util.ts'
+import { decorations, prettyFormat } from './history.ts'
+import {
+  joinOutput,
+  commitOutput,
+  parseDiffFlags,
+  renamesEnabled,
+  type DiffFlags,
+} from './diff_output.ts'
+import { pathspecPatterns } from './pathspec.ts'
+import { commitFacts, configBool, repoArgs } from './repo.ts'
+import { opened } from './session.ts'
+import { resolveCommit, resolveObject } from './revparse.ts'
+import { checkOperands, escaped, fatal, revisionArg, splitMarked, startPoint } from './util.ts'
 import { encodeText } from '../../../../shell/bytes.ts'
-import { compareCodePoints } from '../../../../utils/sort.ts'
-
-const MERGE_PARENTS = 1
-
-// A merge prints no ordinary diff. git renders one against every parent at once
-// (`--cc`, the combined format with two prefix columns and `@@@` ranges), which
-// comes out empty whenever the merge result matches a parent exactly, so the
-// common merge shows only its header. Combined diffs are not implemented, so a
-// merge that resolved a conflict shows its header and nothing else rather than a
-// patch git would never print.
 
 /**
  * The parsed shape of a `git show` invocation.
@@ -54,27 +53,27 @@ const MERGE_PARENTS = 1
  * diff drivers here, so it changes nothing by construction.
  */
 interface ShowFlags {
-  /** `--stat`, the diffstat table instead of a patch. */
-  readonly stat: boolean
-  /**
-   * `-s`/`--no-patch`, no diff section at all. Wins over `--stat` and
-   * `--name-only` in either order, which is what git 2.50 does.
-   */
-  readonly noPatch: boolean
-  /** `--name-only`, changed paths instead of a patch. Wins over `--stat`. */
-  readonly nameOnly: boolean
-  /** How the header renders. */
+  readonly diff: DiffFlags
   readonly pretty: LogFormat
+  readonly date: DateMode
+  readonly mailmap: readonly MailmapEntry[]
+  readonly useMailmap: boolean
 }
 
 /** Read the raw show flag kwargs into a frozen struct. */
-function parseShowFlags(fl: FlagView): ShowFlags {
-  const spelled = prettyValue(fl)
+function parseShowFlags(
+  fl: FlagView,
+  defaultRenames = true,
+  quotePathFully = true,
+  env: Readonly<Record<string, string>> | null = null,
+): ShowFlags {
+  const pretty = prettyFormat(fl)
   return {
-    stat: fl.asBool('stat'),
-    noPatch: fl.asBool('no_patch'),
-    nameOnly: fl.asBool('name_only'),
-    pretty: spelled !== null ? parsePretty(spelled) : MEDIUM,
+    mailmap: [],
+    useMailmap: true,
+    date: parseDateMode(fl.asStr('date') ?? 'default', dateClock(env)),
+    diff: parseDiffFlags(fl, true, 'dense-combined', true, defaultRenames, quotePathFully),
+    pretty,
   }
 }
 
@@ -95,58 +94,110 @@ function header(
   const fmt = flags.pretty
   if (fmt.kind === 'oneline') return `${oneline(commit, width)}\n`
   if (fmt.kind === 'format' || fmt.kind === 'tformat') {
-    const text = renderTemplate(fmt.template ?? '', commit, width, decor)
+    const text = renderTemplate(fmt.template ?? '', commit, width, decor, flags.date, flags.mailmap)
     if (fmt.kind === 'tformat') {
       return fmt.template === null || fmt.template === '' ? '' : `${text}\n`
     }
     return text
   }
-  return `${presetBlock(commit, fmt.kind, width).join('\n')}\n`
+  return `${presetBlock(commit, fmt.kind, width, flags.date, flags.useMailmap ? flags.mailmap : []).join('\n')}\n`
 }
 
-/** The section under the header: patch, stat, names, or nothing. */
-async function diffSection(repo: Repo, commit: CommitFacts, flags: ShowFlags): Promise<string> {
-  if (flags.noPatch) return ''
-  const first = commit.parents[0]
-  const parentTree = first === undefined ? null : (await commitFacts(repo, first)).tree
-  if (flags.nameOnly || flags.stat) {
-    const before =
-      parentTree === null ? new Map<string, TreeEntry>() : await treeEntries(repo, parentTree)
-    const after = await treeEntries(repo, commit.tree)
-    if (flags.nameOnly) {
-      const changed = [...new Set([...before.keys(), ...after.keys()])]
-        .filter(
-          (path) =>
-            before.get(path)?.oid !== after.get(path)?.oid ||
-            before.get(path)?.mode !== after.get(path)?.mode,
-        )
-        .sort(compareCodePoints)
-      return changed.map((path) => `${path}\n`).join('')
-    }
-    const lines = statTable(await diffstat(repo, before, after))
-    return lines.map((line) => `${line}\n`).join('')
-  }
-  return treeDiff(repo, parentTree, commit.tree)
-}
-
-/** Show one commit: its log entry, then its diff against its parent. */
+/**
+ * Show one commit: its log entry, then its diff against its parent.
+ *
+ * Operands after `--` are pathspecs, read once the revision has resolved, as
+ * git reads them; they limit the diff to the paths they name, and a commit
+ * that changes nothing they name prints nothing at all.
+ */
 export async function show(inv: CLIInvocation): Promise<CommandFnResult> {
   const doors = inv.doors ?? {}
   const texts = [...inv.texts]
   const fl = new FlagView(inv.flags)
   try {
-    checkOperands(texts)
-    const parsed = parseShowFlags(fl)
+    checkOperands(texts, undefined, escaped(inv.argv))
+    const [revisions, paths] = splitMarked(texts, inv.argv)
     const repo = await opened(fl, doors)
-    const oid = await resolveCommit(repo, revisionArg(texts))
+    const base = parseShowFlags(
+      fl,
+      await renamesEnabled(repo),
+      await configBool(repo, 'core.quotepath', true),
+      inv.env,
+    )
+    const mailmap = await loadMailmap(repo.dispatch, repo.location)
+    const mapped = useMailmap(fl, await configBool(repo, 'log.mailmap', true))
+    const revision = revisionArg(revisions)
+    const obj = await resolveObject(repo, revision)
+    const pathspecs = pathspecPatterns(repo.location, startPoint(fl), paths)
+    const parsed = { ...base, mailmap, useMailmap: mapped, diff: { ...base.diff, pathspecs } }
+    if (obj.type === 'blob') {
+      const { blob } = await git.readBlob({ ...repoArgs(repo), oid: obj.oid })
+      return [blob, new IOResult()]
+    }
+    if (obj.type === 'tree') {
+      const { tree } = await git.readTree({ ...repoArgs(repo), oid: obj.oid })
+      const body = tree
+        .map((entry) => entry.path + (entry.type === 'tree' ? '/' : '') + '\n')
+        .join('')
+      return [encodeText(`tree ${revision}\n\n${body}`), new IOResult()]
+    }
+    const oid = await resolveCommit(repo, revision)
     const facts = await commitFacts(repo, oid)
     const decor = needsDecorations(parsed.pretty) ? await decorations(repo) : null
     const head = header(facts, parsed, repo.abbrev, decor)
-    if (facts.parents.length > MERGE_PARENTS) return [encodeText(head), new IOResult()]
-    const body = await diffSection(repo, facts, parsed)
-    if (body === '') return [encodeText(head), new IOResult()]
-    if (head === '') return [encodeText(body), new IOResult()]
-    return [encodeText(`${head}\n${body}`), new IOResult()]
+    const bodies = await commitOutput(repo, facts, parsed.diff)
+    const combined =
+      facts.parents.length > 1 &&
+      (parsed.diff.merge === 'combined' || parsed.diff.merge === 'dense-combined')
+    return [
+      encodeText(
+        joinOutput(
+          facts,
+          head,
+          bodies,
+          parsed.pretty.kind,
+          repo.abbrev,
+          parsed.diff,
+          (parsed.diff.summary || combined) && !parsed.diff.noPatch,
+        ),
+      ),
+      new IOResult(),
+    ]
+  } catch (err) {
+    if (err instanceof GitError) return fatal(err)
+    throw err
+  }
+}
+
+/**
+ * Compare a commit with its parents.
+ *
+ * Every block opens with the commit id unless `--no-commit-id`, and a parent
+ * the commit does not differ from prints nothing, id included. Operands after
+ * `--` are pathspecs, read once the commit has resolved; they limit every block
+ * to the paths they name.
+ */
+export async function diffTree(inv: CLIInvocation): Promise<CommandFnResult> {
+  const fl = new FlagView(inv.flags)
+  try {
+    const repo = await opened(fl, inv.doors ?? {})
+    const parsed = parseDiffFlags(
+      fl,
+      false,
+      'off',
+      false,
+      true,
+      await configBool(repo, 'core.quotepath', true),
+    )
+    const [revisions, paths] = splitMarked(inv.texts, inv.argv)
+    const commit = await commitFacts(repo, await resolveCommit(repo, revisionArg(revisions)))
+    const pathspecs = pathspecPatterns(repo.location, startPoint(fl), paths)
+    const bodies = await commitOutput(repo, commit, { ...parsed, pathspecs }, fl.asBool('r'), false)
+    const out = bodies
+      .filter((body) => body !== null)
+      .map((body) => (fl.asBool('no_commit_id') ? '' : commit.oid + '\n') + body)
+      .join('')
+    return [encodeText(out), new IOResult()]
   } catch (err) {
     if (err instanceof GitError) return fatal(err)
     throw err

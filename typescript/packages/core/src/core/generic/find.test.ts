@@ -15,8 +15,18 @@
 import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { modifiedTs, walkFind, type WalkFindDeps } from './find.ts'
+import {
+  makeSearchBackedFind,
+  modifiedTs,
+  walkFind,
+  type SearchFindDeps,
+  type WalkFindDeps,
+} from './find.ts'
 import { isEnoent } from '../../utils/errors.ts'
+import { CommandTimeoutError } from '../../commands/errors.ts'
+import { parseFindExpression } from '../../commands/builtin/find_parse.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 function enoent(p: string): Error {
   const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
@@ -43,16 +53,27 @@ function makeDeps(
           name,
           size: entry.size ?? null,
           modified: entry.modified ?? null,
-          type: entry.size === undefined ? FileType.DIRECTORY : FileType.TEXT,
+          type: entry.size === undefined ? FileType.DIRECTORY : FileType.FILE,
         }),
       )
     },
   }
 }
 
-const ROOT = new PathSpec({ resourcePath: '', virtual: '/', directory: '/' })
+const ROOT = new PathSpec({ vfsPath: '', virtual: '/', directory: '/' })
 
 describe('walkFind', () => {
+  it('does not classify an unknown-size file as empty', async () => {
+    const deps: WalkFindDeps = {
+      readdir: () => Promise.resolve([]),
+      stat: () =>
+        Promise.resolve(new FileStat({ name: 'records.jsonl', type: FileType.FILE, size: null })),
+    }
+    expect(await walkFind(PathSpec.fromStrPath('/records.jsonl'), deps, { empty: true })).toEqual(
+      [],
+    )
+  })
+
   it('walks recursively and sorts by codepoint', async () => {
     const deps = makeDeps(
       {
@@ -106,6 +127,28 @@ describe('walkFind', () => {
     expect(readdirCalls).toBe(0)
   })
 
+  it('a time test before -prune gates it, one after does not', async () => {
+    const now = { modified: '2026-01-01T00:00:00Z' }
+    const deps = makeDeps(
+      { '/': ['/old/', '/new/'], '/old': ['/old/f.txt'], '/new': ['/new/g.txt'] },
+      {
+        '/': now,
+        '/old': { modified: '2000-01-01T00:00:00Z' },
+        '/new': now,
+        '/old/f.txt': { size: 1, ...now },
+        '/new/g.txt': { size: 1, ...now },
+      },
+    )
+    const gated = parseFindExpression(['-mindepth', '1', '-newermt', '2010-01-01', '-prune'])
+    expect(
+      await walkFind(ROOT, deps, { tree: gated.tree, minDepth: 1, mtimeMin: gated.mtimeMin }),
+    ).toEqual(['/new', '/old/f.txt'])
+    const firm = parseFindExpression(['-mindepth', '1', '-prune', '-newermt', '2010-01-01'])
+    expect(
+      await walkFind(ROOT, deps, { tree: firm.tree, minDepth: 1, mtimeMin: firm.mtimeMin }),
+    ).toEqual(['/new'])
+  })
+
   it('emits the start path at depth 0 when it exists', async () => {
     const deps = makeDeps({ '/': ['/a.txt'] }, { '/': {}, '/a.txt': { size: 1 } })
     expect(await walkFind(ROOT, deps)).toEqual(['/', '/a.txt'])
@@ -121,7 +164,7 @@ describe('walkFind', () => {
     const root = new PathSpec({
       virtual: '/mnt/x',
       directory: '/mnt/x',
-      resourcePath: mountKey('/mnt/x', '/mnt/x'),
+      vfsPath: mountKey('/mnt/x', '/mnt/x'),
     })
     expect(await walkFind(root, deps, { name: 'x' })).toEqual(['/'])
   })
@@ -150,7 +193,7 @@ describe('walkFind', () => {
     const root = new PathSpec({
       virtual: '/mnt/x',
       directory: '/mnt/x',
-      resourcePath: mountKey('/mnt/x', '/mnt/x'),
+      vfsPath: mountKey('/mnt/x', '/mnt/x'),
     })
     expect(await walkFind(root, deps)).toEqual(['/a.txt'])
   })
@@ -191,6 +234,54 @@ describe('walkFind', () => {
     const deps = makeDeps({ '/': ['/a.json'] })
     expect(await walkFind(ROOT, deps, { minSize: 1 })).toEqual([])
   })
+
+  const FLAKY_TREE = { '/': ['/a.json', '/b.json', '/c.json'] }
+  const FLAKY_STATS = {
+    '/': {},
+    '/a.json': { size: 1 },
+    '/b.json': { size: 1 },
+    '/c.json': { size: 1 },
+  }
+
+  // One entry's stat fails the way a dropped request does; every other
+  // entry answers.
+  function flaky(err: Error, calls: string[] = []): WalkFindDeps {
+    const base = makeDeps(FLAKY_TREE, FLAKY_STATS)
+    return {
+      ...base,
+      stat: (spec, index) => {
+        calls.push(spec.virtual)
+        return spec.virtual === '/b.json' ? Promise.reject(err) : base.stat(spec, index)
+      },
+    }
+  }
+
+  it('records an entry whose stat fails and keeps it as a leaf when the caller collects', async () => {
+    const err = new Error('socket hang up')
+    const unstatted = new Map<string, unknown>()
+    const deps = { ...flaky(err), unstatted }
+    expect(await walkFind(ROOT, deps, { type: 'f' })).toEqual(['/a.json', '/b.json', '/c.json'])
+    expect([...unstatted]).toEqual([['/b.json', err]])
+  })
+
+  it('fails a test only the stat answers without asking again', async () => {
+    const calls: string[] = []
+    const unstatted = new Map<string, unknown>()
+    const deps = { ...flaky(new Error('socket hang up'), calls), unstatted }
+    expect(await walkFind(ROOT, deps, { minSize: 1 })).toEqual(['/', '/a.json', '/c.json'])
+    expect(calls.filter((p) => p === '/b.json')).toHaveLength(1)
+  })
+
+  it('propagates an entry failure the caller does not collect', async () => {
+    await expect(walkFind(ROOT, flaky(new Error('socket hang up')))).rejects.toThrow(
+      'socket hang up',
+    )
+  })
+
+  it('propagates a timeout even when the caller collects', async () => {
+    const deps = { ...flaky(new CommandTimeoutError('stat', 5)), unstatted: new Map() }
+    await expect(walkFind(ROOT, deps)).rejects.toThrow('timed out')
+  })
 })
 
 describe('modifiedTs', () => {
@@ -218,5 +309,92 @@ describe('isEnoent', () => {
     expect(isEnoent(new Error('ENOENT: /x'))).toBe(false)
     expect(isEnoent('ENOENT')).toBe(false)
     expect(isEnoent(null)).toBe(false)
+  })
+})
+
+// Mirrors python/tests/core/generic/test_find.py's -empty cases. The
+// search-backed backends (chroma, dify) get the whole subtree from one
+// walk, so -empty has to answer off that list rather than a readdir.
+const SEARCH_DIRS = new Set(['/', '/guides', '/api'])
+const SEARCH_SIZES: Record<string, number> = { '/api/reference': 900, '/empty': 0 }
+
+function makeSearchDeps(
+  keys: string[],
+): SearchFindDeps<unknown> & { resolveCalls: number; probes: PathSpec[] } {
+  const deps = {
+    resolveCalls: 0,
+    probes: [] as PathSpec[],
+    walk: () => Promise.resolve([...keys]),
+    resolvePath: (_a: unknown, spec: PathSpec) => {
+      deps.probes.push(spec)
+      deps.resolveCalls += 1
+      return Promise.resolve({ isDir: SEARCH_DIRS.has(rstripSlash(spec.mountPath) || '/') })
+    },
+    stat: (_a: unknown, spec: PathSpec) => {
+      deps.probes.push(spec)
+      return Promise.resolve(
+        new FileStat({
+          name: spec.mountPath.split('/').pop() ?? '',
+          type: SEARCH_DIRS.has(rstripSlash(spec.mountPath) || '/')
+            ? FileType.DIRECTORY
+            : FileType.FILE,
+          size: SEARCH_SIZES[spec.mountPath] ?? null,
+        }),
+      )
+    },
+  }
+  return deps
+}
+
+describe('makeSearchBackedFind — -empty', () => {
+  it.each(
+    ['', '/knowledge', '/api', '/nested/mount'].flatMap((prefix) =>
+      ['/', '/api'].map((root) => ({ prefix, root })),
+    ),
+  )(
+    'preserves both paths for metadata probes at $prefix with root $root',
+    async ({ prefix, root }) => {
+      const keys = root === '/' ? ['/', '/api', '/api/reference'] : ['/api', '/api/reference']
+      const deps = makeSearchDeps(keys)
+      const path = PathSpec.fromStrPath(rstripSlash(prefix + root) || '/', root.replace(/^\//, ''))
+      expect(
+        await makeSearchBackedFind(deps)(
+          {},
+          path,
+          { type: 'f', minSize: 1 },
+          new RAMIndexCacheStore(),
+        ),
+      ).toEqual(['/api/reference'])
+      expect(new Set(deps.probes.map((p) => JSON.stringify([p.virtual, p.vfsPath])))).toEqual(
+        new Set(
+          keys.map((key) =>
+            JSON.stringify([rstripSlash(prefix + key) || '/', key.replace(/^\//, '')]),
+          ),
+        ),
+      )
+    },
+  )
+
+  it('reads a directory off the walked list', async () => {
+    const deps = makeSearchDeps(['/', '/guides', '/api', '/api/reference'])
+    const find = makeSearchBackedFind(deps)
+    expect(await find({}, ROOT, { empty: true }, new RAMIndexCacheStore())).toEqual(['/guides'])
+  })
+
+  it('keeps a zero-length file', async () => {
+    const deps = makeSearchDeps(['/', '/api', '/api/reference', '/unsized', '/empty'])
+    const find = makeSearchBackedFind(deps)
+    expect(await find({}, ROOT, { empty: true }, new RAMIndexCacheStore())).toEqual(['/empty'])
+  })
+
+  it('forces the kind lookup it branches on', async () => {
+    // -empty asks a different question of directories than of files, so
+    // it has to force the kind lookup the way -type does. Without that
+    // every entry reads as a file and a childless directory gets judged
+    // by a size it does not have.
+    const deps = makeSearchDeps(['/', '/guides', '/api', '/api/reference'])
+    const find = makeSearchBackedFind(deps)
+    await find({}, ROOT, { empty: true }, new RAMIndexCacheStore())
+    expect(deps.resolveCalls).toBe(4)
   })
 })

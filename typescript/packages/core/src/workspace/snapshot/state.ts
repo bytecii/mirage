@@ -12,18 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { indexConfigDump, restoreIndexConfig } from './config.ts'
+import { tokenOrNull } from '../../cache/file/utils.ts'
 import { CacheEntry } from '../../cache/file/entry.ts'
 import { RAMFileCacheStore } from '../../cache/file/ram.ts'
-import type { Resource } from '../../resource/base.ts'
+import type { BaseVFS } from '../../vfs/base.ts'
 import { EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE } from '../../observe/log_entry.ts'
 import type { EventDict } from '../../observe/observer.ts'
-import { RAMResource, type RAMResourceState } from '../../resource/ram/ram.ts'
+import { RAMVFS, type RAMVFSState } from '../../vfs/ram/ram.ts'
+import type { VFSStateBase } from '../../vfs/base.ts'
 import { z } from 'zod'
 
+import { narrow } from '../session/resolve.ts'
 import { setCwd } from '../session/shell_dirs.ts'
+import { gateRestoredVars } from '../session/state.ts'
 import type { CLIInstall } from '../cli/types.ts'
 import { CLISpec } from '../../commands/cli/types.ts'
-import { ScriptSource } from '../../runtime/policy/types.ts'
+import { ScriptSource } from '../../runtime/routing/types.ts'
 
 /**
  * Per-name overrides for restoring installed CLIs: a plain mapping is a
@@ -35,13 +40,15 @@ export type CLIOverrides = Record<
   string,
   Record<string, unknown> | [CLISpec, Record<string, unknown> | null]
 >
-import { HISTORY_PREFIX } from '../../resource/history/history.ts'
+import { BIN_PREFIX } from '../../shell/constants.ts'
+import { HISTORY_PREFIX } from '../../vfs/history/history.ts'
 import {
   hasRedactedSecret,
   redactConfigWithSchema,
-  resourceStateRequiresOverride,
-} from '../../resource/secrets.ts'
+  vfsStateRequiresOverride,
+} from '../../vfs/secrets.ts'
 import { Job, JobStatus } from '../../shell/job_table/index.ts'
+import type { ShellVar } from '../../shell/variable.ts'
 import {
   Channel,
   type ConsoleChunk,
@@ -50,10 +57,12 @@ import {
   RAMConsoleStore,
   exitOutcome,
 } from '../../shell/console/index.ts'
-import { ConsistencyPolicy, MountMode } from '../../types.ts'
+import { type ReadSpec, DEFAULT_READ_SPEC, MountMode } from '../../types.ts'
+import { resolveReadSpec } from '../mount/read_policy.ts'
+import { Mount } from '../mount/spec.ts'
 import { VERSION } from '../../version.ts'
-import type { NodeMeta } from '../mount/namespace/namespace.ts'
-import { Session } from '../session/session.ts'
+import { metaFromFields, metaToFields, type NodeMeta } from '../mount/namespace/namespace.ts'
+import { SessionState, varsFromFields, varsToFields } from '../session/session.ts'
 import type { Workspace } from '../workspace/workspace.ts'
 import type { MountArgs } from './config.ts'
 import { captureFingerprints, liveOnlyMountPrefixes } from './drift.ts'
@@ -64,7 +73,7 @@ import type {
   JobSnapshot,
   MountSnapshot,
   NodeMetaSnapshot,
-  ResourceState,
+  VFSState,
   SessionSnapshot,
   WorkspaceStateDict,
 } from './types.ts'
@@ -73,24 +82,29 @@ import { FORMAT_VERSION, normMountPrefix } from './utils.ts'
 const VALID_MODES: readonly string[] = [MountMode.READ, MountMode.WRITE, MountMode.EXEC]
 
 export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
-  const skip = new Set(['/dev/', normMountPrefix(HISTORY_PREFIX)])
-  const mounts = [...ws.registry.allMounts()].filter((m) => !skip.has(m.prefix))
+  const skip = new Set(['/dev/', normMountPrefix(HISTORY_PREFIX), normMountPrefix(BIN_PREFIX)])
+  const mounted = [...ws.registry.allMounts()]
+  for (const mount of mounted) await mount.ensureReady()
+  const mounts = mounted.filter((m) => !skip.has(m.prefix))
   const mountSnapshots: MountSnapshot[] = []
   for (let i = 0; i < mounts.length; i++) {
     const m = mounts[i]
     if (m === undefined) continue
-    // The resource is no longer cast into a shape that promises getState:
-    // the contract carries it, so a resource missing one fails to compile
+    // The VFS is no longer cast into a shape that promises getState:
+    // the contract carries it, so a VFS missing one fails to compile
     // rather than throwing here at save time. What remains narrows the
     // returned state to the snapshot format's union.
-    const state = (await Promise.resolve(m.resource.getState())) as ResourceState
+    const state = (await m.use(() => Promise.resolve(m.vfs.getState()))) as VFSState
     mountSnapshots.push({
       index: i,
       prefix: m.prefix,
       mode: m.mode,
-      consistency: ConsistencyPolicy.LAZY,
-      resource_class: m.resource.kind,
-      resource_state: state,
+      read: m.read.policy,
+      ttl: m.read.ttl,
+      vfs_class: m.vfs.name,
+      vfs_ref: m.vfsRef,
+      index_config: indexConfigDump(m.indexConfig),
+      vfs_state: state,
     })
   }
   const ramCache = ws.cache instanceof RAMFileCacheStore ? ws.cache : null
@@ -115,7 +129,7 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
   // that have already ended.
   const jobs: JobSnapshot[] = await Promise.all(
     ws.jobTable
-      .listJobs()
+      .allJobs()
       .filter((j) => j.status !== JobStatus.RUNNING)
       .map(async (j) => ({
         id: j.id,
@@ -153,19 +167,14 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
   const historyEvents = (await ws.observer.events()).filter(
     (e) => e.type === EVENT_COMMAND || e.type === EVENT_CLEAR || e.type === EVENT_DELETE,
   )
+  const current = ws.registry.allMounts()
+  if (current.length !== mounted.length || mounted.some((m, i) => m !== current[i] || m.retiring)) {
+    throw new Error('mounts changed during snapshot')
+  }
   const fingerprints: FingerprintEntrySnapshot[] = captureFingerprints(ws.records, ws.registry)
   const liveOnly = liveOnlyMountPrefixes(ws.registry)
   const nodes: Record<string, NodeMetaSnapshot> = {}
-  for (const [path, meta] of ws.namespace.nodes) {
-    const entry: NodeMetaSnapshot = {}
-    if (meta.target !== undefined) entry.target = meta.target
-    if (meta.mtime !== undefined) entry.mtime = meta.mtime
-    if (meta.mode !== undefined) entry.mode = meta.mode
-    if (meta.uid !== undefined) entry.uid = meta.uid
-    if (meta.gid !== undefined) entry.gid = meta.gid
-    if (meta.atime !== undefined) entry.atime = meta.atime
-    nodes[path] = entry
-  }
+  for (const [path, meta] of ws.namespace.nodes) nodes[path] = metaToFields(meta)
   return {
     version: FORMAT_VERSION,
     mirage_version: VERSION,
@@ -173,6 +182,7 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
     default_agent_id: ws.agentId,
     current_agent_id: ws.agentId,
     sessions,
+    env: varsToFields(ws.sessionManager.seedVars),
     mounts: mountSnapshots,
     cache: {
       limit: ws.cache.cacheLimit,
@@ -214,50 +224,131 @@ function captureCliConfig(install: CLIInstall): Record<string, unknown> | null {
   if (model instanceof z.ZodObject) {
     return redactConfigWithSchema(model, install.config)
   }
+  // A script's config is opaque, so it is captured verbatim rather than
+  // guessed at; the config door refuses a secrets pointer in one for
+  // exactly this reason (`validateConfigKeys`), since resolved, the
+  // value would sit in this capture.
   if (install.config !== null && typeof install.config === 'object') {
     return install.config as Record<string, unknown>
   }
   return null
 }
 
-export function buildMountArgs(
-  state: WorkspaceStateDict,
-  overrides: Record<string, Resource> = {},
-  cliOverrides: CLIOverrides = {},
-): MountArgs {
-  if (state.version < FORMAT_VERSION) {
+/**
+ * Refuse a snapshot this loader's format has moved past.
+ *
+ * An absent version is v3 or older, not "current". It used to be
+ * harmless because every key the loader read had a default; v4 makes the
+ * read policy required, so an unversioned dict would land on a bad
+ * ReadSpec instead of this message.
+ *
+ * Both doors run it, mirroring Python's `check_format_version`.
+ * `buildMountArgs` builds a workspace from the state; `applyStateDict`
+ * restores into one that already exists, and is what `version checkout`,
+ * `version restore` and the agent sandbox's hydrate call. Checking in one
+ * door only meant the same bytes were refused through `Workspace.load`
+ * and half-restored through a checkout.
+ */
+export function checkFormatVersion(state: WorkspaceStateDict): void {
+  // Widened deliberately: the type says `version` is always present, but a
+  // dict written before the field existed comes back from JSON without it.
+  const saved = (state as { version?: number }).version
+  if (saved === undefined || saved < FORMAT_VERSION) {
+    const shown = saved === undefined ? 'unversioned' : `v${String(saved)}`
     throw new Error(
-      `snapshot format v${String(state.version)} not supported ` +
-        `(loader expects v${String(FORMAT_VERSION)})`,
+      `snapshot format ${shown} not supported (loader expects v${String(FORMAT_VERSION)})`,
     )
   }
-  const normalized: Record<string, Resource> = {}
-  for (const [prefix, resource] of Object.entries(overrides)) {
-    normalized[normMountPrefix(prefix)] = resource
+}
+
+export function buildMountArgs(
+  state: WorkspaceStateDict,
+  overrides: Record<string, BaseVFS | Mount> = {},
+  cliOverrides: CLIOverrides = {},
+  userOverrides?: ReadonlySet<string>,
+): MountArgs {
+  checkFormatVersion(state)
+  const normalized: Record<string, BaseVFS | Mount> = {}
+  const overridePrefixes = new Set<string>()
+  for (const [prefix, vfs] of Object.entries(overrides)) {
+    normalized[normMountPrefix(prefix)] = vfs
+    overridePrefixes.add(normMountPrefix(prefix))
   }
+  // A mount with no override by now is one nobody can build: it asked to
+  // be handed back live or was saved with a redacted secret, or the
+  // registry `withRebuiltMounts` consulted had nothing for its ref or
+  // type. Only a mount this builder restores itself is exempt. Refusing
+  // is what Python's `requires_vfs_override` does for a class it
+  // cannot import; an empty RAMVFS in its place would lose the
+  // backend without a word.
   const missing = state.mounts
     .filter(
       (m) =>
         normalized[normMountPrefix(m.prefix)] === undefined &&
-        resourceStateRequiresOverride(m.resource_state),
+        (vfsStateRequiresOverride(m.vfs_state) || !restoresAsFreshRAM(m)),
     )
     .map((m) => m.prefix)
   if (missing.length > 0) {
     throw new Error(
-      `Workspace.load: resources= must include overrides for: ${missing.join(', ')}. ` +
-        `These mounts were saved with redacted creds or transient connection state ` +
-        `and need fresh resources.`,
+      `Workspace.load: mounts= must include overrides for: ${missing.join(', ')}. ` +
+        `A listed mount was saved with redacted credentials, asked to be handed back live ` +
+        `(needs_override), or names a VFS this registry cannot build; register its ` +
+        `factory (register) or pass a live instance.`,
     )
   }
-  const mountArgs: Record<string, [Resource, MountMode]> = {}
+  const mountArgs: Record<string, Mount> = {}
   for (const m of state.mounts) {
     if (!VALID_MODES.includes(m.mode)) {
       throw new Error(`Workspace.fromState: mount '${m.prefix}' has invalid mode '${m.mode}'`)
     }
-    mountArgs[m.prefix] = [
-      normalized[normMountPrefix(m.prefix)] ?? new RAMResource(),
-      m.mode as MountMode,
-    ]
+    // A live override placed as a `Mount` names the door it
+    // came through; a bare VFS, or a rebuilt one, keeps the saved
+    // reference so a second round trip rebuilds through the same door.
+    const override = normalized[normMountPrefix(m.prefix)]
+    const placed = override instanceof Mount ? override : null
+    // Required, never defaulted: a dict labelled v4 with the key missing
+    // would install a default on a mount saved carrying something else,
+    // and a junk policy or a null bound would restore a mount whose cache
+    // can never serve. `mode` three lines up is validated the same way.
+    // Widened deliberately: the type says both keys are present, but a
+    // dict written by a foreign or older writer comes back from JSON
+    // without them.
+    const entry = m as { read?: string; ttl?: number }
+    if (entry.read === undefined || entry.ttl === undefined) {
+      throw new Error(
+        `Workspace.fromState: mount '${m.prefix}' is missing its read policy; ` +
+          `regenerate the snapshot`,
+      )
+    }
+    // Coerced whatever happens, so a junk policy or a non-positive bound
+    // is refused here rather than restoring a mount whose cache can
+    // never serve -- even on a prefix whose spec is then discarded.
+    const savedSpec = resolveReadSpec(entry.read, entry.ttl)
+    // The saved policy belongs to the backend that was saved, so it
+    // applies only where that backend is what is being mounted. A mount
+    // handed back through the caller's `mounts=` -- which a
+    // redacted-credential mount *must* be -- may be a different backend
+    // entirely, and carrying `fresh` onto one that cannot revalidate
+    // would refuse a restore that used to succeed. The override keeps its
+    // own policy, else the default. Everything else here the loader
+    // reconstructs from the saved state itself, which is the same
+    // backend. Python reads the line straight off the branch it took
+    // (`mounts=` vs `_construct_vfs`); here `fromState` merges its
+    // rebuilds into the same map first, so it names its callers' set.
+    const foreign = userOverrides ?? overridePrefixes
+    const read: ReadSpec = foreign.has(normMountPrefix(m.prefix))
+      ? (placed?.options.read ?? DEFAULT_READ_SPEC)
+      : savedSpec
+    const index = restoreIndexConfig(m.index_config, placed?.options.index, m.prefix)
+    mountArgs[m.prefix] = new Mount(
+      placed !== null ? placed.vfs : ((override as BaseVFS | undefined) ?? new RAMVFS()),
+      {
+        mode: m.mode as MountMode,
+        read,
+        ...(index === undefined ? {} : { index }),
+        vfsRef: placed !== null ? (placed.options.vfsRef ?? null) : savedRef(m),
+      },
+    )
   }
   const cliEntries = state.clis ?? []
   const missingClis = cliEntries
@@ -275,7 +366,7 @@ export function buildMountArgs(
     if (Array.isArray(override)) {
       // copy() shares the live spec alongside the revealed config, so a
       // directly installed (never registry-named) spec survives the
-      // round trip like a shared live resource.
+      // round trip like a shared live VFS.
       cliArgs[e.name] = override
     } else {
       cliArgs[e.name] = [cliSpecFromEntry(e), override ?? e.config]
@@ -284,25 +375,145 @@ export function buildMountArgs(
 
   return {
     mountArgs,
-    consistency: ConsistencyPolicy.LAZY,
     defaultSessionId: state.default_session_id,
     defaultAgentId: state.default_agent_id,
     ...(cliEntries.length > 0 ? { clis: cliArgs } : {}),
   }
 }
 
-export async function applyStateDict(ws: Workspace, state: WorkspaceStateDict): Promise<void> {
+/** Builds the VFS a saved mount names, or null when it cannot. */
+export type SavedResourceBuilder = (entry: MountSnapshot) => Promise<BaseVFS | null>
+
+/**
+ * The `vfs_ref` a saved mount was built from, or null: for one
+ * constructed in code, and for a v3 snapshot written before the key
+ * existed, which carries none (the format version did not move).
+ */
+function savedRef(entry: MountSnapshot): string | null {
+  return (entry.vfs_ref as string | null | undefined) ?? null
+}
+
+/**
+ * Whether `buildMountArgs` restores a saved mount itself, into a fresh
+ * RAMVFS, so no registry is asked about it: `disk` (its content
+ * rides the state, and reopening the original root is exactly what a
+ * restore must not do), and `ram` declared by its builtin name or
+ * constructed in code. A `ram` mount whose ref points elsewhere is an
+ * alias registered over RAMVFS, and rebuilds through that alias so
+ * the subclass survives; Python's `_construct_vfs` calls `cls()` on
+ * the class its ladder found for the same reason.
+ */
+export function restoresAsFreshRAM(entry: MountSnapshot): boolean {
+  const type = entry.vfs_state.type
+  if (type === 'disk') return true
+  const ref = savedRef(entry)
+  return type === 'ram' && (ref === null || ref === type)
+}
+
+/**
+ * What a saved mount asks a registry to build: the name and config, or
+ * null when the registry has nothing to say. The `vfs_ref` the
+ * registry built the mount from when one was recorded (a registered name,
+ * or a code reference, which is how a mount declared as
+ * `./wiki.mjs:WikiVFS` comes back), else the VFS's `type`, the
+ * one locator a VFS constructed in code leaves. The ref comes first
+ * because `type` is the class's `name` and a subclass inherits it: an
+ * alias registered over a builtin reports the builtin's type and rebuilt
+ * as the builtin while the type was consulted first. A recorded ref this
+ * registry cannot resolve is not a reason to fall back to that guess: the
+ * answer is null, and `buildMountArgs` then asks for the mount live.
+ */
+export function savedVfsBuild(
+  entry: MountSnapshot,
+  known: (name: string) => boolean,
+): { name: string; config: Record<string, unknown> } | null {
+  if (restoresAsFreshRAM(entry)) return null
+  const type = entry.vfs_state.type
+  const ref = savedRef(entry)
+  const name =
+    ref !== null ? (known(ref) || ref.includes(':') ? ref : null) : known(type) ? type : null
+  if (name === null) return null
+  const config = (entry.vfs_state as VFSStateBase).config
+  return {
+    name,
+    config:
+      typeof config === 'object' && config !== null && !Array.isArray(config)
+        ? (config as Record<string, unknown>)
+        : {},
+  }
+}
+
+/**
+ * The overrides `buildMountArgs` restores with: the caller's, plus every
+ * mount the builder can rebuild from its saved state. A mount that asks
+ * to be handed back live (`vfsStateRequiresOverride`) is never
+ * built here, so the refusal `buildMountArgs` raises for it stands.
+ */
+export async function withRebuiltMounts(
+  state: WorkspaceStateDict,
+  overrides: Record<string, BaseVFS | Mount>,
+  build: SavedResourceBuilder,
+): Promise<Record<string, BaseVFS | Mount>> {
+  const merged: Record<string, BaseVFS | Mount> = { ...overrides }
+  const held = new Set(Object.keys(overrides).map(normMountPrefix))
   for (const m of state.mounts) {
-    if (resourceStateRequiresOverride(m.resource_state)) continue
+    if (held.has(normMountPrefix(m.prefix))) continue
+    if (vfsStateRequiresOverride(m.vfs_state)) continue
+    const built = await build(m)
+    if (built !== null) merged[m.prefix] = built
+  }
+  return merged
+}
+
+/**
+ * Restore post-construction state into an already-built Workspace.
+ *
+ * Every session table and the env template clear the target's
+ * `preSession` gate first (`gateRestoredState`), before any mount,
+ * session or template lands, so a refusal aborts the load with the
+ * workspace as it was. A snapshot mount with no mount at that exact
+ * prefix here is not restored and is reported. `replaceCache` drops
+ * the live cache once the gate has passed, ahead of the mounts'
+ * loadState, so the snapshot's entries are all that is left: a
+ * checkout onto a running workspace asks for it, a workspace built for
+ * the state has nothing to drop. It sits behind the gate because the
+ * callers used to clear before calling, and a refused checkout then
+ * still sent every cached read back to an origin that may have moved.
+ * Mirrors Python `apply_state_dict`.
+ */
+export async function applyStateDict(
+  ws: Workspace,
+  state: WorkspaceStateDict,
+  options: { replaceCache?: boolean } = {},
+): Promise<void> {
+  checkFormatVersion(state)
+  const [sessions, seed] = await gateRestoredState(ws, state)
+  if (options.replaceCache === true) await ws.cache.clear()
+  for (const m of state.mounts) {
     // Exact-prefix lookup, mirroring Python: a snapshot prefix the new
     // workspace does not mount is skipped, never resolved to an
-    // ancestor mount (which would load state into the wrong resource).
+    // ancestor mount (which would load state into the wrong VFS).
+    // It runs before the override skip below so a mount that asks to be
+    // handed back live is reported too: those are the remote and
+    // config-backed mounts, exactly the ones a renamed prefix matters for.
     const mount = ws.registry.tryMountForPrefix(m.prefix)
-    if (mount === null) continue
+    if (mount === null) {
+      // Said out loud: a renamed or missing mount otherwise left no trace.
+      console.warn(
+        `Workspace.load: snapshot mount ${m.prefix} has no mount at that prefix in this ` +
+          `workspace; its state was not restored`,
+      )
+      continue
+    }
+    if (vfsStateRequiresOverride(m.vfs_state)) continue
     // No cast, for the same reason as toStateDict above.
-    await Promise.resolve(mount.resource.loadState(m.resource_state as RAMResourceState))
+    await Promise.resolve(mount.vfs.loadState(m.vfs_state as RAMVFSState))
   }
-  await restoreSessions(ws, state)
+  await restoreSessions(ws, state, sessions)
+  // The env template is constructor state the rebuilt workspace was
+  // never given: without it a session created after the load starts
+  // bare while restored ones carry every workspace env entry.
+  if (seed !== null) ws.sessionManager.restoreSeed(seed)
   // current_agent_id is not restored separately: TS models a single
   // readonly agentId, set to default_agent_id at construction (== current).
   restoreCache(ws, state)
@@ -314,19 +525,53 @@ export async function applyStateDict(ws: Workspace, state: WorkspaceStateDict): 
 async function restoreNodes(ws: Workspace, state: WorkspaceStateDict): Promise<void> {
   const entries = new Map<string, NodeMeta>()
   for (const [path, e] of Object.entries(state.nodes ?? {})) {
-    const meta: NodeMeta = {}
-    if (e.target !== undefined) meta.target = e.target
-    if (e.mtime !== undefined) meta.mtime = e.mtime
-    if (e.mode !== undefined) meta.mode = e.mode
-    if (e.uid !== undefined) meta.uid = e.uid
-    if (e.gid !== undefined) meta.gid = e.gid
-    if (e.atime !== undefined) meta.atime = e.atime
-    entries.set(path, meta)
+    entries.set(path, metaFromFields(e))
   }
   await ws.namespace.replaceNodes(entries)
 }
 
-async function restoreSessions(ws: Workspace, state: WorkspaceStateDict): Promise<void> {
+/**
+ * Vet every env input the snapshot carries before any of it lands.
+ *
+ * Each session table and the env template fire the `preSession` gate
+ * (`gateRestoredVars`) here, ahead of the mounts' loadState and the
+ * session writes: a refusal that arrived once an earlier session had
+ * already been overwritten left the workspace in a state no snapshot
+ * describes, and one its close then persisted. The template is gated
+ * under the id the restore makes the default session, which is the
+ * session a live write of it would land in. Each table is judged under
+ * the policy the target gives its session, never the one the snapshot's
+ * own profile compiled, which was the source deployment's and does not
+ * land: the live session's for an id the target already has, and the
+ * default profile's for one the restore will create, which is what
+ * `scriptOf` answers for an id the manager does not know and the
+ * profile `restoreSessions` then puts the created session under.
+ * Returns the parsed session tables and the template, null when the
+ * snapshot carries none. Mirrors Python `_gate_restored_state`.
+ */
+async function gateRestoredState(
+  ws: Workspace,
+  state: WorkspaceStateDict,
+): Promise<[SessionState[], Record<string, ShellVar> | null]> {
+  const sessions = state.sessions.map((s) => SessionState.fromJSON(s))
+  for (const fields of sessions) {
+    await gateRestoredVars(ws.registry.policies, fields.sessionId, fields.vars)
+  }
+  if (state.env === undefined || Object.keys(state.env).length === 0) return [sessions, null]
+  const seed = varsFromFields(state.env)
+  await gateRestoredVars(
+    ws.registry.policies,
+    state.default_session_id ?? ws.defaultSessionId,
+    seed,
+  )
+  return [sessions, seed]
+}
+
+async function restoreSessions(
+  ws: Workspace,
+  state: WorkspaceStateDict,
+  tables: readonly SessionState[],
+): Promise<void> {
   // The snapshot's default session identity wins over the live one,
   // and the discovery record's pointer follows it. A state without the
   // pointer (older commit metas) keeps the live default, mirroring the
@@ -334,13 +579,21 @@ async function restoreSessions(ws: Workspace, state: WorkspaceStateDict): Promis
   if (state.default_session_id != null) {
     await ws.adoptDefaultSession(state.default_session_id)
   }
-  const restored: Session[] = []
-  for (const s of state.sessions) {
-    const exists = ws.sessionManager.list().some((x) => x.sessionId === s.session_id)
+  const restored: SessionState[] = []
+  for (const fields of tables) {
+    const exists = ws.sessionManager.list().some((x) => x.sessionId === fields.sessionId)
     const session = exists
-      ? ws.sessionManager.get(s.session_id)
-      : ws.sessionManager.create(s.session_id)
-    const fields = Session.fromJSON(s)
+      ? ws.sessionManager.get(fields.sessionId)
+      : ws.sessionManager.create(fields.sessionId)
+    if (!exists) {
+      // A session the restore creates is one created without a profile
+      // name, so it runs under the document's default: the policy
+      // `gateRestoredState` judged its table under, where a bare session
+      // ran under none. Stamped ahead of the table so the grants below
+      // stay the snapshot's, as they do for a session that exists.
+      const compiled = ws.sessionManager.defaultProfile
+      if (compiled !== null) narrow(session, compiled)
+    }
     setCwd(session, fields.cwd)
     session.vars = fields.vars
     session.mountModes = fields.mountModes
@@ -353,6 +606,9 @@ async function restoreSessions(ws: Workspace, state: WorkspaceStateDict): Promis
 
 function restoreCache(ws: Workspace, state: WorkspaceStateDict): void {
   if (!(ws.cache instanceof RAMFileCacheStore)) return
+  // A snapshot is a third door into the entry table, and a document is not
+  // obliged to spell "no token" the way this version does, so each token is
+  // folded the way the live write doors fold it.
   for (const e of state.cache.entries) {
     ws.cache.loadEntry(
       e.key,
@@ -360,7 +616,7 @@ function restoreCache(ws: Workspace, state: WorkspaceStateDict): void {
       new CacheEntry({
         size: e.size,
         cachedAt: e.cached_at,
-        fingerprint: e.fingerprint,
+        fingerprint: tokenOrNull(e.fingerprint),
         ttl: e.ttl,
       }),
     )

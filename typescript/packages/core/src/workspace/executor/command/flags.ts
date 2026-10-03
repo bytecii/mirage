@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { flagKwargName } from '../../../commands/spec/constants.ts'
 import { parseCommand, parseToKwargs } from '../../../commands/spec/parser.ts'
 import {
   ambiguousOptionError,
@@ -21,9 +22,10 @@ import {
   missingRequiredError,
   missingValueError,
   oldOptionError,
+  unexpectedValueError,
   unknownOptionError,
 } from '../../../commands/spec/usage.ts'
-import type { CommandSpec } from '../../../commands/spec/types.ts'
+import type { CommandSpec, FlagValue } from '../../../commands/spec/types.ts'
 import type { ParsedCommand } from './types.ts'
 import { PathSpec } from '../../../types.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
@@ -36,21 +38,48 @@ import { rstripSlash } from '../../../utils/slash.ts'
 /**
  * A PathSpec for a path the classifier never saw: a relative value
  * cwd-resolved by `parseCommand`, or a spec-classified PATH operand the
- * upstream classifier left as text. `resourcePath` stays empty on
+ * upstream classifier left as text. `vfsPath` stays empty on
  * purpose: the mount stamps the backend key on every path at execute
  * time (`Mount.executeCmd`), so a parse-time stamp is dead weight —
  * proven in both languages by running the full suite with this field
- * set to a sentinel. Mirrors `synthesize_path_spec` in the Python
- * executor.
+ * set to a sentinel. The empty name, which only an attached value can
+ * spell (`--file=`), names nothing, however it resolved: its walk answers
+ * ENOENT, as a typed '' operand's does. Mirrors `synthesize_path_spec` in
+ * the Python executor.
  */
-function synthesizePathSpec(value: string): PathSpec {
+function synthesizePathSpec(value: string, rawPath = value): PathSpec {
   const slash = value.lastIndexOf('/')
   return new PathSpec({
-    resourcePath: '',
+    vfsPath: '',
     virtual: value,
+    rawPath,
     directory: slash >= 0 ? value.slice(0, slash + 1) : '/',
     resolved: true,
+    walkError: rawPath === '' ? 'ENOENT' : null,
   })
+}
+
+/**
+ * The next classified word spelling `value`, in argv order. Two words can
+ * resolve to one path (`ls -d dir/ link/` with link -> dir, `tar -C dir .`),
+ * each with its own spelling, so every consumer takes the next word for
+ * its path off a queue rather than reading a lookup keyed by the path
+ * alone, which handed them all the last spelling; the parser hands
+ * positionals back in argv order, the guarantee argparse gives too. A path
+ * no word spells (one the parser normalized, a followed link whose target
+ * climbs through `..`) falls back to the map, which still serves a word
+ * the classifier left as text, and is synthesized after that, since a
+ * keyed backend cannot read `b/../a`. Mirrors `take_spelling`.
+ */
+function takeSpelling(
+  spellings: Map<string, PathSpec[]>,
+  scopeMap: Map<string, PathSpec>,
+  value: string,
+  rawPath?: string,
+): PathSpec {
+  const taken = spellings.get(rstripSlash(value) || '/')?.shift()
+  if (taken !== undefined) return taken
+  return scopeMap.get(value) ?? synthesizePathSpec(value, rawPath)
 }
 
 export function parseFlags(
@@ -63,8 +92,20 @@ export function parseFlags(
   // env-supplied int would go unchecked and an env-supplied path would
   // stay a bare string.
   env?: Readonly<Record<string, string>>,
+  // Whether another parser reads this line after mirage, passed straight to
+  // parseCommand. True only for an installed CLI's node, whose spec is
+  // deliberately partial.
+  unknownIsOperand = false,
+  // The program's own long-option table, when it resolves abbreviations
+  // against it (git's parse-options), passed straight to parseCommand.
+  abbreviations?: readonly string[],
+  // Keep PATH flag values as their resolved virtual-path strings instead of
+  // PathSpec. Cross-mount strategies read the string view.
+  strFlagPaths = false,
 ): ParsedCommand {
-  const argv: string[] = parts.map((item) => (item instanceof PathSpec ? item.virtual : item))
+  const argv: string[] = parts.map((item) =>
+    item instanceof PathSpec ? (item.rawPath === '-' ? '-' : item.virtual) : item,
+  )
   const scopeMap = new Map<string, PathSpec>()
   for (const item of parts) {
     if (item instanceof PathSpec) {
@@ -73,30 +114,95 @@ export function parseFlags(
       if (stripped !== '' && stripped !== item.virtual) scopeMap.set(stripped, item)
     }
   }
+  const spellings = new Map<string, PathSpec[]>()
+  for (const item of parts) {
+    if (item instanceof PathSpec) {
+      const key = rstripSlash(item.virtual) || '/'
+      const queue = spellings.get(key)
+      if (queue === undefined) spellings.set(key, [item])
+      else queue.push(item)
+    }
+  }
 
   if (spec !== null) {
-    const parsed = parseCommand(spec, argv, cwd, env)
-    const flagKwargs = parseToKwargs(parsed)
+    const parsed = parseCommand(spec, argv, cwd, cmdName, env, unknownIsOperand, abbreviations)
+    // Widens from ParsedFlagValue to FlagValue: PATH values become PathSpec
+    // just below.
+    const flagKwargs: Record<string, FlagValue> = parseToKwargs(parsed)
 
-    for (const [key, value] of Object.entries(flagKwargs)) {
-      if (typeof value === 'string') {
-        const match = scopeMap.get(value)
-        if (match !== undefined) {
-          flagKwargs[key] = match.virtual
+    // Recover PathSpec for PATH flag values, each the word that spelled it,
+    // so an error line names the path as typed; a relative value
+    // cwd-resolved by parseCommand (csplit -f part -> /data/part) is
+    // absent from scopeMap and is synthesized like a positional. A pair
+    // option's list alternates name, value; only the values are paths (jq
+    // --rawfile body /d/f.txt). An option's value is read before the
+    // operands, which is POSIX order and the order -C requires (its value
+    // moves the operands after it), so `tar -cf out.tar -C dir .` hands
+    // `dir` to -C and `.` to the operand. A permuted line spelling one
+    // path twice, once as an option's value typed after the operand, swaps
+    // the two spellings and nothing else. Mirrors Python's parse_flags.
+    const pathKeys = new Map<string, 'single' | 'multiple' | 'pair'>()
+    for (const opt of spec.options) {
+      if (opt.type !== 'path') continue
+      const shape = opt.pair ? 'pair' : opt.multiple ? 'multiple' : 'single'
+      for (const name of [opt.short, opt.long]) {
+        if (name !== null) pathKeys.set(flagKwargName(name), shape)
+      }
+    }
+    if (!strFlagPaths) {
+      for (const [key, value] of Object.entries(flagKwargs)) {
+        const shape = pathKeys.get(key)
+        const raw = parsed.rawPathFlags[key]
+        const rawParts = Array.isArray(raw) ? raw : []
+        const parts: readonly (string | PathSpec)[] = Array.isArray(value) ? value : []
+        if (shape === 'pair' && Array.isArray(value)) {
+          flagKwargs[key] = parts.map((part, index) =>
+            index % 2 === 1 && typeof part === 'string'
+              ? takeSpelling(spellings, scopeMap, part, rawParts[index])
+              : part,
+          )
+        } else if (shape === 'multiple' && Array.isArray(value)) {
+          flagKwargs[key] = parts
+            .filter((part): part is string => typeof part === 'string')
+            .map((part, index) => takeSpelling(spellings, scopeMap, part, rawParts[index]))
+        } else if (shape === 'single' && typeof value === 'string') {
+          flagKwargs[key] = takeSpelling(
+            spellings,
+            scopeMap,
+            value,
+            typeof raw === 'string' ? raw : undefined,
+          )
         }
       }
     }
+    // Every value still a string is text (or a PATH value in the string
+    // view), with a classified word's path in place of its spelling; the
+    // string view still takes an option's word off the queue, so the
+    // operands get the same words on both dispatch paths.
+    for (const [key, value] of Object.entries(flagKwargs)) {
+      if (typeof value === 'string') {
+        const match = scopeMap.get(value)
+        if (match !== undefined) flagKwargs[key] = match.virtual
+      }
+    }
+    if (strFlagPaths) {
+      for (const value of parsed.pathFlagValues) takeSpelling(spellings, scopeMap, value)
+    }
 
+    // Classify positional args: each operand takes its own word. The
+    // spelling rides along for a word the classifier left as text (an
+    // interpreter's bare script name under the shell's word policy), so
+    // the handler still sees it as typed: CPython puts the operand
+    // itself in argv[0].
     const paths: PathSpec[] = []
     const texts: string[] = []
-    for (const [value, kind] of parsed.args) {
+    parsed.args.forEach(([value, kind], index) => {
       if (kind === 'path') {
-        const existing = scopeMap.get(value)
-        paths.push(existing ?? synthesizePathSpec(value))
+        paths.push(takeSpelling(spellings, scopeMap, value, parsed.rawOperands[index]?.[0]))
       } else {
         texts.push(value)
       }
-    }
+    })
     return {
       paths,
       texts,
@@ -107,6 +213,7 @@ export function parseFlags(
       optionErrorKinds: parsed.optionErrorKinds,
       needsValueOptions: parsed.needsValueOptions,
       invalidValueOptions: parsed.invalidValueOptions,
+      ambiguousValueOptions: parsed.ambiguousValueOptions,
       invalidIntOptions: parsed.invalidIntOptions,
       invalidFloatOptions: parsed.invalidFloatOptions,
       missingRequiredOptions: parsed.missingRequiredOptions,
@@ -132,6 +239,7 @@ export function parseFlags(
     optionErrorKinds: [],
     needsValueOptions: [],
     invalidValueOptions: [],
+    ambiguousValueOptions: [],
     invalidIntOptions: [],
     invalidFloatOptions: [],
     missingRequiredOptions: [],
@@ -153,30 +261,44 @@ export function optionError(cmdName: string, parsed: ParsedCommand): [Uint8Array
   if (parsed.oldOptionNeedsValue !== null) {
     return oldOptionError(cmdName, parsed.oldOptionNeedsValue)
   }
-  // Scan-order between unknown and ambiguous options: GNU stops at the
-  // first offending token, so `grep --c --bogus` reports the ambiguity
-  // and the reversed line reports --bogus.
-  const ambiguousFirst = parsed.ambiguousOptions[0]
-  if (parsed.optionErrorKinds[0] === 'ambiguous' && ambiguousFirst !== undefined) {
-    return ambiguousOptionError(cmdName, ...ambiguousFirst)
+  // The first refusal on the line, whichever check made it: GNU stops at
+  // the first offending token, so `grep --c --bogus` reports the
+  // ambiguity, the reversed line reports --bogus, and `numfmt --from=bad
+  // --bogus` reports the value. The kinds tape holds one tag per refusal
+  // in scan order and each list is in scan order too, so the first tag's
+  // detail is the head of that tag's list. "invalid" and
+  // "unexpected_value" share invalidOptions: a boolean long handed a value
+  // is not an unrecognized option, and getopt_long words it differently
+  // (`grep --byte-offset=2`).
+  for (const kind of parsed.optionErrorKinds) {
+    if (kind === 'ambiguous') {
+      const ambiguous = parsed.ambiguousOptions[0]
+      if (ambiguous !== undefined) return ambiguousOptionError(cmdName, ...ambiguous)
+    } else if (kind === 'unexpected_value') {
+      return unexpectedValueError(cmdName, parsed.invalidOptions[0] ?? '')
+    } else if (kind === 'invalid') {
+      return unknownOptionError(cmdName, parsed.invalidOptions[0] ?? '')
+    } else if (kind === 'needs_value') {
+      return missingValueError(cmdName, parsed.needsValueOptions[0] ?? '')
+    } else if (kind === 'int') {
+      const badInt = parsed.invalidIntOptions[0]
+      if (badInt !== undefined) return invalidIntError(cmdName, ...badInt)
+    } else if (kind === 'float') {
+      const badFloat = parsed.invalidFloatOptions[0]
+      if (badFloat !== undefined) return invalidFloatError(cmdName, ...badFloat)
+    } else if (kind === 'value') {
+      const badValue = parsed.invalidValueOptions[0]
+      if (badValue !== undefined) return invalidArgumentError(cmdName, ...badValue)
+    } else if (kind === 'ambiguous_value') {
+      // gnulib's other wording for the same refusal, reached only by an
+      // ARGMATCH table: the value is a prefix of two candidates or more.
+      const badValue = parsed.ambiguousValueOptions[0]
+      if (badValue !== undefined) {
+        const [option, value, choices] = badValue
+        return invalidArgumentError(cmdName, option, value, choices, undefined, 'ambiguous')
+      }
+    }
   }
-  if (parsed.invalidOptions.length > 0) {
-    return unknownOptionError(cmdName, parsed.invalidOptions[0] ?? '')
-  }
-  if (ambiguousFirst !== undefined) return ambiguousOptionError(cmdName, ...ambiguousFirst)
-  if (parsed.needsValueOptions.length > 0) {
-    return missingValueError(cmdName, parsed.needsValueOptions[0] ?? '')
-  }
-  // Numeric-typed values before choices, argparse's order (choices are
-  // checked against the converted value), matching the walk's finishNode:
-  // a non-numeric value on an int/float option that also declares choices
-  // reports the conversion failure, not the choice list.
-  const badInt = parsed.invalidIntOptions[0]
-  if (badInt !== undefined) return invalidIntError(cmdName, ...badInt)
-  const badFloat = parsed.invalidFloatOptions[0]
-  if (badFloat !== undefined) return invalidFloatError(cmdName, ...badFloat)
-  const badValue = parsed.invalidValueOptions[0]
-  if (badValue !== undefined) return invalidArgumentError(cmdName, ...badValue)
   if (parsed.missingRequiredOptions.length > 0) {
     return missingRequiredError(cmdName, parsed.missingRequiredOptions[0] ?? '')
   }

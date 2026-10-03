@@ -13,7 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DiskResource } from '../../resource/disk/disk.ts'
+import { ops } from '@struktoai/mirage-core/test-utils'
+import { DiskVFS } from '../../vfs/disk/disk.ts'
 import { opOf, spec, tmpRoot } from '../../test-utils.ts'
 import { DISK_OPS } from './index.ts'
 
@@ -21,12 +22,11 @@ const truncateOp = opOf(DISK_OPS, 'truncate')
 
 let root: string
 let cleanup: () => void
-let res: DiskResource
+let res: DiskVFS
 
-beforeEach(async () => {
+beforeEach(() => {
   ;({ root, cleanup } = tmpRoot('mirage-disk-truncate-op-'))
-  res = new DiskResource({ root })
-  await res.open()
+  res = new DiskVFS({ root })
 })
 afterEach(() => {
   cleanup()
@@ -34,15 +34,15 @@ afterEach(() => {
 
 describe('truncateOp', () => {
   it('truncates a file to the given length', async () => {
-    await res.writeFile(spec('/x'), new TextEncoder().encode('hello world'))
+    await ops(res).write(spec('/x'), new TextEncoder().encode('hello world'))
     await truncateOp.fn(res.accessor, spec('/x'), [5], {})
-    expect(new TextDecoder().decode(await res.readFile(spec('/x')))).toBe('hello')
+    expect(new TextDecoder().decode(await ops(res).read(spec('/x')))).toBe('hello')
   })
 
   it('zero-fills when growing past existing size', async () => {
-    await res.writeFile(spec('/x'), new TextEncoder().encode('ab'))
+    await ops(res).write(spec('/x'), new TextEncoder().encode('ab'))
     await truncateOp.fn(res.accessor, spec('/x'), [5], {})
-    const out = await res.readFile(spec('/x'))
+    const out = await ops(res).read(spec('/x'))
     expect(out.byteLength).toBe(5)
     expect(out[0]).toBe(0x61) // 'a'
     expect(out[1]).toBe(0x62) // 'b'

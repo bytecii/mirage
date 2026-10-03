@@ -12,22 +12,31 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { isEnoent } from '../../utils/errors.ts'
+import { activeCacheManager } from '../../cache/context.ts'
+import { isEacces, isEnoent } from '../../utils/errors.ts'
+import { isEntryError } from '../../commands/errors.ts'
 import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import type { FindOptions } from '../../resource/base.ts'
+import type { FindOptions } from '../../vfs/base.ts'
 import {
+  bindTree,
+  buildTree,
+  dropPruned,
   hasLinkChildren,
   optionsTree,
-  prefixPathNodes,
+  settlePrunes,
+  startBasename,
   treeHasEmpty,
+  treeHasType,
   type FindEntry,
+  type PredNode,
   keep,
 } from '../../commands/builtin/find_eval.ts'
 import { FileType, PathSpec, type FileStat } from '../../types.ts'
 import type { LinkView } from '../../ops/types.ts'
-import { rstripSlash } from '../../utils/slash.ts'
+import { lstripSlash, rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
+import { DIR_SIZE } from '../../utils/stat_view.ts'
 
 export interface WalkFindDeps {
   readdir: (spec: PathSpec, index?: IndexCacheStore) => Promise<string[]>
@@ -36,6 +45,19 @@ export interface WalkFindDeps {
   // is one that no backend readdir can see. Without this a directory
   // holding only a link reads as empty.
   links?: LinkView | null
+  // Where a directory the walk could not open (a rule refused it at the
+  // guarded readdir) is recorded, as its virtual path: GNU names it and
+  // walks on, so a caller that collects those gets the path and the walk
+  // continues; one that does not is not left with a silent gap in its
+  // listing, the refusal propagates.
+  unreadable?: string[]
+  // Where an entry the walk could not stat is recorded, with its error, in
+  // walk order: GNU's find names it and carries on, and the entry stays in
+  // the walk unclassified, a leaf, as a missing one already does, that
+  // fails every test only its stat could answer. It is never statted
+  // again. A caller that does not collect them gets the failure
+  // propagated instead.
+  unstatted?: Map<string, unknown>
 }
 
 interface WalkEntry {
@@ -63,14 +85,21 @@ async function statEntry(
     virtual: path,
     directory: path,
     resolved: false,
-    resourcePath: mountKey(path, prefix),
+    vfsPath: mountKey(path, prefix),
   })
+  if (deps.unstatted?.has(path) === true) return null
   try {
-    return await deps.stat(spec, index)
+    const row = await deps.stat(spec, index)
+    const size = row.size === null ? await activeCacheManager()?.cachedSize(spec) : null
+    return size == null ? row : row.with({ size })
   } catch (err) {
-    // Only missing entries resolve to null; API errors (rate limit, auth) propagate.
+    // Missing entries resolve to null. Any other failure does too when the
+    // caller collects it; otherwise it (a rate limit, an auth failure)
+    // propagates.
     if (isEnoent(err)) return null
-    throw err
+    if (deps.unstatted === undefined || !isEntryError(err)) throw err
+    deps.unstatted.set(path, err)
+    return null
   }
 }
 
@@ -87,17 +116,21 @@ async function isEmptyEntry(
       virtual: path,
       directory: path,
       resolved: false,
-      resourcePath: mountKey(path, prefix),
+      vfsPath: mountKey(path, prefix),
     })
     try {
       return (await deps.readdir(spec, index)).length === 0
     } catch (err) {
       if (isEnoent(err)) return false
+      if (isEacces(err) && deps.unreadable !== undefined) {
+        if (!deps.unreadable.includes(path)) deps.unreadable.push(path)
+        return false
+      }
       throw err
     }
   }
   const st = await statEntry(deps, path, prefix, index)
-  return st !== null && (st.size ?? 0) === 0
+  return st !== null && st.type === FileType.FILE && st.size === 0
 }
 
 async function walk(
@@ -114,6 +147,10 @@ async function walk(
     children = await deps.readdir(spec, index)
   } catch (err) {
     if (isEnoent(err)) return
+    if (isEacces(err) && deps.unreadable !== undefined) {
+      deps.unreadable.push(spec.virtual)
+      return
+    }
     throw err
   }
   for (const child of children) {
@@ -127,12 +164,7 @@ async function walk(
     if (child.endsWith('/')) {
       isFolder = true
     } else {
-      const s = await statEntry(
-        deps,
-        trimmed,
-        mountPrefixOf(spec.virtual, spec.resourcePath),
-        index,
-      )
+      const s = await statEntry(deps, trimmed, mountPrefixOf(spec.virtual, spec.vfsPath), index)
       isFolder = s !== null && s.type === FileType.DIRECTORY
     }
     out.push({ path: trimmed, depth, file: !isFolder })
@@ -141,7 +173,7 @@ async function walk(
         virtual: trimmed,
         directory: trimmed,
         resolved: false,
-        resourcePath: mountKey(trimmed, mountPrefixOf(spec.virtual, spec.resourcePath)),
+        vfsPath: mountKey(trimmed, mountPrefixOf(spec.virtual, spec.vfsPath)),
       })
       await walk(deps, childSpec, index, maxDepth, depth + 1, out)
     }
@@ -155,7 +187,7 @@ export async function walkFind(
   index?: IndexCacheStore,
 ): Promise<string[]> {
   const collected: WalkEntry[] = []
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   // GNU lists the search root itself at depth 0 (even for the mount
   // root), so `-maxdepth 0` prints just the root and `-name` can match
   // the root's own basename.
@@ -178,8 +210,11 @@ export async function walkFind(
     await walk(deps, path, index, options.maxDepth ?? null, 1, collected)
   }
   const results: string[] = []
-  const tree = prefixPathNodes(optionsTree(options), prefix)
+  const tree = bindTree(optionsTree(options), prefix, path.virtual, path.rawPath)
   const needEmpty = treeHasEmpty(tree)
+  const needSize = options.minSize != null || options.maxSize != null
+  const needMtime = options.mtimeMin != null || options.mtimeMax != null
+  const learned = new Map<string, number | null>()
   collected.sort((a, b) => compareCodePoints(a.path, b.path))
   for (const entry of collected) {
     const name = entry.path.split('/').pop() ?? ''
@@ -191,24 +226,31 @@ export async function walkFind(
     if (needEmpty) {
       isEmpty = await isEmptyEntry(deps, entry.path, !entry.file, prefix, index)
     }
+    // With a time test in the tree the stat comes first, so the entry
+    // answers the test itself and a -prune after it fires only where GNU's
+    // would; the stat that -size alone needs waits for the rows the tree
+    // kept.
+    let st: FileStat | null = null
+    if (needMtime) {
+      st = await statEntry(deps, entry.path, prefix, index)
+      if (st === null) continue
+      learned.set(key, modifiedTs(st.modified))
+    }
     const findEntry: FindEntry = {
       key,
       name,
       kind: entry.file ? 'f' : 'd',
       depth: entry.depth,
       isEmpty,
+      mtime: learned.get(key) ?? null,
     }
     if (!keep(findEntry, tree, options.minDepth)) continue
-    const needSize = options.minSize != null || options.maxSize != null
-    const needMtime = options.mtimeMin != null || options.mtimeMax != null
-    let st: FileStat | null = null
-    if ((needSize && entry.file) || needMtime) {
+    if (needSize && entry.file && st === null) {
       st = await statEntry(deps, entry.path, prefix, index)
       if (st === null) continue
     }
     if (needSize) {
-      // Directories count as size 0 for -size: GNU compares the inode size (e.g. 4096 on ext4); see CLAUDE.md Rules.
-      const size = entry.file ? (st?.size ?? 0) : 0
+      const size = entry.file ? (st?.size ?? 0) : DIR_SIZE
       if (options.minSize != null && size < options.minSize) continue
       if (options.maxSize != null && size > options.maxSize) continue
     }
@@ -220,5 +262,165 @@ export async function walkFind(
     }
     results.push(key)
   }
-  return results
+  settlePrunes(tree, learned)
+  return dropPruned(results, tree)
+}
+
+export interface SearchFindDeps<A> {
+  resolvePath: (accessor: A, path: PathSpec, index?: IndexCacheStore) => Promise<{ isDir: boolean }>
+  stat: (accessor: A, path: PathSpec, index?: IndexCacheStore) => Promise<FileStat>
+  walk: (
+    accessor: A,
+    path: PathSpec,
+    index?: IndexCacheStore,
+    options?: { includeRoot?: boolean; maxDepth?: number | null; stripPrefix?: boolean },
+  ) => Promise<string[]>
+}
+
+function searchRelativeDepth(item: string, root: string): number {
+  const rootNorm = rstripSlash(root) !== '' ? rstripSlash(root) : '/'
+  const itemNorm = rstripSlash(item) !== '' ? rstripSlash(item) : '/'
+  if (itemNorm === rootNorm) return 0
+  let relative: string
+  if (rootNorm === '/') {
+    relative = stripSlash(itemNorm)
+  } else {
+    relative = itemNorm.startsWith(rootNorm) ? itemNorm.slice(rootNorm.length) : itemNorm
+    relative = lstripSlash(relative)
+  }
+  if (relative === '') return 0
+  return relative.split('/').length
+}
+
+async function searchMatches<A>(
+  deps: SearchFindDeps<A>,
+  accessor: A,
+  item: string,
+  prefix: string,
+  index: IndexCacheStore | undefined,
+  root: string,
+  options: FindOptions,
+  tree: PredNode,
+  needsKind: boolean,
+  startName: string,
+  allItems: readonly string[],
+): Promise<boolean> {
+  const rootNorm = rstripSlash(root) !== '' ? rstripSlash(root) : '/'
+  const itemNorm = rstripSlash(item) !== '' ? rstripSlash(item) : '/'
+  const itemName = itemNorm === rootNorm ? startName : (rstripSlash(item).split('/').pop() ?? '')
+  // The walk strips its mount prefix; backend probes still need both paths.
+  const virtual = rstripSlash(rstripSlash(prefix) + '/' + lstripSlash(item)) || '/'
+  const spec = PathSpec.fromStrPath(virtual, lstripSlash(item))
+  let kind: 'd' | 'f' = 'f'
+  if (needsKind) {
+    const resolved = await deps.resolvePath(accessor, spec, index)
+    kind = resolved.isDir ? 'd' : 'f'
+  }
+  let itemStat: FileStat | null = null
+  // -empty answers off the walked list, not a readdir: the whole subtree
+  // arrived in one `walk`, so a directory is empty exactly when no other
+  // walked key sits under it. `walkFind` has to ask readdir instead,
+  // because it drives its own traversal.
+  let isEmpty: boolean | null = null
+  if (treeHasEmpty(tree)) {
+    if (kind === 'd') {
+      const childPrefix = rstripSlash(item) + '/'
+      isEmpty = !allItems.some((other) => other !== item && other.startsWith(childPrefix))
+    } else {
+      itemStat = await deps.stat(accessor, spec, index)
+      isEmpty = itemStat.type === FileType.FILE && itemStat.size === 0
+    }
+  }
+  const entry: FindEntry = {
+    key: item,
+    name: itemName,
+    kind,
+    depth: searchRelativeDepth(item, root),
+    isEmpty,
+  }
+  if (!keep(entry, tree, options.minDepth)) return false
+  if (options.minSize != null || options.maxSize != null) {
+    let size = DIR_SIZE
+    if (kind === 'f') {
+      itemStat ??= await deps.stat(accessor, spec, index)
+      // Sizeless rendered files count as size 0, as the FUSE view reports
+      // them before a first open; never drop them.
+      size = itemStat.size ?? 0
+    }
+    if (options.minSize != null && size < options.minSize) return false
+    if (options.maxSize != null && size > options.maxSize) return false
+  }
+  if (options.mtimeMin != null || options.mtimeMax != null) {
+    itemStat ??= await deps.stat(accessor, spec, index)
+    const modTs = modifiedTs(itemStat.modified)
+    if (modTs === null) return false
+    if (options.mtimeMin != null && modTs < options.mtimeMin) return false
+    if (options.mtimeMax != null && modTs > options.mtimeMax) return false
+  }
+  return true
+}
+
+/**
+ * Build `find` for a backend whose walk comes from a search index.
+ *
+ * The search-backed backends (chroma, dify) get the whole subtree from
+ * one `walk` call and then filter it, where the API backends drive the
+ * traversal themselves through `walkFind`'s `readdir`. That is the only
+ * difference between them, so everything after the walk lives here once
+ * rather than once per backend. Mirrors python's
+ * `mirage/core/generic/find.py`.
+ */
+export function makeSearchBackedFind<A>(
+  deps: SearchFindDeps<A>,
+): (
+  accessor: A,
+  path: PathSpec,
+  options?: FindOptions,
+  index?: IndexCacheStore,
+) => Promise<string[]> {
+  return async (accessor, path, options = {}, index) => {
+    if (index === undefined) {
+      throw new Error('find: missing index')
+    }
+    const results = await deps.walk(accessor, path, index, {
+      includeRoot: true,
+      maxDepth: options.maxDepth ?? null,
+      stripPrefix: true,
+    })
+    const tree =
+      options.tree ??
+      buildTree({
+        name: options.name,
+        iname: options.iname,
+        pathPattern: options.pathPattern,
+        type: options.type,
+        nameExclude: options.nameExclude,
+        orNames: options.orNames,
+        empty: options.empty,
+      })
+    const needsKind =
+      treeHasType(tree) || options.minSize != null || options.maxSize != null || treeHasEmpty(tree)
+    const startName = startBasename(path.virtual)
+    const filtered: string[] = []
+    for (const item of results) {
+      if (
+        await searchMatches(
+          deps,
+          accessor,
+          item,
+          mountPrefixOf(path.virtual, path.vfsPath),
+          index,
+          path.mountPath,
+          options,
+          tree,
+          needsKind,
+          startName,
+          results,
+        )
+      ) {
+        filtered.push(item)
+      }
+    }
+    return filtered.sort(compareCodePoints)
+  }
 }

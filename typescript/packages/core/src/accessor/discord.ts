@@ -13,15 +13,32 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Accessor } from './base.ts'
-import type { Resource } from '../resource/base.ts'
-import type { DiscordTransport } from '../core/discord/client.ts'
+import { TimeRange } from '../core/time_range.ts'
+import type { BaseVFS } from '../vfs/base.ts'
+import { NodeDiscordTransport, type DiscordTransport } from '../core/discord/client.ts'
+import type { DiscordConfig } from '../core/discord/config.ts'
 
 export class DiscordAccessor extends Accessor {
-  constructor(public readonly transport: DiscordTransport) {
+  readonly timeRange: TimeRange
+  constructor(
+    public readonly transport: DiscordTransport,
+    config: { startTime?: string | null; endTime?: string | null } = {},
+  ) {
     super()
+    this.timeRange = new TimeRange(config.startTime, config.endTime)
   }
 }
 
-export interface DiscordResourceLike extends Resource {
+/**
+ * The accessor the `discord` CLI's verbs reach the API through, built from
+ * the install's config. Python's verbs hand the config to core directly;
+ * here core takes an accessor.
+ */
+export function discordAccessor(config: unknown): DiscordAccessor {
+  const cfg = config as DiscordConfig
+  return new DiscordAccessor(new NodeDiscordTransport(cfg.token, cfg.baseUrl))
+}
+
+export interface DiscordResourceLike extends BaseVFS {
   readonly accessor: DiscordAccessor
 }

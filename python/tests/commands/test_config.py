@@ -14,9 +14,8 @@
 
 import asyncio
 
-from mirage.commands.config import (CommandOpts, RegisteredCommand, command,
-                                    cross_command, version_request)
-from mirage.commands.spec import CommandSpec, Operand, Option
+from mirage.commands.config import CommandOpts, RegisteredCommand, command
+from mirage.commands.spec import SPECS, CommandSpec, Operand, Option
 from mirage.version import __version__
 
 _HANDLER_CALLS: list[str] = []
@@ -41,25 +40,23 @@ async def _collect(source):
 
 
 class TestRegisteredCommand:
-
     def test_basic_fields(self):
         rc = RegisteredCommand(
             name="cat",
             spec=CommandSpec(rest=Operand(type="path")),
-            resource="ram",
+            vfs="ram",
             filetype=None,
             fn=lambda: None,
         )
         assert rc.name == "cat"
-        assert rc.resource == "ram"
+        assert rc.vfs == "ram"
         assert rc.filetype is None
-        assert rc.provision_fn is None
 
     def test_with_filetype(self):
         rc = RegisteredCommand(
             name="grep",
             spec=CommandSpec(),
-            resource="s3",
+            vfs="s3",
             filetype=".parquet",
             fn=lambda: None,
         )
@@ -67,11 +64,10 @@ class TestRegisteredCommand:
 
 
 class TestCommandDecorator:
-
     def test_decorator_attaches_registered_commands(self):
         spec = CommandSpec(rest=Operand(type="path"))
 
-        @command("mytest", resource="ram", spec=spec)
+        @command("mytest", vfs="ram", spec=spec)
         async def my_fn(backend, paths, *texts, **kw):
             pass
 
@@ -79,26 +75,25 @@ class TestCommandDecorator:
         assert len(my_fn._registered_commands) == 1
         rc = my_fn._registered_commands[0]
         assert rc.name == "mytest"
-        assert rc.resource == "ram"
+        assert rc.vfs == "ram"
 
-    def test_decorator_with_provision(self):
-        spec = CommandSpec()
+    def test_wrapping_a_registered_function_does_not_mutate_it(self):
+        original = command("cat", vfs="s3", spec=CommandSpec())(_noop_handler)
+        original_registrations = list(original._registered_commands)
 
-        async def my_provision(*a, **kw):
-            pass
+        wrapped = command("cat", vfs="s3", spec=CommandSpec())(original)
 
-        @command("mytest", resource="ram", spec=spec, provision=my_provision)
-        async def my_fn(backend, paths, *texts, **kw):
-            pass
-
-        rc = my_fn._registered_commands[0]
-        assert rc.provision_fn is my_provision
+        assert original._registered_commands == original_registrations
+        assert (
+            wrapped._registered_commands is not original._registered_commands
+        )
+        assert len(wrapped._registered_commands) == 2
 
     def test_write_defaults_false(self):
         rc = RegisteredCommand(
             name="cat",
             spec=CommandSpec(rest=Operand(type="path")),
-            resource="ram",
+            vfs="ram",
             filetype=None,
             fn=lambda: None,
         )
@@ -108,7 +103,7 @@ class TestCommandDecorator:
         rc = RegisteredCommand(
             name="rm",
             spec=CommandSpec(),
-            resource="s3",
+            vfs="s3",
             filetype=None,
             fn=lambda: None,
             write=True,
@@ -117,11 +112,10 @@ class TestCommandDecorator:
 
 
 class TestCommandDecoratorWrite:
-
     def test_write_flag_passed_through(self):
         spec = CommandSpec()
 
-        @command("rm", resource="ram", spec=spec, write=True)
+        @command("rm", vfs="ram", spec=spec, write=True)
         async def my_rm(backend, paths, *texts, **kw):
             pass
 
@@ -131,7 +125,7 @@ class TestCommandDecoratorWrite:
     def test_write_flag_defaults_false(self):
         spec = CommandSpec()
 
-        @command("cat", resource="ram", spec=spec)
+        @command("cat", vfs="ram", spec=spec)
         async def my_cat(backend, paths, *texts, **kw):
             pass
 
@@ -139,27 +133,11 @@ class TestCommandDecoratorWrite:
         assert rc.write is False
 
 
-class TestCrossCommandDecorator:
-
-    def test_cross_command_fields(self):
-        spec = CommandSpec()
-
-        @cross_command("cp", src="s3", dst="disk", spec=spec)
-        async def my_cp(ws, paths, *texts, **kw):
-            pass
-
-        rc = my_cp._registered_commands[0]
-        assert rc.name == "cp"
-        assert rc.src == "s3"
-        assert rc.dst == "disk"
-        assert rc.resource == "s3->disk"
-
-
 class TestVersionSupport:
-
     def test_auto_injects_version_option(self):
-        registered = command("foo", resource="disk",
-                             spec=CommandSpec())(_noop_handler)
+        registered = command("foo", vfs="disk", spec=CommandSpec())(
+            _noop_handler
+        )
         longs = [
             o.long for o in registered._registered_commands[0].spec.options
         ]
@@ -168,57 +146,68 @@ class TestVersionSupport:
 
     def test_version_short_circuits_handler(self):
         _HANDLER_CALLS.clear()
-        registered = command("tsort", resource="disk",
-                             spec=CommandSpec())(_recording_handler)
-        stdout, result = asyncio.run(registered._registered_commands[0].fn(
-            None, [], [], CommandOpts(flags={"version": True})))
+        registered = command("tsort", vfs="disk", spec=CommandSpec())(
+            _recording_handler
+        )
+        stdout, result = asyncio.run(
+            registered._registered_commands[0].fn(
+                None, [], [], CommandOpts(flags={"version": True})
+            )
+        )
         assert _HANDLER_CALLS == []
-        assert asyncio.run(
-            _collect(stdout)) == f"tsort (Mirage) {__version__}\n".encode()
+        assert (
+            asyncio.run(_collect(stdout))
+            == f"tsort (Mirage) {__version__}\n".encode()
+        )
         assert result.exit_code == 0
 
     def test_help_keeps_the_spec_epilog(self):
         registered = command(
-            "foo",
-            resource="disk",
-            spec=CommandSpec(epilog="Services:\n  drive"))(_noop_handler)
+            "foo", vfs="disk", spec=CommandSpec(epilog="Services:\n  drive")
+        )(_noop_handler)
         rc = registered._registered_commands[0]
         assert rc.spec.epilog == "Services:\n  drive"
         stdout, result = asyncio.run(
-            rc.fn(None, [], [], CommandOpts(flags={"help": True})))
+            rc.fn(None, [], [], CommandOpts(flags={"help": True}))
+        )
         assert b"Services:\n  drive\n" in asyncio.run(_collect(stdout))
         assert result.exit_code == 0
 
+    def test_declared_version_reaches_the_handler(self):
+        _HANDLER_CALLS.clear()
+        registered = command(
+            "custom",
+            vfs=None,
+            spec=CommandSpec(options=(Option(long="--version"),)),
+        )(_recording_handler)
+        asyncio.run(
+            registered._registered_commands[0].fn(
+                None, [], [], CommandOpts(flags={"version": True})
+            )
+        )
+        assert _HANDLER_CALLS == ["called"]
 
-class TestVersionRequest:
+    def test_help_reaches_a_program_that_runs_its_own_option_loop(self):
+        # jq answers --help where its loop reaches it (OWN_OPTION_LOOP).
+        _HANDLER_CALLS.clear()
+        registered = command("jq", vfs=None, spec=SPECS["jq"])(
+            _recording_handler
+        )
+        asyncio.run(
+            registered._registered_commands[0].fn(
+                None, [], [], CommandOpts(flags={"help": True})
+            )
+        )
+        assert _HANDLER_CALLS == ["called"]
 
-    def test_matches_injected_option(self):
-        registered = command("tsort", resource="disk",
-                             spec=CommandSpec())(_noop_handler)
-        spec = registered._registered_commands[0].spec
-        assert version_request(
-            "tsort", spec,
-            ["--version"]) == f"tsort (Mirage) {__version__}\n".encode()
-
-    def test_none_without_the_flag(self):
-        registered = command("tsort", resource="disk",
-                             spec=CommandSpec())(_noop_handler)
-        spec = registered._registered_commands[0].spec
-        assert version_request("tsort", spec, ["/data/a.txt"]) is None
-
-    def test_none_after_end_of_options(self):
-        registered = command("grep", resource="disk",
-                             spec=CommandSpec())(_noop_handler)
-        spec = registered._registered_commands[0].spec
-        assert version_request("grep", spec, ["--", "--version"]) is None
-
-    def test_none_for_unregistered_command(self):
-        assert version_request("nope", None, ["--version"]) is None
-
-    def test_none_when_command_declares_its_own_version(self):
-        spec = CommandSpec(options=(Option(long="--version"), ))
-        registered = command("custom", resource="disk",
-                             spec=spec)(_noop_handler)
-        assert version_request("custom",
-                               registered._registered_commands[0].spec,
-                               ["--version"]) is None
+    def test_help_short_circuits_a_borrowed_name(self):
+        _HANDLER_CALLS.clear()
+        registered = command("jq", vfs=None, spec=CommandSpec())(
+            _recording_handler
+        )
+        asyncio.run(
+            registered._registered_commands[0].fn(
+                None, [], [], CommandOpts(flags={"help": True})
+            )
+        )
+        assert _HANDLER_CALLS == []

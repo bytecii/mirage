@@ -13,52 +13,112 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
-import { stripSlash } from '../../../utils/slash.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { CommandName } from '../../spec/types.ts'
+import { missingOperandError } from '../../spec/usage.ts'
+import { fsStrerror, isFsError } from '../../../utils/errors.ts'
 import { mountKey } from '../../../utils/key_prefix.ts'
+import { resolvePath } from '../../../utils/path.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { readStdinAsync } from '../utils/stream.ts'
+import { splitLines } from '../utils/lines.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
 
-function splitLinesNoTrailing(text: string): string[] {
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped === '' ? [] : stripped.split('\n')
+function isRegex(pattern: string): boolean {
+  return pattern.startsWith('/') && pattern.endsWith('/')
 }
 
+/**
+ * GNU's parse-time checks on the line-number patterns, in order: a repeated
+ * number warns and still splits (an empty piece); a zero or a number below
+ * its predecessor refuses the whole run before any piece is written.
+ * Mirrors Python's `_check_line_numbers`.
+ */
+function checkLineNumbers(patterns: readonly string[]): [string, boolean] {
+  let messages = ''
+  let last = 0
+  for (const pattern of patterns) {
+    if (isRegex(pattern)) continue
+    const number = Number.parseInt(pattern, 10)
+    if (number <= 0) {
+      return [messages + `csplit: ${pattern}: line number must be greater than zero\n`, true]
+    }
+    if (number < last) {
+      const refusal = `csplit: line number '${pattern}' is smaller than preceding line number, ${String(last)}\n`
+      return [messages + refusal, true]
+    }
+    if (number === last) {
+      messages += `csplit: warning: line number '${pattern}' is the same as preceding line number\n`
+    }
+    last = number
+  }
+  return [messages, false]
+}
+
+/**
+ * Cut `lines` into pieces as GNU csplit does, and report a failure. GNU keeps
+ * two cursors: the first line not yet written (`head`) and the last line it
+ * examined (`seen`, counted from 1). A regex searches from the line after
+ * `seen`, so a repeated regex never matches the line the previous one stopped
+ * at; line N writes up to the line before it, an empty piece once `head` is
+ * past it. A line number fails when no line follows `seen`, a regex when
+ * nothing matches, and the piece being built takes what is left.
+ * `--suppress-matched` drops the line each pattern stops at. The rest of the
+ * input is always the last piece, empty or not. Mirrors Python's
+ * `_split_by_patterns`.
+ */
 function splitByPatterns(
   lines: readonly string[],
   patterns: readonly string[],
   suppressMatched: boolean,
-): string[][] {
+): [string[][], string | null] {
   const parts: string[][] = []
-  let currentStart = 0
+  let head = 0
+  let seen = 0
   for (const pat of patterns) {
-    if (pat.startsWith('/') && pat.endsWith('/')) {
+    const outOfRange = `csplit: '${pat}': line number out of range\n`
+    if (isRegex(pat)) {
       const regex = new RegExp(pat.slice(1, -1))
-      for (let idx = currentStart; idx < lines.length; idx++) {
+      let found = -1
+      for (let idx = seen; idx < lines.length; idx++) {
         if (regex.test(lines[idx] ?? '')) {
-          parts.push(lines.slice(currentStart, idx))
-          currentStart = suppressMatched ? idx + 1 : idx
+          found = idx
           break
         }
       }
-    } else {
-      const lineNum = Number.parseInt(pat, 10)
-      const splitAt = lineNum - 1
-      if (splitAt > currentStart) {
-        parts.push(lines.slice(currentStart, splitAt))
-        currentStart = splitAt
+      if (found === -1) {
+        parts.push(lines.slice(head))
+        return [parts, `csplit: '${pat}': match not found\n`]
       }
+      parts.push(lines.slice(head, found))
+      head = found
+      seen = found + 1
+    } else {
+      if (suppressMatched && seen >= lines.length) {
+        parts.push([])
+        return [parts, outOfRange]
+      }
+      const stop = Math.max(head, Number.parseInt(pat, 10) - 1)
+      if (stop > lines.length) {
+        parts.push(lines.slice(head))
+        return [parts, outOfRange]
+      }
+      parts.push(lines.slice(head, stop))
+      head = stop
+      seen = Math.max(seen, stop)
+      if (!suppressMatched && seen >= lines.length) return [parts, outOfRange]
+    }
+    if (suppressMatched && head < lines.length) {
+      head += 1
+      seen = Math.max(seen, head)
     }
   }
-  if (currentStart < lines.length) {
-    parts.push(lines.slice(currentStart))
-  }
-  return parts
+  parts.push(lines.slice(head))
+  return [parts, null]
 }
 
 function padNum(n: number, digits: number): string {
@@ -77,40 +137,29 @@ function formatSuffix(index: number, digits: number, format: string | null): str
   })
 }
 
-function makePathSpec(virtual: string): PathSpec {
-  return new PathSpec({
-    virtual,
-    directory: virtual,
-    resourcePath: stripSlash(virtual),
-    resolved: true,
-  })
-}
-
-async function writePart(
-  write: (p: PathSpec, data: Uint8Array) => Promise<void>,
-  filename: string,
-  data: Uint8Array,
-  writes: Record<string, Uint8Array>,
-): Promise<void> {
-  await write(makePathSpec(filename), data)
-  writes[filename] = data
-}
-
 export async function csplitGeneric(
   paths: PathSpec[],
   texts: string[],
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
   write: (p: PathSpec, data: Uint8Array) => Promise<void>,
+  unlink: (p: PathSpec) => Promise<void>,
+  relay = false,
 ): Promise<CommandFnResult> {
+  // GNU wants FILE and a PATTERN before it opens anything.
+  if (texts.length === 0) {
+    throw missingOperandError(CommandName.CSPLIT, paths[paths.length - 1]?.rawPath ?? null)
+  }
   const fl = new FlagView(opts.flags, specOf('csplit'))
-  const prefixValue = fl.asStr('prefix')
-  const rawPrefix = typeof prefixValue === 'string' ? prefixValue : 'xx'
-  const prefix = new PathSpec({
-    virtual: rawPrefix,
-    directory: rawPrefix,
-    resourcePath: mountKey(rawPrefix, opts.mountPrefix ?? ''),
-  }).mountPath
+  // An output is the -f prefix, or `xx` in the working directory, plus its
+  // suffix, wherever the input lives: GNU writes `xx00` to the cwd, names it
+  // as it formed it (`csplit: xx00`), and stops at the first one it cannot
+  // create, -k or not. Mirrors csplit.py.
+  const prefixSpec = fl.asPaths('prefix')[0]
+  const prefixWord = fl.asStr('prefix') ?? 'xx'
+  const prefixVirtual = prefixSpec?.virtual ?? resolvePath(prefixWord, opts.cwd)
+  const typedPrefix = prefixSpec?.rawPath ?? prefixWord
+  const mountPrefix = opts.mountPrefix ?? ''
   const digitsValue = fl.asStr('digits')
   const suffixValue = fl.asStr('suffix_format')
   const digits = typeof digitsValue === 'string' ? Number.parseInt(digitsValue, 10) : 2
@@ -120,35 +169,69 @@ export async function csplitGeneric(
   const suppressMatched = fl.asBool('suppress_matched')
   const elideEmpty = fl.asBool('elide_empty_files')
   let raw: Uint8Array
-  if (paths.length > 0) {
-    const first = paths[0]
-    if (first === undefined) return [null, new IOResult()]
+  // `-` is stdin. /dev/stdin would run csplit on the /dev mount, which is
+  // where its pieces would land, so it stays a path.
+  const first = paths[0]
+  if (first !== undefined && first.rawPath !== '-') {
     raw = await materialize(stream(first))
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
     raw = stdinData ?? new Uint8Array(0)
   }
+  const checked = checkLineNumbers(texts)
+  let diagnostics = checked[0]
+  if (checked[1]) {
+    return [ENC.encode(''), new IOResult({ stderr: ENC.encode(diagnostics), exitCode: 1 })]
+  }
   const text = DEC.decode(raw)
-  const lines = splitLinesNoTrailing(text)
-  const parts = splitByPatterns(lines, texts, suppressMatched)
+  const lines = splitLines(text)
+  const [parts, splitError] = splitByPatterns(lines, texts, suppressMatched)
+  let error = splitError
   const writes: Record<string, Uint8Array> = {}
   const sizes: string[] = []
-  try {
-    for (let idx = 0; idx < parts.length; idx++) {
-      const part = parts[idx] ?? []
-      if (elideEmpty && part.length === 0) continue
-      const filename = prefix + formatSuffix(idx, digits, suffixFormat)
-      const data = part.length > 0 ? ENC.encode(part.join('\n') + '\n') : new Uint8Array(0)
-      await writePart(write, filename, data, writes)
-      sizes.push(String(data.byteLength))
+  const created: [string, PathSpec][] = []
+  for (const part of parts) {
+    if (elideEmpty && part.length === 0) continue
+    const suffix = formatSuffix(sizes.length, digits, suffixFormat)
+    const name = typedPrefix + suffix
+    const data = part.length > 0 ? ENC.encode(part.join('\n') + '\n') : new Uint8Array(0)
+    const virtual = prefixVirtual + suffix
+    const spec = PathSpec.fromStrPath(virtual, mountKey(virtual, mountPrefix))
+    try {
+      await write(spec, data)
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      error = `csplit: ${name}: ${String(fsStrerror(err))}\n`
+      break
     }
-  } catch (err) {
-    if (!keep) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`csplit: ${msg}\n`) })]
+    created.push([name, spec])
+    // Relay writes land on whichever mount owns each path and invalidate
+    // through the dispatcher; keying them here would have the runner prefix
+    // them onto this mount.
+    if (!relay) writes[spec.mountPath] = data
+    sizes.push(String(data.byteLength))
+  }
+  if (error !== null) diagnostics += error
+  if (error !== null && !keep) {
+    // GNU removes every piece the failed run wrote unless -k keeps them, so
+    // an earlier run's piece of that name is gone too.
+    for (const [name, spec] of created) {
+      try {
+        await unlink(spec)
+      } catch (err) {
+        if (!isFsError(err)) throw err
+        diagnostics += `csplit: ${name}: ${String(fsStrerror(err))}\n`
+      }
     }
   }
   const output = quiet || sizes.length === 0 ? '' : sizes.join('\n') + '\n'
   const result: ByteSource = ENC.encode(output)
-  return [result, new IOResult({ writes })]
+  return [
+    result,
+    new IOResult({
+      writes,
+      ...(diagnostics !== '' ? { stderr: ENC.encode(diagnostics) } : {}),
+      ...(error !== null ? { exitCode: 1 } : {}),
+    }),
+  ]
 }

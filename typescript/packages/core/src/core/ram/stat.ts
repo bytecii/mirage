@@ -14,9 +14,9 @@
 
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import { FileStat, FileType, type PathSpec } from '../../types.ts'
-import { guessType } from '../../utils/filetype.ts'
-import { basename, norm } from './utils.ts'
-import { enoent } from '../../utils/errors.ts'
+import { contentTypeForPath } from '../../utils/filetype.ts'
+import { gnuBasename, norm } from '../../utils/path.ts'
+import { lookupError } from './dest.ts'
 
 export function stat(accessor: RAMAccessor, path: PathSpec): Promise<FileStat> {
   const p = norm(path.mountPath)
@@ -24,7 +24,7 @@ export function stat(accessor: RAMAccessor, path: PathSpec): Promise<FileStat> {
   if (accessor.store.dirs.has(p)) {
     return Promise.resolve(
       new FileStat({
-        name: basename(p),
+        name: gnuBasename(p),
         modified: accessor.store.modified.get(p) ?? null,
         type: FileType.DIRECTORY,
         mode: attrs.mode ?? null,
@@ -36,14 +36,15 @@ export function stat(accessor: RAMAccessor, path: PathSpec): Promise<FileStat> {
   }
   const data = accessor.store.files.get(p)
   if (data === undefined) {
-    throw enoent(path)
+    throw lookupError(accessor, path, p)
   }
   return Promise.resolve(
     new FileStat({
-      name: basename(p),
+      name: gnuBasename(p),
       size: data.byteLength,
       modified: accessor.store.modified.get(p) ?? null,
-      type: guessType(p),
+      type: FileType.FILE,
+      content: contentTypeForPath(p),
       mode: attrs.mode ?? null,
       uid: attrs.uid ?? null,
       gid: attrs.gid ?? null,

@@ -1,5 +1,6 @@
 import pytest
 from aioresponses import CallbackResult, aioresponses
+from yarl import URL
 
 from mirage.accessor.onedrive import OneDriveAccessor, OneDriveConfig
 from mirage.core.onedrive.create import create
@@ -9,7 +10,13 @@ from mirage.core.onedrive.rename import rename
 from mirage.core.onedrive.rm import rm_r
 from mirage.core.onedrive.rmdir import rmdir
 from mirage.core.onedrive.unlink import unlink
+from mirage.observe.context import RecordingScope
 from mirage.types import PathSpec
+
+# The emptiness probe is one bounded page, not a full listing walk, so the
+# query is part of the URL the stub has to match; a regression to
+# `graph_list` stops matching it.
+_PROBE = "?$top=1&$select=id"
 
 
 def _accessor(**kw) -> OneDriveAccessor:
@@ -49,17 +56,44 @@ async def test_create_puts_empty_content():
 
 
 @pytest.mark.asyncio
+async def test_create_records_the_virtual_path():
+    # A key named like its mount: neither m/k.txt nor /m/k.txt is virtual.
+    spec = PathSpec(
+        virtual="/m/m/k.txt", directory="/m/m/", vfs_path="m/k.txt"
+    )
+    scope = RecordingScope()
+    try:
+        with aioresponses() as m:
+            m.put(
+                _BASE + "/root:/m/k.txt:/content",
+                status=201,
+                payload={"id": "X"},
+            )
+            await create(_accessor(), spec)
+    finally:
+        scope.close()
+    assert [(r.op, r.path) for r in scope.records] == [
+        ("create", "/m/m/k.txt")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_unlink_deletes_item():
     with aioresponses() as m:
         m.delete(_BASE + "/root:/a.txt", status=204)
         await unlink(_accessor(), PathSpec.from_str_path("/a.txt"))
+        assert ("DELETE", URL(_BASE + "/root:/a.txt")) in m.requests
 
 
 @pytest.mark.asyncio
 async def test_rmdir_deletes_folder():
     with aioresponses() as m:
+        m.get(_BASE + "/root:/docs:/children" + _PROBE, payload={"value": []})
         m.delete(_BASE + "/root:/docs", status=204)
         await rmdir(_accessor(), PathSpec.from_str_path("/docs"))
+        assert ("DELETE", URL(_BASE + "/root:/docs")) in m.requests
+        # One bounded emptiness probe, not a listing walk.
+        assert len([k for k in m.requests if k[0] == "GET"]) == 1
 
 
 @pytest.mark.asyncio
@@ -67,6 +101,9 @@ async def test_rm_r_deletes_tree():
     with aioresponses() as m:
         m.delete(_BASE + "/root:/docs", status=204)
         await rm_r(_accessor(), PathSpec.from_str_path("/docs"))
+        # Graph deletes a folder recursively, so rm -r is one request and
+        # must not walk the tree first.
+        assert list(m.requests) == [("DELETE", URL(_BASE + "/root:/docs"))]
 
 
 @pytest.mark.asyncio
@@ -79,28 +116,31 @@ async def test_rename_patches_name():
 
     with aioresponses() as m:
         m.patch(_BASE + "/root:/a.txt", callback=_cb)
-        await rename(_accessor(), PathSpec.from_str_path("/a.txt"),
-                     PathSpec.from_str_path("/b.txt"))
+        await rename(
+            _accessor(),
+            PathSpec.from_str_path("/a.txt"),
+            PathSpec.from_str_path("/b.txt"),
+        )
     assert body["name"] == "b.txt"
 
 
 @pytest.mark.asyncio
 async def test_exists_true_and_false():
     with aioresponses() as m:
-        m.get(_BASE + "/root:/a.txt",
-              payload={
-                  "id": "X",
-                  "name": "a.txt",
-                  "file": {}
-              })
-        assert await exists(_accessor(),
-                            PathSpec.from_str_path("/a.txt")) is True
+        m.get(
+            _BASE + "/root:/a.txt",
+            payload={"id": "X", "name": "a.txt", "file": {}},
+        )
+        assert (
+            await exists(_accessor(), PathSpec.from_str_path("/a.txt")) is True
+        )
     with aioresponses() as m:
-        m.get(_BASE + "/root:/missing.txt",
-              status=404,
-              payload={"error": {
-                  "code": "itemNotFound",
-                  "message": "no"
-              }})
-        assert await exists(_accessor(),
-                            PathSpec.from_str_path("/missing.txt")) is False
+        m.get(
+            _BASE + "/root:/missing.txt",
+            status=404,
+            payload={"error": {"code": "itemNotFound", "message": "no"}},
+        )
+        assert (
+            await exists(_accessor(), PathSpec.from_str_path("/missing.txt"))
+            is False
+        )

@@ -14,123 +14,115 @@
 
 import asyncio
 import dataclasses
-from typing import Any
+from collections.abc import Awaitable, Callable
+from functools import partial
+from types import SimpleNamespace
+from typing import Any, TypeVar
 
-from mirage.commands.builtin.utils.limit import run_with_timeout
+from mirage.commands.builtin.utils.limit import guard_io, run_with_timeout
+from mirage.context import (
+    redirect_paths_for,
+    reset_admission,
+    reset_op_policies,
+    set_admission,
+    set_op_policies,
+)
 from mirage.io import IOResult
 from mirage.io.types import materialize
-from mirage.policy import CommandContext, PolicyDenied, resolve_limit
-from mirage.policy.types import SessionContext
-from mirage.runtime.policy import PolicyDecision
-from mirage.shell.bytes import encode_text
+from mirage.policy import PolicyDenied, resolve_limit, resolve_producer
+from mirage.policy.types import Claimant, HandOff, SessionContext
+from mirage.runtime.routing import RouteDecision
+from mirage.shell.console import Channel, JobConsole
 from mirage.shell.errors import ExitSignal
-from mirage.shell.syntax.parse import (find_syntax_error, parse,
-                                       syntax_error_result)
+from mirage.shell.helpers import (
+    get_command_name,
+    get_parts,
+    get_process_sub_body,
+    get_process_sub_direction,
+    get_text,
+    split_env_prefix,
+)
+from mirage.shell.parse import (
+    find_syntax_error,
+    parse,
+    source_offsets,
+    syntax_error_result,
+)
 from mirage.shell.types import NodeType as NT
-from mirage.shell.types import ShellBuiltin as SB
-from mirage.shell.variable import ShellVar, VarAttr
+from mirage.shell.types import ProcessSubDirection
+from mirage.shell.variable import TempEnv, VarAttr
 from mirage.shell.xtrace import trace_command
-from mirage.types import PathSpec, Producer, word_text
+from mirage.types import LsLinkMode, PathSpec, Producer, word_text
 from mirage.utils.glob_walk import glob_pattern
-from mirage.utils.path import CycleError, resolve_path
-from mirage.workspace.executor.builtins.alias import (alias_command_text,
-                                                      handle_alias,
-                                                      handle_unalias)
-from mirage.workspace.executor.builtins.exec_cmd import handle_exec_command
-from mirage.workspace.executor.builtins.scope import _to_scope
+from mirage.utils.path import CycleError
+from mirage.vfs.dev.dev import DevVFS
+from mirage.workspace.executor.builtins import (
+    accepts_line,
+    follow_directory_links,
+    follow_paths,
+    handle_chgrp,
+    handle_chmod,
+    handle_chown,
+    handle_df,
+    handle_exec_path,
+    handle_getfattr,
+    handle_ln,
+    handle_readlink,
+    handle_setfattr,
+    handle_touch,
+    prepare_mv,
+    settle_moves,
+    strip_link_operands,
+)
+from mirage.workspace.executor.builtins.alias import (
+    alias_command_text,
+    expanding_aliases,
+)
+from mirage.workspace.executor.builtins.table import BUILTINS
+from mirage.workspace.executor.builtins.types import BuiltinCall
 from mirage.workspace.executor.command import handle_command
-from mirage.workspace.executor.command.routing import (path_flag_scopes,
-                                                       positional_scopes)
-from mirage.workspace.executor.control import BreakSignal, ContinueSignal
-from mirage.workspace.executor.traps import execute_child_shell, finish_shell
+from mirage.workspace.executor.command.external import run_external
 from mirage.workspace.expand import expand_node
 from mirage.workspace.expand.argv import Argv, expand_argv
-from mirage.workspace.expand.classify import classify_bare_path
 from mirage.workspace.expand.globs import expand_boundary_globs
-from mirage.workspace.route import (SLASH_KEEPS_LAST, UNSUPPORTED_BUILTINS,
-                                    follows_last_component)
-from mirage.workspace.session.shell_dirs import home_dir, logical_cwd
-from mirage.workspace.session.state import (ensure_var_visible,
-                                            pre_session_gate, seed_var,
-                                            session_view, set_attr)
+from mirage.workspace.expand.node import child_line
+from mirage.workspace.lookup import (
+    SLASH_KEEPS_LAST,
+    UNSUPPORTED_BUILTINS,
+    Consumer,
+    follows_last_component,
+    lookup,
+    ls_link_mode,
+    runtime_refused,
+)
+from mirage.workspace.lookup.constants import INTERPRETER_NAMES
+from mirage.workspace.node.admission import Admitted, Refused, admit
+from mirage.workspace.node.occurrence import claimant_for, evaluated_from
+from mirage.workspace.session.state import (
+    ensure_var_visible,
+    pre_session_gate,
+    seed_var,
+    session_view,
+    set_attr,
+)
 from mirage.workspace.types import ExecutionNode
 
-from mirage.shell.syntax.helpers import (  # isort: skip
-    ProcessSubDirection, get_command_name, get_parts, get_process_sub_body,
-    get_process_sub_direction, get_text, split_env_prefix)
-
-from mirage.workspace.executor.builtins import (  # isort: skip
-    accepts_line, follow_paths, handle_bash, handle_cd, handle_chgrp,
-    handle_exec_path, handle_chmod, handle_chown, handle_command_builtin,
-    handle_df, handle_echo, handle_env, handle_eval, handle_exit,
-    handle_export, handle_getopts, handle_history, handle_let, handle_ln,
-    handle_local, handle_man, handle_mapfile, handle_printenv, handle_printf,
-    handle_read, handle_readlink, handle_return, handle_set, handle_shift,
-    handle_sleep, handle_source, handle_test, handle_timeout, handle_touch,
-    handle_trap, handle_shopt, handle_type, handle_umask, handle_unset,
-    handle_which, handle_whoami, handle_xargs, link_flags, prepare_mv,
-    strip_link_operands)
-
-_CdArgs = list[str | PathSpec]
+T = TypeVar("T")
 
 
-def _loop_levels(args: list[str]) -> int:
-    """Parse the optional numeric level of ``break``/``continue``.
+async def _own_words(node: Any, pending: Awaitable[T]) -> T:
+    """Await an expansion of the command's own words; an ``ExitSignal``
+    it raises names the command, whose redirects bash had not applied.
 
     Args:
-        args (list[str]): words after the builtin name.
+        node (Any): the command.
+        pending (Awaitable[T]): the expansion.
     """
-    if args and args[0].isdigit() and int(args[0]) > 0:
-        return int(args[0])
-    return 1
-
-
-def _split_mode_options(
-        args: _CdArgs,
-        letters: str = "LPe@",
-        default: bool = False) -> tuple[_CdArgs, str | None, bool]:
-    """Split leading ``-L``/``-P`` option flags from the operands.
-
-    Shared by ``cd`` (which also takes ``-e -@``) and ``pwd``, so the
-    last-wins rule -- ``pwd -L -P`` is physical, ``pwd -P -L`` logical --
-    has one implementation. Accepts clusters such as ``-LP`` plus a
-    ``--`` end-of-options marker; a bare ``-`` is an operand (``cd``'s
-    OLDPWD shorthand), not an option.
-
-    Args:
-        args: The classified arguments after the command name.
-        letters: The accepted option characters.
-        default: The mode to assume when the line names neither, which
-            is what ``set -P`` changes for the whole session.
-
-    Returns:
-        ``(operands, bad, physical)`` where ``operands`` are the non-option
-        args, ``bad`` is the first unknown option character (or ``None``),
-        and ``physical`` is True when ``-P`` is the effective (last-wins)
-        mode.
-    """
-    operands: _CdArgs = []
-    parsing = True
-    physical = default
-    for arg in args:
-        s = arg.virtual if isinstance(arg, PathSpec) else str(arg)
-        if parsing:
-            if s == "--":
-                parsing = False
-                continue
-            if s != "-" and len(s) >= 2 and s.startswith("-"):
-                bad = next((c for c in s[1:] if c not in letters), None)
-                if bad is None:
-                    for c in s[1:]:
-                        if c == "P":
-                            physical = True
-                        elif c == "L":
-                            physical = False
-                    continue
-                return operands, bad, physical
-            parsing = False
-        operands.append(arg)
-    return operands, None, physical
+    try:
+        return await pending
+    except ExitSignal as exc:
+        exc.expanding = node.id
+        raise
 
 
 async def execute_command(
@@ -145,9 +137,16 @@ async def execute_command(
     call_stack,
     job_table,
     cancel: asyncio.Event | None = None,
-    routing_decision: PolicyDecision | None = None,
+    routing_decision: RouteDecision | None = None,
+    agent_id: str = "",
+    handed: HandOff | None = None,
+    sink: JobConsole | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
-    """Dispatch a command node by name."""
+    """Dispatch a command node by name.
+
+    ``sink`` is where a command that runs statements of its own (a
+    function body, a nested shell) writes them as they finish.
+    """
     name = get_command_name(node)
     assignment_nodes, parts = split_env_prefix(get_parts(node))
 
@@ -160,31 +159,64 @@ async def execute_command(
     # mark, the no-second-expansion stack). The rewritten line runs
     # through the same executor with the same call stack, so `$1`
     # inside a function still means the function's argument.
-    if (session.aliases and parts and parts[0].type == NT.COMMAND_NAME
-            and parts[0].named_children
-            and parts[0].named_children[0].type == NT.WORD):
+    if (
+        session.aliases
+        and parts
+        and parts[0].type == NT.COMMAND_NAME
+        and parts[0].named_children
+        and parts[0].named_children[0].type == NT.WORD
+    ):
         head_node = parts[0]
         head = get_text(head_node)
         mark = (session._parse_current, node.start_point[0])
-        source = get_text(node)
+        source = node.text or b""
         base = node.start_byte
-        rest = source[head_node.end_byte - base:]
-        rewritten = alias_command_text(session, head, rest, mark)
-        if rewritten is not None:
-            line = source[:head_node.start_byte - base] + rewritten
+        rest = source[head_node.end_byte - base :].decode()
+        rewrite = alias_command_text(session, head, rest, mark)
+        if rewrite is not None:
+            rewritten, texts = rewrite
+            at = head_node.start_byte - base
+            line = source[:at].decode() + rewritten
             ast = parse(line)
-            offending = find_syntax_error(ast)
+            own: dict[str, tuple[int, int]] = {}
+            for alias, text in texts:
+                own[alias] = (at, at + len(text.encode()))
+                at = own[alias][1]
+            offending = find_syntax_error(
+                ast, expanding_aliases(session), own, source_offsets(line, ast)
+            )
             if offending is not None:
-                io = syntax_error_result(offending)
+                io = syntax_error_result(offending, ast)
                 bad = io.stderr if isinstance(io.stderr, bytes) else b""
-                return None, io, ExecutionNode(command=head,
-                                               exit_code=io.exit_code,
-                                               stderr=bad)
+                return (
+                    None,
+                    io,
+                    ExecutionNode(
+                        command=head, exit_code=io.exit_code, stderr=bad
+                    ),
+                )
             session._alias_stack.append(head)
+            # The rewritten line is read from this node, so it runs as
+            # a line of its own under the word that named it: each
+            # invocation of one alias is a place of its own on the line
+            # (`c && c` asks twice, as its spelled-out form does), and
+            # what its gates claim is the line's again at its end. Run
+            # on the line's own hand-off, both reads stood at the same
+            # offsets of the same text and the second ran on the
+            # first's nod.
+            expansion = (
+                evaluated_from(node, handed) if handed is not None else None
+            )
             try:
-                return await recurse(ast, session, stdin, call_stack)
+                if expansion is None:
+                    return await recurse(ast, session, stdin, call_stack)
+                return await recurse(
+                    ast, session, stdin, call_stack, handed=expansion
+                )
             finally:
                 session._alias_stack.pop()
+                if expansion is not None:
+                    registry.decisions.hand_up(session.session_id, expansion)
 
     prefix_assignments: list[tuple[str, str]] = []
     for p in assignment_nodes:
@@ -194,12 +226,16 @@ async def execute_command(
         key, _, raw_val = atext.partition("=")
         val_nodes = [c for c in p.named_children if c.type != NT.VARIABLE_NAME]
         if val_nodes:
-            v = await expand_node(val_nodes[0],
-                                  session,
-                                  execute_fn,
-                                  call_stack,
-                                  view=session_view(session,
-                                                    registry.policies))
+            v = await _own_words(
+                node,
+                expand_node(
+                    val_nodes[0],
+                    session,
+                    execute_fn,
+                    call_stack,
+                    view=session_view(session, registry.policies),
+                ),
+            )
         else:
             v = raw_val
         prefix_assignments.append((key, v))
@@ -207,8 +243,8 @@ async def execute_command(
     for k, v in prefix_assignments:
         # The hidden gate runs first, as in set_var: calling a hidden
         # name "readonly" would leak that it exists. Both branches
-        # below write session.env raw (a function-call prefix on
-        # purpose never restores), so ungated they would let a
+        # below write session.env raw (an `export` inside a function
+        # keeps its prefix past the call), so ungated they would let a
         # narrowed session clobber the host's value.
         try:
             ensure_var_visible(session, k)
@@ -221,55 +257,91 @@ async def execute_command(
             # door, so this loop is the only place the rule can be asked.
             await pre_session_gate(
                 registry.policies,
-                SessionContext(plane="env",
-                               verb="set",
-                               key=k,
-                               value=v,
-                               session_id=session.session_id))
+                SessionContext(
+                    plane="env",
+                    verb="set",
+                    key=k,
+                    value=v,
+                    session_id=session.session_id,
+                ),
+            )
         except PolicyDenied as exc:
             err = f"bash: {exc.strerror}\n".encode()
-            return None, IOResult(exit_code=1,
-                                  stderr=err), ExecutionNode(command=name or k,
-                                                             exit_code=1,
-                                                             stderr=err)
+            return (
+                None,
+                IOResult(exit_code=1, stderr=err),
+                ExecutionNode(command=name or k, exit_code=1, stderr=err),
+            )
         if k in session.readonly_vars:
             err = f"bash: {k}: readonly variable\n".encode()
-            return None, IOResult(exit_code=1,
-                                  stderr=err), ExecutionNode(command=name or k,
-                                                             exit_code=1,
-                                                             stderr=err)
+            return (
+                None,
+                IOResult(exit_code=1, stderr=err),
+                ExecutionNode(command=name or k, exit_code=1, stderr=err),
+            )
 
     if prefix_assignments and not name:
         for k, v in prefix_assignments:
             seed_var(session, k, v)
-        return None, IOResult(), ExecutionNode(command=" ".join(
-            f"{k}={v}" for k, v in prefix_assignments),
-                                               exit_code=0)
+        return (
+            None,
+            IOResult(),
+            ExecutionNode(
+                command=" ".join(f"{k}={v}" for k, v in prefix_assignments),
+                exit_code=0,
+            ),
+        )
 
-    is_function_call = name in session.functions
-    saved_env_overrides: dict[str, ShellVar | None] = {}
-    for k, v in prefix_assignments:
-        if not is_function_call:
-            saved_env_overrides[k] = session.vars.get(k)
-        # Exported for the duration, which is the whole point of the
-        # form: `TOKEN=x printenv TOKEN` prints `x` because bash puts a
-        # prefix assignment in the *command's environment*, not merely in
-        # the shell. Seeding it plain left it invisible to every reader
-        # of `env_snapshot` -- the command's own env, an installed CLI,
-        # a guest runtime -- once that view narrowed to the exported set.
-        # The saved record is put back below, so the attribute does not
-        # outlive the command; a function call deliberately saves nothing
-        # and keeps the assignment, as bash does.
-        seed_var(session, k, v)
-        set_attr(session, k, VarAttr.EXPORT)
+    saved_env_overrides = TempEnv()
+
+    def seed_prefix(command: str) -> None:
+        # Seeded once the command's words are expanded, since bash
+        # expands them with the values from before the assignment:
+        # `x=new echo $x` prints the old x and `IFS=, cmd $v` splits on
+        # the old IFS.
+        for k, v in prefix_assignments:
+            saved_env_overrides.setdefault(k, session.vars.get(k))
+            # Exported for the duration, which is the whole point of the
+            # form: `TOKEN=x printenv TOKEN` prints `x` because bash puts
+            # a prefix assignment in the *command's environment*, not
+            # merely in the shell. Seeding it plain left it invisible to
+            # every reader of `env_snapshot` -- the command's own env, an
+            # installed CLI, a guest runtime -- once that view narrowed
+            # to the exported set. The saved record is put back below, so
+            # neither the value nor the attribute outlives the command.
+            seed_var(session, k, v)
+            set_attr(session, k, VarAttr.EXPORT)
+        if command in session.functions:
+            # A function runs with the prefix as its temporary
+            # environment, a scope under its own locals: `unset` inside
+            # reveals the caller's value and `export` keeps the name.
+            session._local_frames.append(saved_env_overrides)
 
     try:
-        return await _dispatch_command_body(recurse, dispatch, registry,
-                                            namespace, execute_fn, node, parts,
-                                            name, session, stdin, call_stack,
-                                            job_table, cancel,
-                                            routing_decision)
+        return await _dispatch_command_body(
+            recurse,
+            dispatch,
+            registry,
+            namespace,
+            execute_fn,
+            node,
+            parts,
+            name,
+            session,
+            stdin,
+            call_stack,
+            job_table,
+            seed_prefix,
+            cancel,
+            routing_decision,
+            agent_id,
+            handed,
+            sink,
+        )
     finally:
+        frames = session._local_frames
+        if frames and frames[-1] is saved_env_overrides:
+            frames.pop()
         for k, prev in saved_env_overrides.items():
             if prev is None:
                 session.vars.pop(k, None)
@@ -290,91 +362,162 @@ async def _dispatch_command_body(
     stdin,
     call_stack,
     job_table,
+    seed_prefix: Callable[[str], None],
     cancel: asyncio.Event | None = None,
-    routing_decision: PolicyDecision | None = None,
+    routing_decision: RouteDecision | None = None,
+    agent_id: str = "",
+    handed: HandOff | None = None,
+    sink: JobConsole | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
-    parent = node.parent
-    if parent is None or parent.type != NT.REDIRECTED_STATEMENT:
-        for child in node.named_children:
-            if child.type == NT.HERESTRING_REDIRECT:
-                for sc in child.named_children:
-                    content = await expand_node(sc,
-                                                session,
-                                                execute_fn,
-                                                call_stack,
-                                                view=session_view(
-                                                    session,
-                                                    registry.policies))
-                    stdin = encode_text(content) + b"\n"
-                    break
+    # The command's place on the line, as the pass computed it, and
+    # the door its nested evaluations re-enter through: a word that
+    # runs a line (eval, source, xargs) is bound to this node, and a
+    # substitution names its own node when it calls, so every nested
+    # line stands under the node its text came from.
+    claimant = claimant_for(node, handed)
+    execute_fn = partial(execute_fn, node=node)
 
-    # Process substitution: <(cmd) feeds inner stdout as stdin.
-    # Output direction >(cmd) is unsupported; reject early so the
-    # caller sees a capability gap rather than a silent no-op.
-    proc_sub_parts = []
+    # Buffered virtual files preserve operand identity without host pipes.
+    dev: DevVFS | None = None
+    proc_sub_inputs: list[tuple[str, int]] = []
     proc_sub_stderr = []
     clean_parts = []
-    for p in parts:
-        if hasattr(p, "type") and p.type == NT.PROCESS_SUBSTITUTION:
+    try:
+        for p in parts:
+            if p.type != NT.PROCESS_SUBSTITUTION:
+                clean_parts.append(p)
+                continue
             if get_process_sub_direction(p) == ProcessSubDirection.OUTPUT:
                 err = b"mirage: unsupported: process substitution >(...)\n"
-                return None, IOResult(exit_code=2, stderr=err), ExecutionNode(
-                    command=name or "process_sub", exit_code=2, stderr=err)
+                return (
+                    None,
+                    IOResult(exit_code=2, stderr=err),
+                    ExecutionNode(
+                        command=name or "process_sub", exit_code=2, stderr=err
+                    ),
+                )
+            if dev is None:
+                dev, _, _ = registry.resolve("/dev/null")
+                assert isinstance(dev, DevVFS)
+            path, allocation = dev.allocate_input()
+            proc_sub_inputs.append((path, allocation))
             inner = get_process_sub_body(p)
             if inner:
-                io_ps = await execute_child_shell(execute_fn, session, inner)
-                proc_sub_parts.append(await materialize(io_ps.stdout))
-                stderr = await materialize(io_ps.stderr)
-                if stderr:
-                    proc_sub_stderr.append(stderr)
-        else:
-            clean_parts.append(p)
-    if proc_sub_parts and stdin is None:
-        stdin = b"".join(proc_sub_parts)
-    parts = clean_parts
+                io_ps = await child_line(
+                    session, execute_fn, inner, p, call_stack
+                )
+                data = await materialize(io_ps.stdout)
+                dev.set_input(path, allocation, data)
+                proc_sub_stderr.append(await materialize(io_ps.stderr))
+            clean_parts.append(
+                SimpleNamespace(
+                    type=NT.WORD,
+                    text=path.encode(),
+                    children=[],
+                    named_children=[],
+                )
+            )
+        parts = clean_parts
 
-    argv = await expand_argv(parts,
-                             session,
-                             execute_fn,
-                             call_stack,
-                             registry,
-                             namespace,
-                             view=session_view(session, registry.policies))
+        argv = await _own_words(
+            node,
+            expand_argv(
+                parts,
+                session,
+                execute_fn,
+                call_stack,
+                registry,
+                namespace,
+                view=session_view(session, registry.policies),
+                routing=routing_decision,
+            ),
+        )
+        seed_prefix(argv.name)
 
-    # Limits resolve against the expanded name, so `$CMD`-style
-    # invocations get their real command's policy.
-    resolved = resolve_limit(argv.name) if argv.name else None
-    timeout = (resolved.timeout_seconds if resolved is not None else None)
-    body = _run_argv(recurse,
-                     dispatch,
-                     registry,
-                     namespace,
-                     execute_fn,
-                     argv,
-                     session,
-                     stdin,
-                     call_stack,
-                     job_table,
-                     cancel,
-                     routing_decision,
-                     row=node.start_point[0])
-    # Capture xtrace before the body runs so `set -x` itself is not
-    # traced (bash enables tracing only for the following commands).
-    xtrace = bool(session.shell_options.get("xtrace"))
-    stdout, io, exec_node = await run_with_timeout(body, timeout, argv.name
-                                                   or "?")
-    if io.producer is None and argv.name:
-        # Builtins and other non-mount routes return no rider; stamp the
-        # expanded name here so post_execute policies keyed on a command
-        # (echo, printf, ...) still see it.
-        io.producer = Producer(command=argv.name)
-    if proc_sub_stderr:
-        io.stderr = b"".join(proc_sub_stderr) + await materialize(io.stderr)
-        exec_node.stderr = io.stderr
-    if xtrace and argv.name:
-        existing = await materialize(io.stderr) or b""
-        io.stderr = trace_command([argv.name, *argv.args]) + existing
-    return stdout, io, exec_node
+        # Limits resolve against the expanded name, so `$CMD`-style
+        # invocations get their real command's policy.
+        # Mount, CLI and external dispatch own their resolved deadlines.
+        owns_deadline = (
+            "/" not in argv.name
+            and lookup(argv.name, session, registry, routing_decision)
+            in (Consumer.EXTERNAL, Consumer.MOUNT, Consumer.CLI)
+        ) or argv.name in INTERPRETER_NAMES
+        resolved = (
+            resolve_limit(
+                argv.name,
+                workspace_limits=registry.command_limits,
+                profile_limits=session.command_limits,
+            )
+            if argv.name and not owns_deadline
+            else None
+        )
+        timeout = resolved.timeout_seconds if resolved is not None else None
+        body = _run_argv(
+            recurse,
+            dispatch,
+            registry,
+            namespace,
+            execute_fn,
+            argv,
+            session,
+            stdin,
+            call_stack,
+            job_table,
+            cancel,
+            routing_decision,
+            row=node.start_point[0],
+            agent_id=agent_id,
+            redirects=redirect_paths_for(node.id),
+            claimant=claimant,
+            sink=sink,
+        )
+        # Capture xtrace before the body runs so `set -x` itself is not
+        # traced (bash enables tracing only for the following commands).
+        # A body that writes as it runs is traced before it starts.
+        xtrace = bool(session.shell_options.get("xtrace")) and bool(argv.name)
+        if xtrace and sink is not None:
+            await sink.emit(
+                Channel.STDERR, trace_command([argv.name, *argv.args])
+            )
+            xtrace = False
+        stdout, io, exec_node = await run_with_timeout(
+            body, timeout, argv.name or "?"
+        )
+        if io.producer is None and argv.name:
+            # Builtins and other non-mount routes return no rider; stamp the
+            # expanded name here so post_execute policies keyed on a command
+            # (echo, printf, ...) still see it.
+            io.producer = Producer(command=argv.name)
+        if not io.output_finalized:
+            io.output_finalized = True
+            if (
+                session.terminal_output
+                and session.exec_stdout in (None, "&1")
+                and io.producer is not None
+            ):
+                bound = resolve_producer(
+                    io.producer,
+                    registry.limit_override,
+                    registry.command_limits,
+                    session.command_limits,
+                )
+                stdout = guard_io(stdout, io, bound, io.producer.command)
+                exec_node.exit_code = io.exit_code
+        if proc_sub_stderr:
+            io.stderr = b"".join(proc_sub_stderr) + await materialize(
+                io.stderr
+            )
+            exec_node.stderr = io.stderr
+        if xtrace:
+            existing = await materialize(io.stderr) or b""
+            io.stderr = trace_command([argv.name, *argv.args]) + existing
+        if proc_sub_inputs and stdout is not None:
+            stdout = await materialize(stdout)
+        return stdout, io, exec_node
+    finally:
+        if dev is not None:
+            for path, allocation in proc_sub_inputs:
+                dev.release_input(path, allocation)
 
 
 async def _run_argv(
@@ -389,21 +532,29 @@ async def _run_argv(
     call_stack,
     job_table,
     cancel: asyncio.Event | None = None,
-    routing_decision: PolicyDecision | None = None,
+    routing_decision: RouteDecision | None = None,
     row: int = 0,
+    agent_id: str = "",
+    redirects: tuple[PathSpec, ...] = (),
+    claimant: Claimant | None = None,
+    sink: JobConsole | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
     """Route one expanded command to its builtin or mount handler.
 
     ``row`` is the command's line within its parse, which only ``alias``
     reads: a definition remembers where it was made so a use on the
     same line does not see it, as bash's line reader would not.
+    ``agent_id`` is the agent the line is attributed to, which an
+    approval request names. ``redirects`` are the statement's expanded
+    redirect targets, judged with the line because their I/O runs on
+    the shell's own fds outside the admitted command's gate window.
     """
     name = argv.name
 
     # ── boundary globs ──────────────────────────
     # A glob whose directory holds a child mount cannot be pushed down
     # to one backend: the mount root is a child of that directory but
-    # its keys live in another resource, so the backend reports "no such
+    # its keys live in another VFS, so the backend reports "no such
     # file" for a name its own listing shows. Expanding such a word here
     # lets the matches route per mount. It has to happen before the
     # admission policies below, not just before the follow policy: a
@@ -411,63 +562,187 @@ async def _run_argv(
     # and `MountRootPolicy` cannot recognize a mount root inside one, so
     # `tar -cf out.tar /base/*` would archive a whole backend the same
     # operand typed by hand is refused for.
-    boundary = await expand_boundary_globs(list(argv.operands), registry,
-                                           namespace)
+    refused_external = runtime_refused(
+        name, session, registry, routing_decision
+    )
+    boundary = (
+        list(argv.operands)
+        if refused_external
+        else await expand_boundary_globs(
+            list(argv.operands), registry, namespace
+        )
+    )
     expanded = [word_text(w) for w in boundary]
     # Compared as words, not as a count: a glob that matches exactly one
     # name (`du /base/i*` where only the mount root matches) is still an
     # expansion, and dropping it routes the pattern to a backend that
     # cannot serve the child mount's keys.
     if expanded != [word_text(w) for w in argv.operands]:
-        argv = dataclasses.replace(argv,
-                                   operands=tuple(boundary),
-                                   args=tuple(expanded))
+        argv = dataclasses.replace(
+            argv, operands=tuple(boundary), args=tuple(expanded)
+        )
 
-    args = list(argv.args)
-    operands = list(argv.operands)
-
-    # ── admission policies ──────────────────────
+    # ── visibility and admission ────────────────
     # The one chokepoint every command class passes through: shell
     # builtins, namespace-routed commands (touch/chmod/ln -s), job
     # builtins, shell functions, and mount commands all route below, so
-    # the hook must fire here, not in handle_command. Paths are the
-    # operands as typed plus path-valued flags (shuf -o DEST); refusals
-    # win over flag parsing, routing, and runtime placement.
+    # the gate must fire here, not in handle_command. Checked ahead of
+    # the BUILTINS table, which runs before lookup(); the enumerators
+    # read the same visibility filter through _layers. Refusals win
+    # over flag parsing, routing, and runtime placement.
+    admitted: Admitted | None = None
     if name:
-        scopes = [p for p in operands if isinstance(p, PathSpec)]
-        scopes.extend(path_flag_scopes(name, args, session.cwd))
-        if "/" in name:
-            # A slash-carrying head word is a file the line executes
-            # (the path-execution branch below), and it lives in
-            # argv[0], not the operands, so a path-pattern guard would
-            # never see it without this row.
-            scopes.insert(0, _to_scope(resolve_path(name, session.cwd)))
-        deny = await registry.policies.pre_command(
-            CommandContext(command=name,
-                           paths=tuple(scopes),
-                           operands=tuple(
-                               positional_scopes(name, args, session.cwd,
-                                                 operands)),
-                           argv=tuple(args),
-                           cwd=session.cwd,
-                           registry=registry))
-        if deny is not None:
-            err = deny.message.encode()
-            cmd_str = " ".join([name, *args])
-            return None, IOResult(exit_code=deny.exit_code,
-                                  stderr=err), ExecutionNode(
-                                      command=cmd_str,
-                                      exit_code=deny.exit_code,
-                                      stderr=err)
+        verdict = await admit(
+            name,
+            list(argv.args),
+            list(argv.operands),
+            session,
+            registry,
+            namespace,
+            agent_id,
+            stdin,
+            redirects=redirects,
+            cancel=cancel,
+            claimant=claimant,
+        )
+        if isinstance(verdict, Refused):
+            cmd_str = " ".join([name, *argv.args])
+            return (
+                None,
+                IOResult(
+                    exit_code=verdict.exit_code,
+                    stderr=verdict.stderr,
+                    refusal=verdict.refusal,
+                ),
+                ExecutionNode(
+                    command=cmd_str,
+                    exit_code=verdict.exit_code,
+                    stderr=verdict.stderr,
+                    refused=True,
+                ),
+            )
+        admitted = verdict
+
+    # ── run ────────────────────────────────────
+    # The admitted command's gate is bound for its run and reset after,
+    # so its own I/O can ask about the entries the gate did not see and
+    # a nested line binds its own (see ``Admitted``). The workspace's
+    # policies bind in the same window, whether or not a gate judged the
+    # line, so the command tier's policy guard can fire pre_ops for the
+    # backend I/O a handler performs.
+    ptoken = set_op_policies(registry.policies)
+    try:
+        if admitted is None:
+            return await _route_argv(
+                recurse,
+                dispatch,
+                registry,
+                namespace,
+                execute_fn,
+                argv,
+                session,
+                stdin,
+                call_stack,
+                job_table,
+                cancel,
+                routing_decision,
+                row,
+                agent_id,
+                claimant.line if claimant is not None else None,
+                sink,
+            )
+        token = set_admission(admitted)
+        try:
+            return await _route_argv(
+                recurse,
+                dispatch,
+                registry,
+                namespace,
+                execute_fn,
+                argv,
+                session,
+                stdin,
+                call_stack,
+                job_table,
+                cancel,
+                routing_decision,
+                row,
+                agent_id,
+                claimant.line if claimant is not None else None,
+                sink,
+            )
+        finally:
+            reset_admission(token)
+    finally:
+        reset_op_policies(ptoken)
+
+
+def unsaid(lines: list[str], said: bytes) -> list[str]:
+    """Drop the refusal lines the command tier already wrote.
+
+    A mount-mode refusal names the mount, not the operand, so the line
+    the node table wrote for a refused link is the very line
+    ``Mount.execute_cmd`` writes for the backend operands beside it on
+    the same mount, and ``rm dlink file`` would say it twice. The tier
+    writes it without a trailing newline, so the comparison is on the
+    stripped text.
+
+    Args:
+        lines (list[str]): the node table's refusal lines, in order.
+        said (bytes): stderr the command tier already produced.
+
+    Returns:
+        list[str]: the lines not already present.
+    """
+    if not said:
+        return lines
+    spoken = {t.strip() for t in said.decode(errors="replace").split("\n")}
+    return [line for line in lines if line.strip() not in spoken]
+
+
+async def _route_argv(
+    recurse,
+    dispatch,
+    registry,
+    namespace,
+    execute_fn,
+    argv: Argv,
+    session,
+    stdin,
+    call_stack,
+    job_table,
+    cancel: asyncio.Event | None,
+    routing_decision: RouteDecision | None,
+    row: int,
+    agent_id: str = "",
+    handed: HandOff | None = None,
+    sink: JobConsole | None = None,
+) -> tuple[Any, IOResult, ExecutionNode]:
+    """Route one admitted command to its builtin or mount handler.
+
+    The half of ``_run_argv`` past the gate, split out so the gate's
+    verdict can be bound around it.
+    """
+    name = argv.name
+    args = list(argv.args)
+    operands = list(argv.operands)
 
     # ── path execution ─────────────────────────
     # bash hands a slash-carrying head word to the loader, never to
     # command lookup: no builtin, function, or CLI can claim it. After
     # the admission gate so a policy sees the line like any other.
     if name and "/" in name:
-        return await handle_exec_path(dispatch, execute_fn, name,
-                                      [word_text(a) for a in args], session,
-                                      stdin)
+        return await handle_exec_path(
+            dispatch,
+            execute_fn,
+            name,
+            [word_text(a) for a in args],
+            session,
+            registry,
+            namespace,
+            stdin,
+            sink,
+        )
 
     # ── unsupported bash builtins ──────────────
     # Constructs the parser accepts but the executor cannot honor.
@@ -475,260 +750,40 @@ async def _run_argv(
     # of treating it as a missing binary or a silent no-op.
     if name in UNSUPPORTED_BUILTINS:
         err = f"mirage: unsupported builtin: {name}\n".encode()
-        return None, IOResult(exit_code=2,
-                              stderr=err), ExecutionNode(command=name,
-                                                         exit_code=2,
-                                                         stderr=err)
+        return (
+            None,
+            IOResult(exit_code=2, stderr=err),
+            ExecutionNode(command=name, exit_code=2, stderr=err),
+        )
+
+    consumer = lookup(name, session, registry, routing_decision)
+    if consumer is Consumer.EXTERNAL:
+        return await run_external(
+            argv, stdin, session, registry, routing_decision
+        )
 
     # ── shell builtins ──────────────────────────
-    # `set -P` (`set -o physical`) is the session-wide version of the
-    # per-command flag, and GNU applies it to both `cd` and `pwd`.
-    shell_physical = bool(session.shell_options.get("physical"))
-
-    if name == SB.PWD:
-        _, bad_opt, physical = _split_mode_options(operands, "LP",
-                                                   shell_physical)
-        if bad_opt is not None:
-            err = (f"pwd: -{bad_opt}: invalid option\n"
-                   f"pwd: usage: pwd [-LP]\n").encode()
-            return None, IOResult(exit_code=2,
-                                  stderr=err), ExecutionNode(command="pwd",
-                                                             exit_code=2,
-                                                             stderr=err)
-        # GNU ignores operands entirely: `pwd extra` still prints the cwd.
-        cwd = session.cwd if physical else logical_cwd(session)
-        out = (cwd + "\n").encode()
-        return out, IOResult(), ExecutionNode(command="pwd", exit_code=0)
-
-    if name == SB.CD:
-        cd_operands, bad_opt, physical = _split_mode_options(
-            operands, default=shell_physical)
-        if bad_opt is not None:
-            err = (f"cd: -{bad_opt}: invalid option\n"
-                   f"cd: usage: cd [-L|[-P [-e]] [-@]] [dir]\n").encode()
-            return None, IOResult(exit_code=2,
-                                  stderr=err), ExecutionNode(command="cd",
-                                                             exit_code=2,
-                                                             stderr=err)
-        if len(cd_operands) > 1:
-            err = b"cd: too many arguments\n"
-            return None, IOResult(exit_code=1,
-                                  stderr=err), ExecutionNode(command="cd",
-                                                             exit_code=1,
-                                                             stderr=err)
-        if not cd_operands:
-            home = home_dir(session)
-            if home is None:
-                err = b"cd: HOME not set\n"
-                return None, IOResult(exit_code=1,
-                                      stderr=err), ExecutionNode(command="cd",
-                                                                 exit_code=1,
-                                                                 stderr=err)
-            return await handle_cd(dispatch,
-                                   registry.is_mount_root,
-                                   home,
-                                   session,
-                                   links=namespace.symlink_targets(),
-                                   physical=physical)
-        raw = cd_operands[0]
-        raw_str = raw.virtual if isinstance(raw, PathSpec) else str(raw)
-        if raw_str == "-":
-            old = session.env.get("OLDPWD")
-            if not old:
-                err = b"cd: OLDPWD not set\n"
-                return None, IOResult(exit_code=1, stderr=err), ExecutionNode(
-                    command="cd -", exit_code=1, stderr=err)
-            return await handle_cd(dispatch,
-                                   registry.is_mount_root,
-                                   old,
-                                   session,
-                                   print_path=True,
-                                   links=namespace.symlink_targets(),
-                                   physical=physical)
-        path: str | PathSpec
-        if isinstance(raw, PathSpec):
-            path = raw
-            cdpath_target = raw.raw_path
-        elif raw_str.startswith("/"):
-            path = raw_str
-            cdpath_target = raw_str
-        else:
-            path = classify_bare_path(raw_str, registry, session.cwd)
-            cdpath_target = raw_str
-        return await handle_cd(dispatch,
-                               registry.is_mount_root,
-                               path,
-                               session,
-                               cdpath_target=cdpath_target,
-                               links=namespace.symlink_targets(),
-                               physical=physical)
-
-    if name == SB.HISTORY:
-        return await handle_history(registry, args, session)
-
-    if name == SB.TRUE:
-        return None, IOResult(), ExecutionNode(command="true", exit_code=0)
-
-    if name == SB.COLON:
-        return None, IOResult(), ExecutionNode(command=":", exit_code=0)
-
-    if name == SB.FALSE:
-        return None, IOResult(exit_code=1), ExecutionNode(command="false",
-                                                          exit_code=1)
-
-    if name in (SB.SOURCE, SB.DOT):
-        path = operands[0] if operands else ""
-        return await handle_source(dispatch, execute_fn, path, session,
-                                   [word_text(o) for o in operands[1:]])
-
-    if name == SB.EVAL:
-        return await handle_eval(execute_fn, args, session)
-
-    if name in (SB.BASH, SB.SH):
-        return await handle_bash(dispatch, execute_fn, args, session, stdin,
-                                 str(name))
-
-    if name == SB.EXPORT:
-        return await handle_export(
-            args, session, session_view(session, namespace.registry.policies))
-
-    if name == SB.UNSET:
-        return await handle_unset(
-            args, session, session_view(session, namespace.registry.policies))
-
-    if name == SB.LOCAL:
-        return await handle_local(
-            args, session, session_view(session, namespace.registry.policies))
-
-    if name == SB.PRINTENV:
-        var_name = args[0] if args else None
-        return await handle_printenv(var_name, session)
-
-    if name == SB.ENV:
-        return await handle_env(execute_fn, args, session, stdin)
-
-    if name == SB.WHOAMI:
-        return await handle_whoami(namespace)
-
-    if name == SB.MAN:
-        return await handle_man(args, session, registry)
-
-    if name == SB.READ:
-        return await handle_read(
-            args, session, stdin,
-            session_view(session, namespace.registry.policies))
-
-    if name in (SB.MAPFILE, SB.READARRAY):
-        return await handle_mapfile(args,
-                                    session,
-                                    stdin,
-                                    execute_fn,
-                                    session_view(session,
-                                                 namespace.registry.policies),
-                                    cmd=str(name))
-
-    if name == SB.SET:
-        return await handle_set(args, session, call_stack=call_stack)
-
-    if name == SB.SHIFT:
-        return await handle_shift(args, call_stack, session=session)
-
-    if name == SB.GETOPTS:
-        return await handle_getopts(
-            args, session, call_stack,
-            session_view(session, namespace.registry.policies))
-
-    if name == SB.TRAP:
-        return await handle_trap(args, session)
-
-    if name == SB.LET:
-        return await handle_let(
-            args, session, session_view(session, namespace.registry.policies))
-
-    if name == SB.UMASK:
-        return await handle_umask(args, session)
-
-    if name == SB.EXEC:
-        # The redirect-only form is intercepted where redirects are
-        # applied; a bare `exec` reaching here has no redirects, and
-        # `exec cmd` is the process-replacement form this refuses.
-        return await handle_exec_command(args, session)
-
-    if name == SB.SHOPT:
-        return await handle_shopt(args, session)
-
-    if name == SB.ALIAS:
-        return await handle_alias(args, session, (session._parse_current, row))
-
-    if name == SB.UNALIAS:
-        return await handle_unalias(args, session)
-
-    if name in (SB.TEST, SB.BRACKET, SB.DOUBLE_BRACKET):
-        test_args = list(operands)
-        test_name = "[" if name == SB.BRACKET else "test"
-        if name == SB.BRACKET:
-            if test_args and word_text(test_args[-1]) == "]":
-                test_args = test_args[:-1]
-            else:
-                err = b"[: missing `]'\n"
-                return None, IOResult(exit_code=2,
-                                      stderr=err), ExecutionNode(command="[",
-                                                                 exit_code=2,
-                                                                 stderr=err)
-        return await handle_test(dispatch,
-                                 namespace,
-                                 test_args,
-                                 session,
-                                 name=test_name)
-
-    if name == SB.ECHO:
-        return await handle_echo(args)
-
-    if name == SB.PRINTF:
-        return await handle_printf(
-            args, session, session_view(session, namespace.registry.policies))
-
-    if name == SB.SLEEP:
-        return await handle_sleep(args, cancel=cancel)
-
-    if name == SB.RETURN:
-        return await handle_return(args, session, call_stack)
-
-    if name == SB.EXIT:
-        try:
-            return await handle_exit(args, session)
-        except ExitSignal as sig:
-            # Explicit exit runs cleanup before function locals unwind.
-            stdout, io, _ = await finish_shell(
-                execute_fn, session,
-                (sig.stdout,
-                 IOResult(exit_code=sig.exit_code, stderr=sig.stderr),
-                 ExecutionNode(command="exit", exit_code=sig.exit_code)))
-            raise ExitSignal(io.exit_code,
-                             stderr=await materialize(io.stderr),
-                             stdout=await materialize(stdout))
-
-    if name == SB.COMMAND:
-        return await handle_command_builtin(execute_fn, args, session,
-                                            registry, stdin)
-
-    if name == SB.TYPE:
-        return handle_type(args, session, registry)
-
-    if name == SB.WHICH:
-        return handle_which(args, session, registry)
-
-    if name == SB.XARGS:
-        return await handle_xargs(execute_fn, args, session, stdin)
-
-    if name == SB.TIMEOUT:
-        return await handle_timeout(execute_fn, args, session)
-
-    if name == SB.BREAK:
-        raise BreakSignal(levels=_loop_levels(args))
-
-    if name == SB.CONTINUE:
-        raise ContinueSignal(levels=_loop_levels(args))
+    # One lookup: every executor-run builtin word maps to a handler that
+    # takes the whole invocation, so the arms live beside their workers
+    # (builtins/<word>/) rather than here. Job builtins and the
+    # interpreters are not in the table; they route below.
+    builtin = BUILTINS.get(name)
+    if builtin is not None:
+        return await builtin(
+            BuiltinCall(
+                argv=argv,
+                session=session,
+                stdin=stdin,
+                call_stack=call_stack,
+                cancel=cancel,
+                row=row,
+                dispatch=dispatch,
+                registry=registry,
+                namespace=namespace,
+                execute_fn=execute_fn,
+                sink=sink,
+            )
+        )
 
     # ── pathname resolution (POSIX): every component of an operand but
     #    the last resolves for every command, so `stat dlink/f2` reports
@@ -736,29 +791,41 @@ async def _run_argv(
     #    that follows (open(2) rather than lstat(2)) or an operand typed
     #    with a trailing slash, which POSIX reads as `dlink/.`. This runs
     #    ahead of every handler below because the kernel resolves a path
-    #    before the syscall, not inside it.
+    #    before the syscall, not inside it. An operand a link loop stands
+    #    in comes back refused (`walk_error`) rather than failing the
+    #    line: the command meets ELOOP at its op and words it per operand.
     if namespace.nodes and operands:
-        try:
-            operands = follow_paths(namespace,
-                                    operands,
-                                    follows_last_component(name, argv.words),
-                                    slash_follows=name not in SLASH_KEEPS_LAST)
-        except CycleError as exc:
-            err = (f"{name}: {exc}: "
-                   f"Too many levels of symbolic links\n").encode()
-            return None, IOResult(exit_code=1,
-                                  stderr=err), ExecutionNode(command=name,
-                                                             exit_code=1,
-                                                             stderr=err)
+        ls_mode = ls_link_mode(argv.words) if name == "ls" else None
+        operands = follow_paths(
+            namespace,
+            operands,
+            ls_mode is LsLinkMode.ALL
+            if ls_mode is not None
+            else follows_last_component(name, argv.words),
+            slash_follows=name not in SLASH_KEEPS_LAST,
+        )
+        if ls_mode is LsLinkMode.DIRECTORY:
+            # ls resolves a command-line link only when it leads to a
+            # directory, and only a stat can tell where it leads.
+            operands = await follow_directory_links(
+                namespace, dispatch, operands
+            )
         argv = argv.with_operands(operands)
 
     # ── symlinks (namespace-backed; not bash builtins, not mount
     #    commands: they mutate the addressing layer) ──
-    if name == "ln" and "s" in link_flags(operands, "sfnvrT"):
+    if name == "ln":
         return await handle_ln(namespace, dispatch, session, operands)
 
     if name == "readlink":
         return await handle_readlink(namespace, dispatch, session, operands)
+
+    # ── extended attributes (the door's node table and the backend's
+    #    own facts; they read -h themselves) ──
+    if name == "getfattr":
+        return await handle_getfattr(dispatch, session, operands)
+    if name == "setfattr":
+        return await handle_setfattr(dispatch, session, operands)
 
     # ── metadata commands (namespace-routed: resolve-then-setattr with
     #    overlay fallback; they run their own link follow) ──
@@ -772,14 +839,13 @@ async def _run_argv(
         return await handle_touch(namespace, dispatch, session, operands)
 
     # ── capacity (registry-routed: enumerates mounts, reports per-mount
-    #    statfs; never fabricates numbers) ──
+    #    capacity; never fabricates numbers) ──
     if name == "df":
         return await handle_df(registry, session, dispatch, operands)
 
     # ── symlink-aware dispatch: reads follow links (open(2)); rm/mv act
     #    on the link entry itself (lstat semantics) ──
-    post_unlink: str | None = None
-    post_rename: tuple[str, str] | None = None
+    link_errors: list[str] = []
     if namespace.nodes:
         try:
             # Both remove the link entry itself, which no backend can
@@ -789,25 +855,39 @@ async def _run_argv(
             # it cannot be taken back (GNU refuses `rm --bogus dlink`
             # and `unlink dlink other` with the link still there).
             if name in ("rm", "unlink") and accepts_line(
-                    name, argv.args, operands, session.cwd):
-                operands, removed = await strip_link_operands(
-                    namespace, operands)
-                if removed and not any(
-                        isinstance(a, PathSpec) for a in operands):
-                    return None, IOResult(), ExecutionNode(command=name,
-                                                           exit_code=0)
+                name, argv.args, operands, session.cwd
+            ):
+                operands, handled, link_errors = await strip_link_operands(
+                    name, dispatch, namespace, operands, argv.args, session.cwd
+                )
+                if handled and not any(
+                    isinstance(a, PathSpec) for a in operands
+                ):
+                    if not link_errors:
+                        return (
+                            None,
+                            IOResult(),
+                            ExecutionNode(command=name, exit_code=0),
+                        )
+                    err = "".join(link_errors).encode()
+                    return (
+                        None,
+                        IOResult(exit_code=1, stderr=err),
+                        ExecutionNode(command=name, exit_code=1, stderr=err),
+                    )
             elif name == "mv":
-                operands, post_unlink, post_rename, early = await prepare_mv(
-                    namespace, dispatch, operands)
+                operands, early = await prepare_mv(
+                    namespace, dispatch, operands, argv.args, session.cwd
+                )
                 if early is not None:
                     return early
         except CycleError as exc:
-            err = (f"{name}: {exc}: "
-                   f"Too many levels of symbolic links\n").encode()
-            return None, IOResult(exit_code=1,
-                                  stderr=err), ExecutionNode(command=name,
-                                                             exit_code=1,
-                                                             stderr=err)
+            err = f"{name}: {exc.filename}: {exc.strerror}\n".encode()
+            return (
+                None,
+                IOResult(exit_code=1, stderr=err),
+                ExecutionNode(command=name, exit_code=1, stderr=err),
+            )
         argv = argv.with_operands(operands)
 
     # ── mount command (default) ─────────────────
@@ -822,7 +902,11 @@ async def _run_argv(
         job_table=job_table,
         namespace=namespace,
         routing_decision=routing_decision,
-        cancel=cancel)
+        agent_id=agent_id,
+        execute_fn=execute_fn,
+        handed=handed,
+        sink=sink,
+    )
 
     if io.exit_code == 0 and namespace.nodes:
         if name == "rm":
@@ -832,6 +916,12 @@ async def _run_argv(
             # the node table matches the pattern itself.
             for item in operands:
                 if not isinstance(item, PathSpec):
+                    continue
+                if item.walk_error is not None:
+                    # The walk refused it, so rm removed nothing there
+                    # (-f only silenced the refusal), and the empty
+                    # name's `virtual` is the working directory: purging
+                    # under it dropped every link the directory held.
                     continue
                 if item.raw_path.endswith("/"):
                     # A trailing slash asked for the directory, and rm
@@ -848,8 +938,22 @@ async def _run_argv(
                 else:
                     await namespace.unlink(item.virtual)
                     await namespace.purge_under(item.virtual)
-        if post_unlink is not None:
-            await namespace.unlink(post_unlink)
-        if post_rename is not None:
-            await namespace.rename(post_rename[0], post_rename[1])
+    if name == "mv" and io.renames:
+        await settle_moves(namespace, io.renames)
+    if link_errors:
+        # A refused link operand fails the line the way a refused
+        # backend operand does: its lines lead (they were reported
+        # first) and any success stays a partial one. Merged after the
+        # bookkeeping above so the operands the backend did remove
+        # still shed their node meta.
+        tail = io.stderr if isinstance(io.stderr, bytes) else b""
+        err = "".join(unsaid(link_errors, tail)).encode()
+        io.stderr = err + tail
+        if io.exit_code == 0:
+            io.exit_code = 1
+        node_tail = exec_node.stderr or b""
+        node_err = "".join(unsaid(link_errors, node_tail)).encode()
+        exec_node.stderr = node_err + node_tail
+        if exec_node.exit_code == 0:
+            exec_node.exit_code = 1
     return stdout, io, exec_node

@@ -14,22 +14,23 @@
 
 import asyncio
 from pathlib import Path
+from urllib.parse import quote
 
 import typer
 
-from mirage.agents.mcp.server import serve_mirage_mcp
-from mirage.server.workspace_config import (build_workspace_from_config,
-                                            resolve_workspace_config)
+from mirage.cli.client import DaemonUnreachable, make_client
+from mirage.cli.output import fail, handle_response
+from mirage.cli.workspace import resolve_config
+from mirage.server.workspace_config import resolve_workspace_config
 
 MCP_ENV_NAMES = ("MIRAGE_MCP_CONFIG", "MIRAGE_CONFIG")
 
-app = typer.Typer(invoke_without_command=True,
-                  help="Serve a Mirage workspace as MCP tools over stdio.")
 
-
-def resolve_mcp_config(config: str | None = None,
-                       cwd: str | Path | None = None,
-                       env: dict[str, str] | None = None) -> Path:
+def resolve_mcp_config(
+    config: str | None = None,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+) -> Path:
     """Find the config `mirage mcp` should serve.
 
     Args:
@@ -40,40 +41,107 @@ def resolve_mcp_config(config: str | None = None,
     Returns:
         Path: the resolved config path.
     """
-    return resolve_workspace_config(config,
-                                    cwd=cwd,
-                                    env=env,
-                                    env_names=MCP_ENV_NAMES)
+    return resolve_workspace_config(
+        config, cwd=cwd, env=env, env_names=MCP_ENV_NAMES
+    )
 
 
-async def run_mcp_server(config: str | None,
-                         stale_write_protection: bool) -> None:
-    """Build the workspace and serve it until the client disconnects.
+def has_session(workspace_path: str, session_id: str) -> bool:
+    """Whether a daemon workspace holds a session.
 
     Args:
-        config (str | None): explicit config path, or None to discover.
-        stale_write_protection (bool): False lets an agent overwrite a
-            file that changed since it read it.
+        workspace_path (str): the workspace's ``/v1/workspaces/{id}``.
+        session_id (str): the session.
+
+    Returns:
+        bool: True when the workspace lists the session.
     """
-    workspace = await build_workspace_from_config(resolve_mcp_config(config))
-    try:
-        await serve_mirage_mcp(workspace, stale_write_protection)
-    finally:
-        await workspace.close()
+    with make_client() as client:
+        rows = handle_response(
+            client.request("GET", f"{workspace_path}/sessions")
+        )
+    return any(
+        isinstance(row, dict) and row.get("session_id") == session_id
+        for row in rows
+    )
 
 
-@app.callback(invoke_without_command=True)
 def mcp_cmd(
-    config: str | None = typer.Argument(None,
-                                        help="Mirage workspace YAML config."),
-    stale_write_protection: bool = typer.Option(
-        True,
-        "--stale-write-protection/--no-stale-write-protection",
-        help="Refuse an edit when the file changed since it was read."),
+    config: str | None = typer.Argument(
+        None, help="Mirage workspace YAML config."
+    ),
+    workspace_id: str | None = typer.Option(
+        None,
+        "--workspace",
+        "-w",
+        help="Serve this daemon workspace instead of loading a config.",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session_id",
+        "--session",
+        "-s",
+        help="Session the tools act as; the workspace's default when absent.",
+    ),
 ) -> None:
-    """Serve a Mirage workspace as MCP tools over stdio."""
+    """Serve a Mirage workspace's MCP tools over stdio.
+
+    The tools are the daemon's: this relays stdio to the workspace's
+    ``/v1/workspaces/{id}/mcp`` endpoint, starting the daemon when it is
+    not running. A config with no ``workspace_id`` makes a workspace that
+    lives as long as this process, as a stdio server's state does. A
+    workspace with a name, the config's ``workspace_id`` or
+    ``--workspace``, outlives it. The daemon answers a config's name with
+    the live workspace created from that same config, and refuses it when
+    the live one came from another. ``--session`` serves the tools as
+    that session, under its profile, as it does for ``mirage shell``.
+    """
+    if workspace_id is None:
+        try:
+            path = resolve_mcp_config(config)
+        except FileNotFoundError as e:
+            fail(str(e), exit_code=2)
+    elif config is not None:
+        fail("pass a config or --workspace, not both", exit_code=2)
+    minted = False
+    with make_client() as client:
+        try:
+            client.ensure_running()
+        except DaemonUnreachable as e:
+            fail(str(e))
+        if workspace_id is None:
+            body = {"config": resolve_config(path)}
+            created = handle_response(
+                client.request("POST", "/v1/workspaces", json=body)
+            )
+            if not isinstance(created, dict):
+                fail(f"unexpected daemon response: {created!r}")
+            workspace_id = str(created["id"])
+            minted = not body["config"].get("workspace_id")
+        else:
+            handle_response(
+                client.request(
+                    "GET", f"/v1/workspaces/{quote(workspace_id, safe='')}"
+                )
+            )
+        workspace_path = f"/v1/workspaces/{quote(workspace_id, safe='')}"
+        url = f"{client.settings.url}{workspace_path}/mcp"
+        if session_id is not None:
+            url += f"?session_id={quote(session_id, safe='')}"
+        token = client.settings.auth_token
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    # Imported here, as the TypeScript twin awaits mirage-server/mcp:
+    # every other `mirage` verb would otherwise pay for the MCP SDK on
+    # each spawn.
+    from mirage.server.mcp.relay import relay_stdio
+
     try:
-        asyncio.run(run_mcp_server(config, stale_write_protection))
-    except FileNotFoundError as e:
-        typer.echo(str(e), err=True)
-        raise SystemExit(2) from e
+        if session_id is not None and not has_session(
+            workspace_path, session_id
+        ):
+            fail(f"session not found: {session_id}", exit_code=2)
+        asyncio.run(relay_stdio(url, headers))
+    finally:
+        if minted:
+            with make_client() as client:
+                client.request("DELETE", workspace_path)

@@ -12,26 +12,45 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, replace
 
 from dulwich.objects import Commit
 
-from mirage.commands.cli.builtin.git.errors import (BadPrettyError,
-                                                    UnsupportedPrettyError)
+from mirage.commands.cli.builtin.git.dates import show_date
+from mirage.commands.cli.builtin.git.errors import (
+    BadPrettyError,
+    UnsupportedPrettyError,
+)
+from mirage.commands.cli.builtin.git.mailmap import mapped_identity
+from mirage.commands.cli.builtin.git.types import (
+    DateKind,
+    DateMode,
+    MailmapEntry,
+)
 from mirage.shell.bytes import byte_char
 
 SHORT_SHA = 7
 FULL_SHA = 40
 INDENT = "    "
-DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
-          "Nov", "Dec")
+DEFAULT_DATE = DateMode()
+RAW_DATE = DateMode(kind=DateKind.RAW)
+
+# The ident date placeholders that name a style of their own, whatever
+# --date says: %ad alone follows it.
+FIXED_DATE_KINDS = {
+    "D": DateKind.RFC2822,
+    "r": DateKind.RELATIVE,
+    "t": DateKind.UNIX,
+    "i": DateKind.ISO8601,
+    "I": DateKind.ISO8601_STRICT,
+    "h": DateKind.HUMAN,
+    "s": DateKind.SHORT,
+}
 
 # The presets this build renders, and the real git presets it refuses
 # by name rather than calling invalid.
-PRESET_KINDS = ("oneline", "short", "medium", "full", "fuller")
-UNSUPPORTED_PRESETS = ("raw", "email", "mboxrd", "reference")
+PRESET_KINDS = ("oneline", "short", "medium", "full", "fuller", "raw")
+UNSUPPORTED_PRESETS = ("email", "mboxrd", "reference")
 HEX_DIGITS = "0123456789abcdefABCDEF"
 
 Decorations = dict[bytes, list[str]]
@@ -48,6 +67,7 @@ class LogFormat:
             what a bare ``%`` string means.
         template (str | None): the placeholder string, None for presets.
     """
+
     kind: str
     template: str | None = None
 
@@ -66,9 +86,9 @@ def parse_pretty(value: str) -> LogFormat:
         BadPrettyError: a name git itself would refuse.
     """
     if value.startswith("format:"):
-        return LogFormat(kind="format", template=value[len("format:"):])
+        return LogFormat(kind="format", template=value[len("format:") :])
     if value.startswith("tformat:"):
-        return LogFormat(kind="tformat", template=value[len("tformat:"):])
+        return LogFormat(kind="tformat", template=value[len("tformat:") :])
     # A bare % string is tformat; so is the empty string, which renders
     # every commit as nothing and therefore prints nothing at all.
     if "%" in value or value == "":
@@ -136,28 +156,6 @@ def short(sha: bytes, length: int = SHORT_SHA) -> str:
     return sha.decode()[:length]
 
 
-def git_date(timestamp: int, offset: int) -> str:
-    """Render a commit time in git's default date format.
-
-    ``Fri Jan 16 11:30:00 2026 +0000``: the day of the month is not
-    padded, which is why this is built by hand rather than with strftime
-    (``%d`` zero-pads and ``%-d`` is not portable). The stored offset is
-    seconds east of UTC, and the timestamp is read in that offset, so a
-    commit prints the wall clock its author saw.
-
-    Args:
-        timestamp (int): seconds since the epoch.
-        offset (int): the author's UTC offset in seconds.
-    """
-    tz = timezone(timedelta(seconds=offset))
-    moment = datetime.fromtimestamp(timestamp, tz)
-    sign = "+" if offset >= 0 else "-"
-    hours, minutes = divmod(abs(offset) // 60, 60)
-    return (f"{DAYS[moment.weekday()]} {MONTHS[moment.month - 1]} "
-            f"{moment.day} {moment:%H:%M:%S} {moment.year} "
-            f"{sign}{hours:02d}{minutes:02d}")
-
-
 def subject(commit: Commit) -> str:
     """The first line of a commit message.
 
@@ -193,7 +191,12 @@ def message_block(commit: Commit) -> list[str]:
     return [f"{INDENT}{line}" for line in text.split("\n")]
 
 
-def entry(commit: Commit, length: int = SHORT_SHA) -> list[str]:
+def entry(
+    commit: Commit,
+    length: int = SHORT_SHA,
+    date: DateMode = DEFAULT_DATE,
+    mailmap: tuple[MailmapEntry, ...] = (),
+) -> list[str]:
     """A full log entry: the header block and the indented message.
 
     A merge carries an extra ``Merge:`` line naming its parents in
@@ -206,14 +209,19 @@ def entry(commit: Commit, length: int = SHORT_SHA) -> list[str]:
     """
     lines = [f"commit {commit.id.decode()}"]
     if len(commit.parents) > 1:
-        lines.append(f"Merge: "
-                     f"{' '.join(short(p, length) for p in commit.parents)}")
-    lines.extend([
-        f"Author: {commit.author.decode('utf-8', errors='replace')}",
-        f"Date:   {git_date(commit.author_time, commit.author_timezone)}",
-        "",
-        *message_block(commit),
-    ])
+        lines.append(
+            f"Merge: {' '.join(short(p, length) for p in commit.parents)}"
+        )
+    author = mapped_identity(commit.author.decode("utf-8", "replace"), mailmap)
+    lines.extend(
+        [
+            f"Author: {author}",
+            "Date:   "
+            + show_date(commit.author_time, commit.author_timezone, date),
+            "",
+            *message_block(commit),
+        ]
+    )
     return lines
 
 
@@ -238,7 +246,13 @@ def _subject_only_block(commit: Commit) -> list[str]:
     return [f"{INDENT}{subject(commit)}"]
 
 
-def preset_block(commit: Commit, kind: str, length: int) -> list[str]:
+def preset_block(
+    commit: Commit,
+    kind: str,
+    length: int,
+    date: DateMode = DEFAULT_DATE,
+    mailmap: tuple[MailmapEntry, ...] = (),
+) -> list[str]:
     """One commit as a block preset renders it (short/medium/full/fuller).
 
     Pinned against git 2.50: ``short`` is the id, author and indented
@@ -250,30 +264,52 @@ def preset_block(commit: Commit, kind: str, length: int) -> list[str]:
         kind (str): the preset name, already validated.
         length (int): how many hex digits of a parent id to print.
     """
+    if kind == "raw":
+        return [
+            f"commit {commit.id.decode()}",
+            f"tree {commit.tree.decode()}",
+            *[f"parent {p.decode()}" for p in commit.parents],
+            f"author {commit.author.decode()} "
+            + show_date(commit.author_time, commit.author_timezone, RAW_DATE),
+            f"committer {commit.committer.decode()} "
+            + show_date(commit.commit_time, commit.commit_timezone, RAW_DATE),
+            "",
+            *message_block(commit),
+        ]
     if kind == "medium":
-        return entry(commit, length)
-    author = commit.author.decode("utf-8", errors="replace")
-    committer = commit.committer.decode("utf-8", errors="replace")
+        return entry(commit, length, date, mailmap)
+    author = mapped_identity(
+        commit.author.decode("utf-8", errors="replace"), mailmap
+    )
+    committer = mapped_identity(
+        commit.committer.decode("utf-8", errors="replace"), mailmap
+    )
     lines = [f"commit {commit.id.decode()}", *_merge_line(commit, length)]
     if kind == "short":
         lines.extend([f"Author: {author}", "", *_subject_only_block(commit)])
         return lines
     if kind == "full":
-        lines.extend([
-            f"Author: {author}",
-            f"Commit: {committer}",
+        lines.extend(
+            [
+                f"Author: {author}",
+                f"Commit: {committer}",
+                "",
+                *message_block(commit),
+            ]
+        )
+        return lines
+    lines.extend(
+        [
+            f"Author:     {author}",
+            "AuthorDate: "
+            + show_date(commit.author_time, commit.author_timezone, date),
+            f"Commit:     {committer}",
+            "CommitDate: "
+            + show_date(commit.commit_time, commit.commit_timezone, date),
             "",
             *message_block(commit),
-        ])
-        return lines
-    lines.extend([
-        f"Author:     {author}",
-        f"AuthorDate: {git_date(commit.author_time, commit.author_timezone)}",
-        f"Commit:     {committer}",
-        f"CommitDate: {git_date(commit.commit_time, commit.commit_timezone)}",
-        "",
-        *message_block(commit),
-    ])
+        ]
+    )
     return lines
 
 
@@ -297,7 +333,7 @@ def ident_email(ident: bytes) -> str:
     text = ident.decode("utf-8", errors="replace")
     start = text.rfind("<")
     end = text.rfind(">")
-    return text[start + 1:end] if 0 <= start < end else ""
+    return text[start + 1 : end] if 0 <= start < end else ""
 
 
 def _subject_folded(message: str) -> str:
@@ -333,8 +369,14 @@ def decoration_names(decor: Decorations | None, commit: Commit) -> list[str]:
     return decor.get(commit.id, [])
 
 
-def render_template(template: str, commit: Commit, length: int,
-                    decor: Decorations | None) -> str:
+def render_template(
+    template: str,
+    commit: Commit,
+    length: int,
+    decor: Decorations | None,
+    date: DateMode = DEFAULT_DATE,
+    mailmap: tuple[MailmapEntry, ...] = (),
+) -> str:
     """Expand a format:/tformat: template for one commit.
 
     The scan mirrors git's pretty.c behavior pinned in docker: an
@@ -367,15 +409,20 @@ def render_template(template: str, commit: Commit, length: int,
             i += 2
             continue
         if marker in ("a", "c") and i + 2 < len(template):
-            pair = _ident_placeholder(marker, template[i + 2], commit)
+            pair = _ident_placeholder(
+                marker, template[i + 2], commit, date, mailmap
+            )
             if pair is not None:
                 out.append(pair)
                 i += 3
                 continue
-        if marker == "x" and i + 3 < len(template) \
-                and template[i + 2] in HEX_DIGITS \
-                and template[i + 3] in HEX_DIGITS:
-            out.append(byte_char(int(template[i + 2:i + 4], 16)))
+        if (
+            marker == "x"
+            and i + 3 < len(template)
+            and template[i + 2] in HEX_DIGITS
+            and template[i + 3] in HEX_DIGITS
+        ):
+            out.append(byte_char(int(template[i + 2 : i + 4], 16)))
             i += 4
             continue
         out.append(char + marker)
@@ -383,8 +430,9 @@ def render_template(template: str, commit: Commit, length: int,
     return "".join(out)
 
 
-def _simple_placeholder(marker: str, commit: Commit, message: str, length: int,
-                        labels: list[str]) -> str | None:
+def _simple_placeholder(
+    marker: str, commit: Commit, message: str, length: int, labels: list[str]
+) -> str | None:
     """One single-letter placeholder's value, None when it is not one.
 
     Args:
@@ -423,18 +471,30 @@ def _simple_placeholder(marker: str, commit: Commit, message: str, length: int,
     return None
 
 
-def _ident_placeholder(who: str, field: str, commit: Commit) -> str | None:
+def _ident_placeholder(
+    who: str,
+    field: str,
+    commit: Commit,
+    date: DateMode,
+    mailmap: tuple[MailmapEntry, ...],
+) -> str | None:
     """An author/committer placeholder's value (%an, %cd, ...).
 
-    %aN/%aE are the mailmap variants; no mailmap is ever loaded, so
-    they read as their plain forms.
+    Uppercase identity placeholders always apply the worktree mailmap.
 
     Args:
         who (str): ``a`` or ``c``.
         field (str): the letter after it.
         commit (Commit): the commit to render.
+        date (DateMode): the ``--date`` style, which ``%ad`` follows and
+            the fixed styles take their clock from.
+        mailmap (tuple[MailmapEntry, ...]): the worktree mailmap.
     """
     ident = commit.author if who == "a" else commit.committer
+    if field in ("N", "E"):
+        ident = mapped_identity(
+            ident.decode("utf-8", "replace"), mailmap
+        ).encode()
     time = commit.author_time if who == "a" else commit.commit_time
     zone = commit.author_timezone if who == "a" else commit.commit_timezone
     if field in ("n", "N"):
@@ -442,7 +502,13 @@ def _ident_placeholder(who: str, field: str, commit: Commit) -> str | None:
     if field in ("e", "E"):
         return ident_email(ident)
     if field == "d":
-        return git_date(time, zone)
-    if field == "t":
-        return str(time)
+        return show_date(time, zone, date)
+    if field in FIXED_DATE_KINDS:
+        return show_date(
+            time,
+            zone,
+            replace(
+                date, kind=FIXED_DATE_KINDS[field], local=False, strftime=""
+            ),
+        )
     return None

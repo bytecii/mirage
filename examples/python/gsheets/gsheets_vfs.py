@@ -15,12 +15,11 @@
 import asyncio
 import json
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.gsheets import GSheetsConfig, GSheetsResource
+from mirage.vfs.gsheets import GSheetsConfig, GSheetsVFS
 
 load_dotenv(".env.development")
 
@@ -29,23 +28,22 @@ config = GSheetsConfig(
     client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
     refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
 )
-resource = GSheetsResource(config=config)
+vfs = GSheetsVFS(config=config)
 
 
 async def main() -> None:
-    with Workspace({"/gsheets/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
+    with Workspace({"/gsheets/": vfs}, mode=MountMode.READ) as ws:
         print(
             "=== VFS MODE: open() reads from Google Sheets transparently ===\n"
         )
 
         print("--- os.listdir() root ---")
-        dirs = vos.listdir("/gsheets")
+        dirs = os.listdir("/gsheets")
         for d in dirs:
             print(f"  {d}")
 
         print("\n--- os.listdir() owned ---")
-        sheets = vos.listdir("/gsheets/owned")
+        sheets = os.listdir("/gsheets/owned")
         for s in sheets[:5]:
             print(f"  {s}")
 
@@ -63,9 +61,9 @@ async def main() -> None:
                 print(f"  preview: {content[:200]}...")
 
             print("\n--- os.path.exists() ---")
-            print(f"  {first}: {vos.path.exists(path)}")
+            print(f"  {first}: {os.path.exists(path)}")
             print(
-                f"  nonexistent: {vos.path.exists('/gsheets/owned/nope.json')}"
+                f"  nonexistent: {os.path.exists('/gsheets/owned/nope.json')}"
             )
 
         print("\n--- bash history ---")
@@ -75,7 +73,7 @@ async def main() -> None:
                     break
                 print(f"  {line.rstrip()[:120]}")
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(r.bytes for r in records)
         print(f"\nStats: {len(records)} ops, {total} bytes transferred")
 

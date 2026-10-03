@@ -23,12 +23,22 @@ vi.mock('./client.ts', async () => {
 import { runWithCacheManager } from '@struktoai/mirage-core/cache/context'
 import { PathSpec } from '@struktoai/mirage-core/types'
 import { GridFSAccessor } from '../../accessor/gridfs.ts'
-import type { GridFSConfig } from '../../resource/gridfs/config.ts'
+import type { GridFSConfig } from '../../vfs/gridfs/config.ts'
 import * as clientMod from './client.ts'
+import { DRIVER } from './driver.ts'
 import { write } from './write.ts'
 
 class FakeManager {
+  listingTrusted(_folder: string): boolean {
+    return false
+  }
+
+  probedStat(): null {
+    return null
+  }
+
   writes: string[] = []
+  ancestors: string[] = []
 
   invalidateAfterWrite(path: PathSpec): Promise<void> {
     this.writes.push(path.mountPath)
@@ -39,7 +49,24 @@ class FakeManager {
     return Promise.resolve()
   }
 
+  invalidateAncestors(path: PathSpec): Promise<void> {
+    this.ancestors.push(path.virtual)
+    return Promise.resolve()
+  }
+
+  invalidateSubtree(_path: PathSpec): Promise<void> {
+    return Promise.resolve()
+  }
+
+  readThrough(_path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array> {
+    return fetch()
+  }
+
   cachedBytes(_path: PathSpec): Promise<Uint8Array | null> {
+    return Promise.resolve(null)
+  }
+
+  cachedSize(_path: PathSpec): Promise<number | null> {
     return Promise.resolve(null)
   }
 }
@@ -50,6 +77,9 @@ function fakeBucket(keys: string[]): unknown {
       keys.push(key)
       const handlers: Record<string, () => void> = {}
       return {
+        // The new revision's _id, which put reports as the object's
+        // token the way a real GridFSBucketWriteStream does.
+        id: `oid-${String(keys.length)}`,
         on: (event: string, handler: () => void) => {
           handlers[event] = handler
         },
@@ -70,7 +100,7 @@ async function runWrite(mountPath: string): Promise<{ manager: FakeManager; keys
     database: 'db',
   } as GridFSConfig)
   const spec = new PathSpec({
-    resourcePath: mountPath.replace(/^\//, ''),
+    vfsPath: mountPath.replace(/^\//, ''),
     virtual: `/mnt${mountPath}`,
     directory: '/mnt/',
   })
@@ -85,11 +115,29 @@ describe('gridfs core write', () => {
     const { manager, keys } = await runWrite('/a/b/c.txt')
     expect(keys).toEqual(['a/b/c.txt'])
     // The upload materializes `a` and `a/b` too, so their listings are stale.
-    expect(manager.writes).toEqual(['/a/b/c.txt', '/a/b', '/a'])
+    expect(manager.writes).toEqual(['/a/b/c.txt'])
+    expect(manager.ancestors).toEqual(['/mnt/a/b/c.txt'])
   })
 
   it('invalidates only itself at the mount root', async () => {
     const { manager } = await runWrite('/c.txt')
     expect(manager.writes).toEqual(['/c.txt'])
+  })
+})
+
+describe('gridfs put token', () => {
+  it('reports the new revision as the object token', async () => {
+    // gridfs spells a token as the uploaded revision's _id, the same
+    // string `head` answers for the latest revision.
+    const keys: string[] = []
+    vi.mocked(clientMod.bucket).mockResolvedValue(fakeBucket(keys) as never)
+    const accessor = new GridFSAccessor({
+      uri: 'mongodb://localhost:27017',
+      database: 'db',
+    } as GridFSConfig)
+    const meta = await DRIVER.put(accessor, 'a/b.txt', new TextEncoder().encode('hi'))
+    expect(meta?.fingerprint).toBe('oid-1')
+    expect(meta?.revision).toBe('oid-1')
+    expect(meta?.size).toBe(2)
   })
 })

@@ -16,11 +16,11 @@ import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { BoxAccessor } from '../../accessor/box.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { getFolderInfo, type BoxItem } from './api.ts'
+import { absentOn404, getFolderInfo, type BoxItem } from './api.ts'
 import { readdir as coreReaddir, resourceTypeFor } from './readdir.ts'
 import { pathParts, resolveItem } from './resolve.ts'
 import { enoent } from '../../utils/errors.ts'
-import { guessType } from '../../utils/filetype.ts'
+import { contentTypeForPath } from '../../utils/filetype.ts'
 
 function statFromItem(item: BoxItem): FileStat {
   const vfsName = item.name
@@ -43,7 +43,8 @@ function statFromItem(item: BoxItem): FileStat {
   return new FileStat({
     name: vfsName,
     size,
-    type: guessType(vfsName),
+    type: FileType.FILE,
+    content: contentTypeForPath(vfsName),
     modified,
     fingerprint: sha1 ?? (modified !== '' ? modified : null),
     extra: { box_id: item.id, resource_type: rt, ...(sha1 === null ? {} : { sha1 }) },
@@ -55,13 +56,15 @@ export async function stat(
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const key = path.resourcePath
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
+  const key = path.vfsPath
   if (key === '') {
     // The mount root has no parent listing to inherit an mtime from; fetch
     // the folder's own metadata so find -mtime and ls -ld see a real
     // timestamp (mirrors the onedrive Graph-root stat).
-    const info = await getFolderInfo(accessor.tokenManager, accessor.rootFolderId)
+    const info = await absentOn404(path.virtual, () =>
+      getFolderInfo(accessor.tokenManager, accessor.rootFolderId),
+    )
     return new FileStat({
       name: '/',
       type: FileType.DIRECTORY,
@@ -71,9 +74,9 @@ export async function stat(
   }
 
   if (index === undefined) {
-    // The write-family builders and provision estimation call stat without a
-    // threaded index; resolve the id directly rather than ENOENT.
-    const item = await resolveItem(accessor, pathParts(path))
+    // The write-family builders call stat without a threaded index;
+    // resolve the id directly rather than ENOENT.
+    const item = await absentOn404(path.virtual, () => resolveItem(accessor, pathParts(path)))
     // Weblinks are hidden from listings; a direct lookup must not
     // resurface a sizeless, unreadable entry.
     if (item === null || item.type === 'web_link') throw enoent(path.virtual)
@@ -92,7 +95,7 @@ export async function stat(
           virtual: parentVirtual,
           directory: parentVirtual,
           resolved: false,
-          resourcePath: mountKey(parentVirtual, prefix),
+          vfsPath: mountKey(parentVirtual, prefix),
         }),
         index,
       )
@@ -101,7 +104,7 @@ export async function stat(
     }
     result = await index.get(virtualKey)
     if (result.entry === undefined || result.entry === null) {
-      const item = await resolveItem(accessor, pathParts(path))
+      const item = await absentOn404(path.virtual, () => resolveItem(accessor, pathParts(path)))
       if (item === null || item.type === 'web_link') throw enoent(path.virtual)
       return statFromItem(item)
     }
@@ -119,7 +122,8 @@ export async function stat(
   return new FileStat({
     name: result.entry.vfsName !== '' ? result.entry.vfsName : result.entry.name,
     size: result.entry.size,
-    type: guessType(result.entry.vfsName),
+    type: FileType.FILE,
+    content: contentTypeForPath(result.entry.vfsName),
     modified: result.entry.remoteTime,
     fingerprint: sha1 ?? (result.entry.remoteTime !== '' ? result.entry.remoteTime : null),
     extra: {

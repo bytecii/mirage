@@ -14,18 +14,26 @@
 
 from dataclasses import dataclass, field
 
-from mirage.resource.base import BaseResource
-from mirage.types import Limit, MountBackend, MountMode
+from mirage.cache.index import IndexConfig
+from mirage.types import Limit, MountBackend, MountMode, ReadSpec
+from mirage.vfs.base import BaseVFS
 
 
 @dataclass(frozen=True)
 class Mount:
-    resource: BaseResource
+    """A driver and its placement settings.
+
+    ``backend`` exposes the mount inside the workspace or at a kernel
+    ``mountpoint``. ``vfs_ref`` names its registry or code loader for
+    snapshots. ``index`` and ``read`` override the workspace defaults;
+    without an index default, RAM uses the driver's ``index_ttl``.
+    """
+
+    vfs: BaseVFS
     mode: MountMode | None = None
-    # How the mount is exposed. VFS (the default) keeps it inside mirage's
-    # own filesystem; FUSE and FSKIT also register a real mountpoint.
-    backend: MountBackend = MountBackend.VFS
-    # Where to mount, for the kernel backends. None picks a temporary
-    # directory appropriate for the backend. Ignored when backend is VFS.
+    backend: MountBackend = MountBackend.WORKSPACE
     mountpoint: str | None = None
     command_limits: dict[str, Limit] = field(default_factory=dict)
+    vfs_ref: str | None = None
+    index: IndexConfig | None = None
+    read: ReadSpec | None = None

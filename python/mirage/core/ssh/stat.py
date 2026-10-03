@@ -16,22 +16,24 @@ import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.ssh.client import _abs
-from mirage.core.timeutil import epoch_to_iso
+from mirage.core.ssh.utils import join_root
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.errors import enoent
-from mirage.utils.filetype import guess_type
+from mirage.utils.dates import epoch_to_iso
+from mirage.utils.errors import eacces, enoent
+from mirage.utils.filetype import content_type_for_path
 
 
-async def stat(accessor: SSHAccessor,
-               path_spec: PathSpec,
-               index: IndexCacheStore = NULL_INDEX) -> FileStat:
+async def stat(
+    accessor: SSHAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+) -> FileStat:
     virtual = path_spec.virtual
     path = path_spec.mount_path
     config = accessor.config
     sftp = await accessor.sftp()
     try:
-        remote_path = _abs(config, path)
+        remote_path = join_root(config.root, path)
         attrs = await sftp.stat(remote_path)
         is_dir = attrs.type == asyncssh.FILEXFER_TYPE_DIRECTORY
         name = path.rstrip("/").rsplit("/", 1)[-1] or "/"
@@ -43,17 +45,25 @@ async def stat(accessor: SSHAccessor,
         # disk. Ownership can never be applied natively (chown over SFTP
         # needs privileges), so it lives wholly in the namespace overlay;
         # server-side uid/gid numbers would also be machine-dependent
-        # noise.
+        # noise. A directory has no rendered byte length, so its size is
+        # None whatever the remote inode reports.
         return FileStat(
             name=name,
-            size=attrs.size or 0,
+            size=None if is_dir else attrs.size,
             modified=mod_str,
             fingerprint=mod_str or None,
-            type=FileType.DIRECTORY if is_dir else guess_type(path),
-            mode=(attrs.permissions
-                  & 0o7777 if attrs.permissions is not None else None),
-            atime=(epoch_to_iso(attrs.atime)
-                   if attrs.atime is not None else None),
+            type=FileType.DIRECTORY if is_dir else FileType.FILE,
+            content=None if is_dir else content_type_for_path(path),
+            mode=(
+                attrs.permissions & 0o7777
+                if attrs.permissions is not None
+                else None
+            ),
+            atime=(
+                epoch_to_iso(attrs.atime) if attrs.atime is not None else None
+            ),
         )
+    except asyncssh.SFTPPermissionDenied as exc:
+        raise eacces(virtual) from exc
     except asyncssh.SFTPNoSuchFile:
         raise enoent(virtual)

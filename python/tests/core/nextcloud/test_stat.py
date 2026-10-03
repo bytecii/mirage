@@ -81,7 +81,7 @@ async def test_readdir_backfills_lister_omitted_size(make_acc):
 
 @pytest.mark.asyncio
 async def test_stat_size_matches_read_for_every_file(make_acc):
-    # The fskit invariant behind SIZES_ALWAYS_KNOWN: the size stat serves
+    # The fskit invariant behind sizes_always_known: the size stat serves
     # from the listing must equal the byte length a read delivers, 0-byte
     # files included.
     contents = {
@@ -103,8 +103,9 @@ async def test_stat_size_matches_read_for_every_file(make_acc):
                 stack.append(trimmed)
                 continue
             assert info.size is not None, trimmed
-            body = await read_bytes(acc, PathSpec.from_str_path(trimmed),
-                                    index)
+            body = await read_bytes(
+                acc, PathSpec.from_str_path(trimmed), index
+            )
             assert info.size == len(body), trimmed
             files.append(trimmed)
     assert sorted(files) == ["/a.txt", "/docs/b.bin", "/empty.txt"]

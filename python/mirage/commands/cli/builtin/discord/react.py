@@ -15,7 +15,7 @@
 import json
 
 from mirage.commands.cli.types import CLIInvocation
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.discord.config import DiscordConfig
 from mirage.core.discord.react import add_reaction
 from mirage.io.stream import yield_bytes
@@ -23,7 +23,7 @@ from mirage.io.types import ByteSource, IOResult
 
 
 async def react(
-        inv: CLIInvocation[DiscordConfig]
+    inv: CLIInvocation[DiscordConfig],
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(inv.flags)
     await add_reaction(
@@ -32,7 +32,7 @@ async def react(
         fl.as_str("message") or "",
         fl.as_str("emoji") or "",
     )
-    out = json.dumps({
-        "ok": True
-    }, ensure_ascii=False, separators=(",", ":")).encode()
+    out = json.dumps(
+        {"ok": True}, ensure_ascii=False, separators=(",", ":")
+    ).encode()
     return yield_bytes(out), IOResult()

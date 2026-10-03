@@ -35,7 +35,7 @@
       }
     },
     {
-      "id": "awk_rejects_function_call",
+      "id": "awk_getline_var_at_eof",
       "seq": 962341,
       "targets": [
         "ram",
@@ -61,15 +61,15 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "printf 'line\\n' | awk '{print toupper($1)}'",
+      "command": "printf 'a\\n' | awk '{getline line; print line}'",
       "expect": {
-        "exit": 2,
-        "stdout": "",
-        "stderr": "awk: unsupported construct: 'print toupper($1)'\n"
+        "exit": 0,
+        "stdout": "\n",
+        "stderr": ""
       }
     },
     {
-      "id": "awk_rejects_arithmetic_assignment",
+      "id": "awk_output_pipe_to_cat",
       "seq": 962342,
       "targets": [
         "ram",
@@ -95,11 +95,45 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "printf 'line\\n' | awk '{x = y + 1; print x}'",
+      "command": "awk 'BEGIN{print \"hi\" | \"cat\"}'",
       "expect": {
-        "exit": 2,
-        "stdout": "",
-        "stderr": "awk: unsupported construct: 'x = y + 1'\n"
+        "exit": 0,
+        "stdout": "hi\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "awk_system_runs_a_command",
+      "seq": 962343,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "awk 'BEGIN{r = system(\"echo hi\"); print r}'",
+      "expect": {
+        "exit": 0,
+        "stdout": "hi\n0\n",
+        "stderr": ""
       }
     }
   ]

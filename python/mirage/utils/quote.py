@@ -31,7 +31,7 @@ _SOLO_SPECIAL = frozenset({"{", "}"})
 # Narrower than the trigger set: a space and a ``:`` are harmless inside
 # double quotes, while the four conditional characters above lose their
 # position rule and always rule it out.
-_DQ_BLOCKERS = frozenset("!\"#$&()*;<=>?[\\^`{|}~")
+_DQ_BLOCKERS = frozenset('!"#$&()*;<=>?[\\^`{|}~')
 
 _NAMED_ESCAPES = {
     "\a": "a",
@@ -49,48 +49,48 @@ _NAMED_ESCAPES = {
 # family quote only when the name needs it (gnulib's ``shell_escape``
 # style), while head/tail/tac/fmt/split/csplit/truncate/strings quote
 # always and word the line differently ("cannot open X for reading").
-# mirage renders one line shape for the whole read family, so it renders
-# one policy too: quote when the name needs it, which is the same answer
-# for every name that carries a metacharacter and differs only for the
-# plain ones GNU's always-quoting half would dress up.
+# Those say it in GNU's words (``FAILURE_WORDING`` in
+# mirage.utils.errors). For the rest mirage renders one line shape, so it
+# renders one policy too: quote when the name needs it, which is the same
+# answer for every name that carries a metacharacter and differs only for
+# the plain ones GNU's always-quoting half would dress up.
 #
 # Absent on purpose, in two groups. GNU prints the operand bare for grep,
 # sed, cmp, diff, rev (util-linux), md5 (BSD) and zcat (gzip). And the
 # tools that are nobody's coreutils -- awk, column, file, iconv, jq, look,
 # xxd -- keep their own original's diagnostic, which is not this one.
-SHELL_QUOTED_COMMANDS: frozenset[str] = frozenset({
-    "base64",
-    "cat",
-    "comm",
-    "csplit",
-    "cut",
-    "df",
-    "expand",
-    "fmt",
-    "fold",
-    "head",
-    "join",
-    "md5sum",
-    "nl",
-    "od",
-    "paste",
-    "sha1sum",
-    "sha256sum",
-    "sha384sum",
-    "sha512sum",
-    "shuf",
-    "sort",
-    "split",
-    "strings",
-    "tac",
-    "tail",
-    "tee",
-    "truncate",
-    "tsort",
-    "unexpand",
-    "uniq",
-    "wc",
-})
+SHELL_QUOTED_COMMANDS: frozenset[str] = frozenset(
+    {
+        "base64",
+        "cat",
+        "comm",
+        "csplit",
+        "cut",
+        "df",
+        "expand",
+        "fmt",
+        "fold",
+        "join",
+        "md5sum",
+        "nl",
+        "od",
+        "paste",
+        "realpath",
+        "sha1sum",
+        "sha256sum",
+        "sha384sum",
+        "sha512sum",
+        "shuf",
+        "sort",
+        "split",
+        "strings",
+        "tee",
+        "tsort",
+        "unexpand",
+        "uniq",
+        "wc",
+    }
+)
 
 
 def _needs_escape(char: str) -> bool:
@@ -126,6 +126,28 @@ def quotes_operands(cmd_name: str) -> bool:
     return cmd_name in SHELL_QUOTED_COMMANDS
 
 
+def escape_name(name: str) -> str:
+    """GNU ls -b names: C escapes, with spaces and backslashes protected.
+
+    Uses the same UTF-8 locale policy as shell_quote_always, including
+    its documented divergence for unassigned Unicode characters.
+
+    Args:
+        name (str): the filename or symlink target to display.
+    """
+    parts: list[str] = []
+    for char in name:
+        if char in " \\":
+            parts.append("\\" + char)
+        elif 0xDC80 <= ord(char) <= 0xDCFF:
+            parts.append(f"\\{ord(char) - 0xDC00:03o}")
+        elif _needs_escape(char):
+            parts.append(_escape(char))
+        else:
+            parts.append(char)
+    return "".join(parts)
+
+
 def needs_shell_quote(name: str) -> bool:
     """Whether a name cannot be pasted back into a shell as written.
 
@@ -159,8 +181,9 @@ def shell_quote_always(name: str) -> str:
     Args:
         name (str): The name to wrap.
     """
-    if "'" in name and not any(char in _DQ_BLOCKERS or _needs_escape(char)
-                               for char in name):
+    if "'" in name and not any(
+        char in _DQ_BLOCKERS or _needs_escape(char) for char in name
+    ):
         return f'"{name}"'
     parts = ["'"]
     in_escape = False

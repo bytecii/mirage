@@ -21,10 +21,10 @@ from mirage.utils.key_prefix import mount_key
 
 def _paths(*names: str) -> list[PathSpec]:
     return [
-        PathSpec(resource_path=mount_key(n, ""),
-                 virtual=n,
-                 directory="/d",
-                 resolved=True) for n in names
+        PathSpec(
+            vfs_path=mount_key(n, ""), virtual=n, directory="/d", resolved=True
+        )
+        for n in names
     ]
 
 
@@ -35,42 +35,32 @@ async def _collect(gen) -> bytes:
     return out
 
 
-@pytest.mark.asyncio
-async def test_head_multi_bytes_reader_no_headers():
-    data = {"/a": b"a1\na2\na3\n", "/b": b"b1\nb2\n"}
-
-    async def read(p):
-        return data[p.virtual]
-
-    out = await _collect(
-        head_multi(_paths("/a", "/b"), read=read, n=1, show_headers=False))
-    assert out == b"a1\nb1\n"
+_CHUNKS = {"/a": [b"a1\n", b"a2\n"], "/b": [b"b1\n"]}
 
 
-@pytest.mark.asyncio
-async def test_head_multi_with_headers():
-    data = {"/a": b"a1\na2\n", "/b": b"b1\nb2\n"}
+async def _read_bytes(p: PathSpec) -> bytes:
+    return b"".join(_CHUNKS[p.virtual])
 
-    async def read(p):
-        return data[p.virtual]
 
-    out = await _collect(
-        head_multi(_paths("/a", "/b"), read=read, n=1, show_headers=True))
-    assert out == b"==> /a <==\na1\n\n==> /b <==\nb1\n"
+def _read_stream(p: PathSpec):
+
+    async def gen():
+        for chunk in _CHUNKS[p.virtual]:
+            yield chunk
+
+    return gen()
 
 
 @pytest.mark.asyncio
-async def test_head_multi_stream_reader():
-    chunks = {"/a": [b"a1\n", b"a2\n"], "/b": [b"b1\n"]}
-
-    def read(p):
-
-        async def gen():
-            for ch in chunks[p.virtual]:
-                yield ch
-
-        return gen()
-
+@pytest.mark.parametrize(
+    "read,n,expected",
+    [
+        (_read_bytes, 1, b"==> /a <==\na1\n\n==> /b <==\nb1\n"),
+        (_read_stream, 5, b"==> /a <==\na1\na2\n\n==> /b <==\nb1\n"),
+    ],
+)
+async def test_head_multi_takes_a_bytes_or_a_stream_reader(read, n, expected):
     out = await _collect(
-        head_multi(_paths("/a", "/b"), read=read, n=5, show_headers=True))
-    assert out == b"==> /a <==\na1\na2\n\n==> /b <==\nb1\n"
+        head_multi(_paths("/a", "/b"), read=read, n=n, show_headers=True)
+    )
+    assert out == expected

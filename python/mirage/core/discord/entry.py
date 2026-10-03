@@ -19,7 +19,7 @@ from typing import Any
 from mirage.cache.index.config import IndexEntry
 from mirage.core.discord.history import DISCORD_EPOCH
 from mirage.core.discord.render import member_json_bytes
-from mirage.core.timeutil import epoch_to_iso
+from mirage.utils.dates import epoch_to_iso
 from mirage.utils.naming import make_id_name
 
 
@@ -40,16 +40,17 @@ def channel_dirname(c: dict[str, Any]) -> str:
 
 def member_filename(m: dict[str, Any]) -> str:
     user = m.get("user", {})
-    return (
-        f"{make_id_name(user.get('username', ''), user['id'], path_safe=True)}"
-        ".json")
+    return make_id_name(
+        user.get("username", ""), user["id"], path_safe=True, suffix=".json"
+    )
 
 
 def snowflake_to_date(snowflake: str) -> str:
     """Convert a Discord snowflake to a UTC YYYY-MM-DD date string."""
     ms = (int(snowflake) >> 22) + DISCORD_EPOCH
-    return datetime.fromtimestamp(ms / 1000,
-                                  tz=timezone.utc).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime(
+        "%Y-%m-%d"
+    )
 
 
 def snowflake_to_iso(snowflake: str) -> str | None:
@@ -98,10 +99,13 @@ def member_entry(m: dict[str, Any]) -> IndexEntry:
     )
 
 
-def history_entry(channel_key: str, date: str) -> IndexEntry:
+def history_entry(channel_id: str, date: str) -> IndexEntry:
+    # channel_id rides extra so the day and files listers can query the
+    # history API without re-resolving the channel through its parent.
     return IndexEntry(
-        id=f"{channel_key}:{date}",
+        id=f"{channel_id}:{date}",
         name=date,
         resource_type=DiscordResourceType.HISTORY,
-        vfs_name=f"{date}.jsonl",
+        vfs_name=date,
+        extra={"channel_id": channel_id},
     )

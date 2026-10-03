@@ -15,16 +15,41 @@
 import type { SessionView } from '../../ops/types.ts'
 import { PolicyDenied, preSessionGate, type Policies } from '../../policy/index.ts'
 import { evaluateArith } from '../../shell/arith.ts'
-import { arrayExtent, arrayGet, arrayHas, arrayValues, type ShellArray } from '../../shell/array.ts'
+import type { CallStack } from '../../shell/call_stack.ts'
+import {
+  arrayExtent,
+  arrayGet,
+  arrayHas,
+  arrayValues,
+  arrayWith,
+  makeArray,
+  type ShellArray,
+} from '../../shell/array.ts'
+import {
+  FUNCNAME,
+  PIPESTATUS,
+  RANDOM,
+  RANDOM_MODULUS,
+  RANDOM_UNSET,
+} from '../../shell/constants.ts'
 import { ArithError } from '../../shell/errors.ts'
-import type { ElementOps } from '../../shell/types.ts'
+import type { ArithWrite, ElementOps } from '../../shell/types.ts'
 import { varHidden } from '../../utils/hidden.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { ReadonlyVariableError } from './errors.ts'
+import { draw, initialSeed } from './rng.ts'
 import { ownRecord, sessionEntry, setSessionEntry } from './session.ts'
-import type { ShellValue } from '../../shell/variable.ts'
-import { coerceValue, makeVar, VarAttr, withAttr, withValue } from '../../shell/variable.ts'
-import type { Session } from './session.ts'
+import type { ShellValue, ShellVar } from '../../shell/variable.ts'
+import {
+  coerceValue,
+  detach,
+  makeVar,
+  TempEnv,
+  VarAttr,
+  withAttr,
+  withValue,
+} from '../../shell/variable.ts'
+import type { SessionState } from './session.ts'
 
 /**
  * The one copy-out of a session's environment.
@@ -43,7 +68,7 @@ import type { Session } from './session.ts'
  * (`export Z`) is absent too, which falls out of the value check
  * rather than needing its own arm.
  */
-export function envSnapshot(session: Session): Record<string, string> {
+export function envSnapshot(session: SessionState): Record<string, string> {
   const out = ownRecord<string>()
   for (const [name, v] of Object.entries(session.vars)) {
     if (
@@ -66,7 +91,7 @@ export function envSnapshot(session: Session): Record<string, string> {
  * read this and the process view reads `envSnapshot`, rather than one
  * of them re-deriving the other's filter.
  */
-export function exportedNames(session: Session): string[] {
+export function exportedNames(session: SessionState): string[] {
   const out: string[] = []
   for (const [name, v] of Object.entries(session.vars)) {
     if (v.attrs.has(VarAttr.Export) && !varHidden(session.hiddenVars, name)) {
@@ -82,7 +107,7 @@ export function exportedNames(session: Session): string[] {
  * before `r=v`): bash treats the first assignment as naming the target,
  * so until then it stands for nothing.
  */
-export function namerefTarget(session: Session, name: string): string | null {
+export function namerefTarget(session: SessionState, name: string): string | null {
   const v = sessionEntry(session.vars, name)
   if (!v?.attrs.has(VarAttr.Nameref)) return null
   return typeof v.value === 'string' && v.value ? v.value : null
@@ -97,7 +122,7 @@ export function namerefTarget(session: Session, name: string): string | null {
  * reference's own record. The warning line is the one part not
  * reproduced.
  */
-export function deref(session: Session, name: string): string {
+export function deref(session: SessionState, name: string): string {
   let current = name
   const seen = new Set<string>()
   for (;;) {
@@ -112,7 +137,7 @@ export function deref(session: Session, name: string): string {
 /** The variable's value, null when unset or hidden. Sync on purpose:
  * `$X` expansion is the hot path, so a read stays a record lookup plus
  * the hidden check. A name reference reads its target. */
-export function envGet(session: Session, name: string): string | null {
+export function envGet(session: SessionState, name: string): string | null {
   const resolved = deref(session, name)
   if (varHidden(session.hiddenVars, resolved)) return null
   const v = sessionEntry(session.vars, resolved)
@@ -126,7 +151,7 @@ export function envGet(session: Session, name: string): string | null {
  * visible world, and calling a name that reads as unset "readonly"
  * would leak it.
  */
-function envIsReadonly(session: Session, name: string): boolean {
+function envIsReadonly(session: SessionState, name: string): boolean {
   const resolved = deref(session, name)
   if (varHidden(session.hiddenVars, resolved)) return false
   const v = sessionEntry(session.vars, resolved)
@@ -152,7 +177,7 @@ function envIsReadonly(session: Session, name: string): boolean {
  * all along (`_VisibleEnv` beside `env_snapshot`); this is TS catching
  * up to it.
  */
-export function visibleEnv(session: Session): Record<string, string> {
+export function visibleEnv(session: SessionState): Record<string, string> {
   const out = ownRecord<string>()
   for (const [name, v] of Object.entries(session.vars)) {
     if (typeof v.value === 'string' && !varHidden(session.hiddenVars, name)) {
@@ -169,12 +194,21 @@ export function visibleEnv(session: Session): Record<string, string> {
  * `session.arrays` before narrowing, so a hidden name can hold an
  * array and array reads need the same filter env reads get.
  */
-export function visibleArrays(session: Session): Record<string, ShellArray> {
+export function visibleArrays(session: SessionState): Record<string, ShellArray> {
   const out = ownRecord<ShellArray>()
   for (const [name, v] of Object.entries(session.vars)) {
     if (Array.isArray(v.value) && !varHidden(session.hiddenVars, name)) {
       out[name] = v.value
     }
+  }
+  // PIPESTATUS and FUNCNAME are the session's records, never the store's:
+  // an assignment to either is ignored, as bash ignores one, because the
+  // record answers before the store.
+  if (!varHidden(session.hiddenVars, PIPESTATUS)) {
+    out[PIPESTATUS] = session.pipeStatus.map((code) => String(code))
+  }
+  if (session.functionNames !== null && !varHidden(session.hiddenVars, FUNCNAME)) {
+    out[FUNCNAME] = [...session.functionNames]
   }
   return out
 }
@@ -186,7 +220,7 @@ export function visibleArrays(session: Session): Record<string, ShellArray> {
  * same reason both exist: the embedder can seed a hidden name with any
  * value shape, so every reader tier filters the same way.
  */
-export function visibleAssocs(session: Session): Record<string, Record<string, string>> {
+export function visibleAssocs(session: SessionState): Record<string, Record<string, string>> {
   const out = ownRecord<Record<string, string>>()
   for (const [name, v] of Object.entries(session.vars)) {
     if (
@@ -260,11 +294,13 @@ export function elementIndex(
   subscript: string,
   env: Readonly<Record<string, string>>,
   elements: ElementOps | null = null,
+  readVar: ((name: string) => string | null) | null = null,
+  wroteVar: ((name: string, value: string) => void) | null = null,
 ): number {
   const trimmed = subscript.trim()
   if (/^-?\d+$/.test(trimmed)) return Number(trimmed)
   try {
-    return Number(evaluateArith(subscript, env, 0, elements).value)
+    return Number(evaluateArith(subscript, env, 0, elements, readVar, wroteVar).value)
   } catch (error) {
     if (error instanceof ArithError) return 0
     throw error
@@ -283,13 +319,31 @@ export function elementIndex(
  * close a cycle.
  */
 class SessionElements implements ElementOps {
-  constructor(private readonly session: Session) {}
+  constructor(
+    private readonly session: SessionState,
+    private readonly reader: RandomReader | null = null,
+  ) {}
+
+  isAssoc(name: string): boolean {
+    return visibleAssocs(this.session)[name] !== undefined
+  }
+
+  holdsArray(name: string): boolean {
+    return this.isAssoc(name) || visibleArrays(this.session)[name] !== undefined
+  }
 
   resolve(name: string, subscript: string, env: Readonly<Record<string, string>>): string {
     if (visibleAssocs(this.session)[name] !== undefined) {
       return stripKeyQuotes(subscript)
     }
-    let idx = elementIndex(subscript, env, sessionElements(this.session))
+    const reader = this.reader
+    let idx = elementIndex(
+      subscript,
+      env,
+      sessionElements(this.session, reader),
+      reader?.read ?? null,
+      reader?.wrote ?? null,
+    )
     if (idx < 0) {
       const arr = visibleArrays(this.session)[name]
       if (arr !== undefined) idx += arrayExtent(arr)
@@ -313,9 +367,82 @@ class SessionElements implements ElementOps {
   }
 }
 
-/** Element callbacks bound to one session, for `evaluateArith`. */
-export function sessionElements(session: Session): ElementOps {
-  return new SessionElements(session)
+/** Element callbacks bound to one session, for `evaluateArith`. `reader`
+ * is the expression's `RANDOM` reader, so a subscript draws from the
+ * same generator as the expression around it; null where nothing
+ * draws. */
+export function sessionElements(
+  session: SessionState,
+  reader: RandomReader | null = null,
+): ElementOps {
+  return new SessionElements(session, reader)
+}
+
+/**
+ * The whole variable one arithmetic write produces. A scalar is itself;
+ * an element is the array it lands in, the way `assignElement` lands
+ * one, so a refusal never leaves a write half-applied.
+ */
+function writtenValue(session: SessionState, write: ArithWrite): ShellValue {
+  if (write.key === null) return write.value
+  const assoc = visibleAssocs(session)[write.name]
+  if (assoc !== undefined) return { ...assoc, [write.key]: write.value }
+  const arr = visibleArrays(session)[write.name]
+  return arrayWith(arr ?? makeArray([]), Number(write.key), write.value)
+}
+
+/**
+ * An indexed subscript resolved outside an arithmetic expression:
+ * `${a[i]}`, `a[i]=v`, `unset 'a[i]'`, `[[ -v a[i] ]]`.
+ *
+ * The subscript is arithmetic, so it may assign (`a[x=3]`) and seed
+ * (`a[RANDOM=42]`), and bash binds those as it evaluates them. Each
+ * lands through the door once the index is known, then the `RANDOM`
+ * reader replays the draws made after the seed. A subscript that fails
+ * to evaluate lands what it assigned before failing and then throws, the
+ * subscript text leading the message, since bash aborts the line on it
+ * (`${a[1/0]}` is `1/0: division by 0`) rather than reading element 0.
+ * `view` is the gated door; null lands the writes ungated, outside a
+ * workspace. Throws what the door throws too: a PolicyDenied, a
+ * ReadonlyVariableError, or an ArithError from a `-i` name refusing the
+ * value.
+ */
+export async function subscriptIndex(
+  session: SessionState,
+  subscript: string,
+  view: SessionView | null = null,
+): Promise<number> {
+  const trimmed = subscript.trim()
+  if (/^-?\d+$/.test(trimmed)) return Number(trimmed)
+  const reader = randomReader(session)
+  let idx = 0
+  let writes: readonly ArithWrite[]
+  let error: ArithError | null = null
+  try {
+    const result = evaluateArith(
+      subscript,
+      visibleEnv(session),
+      0,
+      sessionElements(session, reader),
+      reader.read,
+      reader.wrote,
+      session.shellOptions.nounset === true,
+    )
+    idx = Number(result.value)
+    writes = result.writes
+  } catch (err) {
+    if (!(err instanceof ArithError)) throw err
+    error = err
+    writes = err.writes
+  }
+  for (const write of writes) {
+    const value = writtenValue(session, write)
+    if (view !== null) await view.set(write.name, value)
+    else await setVar(session, null, write.name, value)
+  }
+  reader.settle()
+  if (error !== null) throw new ArithError(`${subscript.trim()}: ${error.message}`)
+  return idx
 }
 
 /**
@@ -330,23 +457,228 @@ export function sessionElements(session: Session): ElementOps {
  * expected`), so it is spelled once here rather than at each of the
  * sites that catch it.
  */
-function integerText(session: Session, text: string): string {
-  try {
-    return evaluateArith(text, visibleEnv(session), 0, sessionElements(session)).value.toString()
-  } catch (err) {
-    if (err instanceof ArithError) throw new ArithError(`${text}: ${err.message}`)
-    throw err
+/** Evaluate a host-supplied seed; invalid arithmetic propagates. Read
+ * without the generator on offer: a host word naming `RANDOM` would
+ * otherwise draw, and the draw reseed, without end. */
+export function seedFrom(word: string, session: SessionState): number {
+  const value = evaluateArith(word, visibleEnv(session), 0, sessionElements(session)).value
+  const modulus = BigInt(RANDOM_MODULUS)
+  return Number(((value % modulus) + modulus) % modulus)
+}
+
+/** Draw from the session generator, or null after RANDOM is unset.
+ * Shell assignments validate and seed at the session door. A host-seeded
+ * variable is consumed here on its first read. Reseeding resets repeat
+ * suppression to zero independently of the stored word. */
+export function nextRandom(session: SessionState, stored: string | undefined): number | null {
+  if (
+    session.randomSeed === RANDOM_UNSET ||
+    (stored === undefined && session.randomSeed !== null)
+  ) {
+    return null
+  }
+  let state: number
+  let last: number
+  const seed =
+    stored !== undefined && stored !== session.randomSeed ? seedFrom(stored, session) : null
+  if (seed !== null) {
+    state = seed
+    last = 0
+  } else if (session.randomState === null) {
+    state = initialSeed(session.sessionId)
+    last = 0
+  } else {
+    state = session.randomState
+    last = session.randomLast
+  }
+  const [nextState, value] = draw(state, last)
+  state = nextState
+  session.randomState = state
+  session.randomLast = value
+  const word = String(value)
+  const existing = session.vars[RANDOM]
+  session.vars[RANDOM] = existing !== undefined ? withValue(existing, word) : makeVar(word)
+  session.randomSeed = word
+  return value
+}
+
+/**
+ * Arithmetic's reads of `$RANDOM`, bound to one session.
+ *
+ * A read before the expression assigns `RANDOM` draws from the session
+ * generator. bash seeds at the instant of an assignment and every later
+ * read draws from the new seed (`$((RANDOM=42, RANDOM))` is the first
+ * draw after seeding with 42). Here the assignment is still pending at
+ * the session door, which lands it gated after evaluation, so the
+ * evaluator tells the reader of each assignment as it is made (`wrote`),
+ * the reader seeds a scratch generator the way the door will and draws
+ * from that, and `settle` replays the draws on the session once the
+ * door has seeded it: the session ends where bash's does, seeded and
+ * advanced by every read since the last assignment, and the write still
+ * reaches the gate as the assignment it is. Each assignment restarts
+ * the scratch generator and the count, since the door lands only the
+ * last value written, and the draws are replayed only if the door did
+ * land it: an assignment the caller never applied leaves the session as
+ * it was.
+ *
+ * Lives beside the door rather than with the generator because the
+ * door needs it too: `RANDOM=RANDOM` draws once while the seed is
+ * evaluated, then seeds with the draw, as bash's `assign_random` does
+ * through `evalexp`.
+ */
+export class RandomReader {
+  private seeded: string | null = null
+  private state = 0
+  private last = 0
+  private draws = 0
+
+  constructor(private readonly session: SessionState) {}
+
+  private special(name: string): boolean {
+    const session = this.session
+    return (
+      name === RANDOM && !varHidden(session.hiddenVars, name) && session.randomSeed !== RANDOM_UNSET
+    )
+  }
+
+  /** The dynamic value of a name, null for a name that has none. */
+  readonly read = (name: string): string | null => {
+    if (!this.special(name)) return null
+    if (this.seeded === null) {
+      const value = nextRandom(this.session, visibleEnv(this.session)[name])
+      return value === null ? null : String(value)
+    }
+    const [state, value] = draw(this.state, this.last)
+    this.state = state
+    this.last = value
+    this.draws += 1
+    return String(value)
+  }
+
+  /** Note an assignment the expression made: the name and its value, an
+   * integer's text. */
+  readonly wrote = (name: string, value: string): void => {
+    if (!this.special(name)) return
+    this.seeded = value
+    const modulus = BigInt(RANDOM_MODULUS)
+    this.state = Number(((BigInt(value) % modulus) + modulus) % modulus)
+    this.last = 0
+    this.draws = 0
+  }
+
+  /** Replay the scratch draws on the session generator, once the door
+   * has seeded it with the value the expression assigned. */
+  settle(): void {
+    if (this.seeded === null || this.session.randomSeed !== this.seeded) return
+    for (let i = 0; i < this.draws; i++) {
+      nextRandom(this.session, visibleEnv(this.session)[RANDOM])
+    }
+    this.draws = 0
   }
 }
 
-export function ensureVarVisible(session: Session, name: string): void {
+/**
+ * End `RANDOM`'s special meaning when a non-string lands on it.
+ *
+ * bash's `convert_var_to_array` drops the dynamic value and the assign
+ * hook, so `RANDOM=(1 2)`, `declare -a RANDOM`, `RANDOM[1]=5` and
+ * `RANDOM+=(3)` all leave an ordinary array that `$RANDOM` reads element
+ * 0 of, for good, as `unset RANDOM` does. Every store door calls this,
+ * gated or not, since a host seeding an array onto the name means the
+ * same thing.
+ */
+export function noteRandomKind(session: SessionState, name: string, value: ShellValue): void {
+  if (name === RANDOM && typeof value !== 'string') session.randomSeed = RANDOM_UNSET
+}
+
+/**
+ * The scalar an array conversion keeps as element 0.
+ *
+ * bash's `convert_var_to_array` copies the variable's current value into
+ * element 0, and for a live `RANDOM` looking the name up is what draws:
+ * `RANDOM[1]=5` leaves `[0]` holding one draw and `declare -a RANDOM` one
+ * alone, after which the array is ordinary.
+ */
+export function conversionScalar(session: SessionState, name: string): string | undefined {
+  if (name === RANDOM) {
+    const drawn = nextRandom(session, visibleEnv(session)[RANDOM])
+    if (drawn !== null) return String(drawn)
+  }
+  return session.env[name]
+}
+
+/** Bind arithmetic `$RANDOM` reads to a session. */
+export function randomReader(session: SessionState): RandomReader {
+  return new RandomReader(session)
+}
+
+/**
+ * The `-i` coercion and the `RANDOM` seed, as one evaluation. The
+ * incoming text evaluates as arithmetic against the visible env, element
+ * references resolving through the session's resolver, so `n=x+1` sees
+ * `x` and `n=a[1]+1` the element; an unresolvable name is 0 (`n=abc`
+ * stores `0`), the arithmetic rule, not a refusal. `RANDOM` draws, as in
+ * every other arithmetic context, so `n=RANDOM` and a `RANDOM=RANDOM`
+ * seed both advance the generator. The assignments the expression makes
+ * are kept for the door to land (`landCoercion`): bash binds `x` in
+ * `n='x=5'` and in `RANDOM='x=5'`, before the error too if the expression
+ * then fails. A malformed expression throws ArithError with the
+ * offending text leading, the way every caller voices it.
+ */
+class IntegerCoercion {
+  readonly reader: RandomReader
+  readonly writes: ArithWrite[] = []
+
+  constructor(private readonly session: SessionState) {
+    this.reader = randomReader(session)
+  }
+
+  readonly run = (text: string): string => {
+    const session = this.session
+    try {
+      const result = evaluateArith(
+        text,
+        visibleEnv(session),
+        0,
+        sessionElements(session, this.reader),
+        this.reader.read,
+        this.reader.wrote,
+      )
+      this.writes.push(...result.writes)
+      return result.value.toString()
+    } catch (err) {
+      if (err instanceof ArithError) {
+        this.writes.push(...err.writes)
+        throw new ArithError(`${text}: ${err.message}`)
+      }
+      throw err
+    }
+  }
+}
+
+/**
+ * Land the assignments a coercion made, each through the door, then
+ * settle its `RANDOM` draws.
+ */
+async function landCoercion(
+  session: SessionState,
+  policies: Policies | null,
+  coercion: IntegerCoercion,
+): Promise<void> {
+  for (const write of coercion.writes) {
+    await setVar(session, policies, write.name, writtenValue(session, write))
+  }
+  coercion.reader.settle()
+}
+
+export function ensureVarVisible(session: SessionState, name: string): void {
   if (varHidden(session.hiddenVars, name)) {
     throw new PolicyDenied(`${name}: permission denied`, name)
   }
 }
 
 async function setVar(
-  session: Session,
+  session: SessionState,
   policies: Policies | null,
   name: string,
   value: ShellValue,
@@ -368,29 +700,52 @@ async function setVar(
   // so every reader agrees without per-read work. `-i` evaluates against
   // the visible env, and a bad expression throws the arithmetic error
   // as bash does. Coercion runs before the gate so a rule judges the
-  // value that will land: `declare -l role; role=ADMIN` stores `admin`,
+  // value that will land: `declare -l profile; profile=ADMIN` stores `admin`,
   // and a rule refusing `admin` must see that, not the raw text.
-  const shaped =
-    existing !== undefined && existing.attrs.size > 0
-      ? coerceValue(value, existing.attrs, (text) => integerText(session, text))
-      : value
-  const rendered =
-    typeof shaped === 'string'
-      ? shaped
-      : Array.isArray(shaped)
-        ? arrayValues(shaped).join(' ')
-        : Object.keys(shaped)
-            .sort(compareCodePoints)
-            .map((k) => shaped[k])
-            .join(' ')
+  const coercion = new IntegerCoercion(session)
+  let shaped: ShellValue = value
+  if (existing !== undefined && existing.attrs.size > 0) {
+    try {
+      shaped = coerceValue(value, existing.attrs, coercion.run)
+    } catch (err) {
+      // bash bound what the expression assigned before it failed
+      // (`declare -i n; x='y=5,1/0'; n=x` leaves y at 5, and a RANDOM
+      // seed in it seeds); they land, gated, before the refusal reports.
+      if (err instanceof ArithError) await landCoercion(session, policies, coercion)
+      throw err
+    }
+  }
   await preSessionGate(policies, {
     plane: 'env',
     verb: 'set',
     key: name,
-    value: rendered,
+    value: gateRendering(shaped),
     sessionId: session.sessionId,
   })
+  if (name === RANDOM && session.randomSeed !== RANDOM_UNSET && typeof shaped === 'string') {
+    try {
+      const value = BigInt(coercion.run(shaped))
+      const modulus = BigInt(RANDOM_MODULUS)
+      session.randomState = Number(((value % modulus) + modulus) % modulus)
+    } catch (err) {
+      if (!(err instanceof ArithError)) throw err
+      session.diagnostics.push(err.message)
+      await landCoercion(session, policies, coercion)
+      return
+    }
+    session.randomSeed = shaped
+    session.randomLast = 0
+  }
+  noteRandomKind(session, name, shaped)
+  // The assignments the coercion or the seed made land now, gated each,
+  // before the name they were made for.
+  await landCoercion(session, policies, coercion)
   let stored = existing === undefined ? makeVar(shaped) : withValue(existing, shaped)
+  // An agent write to a managed name shadows session-locally: the
+  // pointer drops and the record becomes a plain variable for this
+  // session only. Only the host-tier fill step writes pointer-keeping
+  // records, and it goes directly into `session.vars`, not here.
+  if (stored.managed !== undefined) stored = detach(stored)
   // `set -a` marks every name assigned *while it is on*, which is why
   // it is read here at write time rather than applied to the session in
   // bulk when the option flips: `B=1; set -a; C=2; set +a; D=3` exports
@@ -410,7 +765,7 @@ async function setVar(
  * PolicyDenied when a preSession policy refuses the write.
  */
 async function unsetVar(
-  session: Session,
+  session: SessionState,
   policies: Policies | null,
   name: string,
   followRef = true,
@@ -428,8 +783,136 @@ async function unsetVar(
     sessionId: session.sessionId,
   })
 
+  drop(session, name)
+  // bash: unsetting RANDOM strips its special meaning for good.
+  if (name === RANDOM) session.randomSeed = RANDOM_UNSET
+}
+
+/** The innermost scope on the call path that saved `name`. */
+function shadowingFrame(
+  session: SessionState,
+  name: string,
+): Map<string, ShellVar | null> | undefined {
+  for (let i = session.localFrames.length - 1; i >= 0; i--) {
+    const frame = session.localFrames[i]
+    if (frame?.has(name) === true) return frame
+  }
+  return undefined
+}
+
+/**
+ * Remove a variable as bash's `unset` does.
+ *
+ * A name the running function made local stays unset until it returns.
+ * A name an enclosing scope shadows, a caller's `local` or the temporary
+ * environment of `x=1 f`, is that scope's to lose: the unset reveals the
+ * value it saved, and the name holds that value from then on (GNU:
+ * `x=old; x=pre f` where f runs `unset x` reads `old` inside f and after
+ * it).
+ */
+function drop(session: SessionState, name: string): void {
+  const frame = shadowingFrame(session, name)
+  const saved = frame?.get(name) ?? null
+  if (frame !== undefined && frame !== session.localVars && name !== RANDOM) {
+    frame.delete(name)
+    if (saved !== null) {
+      setSessionEntry(session.vars, name, saved)
+      return
+    }
+  }
   // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
   delete session.vars[name]
+}
+
+/**
+ * Let a temporary-environment variable outlive its call.
+ *
+ * bash keeps a name that `x=1 f` put in front of a function once
+ * something inside runs `export x` or `readonly x`: x still holds its
+ * value after f returns, where otherwise the caller's comes back.
+ */
+export function outliveCall(session: SessionState, name: string): void {
+  const frame = shadowingFrame(session, name)
+  if (frame instanceof TempEnv) frame.delete(name)
+}
+
+/**
+ * Whether the running function's call assigned `name` in front.
+ *
+ * `x=1 f` puts `x` in f's temporary environment, which sits right under
+ * f's own frame of locals.
+ */
+export function inCallEnv(session: SessionState, name: string): boolean {
+  const below = session.localFrames[session.localFrames.length - 2]
+  return below instanceof TempEnv && below.has(name)
+}
+
+/**
+ * The positional parameters in scope.
+ *
+ * Inside a function they are the function's own, even when it was called
+ * with none: bash's `f` run bare sees `$#` as 0, never its caller's
+ * count. Outside every function they are the shell's.
+ */
+export function positionalParams(session: SessionState, callStack: CallStack | null): string[] {
+  if (callStack !== null && callStack.depth > 1) return callStack.getAllPositional()
+  return session.positionalArgs
+}
+
+/**
+ * Replace the positional parameters in scope.
+ *
+ * `set --` and `shift` inside a function change the function's own and
+ * leave the caller's alone, as bash's do.
+ */
+export function setPositionalParams(
+  session: SessionState,
+  callStack: CallStack | null,
+  values: string[],
+): void {
+  if (callStack !== null && callStack.depth > 1) callStack.setPositional(values)
+  else session.positionalArgs = values
+}
+
+/**
+ * Record the caller's record before a `local` shadows it, once per frame.
+ *
+ * `RANDOM` parks its generator marker too: a local `RANDOM` is an ordinary
+ * variable for the function's extent (`local RANDOM=5; echo $RANDOM`
+ * prints 5, and `local RANDOM=(7)` leaves the caller's generator alone),
+ * and `restoreLocals` hands the marker back.
+ */
+export function shadowLocal(
+  session: SessionState,
+  locals: Map<string, ShellVar | null>,
+  name: string,
+): void {
+  if (locals.has(name)) return
+  locals.set(name, sessionEntry(session.vars, name) ?? null)
+  if (name === RANDOM) {
+    session.localRandom.push(session.randomSeed)
+    session.randomSeed = RANDOM_UNSET
+  }
+}
+
+/**
+ * Put a returning function's shadowed records back.
+ *
+ * Deliberate divergence: bash reseeds the global generator when a local
+ * `RANDOM` is popped (`RANDOM=42; f(){ local RANDOM; }; f; echo $RANDOM`
+ * prints 11074 where 17772 was next); mirage resumes the caller's
+ * sequence where it left off.
+ */
+export function restoreLocals(session: SessionState, locals: Map<string, ShellVar | null>): void {
+  for (const [key, old] of locals) {
+    if (old === null) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete session.vars[key]
+    } else {
+      setSessionEntry(session.vars, key, old)
+    }
+  }
+  if (locals.has(RANDOM)) session.randomSeed = session.localRandom.pop() ?? null
 }
 
 /**
@@ -450,13 +933,14 @@ async function unsetVar(
  * `SessionView.set` instead, which is the whole point of the store being
  * read-only from outside.
  */
-export function seedVar(session: Session, name: string, value: ShellValue): void {
+export function seedVar(session: SessionState, name: string, value: ShellValue): void {
   const existing = sessionEntry(session.vars, name)
   setSessionEntry(
     session.vars,
     name,
     existing === undefined ? makeVar(value) : withValue(existing, value),
   )
+  noteRandomKind(session, name, value)
 }
 
 /**
@@ -472,7 +956,12 @@ export function seedVar(session: Session, name: string, value: ShellValue): void
  * `declare -- L` and `${L-d}` still expands to `d`, so those two cannot
  * route through a value writer either.
  */
-export function setAttr(session: Session, name: string, attr: VarAttr | null, on = true): void {
+export function setAttr(
+  session: SessionState,
+  name: string,
+  attr: VarAttr | null,
+  on = true,
+): void {
   const existing = sessionEntry(session.vars, name) ?? makeVar()
   setSessionEntry(session.vars, name, attr === null ? existing : withAttr(existing, attr, on))
 }
@@ -495,7 +984,7 @@ export function setAttr(session: Session, name: string, attr: VarAttr | null, on
  * attribute on a name the deployment refused it.
  */
 async function markVar(
-  session: Session,
+  session: SessionState,
   policies: Policies | null,
   name: string,
   attr: VarAttr | null,
@@ -515,7 +1004,7 @@ async function markVar(
   setAttr(session, name, attr, on)
 }
 
-export function sessionView(session: Session, policies: Policies | null = null): SessionView {
+export function sessionView(session: SessionState, policies: Policies | null = null): SessionView {
   return {
     get: (name) => envGet(session, name),
     snapshot: () => envSnapshot(session),
@@ -523,5 +1012,60 @@ export function sessionView(session: Session, policies: Policies | null = null):
     unset: (name, followRef = true) => unsetVar(session, policies, name, followRef),
     mark: (name, attr, on) => markVar(session, policies, name, attr, on),
     isReadonly: (name) => envIsReadonly(session, name),
+    profile: () => session.profile,
+  }
+}
+
+// The names the shell maintains itself (`seedVar`'s second caller): a `cd`
+// writes the first two and `[[ =~ ]]` the third, ungated, because they are
+// the shell's to keep current rather than the session's to admit. Mirrors
+// Python `SHELL_BOOKKEEPING`.
+export const SHELL_BOOKKEEPING: ReadonlySet<string> = new Set(['PWD', 'OLDPWD', 'BASH_REMATCH'])
+
+/**
+ * The value a `preSession` hook is shown for one variable: a scalar as
+ * itself, an indexed array as its present elements joined by spaces, an
+ * associative one in sorted-key order, and null for a variable that is
+ * declared but unset. One rendering, so a rule reads the same text whether
+ * the write came from a typed line or a restore. Mirrors Python
+ * `gate_rendering`.
+ */
+export function gateRendering(value: ShellValue | null): string | null {
+  if (value === null) return null
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return arrayValues(value).join(' ')
+  return Object.keys(value)
+    .sort(compareCodePoints)
+    .map((k) => value[k])
+    .join(' ')
+}
+
+/**
+ * Vet a variable table a snapshot restores through the session gate.
+ *
+ * A snapshot is the one env input the deployment did not author, so the
+ * `preSession` rule that refuses a name on a typed line has to see the
+ * restore too. Every restored variable fires the gate as a `set` of its
+ * rendered value before any of them lands, and a refusal aborts the load
+ * with the `PolicyDenied` a live `export` of that name reports, rather
+ * than dropping the one variable: a partial restore is a workspace whose
+ * state matches no snapshot. The shell's own bookkeeping
+ * (`SHELL_BOOKKEEPING`) is exempt here as it is live. Null policies gate
+ * nothing. Mirrors Python `gate_restored_vars`.
+ */
+export async function gateRestoredVars(
+  policies: Policies | null,
+  sessionId: string,
+  table: Record<string, ShellVar>,
+): Promise<void> {
+  for (const [name, variable] of Object.entries(table)) {
+    if (SHELL_BOOKKEEPING.has(name)) continue
+    await preSessionGate(policies, {
+      plane: 'env',
+      verb: 'set',
+      key: name,
+      value: gateRendering(variable.value),
+      sessionId,
+    })
   }
 }

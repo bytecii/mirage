@@ -15,49 +15,37 @@
 export * from '@struktoai/mirage-core'
 export { Workspace, type NodeWorkspaceOptions } from './workspace.ts'
 export { Mount, type MountSpecOptions } from '@struktoai/mirage-core/workspace/mount/spec'
-export {
-  DiskResource,
-  type DiskResourceOptions,
-  type DiskResourceState,
-} from './resource/disk/disk.ts'
-export { DISK_PROMPT } from './resource/disk/prompt.ts'
+export { DiskVFS, type DiskVFSOptions, type DiskVFSState } from './vfs/disk/disk.ts'
+export { PROMPT as DISK_PROMPT } from './vfs/disk/prompt.ts'
 export { DISK_OPS } from './ops/disk/index.ts'
 export { DiskObserverStore } from './observe/disk_store.ts'
 export { RedisObserverStore, type RedisObserverStoreOptions } from './observe/redis_store.ts'
 export { RedisConsoleStore, type RedisConsoleStoreOptions } from './shell/console/redis/index.ts'
-export { DiskNamespaceStore } from './workspace/namespace/disk.ts'
+export { DiskNamespaceStore } from './workspace/mount/namespace/disk.ts'
 export {
   RedisNamespaceStore,
   type RedisNamespaceStoreOptions,
-} from './workspace/namespace/redis.ts'
+} from './workspace/mount/namespace/redis.ts'
 export { DiskRecordClient } from './workspace/record/disk.ts'
+export { parseSessionProfile, type SessionProfile } from '@struktoai/mirage-core/policy/profile'
 export { DiskSessionStore } from './workspace/session/disk.ts'
 export { RedisSessionStore, type RedisSessionStoreOptions } from './workspace/session/redis.ts'
 export {
   DEFAULT_STATE_ROOT,
   DiskWorkspaceStateStore,
+  DOT_IDS,
   type DiskWorkspaceStateStoreOptions,
 } from './workspace/store/disk.ts'
 export {
   RedisWorkspaceStateStore,
   type RedisWorkspaceStateStoreOptions,
 } from './workspace/store/redis.ts'
-export { patchNodeFs } from './fs_monkey.ts'
-export {
-  RedisResource,
-  type RedisResourceOptions,
-  type RedisResourceState,
-} from './resource/redis/redis.ts'
-export { REDIS_PROMPT } from './resource/redis/prompt.ts'
-export { RedisStore, type RedisStoreOptions } from './resource/redis/store.ts'
-export { RedisAccessor } from './accessor/redis.ts'
-export { REDIS_OPS } from './ops/redis/index.ts'
-export {
-  fileReadProvision,
-  headTailProvision,
-  metadataProvision,
-  type RedisResourceLike,
-} from './commands/builtin/redis/_provision.ts'
+export { patchNodeFs } from './ops/os_patch.ts'
+export { RedisVFS, type RedisVFSOptions, type RedisVFSState } from './vfs/redis/redis.ts'
+export { PROMPT as REDIS_PROMPT } from '@struktoai/mirage-core/vfs/redis/prompt'
+export { RedisStore, type RedisStoreOptions } from './vfs/redis/store.ts'
+export { RedisAccessor } from '@struktoai/mirage-core/accessor/redis'
+export { REDIS_OPS } from '@struktoai/mirage-core/ops/redis/index'
 export { RedisFileCacheStore, type RedisFileCacheOptions } from './cache/file/redis.ts'
 export { FuseManager } from './workspace/fuse.ts'
 export { MirageFS, type MirageFSOptions, type FuseAttr } from './fuse/fs.ts'
@@ -80,60 +68,54 @@ export {
   type MountOptions as FuseMountOptions,
 } from './fuse/mount.ts'
 export { isMacosMetadata } from './fuse/platform/macos.ts'
-export { S3Resource, type S3ResourceState } from './resource/s3/s3.ts'
-export { GridFSResource, type GridFSResourceState } from './resource/gridfs/gridfs.ts'
+export { S3VFS, type S3VFSState } from './vfs/s3/s3.ts'
+export { S3_COMMANDS } from '@struktoai/mirage-core/commands/builtin/s3/index'
+export { GridFSVFS, type GridFSVFSState } from './vfs/gridfs/gridfs.ts'
 export {
   normalizeGridFSConfig,
   type GridFSConfig,
   type GridFSConfigRedacted,
-} from './resource/gridfs/config.ts'
+} from './vfs/gridfs/config.ts'
 export { GridFSAccessor } from './accessor/gridfs.ts'
 export {
-  DatabricksVolumeResource,
-  type DatabricksVolumeResourceState,
-} from './resource/databricks_volume/databricks_volume.ts'
+  DatabricksVolumeVFS,
+  type DatabricksVolumeVFSState,
+} from './vfs/databricks_volume/databricks_volume.ts'
 export {
   loadDatabricksProfile,
   parseDatabricksCfg,
   type DatabricksProfile,
-} from './resource/databricks_volume/profile.ts'
+} from './vfs/databricks_volume/profile.ts'
 export {
   normalizeS3Config,
   redactConfig as redactS3Config,
   type S3Config,
   type S3ConfigRedacted,
-} from './resource/s3/config.ts'
-export { GCSResource, type GCSResourceState } from './resource/gcs/gcs.ts'
+} from './vfs/s3/config.ts'
+export { GCSVFS, type GCSVFSState } from './vfs/gcs/gcs.ts'
 export {
   GCS_ENDPOINT,
   redactGcsConfig,
   type GCSConfig,
   type GCSConfigRedacted,
-} from './resource/gcs/config.ts'
-export { GCS_PROMPT } from './resource/gcs/prompt.ts'
-export { OCIResource, type OCIResourceState } from './resource/oci/oci.ts'
-export { redactOciConfig, type OCIConfig, type OCIConfigRedacted } from './resource/oci/config.ts'
-export { OCI_PROMPT } from './resource/oci/prompt.ts'
-export { R2Resource, type R2ResourceState } from './resource/r2/r2.ts'
-export { redactR2Config, type R2Config, type R2ConfigRedacted } from './resource/r2/config.ts'
-export { R2_PROMPT } from './resource/r2/prompt.ts'
-export { SupabaseResource, type SupabaseResourceState } from './resource/supabase/supabase.ts'
+} from './vfs/gcs/config.ts'
+export { PROMPT as GCS_PROMPT } from './vfs/gcs/prompt.ts'
+export { OCIVFS, type OCIVFSState } from './vfs/oci/oci.ts'
+export { redactOciConfig, type OCIConfig, type OCIConfigRedacted } from './vfs/oci/config.ts'
+export { PROMPT as OCI_PROMPT } from './vfs/oci/prompt.ts'
+export { R2VFS, type R2VFSState } from './vfs/r2/r2.ts'
+export { redactR2Config, type R2Config, type R2ConfigRedacted } from './vfs/r2/config.ts'
+export { PROMPT as R2_PROMPT } from './vfs/r2/prompt.ts'
+export { SupabaseVFS, type SupabaseVFSState } from './vfs/supabase/supabase.ts'
 export {
   redactSupabaseConfig,
   resolvedSupabaseEndpoint,
   type SupabaseConfig,
   type SupabaseConfigRedacted,
-} from './resource/supabase/config.ts'
-export { SUPABASE_PROMPT } from './resource/supabase/prompt.ts'
-export {
-  HF_RESOURCES,
-  HfAccessor,
-  HfBucketsAccessor,
-  HfDatasetsAccessor,
-  HfModelsAccessor,
-  HfSpacesAccessor,
-} from './accessor/hf.ts'
-export { HfBucketsResource, type HfBucketsResourceState } from './resource/hf_buckets/hf_buckets.ts'
+} from './vfs/supabase/config.ts'
+export { PROMPT as SUPABASE_PROMPT } from './vfs/supabase/prompt.ts'
+export { HfBucketsAccessor } from './accessor/hf_buckets.ts'
+export { HfBucketsVFS, type HfBucketsVFSState } from './vfs/hf_buckets/hf_buckets.ts'
 export {
   assertHfRepoId,
   HF_ENDPOINT,
@@ -145,243 +127,256 @@ export {
   type HfBucketsConfigRedacted,
   type HfRepoConfig,
   type HfRepoConfigRedacted,
-} from './resource/hf_buckets/config.ts'
-export { HF_BUCKETS_PROMPT } from './resource/hf_buckets/prompt.ts'
+} from './vfs/hf_buckets/config.ts'
+export { PROMPT as HF_BUCKETS_PROMPT } from './vfs/hf_buckets/prompt.ts'
+export { HfDatasetsVFS, type HfDatasetsVFSState } from './vfs/hf_datasets/hf_datasets.ts'
 export {
-  HfDatasetsResource,
-  type HfDatasetsResourceState,
-} from './resource/hf_datasets/hf_datasets.ts'
-export { HF_DATASETS_PROMPT } from './resource/hf_datasets/prompt.ts'
-export { HfModelsResource, type HfModelsResourceState } from './resource/hf_models/hf_models.ts'
+  normalizeHfDatasetsConfig,
+  redactHfDatasetsConfig,
+  type HfDatasetsConfig,
+  type HfDatasetsConfigRedacted,
+} from './vfs/hf_datasets/config.ts'
+export { PROMPT as HF_DATASETS_PROMPT } from './vfs/hf_datasets/prompt.ts'
+export { HfModelsVFS, type HfModelsVFSState } from './vfs/hf_models/hf_models.ts'
 export {
   normalizeHfModelsConfig,
   redactHfModelsConfig,
   type HfModelsConfig,
   type HfModelsConfigRedacted,
-} from './resource/hf_models/config.ts'
-export { HF_MODELS_PROMPT } from './resource/hf_models/prompt.ts'
-export { HfSpacesResource, type HfSpacesResourceState } from './resource/hf_spaces/hf_spaces.ts'
-export { HF_SPACES_PROMPT } from './resource/hf_spaces/prompt.ts'
-export { HF_COMMANDS } from './commands/builtin/hf/index.ts'
-export { HF_OPS } from './ops/hf/index.ts'
-export { MinIOResource, type MinIOResourceState } from './resource/minio/minio.ts'
+} from './vfs/hf_models/config.ts'
+export { PROMPT as HF_MODELS_PROMPT } from './vfs/hf_models/prompt.ts'
+export { HfSpacesVFS, type HfSpacesVFSState } from './vfs/hf_spaces/hf_spaces.ts'
+export {
+  normalizeHfSpacesConfig,
+  redactHfSpacesConfig,
+  type HfSpacesConfig,
+  type HfSpacesConfigRedacted,
+} from './vfs/hf_spaces/config.ts'
+export { PROMPT as HF_SPACES_PROMPT } from './vfs/hf_spaces/prompt.ts'
+export { HF_BUCKETS_COMMANDS } from './commands/builtin/hf_buckets/index.ts'
+export { HF_BUCKETS_OPS } from './ops/hf_buckets/index.ts'
+export { HF_HUB_COMMANDS } from './commands/builtin/hf_hub/index.ts'
+export { HF_HUB_OPS } from './ops/hf_hub/index.ts'
+export { MinIOVFS, type MinIOVFSState } from './vfs/minio/minio.ts'
 export {
   redactMinIOConfig,
   type MinIOConfig,
   type MinIOConfigRedacted,
-} from './resource/minio/config.ts'
-export { MINIO_PROMPT } from './resource/minio/prompt.ts'
-export { SeaweedFSResource, type SeaweedFSResourceState } from './resource/seaweedfs/seaweedfs.ts'
+} from './vfs/minio/config.ts'
+export { PROMPT as MINIO_PROMPT } from './vfs/minio/prompt.ts'
+export { SeaweedFSVFS, type SeaweedFSVFSState } from './vfs/seaweedfs/seaweedfs.ts'
 export {
   redactSeaweedFSConfig,
   type SeaweedFSConfig,
   type SeaweedFSConfigRedacted,
-} from './resource/seaweedfs/config.ts'
-export { SEAWEEDFS_PROMPT } from './resource/seaweedfs/prompt.ts'
-export { CephResource, type CephResourceState } from './resource/ceph/ceph.ts'
-export {
-  redactCephConfig,
-  type CephConfig,
-  type CephConfigRedacted,
-} from './resource/ceph/config.ts'
-export { CEPH_PROMPT } from './resource/ceph/prompt.ts'
-export { WasabiResource, type WasabiResourceState } from './resource/wasabi/wasabi.ts'
+} from './vfs/seaweedfs/config.ts'
+export { PROMPT as SEAWEEDFS_PROMPT } from './vfs/seaweedfs/prompt.ts'
+export { CephVFS, type CephVFSState } from './vfs/ceph/ceph.ts'
+export { redactCephConfig, type CephConfig, type CephConfigRedacted } from './vfs/ceph/config.ts'
+export { PROMPT as CEPH_PROMPT } from './vfs/ceph/prompt.ts'
+export { WasabiVFS, type WasabiVFSState } from './vfs/wasabi/wasabi.ts'
 export {
   redactWasabiConfig,
   resolvedWasabiEndpoint,
   type WasabiConfig,
   type WasabiConfigRedacted,
-} from './resource/wasabi/config.ts'
-export { WASABI_PROMPT } from './resource/wasabi/prompt.ts'
-export { BackblazeResource, type BackblazeResourceState } from './resource/backblaze/backblaze.ts'
+} from './vfs/wasabi/config.ts'
+export { PROMPT as WASABI_PROMPT } from './vfs/wasabi/prompt.ts'
+export { BackblazeVFS, type BackblazeVFSState } from './vfs/backblaze/backblaze.ts'
 export {
   redactBackblazeConfig,
   resolvedBackblazeEndpoint,
   type BackblazeConfig,
   type BackblazeConfigRedacted,
-} from './resource/backblaze/config.ts'
-export { BACKBLAZE_PROMPT } from './resource/backblaze/prompt.ts'
-export {
-  DigitalOceanResource,
-  type DigitalOceanResourceState,
-} from './resource/digitalocean/digitalocean.ts'
+} from './vfs/backblaze/config.ts'
+export { PROMPT as BACKBLAZE_PROMPT } from './vfs/backblaze/prompt.ts'
+export { DigitalOceanVFS, type DigitalOceanVFSState } from './vfs/digitalocean/digitalocean.ts'
 export {
   redactDigitalOceanConfig,
   resolvedDigitalOceanEndpoint,
   type DigitalOceanConfig,
   type DigitalOceanConfigRedacted,
-} from './resource/digitalocean/config.ts'
-export { DIGITALOCEAN_PROMPT } from './resource/digitalocean/prompt.ts'
-export { TencentResource, type TencentResourceState } from './resource/tencent/tencent.ts'
+} from './vfs/digitalocean/config.ts'
+export { PROMPT as DIGITALOCEAN_PROMPT } from './vfs/digitalocean/prompt.ts'
+export { TencentVFS, type TencentVFSState } from './vfs/tencent/tencent.ts'
 export {
   redactTencentConfig,
   resolvedTencentEndpoint,
   type TencentConfig,
   type TencentConfigRedacted,
-} from './resource/tencent/config.ts'
-export { TENCENT_PROMPT } from './resource/tencent/prompt.ts'
-export { AliyunResource, type AliyunResourceState } from './resource/aliyun/aliyun.ts'
+} from './vfs/tencent/config.ts'
+export { PROMPT as TENCENT_PROMPT } from './vfs/tencent/prompt.ts'
+export { AliyunVFS, type AliyunVFSState } from './vfs/aliyun/aliyun.ts'
 export {
   redactAliyunConfig,
   resolvedAliyunEndpoint,
   type AliyunConfig,
   type AliyunConfigRedacted,
-} from './resource/aliyun/config.ts'
-export { ALIYUN_PROMPT } from './resource/aliyun/prompt.ts'
-export { ScalewayResource, type ScalewayResourceState } from './resource/scaleway/scaleway.ts'
+} from './vfs/aliyun/config.ts'
+export { PROMPT as ALIYUN_PROMPT } from './vfs/aliyun/prompt.ts'
+export { ScalewayVFS, type ScalewayVFSState } from './vfs/scaleway/scaleway.ts'
 export {
   redactScalewayConfig,
   resolvedScalewayEndpoint,
   type ScalewayConfig,
   type ScalewayConfigRedacted,
-} from './resource/scaleway/config.ts'
-export { SCALEWAY_PROMPT } from './resource/scaleway/prompt.ts'
-export { QingStorResource, type QingStorResourceState } from './resource/qingstor/qingstor.ts'
+} from './vfs/scaleway/config.ts'
+export { PROMPT as SCALEWAY_PROMPT } from './vfs/scaleway/prompt.ts'
+export { QingStorVFS, type QingStorVFSState } from './vfs/qingstor/qingstor.ts'
 export {
   redactQingStorConfig,
   resolvedQingStorEndpoint,
   type QingStorConfig,
   type QingStorConfigRedacted,
-} from './resource/qingstor/config.ts'
-export { QINGSTOR_PROMPT } from './resource/qingstor/prompt.ts'
-export { PostgresResource, type PostgresResourceOptions } from './resource/postgres/postgres.ts'
-export { PostgresStore } from './resource/postgres/store.ts'
-export { MongoDBResource, type MongoDBResourceOptions } from './resource/mongodb/mongodb.ts'
-export { MongoDBStore } from './resource/mongodb/store.ts'
-export { LanceDBResource, type LanceDBResourceOptions } from './resource/lancedb/lancedb.ts'
-export { LanceDBStore } from './resource/lancedb/store.ts'
-export { SlackResource, type SlackResourceState } from './resource/slack/slack.ts'
-export { normalizeSlackConfig, redactSlackConfig } from '@struktoai/mirage-core/core/slack/config'
-export type { SlackConfig, SlackConfigRedacted } from '@struktoai/mirage-core/core/slack/config'
-export { SSHResource, type SSHResourceState } from './resource/ssh/ssh.ts'
+} from './vfs/qingstor/config.ts'
+export { PROMPT as QINGSTOR_PROMPT } from './vfs/qingstor/prompt.ts'
+export { PostgresVFS, type PostgresVFSOptions } from './vfs/postgres/postgres.ts'
+export { PostgresStore } from './vfs/postgres/store.ts'
+export { MongoDBVFS, type MongoDBVFSOptions } from './vfs/mongodb/mongodb.ts'
+export { MongoDBStore } from './vfs/mongodb/store.ts'
+export { LanceDBVFS, type LanceDBVFSOptions } from './vfs/lancedb/lancedb.ts'
+export { LanceDBStore } from './vfs/lancedb/store.ts'
+export { SlackVFS, type SlackVFSState } from './vfs/slack/slack.ts'
+export { normalizeSlackConfig, redactSlackConfig } from '@struktoai/mirage-core/vfs/slack/config'
+export type { SlackConfig, SlackConfigRedacted } from '@struktoai/mirage-core/vfs/slack/config'
+export { SSHVFS, type SSHVFSState } from './vfs/ssh/ssh.ts'
 export {
   normalizeSshConfig,
   redactSshConfig,
   type SSHConfig,
   type SSHConfigRedacted,
-} from './resource/ssh/config.ts'
+} from './vfs/ssh/config.ts'
 export { SSHAccessor } from './accessor/ssh.ts'
-export { SSH_PROMPT } from './resource/ssh/prompt.ts'
+export { PROMPT as SSH_PROMPT } from './vfs/ssh/prompt.ts'
 export { SSH_COMMANDS } from './commands/builtin/ssh/index.ts'
 export { SSH_OPS } from './ops/ssh/index.ts'
 export { NextcloudAccessor } from './accessor/nextcloud.ts'
-export { NextcloudResource, type NextcloudResourceState } from './resource/nextcloud/nextcloud.ts'
+export { NextcloudVFS, type NextcloudVFSState } from './vfs/nextcloud/nextcloud.ts'
 export {
   normalizeNextcloudConfig,
   redactNextcloudConfig,
   type NextcloudConfig,
   type NextcloudConfigRedacted,
-} from './resource/nextcloud/config.ts'
-export { NEXTCLOUD_PROMPT } from './resource/nextcloud/prompt.ts'
+} from './vfs/nextcloud/config.ts'
+export { PROMPT as NEXTCLOUD_PROMPT } from './vfs/nextcloud/prompt.ts'
 export { NEXTCLOUD_COMMANDS } from './commands/builtin/nextcloud/index.ts'
 export { NEXTCLOUD_OPS } from './ops/nextcloud/index.ts'
 export { buildDeltaHook as buildNextcloudDeltaHook, NextcloudWalk } from './core/nextcloud/watch.ts'
-export { DiscordResource, type DiscordResourceState } from './resource/discord/discord.ts'
+export { DiscordVFS, type DiscordVFSState } from './vfs/discord/discord.ts'
 export {
   normalizeDiscordConfig,
   redactDiscordConfig,
-} from '@struktoai/mirage-core/core/discord/config'
+} from '@struktoai/mirage-core/vfs/discord/config'
 export type {
   DiscordConfig,
   DiscordConfigRedacted,
-} from '@struktoai/mirage-core/core/discord/config'
-export { TrelloResource, type TrelloResourceState } from './resource/trello/trello.ts'
+} from '@struktoai/mirage-core/vfs/discord/config'
+export { TrelloVFS, type TrelloVFSState } from '@struktoai/mirage-core/vfs/trello/trello'
 export {
   normalizeTrelloConfig,
   redactTrelloConfig,
   type TrelloConfig,
   type TrelloConfigRedacted,
-} from './resource/trello/config.ts'
-export { LinearResource, type LinearResourceState } from './resource/linear/linear.ts'
+} from '@struktoai/mirage-core/vfs/trello/config'
+export { LinearVFS, type LinearVFSState } from '@struktoai/mirage-core/vfs/linear/linear'
 export {
   normalizeLinearConfig,
   redactLinearConfig,
 } from '@struktoai/mirage-core/core/linear/config'
 export type { LinearConfig, LinearConfigRedacted } from '@struktoai/mirage-core/core/linear/config'
-export { NotionResource, type NotionResourceState } from './resource/notion/notion.ts'
+export { NotionVFS, type NotionVFSState } from './vfs/notion/notion.ts'
 export {
   normalizeNotionConfig,
   redactNotionConfig,
 } from '@struktoai/mirage-core/core/notion/config'
 export type { NotionConfig, NotionConfigRedacted } from '@struktoai/mirage-core/core/notion/config'
-// Named rather than left to the `export *` above: the three resources come
+// Named rather than left to the `export *` above: the three VFS classes come
 // through it, but core's front door carries no config type of theirs, so
 // dropping these lines would take them out of this package's API too.
-export type { Mem0Config } from '@struktoai/mirage-core/resource/mem0/config'
+export {
+  normalizeAirtableConfig,
+  redactAirtableConfig,
+} from '@struktoai/mirage-core/core/airtable/config'
+export type {
+  AirtableConfig,
+  AirtableConfigRedacted,
+} from '@struktoai/mirage-core/core/airtable/config'
+export type { AirtableVFSState } from '@struktoai/mirage-core/vfs/airtable/airtable'
+export type { Mem0Config } from '@struktoai/mirage-core/vfs/mem0/config'
 export type { OneDriveConfig } from '@struktoai/mirage-core/accessor/onedrive'
 export type { SharePointConfig } from '@struktoai/mirage-core/accessor/sharepoint'
-export { LangfuseResource, type LangfuseResourceState } from './resource/langfuse/langfuse.ts'
-export { JaegerResource, type JaegerResourceState } from './resource/jaeger/jaeger.ts'
+export { LangfuseVFS, type LangfuseVFSState } from '@struktoai/mirage-core/vfs/langfuse/langfuse'
+export { JaegerVFS, type JaegerVFSState } from './vfs/jaeger/jaeger.ts'
 export {
   normalizeLangfuseConfig,
   redactLangfuseConfig,
   type LangfuseConfig,
   type LangfuseConfigRedacted,
-} from './resource/langfuse/config.ts'
-export { GitHubResource, type GitHubResourceState } from './resource/github/github.ts'
+} from '@struktoai/mirage-core/vfs/langfuse/config'
+export { GitHubVFS, type GitHubVFSState } from '@struktoai/mirage-core/vfs/github/github'
 export {
   normalizeGitHubConfig,
   redactGitHubConfig,
   type GitHubConfig,
   type GitHubConfigRedacted,
-} from './resource/github/config.ts'
-export { GDocsResource, type GDocsResourceState } from './resource/gdocs/gdocs.ts'
+} from '@struktoai/mirage-core/core/github/config'
+export { GDocsVFS, type GDocsVFSState } from '@struktoai/mirage-core/vfs/gdocs/gdocs'
 export {
   normalizeGDocsConfig,
   redactGDocsConfig,
   type GDocsConfig,
   type GDocsConfigRedacted,
-} from './resource/gdocs/config.ts'
-export { GSheetsResource, type GSheetsResourceState } from './resource/gsheets/gsheets.ts'
+} from '@struktoai/mirage-core/vfs/gdocs/config'
+export { GSheetsVFS, type GSheetsVFSState } from '@struktoai/mirage-core/vfs/gsheets/gsheets'
 export {
   normalizeGSheetsConfig,
   redactGSheetsConfig,
   type GSheetsConfig,
   type GSheetsConfigRedacted,
-} from './resource/gsheets/config.ts'
-export { GSlidesResource, type GSlidesResourceState } from './resource/gslides/gslides.ts'
+} from '@struktoai/mirage-core/vfs/gsheets/config'
+export { GSlidesVFS, type GSlidesVFSState } from '@struktoai/mirage-core/vfs/gslides/gslides'
 export {
   normalizeGSlidesConfig,
   redactGSlidesConfig,
   type GSlidesConfig,
   type GSlidesConfigRedacted,
-} from './resource/gslides/config.ts'
-export { GDriveResource, type GDriveResourceState } from './resource/gdrive/gdrive.ts'
+} from '@struktoai/mirage-core/vfs/gslides/config'
+export { GDriveVFS, type GDriveVFSState } from '@struktoai/mirage-core/vfs/gdrive/gdrive'
 export {
   normalizeGDriveConfig,
   redactGDriveConfig,
   type GDriveConfig,
   type GDriveConfigRedacted,
-} from './resource/gdrive/config.ts'
-export { DropboxResource, type DropboxResourceState } from './resource/dropbox/dropbox.ts'
+} from '@struktoai/mirage-core/vfs/gdrive/config'
+export { DropboxVFS, type DropboxVFSState } from '@struktoai/mirage-core/vfs/dropbox/dropbox'
 export {
   normalizeDropboxConfig,
   redactDropboxConfig,
   type DropboxConfig,
   type DropboxConfigRedacted,
-} from './resource/dropbox/config.ts'
-export { BoxResource, type BoxResourceState } from './resource/box/box.ts'
+} from './vfs/dropbox/config.ts'
+export { BoxVFS, type BoxVFSState } from '@struktoai/mirage-core/vfs/box/box'
 export {
   normalizeBoxConfig,
   redactBoxConfig,
   type BoxConfig,
   type BoxConfigRedacted,
-} from './resource/box/config.ts'
-export { GmailResource, type GmailResourceState } from './resource/gmail/gmail.ts'
+} from '@struktoai/mirage-core/vfs/box/config'
+export { GmailVFS, type GmailVFSState } from '@struktoai/mirage-core/vfs/gmail/gmail'
 export {
   normalizeGmailConfig,
   redactGmailConfig,
   type GmailConfig,
   type GmailConfigRedacted,
-} from './resource/gmail/config.ts'
-export { GCalResource, type GCalResourceState } from './resource/gcal/gcal.ts'
+} from '@struktoai/mirage-core/vfs/gmail/config'
+export { GCalVFS, type GCalVFSState } from '@struktoai/mirage-core/vfs/gcal/gcal'
 export {
   normalizeGCalConfig,
   redactGCalConfig,
   type GCalConfig,
   type GCalConfigRedacted,
-} from './resource/gcal/config.ts'
-export { EmailResource, type EmailResourceState } from './resource/email/email.ts'
+} from '@struktoai/mirage-core/vfs/gcal/config'
+export { EmailVFS, type EmailVFSState } from './vfs/email/email.ts'
 export {
   buildEmailConfig,
   normalizeEmailConfig,
@@ -391,31 +386,42 @@ export {
   type EmailConfigRedacted,
   EMAIL_PROMPT,
   EMAIL_WRITE_PROMPT,
-} from './resource/email/index.ts'
+} from './vfs/email/index.ts'
 export { EmailAccessor } from './accessor/email.ts'
 export { EMAIL_COMMANDS } from './commands/builtin/email/index.ts'
+export { HF } from './commands/cli/builtin/hf/index.ts'
 export { HIMALAYA } from './commands/cli/builtin/himalaya/index.ts'
 export { EMAIL_OPS } from './ops/email/index.ts'
 export { DaytonaRuntime } from './runtime/sandbox/daytona/runtime.ts'
-export { LocalRuntime } from './runtime/python/local.ts'
+export { LocalRuntime } from './runtime/python/local/runtime.ts'
 export { DAYTONA_CONFIG_KEYS, type DaytonaConfig } from './runtime/sandbox/daytona/config.ts'
-export { E2BRuntime } from './runtime/sandbox/e2b/runtime.ts'
-export { E2B_CONFIG_KEYS, type E2BConfig } from './runtime/sandbox/e2b/config.ts'
+export { E2BRuntime } from '@struktoai/mirage-core/runtime/sandbox/e2b/runtime'
+export { E2B_CONFIG_KEYS, type E2BConfig } from '@struktoai/mirage-core/runtime/sandbox/e2b/config'
 export { DockerRuntime } from './runtime/sandbox/docker/runtime.ts'
 export { DOCKER_CONFIG_KEYS, type DockerConfig } from './runtime/sandbox/docker/config.ts'
+export { SandlockRuntime } from './runtime/sandbox/sandlock/runtime.ts'
+export type { SandlockConfig } from './runtime/sandbox/sandlock/config.ts'
 export { SmolvmRuntime } from './runtime/sandbox/smolvm/runtime.ts'
 export { SMOLVM_CONFIG_KEYS, type SmolvmConfig } from './runtime/sandbox/smolvm/config.ts'
+export { AppleContainerRuntime } from './runtime/sandbox/apple_container/runtime.ts'
 export {
-  buildResource,
-  knownResources,
-  register as registerResourceFactory,
-  type ResourceFactory,
-} from './resource/registry.ts'
-export { MODULE_SUFFIXES, isModulePath, loadAttr, splitRef } from './resource/loader.ts'
+  APPLE_CONTAINER_CONFIG_KEYS,
+  type AppleContainerConfig,
+} from './runtime/sandbox/apple_container/config.ts'
+export { SSHRuntime } from './runtime/sandbox/ssh/runtime.ts'
+export { SSH_RUNTIME_CONFIG_KEYS, type SSHRuntimeConfig } from './runtime/sandbox/ssh/config.ts'
+export {
+  buildVfs,
+  knownVfsNames,
+  register as registerVfsFactory,
+  type VFSFactory,
+} from './vfs/registry.ts'
+export { MODULE_SUFFIXES, isModulePath, loadAttr, splitRef } from './vfs/loader.ts'
 export { DISK_COMMANDS } from './commands/builtin/disk/index.ts'
-export { REDIS_COMMANDS } from './commands/builtin/redis/index.ts'
+export { REDIS_COMMANDS } from '@struktoai/mirage-core/commands/builtin/redis/index'
 export { GRIDFS_COMMANDS } from './commands/builtin/gridfs/index.ts'
 export {
+  absolutizeScripts,
   checkWorkspaceConfig,
   checkWorkspaceConfigFile,
   configToWorkspaceArgs,
@@ -426,3 +432,54 @@ export {
   type WorkspaceArgs,
   type WorkspaceConfigRaw,
 } from './config.ts'
+
+// The authoring surface: what a host reaches for to bring its own
+// VFS, CLI, policy or runtime, and the types the Workspace's own
+// signatures hand back. Core's barrel is the front door for a program
+// that mounts and runs; these are the doors behind it, re-exported by
+// module so a consumer of this package needs no second dependency on
+// core to reach them (`@struktoai/mirage-core/<path>` works too).
+export { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+export { op, type RegisteredOp } from '@struktoai/mirage-core/ops/registry'
+export { makeGenericOps } from '@struktoai/mirage-core/ops/generic/factory'
+export { makeGenericCommands } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
+export { FlagView } from '@struktoai/mirage-core/commands/spec/flag_view'
+export { type FlagValue, UsageStyle } from '@struktoai/mirage-core/commands/spec/types'
+export type { CLIDoors } from '@struktoai/mirage-core/commands/cli/types'
+export { UsageError } from '@struktoai/mirage-core/commands/errors'
+export { PolicyDenied, PolicyError } from '@struktoai/mirage-core/policy/errors'
+export {
+  type Ask,
+  type AskHandler,
+  type Decision,
+  Decisions,
+  type Deny,
+  type Explanation,
+  Outcome,
+  Scope,
+  type SessionContext,
+} from '@struktoai/mirage-core/policy/index'
+export { LanguageRuntime } from '@struktoai/mirage-core/runtime/language'
+export { RemoteSandbox } from '@struktoai/mirage-core/runtime/sandbox/base'
+export type { HomeConfig, RuntimeConfig } from '@struktoai/mirage-core/runtime/config'
+export { knownRuntimes, registerRuntime } from '@struktoai/mirage-core/runtime/table'
+export { type MountResolver, PrefixResolver } from '@struktoai/mirage-core/runtime/resolver'
+export { RuntimeVFS } from '@struktoai/mirage-core/runtime/vfs'
+export { CrossMountError } from '@struktoai/mirage-core/runtime/errors'
+export type { RunArgs, RuntimeReach } from '@struktoai/mirage-core/runtime/types'
+export {
+  DenyResult,
+  type RouteContext,
+  type RoutePolicy,
+  RouteResult,
+} from '@struktoai/mirage-core/runtime/routing/types'
+export {
+  type ExecuteOptions,
+  ExecuteResult,
+  type WorkspaceOptions,
+} from '@struktoai/mirage-core/workspace/workspace/types'
+export { Ops } from '@struktoai/mirage-core/ops/ops'
+export { Namespace } from '@struktoai/mirage-core/workspace/mount/namespace/namespace'
+
+export { WandbVFS } from '@struktoai/mirage-core/vfs/wandb/wandb'
+export { normalizeWandbConfig, type WandbConfig } from '@struktoai/mirage-core/core/wandb/config'

@@ -12,36 +12,35 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import time
-from pathlib import Path
+import os
+from functools import partial
 
 import aiofiles
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.context import invalidate_after_write
-from mirage.observe.context import record
+from mirage.core.disk.utils import open_flags, resolve_inside
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
 
 
-def _resolve(root: Path, path: str) -> Path:
-    relative = path.lstrip("/")
-    resolved = (root / relative).resolve()
-    resolved.relative_to(root)
-    return resolved
-
-
-async def truncate(accessor: DiskAccessor, path_spec: PathSpec,
-                   length: int) -> None:
-    path = path_spec.mount_path
-    start_ms = int(time.monotonic() * 1000)
-    p = _resolve(accessor.root, path)
+async def truncate(
+    accessor: DiskAccessor,
+    path_spec: PathSpec,
+    length: int,
+    no_create: bool = False,
+) -> None:
+    timer = start_op()
+    p = await resolve_inside(accessor.root, path_spec)
+    flags = os.O_WRONLY | (0 if no_create else os.O_CREAT)
     try:
-        async with aiofiles.open(p, "rb") as f:
-            data = await f.read()
+        async with aiofiles.open(
+            p, "wb", opener=partial(open_flags, flags)
+        ) as f:
+            await f.truncate(length)
     except FileNotFoundError:
-        data = b""
-    result = data[:length].ljust(length, b"\0")
-    async with aiofiles.open(p, "wb") as f:
-        await f.write(result)
-    record("truncate", path, "disk", 0, start_ms)
+        if no_create:
+            return
+        raise
+    record("truncate", path_spec.virtual, "disk", 0, timer)
     await invalidate_after_write(path_spec)

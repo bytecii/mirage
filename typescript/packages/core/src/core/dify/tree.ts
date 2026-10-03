@@ -14,92 +14,25 @@
 
 import type { DifyAccessor } from '../../accessor/dify.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
-import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { gnuBasename, parent } from '../../utils/path.ts'
-import { rstripSlash, stripSlash } from '../../utils/slash.ts'
+import { epochToIso } from '../../utils/dates.ts'
+import { gnuBasename } from '../../utils/path.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { dirRows, dropCollisions, normalizeSlug, scalarString } from '../slug_tree/rows.ts'
+import { SlugTree } from '../slug_tree/tree.ts'
+import type { DirRows } from '../slug_tree/types.ts'
 import { listAllDocuments } from './client.ts'
-import { compareCodePoints } from '../../utils/sort.ts'
 
-interface CollectedFiles {
-  files: Map<string, Record<string, unknown>>
-  rawSlugs: Map<string, string>
-  hasSlugs: Map<string, boolean>
-}
+export const SLUG_NOUN = 'Dify document slug'
 
-export function scalarString(value: unknown): string | null {
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return null
-}
-
-export async function ensureTree(
-  accessor: DifyAccessor,
-  index: IndexCacheStore,
-  prefix = '',
-): Promise<void> {
-  const rootKey = mountRoot(prefix)
-  const listing = await index.listDir(rootKey)
-  if (listing.entries !== undefined && listing.entries !== null) return
-
-  const documents = await listAllDocuments(accessor)
-  const dirEntries = buildDirEntries(documents, prefix, accessor.config.slugMetadataName)
-  for (const directory of [...dirEntries.keys()].sort(compareCodePoints)) {
-    const entries = dirEntries.get(directory) ?? []
-    const sorted = [...entries].sort((a, b) => compareCodePoints(a[0], b[0]))
-    await index.setDir(directory, sorted)
-  }
+async function loadTree(accessor: DifyAccessor, prefix: string): Promise<DirRows> {
+  return buildDirEntries(await listAllDocuments(accessor), prefix, accessor.config.slugMetadataName)
 }
 
 export function buildDirEntries(
   documents: Record<string, unknown>[],
   prefix: string,
   slugMetadataName = 'slug',
-): Map<string, [string, IndexEntry][]> {
-  const collected = collectFiles(documents, slugMetadataName)
-  const files = skipPathCollisions(collected.files)
-  const directories = collectDirectories(new Set(files.keys()))
-  const dirEntries = new Map<string, [string, IndexEntry][]>()
-  for (const directory of directories) {
-    dirEntries.set(virtualPath(directory, prefix), [])
-  }
-
-  for (const directory of [...directories].sort(compareCodePoints)) {
-    if (directory === '/') continue
-    const entry = new IndexEntry({
-      id: stripSlash(directory),
-      name: gnuBasename(directory),
-      resourceType: 'folder',
-    })
-    dirEntries.get(virtualPath(parent(directory), prefix))?.push([entry.name, entry])
-  }
-
-  for (const path of [...files.keys()].sort(compareCodePoints)) {
-    const document = files.get(path) ?? {}
-    const entry = new IndexEntry({
-      id: scalarString(document.id) ?? '',
-      name: gnuBasename(path),
-      resourceType: 'file',
-      size: extractDocumentSize(document),
-      remoteTime: timestampToIso(document.created_at),
-      extra: {
-        slug: stripSlash(path),
-        slug_metadata_name: slugMetadataName,
-        raw_slug: collected.rawSlugs.get(path) ?? '',
-        has_slug: collected.hasSlugs.get(path) ?? false,
-        tokens: document.tokens ?? null,
-        indexing_status: document.indexing_status ?? null,
-        data_source_type: document.data_source_type ?? null,
-      },
-    })
-    dirEntries.get(virtualPath(parent(path), prefix))?.push([entry.name, entry])
-  }
-  return dirEntries
-}
-
-function collectFiles(
-  documents: Record<string, unknown>[],
-  slugMetadataName: string,
-): CollectedFiles {
+): DirRows {
   const files = new Map<string, Record<string, unknown>>()
   const rawSlugs = new Map<string, string>()
   const hasSlugs = new Map<string, boolean>()
@@ -113,7 +46,7 @@ function collectFiles(
         throw new Error('missing document id')
       }
       ;[slug, hasSlug] = extractSlug(document, slugMetadataName)
-      path = normalizeSlug(slug)
+      path = normalizeSlug(slug, SLUG_NOUN)
     } catch (err) {
       console.warn(`Skipping invalid Dify document ${documentId ?? '?'}: ${String(err)}`)
       continue
@@ -129,7 +62,36 @@ function collectFiles(
     rawSlugs.set(path, slug)
     hasSlugs.set(path, hasSlug)
   }
-  return { files, rawSlugs, hasSlugs }
+  const kept = dropCollisions(files, (ancestor, path) => {
+    console.warn(
+      `Skipping Dify document path collision: document ${scalarString(files.get(ancestor)?.id) ?? '?'} ` +
+        `uses file path '${stripSlash(ancestor)}' but document ${scalarString(files.get(path)?.id) ?? '?'} ` +
+        `requires it as a directory prefix.`,
+    )
+  })
+  return dirRows(
+    kept,
+    prefix,
+    // No size: the API's is the uploaded source file (a PDF, say), not the
+    // segment text this mount serves, so it rides in extra.
+    (path, document) =>
+      new IndexEntry({
+        id: scalarString(document.id) ?? '',
+        name: gnuBasename(path),
+        resourceType: 'file',
+        remoteTime: epochText(document.created_at) ?? '',
+        extra: {
+          slug: stripSlash(path),
+          source_size: extractDocumentSize(document),
+          slug_metadata_name: slugMetadataName,
+          raw_slug: rawSlugs.get(path) ?? '',
+          has_slug: hasSlugs.get(path) ?? false,
+          tokens: document.tokens ?? null,
+          indexing_status: document.indexing_status ?? null,
+          data_source_type: document.data_source_type ?? null,
+        },
+      }),
+  )
 }
 
 export function extractSlug(
@@ -157,55 +119,6 @@ export function extractSlug(
   return [name, false]
 }
 
-export function normalizeSlug(value: string): string {
-  const parts = stripSlash(value)
-    .split('/')
-    .filter((part) => part !== '')
-  if (parts.length === 0) {
-    throw new Error('Invalid empty Dify document slug.')
-  }
-  for (const part of parts) {
-    if (part === '.' || part === '..') {
-      throw new Error(`Invalid Dify document slug segment: '${part}'`)
-    }
-  }
-  return '/' + parts.join('/')
-}
-
-function skipPathCollisions(
-  files: Map<string, Record<string, unknown>>,
-): Map<string, Record<string, unknown>> {
-  const safe = new Map(files)
-  const paths = new Set(files.keys())
-  for (const path of [...paths].sort(compareCodePoints)) {
-    const parts = stripSlash(path).split('/')
-    for (let i = 1; i < parts.length; i++) {
-      const ancestor = '/' + parts.slice(0, i).join('/')
-      if (paths.has(ancestor)) {
-        console.warn(
-          `Skipping Dify document path collision: document ${scalarString(files.get(ancestor)?.id) ?? '?'} ` +
-            `uses file path '${stripSlash(ancestor)}' but document ${scalarString(files.get(path)?.id) ?? '?'} ` +
-            `requires it as a directory prefix.`,
-        )
-        safe.delete(path)
-        break
-      }
-    }
-  }
-  return safe
-}
-
-function collectDirectories(paths: ReadonlySet<string>): Set<string> {
-  const directories = new Set<string>(['/'])
-  for (const path of paths) {
-    const parts = stripSlash(path).split('/')
-    for (let i = 1; i < parts.length; i++) {
-      directories.add('/' + parts.slice(0, i).join('/'))
-    }
-  }
-  return directories
-}
-
 export function extractDocumentSize(document: Record<string, unknown>): number | null {
   for (const candidate of [document.data_source_detail_dict, document.data_source_info]) {
     if (candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)) {
@@ -219,20 +132,10 @@ export function extractDocumentSize(document: Record<string, unknown>): number |
   return null
 }
 
-export function timestampToIso(value: unknown): string {
-  if (typeof value === 'number') return new Date(value * 1000).toISOString()
-  if (typeof value === 'string') return value
-  return ''
+/** A Dify timestamp (epoch seconds) as `YYYY-MM-DDTHH:MM:SSZ`; a string passes through. */
+export function epochText(value: unknown): string | null {
+  if (typeof value === 'number') return epochToIso(value)
+  return typeof value === 'string' ? value : null
 }
 
-function mountRoot(prefix: string): string {
-  const stripped = rstripSlash(prefix)
-  return stripped !== '' ? stripped : '/'
-}
-
-function virtualPath(path: string, prefix: string): string {
-  const root = mountRoot(prefix)
-  if (path === '/') return root
-  if (root === '/') return path
-  return root + path
-}
+export const DIFY_TREE = new SlugTree<DifyAccessor>(loadTree)

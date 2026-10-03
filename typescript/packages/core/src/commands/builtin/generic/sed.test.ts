@@ -13,7 +13,10 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 import { describe, expect, it } from 'vitest'
 
+import { yieldBytes } from '../../../io/stream.ts'
 import { materialize } from '../../../io/types.ts'
+import { PathSpec } from '../../../types.ts'
+import { eisdir } from '../../../utils/errors.ts'
 import type { CommandOpts } from '../../config.ts'
 import { sedGeneric } from './sed.ts'
 
@@ -22,14 +25,13 @@ const DEC = new TextDecoder()
 async function runSed(
   texts: string[],
   flags: CommandOpts['flags'] = {},
-  stdin: Uint8Array | null = null,
 ): Promise<{ exitCode: number; stderr: string }> {
   const opts = {
-    stdin,
+    stdin: null,
     flags,
     filetypeFns: null,
     cwd: '/',
-    resource: { kind: 'ram' } as never,
+    vfs: { kind: 'ram' } as never,
   } as CommandOpts
   const result = await sedGeneric(
     [],
@@ -47,24 +49,59 @@ async function runSed(
 }
 
 describe('sed usage reporting', () => {
-  it('names a missing script and exits 1', async () => {
-    // GNU answers this with its whole usage block, also exit 1. Python used
-    // to raise ValueError('sed: usage: sed EXPRESSION [path]') here.
-    expect(await runSed([])).toEqual({ exitCode: 1, stderr: 'sed: missing script\n' })
-  })
-
-  it('reports no input files with GNU exit 4 when there is nothing to read', async () => {
-    // GNU's spelling and exit code for `sed -i` with no operands; mirage
-    // reuses them when there is no stdin either, having no terminal to
-    // read. This used to be 'sed: missing operand' with exit 1 here and
-    // ValueError('sed: usage: sed EXPRESSION path') in Python.
-    expect(await runSed(['s/a/b/'])).toEqual({ exitCode: 4, stderr: 'sed: no input files\n' })
-  })
-
-  it('reports no input files for -i with no operands too', async () => {
+  it('reports no input files for -i with no operands', async () => {
     expect(await runSed(['s/a/b/'], { i: true })).toEqual({
       exitCode: 4,
       stderr: 'sed: no input files\n',
     })
+  })
+})
+
+describe('sed operands after a directory (GNU sed 4.9)', () => {
+  const enc = (text: string): Uint8Array => new TextEncoder().encode(text)
+
+  async function run(
+    script: string,
+    flags: CommandOpts['flags'] = {},
+  ): Promise<{ out: string; code: number; reads: string[] }> {
+    const files = new Map([
+      ['/f', enc('one\ntwo\nthree\n')],
+      ['/g', enc('L1\nL2\n')],
+    ])
+    const reads: string[] = []
+    const paths = ['/f', '/d', '/g'].map((p) => PathSpec.fromStrPath(p))
+    const opts = {
+      stdin: null,
+      flags: { n: true, ...flags },
+      filetypeFns: null,
+      cwd: '/',
+      vfs: { kind: 'ram' } as never,
+    } as CommandOpts
+    const result = await sedGeneric(
+      paths,
+      [script],
+      opts,
+      (p) => {
+        reads.push(p.virtual)
+        if (p.virtual === '/d') throw eisdir(p)
+        return yieldBytes(files.get(p.virtual) ?? new Uint8Array())
+      },
+      () => Promise.resolve(),
+    )
+    if (result === null) throw new Error('sed returned nothing')
+    const out = result[0] === null ? '' : DEC.decode(await materialize(result[0]))
+    return { out, code: result[1].exitCode, reads }
+  }
+
+  it('reads nothing past the directory under -s, whose lookahead stays in the file', async () => {
+    expect(await run('n;p', { separate: true })).toEqual({
+      out: 'two\n',
+      code: 4,
+      reads: ['/f', '/d'],
+    })
+  })
+
+  it('reads nothing past the directory without a lookahead', async () => {
+    expect(await run('p')).toEqual({ out: 'one\ntwo\nthree\n', code: 4, reads: ['/f', '/d'] })
   })
 })

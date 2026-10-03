@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { ObserverStore } from '../../observe/store.ts'
-import { normalizeKeyPrefix, type S3Config } from '../../resource/s3/config.ts'
+import { normalizeKeyPrefix, type S3Config } from '../../vfs/s3/config.ts'
 import type { NamespaceStore } from '../mount/namespace/store.ts'
 import { S3RecordClient } from '../record/s3.ts'
 import { S3SessionStore } from '../session/s3.ts'
@@ -92,6 +92,12 @@ export class S3WorkspaceStateStore extends WorkspaceStateStore {
     expectedGeneration: number,
   ): Promise<boolean> {
     return this.meta.casPut(workspaceId, fields, expectedGeneration)
+  }
+
+  protected async forgetSelf(workspaceId: string): Promise<void> {
+    await this.sessionTables.get(workspaceId)?.close()
+    this.sessionTables.delete(workspaceId)
+    await this.meta.delete([workspaceId])
   }
 
   protected async closeSelf(): Promise<void> {

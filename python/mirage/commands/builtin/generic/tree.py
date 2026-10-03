@@ -7,12 +7,12 @@ from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
-from mirage.context import mount_allowed
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import MountView, ReaddirPath, StatPath
 from mirage.types import FileStat, FileType, PathSpec, ReaddirFn
-from mirage.utils.errors import WALK_ERRORS
+from mirage.utils.errors import MISS_ERRORS, WALK_ERRORS
 from mirage.utils.fnmatch import fnmatch
 from mirage.utils.key_prefix import rekey
 
@@ -26,9 +26,12 @@ _INDENT = "    "
 Readdir = Callable[[PathSpec, IndexCacheStore | None], Awaitable[list[str]]]
 Stat = Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]]
 
+UNOPENABLE_MARK = "  [error opening dir]"
 
-async def _cross_readdir(readdir_path: ReaddirPath, path: PathSpec,
-                         index: IndexCacheStore | None) -> list[str]:
+
+async def _cross_readdir(
+    readdir_path: ReaddirPath, path: PathSpec, index: IndexCacheStore | None
+) -> list[str]:
     """List a directory that belongs to another mount.
 
     Args:
@@ -40,8 +43,22 @@ async def _cross_readdir(readdir_path: ReaddirPath, path: PathSpec,
     return await readdir_path(path.virtual)
 
 
-async def _cross_stat(stat_path: StatPath, path: PathSpec,
-                      index: IndexCacheStore | None) -> FileStat:
+async def _not_crossed(
+    path: PathSpec, index: IndexCacheStore | None
+) -> list[str]:
+    """List a mount point ``-x`` keeps the walk out of: empty, the way
+    GNU tree draws a directory on another filesystem.
+
+    Args:
+        path (PathSpec): the mount point.
+        index (IndexCacheStore | None): unused.
+    """
+    return []
+
+
+async def _cross_stat(
+    stat_path: StatPath, path: PathSpec, index: IndexCacheStore | None
+) -> FileStat:
     """Stat an entry that belongs to another mount.
 
     Args:
@@ -63,14 +80,12 @@ def _child_mounts(mounts: MountView | None, directory: str) -> list[str]:
     somebody else. Either way the name has to come from the mount table,
     the same way `ls` injects it.
 
-    Session-filtered, because a crossing entry is drawn from the mount
-    table alone: its row is synthesized as a directory without asking
-    any backend, so the dispatcher never gets the chance to refuse it
-    and an ungranted mount's name would reach the drawing. `ls` filters
-    the same fact through `child_mount_names`. Note this is the opposite
-    of what `du` wants from the same view: there an ungranted mount
-    still shadows the parent's keys, so its prefix must stay in the
-    list even though the walk never enters it.
+    A crossing entry's row is drawn from the mount table alone: it is
+    synthesized as a directory without asking any backend, so the
+    dispatcher never gets the chance to refuse it. `tree` names the
+    boundary rather than avoiding it, so it reads the visible list; `du`
+    reads the other one from the same view, because there a hidden mount
+    still shadows the parent's keys and its prefix has to stay.
 
     Args:
         mounts (MountView | None): the boundary facts.
@@ -80,8 +95,9 @@ def _child_mounts(mounts: MountView | None, directory: str) -> list[str]:
         return []
     base = directory.rstrip("/")
     return [
-        root for root in mounts.descendants(directory)
-        if posixpath.dirname(root) == (base or "/") and mount_allowed(root)
+        root
+        for root in mounts.visible_descendants(directory)
+        if posixpath.dirname(root) == (base or "/")
     ]
 
 
@@ -102,33 +118,57 @@ async def _walk(
     mounts: MountView | None = None,
     cross_readdir: Readdir | None = None,
     cross_stat: Stat | None = None,
-) -> tuple[list[str], int, int]:
+) -> tuple[list[str], int, int, int]:
+    """One directory's lines, its counts, and how many directories in
+    its subtree (itself included) could not be opened.
+
+    A directory the walk could not open (a rule refused it below the
+    operand) contributes no lines and counts itself, so the caller
+    marks its own line the way GNU does and the run exits 2; the
+    refusal itself is kept in ``warnings`` for the root case, which has
+    no line to mark.
+    """
     lines: list[str] = []
     dirs = 0
     files = 0
+    unopened = 0
+    # The mount table is read before the backend, not merged after it. A
+    # directory that exists only because mounts sit under it (`/repos`
+    # when `/repos/alpha` is mounted) has no backend to list it, so the
+    # readdir raises and a merge below it never runs: `tree` reported the
+    # one path whose children it could name for certain as unopenable.
+    child_mounts = _child_mounts(mounts, path.virtual)
     try:
         entries = sorted(await readdir(path, index))
     except WALK_ERRORS as exc:
-        warnings.append(f"tree: '{path.raw_path}': {exc}")
-        return lines, dirs, files
-    child_mounts = _child_mounts(mounts, path.virtual)
+        # An absence only. A directory the backend refused (EACCES,
+        # ENOTSUP) is there and holds data, so it stays a warning and an
+        # unopened row even when mounts sit under it; swallowing that to
+        # draw the children would report a readable tree that is not.
+        if not (child_mounts and isinstance(exc, MISS_ERRORS)):
+            warnings.append(f"tree: '{path.raw_path}': {exc}")
+            return lines, dirs, files, 1
+        entries = []
     if child_mounts:
         entries = sorted(set(entries) | set(child_mounts))
 
     filtered: list[tuple[PathSpec, FileStat, bool]] = []
     for entry in entries:
-        entry_spec = PathSpec(virtual=entry,
-                              directory=entry,
-                              resolved=False,
-                              resource_path=rekey(path.virtual,
-                                                  path.resource_path, entry))
+        entry_spec = PathSpec(
+            virtual=entry,
+            directory=entry,
+            resolved=False,
+            vfs_path=rekey(path.virtual, path.vfs_path, entry),
+        )
         crossing = entry in child_mounts and cross_readdir is not None
         if crossing:
             # The mount table already says this is a directory, and the
             # backend serving it may not stat its own root (an empty
             # mount, or a prefix store with no marker object).
-            s = FileStat(name=posixpath.basename(entry.rstrip("/")),
-                         type=FileType.DIRECTORY)
+            s = FileStat(
+                name=posixpath.basename(entry.rstrip("/")),
+                type=FileType.DIRECTORY,
+            )
         else:
             try:
                 s = await stat(entry_spec, index)
@@ -157,31 +197,40 @@ async def _walk(
         if max_depth is not None and depth + 1 >= max_depth:
             continue
         extension = _INDENT if is_last else _VERTICAL
-        # Past a mount root the subtree belongs to another resource, so
+        # Past a mount root the subtree belongs to another VFS, so
         # the rest of this branch reads through the dispatcher. Deeper
         # mounts under it need no second switch: the dispatcher already
         # routes every path to its owner.
         sub_readdir = cross_readdir if crossing and cross_readdir else readdir
         sub_stat = cross_stat if crossing and cross_stat else stat
-        sub, sub_dirs, sub_files = await _walk(entry_spec,
-                                               sub_readdir,
-                                               sub_stat,
-                                               prefix=prefix + extension,
-                                               depth=depth + 1,
-                                               max_depth=max_depth,
-                                               show_hidden=show_hidden,
-                                               ignore_pattern=ignore_pattern,
-                                               dirs_only=dirs_only,
-                                               match_pattern=match_pattern,
-                                               warnings=warnings,
-                                               index=index,
-                                               mounts=mounts,
-                                               cross_readdir=cross_readdir,
-                                               cross_stat=cross_stat)
+        sub, sub_dirs, sub_files, sub_unopened = await _walk(
+            entry_spec,
+            sub_readdir,
+            sub_stat,
+            prefix=prefix + extension,
+            depth=depth + 1,
+            max_depth=max_depth,
+            show_hidden=show_hidden,
+            ignore_pattern=ignore_pattern,
+            dirs_only=dirs_only,
+            match_pattern=match_pattern,
+            warnings=warnings,
+            index=index,
+            mounts=mounts,
+            cross_readdir=cross_readdir,
+            cross_stat=cross_stat,
+        )
+        if sub_unopened and not sub:
+            # The child itself could not be opened (one that opened but
+            # holds an unopenable grandchild lists at least that line):
+            # GNU marks it inline, on the directory's own line, and
+            # still counts it.
+            lines[-1] += UNOPENABLE_MARK
         lines.extend(sub)
         dirs += sub_dirs
         files += sub_files
-    return lines, dirs, files
+        unopened += sub_unopened
+    return lines, dirs, files, unopened
 
 
 def _summary(dirs: int, files: int, dirs_only: bool) -> str:
@@ -192,8 +241,9 @@ def _summary(dirs: int, files: int, dirs_only: bool) -> str:
     return f"{dirs} {dir_word}, {files} {file_word}"
 
 
-def _unopenable(root_label: str, dirs_only: bool, files: int,
-                exit_code: int) -> tuple[bytes, IOResult]:
+def _unopenable(
+    root_label: str, dirs_only: bool, files: int, exit_code: int
+) -> tuple[bytes, IOResult]:
     """GNU's inline marker for a root it could not open.
 
     ``tree`` prints the marker and nothing on stderr, so the exit code and
@@ -208,8 +258,9 @@ def _unopenable(root_label: str, dirs_only: bool, files: int,
         exit_code (int): process exit status.
     """
     body = [
-        f"{root_label}  [error opening dir]", "",
-        _summary(0, files, dirs_only)
+        f"{root_label}{UNOPENABLE_MARK}",
+        "",
+        _summary(0, files, dirs_only),
     ]
     return format_records(body), IOResult(exit_code=exit_code)
 
@@ -228,6 +279,7 @@ async def tree(
     stat_path: StatPath | None = None,
     readdir_path: ReaddirPath | None = None,
     mounts: MountView | None = None,
+    one_file_system: bool = False,
 ) -> tuple[bytes, IOResult]:
     """Render one directory tree, GNU ``tree``'s drawing and summary.
 
@@ -253,6 +305,7 @@ async def tree(
         readdir_path (ReaddirPath | None): dispatcher-backed readdir,
             which is how a subtree on another mount is read at all.
         mounts (MountView | None): where the mount boundaries are.
+        one_file_system (bool): -x, draw a mount point but nothing in it.
     """
     warnings: list[str] = []
     root_label = path.raw_path or path.virtual
@@ -269,25 +322,33 @@ async def tree(
             return _unopenable(root_label, dirs_only, 0, 2)
         if start.type != FileType.DIRECTORY:
             return _unopenable(root_label, dirs_only, 1, 0)
-    cross_readdir = (partial(_cross_readdir, readdir_path)
-                     if readdir_path is not None else None)
-    cross_stat = (partial(_cross_stat, stat_path)
-                  if stat_path is not None else None)
-    lines, dirs, files = await _walk(path,
-                                     readdir,
-                                     stat,
-                                     prefix="",
-                                     depth=0,
-                                     max_depth=max_depth,
-                                     show_hidden=show_hidden,
-                                     ignore_pattern=ignore_pattern,
-                                     dirs_only=dirs_only,
-                                     match_pattern=match_pattern,
-                                     warnings=warnings,
-                                     index=index,
-                                     mounts=mounts,
-                                     cross_readdir=cross_readdir,
-                                     cross_stat=cross_stat)
+    cross_readdir: Readdir | None = (
+        partial(_cross_readdir, readdir_path)
+        if readdir_path is not None
+        else None
+    )
+    if cross_readdir is not None and one_file_system:
+        cross_readdir = _not_crossed
+    cross_stat = (
+        partial(_cross_stat, stat_path) if stat_path is not None else None
+    )
+    lines, dirs, files, unopened = await _walk(
+        path,
+        readdir,
+        stat,
+        prefix="",
+        depth=0,
+        max_depth=max_depth,
+        show_hidden=show_hidden,
+        ignore_pattern=ignore_pattern,
+        dirs_only=dirs_only,
+        match_pattern=match_pattern,
+        warnings=warnings,
+        index=index,
+        mounts=mounts,
+        cross_readdir=cross_readdir,
+        cross_stat=cross_stat,
+    )
     # GNU signals an unopenable path with the inline "[error opening dir]"
     # marker and exit 2, and writes nothing to stderr. `warnings` therefore
     # only decides the marker; emitting it would diverge. With stat_path
@@ -300,7 +361,9 @@ async def tree(
     # count is omitted under -d).
     root_dirs = dirs + 1 if lines else 0
     body = [root_label] + lines + ["", _summary(root_dirs, files, dirs_only)]
-    return format_records(body), IOResult()
+    # A directory below the root it could not open is marked inline and
+    # makes the run exit 2, as GNU does, with nothing on stderr.
+    return format_records(body), IOResult(exit_code=2 if unopened else 0)
 
 
 __all__ = ["tree"]
@@ -313,6 +376,7 @@ class TreeFlags:
     ignore_pattern: str | None = None
     dirs_only: bool = False
     match_pattern: str | None = None
+    one_file_system: bool = False
 
 
 def parse_flags(flags: Mapping[str, FlagValue]) -> TreeFlags:
@@ -324,6 +388,7 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> TreeFlags:
         ignore_pattern=fl.as_str("args_I"),
         dirs_only=fl.as_bool("d"),
         match_pattern=fl.as_str("P"),
+        one_file_system=fl.as_bool("x"),
     )
 
 
@@ -335,15 +400,18 @@ async def tree_generic(
     stat: Stat,
 ) -> tuple[ByteSource | None, IOResult]:
     parsed = parse_flags(opts.flags)
-    return await tree(paths[0],
-                      readdir=readdir,
-                      stat=stat,
-                      max_depth=parsed.max_depth,
-                      show_hidden=parsed.show_hidden,
-                      ignore_pattern=parsed.ignore_pattern,
-                      dirs_only=parsed.dirs_only,
-                      match_pattern=parsed.match_pattern,
-                      index=opts.index,
-                      stat_path=opts.stat_path,
-                      readdir_path=opts.readdir_path,
-                      mounts=opts.ns.mounts if opts.ns is not None else None)
+    return await tree(
+        paths[0],
+        readdir=readdir,
+        stat=stat,
+        max_depth=parsed.max_depth,
+        show_hidden=parsed.show_hidden,
+        ignore_pattern=parsed.ignore_pattern,
+        dirs_only=parsed.dirs_only,
+        match_pattern=parsed.match_pattern,
+        index=opts.index,
+        stat_path=opts.stat_path,
+        readdir_path=opts.readdir_path,
+        mounts=opts.ns.mounts if opts.ns is not None else None,
+        one_file_system=parsed.one_file_system,
+    )

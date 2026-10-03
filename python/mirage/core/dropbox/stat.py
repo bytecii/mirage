@@ -23,15 +23,16 @@ from mirage.core.dropbox.paths import dropbox_path_of
 from mirage.core.dropbox.readdir import readdir
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent
-from mirage.utils.filetype import guess_type
+from mirage.utils.filetype import content_type_for_path
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 
 logger = logging.getLogger(__name__)
 
 
 def _stat_from_entry(entry: dict[str, Any]) -> FileStat:
-    modified = entry.get("server_modified") or entry.get(
-        "client_modified") or ""
+    modified = (
+        entry.get("server_modified") or entry.get("client_modified") or ""
+    )
     name = entry.get("name", "")
     entry_id = entry.get("id") or entry.get("path_display") or name
     if entry.get(".tag") == "folder":
@@ -45,7 +46,8 @@ def _stat_from_entry(entry: dict[str, Any]) -> FileStat:
     return FileStat(
         name=name,
         size=size if isinstance(size, int) else None,
-        type=guess_type(name),
+        type=FileType.FILE,
+        content=content_type_for_path(name),
         modified=modified,
         fingerprint=modified or None,
         extra={
@@ -55,13 +57,15 @@ def _stat_from_entry(entry: dict[str, Any]) -> FileStat:
     )
 
 
-async def _stat_from_api(accessor: DropboxAccessor,
-                         path: PathSpec) -> FileStat:
+async def _stat_from_api(
+    accessor: DropboxAccessor, path: PathSpec
+) -> FileStat:
     # API-truthful stat for index-less callers (unlink/rmdir
     # classification, walk fallbacks): get_metadata resolves directly.
     try:
-        entry = await get_metadata(accessor.token_manager,
-                                   dropbox_path_of(accessor, path))
+        entry = await get_metadata(
+            accessor.token_manager, dropbox_path_of(accessor, path)
+        )
     except DropboxApiError as exc:
         if exc.status == 409:
             raise enoent(path.virtual) from exc
@@ -75,8 +79,8 @@ async def stat(
     index: IndexCacheStore = NULL_INDEX,
 ) -> FileStat:
     virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    key = path.resource_path
+    prefix = mount_prefix_of(path.virtual, path.vfs_path)
+    key = path.vfs_path
     if not key:
         return FileStat(name="/", type=FileType.DIRECTORY)
     if index is NULL_INDEX:
@@ -89,15 +93,23 @@ async def stat(
         try:
             await readdir(
                 accessor,
-                PathSpec(virtual=parent_virtual,
-                         directory=parent_virtual,
-                         resource_path=mount_key(parent_virtual, prefix)),
+                PathSpec(
+                    virtual=parent_virtual,
+                    directory=parent_virtual,
+                    vfs_path=mount_key(parent_virtual, prefix),
+                ),
                 index=index,
             )
-        except (FileNotFoundError, DropboxApiError) as exc:
-            # Parent listing failed (missing dir surfaces as a 409 from
-            # the API): fall through to enoent, mirroring the TS stat.
-            logger.debug("stat populate failed for %s: %s", virtual, exc)
+        except FileNotFoundError as exc:
+            # readdir already maps a genuinely missing path to ENOENT, so
+            # catch only that. A non-409 DropboxApiError (a 5xx/429 while
+            # listing the parent) was previously swallowed here and
+            # re-answered as a destructively actionable false ENOENT; it now
+            # surfaces. NotADirectoryError (a path under a file) was never in
+            # this catch and already propagated.
+            logger.debug(
+                "stat found no parent listing for %s: %s", virtual, exc
+            )
         result = await index.get(virtual_key)
         if result.entry is None:
             raise enoent(virtual)
@@ -111,7 +123,8 @@ async def stat(
     return FileStat(
         name=result.entry.vfs_name or result.entry.name,
         size=result.entry.size,
-        type=guess_type(result.entry.vfs_name),
+        type=FileType.FILE,
+        content=content_type_for_path(result.entry.vfs_name),
         modified=result.entry.remote_time,
         fingerprint=result.entry.remote_time or None,
         extra={

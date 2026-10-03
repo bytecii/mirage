@@ -13,12 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { GitHubAccessor } from '../../../accessor/github.ts'
+import { hiddenPathsIntersect, pathRulesActive } from '../../../context/session_context.ts'
 import { find as githubFind } from '../../../core/github/find.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
+import { VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { findGeneric } from '../generic/find.ts'
-import { metadataProvision } from './_provision.ts'
+import { withPathGuards, withPolicyGuard } from '../generic_bind/adapter.ts'
+import { findWalk } from '../generic_bind/builders/find.ts'
+import { resolveGlobOf } from '../generic_bind/index.ts'
+import { IO } from './io.ts'
+import { ensureLiveTree } from '../../../core/github/tree.ts'
+
+const resolveGlob = resolveGlobOf(IO)
+const WALK_IO = withPolicyGuard(withPathGuards(IO))
 
 async function findCommand(
   accessor: GitHubAccessor,
@@ -26,13 +34,28 @@ async function findCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  return findGeneric(paths, texts, opts, (root, options) => githubFind(accessor, root, options))
+  await ensureLiveTree(accessor, opts.index ?? undefined, opts.mountPrefix ?? '')
+  // The dispatcher hands a pattern over whole; the wrapper resolves it,
+  // as python's does, before the walk names anything.
+  const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
+  // The native find classifies on the raw tree, so under hidden paths or a
+  // path rule it would answer for entries the session cannot see; the walk
+  // classifies through the guarded readdir/stat, the fork the factory
+  // builder takes. A truncated tree names only some paths and is never
+  // refetched, so it takes the same folder-by-folder walk.
+  if (
+    accessor.truncated ||
+    pathRulesActive() ||
+    resolved.some((p) => hiddenPathsIntersect(p.virtual))
+  ) {
+    return findWalk(WALK_IO, accessor, resolved, texts, opts)
+  }
+  return findGeneric(resolved, texts, opts, (root, options) => githubFind(accessor, root, options))
 }
 
 export const GITHUB_FIND = command({
   name: 'find',
-  resource: ResourceName.GITHUB,
+  vfs: VFSName.GITHUB,
   spec: specOf('find'),
   fn: findCommand,
-  provision: metadataProvision,
 })

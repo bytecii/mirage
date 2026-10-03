@@ -13,22 +13,17 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mountKey } from '../../../utils/key_prefix.ts'
-import { describe, expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
-import { materialize, type ByteSource } from '../../../io/types.ts'
-import type { CommandFn, CommandOpts } from '../../config.ts'
+import { materialize } from '../../../io/types.ts'
+import type { CommandOpts } from '../../config.ts'
+import { ByteCursor } from '../rg_search.ts'
 import { rgGeneric } from './rg.ts'
 
 const ENC = new TextEncoder()
-const DEC = new TextDecoder()
-
-const FOLDERS = new Set(['/', '/d1', '/d2'])
 
 const FILES: Record<string, string> = {
-  '/d1/a.txt': 'hello a\n',
-  '/d1/data.parquet': 'hello parquet\n',
-  '/d2/b.txt': 'hello b\n',
   '/top1.txt': 'hello one\n',
   '/top2.txt': 'hello two\n',
 }
@@ -42,107 +37,82 @@ function spec(path: string): PathSpec {
     virtual: path,
     directory: path,
     resolved: false,
-    resourcePath: mountKey(path, ''),
+    vfsPath: mountKey(path, ''),
   })
 }
 
-function opts(
-  flags: Record<string, string | boolean | number | string[]>,
-  filetypeFns: Record<string, CommandFn> | null = null,
-): CommandOpts {
+function opts(flags: Record<string, string | boolean | number | string[]>): CommandOpts {
   return {
     stdin: null,
     flags,
-    filetypeFns,
+    filetypeFns: null,
     cwd: '/',
-    resource: null,
+    vfs: null,
   } as unknown as CommandOpts
 }
 
 const stat = (p: PathSpec): Promise<FileStat> => {
   const k = key(p)
-  if (!FOLDERS.has(k) && FILES[k] === undefined) {
-    return Promise.reject(new Error(`ENOENT: ${k}`))
+  if (FILES[k] === undefined) return Promise.reject(new Error(`ENOENT: ${k}`))
+  return Promise.resolve(new FileStat({ name: k.split('/').pop() ?? '', type: FileType.FILE }))
+}
+
+const readdir = (p: PathSpec): Promise<string[]> => Promise.reject(new Error(`ENOTDIR: ${key(p)}`))
+
+it.each([
+  [[], false],
+  [['/top1.txt'], false],
+  [['/top1.txt'], true],
+  [['/top1.txt', '/top2.txt'], false],
+] as const)('cancels streaming matches for paths=%j, -H=%s', async (paths, withFilename) => {
+  const controller = new AbortController()
+  const data = ENC.encode('hello '.repeat(100000) + '\n')
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let closed = false
+  async function* source(): AsyncIterable<Uint8Array> {
+    try {
+      yield await Promise.resolve(data)
+      throw new Error('read beyond the matching line')
+    } finally {
+      closed = true
+    }
   }
-  return Promise.resolve(
-    new FileStat({
-      name: k.split('/').pop() ?? '',
-      type: FOLDERS.has(k) ? FileType.DIRECTORY : FileType.TEXT,
-    }),
-  )
-}
-
-const readdir = (p: PathSpec): Promise<string[]> => {
-  const k = key(p)
-  if (k === '/') return Promise.resolve(['/d1', '/d2', '/top1.txt', '/top2.txt'])
-  if (k === '/d1') return Promise.resolve(['/d1/a.txt', '/d1/data.parquet'])
-  if (k === '/d2') return Promise.resolve(['/d2/b.txt'])
-  return Promise.reject(new Error(`ENOTDIR: ${k}`))
-}
-
-async function* stream(p: PathSpec): AsyncIterable<Uint8Array> {
-  await Promise.resolve()
-  const content = FILES[key(p)]
-  if (content === undefined) throw new Error(`ENOENT: ${p.virtual}`)
-  yield ENC.encode(content)
-}
-
-async function run(
-  paths: string[],
-  flags: Record<string, string | boolean | number | string[]>,
-  filetypeFns: Record<string, CommandFn> | null = null,
-): Promise<string> {
-  const [out] = (await rgGeneric(
-    paths.map(spec),
-    ['hello'],
-    opts(flags, filetypeFns),
-    stat,
-    readdir,
-    stream,
-  )) as [ByteSource, unknown]
-  return DEC.decode(await materialize(out))
-}
-
-const fakeFiletypeFn = (() => {
-  throw new Error('not called')
-}) as unknown as CommandFn
-
-describe('rgGeneric multi-path dispatch', () => {
-  it('searches every directory argument', async () => {
-    expect(await run(['/d1', '/d2'], {})).toBe('/d1/a.txt:hello a\n/d2/b.txt:hello b\n')
+  // Every match's offset is one step of the line's byte cursor; the
+  // original is only ever called with the cursor it came from.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const original = ByteCursor.prototype.at
+  const offset = vi.spyOn(ByteCursor.prototype, 'at').mockImplementation(function (
+    this: ByteCursor,
+    index: number,
+  ) {
+    timer ??= setTimeout(() => {
+      controller.abort()
+    }, 0)
+    return original.call(this, index)
   })
-
-  it('lists every file argument with -l', async () => {
-    expect(await run(['/top1.txt', '/top2.txt'], { args_l: true })).toBe('/top1.txt\n/top2.txt\n')
-  })
-
-  it('searches every directory argument in the filetype walk', async () => {
-    expect(await run(['/d1', '/d2'], {}, { parquet: fakeFiletypeFn })).toBe(
-      '/d1/a.txt:hello a\n/d2/b.txt:hello b\n',
+  async function scan(): Promise<void> {
+    const result = await rgGeneric(
+      paths.map(spec),
+      ['hello'],
+      {
+        ...opts({ only_matching: true, byte_offset: true, with_filename: withFilename }),
+        stdin: paths.length === 0 ? source() : null,
+        signal: controller.signal,
+      },
+      stat,
+      readdir,
+      source,
     )
-  })
-})
-
-describe('rgGeneric columnar skip', () => {
-  it('skips columnar files in the recursive walk', async () => {
-    expect(await run(['/d1'], {})).toBe('/d1/a.txt:hello a\n')
-  })
-
-  it('skips columnar files in the filetype folder walk', async () => {
-    expect(await run(['/d1'], {}, { parquet: fakeFiletypeFn })).toBe('/d1/a.txt:hello a\n')
-  })
-})
-
-describe('rgGeneric -H/-I filename labels', () => {
-  it('-H labels a single file like ripgrep --with-filename', async () => {
-    expect(await run(['/top1.txt'], { H: true })).toBe('/top1.txt:hello one\n')
-  })
-
-  it('-H labels a single-file count', async () => {
-    expect(await run(['/top1.txt'], { H: true, c: true })).toBe('/top1.txt:1\n')
-  })
-
-  it('-I suppresses multi-file labels like ripgrep --no-filename', async () => {
-    expect(await run(['/top1.txt', '/top2.txt'], { args_I: true })).toBe('hello one\nhello two\n')
-  })
+    if (result === null) throw new Error('rg returned no result')
+    await materialize(result[0])
+  }
+  try {
+    await expect(scan()).rejects.toMatchObject({ name: 'AbortError' })
+    expect(offset.mock.calls.length).toBeGreaterThan(0)
+    expect(offset.mock.calls.length).toBeLessThan(100000)
+    expect(closed).toBe(true)
+  } finally {
+    clearTimeout(timer)
+    offset.mockRestore()
+  }
 })

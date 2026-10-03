@@ -17,10 +17,16 @@ from io import BytesIO
 
 from dulwich.refs import DictRefsContainer, Ref, read_packed_refs_with_peeled
 
-from mirage.commands.cli.builtin.git.io import (read_file, read_names,
-                                                read_optional, remove_file,
-                                                write_file)
-from mirage.commands.cli.builtin.git.types import HeadRef
+from mirage.commands.cli.builtin.git.constants import HEAD_REF
+from mirage.commands.cli.builtin.git.io import (
+    basename,
+    read_file,
+    read_names,
+    read_optional,
+    remove_file,
+    write_file,
+)
+from mirage.commands.cli.builtin.git.types import HeadRef, Refspec
 from mirage.runtime.types import DispatchFn
 
 HEAD_FILE = "HEAD"
@@ -28,7 +34,7 @@ PACKED_REFS = "packed-refs"
 REFS_DIR = "refs"
 SYMREF_PREFIX = "ref: "
 BRANCH_PREFIX = "refs/heads/"
-HEAD_REF = Ref(b"HEAD")
+TAG_PREFIX = "refs/tags/"
 
 
 async def read_head(dispatch: DispatchFn, gitdir: str) -> HeadRef:
@@ -47,14 +53,16 @@ async def read_head(dispatch: DispatchFn, gitdir: str) -> HeadRef:
     text = raw.decode("utf-8", errors="replace").strip()
     if not text.startswith(SYMREF_PREFIX):
         return HeadRef(branch=None, ref=None, commit=text or None)
-    ref = text[len(SYMREF_PREFIX):].strip()
-    branch = (ref[len(BRANCH_PREFIX):]
-              if ref.startswith(BRANCH_PREFIX) else ref)
+    ref = text[len(SYMREF_PREFIX) :].strip()
+    branch = (
+        ref[len(BRANCH_PREFIX) :] if ref.startswith(BRANCH_PREFIX) else ref
+    )
     return HeadRef(branch=branch, ref=ref, commit=None)
 
 
-async def _walk_loose_refs(dispatch: DispatchFn, root: str, prefix: str,
-                           refs: dict[Ref, bytes]) -> None:
+async def _walk_loose_refs(
+    dispatch: DispatchFn, root: str, prefix: str, refs: dict[Ref, bytes]
+) -> None:
     """Collect loose refs under one directory into the ref table.
 
     Ref names nest arbitrarily (``refs/heads/feat/git-cli``,
@@ -68,7 +76,7 @@ async def _walk_loose_refs(dispatch: DispatchFn, root: str, prefix: str,
         refs (dict[Ref, bytes]): ref table, updated in place.
     """
     for entry in await read_names(dispatch, root):
-        name = entry.rstrip("/").rsplit("/", 1)[-1]
+        name = basename(entry)
         if not name:
             continue
         child = posixpath.join(root, name)
@@ -81,8 +89,9 @@ async def _walk_loose_refs(dispatch: DispatchFn, root: str, prefix: str,
             refs[Ref(f"{prefix}/{name}".encode())] = value
 
 
-async def write_ref(dispatch: DispatchFn, commondir: str, ref: str,
-                    sha: bytes) -> None:
+async def write_ref(
+    dispatch: DispatchFn, commondir: str, ref: str, sha: bytes
+) -> None:
     """Point one ref at an object id, as a loose ref file.
 
     Always written loose, never into ``packed-refs``: git does the same
@@ -104,13 +113,47 @@ async def write_ref(dispatch: DispatchFn, commondir: str, ref: str,
     await write_file(dispatch, posixpath.join(commondir, ref), sha + b"\n")
 
 
-async def delete_ref(dispatch: DispatchFn, commondir: str, ref: str) -> None:
-    """Remove a loose ref file.
+def without_packed(data: bytes, ref: str) -> bytes | None:
+    """``packed-refs`` with one ref's lines removed, None if it held none.
 
-    Only the loose copy is removed. A ref that also sits in
-    ``packed-refs`` would come back, which is a real gap rather than a
-    silent one: ``branch -d`` refuses below unless the loose file is
-    what actually holds the branch.
+    A packed ref is two lines rather than one when it is an annotated
+    tag: the tag object's own id, then a ``^`` line holding the commit
+    it peels to. The peeled line belongs to the ref above it, so
+    dropping a ref drops the ``^`` line that follows it and nothing
+    else.
+
+    Args:
+        data (bytes): the file as it stands.
+        ref (str): full ref name to drop.
+    """
+    wanted = ref.encode()
+    kept: list[bytes] = []
+    dropped = False
+    found = False
+    for line in data.split(b"\n"):
+        if line.startswith(b"^"):
+            if not dropped:
+                kept.append(line)
+            continue
+        dropped = False
+        if line and not line.startswith(b"#"):
+            space = line.find(b" ")
+            if space != -1 and line[space + 1 :].strip() == wanted:
+                dropped = True
+                found = True
+                continue
+        kept.append(line)
+    return b"\n".join(kept) if found else None
+
+
+async def delete_ref(dispatch: DispatchFn, commondir: str, ref: str) -> None:
+    """Remove a ref, loose copy and packed copy alike.
+
+    Both are removed because either alone can be what holds the ref,
+    and removing only the loose one would report a deletion the next
+    read undoes: after ``git pack-refs`` a ref exists nowhere else, and
+    a force-updated one exists in both, where dropping the loose file
+    would resurrect the older packed value.
 
     Args:
         dispatch (DispatchFn): workspace op dispatcher.
@@ -119,6 +162,13 @@ async def delete_ref(dispatch: DispatchFn, commondir: str, ref: str) -> None:
         ref (str): full ref name.
     """
     await remove_file(dispatch, posixpath.join(commondir, ref))
+    path = posixpath.join(commondir, PACKED_REFS)
+    data = await read_optional(dispatch, path)
+    if data is None:
+        return
+    rewritten = without_packed(data, ref)
+    if rewritten is not None:
+        await write_file(dispatch, path, rewritten)
 
 
 async def set_head(dispatch: DispatchFn, gitdir: str, ref: str) -> None:
@@ -130,8 +180,11 @@ async def set_head(dispatch: DispatchFn, gitdir: str, ref: str) -> None:
             directory, which owns HEAD.
         ref (str): full ref name to attach to.
     """
-    await write_file(dispatch, posixpath.join(gitdir, HEAD_FILE),
-                     f"{SYMREF_PREFIX}{ref}\n".encode())
+    await write_file(
+        dispatch,
+        posixpath.join(gitdir, HEAD_FILE),
+        f"{SYMREF_PREFIX}{ref}\n".encode(),
+    )
 
 
 async def detach_head(dispatch: DispatchFn, gitdir: str, sha: bytes) -> None:
@@ -146,9 +199,9 @@ async def detach_head(dispatch: DispatchFn, gitdir: str, sha: bytes) -> None:
     await write_file(dispatch, posixpath.join(gitdir, HEAD_FILE), sha + b"\n")
 
 
-async def load_refs(dispatch: DispatchFn,
-                    gitdir: str,
-                    commondir: str | None = None) -> DictRefsContainer:
+async def load_refs(
+    dispatch: DispatchFn, gitdir: str, commondir: str | None = None
+) -> DictRefsContainer:
     """Read every ref a repository publishes, packed and loose.
 
     Both sources are needed and neither is optional: a freshly cloned
@@ -183,16 +236,120 @@ async def load_refs(dispatch: DispatchFn,
     packed = await read_optional(dispatch, posixpath.join(shared, PACKED_REFS))
     if packed is not None:
         for sha, name, _peeled in read_packed_refs_with_peeled(
-                BytesIO(packed)):
+            BytesIO(packed)
+        ):
             refs[name] = sha
-    await _walk_loose_refs(dispatch, posixpath.join(shared, REFS_DIR),
-                           REFS_DIR, refs)
+    await _walk_loose_refs(
+        dispatch, posixpath.join(shared, REFS_DIR), REFS_DIR, refs
+    )
     if gitdir != shared:
-        await _walk_loose_refs(dispatch, posixpath.join(gitdir, REFS_DIR),
-                               REFS_DIR, refs)
+        await _walk_loose_refs(
+            dispatch, posixpath.join(gitdir, REFS_DIR), REFS_DIR, refs
+        )
     head = await read_head(dispatch, gitdir)
     if head.ref is not None:
         refs[HEAD_REF] = f"{SYMREF_PREFIX}{head.ref}".encode()
     elif head.commit is not None:
         refs[HEAD_REF] = head.commit.encode()
     return DictRefsContainer(refs)
+
+
+# Every byte git forbids anywhere in a ref name, on top of the control
+# characters: the shell metacharacters that would make a name unusable
+# as a revision, and the backslash.
+FORBIDDEN_IN_REF = frozenset(" ~^:?*[\\")
+LOCK_SUFFIX = ".lock"
+
+
+def blocking_ref(known: set[Ref], ref: str) -> str | None:
+    """The existing ref that stops a new one from being written.
+
+    A ref is a path, so two of them cannot coexist when one spells a
+    directory the other spells a file: with ``refs/tags/foo`` already
+    there, ``refs/tags/foo/bar`` has no directory to live in, and with
+    ``refs/tags/foo/bar`` there, ``refs/tags/foo`` has a directory
+    standing on its name. git refuses both and names the ref already
+    written; a repository can only ever hold one of the two shapes, so
+    the two searches cannot both answer.
+
+    Nothing below git's own storage can be relied on to say so. A disk
+    mount raises whatever its host filesystem raises, which reaches the
+    user as neither git's wording nor git's exit code, and a prefix
+    store takes both keys happily and leaves a ref the loose-ref walk
+    cannot find.
+
+    Args:
+        known (set[Ref]): every ref the repository holds.
+        ref (str): the full ref name about to be written.
+
+    Returns:
+        str | None: the ref standing in the way, None when none does.
+    """
+    parts = ref.split("/")
+    for depth in range(1, len(parts)):
+        above = "/".join(parts[:depth])
+        if Ref(above.encode()) in known:
+            return above
+    below = f"{ref}/".encode()
+    found = sorted(name for name in known if name.startswith(below))
+    return found[0].decode() if found else None
+
+
+def valid_ref_name(name: str) -> bool:
+    """Whether a name passes git's ref rules (``git check-ref-format``).
+
+    The rules, in git's own order: no component may start with ``.`` or
+    end with ``.lock``; ``..`` may not appear; no control character,
+    space or shell metacharacter; no leading, trailing or doubled ``/``;
+    no trailing ``.``; and no ``@{``. Empty is refused too. A bare ``@``
+    is refused only as a whole ref, and a name here always sits below
+    ``refs/``, so it passes. Pinned against git 2.50.1.
+
+    Args:
+        name (str): the name below ``refs/heads/`` or ``refs/tags/``.
+    """
+    if not name or name.startswith("/") or name.endswith("/"):
+        return False
+    if "//" in name or ".." in name or "@{" in name or name.endswith("."):
+        return False
+    for ch in name:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F or ch in FORBIDDEN_IN_REF:
+            return False
+    for part in name.split("/"):
+        if part.startswith(".") or part.endswith(LOCK_SUFFIX):
+            return False
+    return True
+
+
+def parse_refspec(text: str) -> Refspec:
+    """Split a refspec into its source, destination and force flag.
+
+    Args:
+        text (str): the refspec as typed or configured.
+    """
+    force = text.startswith("+")
+    src, colon, dst = text[1 if force else 0 :].partition(":")
+    return Refspec(src, dst if colon and dst else None, force)
+
+
+def mapped(spec: Refspec, name: str) -> str | None:
+    """The local ref a refspec maps a remote ref to, None when unmatched.
+
+    Args:
+        spec (Refspec): the refspec.
+        name (str): the remote ref name.
+    """
+    if "*" not in spec.src:
+        return (spec.dst or "") if name == spec.src else None
+    head, tail = spec.src.split("*", 1)
+    if (
+        len(name) < len(head) + len(tail)
+        or not name.startswith(head)
+        or not name.endswith(tail)
+    ):
+        return None
+    middle = name[len(head) : len(name) - len(tail)]
+    if not spec.dst:
+        return ""
+    before, star, after = spec.dst.partition("*")
+    return f"{before}{middle}{after}" if star else spec.dst

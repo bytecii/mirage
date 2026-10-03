@@ -20,8 +20,8 @@ from mirage.accessor.jaeger import JaegerAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.jaeger.stat import stat
 from mirage.core.render.json import json_bytes
-from mirage.resource.jaeger.config import JaegerConfig
-from mirage.types import FileType, PathSpec
+from mirage.types import ContentType, FileType, PathSpec
+from mirage.vfs.jaeger.config import JaegerConfig
 
 TRACE_A = "a" * 32
 TRACE_B = "b" * 32
@@ -39,27 +39,31 @@ def index():
 
 def spec(path: str) -> PathSpec:
     virtual = f"/{path}" if path else "/"
-    return PathSpec(resource_path=path, virtual=virtual, directory=virtual)
+    return PathSpec(vfs_path=path, virtual=virtual, directory=virtual)
 
 
 def known_service():
-    return patch("mirage.core.jaeger.readdir.fetch_services",
-                 new_callable=AsyncMock,
-                 return_value=["checkout"])
+    return patch(
+        "mirage.core.jaeger.readdir.fetch_services",
+        new_callable=AsyncMock,
+        return_value=["checkout"],
+    )
 
 
 def listed_operations(names):
-    return patch("mirage.core.jaeger.readdir.fetch_operations",
-                 new_callable=AsyncMock,
-                 return_value=names)
+    return patch(
+        "mirage.core.jaeger.readdir.fetch_operations",
+        new_callable=AsyncMock,
+        return_value=names,
+    )
 
 
 def listed_traces(ids):
-    return patch("mirage.core.jaeger.readdir.fetch_traces",
-                 new_callable=AsyncMock,
-                 return_value=[{
-                     "traceID": tid
-                 } for tid in ids])
+    return patch(
+        "mirage.core.jaeger.readdir.fetch_traces",
+        new_callable=AsyncMock,
+        return_value=[{"traceID": tid} for tid in ids],
+    )
 
 
 @pytest.mark.asyncio
@@ -95,10 +99,10 @@ async def test_stat_operations_file(accessor, index):
     operations = ["GET /cart"]
     with known_service():
         with listed_operations(operations):
-            result = await stat(accessor,
-                                spec("services/checkout/operations.json"),
-                                index)
-    assert result.type == FileType.JSON
+            result = await stat(
+                accessor, spec("services/checkout/operations.json"), index
+            )
+    assert result.content == ContentType.JSON
     # The service listing sized it, so stat agrees with what read returns.
     assert result.size == len(json_bytes(operations))
 
@@ -108,9 +112,11 @@ async def test_stat_listed_trace(accessor, index):
     with known_service():
         with listed_traces([TRACE_A]):
             result = await stat(
-                accessor, spec(f"services/checkout/traces/{TRACE_A}.json"),
-                index)
-    assert result.type == FileType.JSON
+                accessor,
+                spec(f"services/checkout/traces/{TRACE_A}.json"),
+                index,
+            )
+    assert result.content == ContentType.JSON
     assert result.extra["trace_id"] == TRACE_A
     # The listing that proved existence also seeded the rendered size.
     assert result.size == len(json_bytes({"traceID": TRACE_A}))
@@ -122,17 +128,20 @@ async def test_stat_unlisted_trace_raises(accessor, index):
     with known_service():
         with listed_traces([TRACE_A]):
             with pytest.raises(FileNotFoundError):
-                await stat(accessor,
-                           spec(f"services/checkout/traces/{TRACE_B}.json"),
-                           index)
+                await stat(
+                    accessor,
+                    spec(f"services/checkout/traces/{TRACE_B}.json"),
+                    index,
+                )
 
 
 @pytest.mark.asyncio
 async def test_stat_malformed_trace_id_raises(accessor, index):
     with known_service():
         with pytest.raises(FileNotFoundError):
-            await stat(accessor, spec("services/checkout/traces/zzz.json"),
-                       index)
+            await stat(
+                accessor, spec("services/checkout/traces/zzz.json"), index
+            )
 
 
 @pytest.mark.asyncio

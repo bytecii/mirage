@@ -12,8 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { NodeType } from './types.ts'
 import { compareCodePoints } from '../utils/sort.ts'
+import { BuiltinGroup, BuiltinTier, NodeType, ShellBuiltin } from './types.ts'
+
+export const PARAMETER_NAME = /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/
 
 // Bash arithmetic tokens: integer literals (base#value/decimal/hex/
 // octal), variable names, then operators longest-first so `<<=` never
@@ -55,14 +57,70 @@ export const ARITH_ASSIGN_OPS = new Set([
 // mirroring bash's expression recursion limit.
 export const ARITH_MAX_DEPTH = 16
 
+// The descriptors the shell models: stdin, stdout and stderr, and no
+// table above them. A redirect naming any other number is refused before
+// it does anything (`shell/descriptors.ts`), because the old fall-through
+// aliased fd 3 onto stdout and `exec 3>&-` closed the session's stdout.
+// FD_BOTH is `Redirect.fd` for `&>`; FD_CLOSE is `Redirect.target` for
+// `>&-`.
+export const FD_STDIN = 0
+export const FD_STDOUT = 1
+export const FD_STDERR = 2
+export const FD_BOTH = -1
+export const FD_CLOSE = -1
+export const SHELL_FDS: ReadonlySet<number> = new Set([FD_STDIN, FD_STDOUT, FD_STDERR])
+
+// The dynamic variables the shell answers itself: PIPESTATUS reads the
+// session's record of the last pipeline (`SessionState.pipeStatus`), FUNCNAME
+// the frames on the call stack (`SessionState.functionNames`) and RANDOM
+// steps a generator (`session/rng.ts`). None lives in the variable store.
+export const PIPESTATUS = 'PIPESTATUS'
+export const FUNCNAME = 'FUNCNAME'
+export const RANDOM = 'RANDOM'
+// bash 5.2's generator (lib/sh/random.c): a Park-Miller minimal-standard
+// step through Schrage's method, the value folding the state's two halves
+// and keeping 15 bits, and a draw that never repeats the value before it.
+// A seed is the assigned integer truncated to 32 bits, and a zero state
+// steps from ZERO_SEED. Identical in both languages, so `RANDOM=42` is the
+// same sequence everywhere, and bash's.
+export const RANDOM_A = 16807
+export const RANDOM_Q = 127773
+export const RANDOM_R = 2836
+export const RANDOM_M = 0x7fffffff
+export const RANDOM_ZERO_SEED = 123459876
+export const RANDOM_MODULUS = 2 ** 32
+export const RANDOM_MAX = 32767
+// What `SessionState.randomSeed` holds once `unset RANDOM` has stripped the name
+// of its meaning: no generated word is ever empty.
+export const RANDOM_UNSET = ''
+
 // What the shell calls itself when no script is running, bash's "bash".
-// A nested `bash`/`sh` overrides it through Session.scriptName, and
-// `Session.argv0` is the one place the two are folded together.
+// A nested `bash`/`sh` overrides it through SessionState.scriptName, and
+// `SessionState.argv0` is the one place the two are folded together.
 export const SHELL_ARGV0 = 'mirage'
+
+// The one directory PATH names, bash's default PATH for a shell that
+// starts without one: every program a session can run has a file here
+// (the /usr/bin view mount), which is the path which, type and command -v
+// report.
+export const BIN_PREFIX = '/usr/bin'
+
+// The IFS a shell starts with, what an unset IFS splits on, and the
+// characters of any IFS that count as its whitespace.
+export const IFS_DEFAULT = ' \t\n'
+
+// What bash says when fork(2) fails with EAGAIN, as at `ulimit -u`: the
+// forking shell abandons the rest of its line with status 254 (bash 5.2,
+// pinned in debian:stable-slim), and a subshell dying of it reports 254 to
+// its parent. A session's `processes.max` is the cap here. bash first
+// retries with backoff, printing `fork: retry:`; the refusal here is
+// immediate.
+export const FORK_FAILED = 'bash: fork: Resource temporarily unavailable\n'
+export const FORK_FAILED_STATUS = 254
 
 // Node types whose failure never triggers `set -e` by shape alone.
 // Lists are NOT exempt: bash exits when the command after the final
-// `&&`/`||` fails; short-circuit failures set Session.errexitImmune
+// `&&`/`||` fails; short-circuit failures set SessionState.errexitImmune
 // instead, so the executor loops skip only those.
 export const ERREXIT_EXEMPT_TYPES: ReadonlySet<string> = new Set<string>([NodeType.NEGATED_COMMAND])
 
@@ -210,3 +268,100 @@ export const SHOPT_DEFAULTS: ReadonlyMap<string, boolean> = new Map([
 // mode, so a stored `on` would promise a syntax that still fails to
 // parse. Refusing is the honest answer until the parser learns it.
 export const SHOPT_UNSUPPORTED: ReadonlySet<string> = new Set(['extglob'])
+
+export const GROUP_TIER: ReadonlyMap<BuiltinGroup, BuiltinTier> = new Map<
+  BuiltinGroup,
+  BuiltinTier
+>([
+  [BuiltinGroup.WORKING_DIRECTORY, BuiltinTier.GRAMMAR],
+  [BuiltinGroup.VARIABLES, BuiltinTier.GRAMMAR],
+  [BuiltinGroup.SHELL_STATE, BuiltinTier.GRAMMAR],
+  [BuiltinGroup.CONDITIONS, BuiltinTier.GRAMMAR],
+  [BuiltinGroup.OUTPUT, BuiltinTier.GRAMMAR],
+  [BuiltinGroup.RUNNING_LINES, BuiltinTier.GRAMMAR],
+  [BuiltinGroup.NAME_LOOKUP, BuiltinTier.GRAMMAR],
+  [BuiltinGroup.CONTROL_FLOW, BuiltinTier.GRAMMAR],
+  [BuiltinGroup.ENVIRONMENT, BuiltinTier.TOOL],
+  [BuiltinGroup.MANUALS_AND_HISTORY, BuiltinTier.TOOL],
+  [BuiltinGroup.JOB_CONTROL, BuiltinTier.TOOL],
+  [BuiltinGroup.CLOCK, BuiltinTier.TOOL],
+  [BuiltinGroup.NESTED_SHELLS, BuiltinTier.TOOL],
+  [BuiltinGroup.INTERPRETERS, BuiltinTier.TOOL],
+  [BuiltinGroup.COMMAND_RUNNERS, BuiltinTier.TOOL],
+])
+
+// One row per ShellBuiltin. shell/types.test.ts pins that the rows cover
+// the enum, that every group is used, and that the tier sets below are
+// the rows' partition, so a new member has to be filed here on purpose.
+export const BUILTIN_GROUP: ReadonlyMap<ShellBuiltin, BuiltinGroup> = new Map<
+  ShellBuiltin,
+  BuiltinGroup
+>([
+  [ShellBuiltin.PWD, BuiltinGroup.WORKING_DIRECTORY],
+  [ShellBuiltin.CD, BuiltinGroup.WORKING_DIRECTORY],
+  [ShellBuiltin.EXPORT, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.UNSET, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.LOCAL, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.DECLARE, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.TYPESET, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.READONLY, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.SET, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.READ, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.MAPFILE, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.READARRAY, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.SHIFT, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.GETOPTS, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.LET, BuiltinGroup.VARIABLES],
+  [ShellBuiltin.TRAP, BuiltinGroup.SHELL_STATE],
+  [ShellBuiltin.SHOPT, BuiltinGroup.SHELL_STATE],
+  [ShellBuiltin.UMASK, BuiltinGroup.SHELL_STATE],
+  [ShellBuiltin.ALIAS, BuiltinGroup.SHELL_STATE],
+  [ShellBuiltin.UNALIAS, BuiltinGroup.SHELL_STATE],
+  [ShellBuiltin.EXEC, BuiltinGroup.SHELL_STATE],
+  [ShellBuiltin.TEST, BuiltinGroup.CONDITIONS],
+  [ShellBuiltin.BRACKET, BuiltinGroup.CONDITIONS],
+  [ShellBuiltin.DOUBLE_BRACKET, BuiltinGroup.CONDITIONS],
+  [ShellBuiltin.ECHO, BuiltinGroup.OUTPUT],
+  [ShellBuiltin.PRINTF, BuiltinGroup.OUTPUT],
+  [ShellBuiltin.SOURCE, BuiltinGroup.RUNNING_LINES],
+  [ShellBuiltin.DOT, BuiltinGroup.RUNNING_LINES],
+  [ShellBuiltin.EVAL, BuiltinGroup.RUNNING_LINES],
+  [ShellBuiltin.COMMAND, BuiltinGroup.RUNNING_LINES],
+  [ShellBuiltin.TYPE, BuiltinGroup.NAME_LOOKUP],
+  [ShellBuiltin.WHICH, BuiltinGroup.NAME_LOOKUP],
+  [ShellBuiltin.TRUE, BuiltinGroup.CONTROL_FLOW],
+  [ShellBuiltin.FALSE, BuiltinGroup.CONTROL_FLOW],
+  [ShellBuiltin.COLON, BuiltinGroup.CONTROL_FLOW],
+  [ShellBuiltin.BREAK, BuiltinGroup.CONTROL_FLOW],
+  [ShellBuiltin.CONTINUE, BuiltinGroup.CONTROL_FLOW],
+  [ShellBuiltin.RETURN, BuiltinGroup.CONTROL_FLOW],
+  [ShellBuiltin.EXIT, BuiltinGroup.CONTROL_FLOW],
+  [ShellBuiltin.PRINTENV, BuiltinGroup.ENVIRONMENT],
+  [ShellBuiltin.ENV, BuiltinGroup.ENVIRONMENT],
+  [ShellBuiltin.WHOAMI, BuiltinGroup.ENVIRONMENT],
+  [ShellBuiltin.MAN, BuiltinGroup.MANUALS_AND_HISTORY],
+  [ShellBuiltin.HISTORY, BuiltinGroup.MANUALS_AND_HISTORY],
+  [ShellBuiltin.WAIT, BuiltinGroup.JOB_CONTROL],
+  [ShellBuiltin.FG, BuiltinGroup.JOB_CONTROL],
+  [ShellBuiltin.KILL, BuiltinGroup.JOB_CONTROL],
+  [ShellBuiltin.JOBS, BuiltinGroup.JOB_CONTROL],
+  [ShellBuiltin.DISOWN, BuiltinGroup.JOB_CONTROL],
+  [ShellBuiltin.PS, BuiltinGroup.JOB_CONTROL],
+  [ShellBuiltin.SLEEP, BuiltinGroup.CLOCK],
+  [ShellBuiltin.BASH, BuiltinGroup.NESTED_SHELLS],
+  [ShellBuiltin.SH, BuiltinGroup.NESTED_SHELLS],
+  [ShellBuiltin.PYTHON, BuiltinGroup.INTERPRETERS],
+  [ShellBuiltin.PYTHON3, BuiltinGroup.INTERPRETERS],
+  [ShellBuiltin.NODE, BuiltinGroup.INTERPRETERS],
+  [ShellBuiltin.JS, BuiltinGroup.INTERPRETERS],
+  [ShellBuiltin.XARGS, BuiltinGroup.COMMAND_RUNNERS],
+  [ShellBuiltin.TIMEOUT, BuiltinGroup.COMMAND_RUNNERS],
+])
+
+export const GRAMMAR_BUILTINS: ReadonlySet<ShellBuiltin> = new Set<ShellBuiltin>(
+  [...BUILTIN_GROUP].filter(([, g]) => GROUP_TIER.get(g) === BuiltinTier.GRAMMAR).map(([b]) => b),
+)
+
+export const TOOL_BUILTINS: ReadonlySet<ShellBuiltin> = new Set<ShellBuiltin>(
+  [...BUILTIN_GROUP].filter(([, g]) => GROUP_TIER.get(g) === BuiltinTier.TOOL).map(([b]) => b),
+)

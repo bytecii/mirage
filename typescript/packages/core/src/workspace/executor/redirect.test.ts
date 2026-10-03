@@ -13,15 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it, vi } from 'vitest'
-import { IOResult } from '../../io/types.ts'
+import { DeviceInput, IOResult } from '../../io/types.ts'
 import { Redirect, RedirectKind } from '../../shell/types.ts'
-import { PathSpec } from '../../types.ts'
+import { FileStat, FileType, PathSpec } from '../../types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { makeIntegrationWS, run, runExit, runResult } from '../fixtures/integration_fixture.ts'
-import { Session } from '../session/session.ts'
+import { SessionState } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
-import type { DispatchFn } from './cross_mount.ts'
-import type { ExecuteNodeFn } from './types.ts'
+import type { DispatchFn } from '../../runtime/types.ts'
+import type { ExecuteNodeFn } from './jobs.ts'
 import { handleRedirect } from './redirect.ts'
 
 function encode(s: string): Uint8Array {
@@ -57,7 +57,7 @@ describe('handleRedirect > / >>', () => {
       dispatch,
       STUB_NODE,
       redirects,
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
     expect(stdout).toBeNull()
     expect(io.exitCode).toBe(0)
@@ -67,12 +67,12 @@ describe('handleRedirect > / >>', () => {
     expect(io.writes['/ram/out.txt']).toBeDefined()
   })
 
-  it('>> appends to existing file', async () => {
+  it('>> dispatches append without reading the target', async () => {
     const writes: { path: string; data: Uint8Array }[] = []
     const dispatch = vi.fn<DispatchFn>((op, path, args) => {
       if (op === 'read')
         return Promise.resolve<[unknown, IOResult]>([encode('pre-'), new IOResult()])
-      if (op === 'write') writes.push({ path: path.virtual, data: args?.[0] as Uint8Array })
+      if (op === 'append') writes.push({ path: path.virtual, data: args?.[0] as Uint8Array })
       return Promise.resolve<[unknown, IOResult]>([null, new IOResult()])
     })
     const execute: ExecuteNodeFn = () =>
@@ -85,9 +85,10 @@ describe('handleRedirect > / >>', () => {
       dispatch,
       STUB_NODE,
       redirects,
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
-    expect(decode(writes[0]?.data ?? null)).toBe('pre-new')
+    expect(decode(writes[0]?.data ?? null)).toBe('new')
+    expect(dispatch.mock.calls.map(([op]) => op)).toEqual(['append'])
   })
 })
 
@@ -109,10 +110,57 @@ describe('handleRedirect < (stdin)', () => {
       dispatch,
       STUB_NODE,
       redirects,
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
     expect(receivedStdin).not.toBeNull()
     expect(decode(receivedStdin)).toBe('file-contents')
+  })
+})
+
+describe('handleRedirect < from a character device', () => {
+  // ripgrep searches stdin only when a file, FIFO or socket is attached, so
+  // the command is told when `<` names a device; it still reads as empty.
+  async function stdinFor(read: Uint8Array, type: FileType): Promise<[unknown, string[]]> {
+    const ops: string[] = []
+    const dispatch = vi.fn<DispatchFn>((op) => {
+      ops.push(op)
+      if (op === 'read') return Promise.resolve<[unknown, IOResult]>([read, new IOResult()])
+      return Promise.resolve<[unknown, IOResult]>([
+        new FileStat({ name: 'n', type }),
+        new IOResult(),
+      ])
+    })
+    let received: unknown = null
+    const execute: ExecuteNodeFn = async (_n, _s, stdin) => {
+      received = stdin
+      return Promise.resolve([null, new IOResult(), new ExecutionNode()])
+    }
+    const redirects = [new Redirect({ fd: 0, target: '/dev/null', kind: RedirectKind.STDIN })]
+    await handleRedirect(
+      execute,
+      dispatch,
+      STUB_NODE,
+      redirects,
+      new SessionState({ sessionId: 't' }),
+    )
+    return [received, ops]
+  }
+
+  it('marks a device as a DeviceInput that reads as empty', async () => {
+    const [stdin] = await stdinFor(new Uint8Array(0), FileType.CHAR_DEVICE)
+    expect(stdin).toBeInstanceOf(DeviceInput)
+    expect((stdin as Uint8Array).length).toBe(0)
+  })
+
+  it('leaves an empty regular file plain', async () => {
+    const [stdin] = await stdinFor(new Uint8Array(0), FileType.FILE)
+    expect(stdin).toBeInstanceOf(Uint8Array)
+    expect(stdin).not.toBeInstanceOf(DeviceInput)
+  })
+
+  it('stats nothing when the read holds content', async () => {
+    const [, ops] = await stdinFor(encode('x'), FileType.CHAR_DEVICE)
+    expect(ops).toEqual(['read'])
   })
 })
 
@@ -134,7 +182,7 @@ describe('handleRedirect <<< (herestring)', () => {
       dispatch,
       STUB_NODE,
       redirects,
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
     expect(decode(receivedStdin)).toBe('hello world\n')
   })
@@ -163,7 +211,7 @@ describe('handleRedirect 2>&1', () => {
       dispatch,
       STUB_NODE,
       redirects,
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
     expect(decode(writes[0]?.data ?? null)).toBe('out-err-')
   })
@@ -191,7 +239,7 @@ describe('handleRedirect 2>&1', () => {
       dispatch,
       STUB_NODE,
       redirects,
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
     expect(decode(writes[0]?.data ?? null)).toBe('out-')
     expect(decode((stdout as Uint8Array | null) ?? null)).toBe('err-')
@@ -213,7 +261,7 @@ describe('handleRedirect &> (both to file)', () => {
       dispatch,
       STUB_NODE,
       redirects,
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
     expect(writes[0]?.path).toBe('/ram/all.log')
     expect(decode(writes[0]?.data ?? null)).toBe('OUTERR')
@@ -236,9 +284,65 @@ describe('handleRedirect accepts PathSpec targets', () => {
       dispatch,
       STUB_NODE,
       redirects,
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
     expect(decode(writes[0]?.data ?? null)).toBe('ok')
+  })
+})
+
+// A trailing redirect binds to the command it follows, whatever the parse
+// wrapped it around: a pipeline in an &&/|| list, a list the parse pulled
+// into a pipeline's first stage, a pipeline pulled in the same way, and a
+// `!`. Every row is GNU bash 5.2 in debian:stable-slim (redirect errors
+// without bash's `bash: line N:` prefix); PS prints $? and PIPESTATUS.
+const PS = '; echo "rc=$? ps=${PIPESTATUS[*]}"'
+const BINDS: [string, string, string, number][] = [
+  ["true && printf 'x\\n' | cat < /data/b.txt", '1\n2\n3\n', '', 0],
+  ["true && printf 'x\\n' | wc -l < /dev/null", '0\n', '', 0],
+  ["false || printf 'x\\n' | cat < /dev/null", '', '', 0],
+  ["(cd /data && printf 'x\\n' | cat < b.txt)", '1\n2\n3\n', '', 0],
+  ["true && printf 'x\\n' | cat | cat < /data/b.txt", '1\n2\n3\n', '', 0],
+  ["false && true || printf 'x\\n' | cat < /data/b.txt", '1\n2\n3\n', '', 0],
+  [
+    "true && printf 'x\\n' | cat < /nonexistent" + PS,
+    'rc=1 ps=0 1\n',
+    '/nonexistent: No such file or directory\n',
+    0,
+  ],
+  ["true && printf 'x\\n' | cat < /data/b.txt && echo after", '1\n2\n3\nafter\n', '', 0],
+  ["f() { true && printf 'x\\n' | cat < /data/b.txt; }; f", '1\n2\n3\n', '', 0],
+  [
+    'true && { echo e1 >&2; echo o; } | { cat; echo e2 >&2; } 2> /data/e; echo ---; cat /data/e',
+    'o\n---\ne2\n',
+    'e1\n',
+    0,
+  ],
+  ['false || { echo e1 >&2; echo o; } | { cat; echo e2 >&2; } 2>&1', 'o\ne2\n', 'e1\n', 0],
+  ["true && printf 'x\\n' | cat <<EOF\nH\nEOF", 'H\n', '', 0],
+  ["true && { printf 'x\\n' | cat; } < /data/b.txt", 'x\n', '', 0],
+  ["true && (printf 'x\\n' | cat) < /data/b.txt", 'x\n', '', 0],
+  ["true && printf 'x\\n' | cat < /data/b.txt | tr 3 Z" + PS, '1\n2\nZ\nrc=0 ps=0 0 0\n', '', 0],
+  ["false && printf 'x\\n' | cat < /data/b.txt | cat" + PS, 'rc=1 ps=1\n', '', 0],
+  ['false && cat <<EOF | tr a-z A-Z\nhi\nEOF\n' + PS.slice(2), 'rc=1 ps=1\n', '', 0],
+  ["printf 'x\\n' | false && cat < /data/b.txt | tr 1 X" + PS, 'rc=1 ps=0 1\n', '', 0],
+  ['(set -e; false && cat < /data/b.txt | tr 1 X; echo survived)', 'survived\n', '', 0],
+  ["printf 'x\\n' | cat < /data/b.txt | cat" + PS, '1\n2\n3\nrc=0 ps=0 0 0\n', '', 0],
+  ["! printf 'x\\n' | cat < /data/b.txt | cat" + PS, '1\n2\n3\nrc=1 ps=0 0 0\n', '', 0],
+  ['! cat < /data/b.txt | tr 1 X' + PS, 'X\n2\n3\nrc=1 ps=0 0\n', '', 0],
+  ['! false | true > /dev/null' + PS, 'rc=1 ps=1 0\n', '', 0],
+  ['! cat < /nonexistent' + PS, 'rc=0 ps=1\n', '/nonexistent: No such file or directory\n', 0],
+  ['true && { echo e >&2; echo o; } |& cat > /data/p; cat /data/p', 'e\no\n', '', 0],
+]
+
+describe('a trailing redirect binds to the command it follows', () => {
+  it.each(BINDS)('%s', async (line, stdout, stderr, code) => {
+    const { ws } = await makeIntegrationWS({ 'b.txt': '1\n2\n3\n' })
+    try {
+      const [exit, out, err] = await runResult(ws, line)
+      expect([out, err, exit]).toEqual([stdout, stderr, code])
+    } finally {
+      await ws.close()
+    }
   })
 })
 
@@ -257,7 +361,7 @@ describe('fd-table routing end-to-end', () => {
   it('multiple stdout redirects truncate all, write last', async () => {
     const { ws } = await makeIntegrationWS()
     try {
-      await ws.execute('echo body > /data/m1 > /data/m2')
+      await ws.shell('echo body > /data/m1 > /data/m2')
       expect(await run(ws, 'cat /data/m1')).toBe('')
       expect(await run(ws, 'cat /data/m2')).toBe('body\n')
     } finally {
@@ -268,7 +372,7 @@ describe('fd-table routing end-to-end', () => {
   it('2> file creates the file even when stderr is empty', async () => {
     const { ws } = await makeIntegrationWS()
     try {
-      await ws.execute('echo fine 2> /data/errs')
+      await ws.shell('echo fine 2> /data/errs')
       expect(await runExit(ws, 'test -f /data/errs')).toBe(0)
     } finally {
       await ws.close()
@@ -303,8 +407,8 @@ describe('fd-table routing end-to-end', () => {
   it('&>> appends both streams', async () => {
     const { ws } = await makeIntegrationWS()
     try {
-      await ws.execute('echo one &> /data/acc')
-      await ws.execute('echo three &>> /data/acc')
+      await ws.shell('echo one &> /data/acc')
+      await ws.shell('echo three &>> /data/acc')
       expect(await run(ws, 'cat /data/acc')).toBe('one\nthree\n')
     } finally {
       await ws.close()
@@ -315,6 +419,52 @@ describe('fd-table routing end-to-end', () => {
 // GNU bash 5.2.37 pinned: both `cat < missing` and `echo x > /nosuchdir/f`
 // answer "bash: line 1: <target>: No such file or directory", exit 1, and
 // never name the command. mirage drops the "bash: line N:" prefix, matching
+describe('handleRedirect numeric targets', () => {
+  it('routes a close or dup by the descriptor claimed, not the operator', async () => {
+    const { ws } = await makeIntegrationWS()
+    try {
+      expect(await runResult(ws, 'cat /data/missing 2<&-; echo code=$?')).toEqual([
+        0,
+        'code=1\n',
+        '',
+      ])
+      expect(await runResult(ws, 'echo x 1<&-; echo code=$?')).toEqual([
+        0,
+        'code=1\n',
+        'echo: write error: Bad file descriptor\n',
+      ])
+      expect(await runResult(ws, 'cat /data/missing 2<&1; echo code=$?')).toEqual([
+        0,
+        'cat: /data/missing: No such file or directory\ncode=1\n',
+        '',
+      ])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('reads a bare 0 touching the operator as the descriptor', async () => {
+    const { ws } = await makeIntegrationWS({ 'a.txt': 'a' })
+    try {
+      expect(await runResult(ws, 'echo x 0>&-; echo code=$?')).toEqual([0, 'x\ncode=0\n', ''])
+      expect(await runResult(ws, 'cat 0</data/a.txt; echo code=$?')).toEqual([0, 'acode=0\n', ''])
+      expect(await runResult(ws, 'echo 0 >&-; echo code=$?')).toEqual([
+        0,
+        'code=1\n',
+        'echo: write error: Bad file descriptor\n',
+      ])
+      expect(await runResult(ws, 'exec 2<&-; cat /data/missing; echo code=$?')).toEqual([
+        0,
+        'code=1\n',
+        '',
+      ])
+      expect(await runResult(ws, 'exec 0>&-; echo x; echo code=$?')).toEqual([0, 'x\ncode=0\n', ''])
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
 // the house style of the other shell-attributed error
 // ("nosuchcmd: command not found").
 describe('handleRedirect missing < source', () => {
@@ -425,7 +575,7 @@ describe('handleRedirect missing < source', () => {
         dispatch,
         STUB_NODE,
         redirects,
-        new Session({ sessionId: 'test' }),
+        new SessionState({ sessionId: 'test' }),
         null,
         null,
       ),
@@ -517,11 +667,9 @@ describe('handleRedirect unwritable > target', () => {
     }
   })
 
-  it('rethrows a non-filesystem append pre-read error', async () => {
-    // The `>>` pre-read swallows filesystem errors (the write reports
-    // them) but must not hide a backend bug.
+  it('rethrows a non-filesystem append error', async () => {
     const dispatch = vi.fn<DispatchFn>((op) => {
-      if (op === 'read') return Promise.reject(new Error('backend exploded'))
+      if (op === 'append') return Promise.reject(new Error('backend exploded'))
       return Promise.resolve<[unknown, IOResult]>([null, new IOResult()])
     })
     const execute: ExecuteNodeFn = () =>
@@ -530,7 +678,13 @@ describe('handleRedirect unwritable > target', () => {
       new Redirect({ fd: 1, target: '/ram/out.txt', kind: RedirectKind.STDOUT, append: true }),
     ]
     await expect(
-      handleRedirect(execute, dispatch, STUB_NODE, redirects, new Session({ sessionId: 'test' })),
+      handleRedirect(
+        execute,
+        dispatch,
+        STUB_NODE,
+        redirects,
+        new SessionState({ sessionId: 'test' }),
+      ),
     ).rejects.toThrow('backend exploded')
   })
 
@@ -543,7 +697,308 @@ describe('handleRedirect unwritable > target', () => {
       Promise.resolve([encode('hi'), new IOResult(), new ExecutionNode()])
     const redirects = [new Redirect({ fd: 1, target: '/ram/out.txt', kind: RedirectKind.STDOUT })]
     await expect(
-      handleRedirect(execute, dispatch, STUB_NODE, redirects, new Session({ sessionId: 'test' })),
+      handleRedirect(
+        execute,
+        dispatch,
+        STUB_NODE,
+        redirects,
+        new SessionState({ sessionId: 'test' }),
+      ),
     ).rejects.toThrow('backend exploded')
+  })
+})
+
+describe('descriptor zero duplication', () => {
+  it.each([
+    ['echo x 1>&0', '', 'echo: write error: Bad file descriptor\n', 1],
+    // A self-dup never reopens a closed descriptor, transient or
+    // persistent; a file redirect on it does.
+    [
+      'touch /data/marker 1>&- 1>&1 2>&1; echo rc=$? >&2; test -e /data/marker; echo e=$? >&2',
+      '',
+      '1: Bad file descriptor\nrc=1\ne=1\n',
+      0,
+    ],
+    [
+      'exec 1>&-; touch /data/marker 1>&1 2>&1; echo rc=$? >&2; test -e /data/marker; echo e=$? >&2',
+      '',
+      '1: Bad file descriptor\nrc=1\ne=1\n',
+      0,
+    ],
+    [
+      'touch /data/marker 1>&- 1>&1 >/data/f 2>&1; echo rc=$? >&2; test -e /data/marker; echo e=$? >&2',
+      '',
+      'rc=0\ne=0\n',
+      0,
+    ],
+    ['echo x 2>&0 1>&2', '', '', 1],
+    ['echo x 0>&1 1>&0', 'x\n', '', 0],
+    ['echo x 1>&0 0>&1', '', 'echo: write error: Bad file descriptor\n', 1],
+    ['echo x 1>&0 2>&1', '', '', 1],
+    // A dup from a descriptor closed earlier on the line refuses the
+    // line, and the command never runs; a self-dup stays a no-op.
+    ['touch /data/marker 0<&- 1<&0; test -e /data/marker', '', '0: Bad file descriptor\n', 1],
+    ['echo hi 1>&- 2>&1', '', '1: Bad file descriptor\n', 1],
+    ['cat 0<&- 0<&0 </data/a.txt', 'a', '', 0],
+    // `>&word` on a descriptor other than 1 is bash's ambiguous redirect,
+    // refused before the command runs; bare and on 1 it is the both-streams
+    // file.
+    [
+      'touch /data/marker 3>&/data/foo; test -e /data/marker || test -e /data/foo',
+      '',
+      '/data/foo: ambiguous redirect\n',
+      1,
+    ],
+    ['echo x 2>&/data/foo; test -e /data/foo', '', '/data/foo: ambiguous redirect\n', 1],
+    ['( echo out; echo err >&2 ) 1>&/data/both; cat /data/both', 'out\nerr\n', '', 0],
+    // An output redirect leaves its descriptor write-only.
+    ['cat 1>/data/out 0<&1; wc -c < /data/out', '0\n', 'cat: -: Bad file descriptor\n', 0],
+    ['echo x 1>&0 2>/data/err; cat /data/err', 'echo: write error: Bad file descriptor\n', '', 0],
+    ['echo x 0>/data/out 1>&0; cat /data/out', 'x\n', '', 0],
+    ['cat </data/a.txt 1<&0 0<&1 1>/data/out; cat /data/out', 'a', '', 0],
+    // bash 5.2: stdout is open for writing only, so the read fails.
+    ['cat </data/a.txt 0<&1', '', 'cat: -: Bad file descriptor\n', 1],
+    // A descriptor `exec` closed for the shell refuses a dup from it too;
+    // a redirect that opens it or a rebinding takes it back.
+    [
+      'exec 1>&-; touch /data/marker 2>&1; echo rc=$? >&2; test -e /data/marker; echo e=$? >&2',
+      '',
+      '1: Bad file descriptor\nrc=1\ne=1\n',
+      0,
+    ],
+    [
+      'exec 0<&-; touch /data/marker 1<&0; echo rc=$? >&2; test -e /data/marker; echo e=$? >&2',
+      '',
+      '0: Bad file descriptor\nrc=1\ne=1\n',
+      0,
+    ],
+    ['exec 1>&-; true 1>&1; echo rc=$? >&2', '', 'rc=0\n', 0],
+    [
+      'exec 1>&-; touch /data/marker >/data/f 2>&1; echo rc=$? >&2; test -e /data/marker; echo e=$? >&2',
+      '',
+      'rc=0\ne=0\n',
+      0,
+    ],
+    [
+      'exec 1>&-; exec 1>&2; touch /data/marker 2>&1; echo rc=$?; test -e /data/marker; echo e=$?',
+      '',
+      'rc=0\ne=0\n',
+      0,
+    ],
+    ['exec 2>&-; touch /data/marker 1>&2; test -e /data/marker; echo e=$?', 'e=1\n', '', 0],
+  ])('tracks direction and order: %s', async (line, out, err, code) => {
+    const { ws } = await makeIntegrationWS({ 'a.txt': 'a' })
+    try {
+      expect(await runResult(ws, line)).toEqual([code, out, err])
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+it('opens a standard descriptor in the other direction', async () => {
+  // bash accepts `exec 0>f` (fd 0 write-only: a read is EBADF) and `exec
+  // 1<f` / `exec 2<f` (the stream read-only: a write fails), pinned on
+  // 5.2; the file itself stays what the redirect made it.
+  const { ws } = await makeIntegrationWS({ input: 'original\n', source: 'readable\n' })
+  try {
+    const zero = await ws.shell(
+      '( exec 0>/data/input; echo rc=$?; cat; echo rc=$?; read v; echo rc=$? )',
+    )
+    expect(zero.stdoutText).toBe('rc=0\nrc=1\nrc=1\n')
+    expect(zero.stderrText).toContain('cat: -: Bad file descriptor')
+    expect((await ws.shell('cat /data/input')).stdoutText).toBe('')
+    const one = await ws.shell('( exec 1</data/source; echo hi; echo rc=$? >&2 )')
+    expect(one.stdoutText).toBe('')
+    expect(one.stderrText).toBe('echo: write error: Bad file descriptor\nrc=1\n')
+    const two = await ws.shell('( exec 2</data/source; echo hi >&2; echo rc=$? )')
+    expect(two.stdoutText).toBe('rc=1\n')
+  } finally {
+    await ws.close()
+  }
+})
+
+it('persists an explicit stdin file redirect', async () => {
+  const { ws } = await makeIntegrationWS({ input: 'readable\n' })
+  try {
+    await ws.shell('exec 0</data/input')
+    expect((await ws.shell('read value; echo $value')).stdoutText).toBe('readable\n')
+  } finally {
+    await ws.close()
+  }
+})
+
+describe('descriptor identities survive dups', () => {
+  // bash 5.2 on debian:stable-slim with stdin from /dev/null: a stream
+  // opened for reading keeps the file through a dup (`exec 1<f; exec 0<&1`)
+  // and answers a transient `<&1`; fd 0 opened for writing takes a
+  // transient `>&0`, appending as bash's shared offset does.
+  it.each([
+    ['printf x >/data/f; exec 1</data/f; exec 0<&1; cat >&2', '', 'x', 0],
+    // A stream aliased onto stdin's read end reads what stdin reads, and
+    // keeps the file a `exec <f` bound even after `exec 0<&-`.
+    ['printf x >/data/f; exec </data/f; exec 1<&0; cat <&1 >&2; echo rc=$? >&2', '', 'xrc=0\n', 0],
+    [
+      'printf x >/data/f; exec </data/f; exec 1<&0; exec 0<&-; cat <&1 >&2; echo rc=$? >&2',
+      '',
+      'xrc=0\n',
+      0,
+    ],
+    ['printf x >/data/f; exec </data/f; exec 2<&0; cat <&2 >&2', '', '', 1],
+    ['printf x | { exec 1<&0; cat <&1 >&2; }; echo rc=$? >&2', '', 'xrc=0\n', 0],
+    ['printf xy >/data/f; exec 1</data/f; exec 0<&1; exec 1>&-; cat >&2', '', 'xy', 0],
+    ['printf x >/data/f; exec 1</data/f; exec 0<&1; exec 1>&2; cat', '', 'x', 0],
+    ['printf x >/data/f; exec 2</data/f; exec 0<&2; cat >&2', '', '', 1],
+    ['printf x >/data/f; exec 1</data/f; cat <&1 >&2; echo rc=$? >&2', '', 'xrc=0\n', 0],
+    // A dup is another descriptor on the same open file: a read through
+    // either moves the one offset, whatever fd 0 was bound to in between,
+    // and each open starts its own.
+    [
+      'printf \'a\\nb\\n\' >/data/f; exec </data/f; exec 1<&0; read x; exec 0<&1; read y; echo "[$x][$y]" >&2',
+      '',
+      '[a][b]\n',
+      0,
+    ],
+    [
+      'printf \'a\\nb\\n\' >/data/f; exec 1</data/f; read x <&1; read y <&1; echo "[$x][$y]" >&2',
+      '',
+      '[a][b]\n',
+      0,
+    ],
+    [
+      'printf \'a\\nb\\n\' >/data/f; exec 1</data/f; exec 0<&1; read x; exec 1</data/f; exec 0<&1; read y; echo "[$x][$y]" >&2',
+      '',
+      '[a][a]\n',
+      0,
+    ],
+    [
+      'printf \'a\\nb\\n\' >/data/f; exec </data/f; exec 1<&0; exec </data/f; read x; read y; exec 0<&1; read z; echo "[$x][$y][$z]" >&2',
+      '',
+      '[a][b][a]\n',
+      0,
+    ],
+    [
+      "printf 'a\\n' >/data/f; exec 1</data/f; cat <&1 >&2; cat <&1 >&2; echo rc=$? >&2",
+      '',
+      'a\nrc=0\n',
+      0,
+    ],
+    [
+      'printf \'a\\nb\\n\' >/data/f; exec 1</data/f; ( read x <&1; echo "[$x]" >&2 ); read y <&1; echo "[$y]" >&2',
+      '',
+      '[a]\n[b]\n',
+      0,
+    ],
+    [
+      'printf \'a\\nb\\nc\\n\' >/data/f; exec 1</data/f; exec 0<&1; read x; read y <&1; read z; echo "[$x][$y][$z]" >&2',
+      '',
+      '[a][b][c]\n',
+      0,
+    ],
+    [
+      'printf \'a\\nb\\n\' >/data/f; ( exec 2</data/f; exec 1<&2; read x <&1; read y <&2; echo "[$x][$y]" >/data/o ); cat /data/o',
+      '[a][b]\n',
+      '',
+      0,
+    ],
+    [
+      'printf \'a\\nb\\n\' >/data/f; ( exec 1</data/f; exec 2>&1; read x <&2; read y <&1; echo "[$x][$y]" >/data/o ); cat /data/o',
+      '[a][b]\n',
+      '',
+      0,
+    ],
+    [
+      "printf 'a\\n' >/data/f; printf 'p\\n' | ( exec 1<&0; exec </data/f; exec 0<&1; read x; echo \"[$x]\" >&2 )",
+      '',
+      '[p]\n',
+      0,
+    ],
+    [
+      'printf \'a\\n\' >/data/f; exec 1</data/f; rm /data/f; read x <&1; echo "[$x]" >&2',
+      '',
+      '[a]\n',
+      0,
+    ],
+    ['exec 0>/data/f; echo x >&0; echo y >&0; cat /data/f', 'x\ny\n', '', 0],
+    ['exec 0>/data/f; { echo a; echo b; } >&0; cat /data/f', 'a\nb\n', '', 0],
+    ['exec 0>/data/f; echo x >&0; exec 0<&-; cat /data/f', 'x\n', '', 0],
+    ['exec 0>/data/f; echo x >&0; exec 1>&0; echo y; exec 1>&2; cat /data/f >&2', '', 'x\ny\n', 0],
+    ['exec 0>/data/f; echo x 1>&0 2>&0; cat /data/f', 'x\n', '', 0],
+    ['exec 0<&1; echo x >&0', 'x\n', '', 0],
+    ['echo x >&0; echo rc=$?', 'rc=1\n', 'echo: write error: Bad file descriptor\n', 0],
+  ])('%s', async (line, out, err, code) => {
+    const { ws } = await makeIntegrationWS()
+    try {
+      expect(await runResult(ws, line)).toEqual([code, out, err])
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('handleRedirect trailing slash', () => {
+  it('refuses a slashed target before the command runs', async () => {
+    // GNU bash 5.2: open(2) with O_CREAT answers `missing/` with EISDIR
+    // before looking anything up, so the line prints `missing/: Is a
+    // directory`, exits 1, and the command never runs; a plain file behind
+    // the slash gets the same answer and keeps its bytes.
+    const { ws } = await makeIntegrationWS({ reg: 'y' })
+    for (const line of [
+      'echo hi > /data/missing/',
+      'echo hi >> /data/missing/',
+      'echo hi > /data/reg/',
+      'echo hi >> /data/reg/',
+      'touch /data/marker > /data/missing/',
+    ]) {
+      const [code, , err] = await runResult(ws, line)
+      const target = line.split(' ').pop() ?? ''
+      expect([code, err], line).toEqual([1, `${target}: Is a directory\n`])
+    }
+    expect(await runExit(ws, 'test -e /data/missing')).toBe(1)
+    expect(await runExit(ws, 'test -e /data/marker')).toBe(1)
+    expect(await run(ws, 'cat /data/reg')).toBe('y')
+  })
+
+  it('keeps the opens before a slashed refusal', async () => {
+    // bash opens left to right, so `> a > missing/` has created `a`
+    // (empty) by the time the second open refuses.
+    const { ws } = await makeIntegrationWS()
+    const [code, , err] = await runResult(ws, 'echo hi > /data/a > /data/missing/')
+    expect([code, err]).toEqual([1, '/data/missing/: Is a directory\n'])
+    expect(await runExit(ws, 'test -f /data/a')).toBe(0)
+    expect(await run(ws, 'cat /data/a')).toBe('')
+  })
+
+  it('reports an earlier failed open ahead of a later refusal', async () => {
+    // bash stops at the first open it cannot perform, so a redirect under
+    // an absent parent is reported ahead of a slashed or noclobbered
+    // target written after it, and nothing is created.
+    const { ws } = await makeIntegrationWS({ reg: 'y' })
+    for (const line of [
+      'echo hi > /data/nodir/f > /data/missing/',
+      'set -C; echo hi > /data/nodir/f > /data/reg',
+    ]) {
+      const [code, , err] = await runResult(ws, line)
+      expect([code, err], line).toEqual([1, '/data/nodir/f: No such file or directory\n'])
+    }
+    expect(await runExit(ws, 'test -e /data/nodir')).toBe(1)
+    expect(await runExit(ws, 'test -e /data/missing')).toBe(1)
+    expect(await run(ws, 'cat /data/reg')).toBe('y')
+  })
+})
+
+describe('stdin from a character device end-to-end', () => {
+  it('leaves rg the cwd, while an empty file is still stdin', async () => {
+    // ripgrep 14.1.1 searches stdin only when a file, FIFO or socket is
+    // attached: /dev/null is neither, so rg searches the cwd.
+    const { ws } = await makeIntegrationWS()
+    try {
+      await ws.shell("printf 'hit\\n' > /data/x.txt && printf '' > /data/e")
+      expect(await run(ws, 'cd /data && rg hit < /dev/null')).toBe('x.txt:hit\n')
+      expect(await runResult(ws, 'cd /data && rg hit < /data/e')).toEqual([1, '', ''])
+      expect(await run(ws, 'cat < /dev/null')).toBe('')
+    } finally {
+      await ws.close()
+    }
   })
 })

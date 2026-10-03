@@ -14,21 +14,16 @@
 
 import { Cmd } from './types.ts'
 
-export const STREAM_COMMANDS: ReadonlySet<string> = new Set([
-  Cmd.CAT,
-  Cmd.NL,
-  Cmd.SORT,
-  Cmd.CUT,
-  Cmd.SED,
-  Cmd.REV,
-  Cmd.AWK,
-])
+export const STREAM_COMMANDS: ReadonlySet<string> = new Set([Cmd.CAT, Cmd.NL, Cmd.CUT])
+// The stream commands that read their input as lines: GNU ends a file's
+// unterminated last line where the next file begins (`cut -c 1` on `ab` then
+// `cd` prints two lines), so the merged stream carries that newline. `cat` joins
+// the bytes as they are. Mirrors Python's LINE_STREAM_COMMANDS.
+export const LINE_STREAM_COMMANDS: ReadonlySet<string> = new Set([Cmd.NL, Cmd.CUT])
 const FANOUT_COMMANDS: ReadonlySet<string> = new Set([
-  Cmd.GREP,
-  Cmd.RG,
+  Cmd.REV,
   Cmd.HEAD,
   Cmd.TAIL,
-  Cmd.WC,
   Cmd.DU,
   Cmd.FILE,
   Cmd.MD5,
@@ -40,7 +35,6 @@ const FANOUT_COMMANDS: ReadonlySet<string> = new Set([
   Cmd.STAT,
   Cmd.STRINGS,
   Cmd.TAC,
-  Cmd.LS,
   Cmd.FIND,
   Cmd.RM,
   Cmd.RMDIR,
@@ -59,6 +53,15 @@ export const RELAY_COMMANDS: ReadonlySet<string> = new Set([
   Cmd.JOIN,
   Cmd.TAR,
   Cmd.UNZIP,
+  Cmd.ZIP,
+  Cmd.LS,
+  Cmd.SORT,
+  Cmd.WC,
+  Cmd.AWK,
+  Cmd.SED,
+  Cmd.REALPATH,
+  Cmd.GREP,
+  Cmd.RG,
 ])
 export const CROSS_MOUNT_COMMANDS: ReadonlySet<string> = new Set([
   ...STREAM_COMMANDS,

@@ -14,15 +14,20 @@
 
 import asyncio
 
-from mirage.resource.ram import RAMResource
+import pytest
+
+from mirage.commands.builtin.generic.patch import patch_generic
+from mirage.commands.config import CommandOpts
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from tests.fixtures.driver_ops import ops
 
 
 def _ws(**files):
-    mem = RAMResource()
+    mem = RAMVFS()
     for path, data in files.items():
-        asyncio.run(mem.write(PathSpec.from_str_path(path), data=data))
+        asyncio.run(ops(mem).write(PathSpec.from_str_path(path), data=data))
     return Workspace(
         {"/data": (mem, MountMode.WRITE)},
         mode=MountMode.WRITE,
@@ -31,7 +36,7 @@ def _ws(**files):
 
 def _run_raw(ws, cmd, cwd="/", stdin=None):
     ws._cwd = cwd
-    io = asyncio.run(ws.execute(cmd, stdin=stdin))
+    io = asyncio.run(ws.shell(cmd, stdin=stdin))
     return io.stdout, io
 
 
@@ -49,41 +54,82 @@ async def _collect(ait):
 
 def test_patch_apply():
     ws = _ws(**{"/hello.txt": b"hello\nworld\n"})
-    diff_text = ("--- a/hello.txt\n"
-                 "+++ b/hello.txt\n"
-                 "@@ -1,2 +1,2 @@\n"
-                 " hello\n"
-                 "-world\n"
-                 "+universe\n")
+    diff_text = (
+        "--- a/hello.txt\n"
+        "+++ b/hello.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        " hello\n"
+        "-world\n"
+        "+universe\n"
+    )
     _run_raw(ws, "patch -p1", cwd="/data", stdin=diff_text.encode())
     stdout, _ = _run_raw(ws, "cat /data/hello.txt")
     assert b"universe" in _bytes(stdout)
 
 
 def test_patch_i():
-    diff_text = ("--- a/hello.txt\n"
-                 "+++ b/hello.txt\n"
-                 "@@ -1,2 +1,2 @@\n"
-                 " hello\n"
-                 "-world\n"
-                 "+universe\n")
-    ws = _ws(**{
-        "/hello.txt": b"hello\nworld\n",
-        "/fix.patch": diff_text.encode()
-    })
+    diff_text = (
+        "--- a/hello.txt\n"
+        "+++ b/hello.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        " hello\n"
+        "-world\n"
+        "+universe\n"
+    )
+    ws = _ws(
+        **{"/hello.txt": b"hello\nworld\n", "/fix.patch": diff_text.encode()}
+    )
     _run_raw(ws, "patch -p1 -i /data/fix.patch", cwd="/data")
     stdout, _ = _run_raw(ws, "cat /data/hello.txt")
     assert b"universe" in _bytes(stdout)
 
 
 def test_patch_N():
-    diff_text = ("--- a/hello.txt\n"
-                 "+++ b/hello.txt\n"
-                 "@@ -1,2 +1,2 @@\n"
-                 " hello\n"
-                 "-world\n"
-                 "+universe\n")
+    diff_text = (
+        "--- a/hello.txt\n"
+        "+++ b/hello.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        " hello\n"
+        "-world\n"
+        "+universe\n"
+    )
     ws = _ws(**{"/hello.txt": b"hello\nuniverse\n"})
     _run_raw(ws, "patch -p1 -N", cwd="/data", stdin=diff_text.encode())
     stdout, _ = _run_raw(ws, "cat /data/hello.txt")
     assert b"universe" in _bytes(stdout)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["", "/data", "/nested/data"])
+@pytest.mark.parametrize("source", ["stdin", "operand", "input"])
+async def test_patch_preserves_virtual_paths_for_mounted_io(prefix, source):
+    patch_data = (
+        b"--- a/hello.txt\n+++ b/hello.txt\n@@ -1,2 +1,2 @@\n"
+        b" hello\n-world\n+universe\n"
+    )
+    files = {"hello.txt": b"hello\nworld\n", "fix.diff": patch_data}
+    seen = []
+
+    async def read(path):
+        assert path.virtual == prefix + "/" + path.vfs_path
+        seen.append(path.vfs_path)
+        return files[path.vfs_path]
+
+    async def write(path, data):
+        assert path.virtual == prefix + "/" + path.vfs_path
+        files[path.vfs_path] = data
+
+    input_path = PathSpec.from_str_path(prefix + "/fix.diff", "fix.diff")
+    orig_path = PathSpec.from_str_path(prefix + "/hello.txt", "hello.txt")
+    flags = {"p": "1"}
+    if source == "input":
+        flags["i"] = input_path
+    opts = CommandOpts(
+        flags=flags,
+        mount_prefix=prefix,
+        stdin=patch_data if source == "stdin" else None,
+    )
+    operands = [orig_path, input_path] if source == "operand" else []
+    await patch_generic(operands, [], opts, read, write, True)
+    assert "hello.txt" in seen
+    assert files["hello.txt"] == b"hello\nuniverse\n"

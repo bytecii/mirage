@@ -21,35 +21,41 @@ from mirage import MountMode, Workspace
 from mirage.cache.index import IndexCacheStore
 from mirage.cache.index.config import IndexEntry
 from mirage.ops import Ops
-from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
+from mirage.vfs.gdrive import GoogleDriveConfig, GoogleDriveVFS
 
 
 def _make_gdrive_ops() -> tuple[Ops, IndexCacheStore]:
-    # Mounting re-derives the resource's index from the workspace's
-    # config, so the store to seed is the one the mount ends up with.
-    resource = GoogleDriveResource(
-        config=GoogleDriveConfig(client_id="x", refresh_token="y"))
-    ws = Workspace({"/gdrive/": resource}, mode=MountMode.READ)
-    return ws.ops, resource.index
+    # The store to seed is the one the mount runs the driver under.
+    vfs = GoogleDriveVFS(
+        config=GoogleDriveConfig(client_id="x", refresh_token="y")
+    )
+    ws = Workspace({"/gdrive/": vfs}, mode=MountMode.READ)
+    return ws.vfs, ws.mount("/gdrive/").index_store
 
 
 @pytest.mark.asyncio
 async def test_read_gdoc_via_filetype_cascade():
     ops, index = _make_gdrive_ops()
-    await index.put(
-        "/gdrive/docs/report.gdoc.json",
-        IndexEntry(
-            id="doc123",
-            name="Report",
-            resource_type="gdrive/gdoc",
-            remote_time="2026-04-01T00:00:00Z",
-            vfs_name="report.gdoc.json",
-        ))
+    await index.set_dir(
+        "/gdrive/docs",
+        [
+            (
+                "report.gdoc.json",
+                IndexEntry(
+                    id="doc123",
+                    name="Report",
+                    resource_type="gdrive/gdoc",
+                    remote_time="2026-04-01T00:00:00Z",
+                    vfs_name="report.gdoc.json",
+                ),
+            )
+        ],
+    )
     doc_json = json.dumps({"documentId": "doc123", "title": "Report"}).encode()
     with patch(
-            "mirage.core.gdrive.read.read_doc",
-            new_callable=AsyncMock,
-            return_value=doc_json,
+        "mirage.core.gdrive.read.read_doc",
+        new_callable=AsyncMock,
+        return_value=doc_json,
     ):
         result = await ops.read("/gdrive/docs/report.gdoc.json")
         parsed = json.loads(result)
@@ -59,19 +65,25 @@ async def test_read_gdoc_via_filetype_cascade():
 @pytest.mark.asyncio
 async def test_read_plain_file_falls_through():
     ops, index = _make_gdrive_ops()
-    await index.put(
-        "/gdrive/notes.txt",
-        IndexEntry(
-            id="file789",
-            name="notes",
-            resource_type="gdrive/file",
-            remote_time="2026-04-01T00:00:00Z",
-            vfs_name="notes.txt",
-        ))
+    await index.set_dir(
+        "/gdrive",
+        [
+            (
+                "notes.txt",
+                IndexEntry(
+                    id="file789",
+                    name="notes",
+                    resource_type="gdrive/file",
+                    remote_time="2026-04-01T00:00:00Z",
+                    vfs_name="notes.txt",
+                ),
+            )
+        ],
+    )
     with patch(
-            "mirage.core.gdrive.read.download_file",
-            new_callable=AsyncMock,
-            return_value=b"plain content",
+        "mirage.core.gdrive.read.download_file",
+        new_callable=AsyncMock,
+        return_value=b"plain content",
     ):
         result = await ops.read("/gdrive/notes.txt")
         assert result == b"plain content"
@@ -80,15 +92,20 @@ async def test_read_plain_file_falls_through():
 @pytest.mark.asyncio
 async def test_readdir():
     ops, index = _make_gdrive_ops()
-    await index.set_dir("/gdrive/docs", [(
-        "report.gdoc.json",
-        IndexEntry(
-            id="doc123",
-            name="Report",
-            resource_type="gdrive/gdoc",
-            remote_time="2026-04-01T00:00:00Z",
-            vfs_name="report.gdoc.json",
-        ),
-    )])
+    await index.set_dir(
+        "/gdrive/docs",
+        [
+            (
+                "report.gdoc.json",
+                IndexEntry(
+                    id="doc123",
+                    name="Report",
+                    resource_type="gdrive/gdoc",
+                    remote_time="2026-04-01T00:00:00Z",
+                    vfs_name="report.gdoc.json",
+                ),
+            )
+        ],
+    )
     result = await ops.readdir("/gdrive/docs")
     assert "/gdrive/docs/report.gdoc.json" in result

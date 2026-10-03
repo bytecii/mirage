@@ -12,20 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { IOResult } from '../../../../../io/types.ts'
+import type { ByteSource } from '../../../../../io/types.ts'
 import type { PathSpec } from '../../../../../types.ts'
-import { joinGeneric } from '../../join.ts'
+import { join, parseJoinFlags } from '../../join.ts'
 import type { CrossResult, DispatchFn } from '../types.ts'
-import { crossOpts, flatten, streamOp } from '../utils.ts'
+import { flatten, streamOp } from '../utils.ts'
 import type { FlagValue } from '../../../../spec/types.ts'
 
-// Join two files on different mounts via the shared generic join. Pure wiring: every operand is read through dispatch-relayed
-// primitives on its owning mount, matching the single-mount builder.
+// Join two files on different mounts via the shared generic join. Pure wiring: every operand is
+// read through dispatch-relayed primitives on its owning mount, and the flags go through the
+// generic's own parse, matching the single-mount builder. Mirrors run_join in join.py.
 export async function runJoin(
   scopes: PathSpec[],
   flagKwargs: Record<string, FlagValue>,
   dispatch: DispatchFn,
+  stdin: ByteSource | null = null,
 ): Promise<CrossResult> {
-  const result = await joinGeneric(flatten(scopes), crossOpts(flagKwargs), streamOp(dispatch))
-  return result ?? [null, new IOResult()]
+  const paths = flatten(scopes)
+  return join(paths, {
+    read: streamOp(dispatch),
+    stdin,
+    flags: parseJoinFlags(
+      flagKwargs,
+      paths.map((path) => path.rawPath),
+    ),
+  })
 }

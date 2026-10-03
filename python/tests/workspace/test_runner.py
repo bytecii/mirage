@@ -13,17 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import threading
 import time
 
 import pytest
 
 from mirage import MountMode, Workspace, WorkspaceRunner
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
 
 def _make_ws() -> Workspace:
     return Workspace(
-        {"/": (RAMResource(), MountMode.WRITE)},
+        {"/": (RAMVFS(), MountMode.WRITE)},
         mode=MountMode.WRITE,
     )
 
@@ -35,7 +36,7 @@ async def test_runner_executes_on_its_own_loop():
     try:
         outer = asyncio.get_running_loop()
         assert runner.loop is not outer
-        result = await runner.call(runner.ws.execute("echo hello"))
+        result = await runner.call(runner.ws.shell("echo hello"))
         assert result.exit_code == 0
         assert (result.stdout or b"").startswith(b"hello")
     finally:
@@ -47,7 +48,7 @@ async def test_runner_call_does_not_block_caller_loop():
     ws = _make_ws()
     runner = WorkspaceRunner(ws)
     try:
-        slow = asyncio.create_task(runner.call(runner.ws.execute("sleep 0.5")))
+        slow = asyncio.create_task(runner.call(runner.ws.shell("sleep 0.5")))
         ticks = 0
         for _ in range(20):
             await asyncio.sleep(0.05)
@@ -68,19 +69,56 @@ async def test_two_runners_are_isolated():
     runner_b = WorkspaceRunner(ws_b)
     try:
         slow = asyncio.create_task(
-            runner_a.call(runner_a.ws.execute("sleep 1.0")))
+            runner_a.call(runner_a.ws.shell("sleep 1.0"))
+        )
         await asyncio.sleep(0.05)
         start = time.monotonic()
-        fast_result = await runner_b.call(runner_b.ws.execute("echo quick"))
+        fast_result = await runner_b.call(runner_b.ws.shell("echo quick"))
         elapsed = time.monotonic() - start
         assert fast_result.exit_code == 0
         assert elapsed < 0.5, (
             f"workspace B's quick command took {elapsed:.2f}s "
-            "while workspace A was sleeping; isolation violated")
+            "while workspace A was sleeping; isolation violated"
+        )
         await slow
     finally:
         await runner_a.stop()
         await runner_b.stop()
+
+
+@pytest.mark.asyncio
+async def test_work_is_refused_once_stop_begins():
+    runner = WorkspaceRunner(_make_ws())
+    stopping = asyncio.create_task(runner.stop())
+    await asyncio.sleep(0)
+    for _ in range(2):
+        line = runner.ws.shell("echo late")
+        with pytest.raises(RuntimeError, match="stopped"):
+            await runner.call(line)
+        assert line.cr_frame is None
+        await stopping
+
+
+@pytest.mark.asyncio
+async def test_cancelled_call_waits_for_the_work_to_settle():
+    runner = WorkspaceRunner(_make_ws())
+    entered, cleaned = threading.Event(), threading.Event()
+
+    async def work():
+        entered.set()
+        try:
+            await asyncio.sleep(10)
+        finally:
+            await asyncio.sleep(0.05)
+            cleaned.set()
+
+    call = asyncio.create_task(runner.call(work()))
+    assert await asyncio.to_thread(entered.wait, 2)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert cleaned.is_set()
+    await asyncio.gather(runner.stop(), runner.stop())
 
 
 @pytest.mark.asyncio
@@ -96,7 +134,7 @@ def test_call_sync_runs_on_workspace_loop():
     ws = _make_ws()
     runner = WorkspaceRunner(ws)
     try:
-        result = runner.call_sync(runner.ws.execute("echo sync"), timeout=5.0)
+        result = runner.call_sync(runner.ws.shell("echo sync"), timeout=5.0)
         assert result.exit_code == 0
         assert (result.stdout or b"").startswith(b"sync")
     finally:

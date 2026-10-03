@@ -15,12 +15,11 @@
 import asyncio
 import json
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.slack import SlackConfig, SlackResource
+from mirage.vfs.slack import SlackConfig, SlackVFS
 
 load_dotenv(".env.development")
 
@@ -28,21 +27,20 @@ config = SlackConfig(
     token=os.environ["SLACK_BOT_TOKEN"],
     search_token=os.environ.get("SLACK_USER_TOKEN"),
 )
-resource = SlackResource(config=config)
+vfs = SlackVFS(config=config)
 
 
 async def main():
-    with Workspace({"/slack/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
+    with Workspace({"/slack/": vfs}, mode=MountMode.READ) as ws:
         print("=== VFS MODE: open() reads from Slack transparently ===\n")
 
         print("--- os.listdir() root ---")
-        sections = vos.listdir("/slack")
+        sections = os.listdir("/slack")
         for s in sections:
             print(f"  {s}")
 
         print("\n--- os.listdir() channels ---")
-        channels = vos.listdir("/slack/channels")
+        channels = os.listdir("/slack/channels")
         for ch in channels[:5]:
             print(f"  {ch}")
 
@@ -50,7 +48,7 @@ async def main():
             ch = next((c for c in channels if "general" in c), channels[0])
             ch_dir = f"/slack/channels/{ch}"
             print("\n--- os.listdir() dates ---")
-            dates = vos.listdir(ch_dir)
+            dates = os.listdir(ch_dir)
             for d in dates[-5:]:
                 print(f"  {d}")
 
@@ -60,7 +58,8 @@ async def main():
                     with open(path) as f:
                         content = f.read()
                     lines = [
-                        line_text for line_text in content.strip().split("\n")
+                        line_text
+                        for line_text in content.strip().split("\n")
                         if line_text.strip()
                     ]
                     if lines:
@@ -76,9 +75,9 @@ async def main():
                     print("\n  (no messages found in recent dates)")
 
                 print("\n--- os.path.exists() ---")
-                print(f"  exists: {vos.path.exists(path)}")
+                print(f"  exists: {os.path.exists(path)}")
                 print(
-                    f"  nonexistent: {vos.path.exists('/slack/channels/nope')}"
+                    f"  nonexistent: {os.path.exists('/slack/channels/nope')}"
                 )
 
         print("\n--- bash history ---")
@@ -88,7 +87,7 @@ async def main():
                     break
                 print(f"  {line.rstrip()[:120]}")
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(r.bytes for r in records)
         print(f"\nStats: {len(records)} ops, {total} bytes transferred")
 

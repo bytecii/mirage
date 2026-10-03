@@ -17,7 +17,7 @@ import os
 from dotenv import load_dotenv
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.resource.hf_buckets import HfBucketsConfig, HfBucketsResource
+from mirage.vfs.hf_buckets import HfBucketsConfig, HfBucketsVFS
 
 load_dotenv(".env.development")
 
@@ -25,11 +25,11 @@ config = HfBucketsConfig(
     bucket=os.environ["HF_BUCKET_NAME"],
     token=os.environ["HF_TOKEN"],
 )
-resource = HfBucketsResource(config)
+vfs = HfBucketsVFS(config)
 
 with Workspace(
-    {"/hf/": Mount(resource, mode=MountMode.READ,
-                   backend=MountBackend.FUSE)}) as ws:
+    {"/hf/": Mount(vfs, mode=MountMode.READ, backend=MountBackend.FUSE)}
+) as ws:
     mp = ws.fuse_mountpoint
 
     print(f"=== FUSE MODE: mounted at {mp} ===\n")
@@ -76,6 +76,6 @@ with Workspace(
     except EOFError:
         pass
 
-    records = ws.ops.records
+    records = ws.vfs.records
     total = sum(r.bytes for r in records)
     print(f"\nStats: {len(records)} ops, {total} bytes transferred")

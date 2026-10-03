@@ -12,13 +12,24 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve, sep } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { FsError, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
 import type { FsErrorCode } from '@deepseek-ai/dsh-fs'
-import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
+import { runWithSession } from '@struktoai/mirage-core/context/session_context'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { MountMode } from '@struktoai/mirage-core/types'
-import { Workspace, registerResourceFactory } from '@struktoai/mirage-node'
+import { RAMWorkspaceStateStore } from '@struktoai/mirage-core/workspace/store/ram'
+import {
+  DiskVFS,
+  LocalRuntime,
+  Workspace,
+  parseSessionProfile,
+  registerVfsFactory,
+} from '@struktoai/mirage-node'
 import { MirageFileSystem } from './fs.ts'
 import type { MirageFsConfig } from './fs.ts'
 import { MirageService } from './service.ts'
@@ -29,7 +40,7 @@ async function makeFs(
   seed: Record<string, string | Uint8Array> = {},
   options: { cwd?: string; readOnly?: boolean; diffBasisMaxBytes?: number } = {},
 ): Promise<{ fs: MirageFileSystem; ws: Workspace }> {
-  const ram = new RAMResource()
+  const ram = new RAMVFS()
   const ws = new Workspace({ '/data': [ram, MountMode.WRITE] })
   workspaces.push(ws)
   for (const [path, content] of Object.entries(seed)) {
@@ -38,9 +49,9 @@ async function makeFs(
     let dir = ''
     for (const part of parts) {
       dir += `/${part}`
-      if (dir !== '/data' && !(await ws.fs.isDir(dir))) await ws.fs.mkdir(dir)
+      if (dir !== '/data' && !(await ws.vfs.isDir(dir))) await ws.vfs.mkdir(dir)
     }
-    await ws.fs.writeFile(full, content)
+    await ws.vfs.write(full, content)
   }
   let target = ws
   if (options.readOnly === true) {
@@ -75,8 +86,33 @@ async function errorCode(promise: Promise<unknown>): Promise<FsErrorCode> {
   throw new Error('expected rejection')
 }
 
+const tempRoots: string[] = []
+
+/**
+ * A workspace with one disk mount, for the host-path mapping.
+ *
+ * @param prefix where the disk VFS is mounted.
+ * @returns the filesystem seam and the host directory behind the mount.
+ */
+async function makeDiskFs(
+  prefix = '/work',
+): Promise<{ fs: MirageFileSystem; root: string; ws: Workspace }> {
+  const root = await mkdtemp(join(tmpdir(), 'mirage-dsh-host-'))
+  tempRoots.push(root)
+  const ws = new Workspace({ [prefix]: [new DiskVFS({ root }), MountMode.WRITE] })
+  workspaces.push(ws)
+  const ctx = new Context()
+  await ctx.plugin(MirageService, { workspace: ws }).await()
+  await ctx.plugin(MirageFileSystem, {}).await()
+  return { fs: ctx.fs as MirageFileSystem, root, ws }
+}
+
 afterEach(async () => {
   while (workspaces.length > 0) await workspaces.pop()?.close()
+  while (tempRoots.length > 0) {
+    const root = tempRoots.pop()
+    if (root !== undefined) await rm(root, { recursive: true, force: true })
+  }
 })
 
 describe('resolve', () => {
@@ -85,6 +121,31 @@ describe('resolve', () => {
     const target = await fs.resolve('a.txt')
     expect(String(target.targetKey)).toBe('/data/a.txt')
     expect(target.displayPath).toBe('/data/a.txt')
+  })
+
+  it('ignores a caller cwd that names nothing in this world', async () => {
+    const { fs } = await makeFs({ 'a.txt': 'hello' }, { cwd: '/data' })
+    const target = await fs.resolve('a.txt', { cwd: '/Users/somebody/host-project' })
+    expect(String(target.targetKey)).toBe('/data/a.txt')
+    expect(await fs.readText(target)).toBe('hello')
+  })
+
+  it('honors a caller cwd that is a real directory here', async () => {
+    const { fs } = await makeFs({ 'sub/b.txt': 'nested' }, { cwd: '/' })
+    const target = await fs.resolve('b.txt', { cwd: '/data/sub' })
+    expect(String(target.targetKey)).toBe('/data/sub/b.txt')
+  })
+
+  it('leaves an absolute path alone whatever the caller cwd says', async () => {
+    const { fs } = await makeFs({ 'a.txt': 'hello' }, { cwd: '/' })
+    const target = await fs.resolve('/data/a.txt', { cwd: '/Users/somebody/host-project' })
+    expect(String(target.targetKey)).toBe('/data/a.txt')
+  })
+
+  it('ignores a host cwd for lstat too', async () => {
+    const { fs } = await makeFs({ 'a.txt': 'hello' }, { cwd: '/data' })
+    const info = await fs.lstat('a.txt', { cwd: '/Users/somebody/host-project' })
+    expect(info?.type).toBe('file')
   })
 
   it('yields one target key for aliased spellings', async () => {
@@ -96,7 +157,7 @@ describe('resolve', () => {
 
   it('follows namespace symlinks to the canonical target', async () => {
     const { fs, ws } = await makeFs({ 'a.txt': 'hello' })
-    await ws.fs.links?.symlink('/data/link.txt', '/data/a.txt', Date.now())
+    await ws.vfs.symlink('/data/link.txt', '/data/a.txt')
     const viaLink = await fs.resolve('/data/link.txt')
     expect(String(viaLink.targetKey)).toBe('/data/a.txt')
   })
@@ -143,14 +204,14 @@ describe('stat and lstat', () => {
     const before = await fs.stat(target)
     const again = await fs.stat(target)
     expect(again?.version).toBe(before?.version)
-    await ws.fs.writeFile('/data/a.txt', 'three is longer')
+    await ws.vfs.write('/data/a.txt', 'three is longer')
     const after = await fs.stat(target)
     expect(after?.version).not.toBe(before?.version)
   })
 
   it('lstat reports the link itself, stat its target', async () => {
     const { fs, ws } = await makeFs({ 'a.txt': 'hello' })
-    await ws.fs.links?.symlink('/data/link.txt', '/data/a.txt', Date.now())
+    await ws.vfs.symlink('/data/link.txt', '/data/a.txt')
     const path = await fs.lstat('/data/link.txt')
     expect(path?.type).toBe('symlink')
     expect(path?.size).toBe('/data/a.txt'.length)
@@ -239,6 +300,66 @@ describe('readBytes', () => {
   })
 })
 
+describe('readByteRange', () => {
+  const DEC = new TextDecoder()
+
+  it('reads the window the caller asked for', async () => {
+    const { fs } = await makeFs({ 'a.txt': '0123456789' })
+    const target = await fs.resolve('/data/a.txt')
+    expect(DEC.decode(await fs.readByteRange(target, { offset: 2, length: 3 }))).toBe('234')
+  })
+
+  it('comes back short when the file ends inside the window', async () => {
+    const { fs } = await makeFs({ 'a.txt': '0123456789' })
+    const target = await fs.resolve('/data/a.txt')
+    expect(DEC.decode(await fs.readByteRange(target, { offset: 7, length: 99 }))).toBe('789')
+  })
+
+  it('answers empty at or past the end of the file', async () => {
+    const { fs } = await makeFs({ 'a.txt': '0123456789' })
+    const target = await fs.resolve('/data/a.txt')
+    expect(await fs.readByteRange(target, { offset: 10, length: 4 })).toEqual(new Uint8Array(0))
+    expect(await fs.readByteRange(target, { offset: 99, length: 4 })).toEqual(new Uint8Array(0))
+  })
+
+  it('answers empty for a zero-length window without reading', async () => {
+    const { fs } = await makeFs({ 'a.txt': '0123456789' })
+    const target = await fs.resolve('/data/a.txt')
+    expect(await fs.readByteRange(target, { offset: 2, length: 0 })).toEqual(new Uint8Array(0))
+  })
+
+  it('decodes nothing and rejects nothing: a NUL rides through', async () => {
+    const blob = new Uint8Array([104, 105, 0, 106])
+    const { fs } = await makeFs({ 'blob.bin': blob })
+    const target = await fs.resolve('/data/blob.bin')
+    expect(await fs.readByteRange(target, { offset: 1, length: 3 })).toEqual(blob.slice(1, 4))
+    // The same bytes through the text door are refused, which is the
+    // difference this method exists for.
+    expect(await errorCode(fs.readText(target))).toBe('FS_NOT_TEXT')
+  })
+
+  it('applies no cap of its own: the window is the only bound', async () => {
+    const { fs } = await makeFs({ 'a.txt': 'x'.repeat(4096) })
+    const target = await fs.resolve('/data/a.txt')
+    const bytes = await fs.readByteRange(target, { offset: 0, length: 4096 })
+    expect(bytes.byteLength).toBe(4096)
+  })
+
+  it('reports a missing file as FS_NOT_FOUND', async () => {
+    const { fs } = await makeFs()
+    const target = await fs.resolve('/data/nope')
+    expect(await errorCode(fs.readByteRange(target, { offset: 0, length: 4 }))).toBe('FS_NOT_FOUND')
+  })
+
+  it('refuses a directory as FS_NOT_REGULAR_FILE', async () => {
+    const { fs } = await makeFs({ 'sub/a.txt': 'x' })
+    const target = await fs.resolve('/data/sub')
+    expect(await errorCode(fs.readByteRange(target, { offset: 0, length: 4 }))).toBe(
+      'FS_NOT_REGULAR_FILE',
+    )
+  })
+})
+
 describe('listDir', () => {
   it('lists children sorted with types, sizes and resolvable targets', async () => {
     const { fs } = await makeFs({ 'b.txt': 'bee', 'sub/c.txt': 'cee' })
@@ -252,7 +373,7 @@ describe('listDir', () => {
 
   it('merges namespace symlinks into the listing', async () => {
     const { fs, ws } = await makeFs({ 'a.txt': 'hello' })
-    await ws.fs.links?.symlink('/data/link.txt', '/data/a.txt', Date.now())
+    await ws.vfs.symlink('/data/link.txt', '/data/a.txt')
     const entries = await fs.listDir(await fs.resolve('/data'))
     const link = entries.find((e) => e.name === 'link.txt')
     expect(link?.type).toBe('file')
@@ -267,7 +388,7 @@ describe('listDir', () => {
 
   it('lists a cyclic symlink as an entry of unknown kind', async () => {
     const { fs, ws } = await makeFs({ 'a.txt': 'hello' })
-    await ws.fs.links?.symlink('/data/loop', '/data/loop', Date.now())
+    await ws.vfs.symlink('/data/loop', '/data/loop')
     const entries = await fs.listDir(await fs.resolve('/data'))
     expect(entries.map((e) => e.name)).toEqual(['a.txt', 'loop'])
     const loop = entries.find((e) => e.name === 'loop')
@@ -388,7 +509,7 @@ describe('editText', () => {
     const { fs, ws } = await makeFs({ 'a.txt': 'guarded content' })
     const target = await fs.resolve('/data/a.txt')
     const stale = await versionAt(fs, '/data/a.txt')
-    await ws.fs.writeFile('/data/a.txt', 'now something else entirely')
+    await ws.vfs.write('/data/a.txt', 'now something else entirely')
     expect(
       await errorCode(
         fs.editText(
@@ -412,13 +533,13 @@ describe('cancellation across readiness', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
-    registerResourceFactory('gated-ram-write', async () => {
+    registerVfsFactory('gated-ram-write', async () => {
       await gate
-      return new RAMResource()
+      return new RAMVFS()
     })
     const ctx = new Context()
     const fiber = ctx.plugin(MirageService, {
-      mounts: { '/data': { resource: 'gated-ram-write', mode: 'write' } },
+      mounts: { '/data': { vfs: 'gated-ram-write', mode: 'write' } },
     })
     await fiber.await()
     await ctx.plugin(MirageFileSystem, {}).await()
@@ -433,7 +554,360 @@ describe('cancellation across readiness', () => {
     release()
     expect(await errorCode(pending)).toBe('FS_ABORTED')
     const ws = await ctx.mirage.ready
-    expect(await ws.fs.exists('/data/out.txt')).toBe(false)
+    expect(await ws.vfs.exists('/data/out.txt')).toBe(false)
     await fiber.dispose()
+  })
+})
+
+describe('sandbox policy', () => {
+  const READ_ONLY = { mode: 'read-only', workspaceRoot: '/Users/somebody/host-project' } as const
+  const WORKSPACE_WRITE = { mode: 'workspace-write', workspaceRoot: '/Users/somebody' } as const
+
+  it('reports the same confinement the shell executor does', async () => {
+    const { fs } = await makeFs()
+    expect(fs.sandboxMode).toBe('workspace-write')
+  })
+
+  it('makes no claim once a runtime executes beyond the workspace', async () => {
+    const { fs, ws } = await makeFs()
+    ws.addRuntime(new LocalRuntime({ captures: ['python'] }))
+    expect(fs.sandboxMode).toBeUndefined()
+  })
+
+  it('refuses a write under a read-only policy', async () => {
+    const { fs, ws } = await makeFs()
+    const target = await fs.resolve('/data/new.txt')
+    expect(await errorCode(fs.writeText(target, 'x', undefined, undefined, READ_ONLY))).toBe(
+      'FS_SANDBOX_DENIED',
+    )
+    expect(await ws.vfs.exists('/data/new.txt')).toBe(false)
+  })
+
+  it('refuses an edit under a read-only policy', async () => {
+    const { fs, ws } = await makeFs({ 'a.txt': 'one' })
+    const target = await fs.resolve('/data/a.txt')
+    const edit = { oldString: 'one', newString: 'two', replaceAll: false }
+    expect(await errorCode(fs.editText(target, edit, undefined, undefined, READ_ONLY))).toBe(
+      'FS_SANDBOX_DENIED',
+    )
+    expect(await ws.vfs.cat('/data/a.txt')).toBe('one')
+  })
+
+  it('reads under a read-only policy, since only mutations are fenced', async () => {
+    const { fs } = await makeFs({ 'a.txt': 'visible' })
+    const target = await fs.resolve('/data/a.txt')
+    expect(await fs.readText(target)).toBe('visible')
+  })
+
+  it('allows a write under a workspace-write policy', async () => {
+    const { fs } = await makeFs()
+    const target = await fs.resolve('/data/new.txt')
+    const outcome = await fs.writeText(target, 'x', undefined, undefined, WORKSPACE_WRITE)
+    expect(outcome.operation).toBe('create')
+  })
+
+  it('allows an unguarded write when the caller supplies no policy', async () => {
+    const { fs } = await makeFs()
+    const target = await fs.resolve('/data/new.txt')
+    const outcome = await fs.writeText(target, 'x')
+    expect(outcome.operation).toBe('create')
+  })
+})
+
+describe('listDir cancellation', () => {
+  it('stops walking children once the signal fires', async () => {
+    const { fs, ws } = await makeFs({ 'a.txt': 'x', 'b.txt': 'y', 'c.txt': 'z' })
+    const target = await fs.resolve('/data')
+    const controller = new AbortController()
+    // The walk's per-entry stats are index hits the readdir just warmed,
+    // so the only deterministic window is the moment the listing lands.
+    // Aborting as `readdir` returns puts the signal exactly there: with
+    // the walk unguarded it would classify every child regardless.
+    const ops = ws.vfs
+    const inner = ops.readdir.bind(ops)
+    ops.readdir = async (path: string): Promise<string[]> => {
+      const listing = await inner(path)
+      controller.abort()
+      return listing
+    }
+    expect(await errorCode(fs.listDir(target, controller.signal))).toBe('FS_ABORTED')
+  })
+
+  it('lists the whole directory when nothing aborts', async () => {
+    const { fs } = await makeFs({ 'a.txt': 'x', 'b.txt': 'y' })
+    const entries = await fs.listDir(await fs.resolve('/data'), new AbortController().signal)
+    expect(entries.map((e) => e.name)).toEqual(['a.txt', 'b.txt'])
+  })
+})
+
+async function adapterOn(ws: Workspace, config: MirageFsConfig): Promise<MirageFileSystem> {
+  const ctx = new Context()
+  await ctx.plugin(MirageService, { workspace: ws }).await()
+  await ctx.plugin(MirageFileSystem, config).await()
+  return ctx.fs as MirageFileSystem
+}
+
+describe('the session the adapter reads as', () => {
+  it('a named session confines ctx.fs the way it confines the shell', async () => {
+    const ws = new Workspace(
+      { '/data': [new RAMVFS(), MountMode.WRITE] },
+      {
+        profiles: {
+          agent: parseSessionProfile(
+            { paths: { hide: ['/data/vault', '/data/hidden-lk'] } },
+            'profile agent',
+          ),
+        },
+      },
+    )
+    workspaces.push(ws)
+    await ws.vfs.mkdir('/data/vault')
+    await ws.vfs.write('/data/vault/secret', 'top')
+    await ws.vfs.write('/data/public.txt', 'pub')
+    await ws.vfs.symlink('/data/vault/lk', '/data/public.txt')
+    await ws.vfs.symlink('/data/hidden-lk', '/data/public.txt')
+    ws.createSession('agent', { profile: 'agent' })
+    const fs = await adapterOn(ws, { sessionId: 'agent' })
+    expect(await fs.stat(await fs.resolve('/data/vault/secret'))).toBeUndefined()
+    const target = await fs.resolve('/data/vault/new.txt')
+    const err = await fs.writeText(target, 'x').catch((caught: unknown) => caught)
+    expect((err as FsError).code).toBe('FS_NOT_FOUND')
+    // A link inside hidden space is not followed out of it: the typed
+    // path reaches the door and reads as absent, and the listing never
+    // names a hidden link either.
+    const link = await fs.resolve('/data/vault/lk')
+    expect(String(link.targetKey)).toBe('/data/vault/lk')
+    expect(await fs.stat(link)).toBeUndefined()
+    const listed = await fs.listDir(await fs.resolve('/data'))
+    expect(listed.map((e) => e.name)).toEqual(['public.txt'])
+    // lstat reads the leaf off the link table, so a hidden link is
+    // absent there too, under a hidden parent or hidden by its own name.
+    expect(await fs.lstat('/data/vault/lk')).toBeUndefined()
+    expect(await fs.lstat('/data/hidden-lk')).toBeUndefined()
+    expect(String((await fs.resolve('/data/hidden-lk')).targetKey)).toBe('/data/hidden-lk')
+    expect(await ws.vfs.cat('/data/vault/secret')).toBe('top')
+  })
+
+  it('reads links as the ambient session the door will keep', async () => {
+    // A callback reaching ctx.fs from inside `ws.shell` dispatches as
+    // that line's session, so the link table is judged as it too: a
+    // link the ambient session hides stays typed for the door to refuse,
+    // even though the adapter's own configured session could see it.
+    const ws = new Workspace(
+      { '/data': [new RAMVFS(), MountMode.WRITE] },
+      {
+        profiles: {
+          agent: parseSessionProfile({ paths: { hide: ['/data/vault'] } }, 'profile agent'),
+        },
+      },
+    )
+    workspaces.push(ws)
+    await ws.vfs.mkdir('/data/vault')
+    await ws.vfs.write('/data/public.txt', 'pub')
+    await ws.vfs.symlink('/data/vault/lk', '/data/public.txt')
+    const agent = ws.createSession('agent', { profile: 'agent' })
+    const fs = await adapterOn(ws, {})
+    expect(String((await fs.resolve('/data/vault/lk')).targetKey)).toBe('/data/public.txt')
+    const asAgent = await runWithSession(
+      agent,
+      async () => ({
+        key: String((await fs.resolve('/data/vault/lk')).targetKey),
+        names: (await fs.listDir(await fs.resolve('/data'))).map((e) => e.name),
+        stat: await fs.stat(await fs.resolve('/data/vault/lk')),
+      }),
+      ws.sessionManager,
+    )
+    expect(asAgent).toEqual({ key: '/data/vault/lk', names: ['public.txt'], stat: undefined })
+  })
+
+  it('probes a caller cwd as the session, not as the default', async () => {
+    const ram = new RAMVFS()
+    const seeder = new Workspace({ '/data': [ram, MountMode.WRITE] })
+    workspaces.push(seeder)
+    await seeder.vfs.mkdir('/data/work')
+    await seeder.vfs.mkdir('/data/vault')
+    const ws = new Workspace(
+      { '/data': [ram, MountMode.WRITE] },
+      {
+        profiles: {
+          host: parseSessionProfile({ paths: { hide: ['/data/work'] } }, 'profile host'),
+          agent: parseSessionProfile({ paths: { hide: ['/data/vault'] } }, 'profile agent'),
+        },
+        profile: 'host',
+      },
+    )
+    workspaces.push(ws)
+    ws.createSession('agent', { profile: 'agent' })
+    const fs = await adapterOn(ws, { sessionId: 'agent' })
+    // A directory only the agent can see is a base; one only the
+    // default can see is not, so the configured cwd takes over.
+    const seen = await fs.resolve('x.txt', { cwd: '/data/work' })
+    expect(String(seen.targetKey)).toBe('/data/work/x.txt')
+    const unseen = await fs.resolve('x.txt', { cwd: '/data/vault' })
+    expect(String(unseen.targetKey)).toBe('/x.txt')
+  })
+
+  it('hydrates a fresh attach before reading as its session', async () => {
+    // `ready` resolves an attached workspace as built, with a minted
+    // default and an empty link table; the adapter reads both outside
+    // the door, so it must hydrate first or a persisted hide is judged
+    // by the wrong session and a persisted link is not seen at all.
+    const store = new RAMWorkspaceStateStore()
+    const ram = new RAMVFS()
+    const build = (): Workspace =>
+      new Workspace({ '/data': [ram, MountMode.WRITE] }, { workspaceId: 'shared', store })
+    const wsA = build()
+    workspaces.push(wsA)
+    await wsA.vfs.mkdir('/data/vault')
+    await wsA.vfs.write('/data/vault/secret', 'top')
+    await wsA.vfs.write('/data/public.txt', 'pub')
+    await wsA.vfs.symlink('/data/vault/lk', '/data/public.txt')
+    await wsA.vfs.symlink('/data/lk', '/data/public.txt')
+    await wsA.setSessionProfile(
+      wsA.defaultSessionId,
+      parseSessionProfile({ paths: { hide: ['/data/vault'] } }, 'profile default'),
+    )
+    await wsA.flushSessions()
+
+    const wsB = build()
+    workspaces.push(wsB)
+    const minted = wsB.defaultSessionId
+    const fs = await adapterOn(wsB, {})
+    const hidden = await fs.resolve('/data/vault/lk')
+    expect(String(hidden.targetKey)).toBe('/data/vault/lk')
+    expect(await fs.lstat('/data/vault/lk')).toBeUndefined()
+    expect(String((await fs.resolve('/data/lk')).targetKey)).toBe('/data/public.txt')
+    expect(wsB.defaultSessionId).toBe(wsA.defaultSessionId)
+    expect(wsB.defaultSessionId).not.toBe(minted)
+  })
+})
+
+describe('a policy refusal at the op door', () => {
+  it('reads as a sandbox denial, so the tool layer offers the escalation', async () => {
+    const ram = new RAMVFS()
+    const seeder = new Workspace({ '/data': [ram, MountMode.WRITE] })
+    workspaces.push(seeder)
+    await seeder.vfs.write('/data/keep.txt', 'original')
+    const ws = new Workspace(
+      { '/data': [ram, MountMode.WRITE] },
+      {
+        profiles: {
+          agent: parseSessionProfile(
+            { commands: { deny: [{ reason: 'keep.txt is frozen', paths: ['/data/keep.txt'] }] } },
+            'profile agent',
+          ),
+        },
+        profile: 'agent',
+      },
+    )
+    workspaces.push(ws)
+    const ctx = new Context()
+    await ctx.plugin(MirageService, { workspace: ws }).await()
+    await ctx.plugin(MirageFileSystem, {}).await()
+    const fs = ctx.fs as MirageFileSystem
+    const target = await fs.resolve('/data/keep.txt')
+    const err = await fs.writeText(target, 'overwritten').catch((caught: unknown) => caught)
+    expect(err).toBeInstanceOf(FsError)
+    // Not FS_PERMISSION_DENIED: a mode refusal is the shape of this world,
+    // while a rule is a confinement a call may be entitled to escalate past.
+    expect((err as FsError).code).toBe('FS_SANDBOX_DENIED')
+    expect((err as FsError).message).toContain('keep.txt is frozen')
+  })
+
+  it('still reads a plain mount-mode refusal as a permission denial', async () => {
+    const { fs } = await makeFs({ 'a.txt': 'read only' }, { readOnly: true })
+    const target = await fs.resolve('/data/a.txt')
+    const err = await fs.writeText(target, 'nope').catch((caught: unknown) => caught)
+    expect((err as FsError).code).toBe('FS_PERMISSION_DENIED')
+  })
+})
+
+describe('processPathFromHostPath', () => {
+  it('maps a host path under a disk mount onto its workspace path', async () => {
+    const { fs, root } = await makeDiskFs()
+    await writeFile(join(root, 'a.txt'), 'hello')
+    expect(fs.processPathFromHostPath(join(root, 'a.txt'))).toBe('/work/a.txt')
+  })
+
+  it('maps a nested host path, separators and all', async () => {
+    const { fs, root } = await makeDiskFs()
+    const nested = ['sub', 'deeper', 'c.txt'].join(sep)
+    expect(fs.processPathFromHostPath(join(root, nested))).toBe('/work/sub/deeper/c.txt')
+  })
+
+  it('maps the mount root itself without a trailing slash', async () => {
+    const { fs, root } = await makeDiskFs()
+    expect(fs.processPathFromHostPath(root)).toBe('/work')
+  })
+
+  it('normalizes a host path before matching', async () => {
+    const { fs, root } = await makeDiskFs()
+    expect(fs.processPathFromHostPath(join(root, 'sub', '..', 'a.txt'))).toBe('/work/a.txt')
+  })
+
+  it('declines a path shadowed by a mount nested under the disk mount', async () => {
+    // Dispatch routes /work/cache to the RAM child, so the disk file at
+    // <root>/cache/x.txt is not what that virtual path reads.
+    const { fs, root, ws } = await makeDiskFs()
+    ws.addMount('/work/cache', new RAMVFS(), MountMode.WRITE)
+    expect(fs.processPathFromHostPath(join(root, 'cache', 'x.txt'))).toBeUndefined()
+    // The rest of the disk mount still maps.
+    expect(fs.processPathFromHostPath(join(root, 'kept.txt'))).toBe('/work/kept.txt')
+  })
+
+  it('maps an in-root name that merely begins with two dots', async () => {
+    // `relative()` answers `..draft/a.txt` here, which is an ordinary
+    // file, not an escape.
+    const { fs, root } = await makeDiskFs()
+    expect(fs.processPathFromHostPath(join(root, '..draft', 'a.txt'))).toBe('/work/..draft/a.txt')
+    expect(fs.processPathFromHostPath(join(root, '..'))).toBeUndefined()
+  })
+
+  it('declines a path a namespace symlink shadows', async () => {
+    // Codex's ordering: the link exists first, then the externally
+    // mutable disk grows a file at the same name. A read of /work/a.txt
+    // follows the link, so the disk file is not what that path returns.
+    const { fs, root, ws } = await makeDiskFs()
+    await ws.vfs.symlink('/work/a.txt', '/work/other.txt')
+    await writeFile(join(root, 'a.txt'), 'on disk')
+    expect(fs.processPathFromHostPath(join(root, 'a.txt'))).toBeUndefined()
+    // A sibling the link does not cover still maps.
+    await writeFile(join(root, 'b.txt'), 'on disk')
+    expect(fs.processPathFromHostPath(join(root, 'b.txt'))).toBe('/work/b.txt')
+  })
+
+  it('declines a path whose ancestor is a namespace symlink', async () => {
+    const { fs, root, ws } = await makeDiskFs()
+    await ws.vfs.symlink('/work/sub', '/work/real')
+    expect(fs.processPathFromHostPath(join(root, 'sub', 'x.txt'))).toBeUndefined()
+  })
+
+  it('declines a host path outside every disk mount', async () => {
+    const { fs, root } = await makeDiskFs()
+    expect(fs.processPathFromHostPath(resolve(root, '..', 'elsewhere.txt'))).toBeUndefined()
+  })
+
+  it('declines a relative path, having no host cwd to resolve it against', async () => {
+    const { fs } = await makeDiskFs()
+    expect(fs.processPathFromHostPath('a.txt')).toBeUndefined()
+  })
+
+  it('declines when no mount holds host files at all', async () => {
+    // A ram mount holds the same bytes as nothing on the host, so there
+    // is no path to answer with and inventing one would name a file the
+    // caller cannot open.
+    const { fs } = await makeFs({ 'a.txt': 'hello' })
+    expect(fs.processPathFromHostPath('/data/a.txt')).toBeUndefined()
+  })
+
+  it('answers a path the shell and the fs seam both reach', async () => {
+    const { fs, root, ws } = await makeDiskFs()
+    await writeFile(join(root, 'a.txt'), 'hello')
+    const virtual = fs.processPathFromHostPath(join(root, 'a.txt'))
+    if (virtual === undefined) throw new Error('expected a mapping')
+    // The point of the mapping: what it returns is live in this world,
+    // not merely well-formed.
+    expect(await ws.vfs.cat(virtual)).toBe('hello')
+    expect(await fs.readText(await fs.resolve(virtual))).toBe('hello')
   })
 })

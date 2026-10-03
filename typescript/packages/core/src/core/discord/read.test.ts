@@ -51,7 +51,7 @@ class FakeDiscordTransport implements DiscordTransport {
 }
 
 function spec(virtual: string, prefix = ''): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath: mountKey(virtual, prefix) })
+  return new PathSpec({ virtual, directory: virtual, vfsPath: mountKey(virtual, prefix) })
 }
 
 const decoder = new TextDecoder()
@@ -71,11 +71,8 @@ describe('read history jsonl branch', () => {
         }),
       ],
     ])
-    let returned = false
     const t = new FakeDiscordTransport((_m, endpoint) => {
       if (endpoint === '/channels/C1/messages') {
-        if (returned) return []
-        returned = true
         return [
           { id: '1196300000000000000', content: 'hello' },
           { id: '1196400000000000000', content: 'world' },
@@ -267,10 +264,12 @@ describe('read unknown', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
-  it('throws ENOENT for root', async () => {
+  it('throws EISDIR for root', async () => {
+    // The root exists by construction, so reading it as a file is the one
+    // shape the kit reports as a directory rather than absent.
     const t = new FakeDiscordTransport(() => null)
     await expect(
       read(new DiscordAccessor(t), spec('/mnt/discord', '/mnt/discord')),
-    ).rejects.toMatchObject({ code: 'ENOENT' })
+    ).rejects.toMatchObject({ code: 'EISDIR' })
   })
 })

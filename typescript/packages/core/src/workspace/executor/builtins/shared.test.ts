@@ -14,19 +14,30 @@
 
 import { describe, expect, it } from 'vitest'
 import { IOResult } from '../../../io/types.ts'
-import { RAMResource } from '../../../resource/ram/ram.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import { MountMode, PathSpec } from '../../../types.ts'
 import { getTestParser } from '../../fixtures/workspace_fixture.ts'
 import { Workspace } from '../../workspace/workspace.ts'
+import { PolicyDenied } from '../../../policy/errors.ts'
+import { ArithError } from '../../../shell/errors.ts'
+import { SessionState } from '../../session/session.ts'
+import { sessionView } from '../../session/state.ts'
+import { IDENTIFIER_RE } from './constants.ts'
 import {
   absPath,
+  arithRefusal,
   expandOperands,
   fail,
   finish,
+  isCountWord,
+  isValidName,
   ok,
   operandText,
+  readonlyRefusal,
+  refusal,
   splitFlags,
   splitValueFlags,
+  requireView,
 } from './shared.ts'
 
 const DEC = new TextDecoder()
@@ -130,16 +141,16 @@ describe('builtins/shared: expandOperands', () => {
   it('expands a pattern per mount and passes a plain path through', async () => {
     const parser = await getTestParser()
     const ws = new Workspace(
-      { '/data': new RAMResource() },
+      { '/data': new RAMVFS() },
       { mode: MountMode.WRITE, shellParser: parser },
     )
-    await ws.execute('echo a > /data/a.txt && echo b > /data/b.txt')
+    await ws.shell('echo a > /data/a.txt && echo b > /data/b.txt')
     const globSpec = new PathSpec({
       virtual: '/data/*.txt',
       directory: '/data/',
       pattern: '*.txt',
       resolved: false,
-      resourcePath: '*.txt',
+      vfsPath: '*.txt',
     })
     const expanded = await expandOperands(ws.namespace, [globSpec, '/data/c.md'])
     expect(expanded.map((p) => p.virtual).sort()).toEqual([
@@ -148,5 +159,54 @@ describe('builtins/shared: expandOperands', () => {
       '/data/c.md',
     ])
     await ws.close()
+  })
+})
+
+describe('builtins/shared: the session helpers', () => {
+  it('requireView returns the threaded view', () => {
+    const session = new SessionState({ sessionId: 's1' })
+    const view = sessionView(session)
+    expect(requireView(view)).toBe(view)
+  })
+
+  it('requireView refuses a missing view', () => {
+    expect(() => requireView(null)).toThrow(/gated session view/)
+  })
+
+  it('refusal speaks in the builtin voice', () => {
+    const [out, io, node] = refusal('export', new PolicyDenied('X: refused', 'X'))
+    expect(out).toBeNull()
+    expect(io.exitCode).toBe(1)
+    expect(stderrOf(io)).toBe('X: refused\n')
+    expect(node.command).toBe('export')
+  })
+
+  it('readonlyRefusal names the variable', () => {
+    const [out, io, node] = readonlyRefusal('read', 'X')
+    expect(out).toBeNull()
+    expect(io.exitCode).toBe(1)
+    expect(stderrOf(io)).toBe('bash: X: readonly variable\n')
+    expect(node.command).toBe('read')
+  })
+
+  it('arithRefusal prefixes the builtin', () => {
+    const [out, io, node] = arithRefusal('let', new ArithError('1+: syntax error'))
+    expect(out).toBeNull()
+    expect(io.exitCode).toBe(1)
+    expect(stderrOf(io)).toBe('bash: let: 1+: syntax error\n')
+    expect(node.command).toBe('let')
+  })
+
+  it('isValidName / isCountWord', () => {
+    expect(isValidName('_x9')).toBe(true)
+    expect(isValidName('9x')).toBe(false)
+    expect(isValidName('a-b')).toBe(false)
+    expect(isValidName('')).toBe(false)
+    expect(IDENTIFIER_RE.test('abc')).toBe(true)
+    expect(isCountWord('3')).toBe(true)
+    expect(isCountWord('-3')).toBe(true)
+    expect(isCountWord('+3')).toBe(true)
+    expect(isCountWord('x')).toBe(false)
+    expect(isCountWord('-')).toBe(false)
   })
 })

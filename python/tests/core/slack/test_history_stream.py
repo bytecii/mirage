@@ -17,8 +17,11 @@ from unittest.mock import patch
 import pytest
 
 from mirage.core.slack.config import SlackConfig
-from mirage.core.slack.history import (fetch_messages_for_day,
-                                       stream_messages_for_day)
+from mirage.core.slack.history import (
+    fetch_messages_for_day,
+    stream_messages_for_day,
+)
+from mirage.core.time_range import TimeRange
 
 
 @pytest.mark.asyncio
@@ -26,42 +29,34 @@ async def test_stream_messages_for_day_applies_day_bounds_and_yields_pages():
     cfg = SlackConfig(token="xoxb-t")
     pages = [
         {
-            "messages": [{
-                "ts": "1.0",
-                "text": "a"
-            }],
-            "response_metadata": {
-                "next_cursor": "cur1"
-            },
+            "messages": [{"ts": "1778371201.0", "text": "a"}],
+            "response_metadata": {"next_cursor": "cur1"},
         },
         {
-            "messages": [{
-                "ts": "2.0",
-                "text": "b"
-            }],
-            "response_metadata": {
-                "next_cursor": ""
-            },
+            "messages": [{"ts": "1778371202.0", "text": "b"}],
+            "response_metadata": {"next_cursor": ""},
         },
     ]
     calls = []
 
-    async def fake_get(_cfg, method, params=None, token=None):
+    async def fake_get(_cfg, method, params=None, token=None, session=None):
         assert method == "conversations.history"
         calls.append(dict(params or {}))
         return pages[len(calls) - 1]
 
     with patch("mirage.core.slack.paginate.slack_get", new=fake_get):
         seen = []
-        async for page in stream_messages_for_day(cfg, "C1", "2026-05-10"):
+        async for page in stream_messages_for_day(
+            cfg, "C1", "2026-05-10", TimeRange()
+        ):
             seen.append(page)
 
     assert [m["text"] for m in seen[0]] == ["a"]
     assert [m["text"] for m in seen[1]] == ["b"]
     assert calls[0]["channel"] == "C1"
     assert calls[0]["inclusive"] == "true"
-    assert "oldest" in calls[0]
-    assert "latest" in calls[0]
+    assert calls[0]["oldest"] == "1778371200.000000"
+    assert calls[0]["latest"] == "1778457600.000000"
     assert calls[1]["cursor"] == "cur1"
 
 
@@ -70,32 +65,28 @@ async def test_fetch_messages_for_day_collects_and_sorts_across_pages():
     cfg = SlackConfig(token="xoxb-t")
     pages = [
         {
-            "messages": [{
-                "ts": "3.0"
-            }, {
-                "ts": "1.0"
-            }],
-            "response_metadata": {
-                "next_cursor": "cur1"
-            },
+            "messages": [{"ts": "1778371203.0"}, {"ts": "1778371201.0"}],
+            "response_metadata": {"next_cursor": "cur1"},
         },
         {
-            "messages": [{
-                "ts": "2.0"
-            }],
-            "response_metadata": {
-                "next_cursor": ""
-            },
+            "messages": [{"ts": "1778371202.0"}],
+            "response_metadata": {"next_cursor": ""},
         },
     ]
     calls = {"n": 0}
 
-    async def fake_get(_cfg, _method, params=None, token=None):
+    async def fake_get(_cfg, _method, params=None, token=None, session=None):
         page = pages[calls["n"]]
         calls["n"] += 1
         return page
 
     with patch("mirage.core.slack.paginate.slack_get", new=fake_get):
-        result = await fetch_messages_for_day(cfg, "C1", "2026-05-10")
+        result = await fetch_messages_for_day(
+            cfg, "C1", "2026-05-10", TimeRange()
+        )
 
-    assert [m["ts"] for m in result] == ["1.0", "2.0", "3.0"]
+    assert [m["ts"] for m in result] == [
+        "1778371201.0",
+        "1778371202.0",
+        "1778371203.0",
+    ]

@@ -18,8 +18,8 @@ from mirage.accessor.ram import RAMAccessor
 from mirage.cache.index import RAMIndexCacheStore
 from mirage.core.ram.mkdir import mkdir
 from mirage.ops.ram import OPS
-from mirage.resource.ram.store import RAMStore
-from mirage.types import FileType, PathSpec
+from mirage.types import ContentType, FileType, PathSpec
+from mirage.vfs.ram.store import RAMStore
 
 
 def _op(name: str):
@@ -40,10 +40,9 @@ truncate = _op("truncate")
 
 
 def _scope(path: str) -> PathSpec:
-    return PathSpec(resource_path=(path).strip("/"),
-                    virtual=path,
-                    directory=path,
-                    resolved=True)
+    return PathSpec(
+        vfs_path=(path).strip("/"), virtual=path, directory=path, resolved=True
+    )
 
 
 @pytest.fixture
@@ -95,7 +94,7 @@ async def test_op_stat_file(accessor):
     result = await stat(accessor, _scope("/hello.txt"), index=None)
     assert result.name == "hello.txt"
     assert result.size == 5
-    assert result.type == FileType.TEXT
+    assert result.content == ContentType.TEXT
 
 
 @pytest.mark.asyncio
@@ -139,7 +138,8 @@ async def test_op_unlink_not_found(accessor):
 async def test_op_rmdir(accessor, store):
     await mkdir(
         accessor,
-        PathSpec(resource_path="empty", virtual="/empty", directory="/empty"))
+        PathSpec(vfs_path="empty", virtual="/empty", directory="/empty"),
+    )
     await rmdir(accessor, _scope("/empty"))
     assert "/empty" not in store.dirs
 

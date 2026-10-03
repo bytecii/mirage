@@ -20,4 +20,14 @@ export {
   type MirageRuntimeBlock,
 } from './service.ts'
 export { MirageFileSystem, type MirageFsConfig } from './fs.ts'
+export { MirageSubprocess, type MirageSubprocessConfig } from './subprocess.ts'
 export { MirageShellExecutor, type MirageShellConfig } from './shell.ts'
+export { MirageSpillStore, type MirageSpillConfig } from './spill-store.ts'
+export {
+  APPROVAL_TOOL_NAME,
+  approvalReason,
+  approverOf,
+  askThroughApproval,
+  type ApprovalOutcome,
+  type Approver,
+} from './approval.ts'

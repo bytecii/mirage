@@ -13,119 +13,35 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mountKey } from '../../../utils/key_prefix.ts'
+import { SlackAccessor } from '../../../accessor/slack.ts'
 import { describe, expect, it } from 'vitest'
 import { RAMIndexCacheStore } from '../../../cache/index/ram.ts'
-import { materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
-import { FakeSlackTransport, makeFakeResource, seedChannel } from './_test_util.ts'
+import { FakeSlackTransport, seedChannel } from './_test_util.ts'
 import { SLACK_GREP } from './grep.ts'
 
-const DEC = new TextDecoder()
-
-async function runGrep(
-  paths: PathSpec[],
-  texts: string[],
-  flags: Record<string, string | boolean | number | string[]>,
-  options: { index?: RAMIndexCacheStore; transport?: FakeSlackTransport } = {},
-): Promise<{ stdout: string; exitCode: number }> {
-  const cmd = SLACK_GREP[0]
-  if (cmd === undefined) throw new Error('grep not registered')
-  const transport = options.transport ?? new FakeSlackTransport()
-  const resource = makeFakeResource(transport)
-  const result = await cmd.fn(resource.accessor, paths, texts, {
-    stdin: null,
-    flags,
-    filetypeFns: null,
-    cwd: '/',
-    ...(options.index !== undefined ? { index: options.index } : {}),
-  })
-  if (result === null) return { stdout: '', exitCode: 0 }
-  const [out, io] = result
-  const buf =
-    out === null
-      ? new Uint8Array()
-      : out instanceof Uint8Array
-        ? out
-        : await materialize(out as AsyncIterable<Uint8Array>)
-  return { stdout: DEC.decode(buf), exitCode: io.exitCode }
-}
-
-describe('slack grep', () => {
-  it('uses native search.messages for a channel directory path', async () => {
-    const transport = new FakeSlackTransport((endpoint) => {
-      if (endpoint === 'search.messages') {
-        return {
-          ok: true,
-          messages: {
-            matches: [
-              {
-                channel: { name: 'general', id: 'C1' },
-                ts: '1700000000.000100',
-                user: 'U1',
-                text: 'hello world',
-              },
-            ],
-          },
-        }
-      }
-      return { ok: true }
-    })
-    const out = await runGrep(
+describe('slack grep on a time-scoped mount', () => {
+  it('scans instead of searching, so a bare directory is EISDIR', async () => {
+    const idx = new RAMIndexCacheStore()
+    await seedChannel(idx, '/mnt/slack', 'general__C1', 'C1', { dates: ['2026-01-02'] })
+    const transport = new FakeSlackTransport()
+    const cmd = SLACK_GREP[0]
+    if (cmd === undefined) throw new Error('grep not registered')
+    const result = await cmd.fn(
+      new SlackAccessor(transport, { startTime: '2026-01-01T00:00:00Z' }),
       [
         new PathSpec({
           virtual: '/mnt/slack/channels/general__C1',
           directory: '/mnt/slack/channels/general__C1',
           resolved: false,
-          resourcePath: mountKey('/mnt/slack/channels/general__C1', '/mnt/slack'),
+          vfsPath: mountKey('/mnt/slack/channels/general__C1', '/mnt/slack'),
         }),
       ],
       ['hello'],
-      { w: true },
-      { transport },
+      { stdin: null, flags: { w: true }, filetypeFns: null, cwd: '/', index: idx },
     )
-    expect(transport.calls[0]?.endpoint).toBe('search.messages')
-    expect(transport.calls[0]?.params?.query).toContain('in:#general')
-    const lines = out.stdout.split('\n').filter((l) => l !== '')
-    expect(lines.length).toBe(1)
-    expect(lines[0]).toContain('hello world')
-  })
-
-  it('matches lines containing pattern', async () => {
-    const idx = new RAMIndexCacheStore()
-    await seedChannel(idx, '/mnt/slack', 'general__C1', 'C1', { dates: ['2024-01-01'] })
-    const transport = new FakeSlackTransport((endpoint) => {
-      if (endpoint === 'conversations.history') {
-        return {
-          ok: true,
-          messages: [
-            { ts: '1.0', text: 'hello world' },
-            { ts: '2.0', text: 'goodbye' },
-            { ts: '3.0', text: 'hello again' },
-          ],
-        }
-      }
-      return { ok: true }
-    })
-    const out = await runGrep(
-      [
-        new PathSpec({
-          virtual: '/mnt/slack/channels/general__C1/2024-01-01/chat.jsonl',
-          directory: '/mnt/slack/channels/general__C1/',
-          resolved: false,
-          resourcePath: mountKey(
-            '/mnt/slack/channels/general__C1/2024-01-01/chat.jsonl',
-            '/mnt/slack',
-          ),
-        }),
-      ],
-      ['hello'],
-      {},
-      { index: idx, transport },
-    )
-    const lines = out.stdout.split('\n').filter((l) => l !== '')
-    expect(lines).toHaveLength(2)
-    for (const l of lines) {
-      expect(l).toContain('hello')
-    }
+    expect(transport.calls.map((c) => c.endpoint)).not.toContain('search.messages')
+    expect(result?.[1].exitCode).toBe(2)
+    expect(await result?.[1].stderrStr()).toContain('Is a directory')
   })
 })

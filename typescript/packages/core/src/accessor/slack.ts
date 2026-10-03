@@ -13,15 +13,32 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Accessor } from './base.ts'
-import type { Resource } from '../resource/base.ts'
-import type { SlackTransport } from '../core/slack/client.ts'
+import { TimeRange } from '../core/time_range.ts'
+import type { BaseVFS } from '../vfs/base.ts'
+import { NodeSlackTransport, type SlackTransport } from '../core/slack/client.ts'
+import type { SlackConfig } from '../core/slack/config.ts'
 
 export class SlackAccessor extends Accessor {
-  constructor(public readonly transport: SlackTransport) {
+  readonly timeRange: TimeRange
+  constructor(
+    public readonly transport: SlackTransport,
+    config: { startTime?: string | null; endTime?: string | null } = {},
+  ) {
     super()
+    this.timeRange = new TimeRange(config.startTime, config.endTime)
   }
 }
 
-export interface SlackResourceLike extends Resource {
+/**
+ * The accessor the `slack` CLI's verbs reach the API through, built from
+ * the install's config. Python's verbs hand the config to core directly;
+ * here core takes an accessor.
+ */
+export function slackAccessor(config: unknown): SlackAccessor {
+  const cfg = config as SlackConfig
+  return new SlackAccessor(new NodeSlackTransport(cfg.token, cfg.searchToken, cfg.baseUrl))
+}
+
+export interface SlackResourceLike extends BaseVFS {
   readonly accessor: SlackAccessor
 }

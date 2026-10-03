@@ -15,12 +15,11 @@
 import asyncio
 import json
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
+from mirage.vfs.gdrive import GoogleDriveConfig, GoogleDriveVFS
 
 load_dotenv(".env.development")
 
@@ -29,17 +28,17 @@ config = GoogleDriveConfig(
     client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
     refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
 )
-resource = GoogleDriveResource(config=config)
+vfs = GoogleDriveVFS(config=config)
 
 
 async def main():
-    with Workspace({"/gdrive/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
+    with Workspace({"/gdrive/": vfs}, mode=MountMode.READ) as ws:
         print(
-            "=== VFS MODE: open() reads from Google Drive transparently ===\n")
+            "=== VFS MODE: open() reads from Google Drive transparently ===\n"
+        )
 
         print("--- os.listdir() root ---")
-        entries = vos.listdir("/gdrive")
+        entries = os.listdir("/gdrive")
         for e in entries[:10]:
             print(f"  {e}")
 
@@ -83,8 +82,8 @@ async def main():
 
         print("\n--- os.path.exists() ---")
         if gdoc:
-            print(f"  {gdoc}: {vos.path.exists(f'/gdrive/{gdoc}')}")
-        print(f"  nonexistent: {vos.path.exists('/gdrive/nope.txt')}")
+            print(f"  {gdoc}: {os.path.exists(f'/gdrive/{gdoc}')}")
+        print(f"  nonexistent: {os.path.exists('/gdrive/nope.txt')}")
 
         print("\n--- bash history ---")
         with open("/.bash_history") as f:
@@ -93,7 +92,7 @@ async def main():
                     break
                 print(f"  {line.rstrip()[:120]}")
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(r.bytes for r in records)
         print(f"\nStats: {len(records)} ops, {total} bytes transferred")
 

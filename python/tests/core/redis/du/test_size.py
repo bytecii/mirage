@@ -19,16 +19,16 @@ import pytest_asyncio
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.core.redis.du import size
-from mirage.resource.redis.store import RedisStore
 from mirage.types import PathSpec
+from mirage.vfs.redis.store import RedisStore
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
 
 
 @pytest_asyncio.fixture()
-async def accessor():
-    s = RedisStore(url=REDIS_URL, key_prefix="test:du:")
+async def accessor(redis_prefix):
+    s = RedisStore(url=REDIS_URL, key_prefix=redis_prefix)
     await s.clear()
     await s.add_dir("/")
     await s.add_dir("/sub")
@@ -43,16 +43,17 @@ async def accessor():
 
 @pytest.mark.asyncio
 async def test_size_root(accessor):
-    total = await size(accessor,
-                       PathSpec(resource_path="", virtual="/", directory="/"))
+    total = await size(
+        accessor, PathSpec(vfs_path="", virtual="/", directory="/")
+    )
     assert total == 5 + 6 + 4
 
 
 @pytest.mark.asyncio
 async def test_size_subdir(accessor):
     total = await size(
-        accessor,
-        PathSpec(resource_path="sub", virtual="/sub", directory="/sub"))
+        accessor, PathSpec(vfs_path="sub", virtual="/sub", directory="/sub")
+    )
     assert total == 6 + 4
 
 
@@ -60,19 +61,18 @@ async def test_size_subdir(accessor):
 async def test_size_single_file(accessor):
     total = await size(
         accessor,
-        PathSpec(resource_path="a.txt", virtual="/a.txt", directory="/a.txt"))
+        PathSpec(vfs_path="a.txt", virtual="/a.txt", directory="/a.txt"),
+    )
     assert total == 5
 
 
 @pytest.mark.asyncio
-async def test_size_empty():
-    s = RedisStore(url=REDIS_URL, key_prefix="test:du:e:")
+async def test_size_empty(redis_prefix):
+    s = RedisStore(url=REDIS_URL, key_prefix=f"{redis_prefix}e:")
     await s.clear()
     await s.add_dir("/")
     a = RedisAccessor(s)
-    total = await size(a, PathSpec(resource_path="",
-                                   virtual="/",
-                                   directory="/"))
+    total = await size(a, PathSpec(vfs_path="", virtual="/", directory="/"))
     assert total == 0
     await s.clear()
     await s.close()

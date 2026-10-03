@@ -14,21 +14,91 @@
 
 import { stripSlash } from '../../../utils/slash.ts'
 import { describe, expect, it } from 'vitest'
-import { FileStat, FileType, PathSpec } from '../../../types.ts'
-import { enoent } from '../../../utils/errors.ts'
-import { dirAwareStat, dirAwareStream, makeResolveGlob, type CommandIO } from './adapter.ts'
+import type { Accessor } from '../../../accessor/base.ts'
+import type { CommandOpts } from '../../config.ts'
+import { ContentType, FileStat, FileType, MountMode, PathSpec } from '../../../types.ts'
+import { eacces, eisdir, enoent, formatFsError } from '../../../utils/errors.ts'
+import {
+  dirAwareStat,
+  dirAwareStream,
+  makeResolveGlob,
+  resolveGlobOf,
+  withDirGuard,
+  withHiddenGuard,
+  withAbortGuard,
+  withPolicyGuard,
+  withRuleGuard,
+  withDispatchRuleGuard,
+  withPathGuards,
+  requireOp,
+  type CommandIO,
+} from './adapter.ts'
+import {
+  runWithAdmission,
+  runWithMountGate,
+  runWithOpPolicies,
+  runWithSession,
+} from '../../../context/session_context.ts'
+import type { Policy } from '../../../policy/base.ts'
+import { Policies } from '../../../policy/policies.ts'
+import type { Action, OpsContext } from '../../../policy/types.ts'
+import { SessionState } from '../../../workspace/session/session.ts'
+import { IOResult } from '../../../io/types.ts'
+import type { DispatchFn } from '../../../runtime/types.ts'
 
 const accessor = {} as never
+// No namespace facts, which is what a command bound outside a workspace
+// gets: the two probes below the backend are the only ones that can fire.
+const NO_NS = {} as CommandOpts
+// The one a mount parent needs: no backend row, a name plane that owes the
+// path a child name.
+function nsDir(dir: string): CommandOpts {
+  return {
+    ns: { childMounts: (parent: string) => (parent === dir ? ['alpha'] : []) },
+  } as CommandOpts
+}
 
 function glob(dir: string, pattern: string): PathSpec {
   return new PathSpec({
-    resourcePath: stripSlash(dir),
+    vfsPath: stripSlash(dir),
     virtual: dir,
     directory: dir,
     pattern,
     resolved: false,
   })
 }
+
+describe('resolveGlobOf', () => {
+  it('lets a trailing slash ask the namespace about an owed name', async () => {
+    // The factory stamps the invocation's link target stat beside the
+    // owed child names; the resolver drops a link to nothing the way
+    // bash does and keeps a link to a directory.
+    const readdir = () => Promise.resolve(['/d/alpha'])
+    const stat = () => Promise.resolve(new FileStat({ name: 'alpha', type: FileType.DIRECTORY }))
+    const ops: CommandIO = {
+      readdir,
+      readBytes: () => Promise.resolve(new Uint8Array()),
+      readStream: () => oneChunkStream(new Uint8Array()),
+      stat,
+      isMounted: () => true,
+      globChildren: (parent) => (parent === '/d/' ? ['broken', 'lnk'] : []),
+      globTargetStat: (virtual) =>
+        Promise.resolve(
+          virtual === '/d/lnk' ? new FileStat({ name: 'lnk', type: FileType.DIRECTORY }) : null,
+        ),
+    }
+    const word = new PathSpec({
+      virtual: '/d/*',
+      directory: '/d/',
+      vfsPath: '*',
+      pattern: '*',
+      resolved: false,
+      rawPath: '/d/*/',
+    })
+    const out = await resolveGlobOf(ops)(accessor, [word])
+    expect(out.map((p) => p.rawPath)).toEqual(['/d/alpha/', '/d/lnk/'])
+  })
+})
 
 describe('makeResolveGlob', () => {
   it('expands a glob pattern against readdir', async () => {
@@ -43,7 +113,7 @@ describe('makeResolveGlob', () => {
     const readdir = () => Promise.reject(new Error('should not readdir'))
     const resolveGlob = makeResolveGlob(readdir)
     const p = new PathSpec({
-      resourcePath: 'd/a.txt',
+      vfsPath: 'd/a.txt',
       virtual: '/d/a.txt',
       directory: '/d/',
       resolved: true,
@@ -63,7 +133,7 @@ describe('makeResolveGlob', () => {
     const readdir = () => Promise.reject(new Error('should not readdir'))
     const resolveGlob = makeResolveGlob(readdir)
     const p = new PathSpec({
-      resourcePath: 'd/a.txt',
+      vfsPath: 'd/a.txt',
       virtual: '/d/a.txt',
       directory: '/d/',
       resolved: false,
@@ -96,7 +166,7 @@ function dirOps(implicitDirs: readonly string[], explicitDirs: readonly string[]
       if (implicitDirs.includes(p.virtual)) return Promise.reject(enoent(p))
       if (explicitDirs.includes(p.virtual))
         return Promise.resolve(new FileStat({ name: p.virtual, type: FileType.DIRECTORY }))
-      return Promise.resolve(new FileStat({ name: p.virtual, size: 0 }))
+      return Promise.resolve(new FileStat({ name: p.virtual, type: FileType.FILE, size: 0 }))
     },
     isMounted: () => true,
   }
@@ -104,19 +174,34 @@ function dirOps(implicitDirs: readonly string[], explicitDirs: readonly string[]
 
 describe('dirAwareStat', () => {
   it('refuses an implicit keyed-backend directory with EISDIR', async () => {
-    const stat = dirAwareStat(dirOps(['/sub']), accessor)
+    const stat = dirAwareStat(dirOps(['/sub']), accessor, NO_NS)
     await expect(stat(PathSpec.fromStrPath('/sub'))).rejects.toMatchObject({ code: 'EISDIR' })
   })
 
   it('refuses a stat-typed directory with EISDIR', async () => {
-    const stat = dirAwareStat(dirOps([], ['/sub']), accessor)
+    const stat = dirAwareStat(dirOps([], ['/sub']), accessor, NO_NS)
     await expect(stat(PathSpec.fromStrPath('/sub'))).rejects.toMatchObject({ code: 'EISDIR' })
   })
 
   it('keeps ENOENT for a genuinely missing path', async () => {
     const failing: CommandIO = { ...dirOps([]), stat: (_a, p) => Promise.reject(enoent(p)) }
-    const stat = dirAwareStat(failing, accessor)
+    const stat = dirAwareStat(failing, accessor, NO_NS)
     await expect(stat(PathSpec.fromStrPath('/nope.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('refuses a namespace-only mount parent with EISDIR', async () => {
+    // No backend knows the path: its keys live in a mount nested under it,
+    // so neither the stat nor the parent-listing probe can see it, and the
+    // dispatcher is the only thing that can say it is a directory.
+    const failing: CommandIO = { ...dirOps([]), stat: (_a, p) => Promise.reject(enoent(p)) }
+    const stat = dirAwareStat(failing, accessor, nsDir('/ghost'))
+    await expect(stat(PathSpec.fromStrPath('/ghost'))).rejects.toMatchObject({ code: 'EISDIR' })
+  })
+
+  it('keeps ENOENT when the dispatcher does not know the path either', async () => {
+    const failing: CommandIO = { ...dirOps([]), stat: (_a, p) => Promise.reject(enoent(p)) }
+    const stat = dirAwareStat(failing, accessor, nsDir('/elsewhere'))
+    await expect(stat(PathSpec.fromStrPath('/ghost'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('ignores fabricated children from synthetic hierarchies', async () => {
@@ -131,7 +216,7 @@ describe('dirAwareStat', () => {
         return Promise.resolve([`${target}/tables`, `${target}/views`])
       },
     }
-    const stat = dirAwareStat(lying, accessor)
+    const stat = dirAwareStat(lying, accessor, NO_NS)
     await expect(stat(PathSpec.fromStrPath('/nope.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
@@ -141,19 +226,19 @@ describe('dirAwareStat', () => {
       stat: (_a, p) => Promise.reject(enoent(p)),
       readdir: () => Promise.reject(new Error("Table 'nope.txt' was not found")),
     }
-    const stat = dirAwareStat(throwing, accessor)
+    const stat = dirAwareStat(throwing, accessor, NO_NS)
     await expect(stat(PathSpec.fromStrPath('/nope.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('passes regular files through', async () => {
-    const stat = dirAwareStat(dirOps([]), accessor)
+    const stat = dirAwareStat(dirOps([]), accessor, NO_NS)
     await expect(stat(PathSpec.fromStrPath('/f.txt'))).resolves.toMatchObject({ size: 0 })
   })
 })
 
 describe('dirAwareStream', () => {
   it('refuses an implicit directory with EISDIR when consumed', async () => {
-    const stream = dirAwareStream(dirOps(['/sub']), accessor)
+    const stream = dirAwareStream(dirOps(['/sub']), accessor, NO_NS)
     const consume = async () => {
       for await (const chunk of stream(PathSpec.fromStrPath('/sub'))) {
         throw new Error(`no data expected, got ${String(chunk.byteLength)} bytes`)
@@ -171,7 +256,7 @@ describe('dirAwareStream', () => {
         throw new Error('Failure')
       },
     }
-    const stream = dirAwareStream(sshLike, accessor)
+    const stream = dirAwareStream(sshLike, accessor, NO_NS)
     const consume = async () => {
       for await (const chunk of stream(PathSpec.fromStrPath('/sub'))) {
         throw new Error(`no data expected, got ${String(chunk.byteLength)} bytes`)
@@ -181,9 +266,821 @@ describe('dirAwareStream', () => {
   })
 
   it('streams regular files untouched', async () => {
-    const stream = dirAwareStream(dirOps([]), accessor)
+    const stream = dirAwareStream(dirOps([]), accessor, NO_NS)
     const chunks: Uint8Array[] = []
     for await (const chunk of stream(PathSpec.fromStrPath('/f.txt'))) chunks.push(chunk)
     expect(new TextDecoder().decode(chunks[0])).toBe('data')
+  })
+})
+
+describe('withRuleGuard', () => {
+  const spec = (virtual: string): PathSpec =>
+    new PathSpec({
+      virtual,
+      directory: virtual.slice(0, virtual.lastIndexOf('/')) || '/',
+      vfsPath: virtual,
+      resolved: true,
+    })
+
+  it('asks the bound gate and leaves stat alone', async () => {
+    const calls: string[][] = []
+    async function* stream(_a: Accessor, path: PathSpec): AsyncGenerator<Uint8Array> {
+      calls.push(['stream', path.virtual])
+      yield await Promise.resolve(new Uint8Array([1]))
+    }
+    const ops: CommandIO = {
+      readdir: (_a, path) => {
+        calls.push(['readdir', path.virtual])
+        return Promise.resolve(['/data/locked/y'])
+      },
+      readBytes: (_a, path) => {
+        calls.push(['read', path.virtual])
+        return Promise.resolve(new Uint8Array([1]))
+      },
+      readStream: stream,
+      stat: (_a, path) => {
+        calls.push(['stat', path.virtual])
+        return Promise.resolve(
+          new FileStat({ name: 'k', type: FileType.FILE, content: ContentType.TEXT, size: 1 }),
+        )
+      },
+      isMounted: () => true,
+      rename: (_a, src, dst) => {
+        calls.push(['rename', src.virtual, dst.virtual])
+        return Promise.resolve()
+      },
+    }
+    const guarded = withRuleGuard(ops)
+    // No gate bound: every slot runs as is.
+    expect(await guarded.readBytes(accessor, spec('/data/locked/y'))).toEqual(new Uint8Array([1]))
+    const asked: string[] = []
+    const gate = {
+      scoped: true,
+      granted: [],
+      check: (virtual: string) => {
+        asked.push(virtual)
+        if (virtual === '/data/locked/y') throw new Error(`refused ${virtual}`)
+      },
+      refuses: (virtual: string) => virtual === '/data/locked/y',
+    }
+    await runWithAdmission(gate, async () => {
+      // The gate throws at call time, like the hidden guard, so a caller's
+      // `await` inside a try sees it the same way as a rejection.
+      expect(() => guarded.readBytes(accessor, spec('/data/locked/y'))).toThrow('refused')
+      // stat is not a guarded slot: deny is present and refused.
+      expect((await guarded.stat(accessor, spec('/data/locked/y'))).size).toBe(1)
+      // readdir asks about the directory, never filters its names.
+      expect(await guarded.readdir(accessor, spec('/data/locked'))).toEqual(['/data/locked/y'])
+      // A pair op asks about both paths.
+      const rename = guarded.rename
+      if (rename === undefined) throw new Error('rename slot missing')
+      expect(() => rename(accessor, spec('/data/a'), spec('/data/locked/y'))).toThrow('refused')
+      await rename(accessor, spec('/data/a'), spec('/data/b'))
+    })
+    expect(asked).toEqual([
+      '/data/locked/y',
+      '/data/locked',
+      '/data/a',
+      '/data/locked/y',
+      '/data/a',
+      '/data/b',
+    ])
+    expect(calls).not.toContainEqual(['rename', '/data/a', '/data/locked/y'])
+    expect(calls).toContainEqual(['rename', '/data/a', '/data/b'])
+  })
+})
+
+describe('withDispatchRuleGuard', () => {
+  const spec = (virtual: string): PathSpec =>
+    new PathSpec({
+      virtual,
+      directory: virtual.slice(0, virtual.lastIndexOf('/')) || '/',
+      vfsPath: virtual,
+      resolved: true,
+    })
+
+  it('marks an op with the bound gate for the door to judge', async () => {
+    const seen: [string, unknown][] = []
+    const door: DispatchFn = (op, _path, _args, kwargs) => {
+      seen.push([op, kwargs?.ruleGate])
+      return Promise.resolve([null, new IOResult()])
+    }
+    const dispatch = withDispatchRuleGuard(door)
+    // No gate bound: the op goes to the door unmarked.
+    await dispatch('read', spec('/data/f'))
+    const asked: string[] = []
+    const gate = {
+      scoped: true,
+      granted: [],
+      check: (virtual: string) => {
+        asked.push(virtual)
+      },
+      refuses: () => false,
+    }
+    await runWithAdmission(gate, async () => {
+      await dispatch('read', spec('/data/f'), [spec('/data/g')])
+      // A metadata op is never judged: deny is present and refused.
+      await dispatch('stat', spec('/data/f'))
+    })
+    expect(seen).toEqual([
+      ['read', undefined],
+      ['read', gate],
+      ['stat', undefined],
+    ])
+    // The wrapper judges nothing itself: the door does, on its own paths.
+    expect(asked).toEqual([])
+  })
+})
+
+/** Refuse reads of one path; record every op asked. */
+class SealedRead implements Policy {
+  readonly asked: [string, string, boolean][] = []
+  private readonly sealed: string
+  constructor(sealed: string) {
+    this.sealed = sealed
+  }
+  preOps(ctx: OpsContext): Action | null {
+    this.asked.push([ctx.op, ctx.path.virtual, ctx.write])
+    if (!ctx.write && ctx.path.virtual === this.sealed) {
+      return { kind: 'deny', reason: 'sealed' }
+    }
+    return null
+  }
+}
+
+describe('withPolicyGuard', () => {
+  const spec = (virtual: string): PathSpec =>
+    new PathSpec({
+      virtual,
+      directory: virtual.slice(0, virtual.lastIndexOf('/')) || '/',
+      vfsPath: virtual,
+      resolved: true,
+    })
+
+  function probeOps(calls: string[][]): CommandIO {
+    async function* stream(_a: Accessor, path: PathSpec): AsyncGenerator<Uint8Array> {
+      calls.push(['stream', path.virtual])
+      yield await Promise.resolve(new Uint8Array([1]))
+    }
+    return {
+      readdir: (_a, path) => {
+        calls.push(['readdir', path.virtual])
+        return Promise.resolve(['a'])
+      },
+      readBytes: (_a, path) => {
+        calls.push(['read', path.virtual])
+        return Promise.resolve(new Uint8Array([1]))
+      },
+      readStream: stream,
+      stat: (_a, path) => {
+        calls.push(['stat', path.virtual])
+        return Promise.resolve(
+          new FileStat({ name: 'k', type: FileType.FILE, content: ContentType.TEXT, size: 1 }),
+        )
+      },
+      isMounted: () => true,
+      copy: (_a, src, dst) => {
+        calls.push(['copy', src.virtual, dst.virtual])
+        return Promise.resolve()
+      },
+      unlink: (_a, path) => {
+        calls.push(['unlink', path.virtual])
+        return Promise.resolve()
+      },
+    }
+  }
+
+  it('admits slots and leaves stat alone', async () => {
+    const calls: string[][] = []
+    const raw = probeOps(calls)
+    // No binding: every slot runs as is, and no hook fires.
+    expect(await withPolicyGuard(raw).readBytes(accessor, spec('/data/secret'))).toEqual(
+      new Uint8Array([1]),
+    )
+    calls.length = 0
+
+    const policy = new SealedRead('/data/secret')
+    await runWithOpPolicies(new Policies([policy]), () =>
+      runWithMountGate('/data', MountMode.WRITE, async () => {
+        const ops = withPolicyGuard(raw)
+        await expect(ops.readBytes(accessor, spec('/data/secret'))).rejects.toThrow('sealed')
+        expect(calls).not.toContainEqual(['read', '/data/secret'])
+        // The stream gates before its first chunk.
+        await expect(drain(ops.readStream(accessor, spec('/data/secret')))).rejects.toThrow(
+          'sealed',
+        )
+        expect(calls).not.toContainEqual(['stream', '/data/secret'])
+        // stat is not a guarded slot: deny is present and refused.
+        expect((await ops.stat(accessor, spec('/data/secret'))).size).toBe(1)
+        // readdir asks about the directory it lists.
+        expect(await ops.readdir(accessor, spec('/data/dir'))).toEqual(['a'])
+        // A copy's source is a read; its destination is a write.
+        const copy = ops.copy
+        if (copy === undefined) throw new Error('copy slot missing')
+        await copy(accessor, spec('/data/src'), spec('/data/dst'))
+        // A write slot asks with write=true.
+        const unlink = ops.unlink
+        if (unlink === undefined) throw new Error('unlink slot missing')
+        await unlink(accessor, spec('/data/gone'))
+      }),
+    )
+    expect(policy.asked).toContainEqual(['read_bytes', '/data/secret', false])
+    expect(policy.asked).toContainEqual(['read_stream', '/data/secret', false])
+    expect(policy.asked).toContainEqual(['readdir', '/data/dir', false])
+    expect(policy.asked).toContainEqual(['copy', '/data/src', false])
+    expect(policy.asked).toContainEqual(['copy', '/data/dst', true])
+    expect(policy.asked).toContainEqual(['unlink', '/data/gone', true])
+    expect(policy.asked.some(([op]) => op === 'stat')).toBe(false)
+  })
+
+  it('wrap-time capture covers late drains', async () => {
+    // head/tail/wc bind lazy readers the pipeline drains after dispatch
+    // has reset the context; the guard captured at wrap time still
+    // answers (livePolicyScope).
+    const calls: string[][] = []
+    const raw = probeOps(calls)
+    const policy = new SealedRead('/data/secret')
+    const ops = await runWithOpPolicies(new Policies([policy]), () =>
+      Promise.resolve(withPolicyGuard(raw)),
+    )
+    // Both the slot call and the drain happen outside the window now.
+    await expect(drain(ops.readStream(accessor, spec('/data/secret')))).rejects.toThrow('sealed')
+    expect(calls).not.toContainEqual(['stream', '/data/secret'])
+    await expect(ops.readBytes(accessor, spec('/data/secret'))).rejects.toThrow('sealed')
+  })
+
+  it('admits before a warm serve', async () => {
+    // The guard wraps outside the cache tier (`finish` in the factory),
+    // so a warm reader below it never answers a refused read.
+    const calls: string[][] = []
+    const warm: CommandIO = {
+      ...probeOps(calls),
+      readBytes: () => Promise.resolve(new TextEncoder().encode('warm')),
+    }
+    const policy = new SealedRead('/data/secret')
+    await runWithOpPolicies(new Policies([policy]), async () => {
+      const ops = withPolicyGuard(warm)
+      await expect(ops.readBytes(accessor, spec('/data/secret'))).rejects.toThrow('sealed')
+      expect(await ops.readBytes(accessor, spec('/data/open'))).toEqual(
+        new TextEncoder().encode('warm'),
+      )
+    })
+  })
+})
+
+// A keyed backend: no directory objects, so a read of one misses. Reads
+// throw `readError` for anything that is not a stored file, which is
+// what RAM/S3/Redis do for a directory (there is no key there) and what
+// an sftp read of a directory does with a non-FsError (SFTPFailure).
+// eslint-disable-next-line @typescript-eslint/require-await
+async function* oneChunkStream(data: Uint8Array): AsyncIterable<Uint8Array> {
+  yield data
+}
+
+// A stream that fails on the first pull, which is where a keyed backend
+// reports a directory: there is no key, so the read raises rather than
+// the call.
+// eslint-disable-next-line @typescript-eslint/require-await, require-yield
+async function* throwingStream(err: Error): AsyncIterable<Uint8Array> {
+  throw err
+}
+
+function keyedReadOps(opts: {
+  implicitDirs?: readonly string[]
+  explicitDirs?: readonly string[]
+  files?: Record<string, string>
+  readError?: (p: PathSpec) => Error
+  children?: Record<string, string[]>
+}): CommandIO {
+  const implicitDirs = opts.implicitDirs ?? []
+  const explicitDirs = opts.explicitDirs ?? []
+  const files = opts.files ?? {}
+  const readError = opts.readError ?? ((p: PathSpec) => enoent(p))
+  const children = opts.children
+  const encode = (t: string) => new TextEncoder().encode(t)
+  return {
+    readdir: (_a, p) => {
+      const target = `/${stripSlash(p.virtual)}`
+      const entries = implicitDirs.filter((d) => (d.slice(0, d.lastIndexOf('/')) || '/') === target)
+      if (implicitDirs.includes(p.virtual))
+        entries.push(`${target === '/' ? '' : target}/child.txt`)
+      return Promise.resolve(entries)
+    },
+    readBytes: (_a, p) => {
+      const hit = files[p.virtual]
+      if (hit !== undefined) return Promise.resolve(encode(hit))
+      return Promise.reject(readError(p))
+    },
+    readRange: (_a, p) => {
+      const hit = files[p.virtual]
+      if (hit !== undefined) return Promise.resolve(encode(hit))
+      return Promise.reject(readError(p))
+    },
+    readStream: (_a, p) => {
+      const hit = files[p.virtual]
+      return hit === undefined ? throwingStream(readError(p)) : oneChunkStream(encode(hit))
+    },
+    stat: (_a, p) => {
+      if (explicitDirs.includes(p.virtual))
+        return Promise.resolve(new FileStat({ name: p.virtual, type: FileType.DIRECTORY }))
+      const hit = files[p.virtual]
+      if (hit !== undefined)
+        return Promise.resolve(
+          new FileStat({ name: p.virtual, type: FileType.FILE, size: hit.length }),
+        )
+      return Promise.reject(enoent(p))
+    },
+    isMounted: () => true,
+    ...(children === undefined ? {} : { globChildren: (dir: string) => children[dir] ?? [] }),
+  }
+}
+
+async function drain(stream: AsyncIterable<Uint8Array>): Promise<Uint8Array[]> {
+  const out: Uint8Array[] = []
+  for await (const chunk of stream) out.push(chunk)
+  return out
+}
+
+describe('withDirGuard', () => {
+  it('refuses an explicit directory on every read slot', async () => {
+    const ops = withDirGuard(keyedReadOps({ explicitDirs: ['/sub'] }))
+    const p = PathSpec.fromStrPath('/sub')
+    await expect(ops.readBytes(accessor, p, undefined)).rejects.toMatchObject({ code: 'EISDIR' })
+    await expect(ops.readRange?.(accessor, p, undefined, 0, null)).rejects.toMatchObject({
+      code: 'EISDIR',
+    })
+    await expect(drain(ops.readStream(accessor, p, undefined))).rejects.toMatchObject({
+      code: 'EISDIR',
+    })
+  })
+
+  it('refuses an implicit keyed-backend directory', async () => {
+    const ops = withDirGuard(keyedReadOps({ implicitDirs: ['/sub'] }))
+    const p = PathSpec.fromStrPath('/sub')
+    await expect(ops.readBytes(accessor, p, undefined)).rejects.toMatchObject({ code: 'EISDIR' })
+    await expect(drain(ops.readStream(accessor, p, undefined))).rejects.toMatchObject({
+      code: 'EISDIR',
+    })
+  })
+
+  it('refuses a namespace-only directory', async () => {
+    // /a/b holds no key in this backend; it exists because a mount or a
+    // link sits under it, which only the namespace can see.
+    const ops = withDirGuard(keyedReadOps({ children: { '/a/b': ['inner'] } }))
+    await expect(
+      ops.readBytes(accessor, PathSpec.fromStrPath('/a/b'), undefined),
+    ).rejects.toMatchObject({ code: 'EISDIR' })
+  })
+
+  it('refines a read failure that is not an FsError at all', async () => {
+    // An sftp read of a directory throws asyncssh's SFTPFailure, which
+    // carries no errno, so the code-only path cannot see it. The stat
+    // says directory, and that is what decides.
+    const ops = withDirGuard(
+      keyedReadOps({
+        explicitDirs: ['/sub'],
+        readError: () => new Error('SFTP protocol failure'),
+      }),
+    )
+    await expect(
+      ops.readBytes(accessor, PathSpec.fromStrPath('/sub'), undefined),
+    ).rejects.toMatchObject({ code: 'EISDIR' })
+  })
+
+  it('leaves a real miss alone', async () => {
+    const ops = withDirGuard(keyedReadOps({}))
+    const p = PathSpec.fromStrPath('/nope.txt')
+    await expect(ops.readBytes(accessor, p, undefined)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(drain(ops.readStream(accessor, p, undefined))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('leaves a successful read alone', async () => {
+    const ops = withDirGuard(keyedReadOps({ files: { '/f.txt': 'data' } }))
+    const p = PathSpec.fromStrPath('/f.txt')
+    expect(new TextDecoder().decode(await ops.readBytes(accessor, p, undefined))).toBe('data')
+    expect(new TextDecoder().decode((await drain(ops.readStream(accessor, p, undefined)))[0])).toBe(
+      'data',
+    )
+  })
+
+  it('names the virtual path, not the backend one', async () => {
+    // A raw disk error names the host path; the refusal is built from the
+    // operand's own PathSpec so the mount's host root never leaks.
+    const ops = withDirGuard(
+      keyedReadOps({
+        explicitDirs: ['/mnt/sub'],
+        readError: () => eisdir('/private/var/host/sub'),
+      }),
+    )
+    await expect(
+      ops.readBytes(accessor, PathSpec.fromStrPath('/mnt/sub'), undefined),
+    ).rejects.toMatchObject({ code: 'EISDIR', message: '/mnt/sub' })
+  })
+
+  it('keeps the read own error when a probe blows up', async () => {
+    // A probe that fails is a negative probe. Surfacing it would swap the
+    // read's error for one from a call the user never made.
+    const ops = withDirGuard({
+      readdir: () => Promise.reject(new Error('transport reset')),
+      readBytes: (_a, p) => Promise.reject(eacces(p.virtual)),
+      readStream: () => {
+        throw new Error('not used')
+      },
+      stat: () => Promise.reject(new Error('transport reset')),
+      isMounted: () => true,
+    })
+    await expect(
+      ops.readBytes(accessor, PathSpec.fromStrPath('/locked.txt'), undefined),
+    ).rejects.toMatchObject({ code: 'EACCES' })
+  })
+})
+
+describe('withHiddenGuard rmdir under namespace children', () => {
+  it('a visible mounted child keeps the rmdir refusal', async () => {
+    // The guard is applied over an adapter already stamped with the
+    // invocation's globChildren (the factory's per-invocation order),
+    // so the visible mounted child joins the emptiness judgment and
+    // the not-empty refusal stays with the cascade never started.
+    const removed: string[] = []
+    const notEmpty = (): Error => {
+      const err = new Error('ENOTEMPTY: directory not empty') as Error & { code: string }
+      err.code = 'ENOTEMPTY'
+      return err
+    }
+    const base: CommandIO = {
+      readdir: () => Promise.resolve(['h']),
+      readBytes: () => Promise.reject(new Error('not used')),
+      readStream: () => {
+        throw new Error('not used')
+      },
+      stat: (_a, path) =>
+        Promise.resolve(
+          new FileStat({ name: path.virtual, type: FileType.FILE, content: ContentType.TEXT }),
+        ),
+      isMounted: () => true,
+      unlink: (_a, path) => {
+        removed.push(path.virtual)
+        return Promise.resolve()
+      },
+      rmdir: () => Promise.reject(notEmpty()),
+      globChildren: (parent: string) => (parent === '/m/d' ? ['m'] : []),
+    }
+    const ops = withHiddenGuard(base)
+    const rmdir = ops.rmdir
+    if (rmdir === undefined) throw new Error('rmdir slot missing')
+    const sess = new SessionState({ sessionId: 'narrowed' })
+    sess.hiddenPaths = { paths: ['/m/d/h'] }
+    const spec = new PathSpec({ virtual: '/m/d', directory: '/m', vfsPath: 'd' })
+    await runWithSession(sess, async () => {
+      await expect(rmdir(accessor, spec)).rejects.toMatchObject({ code: 'ENOTEMPTY' })
+    })
+    expect(removed).toEqual([])
+  })
+
+  it('a failed fallback listing keeps the rmdir refusal', async () => {
+    // A backend that cannot list the remnants keeps the original
+    // refusal, whatever error type it failed with: a raw backend
+    // failure here would reveal exactly what the refusal exists to
+    // hide.
+    const notEmpty = (): Error => {
+      const err = new Error('ENOTEMPTY: directory not empty') as Error & { code: string }
+      err.code = 'ENOTEMPTY'
+      return err
+    }
+    const base: CommandIO = {
+      readdir: () => Promise.reject(new Error('api exploded')),
+      readBytes: () => Promise.reject(new Error('not used')),
+      readStream: () => {
+        throw new Error('not used')
+      },
+      stat: (_a, path) =>
+        Promise.resolve(
+          new FileStat({ name: path.virtual, type: FileType.FILE, content: ContentType.TEXT }),
+        ),
+      isMounted: () => true,
+      unlink: () => Promise.reject(new Error('never reached')),
+      rmdir: () => Promise.reject(notEmpty()),
+    }
+    const ops = withHiddenGuard(base)
+    const rmdir = ops.rmdir
+    if (rmdir === undefined) throw new Error('rmdir slot missing')
+    const sess = new SessionState({ sessionId: 'narrowed' })
+    sess.hiddenPaths = { paths: ['/m/d/h'] }
+    const spec = new PathSpec({ virtual: '/m/d', directory: '/m', vfsPath: 'd' })
+    await runWithSession(sess, async () => {
+      await expect(rmdir(accessor, spec)).rejects.toMatchObject({ code: 'ENOTEMPTY' })
+    })
+  })
+})
+
+describe('withAbortGuard', () => {
+  const spec = (virtual: string): PathSpec =>
+    new PathSpec({
+      virtual,
+      directory: virtual.slice(0, virtual.lastIndexOf('/')) || '/',
+      vfsPath: virtual,
+      resolved: true,
+    })
+
+  function recording(calls: string[]): CommandIO {
+    return {
+      readdir: (_a, path) => {
+        calls.push(`readdir ${path.virtual}`)
+        return Promise.resolve([])
+      },
+      readBytes: (_a, path) => {
+        calls.push(`read ${path.virtual}`)
+        return Promise.resolve(new Uint8Array([1]))
+      },
+      readStream: (_a, path) => {
+        calls.push(`stream ${path.virtual}`)
+        return (async function* () {
+          yield await Promise.resolve(new Uint8Array([1]))
+        })()
+      },
+      stat: (_a, path) => {
+        calls.push(`stat ${path.virtual}`)
+        return Promise.resolve(
+          new FileStat({ name: 'k', type: FileType.FILE, content: ContentType.TEXT, size: 1 }),
+        )
+      },
+      isMounted: () => true,
+      exists: (_a, path) => {
+        calls.push(`exists ${path.virtual}`)
+        return Promise.resolve(true)
+      },
+      find: (_a, path) => {
+        calls.push(`find ${path.virtual}`)
+        return Promise.resolve([])
+      },
+      du: {
+        size: (_a, path) => {
+          calls.push(`du.size ${path.virtual}`)
+          return Promise.resolve(0)
+        },
+        entries: (_a, path) => {
+          calls.push(`du.entries ${path.virtual}`)
+          return Promise.resolve([[], 0] as [[string, number][], number])
+        },
+      },
+      unlink: (_a, path) => {
+        calls.push(`unlink ${path.virtual}`)
+        return Promise.resolve()
+      },
+      write: (_a, path) => {
+        calls.push(`write ${path.virtual}`)
+        return Promise.resolve()
+      },
+    }
+  }
+
+  it('forwards every slot while the signal is quiet', async () => {
+    const calls: string[] = []
+    const guarded = withAbortGuard(recording(calls), new AbortController().signal)
+    await guarded.unlink?.(accessor, spec('/data/a'))
+    await guarded.readBytes(accessor, spec('/data/a'))
+    expect(calls).toEqual(['unlink /data/a', 'read /data/a'])
+  })
+
+  it('refuses to start a slot once the signal fired', async () => {
+    const calls: string[] = []
+    const controller = new AbortController()
+    const guarded = withAbortGuard(recording(calls), controller.signal)
+    controller.abort(new Error('released'))
+    await expect(guarded.unlink?.(accessor, spec('/data/b'))).rejects.toMatchObject({
+      name: 'AbortError',
+      cause: { message: 'released' },
+    })
+    await expect(
+      guarded.write?.(accessor, spec('/data/b'), new Uint8Array()),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(guarded.readdir(accessor, spec('/data'))).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(calls).toEqual([])
+  })
+
+  // A presence fact costs no write, which is why the policy guard lets
+  // it through, but on an API mount it is still a request. `stat a b`
+  // whose first call outlives the grace would otherwise start the
+  // second after the caller was released.
+  it('refuses the presence facts too', async () => {
+    const calls: string[] = []
+    const controller = new AbortController()
+    const guarded = withAbortGuard(recording(calls), controller.signal)
+    controller.abort(new Error('released'))
+    await expect(guarded.stat(accessor, spec('/data/b'))).rejects.toMatchObject({
+      name: 'AbortError',
+      cause: { message: 'released' },
+    })
+    await expect(guarded.exists?.(accessor, spec('/data/b'))).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    await expect(guarded.find?.(accessor, spec('/data'), {})).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    await expect(guarded.du?.size(accessor, spec('/data'))).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    await expect(guarded.du?.entries(accessor, spec('/data'))).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(calls).toEqual([])
+  })
+
+  it('is the ops themselves without a signal', () => {
+    const ops = recording([])
+    expect(withAbortGuard(ops, undefined)).toBe(ops)
+  })
+})
+
+function capabilityOps(backend?: () => Promise<void>): CommandIO {
+  return {
+    readdir: () => Promise.resolve([]),
+    readBytes: () => Promise.resolve(new Uint8Array()),
+    readStream: () => oneChunkStream(new Uint8Array()),
+    // The regions stand as directories, so a mkdir of `f` inside one is a
+    // real create and answers the region's own refusal (a missing parent
+    // would be ENOENT, as GNU says). Mirrors test_adapter.py.
+    stat: (_accessor, path) =>
+      ['/data/locked', '/data/hidden', '/data/build'].includes(path.virtual)
+        ? Promise.resolve(new FileStat({ type: FileType.DIRECTORY, name: path.virtual }))
+        : Promise.reject(enoent(path.virtual)),
+    isMounted: () => true,
+    ...(backend === undefined
+      ? {}
+      : {
+          write: backend,
+          mkdir: backend,
+          unlink: backend,
+          copy: backend,
+          rename: backend,
+          truncate: backend,
+        }),
+  }
+}
+
+const capabilityCases = [false, true].flatMap((available) =>
+  (['write', 'mkdir', 'unlink', 'rename', 'copy', 'truncate'] as const).flatMap((operation) =>
+    (['locked', 'hidden', 'build'] as const).map((region) => ({ available, operation, region })),
+  ),
+)
+
+it.each(capabilityCases)(
+  'guards $operation in $region, available=$available',
+  async ({ available, operation, region }) => {
+    let calls = 0
+    const backend = () => {
+      calls++
+      return Promise.resolve()
+    }
+    const session = new SessionState({
+      sessionId: 'guard-matrix',
+      mountModes: new Map([['/data', MountMode.READ]]),
+      hiddenPaths: { paths: ['/data/hidden'] },
+      shownPaths: { entries: [{ path: '/data/build', mode: MountMode.WRITE }] },
+    })
+    await runWithSession(session, () =>
+      runWithMountGate('/data', MountMode.WRITE, async () => {
+        const ops = withPolicyGuard(withPathGuards(capabilityOps(available ? backend : undefined)))
+        const path = PathSpec.fromStrPath(`/data/${region}/f`)
+        const invoke = () => {
+          if (operation === 'copy' || operation === 'rename') {
+            return requireOp(ops[operation], operation)(
+              accessor,
+              PathSpec.fromStrPath('/data/build/src'),
+              path,
+            )
+          }
+          if (operation === 'write')
+            return requireOp(ops.write, operation)(accessor, path, new Uint8Array())
+          if (operation === 'truncate') return requireOp(ops.truncate, operation)(accessor, path, 0)
+          return requireOp(ops[operation], operation)(accessor, path)
+        }
+        if (available && region === 'build') {
+          await invoke()
+          expect(calls).toBe(1)
+        } else {
+          const code = { locked: 'EROFS', hidden: 'ENOENT', build: 'ENOTSUP' }[region]
+          const named =
+            operation === 'rename' && region === 'build' ? '/data/build/src' : path.virtual
+          await expect(invoke()).rejects.toMatchObject({ code, virtualPath: named })
+          expect(calls).toBe(0)
+          if (region === 'locked') {
+            const err = await invoke().catch((e: unknown) => e)
+            expect(new TextDecoder().decode(formatFsError('probe', err))).toBe(
+              `probe: ${path.virtual}: Read-only file system\n`,
+            )
+          }
+        }
+      }),
+    )
+  },
+)
+
+it.each([false, true])(
+  'copy reads source; rename mutates source and subtree, available=%s',
+  async (available) => {
+    let calls = 0
+    const backend = () => {
+      calls++
+      return Promise.resolve()
+    }
+    const session = new SessionState({
+      sessionId: 'pair-guards',
+      shownPaths: {
+        entries: [
+          { path: '/data/src', mode: MountMode.READ },
+          { path: '/data/tree/locked', mode: MountMode.READ },
+        ],
+      },
+    })
+    await runWithSession(session, () =>
+      runWithMountGate('/data', MountMode.WRITE, async () => {
+        const ops = withPathGuards(capabilityOps(available ? backend : undefined))
+        const src = PathSpec.fromStrPath('/data/src'),
+          dst = PathSpec.fromStrPath('/data/dst')
+        const copy = requireOp(ops.copy, 'copy')
+        if (available) await copy(accessor, src, dst)
+        else
+          await expect(copy(accessor, src, dst)).rejects.toMatchObject({
+            code: 'ENOTSUP',
+            virtualPath: dst.virtual,
+          })
+        for (const [source, blame] of [
+          [src, src.virtual],
+          [PathSpec.fromStrPath('/data/tree'), '/data/tree/locked'],
+        ] as const) {
+          await expect(
+            Promise.resolve().then(() => requireOp(ops.rename, 'rename')(accessor, source, dst)),
+          ).rejects.toMatchObject({ code: 'EROFS', virtualPath: blame })
+        }
+        expect(calls).toBe(Number(available))
+      }),
+    )
+  },
+)
+
+it('a missing capability obeys the rule before the mode', async () => {
+  const asked: string[] = []
+  const gate = {
+    scoped: true,
+    granted: [],
+    check: (path: string) => {
+      asked.push(path)
+      throw eacces(path)
+    },
+    refuses: () => true,
+  }
+  await runWithAdmission(gate, () =>
+    runWithMountGate('/data', MountMode.READ, async () => {
+      await expect(
+        requireOp(capabilityOps().write, 'write')(
+          accessor,
+          PathSpec.fromStrPath('/data/locked'),
+          new Uint8Array(),
+        ),
+      ).rejects.toMatchObject({ code: 'EACCES' })
+    }),
+  )
+  expect(asked).toEqual(['/data/locked'])
+})
+
+it('a missing copy admits its source as a read before capability failure', async () => {
+  const policy = new SealedRead('/data/secret')
+  await runWithOpPolicies(new Policies([policy]), async () => {
+    await expect(
+      requireOp(capabilityOps().copy, 'copy')(
+        accessor,
+        PathSpec.fromStrPath('/data/secret'),
+        PathSpec.fromStrPath('/data/dst'),
+      ),
+    ).rejects.toMatchObject({ code: 'EACCES' })
+  })
+  expect(policy.asked).toEqual([['copy', '/data/secret', false]])
+})
+
+describe('directory EOF', () => {
+  it.each([false, true])('distinguishes empty files from directories: %s', async (isDir) => {
+    const ops = withDirGuard(
+      keyedReadOps({
+        explicitDirs: isDir ? ['/empty'] : [],
+        files: { '/empty': '' },
+      }),
+    )
+    const path = PathSpec.fromStrPath('/empty')
+    if (isDir) {
+      await expect(ops.readBytes(accessor, path)).rejects.toMatchObject({ code: 'EISDIR' })
+      await expect(drain(ops.readStream(accessor, path))).rejects.toMatchObject({ code: 'EISDIR' })
+      await expect(ops.readRange?.(accessor, path, undefined, 0, null)).rejects.toMatchObject({
+        code: 'EISDIR',
+      })
+    } else {
+      expect(await ops.readBytes(accessor, path)).toEqual(new Uint8Array())
+      expect(await drain(ops.readStream(accessor, path))).toEqual([new Uint8Array()])
+      expect(await ops.readRange?.(accessor, path, undefined, 0, null)).toEqual(new Uint8Array())
+    }
   })
 })

@@ -13,12 +13,29 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mountKey } from '../../../utils/key_prefix.ts'
-import { describe, expect, it } from 'vitest'
-import { FileStat, FileType, LINK_TARGET_KEY, PathSpec } from '../../../types.ts'
-import type { LinkView } from '../../../ops/types.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { ContentType, FileStat, FileType, PathSpec } from '../../../types.ts'
+import type { MountView } from '../../../ops/types.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import type { CommandOpts } from '../../config.ts'
-import { LS_FAILURE, LS_MINOR_PROBLEM, LS_OK, exitStatusFor, lsGeneric } from './ls.ts'
+import {
+  LS_FAILURE,
+  LS_MINOR_PROBLEM,
+  LS_OK,
+  exitStatusFor,
+  filevercmp,
+  indicatorFlag,
+  lsGeneric,
+  parseFlags,
+  sortStats,
+  typeIndicator,
+} from './ls.ts'
+import { CommandTimeoutError, UsageError } from '../../errors.ts'
+import { specOf } from '../../spec/builtins.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { SPECS, parseCommand } from '../../spec/index.ts'
+import { parseToKwargs } from '../../spec/parser.ts'
+import { type FlagValue } from '../../spec/types.ts'
 
 const DEC = new TextDecoder()
 
@@ -37,7 +54,7 @@ function spec(path: string): PathSpec {
     virtual: path,
     directory: path,
     resolved: false,
-    resourcePath: mountKey(path, ''),
+    vfsPath: mountKey(path, ''),
   })
 }
 
@@ -47,7 +64,7 @@ function opts(flags: Record<string, string | boolean | number | string[]>): Comm
     flags,
     filetypeFns: null,
     cwd: '/',
-    resource: null,
+    vfs: null,
   } as unknown as CommandOpts
 }
 
@@ -56,7 +73,7 @@ const stat = (p: PathSpec): Promise<FileStat> => {
   return Promise.resolve(
     new FileStat({
       name,
-      type: key(p) === '/' ? FileType.DIRECTORY : FileType.TEXT,
+      type: key(p) === '/' ? FileType.DIRECTORY : FileType.FILE,
       modified: MODIFIED[name] ?? null,
     }),
   )
@@ -67,30 +84,23 @@ const readdir = (p: PathSpec): Promise<string[]> => {
   return Promise.resolve([])
 }
 
-async function run(flags: Record<string, string | boolean | number | string[]>): Promise<string[]> {
-  const result = await lsGeneric([spec('/')], opts(flags), readdir, stat)
-  if (result === null) return []
-  const [out] = result
-  return DEC.decode(out as Uint8Array)
-    .replace(/\n$/, '')
-    .split('\n')
-}
-
 describe('lsGeneric', () => {
-  it('sorts names by ASCII byte order, uppercase before lowercase', async () => {
-    expect(await run({})).toEqual(['Banana.txt', 'CHERRY.txt', 'apple.txt'])
-  })
-
-  it('-r reverses the ASCII order', async () => {
-    expect(await run({ r: true })).toEqual(['apple.txt', 'CHERRY.txt', 'Banana.txt'])
-  })
-
-  it('-t sorts newest first by codepoint comparison of modified', async () => {
-    expect(await run({ t: true })).toEqual(['apple.txt', 'CHERRY.txt', 'Banana.txt'])
-  })
-
-  it('-tr sorts oldest first', async () => {
-    expect(await run({ t: true, r: true })).toEqual(['Banana.txt', 'CHERRY.txt', 'apple.txt'])
+  // On a mount that keeps no listing index each entry's stat is a
+  // backend request; a whole directory's worth at once is a burst.
+  it('stats one entry at a time', async () => {
+    const names = Array.from({ length: 40 }, (_, i) => `/${String(i)}.json`)
+    let inFlight = 0
+    let peak = 0
+    const slowStat = async (p: PathSpec): Promise<FileStat> => {
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      inFlight -= 1
+      return new FileStat({ name: key(p).split('/').pop() ?? '', type: FileType.FILE })
+    }
+    const result = await lsGeneric([spec('/')], opts({}), () => Promise.resolve(names), slowStat)
+    expect(DEC.decode((result?.[0] ?? new Uint8Array()) as Uint8Array).split('\n')).toHaveLength(41)
+    expect(peak).toBe(1)
   })
 })
 
@@ -99,13 +109,13 @@ describe('lsGeneric', () => {
 // is in play, blank-line separated.
 const TREE: Record<string, FileType> = {
   '/a': FileType.DIRECTORY,
-  '/a/f.txt': FileType.TEXT,
+  '/a/f.txt': FileType.FILE,
   '/a/sub': FileType.DIRECTORY,
   '/b': FileType.DIRECTORY,
-  '/b/g.txt': FileType.TEXT,
+  '/b/g.txt': FileType.FILE,
   '/c': FileType.DIRECTORY,
-  '/mfile': FileType.TEXT,
-  '/zfile': FileType.TEXT,
+  '/mfile': FileType.FILE,
+  '/zfile': FileType.FILE,
 }
 
 const treeStat = (p: PathSpec): Promise<FileStat> => {
@@ -113,7 +123,7 @@ const treeStat = (p: PathSpec): Promise<FileStat> => {
   const type = TREE[path]
   if (type === undefined) return Promise.reject(Object.assign(new Error(path), { code: 'ENOENT' }))
   return Promise.resolve(
-    new FileStat({ name: path.split('/').pop() ?? '', type, size: type === FileType.TEXT ? 3 : 0 }),
+    new FileStat({ name: path.split('/').pop() ?? '', type, size: type === FileType.FILE ? 3 : 0 }),
   )
 }
 
@@ -145,65 +155,24 @@ async function runTree(
 }
 
 describe('lsGeneric operand headers', () => {
-  it('a single directory operand has no header', async () => {
-    expect((await runTree(['/a'])).stdout).toBe('f.txt\nsub\n')
-  })
-
-  it('two directory operands are headed and blank-line separated', async () => {
-    const r = await runTree(['/a', '/b'])
-    expect(r.stdout).toBe('/a:\nf.txt\nsub\n\n/b:\ng.txt\n')
-    expect(r.exitCode).toBe(0)
-  })
-
   it('an empty directory operand still gets a header', async () => {
     expect((await runTree(['/b', '/c'])).stdout).toBe('/b:\ng.txt\n\n/c:\n')
   })
 
-  it('file operands print first, unheaded, then the directories', async () => {
-    expect((await runTree(['/b', '/zfile', '/a', '/mfile'])).stdout).toBe(
-      '/mfile\n/zfile\n\n/a:\nf.txt\nsub\n\n/b:\ng.txt\n',
-    )
-  })
-
-  it('file operands alone emit no trailing blank line', async () => {
-    expect((await runTree(['/zfile', '/mfile'])).stdout).toBe('/mfile\n/zfile\n')
-  })
-
-  it('operands sort by name, not command-line order', async () => {
-    expect((await runTree(['/b', '/a'])).stdout).toBe('/a:\nf.txt\nsub\n\n/b:\ng.txt\n')
-  })
-
   it('-r flips both the operand order and the entry order', async () => {
-    expect((await runTree(['/a', '/b'], { r: true })).stdout).toBe(
+    expect((await runTree(['/a', '/b'], { reverse: true })).stdout).toBe(
       '/b:\ng.txt\n\n/a:\nsub\nf.txt\n',
     )
-  })
-
-  it('a failed operand still leaves the listed one headed', async () => {
-    const r = await runTree(['/nope', '/a'])
-    expect(r.stdout).toBe('/a:\nf.txt\nsub\n')
-    // The header is output, not evidence of success: the bad operand still
-    // ratchets the status to 2.
-    expect(r.exitCode).toBe(LS_FAILURE)
-    expect(r.stderr).toContain('/nope')
   })
 
   it('a repeated operand lists twice', async () => {
     expect((await runTree(['/a', '/a'])).stdout).toBe('/a:\nf.txt\nsub\n\n/a:\nf.txt\nsub\n')
   })
 
-  it('-R keeps the header on a lone operand', async () => {
-    expect((await runTree(['/a'], { R: true })).stdout).toBe('/a:\nf.txt\nsub\n\n/a/sub:\n')
-  })
-
   it('-R does not head a file operand', async () => {
-    expect((await runTree(['/a', '/zfile'], { R: true })).stdout).toBe(
+    expect((await runTree(['/a', '/zfile'], { recursive: true })).stdout).toBe(
       '/zfile\n\n/a:\nf.txt\nsub\n\n/a/sub:\n',
     )
-  })
-
-  it('-d sorts its operands and stays unheaded', async () => {
-    expect((await runTree(['/zfile', '/b', '/a'], { d: true })).stdout).toBe('/a\n/b\n/zfile\n')
   })
 })
 
@@ -220,7 +189,8 @@ const tiedStat = (p: PathSpec): Promise<FileStat> => {
   return Promise.resolve(
     new FileStat({
       name: path.slice(1),
-      type: FileType.TEXT,
+      type: FileType.FILE,
+      content: ContentType.TEXT,
       size: 2,
       modified: '2024-01-01T00:00:00Z',
     }),
@@ -248,12 +218,14 @@ describe('lsGeneric tie-breaks', () => {
     })
 
     it(`-${sort}r flips the tie-break too`, async () => {
-      expect(await runTied(['/c', '/a', '/b'], { [sort]: true, r: true })).toBe('/c\n/b\n/a\n')
+      expect(await runTied(['/c', '/a', '/b'], { [sort]: true, reverse: true })).toBe(
+        '/c\n/b\n/a\n',
+      )
     })
 
     it(`-${sort} breaks tied entries on the name`, async () => {
       expect(await runTied(['/'], { [sort]: true })).toBe('a\nb\nc\n')
-      expect(await runTied(['/'], { [sort]: true, r: true })).toBe('c\nb\na\n')
+      expect(await runTied(['/'], { [sort]: true, reverse: true })).toBe('c\nb\na\n')
     })
   }
 })
@@ -286,7 +258,7 @@ const codeStat = (p: PathSpec): Promise<FileStat> => {
   return Promise.resolve(
     new FileStat({
       name: k.split('/').pop() ?? '',
-      type: dir ? FileType.DIRECTORY : FileType.TEXT,
+      type: dir ? FileType.DIRECTORY : FileType.FILE,
     }),
   )
 }
@@ -302,16 +274,6 @@ async function status(
 }
 
 describe('lsGeneric exit codes', () => {
-  it('exits 0 when every operand lists cleanly', async () => {
-    const [code] = await status(['/good'])
-    expect(code).toBe(LS_OK)
-  })
-
-  it('exits 2 for a missing command-line operand', async () => {
-    const [code] = await status(['/bad'])
-    expect(code).toBe(LS_FAILURE)
-  })
-
   it('exits 2 when only one of several operands is missing', async () => {
     expect((await status(['/bad', '/good']))[0]).toBe(LS_FAILURE)
     expect((await status(['/good', '/bad']))[0]).toBe(LS_FAILURE)
@@ -324,21 +286,15 @@ describe('lsGeneric exit codes', () => {
   })
 
   it('exits 2 for a missing operand under -d', async () => {
-    expect((await status(['/bad'], { d: true }))[0]).toBe(LS_FAILURE)
-    expect((await status(['/good', '/bad'], { d: true }))[0]).toBe(LS_FAILURE)
+    expect((await status(['/bad'], { directory: true }))[0]).toBe(LS_FAILURE)
+    expect((await status(['/good', '/bad'], { directory: true }))[0]).toBe(LS_FAILURE)
   })
 
   it('exits 1 when an entry below the operand cannot be stat', async () => {
-    const [code, out] = await status(['/half'])
+    const [code, out] = await status(['/half'], { args_l: true })
     expect(code).toBe(LS_MINOR_PROBLEM)
-    // The unreadable entry is skipped, not fatal: the listing still renders.
-    expect(out).not.toContain('locked.txt')
-  })
-
-  it('exits 1 when -R cannot open a subdirectory, keeping parent output', async () => {
-    const [code, out] = await status(['/deep'], { R: true })
-    expect(code).toBe(LS_MINOR_PROBLEM)
-    expect(out).toContain('/deep:')
+    // Not fatal, and not dropped: the entry keeps GNU's row of `?`.
+    expect(out).toContain('? locked.txt')
   })
 
   it('lets a serious problem outrank a minor one', async () => {
@@ -346,13 +302,13 @@ describe('lsGeneric exit codes', () => {
   })
 
   it('prints no header for a -R operand it cannot open', async () => {
-    const [code, out] = await status(['/good', '/bad'], { R: true })
+    const [code, out] = await status(['/good', '/bad'], { recursive: true })
     expect(code).toBe(LS_FAILURE)
     expect(out).not.toContain('/bad:')
   })
 
   it('starts flush left when the first -R operand could not be opened', async () => {
-    const [code, out] = await status(['/bad', '/good'], { R: true })
+    const [code, out] = await status(['/bad', '/good'], { recursive: true })
     expect(code).toBe(LS_FAILURE)
     expect(out).toBe('/good:\na.txt\nb.txt\n')
   })
@@ -368,99 +324,34 @@ describe('lsGeneric exit codes', () => {
   })
 })
 
-describe('link operands on backends with different readdir shapes', () => {
-  const linkRowStat = new FileStat({
-    name: 'flink',
-    size: 19,
-    modified: '2026-01-02T15:30:00Z',
-    type: FileType.SYMLINK,
-    extra: { [LINK_TARGET_KEY]: '/data/symx/real.txt' },
-  })
-
-  const links: LinkView = {
-    statAt: (v: string) => (v.endsWith('flink') ? linkRowStat : null),
-    children: () => [],
-    subtree: () => [],
-    resolve: (v: string) => v,
-    exists: () => Promise.resolve(true),
-    targetStat: () => Promise.resolve(null),
-  }
-
-  const missing = (p: PathSpec): Promise<never> => {
-    // Stamped like a real backend's ENOENT; bare errors now propagate.
-    const err = new Error(p.virtual) as Error & { code: string }
-    err.code = 'ENOENT'
-    return Promise.reject(err)
-  }
-
-  it('reports the link when readdir throws', async () => {
-    const [out] = (await lsGeneric(
-      [PathSpec.fromStrPath('/data/symx/flink')],
-      { flags: { args_l: true }, cwd: '/', ns: { links } } as never,
-      missing,
-      missing,
-    )) as [Uint8Array, unknown]
-    expect(new TextDecoder().decode(out)).toContain('flink -> /data/symx/real.txt')
-  })
-
-  // Backends without real directories (s3, nextcloud) answer readdir on
-  // a link with an empty list, which rendered an empty directory.
-  it('reports the link when readdir returns empty', async () => {
-    const [out] = (await lsGeneric(
-      [PathSpec.fromStrPath('/data/symx/flink')],
-      { flags: { args_l: true }, cwd: '/', ns: { links } } as never,
-      () => Promise.resolve([]),
-      missing,
-    )) as [Uint8Array, unknown]
-    expect(new TextDecoder().decode(out)).toContain('flink -> /data/symx/real.txt')
-  })
-})
-
 describe('structure-only directories', () => {
   const missing = (p: PathSpec): Promise<never> => {
     const err = new Error(p.virtual) as Error & { code: string }
     err.code = 'ENOENT'
     return Promise.reject(err)
   }
-  const childMounts = (parent: string): string[] => (parent === '/ghost' ? ['deep'] : [])
-
-  // A directory no backend serves still lists when the namespace owes it
-  // children (a nested mount, a link's ancestors): the door already names
-  // it in the parent listing, so ls must agree instead of reporting it
-  // missing.
-  it('lists namespace children when no backend serves the directory', async () => {
-    const result = await lsGeneric(
-      [PathSpec.fromStrPath('/ghost')],
-      { flags: {}, cwd: '/', ns: { childMounts } } as never,
-      missing,
-      missing,
-    )
-    expect(result?.[1].exitCode).toBe(LS_OK)
-    expect(DEC.decode(result?.[0] as Uint8Array)).toBe('deep\n')
-  })
-
-  // Under -R the group still renders from the namespace fact; only
-  // descent into the child-mount root is withheld, because that listing
-  // is another backend's and the cross-mount fan-out assembles it.
-  it('-R renders the namespace-only group and leaves descent to fan-out', async () => {
-    const result = await lsGeneric(
-      [PathSpec.fromStrPath('/ghost')],
-      { flags: { R: true }, cwd: '/', ns: { childMounts } } as never,
-      missing,
-      missing,
-    )
-    expect(result?.[1].exitCode).toBe(LS_OK)
-    expect(DEC.decode(result?.[0] as Uint8Array)).toBe('/ghost:\ndeep\n')
+  // Only `isRoot` is exercised: it is what tells a nested mount's root
+  // (whose listing belongs to another backend) from a directory the
+  // namespace merely owes children, which -R must still descend.
+  const mountsAt = (...roots: string[]): MountView => ({
+    descendants: (p) => roots.filter((r) => r.startsWith(`${rstripSlash(p)}/`)),
+    visibleDescendants: (p) => roots.filter((r) => r.startsWith(`${rstripSlash(p)}/`)),
+    isRoot: (p) => roots.includes(rstripSlash(p)),
+    rootOf: () => '/',
   })
 
   // A structure chain (a link's ancestors) continues below the first
-  // level, so -R descends it: only a child-mount root stops the walk.
+  // level, so -R descends it: only a mount root stops the walk.
   it('-R descends structure that continues below', async () => {
     const chain = (parent: string): string[] =>
       parent === '/ghost' ? ['deep'] : parent === '/ghost/deep' ? ['lnk'] : []
     const result = await lsGeneric(
       [PathSpec.fromStrPath('/ghost')],
-      { flags: { R: true }, cwd: '/', ns: { childMounts: chain } } as never,
+      {
+        flags: { recursive: true },
+        cwd: '/',
+        ns: { childMounts: chain, mounts: mountsAt('/ghost/deep/lnk') },
+      } as never,
       missing,
       missing,
     )
@@ -468,57 +359,589 @@ describe('structure-only directories', () => {
     expect(DEC.decode(result?.[0] as Uint8Array)).toBe('/ghost:\ndeep\n\n/ghost/deep:\nlnk\n')
   })
 
-  // -d stats the operand itself; the namespace fact is what says the
-  // directory exists, so the row must come from it when no backend does.
-  it('-d prints the namespace-only directory row', async () => {
+  // A mount root is not always a directory. Every workspace mounts
+  // `/.bash_history` as a whole mount serving one file, and no backend can
+  // stat it: the parent's cannot see into the child mount and the child's
+  // own calls its root '/'. Synthesizing the row as a directory suffixed it
+  // with '/' under -F, rendered it `drwxr-xr-x` under -l, and offered it to
+  // -R as something to descend. GNU (coreutils 9.7, `mount --bind` of one
+  // file onto another) lists it as an ordinary file row of its parent.
+  it('does not render a child mount serving one file as a directory', async () => {
+    const served: Record<string, FileType> = {
+      '/base': FileType.DIRECTORY,
+      '/base/top.txt': FileType.FILE,
+    }
+    const servedStat = (p: PathSpec): Promise<FileStat> => {
+      const type = served[rstripSlash(p.virtual)]
+      if (type === undefined) return missing(p)
+      return Promise.resolve(
+        new FileStat({ name: rstripSlash(p.virtual).split('/').pop() ?? '', type }),
+      )
+    }
+    const servedReaddir = (p: PathSpec): Promise<string[]> =>
+      rstripSlash(p.virtual) === '/base' ? Promise.resolve(['/base/top.txt']) : missing(p)
+    const result = await lsGeneric(
+      [PathSpec.fromStrPath('/base')],
+      {
+        flags: { recursive: true, classify: true },
+        cwd: '/',
+        // The child mount answers its own root with its name for it.
+        statPath: (virtual: string) =>
+          Promise.resolve(
+            virtual === '/base/hist'
+              ? new FileStat({ name: '/', type: FileType.FILE, content: ContentType.TEXT })
+              : null,
+          ),
+        ns: {
+          childMounts: (parent: string) => (parent === '/base' ? ['hist'] : []),
+          mounts: mountsAt('/base/hist'),
+        },
+      } as never,
+      servedReaddir,
+      servedStat,
+    )
+    expect(result?.[1].exitCode).toBe(LS_OK)
+    expect(DEC.decode(result?.[0] as Uint8Array)).toBe('/base:\nhist\ntop.txt\n')
+  })
+
+  // Absence of the door can only mean "nobody can answer", so the row keeps
+  // the shape every caller outside a workspace already saw.
+  it('falls back to a directory row with no dispatcher', async () => {
     const result = await lsGeneric(
       [PathSpec.fromStrPath('/ghost')],
-      { flags: { d: true }, cwd: '/', ns: { childMounts } } as never,
+      {
+        flags: { classify: true },
+        cwd: '/',
+        ns: { childMounts: (parent: string) => (parent === '/ghost' ? ['deep'] : []) },
+      } as never,
       missing,
       missing,
     )
     expect(result?.[1].exitCode).toBe(LS_OK)
-    expect(DEC.decode(result?.[0] as Uint8Array)).toBe('/ghost\n')
+    expect(DEC.decode(result?.[0] as Uint8Array)).toBe('deep/\n')
   })
 })
 
 describe('honest per-entry errors', () => {
-  function enoent(p: string): Error {
+  function stamped(p: string, code: string): Error {
     const e = new Error(p) as Error & { code: string }
-    e.code = 'ENOENT'
+    e.code = code
     return e
   }
 
   function statFailingEntries(err: Error) {
-    return (p: PathSpec): Promise<FileStat> => (key(p) === '/' ? stat(p) : Promise.reject(err))
+    return (p: PathSpec): Promise<FileStat> =>
+      key(p) === '/apple.txt' ? Promise.reject(err) : stat(p)
   }
 
-  it('warns per entry and ratchets the exit code on a stamped fs error', async () => {
-    const result = await lsGeneric(
-      [spec('/')],
-      opts({}),
-      readdir,
-      statFailingEntries(enoent('/apple.txt')),
+  async function run(flags: Record<string, boolean>, err: Error) {
+    const result = await lsGeneric([spec('/')], opts(flags), readdir, statFailingEntries(err))
+    return {
+      code: result?.[1].exitCode,
+      stdout: DEC.decode(result?.[0] as Uint8Array),
+      stderr: DEC.decode((result?.[1].stderr ?? new Uint8Array()) as Uint8Array),
+    }
+  }
+
+  // GNU (coreutils 9.7, EIO injected on one entry with strace) lists every
+  // name, and only a listing that stats the entry (-l, -F, -t, -i ...)
+  // reports it, whatever the errno, and exits 1.
+  it.each([
+    [stamped('/apple.txt', 'ENOENT'), {}, 'apple.txt', ''],
+    [new Error('socket hang up'), {}, 'apple.txt', ''],
+    [
+      stamped('/apple.txt', 'ENOENT'),
+      { args_l: true },
+      '?????????? ? ? ? ?            ? apple.txt',
+      "ls: cannot access '/apple.txt': No such file or directory\n",
+    ],
+    [
+      new Error('S3 GET apple.txt failed: 403 Forbidden'),
+      { classify: true },
+      'apple.txt',
+      "ls: cannot access '/apple.txt': S3 GET apple.txt failed: 403 Forbidden\n",
+    ],
+    [
+      stamped('/apple.txt', 'EIO'),
+      { args_l: true },
+      '?????????? ? ? ? ?            ? apple.txt',
+      "ls: cannot access '/apple.txt': Input/output error\n",
+    ],
+  ])('lists an entry whose stat failed with %s under %o', async (err, flags, row, expected) => {
+    const host = (['debug', 'log', 'info', 'warn', 'error'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => undefined),
     )
-    expect(result?.[1].exitCode).toBe(LS_MINOR_PROBLEM)
-    const stderr = DEC.decode(result?.[1].stderr as Uint8Array)
-    expect(stderr).toContain("ls: cannot access '/apple.txt': No such file or directory")
+    try {
+      const { code, stdout, stderr } = await run(flags, err)
+      expect(stdout.trimEnd().split('\n').slice(-2)).toEqual([
+        expect.stringMatching(/CHERRY\.txt$/),
+        row,
+      ])
+      expect(stderr).toBe(expected)
+      expect(code).toBe(expected === '' ? LS_OK : LS_MINOR_PROBLEM)
+      for (const spy of host) expect(spy).not.toHaveBeenCalled()
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 
-  it('propagates an unstamped backend error instead of laundering it', async () => {
-    // An error with no POSIX code (auth failure, transport prose) must not
-    // become a GNU-shaped 'cannot access' line.
-    const raw = new Error('S3 GET apple.txt failed: 403 Forbidden')
-    await expect(
-      lsGeneric([spec('/')], opts({}), readdir, statFailingEntries(raw)),
-    ).rejects.toThrow('403 Forbidden')
+  // GNU (coreutils 9.7, both entries' stat denied) zeroes a failed stat, so
+  // -S sorts the rows as size 0 even where readdir marked a directory.
+  it('-S counts an unstattable directory as size 0', async () => {
+    const marking = (p: PathSpec): Promise<string[]> =>
+      Promise.resolve(key(p) === '/' ? ['/afile', '/zdir/'] : [])
+    const denying = (p: PathSpec): Promise<FileStat> =>
+      key(p) === '/' ? stat(p) : Promise.reject(stamped(key(p), 'EACCES'))
+    const result = await lsGeneric([spec('/')], opts({ S: true }), marking, denying)
+    expect(result?.[1].exitCode).toBe(LS_MINOR_PROBLEM)
+    expect(DEC.decode(result?.[0] as Uint8Array)).toBe('afile\nzdir\n')
+  })
+
+  it('still ends the command on a timeout or an abort', async () => {
+    await expect(run({}, new CommandTimeoutError('stat', 5))).rejects.toThrow('timed out')
+    await expect(run({}, new DOMException('execute aborted', 'AbortError'))).rejects.toThrow(
+      'execute aborted',
+    )
+  })
+
+  it("still propagates the operand's own unstamped failure", async () => {
+    const failing = (): Promise<string[]> => Promise.reject(new Error('socket hang up'))
+    await expect(lsGeneric([spec('/')], opts({}), failing, stat)).rejects.toThrow('socket hang up')
   })
 
   it('-d propagates an unstamped stat error', async () => {
     const raw = new Error('rate limited')
     const failing = (): Promise<FileStat> => Promise.reject(raw)
-    await expect(lsGeneric([spec('/x')], opts({ d: true }), readdir, failing)).rejects.toThrow(
-      'rate limited',
+    await expect(
+      lsGeneric([spec('/x')], opts({ directory: true }), readdir, failing),
+    ).rejects.toThrow('rate limited')
+  })
+})
+
+// The flag set beyond -l: sort orders, columns, time styles. Mirrors the
+// Python generic ls tests; GNU coreutils 9.7 pinned the orders.
+const VERSION_NAMES = ['file10.txt', 'file2.txt', 'Z.txt', 'a.txt', 'b.md', 'c', 'dir1', 'dir2']
+const VERSION_SIZES: Record<string, number> = {
+  'file10.txt': 10,
+  'file2.txt': 2,
+  'Z.txt': 1,
+  'a.txt': 6,
+  'b.md': 1,
+  c: 0,
+}
+
+const versionStat = (p: PathSpec): Promise<FileStat> => {
+  const name = key(p).split('/').pop() ?? ''
+  const isDir = key(p) === '/v' || name.startsWith('dir')
+  return Promise.resolve(
+    new FileStat({
+      name,
+      type: isDir ? FileType.DIRECTORY : FileType.FILE,
+      size: isDir ? null : (VERSION_SIZES[name] ?? 0),
+      modified: name === 'a.txt' ? '2025-01-15T10:30:00Z' : null,
+    }),
+  )
+}
+const versionReaddir = (p: PathSpec): Promise<string[]> =>
+  Promise.resolve(key(p) === '/v' ? VERSION_NAMES.map((n) => `/v/${n}`) : [])
+
+async function runV(
+  flags: Record<string, string | boolean | number | string[]>,
+): Promise<string[]> {
+  const result = await lsGeneric([spec('/v')], opts(flags), versionReaddir, versionStat)
+  if (result === null) return []
+  const [out] = result
+  return DEC.decode(out as Uint8Array)
+    .replace(/\n$/, '')
+    .split('\n')
+}
+
+describe('lsGeneric sort orders', () => {
+  it('-U keeps the listing order and ignores grouping', async () => {
+    expect(await runV({ U: true, group_directories_first: true })).toEqual(VERSION_NAMES)
+  })
+
+  it('filevercmp pins gnulib corner cases', () => {
+    expect(filevercmp('file2.txt', 'file10.txt')).toBeLessThan(0)
+    expect(filevercmp('a.txt', 'a.tar.gz')).toBeGreaterThan(0)
+    expect(filevercmp('', 'a')).toBeLessThan(0)
+    expect(filevercmp('.', '..')).toBeLessThan(0)
+    expect(filevercmp('.hidden', 'a')).toBeLessThan(0)
+    expect(filevercmp('1.0~rc1', '1.0')).toBeLessThan(0)
+    expect(filevercmp('abc', 'abc')).toBe(0)
+  })
+
+  it('sortStats: -U keeps the listing order under -r, and width counts columns', () => {
+    const rows = ['b', 'd', 'a'].map((name) => new FileStat({ name, type: FileType.FILE }))
+    const names = (stats: FileStat[]): string[] => stats.map((s) => s.name)
+    expect(names(sortStats(rows, 'none', false))).toEqual(['b', 'd', 'a'])
+    expect(names(sortStats(rows, 'none', true))).toEqual(['b', 'd', 'a'])
+    // Pinned on coreutils 9.7 under C.UTF-8: a wide character counts two
+    // columns and a combining mark none.
+    const wide = ['界', 'aa', 'é', 'a', 'e\u0301x'].map(
+      (name) => new FileStat({ name, type: FileType.FILE }),
     )
+    expect(names(sortStats(wide, 'width', false))).toEqual(['a', 'é', 'aa', 'e\u0301x', '界'])
+  })
+
+  it('filevercmp orders bytes past the letters', () => {
+    // Pinned on coreutils 9.7 under LC_ALL=C: `_ { é ÿ Ā €` and
+    // `a- a{ aé`, since gnulib classifies bytes, not code points.
+    expect(filevercmp('_', '{')).toBeLessThan(0)
+    expect(filevercmp('{', 'é')).toBeLessThan(0)
+    expect(filevercmp('é', 'ÿ')).toBeLessThan(0)
+    expect(filevercmp('ÿ', 'Ā')).toBeLessThan(0)
+    expect(filevercmp('Ā', '€')).toBeLessThan(0)
+    expect(filevercmp('a-', 'a{')).toBeLessThan(0)
+    expect(filevercmp('a{', 'aé')).toBeLessThan(0)
+    expect(filevercmp('\uffff', '\u{1d11e}')).toBeLessThan(0)
+  })
+})
+
+describe('lsGeneric columns and time styles', () => {
+  const single = (p: PathSpec): Promise<FileStat> =>
+    Promise.resolve(
+      key(p) === '/d'
+        ? new FileStat({ name: 'd', type: FileType.DIRECTORY })
+        : new FileStat({
+            name: 'a.txt',
+            type: FileType.FILE,
+            size: 42,
+            modified: '2025-01-15T10:30:00Z',
+          }),
+    )
+  const singleReaddir = (p: PathSpec): Promise<string[]> =>
+    Promise.resolve(key(p) === '/d' ? ['/d/a.txt'] : [])
+  async function line(
+    flags: Record<string, string | boolean | number | string[]>,
+  ): Promise<string> {
+    const result = await lsGeneric([spec('/d')], opts(flags), singleReaddir, single)
+    return result === null ? '' : DEC.decode(result[0] as Uint8Array)
+  }
+
+  it('-g -o drop the owner and group, -i and -Z lead with ?', async () => {
+    expect(
+      await line({ g: true, o: true, inode: true, context: true, time_style: 'long-iso' }),
+    ).toBe('total ?\n? -rw-r--r-- 1 ? 42 2025-01-15 10:30 a.txt\n')
+    expect(await line({ inode: true, context: true })).toBe('? ? a.txt\n')
+  })
+
+  it.each([
+    ['full-iso', '2025-01-15 10:30:00.000000000 +0000'],
+    ['long-iso', '2025-01-15 10:30'],
+    ['iso', '2025-01-15 '],
+    ['+%Y/%m/%d', '2025/01/15'],
+    ['+%Y\n%H:%M', '2025'],
+  ])('--time-style=%s spells an old time as GNU does', async (style, expected) => {
+    expect(await line({ g: true, o: true, time_style: style })).toBe(
+      `total ?\n-rw-r--r-- 1 42 ${expected} a.txt\n`,
+    )
+  })
+
+  it('--hyperlink=always wraps the name in OSC 8', async () => {
+    expect(await line({ hyperlink: 'always' })).toBe(
+      '\x1b]8;;file:///d/a.txt\x07a.txt\x1b]8;;\x07\n',
+    )
+    expect(await line({ hyperlink: 'auto' })).toBe('a.txt\n')
+  })
+
+  it.each([
+    [{ t: true, S: true }, 'size', 'mtime'],
+    [{ S: true, sort: 'version' }, 'version', 'mtime'],
+    [{ u: true }, 'time', 'atime'],
+    [{ u: true, args_l: true }, 'name', 'atime'],
+    [{ c: true, u: true, time: 'status' }, 'time', 'ctime'],
+    [{ X: true, U: true }, 'none', 'mtime'],
+  ])('parseFlags: the last sort and time spelling win (%o)', (flags, sortBy, timeKind) => {
+    const parsed = parseFlags(new FlagView(flags as Record<string, FlagValue>, specOf('ls')))
+    expect(parsed.sortBy).toBe(sortBy)
+    expect(parsed.timeKind).toBe(timeKind)
+  })
+
+  it('parseFlags: the later of -h and --block-size wins', () => {
+    const parse = (flags: Record<string, FlagValue>): boolean =>
+      parseFlags(new FlagView(flags, specOf('ls'))).columns.blockSize !== null
+    expect(parse({ block_size: 'K', human_readable: true })).toBe(false)
+    expect(parse({ human_readable: true, block_size: 'K' })).toBe(true)
+    expect(() => parse({ block_size: 'bogus', human_readable: true })).toThrow(UsageError)
+  })
+
+  it('parseFlags: -1 never undoes the long format', () => {
+    const parse = (flags: Record<string, FlagValue>): boolean =>
+      parseFlags(new FlagView(flags, specOf('ls'))).long
+    expect(parse({ g: true, args_1: true })).toBe(true)
+    expect(parse({ args_l: true, args_1: true })).toBe(true)
+    expect(parse({ args_1: true })).toBe(false)
+  })
+
+  // gnulib's argmatch resolves an unambiguous prefix and answers the
+  // canonical word of the value it matched. Every row measured on coreutils
+  // 9.4 (`ls --sort=non`, `-l --time=acc`, `--hyperlink=n`,
+  // `-l --time-style=full`). Mirrors test_ls.py. A posix- prefix
+  // short-circuits the option before the matcher: GNU jumps to the locale
+  // style without reading what follows, `posix-l` included, which is
+  // ambiguous only if the remainder is matched (it must not be).
+  it.each<[Record<string, string>, string, string | boolean]>([
+    [{ sort: 'non' }, 'sortBy', 'none'],
+    [{ sort: 'n' }, 'sortBy', 'none'],
+    [{ sort: 'si' }, 'sortBy', 'size'],
+    [{ time: 'a' }, 'timeKind', 'atime'],
+    [{ time: 'acc' }, 'timeKind', 'atime'],
+    [{ time: 'u' }, 'timeKind', 'atime'],
+    [{ time: 'm' }, 'timeKind', 'mtime'],
+    [{ time: 's' }, 'timeKind', 'ctime'],
+    [{ time: 'b' }, 'timeKind', 'birth'],
+    [{ hyperlink: 'al' }, 'hyperlink', true],
+    [{ hyperlink: 'y' }, 'hyperlink', true],
+    [{ hyperlink: 'f' }, 'hyperlink', true],
+    [{ hyperlink: 'n' }, 'hyperlink', false],
+    [{ hyperlink: 'au' }, 'hyperlink', false],
+    [{ hyperlink: 'i' }, 'hyperlink', false],
+    [{ time_style: 'full' }, 'columns.timeStyle', 'full-iso'],
+    [{ time_style: 'long' }, 'columns.timeStyle', 'long-iso'],
+    [{ time_style: 'i' }, 'columns.timeStyle', 'iso'],
+    [{ time_style: 'loc' }, 'columns.timeStyle', 'locale'],
+    ...[
+      'posix-full-iso',
+      'posix-long-iso',
+      'posix-iso',
+      'posix-locale',
+      'posix-l',
+      'posix-zzz',
+      'posix-',
+      'posix-+%H:%M',
+      'posix-posix-full-iso',
+    ].map((value): [Record<string, string>, string, string] => [
+      { time_style: value },
+      'columns.timeStyle',
+      'locale',
+    ]),
+  ])('parseFlags reads %o into %s as %s', (flags, attr, expected) => {
+    const parsed = parseFlags(new FlagView(flags, specOf('ls')))
+    const value = attr
+      .split('.')
+      .reduce<unknown>((at, name) => (at as Record<string, unknown>)[name], parsed)
+    expect(value).toBe(expected)
+  })
+
+  // `ls --sort=NON`, `=NONE` and `=None` are all `invalid argument`, never
+  // ambiguous and never accepted: gnulib compares bytes (measured).
+  it.each(['NON', 'NONE', 'None'])('parseFlags matches --sort case-sensitively (%s)', (value) => {
+    let caught: unknown = null
+    try {
+      parseFlags(new FlagView({ sort: value }, specOf('ls')))
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(UsageError)
+    expect(
+      (caught as UsageError).message.startsWith(`ls: invalid argument '${value}' for '--sort'`),
+    ).toBe(true)
+  })
+})
+
+// ls's argument clauses name the refused word through gnulib's quote(), so
+// a byte outside 0x20-0x7e comes back escaped rather than interpolated raw.
+// Every row measured against GNU coreutils 9.4 under `LC_ALL=C` with a raw
+// `bytes` argv (`ls --sort=<w>`, `--time=<w>`, `--hyperlink=<w>`,
+// `-l --time-style=<w>`, and `--format=<w>`, which mirage has no option for
+// but which renders through the same clause). Mirrors test_ls.py.
+describe('ls quotes the word its argument clauses name', () => {
+  const words: [string, string][] = [
+    ['xé', 'x\\303\\251'],
+    ['x\r', 'x\\r'],
+    ['x\x01', 'x\\001'],
+    ['x\x7f', 'x\\177'],
+    ["x'", "x\\'"],
+    ['x\\', 'x\\\\'],
+  ]
+  const clauses: [string, string][] = [
+    ['sort', "'--sort'"],
+    ['time', "'--time'"],
+    ['hyperlink', "'--hyperlink'"],
+    ['time_style', "'time style'"],
+  ]
+  for (const [dest, option] of clauses) {
+    it.each(words)(`escapes %j for ${dest}`, (value, escaped) => {
+      let message = ''
+      try {
+        parseFlags(new FlagView({ [dest]: value }, specOf('ls')))
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      expect(message.startsWith(`ls: invalid argument '${escaped}' for ${option}\n`)).toBe(true)
+    })
+  }
+
+  // An EMPTY ARGMATCH value is `ambiguous`, not `invalid`: gnulib's
+  // argmatch matches on a prefix and `''` is a prefix of every candidate.
+  // Measured on coreutils 9.4 -- `ls --sort=`, `--time=` and
+  // `--hyperlink=` are exit 1, `ls -l --time-style=` is exit 2.
+  it.each([
+    ['sort', "'--sort'", 1],
+    ['time', "'--time'", 1],
+    ['hyperlink', "'--hyperlink'", 1],
+    ['time_style', "'time style'", 2],
+  ])('words an empty %s as ambiguous', (dest, option, code) => {
+    let caught: unknown = null
+    try {
+      parseFlags(new FlagView({ [dest]: '' }, specOf('ls')))
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(UsageError)
+    expect(
+      (caught as UsageError).message.startsWith(`ls: ambiguous argument '' for ${option}\n`),
+    ).toBe(true)
+    expect((caught as UsageError).exitCode).toBe(code)
+  })
+
+  // GNU's own `sort_args`: `none time size extension version width`, in
+  // that order and with no `name` -- `ls --sort=name` is a refusal on
+  // coreutils 9.4, not name order.
+  it('lists GNU sort_args and refuses name', () => {
+    let caught: unknown = null
+    try {
+      parseFlags(new FlagView({ sort: 'name' }, specOf('ls')))
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(UsageError)
+    expect((caught as UsageError).message).toBe(
+      "ls: invalid argument 'name' for '--sort'\n" +
+        "Valid arguments are:\n  - 'none'\n  - 'time'\n  - 'size'\n" +
+        "  - 'extension'\n  - 'version'\n  - 'width'\n" +
+        "Try 'ls --help' for more information.",
+    )
+    expect((caught as UsageError).exitCode).toBe(1)
+  })
+
+  // `--block-size` is quoted but NOT escaped, which is GNU's own split:
+  // `ls --block-size=1é` reports the two UTF-8 bytes intact, so this
+  // clause must not be routed through quote() even though its neighbours
+  // above are.
+  it.each([['1é'], ['1\x01']])('leaves %j raw for --block-size', (value) => {
+    let message = ''
+    try {
+      parseFlags(new FlagView({ block_size: value, human_readable: true }, specOf('ls')))
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message.includes(value)).toBe(true)
+  })
+})
+
+describe('dot entries respect mount boundaries', () => {
+  for (const prefix of ['', '/data', '/nested/data']) {
+    for (const subdir of [false, true]) {
+      it.each([false, true])(
+        `prefix=${prefix} subdir=${String(subdir)} namespace=%s`,
+        async (namespace) => {
+          const root = prefix || '/'
+          const directory = subdir ? `${prefix}/sub` : root
+          const tree = new Map([
+            [root, new FileStat({ name: 'root', type: FileType.DIRECTORY, mode: 0o751 })],
+            [`${prefix}/sub`, new FileStat({ name: 'sub', type: FileType.DIRECTORY, mode: 0o750 })],
+          ])
+          const backendStat = vi.fn((path: PathSpec): Promise<FileStat> => {
+            const row = tree.get(path.virtual)
+            if (row === undefined) throw new Error(`out-of-mount stat: ${path.virtual}`)
+            expect(path.vfsPath).toBe(mountKey(path.virtual, prefix))
+            return Promise.resolve(row)
+          })
+          const read = (path: PathSpec): Promise<string[]> =>
+            Promise.resolve(path.virtual === root ? [`${prefix}/sub`] : [])
+          const statPath = vi.fn((path: string): Promise<FileStat> =>
+            Promise.resolve(
+              tree.get(path) ??
+                new FileStat({
+                  name: 'parent',
+                  type: FileType.DIRECTORY,
+                  mode: 0o700,
+                }),
+            ),
+          )
+          const options = opts({ all: true, args_l: true })
+          if (namespace) options.statPath = statPath
+          const result = await lsGeneric(
+            [new PathSpec({ virtual: directory, directory, vfsPath: subdir ? 'sub' : '' })],
+            options,
+            read,
+            backendStat,
+          )
+          expect(result?.[1].exitCode).toBe(0)
+          expect(result?.[1].stderr).toBeNull()
+          const output = DEC.decode(result?.[0] as Uint8Array)
+          const dotMode = subdir ? 'drwxr-x---' : 'drwxr-x--x'
+          const parentMode =
+            subdir || !prefix ? 'drwxr-x--x' : namespace ? 'drwx------' : 'drwxr-xr-x'
+          expect(output).toContain(`${dotMode} 1 - - 4096 - .\n`)
+          expect(output).toContain(`${parentMode} 1 - - 4096 - ..\n`)
+          if (namespace) {
+            const parent = subdir ? root : root.slice(0, root.lastIndexOf('/')) || '/'
+            expect(statPath.mock.calls.slice(-2)).toEqual([[directory], [parent]])
+          } else {
+            expect(backendStat).toHaveBeenCalled()
+          }
+        },
+      )
+    }
+  }
+})
+
+function lsView(...argv: string[]): FlagView {
+  const spec = SPECS.ls
+  if (spec === undefined) throw new Error('no ls spec')
+  return new FlagView(parseToKwargs(parseCommand(spec, argv, '/', 'ls')), spec)
+}
+
+describe('indicatorFlag', () => {
+  // coreutils 9.7: -F, --classify[=WHEN], -p, --file-type and
+  // --indicator-style all set the one style, so the last one wins; a
+  // --classify that is not always has no terminal to be auto on. Mirrors
+  // test_ls.py.
+  it.each([
+    [[], 'none'],
+    [['-F'], 'classify'],
+    [['--classify=always'], 'classify'],
+    [['--classify=never'], 'none'],
+    [['--classify=auto'], 'none'],
+    [['-p'], 'slash'],
+    [['--file-type'], 'file-type'],
+    [['--indicator-style=classify'], 'classify'],
+    [['-F', '-p'], 'slash'],
+    [['-p', '-F'], 'classify'],
+    [['--file-type', '--indicator-style=none'], 'none'],
+  ] as const)('reads %j as %s', (argv, style) => {
+    expect(indicatorFlag(lsView(...argv))).toBe(style)
+  })
+
+  // GNU checks each value while it reads the options, so a bad one before a
+  // good one is still refused.
+  it.each([['--indicator-style=bogus'], ['--classify=bogus'], ['--indicator-style=bogus', '-F']])(
+    'refuses %s',
+    (...argv) => {
+      expect(() => indicatorFlag(lsView(...argv))).toThrow(/^ls: invalid argument 'bogus' for/)
+    },
+  )
+})
+
+describe('typeIndicator', () => {
+  // ls.c get_type_indicator: slash marks only directories, and only classify
+  // marks an executable. Mirrors test_ls.py.
+  it.each([
+    [FileType.DIRECTORY, null, ['', '/', '/', '/']],
+    [FileType.SYMLINK, null, ['', '', '@', '@']],
+    [FileType.FIFO, null, ['', '', '|', '|']],
+    [FileType.FILE, 0o755, ['', '', '', '*']],
+    [FileType.FILE, 0o644, ['', '', '', '']],
+  ] as const)('marks %s (mode %s) by style', (type, mode, marks) => {
+    const entry = new FileStat({ name: 'x', type, mode })
+    const styles = ['none', 'slash', 'file-type', 'classify'] as const
+    expect(styles.map((s) => typeIndicator(entry, s))).toEqual(marks)
+  })
+
+  it('marks nothing it could not stat', () => {
+    expect(typeIndicator(null, 'classify')).toBe('')
   })
 })

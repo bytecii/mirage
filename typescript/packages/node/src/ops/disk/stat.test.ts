@@ -14,7 +14,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FileStat, FileType } from '@struktoai/mirage-core/types'
-import { DiskResource } from '../../resource/disk/disk.ts'
+import { ops } from '@struktoai/mirage-core/test-utils'
+import { DiskVFS } from '../../vfs/disk/disk.ts'
 import { opOf, spec, tmpRoot } from '../../test-utils.ts'
 import { DISK_OPS } from './index.ts'
 
@@ -22,12 +23,11 @@ const statOp = opOf(DISK_OPS, 'stat')
 
 let root: string
 let cleanup: () => void
-let res: DiskResource
+let res: DiskVFS
 
-beforeEach(async () => {
+beforeEach(() => {
   ;({ root, cleanup } = tmpRoot('mirage-disk-stat-op-'))
-  res = new DiskResource({ root })
-  await res.open()
+  res = new DiskVFS({ root })
 })
 afterEach(() => {
   cleanup()
@@ -35,7 +35,7 @@ afterEach(() => {
 
 describe('statOp', () => {
   it('returns FileStat for a file', async () => {
-    await res.writeFile(spec('/x'), new TextEncoder().encode('abc'))
+    await ops(res).write(spec('/x'), new TextEncoder().encode('abc'))
     const s = (await statOp.fn(res.accessor, spec('/x'), [], {})) as FileStat
     expect(s).toBeInstanceOf(FileStat)
     expect(s.size).toBe(3)
@@ -43,7 +43,7 @@ describe('statOp', () => {
   })
 
   it('returns DIRECTORY type for a directory', async () => {
-    await res.mkdir(spec('/d'))
+    await ops(res).mkdir(spec('/d'))
     const s = (await statOp.fn(res.accessor, spec('/d'), [], {})) as FileStat
     expect(s.type).toBe(FileType.DIRECTORY)
   })

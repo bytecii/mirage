@@ -12,53 +12,70 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from dataclasses import replace
 from functools import partial
 
 from mirage.accessor.base import Accessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.cp import cp as generic_cp
-from mirage.commands.builtin.generic.cp import parse_cp_flags
+from mirage.commands.builtin.generic.cp import parse_flags
+from mirage.commands.builtin.generic.crossmount.utils import transfer_links
 from mirage.commands.builtin.generic.find import parse_find_args, walk_find
-from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          Operation,
-                                                          OperationFn,
-                                                          bound_op,
-                                                          overlaid_stat)
+from mirage.commands.builtin.generic_bind.adapter import (
+    Builder,
+    CommandIO,
+    Operation,
+    bound_op,
+    overlaid_stat,
+)
+from mirage.commands.builtin.utils.links import typed_link
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
+from mirage.context import hidden_paths_intersect, path_rules_active
 from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import StatOverlay
-from mirage.types import NativeCopy, PathSpec
+from mirage.types import NativeCopy, PathSpec, PrimitiveCopy
 from mirage.utils.key_prefix import rekey
+from mirage.vfs.types import OperationFn
 
 
-async def _walk_find(readdir: OperationFn,
-                     stat: OperationFn,
-                     index: IndexCacheStore,
-                     src: PathSpec,
-                     type: str | None = None) -> list[str]:
-    results = await walk_find(src,
-                              readdir=readdir,
-                              stat=stat,
-                              index=index,
-                              args=parse_find_args((), type=type))
-    return [
-        "/" + rekey(src.virtual, src.resource_path, path) for path in results
-    ]
+async def _walk_find(
+    readdir: OperationFn,
+    stat: OperationFn,
+    index: IndexCacheStore,
+    src: PathSpec,
+    type: str | None = None,
+) -> list[str]:
+    results = await walk_find(
+        src,
+        readdir=readdir,
+        stat=stat,
+        index=index,
+        args=parse_find_args((), type=type),
+    )
+    return ["/" + rekey(src.virtual, src.vfs_path, path) for path in results]
 
 
-def _make_find(ops: CommandIO, accessor: Accessor,
-               index: IndexCacheStore) -> OperationFn:
+def _make_find(
+    ops: CommandIO, accessor: Accessor, index: IndexCacheStore
+) -> OperationFn:
     if ops.find is not None:
-        return partial(ops.find, accessor)
-    return partial(_walk_find, partial(ops.readdir, accessor),
-                   partial(ops.stat, accessor), index)
+        return partial(ops.find, accessor, index=index)
+    return partial(
+        _walk_find,
+        partial(ops.readdir, accessor),
+        partial(ops.stat, accessor),
+        index,
+    )
 
 
-def overlayable_stat(ops: CommandIO, accessor: Accessor,
-                     index: IndexCacheStore,
-                     stat_overlay: StatOverlay | None) -> OperationFn:
+def overlayable_stat(
+    ops: CommandIO,
+    accessor: Accessor,
+    index: IndexCacheStore,
+    stat_overlay: StatOverlay | None,
+) -> OperationFn:
     """The backend stat, merged with the namespace attr overlay if any.
 
     cp/mv freshness checks (``-u``) must see touch/chmod overlay state,
@@ -72,37 +89,83 @@ def overlayable_stat(ops: CommandIO, accessor: Accessor,
     """
     if stat_overlay is None:
         return bound_op(ops.stat, accessor, index)
-    return partial(overlaid_stat,
-                   partial(ops.stat, accessor),
-                   stat_overlay,
-                   index=index)
+    return partial(
+        overlaid_stat, partial(ops.stat, accessor), stat_overlay, index=index
+    )
 
 
-async def cp(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
-             texts: list[str],
-             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def _write(
+    op: OperationFn, accessor: Accessor, path: PathSpec, data: bytes = b""
+) -> None:
+    await op(accessor, path, data)
+
+
+async def cp(
+    ops: CommandIO,
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
-        raise ValueError("cp: no resource")
+        raise ValueError("cp: no VFS")
     fl = FlagView(opts.flags, spec=SPECS["cp"])
-    parsed = parse_cp_flags(fl)
+    parsed = parse_flags(fl)
     paths = await ops.resolve_glob(accessor, paths, opts.index)
     dir_copy = partial(ops.dir_copy, accessor) if ops.dir_copy else None
     mkdir = partial(ops.mkdir, accessor) if ops.mkdir else None
-    strategy = NativeCopy(copy=partial(ops.require(Operation.COPY), accessor),
-                          find=_make_find(ops, accessor, opts.index),
-                          dir_copy=dir_copy,
-                          mkdir=mkdir)
+    if ops.copy is None and ops.write is None:
+        # Directory creation is not a usable copy step without a file
+        # transfer capability. Refuse it through the same guarded door
+        # before the command leaves an uncopyable destination tree.
+        mkdir = partial(
+            replace(ops, mkdir=None).require(Operation.MKDIR), accessor
+        )
+    strategy: NativeCopy | PrimitiveCopy
+    guarded = path_rules_active() or any(
+        hidden_paths_intersect(p.virtual) for p in paths
+    )
+    primitive = ops.copy is None or (guarded and mkdir is not None)
+    if primitive and ops.write is not None:
+        # A native copy moves a tree in one backend call and a native
+        # find lists it, neither of which passes an entry through the
+        # guard the way a read does; while a path rule scopes cp, or a
+        # hide could cover an entry under an operand (the native find
+        # listed hidden names and the per-file read then printed them
+        # in its refusal), the primitive walk copies entry by entry
+        # (the cross-mount relay's own path), which is also where GNU's
+        # per-entry refusals are worded.
+        strategy = PrimitiveCopy(
+            read_bytes=bound_op(ops.read_bytes, accessor, opts.index),
+            write=partial(_write, ops.write, accessor),
+            mkdir=partial(ops.require(Operation.MKDIR), accessor),
+            readdir=bound_op(ops.readdir, accessor, opts.index),
+        )
+    else:
+        strategy = NativeCopy(
+            copy=partial(ops.require(Operation.COPY), accessor),
+            find=_make_find(ops, accessor, opts.index),
+            dir_copy=dir_copy,
+            mkdir=mkdir,
+        )
     overlay = opts.ns.stat_overlay if opts.ns is not None else None
-    return await generic_cp(paths,
-                            strategy=strategy,
-                            stat=overlayable_stat(ops, accessor, opts.index,
-                                                  overlay),
-                            flags=parsed,
-                            readdir=bound_op(ops.readdir, accessor,
-                                             opts.index))
+    links = opts.ns.links if opts.ns is not None else None
+    cwd = opts.cwd.virtual if opts.cwd is not None else "/"
+    return await generic_cp(
+        paths,
+        strategy=strategy,
+        stat=overlayable_stat(ops, accessor, opts.index, overlay),
+        flags=parsed,
+        readdir=bound_op(ops.readdir, accessor, opts.index),
+        link_at=(
+            partial(typed_link, links, cwd=cwd) if links is not None else None
+        ),
+        copies=(
+            transfer_links(links, opts.dispatch, cwd)
+            if links is not None and opts.dispatch is not None
+            else None
+        ),
+    )
 
 
-BUILDER = Builder('cp',
-                  cp,
-                  write=True,
-                  requirements=frozenset({Operation.COPY}))
+BUILDER = Builder("cp", cp, write=True)

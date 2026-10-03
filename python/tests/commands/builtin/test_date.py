@@ -14,13 +14,13 @@
 
 import asyncio
 
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 
 def _ws():
-    mem = RAMResource()
+    mem = RAMVFS()
     ws = Workspace(
         {"/data": (mem, MountMode.WRITE)},
         mode=MountMode.WRITE,
@@ -30,7 +30,7 @@ def _ws():
 
 def _run_raw(ws, cmd, cwd="/", stdin=None):
     ws._cwd = cwd
-    io = asyncio.run(ws.execute(cmd, stdin=stdin))
+    io = asyncio.run(ws.shell(cmd, stdin=stdin))
     return io.stdout, io
 
 
@@ -55,7 +55,8 @@ def test_date_utc_format():
 def test_date_relative_from_iso_base():
     ws, _ = _ws()
     stdout, io = _run_raw(
-        ws, "date -u -d '2026-08-16 12:00:00 24 hours ago' '+%F %T'")
+        ws, "date -u -d '2026-08-16 12:00:00 24 hours ago' '+%F %T'"
+    )
     assert _bytes(stdout).decode() == "2026-08-15 12:00:00\n"
     assert io.exit_code == 0
 

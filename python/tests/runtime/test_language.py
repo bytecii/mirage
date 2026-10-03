@@ -14,6 +14,7 @@
 
 import asyncio
 
+from mirage.runtime.binding import WorkspaceBinding
 from mirage.runtime.js.base import JsRuntime
 from mirage.runtime.js.quickjs import QuickJsRuntime
 from mirage.runtime.language import LanguageRuntime
@@ -27,15 +28,15 @@ from mirage.runtime.types import RunArgs, RunResult
 
 class EchoRuntime(PythonRuntime):
     name = "echo"
-    captures = ("echo-run", )
+    captures = ("echo-run",)
 
     async def run(self, args: RunArgs) -> RunResult:
         return RunResult(stdout=args.code.encode(), stderr=None, exit_code=0)
 
 
-def test_attach_defaults_to_noop():
+def test_language_inherits_workspace_binding():
     rt = EchoRuntime()
-    rt.attach(lambda *a: None, PrefixResolver(lambda: []))
+    rt.bind(WorkspaceBinding(lambda *a: None, PrefixResolver(lambda: [])))
     result = asyncio.run(rt.run(RunArgs(code="hi")))
     assert result.stdout == b"hi"
     assert result.exit_code == 0
@@ -60,8 +61,8 @@ def test_captures_default_is_declared_once_per_tier():
     for cls in (MontyRuntime, WasiRuntime, LocalRuntime):
         assert cls.captures == ("python3", "python")
     assert QuickJsRuntime.captures == ("node", "js")
-    assert EchoRuntime.captures == ("echo-run", )
-    assert EchoRuntime(captures=("only", )).captures == ("only", )
+    assert EchoRuntime.captures == ("echo-run",)
+    assert EchoRuntime(captures=("only",)).captures == ("only",)
 
 
 def test_tiers_are_language_runtimes():

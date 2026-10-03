@@ -13,23 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { BaseResource, type Resource } from '../../../resource/base.ts'
+import { BaseVFS } from '../../../vfs/base.ts'
 import { MountMode, PathSpec } from '../../../types.ts'
 import { MountRegistry } from '../../mount/registry.ts'
 import { classifyWord } from './heuristic.ts'
 
-class StubResource extends BaseResource implements Resource {
-  readonly kind = 'stub'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
+class StubVFS extends BaseVFS {
+  override readonly name = 'stub'
   override close(): Promise<void> {
     return Promise.resolve()
   }
 }
 
 function setup(): MountRegistry {
-  return new MountRegistry({ '/ram': new StubResource() }, MountMode.WRITE)
+  return new MountRegistry({ '/ram': new StubVFS() }, MountMode.WRITE)
 }
 
 // Quote removal is the expansion layer's job and it happens once, so a
@@ -102,8 +99,26 @@ describe('classifyWord — relative paths', () => {
     expect(r.virtual).toBe('/ram/sub/file.txt')
   })
 
-  it('leaves bare glob (like *) as text — could be a command arg', () => {
+  // bash expands every unquoted glob word, a bare `*` included (`echo *`
+  // lists the directory); a quoted one arrives without glob marks and is
+  // text, which is how `expr 4 '*' 3` keeps its operator.
+  it('a bare glob is a pattern under cwd', () => {
     const reg = setup()
-    expect(classifyWord('*', reg, '/ram')).toBe('*')
+    const r = classifyWord('*', reg, '/ram')
+    if (!(r instanceof PathSpec)) throw new Error('expected PathSpec')
+    expect(r.pattern).toBe('*')
+    expect(r.directory).toBe('/ram/')
+  })
+
+  it('a glob with no name character still globs', () => {
+    const reg = setup()
+    const r = classifyWord('*-*', reg, '/ram')
+    if (!(r instanceof PathSpec)) throw new Error('expected PathSpec')
+    expect(r.pattern).toBe('*-*')
+  })
+
+  it('a glob beside shell syntax stays text', () => {
+    const reg = setup()
+    expect(classifyWord('x=*', reg, '/ram')).toBe('x=*')
   })
 })

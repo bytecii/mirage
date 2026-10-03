@@ -18,16 +18,17 @@ from opendal.exceptions import NotFound
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.nextcloud.stat import stat
+from mirage.core.nextcloud.du.walk import stat_or_null
+from mirage.core.nextcloud.util import raw_path_of
 from mirage.types import FileType, PathSpec
 
 logger = logging.getLogger(__name__)
 
 
 async def entries(
-        accessor: NextcloudAccessor,
-        path: PathSpec,
-        index: IndexCacheStore = NULL_INDEX
+    accessor: NextcloudAccessor,
+    path: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> tuple[list[tuple[str, int]], int]:
     """Per-file sizes under a path plus their total.
 
@@ -35,13 +36,10 @@ async def entries(
         accessor (NextcloudAccessor): Nextcloud accessor.
         path (PathSpec): target path.
     """
-    try:
-        info = await stat(accessor, path, index=index)
-    except FileNotFoundError:
-        info = None
+    info = await stat_or_null(accessor, path, index=index)
     if info is not None and info.type != FileType.DIRECTORY:
         return [], info.size or 0
-    pfx = path.mount_path.strip("/")
+    pfx = raw_path_of(path).strip("/")
     scan_path = pfx + "/" if pfx else "/"
     op = accessor.operator()
     found: list[tuple[str, int]] = []
@@ -56,7 +54,8 @@ async def entries(
             found.append(("/" + rel.lstrip("/"), size))
             total += size
     except NotFound:
-        logger.debug("nextcloud du: listing raced a delete under %s",
-                     scan_path)
+        logger.debug(
+            "nextcloud du: listing raced a delete under %s", scan_path
+        )
     found.sort()
     return found, total

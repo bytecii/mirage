@@ -13,30 +13,30 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import re
+from dataclasses import replace
 
-from mirage.commands.errors import UsageError
+from mirage.commands.spec.argmatch import ArgmatchMatch, argmatch
+from mirage.commands.spec.usage import argmatch_error
 from mirage.types import PathSpec, ReaddirFn
 from mirage.utils.key_prefix import rekey
 
-# GNU version-control names (each canonical control has a legacy alias).
-BACKUP_CONTROLS = {
-    "none": "none",
-    "off": "none",
-    "simple": "simple",
-    "never": "simple",
-    "existing": "existing",
-    "nil": "existing",
-    "numbered": "numbered",
-    "t": "numbered",
-}
-
-DEFAULT_BACKUP_SUFFIX = "~"
+# GNU's version-control names as ARGMATCH candidates, aliases of one
+# value on one line, which is how gnulib's `argmatch_valid` prints
+# `backup_args` and, since the canonical word of each class is the
+# control itself, the only table this needs.
+BACKUP_ARGS = (
+    ("none", "off"),
+    ("simple", "never"),
+    ("existing", "nil"),
+    ("numbered", "t"),
+)
 
 _NUMBERED_SUFFIX = re.compile(r"^\.~([0-9]+)~$")
 
 
-def backup_control(cmd_name: str, value: str | bool | None,
-                   suffix: str | None) -> str | None:
+def backup_control(
+    cmd_name: str, value: str | bool | None, suffix: str | None
+) -> str | None:
     """Resolve ``-b``/``--backup[=CONTROL]``/``-S`` into a backup control.
 
     Deliberate divergence from GNU: the ``VERSION_CONTROL`` and
@@ -58,18 +58,23 @@ def backup_control(cmd_name: str, value: str | bool | None,
     enabled = value is not None and value is not False
     if not enabled and suffix is None:
         return None
-    if isinstance(value, str):
-        control = BACKUP_CONTROLS.get(value)
-        if control is None:
-            raise UsageError(
-                f"{cmd_name}: invalid argument '{value}' for 'backup type'\n"
-                "Valid arguments are:\n"
-                "  - 'none', 'off'\n"
-                "  - 'simple', 'never'\n"
-                "  - 'existing', 'nil'\n"
-                "  - 'numbered', 't'\n"
-                f"Try '{cmd_name} --help' for more information.", 1)
-        return control
+    # An EMPTY control is the default, not a refusal: gnulib's
+    # `xget_version` only calls argmatch when `version && *version`, so
+    # `cp --backup=` is `cp --backup` (measured on coreutils 9.4: exit 0,
+    # and it writes the `existing` backup). This is the one argmatch-shaped
+    # slot in the repo where the empty word is neither invalid nor
+    # ambiguous.
+    if isinstance(value, str) and value != "":
+        # The canonical word of each class IS its control, so an
+        # ARGMATCH match answers the control directly: `--backup=e` is
+        # `existing`, while `--backup=n` spans none/never/nil/numbered
+        # and is ambiguous (both measured on coreutils 9.4).
+        match = argmatch(value, BACKUP_ARGS)
+        if not isinstance(match, ArgmatchMatch):
+            raise argmatch_error(
+                cmd_name, "backup type", value, BACKUP_ARGS, 1, match.kind
+            )
+        return match.word
     return "existing"
 
 
@@ -81,8 +86,12 @@ def sibling_path(path: PathSpec, appended: str) -> PathSpec:
         appended (str): Text appended to the full name (e.g. ``~``).
     """
     virtual = path.virtual.rstrip("/") + appended
-    return PathSpec.from_str_path(
-        virtual, rekey(path.virtual, path.resource_path, virtual))
+    return replace(
+        PathSpec.from_str_path(
+            virtual, rekey(path.virtual, path.vfs_path, virtual)
+        ),
+        raw_path=(path.raw_path.rstrip("/") or path.raw_path) + appended,
+    )
 
 
 def parent_path(path: PathSpec) -> PathSpec:
@@ -92,13 +101,17 @@ def parent_path(path: PathSpec) -> PathSpec:
         path (PathSpec): Any non-root path.
     """
     virtual = path.virtual.rstrip("/").rsplit("/", 1)[0] or "/"
-    resource = path.resource_path.rstrip("/").rsplit("/", 1)[0] \
-        if "/" in path.resource_path.rstrip("/") else ""
-    return PathSpec.from_str_path(virtual, resource)
+    vfs = (
+        path.vfs_path.rstrip("/").rsplit("/", 1)[0]
+        if "/" in path.vfs_path.rstrip("/")
+        else ""
+    )
+    return PathSpec.from_str_path(virtual, vfs)
 
 
-async def _numbered_versions(readdir: ReaddirFn | None,
-                             target: PathSpec) -> list[int]:
+async def _numbered_versions(
+    readdir: ReaddirFn | None, target: PathSpec
+) -> list[int]:
     """Existing numbered-backup versions (``name.~N~``) next to a target.
 
     A listing failure propagates: reading it as "no numbered backups" would
@@ -119,14 +132,15 @@ async def _numbered_versions(readdir: ReaddirFn | None,
         name = child.rstrip("/").rsplit("/", 1)[-1]
         if not name.startswith(base):
             continue
-        match = _NUMBERED_SUFFIX.match(name[len(base):])
+        match = _NUMBERED_SUFFIX.match(name[len(base) :])
         if match:
             versions.append(int(match.group(1)))
     return versions
 
 
-async def backup_target(readdir: ReaddirFn | None, target: PathSpec,
-                        control: str, suffix: str) -> PathSpec | None:
+async def backup_target(
+    readdir: ReaddirFn | None, target: PathSpec, control: str, suffix: str
+) -> PathSpec | None:
     """Pick the backup path for a target about to be overwritten.
 
     GNU naming: ``simple`` appends the suffix, ``numbered`` appends

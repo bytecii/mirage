@@ -18,8 +18,8 @@ from contextlib import ExitStack
 from mirage.accessor.s3 import S3Accessor
 from mirage.cache.index import NULL_INDEX
 from mirage.core.s3.stat import stat
-from mirage.resource.s3 import S3Config
 from mirage.types import FileType, PathSpec
+from mirage.vfs.s3 import S3Config
 from tests.e2e.s3_mock import patch_s3_multi
 
 
@@ -30,7 +30,8 @@ def _accessor() -> S3Accessor:
             region="us-east-1",
             aws_access_key_id="fake",
             aws_secret_access_key="fake",
-        ))
+        )
+    )
 
 
 def test_trailing_slash_prefers_directory_over_coexisting_object():
@@ -40,16 +41,20 @@ def test_trailing_slash_prefers_directory_over_coexisting_object():
     try:
         accessor = _accessor()
         file_stat = asyncio.run(
-            stat(accessor,
-                 PathSpec(resource_path="csv", virtual="/csv", directory="/"),
-                 index=NULL_INDEX))
+            stat(
+                accessor,
+                PathSpec(vfs_path="csv", virtual="/csv", directory="/"),
+                index=NULL_INDEX,
+            )
+        )
         assert file_stat.type != FileType.DIRECTORY
         dir_stat = asyncio.run(
-            stat(accessor,
-                 PathSpec(resource_path="csv",
-                          virtual="/csv/",
-                          directory="/csv/"),
-                 index=NULL_INDEX))
+            stat(
+                accessor,
+                PathSpec(vfs_path="csv", virtual="/csv/", directory="/csv/"),
+                index=NULL_INDEX,
+            )
+        )
         assert dir_stat.type == FileType.DIRECTORY
     finally:
         stack.close()

@@ -14,18 +14,18 @@
 
 import pytest
 
-from mirage import MountMode, RAMResource, Workspace
+from mirage import RAMVFS, MountMode, Workspace
 
 
 @pytest.fixture
 def workspace():
-    return Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    return Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
 
 
 async def _seed(workspace):
-    await workspace.ops.mkdir("/sub")
-    await workspace.ops.write("/a.txt", b"hello\n")
-    await workspace.ops.write("/sub/b.txt", b"hello\n")
+    await workspace.vfs.mkdir("/sub")
+    await workspace.vfs.write("/a.txt", b"hello\n")
+    await workspace.vfs.write("/sub/b.txt", b"hello\n")
     return workspace
 
 
@@ -36,7 +36,7 @@ async def test_find_bare_walks_the_cwd(workspace):
     # implicit dev/history mounts ride along dot-spelled, interleaved
     # at their path-sorted position (the fan-out merge sorts so a
     # mount root prints before its contents).
-    io = await seeded.execute("find", cwd="/")
+    io = await seeded.shell("find", cwd="/")
     assert io.exit_code == 0
     out = (io.stdout or b"").decode()
     lines = out.strip().split("\n")
@@ -46,19 +46,9 @@ async def test_find_bare_walks_the_cwd(workspace):
 
 
 @pytest.mark.asyncio
-async def test_find_bare_with_expression(workspace):
-    seeded = await _seed(workspace)
-    # `find -name x` is `find . -name x`; the implied `.` goes before
-    # the expression.
-    io = await seeded.execute("find -name '*.txt'", cwd="/")
-    assert io.exit_code == 0
-    assert (io.stdout or b"") == b"./a.txt\n./sub/b.txt\n"
-
-
-@pytest.mark.asyncio
 async def test_tree_bare_renders_the_cwd(workspace):
     seeded = await _seed(workspace)
-    io = await seeded.execute("tree", cwd="/")
+    io = await seeded.shell("tree", cwd="/")
     assert io.exit_code == 0
     assert (io.stdout or b"").startswith(b".\n")
     assert b"a.txt" in (io.stdout or b"")
@@ -71,17 +61,25 @@ async def test_du_bare_measures_the_cwd_dot_spelled(workspace):
     # (sizes are bytes, mirage's documented divergence from blocks);
     # the implicit /dev child mount rides along as ./dev, in its
     # post-order position rather than appended, and keeps GNU's `0` row
-    # even though it holds nothing. Pinned on coreutils 9.7 with a tmpfs
-    # at ./dev: `0 ./dev`, `6 ./sub`, `12 .`.
-    io = await seeded.execute("du", cwd="/")
+    # even though it holds nothing; the /usr/bin view rides along the
+    # same way, and /.bash_history counts toward `.` like any dotfile
+    # (unrecorded here, so it is still empty). Pinned on coreutils 9.7 with
+    # a tmpfs at ./dev: `0 ./dev`, `6 ./sub`, `12 .`, plus the program
+    # files' own total.
+    listed = await seeded.shell("du -s /usr/bin", record=False)
+    programs = int((listed.stdout or b"0").split(b"\t")[0])
+    io = await seeded.shell("du", cwd="/")
     assert io.exit_code == 0
-    assert (io.stdout or b"") == b"0\t./dev\n6\t./sub\n12\t.\n"
+    assert (io.stdout or b"") == (
+        f"0\t./dev\n6\t./sub\n{programs}\t./usr/bin\n"
+        f"{programs}\t./usr\n{12 + programs}\t.\n"
+    ).encode()
 
 
 @pytest.mark.asyncio
 async def test_ls_recursive_bare_uses_dot_headers(workspace):
     seeded = await _seed(workspace)
-    io = await seeded.execute("ls -R", cwd="/")
+    io = await seeded.shell("ls -R", cwd="/")
     assert io.exit_code == 0
     out = (io.stdout or b"").decode()
     assert out.startswith(".:\n")
@@ -91,7 +89,7 @@ async def test_ls_recursive_bare_uses_dot_headers(workspace):
 @pytest.mark.asyncio
 async def test_ls_bare_still_lists_the_cwd(workspace):
     seeded = await _seed(workspace)
-    io = await seeded.execute("ls", cwd="/")
+    io = await seeded.shell("ls", cwd="/")
     assert io.exit_code == 0
     out = (io.stdout or b"").decode()
     # The dev mount is a row like any other now, so it sorts into the

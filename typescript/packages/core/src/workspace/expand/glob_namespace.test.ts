@@ -13,8 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OpsRegistry } from '../../ops/registry.ts'
-import { RAMResource } from '../../resource/ram/ram.ts'
+import { OpsRegistry, type RegisteredOp } from '../../ops/registry.ts'
+import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { MountMode } from '../../types.ts'
 import { getTestParser, stdoutStr } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace.ts'
@@ -27,26 +27,26 @@ import { Workspace } from '../workspace/workspace.ts'
 
 async function makeWs(): Promise<Workspace> {
   const parser = await getTestParser()
-  const root = new RAMResource()
-  const inner = new RAMResource()
+  const root = new RAMVFS()
+  const inner = new RAMVFS()
   const registry = new OpsRegistry()
-  registry.registerResource(root)
-  registry.registerResource(inner)
+  registry.registerVfs(root)
+  registry.registerVfs(inner)
   const ws = new Workspace(
     { '/': root, '/base/inner': inner },
     { mode: MountMode.WRITE, ops: registry, shellParser: parser },
   )
   ws.createSession('s')
-  await ws.execute('mkdir -p /base/sub', { sessionId: 's' })
-  await ws.execute('printf 111 > /base/f1', { sessionId: 's' })
-  await ws.execute('printf 2222222 > /base/sub/f2', { sessionId: 's' })
-  await ws.execute('printf 3333333 > /base/inner/g1', { sessionId: 's' })
-  await ws.execute('ln -s /base/sub/f2 /base/link', { sessionId: 's' })
+  await ws.shell('mkdir -p /base/sub', { sessionId: 's' })
+  await ws.shell('printf 111 > /base/f1', { sessionId: 's' })
+  await ws.shell('printf 2222222 > /base/sub/f2', { sessionId: 's' })
+  await ws.shell('printf 3333333 > /base/inner/g1', { sessionId: 's' })
+  await ws.shell('ln -s /base/sub/f2 /base/link', { sessionId: 's' })
   return ws
 }
 
 async function out(ws: Workspace, line: string): Promise<string> {
-  return stdoutStr(await ws.execute(line, { sessionId: 's' }))
+  return stdoutStr(await ws.shell(line, { sessionId: 's' }))
 }
 
 describe('glob expansion sees namespace state', () => {
@@ -98,8 +98,8 @@ describe('glob expansion sees namespace state', () => {
   // The live `*` matches the literal `*` in the first name.
   it('keeps a match spelled like the glob word', async () => {
     const ws = await makeWs()
-    await ws.execute("touch '/base/*a.txt'", { sessionId: 's' })
-    await ws.execute('touch /base/xa.txt', { sessionId: 's' })
+    await ws.shell("touch '/base/*a.txt'", { sessionId: 's' })
+    await ws.shell('touch /base/xa.txt', { sessionId: 's' })
     expect((await out(ws, 'echo /base/*a.txt')).split(/\s+/).filter(Boolean)).toEqual([
       '/base/*a.txt',
       '/base/xa.txt',
@@ -114,9 +114,9 @@ describe('glob expansion sees namespace state', () => {
   //   echo '/data/*d'/*.txt -> /data/*d/one.txt /data/*d/two.txt
   it('lists a directory whose name holds a quoted glob character', async () => {
     const ws = await makeWs()
-    await ws.execute("mkdir '/base/*d'", { sessionId: 's' })
-    await ws.execute("touch '/base/*d/one.txt'", { sessionId: 's' })
-    await ws.execute("touch '/base/*d/two.txt'", { sessionId: 's' })
+    await ws.shell("mkdir '/base/*d'", { sessionId: 's' })
+    await ws.shell("touch '/base/*d/one.txt'", { sessionId: 's' })
+    await ws.shell("touch '/base/*d/two.txt'", { sessionId: 's' })
     expect((await out(ws, "echo '/base/*d'/*.txt")).split(/\s+/).filter(Boolean)).toEqual([
       '/base/*d/one.txt',
       '/base/*d/two.txt',
@@ -150,8 +150,8 @@ describe('glob expansion sees namespace state', () => {
   // checked. Both spellings must answer identically.
   it('refuses a mount root a glob produced', async () => {
     const ws = await makeWs()
-    const typed = await ws.execute('tar -cf /out.tar /base/inner', { sessionId: 's' })
-    const globbed = await ws.execute('tar -cf /out2.tar /base/i*', { sessionId: 's' })
+    const typed = await ws.shell('tar -cf /out.tar /base/inner', { sessionId: 's' })
+    const globbed = await ws.shell('tar -cf /out2.tar /base/i*', { sessionId: 's' })
     expect(new TextDecoder().decode(globbed.stderr)).toBe(new TextDecoder().decode(typed.stderr))
     expect(globbed.exitCode).toBe(typed.exitCode)
     expect(new TextDecoder().decode(globbed.stderr)).toContain('Device or resource busy')
@@ -166,8 +166,8 @@ describe('glob expansion sees namespace state', () => {
 describe('glob expansion follows a symlinked directory', () => {
   async function makeLinked(): Promise<Workspace> {
     const ws = await makeWs()
-    await ws.execute('ln -s /base/sub /base/dlink', { sessionId: 's' })
-    await ws.execute('ln -s /base/inner /base/mlink', { sessionId: 's' })
+    await ws.shell('ln -s /base/sub /base/dlink', { sessionId: 's' })
+    await ws.shell('ln -s /base/inner /base/mlink', { sessionId: 's' })
     return ws
   }
 
@@ -193,5 +193,240 @@ describe('glob expansion follows a symlinked directory', () => {
     const ws = await makeLinked()
     expect((await out(ws, 'echo /base/mlink/*')).trim()).toBe('/base/mlink/g1')
     expect((await out(ws, 'echo /base/m*/g1')).trim()).toBe('/base/mlink/g1')
+  })
+})
+
+// Trailing-slash pathname expansion, pinned against bash 5.2.37
+// (debian:stable-slim) and bash 3.2.57: a word ending in a slash matches
+// directories only (a symlink to a directory counts, a broken link and a
+// regular file do not), and every match keeps exactly one trailing slash
+// (#1065).
+async function makeDirsWs(): Promise<Workspace> {
+  const parser = await getTestParser()
+  const root = new RAMVFS()
+  const inner = new RAMVFS()
+  const registry = new OpsRegistry()
+  registry.registerVfs(root)
+  registry.registerVfs(inner)
+  const ws = new Workspace(
+    { '/': root, '/data/records/inner': inner },
+    { mode: MountMode.WRITE, ops: registry, shellParser: parser },
+  )
+  ws.createSession('s')
+  await ws.shell('mkdir -p /data/records/2026-09-10 /data/records/2026-09-11', { sessionId: 's' })
+  await ws.shell('echo sample > /data/records/2026-09-10/sample.txt', { sessionId: 's' })
+  await ws.shell('echo plain > /data/records/plain.txt', { sessionId: 's' })
+  await ws.shell('ln -s /data/records/2026-09-10 /data/records/lnk', { sessionId: 's' })
+  await ws.shell('ln -s /data/records/nowhere /data/records/broken', { sessionId: 's' })
+  return ws
+}
+
+// One mount and no boundary under the globbed directory, so a mount
+// command's pattern travels to the command tier instead of being resolved
+// by the shell tier on the way (which is what a nested mount forces).
+async function makeFlatWs(): Promise<Workspace> {
+  const parser = await getTestParser()
+  const registry = new OpsRegistry()
+  const data = new RAMVFS()
+  registry.registerVfs(data)
+  const ws = new Workspace(
+    { '/data': data },
+    { mode: MountMode.WRITE, ops: registry, shellParser: parser },
+  )
+  ws.createSession('s')
+  await ws.shell('mkdir -p /data/records/2026-09-10 /data/records/2026-09-11', { sessionId: 's' })
+  await ws.shell('echo sample > /data/records/2026-09-10/sample.txt', { sessionId: 's' })
+  await ws.shell('echo plain > /data/records/plain.txt', { sessionId: 's' })
+  await ws.shell('ln -s /data/records/2026-09-10 /data/records/lnk', { sessionId: 's' })
+  await ws.shell('ln -s /data/records/nowhere /data/records/broken', { sessionId: 's' })
+  return ws
+}
+
+describe('trailing-slash globs', () => {
+  it('keeps the slash and matches directories only', async () => {
+    const ws = await makeDirsWs()
+    expect(await out(ws, "cd /data/records && printf '<%s>\\n' */")).toBe(
+      '<2026-09-10/>\n<2026-09-11/>\n<inner/>\n<lnk/>\n',
+    )
+  })
+
+  it('spells an absolute word', async () => {
+    const ws = await makeDirsWs()
+    expect(await out(ws, "printf '<%s>\\n' /data/records/2026*/")).toBe(
+      '</data/records/2026-09-10/>\n</data/records/2026-09-11/>\n',
+    )
+  })
+
+  it('spells a relative head', async () => {
+    const ws = await makeDirsWs()
+    expect(await out(ws, "cd /data && printf '<%s>\\n' records/2026*/")).toBe(
+      '<records/2026-09-10/>\n<records/2026-09-11/>\n',
+    )
+  })
+
+  it('walks a mid-path pattern', async () => {
+    const ws = await makeDirsWs()
+    expect(await out(ws, "cd /data && printf '<%s>\\n' */2026*/")).toBe(
+      '<records/2026-09-10/>\n<records/2026-09-11/>\n',
+    )
+  })
+
+  it('keeps a zero-match word literal', async () => {
+    const ws = await makeDirsWs()
+    expect(await out(ws, "cd /data/records && printf '<%s>\\n' nomatch*/")).toBe('<nomatch*/>\n')
+  })
+
+  // A mount command's pattern reaches the command tier, which resolves it
+  // with the namespace in view: the nested mount root and the link to a
+  // directory are kept, the file and the dangling link are dropped.
+  it('reaches a command operand with the namespace in view', async () => {
+    const ws = await makeFlatWs()
+    expect(await out(ws, 'cd /data/records && ls -d */')).toBe('2026-09-10/\n2026-09-11/\nlnk/\n')
+  })
+
+  it('keeps each spelling of one directory on its own row', async () => {
+    const ws = await makeFlatWs()
+    expect(await out(ws, 'cd /data/records && ls -d 2026-09-10/ lnk/')).toBe('2026-09-10/\nlnk/\n')
+  })
+
+  // The builders that walked without resolving leaned on the dispatcher's
+  // expansion; they resolve for themselves now, like their python twins.
+  it('expands a pattern for cp, mv, readlink and realpath', async () => {
+    const ws = await makeFlatWs()
+    expect(await out(ws, 'cd /data/records && mkdir out && cp 2026-*/*.txt out && ls out')).toBe(
+      'sample.txt\n',
+    )
+    expect(await out(ws, 'cd /data/records && mv out/samp* moved.txt && ls moved.txt')).toBe(
+      'moved.txt\n',
+    )
+    expect(await out(ws, 'cd /data/records && readlink ln*')).toBe('/data/records/2026-09-10\n')
+    expect(await out(ws, 'cd /data/records && realpath 2026*')).toBe(
+      '/data/records/2026-09-10\n/data/records/2026-09-11\n',
+    )
+  })
+
+  it('keeps one slash for a doubled one', async () => {
+    const ws = await makeDirsWs()
+    expect(await out(ws, "cd /data/records && printf '<%s>\\n' 2026*//")).toBe(
+      '<2026-09-10/>\n<2026-09-11/>\n',
+    )
+  })
+
+  it('drives the traversal loop from the issue', async () => {
+    // `"$d"*.txt` concatenates the spelled directory, so a missing slash
+    // made every file invisible.
+    const ws = await makeDirsWs()
+    const line =
+      'cd /data/records && for d in */; do for f in "$d"*.txt; do [ -f "$f" ] || continue; cat "$f"; done; done'
+    expect(await out(ws, line)).toBe('sample\nsample\n')
+  })
+})
+
+// A RAM mount that answers listings but can stat nothing: no stat op, and
+// no vfs.stat either.
+class NoStatRAM extends RAMVFS {
+  constructor() {
+    super()
+    Object.defineProperty(this, 'stat', { value: undefined })
+  }
+
+  override ops(): readonly RegisteredOp[] {
+    return super.ops().filter((op) => op.name !== 'stat')
+  }
+}
+
+// A custom VFS whose stat lives only in its op table, not as a method.
+class OpsOnlyStatRAM extends RAMVFS {
+  constructor() {
+    super()
+    Object.defineProperty(this, 'stat', { value: undefined })
+  }
+}
+
+async function flatWs(vfs: RAMVFS): Promise<Workspace> {
+  vfs.loadState({
+    type: 'ram',
+    dirs: ['/', '/a', '/b'],
+    files: { '/f': new TextEncoder().encode('x') },
+  })
+  const ws = new Workspace(
+    { '/m': vfs },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  ws.createSession('s')
+  return ws
+}
+
+// Twin of python test_trailing_slash_glob_keeps_nothing_a_mount_cannot_stat.
+// A trailing-slash match is a directory only when the stat the dispatcher
+// runs says so, so a match that stat cannot classify -- no stat op at all,
+// or one that answers nothing -- is dropped, and a word left with no match
+// stays literal, as bash leaves one whose matches lstat cannot classify.
+describe('trailing-slash globs on a mount that cannot stat', () => {
+  it.each([
+    ['missing', '/m/*/\n'],
+    ['none', '/m/*/\n'],
+    ['one', '/m/a/ /m/b/\n'],
+  ])('keeps only what stat calls a directory (stat=%s)', async (stat, expected) => {
+    const vfs = stat === 'missing' ? new NoStatRAM() : new RAMVFS()
+    const ws = await flatWs(vfs)
+    if (stat !== 'missing') {
+      const ramStat = vfs.ops().find((op) => op.name === 'stat')
+      ws.opsRegistry.register({
+        name: 'stat',
+        vfs: 'ram',
+        filetype: null,
+        write: false,
+        fn: (accessor, path, args, kwargs) =>
+          stat === 'none' || path.virtual === '/m/f'
+            ? Promise.resolve(undefined)
+            : ramStat?.fn(accessor, path, args, kwargs),
+      })
+    }
+    try {
+      expect(await out(ws, 'echo /m/*')).toBe('/m/a /m/b /m/f\n')
+      expect(await out(ws, 'echo /m/*/')).toBe(expected)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  // A stat op registered for one filetype answers a match with that
+  // extension, as it answers `stat` of the same path: the glob's stat is
+  // stamped with the path's filetype the way dispatch stamps it.
+  it('asks a filetype-scoped stat op for a match with that extension', async () => {
+    const ramStat = new RAMVFS().ops().find((op) => op.name === 'stat')
+    const vfs = new NoStatRAM()
+    vfs.loadState({ type: 'ram', dirs: ['/', '/x.d', '/y'] })
+    const ws = new Workspace(
+      { '/m': vfs },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    ws.createSession('s')
+    ws.opsRegistry.register({
+      name: 'stat',
+      vfs: 'ram',
+      filetype: '.d',
+      write: false,
+      fn: (accessor, path, args, kwargs) => ramStat?.fn(accessor, path, args, kwargs),
+    })
+    try {
+      expect(await out(ws, 'stat -c %F /m/x.d')).toBe('directory\n')
+      expect(await out(ws, 'echo /m/*/')).toBe('/m/x.d/\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  // The glob asks the op the dispatcher runs, so it agrees with `stat` and
+  // `test -d` on a VFS that registers stat as an op but has no stat method.
+  it('agrees with stat on a VFS whose stat is an op only', async () => {
+    const ws = await flatWs(new OpsOnlyStatRAM())
+    try {
+      expect(await out(ws, 'stat -c %F /m/a; test -d /m/a && echo dir')).toBe('directory\ndir\n')
+      expect(await out(ws, 'echo /m/*/')).toBe('/m/a/ /m/b/\n')
+    } finally {
+      await ws.close()
+    }
   })
 })

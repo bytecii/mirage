@@ -13,114 +13,138 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.notion import NotionAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.notion.pages import get_data_source, get_database
-from mirage.core.notion.pathing import split_suffix_id
-from mirage.core.notion.readdir import readdir as _readdir
-from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.errors import enoent
-from mirage.utils.filetype import guess_type
+from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.core.hierarchy.probe import assert_parent
+from mirage.core.hierarchy.scope import ScopeMatch
+from mirage.core.hierarchy.stat import make_stat
+from mirage.core.notion.pathing import page_dirname
+from mirage.core.notion.readdir import readdir
+from mirage.core.notion.resolve import guard_row, resolve_row
+from mirage.core.notion.scope import detect_scope
+from mirage.types import ContentType, FileStat, FileType, PathSpec
 
 
-async def stat(
-    accessor: NotionAccessor,
-    path_spec: PathSpec,
-    index: IndexCacheStore = NULL_INDEX,
+def _page_stat(
+    match: ScopeMatch, path: PathSpec, entry: IndexEntry
 ) -> FileStat:
-    virtual = path_spec.virtual
-    path = path_spec.mount_path
+    return FileStat(
+        name=entry.vfs_name,
+        type=FileType.DIRECTORY,
+        modified=entry.remote_time or None,
+        extra={"page_id": entry.id},
+    )
 
-    key = path.strip("/")
 
-    if not key or key in ("pages", "databases"):
-        return FileStat(name=key or "/", type=FileType.DIRECTORY)
+async def _row_stat(
+    accessor: NotionAccessor,
+    match: ScopeMatch,
+    path: PathSpec,
+    index: IndexCacheStore,
+) -> FileStat:
+    await assert_parent(stat, accessor, path, index)
+    page = await resolve_row(accessor, match, path.virtual)
+    name = page_dirname(page)
+    return FileStat(
+        name=name,
+        type=FileType.DIRECTORY,
+        modified=page.get("last_edited_time") or None,
+        extra={"page_id": page.get("id", "")},
+    )
 
-    parts = key.split("/")
 
-    if parts[-1] == "page.json":
-        return FileStat(name="page.json", type=guess_type("page.json"))
+async def _row_json_stat(
+    accessor: NotionAccessor,
+    match: ScopeMatch,
+    path: PathSpec,
+    index: IndexCacheStore,
+) -> FileStat:
+    await assert_parent(stat, accessor, path, index)
+    return FileStat(
+        name="page.json", type=FileType.FILE, content=ContentType.JSON
+    )
 
-    if parts[-1] == "database.json" and len(
-            parts) >= 3 and parts[0] == "databases":
-        _, database_id = split_suffix_id(parts[-2])
-        result = await index.get("/" + key)
-        if result.entry is None and index is not NULL_INDEX:
-            parent_virtual = "/" + "/".join(parts[:-1])
-            await _readdir(
-                accessor,
-                PathSpec(virtual=parent_virtual,
-                         directory=parent_virtual,
-                         resource_path=parent_virtual.strip("/")),
-                index=index,
-            )
-            result = await index.get("/" + key)
-        return FileStat(
-            name="database.json",
-            type=guess_type("database.json"),
-            size=result.entry.size if result.entry else None,
-            extra={"database_id": database_id},
-        )
 
-    if len(parts) == 2 and parts[0] == "databases":
-        _, database_id = split_suffix_id(parts[-1])
-        result = await index.get("/" + key)
-        if result.entry is not None:
-            return FileStat(
-                name=result.entry.name,
-                type=FileType.DIRECTORY,
-                extra={"database_id": database_id},
-            )
-        database = await get_database(accessor.config, database_id)
-        return FileStat(
-            name=parts[-1],
-            type=FileType.DIRECTORY,
-            modified=database.get("last_edited_time"),
-            extra={"database_id": database_id},
-        )
+def _page_json_stat(
+    match: ScopeMatch, path: PathSpec, entry: IndexEntry
+) -> FileStat:
+    return FileStat(
+        name=entry.vfs_name,
+        type=FileType.FILE,
+        content=ContentType.JSON,
+        size=entry.size,
+    )
 
-    if parts[-1] == "data_source.json" and parts[0] == "databases":
-        _, data_source_id = split_suffix_id(parts[-2])
-        result = await index.get("/" + key)
-        return FileStat(
-            name="data_source.json",
-            type=guess_type("data_source.json"),
-            size=result.entry.size if result.entry else None,
-            extra={"data_source_id": data_source_id},
-        )
 
-    if len(parts) == 3 and parts[0] == "databases":
-        _, data_source_id = split_suffix_id(parts[-1])
-        result = await index.get("/" + key)
-        if result.entry is not None:
-            return FileStat(
-                name=result.entry.name,
-                type=FileType.DIRECTORY,
-                modified=result.entry.remote_time or None,
-                extra={"data_source_id": data_source_id},
-            )
-        data_source = await get_data_source(accessor.config, data_source_id)
-        return FileStat(
-            name=parts[-1],
-            type=FileType.DIRECTORY,
-            modified=data_source.get("last_edited_time"),
-            extra={"data_source_id": data_source_id},
-        )
+def _database_stat(
+    match: ScopeMatch, path: PathSpec, entry: IndexEntry
+) -> FileStat:
+    return FileStat(
+        name=entry.vfs_name,
+        type=FileType.DIRECTORY,
+        modified=entry.remote_time or None,
+        extra={"database_id": entry.id},
+    )
 
-    if (parts[0] == "pages" and len(parts) >= 2) or (parts[0] == "databases"
-                                                     and len(parts) >= 4):
-        _, page_id = split_suffix_id(parts[-1])
-        result = await index.get("/" + key)
-        if result.entry is not None:
-            return FileStat(
-                name=result.entry.name,
-                type=FileType.DIRECTORY,
-                modified=result.entry.remote_time or None,
-                extra={"page_id": page_id},
-            )
-        return FileStat(
-            name=parts[-1],
-            type=FileType.DIRECTORY,
-            extra={"page_id": page_id},
-        )
 
-    raise enoent(virtual)
+def _database_json_stat(
+    match: ScopeMatch, path: PathSpec, entry: IndexEntry
+) -> FileStat:
+    return FileStat(
+        name=entry.vfs_name,
+        type=FileType.FILE,
+        content=ContentType.JSON,
+        size=entry.size,
+        extra={"database_id": match.slots["database_id"]},
+    )
+
+
+def _data_source_stat(
+    match: ScopeMatch, path: PathSpec, entry: IndexEntry
+) -> FileStat:
+    return FileStat(
+        name=entry.vfs_name,
+        type=FileType.DIRECTORY,
+        modified=entry.remote_time or None,
+        extra={"data_source_id": entry.id},
+    )
+
+
+def _data_source_json_stat(
+    match: ScopeMatch, path: PathSpec, entry: IndexEntry
+) -> FileStat:
+    return FileStat(
+        name=entry.vfs_name,
+        type=FileType.FILE,
+        content=ContentType.JSON,
+        size=entry.size,
+        extra={"data_source_id": match.slots["data_source_id"]},
+    )
+
+
+def _rows_jsonl_stat(
+    match: ScopeMatch, path: PathSpec, entry: IndexEntry
+) -> FileStat:
+    return FileStat(
+        name=entry.vfs_name,
+        type=FileType.FILE,
+        content=ContentType.TEXT,
+        size=entry.size,
+        extra={"data_source_id": match.slots["data_source_id"]},
+    )
+
+
+stat = make_stat(
+    detect_scope,
+    readdir,
+    overrides={"row": _row_stat, "row_json": _row_json_stat},
+    guards={kind: guard_row for kind in ("page", "page_json")},
+    entry_stats={
+        "page": _page_stat,
+        "page_json": _page_json_stat,
+        "database": _database_stat,
+        "database_json": _database_json_stat,
+        "data_source": _data_source_stat,
+        "data_source_json": _data_source_json_stat,
+        "rows_jsonl": _rows_jsonl_stat,
+    },
+)

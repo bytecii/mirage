@@ -7,11 +7,20 @@ permissions:
   push:
     branches: [main]
     paths:
+      # Keep in lockstep with the `changes` filter below.
       - python/**
       - examples/python/**
       - integ/**
-      - conformance/**
+      # mypy reads these now. Without the entry a PR touching only a
+      # generator would skip this workflow, which is the only place
+      # mypy runs, so the gate would pass by never starting.
+      - scripts/**
+      # A hook definition changing here must reach the workflow
+      # that now runs it: Pre-commit skips it, so this is the
+      # only job left that would catch the edit.
+      - .pre-commit-config.yaml
       - .github/workflows/test_python.yml
+      - .github/actions/setup-uv/action.yml
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -19,6 +28,15 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# uv times a request out after 30s by default, which a hosted runner has
+# hit on one stalled wheel download (numpy, pulled in by the lancedb
+# extra) before any test ran.
+env:
+  UV_HTTP_TIMEOUT: 120
+  # mem0 turns its telemetry on by default: importing it starts a PostHog
+  # client, and every Python process then waits ~5 s at exit to flush it.
+  MEM0_TELEMETRY: "False"
 
 jobs:
   changes:
@@ -33,12 +51,15 @@ jobs:
         id: filter
         with:
           filters: |
+            # Keep in lockstep with `push.paths` above.
             hit:
               - 'python/**'
               - 'examples/python/**'
               - 'integ/**'
-              - 'conformance/**'
+              - 'scripts/**'
+              - '.pre-commit-config.yaml'
               - '.github/workflows/test_python.yml'
+              - '.github/actions/setup-uv/action.yml'
 
   test:
     needs: changes
@@ -73,55 +94,123 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
+        uses: ./.github/actions/setup-uv
 
       - name: Install Python dependencies
         working-directory: python
-        run: uv sync --all-extras --no-extra camel
+        run: uv sync --all-extras
 
       - name: Install package
         working-directory: python
         run: uv pip install .
 
+      # Only main saves: the key moves with every source change, so a store
+      # saved from a pull request was a 25 MB entry that only that pull
+      # request could read. Pull requests restore main's newest store.
+      - name: Restore the mypy incremental store
+        id: mypy-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: python/.mypy_cache
+          key: mypy-${{ runner.os }}-py3.12-${{ hashFiles('python/uv.lock') }}-${{ hashFiles('python/mirage/**/*.py', 'scripts/**/*.py') }}
+          restore-keys: |
+            mypy-${{ runner.os }}-py3.12-${{ hashFiles('python/uv.lock') }}-
+            mypy-${{ runner.os }}-py3.12-
+
+      # Bare, not `mypy mirage`: pyproject's `[tool.mypy] files` already
+      # names both roots -- `mirage` and the repo-root `scripts/` that
+      # generate `spec/` -- and this is the repo's only mypy run, so it is
+      # spelled exactly as the py-mypy hook spells it locally.
       - name: Type check (mypy)
         working-directory: python
-        run: uv run mypy mirage
+        run: uv run mypy
 
-      - name: Run pytest (main suite, camel excluded)
+      - name: Save the mypy incremental store
+        if: github.ref == 'refs/heads/main' && steps.mypy-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: python/.mypy_cache
+          key: ${{ steps.mypy-cache.outputs.cache-primary-key }}
+
+      - name: Run pytest (main suite)
         working-directory: python
         env:
           REDIS_URL: redis://localhost:6379/0
           MONGODB_URI: mongodb://localhost:27017
-        run: uv run pytest --ignore=tests/agents/camel
+        run: |
+          # worksteal, not loadscope. Measured as sibling jobs at one commit,
+          # n=4 each: worksteal 398s median with a 13s spread, loadscope 420s
+          # with a 91s spread. loadscope pins a module to one worker, so a
+          # heavy module leaves the others idle and the run time depends on
+          # which worker drew it; worksteal rebalances, which is why its tail
+          # is 58s better even though the medians are close. The redis-backed
+          # tests share this pass and the one server: each takes a key prefix
+          # of its own (`redis_prefix`, tests/conftest.py), so no two tests
+          # can race on a keyspace, whichever worker draws them.
+          uv run pytest -n 4 --dist worksteal
 
+      # Each truth file owns the command it was captured against, so this
+      # list is paths only and cannot drift from what is asserted. The
+      # runner keeps going after a failure and fails the step at the end,
+      # so one stale truth file reports every other one in the same run
+      # instead of hiding the examples listed below it.
       - name: Examples (output checked against integ/ truth files)
         env:
           REDIS_URL: redis://localhost:6379/0
         run: |
-          run() { echo "## $1"; ./python/.venv/bin/python "$1" 2>&1 | bash integ/check_lines.sh "$2"; }
-          run examples/python/ram/ram.py integ/truth/python/ram.txt
-          run examples/python/ram/ram_vfs.py integ/truth/python/ram_vfs.txt
-          run examples/python/ram/ram_python.py integ/truth/python/ram_python.txt
-          run examples/python/disk/disk.py integ/truth/python/disk.txt
-          run examples/python/disk/disk_vfs.py integ/truth/python/disk_vfs.txt
-          run examples/python/disk/watch.py integ/truth/watch_delta.txt
-          run examples/python/other/custom_command.py integ/truth/python/custom_command.txt
-          run examples/python/filetype/filetype.py integ/truth/python/filetype.txt
-          run examples/python/redis_resource/example_redis.py integ/truth/python/redis.txt
-          run examples/python/redis_resource/example_redis_index.py integ/truth/python/redis_index.txt
-          run examples/python/redis_resource/example_redis_cache.py integ/truth/python/redis_cache.txt
-          run examples/python/redis_resource/example_redis_vfs.py integ/truth/python/redis_vfs.txt
-          run examples/python/version/branching.py integ/truth/version_branching.txt
+          bad=0
+          run() {
+            python3 integ/check_example.py "$1" --variant python || bad=1
+          }
+          # One truth file, a second interpreter mode: with UTF-8 mode
+          # off, pathlib passes io.open's "locale" sentinel, which is
+          # not a codec name and is what every read_text() sends on a
+          # host whose LC_CTYPE is already a UTF-8 locale.
+          variant() {
+            python3 integ/check_example.py "$1" --variant "$2" || bad=1
+          }
+          # Each check is its own process against its own workspace, so the
+          # ram/disk-backed ones are independent and run concurrently. xargs
+          # exits 123 when any invocation failed, which is what marks the step
+          # bad; -I{} keeps one check per invocation so all of them still run.
+          independent=(
+            integ/truth/python/ram.json
+            integ/truth/python/ram_vfs.json
+            integ/truth/python/disk.json
+            integ/truth/python/disk_vfs.json
+            integ/truth/watch_delta.json
+            integ/truth/permissions.json
+            integ/truth/ask.json
+            integ/truth/ask_pending.json
+            integ/truth/python/custom_command.json
+            integ/truth/custom_vfs.json
+            integ/truth/custom_cli.json
+            integ/truth/session.json
+            integ/truth/python/filetype.json
+            integ/truth/version_branching.json
+          )
+          printf '%s\n' "${independent[@]}" \
+            | xargs -P 4 -I{} python3 integ/check_example.py {} --variant python \
+            || bad=1
+          variant integ/truth/python/ram_vfs.json python_utf8_off
 
-      - name: Sync Python dependencies for camel
-        working-directory: python
-        run: uv sync --extra camel
+          # ram_python boots the monty language runtime. Four of those loading
+          # at once on a 4 vCPU runner crashed it with SIGABRT (exit -6) in
+          # https://github.com/strukto-ai/mirage/actions/runs/33043622744 while
+          # every other example passed, so it runs on its own.
+          run integ/truth/python/ram_python.json
+          # The policy examples boot monty too, one engine per judged line,
+          # so they stay out of the parallel batch for the same reason.
+          run integ/truth/policy.json
+          run integ/truth/policy_yaml.json
 
-      - name: Run pytest (camel toolkit tests)
-        working-directory: python
-        run: uv run pytest tests/agents/camel
+          # These four share one redis server, so they stay serial: running
+          # them together would have them racing on the same keyspace.
+          run integ/truth/python/redis.json
+          run integ/truth/python/redis_index.json
+          run integ/truth/python/redis_cache.json
+          run integ/truth/python/redis_vfs.json
+          exit $bad
 
   import-isolation:
     needs: changes
@@ -146,9 +235,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: ./.github/actions/setup-uv
         with:
-          enable-cache: true
+          save-cache: "false"
 
       - name: Create venv and install only the target extra
         working-directory: python
@@ -171,9 +260,8 @@ jobs:
           .venv-iso/bin/python - <<'PY'
           import importlib, sys
           mod = importlib.import_module("${{ matrix.module }}")
-          prompt = importlib.import_module("${{ matrix.module }}.prompt")
-          assert isinstance(prompt.MIRAGE_SYSTEM_PROMPT, str)
-          assert callable(prompt.build_system_prompt)
+          assert isinstance(mod.MIRAGE_SYSTEM_PROMPT, str)
+          assert callable(mod.build_system_prompt)
           assert "${{ matrix.blocked }}" not in sys.modules, \
               f"${{ matrix.blocked }} got imported transitively"
           print(f"OK: imported ${{ matrix.module }} cleanly without ${{ matrix.blocked }}")
@@ -184,8 +272,8 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
     runs-on: ubuntu-latest
     env:
-      WASI_BUILD: python-3.14.6-wasi_sdk-24
-      QUICKJS_BUILD: v0.15.1
+      WASI_BUILD: python-3.14.7-wasi_sdk-24
+      QUICKJS_BUILD: v0.16.2
     steps:
       - uses: actions/checkout@v7
 
@@ -195,9 +283,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: ./.github/actions/setup-uv
         with:
-          enable-cache: true
+          save-cache: "false"
 
       - name: Cache the CPython WASI build
         id: wasi-cache
@@ -212,7 +300,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p /tmp/cpython-wasi
-          gh release download v3.14.6 -R brettcannon/cpython-wasi-build \
+          gh release download v3.14.7 -R brettcannon/cpython-wasi-build \
             -p "$WASI_BUILD.zip" -O /tmp/wasi-build.zip
           unzip -q /tmp/wasi-build.zip -d /tmp/cpython-wasi
 
@@ -240,7 +328,7 @@ jobs:
         working-directory: python
         env:
           MIRAGE_WASI_HOME: /tmp/cpython-wasi
-        run: uv run pytest tests/runtime/python/test_wasi.py -v --no-cov
+        run: uv run pytest tests/runtime/python/wasi/ -v --no-cov
 
       - name: Run quickjs runtime tests
         working-directory: python
@@ -253,7 +341,7 @@ jobs:
         env:
           MIRAGE_WASI_HOME: /tmp/cpython-wasi
           MIRAGE_QUICKJS_HOME: /tmp/quickjs
-        run: uv run pytest tests/runtime/test_conformance.py -v --no-cov
+        run: uv run pytest tests/runtime/test_conformance.py tests/runtime/test_binding.py -v --no-cov
 
       - name: Install base package without the monty extra
         working-directory: python
@@ -276,24 +364,24 @@ jobs:
           .venv-nomonty/bin/python - <<'PY'
           import asyncio
 
-          from mirage.resource.ram import RAMResource
+          from mirage.vfs.ram import RAMVFS
           from mirage.types import MountMode
           from mirage.workspace import Workspace
 
 
           async def main():
-              ws = Workspace({"/data": RAMResource()}, mode=MountMode.EXEC)
-              io = await ws.execute("python3 -c 'print(1)'")
+              ws = Workspace({"/data": RAMVFS()}, mode=MountMode.EXEC)
+              io = await ws.shell("python3 -c 'print(1)'")
               assert io.exit_code == 127, io.exit_code
               assert b"monty' extra" in io.stderr, io.stderr
-              ws2 = Workspace({"/data": RAMResource()},
+              ws2 = Workspace({"/data": RAMVFS()},
                               mode=MountMode.EXEC,
                               runtimes=["local"])
-              io2 = await ws2.execute("python3 -c 'print(41 + 1)'")
+              io2 = await ws2.shell("python3 -c 'print(41 + 1)'")
               assert io2.exit_code == 0, io2.stderr
               assert io2.stdout.strip() == b"42", io2.stdout
               try:
-                  Workspace({"/d": RAMResource()}, runtimes=["monty"])
+                  Workspace({"/d": RAMVFS()}, runtimes=["monty"])
               except ImportError:
                   pass
               else:
@@ -320,13 +408,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: ./.github/actions/setup-uv
         with:
-          enable-cache: true
+          save-cache: "false"
 
       - name: Audit dependencies for known vulnerabilities (informational)
         working-directory: python
-        run: uv audit --preview-features audit --no-extra camel
+        run: uv audit --preview-features audit
 
   gate:
     name: test-python-gate

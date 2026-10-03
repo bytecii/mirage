@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.commands.builtin.constants import PatternType
-from mirage.commands.builtin.grep_helper import classify_pattern
+from mirage.commands.builtin.grep_pushdown import classify_pattern
 
 
 def test_fixed_string_is_exact():
@@ -39,8 +39,10 @@ def test_simple_with_special_chars():
 
 
 def test_regex_dot_star():
-    assert classify_pattern("hello.*world",
-                            fixed_string=False) == PatternType.REGEX
+    assert (
+        classify_pattern("hello.*world", fixed_string=False)
+        == PatternType.REGEX
+    )
 
 
 def test_regex_brackets():

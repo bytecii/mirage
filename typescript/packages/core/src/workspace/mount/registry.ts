@@ -12,29 +12,55 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { ProcessView } from '../../process/types.ts'
+import type { SessionState } from '../session/session.ts'
 import { isNoMount, noMount } from '../../utils/errors.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import type { Runtime } from '../../runtime/base.ts'
-import type { VFSRuntime } from '../../runtime/table.ts'
+import type { WorkspaceRuntime } from '../../runtime/table.ts'
 import type { FileCache } from '../../cache/file/mixin.ts'
+import type { Evicted } from '../../cache/index/config.ts'
 import { CacheManager } from '../../cache/manager.ts'
 import { GENERAL_COMMANDS } from '../../commands/builtin/general/index.ts'
-import { cachesReads, type Resource } from '../../resource/base.ts'
-import { DevResource } from '../../resource/dev/dev.ts'
-import { MountRootPolicy, OutputCapPolicy, Policies } from '../../policy/index.ts'
-import { type Limit, ConsistencyPolicy, MountMode, PathSpec } from '../../types.ts'
+import type { BaseVFS } from '../../vfs/base.ts'
+import { DevIndex, DevVFS } from '../../vfs/dev/dev.ts'
+import { Decisions, MountRootPolicy, OutputCapPolicy, Policies } from '../../policy/index.ts'
+import {
+  type Limit,
+  type ReadSpec,
+  DEFAULT_READ_SPEC,
+  MountMode,
+  PathSpec,
+  ReadPolicy,
+} from '../../types.ts'
 import { CLIRegistry } from '../cli/registry.ts'
-import { MountEntry } from './mount.ts'
+import {
+  effectivePathMode,
+  getAdmission,
+  strongestModeUnder,
+} from '../../context/session_context.ts'
+import { MountEntry, type MountInit } from './mount.ts'
+import type { IndexConfig } from '../../cache/index/config.ts'
+import { buildIndex } from '../../cache/index/factory.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { ownerPrefix, rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 
-// The one thing the registry needs from a reconciler. Depending on this local
+// What the registry needs from a reconciler. Depending on this local
 // interface (not the concrete Reconciler) keeps the dependency pointing down:
 // `reconcile` imports the mount layer, not the other way round. The Reconciler
 // satisfies it structurally.
 interface ReadReconciler {
   reconcileRead(mount: MountEntry, path: string): Promise<void>
+  mayServeCached(mount: MountEntry, path: string): Promise<boolean>
+  mayServeListing(mount: MountEntry, folder: string, version: string | null): Promise<boolean>
+  onGone(gone: readonly Evicted[], excluded?: readonly string[]): Promise<void>
 }
+
+// The stat the dispatcher itself runs for a mount's VFS: its registry op,
+// behind the dispatcher's fence. A trailing-slash glob classifies a match
+// with it, the twin of python's owner.execute_op("stat").
+type OpStat = (mount: MountEntry, path: PathSpec) => Promise<unknown>
 
 export const DEV_PREFIX = '/dev/'
 
@@ -62,40 +88,82 @@ export interface OpsMountInfo {
   mode: MountMode
 }
 
+/** What a placement adds to a driver: the store config and the reference it came from. */
+export interface MountPlacementInit {
+  index?: IndexConfig
+  vfsRef?: string | null
+}
+
+/** The placements of the mounts a registry is constructed with, keyed by raw prefix. */
+export interface RegistryPlacements {
+  index?: IndexConfig
+  indexes?: Record<string, IndexConfig>
+  refs?: Record<string, string>
+}
+
 export class MountRegistry {
+  private readonly indexConfig: IndexConfig | undefined
+  processView?: (session: SessionState) => ProcessView
   private readonly mountList: MountEntry[]
+  readonly retiringMounts = new Map<BaseVFS, Promise<void>>()
+  readonly retiredMounts = new WeakSet<BaseVFS>()
   private rootRef: MountEntry | null = null
-  private consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY
-  private readonly defaultMode: MountMode
+  private defaultRead: ReadSpec = DEFAULT_READ_SPEC
   private cacheStore: FileCache | null = null
   private reconciler: ReadReconciler | null = null
-  // The world's vfs runtime, set by Workspace after construction.
+  private opStatDoor: OpStat | null = null
+  // The world's workspace runtime, set by Workspace after construction.
   // Catch-all when its captures are empty; explicit captures make
   // unclaimed commands an admission failure (126).
-  vfsRuntime: VFSRuntime | null = null
+  workspaceRuntime: WorkspaceRuntime | null = null
   // The ordered runtime world, set by Runtimes at construction (the
   // live array, so add() keeps it fresh). The CLI script arm selects
   // an interpreter from it (a runtime: pin or the script's language),
   // which the bindings map cannot answer: an entry behind another
   // capturer never binds a command.
   runtimeEntries: readonly Runtime[] = []
+  commandLimits: Readonly<Record<string, Limit>> = {}
   // Command admission policies. Policies itself is a bare mechanism;
   // the registry seeds the POSIX mount-root rule (mount-root semantics
-  // are mount semantics) and user policies follow it (Workspace
-  // guards/policies options). Registry-hosted like vfsRuntime so the
+  // are mount semantics) and the document's deny rules, then user
+  // policies (Workspace policies option), follow it. Registry-hosted
+  // like workspaceRuntime so the
   // executor reaches them without new threading.
   readonly policies = new Policies([
     new MountRootPolicy(),
     new OutputCapPolicy((prefix, name) => this.limitOverride(prefix, name)),
   ])
+  // The approval door the executor takes an Ask to, hosted here for the
+  // same reason as the policies: the workspace replaces it with one
+  // bound to its session manager and ask handler.
+  decisions = new Decisions()
   // Installed CLIs. Not mount state: CLIs are fully separate from
   // mounts (a CLI exists because it was installed, never because
   // storage was mounted). The registry object is just the vehicle that
   // already reaches every dispatch site, same as the runtime fields.
   readonly clis = new CLIRegistry()
 
+  /** Refetch cached data after native code may have changed the workspace. */
+  async invalidateAfterExternal(): Promise<void> {
+    await this.cacheStore?.clear()
+    for (const mount of this.allMounts()) {
+      if (mount.cacheManager !== null) await mount.cacheManager.clearIndex(mount.indexStore)
+      else await mount.use(() => mount.indexStore.clear())
+    }
+  }
+
   setReconciler(reconciler: ReadReconciler): void {
     this.reconciler = reconciler
+  }
+
+  // Null until the workspace wires its dispatcher in; a bare registry (no
+  // workspace behind it) uses the mount's registered stat operation.
+  get opStat(): OpStat | null {
+    return this.opStatDoor
+  }
+
+  setOpStat(stat: OpStat): void {
+    this.opStatDoor = stat
   }
 
   /**
@@ -109,89 +177,230 @@ export class MountRegistry {
     for (const m of this.mountList) this.attachManager(m)
   }
 
+  /**
+   * Run the shared read verdict for one mount's cached entry.
+   *
+   * The file cache's door and the dispatcher's door ask the same question,
+   * so they ask the same function; a second verdict rule here is what let
+   * the two drift apart in the first place. The reconciler is read at call
+   * time because `attachFileCache` runs before `setReconciler`, and a
+   * manager with none trusts its cache.
+   *
+   * A retiring mount answers false rather than probing, sending the caller
+   * to a cold read — where `ownsPath` already sends it today. Unlike
+   * python there is no EBUSY to catch: this side's probe calls the ops
+   * registry directly and never enters `mount.use()`, so the synchronous
+   * `retiring` check is the whole guard.
+   */
+  private async mayServeCached(m: MountEntry, key: string): Promise<boolean> {
+    const reconciler = this.reconciler
+    if (reconciler === null) return true
+    if (m.retiring) return false
+    return reconciler.mayServeCached(m, key)
+  }
+
+  /**
+   * Run the shared listing verdict for one mount's cached listing.
+   *
+   * Mirrors `mayServeCached`: the reconciler is read at call time, and a
+   * retiring mount answers false without asking. Python also answers false
+   * for EBUSY from a mount that began retiring mid-check; this side has no
+   * such path, for the same reason as the read gate.
+   */
+  private async mayServeListing(
+    m: MountEntry,
+    folder: string,
+    version: string | null,
+  ): Promise<boolean> {
+    const reconciler = this.reconciler
+    if (reconciler === null) return true
+    if (m.retiring) return false
+    return reconciler.mayServeListing(m, folder, version)
+  }
+
   private attachManager(m: MountEntry): void {
     m.cacheManager = new CacheManager(
       this.cacheStore,
-      m.resource.index ?? null,
+      m.indexStore,
       m.prefix,
-      cachesReads(m.resource),
+      m.vfs.cachesReads,
+      (path) => !m.retiring && this.tryMountFor(path) === m,
+      // The cache is shared by every session: a warm entry the running
+      // command may not read goes cold to the guarded read, which refuses
+      // it, before any freshness probe.
+      (key) =>
+        getAdmission()?.refuses(key) === true
+          ? Promise.resolve(false)
+          : this.mayServeCached(m, key),
+      m.read.ttl,
+      // Read at call time, as the gate is; a retiring mount's leftovers go
+      // with its teardown instead.
+      async (gone) => {
+        const reconciler = this.reconciler
+        if (reconciler !== null && !m.retiring)
+          await reconciler.onGone(
+            gone,
+            this.descendantMounts(m.prefix).map((entry) => entry.prefix.replace(/\/$/, '')),
+          )
+      },
+      (folder, version) => this.mayServeListing(m, folder, version),
+      () => this.descendantMounts(m.prefix).map((entry) => entry.prefix.replace(/\/$/, '')),
     )
   }
 
   constructor(
-    resources: Record<string, Resource>,
+    mounts: Record<string, BaseVFS>,
     defaultMode: MountMode,
     modeOverrides: Record<string, MountMode> = {},
+    defaultRead: ReadSpec = DEFAULT_READ_SPEC,
+    readOverrides: Record<string, ReadSpec> = {},
+    placements: RegistryPlacements = {},
   ) {
-    this.defaultMode = defaultMode
-    const mounts: MountEntry[] = []
+    this.indexConfig = placements.index
+    const list: MountEntry[] = []
     const seen = new Set<string>()
     const overrides: Record<string, MountMode> = {}
     for (const [k, v] of Object.entries(modeOverrides)) {
       overrides[normalizePrefix(k)] = v
     }
-    mounts.push(
-      new MountEntry({ prefix: DEV_PREFIX, resource: new DevResource(), mode: MountMode.WRITE }),
+    const readByPrefix: Record<string, ReadSpec> = {}
+    for (const [k, v] of Object.entries(readOverrides)) {
+      readByPrefix[normalizePrefix(k)] = v
+    }
+    this.defaultRead = defaultRead
+    // Explicit at the construction site: /dev does not cache reads, so
+    // its policy can only ever be bounded, and it keeps no index, since a
+    // path-only index would publish one session's descriptors to another.
+    list.push(
+      MountRegistry.place(
+        {
+          prefix: DEV_PREFIX,
+          vfs: new DevVFS(),
+          mode: MountMode.WRITE,
+          read: DEFAULT_READ_SPEC,
+          index: new DevIndex(),
+        },
+        list,
+      ),
     )
     seen.add(DEV_PREFIX)
-    for (const [rawPrefix, resource] of Object.entries(resources)) {
+    for (const [rawPrefix, vfs] of Object.entries(mounts)) {
       const prefix = normalizePrefix(rawPrefix)
       if (seen.has(prefix)) {
         throw new Error(`duplicate mount prefix: ${prefix}`)
       }
+      if (vfs.isClosed) throw new Error('VFS is closed; create a new VFS instance')
       seen.add(prefix)
       const mode = overrides[prefix] ?? defaultMode
-      mounts.push(new MountEntry({ prefix, resource, mode }))
+      const read = readByPrefix[prefix] ?? defaultRead
+      const index = this.indexFor(vfs, placements.indexes?.[rawPrefix], list)
+      const vfsRef = placements.refs?.[rawPrefix] ?? null
+      list.push(
+        MountRegistry.place(
+          {
+            prefix,
+            vfs,
+            mode,
+            read,
+            index,
+            vfsRef,
+            indexConfig: placements.indexes?.[rawPrefix] ?? this.indexConfig,
+          },
+          list,
+        ),
+      )
     }
-    mounts.sort((a, b) => b.prefix.length - a.prefix.length)
-    this.mountList = mounts
-    this.rootRef = mounts.find((m) => m.prefix === '/') ?? null
+    list.sort((a, b) => b.prefix.length - a.prefix.length)
+    this.mountList = list
+    this.rootRef = list.find((m) => m.prefix === '/') ?? null
   }
 
-  setConsistency(consistency: ConsistencyPolicy): void {
-    this.consistency = consistency
+  /**
+   * Build one mount with everything the tree needs to run its driver:
+   * the driver's command and op tables registered on the entry, the
+   * general commands beside them, and the activity gate shared with any
+   * earlier mount of the same instance. The constructor and `mount()`
+   * both place through here, so a mount is the same whichever door
+   * built it. Mirrors the Python registry, whose constructor mounts
+   * through `mount()` as well.
+   */
+  private static place(init: MountInit, siblings: readonly MountEntry[]): MountEntry {
+    const alias = siblings.find((existing) => existing.vfs === init.vfs)
+    const m = new MountEntry(
+      alias === undefined ? init : { ...init, indexConfig: alias.indexConfig },
+    )
+    if (alias !== undefined) m.activity = alias.activity
+    // Through `registerFns`, as python's `registry.mount` does, so a
+    // family table that fans out over sibling VFS names (the HF four
+    // share one table) registers only this mount's entries instead of
+    // letting the last sibling win on a shared key.
+    m.registerFns(init.vfs.commands())
+    for (const cmd of GENERAL_COMMANDS) {
+      m.registerGeneral(cmd)
+    }
+    m.registerFns(init.vfs.ops())
+    return m
   }
 
-  getConsistency(): ConsistencyPolicy {
-    return this.consistency
+  /**
+   * The store a driver runs under: the one its earlier mount already
+   * has, else a new one from the mount's or the workspace's index
+   * config, else a RAM store at the driver's own TTL.
+   */
+  private indexFor(
+    vfs: BaseVFS,
+    config: IndexConfig | undefined,
+    siblings: readonly MountEntry[],
+  ): IndexCacheStore {
+    const alias = siblings.find((existing) => existing.vfs === vfs)
+    if (alias !== undefined) return alias.indexStore
+    if (vfs instanceof DevVFS) return new DevIndex()
+    return buildIndex(config ?? this.indexConfig, vfs.indexTtl)
+  }
+
+  /** A removed VFS instance cannot start a second lifecycle. */
+  checkVfsAvailable(vfs: BaseVFS): void {
+    if (this.retiringMounts.has(vfs) || this.mountList.some((m) => m.vfs === vfs && m.retiring)) {
+      throw new Error('VFS is being unmounted')
+    }
+    if (vfs.isClosed || this.retiredMounts.has(vfs)) {
+      throw new Error('VFS is closed; create a new VFS instance')
+    }
   }
 
   /**
    * Add a mount dynamically. Mirrors Python's `registry.mount(...)`.
-   * Registers the resource's commands and ops on the new mount and
+   * Registers the VFS's commands and ops on the new mount and
    * re-sorts mounts by prefix length (longest first).
    */
   mount(
     prefix: string,
-    resource: Resource,
+    vfs: BaseVFS,
     mode: MountMode = MountMode.READ,
-    consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY,
+    read?: ReadSpec,
+    placement: MountPlacementInit = {},
   ): MountEntry {
+    this.checkVfsAvailable(vfs)
     const norm = normalizePrefix(prefix)
     for (const existing of this.mountList) {
       if (existing.prefix === norm) {
         throw new Error(`duplicate mount prefix: ${norm}`)
       }
     }
-    const m = new MountEntry({ prefix: norm, resource, mode, consistency })
-    const cmds = resource.commands?.()
-    if (cmds !== undefined) {
-      for (const cmd of cmds) {
-        if (cmd.filetype !== null) m.register(cmd)
-        else if (cmd.resource === null) m.registerGeneral(cmd)
-        else m.register(cmd)
-      }
-    }
-    for (const cmd of GENERAL_COMMANDS) {
-      m.registerGeneral(cmd)
-    }
-    const ops = resource.ops?.()
-    if (ops !== undefined) {
-      for (const op of ops) {
-        if (op.resource === null) m.registerGeneralOp(op)
-        else m.registerOp(op)
-      }
-    }
+    const index = this.indexFor(vfs, placement.index, this.mountList)
+    const vfsRef = placement.vfsRef ?? null
+    const m = MountRegistry.place(
+      {
+        prefix: norm,
+        vfs,
+        mode,
+        read: read ?? this.defaultRead,
+        index,
+        vfsRef,
+        indexConfig: placement.index ?? this.indexConfig,
+      },
+      this.mountList,
+    )
     if (this.cacheStore !== null) this.attachManager(m)
     this.mountList.push(m)
     this.mountList.sort((a, b) => b.prefix.length - a.prefix.length)
@@ -276,15 +485,15 @@ export class MountRegistry {
   opsMounts(): OpsMountInfo[] {
     return this.mountList.map((m) => ({
       prefix: m.prefix,
-      resourceType: m.resource.kind,
+      resourceType: m.vfs.name,
       mode: m.mode,
     }))
   }
 
-  findResourceByName(resourceName: string | null): Resource | null {
-    if (resourceName === null) return null
+  findVfsByName(vfsName: string | null): BaseVFS | null {
+    if (vfsName === null) return null
     for (const m of this.mountList) {
-      if (m.resource.kind === resourceName) return m.resource
+      if (m.vfs.name === vfsName) return m.vfs
     }
     return null
   }
@@ -292,8 +501,8 @@ export class MountRegistry {
   getResourceType(path: string | null): string | null {
     if (path === null) return null
     try {
-      const [resource] = this.resolve(path)
-      return resource.kind
+      const [vfs] = this.resolve(path)
+      return vfs.name
     } catch (err) {
       if (isNoMount(err)) return null
       throw err
@@ -323,13 +532,13 @@ export class MountRegistry {
     return this.cacheStore
   }
 
-  resolve(path: string): [Resource, PathSpec, MountMode] {
+  resolve(path: string): [BaseVFS, PathSpec, MountMode] {
     const m = this.mountFor(path)
     const hadTrailing = path.endsWith('/')
     const norm = `/${stripSlash(path)}`
     const mountPrefix = rstripSlash(m.prefix)
     return [
-      m.resource,
+      m.vfs,
       PathSpec.fromStrPath(
         hadTrailing ? `${norm}/` : norm,
         mountKey(hadTrailing ? `${norm}/` : norm, mountPrefix),
@@ -370,9 +579,22 @@ export class MountRegistry {
   isExecAllowed(): boolean {
     for (const m of this.mountList) {
       if (m.prefix === DEV_PREFIX) continue
-      if (m.effectiveMode() === MountMode.EXEC) return true
+      // strongestModeUnder, not effectiveMode: a session whose only x
+      // grant is a show entry still counts as having one.
+      if (strongestModeUnder(m.prefix, m.mode) === MountMode.EXEC) return true
     }
     return false
+  }
+
+  /**
+   * Whether code may be loaded from this path: the per-script form of
+   * `isExecAllowed`, read by an interpreter running a file operand
+   * (`python3 path.py`, `bash script.sh`).
+   */
+  execAllowedAt = (virtual: string): boolean => {
+    const m = this.tryMountFor(virtual)
+    if (m === null) return false
+    return effectivePathMode(virtual, m.prefix, m.mode) === MountMode.EXEC
   }
 
   mountForCommand(cmdName: string): MountEntry | null {
@@ -420,12 +642,13 @@ export class MountRegistry {
     const mountPath = pathScopes.length > 0 ? (pathScopes[0]?.virtual ?? cwd) : cwd
     let mount = this.tryMountFor(mountPath)
     if (mount !== null && mount.resolveCommand(cmdName) == null && pathScopes.length > 0) {
-      throw new MountCommandUnsupported(cmdName, mount.resource.kind, pathScopes[0]?.rawPath ?? cwd)
+      throw new MountCommandUnsupported(cmdName, mount.vfs.name, pathScopes[0]?.rawPath ?? cwd)
     }
     if (mount?.resolveCommand(cmdName) == null) {
       mount = this.mountForCommand(cmdName)
     }
     if (mount === null) return null
+    await mount.ensureReady()
     // Warm reads are served in place by withReadCache, so a read-only command
     // stays on its real mount. Single-mount reads do not go through the
     // dispatcher, so this is where they reconcile against backend truth: the
@@ -435,9 +658,9 @@ export class MountRegistry {
     if (
       this.reconciler !== null &&
       pathScopes.length > 0 &&
-      cachesReads(mount.resource) &&
+      mount.vfs.cachesReads &&
       baseCmd?.write !== true &&
-      this.consistency === ConsistencyPolicy.ALWAYS
+      mount.read.policy === ReadPolicy.FRESH
     ) {
       for (const scope of pathScopes) {
         await this.reconciler.reconcileRead(mount, scope.virtual)

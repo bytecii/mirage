@@ -16,11 +16,15 @@ import { RAM_COMMANDS } from './index.ts'
 import { describe, expect, it } from 'vitest'
 import type { RegisteredCommand } from '../../config.ts'
 import { materialize } from '../../../io/types.ts'
-import { RAMResource } from '../../../resource/ram/ram.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import type { LinkView } from '../../../ops/types.ts'
 import { FileStat, FileType, LINK_TARGET_KEY, PathSpec } from '../../../types.ts'
 import { CycleError } from '../../../utils/path.ts'
 import { readTar } from '../tar_helper.ts'
+import { UsageError } from '../../errors.ts'
+import { MountMode } from '../../../types.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
 const RAM_TAR = RAM_COMMANDS.filter((c) => c.name === 'tar' && c.filetype == null)
 const RAM_ZIP = RAM_COMMANDS.filter((c) => c.name === 'zip' && c.filetype == null)
 const RAM_UNZIP = RAM_COMMANDS.filter((c) => c.name === 'unzip' && c.filetype == null)
@@ -34,7 +38,7 @@ function dirSpec(virtual: string, raw: string): PathSpec {
   return new PathSpec({
     virtual,
     directory: virtual,
-    resourcePath: virtual.replace(/^\/+/, ''),
+    vfsPath: virtual.replace(/^\/+/, ''),
     resolved: true,
     rawPath: raw,
   })
@@ -81,7 +85,7 @@ interface CmdResult {
 
 async function runCmd(
   reg: readonly RegisteredCommand[],
-  resource: RAMResource,
+  vfs: RAMVFS,
   paths: PathSpec[],
   flags: Record<string, string | boolean | number | string[]>,
   texts: string[] = [],
@@ -90,7 +94,7 @@ async function runCmd(
 ): Promise<CmdResult> {
   const cmd = reg[0]
   if (cmd === undefined) throw new Error('not registered')
-  const result = await cmd.fn(resource.accessor, paths, texts, {
+  const result = await cmd.fn(vfs.accessor, paths, texts, {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -120,49 +124,47 @@ async function runCmd(
 
 describe('tar', () => {
   it('creates an archive and lists its contents', async () => {
-    const resource = new RAMResource()
-    resource.store.files.set('/a.txt', ENC.encode('aaa'))
-    resource.store.files.set('/b.txt', ENC.encode('bbb'))
-    await runCmd(
-      RAM_TAR,
-      resource,
-      [PathSpec.fromStrPath('/a.txt'), PathSpec.fromStrPath('/b.txt')],
-      { c: true, f: '/archive.tar' },
-    )
-    expect(resource.store.files.has('/archive.tar')).toBe(true)
-    const { out } = await runCmd(RAM_TAR, resource, [], { t: true, f: '/archive.tar' })
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/a.txt', ENC.encode('aaa'))
+    vfs.store.files.set('/b.txt', ENC.encode('bbb'))
+    await runCmd(RAM_TAR, vfs, [PathSpec.fromStrPath('/a.txt'), PathSpec.fromStrPath('/b.txt')], {
+      create: true,
+      file: '/archive.tar',
+    })
+    expect(vfs.store.files.has('/archive.tar')).toBe(true)
+    const { out } = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/archive.tar' })
     const decoded = DEC.decode(out)
     expect(decoded).toContain('a.txt')
     expect(decoded).toContain('b.txt')
   })
 
   it('extracts an archive back to files', async () => {
-    const resource = new RAMResource()
-    resource.store.files.set('/a.txt', ENC.encode('content_a'))
-    await runCmd(RAM_TAR, resource, [PathSpec.fromStrPath('/a.txt')], {
-      c: true,
-      f: '/archive.tar',
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/a.txt', ENC.encode('content_a'))
+    await runCmd(RAM_TAR, vfs, [PathSpec.fromStrPath('/a.txt')], {
+      create: true,
+      file: '/archive.tar',
     })
-    resource.store.files.delete('/a.txt')
-    await runCmd(RAM_TAR, resource, [], { x: true, f: '/archive.tar', C: '/' })
-    expect(resource.store.files.has('/a.txt')).toBe(true)
-    expect(DEC.decode(resource.store.files.get('/a.txt'))).toBe('content_a')
+    vfs.store.files.delete('/a.txt')
+    await runCmd(RAM_TAR, vfs, [], { extract: true, file: '/archive.tar', directory: '/' })
+    expect(vfs.store.files.has('/a.txt')).toBe(true)
+    expect(DEC.decode(vfs.store.files.get('/a.txt'))).toBe('content_a')
   })
 
   it('walks a directory operand instead of failing on it', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/sub')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    resource.store.files.set('/d/sub/b.txt', ENC.encode('beta'))
-    const { exitCode, out } = await runCmd(RAM_TAR, resource, [dirSpec('/d', 'd')], {
-      c: true,
-      v: true,
-      f: '/out.tar',
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.dirs.add('/d/sub')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    vfs.store.files.set('/d/sub/b.txt', ENC.encode('beta'))
+    const { exitCode, out } = await runCmd(RAM_TAR, vfs, [dirSpec('/d', 'd')], {
+      create: true,
+      verbose: true,
+      file: '/out.tar',
     })
     expect(exitCode).toBe(0)
     expect(DEC.decode(out).trim().split('\n')).toEqual(['d/', 'd/a.txt', 'd/sub/', 'd/sub/b.txt'])
-    const listed = await runCmd(RAM_TAR, resource, [], { t: true, f: '/out.tar' })
+    const listed = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/out.tar' })
     expect(DEC.decode(listed.out).trim().split('\n')).toEqual([
       'd/',
       'd/a.txt',
@@ -172,22 +174,22 @@ describe('tar', () => {
   })
 
   it('names members as the operand was typed, so -C survives a round trip', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/base')
-    resource.store.dirs.add('/base/d')
-    resource.store.files.set('/base/d/a.txt', ENC.encode('alpha'))
-    await runCmd(RAM_TAR, resource, [dirSpec('/base/d', 'd')], { c: true, f: '/out.tar' })
-    const listed = await runCmd(RAM_TAR, resource, [], { t: true, f: '/out.tar' })
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/base')
+    vfs.store.dirs.add('/base/d')
+    vfs.store.files.set('/base/d/a.txt', ENC.encode('alpha'))
+    await runCmd(RAM_TAR, vfs, [dirSpec('/base/d', 'd')], { create: true, file: '/out.tar' })
+    const listed = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/out.tar' })
     expect(DEC.decode(listed.out).trim().split('\n')).toEqual(['d/', 'd/a.txt'])
   })
 
   it('warns once about a stripped leading slash', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    const { stderr } = await runCmd(RAM_TAR, resource, [dirSpec('/d', '/d')], {
-      c: true,
-      f: '/out.tar',
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    const { stderr } = await runCmd(RAM_TAR, vfs, [dirSpec('/d', '/d')], {
+      create: true,
+      file: '/out.tar',
     })
     const text = DEC.decode(stderr)
     expect(text).toContain('Removing leading')
@@ -197,28 +199,28 @@ describe('tar', () => {
   // GNU stores no traversal-bearing name: it drops everything through the
   // last `..` and names the prefix it dropped.
   it('drops a .. prefix from the member name and says which', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/sub')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    const { stderr } = await runCmd(RAM_TAR, resource, [dirSpec('/d/a.txt', '/d/sub/../a.txt')], {
-      c: true,
-      f: '/out.tar',
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.dirs.add('/d/sub')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    const { stderr } = await runCmd(RAM_TAR, vfs, [dirSpec('/d/a.txt', '/d/sub/../a.txt')], {
+      create: true,
+      file: '/out.tar',
     })
     expect(DEC.decode(stderr)).toBe("tar: Removing leading `/d/sub/../' from member names\n")
-    const listed = await runCmd(RAM_TAR, resource, [], { t: true, f: '/out.tar' })
+    const listed = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/out.tar' })
     expect(DEC.decode(listed.out).trim()).toBe('a.txt')
   })
 
   // GNU names the prefix before it reports the operand it could not read,
   // even though nothing under that operand is stored.
   it('announces a prefix it could not archive', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/sub')
-    const { stderr } = await runCmd(RAM_TAR, resource, [dirSpec('/d/missing', 'sub/../missing')], {
-      c: true,
-      f: '/out.tar',
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.dirs.add('/d/sub')
+    const { stderr } = await runCmd(RAM_TAR, vfs, [dirSpec('/d/missing', 'sub/../missing')], {
+      create: true,
+      file: '/out.tar',
     })
     expect(DEC.decode(stderr).split('\n').slice(0, 2)).toEqual([
       "tar: Removing leading `sub/../' from member names",
@@ -229,15 +231,15 @@ describe('tar', () => {
   // A later operand's notice must not jump ahead of an earlier operand's
   // error: GNU emits diagnostics as it walks the operands.
   it('keeps notices in operand order', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/base')
-    resource.store.dirs.add('/base/sub')
-    resource.store.files.set('/base/file', ENC.encode('x'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/base')
+    vfs.store.dirs.add('/base/sub')
+    vfs.store.files.set('/base/file', ENC.encode('x'))
     const first = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/base/nope', 'nope'), dirSpec('/base/file', '../file')],
-      { c: true, f: '/out.tar' },
+      { create: true, file: '/out.tar' },
     )
     expect(DEC.decode(first.stderr).split('\n').slice(0, 2)).toEqual([
       'tar: nope: Cannot stat: No such file or directory',
@@ -245,9 +247,9 @@ describe('tar', () => {
     ])
     const second = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/base/file', '../file'), dirSpec('/base/nope', 'nope')],
-      { c: true, f: '/out2.tar' },
+      { create: true, file: '/out2.tar' },
     )
     expect(DEC.decode(second.stderr).split('\n').slice(0, 2)).toEqual([
       "tar: Removing leading `../' from member names",
@@ -256,14 +258,14 @@ describe('tar', () => {
   })
 
   it("reports a missing operand in tar's own words and exits 2", async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
     const { exitCode, stderr } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/nope', 'nope'), dirSpec('/d', 'd')],
-      { c: true, f: '/out.tar' },
+      { create: true, file: '/out.tar' },
     )
     expect(exitCode).toBe(2)
     const text = DEC.decode(stderr)
@@ -272,10 +274,10 @@ describe('tar', () => {
   })
 
   it('refuses to create an empty archive', async () => {
-    const resource = new RAMResource()
-    const { exitCode, stderr, writes } = await runCmd(RAM_TAR, resource, [], {
-      c: true,
-      f: '/out.tar',
+    const vfs = new RAMVFS()
+    const { exitCode, stderr, writes } = await runCmd(RAM_TAR, vfs, [], {
+      create: true,
+      file: '/out.tar',
     })
     expect(exitCode).toBe(2)
     expect(DEC.decode(stderr)).toContain('Cowardly refusing to create an empty archive')
@@ -283,14 +285,14 @@ describe('tar', () => {
   })
 
   it('refuses a -C it cannot enter', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
     const { exitCode, stderr, writes } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/nodir/a.txt', 'a.txt')],
-      { c: true, f: '/out.tar', C: '/nodir' },
+      { create: true, file: '/out.tar', directory: '/nodir' },
     )
     expect(exitCode).toBe(2)
     const text = DEC.decode(stderr)
@@ -300,63 +302,64 @@ describe('tar', () => {
   })
 
   it('--exclude prunes the whole subtree, and matches mid-path like GNU', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/sub')
-    resource.store.files.set('/d/a.txt', ENC.encode('a'))
-    resource.store.files.set('/d/sub/b.txt', ENC.encode('b'))
-    const pruned = await runCmd(RAM_TAR, resource, [dirSpec('/d', 'd')], {
-      c: true,
-      f: '/out.tar',
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.dirs.add('/d/sub')
+    vfs.store.files.set('/d/a.txt', ENC.encode('a'))
+    vfs.store.files.set('/d/sub/b.txt', ENC.encode('b'))
+    const pruned = await runCmd(RAM_TAR, vfs, [dirSpec('/d', 'd')], {
+      create: true,
+      file: '/out.tar',
       exclude: 'sub',
     })
     expect(pruned.exitCode).toBe(0)
-    const listed = await runCmd(RAM_TAR, resource, [], { t: true, f: '/out.tar' })
+    const listed = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/out.tar' })
     expect(DEC.decode(listed.out).trim().split('\n')).toEqual(['d/', 'd/a.txt'])
 
-    const one = await runCmd(RAM_TAR, resource, [dirSpec('/d', 'd')], {
-      c: true,
-      f: '/two.tar',
+    const one = await runCmd(RAM_TAR, vfs, [dirSpec('/d', 'd')], {
+      create: true,
+      file: '/two.tar',
       exclude: 'sub/b.txt',
     })
     expect(one.exitCode).toBe(0)
-    const listedTwo = await runCmd(RAM_TAR, resource, [], { t: true, f: '/two.tar' })
+    const listedTwo = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/two.tar' })
     expect(DEC.decode(listedTwo.out).trim().split('\n')).toEqual(['d/', 'd/a.txt', 'd/sub/'])
   })
 
   it('round-trips an empty directory through create and extract', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/empty')
-    resource.store.files.set('/d/a.txt', ENC.encode('a'))
-    await runCmd(RAM_TAR, resource, [dirSpec('/d', 'd')], { c: true, f: '/out.tar' })
-    const listed = await runCmd(RAM_TAR, resource, [], { t: true, f: '/out.tar' })
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.dirs.add('/d/empty')
+    vfs.store.files.set('/d/a.txt', ENC.encode('a'))
+    await runCmd(RAM_TAR, vfs, [dirSpec('/d', 'd')], { create: true, file: '/out.tar' })
+    const listed = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/out.tar' })
     expect(DEC.decode(listed.out)).toContain('d/empty/')
-    await runCmd(RAM_TAR, resource, [], { x: true, f: '/out.tar', C: '/out' })
-    expect(resource.store.dirs.has('/out/d/empty')).toBe(true)
+    vfs.store.dirs.add('/out')
+    await runCmd(RAM_TAR, vfs, [], { extract: true, file: '/out.tar', directory: '/out' })
+    expect(vfs.store.dirs.has('/out/d/empty')).toBe(true)
   })
 
   it('names members from virtual paths on a prefixed mount', async () => {
     // The walk answers in mount-relative keys, the way a backend's own
     // find op does; a mount behind a prefix is the only place where
     // forgetting to lift them back shows up.
-    const resource = new RAMResource()
-    resource.store.dirs.add('/tdir')
-    resource.store.dirs.add('/tdir/sub')
-    resource.store.files.set('/tdir/a.txt', ENC.encode('aa'))
-    resource.store.files.set('/tdir/sub/b.txt', ENC.encode('bb'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/tdir')
+    vfs.store.dirs.add('/tdir/sub')
+    vfs.store.files.set('/tdir/a.txt', ENC.encode('aa'))
+    vfs.store.files.set('/tdir/sub/b.txt', ENC.encode('bb'))
     const operand = new PathSpec({
       virtual: '/data/tdir',
       directory: '/data/tdir',
-      resourcePath: 'tdir',
+      vfsPath: 'tdir',
       resolved: true,
       rawPath: 'tdir',
     })
     const { out, exitCode } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [operand],
-      { c: true, v: true, f: '/tdir.tar' },
+      { create: true, verbose: true, file: '/tdir.tar' },
       [],
       '/data',
     )
@@ -370,63 +373,63 @@ describe('tar', () => {
   })
 
   it('leaves the archive out of itself', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('a'))
-    resource.store.files.set('/d/old.tar', ENC.encode('stale'))
-    const { stderr } = await runCmd(RAM_TAR, resource, [dirSpec('/d', 'd')], {
-      c: true,
-      f: '/d/old.tar',
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('a'))
+    vfs.store.files.set('/d/old.tar', ENC.encode('stale'))
+    const { stderr } = await runCmd(RAM_TAR, vfs, [dirSpec('/d', 'd')], {
+      create: true,
+      file: '/d/old.tar',
     })
     expect(DEC.decode(stderr)).toContain('archive cannot contain itself')
-    const listed = await runCmd(RAM_TAR, resource, [], { t: true, f: '/d/old.tar' })
+    const listed = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/d/old.tar' })
     expect(DEC.decode(listed.out).trim().split('\n')).toEqual(['d/', 'd/a.txt'])
   })
 })
 
 describe('zip / unzip', () => {
   it('zip then unzip -l lists the archived file', async () => {
-    const resource = new RAMResource()
-    resource.store.files.set('/a.txt', ENC.encode('hello'))
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/a.txt', ENC.encode('hello'))
     await runCmd(
       RAM_ZIP,
-      resource,
+      vfs,
       [PathSpec.fromStrPath('/out.zip'), PathSpec.fromStrPath('/a.txt')],
       {},
     )
-    expect(resource.store.files.has('/out.zip')).toBe(true)
-    const { out } = await runCmd(RAM_UNZIP, resource, [PathSpec.fromStrPath('/out.zip')], {
+    expect(vfs.store.files.has('/out.zip')).toBe(true)
+    const { out } = await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/out.zip')], {
       args_l: true,
     })
     expect(DEC.decode(out)).toContain('a.txt')
   })
 
   it('zip then unzip -d round trip restores file contents', async () => {
-    const resource = new RAMResource()
-    resource.store.files.set('/a.txt', ENC.encode('zip_content'))
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/a.txt', ENC.encode('zip_content'))
     await runCmd(
       RAM_ZIP,
-      resource,
+      vfs,
       [PathSpec.fromStrPath('/out.zip'), PathSpec.fromStrPath('/a.txt')],
       {},
     )
-    resource.store.files.delete('/a.txt')
-    await runCmd(RAM_UNZIP, resource, [PathSpec.fromStrPath('/out.zip')], { d: '/' })
-    expect(resource.store.files.has('/a.txt')).toBe(true)
-    expect(DEC.decode(resource.store.files.get('/a.txt'))).toBe('zip_content')
+    vfs.store.files.delete('/a.txt')
+    await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/out.zip')], { d: '/' })
+    expect(vfs.store.files.has('/a.txt')).toBe(true)
+    expect(DEC.decode(vfs.store.files.get('/a.txt'))).toBe('zip_content')
   })
 
   it('zip -j junks paths, keeping only basename', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/sub')
-    resource.store.files.set('/sub/deep.txt', ENC.encode('hello'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/sub')
+    vfs.store.files.set('/sub/deep.txt', ENC.encode('hello'))
     await runCmd(
       RAM_ZIP,
-      resource,
+      vfs,
       [PathSpec.fromStrPath('/out.zip'), PathSpec.fromStrPath('/sub/deep.txt')],
       { j: true },
     )
-    const { out } = await runCmd(RAM_UNZIP, resource, [PathSpec.fromStrPath('/out.zip')], {
+    const { out } = await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/out.zip')], {
       args_l: true,
     })
     const text = DEC.decode(out)
@@ -434,157 +437,67 @@ describe('zip / unzip', () => {
     expect(text).not.toContain('sub/')
   })
 
-  it('zip -q suppresses stdout', async () => {
-    const resource = new RAMResource()
-    resource.store.files.set('/a.txt', ENC.encode('hello'))
+  it('strips only the leading ./ run, from names and -x patterns', async () => {
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.dirs.add('/d/sub')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    vfs.store.files.set('/d/sub/b.txt', ENC.encode('beta'))
     const { out } = await runCmd(
       RAM_ZIP,
-      resource,
-      [PathSpec.fromStrPath('/out.zip'), PathSpec.fromStrPath('/a.txt')],
-      { q: true },
+      vfs,
+      [
+        PathSpec.fromStrPath('/out.zip'),
+        dirSpec('/d/a.txt', '././a.txt'),
+        dirSpec('/d/sub', 'sub/.'),
+        dirSpec('/d/sub/b.txt', './sub/b.txt'),
+      ],
+      { r: true, x: ['./sub/b.txt'] },
     )
-    expect(out.byteLength).toBe(0)
+    expect(DEC.decode(out)).toBe('  adding: a.txt\n  adding: sub/./\n  adding: sub/./b.txt\n')
   })
 
-  it('zip -r walks a directory operand instead of failing on it', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/sub')
-    resource.store.dirs.add('/d/empty')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    resource.store.files.set('/d/sub/b.txt', ENC.encode('beta'))
+  it('stores one path named twice once', async () => {
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
     const { out, exitCode } = await runCmd(
       RAM_ZIP,
-      resource,
-      [PathSpec.fromStrPath('/out.zip'), dirSpec('/d', 'd')],
+      vfs,
+      [
+        PathSpec.fromStrPath('/out.zip'),
+        dirSpec('/d', '.'),
+        dirSpec('/d/a.txt', 'a.txt'),
+        dirSpec('/d/a.txt', 'a.txt'),
+      ],
       { r: true },
     )
     expect(exitCode).toBe(0)
-    expect(DEC.decode(out)).toBe(
-      '  adding: d/\n  adding: d/a.txt\n  adding: d/empty/\n  adding: d/sub/\n  adding: d/sub/b.txt\n',
-    )
+    expect(DEC.decode(out)).toBe('  adding: a.txt\n')
   })
 
-  it('zip without -r stores the directory entry and nothing under it', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    const { out } = await runCmd(
-      RAM_ZIP,
-      resource,
-      [PathSpec.fromStrPath('/out.zip'), dirSpec('/d', 'd')],
-      {},
+  it('names -j as the cause of a repeated name, and -q keeps only the error', async () => {
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.dirs.add('/d/sub')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    vfs.store.files.set('/d/sub/a.txt', ENC.encode('again'))
+    const paths = [
+      dirSpec('/out.zip', 'out.zip'),
+      dirSpec('/d/sub/a.txt', 'sub/a.txt'),
+      dirSpec('/d/a.txt', 'a.txt'),
+    ]
+    const loud = await runCmd(RAM_ZIP, vfs, paths, { j: true })
+    expect(loud.exitCode).toBe(16)
+    expect(DEC.decode(loud.stderr)).toContain(
+      '                     name in zip file repeated: a.txt\n' +
+        '                     this may be a result of using -j\n',
     )
-    expect(DEC.decode(out)).toBe('  adding: d/\n')
-  })
-
-  it('zip -r then unzip restores an empty directory', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/empty')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    await runCmd(RAM_ZIP, resource, [PathSpec.fromStrPath('/out.zip'), dirSpec('/d', 'd')], {
-      r: true,
-      q: true,
-    })
-    resource.store.dirs.delete('/d/empty')
-    resource.store.files.delete('/d/a.txt')
-    await runCmd(RAM_UNZIP, resource, [PathSpec.fromStrPath('/out.zip')], { d: '/', q: true })
-    expect(resource.store.dirs.has('/d/empty')).toBe(true)
-    expect(DEC.decode(resource.store.files.get('/d/a.txt'))).toBe('alpha')
-  })
-
-  it('zip -r -j drops directory entries entirely', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/sub')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    resource.store.files.set('/d/sub/b.txt', ENC.encode('beta'))
-    const { out } = await runCmd(
-      RAM_ZIP,
-      resource,
-      [PathSpec.fromStrPath('/out.zip'), dirSpec('/d', 'd')],
-      { r: true, j: true },
+    const quiet = await runCmd(RAM_ZIP, vfs, paths, { j: true, q: true })
+    expect(quiet.exitCode).toBe(16)
+    expect(DEC.decode(quiet.stderr)).toBe(
+      '\nzip error: Invalid command arguments (cannot repeat names in zip file)\n',
     )
-    expect(DEC.decode(out)).toBe('  adding: a.txt\n  adding: b.txt\n')
-  })
-
-  it('zip -x is anchored on the whole stored name', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.dirs.add('/d/sub')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    resource.store.files.set('/d/sub/b.txt', ENC.encode('beta'))
-    const { out } = await runCmd(
-      RAM_ZIP,
-      resource,
-      [PathSpec.fromStrPath('/out.zip'), dirSpec('/d', 'd')],
-      { r: true, x: ['d/sub/*'] },
-    )
-    expect(DEC.decode(out)).toBe('  adding: d/\n  adding: d/a.txt\n')
-  })
-
-  it("warns in Info-ZIP's words on a name it cannot match, and archives the rest", async () => {
-    const resource = new RAMResource()
-    resource.store.files.set('/a.txt', ENC.encode('alpha'))
-    const { exitCode, stderr } = await runCmd(
-      RAM_ZIP,
-      resource,
-      [PathSpec.fromStrPath('/out.zip'), dirSpec('/a.txt', 'a.txt'), dirSpec('/nope', 'nope')],
-      {},
-    )
-    expect(exitCode).toBe(0)
-    expect(DEC.decode(stderr)).toBe('\tzip warning: name not matched: nope\n')
-    expect(resource.store.files.has('/out.zip')).toBe(true)
-  })
-
-  it('writes no archive and exits 12 when nothing matched', async () => {
-    const resource = new RAMResource()
-    const { exitCode, stderr } = await runCmd(
-      RAM_ZIP,
-      resource,
-      [dirSpec('/out.zip', 'out.zip'), dirSpec('/nope', 'nope')],
-      {},
-    )
-    expect(exitCode).toBe(12)
-    expect(resource.store.files.has('/out.zip')).toBe(false)
-    expect(DEC.decode(stderr)).toBe(
-      '\tzip warning: name not matched: nope\n\nzip error: Nothing to do! (out.zip)\n',
-    )
-  })
-
-  it('-q silences the warning but never the fatal error', async () => {
-    const resource = new RAMResource()
-    const { exitCode, stderr } = await runCmd(
-      RAM_ZIP,
-      resource,
-      [dirSpec('/out.zip', 'out.zip'), dirSpec('/nope', 'nope')],
-      { q: true },
-    )
-    expect(exitCode).toBe(12)
-    expect(DEC.decode(stderr)).toBe('\nzip error: Nothing to do! (out.zip)\n')
-  })
-
-  it('names members from virtual paths on a prefixed mount', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
-    const operand = new PathSpec({
-      virtual: '/data/d',
-      directory: '/data/d',
-      resourcePath: 'd',
-      resolved: true,
-      rawPath: '/data/d',
-    })
-    const archive = new PathSpec({
-      virtual: '/data/out.zip',
-      directory: '/data',
-      resourcePath: 'out.zip',
-      resolved: true,
-      rawPath: '/data/out.zip',
-    })
-    const { out } = await runCmd(RAM_ZIP, resource, [archive, operand], { r: true }, [], '/data')
-    expect(DEC.decode(out)).toBe('  adding: data/d/\n  adding: data/d/a.txt\n')
   })
 })
 
@@ -594,16 +507,16 @@ describe('unzip members', () => {
   const WORKBOOK = 'WORKBOOK-CONTENT\n'
   const CAUTION = 'caution: filename not matched:  '
 
-  async function makeBook(): Promise<RAMResource> {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/docProps')
-    resource.store.dirs.add('/xl')
-    resource.store.files.set('/docProps/app.xml', ENC.encode(APP))
-    resource.store.files.set('/xl/sheet1.xml', ENC.encode(SHEET))
-    resource.store.files.set('/xl/workbook.xml', ENC.encode(WORKBOOK))
+  async function makeBook(): Promise<RAMVFS> {
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/docProps')
+    vfs.store.dirs.add('/xl')
+    vfs.store.files.set('/docProps/app.xml', ENC.encode(APP))
+    vfs.store.files.set('/xl/sheet1.xml', ENC.encode(SHEET))
+    vfs.store.files.set('/xl/workbook.xml', ENC.encode(WORKBOOK))
     await runCmd(
       RAM_ZIP,
-      resource,
+      vfs,
       [
         PathSpec.fromStrPath('/book.zip'),
         PathSpec.fromStrPath('/docProps/app.xml'),
@@ -612,32 +525,16 @@ describe('unzip members', () => {
       ],
       {},
     )
-    return resource
+    return vfs
   }
 
   function book(): PathSpec[] {
     return [PathSpec.fromStrPath('/book.zip')]
   }
 
-  it('-p with a member outputs only that member', async () => {
-    const resource = await makeBook()
-    const r = await runCmd(RAM_UNZIP, resource, book(), { p: true }, ['xl/workbook.xml'])
-    expect(DEC.decode(r.out)).toBe(WORKBOOK)
-    expect(r.exitCode).toBe(0)
-    expect(r.stderr.byteLength).toBe(0)
-  })
-
-  it('-p with a missing member exits 11 with a caution on stderr', async () => {
-    const resource = await makeBook()
-    const r = await runCmd(RAM_UNZIP, resource, book(), { p: true }, ['NOSUCHFILE.xml'])
-    expect(r.out.byteLength).toBe(0)
-    expect(r.exitCode).toBe(11)
-    expect(DEC.decode(r.stderr)).toBe(`${CAUTION}NOSUCHFILE.xml\n`)
-  })
-
   it('-p output follows archive order, not argument order', async () => {
-    const resource = await makeBook()
-    const r = await runCmd(RAM_UNZIP, resource, book(), { p: true }, [
+    const vfs = await makeBook()
+    const r = await runCmd(RAM_UNZIP, vfs, book(), { p: true }, [
       'xl/workbook.xml',
       'docProps/app.xml',
     ])
@@ -646,34 +543,34 @@ describe('unzip members', () => {
   })
 
   it('-p charges each entry to the first matching spec', async () => {
-    const resource = await makeBook()
-    const r = await runCmd(RAM_UNZIP, resource, book(), { p: true }, ['*.xml', 'xl/workbook.xml'])
+    const vfs = await makeBook()
+    const r = await runCmd(RAM_UNZIP, vfs, book(), { p: true }, ['*.xml', 'xl/workbook.xml'])
     expect(DEC.decode(r.out)).toBe(APP + SHEET + WORKBOOK)
     expect(r.exitCode).toBe(11)
     expect(DEC.decode(r.stderr)).toBe(`${CAUTION}xl/workbook.xml\n`)
   })
 
   it('-p wildcard star crosses slashes', async () => {
-    const resource = await makeBook()
-    const r = await runCmd(RAM_UNZIP, resource, book(), { p: true }, ['doc*'])
+    const vfs = await makeBook()
+    const r = await runCmd(RAM_UNZIP, vfs, book(), { p: true }, ['doc*'])
     expect(DEC.decode(r.out)).toBe(APP)
     expect(r.exitCode).toBe(0)
   })
 
   it('-p wildcard selects a subtree', async () => {
-    const resource = await makeBook()
-    const r = await runCmd(RAM_UNZIP, resource, book(), { p: true }, ['xl/*'])
+    const vfs = await makeBook()
+    const r = await runCmd(RAM_UNZIP, vfs, book(), { p: true }, ['xl/*'])
     expect(DEC.decode(r.out)).toBe(SHEET + WORKBOOK)
     expect(r.exitCode).toBe(0)
   })
 
   it('-p treats ? as one byte, the way Info-ZIP does', async () => {
-    const resource = new RAMResource()
-    resource.store.files.set('/é.txt', ENC.encode('ACCENT\n'))
-    resource.store.files.set('/ab.txt', ENC.encode('AB\n'))
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/é.txt', ENC.encode('ACCENT\n'))
+    vfs.store.files.set('/ab.txt', ENC.encode('AB\n'))
     await runCmd(
       RAM_ZIP,
-      resource,
+      vfs,
       [
         PathSpec.fromStrPath('/bytes.zip'),
         PathSpec.fromStrPath('/é.txt'),
@@ -682,25 +579,25 @@ describe('unzip members', () => {
       {},
     )
     const arch = [PathSpec.fromStrPath('/bytes.zip')]
-    const one = await runCmd(RAM_UNZIP, resource, arch, { p: true }, ['?.txt'])
+    const one = await runCmd(RAM_UNZIP, vfs, arch, { p: true }, ['?.txt'])
     expect(one.out.byteLength).toBe(0)
     expect(one.exitCode).toBe(11)
     expect(DEC.decode(one.stderr)).toBe(`${CAUTION}?.txt\n`)
-    const two = await runCmd(RAM_UNZIP, resource, arch, { p: true }, ['??.txt'])
+    const two = await runCmd(RAM_UNZIP, vfs, arch, { p: true }, ['??.txt'])
     expect(DEC.decode(two.out)).toBe('ACCENT\nAB\n')
     expect(two.exitCode).toBe(0)
   })
 
   it('-l filters rows and exits 11 only when nothing matched', async () => {
-    const resource = await makeBook()
-    const hit = await runCmd(RAM_UNZIP, resource, book(), { args_l: true }, ['xl/workbook.xml'])
+    const vfs = await makeBook()
+    const hit = await runCmd(RAM_UNZIP, vfs, book(), { args_l: true }, ['xl/workbook.xml'])
     expect(DEC.decode(hit.out)).toContain('xl/workbook.xml')
     expect(DEC.decode(hit.out)).not.toContain('docProps/app.xml')
     expect(hit.exitCode).toBe(0)
-    const miss = await runCmd(RAM_UNZIP, resource, book(), { args_l: true }, ['NOSUCHFILE.xml'])
+    const miss = await runCmd(RAM_UNZIP, vfs, book(), { args_l: true }, ['NOSUCHFILE.xml'])
     expect(miss.exitCode).toBe(11)
     expect(miss.stderr.byteLength).toBe(0)
-    const partial = await runCmd(RAM_UNZIP, resource, book(), { args_l: true }, [
+    const partial = await runCmd(RAM_UNZIP, vfs, book(), { args_l: true }, [
       'xl/workbook.xml',
       'NOSUCHFILE.xml',
     ])
@@ -709,8 +606,8 @@ describe('unzip members', () => {
   })
 
   it('-t reports unmatched members on stdout and exits 11', async () => {
-    const resource = await makeBook()
-    const r = await runCmd(RAM_UNZIP, resource, book(), { t: true }, [
+    const vfs = await makeBook()
+    const r = await runCmd(RAM_UNZIP, vfs, book(), { t: true }, [
       'xl/workbook.xml',
       'NOSUCHFILE.xml',
     ])
@@ -722,13 +619,13 @@ describe('unzip members', () => {
   })
 
   it('extraction writes only the selected members', async () => {
-    const resource = await makeBook()
-    const r = await runCmd(RAM_UNZIP, resource, book(), { d: '/ext' }, [
+    const vfs = await makeBook()
+    const r = await runCmd(RAM_UNZIP, vfs, book(), { d: '/ext' }, [
       'xl/workbook.xml',
       'NOSUCHFILE.xml',
     ])
-    expect(resource.store.files.has('/ext/xl/workbook.xml')).toBe(true)
-    expect(resource.store.files.has('/ext/docProps/app.xml')).toBe(false)
+    expect(vfs.store.files.has('/ext/xl/workbook.xml')).toBe(true)
+    expect(vfs.store.files.has('/ext/docProps/app.xml')).toBe(false)
     expect(r.exitCode).toBe(11)
     expect(DEC.decode(r.stderr)).toBe(`${CAUTION}NOSUCHFILE.xml\n`)
   })
@@ -737,15 +634,15 @@ describe('unzip members', () => {
 describe('archive planner regressions', () => {
   it('two links to one target are not a loop', async () => {
     // GNU tar -h and Info-ZIP both store the two names.
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
     const links = linkView({ '/d/one': '/d/a.txt', '/d/two': '/d/a.txt' })
     const { out, exitCode, stderr } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/d', 'd')],
-      { c: true, h: true, v: true, f: '/out.tar' },
+      { create: true, dereference: true, verbose: true, file: '/out.tar' },
       [],
       '',
       links,
@@ -756,14 +653,14 @@ describe('archive planner regressions', () => {
   })
 
   it('a real cycle is one fatal problem per member and keeps the directory', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
     const links = linkView({ '/d/a': '/d/b', '/d/b': '/d/a' }, true)
     const { exitCode, stderr } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/d', 'd')],
-      { c: true, h: true, f: '/out.tar' },
+      { create: true, dereference: true, file: '/out.tar' },
       [],
       '',
       links,
@@ -775,36 +672,36 @@ describe('archive planner regressions', () => {
   })
 
   it('stores a symlink operand as a symlink rather than its target', async () => {
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
     const links = linkView({ '/link': '/d/a.txt' })
     const { out } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/link', 'link')],
-      { c: true, v: true, f: '/out.tar' },
+      { create: true, verbose: true, file: '/out.tar' },
       [],
       '',
       links,
     )
     expect(DEC.decode(out).trim()).toBe('link')
-    const { out: listed } = await runCmd(RAM_TAR, resource, [], { t: true, f: '/out.tar' })
+    const { out: listed } = await runCmd(RAM_TAR, vfs, [], { list: true, file: '/out.tar' })
     expect(DEC.decode(listed).trim()).toBe('link')
   })
 
   it('stores a symlink operand with its target and no bytes', async () => {
     // The name alone cannot tell the two apart, so read the archive back:
     // a link member carries linkname and no content.
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
     const links = linkView({ '/link': '/d/a.txt' })
     const { writes } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/link', 'link')],
-      { c: true, f: '/out.tar' },
+      { create: true, file: '/out.tar' },
       [],
       '',
       links,
@@ -820,15 +717,15 @@ describe('archive planner regressions', () => {
   it('-h stores the target bytes under the link name', async () => {
     // GNU tar -h follows the link, so the member keeps the link's name but
     // becomes a regular file holding what the target holds.
-    const resource = new RAMResource()
-    resource.store.dirs.add('/d')
-    resource.store.files.set('/d/a.txt', ENC.encode('alpha'))
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/d')
+    vfs.store.files.set('/d/a.txt', ENC.encode('alpha'))
     const links = linkView({ '/link': '/d/a.txt' })
     const { writes } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/link', 'link')],
-      { c: true, h: true, f: '/out.tar' },
+      { create: true, dereference: true, file: '/out.tar' },
       [],
       '',
       links,
@@ -842,13 +739,13 @@ describe('archive planner regressions', () => {
   })
 
   it('-h on a link whose target is gone reports it and writes no member', async () => {
-    const resource = new RAMResource()
+    const vfs = new RAMVFS()
     const links = linkView({ '/link': '/d/missing.txt' })
     const { exitCode, stderr } = await runCmd(
       RAM_TAR,
-      resource,
+      vfs,
       [dirSpec('/link', 'link')],
-      { c: true, h: true, f: '/out.tar' },
+      { create: true, dereference: true, file: '/out.tar' },
       [],
       '',
       links,
@@ -859,19 +756,330 @@ describe('archive planner regressions', () => {
 
   it('fails at the first unenterable -C, not the last', async () => {
     // GNU chdirs at each -C, so a bad early one stops the whole run.
-    const resource = new RAMResource()
-    resource.store.dirs.add('/good')
-    resource.store.files.set('/good/y.txt', ENC.encode('y'))
-    const { exitCode, stderr } = await runCmd(
-      RAM_TAR,
-      resource,
-      [dirSpec('/good/y.txt', 'y.txt')],
-      { c: true, f: '/out.tar', C: ['/missing', '/good'] },
-    )
+    const vfs = new RAMVFS()
+    vfs.store.dirs.add('/good')
+    vfs.store.files.set('/good/y.txt', ENC.encode('y'))
+    const { exitCode, stderr } = await runCmd(RAM_TAR, vfs, [dirSpec('/good/y.txt', 'y.txt')], {
+      create: true,
+      file: '/out.tar',
+      directory: ['/missing', '/good'],
+    })
     expect(exitCode).toBe(2)
     const text = DEC.decode(stderr)
     expect(text).toContain('tar: /missing: Cannot open: No such file or directory')
     expect(text).toContain('Error is not recoverable')
-    expect(resource.store.files.has('/out.tar')).toBe(false)
+    expect(vfs.store.files.has('/out.tar')).toBe(false)
+  })
+})
+
+describe('unzip archive validation', () => {
+  it('an entry reaching past the directory exits 3', async () => {
+    const vfs = await makeMulti()
+    const bytes = vfs.store.files.get('/m.zip')
+    if (bytes === undefined) throw new Error('no archive')
+    const bad = bytes.slice()
+    const at = findSig(bad, [0x50, 0x4b, 0x01, 0x02])
+    bad.set([0xff, 0xff], at + 28)
+    vfs.store.files.set('/m.zip', bad)
+    const r = await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/m.zip')], { args_l: true })
+    expect(r.exitCode).toBe(3)
+    expect(DEC.decode(r.stderr)).toContain('start of central directory not found')
+  })
+
+  it('an entry count short of the directory exits 3', async () => {
+    const vfs = await makeMulti()
+    const bytes = vfs.store.files.get('/m.zip')
+    if (bytes === undefined) throw new Error('no archive')
+    const bad = bytes.slice()
+    const at = findSig(bad, [0x50, 0x4b, 0x05, 0x06])
+    bad.set([0x02, 0x00], at + 10)
+    vfs.store.files.set('/m.zip', bad)
+    const r = await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/m.zip')], { Z: true })
+    expect(r.exitCode).toBe(3)
+    expect(DEC.decode(r.stderr)).toContain('start of central directory not found')
+  })
+
+  it('bytes before the archive shift every offset, and it lists with a warning', async () => {
+    const vfs = await makeMulti()
+    const bytes = vfs.store.files.get('/m.zip')
+    if (bytes === undefined) throw new Error('no archive')
+    const stub = ENC.encode('#!/bin/sh\n')
+    const prefixed = new Uint8Array(stub.byteLength + bytes.byteLength)
+    prefixed.set(stub, 0)
+    prefixed.set(bytes, stub.byteLength)
+    vfs.store.files.set('/m.zip', prefixed)
+    const warning =
+      'warning [/m.zip]:  10 extra bytes at beginning or within zipfile\n  (attempting to process anyway)\n'
+    const listed = await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/m.zip')], {
+      Z: true,
+      args_1: true,
+    })
+    expect(DEC.decode(listed.out)).toBe('d/\nd/a.txt\nb.txt\n')
+    expect(listed.exitCode).toBe(1)
+    expect(DEC.decode(listed.stderr)).toBe(warning)
+    const piped = await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/m.zip')], { p: true }, [
+      'b.txt',
+    ])
+    expect(DEC.decode(piped.out)).toBe('b')
+    expect(piped.exitCode).toBe(1)
+    const missed = await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/m.zip')], { p: true }, [
+      'nomatch',
+    ])
+    expect(missed.exitCode).toBe(11)
+    expect(DEC.decode(missed.stderr)).toBe(warning + 'caution: filename not matched:  nomatch\n')
+  })
+
+  it('an end record pointing past the directory is a missing-bytes error that still lists', async () => {
+    const vfs = await makeMulti()
+    const bytes = vfs.store.files.get('/m.zip')
+    if (bytes === undefined) throw new Error('no archive')
+    const patched = bytes.slice()
+    const at = findSig(patched, [0x50, 0x4b, 0x05, 0x06])
+    const view = new DataView(patched.buffer, patched.byteOffset)
+    view.setUint32(at + 16, view.getUint32(at + 16, true) + 3, true)
+    vfs.store.files.set('/m.zip', patched)
+    const r = await runCmd(RAM_UNZIP, vfs, [PathSpec.fromStrPath('/m.zip')], {
+      Z: true,
+      args_1: true,
+    })
+    expect(DEC.decode(r.out)).toBe('d/\nd/a.txt\nb.txt\n')
+    expect(r.exitCode).toBe(2)
+    expect(DEC.decode(r.stderr)).toBe(
+      'error [/m.zip]:  missing 3 bytes in zipfile\n  (attempting to process anyway)\n',
+    )
+  })
+})
+
+function findSig(bytes: Uint8Array, sig: number[]): number {
+  outer: for (let i = 0; i + sig.length <= bytes.byteLength; i++) {
+    for (let j = 0; j < sig.length; j++) if (bytes[i + j] !== sig[j]) continue outer
+    return i
+  }
+  throw new Error('signature not found')
+}
+
+// d/ (empty dir entry), d/a.txt (200 bytes) and b.txt (1 byte), zipped by
+// mirage: 1980-01-01 stamps and 0644/40755 modes, so every row is pinned.
+async function makeMulti(): Promise<RAMVFS> {
+  const vfs = new RAMVFS()
+  vfs.store.dirs.add('/d')
+  vfs.store.files.set('/d/a.txt', ENC.encode('a'.repeat(200)))
+  vfs.store.files.set('/b.txt', ENC.encode('b'))
+  await runCmd(
+    RAM_ZIP,
+    vfs,
+    [PathSpec.fromStrPath('/m.zip'), dirSpec('/d', 'd'), PathSpec.fromStrPath('/b.txt')],
+    { r: true },
+  )
+  return vfs
+}
+
+describe('unzip -Z (zipinfo mode)', () => {
+  const M = [PathSpec.fromStrPath('/m.zip')]
+
+  it('-Z1 lists names only, whatever -h and -t say', async () => {
+    const vfs = await makeMulti()
+    const r = await runCmd(RAM_UNZIP, vfs, M, { Z: true, args_1: true, h: true, t: true })
+    expect(DEC.decode(r.out)).toBe('d/\nd/a.txt\nb.txt\n')
+    expect(r.exitCode).toBe(0)
+    expect(r.stderr.byteLength).toBe(0)
+  })
+
+  it('zipinfo letters need -Z', async () => {
+    const vfs = await makeMulti()
+    await expect(runCmd(RAM_UNZIP, vfs, M, { args_1: true })).rejects.toThrow(UsageError)
+    await expect(runCmd(RAM_UNZIP, vfs, M, { h: true })).rejects.toThrow(
+      'unzip: -h is a ZipInfo option and needs -Z',
+    )
+  })
+})
+
+describe('unzip -v', () => {
+  const M = [PathSpec.fromStrPath('/m.zip')]
+
+  it.each([[{ args_l: true }], [{ v: true }]])('yields to -t and -p (%o)', async (listing) => {
+    // Info-ZIP lists only when neither -t nor -p picks another mode.
+    const vfs = await makeMulti()
+    const p = await runCmd(RAM_UNZIP, vfs, M, { ...listing, p: true }, ['b.txt'])
+    expect(DEC.decode(p.out)).toBe('b')
+    const t = await runCmd(RAM_UNZIP, vfs, M, { ...listing, t: true })
+    expect(DEC.decode(t.out)).toBe('No errors detected in /m.zip\n')
+  })
+})
+
+describe('unzip -Zm, -Zs and -x', () => {
+  const M = [PathSpec.fromStrPath('/m.zip')]
+
+  it('a filter that leaves nothing exits 11 in every mode', async () => {
+    const vfs = await makeMulti()
+    const z = await runCmd(RAM_UNZIP, vfs, M, { Z: true, args_1: true, x: ['*'] })
+    expect(z.exitCode).toBe(11)
+    expect(z.out.byteLength).toBe(0)
+    const l = await runCmd(RAM_UNZIP, vfs, M, { args_l: true, x: ['*'] })
+    expect(DEC.decode(l.out)).toBe('  Length      Name\n---------  ----\n')
+    expect(l.exitCode).toBe(11)
+    const p = await runCmd(RAM_UNZIP, vfs, M, { p: true, x: ['*'] })
+    expect(p.exitCode).toBe(11)
+    const t = await runCmd(RAM_UNZIP, vfs, M, { t: true, x: ['*'] })
+    expect(DEC.decode(t.out)).toBe('Caution:  zero files tested in /m.zip.\n')
+    expect(t.exitCode).toBe(11)
+    const x = await runCmd(RAM_UNZIP, vfs, M, { x: ['*'] })
+    expect(x.exitCode).toBe(11)
+    expect(Object.keys(x.writes)).toEqual([])
+  })
+
+  it('an excluded member still counts for its include pattern', async () => {
+    const vfs = await makeMulti()
+    const r = await runCmd(RAM_UNZIP, vfs, M, { Z: true, args_1: true, x: ['d/a.txt'] }, ['d/*'])
+    expect(DEC.decode(r.out)).toBe('d/\n')
+    expect(r.exitCode).toBe(0)
+    expect(r.stderr.byteLength).toBe(0)
+  })
+
+  it('-t reports both caution kinds on stdout', async () => {
+    const vfs = await makeMulti()
+    const bad = await runCmd(RAM_UNZIP, vfs, M, { t: true, x: ['b.txt'] }, ['nomatch'])
+    expect(DEC.decode(bad.out)).toBe(
+      'caution: filename not matched:  nomatch\n' +
+        'caution: excluded filename not matched:  b.txt\n' +
+        'At least one error was detected in /m.zip.\n',
+    )
+    expect(bad.exitCode).toBe(11)
+    const ok = await runCmd(RAM_UNZIP, vfs, M, { t: true, x: ['nomatch'] })
+    expect(DEC.decode(ok.out)).toBe(
+      'caution: excluded filename not matched:  nomatch\nNo errors detected in /m.zip\n',
+    )
+    expect(ok.exitCode).toBe(0)
+  })
+
+  it('-p excludes and reports the caution on stderr', async () => {
+    const vfs = await makeMulti()
+    const r = await runCmd(RAM_UNZIP, vfs, M, { p: true, x: ['d/*', 'nomatch'] })
+    expect(DEC.decode(r.out)).toBe('b')
+    expect(r.exitCode).toBe(0)
+    expect(DEC.decode(r.stderr)).toBe('caution: excluded filename not matched:  nomatch\n')
+  })
+})
+
+async function readOnlyShell(
+  seed: string,
+  line: string,
+): Promise<[number, string, string, string[]]> {
+  const vfs = new RAMVFS()
+  const ws = new Workspace(
+    { '/ro/': [vfs, MountMode.WRITE] },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  try {
+    const seeded = await ws.shell(seed)
+    if (seeded.exitCode !== 0) throw new Error(DEC.decode(seeded.stderr))
+    ws.setMountMode('/ro/', MountMode.READ)
+    const before = [...vfs.store.files.keys()].sort()
+    const r = await ws.shell(line)
+    const after = [...vfs.store.files.keys()].sort()
+    expect(after).toEqual(before)
+    return [r.exitCode, DEC.decode(r.stdout), DEC.decode(r.stderr), after]
+  } finally {
+    await ws.close()
+  }
+}
+
+const ARCHIVES =
+  "printf 'hello\\n' > /ro/f.txt && cd /ro && tar -cf a.tar f.txt && zip -q a.zip f.txt && rm f.txt"
+
+describe('tar and unzip on a read-only mount', () => {
+  it.each([
+    ['tar -tf /ro/a.tar', 'f.txt\n'],
+    ['cd /ro && tar tf a.tar', 'f.txt\n'],
+    ['tar -xOf /ro/a.tar', 'hello\n'],
+    ['tar -x --to-stdout -f /ro/a.tar', 'hello\n'],
+  ])('runs %s, which writes nothing', async (line, stdout) => {
+    const [exitCode, out] = await readOnlyShell(ARCHIVES, line)
+    expect([exitCode, out]).toEqual([0, stdout])
+  })
+
+  it.each(['unzip -l /ro/a.zip', 'unzip -v /ro/a.zip', 'unzip -t /ro/a.zip', 'unzip -Z /ro/a.zip'])(
+    'runs %s, which writes nothing',
+    async (line) => {
+      const [exitCode] = await readOnlyShell(ARCHIVES, line)
+      expect(exitCode).toBe(0)
+    },
+  )
+
+  // GNU tar 1.35 on a read-only filesystem: each member it cannot create
+  // is its own line and the run goes on; an archive it cannot create is
+  // fatal before any member is read.
+  const extractRefused =
+    'tar: f.txt: Cannot open: Read-only file system\n' +
+    'tar: Exiting with failure status due to previous errors\n'
+  it.each([
+    ['cd /ro && tar -xf a.tar', 2, extractRefused],
+    ['cd /ro && tar xf a.tar', 2, extractRefused],
+    [
+      'tar -cf /ro/b.tar /ro/a.zip',
+      2,
+      'tar: /ro/b.tar: Cannot open: Read-only file system\n' +
+        'tar: Error is not recoverable: exiting now\n',
+    ],
+    // UnZip 6.00: a member it cannot create is named as it would have made
+    // it (exit 50), an extraction directory it cannot make ends the run
+    // (exit 2). Mirrors test_unzip.py.
+    ['cd /ro && unzip a.zip', 50, 'error:  cannot create f.txt\n        Read-only file system\n'],
+    [
+      'cd /ro && unzip -o a.zip',
+      50,
+      'error:  cannot create f.txt\n        Read-only file system\n',
+    ],
+    [
+      'unzip -q /ro/a.zip -d /ro/out',
+      2,
+      'checkdir:  cannot create extraction directory: /ro/out\n           Read-only file system\n',
+    ],
+  ])('refuses %s at its write', async (line, code, refused) => {
+    const [exitCode, , stderr] = await readOnlyShell(ARCHIVES, line)
+    expect([exitCode, stderr]).toEqual([code, refused])
+  })
+})
+
+describe('tar -f an archive it cannot open', () => {
+  // tar 1.35 names -f as typed. A directory opens and fails the first read,
+  // where a backend keying files alone reports it absent. With a compressor
+  // tar's child speaks, the reading one's gzip meets an empty pipe unless the
+  // name was missing, and tar reports the child's status. Mirrors
+  // test_tar.py.
+  it.each([
+    [
+      'tar -tf nope.tar',
+      'tar: nope.tar: Cannot open: No such file or directory\ntar: Error is not recoverable: exiting now\n',
+    ],
+    [
+      'tar -xf d',
+      'tar: d: Cannot read: Is a directory\ntar: At beginning of tape, quitting now\ntar: Error is not recoverable: exiting now\n',
+    ],
+    [
+      'tar -tzf nope.tgz',
+      'tar (child): nope.tgz: Cannot open: No such file or directory\ntar (child): Error is not recoverable: exiting now\ntar: Child returned status 2\ntar: Error is not recoverable: exiting now\n',
+    ],
+    [
+      'tar -tzf d',
+      'tar (child): d: Cannot read: Is a directory\ntar (child): At beginning of tape, quitting now\ntar (child): Error is not recoverable: exiting now\n\ngzip: stdin: unexpected end of file\ntar: Child returned status 2\ntar: Error is not recoverable: exiting now\n',
+    ],
+    [
+      'tar -czf d a',
+      'tar (child): d: Cannot open: Is a directory\ntar (child): Error is not recoverable: exiting now\ntar: Child returned status 2\ntar: Error is not recoverable: exiting now\n',
+    ],
+  ])('%s', async (line, want) => {
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    try {
+      await ws.shell('mkdir -p /data/d && printf a > /data/a')
+      const r = await ws.shell(`cd /data && ${line}`)
+      expect(r.exitCode).toBe(2)
+      expect(new TextDecoder().decode(r.stderr)).toBe(want)
+    } finally {
+      await ws.close()
+    }
   })
 })

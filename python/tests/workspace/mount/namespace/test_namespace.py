@@ -14,8 +14,8 @@
 
 import pytest
 
-from mirage.core.timeutil import epoch_to_iso
 from mirage.types import FileType
+from mirage.utils.dates import epoch_to_iso
 from mirage.workspace.mount.namespace import Namespace, NodeMeta
 from mirage.workspace.mount.namespace.ram import RAMNamespaceStore
 
@@ -27,13 +27,14 @@ def namespace(registry):
 
 def test_resolve_delegates_to_registry(namespace, registry):
     assert namespace.resolve("/data/hello.txt") == registry.resolve(
-        "/data/hello.txt")
+        "/data/hello.txt"
+    )
 
 
 def test_resolve_follow_noop_without_links(namespace):
     assert namespace.resolve(
-        "/data/hello.txt", follow=True) == namespace.resolve("/data/hello.txt",
-                                                             follow=False)
+        "/data/hello.txt", follow=True
+    ) == namespace.resolve("/data/hello.txt", follow=False)
 
 
 def test_resolve_unknown_path_raises(namespace):
@@ -43,7 +44,8 @@ def test_resolve_unknown_path_raises(namespace):
 
 def test_mount_for_delegates_to_registry(namespace, registry):
     assert namespace.mount_for("/data/hello.txt") is registry.mount_for(
-        "/data/hello.txt")
+        "/data/hello.txt"
+    )
 
 
 @pytest.mark.asyncio
@@ -82,20 +84,23 @@ async def test_rename_moves_link(namespace):
 @pytest.mark.asyncio
 async def test_resolve_follows_link_to_target_mount(namespace):
     await namespace.symlink("/data/link", "/data/hello.txt", 1.0)
-    assert namespace.resolve(
-        "/data/link", follow=True) == namespace.resolve("/data/hello.txt")
+    assert namespace.resolve("/data/link", follow=True) == namespace.resolve(
+        "/data/hello.txt"
+    )
 
 
 @pytest.mark.asyncio
 async def test_resolve_no_follow_keeps_link_path(namespace, registry):
     await namespace.symlink("/data/link", "/data/hello.txt", 1.0)
-    assert namespace.resolve("/data/link",
-                             follow=False) == registry.resolve("/data/link")
+    assert namespace.resolve("/data/link", follow=False) == registry.resolve(
+        "/data/link"
+    )
 
 
 @pytest.mark.asyncio
 async def test_resolve_cycle_raises(namespace):
     from mirage.utils.path import CycleError
+
     await namespace.symlink("/data/a", "/data/b", 1.0)
     await namespace.symlink("/data/b", "/data/a", 1.0)
     with pytest.raises(CycleError):
@@ -121,6 +126,19 @@ async def test_purge_under_drops_nested_entries(namespace):
     assert await namespace.purge_under("/data/sub") == 2
     assert namespace.is_link("/data/keep") is True
     assert namespace.is_link("/data/sub/a") is False
+
+
+@pytest.mark.asyncio
+async def test_drop_overlays_under_keeps_links_and_siblings(namespace):
+    await namespace.set_attrs("/data/sub", mode=0o700)
+    await namespace.set_attrs("/data/sub/deep/x", mode=0o600)
+    await namespace.set_attrs("/data/sub2", mode=0o600)
+    await namespace.symlink("/data/sub/link", "/t1", 1.0)
+    assert await namespace.drop_overlays_under(["/data/sub"]) == 2
+    assert namespace.meta_for("/data/sub") is None
+    assert namespace.meta_for("/data/sub/deep/x") is None
+    assert namespace.meta_for("/data/sub2") is not None
+    assert namespace.is_link("/data/sub/link") is True
 
 
 @pytest.mark.asyncio
@@ -177,11 +195,13 @@ async def test_rename_moves_overlay_node(namespace):
 
 @pytest.mark.asyncio
 async def test_clear_times_keeps_mode_and_ownership(namespace):
-    await namespace.set_attrs("/data/f.txt",
-                              mode=0o601,
-                              uid=500,
-                              mtime=1.0,
-                              atime="2026-03-04T12:00:00+00:00")
+    await namespace.set_attrs(
+        "/data/f.txt",
+        mode=0o601,
+        uid=500,
+        mtime=1.0,
+        atime="2026-03-04T12:00:00+00:00",
+    )
     await namespace.clear_times("/data/f.txt")
     meta = namespace.meta_for("/data/f.txt")
     assert meta.mtime is None
@@ -417,6 +437,28 @@ async def test_link_stats_under_is_one_level_only(namespace):
 
 
 @pytest.mark.asyncio
+async def test_link_names_under_is_one_level_of_names(namespace):
+    # What a readdir row's mark needs: the names, one level, no stats.
+    await namespace.symlink("/data/a", "/t1", 1.0)
+    await namespace.symlink("/data/sub/b", "/t2", 1.0)
+    assert namespace.link_names_under("/data") == {"a"}
+    assert namespace.link_names_under("/other") == set()
+
+
+@pytest.mark.asyncio
+async def test_link_names_under_answers_for_the_directory_a_link_names(
+    namespace,
+):
+    # A readdir of an alias is dispatched at its target and answers with
+    # that directory's entries, so the marks come from there. Asking the
+    # typed path left every link inside an aliased directory unmarked,
+    # and a dir link inside it then read as a directory a walk recurses.
+    await namespace.symlink("/data/real/lk", "/data/real/t.txt", 1.0)
+    await namespace.symlink("/data/alias", "/data/real", 1.0)
+    assert namespace.link_names_under("/data/alias") == {"lk"}
+
+
+@pytest.mark.asyncio
 async def test_link_stats_below_spans_the_whole_subtree(namespace):
     await namespace.symlink("/data/a", "/t1", 1.0)
     await namespace.symlink("/data/sub/b", "/t2", 1.0)
@@ -428,8 +470,38 @@ async def test_link_stats_below_spans_the_whole_subtree(namespace):
 
 @pytest.mark.asyncio
 async def test_link_stats_below_does_not_match_a_sibling_name_prefix(
-        namespace):
+    namespace,
+):
     await namespace.symlink("/data/a", "/t1", 1.0)
     await namespace.symlink("/database/b", "/t2", 1.0)
     found = [path for path, _ in namespace.link_stats_below("/data")]
     assert found == ["/data/a"]
+
+
+@pytest.mark.asyncio
+async def test_xattrs_live_on_the_node_and_leave_with_the_last_one(namespace):
+    await namespace.set_xattr("/data/f.txt", "user.a", b"one")
+    await namespace.set_attrs("/data/g.txt", mode=0o600)
+    await namespace.set_xattr("/data/g.txt", "user.b", b"two")
+    assert namespace.xattrs("/data/f.txt") == {"user.a": b"one"}
+    await namespace.remove_xattr("/data/f.txt", "user.a")
+    assert namespace.meta_for("/data/f.txt") is None
+    await namespace.remove_xattr("/data/g.txt", "user.b")
+    assert namespace.meta_for("/data/g.txt").mode == 0o600
+
+
+def test_xattrs_ride_the_flat_fields_as_base64():
+    meta = NodeMeta(mode=0o644, xattrs={"user.bin": b"\x00\xff"})
+    fields = meta.to_fields()
+    assert fields["xattr:user.bin"] == "AP8="
+    assert NodeMeta.from_fields(fields) == meta
+
+
+@pytest.mark.asyncio
+async def test_xattrs_survive_a_store_round_trip(registry):
+    store = RAMNamespaceStore()
+    first = Namespace(registry, store=store)
+    await first.set_xattr("/data/f.txt", "user.a", b"one")
+    second = Namespace(registry, store=store)
+    await second.ensure_loaded()
+    assert second.xattrs("/data/f.txt") == {"user.a": b"one"}

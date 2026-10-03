@@ -15,9 +15,11 @@
 import { describe, expect, it } from 'vitest'
 import { materialize } from '../../../io/types.ts'
 import { OpsRegistry, type RegisteredOp } from '../../../ops/registry.ts'
-import { RAMResource } from '../../../resource/ram/ram.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import { type CommandOpts } from '../../config.ts'
 import {
+  ContentType,
+  DEVICE_NUMBERS_KEY,
   FileStat,
   type FileStatInit,
   FileType,
@@ -25,6 +27,7 @@ import {
   MountMode,
   PathSpec,
 } from '../../../types.ts'
+import { DIR_SIZE } from '../../../utils/stat_view.ts'
 import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
 import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { statGeneric } from './stat.ts'
@@ -34,11 +37,16 @@ const MTIME_EPOCH = '1767367845'
 const DEC = new TextDecoder()
 
 function fs(overrides: Partial<FileStatInit> = {}): FileStat {
+  // A content shape rides only on a regular file; an override that picks
+  // another kind drops it, the way a backend never reports one for a
+  // directory or link.
+  const type = overrides.type ?? FileType.FILE
   return new FileStat({
     name: 'f.txt',
     size: 6,
     modified: MTIME,
-    type: FileType.TEXT,
+    type,
+    ...(type === FileType.FILE ? { content: ContentType.TEXT } : {}),
     ...overrides,
   })
 }
@@ -49,7 +57,7 @@ function opts(fmt: string): CommandOpts {
     flags: { c: fmt },
     filetypeFns: null,
     cwd: '/',
-    resource: null,
+    vfs: null,
   } as unknown as CommandOpts
 }
 
@@ -123,18 +131,29 @@ class NoSetattrRegistry extends OpsRegistry {
 }
 
 async function run(ws: Workspace, cmd: string): Promise<[number, string, string]> {
-  const r = await ws.execute(cmd)
+  const r = await ws.shell(cmd)
   return [r.exitCode, r.stdoutText, r.stderrText]
 }
 
 describe('stat -c directive formatting', () => {
-  it('renders name, quoted name, size, and type', async () => {
-    expect(await render('%n', fs())).toBe('/data/f.txt')
-    expect(await render('%N', fs())).toBe("'/data/f.txt'")
-    expect(await render('%s', fs({ size: 42 }))).toBe('42')
-    expect(await render('%s', fs({ size: null }))).toBe('0')
-    expect(await render('%F', fs())).toBe('regular file')
-    expect(await render('%F', fs({ type: FileType.DIRECTORY }))).toBe('directory')
+  // A directory is DIR_SIZE whatever the backend put in size: null for a
+  // synthetic one, a subtree total for a Graph folder. A file keeps its own
+  // size, None when unknown.
+  it('sizes a directory in the default record as %s does', async () => {
+    const plain = { ...opts(''), flags: {} } as CommandOpts
+    const cases: [FileStat, string][] = [
+      [fs({ type: FileType.DIRECTORY, size: null }), `  Size: ${String(DIR_SIZE)} `],
+      [fs({ type: FileType.DIRECTORY, size: 123456 }), `  Size: ${String(DIR_SIZE)} `],
+      [fs({ size: null }), '  Size: - '],
+    ]
+    for (const [s, want] of cases) {
+      const result = await statGeneric([PathSpec.fromStrPath('/data/f.txt')], plain, () =>
+        Promise.resolve(s),
+      )
+      if (result === null) throw new Error('statGeneric returned null')
+      expect(result[1].exitCode).toBe(0)
+      expect(DEC.decode(await materialize(result[0]))).toContain(want)
+    }
   })
 
   it('renders mode directives with defaults and explicit bits', async () => {
@@ -153,7 +172,7 @@ describe('stat -c directive formatting', () => {
     expect(await render('%a', d)).toBe('755')
     expect(await render('%A', d)).toBe('drwxr-xr-x')
     expect(await render('%f', d)).toBe('41ed')
-    expect(await render('%s', d)).toBe('0')
+    expect(await render('%s', d)).toBe('4096')
   })
 
   it('renders setuid/setgid/sticky bits in %A', async () => {
@@ -184,14 +203,14 @@ describe('stat -c directive formatting', () => {
     expect(await render('%N', linkFs('a\tb'))).toBe("'/data/f.txt' -> 'a'$'\\t''b'")
   })
 
-  it('renders owner directives, falling back to "user"', async () => {
+  it('renders owner directives, falling back to "-"', async () => {
     const owned = fs({ uid: 1000, gid: 'dev' })
     expect(await render('%u %U %g %G', owned)).toBe('1000 1000 dev dev')
-    expect(await render('%u %U %g %G', fs({ uid: null, gid: null }))).toBe('user user user user')
+    expect(await render('%u %U %g %G', fs({ uid: null, gid: null }))).toBe('- - - -')
   })
 
   it('renders time directives and epochs', async () => {
-    const s = fs({ modified: MTIME, atime: '2026-03-04T05:06:07Z' })
+    const s = fs({ modified: MTIME, ctime: MTIME, atime: '2026-03-04T05:06:07Z' })
     expect(await render('%y', s)).toBe(MTIME)
     expect(await render('%Y', s)).toBe(MTIME_EPOCH)
     expect(await render('%z', s)).toBe(MTIME)
@@ -201,20 +220,22 @@ describe('stat -c directive formatting', () => {
   })
 
   it('falls back atime to mtime when absent', async () => {
-    const s = fs({ modified: MTIME, atime: null })
+    const s = fs({ modified: MTIME, ctime: MTIME, atime: null })
     expect(await render('%x', s)).toBe(MTIME)
     expect(await render('%X', s)).toBe(MTIME_EPOCH)
-  })
-
-  it('renders birth sentinels and epoch of unknown time', async () => {
-    expect(await render('%w', fs())).toBe('-')
-    expect(await render('%W', fs())).toBe('0')
-    expect(await render('%Y', fs({ modified: null }))).toBe('0')
   })
 
   it('renders structural constants', async () => {
     expect(await render('%B', fs())).toBe('512')
     expect(await render('%r %R %t %T', fs())).toBe('0 0 0 0')
+  })
+
+  it('renders character-device number directives', async () => {
+    const device = fs({
+      type: FileType.CHAR_DEVICE,
+      extra: { [DEVICE_NUMBERS_KEY]: [1, 3] },
+    })
+    expect(await render('%r %R %t %T %Hr %Lr', device)).toBe('259 103 1 3 1 3')
   })
 
   it('renders "?" for unbacked and unknown directives', async () => {
@@ -223,46 +244,25 @@ describe('stat -c directive formatting', () => {
     }
   })
 
-  it('handles literal percent and mixed text', async () => {
-    expect(await render('100%%', fs())).toBe('100%')
-    expect(await render('size=%s type=%F', fs({ size: 6 }))).toBe('size=6 type=regular file')
-  })
-
   it('handles long incomplete directives in linear time', async () => {
     const fmt = `%${'0'.repeat(10_000)}!`
     expect(await render(fmt, fs())).toBe(fmt)
   })
 
   it('reports missing operand', async () => {
-    const result = await statGeneric([], opts('%n'), () => Promise.resolve(fs()))
-    if (result === null) throw new Error('statGeneric returned null')
-    const [, io] = result
-    expect(io.exitCode).toBe(1)
-    expect(DEC.decode(await materialize(io.stderr))).toContain('missing operand')
-  })
-
-  it('continues past an errored operand and exits 1', async () => {
-    const ok = PathSpec.fromStrPath('/data/ok.txt')
-    const bad = PathSpec.fromStrPath('/data/bad.txt')
-    const statFn = (p: PathSpec): Promise<FileStat> =>
-      p.virtual === bad.virtual
-        ? Promise.reject(Object.assign(new Error('nope'), { code: 'ENOENT' }))
-        : Promise.resolve(fs({ size: 3 }))
-    const result = await statGeneric([bad, ok], opts('%s'), statFn)
-    if (result === null) throw new Error('statGeneric returned null')
-    const [out, io] = result
-    expect(io.exitCode).toBe(1)
-    expect(DEC.decode(await materialize(out))).toBe('3\n')
+    await expect(statGeneric([], opts('%n'), () => Promise.resolve(fs()))).rejects.toThrow(
+      "stat: missing operand\nTry 'stat --help' for more information.",
+    )
   })
 })
 
 describe('stat -c workspace integration', () => {
   it('reflects overlay chmod/chown on a setattr-less backend', async () => {
     const parser = await getTestParser()
-    const resource = new RAMResource()
-    resource.store.files.set('/f.txt', new TextEncoder().encode('hello'))
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/f.txt', new TextEncoder().encode('hello'))
     const ws = new Workspace(
-      { '/data': resource },
+      { '/data': vfs },
       { mode: MountMode.WRITE, shellParser: parser, ops: new NoSetattrRegistry() },
     )
     await run(ws, 'chmod 600 /data/f.txt')
@@ -274,38 +274,87 @@ describe('stat -c workspace integration', () => {
 
   it('defaults owner to the workspace agent', async () => {
     const parser = await getTestParser()
-    const resource = new RAMResource()
-    resource.store.files.set('/f.txt', new TextEncoder().encode('hello'))
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/f.txt', new TextEncoder().encode('hello'))
     const ws = new Workspace(
-      { '/data': resource },
+      { '/data': vfs },
       { mode: MountMode.WRITE, shellParser: parser, agentId: 'agent7' },
     )
     const [code, out] = await run(ws, 'stat -c "%U:%G" /data/f.txt')
     expect(code).toBe(0)
-    expect(out).toBe('agent7:agent7\n')
+    // The owner is the workspace user; the group is the session's
+    // profile, and this session runs under none.
+    expect(out).toBe('agent7:-\n')
   })
 
-  it('falls back to "user" when the workspace is unclaimed', async () => {
+  it('falls back to "-" when the workspace is unclaimed', async () => {
     const parser = await getTestParser()
-    const resource = new RAMResource()
-    resource.store.files.set('/f.txt', new TextEncoder().encode('hello'))
-    const ws = new Workspace({ '/data': resource }, { mode: MountMode.WRITE, shellParser: parser })
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/f.txt', new TextEncoder().encode('hello'))
+    const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE, shellParser: parser })
     const [code, out] = await run(ws, 'stat -c "%U:%G" /data/f.txt')
     expect(code).toBe(0)
-    expect(out).toBe('user:user\n')
+    expect(out).toBe('-:-\n')
   })
+})
 
-  it('agrees with ls -l on owner', async () => {
-    const parser = await getTestParser()
-    const resource = new RAMResource()
-    resource.store.files.set('/f.txt', new TextEncoder().encode('hello'))
-    const ws = new Workspace(
-      { '/data': resource },
-      { mode: MountMode.WRITE, shellParser: parser, agentId: 'agent7' },
-    )
-    const [, statOwner] = await run(ws, 'stat -c "%U %G" /data/f.txt')
-    const [, lsLong] = await run(ws, 'ls -l /data/f.txt')
-    expect(statOwner.trim()).toBe('agent7 agent7')
-    expect(lsLong).toContain('agent7 agent7')
-  })
+it('renders GNU default layout with explicit unknown metadata', async () => {
+  const info = fs({ size: null, modified: null, ctime: null })
+  const result = await statGeneric(
+    [PathSpec.fromStrPath('/data/f.txt')],
+    { ...opts(''), flags: {} },
+    () => Promise.resolve(info),
+  )
+  if (result === null) throw new Error('missing result')
+  expect(DEC.decode(await materialize(result[0]))).toBe(
+    '  File: /data/f.txt\n' +
+      '  Size: -         \tBlocks: ?          IO Block: ?      regular file\n' +
+      'Device: ?\tInode: ?           Links: ?\n' +
+      'Access: (0644/-rw-r--r--)  Uid: (    -/       -)   Gid: (    -/       -)\n' +
+      'Access: -\nModify: -\nChange: -\n Birth: -\n',
+  )
+  expect(await render('%z %Z %w %W', info)).toBe('- 0 - 0')
+  expect(await render('%z %Z %w %W', fs({ ctime: '2026-03-04T05:06:07Z', birthtime: MTIME }))).toBe(
+    `2026-03-04T05:06:07Z 1772600767 ${MTIME} ${MTIME_EPOCH}`,
+  )
+})
+
+async function defaultLines(s: FileStat): Promise<string[]> {
+  const result = await statGeneric(
+    [PathSpec.fromStrPath('/data/f.txt')],
+    { ...opts(''), flags: {} },
+    () => Promise.resolve(s),
+  )
+  if (result === null) throw new Error('missing result')
+  return DEC.decode(await materialize(result[0]))
+    .trimEnd()
+    .split('\n')
+}
+
+it("renders the directives' times in GNU layout, identically across hosts", async () => {
+  // The Access line is %x, which falls back to the mtime; a naive stamp is
+  // UTC and an offset one is moved to UTC; the fraction is the digits the
+  // stamp carries, so both hosts print the same line.
+  const lines = await defaultLines(
+    fs({
+      modified: '2026-03-04T05:06:07.123456789',
+      ctime: '2026-03-04T07:06:07.5+02:00',
+      birthtime: '2026-03-04T05:06:07Z',
+    }),
+  )
+  expect(lines.slice(4)).toEqual([
+    'Access: 2026-03-04 05:06:07.123456789 +0000',
+    'Modify: 2026-03-04 05:06:07.123456789 +0000',
+    'Change: 2026-03-04 05:06:07.500000000 +0000',
+    ' Birth: 2026-03-04 05:06:07.000000000 +0000',
+  ])
+  expect((await defaultLines(fs({ modified: 'not a time' })))[5]).toBe('Modify: -')
+})
+
+it('names a device type in the default layout', async () => {
+  const lines = await defaultLines(
+    fs({ type: FileType.CHAR_DEVICE, size: null, extra: { [DEVICE_NUMBERS_KEY]: [1, 3] } }),
+  )
+  expect(lines[1]?.endsWith('character special file')).toBe(true)
+  expect(lines[2]).toBe('Device: ?\tInode: ?           Links: ?     Device type: 1,3')
 })

@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { GDriveAccessor } from '../../accessor/gdrive.ts'
-import { invalidateAfterUnlink } from '../../cache/context.ts'
+import { invalidateSubtree } from '../../cache/context.ts'
 import type { PathSpec } from '../../types.ts'
 import { enoent, enotempty } from '../../utils/errors.ts'
 import { deleteFile, listFiles, patchFile } from '../google/drive.ts'
@@ -21,9 +21,9 @@ import { driveTargetName, eaccesOnDenied, isFolder, resolveKey, resolveParent } 
 
 async function renameImpl(accessor: GDriveAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
   const tm = accessor.tokenManager
-  const srcNode = await resolveKey(accessor, src.resourcePath)
+  const srcNode = await resolveKey(accessor, src.vfsPath)
   if (srcNode === null) throw enoent(src)
-  const dstNode = await resolveKey(accessor, dst.resourcePath)
+  const dstNode = await resolveKey(accessor, dst.vfsPath)
   if (dstNode !== null) {
     // GNU mv overwrites the destination: drop a conflicting file (or empty
     // folder) before the move. A non-empty folder conflict is mv's
@@ -32,7 +32,7 @@ async function renameImpl(accessor: GDriveAccessor, src: PathSpec, dst: PathSpec
       const children = await listFiles(tm, {
         folderId: dstNode.id,
         driveId: dstNode.driveId,
-        pageSize: 1,
+        limit: 1,
       })
       if (children.length > 0) throw enotempty(dst)
     }
@@ -40,7 +40,7 @@ async function renameImpl(accessor: GDriveAccessor, src: PathSpec, dst: PathSpec
   }
   const [srcParentId] = await resolveParent(accessor, src)
   const [dstParentId] = await resolveParent(accessor, dst)
-  const dstKey = dst.resourcePath
+  const dstKey = dst.vfsPath
   const basename = dstKey.includes('/') ? dstKey.slice(dstKey.lastIndexOf('/') + 1) : dstKey
   const name = driveTargetName(basename, srcNode)
   const move = dstParentId !== srcParentId
@@ -48,8 +48,8 @@ async function renameImpl(accessor: GDriveAccessor, src: PathSpec, dst: PathSpec
     body: { name },
     ...(move ? { addParents: dstParentId, removeParents: srcParentId } : {}),
   })
-  await invalidateAfterUnlink(dst)
-  await invalidateAfterUnlink(src)
+  await invalidateSubtree(dst)
+  await invalidateSubtree(src)
 }
 
 export const rename = eaccesOnDenied(renameImpl)

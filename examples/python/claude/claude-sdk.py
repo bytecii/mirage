@@ -35,15 +35,16 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 from mirage.fuse.fs import MirageFS
 from mirage.fuse.mount import mount_background
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 
 def unmount(mountpoint: str) -> None:
     if sys.platform == "darwin":
-        subprocess.run(["diskutil", "unmount", "force", mountpoint],
-                       capture_output=True)
+        subprocess.run(
+            ["diskutil", "unmount", "force", mountpoint], capture_output=True
+        )
     else:
         subprocess.run(["fusermount", "-u", mountpoint], capture_output=True)
 
@@ -83,14 +84,15 @@ def main() -> None:
         default=(
             "Create a file called /hello.py that prints 'Hello from Mirage!' "
             "and a file called /utils.py with a function"
-            " that reverses a string."),
+            " that reverses a string."
+        ),
     )
     args = parser.parse_args()
 
-    ws = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
 
     with tempfile.TemporaryDirectory() as mountpoint:
-        fs = MirageFS(ws.ops)
+        fs = MirageFS(ws.vfs)
         t = mount_background(ws, mountpoint)
         print(f"Mounted memory workspace at {mountpoint}")
         print(f"Prompt: {args.prompt}\n")

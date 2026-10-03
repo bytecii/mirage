@@ -12,7 +12,20 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { makeUnlink } from '../google/tree_ops.ts'
+import type { GSheetsAccessor } from '../../accessor/gsheets.ts'
+import type { IndexEntry } from '../../cache/index/config.ts'
+import { deleteFile } from '../google/drive.ts'
+import { makeUnlink } from '../hierarchy/unlink.ts'
 import { readdir } from './readdir.ts'
+import { detectScope } from './scope.ts'
+import type { ScopeMatch } from '../hierarchy/scope.ts'
 
-export const unlink = makeUnlink(readdir)
+async function del(
+  accessor: GSheetsAccessor,
+  _match: ScopeMatch,
+  entry: IndexEntry,
+): Promise<void> {
+  await deleteFile(accessor.tokenManager, entry.id)
+}
+
+export const unlink = makeUnlink(detectScope, readdir, { deleters: { file: del } })

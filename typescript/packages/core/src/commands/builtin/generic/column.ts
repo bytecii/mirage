@@ -13,59 +13,96 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { readStdinAsync } from '../utils/stream.ts'
+import { joinFileBytes, splitLines } from '../utils/lines.ts'
+import { advanceColumn, isSpace, textWidth } from '../../../utils/width.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
 
-function padRight(s: string, width: number): string {
-  if (s.length >= width) return s
-  return s + ' '.repeat(width - s.length)
+const DEFAULT_WIDTH = 80
+
+function isBlank(line: string): boolean {
+  for (const ch of line) if (!isSpace(ch.codePointAt(0) ?? 0)) return false
+  return true
 }
 
-function splitLinesNoTrailing(text: string): string[] {
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped === '' ? [] : stripped.split('\n')
+// The input lines util-linux `column` lays out: blank ones dropped.
+function entries(text: string): string[] {
+  return splitLines(text).filter((line) => !isBlank(line))
+}
+
+// `COLUMNS` when it is a positive number, else 80: stdout is no tty.
+function outputWidth(env: Readonly<Record<string, string>> | undefined): number {
+  const raw = env?.COLUMNS ?? ''
+  return /^[0-9]+$/.test(raw) && Number(raw) > 0 ? Number(raw) : DEFAULT_WIDTH
+}
+
+/**
+ * Lay entries down the columns, util-linux `column`'s default mode: each
+ * column is the widest entry rounded up to the next tab stop, as many
+ * columns as fit the width (at least one), and a gap is tabs to the next
+ * column start. Mirrors Python's `_fill_columns`.
+ */
+function fillColumns(text: string, width: number): string {
+  const items = entries(text)
+  if (items.length === 0) return ''
+  const stop = advanceColumn(
+    items.reduce((widest, item) => Math.max(widest, textWidth(item)), 0),
+    0x09,
+  )
+  const rows = Math.ceil(items.length / Math.max(1, Math.floor(width / stop)))
+  const out: string[] = []
+  for (let row = 0; row < rows; row++) {
+    let line = ''
+    let at = 0
+    let end = stop
+    for (let index = row; index < items.length; index += rows) {
+      const item = items[index] ?? ''
+      line += item
+      at += textWidth(item)
+      if (index + rows >= items.length) break
+      while (advanceColumn(at, 0x09) <= end) {
+        line += '\t'
+        at = advanceColumn(at, 0x09)
+      }
+      end += stop
+    }
+    out.push(line)
+  }
+  return out.join('\n') + '\n'
 }
 
 function tableFormat(text: string, separator: string | null, outputSep: string): string {
-  const lines = splitLinesNoTrailing(text)
-  if (lines.length === 0) return ''
-  const rows: string[][] = []
-  for (const line of lines) {
-    if (separator !== null && separator !== '') {
-      rows.push(line.split(separator))
-    } else {
-      rows.push(line.split(/\s+/).filter((s) => s !== ''))
-    }
-  }
+  const rows = entries(text).map((line) =>
+    separator !== null && separator !== ''
+      ? line.split(separator)
+      : line.split(/\s+/).filter((s) => s !== ''),
+  )
   if (rows.length === 0) return ''
-  let maxCols = 0
-  for (const r of rows) {
-    if (r.length > maxCols) maxCols = r.length
-  }
-  const widths = new Array(maxCols).fill(0) as number[]
+  const widths = new Array(rows.reduce((most, r) => Math.max(most, r.length), 0)).fill(
+    0,
+  ) as number[]
   for (const row of rows) {
-    for (let idx = 0; idx < row.length; idx++) {
-      const cell = row[idx] ?? ''
-      if (cell.length > (widths[idx] ?? 0)) widths[idx] = cell.length
-    }
+    row.forEach((cell, idx) => {
+      widths[idx] = Math.max(widths[idx] ?? 0, textWidth(cell))
+    })
   }
-  const out: string[] = []
-  for (const row of rows) {
-    const parts: string[] = []
-    for (let idx = 0; idx < row.length; idx++) {
-      const cell = row[idx] ?? ''
-      if (idx < row.length - 1) parts.push(padRight(cell, widths[idx] ?? 0))
-      else parts.push(cell)
-    }
-    out.push(parts.join(outputSep))
-  }
-  return out.join('\n') + '\n'
+  return (
+    rows
+      .map((row) =>
+        row
+          .map((cell, idx) =>
+            idx < row.length - 1 ? cell + ' '.repeat((widths[idx] ?? 0) - textWidth(cell)) : cell,
+          )
+          .join(outputSep),
+      )
+      .join('\n') + '\n'
+  )
 }
 
 export async function columnGeneric(
@@ -79,15 +116,17 @@ export async function columnGeneric(
   const oFlag = fl.asStr('o') ?? '  '
   let raw: Uint8Array
   if (paths.length > 0) {
-    const first = paths[0]
-    if (first === undefined) return [null, new IOResult()]
-    raw = await materialize(stream(first))
+    // Every operand is read, as one run of lines in which a file's last line
+    // ends where the next file begins. Mirrors Python's column.
+    const parts: Uint8Array[] = []
+    for (const path of paths) parts.push(await materialize(stream(path)))
+    raw = joinFileBytes(parts, 0x0a)
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
     raw = stdinData ?? new Uint8Array(0)
   }
   const text = DEC.decode(raw)
-  const output = tMode ? tableFormat(text, sFlag, oFlag) : text
+  const output = tMode ? tableFormat(text, sFlag, oFlag) : fillColumns(text, outputWidth(opts.env))
   const result: ByteSource = ENC.encode(output)
   return [result, new IOResult()]
 }

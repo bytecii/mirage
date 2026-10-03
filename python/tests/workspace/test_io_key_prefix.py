@@ -21,14 +21,17 @@ import boto3
 import pytest
 from moto.server import ThreadedMotoServer
 
-from mirage.resource.ram import RAMResource
-from mirage.resource.s3.s3 import S3Config, S3Resource
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
+from mirage.vfs.s3.config import S3Config
+from mirage.vfs.s3.s3 import S3VFS
 from mirage.workspace import Workspace
 
-CREDS = dict(aws_access_key_id="testing",
-             aws_secret_access_key="testing",
-             region_name="us-east-1")
+CREDS = dict(
+    aws_access_key_id="testing",
+    aws_secret_access_key="testing",
+    region_name="us-east-1",
+)
 
 
 @pytest.fixture()
@@ -41,15 +44,19 @@ def s3_endpoint() -> Iterator[str]:
 
 
 def _s3_workspace(endpoint: str, bucket: str) -> Workspace:
-    boto3.client("s3", endpoint_url=endpoint,
-                 **CREDS).create_bucket(Bucket=bucket)
-    s3 = S3Resource(
-        S3Config(bucket=bucket,
-                 region="us-east-1",
-                 endpoint_url=endpoint,
-                 aws_access_key_id="testing",
-                 aws_secret_access_key="testing",
-                 path_style=True))
+    boto3.client("s3", endpoint_url=endpoint, **CREDS).create_bucket(
+        Bucket=bucket
+    )
+    s3 = S3VFS(
+        S3Config(
+            bucket=bucket,
+            region="us-east-1",
+            endpoint_url=endpoint,
+            aws_access_key_id="testing",
+            aws_secret_access_key="testing",
+            path_style=True,
+        )
+    )
     return Workspace({"/data": s3}, mode=MountMode.WRITE)
 
 
@@ -64,9 +71,9 @@ def _capture_io(ws: Workspace) -> list:
     captured: list = []
     orig = ws._dispatcher.apply_io
 
-    async def recording(result, records=None):
+    async def recording(result, records=None, cache_facts=None):
         captured.append(result)
-        return await orig(result, records=records)
+        return await orig(result, records=records, cache_facts=cache_facts)
 
     ws._dispatcher.apply_io = recording
     return captured
@@ -74,7 +81,7 @@ def _capture_io(ws: Workspace) -> list:
 
 def _assert_single_prefix(captured: list) -> None:
     for result in captured:
-        keys = (list(result.writes) + list(result.reads) + list(result.cache))
+        keys = list(result.writes) + list(result.reads) + list(result.cache)
         for key in keys:
             if key.startswith("/dev/"):
                 continue
@@ -82,41 +89,61 @@ def _assert_single_prefix(captured: list) -> None:
             assert not key.startswith("/data/data/"), key
 
 
-@pytest.mark.parametrize("cmd,stdin", [
-    ("tee /data/t.txt > /dev/null", b"x\ny\n"),
-    ("csplit -f /data/cs_ /data/seed.txt 2", None),
-    ("unzip /data/a.zip -d /data/exout", None),
-    ("cp /data/seed.txt /data/copy.txt", None),
-    ("grep x /data/seed.txt > /data/red.txt", None),
-    ("cat /data/seed.txt >> /data/app.txt", None),
-    ("cat /data/seed.txt | tee /data/piped.txt > /dev/null", None),
-    ("sed s/x/z/ /data/seed.txt > /data/s1.txt && cat /data/s1.txt"
-     " > /data/s2.txt", None),
-])
-def test_ram_io_keys_single_prefixed(cmd, stdin):
-    ws = Workspace({"/data": RAMResource()}, mode=MountMode.WRITE)
+@pytest.mark.parametrize(
+    "cmd,stdin,recorded",
+    [
+        ("tee /data/t.txt > /dev/null", b"x\ny\n", ()),
+        ("csplit -f /data/cs_ /data/seed.txt 2", None, ()),
+        ("csplit /data/seed.txt 2", None, ()),
+        ("split -l 1 /data/seed.txt", None, ()),
+        ("cd /data && split -l 1", b"x\ny\n", ()),
+        ("cd /data && csplit - 2", b"x\ny\n", ()),
+        ("unzip /data/a.zip -d /data/exout", None, ()),
+        ("cp /data/seed.txt /data/copy.txt", None, ()),
+        ("mkdir /data/newdir", None, ()),
+        (
+            "mv /data/seed.txt /data/moved.txt",
+            None,
+            ("/data/seed.txt", "/data/moved.txt"),
+        ),
+        ("rm -r /data/d", None, ("/data/d",)),
+        ("grep x /data/seed.txt > /data/red.txt", None, ()),
+        ("cat /data/seed.txt >> /data/app.txt", None, ()),
+        ("cat /data/seed.txt | tee /data/piped.txt > /dev/null", None, ()),
+        (
+            "sed s/x/z/ /data/seed.txt > /data/s1.txt && cat /data/s1.txt"
+            " > /data/s2.txt",
+            None,
+            (),
+        ),
+    ],
+)
+def test_ram_io_keys_single_prefixed(cmd, stdin, recorded):
+    ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
 
     async def run():
-        await ws.execute("tee /data/seed.txt > /dev/null", stdin=b"x\ny\n")
-        await ws.execute("tee /data/a.zip > /dev/null", stdin=_zip_bytes())
+        await ws.shell("tee /data/seed.txt > /dev/null", stdin=b"x\ny\n")
+        await ws.shell("tee /data/a.zip > /dev/null", stdin=_zip_bytes())
+        await ws.shell("mkdir -p /data/d/sub && cp /data/seed.txt /data/d/sub")
         captured = _capture_io(ws)
-        result = await ws.execute(cmd, stdin=stdin)
+        result = await ws.shell(cmd, stdin=stdin)
         assert result.exit_code == 0, await result.stderr_str()
         _assert_single_prefix(captured)
+        assert set(recorded) <= set(result.writes)
         await ws.close()
 
     asyncio.run(run())
 
 
 def test_ram_stderr_redirect_records_mount_relative_key():
-    ws = Workspace({"/data": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
 
     async def run():
         captured = _capture_io(ws)
-        result = await ws.execute("cat /data/missing.txt 2> /data/err.txt")
+        result = await ws.shell("cat /data/missing.txt 2> /data/err.txt")
         assert result.exit_code != 0
         _assert_single_prefix(captured)
-        back = await ws.execute("cat /data/err.txt")
+        back = await ws.shell("cat /data/err.txt")
         assert back.exit_code == 0
         assert "missing.txt" in await back.stdout_str()
         await ws.close()
@@ -125,13 +152,27 @@ def test_ram_stderr_redirect_records_mount_relative_key():
 
 
 def test_ram_csplit_writes_parts_inside_mount():
-    ws = Workspace({"/data": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
 
     async def run():
-        await ws.execute("tee /data/seed.txt > /dev/null", stdin=b"x\ny\n")
-        result = await ws.execute("csplit -f /data/cs_ /data/seed.txt 2")
+        await ws.shell("tee /data/seed.txt > /dev/null", stdin=b"x\ny\n")
+        result = await ws.shell("csplit -f /data/cs_ /data/seed.txt 2")
         assert result.exit_code == 0, await result.stderr_str()
-        part = await ws.execute("cat /data/cs_00")
+        part = await ws.shell("cat /data/cs_00")
+        assert part.exit_code == 0
+        assert await part.stdout_str() == "x\n"
+        await ws.close()
+
+    asyncio.run(run())
+
+
+def test_ram_stdin_csplit_writes_its_part_inside_mount():
+    ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
+
+    async def run():
+        result = await ws.shell("cd /data && csplit - 2", stdin=b"x\ny\n")
+        assert result.exit_code == 0, await result.stderr_str()
+        part = await ws.shell("cat /data/xx00")
         assert part.exit_code == 0
         assert await part.stdout_str() == "x\n"
         await ws.close()
@@ -144,13 +185,13 @@ def test_s3_io_keys_single_prefixed(s3_endpoint):
 
     async def run():
         captured = _capture_io(ws)
-        await ws.execute("tee /data/t.txt > /dev/null", stdin=b"x\ny\n")
+        await ws.shell("tee /data/t.txt > /dev/null", stdin=b"x\ny\n")
         for cmd in (
-                "touch /data/new.txt",
-                "mkdir -p /data/newdir",
-                "csplit -f /data/cs_ /data/t.txt 2",
+            "touch /data/new.txt",
+            "mkdir -p /data/newdir",
+            "csplit -f /data/cs_ /data/t.txt 2",
         ):
-            result = await ws.execute(cmd)
+            result = await ws.shell(cmd)
             assert result.exit_code == 0, await result.stderr_str()
         _assert_single_prefix(captured)
         await ws.close()
@@ -162,14 +203,14 @@ def test_s3_redirect_write_invalidates_listed_dir(s3_endpoint):
     ws = _s3_workspace(s3_endpoint, "key-redirect-test")
 
     async def run():
-        await ws.execute("tee /data/a.txt > /dev/null", stdin=b"x\ny\n")
-        await ws.execute("ls -1 /data/")
-        await ws.execute("grep x /data/a.txt > /data/red.txt")
-        await ws.execute("cat /data/a.txt | tee /data/piped.txt > /dev/null")
-        listing = await (await ws.execute("ls -1 /data/")).stdout_str()
+        await ws.shell("tee /data/a.txt > /dev/null", stdin=b"x\ny\n")
+        await ws.shell("ls -1 /data/")
+        await ws.shell("grep x /data/a.txt > /data/red.txt")
+        await ws.shell("cat /data/a.txt | tee /data/piped.txt > /dev/null")
+        listing = await (await ws.shell("ls -1 /data/")).stdout_str()
         assert "red.txt" in listing
         assert "piped.txt" in listing
-        back = await ws.execute("cat /data/red.txt")
+        back = await ws.shell("cat /data/red.txt")
         assert await back.stdout_str() == "x\n"
         await ws.close()
 
@@ -180,12 +221,12 @@ def test_s3_touch_invalidates_listed_dir(s3_endpoint):
     ws = _s3_workspace(s3_endpoint, "key-invalidate-test")
 
     async def run():
-        await ws.execute("tee /data/a.txt > /dev/null", stdin=b"a\n")
-        await ws.execute("ls -1 /data/")
-        await ws.execute("touch /data/late.txt")
-        result = await ws.execute("rm /data/late.txt")
+        await ws.shell("tee /data/a.txt > /dev/null", stdin=b"a\n")
+        await ws.shell("ls -1 /data/")
+        await ws.shell("touch /data/late.txt")
+        result = await ws.shell("rm /data/late.txt")
         assert result.exit_code == 0, await result.stderr_str()
-        gone = await ws.execute("cat /data/late.txt")
+        gone = await ws.shell("cat /data/late.txt")
         assert gone.exit_code != 0
         await ws.close()
 

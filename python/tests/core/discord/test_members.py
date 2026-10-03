@@ -28,23 +28,13 @@ def config():
 @pytest.mark.asyncio
 async def test_list_members(config):
     mock_data = [
-        {
-            "user": {
-                "id": "U001",
-                "username": "alice"
-            }
-        },
-        {
-            "user": {
-                "id": "U002",
-                "username": "bob"
-            }
-        },
+        {"user": {"id": "U001", "username": "alice"}},
+        {"user": {"id": "U002", "username": "bob"}},
     ]
     with patch(
-            "mirage.core.discord.paginate.discord_get",
-            new_callable=AsyncMock,
-            return_value=mock_data,
+        "mirage.core.discord.paginate.discord_get",
+        new_callable=AsyncMock,
+        return_value=mock_data,
     ) as mock_get:
         result = await list_members(config, "G001")
 
@@ -60,17 +50,12 @@ async def test_list_members(config):
 @pytest.mark.asyncio
 async def test_search_members(config):
     mock_data = [
-        {
-            "user": {
-                "id": "U001",
-                "username": "alice"
-            }
-        },
+        {"user": {"id": "U001", "username": "alice"}},
     ]
     with patch(
-            "mirage.core.discord.members.discord_get",
-            new_callable=AsyncMock,
-            return_value=mock_data,
+        "mirage.core.discord.members.discord_get",
+        new_callable=AsyncMock,
+        return_value=mock_data,
     ) as mock_get:
         result = await search_members(config, "G001", "ali")
 
@@ -79,8 +64,6 @@ async def test_search_members(config):
     mock_get.assert_called_once_with(
         config,
         "/guilds/G001/members/search",
-        params={
-            "query": "ali",
-            "limit": 100
-        },
+        params={"query": "ali", "limit": 100},
+        session=None,
     )

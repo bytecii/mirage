@@ -13,11 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import json
 from pathlib import Path
 
-from mirage.core.jq import jq_eval, parse_json_path
-from mirage.resource.ram import RAMResource
+from mirage.core.jq import InputSource, jq_eval, read_texts
+from mirage.io.stream import yield_bytes
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 
@@ -46,10 +48,28 @@ def eval_one(obj: object, expr: str) -> object:
     return outputs[0]
 
 
-def jq_all(backend, path, expression):
+def documents(backend, path):
+    """Every document of a file, as jq reads a stream of them.
+
+    Args:
+        backend: the mount holding the file.
+        path (str): the file.
+    """
     store = backend.accessor.store
-    data = parse_json_path(store.files[_norm(path)], path)
-    return jq_eval(data, expression.strip())
+    source = InputSource(path, yield_bytes(store.files[_norm(path)]))
+    texts, failure = asyncio.run(read_texts(source))
+    assert failure is None, failure
+    return [json.loads(text) for text in texts]
+
+
+def jq_all(backend, path, expression):
+    """Every output of a program run on each document of a file in turn,
+    the way jq runs it."""
+    return [
+        output
+        for doc in documents(backend, path)
+        for output in jq_eval(doc, expression.strip())
+    ]
 
 
 def jq(backend, path, expression):
@@ -58,8 +78,20 @@ def jq(backend, path, expression):
     return outputs[0]
 
 
+def jq_slurp_all(backend, path, expression):
+    """Every output of a program run once on a file's documents collected
+    into one array, the way `jq -s` runs it."""
+    return jq_eval(documents(backend, path), expression.strip())
+
+
+def jq_slurp(backend, path, expression):
+    outputs = jq_slurp_all(backend, path, expression)
+    assert len(outputs) == 1
+    return outputs[0]
+
+
 def mem_ws(files: dict[str, bytes] | None = None) -> Workspace:
-    mem = RAMResource()
+    mem = RAMVFS()
     if files:
         store = mem.accessor.store
         for path, data in files.items():
@@ -78,7 +110,7 @@ def mem_ws(files: dict[str, bytes] | None = None) -> Workspace:
 
 def run_raw(ws, cmd, cwd="/", stdin=None):
     ws._cwd = cwd
-    io = asyncio.run(ws.execute(cmd, stdin=stdin))
+    io = asyncio.run(ws.shell(cmd, stdin=stdin))
     return io.stdout, io
 
 
@@ -96,9 +128,11 @@ def collect(stdout):
     return b"".join(stdout)
 
 
-SAMPLE_JSONL = (b'{"name": "alice", "age": 30}\n'
-                b'{"name": "bob", "age": 25}\n'
-                b'{"name": "carol", "age": 35}\n')
+SAMPLE_JSONL = (
+    b'{"name": "alice", "age": 30}\n'
+    b'{"name": "bob", "age": 25}\n'
+    b'{"name": "carol", "age": 35}\n'
+)
 
 DATA_DIR = Path(__file__).resolve().parents[5] / "data"
 EXAMPLE_JSON = DATA_DIR / "example.json"

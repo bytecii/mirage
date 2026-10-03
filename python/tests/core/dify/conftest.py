@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 
 from mirage.cache.index import RAMIndexCacheStore
-from mirage.cache.index.config import IndexEntry
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
 
@@ -38,21 +37,6 @@ def document(
     }
 
 
-def file_entry(document_id: str, name: str, size: int = 123) -> IndexEntry:
-    return IndexEntry(id=document_id,
-                      name=name,
-                      resource_type="file",
-                      size=size)
-
-
-def folder_entry(name: str) -> IndexEntry:
-    return IndexEntry(id=name, name=name, resource_type="folder")
-
-
-async def no_documents(config):
-    return []
-
-
 async def list_basic_documents(config):
     return [
         document("doc-1", "Quickstart", slug="guides/quickstart", size=333),
@@ -60,22 +44,13 @@ async def list_basic_documents(config):
     ]
 
 
-async def list_nested_documents(config):
-    return [
-        document("doc-1", "Quickstart", slug="guides/quickstart", size=333),
-        document("doc-2", "Notes", slug="guides/deep/note", size=20),
-        document("doc-3", "README.md", size=10),
-    ]
-
-
-async def noop_ensure_tree(accessor, index, prefix=""):
-    return None
-
-
 @pytest.fixture
 def dify_accessor() -> SimpleNamespace:
-    return SimpleNamespace(config=SimpleNamespace(
-        dataset_id="dataset-1", slug_metadata_name="slug", max_concurrency=10))
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            dataset_id="dataset-1", slug_metadata_name="slug"
+        )
+    )
 
 
 @pytest.fixture
@@ -84,14 +59,8 @@ def dify_index() -> RAMIndexCacheStore:
 
 
 @pytest.fixture
-def knowledge_root() -> PathSpec:
-    return PathSpec(resource_path=mount_key("/knowledge", "/knowledge"),
-                    virtual="/knowledge",
-                    directory="/knowledge")
-
-
-@pytest.fixture
 def guide_path() -> PathSpec:
     return PathSpec.from_str_path(
         "/knowledge/guides/quickstart",
-        mount_key("/knowledge/guides/quickstart", "/knowledge"))
+        mount_key("/knowledge/guides/quickstart", "/knowledge"),
+    )

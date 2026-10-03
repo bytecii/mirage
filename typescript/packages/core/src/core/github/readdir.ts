@@ -12,20 +12,22 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { listingRefreshed } from '../../cache/context.ts'
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GitHubAccessor } from '../../accessor/github.ts'
 import { LookupStatus } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
-import { fetchDirTree } from './client.ts'
-import { ensureLiveIndex, refillIndex } from './tree.ts'
+import { fetchDirTree, type GitHubTreeItem } from './client.ts'
+import { ensureLiveSnapshot, refillSnapshot } from './tree.ts'
+import { withIndexLock } from '../../cache/index/lock.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { enoent } from '../../utils/errors.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 
 function stripPrefix(path: PathSpec): string {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   let p = path.pattern !== null ? path.directory : path.virtual
   if (prefix !== '' && p.startsWith(prefix)) {
     p = p.slice(prefix.length) || '/'
@@ -38,33 +40,55 @@ export async function readdir(
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<string[]> {
+  if (index === undefined) return readdirUnlocked(accessor, path, index)
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
+  return withIndexLock(index, rstripSlash(prefix) || '/', () =>
+    readdirUnlocked(accessor, path, index),
+  )
+}
+
+/** Caller holds the mount's index lock through its final lookup. */
+export async function readdirUnlocked(
+  accessor: GitHubAccessor,
+  path: PathSpec,
+  index?: IndexCacheStore,
+): Promise<string[]> {
   if (index === undefined) {
     throw enoent(path.virtual)
   }
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   const rel = stripSlash(stripPrefix(path))
   const key =
     rel === '' ? (prefix === '' ? '/' : rstripSlash(prefix)) : `${rstripSlash(prefix)}/${rel}`
 
-  await ensureLiveIndex(accessor, index, prefix)
+  let refilled = await ensureLiveSnapshot(accessor, index, prefix)
   let listing = await index.listDir(key)
   // The index is the whole listing here, not a cache in front of one, so an
   // *expired* answer means the tree aged out, not that the path is gone.
   // Refetch once and ask again. A NOT_FOUND against a live index is a real
   // absence and must not cost a tree fetch: refilling on any miss spends a
   // recursive-tree call on every ENOENT.
-  if (listing.status === LookupStatus.EXPIRED && !accessor.truncated) {
-    if (await refillIndex(accessor, index, prefix)) listing = await index.listDir(key)
+  if (listing.status === LookupStatus.EXPIRED && !accessor.truncated && refilled === null) {
+    refilled = await refillSnapshot(accessor, index, prefix)
+    if (refilled !== null) listing = await index.listDir(key)
   }
   if (listing.entries !== undefined && listing.entries !== null) {
     return listing.entries
   }
-  if (listing.status === LookupStatus.NOT_FOUND) {
-    if (accessor.truncated) {
-      return fallbackReaddir(accessor, key, index, prefix)
-    }
-    throw enoent(path)
+  if (
+    accessor.truncated &&
+    (listing.status === LookupStatus.NOT_FOUND || listing.status === LookupStatus.EXPIRED)
+  ) {
+    return fallbackReaddir(accessor, key, index, prefix)
   }
+  // A lock wait can outlast the TTL; use this refill only on EXPIRED.
+  if (refilled !== null && listing.status === LookupStatus.EXPIRED) {
+    refilled = index.scopeSnapshot(refilled)
+    const children = refilled.children.get(key)
+    if (children === undefined) throw enoent(path)
+    return [...children]
+  }
+  if (listing.status === LookupStatus.NOT_FOUND) throw enoent(path)
   return []
 }
 
@@ -75,8 +99,17 @@ async function fallbackReaddir(
   prefix: string,
 ): Promise<string[]> {
   const parentSha = await resolveDirSha(accessor, key, index, prefix)
-  if (parentSha === null) throw enoent(`${prefix}/${key}`)
+  if (parentSha === null) throw enoent(key)
   const entries = await fetchDirTree(accessor.transport, accessor.owner, accessor.repo, parentSha)
+  return cacheDir(index, key, entries)
+}
+
+// Cache one complete tree listing, including each traversed parent.
+async function cacheDir(
+  index: IndexCacheStore,
+  key: string,
+  entries: GitHubTreeItem[],
+): Promise<string[]> {
   const childKeys: string[] = []
   const childEntries: [string, IndexEntry][] = []
   for (const e of entries) {
@@ -106,18 +139,28 @@ async function resolveDirSha(
   index: IndexCacheStore,
   prefix: string,
 ): Promise<string | null> {
-  const result = await index.get(key)
-  if (result.entry !== undefined && result.entry !== null) {
-    return result.entry.id
-  }
+  // Cached directory SHAs may belong to an older branch head, even when
+  // their parent listing is still fresh. Resolve the path from the ref.
   const stem = rstripSlash(prefix)
   const rest = stem !== '' && key.startsWith(stem) ? key.slice(stem.length) : key
   const parts = stripSlash(rest)
     .split('/')
     .filter((p) => p !== '')
   let currentSha = accessor.ref
-  let currentPath = stem
+  let currentPath = stem || '/'
   for (const part of parts) {
+    const childPath = `${currentPath === '/' ? '' : currentPath}/${part}`
+    if (listingRefreshed(currentPath)) {
+      const listing = await index.listDir(currentPath)
+      if (listing.entries?.includes(childPath)) {
+        const cached = (await index.get(childPath)).entry
+        if (cached?.resourceType === 'folder') {
+          currentSha = cached.id
+          currentPath = childPath
+          continue
+        }
+      }
+    }
     const entries = await fetchDirTree(
       accessor.transport,
       accessor.owner,
@@ -125,19 +168,14 @@ async function resolveDirSha(
       currentSha,
     )
     const found = entries.find((e) => e.path === part)
-    if (found === undefined) return null
+    if (found?.type !== 'tree') {
+      // Remove the former directory before caching a replacement blob.
+      await index.invalidatePrefix(childPath)
+    }
+    await cacheDir(index, currentPath, entries)
+    if (found?.type !== 'tree') return null
     currentSha = found.sha
-    currentPath += `/${part}`
-    await index.put(
-      currentPath,
-      new IndexEntry({
-        id: found.sha,
-        name: part,
-        vfsName: part,
-        resourceType: found.type === 'tree' ? 'folder' : 'file',
-        size: found.size ?? null,
-      }),
-    )
+    currentPath = childPath
   }
   return currentSha
 }

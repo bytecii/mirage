@@ -13,8 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { asyncChain } from '../../../../../io/stream.ts'
+import { readFailExitCodeFromLine } from '../../../../spec/usage.ts'
 import { IOResult, materialize, type ByteSource } from '../../../../../io/types.ts'
 import type { PathSpec } from '../../../../../types.ts'
+import { revoiceFsErrorLine } from '../../../../../utils/errors.ts'
+import { LINE_STREAM_COMMANDS } from '../constants.ts'
 import { Cmd, type CrossResult, type RunSingle } from '../types.ts'
 import type { FlagValue } from '../../../../spec/types.ts'
 
@@ -25,15 +28,26 @@ function hasActiveFlags(flagKwargs: Record<string, FlagValue>): boolean {
   return Object.values(flagKwargs).some((v) => v !== false)
 }
 
+// One operand's bytes, its last line ended where the file ends: what a line
+// reader sees at a file boundary, so `ab` followed by the next file's `cd` is
+// two lines, the way the single-mount commands join their operands. Mirrors
+// Python's _line_ended.
+async function* lineEnded(source: ByteSource): AsyncIterable<Uint8Array> {
+  let last = 0x0a
+  for await (const chunk of asyncChain([source])) {
+    if (chunk.byteLength > 0) last = chunk[chunk.byteLength - 1] ?? 0x0a
+    yield chunk
+  }
+  if (last !== 0x0a) yield Uint8Array.of(0x0a)
+}
+
 // The per-operand fetch is a native Cmd.CAT sub-run, so its error lines
-// carry the fetch command's prefix; respell them to the real command so the
-// cross-mount bytes match single-mount.
-function respellFetchStderr(stderr: Uint8Array, cmdName: string): Uint8Array {
-  const fetchPrefix = `${Cmd.CAT}: `
+// carry the fetch command's voice; each is said again in the real command's
+// (its prefix, its quoting, the step it names) so the cross-mount bytes
+// match single-mount.
+function respellFetchStderr(stderr: Uint8Array, cmdName: string, scope: PathSpec): Uint8Array {
   const lines = DEC.decode(stderr).split('\n')
-  const respelled = lines.map((line) =>
-    line.startsWith(fetchPrefix) ? `${cmdName}: ${line.slice(fetchPrefix.length)}` : line,
-  )
+  const respelled = lines.map((line) => revoiceFsErrorLine(line, Cmd.CAT, cmdName, scope))
   return ENC.encode(respelled.join('\n'))
 }
 
@@ -55,13 +69,28 @@ export async function runStream(
   let mergedIo = new IOResult()
   const sources: ByteSource[] = []
   let failed = false
+  // The real command's code for the worst failed fetch. The fetch runs as
+  // Cmd.CAT, so its own code is cat's 1 whatever went wrong; the stderr is
+  // already respelled into the real command's voice and the code has to
+  // follow it, or `sort a /other/missing` answers 1 while `sort missing`
+  // answers 2.
+  let failCode = 0
   for (const scope of scopes) {
     const [out, io] = await runSingle(Cmd.CAT, [scope], [], {})
     if (io.exitCode !== 0) {
       failed = true
-      if (cmdName !== Cmd.CAT && io.stderr !== null) {
-        io.stderr = respellFetchStderr(await materialize(io.stderr), cmdName)
+      if (io.stderr !== null) {
+        let rendered = await materialize(io.stderr)
+        if (cmdName !== Cmd.CAT) {
+          rendered = respellFetchStderr(rendered, cmdName, scope)
+          io.stderr = rendered
+        }
+        failCode = Math.max(failCode, readFailExitCodeFromLine(cmdName, DEC.decode(rendered)))
       }
+      // The fetch ran as cat, so its exit code is cat's whatever went
+      // wrong. failCode already carries the real command's, and merging
+      // cat's over it would win the `||` below.
+      io.exitCode = 0
       mergedIo = await mergedIo.merge(io)
       continue
     }
@@ -71,14 +100,18 @@ export async function runStream(
   // sort aborts on any failed operand like GNU (it needs every input
   // before emitting anything), matching the single-mount builder.
   if (failed && cmdName === Cmd.SORT) {
-    mergedIo.exitCode = mergedIo.exitCode || 1
+    mergedIo.exitCode = mergedIo.exitCode || failCode || 1
     return [null, mergedIo]
   }
 
-  const body: ByteSource = asyncChain(...sources)
+  const merged =
+    LINE_STREAM_COMMANDS.has(cmdName) && sources.length > 0
+      ? [...sources.slice(0, -1).map(lineEnded), ...sources.slice(-1)]
+      : sources
+  const body: ByteSource = asyncChain(merged)
 
   if (cmdName === Cmd.CAT && !hasActiveFlags(flagKwargs)) {
-    if (failed) mergedIo.exitCode = mergedIo.exitCode || 1
+    if (failed) mergedIo.exitCode = mergedIo.exitCode || failCode || 1
     return [body, mergedIo]
   }
 
@@ -87,6 +120,6 @@ export async function runStream(
     resolveHint: scopes[0] ?? null,
   })
   mergedIo = await mergedIo.merge(io)
-  if (failed) mergedIo.exitCode = mergedIo.exitCode || 1
+  if (failed) mergedIo.exitCode = mergedIo.exitCode || failCode || 1
   return [out, mergedIo]
 }

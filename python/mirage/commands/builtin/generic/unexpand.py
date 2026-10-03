@@ -2,13 +2,20 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from mirage.commands.builtin.utils.lines import split_lines_keepends
-from mirage.commands.builtin.utils.operands import (materialized_read,
-                                                    merge_split_errors,
-                                                    split_readable)
-from mirage.commands.builtin.utils.stream import _read_stdin_async
+from mirage.commands.builtin.utils.operands import (
+    materialized_read,
+    merge_split_errors,
+    split_readable,
+)
+from mirage.commands.builtin.utils.stream import (
+    read_stdin_async,
+    stdin_stat,
+    stdin_stream,
+)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
 
@@ -71,17 +78,15 @@ async def unexpand(
     if first_only:
         all_spaces = False
     if paths:
-        all_text: list[str] = []
-        for p in paths:
-            data = (await read_bytes(p)).decode(errors="replace")
-            lines = split_lines_keepends(data)
-            all_text.extend(
-                _unexpand_line(ln, tabsize, all_spaces) for ln in lines)
-        return "".join(all_text).encode(), IOResult()
+        # GNU reads its operands as one stream, so a line a file leaves
+        # unfinished continues into the next one, column and all.
+        texts = [(await read_bytes(p)).decode(errors="replace") for p in paths]
+        return "".join(
+            _unexpand_line(ln, tabsize, all_spaces)
+            for ln in split_lines_keepends("".join(texts))
+        ).encode(), IOResult()
 
-    raw = await _read_stdin_async(stdin)
-    if raw is None:
-        raise ValueError("unexpand: missing operand")
+    raw = await read_stdin_async(stdin) or b""
     lines = split_lines_keepends(raw.decode(errors="replace"))
     result = [_unexpand_line(ln, tabsize, all_spaces) for ln in lines]
     return "".join(result).encode(), IOResult()
@@ -104,17 +109,23 @@ async def unexpand_generic(
         stream (PolymorphicReadFn): Bound reader called as
             ``stream(path)``.
     """
+    stat = stdin_stat(stat)
+    stream = stdin_stream(stream, opts.stdin)
     parsed = parse_flags(opts.flags)
     readable, err = await split_readable(paths, stat, "unexpand")
     if err and not readable:
         return None, IOResult(exit_code=1, stderr=err)
     return await merge_split_errors(
-        await unexpand(readable,
-                       read_bytes=materialized_read(stream),
-                       stdin=opts.stdin,
-                       tabsize=parsed.tabsize,
-                       all_spaces=parsed.all_spaces,
-                       first_only=parsed.first_only), err)
+        await unexpand(
+            readable,
+            read_bytes=materialized_read(stream),
+            stdin=opts.stdin,
+            tabsize=parsed.tabsize,
+            all_spaces=parsed.all_spaces,
+            first_only=parsed.first_only,
+        ),
+        err,
+    )
 
 
 __all__ = ["unexpand", "unexpand_generic"]

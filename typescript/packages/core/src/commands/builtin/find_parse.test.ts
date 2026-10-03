@@ -13,8 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { evalPredicate } from './find_eval.ts'
-import { FindParseError, parseFindExpression } from './find_parse.ts'
+import { evalPredicate, treeHasAction } from './find_eval.ts'
+import { FindParseError } from '../errors.ts'
+import { parseFindExpression } from './find_parse.ts'
 
 describe('parseFindExpression', () => {
   it('negation', () => {
@@ -80,6 +81,12 @@ describe('parseFindExpression', () => {
     expect(evalPredicate(e.tree, { key: '/y', name: 'y', kind: 'f', depth: 1 })).toBe(false)
   })
 
+  it('depthFirst is -depth or -delete', () => {
+    expect(parseFindExpression(['-depth']).depthFirst).toBe(true)
+    expect(parseFindExpression(['-delete']).depthFirst).toBe(true)
+    expect(parseFindExpression(['-print']).depthFirst).toBe(false)
+  })
+
   it('size extracted as global', () => {
     const e = parseFindExpression(['-size', '+50c'])
     expect(e.minSize).toBe(51)
@@ -93,6 +100,28 @@ describe('parseFindExpression', () => {
     expect([e.minSize, e.maxSize]).toEqual([null, 1])
     e = parseFindExpression(['-size', '2c'])
     expect([e.minSize, e.maxSize]).toEqual([2, 2])
+  })
+
+  it('intersects top-level windows and widens them under -o', () => {
+    // GNU: every test in the implicit -a chain must hold, so `-newermt a
+    // -newermt b` keeps what is newer than both and `-mtime +2 -mtime -1`
+    // keeps nothing; under -o the flat window can only widen.
+    const later = parseFindExpression(['-newermt', '2021-06-01']).mtimeMin
+    for (const order of [
+      ['2020-06-01', '2021-06-01'],
+      ['2021-06-01', '2020-06-01'],
+    ]) {
+      const e = parseFindExpression(['-newermt', order[0] ?? '', '-newermt', order[1] ?? ''])
+      expect([e.mtimeMin, e.mtimeMax]).toEqual([later, null])
+    }
+    const empty = parseFindExpression(['-mtime', '+2', '-mtime', '-1'])
+    expect(empty.mtimeMin).not.toBeNull()
+    expect(empty.mtimeMax).not.toBeNull()
+    expect(empty.mtimeMin ?? 0).toBeGreaterThan(empty.mtimeMax ?? 0)
+    const both = parseFindExpression(['-mtime', '-1', '-mtime', '-3'])
+    const either = parseFindExpression(['-mtime', '-1', '-o', '-mtime', '-3'])
+    expect((both.mtimeMin ?? 0) - (either.mtimeMin ?? 0)).toBeCloseTo(2 * 86400, 0)
+    expect([both.mtimeMax, either.mtimeMax]).toEqual([null, null])
   })
 
   it('repeated -mtime windows merge to their union', () => {
@@ -120,6 +149,58 @@ describe('parseFindExpression', () => {
     expect([e.minSize, e.maxSize]).toEqual([1025, null])
   })
 
+  it('a bare -size number counts 512-byte blocks', () => {
+    // GNU: a bare -size N is N 512-byte blocks, so -2 keeps a 4-byte
+    // file and 1 keeps 1..512 bytes.
+    let e = parseFindExpression(['-size', '-2'])
+    expect([e.minSize, e.maxSize]).toEqual([null, 512])
+    e = parseFindExpression(['-size', '1'])
+    expect([e.minSize, e.maxSize]).toEqual([1, 512])
+    e = parseFindExpression(['-size', '+1'])
+    expect([e.minSize, e.maxSize]).toEqual([513, null])
+    e = parseFindExpression(['-size', '0'])
+    expect([e.minSize, e.maxSize]).toEqual([-511, 0])
+  })
+
+  it.each([
+    ['2b', [513, 1024]],
+    ['-2b', [null, 512]],
+    ['2w', [3, 4]],
+    ['-3w', [null, 4]],
+    ['+1w', [3, null]],
+    ['++1', [513, null]],
+    ['-+1', [null, 0]],
+  ])('reads -size %s in block and word units', (spec, bounds) => {
+    const e = parseFindExpression(['-size', spec])
+    expect([e.minSize, e.maxSize]).toEqual(bounds)
+  })
+
+  it.each(['18446744073709551615c', '18446744073709551615', '18446744073709551615G'])(
+    'takes -size %s, since GNU bounds the number alone',
+    (spec) => {
+      expect(parseFindExpression(['-size', spec]).maxSize).toBeGreaterThan(0)
+    },
+  )
+
+  it.each([
+    ['', 'find: invalid null argument to -size'],
+    ['+', "find: invalid -size type `+'"],
+    ['5x', "find: invalid -size type `x'"],
+    ['5K', "find: invalid -size type `K'"],
+    ['5 ', "find: invalid -size type ` '"],
+    ['k', "find: Invalid argument `k' to -size"],
+    ['5kk', "find: Invalid argument `5kk' to -size"],
+    ['1.5', "find: Invalid argument `1.5' to -size"],
+    ['+-1', "find: Invalid argument `+-1' to -size"],
+    ['12ab', "find: Invalid argument `12ab' to -size"],
+    ['18446744073709551616c', "find: Invalid argument `18446744073709551616c' to -size"],
+    ['18446744073709551616G', "find: Invalid argument `18446744073709551616G' to -size"],
+    ['+18446744073709551616', "find: Invalid argument `+18446744073709551616' to -size"],
+    [' 18446744073709551616', "find: Invalid argument ` 18446744073709551616' to -size"],
+  ])('refuses -size %j in GNU wording', (spec, message) => {
+    expect(() => parseFindExpression(['-size', spec])).toThrow(new FindParseError(message))
+  })
+
   it('empty expression is true', () => {
     expect(parseFindExpression([]).tree).toEqual({ op: 'true' })
   })
@@ -127,6 +208,78 @@ describe('parseFindExpression', () => {
   it('throws on unknown / unbalanced', () => {
     expect(() => parseFindExpression(['-bogus'])).toThrow(FindParseError)
     expect(() => parseFindExpression(['(', '-name', 'a'])).toThrow(FindParseError)
+  })
+
+  it('lets one -exec end any arm and refuses what could run twice or differ', () => {
+    expect(parseFindExpression(['-type', 'f', '-exec', 'echo', '{}', ';']).actions).toHaveLength(1)
+    const oneArm = parseFindExpression(['-name', 'a', '-o', '-exec', 'echo', '{}', ';'])
+    expect(oneArm.actions).toEqual([{ kind: 'exec', argv: ['echo', '{}'], batch: false }])
+    expect(oneArm.tree).toEqual({
+      op: 'or',
+      kids: [
+        { op: 'name', pattern: 'a', icase: false },
+        { op: 'action', kind: 'exec' },
+      ],
+    })
+    expect(parseFindExpression(['(', '-exec', 'false', ';', ')']).tree).toEqual({
+      op: 'action',
+      kind: 'exec',
+    })
+    const cases: [string[], string][] = [
+      [['!', '-exec', 'false', ';'], 'find: -exec is not supported under !'],
+      [
+        ['-exec', 'false', '{}', ';', '-o', '-print'],
+        'find: -exec and -print cannot be combined under -o, ! or parentheses',
+      ],
+      [
+        ['-name', 'a', '-exec', 'true', ';', '-o', '-exec', 'false', ';'],
+        'find: -exec may run only one command under -o, ! or parentheses',
+      ],
+      [
+        ['-name', 'a', '-o', '-exec', 'echo', '{}', ';', '-name', 'b'],
+        'find: -exec must end its -a chain under -o, ! or parentheses',
+      ],
+      [
+        ['-type', 'd', '-exec', 'false', '{}', ';', '-o', '-prune'],
+        'find: -exec must end the expression under -o, ! or parentheses',
+      ],
+      [
+        ['-exec', 'echo', '{}', ';', '-o', '-exec', 'echo', '{}', ';'],
+        'find: -exec must end the expression under -o, ! or parentheses',
+      ],
+      [
+        ['(', '-name', 'a', '-exec', 'echo', '{}', ';', ')', '-o', '-name', 'b'],
+        'find: -exec must end the expression under -o, ! or parentheses',
+      ],
+    ]
+    for (const [tokens, message] of cases) {
+      expect(() => parseFindExpression(tokens)).toThrow(message)
+    }
+  })
+
+  it('a batched -exec is true whatever the command exits', () => {
+    // GNU: `-exec ... {} +` always returns true, so the next arm never sees
+    // a row through it and the executor's late status is harmless.
+    expect(parseFindExpression(['-exec', 'echo', '{}', '+']).tree).toEqual({
+      op: 'action',
+      kind: 'exec',
+      batch: true,
+    })
+    expect(
+      parseFindExpression(['-type', 'd', '-exec', 'echo', '{}', '+', '-o', '-prune']).tree,
+    ).toEqual({
+      op: 'or',
+      kids: [
+        {
+          op: 'and',
+          kids: [
+            { op: 'type', kind: 'd' },
+            { op: 'action', kind: 'exec', batch: true },
+          ],
+        },
+        { op: 'prune', pruned: [], pending: [] },
+      ],
+    })
   })
 
   it('throws FindParseError on invalid numeric / size args', () => {
@@ -137,9 +290,20 @@ describe('parseFindExpression', () => {
     expect(() => parseFindExpression(['-mtime', ''])).toThrow(FindParseError)
   })
 
+  it('refuses trailing garbage after the digits', () => {
+    expect(() => parseFindExpression(['-maxdepth', '12abc'])).toThrow(FindParseError)
+    expect(() => parseFindExpression(['-mindepth', '2x'])).toThrow(FindParseError)
+    expect(() => parseFindExpression(['-size', '12ab'])).toThrow(FindParseError)
+    expect(() => parseFindExpression(['-mtime', '3x'])).toThrow(FindParseError)
+  })
+
   it('throws on unsupported predicates', () => {
-    for (const toks of [['-regex', '.*'], ['-newer', 'a'], ['-prune'], ['-nam', 'x']]) {
-      expect(() => parseFindExpression(toks)).toThrow(FindParseError)
+    for (const toks of [
+      ['-regex', '.*'],
+      ['-perm', '644'],
+      ['-nam', 'x'],
+    ]) {
+      expect(() => parseFindExpression(toks)).toThrow('unknown predicate')
     }
   })
 
@@ -198,9 +362,9 @@ describe('parseFindExpression', () => {
 })
 
 describe('find -printf parsing', () => {
-  it('stores the format on the expression', () => {
+  it('stores the format on its action', () => {
     const expr = parseFindExpression(['-printf', '%p\\n'])
-    expect(expr.printf).toBe('%p\\n')
+    expect(expr.actions).toEqual([{ kind: 'printf', format: '%p\\n' }])
   })
 
   it('refuses a missing argument', () => {
@@ -209,6 +373,357 @@ describe('find -printf parsing', () => {
 
   it('combines with tests', () => {
     const expr = parseFindExpression(['-name', '*.txt', '-printf', '%f\\n'])
-    expect(expr.printf).toBe('%f\\n')
+    expect(expr.actions).toEqual([{ kind: 'printf', format: '%f\\n' }])
   })
+
+  // GNU runs every action of the -a chain per row, in the order written.
+  it.each([
+    [
+      ['-printf', '%p\\n', '-exec', 'cat', '{}', ';'],
+      [
+        { kind: 'printf', format: '%p\\n' },
+        { kind: 'exec', argv: ['cat', '{}'], batch: false },
+      ],
+    ],
+    [
+      ['-exec', 'cat', '{}', ';', '-printf', '%p\\n'],
+      [
+        { kind: 'exec', argv: ['cat', '{}'], batch: false },
+        { kind: 'printf', format: '%p\\n' },
+      ],
+    ],
+    [
+      ['-printf', '%p ', '-print'],
+      [{ kind: 'printf', format: '%p ' }, { kind: 'print' }],
+    ],
+    [
+      ['-print0', '-printf', '%p'],
+      [{ kind: 'print0' }, { kind: 'printf', format: '%p' }],
+    ],
+    [
+      ['-printf', '%p', '-ls'],
+      [{ kind: 'printf', format: '%p' }, { kind: 'ls' }],
+    ],
+    [
+      ['-printf', '%p', '-delete'],
+      [{ kind: 'printf', format: '%p' }, { kind: 'delete' }],
+    ],
+    [
+      ['-printf', '%p ', '-printf', '%s\\n'],
+      [
+        { kind: 'printf', format: '%p ' },
+        { kind: 'printf', format: '%s\\n' },
+      ],
+    ],
+  ])('runs beside other actions in order: %j', (tokens, actions) => {
+    expect(parseFindExpression(tokens).actions).toEqual(actions)
+  })
+
+  it('refuses two formats under -o, like two -exec commands', () => {
+    expect(() =>
+      parseFindExpression(['-name', 'a', '-printf', 'A', '-o', '-name', 'b', '-printf', 'B']),
+    ).toThrow('find: -printf may print only one format under -o, ! or parentheses')
+    expect(
+      parseFindExpression(['-name', 'a', '-printf', '%p', '-o', '-name', 'b', '-printf', '%p'])
+        .actions,
+    ).toEqual([{ kind: 'printf', format: '%p' }])
+  })
+})
+
+describe('-newermt GNU dates', () => {
+  it.each([
+    ['yesterday', 86400],
+    ['24 hours ago', 86400],
+    ['now', 0],
+  ] as const)('accepts %s', (operand, seconds) => {
+    const before = Date.now() / 1000
+    const expr = parseFindExpression(['-newermt', operand])
+    expect(expr.mtimeMin).toBeGreaterThanOrEqual(before - seconds)
+    expect(expr.mtimeMin).toBeLessThanOrEqual(Date.now() / 1000 - seconds + 0.001)
+  })
+  it('accepts epoch timestamps', () => {
+    const expr = parseFindExpression(['-newermt', '@1700000000'])
+    expect(expr.mtimeMin).toBeGreaterThan(1700000000)
+    expect(expr.mtimeMin).toBeLessThan(1700000000.001)
+  })
+})
+
+describe('tests after actions', () => {
+  for (const action of [
+    ['-exec', 'echo', '{}', ';'],
+    ['-exec', 'echo', '{}', '+'],
+    ['-print'],
+    ['-delete'],
+    ['-printf', '%p'],
+  ]) {
+    it.each(
+      [
+        ['-name', '*.txt'],
+        ['-type', 'f'],
+        ['-size', '+1c'],
+        ['-newermt', 'yesterday'],
+        ['-newer', 'ref'],
+        ['-empty'],
+        ['-prune'],
+      ].map((test) => [test]),
+    )(`refuses a later test after ${action.join(' ')}`, (test) => {
+      expect(() => parseFindExpression([...action, ...test])).toThrow(
+        'tests after actions are not supported',
+      )
+    })
+  }
+})
+
+describe('action placement', () => {
+  // The tree decides per entry which arm reaches the action; the executor
+  // then runs that one action on every row kept, so the arms must agree on
+  // it and nothing may follow it.
+  for (const action of [['-print'], ['-print0'], ['-ls'], ['-delete'], ['-printf', '%p']]) {
+    it.each([
+      [...action, '-o', '-name', 'keep'],
+      ['-name', 'keep', '-o', ...action],
+      ['(', ...action, ')'],
+    ])(`lets ${action[0] ?? ''} end an arm: %j`, (...tokens) => {
+      const expr = parseFindExpression(tokens)
+      expect(treeHasAction(expr.tree)).toBe(true)
+      expect(expr.actions).toEqual([
+        action[0] === '-printf'
+          ? { kind: 'printf', format: '%p' }
+          : { kind: (action[0] ?? '').slice(1) },
+      ])
+    })
+    it(`allows ${action[0] ?? ''} after grouped tests`, () => {
+      expect(() =>
+        parseFindExpression(['(', '-name', 'a', '-o', '-name', 'b', ')', ...action]),
+      ).not.toThrow()
+    })
+  }
+
+  it('keeps one action across arms and refuses the rest', () => {
+    const expr = parseFindExpression(['-name', 'a', '-print', '-o', '-name', 'b', '-print'])
+    expect(expr.tree).toEqual({
+      op: 'or',
+      kids: [
+        {
+          op: 'and',
+          kids: [
+            { op: 'name', pattern: 'a', icase: false },
+            { op: 'action', kind: 'print' },
+          ],
+        },
+        {
+          op: 'and',
+          kids: [
+            { op: 'name', pattern: 'b', icase: false },
+            { op: 'action', kind: 'print' },
+          ],
+        },
+      ],
+    })
+    expect(expr.actions).toEqual([{ kind: 'print' }])
+    const cases: [string[], string][] = [
+      [
+        ['-name', 'a', '-print', '-o', '-name', 'b', '-print0'],
+        'find: -print and -print0 cannot be combined under -o, ! or parentheses',
+      ],
+      [
+        ['(', '-name', 'a', '-print', ')', '-print'],
+        'find: -print must end its -a chain under -o, ! or parentheses',
+      ],
+      [['!', '-print'], 'find: -print is not supported under !'],
+      [['!', '(', '-name', 'a', '-print', ')'], 'find: -print is not supported under !'],
+      [
+        ['-name', 'a', '-o', '-print', '-name', 'b'],
+        'find: -print must end its -a chain under -o, ! or parentheses',
+      ],
+      [
+        ['-name', 'a', '-o', '-print', '-prune'],
+        'find: -print must end its -a chain under -o, ! or parentheses',
+      ],
+      [
+        ['-print', '-o', '-delete'],
+        'find: -print and -delete cannot be combined under -o, ! or parentheses',
+      ],
+    ]
+    for (const [tokens, message] of cases) {
+      expect(() => parseFindExpression(tokens)).toThrow(message)
+    }
+  })
+})
+
+describe('time tests keep their place in the tree', () => {
+  it('-newermt before -prune sits before it', () => {
+    const expr = parseFindExpression(['-newermt', '2010-01-01', '-prune'])
+    expect(expr.mtimeMin).not.toBeNull()
+    expect(expr.tree).toEqual({
+      op: 'and',
+      kids: [
+        { op: 'mtime', lo: expr.mtimeMin, hi: expr.mtimeMax },
+        { op: 'prune', pruned: [], pending: [] },
+      ],
+    })
+  })
+
+  it('-mtime after -prune sits after it', () => {
+    const expr = parseFindExpression(['-prune', '-mtime', '+3650'])
+    expect(expr.mtimeMax).not.toBeNull()
+    expect(expr.tree).toEqual({
+      op: 'and',
+      kids: [
+        { op: 'prune', pruned: [], pending: [] },
+        { op: 'mtime', lo: expr.mtimeMin, hi: expr.mtimeMax },
+      ],
+    })
+  })
+
+  // -newer stays a plain true until the executor resolves it into
+  // -newermt, since only the dispatcher can stat the reference.
+  it('-newer stays true until the executor resolves it', () => {
+    const expr = parseFindExpression(['-newer', 'ref', '-prune'])
+    expect(expr.tree).toEqual({
+      op: 'and',
+      kids: [{ op: 'true' }, { op: 'prune', pruned: [], pending: [] }],
+    })
+    expect(expr.newer).toEqual(['ref'])
+  })
+})
+
+describe('-prune', () => {
+  it('is a tree node the -o short-circuits past the print for', () => {
+    const expr = parseFindExpression(['-path', './skip', '-prune', '-o', '-type', 'f', '-print'])
+    expect(expr.tree).toEqual({
+      op: 'or',
+      kids: [
+        {
+          op: 'and',
+          kids: [
+            { op: 'path', pattern: './skip' },
+            { op: 'prune', pruned: [], pending: [] },
+          ],
+        },
+        {
+          op: 'and',
+          kids: [
+            { op: 'type', kind: 'f' },
+            { op: 'action', kind: 'print' },
+          ],
+        },
+      ],
+    })
+    expect(expr.actions).toEqual([{ kind: 'print' }])
+    expect(expr.depthFirst).toBe(false)
+    const printf = parseFindExpression([
+      '-path',
+      './skip',
+      '-prune',
+      '-o',
+      '-type',
+      'f',
+      '-printf',
+      '%p',
+    ])
+    expect(printf.actions).toEqual([{ kind: 'printf', format: '%p' }])
+    expect(treeHasAction(printf.tree)).toBe(true)
+  })
+
+  it('is inert under an explicit -depth', () => {
+    const expr = parseFindExpression([
+      '-depth',
+      '-path',
+      './skip',
+      '-prune',
+      '-o',
+      '-type',
+      'f',
+      '-print',
+    ])
+    expect(expr.tree).toEqual({
+      op: 'or',
+      kids: [
+        { op: 'and', kids: [{ op: 'true' }, { op: 'path', pattern: './skip' }, { op: 'true' }] },
+        {
+          op: 'and',
+          kids: [
+            { op: 'type', kind: 'f' },
+            { op: 'action', kind: 'print' },
+          ],
+        },
+      ],
+    })
+    expect(expr.depthFirst).toBe(true)
+  })
+
+  // GNU findutils 4.10.0, pinned on debian:stable-slim.
+  it('with -delete is GNU refusal unless -depth is spelled out', () => {
+    expect(() =>
+      parseFindExpression(['-path', './skip', '-prune', '-o', '-name', '*.tmp', '-delete']),
+    ).toThrow(
+      'find: The -delete action automatically turns on -depth, but -prune does nothing when ' +
+        '-depth is in effect.  If you want to carry on anyway, just explicitly use the -depth option.',
+    )
+    const expr = parseFindExpression([
+      '-depth',
+      '-path',
+      './skip',
+      '-prune',
+      '-o',
+      '-name',
+      '*.tmp',
+      '-delete',
+    ])
+    expect(expr.actions).toEqual([{ kind: 'delete' }])
+  })
+})
+
+it.each([
+  '2026-02-31',
+  '2025-02-29',
+  '2026-04-31',
+  '2026-00-01',
+  '2026-13-01',
+  '2026-01-00',
+  '2026-01-32',
+  '2026-02-31T12:00:00Z',
+  '2026-02-31 1 day',
+  '2026-01-01T24:00:00',
+  '2026-01-01T12:60:00',
+])('rejects invalid calendar fields: %s', (value) => {
+  expect(() => parseFindExpression(['-newermt', value])).toThrow('I cannot figure out')
+})
+
+it.each([
+  [
+    ['-newer', 'ref', '-o', '-name', 'keep'],
+    'find: -newer is supported only in a top-level -a chain, not under -o, ! or parentheses',
+  ],
+  [
+    ['-name', 'keep', '-o', '-newer', 'ref'],
+    'find: -newer is supported only in a top-level -a chain, not under -o, ! or parentheses',
+  ],
+  [
+    ['!', '-newer', 'ref'],
+    'find: -newer is supported only in a top-level -a chain, not under -o, ! or parentheses',
+  ],
+  [
+    ['(', '-newer', 'ref', ')'],
+    'find: -newer is supported only in a top-level -a chain, not under -o, ! or parentheses',
+  ],
+  [
+    ['-newermt', '2000-01-01', '-o', '-name', 'keep'],
+    'find: -newermt is supported only in a top-level -a chain, not under -o, ! or parentheses',
+  ],
+  [
+    ['-name', 'keep', '-o', '-newermt', '2000-01-01'],
+    'find: -newermt is supported only in a top-level -a chain, not under -o, ! or parentheses',
+  ],
+  [
+    ['!', '-newermt', '2000-01-01'],
+    'find: -newermt is supported only in a top-level -a chain, not under -o, ! or parentheses',
+  ],
+  [
+    ['(', '-newermt', '2000-01-01', ')'],
+    'find: -newermt is supported only in a top-level -a chain, not under -o, ! or parentheses',
+  ],
+])('refuses detached newer tests: %s', (tokens, message) => {
+  expect(() => parseFindExpression(tokens)).toThrow(message)
 })

@@ -12,17 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Node } from 'web-tree-sitter'
-
-export interface ShellParserConfig {
-  engineWasm: Uint8Array | ArrayBuffer
-  grammarWasm: Uint8Array | ArrayBuffer
-}
-
-export interface ShellParser {
-  parse(command: string): Node
-}
-
 /**
  * Array-element callbacks the arithmetic evaluator resolves through.
  *
@@ -35,9 +24,20 @@ export interface ShellParser {
  * assignments included, so `i=2, a[i]` reads the new `i`; `read` answers
  * the element's stored text, null when unset.
  */
+import type { Heredoc } from './parse/heredoc/types.ts'
+
 export interface ElementOps {
   resolve(name: string, subscript: string, env: Readonly<Record<string, string>>): string
   read(name: string, key: string): string | null
+  /**
+   * Whether a name holds an associative array, whose subscript is a key.
+   * Given, the evaluator evaluates an indexed subscript itself, in its own
+   * record, and hands `resolve` the index; absent, `resolve` evaluates the
+   * subscript text (a caller outside a session).
+   */
+  isAssoc?(name: string): boolean
+  /** Whether a name holds an array, indexed or associative, empty or not. */
+  holdsArray?(name: string): boolean
 }
 
 /**
@@ -64,6 +64,7 @@ export interface ArithResult {
 }
 
 export const NodeType = Object.freeze({
+  TIMED_STATEMENT: 'timed_statement',
   COMMAND: 'command',
   PIPELINE: 'pipeline',
   LIST: 'list',
@@ -129,6 +130,9 @@ export const NodeType = Object.freeze({
   REDIRECT_APPEND: '>>',
   REDIRECT_IN: '<',
   REDIRECT_STDERR: '>&',
+  REDIRECT_DUP_IN: '<&',
+  REDIRECT_CLOSE_OUT: '>&-',
+  REDIRECT_CLOSE_IN: '<&-',
   REDIRECT_BOTH: '&>',
   REDIRECT_BOTH_APPEND: '&>>',
   HEREDOC_START_TOKEN: '<<',
@@ -187,17 +191,27 @@ export const RedirectKind = Object.freeze({
   STDOUT: 'stdout',
   STDERR: 'stderr',
   STDIN: 'stdin',
+  READWRITE: 'readwrite',
   STDERR_TO_STDOUT: 'stderr_to_stdout',
   HEREDOC: 'heredoc',
   HERESTRING: 'herestring',
+  // `N>&word` with a word that is neither a number nor `-` on a
+  // descriptor other than 1: bash refuses it as `word: ambiguous redirect`
+  // before the command runs, so the target is kept for the message and
+  // nothing is opened.
+  AMBIGUOUS: 'ambiguous',
+  // A heredoc whose body failed to expand: bash fails the command with the
+  // expansion's status and diagnostic and goes on with the line, so the
+  // error is kept as the target and nothing is read.
+  UNEXPANDED: 'unexpanded',
 } as const)
 
 export type RedirectKind = (typeof RedirectKind)[keyof typeof RedirectKind]
 
 export interface RedirectInit {
-  // The descriptor the redirect claims, -1 for `&>`.
+  // The descriptor the redirect claims, FD_BOTH (-1) for `&>`.
   fd: number
-  // The target path, or the dup'd fd number.
+  // The target path, the dup'd fd number, or FD_CLOSE (-1) for `>&-`.
   target: unknown
   // The tree-sitter node the target came from.
   targetNode?: unknown
@@ -212,6 +226,10 @@ export interface RedirectInit {
   pipeline?: unknown
   // Whether the target undergoes expansion.
   expandVars?: boolean
+  // The `&&`/`||` steps a heredoc's operator line carries past the
+  // delimiter word (`false <<EOF || echo x`), each an operator and its
+  // right operand, in the order bash applies them to the statement.
+  continuation?: readonly (readonly [string, unknown])[]
 }
 
 export class Redirect {
@@ -221,8 +239,16 @@ export class Redirect {
   readonly kind: RedirectKind
   readonly append: boolean
   readonly clobber: boolean
+  // The node a heredoc's operator line pipes the command into
+  // (`cat <<EOF | tr`), run on the command's stdout.
   pipeline: unknown
   readonly expandVars: boolean
+  // The `&&`/`||` steps a heredoc's operator line carries past the
+  // delimiter word (`false <<EOF || echo x`), in the order bash applies
+  // them. tree-sitter parses that tail inside the heredoc_redirect node,
+  // so it is detached here and applied by the executor around the whole
+  // statement.
+  continuation: readonly (readonly [string, unknown])[]
 
   constructor(init: RedirectInit) {
     this.fd = init.fd
@@ -233,69 +259,168 @@ export class Redirect {
     this.clobber = init.clobber ?? false
     this.pipeline = init.pipeline ?? null
     this.expandVars = init.expandVars ?? true
+    this.continuation = init.continuation ?? []
   }
 }
 
+/** A pipeline as bash reads it, whatever shape the parse gave it. */
+export interface PipelineStages {
+  // The stages in order, a leading `!` unwrapped.
+  readonly commands: readonly TSNodeLike[]
+  // Per stage, whether `|&` follows it.
+  readonly stderrFlags: readonly boolean[]
+  // Per stage, the redirects the parse hoisted off it, in source order;
+  // empty for a stage that holds its own.
+  readonly redirects: readonly (readonly Redirect[])[]
+  // A leading `!` negates the pipeline's status.
+  readonly negated: boolean
+  // The `left, op, right` of a list the parse pulled into the first
+  // stage. Its left side runs first and its operator decides whether the
+  // pipeline runs at all; its right operand is where the pipeline starts
+  // and stands for it in the connection.
+  readonly lead: readonly [TSNodeLike, string | null, TSNodeLike] | null
+}
+
+// Shell builtin command names: commands that don't touch the
+// filesystem, handled by the executor and never dispatched to a mount.
+// Listed by tier and group; BUILTIN_GROUP below is the source of truth.
+/**
+ * Which way a process substitution carries bytes. `<(cmd)` is INPUT
+ * (the inner command's stdout feeds our stdin), `>(cmd)` is OUTPUT
+ * (our stdout feeds the inner command's stdin).
+ */
+export const ProcessSubDirection = {
+  INPUT: 'input',
+  OUTPUT: 'output',
+} as const
+export type ProcessSubDirection = (typeof ProcessSubDirection)[keyof typeof ProcessSubDirection]
+
 export const ShellBuiltin = Object.freeze({
+  // grammar: the shell's own language
+  // -- working directory
   PWD: 'pwd',
   CD: 'cd',
+  // -- variables and positional parameters
   EXPORT: 'export',
   UNSET: 'unset',
   LOCAL: 'local',
+  // declare / typeset / readonly are parser-owned (the declaration node
+  // runs them, they never reach the executor's table); rows here so
+  // `type` reports them and the tiers file them as grammar.
+  DECLARE: 'declare',
+  TYPESET: 'typeset',
+  READONLY: 'readonly',
   SET: 'set',
-  PRINTENV: 'printenv',
-  ENV: 'env',
-  WHOAMI: 'whoami',
-  MAN: 'man',
-  HISTORY: 'history',
-  TRUE: 'true',
-  FALSE: 'false',
-  COLON: ':',
-  SOURCE: 'source',
-  DOT: '.',
-  EVAL: 'eval',
   READ: 'read',
   MAPFILE: 'mapfile',
   READARRAY: 'readarray',
   SHIFT: 'shift',
   GETOPTS: 'getopts',
+  LET: 'let',
+  // -- shell state
   TRAP: 'trap',
   SHOPT: 'shopt',
   UMASK: 'umask',
   ALIAS: 'alias',
   UNALIAS: 'unalias',
-  LET: 'let',
   EXEC: 'exec',
+  // -- conditions
   TEST: 'test',
   BRACKET: '[',
   DOUBLE_BRACKET: '[[',
+  // -- output
+  ECHO: 'echo',
+  PRINTF: 'printf',
+  // -- running lines
+  SOURCE: 'source',
+  DOT: '.',
+  EVAL: 'eval',
+  COMMAND: 'command',
+  // -- name lookup
+  TYPE: 'type',
+  WHICH: 'which',
+  // -- status and control flow
+  TRUE: 'true',
+  FALSE: 'false',
+  COLON: ':',
+  BREAK: 'break',
+  CONTINUE: 'continue',
+  RETURN: 'return',
+  EXIT: 'exit',
+  // tools: programs the line invokes
+  // -- environment and identity
+  PRINTENV: 'printenv',
+  ENV: 'env',
+  WHOAMI: 'whoami',
+  // -- manuals and history
+  MAN: 'man',
+  HISTORY: 'history',
+  // -- job control
   WAIT: 'wait',
   FG: 'fg',
   KILL: 'kill',
   JOBS: 'jobs',
   DISOWN: 'disown',
   PS: 'ps',
-  ECHO: 'echo',
-  PRINTF: 'printf',
+  // -- clock
   SLEEP: 'sleep',
+  // -- nested shells
   BASH: 'bash',
   SH: 'sh',
+  // -- interpreters
   PYTHON: 'python',
   PYTHON3: 'python3',
   NODE: 'node',
   JS: 'js',
+  // -- command runners
   XARGS: 'xargs',
   TIMEOUT: 'timeout',
-  COMMAND: 'command',
-  TYPE: 'type',
-  WHICH: 'which',
-  BREAK: 'break',
-  CONTINUE: 'continue',
-  RETURN: 'return',
-  EXIT: 'exit',
 } as const)
 
 export type ShellBuiltin = (typeof ShellBuiltin)[keyof typeof ShellBuiltin]
+
+// Which of two things a shell builtin is, as taxonomy. GRAMMAR is the
+// shell's own language: it moves session state, control flow, or the
+// line's own streams, and never reaches a backend except through the op
+// dispatcher. TOOL is a program the line invokes that a real system
+// ships as a separate binary, or that reaches beyond the session (an
+// interpreter, the job table, the history recording). The permission
+// layer reads no tier: every builtin is a subject of a command
+// allowlist exactly like an installed command, and both tiers are
+// deniable by name.
+export const BuiltinTier = Object.freeze({
+  GRAMMAR: 'grammar',
+  TOOL: 'tool',
+} as const)
+
+export type BuiltinTier = (typeof BuiltinTier)[keyof typeof BuiltinTier]
+
+// The family a shell builtin belongs to, one level below the tier.
+// Every group sits in exactly one tier (GROUP_TIER), so filing a word in
+// a group also files its tier; BUILTIN_GROUP is the one row per word. A
+// listing (bare `man`) or a rule can name a group where it would
+// otherwise have to spell out the words.
+export const BuiltinGroup = Object.freeze({
+  // grammar
+  WORKING_DIRECTORY: 'working-directory',
+  VARIABLES: 'variables',
+  SHELL_STATE: 'shell-state',
+  CONDITIONS: 'conditions',
+  OUTPUT: 'output',
+  RUNNING_LINES: 'running-lines',
+  NAME_LOOKUP: 'name-lookup',
+  CONTROL_FLOW: 'control-flow',
+  // tools
+  ENVIRONMENT: 'environment',
+  MANUALS_AND_HISTORY: 'manuals-and-history',
+  JOB_CONTROL: 'job-control',
+  CLOCK: 'clock',
+  NESTED_SHELLS: 'nested-shells',
+  INTERPRETERS: 'interpreters',
+  COMMAND_RUNNERS: 'command-runners',
+} as const)
+
+export type BuiltinGroup = (typeof BuiltinGroup)[keyof typeof BuiltinGroup]
 
 /**
  * The structural shape of a tree-sitter syntax node, so consumers can
@@ -304,15 +429,66 @@ export type ShellBuiltin = (typeof ShellBuiltin)[keyof typeof ShellBuiltin]
  * Python side reading nodes through shell.types.
  */
 export interface TSNodeLike {
+  readonly timing?: readonly boolean[]
+  readonly heredoc?: Heredoc | undefined
+  readonly warnings?: string
+  readonly sourceText?: string
+  readonly hasError?: boolean
   type: string
   text: string
   children: TSNodeLike[]
   namedChildren: TSNodeLike[]
   parent?: TSNodeLike | null
+  /** The token after this node in its parent, as web-tree-sitter spells it. */
+  nextSibling?: TSNodeLike | null
+  /** The token before this node in its parent, as web-tree-sitter spells it. */
+  previousSibling?: TSNodeLike | null
   isNamed?: boolean
   isMissing?: boolean
   startIndex?: number
   endIndex?: number
   startPosition?: { row: number; column: number }
   endPosition?: { row: number; column: number }
+  /**
+   * Tree-node identity. Web-tree-sitter hands out a fresh wrapper per
+   * lookup, so `===` cannot tell one node from a re-read of it; the
+   * env-plane name walk uses this to skip an assignment's own target.
+   */
+  id?: number
+  /** Field lookup (`variable_assignment.name`), as web-tree-sitter spells it. */
+  childForFieldName?(fieldName: string): TSNodeLike | null
+}
+
+/**
+ * One piece of a backtick region as the evaluator lexes it: a command a
+ * pair encloses, or the literal text between two pairs. `text` is the
+ * segment's text, a command's with its escapes resolved, as the nested
+ * line parses it; `start` and `end` span its raw text in the region
+ * (for a command, up to the closing backtick). Mirrors the Python
+ * BacktickSegment.
+ */
+export interface BacktickSegment {
+  readonly text: string
+  readonly command: boolean
+  readonly start: number
+  readonly end: number
+}
+
+export interface ShellNode extends TSNodeLike {
+  readonly id: number
+  readonly hasError: boolean
+  readonly isNamed: boolean
+  readonly isMissing: boolean
+  readonly startIndex: number
+  readonly endIndex: number
+  readonly startPosition: { row: number; column: number }
+  readonly endPosition: { row: number; column: number }
+  readonly childCount: number
+  readonly children: ShellNode[]
+  readonly namedChildren: ShellNode[]
+  readonly parent: ShellNode | null
+  readonly previousSibling: ShellNode | null
+  readonly nextSibling: ShellNode | null
+  child(index: number): ShellNode | null
+  childForFieldName(name: string): ShellNode | null
 }

@@ -1,0 +1,81 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { BaseVFS } from '../base.ts'
+import { ChromaAccessor } from '../../accessor/chroma.ts'
+import { CHROMA_COMMANDS } from '../../commands/builtin/chroma/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
+
+import { CHROMA_OPS } from '../../ops/chroma/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { VFSName } from '../../types.ts'
+import {
+  type ChromaConfigRedacted,
+  redactChromaConfig,
+  resolveChromaConfig,
+  type ChromaConfig,
+  type ChromaConfigResolved,
+} from './config.ts'
+import { PROMPT } from './prompt.ts'
+
+export interface ChromaVFSOptions {
+  config: ChromaConfig
+}
+
+export interface ChromaVFSState {
+  type: string
+  config: ChromaConfigRedacted
+  needs_override: true
+}
+
+export class ChromaVFS extends BaseVFS {
+  override readonly name: string = VFSName.CHROMA
+  override readonly cachesReads: boolean = false
+  override readonly supportsSnapshot: boolean = false
+  // Every file is sized exactly, by one chunk scan per directory the caller
+  // stats; the path tree's own size is the producer's source number and
+  // never becomes the reported byte length.
+  override readonly sizesAlwaysKnown: boolean = true
+  override readonly prompt: string = PROMPT
+  readonly config: ChromaConfigResolved
+  override readonly accessor: ChromaAccessor
+
+  constructor(options: ChromaVFSOptions | ChromaConfig) {
+    super()
+    const config = 'config' in options ? options.config : options
+    this.config = resolveChromaConfig(config)
+    this.accessor = new ChromaAccessor(this.config)
+  }
+
+  override getState(): ChromaVFSState {
+    return {
+      type: this.name,
+      config: redactChromaConfig(this.config),
+      // TypeScript cannot rebuild a config-backed mount from state:
+      // `buildMountArgs` substitutes a RAMVFS for anything it was
+      // not handed. Saying so out loud turns a silently empty mount
+      // into a refusal to load. Python rebuilds via its registry, so it
+      // writes this on only four mounts and reads it nowhere.
+      needs_override: true,
+    }
+  }
+
+  override ops(): readonly RegisteredOp[] {
+    return CHROMA_OPS
+  }
+
+  override commands(): readonly RegisteredCommand[] {
+    return CHROMA_COMMANDS
+  }
+}

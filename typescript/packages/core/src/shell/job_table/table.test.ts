@@ -321,7 +321,7 @@ describe('JobTable.wait ordering', () => {
 describe('JobTable.waitAll', () => {
   it('survives a failing task — mixed success/failure both land in the table', async () => {
     const jt = new JobTable()
-    const failing: JobRunner = () => Promise.reject(new Error('resource API error'))
+    const failing: JobRunner = () => Promise.reject(new Error('VFS API error'))
     const bad = jt.submit({ command: 'bad', run: failing, abort: new AbortController(), cwd: '/' })
     const good = jt.submit({
       command: 'good',
@@ -334,7 +334,7 @@ describe('JobTable.waitAll', () => {
     const badJob = jt.get(bad.id)
     const goodJob = jt.get(good.id)
     expect(badJob?.exitCode).toBe(1)
-    expect(dec(await badJob?.console.snapshot(Channel.STDERR))).toContain('resource API error')
+    expect(dec(await badJob?.console.snapshot(Channel.STDERR))).toContain('VFS API error')
     expect(goodJob?.exitCode).toBe(0)
     expect(dec(await goodJob?.console.snapshot(Channel.STDOUT))).toBe('hello')
   })
@@ -389,4 +389,223 @@ describe('JobTable.popCompleted', () => {
     await jt.closeConsoles()
     expect(j.console.store.closed).toBe(false)
   })
+})
+
+/** A live job in one session, ended only by its own abort. */
+function live(jt: JobTable, sessionId: string): Job {
+  const abort = new AbortController()
+  return jt.submit({ command: 'x', run: pending(abort), abort, cwd: '/', sessionId })
+}
+
+describe('JobTable per-session scoping', () => {
+  it('numbers each session from one', async () => {
+    const jt = new JobTable()
+    const a1 = live(jt, 'a')
+    const b1 = live(jt, 'b')
+    const a2 = live(jt, 'a')
+    expect([a1.id, b1.id, a2.id]).toEqual([1, 1, 2])
+    await jt.killAll()
+  })
+
+  it('scopes every view to one session', async () => {
+    const jt = new JobTable()
+    const a1 = live(jt, 'a')
+    const b1 = live(jt, 'b')
+    expect(jt.listJobs('a')).toEqual([a1])
+    expect(jt.runningJobs('b')).toEqual([b1])
+    expect(jt.get(1, 'b')).toBe(b1)
+    expect(jt.get(2, 'b')).toBeNull()
+    expect(jt.listJobs()).toEqual([])
+    expect(
+      jt
+        .allJobs()
+        .map((j) => j.sessionId)
+        .sort(),
+    ).toEqual(['a', 'b'])
+    await jt.killAll()
+  })
+
+  it('killAll reaches every session', async () => {
+    const jt = new JobTable()
+    const a1 = live(jt, 'a')
+    const b1 = live(jt, 'b')
+    const killed = await jt.killAll()
+    expect(new Set(killed.map((j) => j.sessionId))).toEqual(new Set(['a', 'b']))
+    expect(a1.status).toBe(JobStatus.KILLED)
+    expect(b1.status).toBe(JobStatus.KILLED)
+    expect(jt.allRunningJobs()).toEqual([])
+  })
+
+  it('resets numbering per session when its list empties', async () => {
+    const jt = new JobTable()
+    const a1 = live(jt, 'a')
+    live(jt, 'b')
+    expect(await jt.kill(a1.id, 'a')).toBe(true)
+    jt.reap(a1.id, 'a')
+    expect(live(jt, 'a').id).toBe(1)
+    expect(live(jt, 'b').id).toBe(2)
+    await jt.killAll()
+  })
+
+  it("closeSession stops and forgets the session's jobs", async () => {
+    const jt = new JobTable()
+    const a1 = live(jt, 'a')
+    const a2 = live(jt, 'a')
+    const b1 = live(jt, 'b')
+    expect(jt.disown(a2.id, 'a')).toBe(true)
+    expect(await jt.closeSession('a')).toEqual([a1])
+    expect(a1.status).toBe(JobStatus.KILLED)
+    // Disowned: off the list, still running, bash's own rule.
+    expect(a2.status).toBe(JobStatus.RUNNING)
+    expect(jt.listJobs('a')).toEqual([])
+    expect(jt.get(1, 'a')).toBeNull()
+    expect(jt.listJobs('b')).toEqual([b1])
+    // A session reusing the id starts from one and inherits nothing.
+    expect(live(jt, 'a').id).toBe(1)
+    await jt.killAll()
+    expect(a2.status).toBe(JobStatus.KILLED)
+  })
+
+  it('loadJob restores a job into its session', async () => {
+    const jt = new JobTable()
+    const restored = new Job({
+      id: 3,
+      command: 'x',
+      cwd: '/',
+      status: JobStatus.COMPLETED,
+      sessionId: 'a',
+      console: new JobConsole(),
+    })
+    jt.loadJob(restored)
+    expect(jt.get(3, 'a')).toBe(restored)
+    expect(jt.get(3)).toBeNull()
+    expect(live(jt, 'a').id).toBe(4)
+    expect(live(jt, 'b').id).toBe(1)
+    await jt.killAll()
+  })
+})
+
+it('keeps a disowned process visible until its cancelled runner really exits', async () => {
+  const table = new JobTable(),
+    release: { fire?: () => void } = {}
+  const job = table.submit({
+    command: 'long',
+    run: deaf(release),
+    cwd: '/',
+    sessionId: 'a',
+    abort: new AbortController(),
+  })
+  await Promise.resolve()
+  const process = job.process
+  if (process === null) throw new Error('missing process')
+  const view = table.processes.view('a')
+  expect(table.disown(job.id, 'a')).toBe(true)
+  expect(table.listJobs('a')).toEqual([])
+  expect(view.get(process.info.pid)).not.toBeNull()
+  await table.killAll()
+  expect(job.status).toBe(JobStatus.KILLED)
+  expect(view.get(process.info.pid)?.state).toBe('stopping')
+  if (release.fire === undefined) throw new Error('runner did not start')
+  release.fire()
+  expect(await process.join()).toMatchObject({ exitCode: 0, cancellationRequested: true })
+  expect(view.list()).toEqual([])
+})
+
+it('does not restart process IDs with shell job numbers', async () => {
+  const table = new JobTable()
+  const submit = (sessionId: string) => {
+    const abort = new AbortController()
+    return table.submit({ command: 'wait', run: pending(abort), abort, cwd: '/', sessionId })
+  }
+  const a = submit('a'),
+    b = submit('b')
+  expect(a.id).toBe(1)
+  expect(b.id).toBe(1)
+  const pa = a.process,
+    pb = b.process
+  if (pa === null || pb === null) throw new Error('missing process')
+  expect(pa.info.pid).not.toBe(pb.info.pid)
+  await table.kill(a.id, 'a')
+  table.reap(a.id, 'a')
+  const replacement = submit('a')
+  expect(replacement.id).toBe(1)
+  const pr = replacement.process
+  if (pr === null) throw new Error('missing process')
+  expect(pr.info.pid).toBeGreaterThan(pb.info.pid)
+  await table.killAll()
+  await Promise.all([pa.join(), pb.join(), pr.join()])
+})
+
+it('settles an already aborted job without entering its runner', async () => {
+  const table = new JobTable(),
+    abort = new AbortController()
+  abort.abort()
+  let entered = false
+  const job = table.submit({
+    command: 'cancelled',
+    abort,
+    cwd: '/',
+    run: () => {
+      entered = true
+      return quiet(job)
+    },
+  })
+  await table.wait(job.id)
+  expect(entered).toBe(false)
+  expect(job.status).toBe(JobStatus.KILLED)
+  expect(await job.process?.join()).toMatchObject({ exitCode: 137, cancellationRequested: true })
+})
+
+it('refused jobs never allocate factory consoles', async () => {
+  const stores: RAMConsoleStore[] = []
+  const table = new JobTable(() => {
+    const store = new RAMConsoleStore()
+    stores.push(store)
+    return new JobConsole(store)
+  })
+  const abort = new AbortController()
+  const job = table.submit({ command: 'held', run: pending(abort), abort, cwd: '/', limit: 1 })
+  try {
+    for (let n = 0; n < 3; n++)
+      expect(() =>
+        table.submit({
+          command: 'refused',
+          run: quiet,
+          abort: new AbortController(),
+          cwd: '/',
+          limit: 1,
+        }),
+      ).toThrow(expect.objectContaining({ code: 'EAGAIN' }))
+    expect(stores).toHaveLength(1)
+    expect(table.listJobs()).toEqual([job])
+  } finally {
+    await table.killAll()
+    await table.processes.drain()
+    await table.closeConsoles()
+  }
+  expect(stores[0]?.closed).toBe(true)
+})
+
+it('factory failure never enters the job runner', async () => {
+  const entered: (number | string)[] = []
+  const table = new JobTable((id) => {
+    entered.push(id)
+    throw new Error('console unavailable')
+  })
+  expect(() =>
+    table.submit({
+      command: 'refused',
+      cwd: '/',
+      abort: new AbortController(),
+      limit: 1,
+      run: (job) => {
+        entered.push('runner')
+        return quiet(job)
+      },
+    }),
+  ).toThrow('console unavailable')
+  await table.processes.drain()
+  expect(table.listJobs()).toEqual([])
+  expect(table.processes.live()).toEqual([])
+  expect(entered).toEqual([1])
 })

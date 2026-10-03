@@ -12,14 +12,21 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { CachableAsyncIterator } from '../../../io/cachable_iterator.ts'
+import { isStdin } from '../utils/stream.ts'
+import { stdinStream, stdinStat } from '../utils/stream.ts'
+import { CachableAsyncIterator, concat } from '../../../io/cachable_iterator.ts'
 import { asyncChain } from '../../../io/stream.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
-import type { FileStat, PathSpec } from '../../../types.ts'
+import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
+import { fsErrorLine, isFsError } from '../../../utils/errors.ts'
+import { FileType, Limit, type FileStat, type PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { splitReadable } from '../utils/operands.ts'
 import { resolveSource } from '../utils/stream.ts'
-import type { FlagValue } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { type FlagValue } from '../../spec/types.ts'
+import { specOf } from '../../spec/builtins.ts'
+import { CHAR_DEVICE_MAX_BYTES } from '../utils/constants.ts'
+import { truncateStream } from '../utils/limit.ts'
 
 const ENC = new TextEncoder()
 const NL = 0x0a
@@ -40,16 +47,16 @@ interface CatDisplay {
   squeezeBlank: boolean
 }
 
-function parseFlags(flags: Record<string, FlagValue>): CatDisplay {
-  const showAll = flags.show_all === true
+function parseFlags(bag: Record<string, FlagValue>): CatDisplay {
+  const fl = new FlagView(bag, specOf('cat'))
+  const showAll = fl.asBool('show_all')
   return {
-    numberLines: flags.number === true,
-    numberNonblank: flags.number_nonblank === true,
-    showEnds: flags.show_ends === true || flags.e === true || showAll,
-    showTabs: flags.show_tabs === true || flags.t === true || showAll,
-    showNonprinting:
-      flags.show_nonprinting === true || flags.e === true || flags.t === true || showAll,
-    squeezeBlank: flags.squeeze_blank === true,
+    numberLines: fl.asBool('number'),
+    numberNonblank: fl.asBool('number_nonblank'),
+    showEnds: fl.asBool('show_ends') || fl.asBool('e') || showAll,
+    showTabs: fl.asBool('show_tabs') || fl.asBool('t') || showAll,
+    showNonprinting: fl.asBool('show_nonprinting') || fl.asBool('e') || fl.asBool('t') || showAll,
+    squeezeBlank: fl.asBool('squeeze_blank'),
   }
 }
 
@@ -83,6 +90,24 @@ function visible(
     }
   }
   return Uint8Array.from(out)
+}
+
+// One operand of a multi-operand cat: a read that fails once the stat passed
+// (a table past its read cap) is reported like a missing operand, and the
+// next operand still prints. A failed cachable discards itself, so nothing
+// partial reaches the cache. Mirrors the python non-local loop in cat_generic.
+async function* reported(
+  source: AsyncIterable<Uint8Array>,
+  io: IOResult,
+  path: PathSpec,
+): AsyncIterable<Uint8Array> {
+  try {
+    yield* source
+  } catch (err) {
+    if (!isFsError(err)) throw err
+    io.stderr = concat([await materialize(io.stderr), ENC.encode(fsErrorLine('cat', path, err))])
+    io.exitCode = 1
+  }
 }
 
 /** Line-process a stream for GNU cat's display flags (-n -E -T -v -s). */
@@ -135,11 +160,19 @@ export async function catGeneric(
   stat: Stat,
   stream: Stream,
 ): Promise<CommandFnResult> {
+  stat = stdinStat(stat)
+  stream = stdinStream(stream, opts.stdin)
   const display = parseFlags(opts.flags)
   if (display.numberNonblank) display.numberLines = false
   const wantsDisplay = Object.values(display).some(Boolean)
   if (paths.length > 0) {
-    const [readable, err] = await splitReadable(paths, stat, 'cat')
+    const stats = new Map<string, FileStat>()
+    const rememberStat = async (p: PathSpec): Promise<FileStat> => {
+      const row = await stat(p)
+      stats.set(p.virtual, row)
+      return row
+    }
+    const [readable, err] = await splitReadable(paths, rememberStat, 'cat')
     const errBytes = err === '' ? null : ENC.encode(err)
     if (readable.length === 0) {
       return [null, new IOResult({ exitCode: err === '' ? 0 : 1, stderr: errBytes })]
@@ -147,22 +180,31 @@ export async function catGeneric(
     const reads: Record<string, ByteSource> = {}
     const cacheKeys: string[] = []
     const outputs: AsyncIterable<Uint8Array>[] = []
+    const io = new IOResult({
+      reads,
+      cache: cacheKeys,
+      exitCode: err === '' ? 0 : 1,
+      stderr: errBytes,
+    })
     for (const p of readable) {
-      const cachable = new CachableAsyncIterator(stream(p))
-      reads[p.mountPath] = cachable
-      cacheKeys.push(p.mountPath)
-      outputs.push(cachable)
+      let source: ByteSource = stream(p)
+      if (stats.get(p.virtual)?.type === FileType.CHAR_DEVICE) {
+        source = truncateStream(source, io, new Limit({ maxBytes: CHAR_DEVICE_MAX_BYTES }))
+      }
+      const cachable = new CachableAsyncIterator(source)
+      if (!isStdin(p)) {
+        reads[p.mountPath] = cachable
+        cacheKeys.push(p.mountPath)
+      }
+      outputs.push(readable.length === 1 ? cachable : reported(cachable, io, p))
     }
-    const merged = outputs.length === 1 ? outputs[0] : asyncChain(...outputs)
+    const merged = outputs.length === 1 ? outputs[0] : asyncChain(outputs)
     if (merged === undefined) throw new Error('cat: missing readable stream')
     const out: ByteSource = wantsDisplay ? displayLines(merged, display) : merged
-    return [
-      out,
-      new IOResult({ reads, cache: cacheKeys, exitCode: err === '' ? 0 : 1, stderr: errBytes }),
-    ]
+    return [out, io]
   }
   try {
-    const source = resolveSource(opts.stdin, 'cat: missing operand')
+    const source = resolveSource(opts.stdin)
     const out: ByteSource = wantsDisplay ? displayLines(source, display) : source
     return [out, new IOResult()]
   } catch (err) {

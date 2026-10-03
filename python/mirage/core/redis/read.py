@@ -12,21 +12,22 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import time
-
 from mirage.accessor.redis import RedisAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.observe.context import record
+from mirage.core.redis.dest import lookup_error
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.path import norm
 
 
-async def read_bytes(accessor: RedisAccessor,
-                     path_spec: PathSpec,
-                     index: IndexCacheStore = NULL_INDEX,
-                     offset: int = 0,
-                     size: int | None = None) -> bytes:
+async def read_bytes(
+    accessor: RedisAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+    offset: int = 0,
+    size: int | None = None,
+) -> bytes:
     """Read a file, optionally only a byte range of it.
 
     Args:
@@ -39,15 +40,15 @@ async def read_bytes(accessor: RedisAccessor,
     virtual = path_spec.virtual
     path = path_spec.mount_path
     store = accessor.store
-    start_ms = int(time.monotonic() * 1000)
+    timer = start_op()
     key = norm(path)
     if offset or size is not None:
         data = await store.get_file_range(key, offset, size)
     else:
         data = await store.get_file(key)
     if data is None:
-        raise enoent(virtual)
-    record("read", path, "redis", len(data), start_ms)
+        raise await lookup_error(store, path_spec, key)
+    record("read", virtual, "redis", len(data), timer)
     return data
 
 

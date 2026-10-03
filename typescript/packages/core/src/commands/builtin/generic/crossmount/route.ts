@@ -12,8 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { isStdin, resolveSource } from '../../utils/stream.ts'
 import { IOResult, type ByteSource } from '../../../../io/types.ts'
 import type { PathSpec } from '../../../../types.ts'
+import type { NamespaceView, SessionView } from '../../../../ops/types.ts'
 import { formatFsError, isFsError } from '../../../../utils/errors.ts'
 import { strategyFor } from './detect.ts'
 import { runFanout } from './fanout/index.ts'
@@ -21,6 +23,8 @@ import { Strategy, type Cmd, type CrossResult, type DispatchFn, type RunSingle }
 import { runRelay } from './relay/index.ts'
 import { runStream } from './stream/index.ts'
 import type { FlagValue } from '../../../spec/types.ts'
+import { readFailExitCode } from '../../../spec/usage.ts'
+import { UsageError } from '../../../errors.ts'
 
 // Run a command whose path operands span mounts. Every command combines
 // per-mount work under one of three strategies (see Strategy): STREAM merges
@@ -40,24 +44,71 @@ export async function handleCrossMount(
   stdin: ByteSource | null = null,
   // Maps an operand to its storage identity (RELAY's transfer commands).
   storageKey?: (path: PathSpec) => string,
+  // Name-plane facts for the RELAY generics that render them (ls).
+  ns?: NamespaceView,
+  // The session plane's door, for the RELAY generic that renders the
+  // session's profile (ls).
+  sessionView?: SessionView,
+  // The session's working directory, which a typed operand resolves against
+  // (cp's link sources).
+  cwd = '/',
+  argv: readonly string[] = [],
 ): Promise<CrossResult> {
+  const native = runSingle
+  const input = resolveSource(stdin)
+  runSingle = (name, paths, texts, flags, options) =>
+    native(name, paths, texts, flags, {
+      ...options,
+      stdin: paths.some((p) => isStdin(p)) ? input : (options?.stdin ?? null),
+    })
   try {
     // isCrossMount gated on CROSS_MOUNT_COMMANDS membership, so the name is
     // one of the Cmd values by the time it reaches the strategy layer.
     const cmd = cmdName as Cmd
-    const strategy = strategyFor(cmd, flagKwargs)
+    const strategy = strategyFor(cmd)
     if (strategy === Strategy.RELAY) {
-      return await runRelay(cmd, scopes, textArgs, flagKwargs, dispatch, storageKey)
+      return await runRelay(
+        cmd,
+        scopes,
+        textArgs,
+        flagKwargs,
+        dispatch,
+        runSingle,
+        storageKey,
+        ns,
+        sessionView,
+        stdin,
+        cwd,
+        argv,
+      )
     }
     if (strategy === Strategy.STREAM) {
       return await runStream(cmd, scopes, textArgs, flagKwargs, runSingle)
     }
     return await runFanout(cmd, scopes, textArgs, flagKwargs, runSingle, stdin)
   } catch (err) {
+    // The command's own usage refusal (cmp's bad skip, an extra operand) is
+    // its result, and the rest of the line runs, as the single-mount path
+    // answers it.
+    if (err instanceof UsageError) {
+      return [
+        null,
+        new IOResult({
+          exitCode: err.exitCode,
+          stderr: new TextEncoder().encode(`${err.message}\n`),
+        }),
+      ]
+    }
     // Only typed fs errors format as a GNU operand line, matching the
     // Python chokepoint (FS_ERRORS). Internal errors keep propagating
     // instead of being mangled into a plausible-looking stderr line.
     if (!isFsError(err)) throw err
-    return [null, new IOResult({ exitCode: 1, stderr: formatFsError(cmdName, err, scopes) })]
+    return [
+      null,
+      new IOResult({
+        exitCode: readFailExitCode(cmdName, err),
+        stderr: formatFsError(cmdName, err, scopes),
+      }),
+    ]
   }
 }

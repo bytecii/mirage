@@ -18,16 +18,22 @@ from mirage.types import PathSpec
 def normalize(raw: str | None) -> str:
     """Normalize a key prefix.
 
+    The one rule every object-key backend applies, on both hosts:
+    leading slashes go and one trailing slash is ensured. A prefix that
+    is empty once its leading slashes are gone (``""``, ``"/"``) is no
+    prefix at all, so a root-spelled prefix never puts a slash in front
+    of every key.
+
     Args:
-        raw: The raw prefix string, or None.
+        raw (str | None): The raw prefix string, or None.
 
     Returns:
-        Empty string if input was None/empty; otherwise the prefix with
-        leading slashes stripped and a trailing slash ensured.
+        str: ``""`` for no prefix, else the prefix with leading slashes
+        stripped and a trailing slash ensured.
     """
-    if not raw:
+    v = (raw or "").lstrip("/")
+    if not v:
         return ""
-    v = raw.lstrip("/")
     return v if v.endswith("/") else v + "/"
 
 
@@ -70,7 +76,7 @@ def strip(prefix: str, key: str) -> str:
     Returns:
         The key with the prefix removed if present; otherwise unchanged.
     """
-    return key[len(prefix):] if prefix and key.startswith(prefix) else key
+    return key[len(prefix) :] if prefix and key.startswith(prefix) else key
 
 
 def strip_mount(virtual: str, prefix: str) -> str:
@@ -95,7 +101,7 @@ def strip_mount(virtual: str, prefix: str) -> str:
         strip_mount("/x.txt", "")                  -> "/x.txt"
     """
     if prefix and virtual.startswith(prefix):
-        rest = virtual[len(prefix):]
+        rest = virtual[len(prefix) :]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
             return rest or "/"
     return virtual
@@ -170,7 +176,7 @@ def rekey(parent_original: str, parent_key: str, child: str) -> str:
     return child[prefix_len:].strip("/")
 
 
-def mount_prefix_of(virtual: str, resource_path: str) -> str:
+def mount_prefix_of(virtual: str, vfs_path: str) -> str:
     """Recover a mount prefix from a virtual path and its backend key.
 
     The inverse of stamping: given a path's virtual form and the key the
@@ -180,7 +186,7 @@ def mount_prefix_of(virtual: str, resource_path: str) -> str:
 
     Args:
         virtual (str): An absolute virtual path.
-        resource_path (str): Its backend key (mount-relative, slashless).
+        vfs_path (str): Its backend key (mount-relative, slashless).
 
     Returns:
         The mount prefix without a trailing slash.
@@ -191,7 +197,7 @@ def mount_prefix_of(virtual: str, resource_path: str) -> str:
         mount_prefix_of("/data", "")           -> "/data"
         mount_prefix_of("/x.txt", "x.txt")     -> ""
     """
-    prefix_len = len(virtual.rstrip("/")) - len(resource_path)
+    prefix_len = len(virtual.rstrip("/")) - len(vfs_path)
     return virtual[:prefix_len].rstrip("/")
 
 
@@ -207,6 +213,6 @@ def mounted_path(root: PathSpec, mount_path: str) -> PathSpec:
             prefix.
         mount_path (str): The mount-local key to address.
     """
-    prefix = mount_prefix_of(root.virtual, root.resource_path)
+    prefix = mount_prefix_of(root.virtual, root.vfs_path)
     virtual = prefix + mount_path if prefix else mount_path
     return PathSpec.from_str_path(virtual, mount_path.strip("/"))

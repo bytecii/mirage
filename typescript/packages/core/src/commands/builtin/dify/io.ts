@@ -12,24 +12,24 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { readBytes, readStream } from '../../../core/dify/read.ts'
+import { searchMany, searchResource } from '../../../core/dify/search.ts'
+import { stat } from '../../../core/dify/stat.ts'
+import { DIFY_TREE } from '../../../core/dify/tree.ts'
 import type { DifyAccessor } from '../../../accessor/dify.ts'
-import { readBytes as difyRead, readStream as difyStream } from '../../../core/dify/read.ts'
-import { readdir as difyReaddir } from '../../../core/dify/readdir.ts'
-import { stat as difyStat } from '../../../core/dify/stat.ts'
+import { VFSAdapter } from '../../../vfs/adapter.ts'
 import { type CommandIO, rangeOf } from '../generic_bind/index.ts'
 
 // Dify is read-only, so no write op is wired and the generic byte-mutation
 // commands are intentionally absent. stat is the full document-detail stat;
 // the commands that would multiply that per-entry API call stay cheap
 // through lighter routes instead (ls receives a light-stat adapter from the
-// package factory, the find wrapper threads statLight unless -mtime needs
+// package factory, the find wrapper threads statLight unless a time test needs
 // detail timestamps), mirroring the Python wiring.
-export const DIFY_IO: CommandIO<DifyAccessor> = {
-  readdir: difyReaddir,
-  readBytes: difyRead,
-  readRange: rangeOf(difyRead),
-  readStream: difyStream,
-  stat: difyStat,
+export const IO: CommandIO<DifyAccessor> = new VFSAdapter<DifyAccessor>({
+  search: { search: searchResource, searchMany },
+  read: { readdir: DIFY_TREE.readdir, readBytes, stat },
+  native: { readRange: rangeOf(readBytes), readStream },
   isMounted: () => true,
   local: false,
-}
+}).toCommandIO()

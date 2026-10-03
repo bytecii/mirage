@@ -13,23 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { BaseResource, type Resource } from '../../../resource/base.ts'
+import { BaseVFS } from '../../../vfs/base.ts'
 import { MountMode, PathSpec } from '../../../types.ts'
 import { MountRegistry } from '../../mount/registry.ts'
 import { relativeSpec } from './relative.ts'
 
-class StubResource extends BaseResource implements Resource {
-  readonly kind = 'stub'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
+class StubVFS extends BaseVFS {
+  override readonly name = 'stub'
   override close(): Promise<void> {
     return Promise.resolve()
   }
 }
 
 function setup(): MountRegistry {
-  return new MountRegistry({ '/ram': new StubResource() }, MountMode.WRITE)
+  return new MountRegistry({ '/ram': new StubVFS() }, MountMode.WRITE)
 }
 
 describe('relativeSpec', () => {
@@ -67,5 +64,21 @@ describe('relativeSpec', () => {
     if (!(r instanceof PathSpec)) throw new Error('expected PathSpec')
     expect(r.rawPath).toBe('./sub/a.txt')
     expect(r.virtual).toBe('/ram/sub/a.txt')
+  })
+})
+
+describe('relativeSpec: the empty word', () => {
+  it('is refused by the walk rather than read as the cwd', () => {
+    const r = relativeSpec('', setup(), '/ram/sub')
+    if (!(r instanceof PathSpec)) throw new Error('expected PathSpec')
+    expect(r.virtual).toBe('/ram/sub')
+    expect(r.rawPath).toBe('')
+    expect(r.walkError).toBe('ENOENT')
+  })
+
+  it('leaves a named word unrefused', () => {
+    const r = relativeSpec('sub/a.txt', setup(), '/ram')
+    if (!(r instanceof PathSpec)) throw new Error('expected PathSpec')
+    expect(r.walkError).toBeNull()
   })
 })

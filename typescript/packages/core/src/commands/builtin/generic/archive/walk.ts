@@ -15,9 +15,10 @@
 import type { LinkView, MountView } from '../../../../ops/types.ts'
 import { type FileStat, FileType, LINK_TARGET_KEY, PathSpec } from '../../../../types.ts'
 import { mountKey } from '../../../../utils/key_prefix.ts'
+import { isEnotdir } from '../../../../utils/errors.ts'
 import { CycleError } from '../../../../utils/path.ts'
 import { rstripSlash, stripSlash } from '../../../../utils/slash.ts'
-import type { Entry, MemberKind, Problem, Scan } from './types.ts'
+import type { Entry, MemberKind, Problem, Scan, Walked } from './types.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 
 // A mount boundary is a filesystem boundary, so both archivers stop at
@@ -29,10 +30,15 @@ export const OTHER_FILESYSTEM = 'file is on a different filesystem; not dumped'
 // on a fatal Problem; tar prints them after "Cannot stat: " and Info-ZIP
 // words every unreachable name the same way, so it ignores the reason.
 const NO_SUCH = 'No such file or directory'
+const NOT_DIR = 'Not a directory'
 const TOO_MANY_LEVELS = 'Too many levels of symbolic links'
+// A directory below the operand the walk could not open: a rule refused
+// it. Rides on an `unreadable` Problem; tar prints it after "Cannot open: "
+// and fails the run, Info-ZIP stores the directory and is silent.
+const PERMISSION_DENIED = 'Permission denied'
 
 export type StatFn = (path: PathSpec) => Promise<FileStat>
-export type WalkFn = (path: PathSpec, findType: string) => Promise<string[]>
+export type WalkFn = (path: PathSpec, findType: string) => Promise<Walked>
 export type DirProbe = (path: PathSpec) => Promise<boolean>
 
 // What the shared scan needs from the mount it runs on, plus the two
@@ -59,13 +65,13 @@ function linkTarget(stat: FileStat): string {
 // absolute virtual paths; reading their bytes needs the backend key too,
 // which is the virtual path with this mount's prefix removed.
 function childSpec(virtual: string, root: PathSpec): PathSpec {
-  const cut = rstripSlash(root.virtual).length - stripSlash(root.resourcePath).length
+  const cut = rstripSlash(root.virtual).length - stripSlash(root.vfsPath).length
   const prefix = rstripSlash(root.virtual.slice(0, cut))
   const slash = virtual.lastIndexOf('/')
   return new PathSpec({
     virtual,
     directory: slash >= 0 ? virtual.slice(0, slash + 1) : '/',
-    resourcePath: mountKey(virtual, prefix),
+    vfsPath: mountKey(virtual, prefix),
     rawPath: virtual,
   })
 }
@@ -82,7 +88,7 @@ function sameMount(mounts: MountView | null, one: string, other: string): boolea
 // Three sources have to be merged because no single one can see them
 // all: the backend walk (files and directories), the namespace (its
 // symlinks, which no backend readdir reports), and the mount table (a
-// nested mount, whose keys live in another resource entirely).
+// nested mount, whose keys live in another VFS entirely).
 //
 // `base` and `nameBase` differ only when a link is being followed: the
 // walk runs over the target while the members keep the link's own name.
@@ -91,15 +97,22 @@ async function subtree(
   base: string,
   nameBase: string,
   deps: ScanDeps,
-): Promise<[Entry[], string[]]> {
+): Promise<[Entry[], string[], string[]]> {
   const walked = base !== root.virtual ? childSpec(base, root) : root
   const found = new Map<string, [MemberKind, string]>()
-  for (const virtual of await deps.walk(walked, 'd')) {
+  const dirs = await deps.walk(walked, 'd')
+  for (const virtual of dirs.paths) {
     if (rstripSlash(virtual) !== base) found.set(rstripSlash(virtual), ['dir', ''])
   }
-  for (const virtual of await deps.walk(walked, 'f')) {
+  const files = await deps.walk(walked, 'f')
+  for (const virtual of files.paths) {
     found.set(rstripSlash(virtual), ['file', ''])
   }
+  // Named under nameBase like the entries, once each (both listings
+  // meet the same closed door).
+  const unreadable = [...new Set([...(dirs.unreadable ?? []), ...(files.unreadable ?? [])])].map(
+    (u) => rstripSlash(nameBase) + rstripSlash(u).slice(rstripSlash(base).length),
+  )
   const links = deps.links ?? null
   if (links !== null) {
     for (const [virtual, stat] of links.subtree(base)) {
@@ -107,8 +120,14 @@ async function subtree(
     }
   }
   const mounts = deps.mounts ?? null
+  // Two lists, because pruning and naming are different questions. A
+  // mount the session cannot see still shadows the parent backend's
+  // keys, so every descendant prunes; only the ones it may be told
+  // about become a member and a "different filesystem" warning, since
+  // both hand back the name a hide exists to withhold.
   const crossings = mounts !== null ? mounts.descendants(base) : []
-  for (const crossing of crossings) {
+  const visibleCrossings = mounts !== null ? mounts.visibleDescendants(base) : []
+  for (const crossing of visibleCrossings) {
     // The mountpoint itself is still an entry, exactly as GNU's
     // --one-file-system keeps the directory and drops its contents.
     found.set(rstripSlash(crossing), ['dir', ''])
@@ -126,7 +145,7 @@ async function subtree(
     })
   }
   entries.sort((a, b) => compareCodePoints(a.namePath, b.namePath))
-  return [entries, crossings.map((c) => rstripSlash(c))]
+  return [entries, visibleCrossings.map((c) => rstripSlash(c)), unreadable]
 }
 
 // What dereferencing puts in the archive in place of one symlink.
@@ -136,39 +155,47 @@ async function subtree(
 // file are not a loop and both are archived; a real loop is whatever
 // `resolve` refuses to resolve, since the namespace already walks the
 // chain under a hop limit and raises ELOOP at the end of it. The third
-// return value is why the link was unreachable, empty when it was not.
+// return value is why the link was unreachable, empty when it was not;
+// the fourth names the directories below the target the walk could not
+// open.
 async function follow(
   virtual: string,
   root: PathSpec,
   deps: ScanDeps,
-): Promise<[Entry[], string[], string]> {
+): Promise<[Entry[], string[], string, string[]]> {
   const links = deps.links ?? null
-  if (links === null) return [[], [], '']
+  if (links === null) return [[], [], '', []]
   let target: string
   try {
     target = links.resolve(virtual)
   } catch (e) {
     if (!(e instanceof CycleError)) throw e
-    return [[], [], TOO_MANY_LEVELS]
+    return [[], [], TOO_MANY_LEVELS, []]
   }
-  if (!sameMount(deps.mounts ?? null, virtual, target)) return [[], [OTHER_FILESYSTEM], '']
+  if (!sameMount(deps.mounts ?? null, virtual, target)) return [[], [OTHER_FILESYSTEM], '', []]
   const spec = childSpec(target, root)
   let targetStat: FileStat
   try {
     targetStat = await deps.stat(spec)
-  } catch {
-    return [[], [], NO_SUCH]
+  } catch (err) {
+    return [[], [], isEnotdir(err) ? NOT_DIR : NO_SUCH, []]
   }
   if (targetStat.type !== FileType.DIRECTORY) {
-    return [[{ namePath: virtual, kind: 'file', read: spec }], [], '']
+    return [[{ namePath: virtual, kind: 'file', read: spec }], [], '', []]
   }
-  if (!deps.recurse) return [[{ namePath: virtual, kind: 'dir' }], [], '']
-  const [entries, crossings] = await subtree(root, target, virtual, deps)
+  if (!deps.recurse) return [[{ namePath: virtual, kind: 'dir' }], [], '', []]
+  const [entries, crossings, unreadable] = await subtree(root, target, virtual, deps)
   return [
     [{ namePath: virtual, kind: 'dir' }, ...entries],
     crossings.map(() => OTHER_FILESYSTEM),
     '',
+    unreadable,
   ]
+}
+
+// The problems for directories a walk could not open.
+function unreadableProblems(closed: readonly string[]): Problem[] {
+  return closed.map((path) => ({ path, reason: PERMISSION_DENIED, unreadable: true }))
 }
 
 /**
@@ -190,7 +217,7 @@ export async function scanOperand(path: PathSpec, deps: ScanDeps): Promise<Scan>
   if (linkStat !== null && !deps.dereference) {
     entries.push({ namePath: base, kind: 'link', target: linkTarget(linkStat) })
   } else if (linkStat !== null) {
-    const [followed, why, unreachable] = await follow(base, path, deps)
+    const [followed, why, unreachable, closed] = await follow(base, path, deps)
     if (unreachable !== '') {
       return {
         entries: [],
@@ -201,15 +228,16 @@ export async function scanOperand(path: PathSpec, deps: ScanDeps): Promise<Scan>
     }
     entries.push(...followed)
     problems.push(...why.map((reason) => ({ path: base, reason })))
+    problems.push(...unreadableProblems(closed))
   } else {
     let rootStat: FileStat
     try {
       rootStat = await deps.stat(path)
-    } catch {
+    } catch (err) {
       return {
         entries: [],
         crossings: [],
-        problems: [{ path: base, reason: NO_SUCH, fatal: true }],
+        problems: [{ path: base, reason: isEnotdir(err) ? NOT_DIR : NO_SUCH, fatal: true }],
         missing: true,
       }
     }
@@ -218,9 +246,10 @@ export async function scanOperand(path: PathSpec, deps: ScanDeps): Promise<Scan>
     } else {
       entries.push({ namePath: base, kind: 'dir' })
       if (deps.recurse) {
-        const [below, found] = await subtree(path, base, base, deps)
+        const [below, found, closed] = await subtree(path, base, base, deps)
         entries.push(...below)
         crossings = found
+        problems.push(...unreadableProblems(closed))
       }
     }
   }
@@ -231,13 +260,14 @@ export async function scanOperand(path: PathSpec, deps: ScanDeps): Promise<Scan>
         expanded.push(entry)
         continue
       }
-      const [followed, why, unreachable] = await follow(entry.namePath, path, deps)
+      const [followed, why, unreachable, closed] = await follow(entry.namePath, path, deps)
       if (unreachable !== '') {
         problems.push({ path: entry.namePath, reason: unreachable, fatal: true })
         continue
       }
       expanded.push(...followed)
       problems.push(...why.map((reason) => ({ path: entry.namePath, reason })))
+      problems.push(...unreadableProblems(closed))
     }
     entries = expanded
   }

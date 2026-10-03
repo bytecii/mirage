@@ -15,12 +15,11 @@
 import asyncio
 import json
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.mongodb import MongoDBConfig, MongoDBResource
+from mirage.vfs.mongodb import MongoDBConfig, MongoDBVFS
 
 load_dotenv(".env.development")
 
@@ -29,34 +28,33 @@ COLL = "heterogeneous"
 VIEW = "high_rated_films"
 
 config = MongoDBConfig(uri=os.environ["MONGODB_URI"], databases=[DB])
-resource = MongoDBResource(config=config)
+vfs = MongoDBVFS(config=config)
 
 
 async def main():
-    with Workspace({"/mongodb/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
+    with Workspace({"/mongodb/": vfs}, mode=MountMode.READ) as ws:
         print("=== VFS MODE: open() reads from MongoDB ===\n")
 
         print("--- listdir() root (databases) ---")
-        for db in vos.listdir("/mongodb"):
+        for db in os.listdir("/mongodb"):
             print(f"  {db}")
 
         print(f"\n--- listdir() /mongodb/{DB} (entities) ---")
-        for entry in vos.listdir(f"/mongodb/{DB}"):
+        for entry in os.listdir(f"/mongodb/{DB}"):
             print(f"  {entry}")
 
         print(f"\n--- listdir() /mongodb/{DB}/collections ---")
-        collections = vos.listdir(f"/mongodb/{DB}/collections")
+        collections = os.listdir(f"/mongodb/{DB}/collections")
         for col in collections:
             print(f"  {col}")
 
         print(f"\n--- listdir() /mongodb/{DB}/views ---")
-        views = vos.listdir(f"/mongodb/{DB}/views")
+        views = os.listdir(f"/mongodb/{DB}/views")
         for v in views:
             print(f"  {v}")
 
         print(f"\n--- listdir() /mongodb/{DB}/collections/{COLL} (entity) ---")
-        for entry in vos.listdir(f"/mongodb/{DB}/collections/{COLL}"):
+        for entry in os.listdir(f"/mongodb/{DB}/collections/{COLL}"):
             print(f"  {entry}")
 
         print("\n--- open() database.json ---")
@@ -103,10 +101,9 @@ async def main():
                     break
                 print(f"  {line.rstrip()[:120]}")
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(r.bytes for r in records)
-        print(f"\nStats: {len(records)} ops, "
-              f"{total} bytes transferred")
+        print(f"\nStats: {len(records)} ops, {total} bytes transferred")
 
 
 asyncio.run(main())

@@ -13,55 +13,88 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { ByteSource } from '../../../io/types.ts'
-import { IOResult, materialize } from '../../../io/types.ts'
-import type { Resource } from '../../../resource/base.ts'
-import { assertMountAllowed, MountNotAllowedError } from '../../../context/session_context.ts'
+import { IOResult } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
-import type { FileStat, ResourceName } from '../../../types.ts'
 import type { MountEntry } from '../../mount/mount.ts'
-import type {
-  LinkView,
-  MountView,
-  NamespaceView,
-  ReaddirPath,
-  StatOverlay,
-  StatPath,
-} from '../../../ops/types.ts'
-import { namespaceNames } from '../../../ops/namespace_view.ts'
+import type { ReaddirPath, StatPath } from '../../../ops/types.ts'
 import type { Namespace } from '../../mount/namespace/namespace.ts'
 import { envSnapshot, sessionView } from '../../session/state.ts'
-import { linkTargetStat, pathExists, pathReaddir, pathStat } from '../builtins/links.ts'
-import { mergeOverlayStat } from '../../mount/namespace/overlay.ts'
+import { pathReaddir, pathStat } from '../../mount/namespace/probe.ts'
+import { namespaceViewOf } from '../../mount/namespace/view.ts'
 import { MountCommandUnsupported, type MountRegistry } from '../../mount/registry.ts'
+import { ownLimit } from '../../../policy/builtin/output_cap.ts'
 import type { Runtime } from '../../../runtime/base.ts'
-import { VFSRuntime } from '../../../runtime/table.ts'
-import type { PolicyDecision } from '../../../runtime/policy/index.ts'
-import type { Session } from '../../session/session.ts'
-import type { DispatchFn } from '../../../runtime/types.ts'
-import { applyFindActions } from '../find_action_dispatch.ts'
-import { CommandTimeoutError } from '../../../commands/builtin/utils/limit.ts'
+import { WorkspaceRuntime } from '../../../runtime/table.ts'
+import type { RouteDecision } from '../../../runtime/routing/index.ts'
+import type { SessionState } from '../../session/session.ts'
+import type { DispatchFn, ShellFn } from '../../../runtime/types.ts'
+import type { ExecuteFn } from '../../expand/node.ts'
+import { CommandTimeoutError } from '../../../commands/errors.ts'
 import { UsageError } from '../../../commands/errors.ts'
+import { readFailExitCode } from '../../../commands/spec/usage.ts'
 import { formatFsError } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
-import { makeAbortError, mergeSignals } from '../../abort.ts'
 
+import { makeAbortError, mergeSignals } from '../../abort.ts'
 import type { Flags } from './types.ts'
+import { parseFlags } from './flags.ts'
+import type { CommandSpec } from '../../../commands/spec/types.ts'
 
 export interface RunOnMountCtx {
   registry: MountRegistry
-  session: Session
+  session: SessionState
   dispatch: DispatchFn
   namespace?: Namespace
-  ensureOpen?: (resource: Resource) => Promise<void>
   runtimeBindings?: Record<string, Runtime>
-  routingDecision?: PolicyDecision
+  routingDecision?: RouteDecision
   signal?: AbortSignal
+  executeFn?: ExecuteFn
+}
+
+/**
+ * The door a command handler runs a nested line through (`opts.shell`):
+ * the line runs in the calling command's own session, under its signal,
+ * reading the input it is handed.
+ */
+function nestedShell(
+  executeFn: ExecuteFn,
+  session: SessionState,
+  signal: AbortSignal | undefined,
+): ShellFn {
+  return (line: string, stdin: ByteSource | null) =>
+    executeFn(line, {
+      sessionId: session.sessionId,
+      session,
+      stdin,
+      ...(signal !== undefined ? { signal } : {}),
+    })
+}
+
+/**
+ * find's start points: the path operands typed before its expression.
+ * The expression tail is the parser's, so a word inside it (an `-exec`
+ * command word, a `-newer` reference) is never a start point even when
+ * the rest slot's PATH kind would have read it as one. Only the head is
+ * parsed against the spec, so what it yields as path operands is exactly
+ * the start points.
+ */
+export function findStartPoints(
+  argv: readonly (string | PathSpec)[],
+  exprTokens: readonly string[],
+  spec: CommandSpec | null,
+  cwd: string,
+): PathSpec[] {
+  const head = argv.slice(0, argv.length - exprTokens.length)
+  return parseFlags(head, spec, 'find', cwd).paths
 }
 
 interface RunOnMountOpts {
   stdin?: ByteSource | null
   resolveHint?: PathSpec | null
   mount?: MountEntry | null
+  // The words after the command name, as the line spelled them; absent for
+  // a run split out of a line.
+  argv?: readonly string[]
 }
 
 /** The 126 result for a command no runtime accepted. */
@@ -74,21 +107,21 @@ function admissionDenial(cmdName: string): IOResult {
  * Resolve a command against the line's routing decision. With no
  * decision, the static bindings apply. With one, the command's runtime
  * is looked up in the decision: its binding, or the decision's
- * fallback when no entry captures it. A resolved VFSRuntime means the
- * executor serves the command itself (the vfs runtime has no
+ * fallback when no entry captures it. A resolved WorkspaceRuntime means the
+ * executor serves the command itself (the workspace runtime has no
  * interpreter door); null means no runtime accepted it: exit 126,
  * "no runtime accepted this line", like a shell refusing to exec.
  */
 function lineRuntimeFor(
   cmdName: string,
   runtimeBindings: Record<string, Runtime> | undefined,
-  vfs: Runtime | null,
-  routingDecision: PolicyDecision | undefined,
+  fallback: Runtime | null,
+  routingDecision: RouteDecision | undefined,
 ): [Runtime | undefined, IOResult | null] {
   if (routingDecision === undefined) {
-    const restricted = vfs instanceof VFSRuntime && vfs.restricted
+    const restricted = fallback instanceof WorkspaceRuntime && fallback.restricted
     const runtime = runtimeBindings?.[cmdName]
-    if (runtime !== undefined && runtime === vfs) return [undefined, null]
+    if (runtime !== undefined && runtime === fallback) return [undefined, null]
     if (runtime === undefined && restricted) return [undefined, admissionDenial(cmdName)]
     return [runtime, null]
   }
@@ -96,7 +129,7 @@ function lineRuntimeFor(
     ? routingDecision.bindings[cmdName]
     : routingDecision.fallback
   if (runtime === null || runtime === undefined) return [undefined, admissionDenial(cmdName)]
-  if (runtime instanceof VFSRuntime) return [undefined, null]
+  if (runtime instanceof WorkspaceRuntime) return [undefined, null]
   return [runtime, null]
 }
 
@@ -114,74 +147,31 @@ function scalarFindFlags(flagKwargs: Flags): Flags {
   return out
 }
 
-// Merge namespace attr overlays into one stat row (ls/stat rendering). A path
-// never chown'd defaults its owner to the workspace user (the launch agent,
-// what whoami reports) so ls -l and stat -c agree; an unclaimed workspace
-// leaves uid/gid null and the formatters fall back to the neutral "user".
-function namespaceStatOverlay(namespace: Namespace, virtual: string, stat: FileStat): FileStat {
-  const merged = mergeOverlayStat(namespace.metaFor(virtual), stat)
-  const user = namespace.user
-  if (user === null || (merged.uid !== null && merged.gid !== null)) return merged
-  return merged.with({ uid: merged.uid ?? user, gid: merged.gid ?? user })
-}
-
 /**
- * The mount prefix serving a virtual path, "/" when none does.
- *
- * A mount boundary is a filesystem boundary, which is what a caller walking up a
- * tree needs in order to stop: `git` looks for a `.git` no further than the
- * mount root, the way real git stops discovery at a filesystem boundary. A path
- * under no mount answers "/" so the walk still terminates.
- */
-function mountRootOf(registry: MountRegistry, virtual: string): string {
-  return registry.tryMountFor(virtual)?.prefix ?? '/'
-}
-
-/**
- * The mount-boundary facts on offer to every command.
- *
- * A command that does not read `mounts` off its context simply ignores it, so
- * there is no list of boundary-aware commands to keep in step.
- */
-function mountView(registry: MountRegistry): MountView {
-  return {
-    descendants: (path: string) =>
-      registry.descendantMounts(path).map((m) => rstripSlash(m.prefix) || '/'),
-    isRoot: (path: string) => registry.isMountRoot(path),
-    rootOf: (path: string) => mountRootOf(registry, path),
-  }
-}
-
-/**
- * Drop cached listings and bodies for the mounts a CLI's service backs.
+ * Drop every mount's cached listings and bodies after an account CLI write.
  *
  * An account CLI mutates its service by id, so no vfs path can be derived from
  * the call and per-path invalidation has nothing to aim at: after
  * `gws sheets spreadsheets create` the new file has no cache entry to expire,
- * which is exactly the case that matters. What is known is the service, so the
- * mounts it backs drop their caches and the next read refetches.
+ * which is exactly the case that matters. Which mounts that service backs is
+ * not the CLI's business either (a CLI and a VFS are separate tiers, and
+ * a user's own CLI knows nothing about a user's own VFS), so the executor
+ * says the one thing it knows: a write happened, and every mount may be stale.
+ * A write verb is rare next to reads, and the cost is one cold listing on a
+ * mount's next read, never a wrong answer.
  *
  * Both caches go, because the two hide different writes. A stale listing hides
- * a create or a delete; a stale body hides an edit, and these resources cache
+ * a create or a delete; a stale body hides an edit, and these mounts cache
  * reads, so a `cat` after `gws docs documents batchUpdate` would otherwise keep
  * serving the pre-edit content without ever reaching Google.
- *
- * Scoped by the spec's declared `serves` rather than a blanket reset, so a
- * Slack or S3 mount alongside keeps its cache.
  */
-export async function dropServiceCaches(
-  registry: MountRegistry,
-  serves: readonly ResourceName[],
-): Promise<void> {
-  if (serves.length === 0) return
-  const wanted = new Set<string>(serves)
+export async function dropMountCaches(registry: MountRegistry): Promise<void> {
   for (const mount of registry.allMounts()) {
-    if (!wanted.has(mount.resource.kind)) continue
     // Invalidate rather than clear: a cleared index reads exactly like one
     // that was never filled, so a backend whose index *is* its listing
     // (github seeds the whole tree once) cannot tell the drop from an empty
     // repository. Expiring keeps that distinction and the next read refetches.
-    await mount.resource.index?.invalidate()
+    await mount.index.invalidate()
     await mount.cacheManager?.dropPrefix()
   }
 }
@@ -191,9 +181,11 @@ export async function dropServiceCaches(
 // filesystem-error formatting, ls/find post-processing, and read/write key
 // prefixing. handleCommand uses it for the normal path, and passes it (bound)
 // to the cross-mount runners so each operand executes natively on its owning
-// mount. `resolveHint` resolves the mount when `paths` is empty (a stream
-// command running in stdin mode); a pre-resolved `mount` skips resolution and
-// session-mode checks, which the caller already performed.
+// mount. `resolveHint` names the path whose mount runs the command, ahead of
+// the first of `paths`: a stream command in stdin mode has none, and awk over
+// operands on several mounts runs where its first file lives. A pre-resolved
+// `mount` skips resolution and session-mode checks, which the caller already
+// performed.
 export async function runOnMount(
   ctx: RunOnMountCtx,
   cmdName: string,
@@ -202,12 +194,11 @@ export async function runOnMount(
   flagKwargs: Flags,
   opts: RunOnMountOpts = {},
 ): Promise<[ByteSource | null, IOResult]> {
-  const { registry, session, dispatch, namespace, ensureOpen, runtimeBindings, routingDecision } =
-    ctx
+  const { registry, session, dispatch, namespace, runtimeBindings, routingDecision } = ctx
   const hint = opts.resolveHint ?? null
   let mount = opts.mount ?? null
   if (mount === null) {
-    const resolvePaths = paths.length > 0 ? paths : hint !== null ? [hint] : []
+    const resolvePaths = hint !== null ? [hint] : paths
     try {
       mount = await registry.resolveMount(cmdName, resolvePaths, session.cwd)
     } catch (err) {
@@ -221,36 +212,17 @@ export async function runOnMount(
       const errBytes = new TextEncoder().encode(`${cmdName}: command not found`)
       return [null, new IOResult({ exitCode: 127, stderr: errBytes })]
     }
-    try {
-      assertMountAllowed(mount.prefix)
-      for (const ps of paths) {
-        const target = registry.tryMountFor(ps.virtual)
-        if (target !== null) assertMountAllowed(target.prefix)
-      }
-    } catch (err) {
-      if (err instanceof MountNotAllowedError) {
-        const errBytes = new TextEncoder().encode(`${cmdName}: ${err.message}\n`)
-        return [null, new IOResult({ exitCode: 1, stderr: errBytes })]
-      }
-      throw err
-    }
   }
 
   let flags = flagKwargs
   if (cmdName === 'find') flags = scalarFindFlags(flags)
 
-  if (ensureOpen !== undefined) {
-    await ensureOpen(mount.resource)
-  }
-
-  // resolveMount may redirect a warm remote read to the cache mount, which
-  // does not carry the origin mount's per-command limits. Resolve the
-  // limit from the real (pre-redirect) mount so the cap survives the hit.
-  // A spec can bucket a path-shaped operand as TEXT (python3's script), so
-  // when the spec-split paths are empty fall back to the classified scope
-  // hint before cwd, mirroring the Python executor.
-  const realMount = registry.tryMountFor(paths[0]?.virtual ?? hint?.virtual ?? session.cwd)
-  const limitOverride = realMount?.commandLimits.get(cmdName) ?? null
+  // The profile, serving mount and workspace entries, in precedence order;
+  // the mount folds in the command's declared default and the built-in.
+  const limitOverride =
+    ownLimit(session.commandLimits, cmdName) ??
+    mount.commandLimits.get(cmdName) ??
+    ownLimit(registry.commandLimits, cmdName)
 
   // The name plane's facts, bundled as one view: the attr overlay so
   // ls -l and stat -c agree (cp/mv -u freshness and find -mtime compare
@@ -267,19 +239,22 @@ export async function runOnMount(
   const statPath: StatPath = (path: string) => pathStat(dispatch, path, statOverlay)
   // The same door for a listing: a walker whose output is one document
   // (tree) reads the subtree under a nested mount through here, because
-  // that subtree lives in a resource its own accessor cannot open.
+  // that subtree lives in a VFS its own accessor cannot open.
   const readdirPath: ReaddirPath = (path: string) => pathReaddir(dispatch, path)
-  const childMounts = ns.childMounts ?? null
 
   const [lineRuntime, denial] = lineRuntimeFor(
     cmdName,
     runtimeBindings,
-    registry.vfsRuntime,
+    registry.workspaceRuntime,
     routingDecision,
   )
   if (denial !== null) return [null, denial]
 
   const signal = mergeSignals(ctx.signal, session.abortSignal)
+  // A leaf that resumes here after the caller aborted must not reach a
+  // mount handler: eager write handlers do not read the signal, and a
+  // cancelled `rm` must not run.
+  if (signal?.aborted === true) throw makeAbortError(signal)
   try {
     const [initialStdout, io] = await mount.executeCmd(cmdName, paths, texts, flags, {
       stdin: opts.stdin ?? null,
@@ -288,35 +263,21 @@ export async function runOnMount(
       sessionId: session.sessionId,
       env: envSnapshot(session),
       sessionView: sessionView(session, registry.policies),
+      ...(registry.processView === undefined ? {} : { processes: registry.processView(session) }),
       execAllowed: registry.isExecAllowed(),
+      execPathAllowed: registry.execAllowedAt,
       ...(lineRuntime !== undefined ? { runtime: lineRuntime } : {}),
       ns,
       statPath,
       readdirPath,
       ...(signal !== undefined ? { signal } : {}),
+      ...(ctx.executeFn !== undefined
+        ? { shell: nestedShell(ctx.executeFn, session, signal) }
+        : {}),
       limitOverride,
+      ...(opts.argv !== undefined ? { argv: opts.argv } : {}),
     })
-    if (signal?.aborted === true) throw makeAbortError()
-    let stdout = initialStdout
-    if (cmdName === 'find') {
-      const [newStdout, actionErr] = await applyFindActions(
-        stdout,
-        flags,
-        registry,
-        session.cwd,
-        childMounts,
-        statPath,
-      )
-      stdout = newStdout
-      if (actionErr.length > 0) {
-        const existing = await materialize(io.stderr)
-        const merged = new Uint8Array(existing.length + actionErr.length)
-        merged.set(existing, 0)
-        merged.set(actionErr, existing.length)
-        io.stderr = merged
-        if (io.exitCode === 0) io.exitCode = 1
-      }
-    }
+    const stdout = initialStdout
     const prefix = rstripSlash(mount.prefix)
     if (prefix !== '') {
       io.reads = prefixKeys(io.reads, prefix)
@@ -341,7 +302,13 @@ export async function runOnMount(
     // workspace-level handler that answers with exit 124.
     if (err instanceof CommandTimeoutError || (err instanceof Error && err.name === 'AbortError'))
       throw err
-    return [null, new IOResult({ exitCode: 1, stderr: formatFsError(cmdName, err, paths) })]
+    return [
+      null,
+      new IOResult({
+        exitCode: readFailExitCode(cmdName, err),
+        stderr: formatFsError(cmdName, err, paths),
+      }),
+    ]
   }
 }
 
@@ -351,56 +318,4 @@ function prefixKeys(obj: Record<string, ByteSource>, prefix: string): Record<str
     out[prefix + k] = v
   }
   return out
-}
-
-// The symlink facts on offer, or null when there are no links, built
-// with the namespace's own attr overlay so a link's target stat carries
-// the same rows `ls -l` renders.
-function linkViewFor(namespace: Namespace | null, dispatch: DispatchFn): LinkView | null {
-  const overlay =
-    namespace !== null
-      ? (virtual: string, stat: FileStat) => namespaceStatOverlay(namespace, virtual, stat)
-      : null
-  return linkView(namespace, dispatch, overlay)
-}
-
-function linkView(
-  namespace: Namespace | null,
-  dispatch: DispatchFn,
-  overlay: StatOverlay | null,
-): LinkView | null {
-  if (!namespace?.hasLinks()) return null
-  return {
-    statAt: (path: string) => namespace.linkStatAt(path),
-    children: (directory: string) => namespace.linkStatsUnder(directory),
-    subtree: (directory: string) => namespace.linkStatsBelow(directory),
-    resolve: (path: string) => namespace.follow(path),
-    exists: (path: string) => pathExists(dispatch, path),
-    targetStat: (path: string) => linkTargetStat(namespace, dispatch, path, overlay),
-  }
-}
-
-// The name plane's facts on offer, bundled as one view: symlinks, mount
-// boundaries, the attr overlay, and the child names the namespace owes a
-// directory. Which commands receive it is decided by whether the handler
-// reads `ns` off its context, so there is no list of aware commands to
-// keep in step here or anywhere else. Exported for the mount fan-out,
-// which reaches `executeCmd` without going through `runOnMount` and
-// would otherwise run every sub-command name-plane-blind.
-export function namespaceViewOf(
-  registry: MountRegistry,
-  namespace: Namespace | null,
-  dispatch: DispatchFn,
-): NamespaceView {
-  const links = linkViewFor(namespace, dispatch)
-  const statOverlay =
-    namespace !== null
-      ? (virtual: string, stat: FileStat) => namespaceStatOverlay(namespace, virtual, stat)
-      : null
-  return {
-    ...(links !== null ? { links } : {}),
-    mounts: mountView(registry),
-    ...(statOverlay !== null ? { statOverlay } : {}),
-    childMounts: (parent: string) => namespaceNames(registry.mountPrefixes(), namespace, parent),
-  }
 }

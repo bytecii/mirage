@@ -13,12 +13,12 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { createAsyncContext } from '../utils/async_context.ts'
+import type { ContextCall } from '../utils/async_context.ts'
 import { OpRecord } from './record.ts'
-import { rstripSlash } from '../utils/slash.ts'
 
 interface RecordingState {
   records: OpRecord[]
-  mountPrefix: string
+  mountId: string | null
 }
 
 const storage = createAsyncContext<RecordingState>()
@@ -34,43 +34,61 @@ interface RevisionsState {
 
 const revisionsStorage = createAsyncContext<RevisionsState>()
 
+/** Preserve attribution and revision pins when an operation crosses a worker boundary. */
+export function captureRecordingContext(): ContextCall[] {
+  return [storage.capture(), revisionsStorage.capture()]
+}
+
+export function activeRecords(): readonly OpRecord[] | undefined {
+  return storage.getStore()?.records
+}
+
 export async function runWithRecording<T>(fn: () => Promise<T>): Promise<[T, OpRecord[]]> {
-  const state: RecordingState = { records: [], mountPrefix: '' }
+  const state: RecordingState = { records: [], mountId: null }
   const value = await storage.run(state, fn)
   return [value, state.records]
 }
 
 /**
- * Run `fn` with `prefix` as the mount prefix records are named against.
+ * Run `fn` with `mountId` as the mount its records belong to.
  *
  * Derives a state for this async branch and shares only the records array,
  * so two mounts consumed concurrently (`cat /s3/a & cat /db/b`) cannot see
- * or clobber each other's prefix. Mirrors python's `push_mount_prefix`,
+ * or clobber each other's mount. Mirrors python's `push_mount_context`,
  * whose `Recorder` is frozen and re-set per task for the same reason.
+ * An undefined `mountId` inherits the enclosing frame's.
  *
  * Inert (runs `fn` unchanged) when no recording context is active.
  */
-export function runWithMountPrefix<T>(prefix: string, fn: () => Promise<T>): Promise<T> {
+export function runWithMountContext<T>(fn: () => Promise<T>, mountId?: string | null): Promise<T> {
   const state = storage.getStore()
   if (state === undefined) return fn()
-  return Promise.resolve(storage.run({ records: state.records, mountPrefix: prefix }, fn))
+  return Promise.resolve(
+    storage.run(
+      {
+        records: state.records,
+        mountId: mountId === undefined ? state.mountId : mountId,
+      },
+      fn,
+    ),
+  )
 }
 
 /**
- * Wrap a stream so `prefix` is the active mount prefix during each pull from
- * the underlying source. A command may return a stream that defers its
- * backend read to the first chunk request, by which point the mount's own
- * scope has already exited, so without this the record lands with no prefix.
- * Mirrors python's `with_mount_prefix`.
+ * Wrap a stream so `mountId` is the active mount during each pull from the
+ * underlying source. A command may return a stream that defers its backend
+ * read to the first chunk request, by which point the mount's own scope has
+ * already exited, so without this the record lands under whatever frame
+ * drains it. Mirrors python's `with_mount_context`.
  */
-export async function* withMountPrefix(
-  prefix: string,
+export async function* withMountContext(
   it: AsyncIterable<Uint8Array>,
+  mountId?: string | null,
 ): AsyncGenerator<Uint8Array> {
   const iter = it[Symbol.asyncIterator]()
   try {
     for (;;) {
-      const step = await runWithMountPrefix(prefix, () => iter.next())
+      const step = await runWithMountContext(() => iter.next(), mountId)
       if (step.done === true) return
       yield step.value
     }
@@ -91,31 +109,88 @@ export interface RecordOptions {
   revision?: string | null
 }
 
+/**
+ * A running stopwatch for one op, owned by the record path.
+ *
+ * Opened where the backend work begins and read once when the op
+ * finishes, so an op module hands this around instead of reading a
+ * clock of its own. The wall-clock stamp the record carries is taken at
+ * finish time, not here. Mirrors python's `OpTimer`.
+ */
+export class OpTimer {
+  private readonly startMs: number
+
+  constructor() {
+    this.startMs = performance.now()
+  }
+
+  /** Milliseconds elapsed since the timer was opened. */
+  get elapsedMs(): number {
+    return Math.floor(performance.now() - this.startMs)
+  }
+}
+
+/**
+ * Open the record path's stopwatch for one op. Hand the timer to
+ * {@link record} or {@link finishRecord} when the op completes.
+ */
+export function startOp(): OpTimer {
+  return new OpTimer()
+}
+
+/**
+ * Close `timer` and build the finished record.
+ *
+ * The one place an op's duration and wall-clock stamp are read, shared
+ * by the recorder sink ({@link record}) and by the `Ops` facade's own
+ * ledger, so the two cannot disagree about what a duration measures.
+ * `path` is stored as given.
+ */
+export function finishRecord(
+  op: string,
+  path: string,
+  source: string,
+  nbytes: number,
+  timer: OpTimer,
+  options: RecordOptions = {},
+): OpRecord {
+  const elapsed = timer.elapsedMs
+  return new OpRecord({
+    op,
+    path,
+    source,
+    bytes: nbytes,
+    timestamp: Date.now(),
+    durationMs: elapsed,
+    fingerprint: options.fingerprint ?? null,
+    revision: options.revision ?? null,
+    mountId: storage.getStore()?.mountId ?? null,
+  })
+}
+
+/**
+ * Append a finished record to the active recording, if any.
+ *
+ * `path`: the full virtual path.
+ */
 export function record(
   op: string,
   path: string,
   source: string,
   nbytes: number,
-  startMs: number,
+  timer: OpTimer,
   options: RecordOptions = {},
 ): void {
   const state = storage.getStore()
   if (state === undefined) return
-  const elapsed = Math.floor(performance.now() - startMs)
-  state.records.push(
-    new OpRecord({
-      op,
-      path: applyPrefix(state.mountPrefix, path),
-      source,
-      bytes: nbytes,
-      timestamp: Date.now(),
-      durationMs: elapsed,
-      fingerprint: options.fingerprint ?? null,
-      revision: options.revision ?? null,
-    }),
-  )
+  state.records.push(finishRecord(op, path, source, nbytes, timer, options))
 }
 
+/**
+ * Append a streaming record whose bytes are filled in as it drains.
+ *
+ * `path`: the full virtual path.
+ */
 export function recordStream(
   op: string,
   path: string,
@@ -126,13 +201,14 @@ export function recordStream(
   if (state === undefined) return null
   const rec = new OpRecord({
     op,
-    path: applyPrefix(state.mountPrefix, path),
+    path,
     source,
     bytes: 0,
     timestamp: Date.now(),
     durationMs: 0,
     fingerprint: options.fingerprint ?? null,
     revision: options.revision ?? null,
+    mountId: storage.getStore()?.mountId ?? null,
   })
   state.records.push(rec)
   return rec
@@ -158,20 +234,19 @@ export function runWithRevisions<T>(
 /**
  * Look up the active revision pin for `path`, or null if no pin is
  * installed (or no revisions context is active).
+ *
+ * Every live frame's map is searched, because pins are mount state
+ * threaded through the context only for reach: each bind hands over
+ * the mount's own map, keyed by full virtual path, so a hit is never
+ * another task's different pin — the same mount binds the same map,
+ * and another mount's map cannot hold this path. On the fallback
+ * storage this is what keeps a pinned read pinned while an unpinned
+ * op's frame shadows the newest slot.
  */
 export function revisionFor(path: string): string | null {
-  const map = revisionsStorage.getStore()?.map
-  if (!map) return null
-  return map.get(path) ?? null
-}
-
-// Backends name the mount-relative path ('/report.json') and a few name the
-// virtual one already ('/s3/report.json'), so tell them apart before
-// prefixing. The test has to be for a path boundary, not a bare startsWith:
-// a mount at /s3 holding s3-report.txt would otherwise look already-prefixed
-// and record as '/s3-report.txt'. Mirrors python's _virtual.
-function applyPrefix(prefix: string, path: string): string {
-  const root = rstripSlash(prefix)
-  if (root === '' || path === root || path.startsWith(`${root}/`)) return path
-  return root + path
+  for (const state of revisionsStorage.liveStores()) {
+    const pin = state.map?.get(path)
+    if (pin !== undefined) return pin
+  }
+  return null
 }

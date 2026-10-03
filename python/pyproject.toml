@@ -1,6 +1,6 @@
 [project]
 name = "mirage-ai"
-version = "0.0.5"
+version = "0.0.7a2"
 description = "A unified virtual filesystem for AI agents. Mount S3, Google Drive, Slack, Gmail, GitHub, Linear, Notion, Postgres, MongoDB, SSH, and more behind one filesystem so agents read, write, and pipe across services with familiar shell commands."
 readme = "README.md"
 license = "Apache-2.0"
@@ -46,11 +46,13 @@ dependencies = [
     "tree-sitter-bash>=0.25.1",
     "typer>=0.12.0",
     "uvicorn[standard]>=0.41.0",
-    "jq>=1.11.0",
-    "pyjwt[crypto]>=2.13.0",
-    "dulwich>=1.2.5",
+    "jq>=1.12.0",
+    "pyjwt[crypto]>=2.14.0",
+    "dulwich>=1.2.9",
     "tenacity>=9.1.4",
-    "mcp>=1.28.1",
+    "mcp>=2.3.0,<3",
+    "jsonschema>=4.26.0",
+    "regex>=2026.4.4",
 ]
 
 [project.urls]
@@ -73,14 +75,15 @@ include = ["mirage*"]
 # py.typed is PEP 561 consent: without the marker a type checker refuses
 # to read an installed package's annotations and every mirage import
 # resolves to Any, so our own gated-at-zero mypy proves nothing to anyone
-# downstream. It caught the 0.0.5 build_resource break in one line.
-mirage = ["**/*.lua", "py.typed"]
+# downstream. It caught the 0.0.5 build_vfs break in one line.
+mirage = ["**/*.lua", "**/*.js", "py.typed"]
 
 [project.optional-dependencies]
 # --- python runtime (sandboxed python3 default) ---
 # Pinned exactly: monty's API is still moving fast (0.0.19 replaced the whole
-# execution model), and upstream pins its own worker binary the same way.
-monty    = ["pydantic-monty==0.0.19"]
+# execution model, 0.0.20 split the distribution into client + runtime
+# packages), and upstream pins its own worker binary the same way.
+monty    = ["pydantic-monty==1.0.0"]
 wasi     = ["wasmtime>=46"]
 quickjs  = ["wasmtime>=46"]
 
@@ -96,7 +99,11 @@ ssh      = ["asyncssh>=2.23.0"]
 nextcloud = ["opendal>=0.47.1"]
 
 # --- huggingface ---
-hf       = ["opendal>=0.47.1"]
+# hf_buckets is HF's Xet object store and reaches it through OpenDAL. The
+# three Hub repo VFS (hf_models / hf_datasets / hf_spaces) speak the
+# Hub API over aiohttp, which is a core dependency, so they need no extra
+# at all and must not be documented as needing this one.
+hf-buckets = ["opendal>=0.47.1"]
 
 # --- mount ---
 fuse     = ["mfusepy>=1.0.0"]
@@ -116,6 +123,11 @@ redis    = ["redis[hiredis]>=5.0"]
 # --- mail ---
 email    = ["aioimaplib>=2.0.1", "aiosmtplib>=5.1.0"]
 
+# --- secrets sources ---
+dotenv   = ["python-dotenv>=1.2.2"]
+aws-sm   = ["aioboto3>=13.0"]
+1password = ["onepassword-sdk>=0.4.1"]
+
 # --- data ---
 
 # --- observability ---
@@ -127,9 +139,6 @@ chroma   = ["chromadb-client>=1.0.0"]
 
 # --- qdrant ---
 qdrant   = ["qdrant-client[fastembed]>=1.18.0"]
-
-# --- anthropic ---
-anthropic   = ["anthropic>=0.88"]
 
 # --- openai ---
 openai      = ["openai>=2.46.0", "openai-agents>=0.18.3"]
@@ -147,8 +156,8 @@ deepagents  = [
 
 # --- openhands ---
 openhands   = [
-    "openhands-sdk>=1.36.1 ; python_full_version >= '3.12'",
-    "openhands-tools>=1.36.1 ; python_full_version >= '3.12'",
+    "openhands-sdk==1.49.1 ; python_full_version >= '3.12'",
+    "openhands-tools==1.49.1 ; python_full_version >= '3.12'",
 ]
 
 # --- agno ---
@@ -159,12 +168,6 @@ agno        = [
 # --- claude-agent-sdk ---
 claude-agent-sdk = [
     "claude-agent-sdk>=0.2.123",
-]
-
-# --- camel ---
-camel       = [
-    "camel-ai>=0.2.90,<0.3",
-    "markitdown>=0.1.5",
 ]
 
 # --- sandboxes ---
@@ -181,18 +184,20 @@ all = [
     "mirage-ai[databricks]",
     "mirage-ai[ssh]",
     "mirage-ai[nextcloud]",
-    "mirage-ai[hf]",
+    "mirage-ai[hf-buckets]",
     "mirage-ai[fuse]",
     "mirage-ai[mongodb]",
     "mirage-ai[gridfs]",
     "mirage-ai[postgres]",
     "mirage-ai[redis]",
     "mirage-ai[email]",
+    "mirage-ai[dotenv]",
+    "mirage-ai[aws-sm]",
+    "mirage-ai[1password]",
     "mirage-ai[langfuse]",
     "mirage-ai[mem0]",
     "mirage-ai[chroma]",
     "mirage-ai[qdrant]",
-    "mirage-ai[anthropic]",
     "mirage-ai[openai]",
     "mirage-ai[pydantic-ai]",
     "mirage-ai[deepagents]",
@@ -210,7 +215,7 @@ sandbox = [
     "mirage-ai[databricks]",
     "mirage-ai[ssh]",
     "mirage-ai[nextcloud]",
-    "mirage-ai[hf]",
+    "mirage-ai[hf-buckets]",
     "mirage-ai[fuse]",
     "mirage-ai[mongodb]",
     "mirage-ai[gridfs]",
@@ -228,54 +233,71 @@ mem0 = [
     "mem0ai>=2.0.6",
 ]
 e2b = [
-    "e2b>=2.0.0",
+    "e2b>=2.35.0",
 ]
 
 [tool.uv]
-conflicts = [
-    [
-        { extra = "camel" },
-        { extra = "openai" },
-    ],
-    [
-        { extra = "camel" },
-        { extra = "openhands" },
-    ],
-    [
-        { extra = "camel" },
-        { extra = "pydantic-ai" },
-    ],
-    [
-        { extra = "camel" },
-        { extra = "all" },
-    ],
-]
+constraint-dependencies = ["pypdf>=6.19.0"]
 
 [dependency-groups]
 dev = [
     "aioresponses>=0.7.6",
     "python-dotenv>=1.2.2",
-    "grpcio>=1.78.0",
-    "grpcio-tools>=1.78.0",
     "moto[s3,server]>=5.1.22",
     "pre-commit",
     "pytest",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.0.0",
     "pytest-httpx>=0.36.0",
+    "pytest-xdist>=3.8.0",
     "mypy>=2.3.0",
-    "lz4>=4.4.5",
+    "deadcode>=2.4.1",
+    "websockets>=15.0.1",
 ]
 
-[tool.flake8]
-exclude = ["mirage/commands/remote/grpc/proto/command_pb2.py", "mirage/commands/remote/grpc/proto/command_pb2_grpc.py"]
-per-file-ignores = [
-    "python/mirage/resource/*/prompt.py:E501",
+# Advisory dead-code finder for local use only. NOT a CI gate and not a
+# pre-commit hook: the tool still misreports ~200 live symbols here (see
+# below), so a red run means "read the diff", never "the build is broken".
+#
+# Run it as:  uv run deadcode mirage/
+#
+# `mirage/` and NOT `tests/` is the load-bearing part of that command. A
+# symbol referenced only by its own test is dead production code, and
+# passing tests/ would count that test as a consumer and hide it. Every
+# symbol removed in the dead-code sweep was found exactly this way.
+#
+# The ignore lists below are false positives, not debt. deadcode resolves
+# names statically, so anything invoked by a framework rather than by name
+# reads as unused, and its four --ignore-*-decorated-with flags are no-ops
+# in 2.4.1, so a decorator cannot be excused as a decorator:
+#   *_cmd            typer verbs registered via @app.command(...)
+#   _validate_*      pydantic @field_validator / @model_validator methods
+#   _normalize_*     (same)
+#   __*__            Protocol __call__, __getattr__ lazy-import shims
+#   runtime/wasm     WASI ABI constant tables, complete on purpose
+#   server/routers   FastAPI handlers registered via @router.get/post
+#   agents/*         adapters implementing third-party framework interfaces
+#   fuse/*           libfuse callbacks dispatched by signature
+[tool.deadcode]
+ignore-names = [
+    "*_cmd",
+    "__*__",
+    "_validate_*",
+    "_normalize_*",
+    "_check_*",
+    "_coerce_*",
+    "_v_*",
+]
+ignore-names-in-files = [
+    "mirage/runtime/wasm/*",
+    "mirage/server/routers/*",
+    "mirage/agents/*",
+    "mirage/fuse/*",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=mirage --cov-report=term-missing -q --import-mode=importlib"
+addopts = "-q --import-mode=importlib"
 markers = [
     "network: tests that require network access",
     "no_host_override: skip the tests/server/conftest autouse MIRAGE_ALLOWED_HOSTS=* override",
@@ -284,7 +306,16 @@ markers = [
 
 [tool.mypy]
 python_version = "3.12"
-packages = ["mirage"]
+# `files`, not `packages`: the two are mutually exclusive ("May only
+# specify one of: module/package, files, or command") and `scripts/` is a
+# directory of top-level modules, not a package. It is listed for the
+# reason typescript/scripts is a pnpm workspace member -- those 13 files
+# generate `spec/` and gate CI (`gen_specs.py` is what the Spec drift
+# step runs), and no typechecker read one of them. The first run found
+# 27 errors in 5 files, among them six capability slots read off a bare
+# `type` in `gen_specs.py`: the same shape `vfs_facts.ts` was fixed
+# for on the typescript side.
+files = ["mirage", "../scripts"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true
@@ -308,21 +339,11 @@ warn_return_any = true
 # never add one. A new module is checked the day it lands.
 [[tool.mypy.overrides]]
 module = [
-    "mirage.accessor._hf",
-    "mirage.accessor.gdocs",
-    "mirage.accessor.gdrive",
-    "mirage.accessor.github",
-    "mirage.accessor.gmail",
-    "mirage.accessor.gsheets",
-    "mirage.accessor.gslides",
-    "mirage.accessor.history",
     "mirage.accessor.nextcloud",
     "mirage.agents.agno.toolkit",
-    "mirage.agents.camel.file",
     "mirage.agents.openai_agents.runner",
     "mirage.agents.openai_agents.shell",
     "mirage.agents.openhands.workspace",
-    "mirage.bridge.thread",
     "mirage.cache",
     "mirage.cache.file.ram",
     "mirage.cache.file.redis",
@@ -330,27 +351,22 @@ module = [
     "mirage.cli.client",
     "mirage.cli.output",
     "mirage.cli.workspace",
-    "mirage.commands.builtin.dify.cat",
     "mirage.commands.builtin.generic.crossmount.detect",
     "mirage.commands.builtin.generic.rm_cmd",
     "mirage.commands.builtin.generic_bind.archive_io",
     "mirage.commands.builtin.generic_bind.builders.du",
     "mirage.commands.builtin.generic_bind.builders.sed",
     "mirage.commands.builtin.generic_bind.factory",
-    "mirage.commands.builtin.generic_bind.provision",
     "mirage.commands.builtin.github.du",
     "mirage.commands.builtin.github.grep",
     "mirage.commands.builtin.gmail.grep",
-    "mirage.commands.builtin.grep_helper",
     "mirage.commands.builtin.utils.limit",
     "mirage.commands.cli.builtin.git.format",
     "mirage.commands.cli.builtin.git.objects",
     "mirage.commands.cli.builtin.linear.util",
     "mirage.commands.config",
     "mirage.config",
-    "mirage.core.box.client",
     "mirage.core.box.resolve",
-    "mirage.core.chroma.stat",
     "mirage.core.databricks_volume.copy",
     "mirage.core.databricks_volume.read",
     "mirage.core.databricks_volume.stat",
@@ -360,147 +376,100 @@ module = [
     "mirage.core.discord.readdir",
     "mirage.core.disk.exists",
     "mirage.core.disk.read",
-    "mirage.core.dropbox.client",
     "mirage.core.email.client",
     "mirage.core.email._parse",
-    "mirage.core.github.client",
     "mirage.core.github.readdir",
     "mirage.core.github.repo",
     "mirage.core.gmail.labels",
     "mirage.core.gmail.messages",
-    "mirage.core.google.client",
-    "mirage.core.gsheets.write",
     "mirage.core.hf_buckets.read",
     "mirage.core.hf_buckets.readdir",
     "mirage.core.jq.stream",
     "mirage.core.lancedb.query",
-    "mirage.core.lancedb.read",
-    "mirage.core.lancedb.readdir",
     "mirage.core.langfuse.client",
-    "mirage.core.linear.client",
     "mirage.core.mem0.client",
     "mirage.core.mongodb.client",
     "mirage.core.mongodb._sampler",
     "mirage.core.mongodb.search",
     "mirage.core.mongodb.stream",
-    "mirage.core.msgraph.client",
     "mirage.core.nextcloud.read",
     "mirage.core.nextcloud.readdir",
     "mirage.core.nextcloud.search.query",
     "mirage.core.notion.read",
     "mirage.core.postgres.client",
     "mirage.core.postgres.search",
-    "mirage.core.qdrant.read",
-    "mirage.core.qdrant.readdir",
     "mirage.core.s3.read",
-    "mirage.core.slack.client",
     "mirage.core.slack.readdir",
     "mirage.core.slack.users",
     "mirage.core.ssh.rm",
     "mirage.core.ssh.stream",
-    "mirage.core.trello.client",
     "mirage.core.trello.stat",
     "mirage.fuse.core",
     "mirage.fuse.darwin",
     "mirage.fuse.fs",
     "mirage.fuse.mount",
     "mirage.observe.context",
-    "mirage.ops.chroma.grep",
-    "mirage.ops.chroma.search",
-    "mirage.ops.dify.grep",
-    "mirage.ops.dify.search",
-    "mirage.ops.gcal.read",
     "mirage.ops.gdocs.read",
     "mirage.ops.generic.factory",
     "mirage.ops.gsheets.read",
     "mirage.ops.gslides.read",
     "mirage.ops.ops",
-    "mirage.ops.os_patch",
     "mirage.ops.registry",
-    "mirage.resource",
-    "mirage.resource.box.box",
-    "mirage.resource.chroma",
-    "mirage.resource.chroma.chroma",
-    "mirage.resource.databricks_volume",
-    "mirage.resource.databricks_volume.databricks_volume",
-    "mirage.resource.dev.dev",
-    "mirage.resource.dify",
-    "mirage.resource.dify.dify",
-    "mirage.resource.discord",
-    "mirage.resource.discord.discord",
-    "mirage.resource.disk.disk",
-    "mirage.resource.dropbox",
-    "mirage.resource.dropbox.dropbox",
-    "mirage.resource.email",
-    "mirage.resource.email.email",
-    "mirage.resource.gcal",
-    "mirage.resource.gcal.gcal",
-    "mirage.resource.gdocs",
-    "mirage.resource.gdocs.gdocs",
-    "mirage.resource.gdrive",
-    "mirage.resource.gdrive.gdrive",
-    "mirage.resource.github.github",
-    "mirage.resource.gmail",
-    "mirage.resource.gmail.gmail",
-    "mirage.resource.gridfs.gridfs",
-    "mirage.resource.gsheets",
-    "mirage.resource.gsheets.gsheets",
-    "mirage.resource.gslides",
-    "mirage.resource.gslides.gslides",
-    "mirage.resource.hf_buckets.hf_buckets",
-    "mirage.resource.hf_datasets.hf_datasets",
-    "mirage.resource.hf_models.hf_models",
-    "mirage.resource.hf_spaces.hf_spaces",
-    "mirage.resource.history.history",
-    "mirage.resource.jaeger",
-    "mirage.resource.jaeger.jaeger",
-    "mirage.resource.lancedb",
-    "mirage.resource.lancedb.lancedb",
-    "mirage.resource.langfuse",
-    "mirage.resource.langfuse.langfuse",
-    "mirage.resource.linear",
-    "mirage.resource.linear.linear",
-    "mirage.resource.loader",
-    "mirage.resource.mem0",
-    "mirage.resource.mongodb",
-    "mirage.resource.mongodb.mongodb",
-    "mirage.resource.nextcloud.nextcloud",
-    "mirage.resource.notion",
-    "mirage.resource.notion.notion",
-    "mirage.resource.onedrive.onedrive",
-    "mirage.resource.postgres",
-    "mirage.resource.postgres.postgres",
-    "mirage.resource.qdrant",
-    "mirage.resource.qdrant.qdrant",
-    "mirage.resource.ram",
-    "mirage.resource.ram.ram",
-    "mirage.resource.redis",
-    "mirage.resource.redis.redis",
-    "mirage.resource.registry",
-    "mirage.resource.s3.s3",
-    "mirage.resource.sharepoint.sharepoint",
-    "mirage.resource.slack",
-    "mirage.resource.slack.slack",
-    "mirage.resource.ssh.ssh",
-    "mirage.resource.trello",
-    "mirage.resource.trello.trello",
-    "mirage.runtime.python.monty.osaccess",
+    "mirage.vfs",
+    "mirage.vfs.box.box",
+    "mirage.vfs.chroma.chroma",
+    "mirage.vfs.databricks_volume.databricks_volume",
+    "mirage.vfs.dev.store",
+    "mirage.vfs.dify.dify",
+    "mirage.vfs.discord.discord",
+    "mirage.vfs.disk.disk",
+    "mirage.vfs.dropbox.dropbox",
+    "mirage.vfs.email.email",
+    "mirage.vfs.gcal.gcal",
+    "mirage.vfs.gdocs.gdocs",
+    "mirage.vfs.gdrive.gdrive",
+    "mirage.vfs.github.github",
+    "mirage.vfs.gmail.gmail",
+    "mirage.vfs.gridfs.gridfs",
+    "mirage.vfs.gsheets.gsheets",
+    "mirage.vfs.gslides.gslides",
+    "mirage.vfs.hf_buckets.hf_buckets",
+    "mirage.vfs.hf_datasets.hf_datasets",
+    "mirage.vfs.hf_models.hf_models",
+    "mirage.vfs.hf_spaces.hf_spaces",
+    "mirage.vfs.history.history",
+    "mirage.vfs.jaeger.jaeger",
+    "mirage.vfs.lancedb.lancedb",
+    "mirage.vfs.langfuse.langfuse",
+    "mirage.vfs.linear.linear",
+    "mirage.vfs.loader",
+    "mirage.vfs.mongodb.mongodb",
+    "mirage.vfs.nextcloud.nextcloud",
+    "mirage.vfs.notion.notion",
+    "mirage.vfs.onedrive.onedrive",
+    "mirage.vfs.postgres.postgres",
+    "mirage.vfs.qdrant.qdrant",
+    "mirage.vfs.ram.ram",
+    "mirage.vfs.redis.redis",
+    "mirage.vfs.registry",
+    "mirage.vfs.s3.s3",
+    "mirage.vfs.sharepoint.sharepoint",
+    "mirage.vfs.slack.slack",
+    "mirage.vfs.ssh.ssh",
+    "mirage.vfs.trello.trello",
+    "mirage.runtime.python.monty.fs",
     "mirage.runtime.vfs",
-    "mirage.runtime.wasm.host",
+    "mirage.runtime.wasm.fs",
     "mirage.server.app",
-    "mirage.server.routers.execute",
     "mirage.server.routers.jobs",
     "mirage.server.routers.sessions",
+    "mirage.server.routers.shell",
     "mirage.server.summary",
     "mirage.server.version.api",
-    "mirage.server.version.restore",
-    "mirage.server.version.state_diff",
     "mirage.server.version.state_tree",
     "mirage.shell.arith",
-    "mirage.shell.syntax.parse",
+    "mirage.shell.parse",
     "mirage.workspace.dispatcher.dispatcher",
-    "mirage.workspace.executor.builtins.history",
-    "mirage.workspace.executor.builtins.links",
     "mirage.workspace.executor.builtins.scope",
     "mirage.workspace.executor.control",
     "mirage.workspace.executor.jobs",
@@ -514,12 +483,7 @@ module = [
     "mirage.workspace.node.command_dispatch",
     "mirage.workspace.node.execute_node",
     "mirage.workspace.node.program",
-    "mirage.workspace.node.provision_node",
     "mirage.workspace.node.test_expr",
-    "mirage.workspace.provision.command",
-    "mirage.workspace.provision.control",
-    "mirage.workspace.provision.pipes",
-    "mirage.workspace.provision.redirect",
     "mirage.workspace.session",
     "mirage.workspace.snapshot.api",
     "mirage.workspace.snapshot.manifest",

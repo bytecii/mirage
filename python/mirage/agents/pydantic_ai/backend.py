@@ -17,15 +17,24 @@ from collections.abc import Awaitable
 from typing import TypeVar
 
 from pydantic_ai_backends.protocol import SandboxProtocol
-from pydantic_ai_backends.types import (EditResult, ExecuteResponse, FileInfo,
-                                        GrepMatch, WriteResult)
+from pydantic_ai_backends.types import (
+    EditResult,
+    ExecuteResponse,
+    FileInfo,
+    GrepMatch,
+    WriteResult,
+)
 
-from mirage.agents.pydantic_ai._convert import (io_to_execute_response,
-                                                io_to_file_infos,
-                                                io_to_grep_matches)
+from mirage.agents.io_text import replace_text
+from mirage.agents.pydantic_ai.convert import (
+    io_to_execute_response,
+    io_to_file_infos,
+    io_to_grep_matches,
+)
 from mirage.bridge.sync import run_async_from_sync
 from mirage.io.types import IOResult
-from mirage.workspace.workspace import Workspace
+from mirage.ops.ops import Ops
+from mirage.workspace.workspace import Session, Workspace
 
 T = TypeVar("T")
 
@@ -34,8 +43,15 @@ class PydanticAIWorkspace(SandboxProtocol):
     """Pydantic AI backend backed by a Mirage Workspace.
 
     File operations (read, write, edit, ls) go through the Ops layer directly.
-    Shell operations (execute, grep, glob) go through Workspace.execute()
-    for pipe and flag support.
+    Shell operations (execute, grep, glob) go through Workspace.shell()
+    for pipe and flag support. Both run as the session, so its profile
+    judges every call.
+
+    Args:
+        workspace (Workspace): The workspace to operate on.
+        sandbox_id (str): The id the backend reports.
+        session_id (str | None): The session the backend acts as; None
+            is the workspace's default session.
     """
 
     def __init__(
@@ -52,13 +68,18 @@ class PydanticAIWorkspace(SandboxProtocol):
         return run_async_from_sync(coro)
 
     @property
+    def _vfs(self) -> Ops:
+        """The op facade run as this backend's session."""
+        if self._session_id is None:
+            return self._ws.vfs
+        return Session(self._ws, self._session_id).vfs
+
+    @property
     def id(self) -> str:
         return self._id
 
     async def _exec(self, command: str) -> IOResult:
-        result = await self._ws.execute(command, session_id=self._session_id)
-        assert isinstance(result, IOResult)
-        return result
+        return await self._ws.shell(command, session_id=self._session_id)
 
     def _read_bytes(self, path: str) -> bytes:
         return self.read_bytes(path)
@@ -70,7 +91,7 @@ class PydanticAIWorkspace(SandboxProtocol):
         return self._run(self.aread_bytes(path))
 
     async def aread_bytes(self, path: str) -> bytes:
-        ops = self._ws.ops
+        ops = self._vfs
         return await ops.read(path)
 
     def exists(self, path: str) -> bool:
@@ -78,21 +99,21 @@ class PydanticAIWorkspace(SandboxProtocol):
 
     async def aexists(self, path: str) -> bool:
         try:
-            await self._ws.ops.stat(path)
-        except (FileNotFoundError, ValueError):
+            await self._vfs.stat(path)
+        except (FileNotFoundError, NotADirectoryError, ValueError):
             return False
         return True
 
     # -- execute -------------------------------------------------------
 
-    def execute(self,
-                command: str,
-                timeout: int | None = None) -> ExecuteResponse:
+    def execute(
+        self, command: str, timeout: int | None = None
+    ) -> ExecuteResponse:
         return self._run(self.aexecute(command, timeout=timeout))
 
-    async def aexecute(self,
-                       command: str,
-                       timeout: int | None = None) -> ExecuteResponse:
+    async def aexecute(
+        self, command: str, timeout: int | None = None
+    ) -> ExecuteResponse:
         io = await self._exec(command)
         return io_to_execute_response(io)
 
@@ -115,10 +136,13 @@ class PydanticAIWorkspace(SandboxProtocol):
             is_dir = name.endswith("/")
             clean = name.rstrip("/")
             result.append(
-                FileInfo(name=clean,
-                         path=f"{base}/{clean}",
-                         is_dir=is_dir,
-                         size=None))
+                FileInfo(
+                    name=clean,
+                    path=f"{base}/{clean}",
+                    is_dir=is_dir,
+                    size=None,
+                )
+            )
         return result
 
     # -- read ----------------------------------------------------------
@@ -126,18 +150,17 @@ class PydanticAIWorkspace(SandboxProtocol):
     def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         return self._run(self.aread(path, offset, limit))
 
-    async def aread(self,
-                    path: str,
-                    offset: int = 0,
-                    limit: int = 2000) -> str:
-        ops = self._ws.ops
+    async def aread(
+        self, path: str, offset: int = 0, limit: int = 2000
+    ) -> str:
+        ops = self._vfs
         try:
             data = await ops.read(path)
-        except (FileNotFoundError, ValueError) as exc:
+        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
             return f"Error: {exc}"
         text = data.decode("utf-8", errors="replace")
         lines = text.splitlines(keepends=True)
-        sliced = lines[offset:offset + limit]
+        sliced = lines[offset : offset + limit]
         numbered = []
         for i, line in enumerate(sliced, start=offset + 1):
             numbered.append(f"{i:>6}\t{line}")
@@ -149,11 +172,11 @@ class PydanticAIWorkspace(SandboxProtocol):
         return self._run(self.awrite(path, content))
 
     async def awrite(self, path: str, content: str | bytes) -> WriteResult:
-        ops = self._ws.ops
+        ops = self._vfs
         try:
             await ops.stat(path)
             return WriteResult(error=f"Error: file '{path}' already exists")
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, NotADirectoryError, ValueError):
             # missing file is the good path: the write may proceed
             pass
         parent = "/".join(path.rstrip("/").split("/")[:-1]) or "/"
@@ -184,24 +207,24 @@ class PydanticAIWorkspace(SandboxProtocol):
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
-        ops = self._ws.ops
+        ops = self._vfs
         try:
             data = await ops.read(path)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, NotADirectoryError, ValueError):
             return EditResult(error=f"Error: file '{path}' not found")
         content = data.decode("utf-8", errors="replace")
-        count = content.count(old_string)
+        new_content, count = replace_text(
+            content, old_string, new_string, replace_all
+        )
         if count == 0:
             return EditResult(
-                error=f"Error: string not found in file: '{old_string}'")
+                error=f"Error: string not found in file: '{old_string}'"
+            )
         if count > 1 and not replace_all:
             return EditResult(
                 error=f"Error: string '{old_string}' appears {count} times. "
-                f"Use replace_all=True")
-        if replace_all:
-            new_content = content.replace(old_string, new_string)
-        else:
-            new_content = content.replace(old_string, new_string, 1)
+                f"Use replace_all=True"
+            )
         await ops.write(path, new_content.encode("utf-8"))
         return EditResult(path=path, occurrences=count if replace_all else 1)
 
@@ -236,10 +259,11 @@ class PydanticAIWorkspace(SandboxProtocol):
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         return self._run(self.aglob_info(pattern, path))
 
-    async def aglob_info(self,
-                         pattern: str,
-                         path: str = "/") -> list[FileInfo]:
+    async def aglob_info(
+        self, pattern: str, path: str = "/"
+    ) -> list[FileInfo]:
         name = pattern.split("/")[-1] if "/" in pattern else pattern
         io = await self._exec(
-            f"find {shlex.quote(path)} -name {shlex.quote(name)}")
+            f"find {shlex.quote(path)} -name {shlex.quote(name)}"
+        )
         return io_to_file_infos(io)

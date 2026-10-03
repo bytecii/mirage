@@ -15,7 +15,7 @@
 import json
 
 from mirage.commands.cli.types import CLIInvocation
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.slack.config import SlackConfig
 from mirage.core.slack.react import add_reaction
 from mirage.io.stream import yield_bytes
@@ -23,7 +23,8 @@ from mirage.io.types import ByteSource, IOResult
 
 
 async def react(
-        inv: CLIInvocation[SlackConfig]) -> tuple[ByteSource | None, IOResult]:
+    inv: CLIInvocation[SlackConfig],
+) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(inv.flags)
     result = await add_reaction(
         inv.config,
@@ -31,6 +32,7 @@ async def react(
         fl.as_str("ts") or "",
         fl.as_str("emoji") or "",
     )
-    out = json.dumps(result, ensure_ascii=False,
-                     separators=(",", ":")).encode()
+    out = json.dumps(
+        result, ensure_ascii=False, separators=(",", ":")
+    ).encode()
     return yield_bytes(out), IOResult()

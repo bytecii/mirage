@@ -13,52 +13,63 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Context } from '@deepseek-ai/cordis'
-import { ShellExecutor } from '@deepseek-ai/dsh-shell'
+import { DSH_ENV_PREFIX, ShellExecutor } from '@deepseek-ai/dsh-shell'
 import type {
   CollectedOutput,
   ShellExecRequest,
   ShellExecSpec,
-  ShellProcess,
+  ShellExecution,
   ShellProcessRead,
   ShellProcessStatus,
   ShellRunResult,
   ShellSandboxInfo,
 } from '@deepseek-ai/dsh-shell'
+import type { SubprocessOutputRead } from '@deepseek-ai/dsh-subprocess'
 import {
   Channel,
   JobConsole,
   KILLED_OUTCOME,
-  RAMConsoleStore,
   exitOutcome,
 } from '@struktoai/mirage-core/shell/console/index'
-import type { ConsoleChunk } from '@struktoai/mirage-core/shell/console/index'
+import type {
+  ConsoleChunk,
+  ConsoleStore,
+  ReadResult,
+} from '@struktoai/mirage-core/shell/console/index'
 import { setCwd } from '@struktoai/mirage-core/workspace/session/shell_dirs'
+import { sessionView } from '@struktoai/mirage-core/workspace/session/state'
 import type {
   ExecuteOptions,
   ExecuteResult,
 } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import type { Workspace } from '@struktoai/mirage-node'
-import { tailCap } from './text.ts'
+import { StreamTail, TailBuffer } from './text.ts'
 import { SpillSink, ensureDirPath, type SpillTarget } from './spill.ts'
 import type {} from './service.ts'
+import type { Refusal } from '@struktoai/mirage-core/types'
+import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 600_000
 const DEFAULT_STDOUT_MAX_BYTES = 200_000
 const DEFAULT_STDERR_MAX_BYTES = 64_000
-const STDERR_MARKER = '\n--- stderr ---\n'
-// What the console may hold that the drain loop has not consumed yet.
-// Capping the delta does not bound this: a reader's cursor advances but
-// frees nothing, so an uncapped store keeps every chunk of a noisy
-// command for the life of the process. Five deltas' worth, because the
-// drain awaits the spill's own writes and has to be free to fall
-// briefly behind, and bounded, so a command that outruns it forever
-// cannot grow the heap.
-const CONSOLE_RETENTION_BYTES = 5 * DEFAULT_STDOUT_MAX_BYTES
-
+const STDERR_MARKER = new TextEncoder().encode('\n--- stderr ---\n')
 // Monotonic within the process, so concurrent background commands never
 // collide on a spill filename. Not reset, so it needs no time or randomness.
 let spillCounter = 0
+
+// The mount whose writability a `read-only` policy keeps, because dsh's
+// own definition of that mode keeps it: "permits only required sinks such
+// as /dev/null". Narrowing it too would make `cmd > /dev/null` fail, which
+// no read-only sandbox anywhere does.
+const SINK_PREFIX = '/dev'
+
+// How mirage refuses a write the session's mount grants do not allow: the
+// write itself is refused, in the read-only voice, whether a command or a
+// redirection made it. Hide refusals keep `Permission denied`. Only
+// consulted for a call that ran under `read-only`, so the only permission
+// error these can catch is the one this executor just imposed.
+const DENIAL_SIGNATURES = ['read-only mount at ', ': Permission denied', ': Read-only file system']
 
 /** Configuration for the mirage shell executor. */
 export interface MirageShellConfig {
@@ -83,9 +94,17 @@ export interface MirageShellConfig {
    * dsh's bash tool. With a session bound, `cd`, `export`, and function
    * definitions persist across calls, the persistent-shell contract. The
    * session is created on first use if the workspace does not have it; an
-   * existing session is adopted as is. A spec carrying an explicit
-   * `workdir` or `env` still runs as a one-call subshell of the bound
-   * session, per mirage's `ExecuteOptions` semantics.
+   * existing session is adopted as is.
+   *
+   * A spec carrying an explicit `env`, or a `workdir` that names a real
+   * directory in this world, still runs as a one-call subshell of the
+   * bound session, per mirage's `ExecuteOptions` semantics: both say
+   * "just for this command". The two things dsh injects on every call
+   * are deliberately not read that way, since neither carries that
+   * intent and either would fork every command and leave the binding
+   * with nothing to persist. A workdir resolved on the harness's own
+   * machine names nothing here and is dropped; the managed `DSH_*`
+   * snapshot is seeded into the session instead.
    */
   sessionId?: string
   /**
@@ -102,28 +121,31 @@ export interface MirageShellConfig {
   spillDir?: string
 }
 
-function collect(text: string, maxBytes: number): CollectedOutput {
-  const capped = tailCap(text, maxBytes)
-  return { text: capped.text, truncated: capped.truncated }
-}
-
 function executeOptions(
   spec: ShellExecSpec,
+  workdir: string,
   signal: AbortSignal,
   sessionId: string | undefined,
+  bound: boolean,
   fallbackWorkdir: string,
   sink?: JobConsole,
-): ExecuteOptions & { provision?: false } {
-  const env = {
-    ...(spec.env ?? {}),
-    ...((spec.dshEnv as Record<string, string> | undefined) ?? {}),
-  }
+): ExecuteOptions {
+  // A per-call `env` makes mirage fork a subshell, exactly as `cwd` does,
+  // so what goes in it decides whether anything can persist. Bound to a
+  // session, only a genuine per-call override belongs here: dsh sends a
+  // non-empty managed `DSH_*` snapshot on every single call, and carrying
+  // that per call would fork every command and quietly undo the binding.
+  // Those facts are seeded into the session instead, by `applyManagedEnv`.
+  const managed = (spec.dshEnv as Record<string, string> | undefined) ?? {}
+  const env = bound ? { ...(spec.env ?? {}) } : { ...(spec.env ?? {}), ...managed }
   // Unbound, `cwd` is always present so every command runs in an ephemeral
-  // fork of the default session: isolation must not hinge on a spec
-  // happening to carry a workdir. Bound, an absent workdir runs in the
-  // session itself, which is what lets its state persist.
-  const cwd =
-    spec.workdir !== '' ? spec.workdir : sessionId === undefined ? fallbackWorkdir : undefined
+  // fork: isolation must not hinge on a spec happening to carry a workdir,
+  // and a read-only call runs in a *named* twin session, so without a cwd
+  // its `cd` and exports would persist into the next nominally one-shot
+  // call. Bound, an absent workdir runs in the session itself, which is
+  // what lets its state persist. Either way the decision is the binding's,
+  // never the session this particular call happens to land in.
+  const cwd = workdir !== '' ? workdir : bound ? undefined : fallbackWorkdir
   return {
     signal,
     ...(sessionId !== undefined ? { sessionId } : {}),
@@ -134,115 +156,210 @@ function executeOptions(
   }
 }
 
+/** Where and as whom one command runs, settled before it starts. */
+interface Prepared {
+  ws: Workspace
+  sessionId: string | undefined
+  bound: boolean
+  workdir: string
+}
+
 /**
- * A background command over the workspace executor, streamed through a
- * `JobConsole`. The command runs with the console as its `sink`, so each
- * statement of a compound line lands as it finishes rather than the whole
- * line arriving at the end (a single command still shows up in one chunk,
- * having nothing to emit before it completes). A background follow loop
- * drains the console into `pending`, which `readOutput()` hands back and
- * clears — consuming, so consecutive reads never re-deliver. Unread output
- * is bounded to `budget` bytes: the head is dropped and `lossy` set once
- * it overruns, keeping the tail, which is where the full stream spills to
- * a file. Both ends of the conduit are bounded, because draining the
- * console does not free it: the console holds a retention budget of its
- * own, and a command that outruns this loop by that much loses chunks,
- * which arrives here as a gap in the sequence. `kill()` aborts
- * cooperatively (the executor observes the signal between pipeline stages
- * and inside sleep).
+ * Wait for `work` until `signal` fires; the reason the signal carries is
+ * then the rejection, and the work runs on unwatched.
+ *
+ * @param work the step being waited for.
+ * @param signal the signal that ends the wait.
+ * @returns what the step resolved with.
  */
-class MirageShellProcess implements ShellProcess {
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => {
+      reject(signal.reason as Error)
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    work.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', abort)
+    })
+  })
+}
+
+/** How a settled execution ended, read once it has: the first cause wins. */
+interface Classification {
+  timedOut: boolean
+  aborted: boolean
+}
+
+/** What an execution needs from its executor, beyond the run itself. */
+interface ExecutionParts {
+  controller: AbortController
+  /** Budget of the consuming `readOutput` backlog. */
+  budget: number
+  stdoutMaxBytes: number
+  stderrMaxBytes: number
+  timeoutMs: number
+  spill: SpillSink | null
+  classify: () => Classification
+  /** The sandbox facts once the run settled, its denial read off them. */
+  verdict: (result: ExecuteResult | null, stderr: string) => ShellSandboxInfo | undefined
+  disarm: () => void
+}
+
+/**
+ * The console store one execution streams through: each chunk goes to the
+ * execution as the command emits it, and none is retained. The command
+ * awaits every emit, so a spill write holds it back rather than piling up
+ * behind it, and no retention budget can drop a chunk before it was read:
+ * memory holds only what the execution's bounded tails and backlog keep.
+ */
+class ExecutionStore implements ConsoleStore {
+  private nextSeq = 0
+  private isClosed = false
+  private waiters: (() => void)[] = []
+
+  constructor(private readonly deliver: (chunk: ConsoleChunk) => Promise<void>) {}
+
+  get closed(): boolean {
+    return this.isClosed
+  }
+
+  async append(channel: Channel, data: Uint8Array): Promise<ConsoleChunk> {
+    const chunk: ConsoleChunk = { seq: this.nextSeq, ts: Date.now() / 1000, channel, data }
+    this.nextSeq += 1
+    await this.deliver(chunk)
+    return chunk
+  }
+
+  readFrom(): Promise<ReadResult> {
+    return Promise.resolve([[], this.nextSeq, false])
+  }
+
+  wait(): Promise<void> {
+    if (this.isClosed) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      this.waiters.push(resolve)
+    })
+  }
+
+  close(): Promise<void> {
+    this.isClosed = true
+    for (const resolve of this.waiters.splice(0)) resolve()
+    return Promise.resolve()
+  }
+}
+
+/**
+ * One command over the workspace executor, streamed through a `JobConsole`:
+ * the handle `execute` returns, whether the caller awaits `result()` (a
+ * foreground run) or keeps the handle (a background one).
+ *
+ * The command runs with the console as its `sink`, so each statement of a
+ * compound line lands as it finishes rather than the whole line arriving at
+ * the end (a single command still shows up in one chunk, having nothing to
+ * emit before it completes). Each chunk goes to three places: the consuming
+ * `readOutput` backlog, which hands back and clears, so consecutive reads
+ * never re-deliver; and one bounded tail per stream, which `observed` reads
+ * at a caller's own offsets and `result()` projects once the command is
+ * over. Unread output is bounded on every path: a tail or the backlog that
+ * overruns its budget drops its head, keeping the tail, and the full stream
+ * moves to spill files. `kill()` aborts cooperatively (the executor observes
+ * the signal between pipeline stages and inside sleep).
+ */
+class MirageShellExecution implements ShellExecution {
   status: ShellProcessStatus = 'running'
   exitCode: number | null = null
   signal: NodeJS.Signals | null = null
   sandbox?: ShellSandboxInfo
   readonly done: Promise<void>
+  readonly observed: ShellExecution['observed']
 
-  private readonly controller: AbortController
+  private readonly parts: ExecutionParts
   private readonly console: JobConsole
-  private readonly budget: number
-  private readonly spill: SpillSink | null
-  private readonly sandboxInfo: ShellSandboxInfo | undefined
-  private readonly consumed: Promise<void>
-  private pending = ''
+  private readonly pending: TailBuffer
+  private readonly stdoutTail: StreamTail
+  private readonly stderrTail: StreamTail
+  private failure: { error: unknown } | null = null
+  private settledResult: Promise<ShellRunResult> | null = null
   private lossy = false
   private inStderr = false
   private settled = false
-  private expectSeq = 0
 
+  /**
+   * @param launch starts the command streaming into the console it is
+   *   handed; null when the deadline expired while it was being prepared.
+   * @param parts what the execution needs from its executor.
+   */
   constructor(
-    run: Promise<ExecuteResult>,
-    controller: AbortController,
-    console_: JobConsole,
-    budget: number,
-    spill: SpillSink | null,
-    sandboxInfo: ShellSandboxInfo | undefined,
+    launch: ((sink: JobConsole) => Promise<ExecuteResult>) | null,
+    parts: ExecutionParts,
   ) {
-    this.controller = controller
-    this.console = console_
-    this.budget = budget
-    this.spill = spill
-    this.sandboxInfo = sandboxInfo
-    this.consumed = this.consume()
-    this.done = run.then(
-      (result) => this.settle(result, null),
-      (err: unknown) => this.settle(null, err),
+    this.parts = parts
+    this.console = new JobConsole(
+      new ExecutionStore((chunk) =>
+        chunk.channel === Channel.CONTROL ? Promise.resolve() : this.appendChunk(chunk),
+      ),
     )
+    this.pending = new TailBuffer(parts.budget)
+    this.stdoutTail = new StreamTail(parts.stdoutMaxBytes)
+    this.stderrTail = new StreamTail(parts.stderrMaxBytes)
+    this.observed = {
+      stdout: { readFrom: (from) => this.readStream(this.stdoutTail, from, 'stdout') },
+      stderr: { readFrom: (from) => this.readStream(this.stderrTail, from, 'stderr') },
+    }
+    // A null launch is a deadline that expired while the command was still
+    // being prepared: it settles at once, timed out, with no output.
+    this.done =
+      launch === null
+        ? this.settleExpired()
+        : launch(this.console).then(
+            (result) => this.settle(result, null),
+            (err: unknown) => this.settle(null, err),
+          )
   }
 
-  private async consume(): Promise<void> {
-    // follow() yields every chunk in sequence and ends on the CONTROL
-    // chunk that finish() appends.
-    for await (const chunk of this.console.follow(0)) {
-      if (chunk.channel === Channel.CONTROL) return
-      // A seq that skips means the console trimmed chunks this loop had
-      // not read: the command outran the drain by a whole retention
-      // budget. Those bytes are gone for good, so say so, and stop the
-      // spill rather than let a file with a hole in it be handed back
-      // as the full stream.
-      if (chunk.seq !== this.expectSeq) {
-        this.lossy = true
-        this.spill?.disable()
-      }
-      this.expectSeq = chunk.seq + 1
-      await this.appendChunk(chunk)
-    }
+  private readStream(
+    tail: StreamTail,
+    fromByte: number,
+    channel: 'stdout' | 'stderr',
+  ): SubprocessOutputRead {
+    const read = tail.readFrom(fromByte)
+    const spillPath =
+      channel === 'stdout' ? this.parts.spill?.stdoutPath : this.parts.spill?.stderrPath
+    return { ...read, ...(spillPath !== undefined ? { spillPath } : {}) }
   }
 
   private async appendChunk(chunk: ConsoleChunk): Promise<void> {
+    const spill = this.parts.spill
     // The full, uncapped stream goes to the spill sink (if enabled)
-    // before the delta is capped, so nothing dropped from the delta is
-    // lost to a reader that follows the spill path.
-    if (this.spill !== null) await this.spill.ingest(chunk.channel, chunk.data)
-    const text = new TextDecoder().decode(chunk.data)
-    // stderr rides the same delta as stdout, opened by a marker so the
+    // before anything is capped, so nothing a tail or the backlog drops
+    // is lost to a reader that follows the spill path.
+    if (spill !== null) await spill.ingest(chunk.channel, chunk.data)
+    const tail = chunk.channel === Channel.STDERR ? this.stderrTail : this.stdoutTail
+    tail.append(chunk.data)
+    // stderr rides the same backlog as stdout, opened by a marker so the
     // reader can tell the two apart; a run of stderr chunks marks once.
+    let dropped = false
     if (chunk.channel === Channel.STDERR) {
       if (!this.inStderr) {
-        this.pending += STDERR_MARKER
+        dropped = this.pending.append(STDERR_MARKER)
         this.inStderr = true
       }
-      this.pending += text
     } else {
       this.inStderr = false
-      this.pending += text
     }
-    // Bound the unread backlog: a reader that never drains cannot grow
-    // `pending` without limit. The tail is kept (the freshest output),
-    // matching what the buffered path did at completion.
-    const capped = tailCap(this.pending, this.budget)
-    if (capped.truncated) {
-      this.pending = capped.text
-      this.lossy = true
-      // The delta just dropped bytes; move the full stream to files so
-      // the reader can still recover them from the spill path.
-      if (this.spill !== null) await this.spill.begin()
-    }
+    // The backlog bounds itself as it grows, so a reader that never
+    // drains cannot grow it without limit and an append costs the chunk
+    // rather than everything buffered before it. The tail is kept (the
+    // freshest output).
+    dropped = this.pending.append(chunk.data) || dropped
+    if (dropped) this.lossy = true
+    // Something just dropped bytes; move the full stream to files so a
+    // reader can still recover them from the spill path.
+    if ((dropped || tail.truncated) && spill !== null) await spill.begin()
   }
 
   private async settle(result: ExecuteResult | null, err: unknown): Promise<void> {
     this.settled = true
-    if (this.sandboxInfo !== undefined) this.sandbox = this.sandboxInfo
     let outcome: string
     if (result !== null) {
       this.status = 'completed'
@@ -251,34 +368,78 @@ class MirageShellProcess implements ShellProcess {
     } else {
       this.status = 'killed'
       this.signal = 'SIGTERM'
-      const message = err instanceof Error ? err.message : String(err)
-      await this.console.emit(Channel.STDERR, new TextEncoder().encode(message))
       outcome = KILLED_OUTCOME
+      // Mirage answers an abort by throwing, so only a throw no abort
+      // explains is an infrastructure failure: `result()` rejects with it,
+      // and the read path carries it on stderr for a background reader.
+      if (!this.parts.controller.signal.aborted) {
+        this.failure = { error: err }
+        const message = err instanceof Error ? err.message : String(err)
+        await this.console.emit(Channel.STDERR, new TextEncoder().encode(message))
+      }
     }
-    // The CONTROL chunk ends the follow loop; awaiting `consumed`
-    // guarantees every chunk (the last one included) has landed in
-    // `pending` before `done` resolves, so a read after `done` is whole.
+    // Every emit was awaited as it was made, so everything the command
+    // printed has landed by now and a read after `done` is whole.
     await this.console.finish(outcome)
-    await this.consumed
+    this.stdoutTail.end()
+    this.stderrTail.end()
+    const stderr = this.stderrTail.readFrom(0).text
+    const sandbox = this.parts.verdict(result, stderr)
+    if (sandbox !== undefined) this.sandbox = sandbox
+    this.parts.disarm()
+  }
+
+  private async settleExpired(): Promise<void> {
+    this.settled = true
+    this.status = 'killed'
+    await this.console.finish(KILLED_OUTCOME)
+    const sandbox = this.parts.verdict(null, '')
+    if (sandbox !== undefined) this.sandbox = sandbox
+    this.parts.disarm()
   }
 
   readOutput(): ShellProcessRead {
-    const delta = this.pending
-    this.pending = ''
+    const delta = this.pending.take()
     const lossy = this.lossy
     this.lossy = false
+    const spill = this.parts.spill
     return {
       delta,
       lossy,
-      ...(this.spill?.stdoutPath !== undefined ? { stdoutSpillPath: this.spill.stdoutPath } : {}),
-      ...(this.spill?.stderrPath !== undefined ? { stderrSpillPath: this.spill.stderrPath } : {}),
+      ...(spill?.stdoutPath !== undefined ? { stdoutSpillPath: spill.stdoutPath } : {}),
+      ...(spill?.stderrPath !== undefined ? { stderrSpillPath: spill.stderrPath } : {}),
     }
   }
 
   kill(): boolean {
     if (this.settled) return false
-    this.controller.abort()
+    this.parts.controller.abort()
     return true
+  }
+
+  result(): Promise<ShellRunResult> {
+    this.settledResult ??= this.done.then(() => {
+      if (this.failure !== null) throw this.failure.error
+      return {
+        exitCode: this.exitCode,
+        signal: this.signal,
+        ...this.parts.classify(),
+        timeoutMs: this.parts.timeoutMs,
+        stdout: this.collected(this.stdoutTail, 'stdout'),
+        stderr: this.collected(this.stderrTail, 'stderr'),
+        ...(this.sandbox !== undefined ? { sandbox: this.sandbox } : {}),
+      }
+    })
+    return this.settledResult
+  }
+
+  private collected(tail: StreamTail, channel: 'stdout' | 'stderr'): CollectedOutput {
+    const read = this.readStream(tail, 0, channel)
+    return {
+      text: read.text,
+      truncated: read.lossy,
+      ...(read.spillPath !== undefined ? { spillPath: read.spillPath } : {}),
+    }
   }
 }
 
@@ -307,6 +468,10 @@ export class MirageShellExecutor extends ShellExecutor {
   private readonly sessionId: string | undefined
   private readonly spillDir: string | undefined
   private sessionReady: Promise<void> | null = null
+  private readOnlyReady: Promise<string> | null = null
+  private readonly seeding = new Map<string, Promise<unknown>>()
+  private issued = 0
+  private readonly seeded = new Map<string, number>()
 
   constructor(ctx: Context, config: MirageShellConfig = {}) {
     super(ctx)
@@ -325,6 +490,28 @@ export class MirageShellExecutor extends ShellExecutor {
     return this.ctx.mirage.ready
   }
 
+  /**
+   * The directory this command actually runs in.
+   *
+   * dsh fills an unspecified workdir from the calling session's cwd (by
+   * way of the sandbox policy's workspace root), and that is a directory
+   * on the harness's own machine, which names nothing here. Running
+   * there leaves `pwd` reporting a path the agent cannot reach and every
+   * relative path failing, and, because a per-call cwd forks a subshell,
+   * it also defeats a bound session on every call. So a workdir that is
+   * not a directory in this world is treated as unset: the configured
+   * default when unbound, the session's own cwd when bound.
+   *
+   * @param spec the resolved spec whose workdir is being placed.
+   * @returns the workdir to execute under, `''` meaning the session's own.
+   */
+  private async worldWorkdir(spec: ShellExecSpec): Promise<string> {
+    if (spec.workdir === '') return ''
+    const ws = await this.workspace()
+    if (await ws.vfs.isDir(spec.workdir)) return spec.workdir
+    return this.sessionId === undefined ? this.workdir : ''
+  }
+
   // A spill sink for one background command, or null when no spill
   // directory is configured. The target reaches the live workspace so
   // the full stream lands on a mount the agent can read back.
@@ -334,19 +521,22 @@ export class MirageShellExecutor extends ShellExecutor {
     const target: SpillTarget = {
       ensureDir: async (d) => {
         const ws = await this.workspace()
-        await ensureDirPath({ exists: (p) => ws.fs.exists(p), mkdir: (p) => ws.fs.mkdir(p) }, d)
+        await ensureDirPath({ exists: (p) => ws.vfs.exists(p), mkdir: (p) => ws.vfs.mkdir(p) }, d)
       },
       write: async (p, bytes) => {
         const ws = await this.workspace()
-        await ws.fs.writeFile(p, bytes)
+        await ws.vfs.write(p, bytes)
       },
       append: async (p, bytes) => {
         const ws = await this.workspace()
-        await ws.fs.append(p, bytes)
+        await ws.vfs.append(p, bytes)
       },
     }
     spillCounter += 1
-    return new SpillSink(target, dir, `mirage-shell-${spillCounter.toString()}`)
+    const log = this.ctx.logger('mirage-dsh')
+    return new SpillSink(target, dir, `mirage-shell-${spillCounter.toString()}`, (err: unknown) => {
+      log.debug('spill to %s failed, output will not be recoverable: %o', dir, err)
+    })
   }
 
   /**
@@ -366,24 +556,86 @@ export class MirageShellExecutor extends ShellExecutor {
   }
 
   /**
+   * The mode this one call runs under: the policy the caller resolved
+   * for it, or this executor's own default when the call carried none.
+   * Undefined keeps the "no claim" answer for a world some runtime can
+   * act outside of, where no mode would be true.
+   *
+   * @param spec the resolved spec whose policy is being read.
+   * @returns the effective mode, or undefined when nothing is claimed.
+   */
+  private modeFor(spec: ShellExecSpec): ShellExecutor['sandboxMode'] {
+    const declared = this.sandboxMode
+    if (declared === undefined) return undefined
+    return spec.sandboxPolicy?.mode ?? declared
+  }
+
+  /**
+   * The session this call runs in: the read-only twin when the policy
+   * confines it to reads, else this executor's own binding.
+   *
+   * `workspace-write` and `danger-full-access` both run in the ordinary
+   * session, because the mounts and their modes already are the
+   * workspace boundary and mirage has nothing wider to grant.
+   *
+   * @param spec the resolved spec whose policy selects the session.
+   * @returns the session id to execute under, or undefined for the default.
+   */
+  private async sessionFor(spec: ShellExecSpec): Promise<string | undefined> {
+    if (this.modeFor(spec) !== 'read-only') return this.sessionId
+    return this.readOnlySession()
+  }
+
+  /**
    * The sandbox facts to stamp on this run's result and process handle,
    * or undefined when the world is not fully workspace-bound (no claim).
    *
    * `enforcement` is 'full': when every runtime reaches only the vfs, the
    * workspace gate cannot be bypassed, so unlike an OS sandbox on an older
-   * kernel there is no promised effect it fails to govern. `denied` is
-   * false because mirage has no out-of-band denial channel: a refused write
-   * (a read-only mount) fails in-band as an ordinary command error with a
-   * nonzero exit, the way EROFS would, not as a separate sandbox verdict,
-   * so there is nothing here to distinguish from the command's own failure.
-   * `runnerFailed` is false because the workspace executor is the runner
-   * and a failure to run surfaces as a rejected/aborted execution, not a
-   * runner that never started.
+   * kernel there is no promised effect it fails to govern. `runnerFailed`
+   * is false because the workspace executor is the runner and a failure to
+   * run surfaces as a rejected/aborted execution, not a runner that never
+   * started.
+   *
+   * @param spec the resolved spec this run was built from.
+   * @param denied whether the run was refused a write by the narrowing.
+   * @returns the facts to stamp, or undefined when nothing is claimed.
    */
-  private sandboxInfo(): ShellSandboxInfo | undefined {
-    const mode = this.sandboxMode
+  private sandboxInfo(spec: ShellExecSpec, denied = false): ShellSandboxInfo | undefined {
+    const mode = this.modeFor(spec)
     if (mode === undefined) return undefined
-    return { mode, denied: false, enforcement: 'full', runnerFailed: false }
+    return { mode, denied, enforcement: 'full', runnerFailed: false }
+  }
+
+  /**
+   * Whether this run was refused, by the session's permission document
+   * or by the read-only narrowing.
+   *
+   * The document's refusals ride the result itself: a `Deny`, an
+   * unanswered ask and a policy that raised all leave `refusal` on the
+   * `ExecuteResult`, whatever the line did with its streams (`2>&1`, a
+   * trailing command that owns the status). That record is read for
+   * every call, because a role's `commands.deny` and `commands.ask`
+   * rules bind under `workspace-write` and `danger-full-access` alike:
+   * a mode says what the mounts allow, and says nothing about whether a
+   * rule forbids the line. The narrowing has no record, since it is
+   * EROFS/EACCES from the mounts, so its signatures are still read off
+   * stderr, and only for a call that ran read-only, where this executor
+   * is what imposed it.
+   *
+   * @param spec the resolved spec this run was built from.
+   * @param result what the workspace answered.
+   * @param stderr the run's captured standard error.
+   * @returns true when something refused the run.
+   */
+  private wasDenied(
+    spec: ShellExecSpec,
+    result: { readonly refusal: Refusal | null },
+    stderr: string,
+  ): boolean {
+    if (result.refusal !== null) return true
+    if (this.modeFor(spec) !== 'read-only') return false
+    return DENIAL_SIGNATURES.some((signature) => stderr.includes(signature))
   }
 
   resolve(request: ShellExecRequest): ShellExecSpec {
@@ -395,6 +647,7 @@ export class MirageShellExecutor extends ShellExecutor {
       command: request.command,
       workdir,
       timeoutMs: Math.min(request.timeoutMs ?? this.defaultTimeoutMs, this.maxTimeoutMs),
+      onExpiry: request.onExpiry ?? 'kill',
       stdoutMaxBytes: request.stdoutMaxBytes ?? this.stdoutMaxBytes,
       signal: request.signal,
       stdin: request.stdin,
@@ -413,6 +666,96 @@ export class MirageShellExecutor extends ShellExecutor {
     return this.sessionReady
   }
 
+  /**
+   * Seed this call's managed `DSH_*` snapshot into the bound session.
+   *
+   * These are harness facts about the session (its home, its id), not
+   * overrides for one command, and on a bound session they have to live
+   * in the session: handed over as a per-call `env` they would fork a
+   * subshell on every call, since dsh never sends an empty snapshot.
+   *
+   * The snapshot replaces rather than merges, per the seam's own rule
+   * that a fact absent from the current snapshot must not inherit a
+   * stale value from an earlier one. Only the managed namespace is
+   * touched, so a variable the agent exported itself is left alone.
+   *
+   * @param ws the live workspace holding the session.
+   * @param sessionId the session this call runs in.
+   * @param managed the call's managed snapshot.
+   */
+  private async applyManagedEnv(
+    ws: Workspace,
+    sessionId: string,
+    managed: Record<string, string>,
+  ): Promise<void> {
+    const session = ws.getSession(sessionId)
+    const view = sessionView(session)
+    for (const key of Object.keys(session.env)) {
+      if (key.startsWith(DSH_ENV_PREFIX) && !(key in managed)) await view.unset(key)
+    }
+    for (const [key, value] of Object.entries(managed)) await view.set(key, value)
+  }
+
+  private readOnlySession(): Promise<string> {
+    this.readOnlyReady ??= this.provisionReadOnly().catch((err: unknown) => {
+      this.readOnlyReady = null
+      throw err
+    })
+    return this.readOnlyReady
+  }
+
+  /**
+   * Create (once) the session a read-only call runs in: a twin of the
+   * session this executor would otherwise use, with every grant it holds
+   * narrowed to `read`, so mirage's own dispatch is what refuses the
+   * write rather than a second permission layer bolted on here.
+   *
+   * The twin narrows, never widens, and that takes every part of the
+   * source's view, which is what `narrow` in core stamps: modes, hidden
+   * paths, hidden variables, command rules. Its modes cover every mount
+   * at `read` (the one exception is the null sink, per
+   * {@link SINK_PREFIX}), which is at least as narrow as whatever the
+   * source held, since `read` is the weakest mode there is; naming a
+   * mount only narrows it, so a prefix the map omits would keep its own
+   * mode rather than disappear. The other three are copied from the
+   * source session rather than recompiled, because the profile it was
+   * created under is not something a session records.
+   *
+   * Leaving any of them behind widens. Hides are the obvious one: a
+   * binding confined to `/allowed` would read `/secret` in read-only
+   * mode although the same command is refused outside it. Command rules
+   * are the one modes cannot stand in for, because a mode bounds a
+   * mount and an account CLI reaches a service: a profile that denies
+   * `slack message send` or `git push` still denies it here, where
+   * every mount being `read` says nothing at all about it.
+   *
+   * The policy's `workspaceRoot` is deliberately not consulted anywhere:
+   * it is a directory on the harness's machine, so containment against
+   * it says nothing about this world. The mounts are the boundary.
+   *
+   * @returns the id of the read-only session.
+   */
+  private async provisionReadOnly(): Promise<string> {
+    const ws = await this.workspace()
+    const sessionId = `${this.sessionId ?? 'mirage-dsh'}::read-only`
+    await ws.ensureSessionsLoaded()
+    if (ws.listSessions().some((s) => s.sessionId === sessionId)) return sessionId
+    const source = ws.getSession(this.sessionId ?? ws.defaultSessionId)
+    const grants: Record<string, string> = {}
+    for (const entry of ws.mounts()) {
+      grants[entry.prefix] = rstripSlash(entry.prefix) === SINK_PREFIX ? 'exec' : 'read'
+    }
+    const hide = [...(source.hiddenPaths?.paths ?? []), ...(source.hiddenPaths?.patterns ?? [])]
+    const twin = ws.createSession(sessionId, {
+      mounts: grants,
+      ...(hide.length > 0 ? { permissions: { paths: { hide } } } : {}),
+    })
+    twin.commands = source.commands
+    twin.hiddenVars = source.hiddenVars
+    setCwd(twin, this.workdir)
+    return sessionId
+  }
+
   private async provisionSession(sessionId: string): Promise<void> {
     const ws = await this.workspace()
     await ws.ensureSessionsLoaded()
@@ -420,106 +763,115 @@ export class MirageShellExecutor extends ShellExecutor {
     setCwd(ws.createSession(sessionId), this.workdir)
   }
 
-  async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    const sandbox = this.sandboxInfo()
-    // An already-aborted signal never fires its listener, so answer before
-    // dispatch: the command must not run at all.
-    if (spec.signal?.aborted === true) {
-      return {
-        exitCode: null,
-        signal: 'SIGTERM',
-        timedOut: false,
-        aborted: true,
-        timeoutMs: spec.timeoutMs,
-        stdout: { text: '', truncated: false },
-        stderr: { text: '', truncated: false },
-        ...(sandbox !== undefined ? { sandbox } : {}),
+  /**
+   * Where and as whom one command runs, settled before it starts: the
+   * session binding, the workdir in this world, and its managed env.
+   *
+   * Seeding the env is the one step that writes, so it comes last and
+   * waits for any seed already running on the same session (the bound
+   * one and its read-only twin queue apart). Calls are numbered as they
+   * arrive, and a seed is skipped once a later call has seeded the same
+   * session, so the newest snapshot wins: a slow or abandoned preparation
+   * never lands an old one over it, and a stall before the seed holds up
+   * no other call. A call carrying no snapshot seeds nothing, so it
+   * never counts as the newest, but it still waits for the seeds already
+   * running, so its command never sees one half applied.
+   *
+   * @param spec the resolved spec being prepared.
+   * @returns the workspace, session and workdir the command runs under.
+   */
+  private async prepare(spec: ShellExecSpec): Promise<Prepared> {
+    const ticket = ++this.issued
+    await this.ensureSession()
+    const ws = await this.workspace()
+    const sessionId = await this.sessionFor(spec)
+    const bound = this.sessionId !== undefined
+    const workdir = await this.worldWorkdir(spec)
+    const managed = spec.dshEnv as Record<string, string> | undefined
+    if (bound && sessionId !== undefined) {
+      const running = this.seeding.get(sessionId) ?? Promise.resolve()
+      if (managed === undefined) {
+        await running
+      } else {
+        const seed = running.then(async () => {
+          if (ticket < (this.seeded.get(sessionId) ?? 0)) return
+          await this.applyManagedEnv(ws, sessionId, managed)
+          this.seeded.set(sessionId, ticket)
+        })
+        this.seeding.set(
+          sessionId,
+          seed.catch(() => undefined),
+        )
+        await seed
       }
     }
+    return { ws, sessionId, bound, workdir }
+  }
+
+  async execute(spec: ShellExecSpec): Promise<ShellExecution> {
     const controller = new AbortController()
     let timedOut = false
     let aborted = false
-    const timer = setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, spec.timeoutMs)
+    // `none` arms no deadline: the caller's signal and `kill()` are then
+    // the only ways the command stops.
+    const timer =
+      spec.onExpiry === 'kill'
+        ? setTimeout(() => {
+            timedOut = true
+            controller.abort()
+          }, spec.timeoutMs)
+        : undefined
     const onAbort = (): void => {
       if (!timedOut && !aborted) {
         aborted = true
         controller.abort()
       }
     }
-    spec.signal?.addEventListener('abort', onAbort, { once: true })
-    try {
-      await this.ensureSession()
-      const ws = await this.workspace()
-      const result = await ws.execute(
-        spec.command,
-        executeOptions(spec, controller.signal, this.sessionId, this.workdir),
-      )
-      return {
-        exitCode: result.exitCode,
-        signal: null,
-        timedOut: false,
-        aborted: false,
-        timeoutMs: spec.timeoutMs,
-        stdout: collect(result.stdoutText, spec.stdoutMaxBytes),
-        stderr: collect(result.stderrText, this.stderrMaxBytes),
-        ...(sandbox !== undefined ? { sandbox } : {}),
-      }
-    } catch (err) {
-      if (!controller.signal.aborted) throw err
-      // The fused deadline was the first cause: report the kill as a
-      // result, never a rejection, per the seam contract.
-      return {
-        exitCode: null,
-        signal: 'SIGTERM',
-        timedOut,
-        aborted,
-        timeoutMs: spec.timeoutMs,
-        stdout: { text: '', truncated: false },
-        stderr: { text: '', truncated: false },
-        ...(sandbox !== undefined ? { sandbox } : {}),
-      }
-    } finally {
+    // An already-aborted signal never fires its listener, so it is
+    // treated as fired here: the command must not run at all.
+    if (spec.signal?.aborted === true) onAbort()
+    else spec.signal?.addEventListener('abort', onAbort, { once: true })
+    const disarm = (): void => {
       clearTimeout(timer)
       spec.signal?.removeEventListener('abort', onAbort)
     }
-  }
-
-  start(spec: ShellExecSpec): ShellProcess {
-    const sandbox = this.sandboxInfo()
-    const controller = new AbortController()
-    // The console is the streaming conduit, holding what the follow loop
-    // has not drained yet (nothing, when the loop keeps up). Its own
-    // retention budget is what bounds that, since reading a chunk does
-    // not release it.
-    const console_ = new JobConsole(new RAMConsoleStore(CONSOLE_RETENTION_BYTES))
-    const spill = this.newSpill()
-    if (spec.signal?.aborted === true) {
-      controller.abort()
-      return new MirageShellProcess(
-        Promise.reject(new Error('command aborted before start')),
-        controller,
-        console_,
-        spec.stdoutMaxBytes,
-        spill,
-        sandbox,
-      )
+    const parts: ExecutionParts = {
+      controller,
+      budget: spec.stdoutMaxBytes,
+      stdoutMaxBytes: spec.stdoutMaxBytes,
+      stderrMaxBytes: this.stderrMaxBytes,
+      timeoutMs: spec.timeoutMs,
+      spill: this.newSpill(),
+      classify: () => ({ timedOut, aborted }),
+      verdict: (result, stderr) =>
+        this.sandboxInfo(spec, result !== null && this.wasDenied(spec, result, stderr)),
+      disarm,
     }
-    const onAbort = (): void => {
-      controller.abort()
+    let prepared: Prepared
+    try {
+      // The wait ends at the deadline or a cancel even if a step has
+      // stalled; the preparation runs on, and its seed lands only if no
+      // later call has seeded the session first.
+      controller.signal.throwIfAborted()
+      prepared = await untilAborted(this.prepare(spec), controller.signal)
+    } catch (err) {
+      // Expiry while the command was still being prepared settles a
+      // timed-out handle with no output; a caller's cancellation or a
+      // failure to prepare is the caller's to see.
+      if (!parts.classify().timedOut) {
+        disarm()
+        throw err
+      }
+      return new MirageShellExecution(null, parts)
     }
-    spec.signal?.addEventListener('abort', onAbort, { once: true })
-    const run = this.ensureSession()
-      .then(() => this.workspace())
-      .then((ws) =>
-        ws.execute(
+    const { ws, sessionId, bound, workdir } = prepared
+    return new MirageShellExecution(
+      (sink) =>
+        ws.shell(
           spec.command,
-          executeOptions(spec, controller.signal, this.sessionId, this.workdir, console_),
+          executeOptions(spec, workdir, controller.signal, sessionId, bound, this.workdir, sink),
         ),
-      )
-      .finally(() => spec.signal?.removeEventListener('abort', onAbort))
-    return new MirageShellProcess(run, controller, console_, spec.stdoutMaxBytes, spill, sandbox)
+      parts,
+    )
   }
 }

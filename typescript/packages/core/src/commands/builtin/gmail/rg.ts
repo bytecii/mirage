@@ -16,21 +16,23 @@ import { mountPrefixOf } from '../../../utils/key_prefix.ts'
 import type { GmailAccessor } from '../../../accessor/gmail.ts'
 import type { IndexCacheStore } from '../../../cache/index/index.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
-import { GMAIL_IO } from './io.ts'
+import { IO } from './io.ts'
 import { read as gmailRead } from '../../../core/gmail/read.ts'
 import { readdir as gmailReaddir } from '../../../core/gmail/readdir.ts'
 import { stat as gmailStat } from '../../../core/gmail/stat.ts'
-import { detectScope } from '../../../core/gmail/scope.ts'
+import { detectScope, NATIVE_KINDS } from '../../../core/gmail/scope.ts'
 import { formatGrepResults, searchMessages } from '../../../core/gmail/search.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { type FileStat, type PathSpec, ResourceName } from '../../../types.ts'
-import { patternArg } from '../grep_helper.ts'
+import { type FileStat, type PathSpec, VFSName } from '../../../types.ts'
+import { patternArg } from '../grep_pattern.ts'
+import { pushdownOperand } from '../grep_pushdown.ts'
+import { RG_SEARCH_HONORED, SEARCH_MAX_RESULTS } from './grep.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { rgGeneric } from '../generic/rg.ts'
-import { FlagView } from '../../spec/types.ts'
+import { parseFlags, refuseMissingPattern, rgGeneric } from '../generic/rg.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 
-const resolveGlob = resolveGlobOf(GMAIL_IO)
+const resolveGlob = resolveGlobOf(IO)
 
 const ENC = new TextEncoder()
 
@@ -48,44 +50,29 @@ async function rgCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  const pattern = patternArg(texts, opts.flags) ?? undefined
-  if (pattern === undefined) {
-    return [
-      null,
-      new IOResult({ exitCode: 2, stderr: ENC.encode('rg: usage: rg [flags] pattern [path]\n') }),
-    ]
-  }
+  const pattern = patternArg(texts, opts.flags, 'regexp')
   const fl = new FlagView(opts.flags, specOf('rg'))
-  const maxCount = fl.asInt('m') ?? null
-  // Output-shaping flags need real per-line matching, which the search-API
-  // push-down cannot emulate; fall through to the generic rg over rendered
-  // files instead.
-  const shaping = ['args_l', 'c', 'n', 'o', 'v'].some((flag) => fl.asBool(flag))
-
-  if (paths.length > 0 && !pattern.includes('\n') && !shaping) {
-    const first = paths[0]
-    if (first !== undefined) {
-      const scope = detectScope(first)
-      // Gmail search matches whole words while grep matches substrings,
-      // and the native path returns search results verbatim as the output, so
-      // a bare literal would under-report. Only -w makes the two agree.
-      if (scope.useNative && fl.asBool('w')) {
-        const filePrefix =
-          mountPrefixOf(first.virtual, first.resourcePath) !== ''
-            ? mountPrefixOf(first.virtual, first.resourcePath)
-            : ''
-        const rows = await searchMessages(
-          accessor.tokenManager,
-          pattern,
-          scope.labelName,
-          scope.dateStr,
-          maxCount ?? 50,
-        )
-        const lines = formatGrepResults(rows, scope, filePrefix, pattern)
-        if (lines.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-        const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
-        return [out, new IOResult()]
-      }
+  const refused = refuseMissingPattern(pattern, fl, parseFlags(fl))
+  if (refused !== null) return refused
+  // Same gate as gmail grep, from the same table: only a lone concrete
+  // operand with no reshaping flag may be answered by the search API.
+  const operand = pushdownOperand(paths, opts.flags, pattern, RG_SEARCH_HONORED)
+  if (operand !== null && pattern !== null && fl.asBool('word_regexp')) {
+    const match = detectScope(operand)
+    if (NATIVE_KINDS.has(match.kind)) {
+      const labelName = match.slots.label ?? null
+      const filePrefix = mountPrefixOf(operand.virtual, operand.vfsPath)
+      const rows = await searchMessages(
+        accessor.tokenManager,
+        pattern,
+        labelName,
+        match.slots.day ?? null,
+        SEARCH_MAX_RESULTS,
+      )
+      const lines = formatGrepResults(rows, labelName, filePrefix, pattern)
+      if (lines.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
+      const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
+      return [out, new IOResult()]
     }
   }
 
@@ -101,7 +88,7 @@ async function rgCommand(
 
 export const GMAIL_RG = command({
   name: 'rg',
-  resource: ResourceName.GMAIL,
+  vfs: VFSName.GMAIL,
   spec: specOf('rg'),
   fn: rgCommand,
 })

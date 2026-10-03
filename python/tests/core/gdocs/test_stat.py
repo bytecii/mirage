@@ -20,7 +20,7 @@ from mirage.accessor.gdocs import GDocsAccessor
 from mirage.cache.index import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.gdocs.stat import stat
-from mirage.types import FileType, PathSpec
+from mirage.types import ContentType, FileType, PathSpec
 from mirage.utils.key_prefix import mount_key
 
 
@@ -38,9 +38,13 @@ def index():
 async def test_stat_root(accessor, index):
     result = await stat(
         accessor,
-        PathSpec(resource_path=mount_key("/gdocs", "/gdocs"),
-                 virtual="/gdocs",
-                 directory="/gdocs"), index)
+        PathSpec(
+            vfs_path=mount_key("/gdocs", "/gdocs"),
+            virtual="/gdocs",
+            directory="/gdocs",
+        ),
+        index,
+    )
     assert result.type == FileType.DIRECTORY
     assert result.name == "/"
 
@@ -49,9 +53,13 @@ async def test_stat_root(accessor, index):
 async def test_stat_owned_dir(accessor, index):
     result = await stat(
         accessor,
-        PathSpec(resource_path=mount_key("/gdocs/owned", "/gdocs"),
-                 virtual="/gdocs/owned",
-                 directory="/gdocs/owned"), index)
+        PathSpec(
+            vfs_path=mount_key("/gdocs/owned", "/gdocs"),
+            virtual="/gdocs/owned",
+            directory="/gdocs/owned",
+        ),
+        index,
+    )
     assert result.type == FileType.DIRECTORY
     assert result.name == "owned"
 
@@ -60,35 +68,50 @@ async def test_stat_owned_dir(accessor, index):
 async def test_stat_shared_dir(accessor, index):
     result = await stat(
         accessor,
-        PathSpec(resource_path=mount_key("/gdocs/shared", "/gdocs"),
-                 virtual="/gdocs/shared",
-                 directory="/gdocs/shared"), index)
+        PathSpec(
+            vfs_path=mount_key("/gdocs/shared", "/gdocs"),
+            virtual="/gdocs/shared",
+            directory="/gdocs/shared",
+        ),
+        index,
+    )
     assert result.type == FileType.DIRECTORY
     assert result.name == "shared"
 
 
 @pytest.mark.asyncio
 async def test_stat_doc(accessor, index):
-    await index.set_dir("/gdocs/owned", [
-        ("2026-04-01_My_Doc__doc1.gdoc.json",
-         IndexEntry(id="doc1",
+    await index.set_dir(
+        "/gdocs/owned",
+        [
+            (
+                "2026-04-01_My_Doc__doc1.gdoc.json",
+                IndexEntry(
+                    id="doc1",
                     name="My Doc",
                     resource_type="gdocs/file",
                     remote_time="2026-04-01T00:00:00.000Z",
                     vfs_name="2026-04-01_My_Doc__doc1.gdoc.json",
-                    extra={"source_size": 1000})),
-    ])
+                    extra={"source_size": 1000},
+                ),
+            ),
+        ],
+    )
     result = await stat(
         accessor,
-        PathSpec(resource_path=mount_key(
-            "/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json", "/gdocs"),
-                 virtual="/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json",
-                 directory="/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json"),
+        PathSpec(
+            vfs_path=mount_key(
+                "/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json", "/gdocs"
+            ),
+            virtual="/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json",
+            directory="/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json",
+        ),
         index,
     )
     assert result.name == "2026-04-01_My_Doc__doc1.gdoc.json"
-    assert result.type == FileType.JSON
+    assert result.content == ContentType.JSON
     assert result.modified == "2026-04-01T00:00:00.000Z"
+    assert result.fingerprint == "2026-04-01T00:00:00.000Z"
     assert result.extra["doc_id"] == "doc1"
     assert result.extra["doc_name"] == "My Doc"
     # rendered JSON length is unknown until read; the Drive source size
@@ -99,52 +122,62 @@ async def test_stat_doc(accessor, index):
 
 @pytest.mark.asyncio
 async def test_stat_not_found(accessor, index):
-    files = [{
-        "id": "doc1",
-        "name": "My Doc",
-        "modifiedTime": "2026-04-01T00:00:00.000Z",
-        "owners": [{
-            "me": True
-        }],
-    }]
+    files = [
+        {
+            "mimeType": "application/vnd.google-apps.document",
+            "id": "doc1",
+            "name": "My Doc",
+            "modifiedTime": "2026-04-01T00:00:00.000Z",
+            "owners": [{"me": True}],
+        }
+    ]
     with patch(
-            "mirage.core.gdocs.readdir.list_all_files",
-            new_callable=AsyncMock,
-            return_value=(files, True),
+        "mirage.core.google.entry.get_file",
+        new_callable=AsyncMock,
+        return_value=files[0],
     ):
         with pytest.raises(FileNotFoundError):
             await stat(
                 accessor,
-                PathSpec(resource_path=mount_key(
-                    "/gdocs/owned/nonexistent.gdoc.json", "/gdocs"),
-                         virtual="/gdocs/owned/nonexistent.gdoc.json",
-                         directory="/gdocs/owned/nonexistent.gdoc.json"),
-                index)
+                PathSpec(
+                    vfs_path=mount_key(
+                        "/gdocs/owned/nonexistent.gdoc.json", "/gdocs"
+                    ),
+                    virtual="/gdocs/owned/nonexistent.gdoc.json",
+                    directory="/gdocs/owned/nonexistent.gdoc.json",
+                ),
+                index,
+            )
 
 
 @pytest.mark.asyncio
-async def test_stat_cache_miss_falls_back_via_readdir(accessor, index):
-    files = [{
-        "id": "doc1",
-        "name": "My Doc",
-        "modifiedTime": "2026-04-01T00:00:00.000Z",
-        "size": "1234",
-        "owners": [{
-            "me": True
-        }],
-    }]
+async def test_stat_cache_miss_fetches_metadata_by_id(accessor, index):
+    files = [
+        {
+            "mimeType": "application/vnd.google-apps.document",
+            "id": "doc1",
+            "name": "My Doc",
+            "modifiedTime": "2026-04-01T00:00:00.000Z",
+            "size": "1234",
+            "owners": [{"me": True}],
+        }
+    ]
     target = "/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json"
     with patch(
-            "mirage.core.gdocs.readdir.list_all_files",
-            new_callable=AsyncMock,
-            return_value=(files, True),
+        "mirage.core.google.entry.get_file",
+        new_callable=AsyncMock,
+        return_value=files[0],
     ) as mock_list:
         result = await stat(
             accessor,
-            PathSpec(resource_path=mount_key(target, "/gdocs"),
-                     virtual=target,
-                     directory=target), index)
-    assert result.type == FileType.JSON
+            PathSpec(
+                vfs_path=mount_key(target, "/gdocs"),
+                virtual=target,
+                directory=target,
+            ),
+            index,
+        )
+    assert result.content == ContentType.JSON
     assert result.extra["doc_id"] == "doc1"
     assert result.size is None
     assert result.extra["source_size"] == 1234

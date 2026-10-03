@@ -17,34 +17,39 @@ import json
 import logging
 import pkgutil
 import sys
+from collections.abc import Sequence
 from dataclasses import MISSING, Field, asdict, fields
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
 
 import mirage.commands.builtin
 from mirage.commands.builtin.generic_bind.adapter import CommandIO
 from mirage.commands.config import RegisteredCommand
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import CommandSpec, Operand, Option
-from mirage.resource.base import BaseResource
-from mirage.resource.registry import REGISTRY, resolve_class
+from mirage.vfs.base import BaseVFS
+from mirage.vfs.registry import REGISTRY, resolve_class
 
 logger = logging.getLogger(__name__)
 
 OUT = Path(__file__).resolve().parent.parent / "spec" / "python" / "general"
+VFS_COMMANDS = OUT.parent / "vfs_commands"
 
-BUILTIN = Path(mirage.commands.builtin.__file__).resolve(
-).parent  # type: ignore[arg-type]
+BUILTIN = Path(mirage.commands.builtin.__file__).resolve().parent
 
 # Slots holding a configuration value rather than an operation. Everything
 # else on the adapter is a wired operation, reported by name.
-IO_VALUE_FIELDS = frozenset({"local", "max_glob_matches", "max_du_entries"})
+IO_VALUE_FIELDS = frozenset(
+    {"local", "streams_bytes", "max_glob_matches", "max_du_entries"}
+)
 
 
 def _walk_pkg(pkg: Any) -> list[str]:
     """Import every builtin command module, reporting the ones that failed.
 
-    A module that will not import registers nothing, so its resources
+    A module that will not import registers nothing, so its mounts
     silently vanish from the dump. That reads as a legitimate deletion in
     the committed spec rather than as the under-provisioned environment it
     actually is, so the caller turns any failure into a hard error.
@@ -53,8 +58,9 @@ def _walk_pkg(pkg: Any) -> list[str]:
         pkg (Any): the package to walk.
     """
     failed: list[str] = []
-    for _finder, name, _ispkg in pkgutil.walk_packages(pkg.__path__,
-                                                       pkg.__name__ + "."):
+    for _finder, name, _ispkg in pkgutil.walk_packages(
+        pkg.__path__, pkg.__name__ + "."
+    ):
         try:
             importlib.import_module(name)
         except ImportError as e:
@@ -71,13 +77,17 @@ def _collect_registrations() -> dict[str, list[RegisteredCommand]]:
             continue
         candidates = list(vars(mod).values())
         commands = getattr(mod, "COMMANDS", None)
-        if isinstance(commands, list):
+        if isinstance(commands, Sequence):
             candidates.extend(commands)
         for attr in candidates:
-            if not callable(attr) or id(attr) in seen:
+            if id(attr) in seen:
                 continue
             seen.add(id(attr))
-            rcs = getattr(attr, "_registered_commands", None)
+            rcs = (
+                [attr]
+                if isinstance(attr, RegisteredCommand)
+                else getattr(attr, "_registered_commands", None)
+            )
             if not rcs:
                 continue
             for rc in rcs:
@@ -85,13 +95,13 @@ def _collect_registrations() -> dict[str, list[RegisteredCommand]]:
     return out
 
 
-def _by_resource(rcs: list[RegisteredCommand]) -> dict[str, Any]:
-    """Per-registration metadata, keyed by resource.
+def _by_vfs(rcs: list[RegisteredCommand]) -> dict[str, Any]:
+    """Per-registration metadata, keyed by VFS.
 
-    The union flags below cannot say *which* resource carries a provision,
-    an aggregate, the write flag or a filetype, so dropping one backend's
-    provision while another keeps it leaves every union unchanged. Key the
-    same facts by resource so the parity check sees that difference.
+    The union flags below cannot say *which* VFS carries an aggregate,
+    the write flag or a filetype, so dropping one backend's aggregate
+    while another keeps it leaves every union unchanged. Key the same
+    facts by VFS so the parity check sees that difference.
 
     Args:
         rcs (list[RegisteredCommand]): every registration for one command.
@@ -99,13 +109,13 @@ def _by_resource(rcs: list[RegisteredCommand]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for rc in rcs:
         entry = out.setdefault(
-            rc.resource if rc.resource is not None else "", {
-                "has_provision": False,
+            rc.vfs if rc.vfs is not None else "",
+            {
                 "has_aggregate": False,
                 "has_write": False,
                 "filetypes": set(),
-            })
-        entry["has_provision"] |= rc.provision_fn is not None
+            },
+        )
         entry["has_aggregate"] |= rc.aggregate is not None
         entry["has_write"] |= bool(rc.write)
         if rc.filetype is not None:
@@ -114,15 +124,14 @@ def _by_resource(rcs: list[RegisteredCommand]) -> dict[str, Any]:
 
 
 def _meta_for(rcs: list[RegisteredCommand]) -> dict[str, Any]:
-    resources = sorted({rc.resource for rc in rcs if rc.resource is not None})
+    vfs_names = sorted({rc.vfs for rc in rcs if rc.vfs is not None})
     filetypes = sorted({rc.filetype for rc in rcs if rc.filetype is not None})
     return {
-        "has_provision": any(rc.provision_fn is not None for rc in rcs),
         "has_aggregate": any(rc.aggregate is not None for rc in rcs),
         "has_write": any(rc.write for rc in rcs),
-        "resources": resources,
+        "vfs_names": vfs_names,
         "filetypes": filetypes,
-        "by_resource": _by_resource(rcs),
+        "by_vfs": _by_vfs(rcs),
     }
 
 
@@ -132,7 +141,7 @@ def _default(o: object) -> object:
     raise TypeError(f"unserializable: {type(o)}")
 
 
-def _default_of(f: Field) -> Any:
+def _default_of(f: "Field[Any]") -> Any:
     if f.default_factory is not MISSING:
         return f.default_factory()
     return f.default
@@ -179,35 +188,132 @@ def _spec_payload(spec: Any) -> dict[str, Any]:
     return payload
 
 
-def _emit_one(name: str, spec: Any, rcs: list[RegisteredCommand]) -> None:
+def _emit_one(
+    name: str, spec: Any, rcs: list[RegisteredCommand], out: Path = OUT
+) -> None:
     payload = _spec_payload(spec)
     payload["_meta"] = _meta_for(rcs)
-    path = OUT / f"{name}.json"
+    path = out / f"{name.replace(' ', '_')}.json"
     path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, default=_default) + "\n")
+        json.dumps(payload, indent=2, sort_keys=True, default=_default) + "\n"
+    )
+
+
+def _emit_vfs_commands(registry: dict[str, list[RegisteredCommand]]) -> None:
+    """Dump every registered command SPECS does not declare.
+
+    A backend verb (``trello card create``) carries its spec inline, so
+    the SPECS loop never sees it and the parity gate could not tell a
+    flag one language dropped. Each name gets the spec its registrations
+    share; two registrations of one name with different specs is itself
+    a failure. The directory is rewritten whole so a removed verb leaves
+    no file behind.
+
+    Args:
+        registry (dict[str, list[RegisteredCommand]]): registrations keyed
+            by command name, as collected for the spec dump.
+    """
+    names = sorted(name for name in registry if name not in SPECS)
+    VFS_COMMANDS.mkdir(parents=True, exist_ok=True)
+    for stale in VFS_COMMANDS.glob("*.json"):
+        stale.unlink()
+    for name in names:
+        rcs = registry[name]
+        payloads = {
+            json.dumps(
+                _spec_payload(rc.spec), sort_keys=True, default=_default
+            )
+            for rc in rcs
+        }
+        if len(payloads) > 1:
+            raise SystemExit(
+                f"{name!r} is registered with {len(payloads)} different specs"
+            )
+        _emit_one(name, rcs[0].spec, rcs, VFS_COMMANDS)
+    print(f"emitted {len(names)} backend command specs to {VFS_COMMANDS}")
+
+
+def _vfs_class(name: str, ref: str | type) -> type[BaseVFS]:
+    """The registry reference resolved to the class the spec reads slots off.
+
+    Refuses rather than coerces, for the reason the typescript twin's
+    ``numericCapability`` does: the six capability slots are read off the
+    class, so a reference resolving to something that is not a VFS
+    would emit a spec full of defaults and surface later as a
+    ``check_spec_parity.py`` mismatch naming no class.
+
+    Args:
+        name (str): The registry name, for the refusal.
+        ref (str | type): The entry's ``vfs_path``.
+
+    Returns:
+        type[BaseVFS]: The resolved VFS class.
+
+    Raises:
+        TypeError: The reference does not resolve to a ``BaseVFS``.
+    """
+    cls = resolve_class(ref)
+    if not issubclass(cls, BaseVFS):
+        raise TypeError(
+            f"{name}: {ref!r} resolves to {cls.__name__}, which "
+            f"is not a BaseVFS; its capability slots would "
+            f"read as defaults"
+        )
+    return cls
+
+
+def _config_model(name: str, ref: str | type) -> type[BaseModel]:
+    """The registry reference resolved to the config model the spec dumps.
+
+    Args:
+        name (str): The registry name, for the refusal.
+        ref (str | type): The entry's ``config_path`` or ``CONFIG_CLS``.
+
+    Returns:
+        type[BaseModel]: The resolved pydantic model.
+
+    Raises:
+        TypeError: The reference does not resolve to a ``BaseModel``.
+    """
+    cls = resolve_class(ref) if isinstance(ref, str) else ref
+    if not isinstance(cls, type) or not issubclass(cls, BaseModel):
+        raise TypeError(
+            f"{name}: {ref!r} does not resolve to a pydantic "
+            f"model, so it declares no config fields to compare"
+        )
+    return cls
 
 
 def _capabilities() -> dict[str, dict[str, Any]]:
-    """Per-resource behavior values, read off the class, never an instance.
+    """Per-VFS behavior values, read off the class, never an instance.
 
     Registry membership only says a backend can be built. How it behaves
     once mounted is a second hand-maintained surface that drifted just as
     quietly: python kept the 600 s ``index_ttl`` default for postgres and
     mongodb where typescript pins 0, so an ``ls`` of a live schema could
-    be ten minutes stale. ``storage_id`` and ``statfs`` are reported as
+    be ten minutes stale. ``storage_location`` and ``capacity`` are reported as
     "does this class override the base" rather than by value, because the
-    base answers are per-instance identity and UNKNOWN.
+    base answers are per-instance identity and UNKNOWN. ``has_prompt`` and
+    ``has_write_prompt`` say whether the mount describes itself to an
+    agent; the text is prose each side words for itself, but its absence is
+    not: node's GitHubVFS carried no prompt, so its file prompt left every
+    GitHub mount out while python and the browser described theirs.
     """
     out: dict[str, dict[str, Any]] = {}
     for name in sorted(REGISTRY):
-        cls = resolve_class(REGISTRY[name].resource_path)
+        cls = _vfs_class(name, REGISTRY[name].vfs_path)
         out[name] = {
             "index_ttl": cls.index_ttl,
             "caches_reads": cls.caches_reads,
-            "supports_snapshot": cls.SUPPORTS_SNAPSHOT,
-            "sizes_always_known": cls.SIZES_ALWAYS_KNOWN,
-            "storage_id": cls.storage_id is not BaseResource.storage_id,
-            "statfs": cls.statfs is not BaseResource.statfs,
+            "read_revalidatable": cls.read_revalidatable,
+            "supports_snapshot": cls.supports_snapshot,
+            "sizes_always_known": cls.sizes_always_known,
+            "listing_version": cls.listing_version.value,
+            "storage_location": cls.storage_location
+            is not BaseVFS.storage_location,
+            "capacity": cls.capacity is not BaseVFS.capacity,
+            "has_prompt": bool(cls.prompt),
+            "has_write_prompt": bool(cls.write_prompt),
         }
     return out
 
@@ -227,9 +333,12 @@ def _command_io() -> dict[str, dict[str, Any]]:
         io = getattr(mod, "IO", None)
         if not isinstance(io, CommandIO):
             continue
-        slots = sorted(f.name for f in fields(CommandIO)
-                       if f.name not in IO_VALUE_FIELDS
-                       and getattr(io, f.name) is not None)
+        slots = sorted(
+            f.name
+            for f in fields(CommandIO)
+            if f.name not in IO_VALUE_FIELDS
+            and getattr(io, f.name) is not None
+        )
         out[backend] = {
             "slots": slots,
             "local": io.local,
@@ -239,13 +348,51 @@ def _command_io() -> dict[str, dict[str, Any]]:
     return out
 
 
-def _emit_resources(registry: dict[str, list[RegisteredCommand]]) -> None:
-    """Dump the two resource-name sets the parity gate compares.
+def _configs() -> dict[str, dict[str, Any] | None]:
+    """Per-VFS config field sets, read off the pydantic model.
 
-    ``registry`` is what ``build_resource`` can construct by name — the
+    Registry membership says a backend can be built; ``capabilities`` says
+    how it behaves; this says what it can be *told*. A YAML block is
+    written once in python's snake_case and has to reach both
+    implementations, and nothing compared the two field sets: TypeScript
+    accepted a Google ``access_token`` it never read, dropped an ``oci``
+    ``path_style`` its rename map had lost, and refused an ``ntn``
+    ``api_version`` python had declared. Keys are wire names -- the alias
+    when a field carries one (``DatabricksVolumeConfig.schema_name`` is
+    ``schema`` on the wire) -- so the parity check compares what a config
+    block says, not what an attribute is called. A VFS whose entry
+    names no config class (ram, disk, redis take raw kwargs) dumps null.
+
+    Returns:
+        dict[str, dict[str, Any] | None]: per registry name, ``fields``
+            mapping each wire name to whether it is required.
+    """
+    out: dict[str, dict[str, Any] | None] = {}
+    for name in sorted(REGISTRY):
+        entry = REGISTRY[name]
+        ref = entry.config_path
+        if ref is None:
+            ref = getattr(resolve_class(entry.vfs_path), "CONFIG_CLS", None)
+        if ref is None:
+            out[name] = None
+            continue
+        model = _config_model(name, ref)
+        out[name] = {
+            "fields": {
+                (field.alias or fname): {"required": field.is_required()}
+                for fname, field in model.model_fields.items()
+            }
+        }
+    return out
+
+
+def _emit_vfs_names(registry: dict[str, list[RegisteredCommand]]) -> None:
+    """Dump the two VFS-name sets the parity gate compares.
+
+    ``registry`` is what ``build_vfs`` can construct by name — the
     hand-maintained table workspace YAML and snapshots go through.
-    ``command_resources`` is what the spec tree already knew: every
-    resource registering at least one builtin command. A name in the
+    ``command_vfs_names`` is what the spec tree already knew: every
+    VFS registering at least one builtin command. A name in the
     second but not the first registers commands yet cannot be mounted by
     name, which is how SharePoint stayed unconstructible in python while
     appearing in every command's ``_meta``.
@@ -254,18 +401,19 @@ def _emit_resources(registry: dict[str, list[RegisteredCommand]]) -> None:
         registry (dict[str, list[RegisteredCommand]]): registrations keyed
             by command name, as collected for the spec dump.
     """
-    command_resources: set[str] = set()
+    command_vfs_names: set[str] = set()
     for rcs in registry.values():
         for rc in rcs:
-            if rc.resource is not None:
-                command_resources.add(str(rc.resource))
+            if rc.vfs is not None:
+                command_vfs_names.add(str(rc.vfs))
     payload = {
         "registry": sorted(REGISTRY),
-        "command_resources": sorted(command_resources),
+        "command_vfs_names": sorted(command_vfs_names),
         "capabilities": _capabilities(),
         "command_io": _command_io(),
+        "configs": _configs(),
     }
-    path = OUT.parent / "resources.json"
+    path = OUT.parent / "vfs.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     print(f"emitted {len(payload['registry'])} registry names to {path}")
 
@@ -275,15 +423,18 @@ def main() -> None:
     if failed:
         raise SystemExit(
             "command modules failed to import, so their registrations would "
-            "be missing from the dump:\n  " + "\n  ".join(failed) +
-            "\n\nInstall the optional dependencies first:\n"
-            "  cd python && uv sync --all-extras --no-extra camel")
+            "be missing from the dump:\n  "
+            + "\n  ".join(failed)
+            + "\n\nInstall the optional dependencies first:\n"
+            "  cd python && uv sync --all-extras"
+        )
     registry = _collect_registrations()
     OUT.mkdir(parents=True, exist_ok=True)
     for name, spec in sorted(SPECS.items()):
         _emit_one(name, spec, registry.get(name, []))
     print(f"emitted {len(SPECS)} specs to {OUT}")
-    _emit_resources(registry)
+    _emit_vfs_commands(registry)
+    _emit_vfs_names(registry)
 
 
 if __name__ == "__main__":

@@ -13,10 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.base import Accessor
-from mirage.resource.redis.store import RedisStore
+from mirage.vfs.redis.store import RedisStore
 
 
 class RedisAccessor(Accessor):
-
     def __init__(self, store: RedisStore) -> None:
         self.store = store

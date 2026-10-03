@@ -12,23 +12,22 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.commands.builtin.generic_bind import CommandIO
 from mirage.core.chroma.read import read_bytes as _read
 from mirage.core.chroma.read import read_stream as _read_stream
-from mirage.core.chroma.readdir import readdir as _readdir
+from mirage.core.chroma.search import search_many, search_resource
 from mirage.core.chroma.stat import stat as _stat
+from mirage.core.chroma.tree import CHROMA_TREE
+from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.types import NativeReadOps, ReadOps, SearchOps
 
 # Chroma records are read through the generic factory; find normalises paths,
 # search pushes down to the Chroma query API, so the two stay bespoke.
 # Chroma is read-only, so the generic byte-mutation commands are
 # intentionally absent (no write op wired).
-IO = CommandIO(
-    readdir=_readdir,
-    read_bytes=_read,
-    read_stream=_read_stream,
-    stat=_stat,
+IO = VFSAdapter(
+    search=SearchOps(search=search_resource, search_many=search_many),
+    read=ReadOps(readdir=CHROMA_TREE.readdir, read_bytes=_read, stat=_stat),
+    native=NativeReadOps(read_stream=_read_stream),
     is_mounted=lambda a: True,
     local=False,
-)
-
-resolve_glob = IO.resolve_glob
+).to_command_io()

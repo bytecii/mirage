@@ -6,7 +6,8 @@
       "targets": [
         "ram",
         "disk",
-        "redis"
+        "redis",
+        "opfs"
       ],
       "command": "mkdir -p /data/ptch1 && printf 'x' > /data/ptch1/a.txt && touch -d '2021-06-15T12:00:00' /data/ptch1/a.txt",
       "check": {
@@ -31,7 +32,8 @@
       "targets": [
         "ram",
         "disk",
-        "redis"
+        "redis",
+        "opfs"
       ],
       "command": "mkdir -p /data/ptch2 && printf 'x' > /data/ptch2/ref.txt && touch -d '2020-01-02T03:04:05' /data/ptch2/ref.txt && printf 'y' > /data/ptch2/b.txt && touch -r /data/ptch2/ref.txt /data/ptch2/b.txt",
       "check": {
@@ -56,7 +58,8 @@
       "targets": [
         "ram",
         "disk",
-        "redis"
+        "redis",
+        "opfs"
       ],
       "command": "mkdir -p /data/ptch3 && printf 'x' > /data/ptch3/a.txt && touch -d '2019-05-06T07:08:09' /data/ptch3/a.txt && mv -v /data/ptch3/a.txt /data/ptch3/b.txt",
       "check": {
@@ -74,6 +77,22 @@
       "flags": [
         "d"
       ]
+    },
+    {
+      "id": "touch_usage_refusals_name_the_hint",
+      "seq": 601093,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs"
+      ],
+      "command": "touch; echo rc=$?; touch -Q /data/r10touch; echo rc=$?; ls /data/r10touch",
+      "expect": {
+        "exit": 2,
+        "stdout": "rc=1\nrc=1\n",
+        "stderr": "touch: missing file operand\nTry 'touch --help' for more information.\ntouch: invalid option -- 'Q'\nTry 'touch --help' for more information.\nls: cannot access '/data/r10touch': No such file or directory\n"
+      }
     }
   ]
 }

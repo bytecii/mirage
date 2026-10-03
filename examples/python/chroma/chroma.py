@@ -5,8 +5,8 @@ import shlex
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.chroma import ChromaConfig, ChromaResource
 from mirage.types import PathSpec
+from mirage.vfs.chroma import ChromaConfig, ChromaVFS
 
 load_dotenv(".env.development")
 
@@ -32,21 +32,22 @@ def require_env(name: str) -> str:
     return value
 
 
-def build_resource() -> ChromaResource:
+def build_vfs() -> ChromaVFS:
     config = ChromaConfig(
         host=os.environ.get("CHROMA_HOST", "localhost"),
         port=int_env("CHROMA_PORT", 8000),
         ssl=bool_env("CHROMA_SSL", False),
         collection_name=require_env("CHROMA_COLLECTION"),
         slug_field=os.environ.get("CHROMA_SLUG_FIELD", "page_slug"),
-        chunk_index_field=os.environ.get("CHROMA_CHUNK_INDEX_FIELD",
-                                         "chunk_index"),
+        chunk_index_field=os.environ.get(
+            "CHROMA_CHUNK_INDEX_FIELD", "chunk_index"
+        ),
     )
-    return ChromaResource(config=config)
+    return ChromaVFS(config=config)
 
 
 async def run(ws: Workspace, command: str, max_chars: int = 1000) -> str:
-    result = await ws.execute(command)
+    result = await ws.shell(command)
     stdout = await result.stdout_str()
     stderr = (result.stderr or b"").decode(errors="replace")
     print(f"$ {command}")
@@ -68,8 +69,8 @@ async def first_document_path(ws: Workspace) -> str | None:
 
 
 async def main() -> None:
-    resource = build_resource()
-    ws = Workspace({"/knowledge/": resource}, mode=MountMode.READ)
+    vfs = build_vfs()
+    ws = Workspace({"/knowledge/": vfs}, mode=MountMode.READ)
 
     print("=== Chroma Knowledge ===\n")
 
@@ -91,29 +92,37 @@ async def main() -> None:
     # namespace (durable, snapshot-captured) and merge into
     # dispatch-level stat.
     print(f"=== metadata overlay on {first_path} ===")
-    meta_res = await ws.execute(f"chmod 640 {quoted_path}"
-                                f" && chown 500:dev {quoted_path}"
-                                f" && touch -t 202601021530 {quoted_path}")
+    meta_res = await ws.shell(
+        f"chmod 640 {quoted_path}"
+        f" && chown 500:dev {quoted_path}"
+        f" && touch -t 202601021530 {quoted_path}"
+    )
     print(f"  chmod/chown/touch exit={meta_res.exit_code}")
     meta_st, _ = await ws.dispatch("stat", PathSpec.from_str_path(first_path))
-    print(f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
-          f"gid={meta_st.gid} mtime={meta_st.modified}")
+    print(
+        f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
+        f"gid={meta_st.gid} mtime={meta_st.modified}"
+    )
     await run(ws, f"head -n 5 {quoted_path}")
     await run(ws, f"tail -n 5 {quoted_path}")
 
     query = os.environ.get("CHROMA_EXAMPLE_QUERY", "getting started")
     quoted_query = shlex.quote(query)
     await run(ws, f"grep -in {quoted_query} /knowledge/", max_chars=1500)
-    await run(ws,
-              f"chroma-query --top-k 5 {quoted_query} /knowledge/",
-              max_chars=1500)
+    await run(
+        ws,
+        f"chroma-query --top-k 5 {quoted_query} /knowledge/",
+        max_chars=1500,
+    )
 
-    records = ws.ops.records
-    network_bytes = ws.ops.network_bytes
-    cache_bytes = ws.ops.cache_bytes
+    records = ws.vfs.records
+    network_bytes = ws.vfs.network_bytes
+    cache_bytes = ws.vfs.cache_bytes
     print("=== Stats ===")
-    print(f"{len(records)} ops, {network_bytes} network bytes, "
-          f"{cache_bytes} cache bytes")
+    print(
+        f"{len(records)} ops, {network_bytes} network bytes, "
+        f"{cache_bytes} cache bytes"
+    )
 
 
 if __name__ == "__main__":

@@ -4,13 +4,20 @@ description: "IMAP/SMTP mail client following the pimalaya/himalaya vocabulary."
 icon: envelope
 ---
 
-IMAP/SMTP mail client following the pimalaya/himalaya vocabulary. Install it on the workspace and the whole tree is
-discoverable with `himalaya --help`.
+Mirage's built-in IMAP/SMTP mail client follows the vocabulary of the original
+[pimalaya/himalaya](https://github.com/pimalaya/himalaya) project. The Mirage
+command tree is discoverable with `himalaya --help`.
+
+**Licenses:** `pimalaya/himalaya` is dual-licensed under
+[Apache-2.0](https://github.com/pimalaya/himalaya/blob/master/LICENSE-APACHE) or
+[MIT](https://github.com/pimalaya/himalaya/blob/master/LICENSE-MIT); Mirage's
+independent implementation uses
+[Apache-2.0](https://github.com/strukto-ai/mirage/blob/main/LICENSE).
 
 ## Install
 
 ```typescript
-import { EmailResource, HIMALAYA, Workspace } from '@struktoai/mirage-node'
+import { EmailVFS, HIMALAYA, Workspace } from '@struktoai/mirage-node'
 
 const config = {
   imapHost: 'imap.example.com',
@@ -18,7 +25,7 @@ const config = {
   username: 'agent@example.com',
   password: 'app-password',
 }
-const ws = new Workspace({ '/mail': new EmailResource(config) })
+const ws = new Workspace({ '/mail': new EmailVFS(config) })
 ws.registerCli('himalaya', HIMALAYA, config)
 ```
 
@@ -80,6 +87,14 @@ himalaya envelope list -m INBOX --page 2 --page-size 10
 | `-m, --mailbox`   | no       | Mailbox name (default: INBOX) |
 | `-p, --page`      | no       | Page number, starting from 1  |
 | `-s, --page-size` | no       | Max envelopes per page (25)   |
+
+An envelope carries the message's identifiers (`uid`, `message_id`,
+`in_reply_to`, `references`), its headers (`from`, `reply_to`, `to`, `cc`,
+`subject`, `date`), its `flags`, and its attachment metadata
+(`has_attachments`, `attachments`). The body is not part of it:
+`body_text`, `body_html` and `snippet` belong to `message read` and to
+the mounted `.email.json`, so a page of envelopes stays small however
+large the mail behind it.
 
 Only the newest `page * page_size` messages are fetched, so listing the
 first page costs one page of header fetches rather than a scan of the

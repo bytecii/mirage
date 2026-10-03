@@ -15,12 +15,12 @@
 import { sha384sumGeneric } from '../../generic/sha384sum.ts'
 import { type Builder, dirAwareStream, resolveGlobOf } from '../adapter.ts'
 
-export const SHA384SUM_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'sha384sum',
   read: true,
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return sha384sumGeneric(resolved, opts, dirAwareStream(ops, accessor, idx))
+    return sha384sumGeneric(resolved, opts, dirAwareStream(ops, accessor, opts))
   },
 }

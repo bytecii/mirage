@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="../assets/mirage-og-light@2x.png" alt="Mirage : un système de fichiers virtuel unifié pour les agents IA" width="900">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../assets/mirage-og-dark@2x.png">
+    <img src="../assets/mirage-og-light@2x.png" alt="Mirage : un terminal virtuel pour les agents IA" width="900">
+  </picture>
 </p>
 
 <p align="center">
@@ -11,6 +14,8 @@
         <img src="https://img.shields.io/github/license/strukto-ai/mirage?label=licence&color=0C0C0C&labelColor=FAFAFA" /></a>
     <a href="https://discord.gg/u8BPQ65KsS" alt="Communauté Discord">
         <img src="https://img.shields.io/badge/discord-rejoindre-0C0C0C?labelColor=FAFAFA&logo=discord&logoColor=0C0C0C" /></a>
+    <a href="../assets/wechat-qr-code.jpg" aria-label="Communauté WeChat">
+        <img src="https://img.shields.io/badge/wechat-rejoindre-0C0C0C?labelColor=FAFAFA&logo=wechat&logoColor=0C0C0C" alt="Communauté WeChat" /></a>
     <br/>
     <a href="https://docs.mirage.strukto.ai/python/quickstart" alt="Documentation Python">
         <img src="https://img.shields.io/badge/python-documentation-0C0C0C?labelColor=FAFAFA&logo=python&logoColor=0C0C0C" alt="Documentation Python"></a>
@@ -28,51 +33,53 @@
   <a href="./README.zh-CN.md"><img alt="简体中文 README" src="https://img.shields.io/badge/简体中文-d9d9d9"></a>
   <a href="./README.zh-TW.md"><img alt="繁體中文 README" src="https://img.shields.io/badge/繁體中文-d9d9d9"></a>
   <a href="./README.fr.md"><img alt="README en Français" src="https://img.shields.io/badge/Français-d9d9d9"></a>
+  <a href="./README.de.md"><img alt="README auf Deutsch" src="https://img.shields.io/badge/Deutsch-d9d9d9"></a>
   <a href="./README.vi.md"><img alt="README Tiếng Việt" src="https://img.shields.io/badge/Ti%E1%BA%BFng%20Vi%E1%BB%87t-d9d9d9"></a>
   <a href="./README.ko.md"><img alt="README 한국어" src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-d9d9d9"></a>
 </p>
 
-Mirage est **un système de fichiers virtuel unifié pour les agents IA** : il monte des services et des sources de données comme S3, Google Drive, Slack, Gmail et Redis côte à côte dans un même système de fichiers. Tout LLM qui connaît déjà bash peut lire, chercher avec grep et chaîner des pipes sur chaque backend dès le départ, sans vocabulaire nouveau.
+Mirage est **un terminal virtuel pour les agents IA**. Le système de fichiers virtuel apporte un large contexte de données, les CLI virtualisées donnent à l'agent plus de souplesse dans l'usage des outils, les runtimes dynamiques réduisent le coût de l'infrastructure sous-jacente et consomment moins de tokens, et un contrôle fin sur les actions de l'agent et jusque sur ce qu'il peut voir apporte la meilleure sécurité. Ensemble, ces éléments forment un seul terminal virtualisé, offrant les meilleures performances d'agent, la meilleure efficacité de coût et la meilleure sécurité.
 
 ```python
 ws = Workspace(
     {
-        "/tmp":   (RAMResource(), MountMode.EXEC),
-        "/redis": (RedisResource(url=redis_url), MountMode.WRITE),
-        "/slack": (SlackResource(SlackConfig(token=slack_bot_token)), MountMode.EXEC),
+        "/tmp":   (RAMVFS(), MountMode.EXEC),
+        "/redis": (RedisVFS(url=redis_url), MountMode.WRITE),
+        "/slack": (SlackVFS(SlackConfig(token=slack_bot_token)), MountMode.EXEC),
     },
     # monty capture python : les scripts s'exécutent en bac à sable dans l'espace de travail
-    runtimes=[MontyRuntime(captures=["python", "python3"]), "vfs"],
+    runtimes=[MontyRuntime(captures=["python", "python3"]), "workspace"],
 )
 
 # un seul grep balaie toutes les sources
-await ws.execute("grep -rln session /redis /tmp")
+await ws.shell("grep -rln session /redis /tmp")
 
 # exécute un script hébergé dans Slack, écrit le rapport dans Redis
-await ws.execute(
-    "python3 /slack/channels/general__C0.../files/example__F0....py > /redis/report.txt"
-)
+await ws.shell("python3 /slack/channels/general_.../files/example__F....py > /redis/report.txt")
 
 # installe un CLI typé sous un mot-clé : dispatché par nom, pas par chemin,
 # et découvrable via `man`, `type` et `which` comme tout autre programme
 ws.register_cli("slack", SLACK, {"token": slack_bot_token})
-await ws.execute('slack send-message --channel general --text "report is up"')
+await ws.shell('slack send-message --channel general --text "report is up"')
 ```
 
 ## À propos
 
-- **Une seule interface au lieu de N SDK et M MCP.** Chaque service parle la même sémantique de système de fichiers, et les pipelines se composent entre services aussi naturellement que sur un disque local.
-- **Une cinquantaine de backends intégrés :** RAM, Disk, Redis, S3 / R2 / OCI / Supabase / GCS, Gmail / GDrive / GDocs / GSheets / GSlides, GitHub / Linear / Notion / Trello, Slack / Discord / Email, MongoDB / GridFS / Postgres / LanceDB / Qdrant, SSH et plus encore, montés côte à côte sous une même racine.
-- **Espaces de travail portables :** cloner, snapshotter et versionner un espace de travail ; les exécutions d'agents se déplacent entre machines sans redémarrage ni reconfiguration du système.
-- **Embarquable :** les SDK Python et TypeScript s'exécutent dans le processus, au sein de FastAPI, Express, d'applications navigateur ou de tout runtime asynchrone ; aucun processus séparé n'est requis.
-- **Intégrations d'agents :** OpenAI Agents SDK, Vercel AI SDK, LangChain, Pydantic AI, CAMEL et OpenHands via les SDK ; les agents de code via des adaptateurs natifs, des plugins installables, MCP ou FUSE.
+- **Une interface de terminal virtuel unifiée, au lieu de N SDK et M MCP.** Chaque backend parle la même sémantique de système de fichiers, si bien que les pipelines se composent entre services.
+- **Un système de fichiers virtuel sur toutes les sources.** S3, Google Drive, Slack, Gmail, Redis et les autres se montent côte à côte sous une seule racine, si bien qu'un agent les atteint tous via une interface unifiée, avec les outils unix qu'il connaît déjà comme `ls`, `grep`, `find` et `jq`.
+- **Outils en ligne de commande virtuels (CLI).** `git`, `slack` et `ntn` sont servis par Mirage lui-même, si bien qu'un agent pilote le service sans rien installer, à travers différents runtimes et machines, et un même outil peut être virtualisé en deux ou plus, chacun sous son propre nom avec ses propres identifiants.
+- **Runtimes dynamiques et routés.** Python, JavaScript et n'importe quelle autre commande peuvent être envoyés au runtime configuré, en processus, en bac à sable ou à distance, ce qui découple le calcul du stockage et permet de changer l'un sans toucher à l'autre.
+- **Le shell Mirage virtualisé.** Il relie le système de fichiers, les CLI et les runtimes en une seule ligne de commande, si bien que tubes, redirections, variables, jobs et historique fonctionnent à travers les trois.
+- **Des profils conçus pour les agents.** `allow`, `ask` et `deny` régissent les commandes et les CLI, tandis que `hide` et `show` régissent fichiers et dossiers, si bien qu'un chemin masqué n'est pas seulement illisible mais absent du système de fichiers que voit l'agent.
+- **Un moteur de politiques scriptable.** Un script de politique peut interdire toute action dangereuse avant son exécution, et la même pile filtre chaque opération VFS et chaque écriture de session, si bien que ni un fichier ni une variable d'environnement ne fuit.
+- **Des notifications câblées au VFS et aux agents.** Les changements externes deviennent un flux d'événements sur le montage, si bien qu'une nouvelle réponse Slack apparaît comme une modification du fichier de conversation dans le système de fichiers virtuel, et l'agent y réagit au lieu de re-parcourir l'arborescence.
 
 ## Architecture
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/mirage-arch-dark.svg">
-    <img src="../assets/mirage-arch-light.svg" alt="Architecture de Mirage : agent IA et application → Mirage Bash et VFS → Dispatcher et cache → infrastructure et services distants" width="720">
+    <img src="../assets/mirage-arch-light.svg" alt="Architecture Mirage : les agents et le harnais atteignent les profils et le shell Mirage, qui résolvent les commandes de type Unix, les CLI virtuelles et les langages de programmation vers les runtimes et le système de fichiers virtuel, avec l'authentification, le moteur de politiques et les notifications à côté" width="100%">
   </picture>
 </p>
 
@@ -116,16 +123,16 @@ npx @struktoai/mirage-cli
 
 ```python
 from mirage import Workspace
-from mirage.resource.ram import RAMResource
-from mirage.resource.s3 import S3Config, S3Resource
+from mirage.vfs.ram import RAMVFS
+from mirage.vfs.s3 import S3Config, S3VFS
 
 ws = Workspace({
-    "/data": RAMResource(),
-    "/s3":   S3Resource(S3Config(bucket="my-bucket")),
+    "/data": RAMVFS(),
+    "/s3":   S3VFS(S3Config(bucket="my-bucket")),
 })
 
-await ws.execute("cp /s3/report.csv /data/report.csv")
-await ws.execute("grep alert /s3/data/log.jsonl | wc -l")
+await ws.shell("cp /s3/report.csv /data/report.csv")
+await ws.shell("grep alert /s3/data/log.jsonl | wc -l")
 
 await ws.snapshot("demo.tar")
 ```
@@ -133,15 +140,15 @@ await ws.snapshot("demo.tar")
 ### TypeScript
 
 ```ts
-import { Workspace, RAMResource, S3Resource } from '@struktoai/mirage-node'
+import { Workspace, RAMVFS, S3VFS } from '@struktoai/mirage-node'
 
 const ws = new Workspace({
-  '/data': new RAMResource(),
-  '/s3':   new S3Resource({ bucket: 'my-bucket' }),
+  '/data': new RAMVFS(),
+  '/s3':   new S3VFS({ bucket: 'my-bucket' }),
 })
 
-await ws.execute('cp /s3/report.csv /data/report.csv')
-await ws.execute('grep alert /s3/data/log.jsonl | wc -l')
+await ws.shell('cp /s3/report.csv /data/report.csv')
+await ws.shell('grep alert /s3/data/log.jsonl | wc -l')
 
 await ws.snapshot('demo.tar')
 ```
@@ -150,19 +157,18 @@ await ws.snapshot('demo.tar')
 
 ```bash
 mirage workspace create ws.yaml --id demo
-mirage execute   --workspace_id demo --command "cp /s3/report.csv /data/report.csv"
-mirage provision --workspace_id demo --command "cat /s3/data/large.jsonl"
+mirage shell --workspace_id demo --command "cp /s3/report.csv /data/report.csv"
 mirage workspace snapshot demo demo.tar
 mirage workspace load demo.tar --id demo-restored
 ```
 
 ## Frameworks d'agents
 
-Mirage s'intègre aux frameworks d'agents comme bac à sable ou couche d'outils. Les opérations POSIX telles que `read` peuvent aussi être personnalisées par ressource et par type de fichier : Mirage n'embarque aucun moteur de rendu de format, donc un format s'affiche selon ce que vous enregistrez, et une commande enregistrée pour une ressource et une extension l'emporte sur la commande générique.
+Mirage s'intègre aux frameworks d'agents comme bac à sable ou couche d'outils. Les opérations POSIX telles que `read` peuvent aussi être personnalisées par VFS et par type de fichier : Mirage n'embarque aucun moteur de rendu de format, donc un format s'affiche selon ce que vous enregistrez, et une commande enregistrée pour un VFS et une extension l'emporte sur la commande générique.
 
 |                | Intégrations                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Python         | [OpenAI Agents SDK](https://docs.mirage.strukto.ai/python/agents/openai-agents), [LangChain](https://docs.mirage.strukto.ai/python/agents/langchain), [Pydantic AI](https://docs.mirage.strukto.ai/python/agents/pydantic-ai), [CAMEL](https://docs.mirage.strukto.ai/python/agents/camel), [OpenHands](https://docs.mirage.strukto.ai/python/agents/openhands), [Agno](https://docs.mirage.strukto.ai/python/agents/agno)      |
+| Python         | [OpenAI Agents SDK](https://docs.mirage.strukto.ai/python/agents/openai-agents), [LangChain](https://docs.mirage.strukto.ai/python/agents/langchain), [Pydantic AI](https://docs.mirage.strukto.ai/python/agents/pydantic-ai), [OpenHands](https://docs.mirage.strukto.ai/python/agents/openhands), [Agno](https://docs.mirage.strukto.ai/python/agents/agno)                                                                   |
 | TypeScript     | [Vercel AI SDK](https://docs.mirage.strukto.ai/typescript/agents/vercel), [OpenAI Agents SDK](https://docs.mirage.strukto.ai/typescript/agents/openai), [LangChain](https://docs.mirage.strukto.ai/typescript/agents/langchain), [Mastra](https://docs.mirage.strukto.ai/typescript/agents/mastra)                                                                                                                              |
 | Agents de code | [Claude Code](https://docs.mirage.strukto.ai/python/agents/claude-code), [Codex](https://docs.mirage.strukto.ai/typescript/agents/codex), [DeepSeek Harness](https://docs.mirage.strukto.ai/typescript/agents/dsh), [Grok Build](https://docs.mirage.strukto.ai/typescript/agents/grok-build), [OpenCode](https://docs.mirage.strukto.ai/typescript/agents/opencode), [Pi](https://docs.mirage.strukto.ai/typescript/agents/pi) |
 
@@ -176,10 +182,10 @@ Chaque `Workspace` possède un cache à deux niveaux, pour que le travail répé
 Les deux niveaux utilisent par défaut la RAM du processus, sans configuration. Un store Redis partage l'état du cache entre workers, processus et machines :
 
 ```ts
-import { RedisFileCacheStore, S3Resource, Workspace } from '@struktoai/mirage-node'
+import { RedisFileCacheStore, S3VFS, Workspace } from '@struktoai/mirage-node'
 
 const ws = new Workspace(
-  { '/s3': new S3Resource({ bucket: 'my-bucket' }) },
+  { '/s3': new S3VFS({ bucket: 'my-bucket' }) },
   {
     cache: new RedisFileCacheStore({ url: 'redis://localhost:6379/0', cacheLimit: '8GB' }),
     index: { type: 'redis', url: 'redis://localhost:6379/0', ttl: 600 },

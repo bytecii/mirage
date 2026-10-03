@@ -15,8 +15,7 @@
 from mirage.commands.spec.types import CommandSpec, Operand, Option
 
 SPECS: dict[str, CommandSpec] = {
-    'grep':
-    CommandSpec(
+    "grep": CommandSpec(
         options=(
             Option(short="-r"),
             Option(short="-R"),
@@ -24,14 +23,22 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-I"),
             Option(short="-v"),
             Option(short="-n"),
+            Option(long="--binary-files", type="str"),
             Option(short="-c"),
             Option(short="-l"),
+            Option(short="-L", long="--files-without-match"),
             Option(short="-w"),
             Option(short="-F"),
             Option(short="-E"),
             # -G asks for the basic expressions grep already reads by
-            # default, so it is accepted and changes nothing.
+            # default; with -E, -F and -P it is one of the four matchers,
+            # two different ones being refused.
             Option(short="-G"),
+            Option(short="-P", long="--perl-regexp"),
+            # -E's and -G's long spellings, one option to GNU; mirage keeps
+            # the short dests the matcher check reads next to these.
+            Option(long="--extended-regexp"),
+            Option(long="--basic-regexp"),
             Option(short="-o"),
             Option(short="-q"),
             Option(short="-H"),
@@ -41,11 +48,9 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-B", type="str"),
             Option(short="-C", type="str"),
             Option(short="-e", type="str", multiple=True),
-            Option(short="-f", type="path", multiple=True),
-            # -a searches the extensions the -r walk skips as binary;
-            # explicit operands are always read as text, which is the
-            # documented divergence (no "binary file matches" rows).
+            Option(short="-f", long="--file", type="path", multiple=True),
             Option(short="-a", long="--text"),
+            Option(short="-b", long="--byte-offset"),
             Option(long="--include", type="str", multiple=True),
             Option(long="--exclude", type="str", multiple=True),
             Option(long="--exclude-dir", type="str", multiple=True),
@@ -55,52 +60,174 @@ SPECS: dict[str, CommandSpec] = {
             Option(long="--colour", type="str", value_optional=True),
             Option(long="--line-buffered"),
         ),
-        positional=(Operand(type="str", provided_by=("-e", "-f")), ),
+        positional=(Operand(type="str", provided_by=("-e", "-f")),),
         rest=Operand(type="path"),
     ),
-    'search':
-    CommandSpec(
+    "search": CommandSpec(
         options=(
             Option(long="--method", type="str"),
             Option(long="--top-k", type="str"),
             Option(long="--threshold", type="str"),
         ),
-        positional=(Operand(type="str"), ),
+        positional=(Operand(type="str"),),
         rest=Operand(type="path"),
     ),
-    'rg':
-    CommandSpec(
+    "rg": CommandSpec(
         options=(
-            Option(short="-i"),
-            Option(short="-v"),
-            Option(short="-n"),
-            Option(short="-c"),
-            Option(short="-l"),
-            Option(short="-w"),
-            Option(short="-F"),
-            Option(short="-o"),
-            Option(short="-H"),
-            Option(short="-I"),
-            Option(short="-e", type="str", multiple=True),
-            Option(short="-f", type="path", multiple=True),
-            Option(short="-m", type="str"),
-            Option(short="-A", type="str"),
-            Option(short="-B", type="str"),
-            Option(short="-C", type="str"),
-            Option(long="--hidden"),
-            Option(long="--type", type="str"),
-            Option(long="--glob", type="str"),
-            # Accepted no-op like grep --color (#471).
-            Option(long="--color", type="str", value_optional=True),
+            Option(short="-e", long="--regexp", type="str", multiple=True),
+            Option(short="-f", long="--file", type="path", multiple=True),
+            Option(short="-i", long="--ignore-case"),
+            Option(short="-s", long="--case-sensitive"),
+            Option(short="-S", long="--smart-case"),
+            Option(short="-v", long="--invert-match"),
+            Option(long="--no-invert-match"),
+            Option(short="-w", long="--word-regexp"),
+            Option(short="-x", long="--line-regexp"),
+            Option(short="-F", long="--fixed-strings"),
+            Option(long="--no-fixed-strings"),
+            Option(short="-m", long="--max-count", type="str"),
+            Option(long="--stop-on-nonmatch"),
+            Option(short="-n", long="--line-number"),
+            Option(short="-N", long="--no-line-number"),
+            Option(short="-b", long="--byte-offset"),
+            Option(long="--no-byte-offset"),
+            Option(long="--column"),
+            Option(long="--no-column"),
+            Option(long="--vimgrep"),
+            Option(short="-o", long="--only-matching"),
+            Option(short="-r", long="--replace", type="str"),
+            Option(long="--trim"),
+            Option(long="--no-trim"),
+            Option(short="-M", long="--max-columns", type="str"),
+            Option(long="--max-columns-preview"),
+            Option(long="--no-max-columns-preview"),
+            Option(short="-0", long="--null"),
+            Option(long="--null-data"),
+            Option(long="--path-separator", type="str"),
+            Option(short="-q", long="--quiet"),
+            Option(short="-c", long="--count"),
+            Option(long="--count-matches"),
+            Option(long="--include-zero"),
+            Option(long="--no-include-zero"),
+            Option(short="-l", long="--files-with-matches"),
+            # ripgrep spells this long only: its -L is --follow.
+            Option(long="--files-without-match"),
+            Option(long="--files"),
+            Option(long="--type-list"),
+            Option(short="-H", long="--with-filename"),
+            Option(short="-I", long="--no-filename"),
+            Option(long="--heading"),
+            Option(long="--no-heading"),
+            Option(short="-A", long="--after-context", type="str"),
+            Option(short="-B", long="--before-context", type="str"),
+            Option(short="-C", long="--context", type="str"),
+            Option(long="--passthru"),
+            # ripgrep's second name for --passthru (LONG_SYNONYMS).
+            Option(long="--passthrough"),
+            Option(long="--context-separator", type="str"),
+            Option(long="--no-context-separator"),
+            Option(long="--field-match-separator", type="str"),
+            Option(long="--field-context-separator", type="str"),
+            Option(short="-g", long="--glob", type="str", multiple=True),
+            Option(long="--iglob", type="str", multiple=True),
+            Option(long="--glob-case-insensitive"),
+            Option(long="--no-glob-case-insensitive"),
+            Option(short="-t", long="--type", type="str", multiple=True),
+            Option(short="-T", long="--type-not", type="str", multiple=True),
+            Option(long="--type-add", type="str", multiple=True),
+            Option(long="--type-clear", type="str", multiple=True),
+            Option(short="-.", long="--hidden"),
+            Option(long="--no-hidden"),
+            Option(short="-u", long="--unrestricted", count=True),
+            Option(short="-d", long="--max-depth", type="str"),
+            Option(long="--max-filesize", type="str"),
+            # -L follows a link the walk meets; one named on the line is
+            # followed either way (ripgrep 14.1.1).
+            Option(short="-L", long="--follow"),
+            # A mount is mirage's filesystem boundary: this keeps the walk
+            # out of every mount below the one it starts in.
+            Option(long="--one-file-system"),
+            Option(long="--no-one-file-system"),
+            # mirage searches a binary file's bytes as text either way;
+            # these lift the walk's binary-extension skip.
+            Option(short="-a", long="--text"),
+            Option(long="--no-text"),
+            Option(long="--binary"),
+            Option(long="--no-binary"),
+            Option(long="--sort", type="str"),
+            Option(long="--sortr", type="str"),
+            Option(long="--sort-files"),
+            Option(long="--no-sort-files"),
+            Option(long="--no-messages"),
+            Option(long="--messages"),
+            # Accepted no-ops: mirage reads no ignore files and no config
+            # file, runs one search at a time, and never writes to a tty,
+            # so its output is already what these ask for; the negations
+            # restore defaults of features it does not have.
+            Option(long="--no-ignore"),
+            Option(long="--ignore"),
+            Option(long="--no-ignore-dot"),
+            Option(long="--ignore-dot"),
+            Option(long="--no-ignore-exclude"),
+            Option(long="--ignore-exclude"),
+            Option(long="--no-ignore-files"),
+            Option(long="--ignore-files"),
+            Option(long="--no-ignore-global"),
+            Option(long="--ignore-global"),
+            Option(long="--no-ignore-messages"),
+            Option(long="--ignore-messages"),
+            Option(long="--no-ignore-parent"),
+            Option(long="--ignore-parent"),
+            Option(long="--no-ignore-vcs"),
+            Option(long="--ignore-vcs"),
+            Option(long="--no-require-git"),
+            Option(long="--require-git"),
+            Option(long="--ignore-file-case-insensitive"),
+            Option(long="--no-ignore-file-case-insensitive"),
+            Option(long="--no-config"),
+            Option(short="-j", long="--threads", type="str"),
+            Option(long="--line-buffered"),
+            Option(long="--no-line-buffered"),
+            Option(long="--block-buffered"),
+            Option(long="--no-block-buffered"),
+            Option(long="--mmap"),
+            Option(long="--no-mmap"),
+            # -L's negation, the last of the two winning.
+            Option(long="--no-follow"),
+            Option(long="--no-stats"),
+            Option(long="--no-crlf"),
+            Option(long="--no-multiline"),
+            Option(long="--no-multiline-dotall"),
+            Option(short="-P", long="--pcre2"),
+            Option(long="--no-pcre2"),
+            Option(long="--engine", type="str"),
+            Option(long="--no-json"),
+            Option(long="--no-search-zip"),
+            Option(long="--no-encoding"),
+            Option(long="--no-pre"),
+            Option(long="--unicode"),
+            Option(long="--pcre2-unicode"),
+            Option(long="--no-pcre2-unicode"),
+            Option(long="--no-auto-hybrid-regex"),
+            # Accepted no-op like grep --color (#471), with ripgrep's
+            # required value.
+            Option(long="--color", type="str"),
         ),
-        positional=(Operand(type="str", provided_by=("-e", "-f")), ),
+        # --files and --type-list search nothing, so the first operand is
+        # a path rather than the pattern.
+        positional=(
+            Operand(
+                type="str", provided_by=("-e", "-f", "--files", "--type-list")
+            ),
+        ),
         rest=Operand(type="path"),
+        # ripgrep's parser (lexopt) takes a long flag only as spelled.
+        allow_abbrev=False,
     ),
-    'sed':
-    CommandSpec(
+    "sed": CommandSpec(
         options=(
             Option(short="-i"),
-            # -e takes a script and may repeat; joined with newlines.
+            # -e takes a script and may repeat; the pieces compile in order.
             Option(short="-e", type="str", multiple=True),
             # -f reads the script from a file and may repeat (like grep -f);
             # its value is a PATH so it routes and is read from the mount.
@@ -108,6 +235,10 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-n"),
             Option(short="-E"),
             Option(short="-r"),
+            # -l N sets the `l` command's line length (GNU atoi: 0 never
+            # folds).
+            Option(short="-l", long="--line-length", type="str"),
+            Option(short="-s", long="--separate"),
         ),
         # provided_by lists the flags that can supply this positional slot's
         # value; when any is present the parser skips the slot so the next
@@ -120,115 +251,168 @@ SPECS: dict[str, CommandSpec] = {
         #   sed -f prog.sed f.txt     -> prog.sed is the script; f.txt a file
         # Without provided_by, the -e/-f forms would mislabel f.txt as the
         # script (TEXT) and never read it as a file.
-        positional=(Operand(type="str", provided_by=("-e", "-f")), ),
+        positional=(Operand(type="str", provided_by=("-e", "-f")),),
         rest=Operand(type="path"),
     ),
-    'jq':
-    CommandSpec(
+    "jq": CommandSpec(
         options=(
-            Option(short="-n",
-                   long="--null-input",
-                   description="Use null as the single input value"),
-            Option(short="-R",
-                   long="--raw-input",
-                   description="Read each line as a string instead of JSON"),
-            Option(short="-s",
-                   long="--slurp",
-                   description="Read all inputs into one array"),
-            Option(short="-c",
-                   long="--compact-output",
-                   description="Compact instead of pretty-printed output"),
-            Option(short="-r",
-                   long="--raw-output",
-                   description="Output strings without quotes or escapes"),
-            Option(long="--raw-output0",
-                   description="Implies -r and writes NUL after each output"),
-            Option(short="-j",
-                   long="--join-output",
-                   description="Implies -r and writes no trailing newline"),
-            Option(short="-a",
-                   long="--ascii-output",
-                   description="Escape non-ASCII characters in output"),
-            Option(short="-S",
-                   long="--sort-keys",
-                   description="Sort object keys on output"),
-            Option(short="-e",
-                   long="--exit-status",
-                   description="Set the exit status from the last output"),
+            Option(
+                short="-n",
+                long="--null-input",
+                description="Use null as the single input value",
+            ),
+            Option(
+                short="-R",
+                long="--raw-input",
+                description="Read each line as a string instead of JSON",
+            ),
+            Option(
+                short="-s",
+                long="--slurp",
+                description="Read all inputs into one array",
+            ),
+            Option(
+                short="-c",
+                long="--compact-output",
+                description="Compact instead of pretty-printed output",
+            ),
+            Option(
+                short="-r",
+                long="--raw-output",
+                description="Output strings without quotes or escapes",
+            ),
+            Option(
+                long="--raw-output0",
+                description="Implies -r and writes NUL after each output",
+            ),
+            Option(
+                short="-j",
+                long="--join-output",
+                description="Implies -r and writes no trailing newline",
+            ),
+            Option(
+                short="-a",
+                long="--ascii-output",
+                description="Escape non-ASCII characters in output",
+            ),
+            Option(
+                short="-S",
+                long="--sort-keys",
+                description="Sort object keys on output",
+            ),
+            Option(
+                short="-e",
+                long="--exit-status",
+                description="Set the exit status from the last output",
+            ),
             Option(long="--tab", description="Indent with tabs"),
-            Option(long="--indent",
-                   type="int",
-                   description="Indent with n spaces (max 7)"),
-            Option(short="-M",
-                   long="--monochrome-output",
-                   description="Disable colored output (already the default)"),
-            Option(long="--unbuffered",
-                   description="Accepted for compatibility; output is one "
-                   "buffer"),
-            Option(short="-f",
-                   long="--from-file",
-                   type="path",
-                   description="Read the filter from a file"),
-            Option(long="--stream",
-                   description="Read each input as its [path, leaf] events"),
-            Option(long="--seq",
-                   description="Read and write RS-delimited JSON text "
-                   "sequences"),
-            Option(long="--arg",
-                   type="str",
-                   pair=True,
-                   description="Set $name to a string value"),
-            Option(long="--argjson",
-                   type="str",
-                   pair=True,
-                   description="Set $name to a JSON value"),
-            Option(long="--rawfile",
-                   type="path",
-                   pair=True,
-                   description="Set $name to a file's contents"),
-            Option(long="--slurpfile",
-                   type="path",
-                   pair=True,
-                   description="Set $name to a file's documents, as an "
-                   "array"),
-            Option(long="--args",
-                   description="Read the remaining operands as positional "
-                   "string values"),
-            Option(long="--jsonargs",
-                   description="Read the remaining operands as positional "
-                   "JSON values"),
-            Option(short="-h",
-                   long="--help",
-                   description="Show this help and exit"),
+            # jq words its own refusal of a width it cannot read.
+            Option(
+                long="--indent",
+                type="str",
+                description="Indent with n spaces (max 7)",
+            ),
+            Option(
+                short="-M",
+                long="--monochrome-output",
+                description="Disable colored output (already the default)",
+            ),
+            Option(
+                long="--unbuffered",
+                description="Accepted for compatibility; output is one buffer",
+            ),
+            Option(
+                short="-f",
+                long="--from-file",
+                type="path",
+                description="Read the filter from a file",
+            ),
+            Option(
+                long="--stream",
+                description="Read each input as its [path, leaf] events",
+            ),
+            Option(
+                long="--seq",
+                description="Read and write RS-delimited JSON text sequences",
+            ),
+            Option(
+                long="--arg",
+                type="str",
+                pair=True,
+                description="Set $name to a string value",
+            ),
+            Option(
+                long="--argjson",
+                type="str",
+                pair=True,
+                description="Set $name to a JSON value",
+            ),
+            Option(
+                long="--rawfile",
+                type="path",
+                pair=True,
+                description="Set $name to a file's contents",
+            ),
+            Option(
+                long="--slurpfile",
+                type="path",
+                pair=True,
+                description="Set $name to a file's documents, as an array",
+            ),
+            Option(
+                long="--args",
+                description="Read the remaining operands as positional "
+                "string values",
+            ),
+            Option(
+                long="--jsonargs",
+                description="Read the remaining operands as positional "
+                "JSON values",
+            ),
+            Option(
+                short="-h",
+                long="--help",
+                description="Show this help and exit",
+            ),
+            # jq answers -h and -V inside its option loop, where they are
+            # typed (OWN_OPTION_LOOP), so it declares both.
+            Option(
+                short="-V",
+                long="--version",
+                description="Show version information and exit",
+            ),
         ),
         # Without provided_by, `jq -f prog.jq data.json` would take
         # data.json as the filter and never read it as a file.
-        positional=(Operand(type="str", provided_by=("-f", )), ),
-        # --args and --jsonargs turn the operands after the program into
-        # $ARGS.positional, so they stop being input files.
+        positional=(Operand(type="str", provided_by=("-f",)),),
+        # --args and --jsonargs turn the operands typed after them into
+        # $ARGS.positional, so those stop being input files
+        # (IN_ORDER_OPERANDS).
         rest=Operand(type="path", text_when=("--args", "--jsonargs")),
+        # jq's main.c compares each long option with strcmp, so `--nul` is
+        # no --null-input (jq 1.8.2: `jq: Unknown option --nul`).
+        allow_abbrev=False,
     ),
-    'awk':
-    CommandSpec(
+    "awk": CommandSpec(
         options=(
             Option(short="-F", type="str"),
             Option(short="-v", type="str", multiple=True),
             Option(short="-f", type="path", multiple=True),
         ),
-        positional=(Operand(type="str", provided_by=("-f", )), ),
+        positional=(Operand(type="str", provided_by=("-f",)),),
         rest=Operand(type="path"),
     ),
-    'strings':
-    CommandSpec(
-        options=(Option(short="-n", type="str"), ),
+    "strings": CommandSpec(
+        options=(Option(short="-n", type="str"),),
         rest=Operand(type="path"),
     ),
-    'zgrep':
-    CommandSpec(
+    "zgrep": CommandSpec(
         options=(
             Option(short="-i"),
+            Option(short="-b", long="--byte-offset"),
             Option(short="-c"),
             Option(short="-l"),
+            Option(short="-L", long="--files-without-match"),
             Option(short="-n"),
             Option(short="-v"),
             Option(short="-e", type="str", multiple=True),
@@ -236,14 +420,19 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-E"),
             Option(short="-G"),
             Option(short="-F"),
+            Option(short="-P"),
             Option(short="-H"),
             Option(short="-h"),
             Option(short="-m", type="str"),
             Option(short="-o"),
             Option(short="-q"),
+            # An accepted no-op: zgrep hands -s to grep, which reads a
+            # pipe and has no file to complain about, and gzip's own
+            # lines are gzip's (gzip 1.13).
+            Option(short="-s"),
             Option(short="-w"),
         ),
-        positional=(Operand(type="str", provided_by=("-e", "-f")), ),
+        positional=(Operand(type="str", provided_by=("-e", "-f")),),
         rest=Operand(type="path"),
     ),
 }

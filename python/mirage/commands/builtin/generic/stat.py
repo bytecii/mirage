@@ -1,19 +1,48 @@
+import math
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from itertools import groupby
 
-from mirage.commands.builtin.utils.formatting import _ls_mode_string
+from mirage.commands.builtin.utils.formatting import ls_mode_string
+from mirage.commands.builtin.utils.identity import (
+    Identity,
+    group_name,
+    identity_of,
+    owner_name,
+)
+from mirage.commands.builtin.utils.operands import operand_stat
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
-from mirage.core.timeutil import iso_to_epoch
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
+from mirage.commands.spec.usage import missing_operand_error
 from mirage.io.types import ByteSource, IOResult
-from mirage.ops.types import LinkView
-from mirage.types import LINK_TARGET_KEY, FileStat, FileType, PathSpec, StatFn
+from mirage.ops.types import LinkView, MountView, StatPath
+from mirage.types import (
+    DEVICE_NUMBERS_KEY,
+    LINK_TARGET_KEY,
+    FileStat,
+    FileType,
+    PathSpec,
+    StatFn,
+)
+from mirage.utils.dates import iso_timestamp, iso_to_epoch
 from mirage.utils.errors import FS_ERRORS, fs_error_line
+from mirage.utils.stat_view import (
+    content_size,
+    device_rdev,
+    is_dir,
+    posix_mode,
+)
 
 _STR_DIRECTIVES = frozenset("nNF")
+
+# The fraction of a second as the backend spelled it, so both hosts print
+# the digits the stamp carries rather than what their clock type keeps.
+_FRACTION = re.compile(r"\d\d:\d\d:\d\d\.(\d+)")
 
 _FORMAT_FLAGS = frozenset("#0 +-")
 
@@ -22,15 +51,11 @@ _ASCII_DIGITS = frozenset("0123456789")
 _TYPE_LABELS = {
     FileType.DIRECTORY: "directory",
     FileType.SYMLINK: "symbolic link",
-    FileType.TEXT: "regular file",
-    FileType.BINARY: "regular file",
-    FileType.JSON: "regular file",
-    FileType.CSV: "regular file",
+    FileType.CHAR_DEVICE: "character special file",
+    FileType.FILE: "regular file",
 }
 
-_DEFAULT_OWNER = "user"
-
-_SHELL_SPECIAL = frozenset("!\"#$&()*;<=>?[\\^`{|}~")
+_SHELL_SPECIAL = frozenset('!"#$&()*;<=>?[\\^`{|}~')
 
 _START_SAFE = frozenset("#~")
 
@@ -65,19 +90,13 @@ class _FormatDirective:
 
 
 def _type_label(s: FileStat) -> str:
-    return _TYPE_LABELS.get(s.type,
-                            "regular file") if s.type else "regular file"
+    return (
+        _TYPE_LABELS.get(s.type, "regular file") if s.type else "regular file"
+    )
 
 
 def _effective_mode(s: FileStat) -> int:
-    if s.mode is not None:
-        return s.mode & 0o7777
-    if s.type == FileType.DIRECTORY:
-        return 0o755
-    # A symlink carries no permission bits of its own; GNU reports 0777.
-    if s.type == FileType.SYMLINK:
-        return 0o777
-    return 0o644
+    return posix_mode(s) & 0o7777
 
 
 def _type_bits(s: FileStat) -> int:
@@ -85,11 +104,9 @@ def _type_bits(s: FileStat) -> int:
         return 0o040000
     if s.type == FileType.SYMLINK:
         return 0o120000
+    if s.type == FileType.CHAR_DEVICE:
+        return 0o020000
     return 0o100000
-
-
-def _owner(value: int | str | None) -> str:
-    return str(value) if value is not None else _DEFAULT_OWNER
 
 
 def _epoch(iso: str | None) -> str:
@@ -174,8 +191,9 @@ def _quote_name(name: str) -> str:
     return _single_quoted(name)
 
 
-def _apply_flags(value: str, flags: str, width: str, precision: str | None,
-                 spec: str) -> str:
+def _apply_flags(
+    value: str, flags: str, width: str, precision: str | None, spec: str
+) -> str:
     """Apply GNU printf flags/width/precision to a rendered directive.
 
     Args:
@@ -188,7 +206,7 @@ def _apply_flags(value: str, flags: str, width: str, precision: str | None,
     if "#" in flags and spec == "a" and not value.startswith("0"):
         value = "0" + value
     if precision is not None and spec in _STR_DIRECTIVES:
-        value = value[:int(precision)] if precision else ""
+        value = value[: int(precision)] if precision else ""
     if width and len(value) < int(width):
         w = int(width)
         if "-" in flags:
@@ -200,45 +218,62 @@ def _apply_flags(value: str, flags: str, width: str, precision: str | None,
     return value
 
 
-def _directive_value(spec: str, s: FileStat, name: str) -> str:
+def _directive_value(
+    spec: str, s: FileStat, name: str, identity: Identity | None
+) -> str:
     if spec == "%":
         return "%"
     if spec == "n":
         return name
     if spec == "s":
-        return str(s.size if s.size is not None else 0)
+        return (
+            "-" if not is_dir(s) and s.size is None else str(content_size(s))
+        )
     if spec == "F":
         return _type_label(s)
     if spec == "a":
         return format(_effective_mode(s), "o")
     if spec == "A":
-        return _ls_mode_string(s)
+        return ls_mode_string(s)
     if spec == "f":
         return format(_type_bits(s) | _effective_mode(s), "x")
     if spec in ("u", "U"):
-        return _owner(s.uid)
+        return owner_name(s.uid, identity)
     if spec in ("g", "G"):
-        return _owner(s.gid)
+        return group_name(s.gid, identity)
     if spec == "x":
         return s.atime or s.modified or ""
     if spec == "X":
         return _epoch(s.atime or s.modified)
-    if spec in ("y", "z"):
+    if spec == "y":
         return s.modified or ""
-    if spec in ("Y", "Z"):
+    if spec == "Y":
         return _epoch(s.modified)
+    if spec == "z":
+        return s.ctime or "-"
+    if spec == "Z":
+        return _epoch(s.ctime)
     if spec == "w":
-        return "-"
+        return s.birthtime or "-"
     if spec == "W":
-        return "0"
+        return _epoch(s.birthtime)
     if spec == "B":
         return "512"
-    if spec in ("r", "R", "t", "T"):
-        return "0"
+    dev = s.extra.get(DEVICE_NUMBERS_KEY) if s.extra else None
+    if spec == "t":
+        # rdev major in hex; a non-device has none, so 0 like GNU.
+        return f"{dev[0]:x}" if dev else "0"
+    if spec == "T":
+        return f"{dev[1]:x}" if dev else "0"
+    if spec in ("r", "R"):
+        rdev = device_rdev(s)
+        return str(rdev) if spec == "r" else f"{rdev:x}"
     if len(spec) == 2 and spec[0] in "HL":
-        # %Hr/%Lr are rdev major/minor (0, like %r); %Hd/%Ld are device
-        # major/minor, which a VFS has no truthful value for.
-        return "0" if spec[1] in "rR" else "?"
+        # %Hr/%Lr are rdev major/minor in decimal; %Hd/%Ld are the device
+        # the file resides on, which a VFS has no truthful value for.
+        if spec[1] in "rR":
+            return str(dev[0 if spec[0] == "H" else 1]) if dev else "0"
+        return "?"
     return "?"
 
 
@@ -259,13 +294,17 @@ def _name_parts(s: FileStat, name: str, quoted: bool) -> list[str]:
     return [_quote_name(p) for p in parts] if quoted else parts
 
 
-def _render_directive(d: _FormatDirective, s: FileStat, name: str) -> str:
+def _render_directive(
+    d: _FormatDirective, s: FileStat, name: str, identity: Identity | None
+) -> str:
     """Render one directive with its flags, width and precision applied.
 
     Args:
         d (_FormatDirective): the parsed directive.
         s (FileStat): the stat being rendered.
         name (str): the operand as it was typed.
+        identity (Identity | None): who the session is, for %U and %G
+            on an entry that reports no owner of its own.
     """
     if d.spec == "N":
         # GNU formats the name and a symlink's target as two separate
@@ -273,9 +312,15 @@ def _render_directive(d: _FormatDirective, s: FileStat, name: str) -> str:
         bare = not d.flags and not d.width and d.precision is None
         return " -> ".join(
             _apply_flags(part, d.flags, d.width, d.precision, d.spec)
-            for part in _name_parts(s, name, bare))
-    return _apply_flags(_directive_value(d.spec, s, name), d.flags, d.width,
-                        d.precision, d.spec)
+            for part in _name_parts(s, name, bare)
+        )
+    return _apply_flags(
+        _directive_value(d.spec, s, name, identity),
+        d.flags,
+        d.width,
+        d.precision,
+        d.spec,
+    )
 
 
 def _is_conversion(char: str) -> bool:
@@ -320,14 +365,14 @@ def _parse_format_directive(fmt: str, start: int) -> _FormatDirective | None:
     if spec in ("H", "L") and cursor < end and _is_conversion(fmt[cursor]):
         spec += fmt[cursor]
         cursor += 1
-    return _FormatDirective(end=cursor,
-                            flags=flags,
-                            width=width,
-                            precision=precision,
-                            spec=spec)
+    return _FormatDirective(
+        end=cursor, flags=flags, width=width, precision=precision, spec=spec
+    )
 
 
-def _format_stat(fmt: str, s: FileStat, name: str) -> str:
+def _format_stat(
+    fmt: str, s: FileStat, name: str, identity: Identity | None
+) -> str:
     parts: list[str] = []
     cursor = 0
     while cursor < len(fmt):
@@ -341,19 +386,63 @@ def _format_stat(fmt: str, s: FileStat, name: str) -> str:
             parts.append("%")
             cursor = start + 1
             continue
-        parts.append(_render_directive(directive, s, name))
+        parts.append(_render_directive(directive, s, name, identity))
         cursor = directive.end
     return "".join(parts)
 
 
-def _render_stat(s: FileStat) -> str:
-    """Render the default (no -c) stat line.
+def _stat_time(value: str | None) -> str:
+    """A known timestamp in GNU's layout, in UTC, or '-' when unknown.
 
     Args:
-        s (FileStat): the stat to render.
+        value (str | None): backend ISO timestamp; a naive one is UTC.
     """
-    return (f"name={s.name} size={s.size} modified={s.modified}"
-            f" type={s.type.value if s.type else None}")
+    seconds = iso_timestamp(value)
+    if seconds is None or value is None:
+        return "-"
+    whole = datetime.fromtimestamp(math.floor(seconds), timezone.utc)
+    match = _FRACTION.search(value)
+    fraction = (match.group(1) if match else "").ljust(9, "0")[:9]
+    return f"{whole:%Y-%m-%d %H:%M:%S}.{fraction} +0000"
+
+
+def _render_stat(s: FileStat, name: str, identity: Identity | None) -> str:
+    """GNU coreutils 9.7's default layout, with unknown fields marked.
+
+    A VFS has rendered bytes, modes and logical owners, but no device,
+    inode, allocation blocks, IO block size or link count: those print
+    '?'. An absent size, owner number or time prints '-'. Each time is
+    the one its directive prints (``%x %y %z %w``), the name is unquoted
+    as GNU's default prints it, and times are UTC.
+
+    Args:
+        s (FileStat): the backend and namespace stat.
+        name (str): operand spelling.
+        identity (Identity | None): session owner and group defaults.
+    """
+    size = _directive_value("s", s, name, identity)
+    uid = str(s.uid) if s.uid is not None else "-"
+    gid = str(s.gid) if s.gid is not None else "-"
+    owner = owner_name(s.uid, identity)
+    group = group_name(s.gid, identity)
+    links = "Links: ?"
+    if s.type is FileType.CHAR_DEVICE:
+        major = _directive_value("Hr", s, name, identity)
+        minor = _directive_value("Lr", s, name, identity)
+        links = f"Links: {'?':<5} Device type: {major},{minor}"
+    shown = " -> ".join(_name_parts(s, name, False))
+    return (
+        f"  File: {shown}\n"
+        f"  Size: {size:<10}\tBlocks: {'?':<10} "
+        f"IO Block: {'?':<6} {_type_label(s)}\n"
+        f"Device: ?\tInode: {'?':<10}  {links}\n"
+        f"Access: ({_effective_mode(s):04o}/{ls_mode_string(s)})  "
+        f"Uid: ({uid:>5}/{owner:>8})   Gid: ({gid:>5}/{group:>8})\n"
+        f"Access: {_stat_time(s.atime or s.modified)}\n"
+        f"Modify: {_stat_time(s.modified)}\n"
+        f"Change: {_stat_time(s.ctime)}\n"
+        f" Birth: {_stat_time(s.birthtime)}"
+    )
 
 
 async def stat(
@@ -364,6 +453,9 @@ async def stat(
     f: str | None = None,
     L: bool = False,
     links: LinkView | None = None,
+    stat_path: StatPath | None = None,
+    mounts: MountView | None = None,
+    identity: Identity | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Report file status, GNU stat semantics.
 
@@ -375,9 +467,18 @@ async def stat(
         L (bool): dereference symlinks instead of reporting the link.
         links (LinkView | None): the namespace's symlink facts;
             absent when the workspace holds no links.
+        stat_path (StatPath | None): dispatcher-backed stat of one path,
+            which is what answers a directory that exists only because
+            mounts sit under it.
+        mounts (MountView | None): the mount boundaries, so a mount root
+            reports its own name rather than the backend's name for its
+            root.
+        identity (Identity | None): who the session is: what ``%U`` and
+            ``%G`` print for an entry that reports no uid or gid of its
+            own; None outside a workspace, where both print ``-``.
     """
     if not paths:
-        raise ValueError("stat: missing operand")
+        raise missing_operand_error("stat", None)
     fmt = c if c is not None else f
     lines: list[str] = []
     err = b""
@@ -388,20 +489,26 @@ async def stat(
         linked = None if L or links is None else links.stat_at(p.virtual)
         if linked is not None:
             if fmt is not None:
-                lines.append(_format_stat(fmt, linked, p.raw_path))
+                lines.append(_format_stat(fmt, linked, p.raw_path, identity))
             else:
-                lines.append(_render_stat(linked))
+                lines.append(_render_stat(linked, p.raw_path, identity))
             continue
         try:
-            s = await stat_fn(p)
+            s = await operand_stat(
+                p,
+                stat_fn=stat_fn,
+                stat_path=stat_path,
+                mounts=mounts,
+                links=links,
+            )
         except FS_ERRORS as exc:
             # GNU stat keeps reporting the remaining operands, exit 1.
             err += fs_error_line("stat", p, exc).encode()
             continue
         if fmt is not None:
-            lines.append(_format_stat(fmt, s, p.raw_path))
+            lines.append(_format_stat(fmt, s, p.raw_path, identity))
         else:
-            lines.append(_render_stat(s))
+            lines.append(_render_stat(s, p.raw_path, identity))
     io = IOResult(exit_code=1 if err else 0, stderr=err or None)
     if not lines:
         return None, io
@@ -434,9 +541,14 @@ async def stat_generic(
     stat_fn: StatFn,
 ) -> tuple[ByteSource | None, IOResult]:
     parsed = parse_flags(opts.flags)
-    return await stat(paths,
-                      stat_fn=stat_fn,
-                      c=parsed.format,
-                      f=parsed.file_system,
-                      L=parsed.deref,
-                      links=opts.ns.links if opts.ns is not None else None)
+    return await stat(
+        paths,
+        stat_fn=stat_fn,
+        c=parsed.format,
+        f=parsed.file_system,
+        L=parsed.deref,
+        links=opts.ns.links if opts.ns is not None else None,
+        stat_path=opts.stat_path,
+        mounts=opts.ns.mounts if opts.ns is not None else None,
+        identity=identity_of(opts),
+    )

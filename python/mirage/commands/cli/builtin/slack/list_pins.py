@@ -15,7 +15,7 @@
 import json
 
 from mirage.commands.cli.types import CLIInvocation
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.slack.config import SlackConfig
 from mirage.core.slack.pins import list_pins as list_pins_core
 from mirage.io.stream import yield_bytes
@@ -23,7 +23,8 @@ from mirage.io.types import ByteSource, IOResult
 
 
 async def list_pins(
-        inv: CLIInvocation[SlackConfig]) -> tuple[ByteSource | None, IOResult]:
+    inv: CLIInvocation[SlackConfig],
+) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(inv.flags)
     items = await list_pins_core(inv.config, fl.as_str("channel") or "")
     out = json.dumps(items, ensure_ascii=False, separators=(",", ":")).encode()

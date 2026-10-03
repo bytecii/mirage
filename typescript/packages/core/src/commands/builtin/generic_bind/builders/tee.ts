@@ -13,18 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { teeGeneric } from '../../generic/tee.ts'
-import { type Builder, resolveGlobOf } from '../adapter.ts'
+import { type Builder, requireOp, resolveGlobOf } from '../adapter.ts'
 
-export const TEE_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'tee',
   write: true,
-  requirements: ['write'],
   fn: async (ops, accessor, paths, texts, opts) => {
     const idx = opts.index ?? undefined
-    const { write, append } = ops
-    if (write === undefined) {
-      throw new Error('tee: backend provides no write op')
-    }
+    const { append } = ops
+    const write = requireOp(ops.write, 'write')
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
     // A backend that can append natively does; the rest fall back to the
     // read-modify-write inside the generic.
@@ -35,6 +32,7 @@ export const TEE_BUILDER: Builder = {
       (p) => ops.readStream(accessor, p, idx),
       (p, d) => write(accessor, p, d),
       append === undefined ? undefined : (p, d) => append(accessor, p, d),
+      (p) => ops.stat(accessor, p, idx),
     )
   },
 }

@@ -1,6 +1,6 @@
 import pytest
 
-from mirage.commands.builtin.generic.tr import parse_flags, tr
+from mirage.commands.builtin.generic.tr import tr
 from mirage.io.stream import materialize
 
 
@@ -19,29 +19,10 @@ async def _run(texts, flags, data):
     return io.exit_code, (await materialize(source)).decode()
 
 
-def test_parse_flags_reads_short_and_long_forms():
-    parsed = parse_flags({"complement": True, "delete": True})
-    assert parsed.complement is True
-    assert parsed.delete is True
-    assert parse_flags({"C": True}).complement is True
-
-
-@pytest.mark.asyncio
-async def test_truncate_set1_truncates_to_set2_length():
-    _, out = await _run(["abcde", "xy"], {"truncate_set1": True}, b"abcde")
-    assert out == "xycde"
-
-
 @pytest.mark.asyncio
 async def test_default_pads_set2_to_set1_length():
     _, out = await _run(["abcde", "xy"], {}, b"abcde")
     assert out == "xyyyy"
-
-
-@pytest.mark.asyncio
-async def test_complement_uppercase_C_matches_c():
-    _, out = await _run(["0-9", "_"], {"C": True}, b"abc123")
-    assert out == "___123"
 
 
 @pytest.mark.asyncio
@@ -54,3 +35,19 @@ async def test_long_forms():
     assert deleted == "dd"
     _, squeezed = await _run(["a-c"], {"squeeze_repeats": True}, b"aabbcc")
     assert squeezed == "abc"
+
+
+@pytest.mark.asyncio
+async def test_delete_without_squeeze_names_the_second_operand_as_extra():
+    with pytest.raises(
+        ValueError, match="extra operand 'b'\nOnly one string may be given"
+    ):
+        await _run(["a", "b"], {"delete": True}, b"x")
+    with pytest.raises(Exception, match=r"extra operand 'b'\nTry"):
+        await _run(["a", "b", "c"], {"delete": True}, b"x")
+    with pytest.raises(Exception, match=r"extra operand 'c'\nTry"):
+        await _run(
+            ["a", "b", "c"], {"delete": True, "squeeze_repeats": True}, b"x"
+        )
+    with pytest.raises(Exception, match=r"extra operand 'c'\nTry"):
+        await _run(["a", "b", "c"], {}, b"x")

@@ -12,9 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { pathSafeName, sanitizeName } from '../../utils/sanitize.ts'
-import { makeIdName } from '../../utils/naming.ts'
-import type { SlackScope } from './scope.ts'
+import { pathSafeName } from '../../utils/sanitize.ts'
+import { fileIdName, makeIdName } from '../../utils/naming.ts'
+import type { SearchTarget } from './scope.ts'
 
 const DEC = new TextDecoder('utf-8', { fatal: false })
 
@@ -35,24 +35,16 @@ export function dmDirname(
 
 /** Compute the VFS filename for a user, of the form `name__U123.json`. */
 export function userFilename(u: { id: string; name?: string }): string {
-  return `${makeIdName(u.name ?? '', u.id, true)}.json`
+  return makeIdName(u.name ?? '', u.id, true, '.json')
 }
 
 /**
  * Construct a stable VFS filename for a Slack file, of shape
- * `<stem>__<F-id>.<ext>`. The stem keeps the original spelling, only `/` is
- * replaced.
+ * `<stem>__<F-id>.<ext>`, named after `name` and else `title` (see
+ * `fileIdName`).
  */
 export function fileBlobName(file: { id?: string; name?: string; title?: string }): string {
-  const raw = file.name ?? file.title ?? 'file'
-  const fid = file.id ?? ''
-  const dot = raw.lastIndexOf('.')
-  if (dot >= 0) {
-    const stem = raw.slice(0, dot)
-    const ext = raw.slice(dot + 1)
-    return `${pathSafeName(stem)}__${fid}.${ext}`
-  }
-  return `${pathSafeName(raw)}__${fid}`
+  return fileIdName(file.id ?? '', file.name, file.title)
 }
 
 interface SearchMessageMatch {
@@ -78,7 +70,7 @@ interface SearchFilesPayload {
   files?: { matches?: SearchFileMatch[] }
 }
 
-export function buildQuery(pattern: string, scope: SlackScope): string {
+export function buildQuery(pattern: string, scope: SearchTarget): string {
   if (
     scope.container === 'channels' &&
     scope.channelName !== undefined &&
@@ -99,7 +91,7 @@ function tsToDate(ts: string | number | undefined): string {
   return new Date(tsFloat * 1000).toISOString().slice(0, 10)
 }
 
-export function formatGrepResults(raw: Uint8Array, scope: SlackScope, prefix: string): string[] {
+export function formatGrepResults(raw: Uint8Array, scope: SearchTarget, prefix: string): string[] {
   const payload = JSON.parse(DEC.decode(raw)) as SearchMessagePayload
   const matches = payload.messages?.matches ?? []
   const lines: string[] = []
@@ -109,7 +101,14 @@ export function formatGrepResults(raw: Uint8Array, scope: SlackScope, prefix: st
     const chId = ch.id ?? scope.channelId ?? ''
     const container = scope.container ?? 'channels'
     const dateStr = tsToDate(msg.ts ?? '0')
-    const dirname = chId !== '' ? `${sanitizeName(chName)}__${chId}` : sanitizeName(chName)
+    // The dirname readdir emits, not a second spelling of it: the label's
+    // byte budget depends on the id, so composing the pair here reported a
+    // path that does not exist as soon as a long channel name was trimmed on
+    // one side and not the other. It also sanitized where readdir keeps the
+    // original spelling, so the two disagreed on any name carrying a space,
+    // an apostrophe or an emoji -- DM directories, named after a user's
+    // display name, hit that on far shorter strings than NAME_MAX.
+    const dirname = chId !== '' ? channelDirname({ id: chId, name: chName }) : pathSafeName(chName)
     const path =
       dateStr !== ''
         ? `${prefix}/${container}/${dirname}/${dateStr}/chat.jsonl`
@@ -123,7 +122,7 @@ export function formatGrepResults(raw: Uint8Array, scope: SlackScope, prefix: st
 
 export function formatFileGrepResults(
   raw: Uint8Array,
-  scope: SlackScope,
+  scope: SearchTarget,
   prefix: string,
 ): string[] {
   const payload = JSON.parse(DEC.decode(raw)) as SearchFilesPayload
@@ -137,8 +136,7 @@ export function formatFileGrepResults(
     if (scope.channelId === undefined || scope.channelId === '') continue
     const chId = scope.channelId
     const chName = scope.channelName ?? ''
-    const safeName = chName !== '' ? sanitizeName(chName) : ''
-    const dirname = safeName !== '' ? `${safeName}__${chId}` : chId
+    const dirname = chName !== '' ? channelDirname({ id: chId, name: chName }) : chId
     const container = scope.container ?? 'channels'
     const path =
       dateStr !== ''

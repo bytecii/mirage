@@ -14,24 +14,32 @@
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.cache.context import invalidate_after_unlink
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.redis.dest import lookup_error
 from mirage.types import PathSpec
+from mirage.utils.errors import enotempty
 from mirage.utils.path import norm
 
 
-async def rmdir(accessor: RedisAccessor, path_spec: PathSpec) -> None:
+async def rmdir(
+    accessor: RedisAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+) -> None:
     path = path_spec.mount_path
     store = accessor.store
     p = norm(path)
     if not await store.has_dir(p):
-        raise FileNotFoundError(p)
+        raise await lookup_error(store, path_spec, p)
     prefix = p.rstrip("/") + "/"
     all_files = await store.list_files()
     all_dirs = await store.list_dirs()
     children = [
-        k for k in all_files + list(all_dirs)
+        k
+        for k in all_files + list(all_dirs)
         if k.startswith(prefix) and k != p
     ]
     if children:
-        raise OSError(f"directory not empty: {p}")
+        raise enotempty(path_spec)
     await store.remove_dir(p)
     await invalidate_after_unlink(path_spec)

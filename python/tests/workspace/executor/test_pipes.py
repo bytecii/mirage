@@ -15,14 +15,18 @@
 import pytest
 
 from mirage.io import IOResult
+from mirage.io.cachable_iterator import CachableAsyncIterator
+from mirage.io.stream import async_chain
 from mirage.io.types import materialize
+from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
+from mirage.workspace import Workspace
 from mirage.workspace.executor.pipes import handle_pipe, handle_subshell
-from mirage.workspace.session import Session
+from mirage.workspace.session import SessionState
 from mirage.workspace.types import ExecutionNode
 
 
 class FakeNode:
-
     def __init__(self, text: str):
         self.text = text
         self.is_named = True
@@ -30,28 +34,71 @@ class FakeNode:
 
 
 @pytest.mark.asyncio
+async def test_cache_read_remains_drainable_after_early_pipeline_exit():
+    closed = False
+
+    async def source():
+        nonlocal closed
+        try:
+            yield b"first"
+            yield b"rest"
+        finally:
+            closed = True
+
+    stream = CachableAsyncIterator(source())
+
+    async def execute_node(nd, _session, stdin, _call_stack=None, **kwargs):
+        if nd.text == "cat":
+            return (
+                async_chain([stream]),
+                IOResult(reads={"/remote": stream}, cache=["/remote"]),
+                ExecutionNode(command="cat"),
+            )
+        await anext(stdin)
+        return b"first", IOResult(), ExecutionNode(command="head")
+
+    session = SessionState(session_id="test")
+    session.shell_options["pipefail"] = True
+    _, io, _ = await handle_pipe(
+        execute_node, [FakeNode("cat"), FakeNode("head")], [], session
+    )
+    assert io.exit_code == 0
+    assert not closed
+    assert await stream.drain() == b"firstrest"
+    assert closed
+
+
+@pytest.mark.asyncio
 async def test_handle_pipe_passes_empty_stdin_when_left_returns_none():
     calls: list[dict] = []
 
-    async def execute_node(nd, _session, stdin, _call_stack=None):
+    async def execute_node(nd, _session, stdin, _call_stack=None, **kwargs):
         stdin_was_none = stdin is None
         materialized = await materialize(stdin)
-        calls.append({
-            "text": nd.text,
-            "stdin_was_none": stdin_was_none,
-            "stdin_bytes": materialized,
-        })
+        calls.append(
+            {
+                "text": nd.text,
+                "stdin_was_none": stdin_was_none,
+                "stdin_bytes": materialized,
+            }
+        )
         if nd.text == "left":
-            return (None, IOResult(stderr=b"boom", exit_code=1),
-                    ExecutionNode(command=nd.text, exit_code=1))
-        return (b"right-out", IOResult(exit_code=0),
-                ExecutionNode(command=nd.text, exit_code=0))
+            return (
+                None,
+                IOResult(stderr=b"boom", exit_code=1),
+                ExecutionNode(command=nd.text, exit_code=1),
+            )
+        return (
+            b"right-out",
+            IOResult(exit_code=0),
+            ExecutionNode(command=nd.text, exit_code=0),
+        )
 
     await handle_pipe(
         execute_node,
         [FakeNode("left"), FakeNode("right")],
         [False],
-        Session(session_id="t"),
+        SessionState(session_id="t"),
         None,
     )
     right = next(c for c in calls if c["text"] == "right")
@@ -63,16 +110,19 @@ async def test_handle_pipe_passes_empty_stdin_when_left_returns_none():
 async def test_handle_pipe_threads_stdout_to_next_stdin():
     seen: list[bytes] = []
 
-    async def execute_node(nd, _session, stdin, _call_stack=None):
+    async def execute_node(nd, _session, stdin, _call_stack=None, **kwargs):
         seen.append(await materialize(stdin))
-        return (f"{nd.text}-out".encode(), IOResult(exit_code=0),
-                ExecutionNode(command=nd.text, exit_code=0))
+        return (
+            f"{nd.text}-out".encode(),
+            IOResult(exit_code=0),
+            ExecutionNode(command=nd.text, exit_code=0),
+        )
 
     await handle_pipe(
         execute_node,
         [FakeNode("a"), FakeNode("b")],
         [False],
-        Session(session_id="t"),
+        SessionState(session_id="t"),
         None,
     )
     assert seen[0] == b""
@@ -81,15 +131,18 @@ async def test_handle_pipe_threads_stdout_to_next_stdin():
 
 @pytest.mark.asyncio
 async def test_handle_subshell_seeds_last_exit_code_between_children():
-    session = Session(session_id="t")
+    session = SessionState(session_id="t")
     session.last_exit_code = 0
     seen: list[int] = []
 
-    async def execute_node(nd, sess, _stdin, _call_stack=None):
+    async def execute_node(nd, sess, _stdin, _call_stack=None, **kwargs):
         seen.append(sess.last_exit_code)
         code = 7 if nd.text == "a" else 0
-        return (b"", IOResult(exit_code=code),
-                ExecutionNode(command=nd.text, exit_code=code))
+        return (
+            b"",
+            IOResult(exit_code=code),
+            ExecutionNode(command=nd.text, exit_code=code),
+        )
 
     await handle_subshell(
         execute_node,
@@ -99,3 +152,45 @@ async def test_handle_subshell_seeds_last_exit_code_between_children():
     )
     assert seen == [0, 7]
     assert session.last_exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_each_segment_sees_the_status_the_pipeline_started_with():
+    session = SessionState(session_id="t")
+    session.last_exit_code = 1
+    seen: list[int] = []
+
+    async def execute_node(nd, sess, _stdin, _call_stack=None, **kwargs):
+        seen.append(sess.last_exit_code)
+        # An inner statement of a compound segment lands its own status.
+        sess.last_exit_code = 0
+        return (
+            b"",
+            IOResult(exit_code=0),
+            ExecutionNode(command=nd.text, exit_code=0),
+        )
+
+    await handle_pipe(
+        execute_node, [FakeNode("a"), FakeNode("b")], [False], session, None
+    )
+    assert seen == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_segment_expands_the_pre_pipeline_status():
+    # bash 5.2: each segment is a child of the shell as it stood before
+    # the pipeline, so `$?` is the pre-pipeline status even after a
+    # sibling segment ran a compound command or a function.
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        for line in (
+            "false; { true; } | echo $?",
+            "f() { true; }; false; f | echo $?",
+            "false; true | echo $?",
+        ):
+            io = await ws.shell(line)
+            assert (await io.stdout_str(), io.exit_code) == ("1\n", 0), line
+        io = await ws.shell("false; { false; } | true; echo $?")
+        assert await io.stdout_str() == "0\n"
+    finally:
+        await ws.close()

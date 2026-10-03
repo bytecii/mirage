@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 from dataclasses import dataclass
 
 import pytest
@@ -19,11 +20,18 @@ import pytest
 from mirage.io import IOResult
 from mirage.io.types import materialize
 from mirage.shell.errors import ArithError
-from mirage.workspace.executor.control import (BreakSignal, ContinueSignal,
-                                               handle_case, handle_cfor,
-                                               handle_for, handle_if,
-                                               handle_until, handle_while)
-from mirage.workspace.session import Session
+from mirage.shell.job_table import JobStatus, JobTable
+from mirage.workspace.executor.control import (
+    BreakSignal,
+    ContinueSignal,
+    handle_case,
+    handle_cfor,
+    handle_for,
+    handle_if,
+    handle_until,
+    handle_while,
+)
+from mirage.workspace.session import SessionState
 from mirage.workspace.session.session import vars_from_env
 from mirage.workspace.types import ExecutionNode
 
@@ -32,14 +40,26 @@ from mirage.workspace.types import ExecutionNode
 class FakeNode:
     text: str
     type: str = "command"
+    next_sibling: "FakeNode | None" = None
 
 
 def node(text: str) -> FakeNode:
     return FakeNode(text=text)
 
 
-def session(**kwargs) -> Session:
-    return Session(session_id="test", **kwargs)
+def bg(text: str) -> FakeNode:
+    """A body statement whose terminator is ``&``.
+
+    Its text is bytes, as a tree-sitter node's is, because the job
+    launcher names the job through ``get_text``.
+    """
+    return FakeNode(
+        text=text.encode(), next_sibling=FakeNode(text="&", type="&")
+    )
+
+
+def session(**kwargs) -> SessionState:
+    return SessionState(session_id="test", **kwargs)
 
 
 async def text_of(stdout) -> str:
@@ -79,8 +99,9 @@ async def test_if_runs_the_else_body_when_no_branch_matches():
             return result(exit_code=1)
         return result(b"else-out")
 
-    stdout, io, _ = await handle_if(execute, [(node("c"), [node("b")])],
-                                    [node("e")], session())
+    stdout, io, _ = await handle_if(
+        execute, [(node("c"), [node("b")])], [node("e")], session()
+    )
     assert io.exit_code == 0
     assert await text_of(stdout) == "else-out"
 
@@ -91,8 +112,9 @@ async def test_if_without_an_else_body_succeeds_silently():
     async def execute(_n, *_args):
         return result(exit_code=1)
 
-    stdout, io, _ = await handle_if(execute, [(node("c"), [node("b")])], None,
-                                    session())
+    stdout, io, _ = await handle_if(
+        execute, [(node("c"), [node("b")])], None, session()
+    )
     assert io.exit_code == 0
     assert stdout is None
 
@@ -106,11 +128,13 @@ async def test_for_iterates_values_binding_the_loop_variable():
         seen.append(s.env.get("X", ""))
         return result(f"iter-{s.env.get('X', '')}\n".encode())
 
-    stdout, _, _ = await handle_for(execute, "X", ["a", "b", "c"],
-                                    [node("body")], sess)
+    stdout, _, _ = await handle_for(
+        execute, "X", ["a", "b", "c"], [node("body")], sess
+    )
     assert seen == ["a", "b", "c"]
     assert await text_of(stdout) == "iter-a\niter-b\niter-c\n"
-    assert "X" not in sess.env
+    # bash leaves the loop variable holding its last value.
+    assert sess.env["X"] == "c"
 
 
 @pytest.mark.asyncio
@@ -141,15 +165,47 @@ async def test_for_skips_to_the_next_iteration_on_continue():
     assert seen == ["a", "b", "c"]
 
 
+# bash 5.2: `Z=before; for Z in a b; do :; done; echo $Z` prints b. The
+# loop variable is an ordinary variable and keeps its last value; the
+# shadowed value is not put back.
 @pytest.mark.asyncio
-async def test_for_restores_a_shadowed_loop_variable():
+async def test_for_keeps_the_loop_variables_last_value():
     sess = session(vars=vars_from_env({"X": "saved"}))
 
     async def execute(*_args):
         return result()
 
-    await handle_for(execute, "X", ["a"], [node("body")], sess)
-    assert sess.env["X"] == "saved"
+    await handle_for(execute, "X", ["a", "b"], [node("body")], sess)
+    assert sess.env["X"] == "b"
+
+
+# bash 5.2: `unset Y; for Y in ; do :; done` leaves Y unset, since no
+# iteration ever assigned it.
+@pytest.mark.asyncio
+async def test_for_over_no_words_leaves_the_variable_untouched():
+    sess = session()
+
+    async def execute(*_args):
+        return result()
+
+    await handle_for(execute, "Y", [], [node("body")], sess)
+    assert "Y" not in sess.env
+
+
+# bash 5.2: `for i in $(seq 1 300000); do :; done; echo "$i"` prints
+# 300000.
+@pytest.mark.asyncio
+async def test_for_runs_a_list_of_300000_words_and_keeps_the_last_one():
+    words = [str(i) for i in range(1, 300_001)]
+    sess = session()
+
+    async def execute(_n, s, *_args):
+        return result(f"{s.env['X']}\n".encode())
+
+    stdout, io, _ = await handle_for(execute, "X", words, [node("body")], sess)
+    assert io.exit_code == 0
+    assert await text_of(stdout) == "".join(f"{w}\n" for w in words)
+    assert sess.env["X"] == "300000"
 
 
 @pytest.mark.asyncio
@@ -176,8 +232,9 @@ async def test_while_runs_the_body_while_the_condition_succeeds():
         state["i"] += 1
         return result(f"{state['i']};".encode())
 
-    stdout, _, _ = await handle_while(execute, node("cond"), [node("body")],
-                                      session())
+    stdout, _, _ = await handle_while(
+        execute, node("cond"), [node("body")], session()
+    )
     assert await text_of(stdout) == "1;2;"
 
 
@@ -191,8 +248,9 @@ async def test_until_runs_the_body_while_the_condition_fails():
         state["i"] += 1
         return result(f"{state['i']};".encode())
 
-    stdout, _, _ = await handle_until(execute, node("cond"), [node("body")],
-                                      session())
+    stdout, _, _ = await handle_until(
+        execute, node("cond"), [node("body")], session()
+    )
     assert await text_of(stdout) == "1;2;"
 
 
@@ -202,8 +260,9 @@ async def test_while_caps_runaway_loops_and_says_so_on_stderr():
     async def execute(n, *_args):
         return result(exit_code=0) if n.text == "cond" else result()
 
-    _, io, _ = await handle_while(execute, node("cond"), [node("body")],
-                                  session())
+    _, io, _ = await handle_while(
+        execute, node("cond"), [node("body")], session()
+    )
     assert b"while loop terminated after 10000" in await materialize(io.stderr)
 
 
@@ -215,8 +274,11 @@ async def test_case_runs_the_first_arm_whose_pattern_matches():
         ran.append(n.text)
         return result()
 
-    items = [(["a*"], [node("A")], ";;"), (["b*"], [node("B")], ";;"),
-             (["*"], [node("catchall")], ";;")]
+    items = [
+        (["a*"], [node("A")], ";;"),
+        (["b*"], [node("B")], ";;"),
+        (["*"], [node("catchall")], ";;"),
+    ]
     await handle_case(execute, "banana", items, session())
     assert ran == ["B"]
 
@@ -257,8 +319,11 @@ async def test_case_falls_through_the_next_arm_on_semicolon_amp():
         ran.append(n.text)
         return result()
 
-    items = [(["a"], [node("A")], ";&"), (["b"], [node("B")], ";;"),
-             (["c"], [node("C")], ";;")]
+    items = [
+        (["a"], [node("A")], ";&"),
+        (["b"], [node("B")], ";;"),
+        (["c"], [node("C")], ";;"),
+    ]
     await handle_case(execute, "a", items, session())
     assert ran == ["A", "B"]
 
@@ -271,8 +336,11 @@ async def test_case_keeps_testing_later_patterns_on_double_semicolon_amp():
         ran.append(n.text)
         return result()
 
-    items = [(["a"], [node("A")], ";;&"), (["a"], [node("A2")], ";;&"),
-             (["b"], [node("B")], ";;")]
+    items = [
+        (["a"], [node("A")], ";;&"),
+        (["a"], [node("A2")], ";;&"),
+        (["b"], [node("B")], ";;"),
+    ]
     await handle_case(execute, "a", items, session())
     assert ran == ["A", "A2"]
 
@@ -298,8 +366,9 @@ async def test_cfor_runs_init_once_then_condition_and_update_per_iteration():
         return state["i"]
 
     exprs = [node("init"), node("cond"), node("update")]
-    _, io, _ = await handle_cfor(execute, exprs, [node("body")], eval_expr,
-                                 session())
+    _, io, _ = await handle_cfor(
+        execute, exprs, [node("body")], eval_expr, session()
+    )
     assert ran == ["body", "body", "body"]
     assert io.exit_code == 0
 
@@ -321,8 +390,126 @@ async def test_cfor_aborts_with_status_1_on_a_bad_expression():
         return 1
 
     exprs = [node("init"), node("cond"), node("update")]
-    stdout, io, _ = await handle_cfor(execute, exprs, [node("body")],
-                                      eval_expr, session())
+    stdout, io, _ = await handle_cfor(
+        execute, exprs, [node("body")], eval_expr, session()
+    )
     assert io.exit_code == 1
     assert b"bash: ((: x +: syntax error" in await materialize(io.stderr)
     assert await text_of(stdout) == "ran\n"
+
+
+# ── `&` inside a body: the statement becomes a job, the launch answers 0 ──
+
+
+def _parked_executor(gate: asyncio.Event, ran: list[str]):
+    """An executor whose ``slow`` statement blocks until ``gate`` is set.
+
+    Args:
+        gate (asyncio.Event): released by the test once it has asserted
+            the body returned without waiting for the job.
+        ran (list[str]): statement texts in the order they finished.
+    """
+
+    async def execute(n, *_args, **_kw):
+        text = n.text.decode() if isinstance(n.text, bytes) else n.text
+        if text == "slow":
+            await gate.wait()
+        ran.append(text)
+        return result(exit_code=3 if text == "slow" else 0)
+
+    return execute
+
+
+@pytest.mark.asyncio
+async def test_if_body_ampersand_launches_a_job_and_answers_the_launch_status():
+    table = JobTable()
+    gate = asyncio.Event()
+    ran: list[str] = []
+    sess = session()
+    branches = [(node("c"), [bg("slow")])]
+    _, io, _ = await asyncio.wait_for(
+        handle_if(
+            _parked_executor(gate, ran),
+            branches,
+            None,
+            sess,
+            job_table=table,
+            agent_id="a1",
+        ),
+        timeout=2,
+    )
+    # The body came back while the job is still parked, and its status
+    # is the launch's 0, not the job's eventual 3.
+    assert ran == ["c"]
+    assert io.exit_code == 0
+    assert sess.last_exit_code == 0
+    job = table.get(1, sess.session_id)
+    assert job is not None
+    assert job.command == "slow"
+    assert job.status == JobStatus.RUNNING
+    gate.set()
+    await table.wait(1, sess.session_id)
+    assert ran == ["c", "slow"]
+    assert job.exit_code == 3
+
+
+@pytest.mark.asyncio
+async def test_case_arm_ampersand_launches_a_job():
+    table = JobTable()
+    gate = asyncio.Event()
+    ran: list[str] = []
+    items = [(["x"], [bg("slow")], ";;")]
+    _, io, _ = await asyncio.wait_for(
+        handle_case(
+            _parked_executor(gate, ran),
+            "x",
+            items,
+            session(),
+            job_table=table,
+            agent_id="a1",
+        ),
+        timeout=2,
+    )
+    assert ran == []
+    assert io.exit_code == 0
+    job = table.get(1, "test")
+    assert job is not None
+    assert job.command == "slow"
+    gate.set()
+    await table.wait(1, "test")
+    assert job.exit_code == 3
+
+
+@pytest.mark.asyncio
+async def test_for_body_ampersand_launches_one_job_per_iteration():
+    table = JobTable()
+    gate = asyncio.Event()
+    ran: list[str] = []
+    _, io, _ = await asyncio.wait_for(
+        handle_for(
+            _parked_executor(gate, ran),
+            "i",
+            ["1", "2"],
+            [bg("slow")],
+            session(),
+            job_table=table,
+            agent_id="a1",
+        ),
+        timeout=2,
+    )
+    assert ran == []
+    assert io.exit_code == 0
+    assert [j.command for j in table.list_jobs("test")] == ["slow", "slow"]
+    gate.set()
+    await table.wait_all("test")
+    assert ran == ["slow", "slow"]
+
+
+@pytest.mark.asyncio
+async def test_body_ampersand_without_a_job_table_fails_loud():
+
+    async def execute(n, *_args, **_kw):
+        return result()
+
+    with pytest.raises(RuntimeError, match="job table"):
+        await handle_if(execute, [(node("c"), [bg("x")])], None, session())

@@ -15,23 +15,29 @@
 import logging
 
 from mirage.accessor.discord import DiscordAccessor
+from mirage.commands.builtin.discord.grep import (
+    RG_SEARCH_HONORED,
+    SEARCH_MAX_RESULTS,
+)
 from mirage.commands.builtin.discord.io import resolve_glob
+from mirage.commands.builtin.generic.rg import (
+    parse_flags,
+    refuse_missing_pattern,
+)
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.grep_helper import pattern_arg
+from mirage.commands.builtin.grep_pattern import pattern_arg
+from mirage.commands.builtin.grep_pushdown import pushdown_operand
 from mirage.commands.builtin.utils.output import format_records
-from mirage.commands.config import CommandOpts
-from mirage.commands.errors import UsageError
-from mirage.commands.registry import command
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.discord.channels import list_channels
 from mirage.core.discord.entry import channel_dirname
-from mirage.core.discord.formatters import format_grep_results
 from mirage.core.discord.read import read as discord_read
 from mirage.core.discord.readdir import readdir as _readdir
-from mirage.core.discord.scope import coalesce_scopes, detect_scope
-from mirage.core.discord.search import search_guild
+from mirage.core.discord.scope import NATIVE_KINDS, detect_scope
+from mirage.core.discord.search import format_grep_results, search_guild
 from mirage.core.discord.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
@@ -40,43 +46,51 @@ from mirage.utils.key_prefix import mount_prefix_of
 logger = logging.getLogger(__name__)
 
 
-@command("rg", resource="discord", spec=SPECS["rg"])
-async def rg(accessor: DiscordAccessor, paths: list[PathSpec],
-             texts: list[str],
-             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+@command("rg", vfs="discord", spec=SPECS["rg"])
+async def rg(
+    accessor: DiscordAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["rg"])
-    pattern_str = pattern_arg(texts, fl)
-    if pattern_str is None:
-        raise UsageError("rg: usage: rg [flags] pattern [path]")
-    max_count = fl.as_int("m")
+    pattern_str = pattern_arg(texts, fl, "regexp")
+    refuse_missing_pattern(pattern_str, fl, parse_flags(fl))
 
     pushdown_warnings: list[str] = []
-    if paths and "\n" not in pattern_str:
-        scope = detect_scope(paths[0])
-        if scope.level == "messages":
-            scope = coalesce_scopes(paths) or scope
-
-        # Provider search matches whole words while grep matches
-        # substrings, and the native path returns search results verbatim
-        # as the output, so a bare literal would under-report. Only -w
-        # makes the two agree; otherwise fall through to the scan.
-        if (scope.use_native and scope.guild_id is not None
-                and fl.as_bool("w")):
+    # Output-shaping flags, a glob operand and a multi-operand line all need
+    # the generic scan; see SEARCH_HONORED above.
+    operand = pushdown_operand(
+        paths, opts.flags, pattern_str, RG_SEARCH_HONORED
+    )
+    if (
+        operand is not None
+        and pattern_str is not None
+        and fl.as_bool("word_regexp")
+    ):
+        match = detect_scope(operand)
+        if not accessor.time_range.bounded and match.kind in NATIVE_KINDS:
+            guild_id = match.slots["guild_id"]
             try:
                 msgs = await search_guild(
                     accessor.config,
-                    scope.guild_id,
+                    guild_id,
                     pattern_str,
-                    channel_id=scope.channel_id,
-                    limit=max_count or 100,
+                    channel_id=match.slots.get("channel_id"),
+                    limit=SEARCH_MAX_RESULTS,
+                    session=accessor.pool,
                 )
-                file_prefix = mount_prefix_of(paths[0].virtual,
-                                              paths[0].resource_path) or ""
-                resource_first = scope.resource_path.split("/", 1)[0]
-                channels = await list_channels(accessor.config, scope.guild_id)
+                file_prefix = (
+                    mount_prefix_of(operand.virtual, operand.vfs_path) or ""
+                )
+                vfs_first = match.vfs_path.strip("/").split("/", 1)[0]
+                channels = await list_channels(
+                    accessor.config, guild_id, session=accessor.pool
+                )
                 channel_map = {c["id"]: channel_dirname(c) for c in channels}
-                lines = format_grep_results(msgs, file_prefix, resource_first,
-                                            channel_map)
+                lines = format_grep_results(
+                    msgs, file_prefix, vfs_first, channel_map
+                )
                 if not lines:
                     return b"", IOResult(exit_code=1)
                 return format_records(lines), IOResult()
@@ -84,23 +98,31 @@ async def rg(accessor: DiscordAccessor, paths: list[PathSpec],
                 msg = str(exc)
                 pushdown_warnings.append(
                     f"discord: native search push-down failed ({msg}); "
-                    f"falling back to per-file scan")
-                if ("403" in msg or "Forbidden" in msg
-                        or "missing access" in msg.lower()):
+                    f"falling back to per-file scan"
+                )
+                if (
+                    "403" in msg
+                    or "Forbidden" in msg
+                    or "missing access" in msg.lower()
+                ):
                     pushdown_warnings.append(
                         "discord: hint - ensure the bot has the "
                         "READ_MESSAGE_HISTORY permission for this guild "
-                        "and the MESSAGE CONTENT privileged intent enabled")
+                        "and the MESSAGE CONTENT privileged intent enabled"
+                    )
                 logger.warning(
                     "discord search push-down failed (%s); "
-                    "falling back to per-file scan", exc)
+                    "falling back to per-file scan",
+                    exc,
+                )
 
-    resolved = await resolve_glob(accessor, paths,
-                                  index=opts.index) if paths else []
+    resolved = (
+        await resolve_glob(accessor, paths, index=opts.index) if paths else []
+    )
     stdout, io = await generic_rg(
         resolved,
         texts,
-        opts.flags,
+        opts,
         readdir=bound_op(_readdir, accessor, opts.index),
         stat=bound_op(_stat, accessor, opts.index),
         read_bytes=bound_op(discord_read, accessor, opts.index),

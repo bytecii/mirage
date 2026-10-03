@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { downloadFile } from './files.ts'
+import { downloadFile, fileBlobName } from './files.ts'
 
 const BODY = '0123456789'
 
@@ -24,6 +24,7 @@ function respond(status: number, body: string): typeof globalThis.fetch {
       status,
       statusText: String(status),
       arrayBuffer: () => Promise.resolve(new TextEncoder().encode(body).buffer),
+      text: () => Promise.resolve(body),
     }),
   ) as unknown as typeof globalThis.fetch
 }
@@ -68,5 +69,15 @@ describe('downloadFile', () => {
   it('throws on a failed response', async () => {
     vi.stubGlobal('fetch', respond(404, ''))
     await expect(downloadFile('https://cdn.example/gone.csv')).rejects.toThrow(/404/)
+  })
+})
+
+describe('fileBlobName', () => {
+  it.each([
+    [{ id: 'A1', filename: 'budget.csv', title: 'Q4' }, 'budget__A1.csv'],
+    [{ id: 'A2', filename: '', title: 'scan.png' }, 'scan__A2.png'],
+    [{ id: 'A3' }, 'file__A3'],
+  ])('names %j as %s', (att, expected) => {
+    expect(fileBlobName(att)).toBe(expected)
   })
 })

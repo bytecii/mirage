@@ -23,6 +23,7 @@ COMMANDS = [
     *make_generic_commands(
         "gsheets",
         _IO,
+        overrides={"rm"},
     ),
     rm,
 ]

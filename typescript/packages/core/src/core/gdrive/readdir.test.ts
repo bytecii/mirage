@@ -17,15 +17,17 @@ import type * as DriveModule from '../google/drive.ts'
 
 vi.mock('../google/drive.ts', async () => {
   const actual = await vi.importActual<typeof DriveModule>('../google/drive.ts')
-  return { ...actual, listFiles: vi.fn(), listSharedDrives: vi.fn() }
+  return { ...actual, listFiles: vi.fn(), listSharedDrives: vi.fn(), getFile: vi.fn() }
 })
 
 import { GDriveAccessor } from '../../accessor/gdrive.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import { RedisIndexCacheStore } from '../../cache/index/redis.ts'
 import { PathSpec } from '../../types.ts'
 import type { TokenManager } from '../google/client.ts'
 import * as drive from '../google/drive.ts'
 import { readdir } from './readdir.ts'
+import { stat } from './stat.ts'
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
 
@@ -40,6 +42,77 @@ function makeAccessor(): GDriveAccessor {
 beforeEach(() => {
   vi.mocked(drive.listSharedDrives).mockResolvedValue([])
 })
+
+for (const backend of ['ram', 'redis']) {
+  describe.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `direct Drive stat with ${backend}`,
+    () => {
+      it.each(['updated', 'deleted', 'renamed-folder'])(
+        'refreshes invalidated ids: %s',
+        async (change) => {
+          const url = process.env.REDIS_URL
+          const index =
+            backend === 'ram'
+              ? new RAMIndexCacheStore()
+              : new RedisIndexCacheStore({
+                  ...(url === undefined ? {} : { url }),
+                  keyPrefix: `drive-refresh:${crypto.randomUUID()}:`,
+                })
+          let refreshed = false
+          const calls: string[] = []
+          vi.mocked(drive.listFiles).mockImplementation((_tm, opts) => {
+            const folderId = opts?.folderId ?? 'root'
+            calls.push(folderId)
+            if (
+              refreshed &&
+              change === 'renamed-folder' &&
+              folderId === 'root' &&
+              opts?.name === 'docs'
+            )
+              return Promise.resolve([])
+            if (folderId === 'root')
+              return Promise.resolve([
+                {
+                  id: refreshed ? 'new-folder' : 'old-folder',
+                  name: refreshed && change === 'renamed-folder' ? 'renamed' : 'docs',
+                  mimeType: FOLDER_MIME,
+                },
+              ])
+            expect(folderId).toBe(refreshed ? 'new-folder' : 'old-folder')
+            if (refreshed && change === 'deleted') return Promise.resolve([])
+            return Promise.resolve([
+              {
+                id: refreshed ? 'new-file' : 'old-file',
+                name: 'report.pdf',
+                mimeType: 'application/pdf',
+                size: refreshed ? '42' : '3',
+              },
+            ])
+          })
+          try {
+            const accessor = makeAccessor()
+            await readdir(accessor, PathSpec.fromStrPath('/drive/docs', 'docs'), index)
+            await index.invalidate()
+            refreshed = true
+            calls.length = 0
+            const path = PathSpec.fromStrPath('/drive/docs/report.pdf', 'docs/report.pdf')
+            if (change === 'updated') {
+              const result = await stat(accessor, path, index)
+              expect(result.extra.file_id).toBe('new-file')
+              expect(result.size).toBe(42)
+            } else
+              await expect(stat(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+            expect(calls[0]).toBe('root')
+            expect(calls).not.toContain('old-folder')
+          } finally {
+            await index.clear()
+            await index.close()
+          }
+        },
+      )
+    },
+  )
+}
 
 describe('readdir parent recursion', () => {
   it('repopulates evicted subfolder entry by refetching parent', async () => {
@@ -71,7 +144,7 @@ describe('readdir parent recursion', () => {
     const index = new RAMIndexCacheStore()
     const out = await readdir(
       accessor,
-      new PathSpec({ resourcePath: 'docs', virtual: '/docs', directory: '/docs' }),
+      new PathSpec({ vfsPath: 'docs', virtual: '/docs', directory: '/docs' }),
       index,
     )
     expect(out).toContain('/docs/notes.txt')
@@ -97,7 +170,7 @@ describe('readdir parent recursion', () => {
     await expect(
       readdir(
         accessor,
-        new PathSpec({ resourcePath: 'docs', virtual: '/docs', directory: '/docs' }),
+        new PathSpec({ vfsPath: 'docs', virtual: '/docs', directory: '/docs' }),
         index,
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
@@ -124,7 +197,7 @@ describe('readdir parent recursion', () => {
     await expect(
       readdir(
         makeAccessor(),
-        new PathSpec({ resourcePath: 'a.txt/x', virtual: '/a.txt/x', directory: '/a.txt/x' }),
+        new PathSpec({ vfsPath: 'a.txt/x', virtual: '/a.txt/x', directory: '/a.txt/x' }),
         new RAMIndexCacheStore(),
       ),
     ).rejects.toMatchObject({ code: 'ENOTDIR' })
@@ -147,7 +220,7 @@ describe('readdir shared drives', () => {
     const index = new RAMIndexCacheStore()
     const out = await readdir(
       accessor,
-      new PathSpec({ resourcePath: '', virtual: '/', directory: '/' }),
+      new PathSpec({ vfsPath: '', virtual: '/', directory: '/' }),
       index,
     )
     expect(out).toContain('/readme.txt')
@@ -169,7 +242,7 @@ describe('readdir shared drives', () => {
     const index = new RAMIndexCacheStore()
     const out = await readdir(
       accessor,
-      new PathSpec({ resourcePath: '', virtual: '/', directory: '/' }),
+      new PathSpec({ vfsPath: '', virtual: '/', directory: '/' }),
       index,
     )
     expect(out).toEqual(['/Team/', '/Team [Shared Drive 2]/', '/Team [Shared Drive]/'])
@@ -193,7 +266,7 @@ describe('readdir shared drives', () => {
     const index = new RAMIndexCacheStore()
     const out = await readdir(
       accessor,
-      new PathSpec({ resourcePath: '', virtual: '/', directory: '/' }),
+      new PathSpec({ vfsPath: '', virtual: '/', directory: '/' }),
       index,
     )
     expect(out).toContain('/readme.txt')
@@ -217,7 +290,7 @@ describe('readdir shared drives', () => {
 
     const accessor = makeAccessor()
     const index = new RAMIndexCacheStore()
-    const root = new PathSpec({ resourcePath: '', virtual: '/', directory: '/' })
+    const root = new PathSpec({ vfsPath: '', virtual: '/', directory: '/' })
     await readdir(accessor, root, index)
     expect((await index.listDir('/')).entries).toBeUndefined()
     expect((await index.get('/readme.txt')).entry?.id).toBe('f1')
@@ -227,6 +300,50 @@ describe('readdir shared drives', () => {
     const out = await readdir(accessor, root, index)
     expect(out).toContain('/Team/')
     expect((await index.listDir('/')).entries).toBeDefined()
+  })
+
+  it.each(['updated', 'deleted'])('revalidates an orphaned root child: %s', async (change) => {
+    const accessor = makeAccessor()
+    const index = new RAMIndexCacheStore()
+    let phase: 'initial' | 'refresh' = 'initial'
+    vi.mocked(drive.listFiles).mockImplementation(() => {
+      if (phase === 'initial')
+        return Promise.resolve([
+          { id: 'old-file', name: 'readme.txt', mimeType: 'text/plain', size: '3' },
+        ])
+      if (change === 'deleted') return Promise.resolve([])
+      return Promise.resolve([
+        { id: 'new-file', name: 'readme.txt', mimeType: 'text/plain', size: '42' },
+      ])
+    })
+    vi.mocked(drive.listSharedDrives).mockImplementation(() => {
+      if (phase === 'initial') return Promise.reject(new Error('missing scope'))
+      return Promise.resolve([])
+    })
+    try {
+      const root = new PathSpec({ vfsPath: '', virtual: '/', directory: '/' })
+      await readdir(accessor, root, index)
+      expect((await index.listDir('/')).entries).toBeUndefined()
+      expect((await index.get('/readme.txt')).entry?.id).toBe('old-file')
+      await index.invalidate()
+      phase = 'refresh'
+      const path = new PathSpec({
+        vfsPath: 'readme.txt',
+        virtual: '/readme.txt',
+        directory: '/',
+      })
+      if (change === 'updated') {
+        const result = await stat(accessor, path, index)
+        expect(result.extra.file_id).toBe('new-file')
+        expect(result.size).toBe(42)
+      } else await expect(stat(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+      const cached = (await index.get('/readme.txt')).entry
+      if (change === 'updated') expect(cached?.id).toBe('new-file')
+      else expect(cached ?? null).toBeNull()
+    } finally {
+      await index.clear()
+      await index.close()
+    }
   })
 
   it('passes drive_id from the cached entry when listing inside a shared drive', async () => {
@@ -249,11 +366,11 @@ describe('readdir shared drives', () => {
 
     const accessor = makeAccessor()
     const index = new RAMIndexCacheStore()
-    await readdir(accessor, new PathSpec({ resourcePath: '', virtual: '/', directory: '/' }), index)
+    await readdir(accessor, new PathSpec({ vfsPath: '', virtual: '/', directory: '/' }), index)
     const out = await readdir(
       accessor,
       new PathSpec({
-        resourcePath: 'Team Drive',
+        vfsPath: 'Team Drive',
         virtual: '/Team Drive',
         directory: '/Team Drive',
       }),
@@ -286,7 +403,7 @@ describe('readdir sizes', () => {
 
     const accessor = makeAccessor()
     const index = new RAMIndexCacheStore()
-    await readdir(accessor, new PathSpec({ resourcePath: '', virtual: '/', directory: '/' }), index)
+    await readdir(accessor, new PathSpec({ vfsPath: '', virtual: '/', directory: '/' }), index)
 
     // Binary files download raw: Drive's size is the rendered byte length.
     const binary = (await index.get('/report.pdf')).entry
@@ -296,5 +413,110 @@ describe('readdir sizes', () => {
     const doc = (await index.get('/My Document.gdoc.json')).entry
     expect(doc?.size).toBeNull()
     expect(doc?.extra.source_size).toBe(9999)
+  })
+})
+
+it.each([
+  ['0', 0],
+  ['42', 42],
+  [undefined, null],
+] as const)('preserves binary size %s independently of quota', async (size, expected) => {
+  const item = {
+    id: 'binary',
+    name: 'file.txt',
+    mimeType: 'text/plain',
+    quotaBytesUsed: '99',
+    ...(size === undefined ? {} : { size }),
+  }
+  vi.mocked(drive.listFiles).mockResolvedValue([item])
+  const accessor = makeAccessor()
+  const index = new RAMIndexCacheStore()
+  const rows = await readdir(accessor, PathSpec.fromStrPath('/drive', ''), index)
+  expect(rows).toEqual(['/drive/file.txt'])
+  const result = await stat(accessor, PathSpec.fromStrPath('/drive/file.txt', 'file.txt'), index)
+  expect(result.size).toBe(expected)
+  vi.mocked(drive.getFile).mockResolvedValue(item)
+  const uncached = await stat(accessor, PathSpec.fromStrPath('/drive/file.txt', 'file.txt'))
+  expect(uncached.size).toBe(expected)
+})
+
+describe('the content tokens a listing carries onto its entries', () => {
+  beforeEach(() => {
+    vi.mocked(drive.listSharedDrives).mockResolvedValue([])
+  })
+
+  it('stores both tokens for a binary file', async () => {
+    // stat reads its token off the entry, so the listing has to store it.
+    // Asserted key by key, never against the whole dict, so the two keys that
+    // were already there keep their own assertions.
+    vi.mocked(drive.listFiles).mockResolvedValue([
+      {
+        id: 'f1',
+        name: 'report.pdf',
+        mimeType: 'application/pdf',
+        modifiedTime: '2026-04-01T00:00:00.000Z',
+        size: '2048',
+        md5Checksum: '9f2b6c1d4e5a7b8c9d0e1f2a3b4c5d6e',
+        headRevisionId: 'f1-r3',
+      },
+    ])
+    const index = new RAMIndexCacheStore()
+    await readdir(
+      makeAccessor(),
+      new PathSpec({ vfsPath: '', virtual: '/', directory: '/' }),
+      index,
+    )
+    const entry = (await index.get('/report.pdf')).entry
+    expect(entry?.extra.md5_checksum).toBe('9f2b6c1d4e5a7b8c9d0e1f2a3b4c5d6e')
+    expect(entry?.extra.head_revision_id).toBe('f1-r3')
+  })
+
+  it('omits what a native file does not have, and keeps the older keys', async () => {
+    // A gdoc carries neither token, and the key must be absent rather than
+    // present-and-null, because the listing omits what Drive did not send.
+    // driveId and quotaBytesUsed ride the same dict, so this also separates
+    // extending it from rebuilding it.
+    vi.mocked(drive.listFiles).mockResolvedValue([
+      {
+        id: 'd1',
+        name: 'My Document',
+        mimeType: 'application/vnd.google-apps.document',
+        modifiedTime: '2026-04-01T00:00:00.000Z',
+        driveId: 'drive1',
+        quotaBytesUsed: '9999',
+      },
+    ])
+    const index = new RAMIndexCacheStore()
+    await readdir(
+      makeAccessor(),
+      new PathSpec({ vfsPath: '', virtual: '/', directory: '/' }),
+      index,
+    )
+    const entry = (await index.get('/My Document.gdoc.json')).entry
+    expect('md5_checksum' in (entry?.extra ?? {})).toBe(false)
+    expect('head_revision_id' in (entry?.extra ?? {})).toBe(false)
+    expect(entry?.extra.drive_id).toBe('drive1')
+    expect(entry?.extra.source_size).toBe(9999)
+  })
+
+  it('leaves a shared drive root without a token', async () => {
+    // Shared drive roots are built at a second construction site the file
+    // guard cannot reach, so adding the keys there would go unnoticed.
+    vi.mocked(drive.listFiles).mockResolvedValue([])
+    vi.mocked(drive.listSharedDrives).mockResolvedValue([{ id: 'drive1', name: 'Team Drive' }])
+    const index = new RAMIndexCacheStore()
+    await readdir(
+      makeAccessor(),
+      new PathSpec({ vfsPath: '', virtual: '/', directory: '/' }),
+      index,
+    )
+    const entry = (await index.get('/Team Drive')).entry
+    expect('md5_checksum' in (entry?.extra ?? {})).toBe(false)
+    const st = await stat(
+      makeAccessor(),
+      new PathSpec({ vfsPath: 'Team Drive', virtual: '/Team Drive', directory: '/Team Drive' }),
+      index,
+    )
+    expect(st.fingerprint).toBeNull()
   })
 })

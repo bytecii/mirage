@@ -15,10 +15,16 @@
 import { lstripSlash, rstripSlash, stripSlash } from '../utils/slash.ts'
 import { PathSpec } from '../types.ts'
 
-/** Normalize a key prefix: empty/undefined → '', strip leading /, ensure trailing /. */
+/**
+ * Normalize a key prefix, the one rule every object-key backend applies on
+ * both hosts: strip leading slashes and ensure one trailing slash. A prefix
+ * that is empty once its leading slashes are gone ('', '/') is no prefix at
+ * all, so a root-spelled prefix never puts a slash in front of every key.
+ * Mirrors Python `normalize` (`utils/key_prefix.py`).
+ */
 export function normalize(raw: string | undefined): string {
-  if (raw === undefined || raw === '') return ''
-  const stripped = lstripSlash(raw)
+  const stripped = lstripSlash(raw ?? '')
+  if (stripped === '') return ''
   return stripped.endsWith('/') ? stripped : `${stripped}/`
 }
 
@@ -98,15 +104,15 @@ export function mountKey(virtual: string, prefix: string): string {
  *
  * A child shares the parent's mount prefix, so its key is the child
  * virtual path with the same prefix removed. The prefix length is
- * recovered from the parent's `virtual`/`resourcePath` pair, so no mount
+ * recovered from the parent's `virtual`/`vfsPath` pair, so no mount
  * context is needed.
  *
  * Example:
  *   rekey('/data/sub', 'sub', '/data/sub/x.txt')  -> 'sub/x.txt'
  *   rekey('/data', '', '/data/x.txt')             -> 'x.txt'
  */
-export function rekey(parentVirtual: string, parentResourcePath: string, child: string): string {
-  const prefixLen = rstripSlash(parentVirtual).length - parentResourcePath.length
+export function rekey(parentVirtual: string, parentVfsPath: string, child: string): string {
+  const prefixLen = rstripSlash(parentVirtual).length - parentVfsPath.length
   return stripSlash(child.slice(prefixLen))
 }
 
@@ -121,8 +127,8 @@ export function rekey(parentVirtual: string, parentResourcePath: string, child: 
  *   mountPrefixOf('/data', '')         -> '/data'
  *   mountPrefixOf('/x.txt', 'x.txt')   -> ''
  */
-export function mountPrefixOf(virtual: string, resourcePath: string): string {
-  const prefixLen = rstripSlash(virtual).length - resourcePath.length
+export function mountPrefixOf(virtual: string, vfsPath: string): string {
+  const prefixLen = rstripSlash(virtual).length - vfsPath.length
   return rstripSlash(virtual.slice(0, prefixLen))
 }
 
@@ -131,7 +137,22 @@ export function mountPrefixOf(virtual: string, resourcePath: string): string {
 // only a key (an ancestor it walked to, say) can name it the way the user
 // would see it. Mirrors Python's mounted_path.
 export function mountedPath(root: PathSpec, mountPath: string): PathSpec {
-  const prefix = mountPrefixOf(root.virtual, root.resourcePath)
+  const prefix = mountPrefixOf(root.virtual, root.vfsPath)
   const virtual = prefix !== '' ? prefix + mountPath : mountPath
   return PathSpec.fromStrPath(virtual, stripSlash(mountPath))
+}
+
+// `path` spelled as `rawPath`, every other field kept: Python's
+// `dataclasses.replace(path, raw_path=...)`.
+export function respelled(path: PathSpec, rawPath: string): PathSpec {
+  return new PathSpec({
+    virtual: path.virtual,
+    directory: path.directory,
+    vfsPath: path.vfsPath,
+    pattern: path.pattern,
+    resolved: path.resolved,
+    rawPath,
+    dotted: path.dotted,
+    walkError: path.walkError,
+  })
 }

@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { TimeRange } from '../time_range.ts'
+import { parseTime } from '../time_range.ts'
 import type { GCalAccessor } from '../../accessor/gcal.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
@@ -21,29 +23,33 @@ import {
   eventTitle,
   makeCalendarDirname,
   makeEventFilename,
-} from '../../resource/gcal/event_entry.ts'
+} from '../../vfs/gcal/event_entry.ts'
 import type { JsonValue, PathSpec } from '../../types.ts'
 import { enoent } from '../../utils/errors.ts'
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
-import { globToDateRange } from '../google/date_glob.ts'
+import { globPrefix, literalSpan } from '../../utils/glob_walk.ts'
 import {
-  WINDOW_AHEAD_DAYS,
-  WINDOW_BACK_DAYS,
+  SPAN_SEP,
+  bucketName,
+  bucketStart,
   clampedHhmm,
   dayBounds,
+  localDate,
   daysCovered,
   eventSpan,
+  parseBucket,
   shiftDay,
-  validDay,
   windowBounds,
 } from './day.ts'
+import { ROOT } from '../hierarchy/scope.ts'
+import { detectScope } from './scope.ts'
 import { listCalendars, listEvents } from './client.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { compactJsonBytes } from '../render/json.ts'
 
 const CALENDAR_DIR = 'gcal/calendar_dir'
 export const CALENDAR_JSON = 'gcal/calendar_json'
-const DAY_DIR = 'gcal/day_dir'
+const BUCKET_DIR = 'gcal/bucket_dir'
 export const EVENT = 'gcal/event'
 const FREE_BUSY_ROLE = 'freeBusyReader'
 
@@ -65,8 +71,8 @@ export function calendarPayload(entry: CalendarEntryRow, tz: string): Uint8Array
 
 /** Split a path into `[mount prefix, mount-relative key, virtual key]`. */
 export function normalize(path: PathSpec): [string, string, string] {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const key = (path.pattern !== null ? path.dir : path).resourcePath
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
+  const key = (path.pattern !== null ? path.dir : path).vfsPath
   const virtualKey = key !== '' ? `${prefix}/${key}` : prefix !== '' ? prefix : '/'
   return [prefix, key, virtualKey]
 }
@@ -122,50 +128,102 @@ export function bucketZone(
  *
  * A bare readdir reports a rolling window around today because a calendar
  * is unbounded in both directions and the API offers no descending
- * startTime order. A glob escapes it by pushing its own bounds down.
+ * startTime order. A glob escapes it by pushing its own bounds down, widened
+ * to whole buckets so a bucket the glob reaches into is decided on all of
+ * its days, not only on the ones it named. A glob is read up to its first
+ * span separator: a bucket name is keyed on its first day, so
+ * `2027-03-01--2027-03-07*` bounds the listing as `2027-03-01*` does.
  */
 function daySpan(
   pattern: string | null,
   today: string,
   tz: string,
-): [string, string, string, string] {
-  const span = globToDateRange(pattern)
+  scope: TimeRange,
+  size: number,
+): [string | null, string, string, string] {
+  const span = literalSpan(globPrefix(pattern).split(SPAN_SEP, 1)[0] ?? '')
+  let lo = scope.start
+  let hi = scope.end
   if (span !== null) {
-    const last = shiftDay(span[1], -1)
-    return [dayBounds(span[0], tz)[0], dayBounds(last, tz)[1], span[0], last]
-  }
-  const [lo, hi] = windowBounds(today, tz)
-  return [lo, hi, shiftDay(today, -WINDOW_BACK_DAYS), shiftDay(today, WINDOW_AHEAD_DAYS)]
+    const first = parseTime(dayBounds(bucketStart(span[0], size), tz)[0])
+    const last = parseTime(dayBounds(bucketStart(shiftDay(span[1], -1), size), tz, size)[1])
+    lo = Math.max(first, lo ?? first)
+    hi = Math.min(last, hi ?? last)
+  } else hi ??= parseTime(windowBounds(today, tz, size)[1])
+  return [
+    lo === null ? null : new Date(lo * 1000).toISOString(),
+    new Date(hi * 1000).toISOString(),
+    lo === null ? '0001-01-01' : localDate(lo * 1000, tz),
+    localDate(hi * 1000 - 1, tz),
+  ]
 }
 
-/** Build the index entries for one day directory. */
+/**
+ * The days of a bucket directory inside the configured mount scope.
+ *
+ * A name off this mount's grid is absent, as is a bucket wholly outside the
+ * scope: direct paths are bounded exactly as listings are. The days come
+ * back ascending and consecutive.
+ */
+export function scopedBucket(
+  accessor: GCalAccessor,
+  name: string,
+  tz: string,
+  virtual: string,
+): string[] {
+  const size = accessor.config.bucketDays
+  const start = parseBucket(name, size)
+  if (start === null) throw enoent(virtual)
+  const days: string[] = []
+  for (let offset = 0; offset < size; offset++) {
+    const day = shiftDay(start, offset)
+    const [lo, hi] = dayBounds(day, tz)
+    const [from, to] = accessor.timeRange.clip(parseTime(lo), parseTime(hi))
+    if (from < to) days.push(day)
+  }
+  if (days.length === 0) throw enoent(virtual)
+  return days
+}
+
+/**
+ * Build the index entries for one bucket directory.
+ *
+ * An event gets one entry for each of the bucket's days it covers, so a
+ * multi-day bucket lists what its day directories would, flattened, each
+ * name carrying its day when `dated`.
+ */
 function eventEntries(
   events: CalendarEntryRow[],
-  day: string,
+  days: readonly string[],
   tz: string,
   freeBusy: boolean,
+  dated: boolean,
 ): [string, IndexEntry][] {
   const rows: [string, IndexEntry][] = []
   for (const event of events) {
     const eventId = event.id
     if (typeof eventId !== 'string' || eventId === '') continue
     const span = eventSpan(event, tz)
-    if (span === null || !daysCovered(span, tz).includes(day)) continue
+    if (span === null) continue
     const summary = event.summary
     const title = eventTitle(typeof summary === 'string' ? summary : null, freeBusy)
-    const name = makeEventFilename(eventId, clampedHhmm(span, day, tz), title)
     const updated = event.updated
-    rows.push([
-      name,
-      new IndexEntry({
-        id: eventId,
-        name: title,
-        resourceType: EVENT,
-        remoteTime: typeof updated === 'string' ? updated : '',
-        vfsName: name,
-        size: compactJsonBytes(event).length,
-      }),
-    ])
+    const size = compactJsonBytes(event).length
+    for (const day of daysCovered(span, tz)) {
+      if (!days.includes(day)) continue
+      const name = makeEventFilename(eventId, clampedHhmm(span, day, tz), title, dated ? day : null)
+      rows.push([
+        name,
+        new IndexEntry({
+          id: eventId,
+          name: title,
+          resourceType: EVENT,
+          remoteTime: typeof updated === 'string' ? updated : '',
+          vfsName: name,
+          size,
+        }),
+      ])
+    }
   }
   return rows
 }
@@ -177,10 +235,17 @@ export async function readdir(
   index?: IndexCacheStore,
 ): Promise<string[]> {
   const [prefix, key, virtualKey] = normalize(path)
+  // Bespoke below the classifier: the date-glob push-down filters the
+  // events query itself, and a globbed listing must not be cached as the
+  // directory, which the kit readdir has no notion of.
+  const match = detectScope(key)
+  if (match.kind !== ROOT && match.kind !== 'calendar' && match.kind !== 'bucket') {
+    throw enoent(path.virtual)
+  }
   const calendars = await calendarIndex(accessor)
   const tz = bucketZone(accessor, calendars)
 
-  if (key === '') {
+  if (match.kind === ROOT) {
     const entries: [string, IndexEntry][] = [...calendars.entries()]
       .sort((a, b) => compareCodePoints(a[0], b[0]))
       .map(([name, entry]) => [
@@ -196,23 +261,35 @@ export async function readdir(
     return entries.map(([name]) => `${prefix}/${name}`)
   }
 
-  const parts = key.split('/')
-  const [calName = '', day = ''] = parts
-  const entry = calendars.get(calName)
-  if (entry === undefined || parts.length > 2) throw enoent(path.virtual)
+  const entry = calendars.get(match.slots.calendar ?? '')
+  if (entry === undefined) throw enoent(path.virtual)
   const calId = entry.id
   if (typeof calId !== 'string') throw enoent(path.virtual)
   const freeBusy = entry.accessRole === FREE_BUSY_ROLE
+  const size = accessor.config.bucketDays
 
-  if (parts.length === 1) {
-    const [timeMin, timeMax, first, last] = daySpan(path.pattern, accessor.today(tz), tz)
-    const events = await listEvents(accessor.tokenManager, calId, timeMin, timeMax, tz)
+  if (match.kind === 'calendar') {
+    const [timeMin, timeMax, first, last] = daySpan(
+      path.pattern,
+      accessor.today(tz),
+      tz,
+      accessor.timeRange,
+      size,
+    )
+    const events = await listEvents(
+      accessor.tokenManager,
+      calId,
+      timeMin,
+      timeMax,
+      tz,
+      accessor.timeRange,
+    )
     const seen = new Set<string>()
     for (const event of events) {
       const span = eventSpan(event, tz)
       if (span === null) continue
       for (const day of daysCovered(span, tz)) {
-        if (day >= first && day <= last) seen.add(day)
+        if (day >= first && day <= last) seen.add(bucketName(bucketStart(day, size), size))
       }
     }
     const rows: [string, IndexEntry][] = [
@@ -227,14 +304,14 @@ export async function readdir(
         }),
       ],
     ]
-    for (const day of [...seen].sort(compareCodePoints)) {
+    for (const name of [...seen].sort(compareCodePoints)) {
       rows.push([
-        day,
+        name,
         new IndexEntry({
-          id: `${calId}:${day}`,
-          name: day,
-          resourceType: DAY_DIR,
-          vfsName: day,
+          id: `${calId}:${name}`,
+          name,
+          resourceType: BUCKET_DIR,
+          vfsName: name,
         }),
       ])
     }
@@ -250,10 +327,17 @@ export async function readdir(
     return rows.map(([name]) => `${prefix}/${key}/${name}`)
   }
 
-  if (!validDay(day)) throw enoent(path.virtual)
-  const [timeMin, timeMax] = dayBounds(day, tz)
-  const events = await listEvents(accessor.tokenManager, calId, timeMin, timeMax, tz)
-  const rows = eventEntries(events, day, tz, freeBusy)
+  const days = scopedBucket(accessor, match.slots.bucket ?? '', tz, path.virtual)
+  const [timeMin, timeMax] = dayBounds(days[0] ?? '', tz, days.length)
+  const events = await listEvents(
+    accessor.tokenManager,
+    calId,
+    timeMin,
+    timeMax,
+    tz,
+    accessor.timeRange,
+  )
+  const rows = eventEntries(events, days, tz, freeBusy, size > 1)
   if (index !== undefined) await index.setDir(virtualKey, rows)
   return rows.map(([name]) => `${prefix}/${key}/${name}`)
 }

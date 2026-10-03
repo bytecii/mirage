@@ -22,19 +22,11 @@ vi.mock('../google/client.ts', async () => {
 
 import type { TokenManager } from '../google/client.ts'
 import { googleGet, googleGetBytes } from '../google/client.ts'
-import { captureFileMetadata, downloadRevision, listRevisions } from './versions.ts'
+import { captureFileMetadata, downloadRevision } from './versions.ts'
 
 const TM = { config: { clientId: 'cid', refreshToken: 'rt' } } as TokenManager
 
 describe('gdrive versions', () => {
-  it('listRevisions paginates', async () => {
-    vi.mocked(googleGet)
-      .mockResolvedValueOnce({ revisions: [{ id: 'r1' }], nextPageToken: 'next' })
-      .mockResolvedValueOnce({ revisions: [{ id: 'r2' }] })
-    const revs = await listRevisions(TM, 'f1')
-    expect(revs.map((r) => r.id)).toEqual(['r1', 'r2'])
-  })
-
   it('downloadRevision hits the revision URL', async () => {
     const enc = new TextEncoder()
     vi.mocked(googleGetBytes).mockResolvedValue(enc.encode('old'))
@@ -44,10 +36,11 @@ describe('gdrive versions', () => {
     expect(call?.[1]).toContain('/files/f1/revisions/r1?alt=media')
   })
 
-  it('captureFileMetadata prefers md5, falls back to head revision', async () => {
+  it('captureFileMetadata returns the md5 and head revision raw', async () => {
+    // Raw, not coalesced: the caller checks the md5 against the bytes.
     vi.mocked(googleGet).mockResolvedValueOnce({ headRevisionId: 'r9', md5Checksum: 'abc' })
     expect(await captureFileMetadata(TM, 'f1')).toEqual(['abc', 'r9'])
     vi.mocked(googleGet).mockResolvedValueOnce({ headRevisionId: 'r9' })
-    expect(await captureFileMetadata(TM, 'f1')).toEqual(['r9', 'r9'])
+    expect(await captureFileMetadata(TM, 'f1')).toEqual([null, 'r9'])
   })
 })

@@ -1,0 +1,106 @@
+{
+  "cases": [
+    {
+      "id": "pipe_concat_head_first",
+      "seq": 592,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "cat /data/sorted_a.txt /data/sorted_b.txt | head -n 2",
+      "expect": {
+        "exit": 0,
+        "stdout": "apple\nbanana\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "pipe_concat_head_span",
+      "seq": 593,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "cat /data/sorted_a.txt /data/sorted_b.txt | head -n 4",
+      "expect": {
+        "exit": 0,
+        "stdout": "apple\nbanana\ncherry\nbanana\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "pipe_segment_expands_the_pre_pipeline_status",
+      "seq": 594,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "false; { true; } | echo $?; f() { true; }; false; f | echo $?; false; { false; } | true; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n1\n0\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

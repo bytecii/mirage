@@ -30,7 +30,7 @@ import { GDocsAccessor } from '../../accessor/gdocs.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import type { TokenManager } from '../google/client.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import type { FindOptions } from '../../resource/base.ts'
+import type { FindOptions } from '../../vfs/base.ts'
 import { walkFind } from '../generic/find.ts'
 import * as readdirMod from './readdir.ts'
 import * as statMod from './stat.ts'
@@ -84,7 +84,7 @@ function mockStats(
         name,
         size: entry.size ?? null,
         modified: entry.modified ?? null,
-        type: entry.dir === true ? FileType.DIRECTORY : FileType.TEXT,
+        type: entry.dir === true ? FileType.DIRECTORY : FileType.FILE,
       }),
     )
   })
@@ -106,7 +106,7 @@ const STATS: Record<string, { size?: number | null; modified?: string; dir?: boo
   '/owned/Doc_A__d1.gdoc.json': { size: null, modified: RECENT },
 }
 
-const ROOT = new PathSpec({ resourcePath: '', virtual: '/', directory: '/' })
+const ROOT = new PathSpec({ vfsPath: '', virtual: '/', directory: '/' })
 
 describe('gdocs core find', () => {
   beforeEach(() => {
@@ -123,9 +123,15 @@ describe('gdocs core find', () => {
     expect(dirs).toEqual(['/owned', '/shared'])
   })
 
-  it('treats a null size as 0 for size filters, dirs contribute 0 too', async () => {
-    const out = await find(makeAccessor(), ROOT, { minSize: 1024 })
-    expect(out).toEqual(['/owned/Big__d2.gdoc.json'])
+  it('treats a null size as 0 and a directory as DIR_SIZE for size filters', async () => {
+    expect(await find(makeAccessor(), ROOT, { minSize: 1024 })).toEqual([
+      '/owned',
+      '/owned/Big__d2.gdoc.json',
+      '/shared',
+    ])
+    expect(await find(makeAccessor(), ROOT, { maxSize: 100 })).toEqual([
+      '/owned/Doc_A__d1.gdoc.json',
+    ])
   })
 
   it('filters by mtime, excluding dirs without a modified time', async () => {

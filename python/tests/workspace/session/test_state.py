@@ -19,28 +19,48 @@ import pytest
 from mirage.ops.types import SessionView
 from mirage.policy import Action, Deny, Policies, Policy, PolicyDenied
 from mirage.policy.types import SessionContext
+from mirage.shell.array import make_array
+from mirage.shell.call_stack import CallStack
 from mirage.shell.errors import ArithError
-from mirage.shell.variable import VarAttr
+from mirage.shell.variable import ManagedRef, ShellVar, TempEnv, VarAttr
 from mirage.types import HiddenVars
-from mirage.workspace.session import Session
+from mirage.workspace.session import SessionState
 from mirage.workspace.session.errors import ReadonlyVariableError
 from mirage.workspace.session.session import vars_from_env
-from mirage.workspace.session.state import (element_index, env_snapshot,
-                                            seed_var, session_elements,
-                                            session_view, set_attr,
-                                            strip_key_quotes, visible_env)
+from mirage.workspace.session.state import (
+    element_index,
+    env_snapshot,
+    gate_rendering,
+    gate_restored_vars,
+    in_call_env,
+    next_random,
+    outlive_call,
+    positional_params,
+    seed_var,
+    session_elements,
+    session_view,
+    set_attr,
+    set_positional_params,
+    set_var,
+    strip_key_quotes,
+    subscript_index,
+    visible_env,
+)
 
 
 class DenySecrets(Policy):
-
     async def pre_session(self, ctx: SessionContext) -> Action | None:
         if ctx.key.startswith("SECRET"):
             return Deny("SECRET_* refused by policy\n")
         return None
 
 
-def _view(policies: Policies | None = None) -> tuple[SessionView, Session]:
-    session = Session(session_id="s", cwd="/", vars=vars_from_env({"A": "1"}))
+def _view(
+    policies: Policies | None = None,
+) -> tuple[SessionView, SessionState]:
+    session = SessionState(
+        session_id="s", cwd="/", vars=vars_from_env({"A": "1"})
+    )
     return session_view(session, policies), session
 
 
@@ -86,7 +106,6 @@ def test_an_array_write_renders_the_gate_value_as_words():
     seen: list[str | None] = []
 
     class Capture(Policy):
-
         async def pre_session(self, ctx: SessionContext) -> Action | None:
             seen.append(ctx.value)
             return None
@@ -143,9 +162,11 @@ def test_pre_session_gate_vetoes_a_write():
 
 
 def test_env_snapshot_is_a_copy():
-    session = Session(session_id="s", cwd="/", vars=vars_from_env({"A": "1"}))
+    session = SessionState(
+        session_id="s", cwd="/", vars=vars_from_env({"A": "1"})
+    )
     snap = env_snapshot(session)
-    assert snap == session.env
+    assert snap == {"A": "1", "PWD": "/"}
     assert snap is not session.env
 
 
@@ -157,16 +178,16 @@ def test_the_view_carries_no_session_handle():
 
 
 def _hidden_view(
-        policies: Policies | None = None) -> tuple[SessionView, Session]:
-    session = Session(session_id="s",
-                      cwd="/",
-                      vars=vars_from_env({
-                          "PUBLIC": "1",
-                          "SLACK_TOKEN": "xoxb",
-                          "AWS_SECRET_KEY": "k"
-                      }),
-                      hidden_vars=HiddenVars(names=("SLACK_TOKEN", ),
-                                             patterns=("AWS_*", )))
+    policies: Policies | None = None,
+) -> tuple[SessionView, SessionState]:
+    session = SessionState(
+        session_id="s",
+        cwd="/",
+        vars=vars_from_env(
+            {"PUBLIC": "1", "SLACK_TOKEN": "xoxb", "AWS_SECRET_KEY": "k"}
+        ),
+        hidden_vars=HiddenVars(names=("SLACK_TOKEN",), patterns=("AWS_*",)),
+    )
     return session_view(session, policies), session
 
 
@@ -227,7 +248,9 @@ def test_a_hidden_readonly_var_reports_not_readonly():
 def test_visible_env_matches_the_scalars_when_nothing_is_hidden():
     # $X expansion is the hot path; no hiding means no wrapper and no
     # copy.
-    session = Session(session_id="s", cwd="/", vars=vars_from_env({"A": "1"}))
+    session = SessionState(
+        session_id="s", cwd="/", vars=vars_from_env({"A": "1"})
+    )
     assert dict(visible_env(session)) == dict(session.env)
 
 
@@ -237,8 +260,8 @@ def test_visible_env_filters_reads_without_copying():
     assert env.get("SLACK_TOKEN") is None
     assert "AWS_SECRET_KEY" not in env
     assert env["PUBLIC"] == "1"
-    assert sorted(env) == ["PUBLIC", "PWD"]
-    assert len(env) == 2
+    assert sorted(env) == ["IFS", "PATH", "PUBLIC", "PWD"]
+    assert len(env) == 4
     with pytest.raises(KeyError):
         env["SLACK_TOKEN"]
     seed_var(session, "NEW", "2")
@@ -246,13 +269,12 @@ def test_visible_env_filters_reads_without_copying():
 
 
 def test_a_shaped_write_gates_the_value_that_lands():
-    # `declare -l role; role=ADMIN` stores `admin`, so a rule refusing
+    # `declare -l profile; profile=ADMIN` stores `admin`, so a rule refusing
     # `admin` has to see `admin`, not the raw text: coercion runs
     # before the gate.
     seen: list[str | None] = []
 
     class Capture(Policy):
-
         async def pre_session(self, ctx: SessionContext) -> Action | None:
             seen.append(ctx.value)
             if ctx.value == "admin":
@@ -261,11 +283,11 @@ def test_a_shaped_write_gates_the_value_that_lands():
 
     async def run():
         view, session = _view(Policies([Capture()]))
-        seed_var(session, "role", "")
-        set_attr(session, "role", VarAttr.LOWER)
+        seed_var(session, "profile", "")
+        set_attr(session, "profile", VarAttr.LOWER)
         with pytest.raises(PolicyDenied):
-            await view.set("role", "ADMIN")
-        assert session.env["role"] == ""
+            await view.set("profile", "ADMIN")
+        assert session.env["profile"] == ""
         seed_var(session, "n", "0")
         set_attr(session, "n", VarAttr.INTEGER)
         await view.set("n", "3+4")
@@ -298,8 +320,8 @@ def test_integer_coercion_resolves_elements():
     asyncio.run(run())
 
 
-def _element_session() -> Session:
-    session = Session(session_id="s", cwd="/")
+def _element_session() -> SessionState:
+    session = SessionState(session_id="s", cwd="/")
     seed_var(session, "m", {"a": "1", "k5": "9", "0": "z"})
     seed_var(session, "arr", ["10", "20", "30"])
     seed_var(session, "s5", "5")
@@ -322,6 +344,35 @@ def test_element_index_int_arith_and_error():
     # An unresolvable expression indexes element 0, bash's
     # unset-name-is-zero arithmetic rule.
     assert element_index("$bad", {}) == 0
+
+
+def test_subscript_index_lands_its_assignments_and_seeds_random():
+    session = SessionState(session_id="s", cwd="/")
+    seed_var(session, "i", "1")
+    session.vars["RANDOM"] = ShellVar("1")
+
+    async def run():
+        assert await subscript_index(session, "3") == 3
+        assert await subscript_index(session, "i+1") == 2
+        # The subscript's assignment lands, bash's `a[x=3]`.
+        assert await subscript_index(session, "x=3") == 3
+        assert session.vars["x"].value == "3"
+        # One that fails lands what it assigned before failing, then
+        # raises in bash's words rather than reading element 0.
+        with pytest.raises(ArithError, match=r"^y=4, 1/0: "):
+            await subscript_index(session, "y=4, 1/0")
+        assert session.vars["y"].value == "4"
+        # A seed reaches the generator, and the draw after it advances
+        # the session past it.
+        assert await subscript_index(session, "RANDOM=42, RANDOM") == 17772
+        assert next_random(session, session.vars["RANDOM"].value) == 26794
+        # Through a door, a refusal is the gate's.
+        view = session_view(session, Policies([DenySecrets()]))
+        with pytest.raises(PolicyDenied):
+            await subscript_index(session, "SECRET_N=1", view)
+        assert "SECRET_N" not in session.env
+
+    asyncio.run(run())
 
 
 def test_resolve_assoc_is_literal():
@@ -354,3 +405,173 @@ def test_read_by_kind():
     assert ops.read("s5", "0") == "5"
     assert ops.read("s5", "1") is None
     assert ops.read("missing", "0") is None
+
+
+def _managed(value: str | None) -> ShellVar:
+    return ShellVar(
+        value,
+        frozenset({VarAttr.EXPORT}),
+        managed=ManagedRef("env", "", "TOKEN", False),
+    )
+
+
+def test_set_var_detaches_a_fetched_managed_var():
+
+    async def run():
+        view, session = _view()
+        session.vars["TOKEN"] = _managed("s3cr3t")
+        await view.set("TOKEN", "mine")
+        var = session.vars["TOKEN"]
+        assert var.managed is None
+        assert var.value == "mine"
+        assert var.attrs == frozenset({VarAttr.EXPORT})
+
+    asyncio.run(run())
+
+
+def test_set_var_detaches_an_unfetched_managed_var():
+
+    async def run():
+        view, session = _view()
+        session.vars["TOKEN"] = _managed(None)
+        await view.set("TOKEN", "mine")
+        var = session.vars["TOKEN"]
+        assert var.managed is None
+        assert var.value == "mine"
+
+    asyncio.run(run())
+
+
+def test_unset_var_deletes_a_managed_name_quietly():
+
+    async def run():
+        view, session = _view()
+        session.vars["TOKEN"] = _managed("s3cr3t")
+        await view.unset("TOKEN")
+        assert "TOKEN" not in session.vars
+
+    asyncio.run(run())
+
+
+def test_profile_reads_the_session_profile():
+    view, session = _view()
+    assert view.profile() is None
+    session.profile = "admin"
+    assert view.profile() == "admin"
+
+
+def test_a_failing_coercion_lands_what_it_assigned():
+    # bash: `declare -i n; x='y=5,1/0'; n=x` refuses the assignment but
+    # leaves y at 5, and a RANDOM seed in the expression seeds.
+    session = SessionState(session_id="s", cwd="/")
+    session.vars["RANDOM"] = ShellVar("1")
+    set_attr(session, "n", VarAttr.INTEGER)
+    seed_var(session, "x", "y=5,1/0")
+
+    async def run():
+        with pytest.raises(ArithError):
+            await set_var(session, None, "n", "x")
+        assert session.vars["y"].value == "5"
+        assert "n" not in session.env
+        seed_var(session, "x", "RANDOM=42,1/0")
+        with pytest.raises(ArithError):
+            await set_var(session, None, "n", "x")
+        assert next_random(session, session.vars["RANDOM"].value) == 17772
+
+    asyncio.run(run())
+
+
+# A snapshot is the one env input the deployment did not author, so the
+# restore fires the same gate a typed `export` does, name by name, and a
+# refusal aborts the whole restore rather than dropping one variable.
+@pytest.mark.asyncio
+async def test_gate_restored_vars_refuses_a_denied_name():
+    table = vars_from_env({"SECRET_A": "1", "PUBLIC": "2"})
+    with pytest.raises(PolicyDenied):
+        await gate_restored_vars(Policies([DenySecrets()]), "s", table)
+    await gate_restored_vars(
+        Policies([DenySecrets()]), "s", vars_from_env({"PUBLIC": "2"})
+    )
+    await gate_restored_vars(None, "s", table)
+
+
+# The names the shell keeps current itself (`cd` writes PWD/OLDPWD through
+# `seed_var`, ungated) stay the shell's on a restore too.
+@pytest.mark.asyncio
+async def test_gate_restored_vars_leaves_the_shell_bookkeeping_alone():
+
+    class DenyAll(Policy):
+        async def pre_session(self, ctx: SessionContext) -> Action | None:
+            return Deny("nothing may be set\n")
+
+    await gate_restored_vars(
+        Policies([DenyAll()]), "s", vars_from_env({"PWD": "/", "OLDPWD": "/"})
+    )
+    with pytest.raises(PolicyDenied):
+        await gate_restored_vars(
+            Policies([DenyAll()]), "s", vars_from_env({"X": "1"})
+        )
+
+
+def test_gate_rendering_is_what_set_var_shows_a_hook():
+    assert gate_rendering("x") == "x"
+    assert gate_rendering({"b": "2", "a": "1"}) == "1 2"
+    assert gate_rendering(make_array(["p", "q"])) == "p q"
+    assert gate_rendering(None) is None
+
+
+def test_positional_params_are_a_functions_own_even_when_empty():
+    session = SessionState(session_id="s", positional_args=["a", "b"])
+    stack = CallStack()
+    assert positional_params(session, stack) == ["a", "b"]
+    stack.push([])
+    assert positional_params(session, stack) == []
+    set_positional_params(session, stack, ["x"])
+    assert stack.get_all_positional() == ["x"]
+    assert session.positional_args == ["a", "b"]
+    stack.pop()
+    set_positional_params(session, stack, ["y"])
+    assert session.positional_args == ["y"]
+
+
+def _in_function(
+    session: SessionState, temp: TempEnv
+) -> dict[str, ShellVar | None]:
+    locals_frame: dict[str, ShellVar | None] = {}
+    session._local_frames.extend([temp, locals_frame])
+    session._local_vars = locals_frame
+    return locals_frame
+
+
+@pytest.mark.asyncio
+async def test_unset_reveals_what_an_enclosing_scope_saved():
+    view, session = _view()
+    _in_function(session, TempEnv({"A": ShellVar("old")}))
+    seed_var(session, "A", "pre")
+    await view.unset("A")
+    assert session.env["A"] == "old"
+    assert "A" not in session._local_frames[0]
+
+
+@pytest.mark.asyncio
+async def test_unset_of_a_local_leaves_it_unset():
+    view, session = _view()
+    frame = _in_function(session, TempEnv())
+    frame["A"] = ShellVar("1")
+    seed_var(session, "A", "local")
+    await view.unset("A")
+    assert "A" not in session.env
+    assert frame["A"] == ShellVar("1")
+
+
+def test_outlive_call_keeps_a_temporary_environment_name():
+    session = SessionState(session_id="s")
+    temp = TempEnv({"A": None})
+    frame = _in_function(session, temp)
+    assert in_call_env(session, "A")
+    frame["B"] = None
+    outlive_call(session, "B")
+    assert frame == {"B": None}
+    outlive_call(session, "A")
+    assert temp == {}
+    assert not in_call_env(session, "A")

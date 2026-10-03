@@ -13,13 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { RAMResource } from '../resource/ram/ram.ts'
+import { RAMVFS } from '../vfs/ram/ram.ts'
+import { ops } from '../test-utils.ts'
 import { PathSpec } from '../types.ts'
 import { RAMSessionStore } from './session/ram.ts'
 import { toStateDict } from './snapshot/state.ts'
 import { Workspace } from './workspace/workspace.ts'
 
-class ProbeRAMResource extends RAMResource {
+class ProbeRAMVFS extends RAMVFS {
   closeCalls = 0
 
   override async close(): Promise<void> {
@@ -38,25 +39,44 @@ class ProbeSessionStore extends RAMSessionStore {
 }
 
 describe('workspace close ownership', () => {
-  it('leaves resources shared with another workspace open', async () => {
-    const resource = new ProbeRAMResource()
-    const ws = new Workspace({ '/data': resource })
-    await resource.writeFile(PathSpec.fromStrPath('/a.txt'), new TextEncoder().encode('seed'))
+  it('leaves mounts shared with another workspace open', async () => {
+    const vfs = new ProbeRAMVFS()
+    const ws = new Workspace({ '/data': vfs })
+    await ops(vfs).write(PathSpec.fromStrPath('/a.txt'), new TextEncoder().encode('seed'))
 
     const state = await toStateDict(ws)
-    const replica = await Workspace.fromState(state, {}, { '/data': resource })
+    const replica = await Workspace.fromState(state, {}, { '/data': vfs })
     await replica.close()
-    expect(resource.closeCalls).toBe(0)
-    const body = await resource.readFile(PathSpec.fromStrPath('/a.txt'))
+    expect(vfs.closeCalls).toBe(0)
+    const body = await ops(vfs).read(PathSpec.fromStrPath('/a.txt'))
     expect(new TextDecoder().decode(body)).toBe('seed')
 
     await ws.close()
-    expect(resource.closeCalls).toBe(1)
+    expect(vfs.closeCalls).toBe(1)
+  })
+
+  it.each([false, true])('unmount leaves borrowed mounts open (used=%s)', async (used) => {
+    const vfs = new ProbeRAMVFS()
+    const ws = new Workspace({ '/data': vfs })
+    const state = await toStateDict(ws)
+    const replica = await Workspace.fromState(state, {}, { '/data': vfs })
+    try {
+      if (used) await replica.resolve('/data')
+      await replica.unmount('/data')
+      expect(vfs.closeCalls).toBe(0)
+      await replica.close()
+      expect(vfs.closeCalls).toBe(0)
+      await ws.close()
+      expect(vfs.closeCalls).toBe(1)
+    } finally {
+      await replica.close()
+      await ws.close()
+    }
   })
 
   it('does not close a caller-passed session store', async () => {
     const sessionStore = new ProbeSessionStore()
-    const ws = new Workspace({ '/data': new RAMResource() }, { sessionStore })
+    const ws = new Workspace({ '/data': new RAMVFS() }, { sessionStore })
     await ws.close()
     expect(sessionStore.closeCalls).toBe(0)
   })

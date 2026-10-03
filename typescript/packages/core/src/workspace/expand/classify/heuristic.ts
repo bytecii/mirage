@@ -14,12 +14,11 @@
 
 import { PathSpec } from '../../../types.ts'
 import type { MountRegistry } from '../../mount/registry.ts'
-import { posixNormpath } from '../../../utils/path.ts'
+import { dottedSpelling, posixNormpath } from '../../../utils/path.ts'
 import { stripSlash } from '../../../utils/slash.ts'
 import { hasGlob, unmarkGlobs } from '../../../utils/glob_walk.ts'
 import { relativeSpec } from './relative.ts'
 
-const FILENAME_CHAR = /[a-zA-Z0-9_./]/
 const NON_PATH_CHAR = /[(){}=;|&<> ]/
 const RELATIVE_PATH = /^(?:\.?[a-zA-Z0-9_-]*\/)*[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+$/
 
@@ -49,41 +48,49 @@ export function classifyWord(
     }
     // `rawPath` keeps the spelling as typed, the way relativeSpec does:
     // `virtual` has already lost any `..`, and `cd -P` has to resolve the
-    // link a `..` follows before applying it.
+    // link a `..` follows before applying it. `dotted` keeps it for the
+    // walk that proves each `..` a directory, and a pattern's for the head
+    // its listing walks.
     if (wordHasGlob) {
       const lastSlash = path.lastIndexOf('/')
       return new PathSpec({
-        resourcePath: stripSlash(path),
+        vfsPath: stripSlash(path),
         virtual: path,
         directory: path.slice(0, lastSlash + 1),
         pattern: path.slice(lastSlash + 1),
         rawPath: word,
         resolved: false,
+        dotted: dottedSpelling(word),
       })
     }
     if (isDir) {
       return new PathSpec({
-        resourcePath: stripSlash(path),
+        vfsPath: stripSlash(path),
         virtual: path,
         directory: `${path}/`,
         rawPath: word,
         resolved: false,
+        dotted: dottedSpelling(word),
       })
     }
     const lastSlash = path.lastIndexOf('/')
     return new PathSpec({
-      resourcePath: stripSlash(path),
+      vfsPath: stripSlash(path),
       virtual: path,
       directory: path.slice(0, lastSlash + 1),
       rawPath: word,
       resolved: true,
+      dotted: dottedSpelling(word),
     })
   }
 
+  // Relative glob: a pattern under cwd, a bare `*`, `?` or `[a-z]`
+  // included, because bash expands every unquoted glob word (`echo *`
+  // lists the directory, and `expr 4 * 3` is the classic mistake). A
+  // quoted glob arrives with no marks and stays text. A word carrying
+  // shell syntax beside the glob (`x=*`) is an argument, not a path.
   if (wordHasGlob && (word.includes('/') || !shape.startsWith('.'))) {
-    if (!FILENAME_CHAR.test(shape) || NON_PATH_CHAR.test(shape)) {
-      return word
-    }
+    if (NON_PATH_CHAR.test(shape)) return word
     return relativeSpec(word, registry, cwd)
   }
 

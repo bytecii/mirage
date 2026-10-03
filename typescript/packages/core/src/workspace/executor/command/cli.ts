@@ -12,42 +12,43 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { CLI_CONFIG_ENV } from '../../../commands/cli/constants.ts'
-import { CLAP_EXIT, clapMissingOperands, leafRefusal } from '../../../commands/cli/refusal.ts'
+import { flagOccurrences } from '../../../commands/spec/flag_view.ts'
+import type { ProcessView } from '../../../process/types.ts'
+import { CLAP_EXIT, CLI_CONFIG_ENV, GIT_LONG_OPTIONS } from '../../../commands/cli/constants.ts'
+import { clapMissingOperands, leafRefusal } from '../../../commands/cli/refusal.ts'
 import { CLISpec, type CLIInvocation, type CLIDoors } from '../../../commands/cli/types.ts'
 import { ownsArgv, walk } from '../../../commands/cli/walk.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
 import type { NamespaceView, SessionView, StatPath } from '../../../ops/types.ts'
-import { HELP_OPTION } from '../../../commands/config.ts'
+import { HELP_OPTION } from '../../../commands/spec/constants.ts'
 import { flagKwargName } from '../../../commands/spec/constants.ts'
 import { UsageStyle } from '../../../commands/spec/types.ts'
 import { renderHelp } from '../../../commands/spec/help.ts'
 import { Operand, type FlagValue } from '../../../commands/spec/types.ts'
-import { UsageError } from '../../../commands/errors.ts'
+import { PartialOutputError, UsageError } from '../../../commands/errors.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { wordText, type PathSpec } from '../../../types.ts'
-import { concatBytes } from '../../../core/jq/format.ts'
-import {
-  CommandTimeoutError,
-  maybeWithTimeout,
-  runWithTimeout,
-} from '../../../commands/builtin/utils/limit.ts'
+import { wordText, PathSpec, type Limit } from '../../../types.ts'
+import { maybeWithTimeout, runWithTimeout } from '../../../commands/builtin/utils/limit.ts'
+import { CommandTimeoutError } from '../../../commands/errors.ts'
 import type { CLIInstall } from '../../cli/types.ts'
-import type { Session } from '../../session/session.ts'
+import type { SessionState } from '../../session/session.ts'
 import { envSnapshot } from '../../session/state.ts'
 import { ExecutionNode } from '../../types.ts'
 import { resolveLimit } from '../../../policy/index.ts'
-import { runtimeForLanguage } from '../../../runtime/policy/decide.ts'
-import type { ScriptSource } from '../../../runtime/policy/types.ts'
+import { runtimeForLanguage } from '../../../runtime/routing/decide.ts'
+import type { ScriptSource } from '../../../runtime/routing/types.ts'
 import { runOutput } from '../../../commands/builtin/general/interpreter.ts'
 import type { Runtime } from '../../../runtime/base.ts'
 import { LanguageRuntime } from '../../../runtime/language.ts'
 import { optionError, parseFlags } from './flags.ts'
+import { concat } from '../../../io/cachable_iterator.ts'
 
-// A textual rest operand is the spec's pass-through form: the parser
-// reads undeclared dashed tokens as operands instead of refusing them
-// (lenientDashOperands), which is what a program parsing its own argv
-// needs. 'str', not 'path', so nothing is cwd-resolved or routed.
+// A textual rest operand is a CLI node's pass-through form: parsed under
+// unknownIsOperand, it takes the undeclared dashed tokens the node does not
+// refuse, which is what a program parsing its own argv needs. 'str', not
+// 'path', so nothing is cwd-resolved or routed. Only that parse reads the
+// rest kind this way: a GNU command's textual rest is a list of operands,
+// which is why basename has one and still refuses an option it does not know.
 const PASSTHROUGH_REST = new Operand({ type: 'str' })
 
 /**
@@ -128,6 +129,9 @@ async function scriptOutput(
   script: ScriptSource,
   runtime: LanguageRuntime,
   prog: string,
+  cwd: PathSpec,
+  timeout: number | null,
+  signal: AbortSignal,
 ): Promise<[Uint8Array | null, IOResult]> {
   const env: Record<string, string> = { ...inv.env }
   if (inv.config !== null && inv.config !== undefined) {
@@ -136,12 +140,18 @@ async function scriptOutput(
   const stdin = inv.stdin !== null ? await materialize(inv.stdin) : null
   // A .mjs source needs the engine's module mode, the same bit the js
   // command derives from the operand's extension.
-  const result = await runtime.run({
+  const result = await runtime.execute({
+    kind: 'code',
+    language: runtime.language,
     code: script.source,
     args: [...inv.argv],
     prog,
+    scriptCli: true,
+    cwd,
     env,
     stdin,
+    signal,
+    ...(timeout !== null && timeout > 0 ? { timeoutSeconds: timeout } : {}),
     ...(script.module ? { flags: { module: true } } : {}),
   })
   return runOutput(result)
@@ -154,7 +164,10 @@ async function scriptOutput(
  * there is no allowlist of filesystem-aware CLIs to keep in step (the same rule
  * `links` follows for mount commands).
  */
-export interface CliFacts {
+export interface CLIContext {
+  shell?: (command: string) => Promise<IOResult>
+  signal?: AbortSignal
+  commandLimits?: Readonly<Record<string, Limit>>
   /**
    * The workspace's ordered runtime world, which a script leaf selects
    * its interpreter from; absent (outside a workspace) refuses script
@@ -165,6 +178,22 @@ export interface CliFacts {
   statPath?: StatPath
   ns?: NamespaceView
   sessionView?: SessionView
+  processes?: ProcessView
+}
+
+/**
+ * Whether a write verb of this CLI leaves every mount's caches stale.
+ *
+ * A CLI that reaches a service writes past the dispatcher's per-path
+ * invalidation, so no mount can see the write. Two roots do that: one with a
+ * `configModel` (an account CLI, initialized from it) and a script root, whose
+ * config is opaque by construction and whose program may reach anything. A
+ * root with neither (`git`) has no service to reach; its writes go through the
+ * dispatcher, which invalidates as it goes, so a blanket drop would only cost
+ * every other mount a reload.
+ */
+export function dropsMountCaches(spec: CLISpec): boolean {
+  return spec.configModel !== null || spec.script !== null
 }
 
 /**
@@ -181,15 +210,15 @@ export interface CliFacts {
  * (scriptOutput), so usage refusals, limits, and classification all
  * happen in front of either tier. Help too, for every node that declared
  * a grammar to render it from (parseSpecFor). The workspace facts in
- * `facts` reach a verb as one `inv.doors` field, one door per state plane,
- * so a verb that never reads it cannot touch a mount.
+ * `context` reach a verb as one `inv.doors` field, one door per state
+ * plane, so a verb that never reads it cannot touch a mount.
  */
 export async function handleCli(
   install: CLIInstall,
   parts: readonly (string | PathSpec)[],
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null = null,
-  facts: CliFacts = {},
+  context: CLIContext = {},
   dropCaches: (() => Promise<void>) | null = null,
 ): Promise<[ByteSource | null, IOResult, ExecutionNode]> {
   // Words re-enter string space as typed (wordText): the walk owns
@@ -200,7 +229,10 @@ export async function handleCli(
   const cmdStr = words.join(' ')
   const argv = words.slice(1)
 
-  const result = walk(install.name, install.spec, argv, session.cwd)
+  // The walk takes the same environment the leaf parse below does, so
+  // a group-level option declaring `Option.env` fills at its own
+  // level; without it the fetched credential never enters groupFlags.
+  const result = walk(install.name, install.spec, argv, session.cwd, envSnapshot(session))
   if (result.leaf === null) {
     const stderr = result.stream === 'stderr' ? result.output : new Uint8Array(0)
     const stdout = result.stream === 'stdout' ? result.output : null
@@ -220,7 +252,19 @@ export async function handleCli(
   // The environment goes into the parse, not on top of it: an option
   // declaring one is coerced, choice-checked, path-resolved and credited
   // against required exactly as a typed value is.
-  const parsed = parseFlags([...result.argv], parseSpec, prog, session.cwd, envSnapshot(session))
+  // git resolves an abbreviated long option against the verb's own full table
+  // (parse-options), and its revision walkers take whole words only.
+  const abbreviations =
+    install.spec.name === 'git' ? (GIT_LONG_OPTIONS.get(result.path.join(' ')) ?? []) : undefined
+  const parsed = parseFlags(
+    [...result.argv],
+    parseSpec,
+    prog,
+    session.cwd,
+    envSnapshot(session),
+    true,
+    abbreviations,
+  )
   const { paths, texts, flagKwargs, warnings } = parsed
   if (mirageHelp && flagKwargs.help === true) {
     const helpText = new TextEncoder().encode(renderHelp(prog, parseSpec, [], style))
@@ -231,7 +275,7 @@ export async function handleCli(
   let msg: Uint8Array | null = null
   let code = 0
   if (refusal !== null) {
-    ;[msg, code] = leafRefusal(style, refusal[0], parsed.invalidOptions)
+    ;[msg, code] = leafRefusal(style, refusal[0], parsed)
   } else if (parsed.missingRequiredOperands.length > 0 && style === UsageStyle.CLAP) {
     // Only clap names the empty slots. Under every other style a required
     // operand stays the leaf's own business, worded by the command, which is
@@ -261,6 +305,7 @@ export async function handleCli(
     flags[flagKwargName(spelling)] = value
   }
   Object.assign(flags, flagKwargs)
+  flagOccurrences(flags).push(...flagOccurrences(flagKwargs))
   // Only the injected flag is dropped; a leaf that declared --help
   // itself is handed the value it asked for.
   if (mirageHelp) delete flags.help
@@ -270,13 +315,23 @@ export async function handleCli(
   // while `git` is nothing but one. Absent outside a workspace, so a verb
   // that needs a mount refuses there on its own.
   const doors: CLIDoors = {
-    ...(facts.dispatch !== undefined ? { dispatch: facts.dispatch } : {}),
-    ...(facts.statPath !== undefined ? { statPath: facts.statPath } : {}),
-    ...(facts.ns !== undefined ? { ns: facts.ns } : {}),
-    ...(facts.sessionView !== undefined ? { sessionView: facts.sessionView } : {}),
+    ...(context.processes === undefined ? {} : { processes: context.processes }),
+    ...(context.dispatch !== undefined ? { dispatch: context.dispatch } : {}),
+    ...(context.statPath !== undefined ? { statPath: context.statPath } : {}),
+    ...(context.ns !== undefined ? { ns: context.ns } : {}),
+    ...(context.sessionView !== undefined ? { sessionView: context.sessionView } : {}),
+  }
+  let active = true
+  const shell = async (command: string): Promise<IOResult> => {
+    if (!active || context.signal?.aborted === true) {
+      throw new Error('CLI shell is no longer active')
+    }
+    if (context.shell === undefined) throw new Error('CLI shell is unavailable')
+    return context.shell(command)
   }
   const inv: CLIInvocation = {
     config: install.config,
+    ...(context.shell !== undefined ? { shell } : {}),
     argv,
     paths,
     texts,
@@ -284,11 +339,25 @@ export async function handleCli(
     stdin,
     env: envSnapshot(session),
     ...(Object.keys(doors).length > 0 ? { doors } : {}),
+    spec: leaf,
   }
 
+  // The outer timer bounds the whole invocation; the runtime deadline
+  // also interrupts engines that block their event loop. Unlike Python's
+  // asyncio cancellation, racing a promise does not stop its work.
+  const limit = resolveLimit(
+    prog,
+    [],
+    leaf.limit,
+    null,
+    context.commandLimits,
+    session.commandLimits,
+  )
+  const timeout = limit?.timeoutSeconds ?? null
+  const abort = new AbortController()
   let body: Promise<[ByteSource | null, IOResult] | null>
   if (leaf.script !== null) {
-    const [runtime, refused] = selectRuntime(prog, leaf, facts.entries ?? [])
+    const [runtime, refused] = selectRuntime(prog, leaf, context.entries ?? [])
     if (runtime === null) {
       // The interpreter is missing, not the command: 127 like an
       // interpreter command no runtime entry captures.
@@ -299,7 +368,15 @@ export async function handleCli(
         new ExecutionNode({ command: cmdStr, exitCode: 127, stderr }),
       ]
     }
-    body = scriptOutput(inv, leaf.script, runtime, prog)
+    body = scriptOutput(
+      inv,
+      leaf.script,
+      runtime,
+      prog,
+      PathSpec.fromStrPath(session.cwd),
+      timeout,
+      abort.signal,
+    )
   } else {
     const fn = leaf.fn
     if (fn === null) {
@@ -311,14 +388,12 @@ export async function handleCli(
     // Defer the call into the promise: a synchronously-thrown leaf
     // error must land in the catch arms below, exactly as when the
     // call sat inside the try.
-    body = (async () => fn(inv))()
+    body = Promise.resolve().then(() => fn(inv))
   }
   // The leaf's declared limit bounds the handler body and its
   // streams, exactly like mount dispatch: without the wrap a blocking
   // leaf hangs forever and an unbounded-output leaf ignores its own
   // limits.
-  const limit = resolveLimit(prog, [], leaf.limit)
-  const timeout = limit?.timeoutSeconds ?? null
   let stdout: ByteSource | null = null
   let io = new IOResult()
   try {
@@ -339,43 +414,55 @@ export async function handleCli(
     }
     // A limit timeout is answered by the workspace-level handler
     // (exit 124), not here.
-    if (err instanceof CommandTimeoutError) throw err
+    if (err instanceof CommandTimeoutError) {
+      abort.abort()
+      // Racing a promise does not stop its work: a typed fn that ignores
+      // the abort signal keeps running, and its request may land after
+      // exit 124. Drop now, for a write the service already accepted, and
+      // again when the body settles, for one still in flight.
+      if (leaf.write && dropCaches !== null) {
+        await dropCaches()
+        const settle = (): Promise<void> => dropCaches()
+        void body.then(settle, settle).catch((dropErr: unknown) => {
+          // The command already returned, so a drop that fails here (a
+          // workspace torn down under it) has no stream to land on; it
+          // is reported rather than left as an unhandled rejection.
+          const reason = dropErr instanceof Error ? dropErr.message : String(dropErr)
+          console.warn(`${prog}: cache drop after timeout failed: ${reason}`)
+        })
+      }
+      throw err
+    }
     // Any other thrown leaf error (an API error, a TypeError) becomes
     // this command's IOResult, prefixed like GNU (prog: message), so
-    // the rest of the line keeps running.
+    // the rest of the line keeps running, and what a leaf printed before
+    // it failed stays printed.
     // The write may already have landed when a leaf throws after its
     // request (a PUT whose --jq program fails filters a response the
-    // service already applied), and with no IOResult to consult the
-    // spec's static answer is the only one left; without the drop a
-    // github mount keeps serving its pre-write bytes.
+    // service already applied); without the drop a github mount keeps
+    // serving its pre-write bytes.
     if (leaf.write && dropCaches !== null) await dropCaches()
     const message = err instanceof Error ? err.message : String(err)
     const stderr = new TextEncoder().encode(`${prog}: ${message}\n`)
     return [
-      null,
+      err instanceof PartialOutputError ? err.stdout : null,
       new IOResult({ exitCode: 1, stderr }),
       new ExecutionNode({ command: cmdStr, exitCode: 1, stderr }),
     ]
+  } finally {
+    active = false
   }
-  // An account CLI mutates its service by id, so no vfs path can be derived
-  // from the call and per-path invalidation has nothing to aim at: a newly
-  // created file has no cache entry to expire, which is the case that
-  // matters. Dropping the service's listings is what lets the agent's next
-  // `ls` see what it just made, and dropping its cached bodies is what lets
-  // the next `cat` see an edit rather than the pre-write content.
-  //
-  // The spec's `write` is the static answer, which is the only one most
-  // verbs have; a handler that knows better says so on its result, so a
-  // read-only `gh api` does not expire every github mount.
-  const mutated = io.mutated ?? leaf.write
-  if (mutated && dropCaches !== null) await dropCaches()
+  // The spec's `write` is the one answer: what policy calls a write, the
+  // cache does too, so a verb that can mutate (`gh api` under any method)
+  // costs the mounts a reload rather than a stale read.
+  if (leaf.write && dropCaches !== null) await dropCaches()
 
   io.producer = { command: prog, prefixes: [], declared: leaf.limit ?? null }
 
   if (warnings.length > 0) {
     const warn = new TextEncoder().encode(warnings.map((w) => `${prog}: ${w}\n`).join(''))
     const existing = await materialize(io.stderr)
-    io.stderr = concatBytes([warn, existing])
+    io.stderr = concat([warn, existing])
   }
 
   stdout = maybeWithTimeout(stdout, limit, prog)

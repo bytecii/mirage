@@ -12,26 +12,31 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { indexConfigDump } from '../snapshot/config.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import { KeyLock } from '../../cache/lock.ts'
+import { checkCliVerbs } from '../session/validate.ts'
 import type { FileCache } from '../../cache/file/mixin.ts'
-import { RAMResource } from '../../resource/ram/ram.ts'
-import { IOResult } from '../../io/types.ts'
+import type { IndexConfig } from '../../cache/index/config.ts'
+import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { type EventDict, Observer } from '../../observe/observer.ts'
 import type { OpRecord } from '../../observe/record.ts'
 import { type OpKwargs, OpsRegistry } from '../../ops/registry.ts'
-import { assertMountAllowed } from '../../context/session_context.ts'
-import { isMissingPath } from '../../utils/errors.ts'
-import { contentSize, isDir as statIsDir, mtimeMs } from '../../utils/stat_view.ts'
-import type { Resource } from '../../resource/base.ts'
-import { HISTORY_PREFIX, HistoryViewResource } from '../../resource/history/history.ts'
-import { resourceStateRequiresOverride } from '../../resource/secrets.ts'
-import { GENERAL_COMMANDS } from '../../commands/builtin/general/index.ts'
+import type { BaseVFS } from '../../vfs/base.ts'
+import { HISTORY_PREFIX, HistoryViewVFS } from '../../vfs/history/history.ts'
+import { BIN_PREFIX } from '../../shell/constants.ts'
+import { Consumer } from '../lookup/types.ts'
+import { BinViewVFS } from '../../vfs/bin/bin.ts'
+import { lookup, program, programNote, programs } from '../lookup/lookup.ts'
+import { vfsStateRequiresOverride } from '../../vfs/secrets.ts'
 import { cliSpecFor } from '../../commands/cli/specs.ts'
 import type { CLISpec } from '../../commands/cli/types.ts'
-import { runWithTimeout } from '../../commands/builtin/utils/limit.ts'
 import type { CLIInstall } from '../cli/types.ts'
-import { resolveLimit } from '../../policy/index.ts'
+import { PermissionsPolicy } from '../../policy/builtin/permissions.ts'
+import { PolicyError } from '../../policy/errors.ts'
+import { Decisions } from '../../policy/decisions.ts'
 import { JobTable } from '../../shell/job_table/index.ts'
-import type { ShellParser } from '../../shell/types.ts'
+import type { ShellParser } from '../../shell/parse/index.ts'
 import { buildFileCache } from './cache.ts'
 import { rejectConfigScript } from './guard.ts'
 import { DriftQueue, installDriftState } from '../snapshot/drift.ts'
@@ -42,81 +47,159 @@ import {
   buildMountArgs,
   type CLIOverrides,
   toStateDict,
+  withRebuiltMounts,
 } from '../snapshot/state.ts'
+import { classifyBarePath } from '../expand/classify/path.ts'
+import { resolveGlobs } from '../expand/globs.ts'
 import { readSnapshotTar } from '../snapshot/tar_io.ts'
-import type { WorkspaceStateDict } from '../snapshot/types.ts'
-import type { FileEvent, FileStat } from '../../types.ts'
-import { ConsistencyPolicy, DriftPolicy, MountMode, parseMountMode, PathSpec } from '../../types.ts'
-import type { Policies } from '../../policy/index.ts'
-import type { PolicyFn } from '../../runtime/policy/index.ts'
+import { normMountPrefix } from '../snapshot/utils.ts'
+import type { WorkspaceStateDict, MountSnapshot } from '../snapshot/types.ts'
+import type { FileEvent } from '../../types.ts'
+import {
+  type ReadSpec,
+  DEFAULT_READ_SPEC,
+  DriftPolicy,
+  MountMode,
+  PathSpec,
+  parseMountMode,
+} from '../../types.ts'
+import type { Explanation, Policies } from '../../policy/index.ts'
+import type { RoutePolicy } from '../../runtime/routing/index.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
-import type { ExecuteFn } from '../expand/node.ts'
-import type { ProvisionResult } from '../../provision/types.ts'
 import { Ops } from '../../ops/ops.ts'
 import type { MountEntry } from '../mount/mount.ts'
+import { checkReadCapability } from '../mount/read_policy.ts'
 import { MountRegistry } from '../mount/registry.ts'
-import type { VFSEntry } from '../../runtime/vfs.ts'
 import { PrefixResolver } from '../../runtime/resolver.ts'
+import { ChildProcess } from '../../process/child.ts'
+import { ProcessInput, ProcessOutput } from '../../process/stdio.ts'
+import type { SpawnRequest, ProcessView } from '../../process/types.ts'
+import { literalTree } from '../../shell/literal.ts'
+import { shellJoin } from '../../shell/join.ts'
+import { ProcessSupervisor } from '../../process/supervisor.ts'
+import { WorkspaceBinding, captureBinding } from '../../runtime/binding.ts'
+import type { RuntimeContext } from '../../runtime/types.ts'
+import { ContextScope } from '../../utils/context_scope.ts'
+import { captureRecordingContext } from '../../observe/context.ts'
+import {
+  captureSessionContext,
+  getCurrentSessionUnlessForeign,
+  runWithSession,
+  runAsProgram,
+} from '../../context/session_context.ts'
+import { namespaceViewOf } from '../mount/namespace/view.ts'
+import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
+import { makeVar, VarAttr } from '../../shell/variable.ts'
+import { enoent } from '../../utils/errors.ts'
+import { sessionView, envSnapshot } from '../session/state.ts'
 import type { BridgeDispatchFn } from '../../runtime/types.ts'
 import { MontyUnavailableError } from '../../runtime/python/monty/index.ts'
 import type { Runtime, RuntimeEntry } from '../../runtime/base.ts'
 import { isEvaluator } from '../../runtime/mixin.ts'
 import type { EvalResult } from '../../runtime/types.ts'
-import { PyodideUnavailableError } from '../../runtime/python/types.ts'
+import { PyodideUnavailableError } from '../../runtime/python/pyodide/errors.ts'
 import { Dispatcher } from '../dispatcher/index.ts'
 import { Namespace } from '../mount/namespace/namespace.ts'
-import { provisionNode } from '../node/provision_node.ts'
+import { explainLine } from '../node/explain.ts'
 import { buildFilePrompt } from '../file_prompt.ts'
+import { getCurrentSessionFor } from '../../context/session_context.ts'
+import { abortable, hasAborted, makeAbortError } from '../abort.ts'
+import { SecretSourceSchema, type SecretSource } from '../../secrets/config.ts'
+import { SecretsError } from '../../secrets/errors.ts'
+import { sourceFor } from '../../secrets/registry.ts'
+import { resolveSources } from '../../secrets/sources.ts'
+import type { ResolvedSource } from '../../secrets/types.ts'
+import { DEFAULT_PROFILE } from '../session/constants.ts'
 import { SessionManager } from '../session/manager.ts'
 import type { WorkspaceFields, WorkspaceStateStore } from '../store/base.ts'
-import type { Session } from '../session/session.ts'
-import { varsFromEnv } from '../session/session.ts'
-import type { SessionProfile } from '../session/profile.ts'
+import { varsFromEnv, varsFromEntries, type SessionState } from '../session/session.ts'
+import {
+  parseProfileMounts,
+  parseProfilePolicy,
+  type SessionProfile,
+} from '../../policy/profile.ts'
+import { applyProfile, compileProfile, resolveProfile, withInline } from '../session/resolve.ts'
+import { ScriptPolicy } from '../../policy/script.ts'
 import { newSessionId, newWorkspaceId } from '../../utils/ids.ts'
-import { stripSlash } from '../../utils/slash.ts'
 import type { WatchRuntime } from '../../watch/base.ts'
 import { resolveControlStores } from './build.ts'
 import { executeLine, type ExecuteEnv } from './execute.ts'
 import { closeWorkspace } from './lifecycle.ts'
 import { WorkspaceMeta } from './meta.ts'
-import { normalizeResources, unmountPrefix } from './mounts.ts'
-import { PolicyRouter } from './policy.ts'
+import { normalizeMounts, prepareAddedMount, unmountPrefix } from './mounts.ts'
+import { Router } from './routing.ts'
 import { Runtimes } from './runtimes.ts'
-import type { ExecuteResult } from './types.ts'
-import { type ExecuteOptions, type MountSpec, type WorkspaceOptions } from './types.ts'
-import { commandName, infrastructurePrefixes } from './utils.ts'
+import { Session } from './handle.ts'
+import type { ExecuteOptions, ExecuteResult, MountSpec, WorkspaceOptions } from './types.ts'
+import { Mount } from '../mount/spec.ts'
 import { WatchManager } from './watch.ts'
 
 export { ExecuteResult } from './types.ts'
 export type { ExecuteOptions, MountSpec, WorkspaceOptions } from './types.ts'
 
 export class Workspace {
+  private readonly runtimeBinding: WorkspaceBinding
   readonly registry: MountRegistry
   readonly sessionManager: SessionManager
   private readonly wsId: string
   private readonly stateStoreInternal: WorkspaceStateStore
   private readonly ownsStateStore: boolean
-  private readonly sharedResources = new Set<Resource>()
+  private readonly sharedMounts = new Set<BaseVFS>()
   private readonly meta: WorkspaceMeta
-  private readonly opsRegistry: OpsRegistry
+  /**
+   * The op table every mount's ops are registered on. Not the op
+   * facade: `vfs` is the door a caller reads and writes through, this
+   * is the registry it dispatches into.
+   */
+  readonly opsRegistry: OpsRegistry
+  private readonly indexConfig: IndexConfig | undefined
+  private readonly readDefault: ReadSpec
   private shellParser: ShellParser | null
   private readonly shellParserFactory: (() => Promise<ShellParser>) | null
   private shellParserPromise: Promise<ShellParser> | null = null
-  private readonly opened = new Set<Resource>()
-  private readonly openOrder: Resource[] = []
+  readonly processes = new ProcessSupervisor()
   readonly jobTable: JobTable
   readonly agentId: string | null
-  readonly cache: FileCache & Resource
+  readonly cache: FileCache & BaseVFS
   readonly namespace: Namespace
   private readonly dispatcher: Dispatcher
   readonly observer: Observer
-  readonly fs: Ops
+  readonly vfs: Ops
   private closed = false
+  private readonly lineLock = new KeyLock()
   private readonly closers: (() => Promise<void>)[] = []
+  private closing: Promise<void> | null = null
+  private stateDropped = false
+  // The stores this workspace's state lives in, whether the state store
+  // built them or the caller passed one in directly: delete clears these,
+  // not only what the state store would hand out.
+  private readonly planes: { clear(): Promise<void> }[]
+
+  /**
+   * Whether no new work should be accepted.
+   *
+   * True from the moment `close()` is called, not from the moment teardown
+   * finishes. The two differ because `closed` is now set at the end so a
+   * runtime can still replay its journal, and that window would otherwise let
+   * a caller start a job after `killAll`, or add a mount after the close list
+   * was taken. Internal dispatch and recursive execution stay open until
+   * teardown finishes; their public doors do not. A method keeps TypeScript
+   * from treating a pre-await check as proof that the state is still open.
+   */
+  private isShuttingDown(): boolean {
+    return this.closing !== null || this.closed
+  }
   private readonly watchManager: WatchManager
-  private readonly runtimes: Runtimes
-  private readonly policyRouter: PolicyRouter
-  private readonly policy: PolicyFn | null
+  private readonly runtimeWorld: Runtimes
+  // Named for what it holds: the source declarations, never a secret.
+  private readonly declaredSecretSources: Readonly<Record<string, SecretSource>>
+  private secretSourcesBuilt: Readonly<Record<string, ResolvedSource>> | null = null
+  private secretSourcesPending: Promise<Record<string, ResolvedSource>> | null = null
+  private readonly router: Router
+  private readonly routePolicy: RoutePolicy | null
+  private readonly scriptPolicy: ScriptPolicy
+  private readonly profiles: Record<string, SessionProfile>
+  private readonly defaultProfileName: string | null
   // True when the workspace auto-added an empty `/` anchor (no user `/` mount).
   // The anchor is internal and is not forwarded into the Pyodide filesystem.
   private syntheticRootAnchor = false
@@ -127,26 +210,80 @@ export class Workspace {
   // FUSE lives entirely in the node Workspace (FUSE needs the OS; the browser
   // can't mount), so the core Workspace carries no FUSE state.
 
-  constructor(resources: Record<string, MountSpec>, options: WorkspaceOptions = {}) {
-    const normalized = normalizeResources(resources)
+  constructor(mounts: Record<string, MountSpec>, options: WorkspaceOptions = {}) {
+    if ('python' in options) {
+      throw new Error(
+        "the 'python' workspace option was removed: configure the engine on its runtimes entry, " +
+          'e.g. new PyodideRuntime({ config: { denyPackages } })',
+      )
+    }
+    // The workspace-level default a mount overrides, as `mode` is.
+    this.readDefault = options.read ?? DEFAULT_READ_SPEC
+    const normalized = normalizeMounts(mounts, this.readDefault, options.index)
+    this.indexConfig = options.index
     this.registry = new MountRegistry(
       normalized.bare,
       options.mode ?? MountMode.READ,
       normalized.modes,
+      this.readDefault,
+      normalized.read,
+      {
+        ...(options.index !== undefined ? { index: options.index } : {}),
+        refs: normalized.refs,
+        indexes: normalized.indexes,
+      },
     )
-    const consistency = options.consistency ?? ConsistencyPolicy.LAZY
-    this.registry.setConsistency(consistency)
-    if (options.index !== undefined) {
-      for (const resource of Object.values(normalized.bare)) {
-        resource.setIndex?.(options.index)
-      }
-    }
+    this.registry.processView = (session) => this.processView(session)
     this.wsId = options.workspaceId ?? newWorkspaceId()
-    this.jobTable = new JobTable(options.consoleFactory ?? null)
+    this.jobTable = new JobTable(options.consoleFactory ?? null, this.processes)
     const stores = resolveControlStores(this.wsId, options)
     this.ownsStateStore = stores.owned
     this.stateStoreInternal = stores.stateStore
-    this.sessionManager = new SessionManager(options.sessionId ?? newSessionId(), stores.sessions)
+    // The env block, translated once: a literal entry becomes an
+    // exported var, a managed one becomes a pointer the fill step
+    // resolves at command time. Each managed entry's source is
+    // resolved now, so a typo'd name (or a source nothing registered)
+    // fails at construction, naming the known sources, rather than at
+    // the first fetch.
+    // The source table, kept as declarations: building one reads its
+    // bootstrap pointers, which is I/O, and this constructor is sync.
+    // `secretSources` builds them once, before the first fetch.
+    // Checked here, so every caller-supplied route is covered at once:
+    // an array arrives from an untyped REST override, and
+    // `Object.entries` on one yields nothing, so the declarations
+    // would silently vanish and every restored pointer would read as
+    // an unknown source.
+    // Read as `unknown` on purpose: the declared type says mapping,
+    // and the value comes from an untyped REST override that can say
+    // otherwise, which is exactly the case being caught.
+    const declared: unknown = options.secrets
+    if (
+      declared !== undefined &&
+      (typeof declared !== 'object' || declared === null || Array.isArray(declared))
+    ) {
+      throw new SecretsError('config `secrets` must be a mapping')
+    }
+    this.declaredSecretSources = Object.fromEntries(
+      Object.entries(options.secrets ?? {}).map(([name, block]) => [
+        name,
+        SecretSourceSchema.parse(block),
+      ]),
+    )
+    for (const block of Object.values(this.declaredSecretSources)) sourceFor(block.source)
+    const seedVars = options.env !== undefined ? varsFromEntries(options.env) : undefined
+    for (const seeded of Object.values(seedVars ?? {})) {
+      if (
+        seeded.managed !== undefined &&
+        !Object.hasOwn(this.declaredSecretSources, seeded.managed.source)
+      ) {
+        sourceFor(seeded.managed.source)
+      }
+    }
+    this.sessionManager = new SessionManager(
+      options.sessionId ?? newSessionId(),
+      stores.sessions,
+      seedVars,
+    )
     this.meta = new WorkspaceMeta(
       this.wsId,
       this.stateStoreInternal,
@@ -158,26 +295,63 @@ export class Workspace {
     this.shellParserFactory = options.shellParserFactory ?? null
     this.agentId = options.agentId ?? null
     this.watchManager = new WatchManager(this.registry)
-    const sandboxResolver = new PrefixResolver(() => this.sandboxVisibleMounts())
-    this.runtimes = new Runtimes({
-      registry: this.registry,
-      entries: options.runtimes,
-      pythonConfig: options.python ?? {},
-      bridge: () => this.buildWorkspaceBridge(),
-      resolver: sandboxResolver,
-      registerCloser: (fn) => {
-        this.closers.push(fn)
-      },
-    })
-    rejectConfigScript('policy', options.policy)
-    this.policy = options.policy ?? null
+    const sandboxResolver = new PrefixResolver(
+      () => this.sandboxVisibleMounts(),
+      (directory) => this.namespace.linkNamesUnder(directory),
+    )
+    this.runtimeBinding = new WorkspaceBinding(this.buildWorkspaceBridge(), sandboxResolver, () =>
+      this.runtimeContext(),
+    )
+    rejectConfigScript('routePolicy', options.routePolicy)
+    this.routePolicy = options.routePolicy ?? null
+    // The permission profiles: one per name, and the one a session
+    // gets when it names none. A profile is the whole document a
+    // session runs under, so there is no workspace-wide block above it.
+    this.profiles = { ...(options.profiles ?? {}) }
+    this.defaultProfileName = options.profile ?? null
+    if (this.defaultProfileName !== null && !(this.defaultProfileName in this.profiles)) {
+      throw new PolicyError(`unknown profile ${JSON.stringify(this.defaultProfileName)}`)
+    }
+    // The config door validates the pairing too, but a typed caller
+    // does not pass that door, and the python host refuses the same
+    // profiles at construction.
+    for (const [name, profile] of Object.entries(this.profiles)) {
+      // A typed caller does not pass the parser, so this door repeats
+      // its two checks: the old keys are told where they went, and a
+      // policy block is whole.
+      const legacy = profile as { script?: unknown; runtime?: unknown }
+      if (legacy.script !== undefined || legacy.runtime !== undefined) {
+        throw new PolicyError(
+          `profile '${name}': script and runtime are now one policy block, ` +
+            `policy: {script: <file>, runtime: <engine>}; its program defines ` +
+            `pre_command(ctx) and answers with return`,
+        )
+      }
+      if (profile.policy != null) parseProfilePolicy(profile.policy, `profile '${name}' policy`)
+    }
     // Admission policies, consulted in registration order after the
-    // built-ins the registry seeds: declarative guards first, then
-    // Policy instances, then anything added later through
-    // ws.policies.add(). The runtime policy (policy option) is the
-    // line-level counterpart until it is absorbed as a hook.
-    for (const guard of options.guards ?? []) this.registry.policies.add(guard)
+    // built-ins the registry seeds: the document's command tiers
+    // (PermissionsPolicy, reading each session's compiled layers from
+    // the manager by the id the door puts in the context), the
+    // profile's policy (ScriptPolicy, calling its hook per command through
+    // the same manager), then Policy instances, then anything added later
+    // through ws.policies.add(). The runtime policy (policy option) is
+    // the line-level counterpart until it is absorbed as a hook.
+    this.registry.policies.add(new PermissionsPolicy(this.sessionManager))
+    this.scriptPolicy = new ScriptPolicy(
+      this.sessionManager,
+      () => this.mounts().map((entry) => entry.prefix),
+      // The doors the runtime world attaches, so a profile policy reads
+      // the mounts an agent's program would, and through the same gate,
+      // with its ops stamped as its own for its `preOps` to recognize.
+      { bridge: (issuer) => this.buildWorkspaceBridge(issuer), resolver: sandboxResolver },
+    )
+    this.registry.policies.add(this.scriptPolicy)
     for (const entry of options.policies ?? []) this.registry.policies.add(entry)
+    // The approval door an Ask is taken to (design 3.9): grants live on
+    // the sessions, the host answers through `onAsk` (or just records
+    // the question when none is wired) and reads `ws.decisions`.
+    this.registry.decisions = new Decisions(this.sessionManager, options.onAsk ?? null)
     // Installed CLIs, fully separate from mounts: a spec name resolves
     // against the named registry and every entry installs through the
     // same fail-loud path as registerCli.
@@ -185,22 +359,34 @@ export class Workspace {
       const cliSpec = typeof specOrKey === 'string' ? cliSpecFor(specOrKey) : specOrKey
       this.registry.clis.install(cliName, cliSpec, cliConfig)
     }
-    this.policyRouter = new PolicyRouter(
-      this.registry,
-      this.runtimes,
-      this.policy,
-      this.agentId,
-      sandboxResolver,
-    )
     this.observer = new Observer(stores.observe)
-    this.registry.mount(HISTORY_PREFIX, new HistoryViewResource(this.observer), MountMode.READ)
+    this.planes = [stores.namespace, stores.observe, stores.sessions]
+    // Explicit at the construction site: the history view does not cache
+    // reads, so its policy can only ever be bounded.
+    this.registry.mount(
+      HISTORY_PREFIX,
+      new HistoryViewVFS(this.observer),
+      MountMode.READ,
+      DEFAULT_READ_SPEC,
+    )
+    // One file per program the session can run, where PATH finds it: the
+    // same lookup which, type and command -v answer from.
+    this.registry.mount(
+      BIN_PREFIX,
+      new BinViewVFS(
+        () => programs(this.opSession(), this.registry),
+        (name) => programNote(name, this.opSession(), this.registry),
+      ),
+      MountMode.READ,
+      DEFAULT_READ_SPEC,
+    )
     this.cache = buildFileCache(options.cache, options.cacheLimit)
     this.registry.attachFileCache(this.cache)
     // Only an explicit agentId claims the workspace user; a bare launch
     // adopts whatever identity the namespace store holds.
     this.namespace = new Namespace(
       this.registry,
-      (p) => this.resolve(p),
+      (p) => this.resolveInternal(p),
       stores.namespace,
       options.agentId ?? null,
     )
@@ -208,66 +394,73 @@ export class Workspace {
       this.namespace,
       this.cache,
       this.opsRegistry,
-      consistency,
       this.registry.policies,
       this.drift,
     )
     this.registry.setReconciler(this.dispatcher.reconciler)
+    this.registry.setOpStat((mount, path) => this.dispatcher.opStat(mount, path))
     // The file cache is a hidden store (attached above), never a mount. Arg-less
     // commands and root listing resolve against a neutral root anchor: reuse the
     // user's `/` mount if they gave one, else add a plain empty RAM mount at `/`.
     // A synthetic anchor is internal to Mirage and must NOT be forwarded to Pyodide,
     // whose own `/` filesystem (holding the Python stdlib) would be hijacked.
     if (this.registry.rootMount === null) {
-      this.registry.mount('/', new RAMResource(), options.mode ?? MountMode.READ)
+      // Pinned bounded, not inherited. This anchor is synthesized after
+      // normalizeMounts has run, so it never meets the capability verdict
+      // -- and RAM does not cache reads, so a workspace-level `fresh`
+      // would stamp on it exactly the combination the verdict refuses. It
+      // is snapshotted like any other mount, so that stray policy came
+      // back as a refusal on restore.
+      this.registry.mount('/', new RAMVFS(), options.mode ?? MountMode.READ, DEFAULT_READ_SPEC)
       this.syntheticRootAnchor = true
     }
-    for (const resource of [...this.registry.allMounts().map((m) => m.resource), this.cache]) {
-      const resourceOps = resource.ops?.()
-      if (resourceOps === undefined) continue
-      for (const op of resourceOps) {
-        this.opsRegistry.register(op)
-      }
+    // The workspace's own session is a session created without a name,
+    // so `profiles.default` shapes it too (design 3.4): the primary
+    // agent is not the one agent the document cannot reach.
+    const defaultBase = this.baseProfile(null)
+    this.sessionManager.defaultProfile =
+      defaultBase === null ? null : compileProfile(defaultBase, this.profileName(null))
+    for (const vfs of [...this.registry.allMounts().map((m) => m.vfs), this.cache]) {
+      this.opsRegistry.registerVfs(vfs)
     }
-    for (const mount of this.registry.allMounts()) {
-      const cmds = mount.resource.commands?.()
-      if (cmds !== undefined) {
-        for (const cmd of cmds) {
-          if (cmd.filetype !== null) mount.register(cmd)
-          else if (cmd.resource === null) mount.registerGeneral(cmd)
-          else mount.register(cmd)
-        }
-      }
-      for (const cmd of GENERAL_COMMANDS) {
-        mount.registerGeneral(cmd)
-      }
-    }
-    for (const [prefix, commandLimits] of Object.entries({
-      ...normalized.commandLimits,
-      ...(options.commandLimits ?? {}),
-    })) {
-      const mount = this.registry.tryMountForPrefix(prefix)
-      if (mount === null) {
-        throw new Error(`commandLimits references unknown mount prefix: ${prefix}`)
-      }
-      for (const [cmd, sg] of Object.entries(commandLimits)) {
-        mount.commandLimits.set(cmd, sg)
-      }
+    this.registry.commandLimits = { ...options.commandLimits }
+    for (const [prefix, limits] of Object.entries(normalized.commandLimits)) {
+      const mount = this.registry.mountForPrefix(prefix)
+      for (const [name, limit] of Object.entries(limits)) mount.commandLimits.set(name, limit)
     }
     // The facade delegates every op to the dispatcher, so FUSE and
-    // programmatic ws.fs walk the same pipeline as a shell command and
+    // programmatic ws.vfs walk the same pipeline as a shell command and
     // the policy gates fire exactly once, at that door. It keeps the
     // ledger, which is its own; the sink is only the observer's copy.
-    this.fs = new Ops(
-      this.dispatcher.dispatch,
-      async (rec) => {
-        await this.observer.logOp(rec, this.agentId ?? '', this.sessionManager.defaultId)
+    // It runs as the default session, as a bare `shell` does, so the
+    // default profile confines it too.
+    this.vfs = new Ops(
+      (op, path, args, kwargs, report) => {
+        if (this.isShuttingDown()) throw new Error('Workspace is closed')
+        return this.dispatcher.dispatch(op, path, args, kwargs, report)
+      },
+      async (rec, sessionId) => {
+        await this.observer.logOp(rec, this.agentId ?? '', sessionId)
       },
       this.namespace,
       (path) => {
         const mount = this.registry.tryMountFor(path)
-        return mount === null ? null : { prefix: mount.prefix, kind: mount.resource.kind }
+        return mount === null ? null : { prefix: mount.prefix, kind: mount.vfs.name }
       },
+      { bind: (sessionId, run) => this.bindSession(sessionId, run) },
+    )
+    this.runtimeWorld = new Runtimes({
+      registry: this.registry,
+      entries: options.runtimes,
+      binding: this.runtimeBinding,
+    })
+    this.closers.push(() => this.runtimeWorld.close())
+    this.router = new Router(
+      this.registry,
+      this.runtimeWorld,
+      this.routePolicy,
+      this.agentId,
+      sandboxResolver,
     )
   }
 
@@ -278,31 +471,39 @@ export class Workspace {
    * Two are withheld, and neither is withheld for being `/`. An explicit
    * root mount is forwarded like any other prefix, and a runtime that
    * cannot serve it refuses on its own (Pyodide does, because Emscripten
-   * already owns `/`). What is withheld is the history view, which is a
-   * shell surface rather than a place to put files, and the synthetic
-   * root anchor, which nobody mounted: the workspace adds it so arg-less
-   * commands and root listing have somewhere to resolve, so announcing
-   * it as a mount would make every runtime report a claim on a resource
-   * the embedder never asked for.
+   * already owns `/`). What is withheld is the history and program views,
+   * which are shell surfaces rather than places to put files (a runtime
+   * has its own `/usr/bin`), and the synthetic root anchor, which nobody
+   * mounted: the workspace adds it so arg-less commands and root listing
+   * have somewhere to resolve, so announcing it as a mount would make
+   * every runtime report a claim on a VFS the embedder never asked for.
    */
   private sandboxVisibleMounts(): string[] {
     const prefixes: string[] = []
     for (const m of this.registry.allMounts()) {
       if (m.prefix === HISTORY_PREFIX || m.prefix === HISTORY_PREFIX + '/') continue
+      if (m.prefix === BIN_PREFIX + '/') continue
       if (this.syntheticRootAnchor && m.prefix === '/') continue
       prefixes.push(m.prefix)
     }
     return prefixes
   }
 
-  /** Append a runtime entry to the workspace's ordered world (last, first capturer still wins). */
-  addRuntime(runtime: RuntimeEntry): Runtime {
-    return this.runtimes.add(runtime)
+  /** The ordered runtime world, first capturer first. */
+  runtimes(): readonly Runtime[] {
+    return this.runtimeWorld.entries
   }
 
-  /** The ordered runtime world, as a read-only view of the live list. */
-  get runtimeEntries(): readonly Runtime[] {
-    return this.runtimes.entries
+  /** Append a runtime entry to the workspace's ordered world (last, first capturer still wins). */
+  addRuntime(runtime: RuntimeEntry): Runtime {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    return this.runtimeWorld.add(runtime)
+  }
+
+  /** Remove a runtime entry, closing it once its runs finish; `workspace` is permanent. */
+  async removeRuntime(name: string): Promise<void> {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    await this.runtimeWorld.remove(name)
   }
 
   /**
@@ -316,11 +517,13 @@ export class Workspace {
     spec: CLISpec,
     config: Record<string, unknown> | null = null,
   ): CLIInstall {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
     return this.registry.clis.install(name, spec, config)
   }
 
   /** Remove an installed CLI; its head word stops resolving (127). */
   unregisterCli(name: string): void {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
     this.registry.clis.uninstall(name)
   }
 
@@ -337,94 +540,276 @@ export class Workspace {
     return this.observer.commandEvents()
   }
 
+  /** The session an op runs under: the bound one, else the default. */
+  private opSession(): SessionState {
+    return (
+      getCurrentSessionFor(this.sessionManager) ??
+      this.sessionManager.get(this.sessionManager.defaultId)
+    )
+  }
+
+  /** Capture local adapter doors under this workspace's active or explicitly named session. */
+  runtimeContext(sessionId?: string): RuntimeContext {
+    const session = sessionId === undefined ? this.opSession() : this.sessionManager.get(sessionId)
+    const scope = new ContextScope([
+      ...captureSessionContext(session, this.sessionManager),
+      ...captureRecordingContext(),
+    ])
+    return captureBinding(
+      this.runtimeBinding,
+      {
+        ns: namespaceViewOf(this.registry, this.namespace, this.dispatcher.dispatch),
+        sessionView: sessionView(session, this.policies),
+        processes: this.processView(session),
+        cwd: PathSpec.fromStrPath(session.cwd),
+        env: envSnapshot(session),
+      },
+      scope,
+    )
+  }
+
+  /** Spawn argv in an isolated session fork through the normal admission gate. */
+  spawn(request: SpawnRequest, sessionId?: string): ChildProcess {
+    return this.spawnForSession(
+      request,
+      sessionId === undefined ? this.opSession() : this.sessionManager.get(sessionId),
+    )
+  }
+
+  private processView(session: SessionState): ProcessView {
+    const parentPid = session.processId
+    const view = this.processes.view(session.sessionId, () => session.processes)
+    return Object.freeze({
+      ...view,
+      depth: session.processDepth,
+      spawn: (request: SpawnRequest) => {
+        view.checkSpawn()
+        const child = session.fork()
+        child.processId = parentPid
+        return this.spawnForSession(request, child)
+      },
+    })
+  }
+
+  private spawnForSession(request: SpawnRequest, session: SessionState): ChildProcess {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    if (session.processDepth >= 16) throw new Error('process nesting limit (16) reached')
+    const argv = [...request.argv]
+    literalTree(argv)
+    const head = argv[0] ?? ''
+    const name = head.startsWith(`${BIN_PREFIX}/`) ? head.slice(BIN_PREFIX.length + 1) : head
+    if (!name.includes('/')) {
+      if (
+        program(name, session, this.registry) === null &&
+        lookup(name, session, this.registry) !== Consumer.EXTERNAL
+      )
+        throw enoent(head)
+      argv[0] = name
+    }
+    const cwd = request.cwd ?? PathSpec.fromStrPath(session.cwd)
+    const inheritedEnv = request.replaceEnv === true ? {} : envSnapshot(session)
+    const child = session.fork({
+      cwd: cwd.virtual,
+      processDepth: session.processDepth + 1,
+      vars: varsFromEnv(inheritedEnv),
+      functions: {},
+    })
+    if (!Object.hasOwn(inheritedEnv, 'PWD')) child.vars.PWD = makeVar(cwd.virtual, new Set())
+    child.aliases = {}
+    // The child's stdout is its handle's result, as a typed line's is the
+    // terminal, so the command limits bound what it hands back wherever
+    // the parent's own output goes.
+    child.terminalOutput = true
+    const scope = new ContextScope([
+      ...captureSessionContext(child, this.sessionManager),
+      ...captureRecordingContext(),
+    ])
+    const input = new ProcessInput(),
+      output = new ProcessOutput(request.mergeStderr),
+      abort = new AbortController()
+    const env = request.env === undefined ? undefined : { ...request.env }
+    const owner = this.sessionManager.get(session.sessionId)
+    const admission = this.processes.view(session.sessionId, () => owner.processes)
+    const process = this.processes.start({
+      sessionId: session.sessionId,
+      command: shellJoin(argv),
+      cwd,
+      parentPid: session.processId,
+      limit: session.processes.max,
+      cancel: () => {
+        abort.abort()
+        input.stop()
+        output.stop()
+      },
+      run: async () => {
+        try {
+          await this.ensureSessionsLoaded()
+          if (this.sessionManager.get(session.sessionId) !== owner)
+            throw new Error(
+              'session changed during hydration; retry spawn after ensureSessionsLoaded',
+            )
+          admission.checkSpawn()
+          const result = await scope.run(async () => {
+            const view = sessionView(child, this.policies)
+            for (const [name, value] of Object.entries(env ?? {})) {
+              await view.set(name, value)
+              await view.mark(name, VarAttr.Export, true)
+            }
+            return runAsProgram(child, () =>
+              executeLine(
+                this.executeEnv(),
+                shellJoin(argv),
+                {
+                  sessionId: session.sessionId,
+                  stdin: input.stream(),
+                  sink: output,
+                  signal: abort.signal,
+                },
+                argv,
+              ),
+            )
+          })
+          return result.exitCode
+        } finally {
+          input.stop()
+          output.end()
+        }
+      },
+    })
+    child.processId = process.info.pid
+    child.shellPid = process.info.pid
+    return new ChildProcess(process, input, output, () => {
+      process.terminate()
+      this.processes.terminateChildren(process.info.pid)
+    })
+  }
+
   // The sandboxed runtimes' sole data path (quickjs, pyodide, monty).
-  // Routes through `dispatch`, not the raw Ops facade, so sandbox I/O
-  // takes the same path as shell commands — cache read-through on
+  // Routes through the private dispatch continuation, not the raw Ops facade,
+  // so runtime journal replay stays open during close and sandbox I/O takes
+  // the same path as shell commands — cache read-through on
   // reads, post-write invalidation, and mount-mode enforcement narrowed
-  // by the current session all come from the Dispatcher. Reads are raw
-  // bytes (no filetype rendering), matching the Python WasmVFS.
-  private buildWorkspaceBridge(): BridgeDispatchFn {
-    return async (op, path, bytes, dst) => {
+  // by the current session all come from the Dispatcher. A read is the
+  // rendered one unless its `raw` attr asks for the stored bytes, and its
+  // `offset`/`size` attrs ask for a byte range, matching Python's
+  // RuntimeVFS.read. An `issuer` rides every op as the `issuer` kwarg, which the dispatcher
+  // lifts onto the op door's context and never forwards to a backend:
+  // it is how a profile policy's own reads reach its `preOps` marked as
+  // its own, as an argument rather than ambient state.
+  private buildWorkspaceBridge(issuer?: symbol): BridgeDispatchFn {
+    const dispatch = (
+      opName: string,
+      path: string,
+      args: readonly unknown[] = [],
+      kwargs: OpKwargs = {},
+    ): Promise<unknown> =>
+      this.dispatchInternal(
+        opName,
+        path,
+        args,
+        issuer === undefined ? kwargs : { ...kwargs, issuer },
+      )
+    return async (op, path, bytes, dst, attrs) => {
       switch (op) {
-        case 'read':
-          return (await this.dispatch('read', path)) as Uint8Array
+        case 'read': {
+          const kwargs: OpKwargs = attrs?.raw === true ? { filetype: null } : {}
+          if (attrs?.offset !== undefined || attrs?.size !== undefined) {
+            kwargs.offset = attrs.offset ?? 0
+            kwargs.size = attrs.size ?? null
+          }
+          return (await dispatch('read', path, [], kwargs)) as Uint8Array
+        }
         case 'write': {
           if (bytes === undefined) throw new Error('write op requires bytes')
           const buf =
             bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayLike<number>)
-          await this.dispatch('write', path, [buf])
+          await dispatch('write', path, [buf])
           return undefined
         }
         case 'append': {
           if (bytes === undefined) throw new Error('append op requires bytes')
           const buf =
             bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayLike<number>)
-          await this.dispatch('append', path, [buf])
+          await dispatch('append', path, [buf])
           return undefined
         }
-        case 'stat': {
-          const st = (await this.dispatch('stat', path)) as FileStat
-          // One translator: bare Date.parse read an offset-less stamp
-          // as LOCAL time here while the fuse fold read it as UTC.
-          // VFSStat has no validity channel, so an unknown mtime and
-          // epoch zero both encode as 0 on this wire.
-          return {
-            size: contentSize(st),
-            isDir: statIsDir(st),
-            mtimeMs: mtimeMs(st) ?? 0,
-          }
-        }
+        case 'stat':
+          // The mount's own row, nothing projected: the runtime door
+          // builds the one VFSStat both languages read, so the two
+          // tiers cannot drift into two translations of one fact.
+          // `nofollow` is the only attrs field a stat carries, and it
+          // is the caller's lstat; the dispatcher consumes it.
+          return await dispatch(
+            'stat',
+            path,
+            [],
+            attrs?.nofollow === true ? { nofollow: true } : undefined,
+          )
         case 'create':
-          await this.dispatch('create', path)
+          await dispatch('create', path)
           return undefined
         case 'truncate':
-          await this.dispatch('truncate', path, [0])
+          await dispatch('truncate', path, [0])
           return undefined
         case 'unlink':
-          await this.dispatch('unlink', path)
+          await dispatch('unlink', path)
           return undefined
         case 'mkdir':
-          await this.dispatch('mkdir', path)
+          // `parents` is pathlib's mkdir(parents=True), riding to the
+          // backend op as a kwarg the way python's dispatch carries it.
+          await dispatch('mkdir', path, [], attrs?.parents === true ? { parents: true } : {})
           return undefined
         case 'rmdir':
-          await this.dispatch('rmdir', path)
+          await dispatch('rmdir', path)
           return undefined
         case 'rename': {
           if (dst === undefined) throw new Error('rename op requires dst')
-          await this.dispatch('rename', path, [PathSpec.fromStrPath(dst)])
+          await dispatch('rename', path, [PathSpec.fromStrPath(dst)])
           return undefined
         }
-        case 'readdir': {
-          const entries = ((await this.dispatch('readdir', path)) as string[] | null) ?? []
-          return await Promise.all(
-            entries.map(async (entry): Promise<VFSEntry> => {
-              // Backends that mark directories with a trailing slash
-              // skip the stat; unmarked entries (e.g. RAM) need one to
-              // learn dir-ness.
-              if (entry.endsWith('/')) return { path: entry, size: 0, isDir: true }
-              const isLink = this.namespace.isLink(entry)
-              let stat: FileStat
-              try {
-                stat = (await this.dispatch('stat', entry)) as FileStat
-              } catch (err) {
-                // A dangling link, or an entry that vanished between
-                // list and stat, must not fail the whole listing; the
-                // guest's own open reports the miss. Anything else
-                // (authorization, a timeout, a backend bug) propagates,
-                // or pyodide's syncMounts would replace a healthy
-                // snapshot with a silently degraded one.
-                if (!isMissingPath(err)) throw err
-                return { path: entry, size: 0, isDir: false, ...(isLink ? { isLink } : {}) }
-              }
-              return {
-                path: entry,
-                size: contentSize(stat),
-                isDir: statIsDir(stat),
-                ...(isLink ? { isLink } : {}),
-              }
-            }),
-          )
+        case 'symlink': {
+          // The target is not a PathSpec: a link stores what was typed,
+          // relative or dangling, and resolving it here would record a
+          // different link than the guest asked for.
+          if (dst === undefined) throw new Error('symlink op requires dst')
+          await dispatch('symlink', path, [], { target: dst })
+          return undefined
         }
+        case 'readlink':
+          return (await dispatch('readlink', path)) as string
+        case 'setattr': {
+          if (attrs === undefined) throw new Error('setattr op requires attrs')
+          await dispatch('setattr', path, [], attrs as Record<string, unknown>)
+          return undefined
+        }
+        case 'readdir':
+          // The names as the door merged them, nothing resolved: the
+          // runtime door (`RuntimeVFS.readdir`) stats each entry and
+          // marks the links, so a row is built in one tier and in one
+          // shape in both languages.
+          return ((await dispatch('readdir', path)) as string[] | null) ?? []
+        case 'getxattr':
+          return await dispatch('getxattr', path, [], {
+            name: dst ?? '',
+            nofollow: attrs?.nofollow === true,
+          })
+        case 'listxattr':
+          return await dispatch('listxattr', path, [], { nofollow: attrs?.nofollow === true })
+        case 'setxattr':
+          await dispatch('setxattr', path, [], {
+            name: dst ?? '',
+            value: bytes ?? new Uint8Array(),
+            create: attrs?.create === true,
+            replace: attrs?.replace === true,
+            nofollow: attrs?.nofollow === true,
+          })
+          return undefined
+        case 'removexattr':
+          await dispatch('removexattr', path, [], {
+            name: dst ?? '',
+            nofollow: attrs?.nofollow === true,
+          })
+          return undefined
       }
     }
   }
@@ -452,8 +837,13 @@ export class Workspace {
     return this.registry.policies
   }
 
-  get ops(): OpsRegistry {
-    return this.opsRegistry
+  /**
+   * The host's door on asked commands: `list()` the requests waiting,
+   * `grant(id, scope)` or `deny(id)` one, and the agent's retry passes
+   * or is refused.
+   */
+  get decisions(): Decisions {
+    return this.registry.decisions
   }
 
   get cwd(): string {
@@ -473,77 +863,155 @@ export class Workspace {
   }
 
   /**
-   * Create a session, optionally restricted to per-mount modes.
+   * The base profile a session is created under, which the inline
+   * `permissions`/`mounts` options then layer onto: the profile as
+   * named, else the workspace default.
+   */
+  private baseProfile(profile: string | SessionProfile | null): SessionProfile | null {
+    if (profile === null && this.defaultProfileName !== null) {
+      return this.profiles[this.defaultProfileName] ?? null
+    }
+    return resolveProfile(this.profiles, profile)
+  }
+
+  /**
+   * The name of the profile `baseProfile` resolves, which its script
+   * reads as `ctx.profile`; empty for a profile document passed without
+   * one.
+   */
+  private profileName(profile: string | SessionProfile | null): string {
+    if (typeof profile === 'string') return profile
+    if (profile === null && this.defaultProfileName !== null) return this.defaultProfileName
+    if (profile === null && DEFAULT_PROFILE in this.profiles) return DEFAULT_PROFILE
+    return ''
+  }
+
+  /**
+   * Create a session under one profile, with an optional inline
+   * document of its own.
    *
-   * `mounts` as a map assigns each prefix a mode ceiling ('read',
-   * 'write', 'exec', or the filesystem aliases 'r', 'rw', 'rwx'); an
-   * array of prefixes keeps each mount at its own configured mode (the
-   * previous allowlist behavior). Omitting it leaves the session
-   * unrestricted.
+   * The profile is a name from the workspace's `profiles`, or the
+   * workspace default when none is named, or a profile document. The
+   * inline `permissions` and `mounts` may add ask and deny rules, hides
+   * and weaker modes; they may never add an allow entry, which is the
+   * one rule about combining two documents. `mounts` is sugar for
+   * `permissions.mounts`: a mapping assigns each prefix a mode ('read',
+   * 'write', 'exec', or the filesystem aliases 'r', 'rw', 'rwx'), which
+   * may only be weaker than the mount's own. A mount the mapping omits
+   * keeps its own mode, so this narrows and never confines; a profile
+   * that must keep a session away from a mount hides it. Throws
+   * PolicyError on an unknown profile name, or on an inline document
+   * with an allow list.
    */
   createSession(
     sessionId: string,
     options: {
-      mounts?: ReadonlyMap<string, string> | Record<string, string> | readonly string[] | null
-      /**
-       * A role's narrowing bundle; its fields unpack onto the session,
-       * with an explicit `mounts` option overriding the profile's.
-       */
-      profile?: SessionProfile | null
+      mounts?: ReadonlyMap<string, unknown> | Record<string, unknown> | null
+      profile?: string | SessionProfile | null
+      permissions?: SessionProfile | null
     } = {},
-  ): Session {
-    const profile = options.profile ?? null
-    const mounts = options.mounts ?? profile?.mounts ?? null
-    let modes: Map<string, MountMode> | null = null
-    if (mounts !== null) {
-      modes = new Map<string, MountMode>()
-      if (Array.isArray(mounts)) {
-        for (const p of mounts as readonly string[]) {
-          modes.set('/' + stripSlash(p), MountMode.EXEC)
-        }
-      } else {
-        const entries: [string, string][] =
-          mounts instanceof Map
-            ? [...(mounts as ReadonlyMap<string, string>).entries()]
-            : Object.entries(mounts as Record<string, string>)
-        for (const [p, mode] of entries) {
-          modes.set('/' + stripSlash(p), parseMountMode(mode))
-        }
-      }
-      for (const p of infrastructurePrefixes(this.syntheticRootAnchor)) {
-        if (!modes.has(p)) modes.set(p, MountMode.EXEC)
-      }
+  ): SessionState {
+    const base = this.baseProfile(options.profile ?? null)
+    let inline: SessionProfile | null = options.permissions ?? null
+    if (options.mounts != null) {
+      inline = withInline(inline, { mounts: parseProfileMounts(options.mounts) })
     }
-    const session = this.sessionManager.create(sessionId, { mountModes: modes })
-    if (profile !== null) {
-      session.hiddenPaths = profile.hiddenPaths ?? null
-      session.hiddenVars = profile.hiddenVars ?? null
-      if (profile.env != null) {
-        // A profile's env is a *process* environment, the same shape
-        // `ws.env = {...}` speaks, so every name in it is exported.
-        // Seeding them plain left `$TOKEN` expanding while every command,
-        // CLI and guest runtime in the profiled session saw nothing,
-        // since all three read `envSnapshot` and that is the exported set.
-        Object.assign(session.vars, varsFromEnv(profile.env))
-      }
-    }
+    const compiled = compileProfile(
+      withInline(base, inline),
+      this.profileName(options.profile ?? null),
+    )
+    checkCliVerbs(compiled.commands, this.cliVerbs())
+    const session = this.sessionManager.create(sessionId)
+    applyProfile(session, compiled)
     return session
   }
 
-  getSession(sessionId: string): Session {
+  /**
+   * The verbs each installed CLI declares, keyed by head word.
+   *
+   * Read at `createSession` rather than at compile time because a CLI is
+   * registered on the workspace after it is built.
+   */
+  /**
+   * One session's two doors: `shell` and `vfs` bound to it.
+   *
+   * Creates the session under the given profile when the id is new (the
+   * same call as `createSession`), and adopts it as is when it exists.
+   * Options for an existing session are refused rather than ignored: a
+   * profile is set once, at creation, and the object it returns must not look like
+   * it narrowed a session it merely adopted. The session store is
+   * hydrated first, so a session a previous process persisted is
+   * adopted with its stored profile rather than recreated over it; that
+   * is why this is async where `createSession` is not.
+   */
+  async session(
+    sessionId: string,
+    options: Parameters<Workspace['createSession']>[1] = {},
+  ): Promise<Session> {
+    await this.ensureSessionsLoaded()
+    if (this.sessionManager.list().some((s) => s.sessionId === sessionId)) {
+      if (options.mounts != null || options.profile != null || options.permissions != null) {
+        throw new Error(`session '${sessionId}' exists; its profile was set when it was created`)
+      }
+      return new Session(this, sessionId)
+    }
+    this.createSession(sessionId, options)
+    return new Session(this, sessionId)
+  }
+
+  private cliVerbs(): ReadonlyMap<string, ReadonlySet<string>> {
+    const out = new Map<string, ReadonlySet<string>>()
+    for (const [name, install] of this.registry.clis.items()) {
+      out.set(name, new Set(install.spec.subcommands.map((child) => child.name)))
+    }
+    return out
+  }
+
+  getSession(sessionId: string): SessionState {
     return this.sessionManager.get(sessionId)
   }
 
-  listSessions(): Session[] {
+  /**
+   * Replace a live session's permissions, including its policy runtime.
+   * Compilation succeeds before anything changes. Cwd/env presets apply only
+   * at creation; cwd, variables, functions and history survive this change.
+   * Null selects the workspace default; an empty document clears restrictions.
+   * This is a host-side operation, like creating a session.
+   */
+  async setSessionProfile(
+    sessionId: string,
+    profile: string | SessionProfile | null,
+  ): Promise<SessionState> {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    const compiled = compileProfile(this.baseProfile(profile), this.profileName(profile))
+    checkCliVerbs(compiled.commands, this.cliVerbs())
+    const wasDefault = sessionId === this.defaultSessionId
+    await this.ensureSessionsLoaded()
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    if (wasDefault) sessionId = this.defaultSessionId
+    const session = await this.sessionManager.setProfile(sessionId, compiled)
+    this.processes.revokeSession(sessionId)
+    return session
+  }
+
+  listSessions(): SessionState[] {
     return this.sessionManager.list()
   }
 
-  closeSession(sessionId: string): Promise<void> {
-    return this.sessionManager.close(sessionId)
+  async closeSession(sessionId: string): Promise<void> {
+    // The manager refuses the default and an unknown id first; a session
+    // that did close takes its jobs with it, so a later session reusing
+    // the id inherits nothing.
+    await this.sessionManager.close(sessionId)
+    await this.jobTable.closeSession(sessionId)
   }
 
-  closeAllSessions(): Promise<void> {
-    return this.sessionManager.closeAll()
+  async closeAllSessions(): Promise<void> {
+    const closed = this.listSessions()
+      .map((s) => s.sessionId)
+      .filter((id) => id !== this.defaultSessionId)
+    await this.sessionManager.closeAll()
+    for (const id of closed) await this.jobTable.closeSession(id)
   }
 
   /**
@@ -554,6 +1022,37 @@ export class Workspace {
   async ensureSessionsLoaded(): Promise<void> {
     await this.meta.ensure()
     await this.sessionManager.ensureLoaded()
+  }
+
+  /**
+   * What a line would do under a session's profile, without running any
+   * it: one Explanation per command the gate reads, in gate order,
+   * nested lines included.
+   *
+   * The dry run of the gate every command passes through, so this and
+   * the refusal an agent would read come out of one place and cannot
+   * disagree. It runs no command, expands nothing, spends no grant and
+   * puts no question to a host, which is what makes it safe to call
+   * about a line nobody typed. The line is judged on the static bindings'
+   * route; a route policy is not consulted.
+   *
+   * Host-side only. The structure of a profile's rules is an operator's
+   * business, so there is no builtin an agent can type to read it.
+   */
+  async explain(line: string, sessionId = ''): Promise<Explanation[]> {
+    await this.ensureSessionsLoaded()
+    const session = this.getSession(sessionId === '' ? this.defaultSessionId : sessionId)
+    const parser = await this.getShellParser()
+    const reparse = (text: string): TSNodeLike => parser.parse(text)
+    return explainLine(
+      parser.parse(line),
+      session,
+      this.registry,
+      this.namespace,
+      '',
+      reparse,
+      this.runtimeWorld.wholeLineFor(null) !== null,
+    )
   }
 
   get workspaceId(): string {
@@ -595,7 +1094,7 @@ export class Workspace {
   }
 
   attachWatchRuntime(runtime: WatchRuntime): void {
-    if (this.closed) throw new Error('Workspace is closed')
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
     this.watchManager.attach(runtime)
   }
 
@@ -604,44 +1103,73 @@ export class Workspace {
   }
 
   watch(path: string | PathSpec | readonly (string | PathSpec)[]): AsyncIterable<FileEvent> {
-    if (this.closed) throw new Error('Workspace is closed')
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
     return this.watchManager.watch(path)
   }
 
   async notify(change: FileEvent): Promise<void> {
-    if (this.closed) throw new Error('Workspace is closed')
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
     await this.watchManager.notify(change)
   }
 
   /**
-   * Add a mount to a running workspace. Registers the resource's ops globally
+   * Add a mount to a running workspace. Registers the VFS's ops globally
    * on this workspace's OpsRegistry so dispatch can find them.
+   *
+   * The runtime door runs the same read-policy verdict the constructor
+   * does: a mount added here is no more able to declare a policy its
+   * backend cannot honour than one declared in config.
    */
-  addMount(prefix: string, resource: Resource, mode: MountMode = MountMode.READ): MountEntry {
-    if (this.closed) throw new Error('Workspace is closed')
-    const m = this.registry.mount(prefix, resource, mode)
-    this.opsRegistry.registerResource(resource)
-    const resourceOps = resource.ops?.()
-    if (resourceOps !== undefined) {
-      for (const op of resourceOps) this.opsRegistry.register(op)
-    }
+  addMount(
+    prefix: string,
+    vfs: BaseVFS,
+    mode: MountMode = MountMode.READ,
+    read?: ReadSpec,
+    vfsRef: string | null = null,
+  ): MountEntry {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    this.registry.checkVfsAvailable(vfs)
+    const resolvedRead = read ?? this.readDefault
+    // An alias keeps the index of the VFS's other mount.
+    const alias = this.registry.allMounts().find((m) => m.vfs === vfs)
+    checkReadCapability(
+      prefix,
+      vfs,
+      resolvedRead,
+      alias !== undefined ? alias.indexConfig : this.indexConfig,
+    )
+    const previous = this.registry.allMounts()
+    const m = this.registry.mount(prefix, vfs, mode, resolvedRead, {
+      ...(this.indexConfig !== undefined ? { index: this.indexConfig } : {}),
+      vfsRef,
+    })
+    prepareAddedMount(this.registry, m, previous)
+    this.opsRegistry.registerVfs(vfs)
     return m
   }
 
+  /** Change an exact mount's ceiling, retaining its data and every session's cap. */
+  setMountMode(prefix: string, mode: MountMode): void {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    const parsed = parseMountMode(mode)
+    this.registry.mountForPrefix(prefix).mode = parsed
+  }
+
   /**
-   * Remove a mount by prefix. Closes the resource if the workspace had opened
-   * it and no other mount still references it. Drops cache entries under the
+   * Remove a mount by prefix. Closes the owned VFS when its last alias
+   * leaves, including mounts used without an explicit open. Drops cache entries under the
    * unmounted prefix. Forbidden prefixes: cache root, history view, /dev/.
-   * In-flight ops that already resolved their Mount are not interrupted.
+   * Waits for admitted calls and returned streams before closing the VFS.
+   * Callers must consume or close streams; closed instances cannot be remounted.
    */
   async unmount(prefix: string): Promise<void> {
-    if (this.closed) throw new Error('Workspace is closed')
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
     await unmountPrefix(
       {
         registry: this.registry,
         opsRegistry: this.opsRegistry,
-        opened: this.opened,
-        openOrder: this.openOrder,
+        sharedMounts: this.sharedMounts,
+        isShuttingDown: () => this.isShuttingDown(),
       },
       prefix,
     )
@@ -670,27 +1198,27 @@ export class Workspace {
    * are thin delegates so the public workspace API keeps reading.
    */
   get records(): OpRecord[] {
-    return this.fs.records
+    return this.vfs.records
   }
 
-  /** Records that hit a remote resource (not cache). */
+  /** Records that hit a remote VFS (not cache). */
   get networkRecords(): OpRecord[] {
-    return this.fs.networkRecords
+    return this.vfs.networkRecords
   }
 
   /** Total bytes transferred over the network. */
   get networkBytes(): number {
-    return this.fs.networkBytes
+    return this.vfs.networkBytes
   }
 
   /** Records served from in-memory cache. */
   get cacheRecords(): OpRecord[] {
-    return this.fs.cacheRecords
+    return this.vfs.cacheRecords
   }
 
   /** Total bytes served from cache. */
   get cacheBytes(): number {
-    return this.fs.cacheBytes
+    return this.vfs.cacheBytes
   }
 
   get filePrompt(): string {
@@ -723,11 +1251,93 @@ export class Workspace {
   }
 
   async stat(path: string): Promise<unknown> {
-    return this.fs.stat(path)
+    return this.vfs.stat(path)
   }
 
   async readdir(path: string): Promise<string[]> {
-    return this.fs.readdir(path)
+    return this.vfs.readdir(path)
+  }
+
+  /**
+   * The paths a pathname pattern matches, as the shell expands it.
+   *
+   * The shell's own resolver matches it, so a pattern crosses mounts,
+   * sees namespace links, and honors the session's hides and `dotglob`.
+   * A `**` segment matches any number of directories (bash's
+   * `globstar`); a pattern that matches nothing gives no paths
+   * (`nullglob`), and a path with no glob character gives itself when it
+   * exists. A relative pattern is read from the session's working
+   * directory. Mirrors Python's `Workspace.glob`.
+   */
+  async glob(pattern: string, sessionId?: string): Promise<string[]> {
+    return this.bindSession(sessionId ?? null, async () => {
+      const session = getCurrentSessionFor(this.sessionManager)
+      const spec = classifyBarePath(pattern, this.registry, session?.cwd ?? '/')
+      if (typeof spec === 'string') return []
+      if (spec.pattern === null) return (await this.vfs.exists(spec.virtual)) ? [spec.virtual] : []
+      const matches = await resolveGlobs([spec], this.registry, false, this.namespace, {
+        nullglob: true,
+        failglob: false,
+        globstar: true,
+      })
+      return matches.filter((m): m is PathSpec => m instanceof PathSpec).map((m) => m.virtual)
+    })
+  }
+
+  /**
+   * Run one op door call as `sessionId`.
+   *
+   * A session already bound in this context is kept: a command's
+   * runtime reaching `ws.vfs` stays in its own session, and a kernel
+   * mount serving one session keeps that one, so the door never widens
+   * a caller's view. A session another workspace bound is the
+   * exception: its hides and grants describe that workspace, so an
+   * embedder callback reaching this door from inside the other's line
+   * runs as the session it asked for, judged by this workspace's own
+   * profile. Otherwise the named session is bound the way `shell`
+   * binds it.
+   *
+   * On the fallback storage (no task isolation) the newest live frame
+   * may be another task's, so a facade that names its session binds it
+   * rather than trusting an ambient one; only the unnamed door (`ws.vfs`,
+   * `ws.dispatch`) keeps whatever is bound there, which is what a
+   * command's runtime reaching it relies on.
+   */
+  private async bindSession<T>(sessionId: string | null, run: () => Promise<T>): Promise<T> {
+    if (this.ambientFor(sessionId) !== null) return run()
+    // The full hydration path, discovery record first: a workspace
+    // attached to a shared store adopts the persisted default session's
+    // id there, and binding before that would run as a freshly minted,
+    // unrestricted default instead.
+    await this.ensureSessionsLoaded()
+    const session = this.sessionManager.get(sessionId ?? this.sessionManager.defaultId)
+    return runWithSession(session, run, this.sessionManager)
+  }
+
+  /** The ambient session the op door keeps for a facade, or null. */
+  private ambientFor(sessionId: string | null): SessionState | null {
+    const ambient = getCurrentSessionUnlessForeign(this.sessionManager)
+    if (ambient !== null && (sessionId === null || asyncContextIsolatesTasks)) return ambient
+    return null
+  }
+
+  /**
+   * The session the op door would run a facade's op as, from here.
+   *
+   * The rule is `bindSession`'s, so an adapter that reads namespace
+   * state outside the door (a link table consulted before a dispatch)
+   * judges it as the session the dispatch will then run as, ambient
+   * one included, rather than as the one it was configured with.
+   * Sessions must already be hydrated: this is a lookup, not a bind.
+   *
+   * @param sessionId the facade's session, or null for the default.
+   * @returns the session an op through that facade runs as.
+   */
+  sessionForOps(sessionId: string | null): SessionState {
+    return (
+      this.ambientFor(sessionId) ??
+      this.sessionManager.get(sessionId ?? this.sessionManager.defaultId)
+    )
   }
 
   async dispatch(
@@ -736,9 +1346,20 @@ export class Workspace {
     args: readonly unknown[] = [],
     kwargs: OpKwargs = {},
   ): Promise<unknown> {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    // Runs as the default session unless one is bound, like `ws.vfs`.
+    return this.bindSession(null, () => this.dispatchInternal(opName, path, args, kwargs))
+  }
+
+  private async dispatchInternal(
+    opName: string,
+    path: string,
+    args: readonly unknown[] = [],
+    kwargs: OpKwargs = {},
+  ): Promise<unknown> {
     // The Dispatcher owns the whole pipeline: pre-dispatch
     // initialization (namespace load, pending drift checks), symlink
-    // follow, resolution (its resolveFn is Workspace.resolve, so lazy
+    // follow, resolution (its resolveFn is resolveInternal, so lazy
     // open and mount grants happen there), cache read-through, mode
     // enforcement, per-op commandLimits on the executing mount,
     // revisions, overlay stat, and post-write invalidation. The same
@@ -752,24 +1373,18 @@ export class Workspace {
     return result
   }
 
-  async resolve(path: string): Promise<[Resource, PathSpec, MountMode]> {
+  async resolve(path: string): Promise<[BaseVFS, PathSpec, MountMode]> {
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    return this.resolveInternal(path)
+  }
+
+  private async resolveInternal(path: string): Promise<[BaseVFS, PathSpec, MountMode]> {
     if (this.closed) {
       throw new Error('Workspace is closed')
     }
     const result = this.registry.resolve(path)
-    const [resource] = result
-    // resolve() above already threw for a path outside every mount.
-    const mount = this.registry.mountFor(path)
-    assertMountAllowed(mount.prefix)
-    await this.ensureOpen(resource)
+    await this.registry.mountFor(path).ensureReady()
     return result
-  }
-
-  private async ensureOpen(resource: Resource): Promise<void> {
-    if (this.opened.has(resource)) return
-    await resource.open()
-    this.opened.add(resource)
-    this.openOrder.push(resource)
   }
 
   /**
@@ -780,38 +1395,55 @@ export class Workspace {
    * serving pre-line state.
    */
   private async invalidateAllAfterRemote(): Promise<void> {
-    await this.dispatcher.clearFileCache()
-    for (const m of this.registry.allMounts()) {
-      await m.resource.index?.clear()
-    }
+    await this.registry.invalidateAfterExternal()
   }
 
   async invalidateAfterWriteByPath(path: string): Promise<void> {
     await this.dispatcher.invalidateAfterWriteByPath(path)
   }
 
-  async provision(command: string): Promise<ProvisionResult> {
-    const parser = await this.getShellParser()
-    const root = parser.parse(command)
-    const rootNode = root as unknown as TSNodeLike
-    const session = this.sessionManager.get(this.sessionManager.defaultId)
-    // A dry run must never execute: a command substitution with side
-    // effects ($(tee ...)) would otherwise run while "estimating".
-    // Substitutions expand to empty, so affected words degrade the
-    // plan to honest UNKNOWN instead of resolving via execution.
-    const executeFn: ExecuteFn = () => Promise.resolve(new IOResult())
-    const provName = commandName(command)
-    const provResolved = provName !== '' ? resolveLimit(provName) : null
-    const provTimeout = provResolved !== null ? provResolved.timeoutSeconds : null
-    return runWithTimeout(
-      provisionNode(
-        { registry: this.registry, executeFn, namespace: this.namespace },
-        rootNode,
-        session,
-      ),
-      provTimeout,
-      provName !== '' ? provName : '?',
-    )
+  /**
+   * The declared source instances, built once.
+   *
+   * Deferred rather than done in the constructor because building one
+   * reads its bootstrap pointers, and a dotenv file is I/O. The first
+   * line that fills pays for it; every later line reads the table.
+   * Resolution touches only the process env and dotenv files, never a
+   * remote store, so a failure here is a bad declaration and rightly
+   * fails every line, while an unreachable store still fails only the
+   * names that want it.
+   */
+  /**
+   * The `secrets:` declarations this workspace was built with.
+   *
+   * Read by the paths that rebuild a workspace from state: a snapshot
+   * never carries the block, because it is the deployment's
+   * credentials, so a same-process rebuild has to carry it across or
+   * the restored pointers name instances the new workspace never heard
+   * of.
+   */
+  get declaredSources(): Readonly<Record<string, SecretSource>> {
+    return this.declaredSecretSources
+  }
+
+  private async secretSources(): Promise<Readonly<Record<string, ResolvedSource>>> {
+    if (this.secretSourcesBuilt !== null) return this.secretSourcesBuilt
+    // The in-flight resolution is cached, not just its result: two
+    // sessions filling concurrently would both find the memo empty
+    // across the await and read every bootstrap source twice, and a
+    // rotation between the two reads would leave the loser's config on
+    // one of the lines. Cleared either way, so a failed resolution is
+    // retried by the next line rather than pinned forever.
+    const pending = this.secretSourcesPending ?? resolveSources(this.declaredSecretSources)
+    this.secretSourcesPending = pending
+    let built
+    try {
+      built = await pending
+    } finally {
+      this.secretSourcesPending = null
+    }
+    this.secretSourcesBuilt = built
+    return built
   }
 
   /** Everything the module-level executor needs, assembled from this workspace. */
@@ -820,7 +1452,7 @@ export class Workspace {
       parser: () => this.getShellParser(),
       meta: this.meta,
       drift: this.drift,
-      statFn: (p) => this.dispatch('stat', p),
+      statFn: (p) => this.dispatchInternal('stat', p, [], { index: new RAMIndexCacheStore() }),
       namespace: this.namespace,
       sessions: this.sessionManager,
       registry: this.registry,
@@ -830,33 +1462,96 @@ export class Workspace {
       jobTable: this.jobTable,
       agentId: this.agentId,
       workspaceId: this.wsId,
-      runtimes: this.runtimes,
-      policyRouter: this.policyRouter,
+      runtimes: this.runtimeWorld,
+      router: this.router,
+      secretSources: () => this.secretSources(),
       registerCloser: (fn) => {
         this.closers.push(fn)
       },
-      ensureOpen: (resource) => this.ensureOpen(resource),
       invalidateAllAfterRemote: () => this.invalidateAllAfterRemote(),
-      provision: (cmd) => this.provision(cmd),
-      execute: (cmd, opts) =>
-        this.execute(cmd, opts as ExecuteOptions & { provision?: false | undefined }),
+      execute: (cmd, opts) => this.executeInternal(cmd, opts),
     }
   }
 
-  async execute(
-    command: string,
-    options?: ExecuteOptions & { provision?: false | undefined },
-  ): Promise<ExecuteResult>
-  async execute(
-    command: string,
-    options: ExecuteOptions & { provision: true },
-  ): Promise<ProvisionResult>
-  async execute(command: string, options: ExecuteOptions): Promise<ExecuteResult | ProvisionResult>
-  async execute(
-    command: string,
-    options: ExecuteOptions = {},
-  ): Promise<ExecuteResult | ProvisionResult> {
-    return executeLine(this.executeEnv(), command, options)
+  async shell(command: string, options: ExecuteOptions = {}): Promise<ExecuteResult> {
+    // The top-level door, so it shuts as soon as a close starts. A line that
+    // got in after `jobTable.killAll()` could submit a background job that
+    // teardown then never stops, and mounts would close under it. The
+    // internal dispatch path stays open, which is what the journal replay
+    // uses.
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
+    return this.executeInternal(command, options)
+  }
+
+  private async executeInternal(command: string, options: ExecuteOptions): Promise<ExecuteResult> {
+    // A line admitted before close may still recurse through eval/source/$(),
+    // but no continuation can start after teardown has finished.
+    if (this.closed) throw new Error('Workspace is closed')
+    return this.serializeLine(
+      options.sessionId,
+      options.signal,
+      () => executeLine(this.executeEnv(), command, options),
+      options.session,
+    )
+  }
+
+  /**
+   * Run one line of a session at a time, as one bash process does.
+   *
+   * Two top-level lines on one session share its env, cwd and `$?`, so
+   * letting them interleave hands one line the loop variable the other
+   * just set: two `for f` loops both exit 0 and both print the other's
+   * values. A nested line (`eval`, `source`, `$()`, `xargs`, a host
+   * callback fired mid-line) is the same shell continuing and runs
+   * inline: it already holds the session, and waiting on itself would
+   * deadlock. Evaluators carry their session explicitly. Ambient re-entry
+   * is accepted only with task-local storage, just as in `executeLine`:
+   * the fallback's newest binding may belong to another call. Host callbacks
+   * use their invocation's explicitly bound shell door on the fallback.
+   *
+   * @param sessionId the session named by the caller, or undefined for
+   *   the default.
+   * @param run the line, started only once the session is held.
+   */
+  private async serializeLine<T>(
+    sessionId: string | undefined,
+    signal: AbortSignal | undefined,
+    run: () => Promise<T>,
+    session?: SessionState,
+  ): Promise<T> {
+    if (session !== undefined) return run()
+    const ambient = asyncContextIsolatesTasks ? getCurrentSessionFor(this.sessionManager) : null
+    if (ambient !== null && (sessionId === undefined || sessionId === ambient.sessionId)) {
+      return run()
+    }
+    // Hydrate first: a workspace on a shared store adopts the persisted
+    // default id there, and a key taken before that names a session no
+    // later line would wait on.
+    await abortable(this.ensureSessionsLoaded(), signal)
+    let started = false
+    const key = sessionId ?? this.sessionManager.defaultId
+    const gate = this.lineLock.withLock(key, async () => {
+      // A line queued behind a running one wakes after close may have
+      // started, or after its caller was released; it runs nothing,
+      // like a line that arrived after.
+      if (this.isShuttingDown()) throw new Error('Workspace is closed')
+      if (hasAborted(signal)) throw makeAbortError(signal)
+      started = true
+      return run()
+    })
+    if (signal === undefined) return gate
+    // The wait is the caller's to abandon; the run is not. Once the line
+    // has started, its own abort handling joins the tree under the grace
+    // and restores `$?`, and releasing the caller here would skip that.
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => {
+        if (!started) reject(makeAbortError(signal))
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      gate.then(resolve, reject).finally(() => {
+        signal.removeEventListener('abort', onAbort)
+      })
+    })
   }
 
   /**
@@ -866,14 +1561,21 @@ export class Workspace {
    * runtime throws.
    */
   async executePythonRepl(code: string, options: { sessionId?: string } = {}): Promise<EvalResult> {
-    if (this.closed) throw new Error('Workspace is closed')
+    if (this.isShuttingDown()) throw new Error('Workspace is closed')
     const sessionId = options.sessionId ?? this.sessionManager.defaultId
-    const bound = this.runtimes.bindings.python3
+    const bound = this.runtimeWorld.bindings.python3
     if (bound === undefined || !isEvaluator(bound)) {
       throw new Error('no evaluator runtime bound for the repl')
     }
     try {
-      return await bound.eval(code, { session: sessionId })
+      return await this.serializeLine(sessionId, undefined, async () => {
+        const release = bound.admit()
+        try {
+          return await bound.eval(code, { session: sessionId })
+        } finally {
+          release()
+        }
+      })
     } catch (err) {
       const unavailable =
         err instanceof PyodideUnavailableError || err instanceof MontyUnavailableError
@@ -896,10 +1598,10 @@ export class Workspace {
     this: T,
     source: string | Uint8Array,
     options: WorkspaceOptions = {},
-    overrides: Record<string, Resource> = {},
+    overrides: Record<string, BaseVFS | Mount> = {},
     cliOverrides: CLIOverrides = {},
   ): Promise<InstanceType<T>> {
-    const bytes = typeof source === 'string' ? readFileBytes(source) : source
+    const bytes = typeof source === 'string' ? await readFileBytes(source) : source
     const state = (await readSnapshotTar(bytes)) as WorkspaceStateDict
     return this.fromState(state, options, overrides, cliOverrides)
   }
@@ -908,7 +1610,7 @@ export class Workspace {
     this: T,
     state: WorkspaceStateDict,
     options: WorkspaceOptions = {},
-    overrides: Record<string, Resource> = {},
+    overrides: Record<string, BaseVFS | Mount> = {},
     cliOverrides: CLIOverrides = {},
   ): Promise<InstanceType<T>> {
     const ws = await this._fromState(state, options, overrides, cliOverrides)
@@ -916,57 +1618,95 @@ export class Workspace {
     return ws
   }
 
+  /**
+   * Build the VFS a saved mount names, or null when this package
+   * cannot. Core holds no VFS registry, so it never can; the node
+   * and browser workspaces answer through theirs (`buildVfs`), which
+   * is what lets `load` rebuild a registered custom backend from its
+   * `type` the way Python's loader does, instead of substituting an
+   * empty RAMVFS.
+   */
+  protected static buildSavedVfs(_entry: MountSnapshot): Promise<BaseVFS | null> {
+    return Promise.resolve(null)
+  }
+
   protected static async _fromState<T extends typeof Workspace>(
     this: T,
     state: WorkspaceStateDict,
     options: WorkspaceOptions = {},
-    overrides: Record<string, Resource> = {},
+    overrides: Record<string, BaseVFS | Mount> = {},
     cliOverrides: CLIOverrides = {},
   ): Promise<InstanceType<T>> {
-    const args = buildMountArgs(state, overrides, cliOverrides)
-    const resources: Record<string, MountSpec> = {}
-    for (const [prefix, [resource, mode]] of Object.entries(args.mountArgs)) {
-      resources[prefix] = [resource, mode]
-    }
+    const rebuilt = await withRebuiltMounts(state, overrides, (m) => this.buildSavedVfs(m))
+    // The caller's own overrides, named before the rebuilds are merged
+    // in: past this point the two are one map, and only these are a
+    // backend other than the one the snapshot saved.
+    const args = buildMountArgs(
+      state,
+      rebuilt,
+      cliOverrides,
+      new Set(Object.keys(overrides).map(normMountPrefix)),
+    )
+    // The Mounts ride through whole; flattening them to [vfs, mode]
+    // here is what would drop the restored read policy.
+    const mounts: Record<string, MountSpec> = { ...args.mountArgs }
     const mergedOptions: WorkspaceOptions = {
       ...(args.defaultSessionId !== undefined ? { sessionId: args.defaultSessionId } : {}),
       ...(args.defaultAgentId !== null ? { agentId: args.defaultAgentId } : {}),
       ...(args.clis !== undefined ? { clis: args.clis } : {}),
       ...options,
     }
-    const ws = new this(resources, mergedOptions) as InstanceType<T>
-    for (const resource of Object.values(overrides)) {
-      ws.sharedResources.add(resource)
+    const ws = new this(mounts, mergedOptions) as InstanceType<T>
+    for (const override of Object.values(overrides)) {
+      ws.sharedMounts.add(override instanceof Mount ? override.vfs : override)
     }
     await applyStateDict(ws, state)
     return ws
   }
 
   async copy(options: WorkspaceOptions = {}): Promise<this> {
-    // Mirrors Python's Workspace.copy(): remote-backed resources (Redis, S3,
-    // GDrive — with redacted config) are reused; local resources (RAM, Disk)
+    // Mirrors Python's Workspace.copy(): remote-backed mounts (Redis, S3,
+    // GDrive — with redacted config) are reused; local mounts (RAM, Disk)
     // are reconstructed from snapshot state. Uses _fromState directly (no tar
     // round-trip, no drift install) like Python's `type(self)._from_state`.
     const state = await toStateDict(this)
+    for (const mount of this.registry.allMounts()) {
+      const saved = state.mounts.find((entry) => entry.prefix === mount.prefix)
+      if (saved !== undefined) saved.index_config = indexConfigDump(mount.indexConfig, true)
+    }
     const opts: WorkspaceOptions = {
       mode: options.mode ?? MountMode.WRITE,
+      // The declarations travel with the copy the way a live CLI
+      // install does: an env pointer restores from state naming its
+      // instance, and without the block the copy would answer the
+      // first read with "unknown secrets source". Profiles and command
+      // limits are deployment config the state never carries; without
+      // them the copy runs every session unconfined. Policy instances and
+      // the route policy stay behind: a policy is a live host object whose
+      // state two workspaces must not share, and the route names runtimes
+      // the copy does not carry. A caller's own profile table brings its
+      // own default.
+      secrets: options.secrets ?? this.declaredSecretSources,
+      commandLimits: options.commandLimits ?? this.registry.commandLimits,
+      profiles: options.profiles ?? this.profiles,
+      profile: options.profile ?? (options.profiles == null ? this.defaultProfileName : null),
     }
     const copyAgentId = options.agentId ?? this.agentId
     if (copyAgentId !== null) opts.agentId = copyAgentId
     opts.ops = options.ops ?? this.opsRegistry
     const parser = options.shellParser ?? this.shellParser
     if (parser !== null) opts.shellParser = parser
-    const overrides: Record<string, Resource> = {}
+    const overrides: Record<string, BaseVFS> = {}
     for (const mount of this.registry.allMounts()) {
       for (const snap of state.mounts) {
-        if (snap.prefix === mount.prefix && resourceStateRequiresOverride(snap.resource_state)) {
-          overrides[mount.prefix] = mount.resource
+        if (snap.prefix === mount.prefix && vfsStateRequiresOverride(snap.vfs_state)) {
+          overrides[mount.prefix] = mount.vfs
         }
       }
     }
     // A same-process copy reinstalls every CLI from its live install
     // (spec + validated config), the way remote mounts share their live
-    // resources: a directly installed spec and a redacted secret both
+    // mounts: a directly installed spec and a redacted secret both
     // survive without a registry lookup.
     const cliOverrides: CLIOverrides = {}
     for (const [name, install] of this.registry.clis.items()) {
@@ -977,19 +1717,59 @@ export class Workspace {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return
-    this.closed = true
-    await closeWorkspace({
-      watch: this.watchManager,
-      cache: this.cache,
-      ownsStateStore: this.ownsStateStore,
-      stateStore: this.stateStoreInternal,
-      closers: this.closers,
-      jobTable: this.jobTable,
-      registry: this.registry,
-      opened: this.opened,
-      openOrder: this.openOrder,
-      sharedResources: this.sharedResources,
-    })
+    // Re-entry is guarded by the in-flight promise, not by flipping `closed`
+    // up front. A runtime still replaying its journal has to see an open
+    // workspace or its final writes fail, which is how an interrupted python
+    // program used to lose its last mutations. Python guards the same way,
+    // with `_close_lock`, and sets its flags once teardown is done.
+    // Awaiting the memoized attempt rather than short-circuiting on `closed`
+    // keeps every caller told: teardown runs once, and if it raised, each
+    // caller sees why instead of the second one reading success.
+    this.closing ??= this.runClose(false)
+    await this.closing
+  }
+
+  /**
+   * Close the workspace and delete its state from the store.
+   *
+   * Links, history, sessions and the metadata record all go, so a
+   * workspace created later under this id starts empty. `close` keeps
+   * them, which is how a daemon's workspace survives a restart. Throws
+   * when the workspace was closed first: that closed the stores its
+   * state lives in, so nothing was deleted.
+   */
+  async delete(): Promise<void> {
+    this.closing ??= this.runClose(true)
+    await this.closing
+    if (!this.stateDropped) throw new Error('workspace was closed before delete; its state is kept')
+  }
+
+  private async runClose(dropState: boolean): Promise<void> {
+    this.stateDropped = dropState
+    try {
+      await closeWorkspace({
+        watch: this.watchManager,
+        cache: this.cache,
+        ownsStateStore: this.ownsStateStore,
+        stateStore: this.stateStoreInternal,
+        closers: [
+          () => this.sessionManager.settle(),
+          () => this.scriptPolicy.close(),
+          ...this.closers.splice(0),
+        ],
+        jobTable: this.jobTable,
+        registry: this.registry,
+        sharedMounts: this.sharedMounts,
+        dropState,
+        workspaceId: this.workspaceId,
+        planes: this.planes,
+      })
+    } finally {
+      // Teardown has run either way, and `closing` is memoized, so it will
+      // not run again. The guards that only read `closed` are the ones that
+      // stop a settled runner resuming onto a released VFS, so a
+      // teardown that raises must still close the door behind it.
+      this.closed = true
+    }
   }
 }

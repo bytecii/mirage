@@ -13,13 +13,16 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { TrelloAccessor } from '../../../accessor/trello.ts'
+import { requireMountWritable } from '../../../context/session_context.ts'
 import { commentUpdate } from '../../../core/trello/client.ts'
 import { normalizeComment } from '../../../core/trello/normalize.ts'
 import { IOResult } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
+import { VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
-import { CommandSpec, FlagView, Option } from '../../spec/types.ts'
+import { CommandSpec, Option } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { resolveTextInput } from './_input.ts'
+import { requireCard } from './_scope.ts'
 
 const ENC = new TextEncoder()
 
@@ -47,20 +50,24 @@ async function trelloCardCommentUpdateCommand(
   }
   const inlineText = fl.asStr('text') ?? null
   const textFile = fl.asStr('text_file') ?? null
-  const text = await resolveTextInput(accessor.transport, {
+  const text = await resolveTextInput(accessor, {
     inlineText,
     filePath: textFile,
     mountPrefix: opts.mountPrefix ?? '',
     stdin: opts.stdin,
     errorMessage: 'comment text is required',
   })
+  // A card write is addressed by id, not path, so only the mount-wide
+  // grant can admit it (a write-granting carve-out names no card).
+  requireMountWritable(opts.mountPrefix ?? '')
+  await requireCard(accessor, cardId)
   const comment = await commentUpdate(accessor.transport, cardId, commentId, text)
   return [ENC.encode(JSON.stringify(normalizeComment(comment, cardId))), new IOResult()]
 }
 
 export const TRELLO_CARD_COMMENT_UPDATE = command({
   name: 'trello card comment-update',
-  resource: ResourceName.TRELLO,
+  vfs: VFSName.TRELLO,
   spec: SPEC,
   fn: trelloCardCommentUpdateCommand,
   write: true,

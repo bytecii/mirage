@@ -14,10 +14,9 @@
 
 from typing import Any
 
-import aiohttp
-
-from mirage.utils.ranges import range_header, window_if_unranged
-from mirage.utils.sanitize import path_safe_name
+from mirage.core.api.client import SessionArg, api_request, status_error
+from mirage.utils.naming import file_id_name
+from mirage.utils.ranges import window_for
 
 
 def file_blob_name(att: dict[str, Any]) -> str:
@@ -27,20 +26,20 @@ def file_blob_name(att: dict[str, Any]) -> str:
         att (dict): Discord attachment dict (with id, filename fields).
 
     Returns:
-        str: VFS filename of shape ``<stem>__<att-id>.<ext>``. The stem
-        keeps the original spelling, only ``/`` is replaced.
+        str: VFS filename of shape ``<stem>__<att-id>.<ext>``, named after
+        ``filename`` and else ``title`` (see ``file_id_name``).
     """
-    raw_name = att.get("filename") or att.get("title") or "file"
-    aid = str(att.get("id", ""))
-    if "." in raw_name:
-        stem, _, ext = raw_name.rpartition(".")
-        return f"{path_safe_name(stem)}__{aid}.{ext}"
-    return f"{path_safe_name(raw_name)}__{aid}"
+    return file_id_name(
+        str(att.get("id", "")), att.get("filename"), att.get("title")
+    )
 
 
-async def download_file(url: str,
-                        offset: int = 0,
-                        size: int | None = None) -> bytes:
+async def download_file(
+    url: str,
+    offset: int = 0,
+    size: int | None = None,
+    session: SessionArg = None,
+) -> bytes:
     """Download a Discord-hosted file blob, optionally only a byte range.
 
     Discord CDN URLs (``cdn.discordapp.com`` for ``url``,
@@ -55,14 +54,17 @@ async def download_file(url: str,
             attachment object).
         offset (int): first byte to read.
         size (int | None): how many bytes, or None for the rest.
+        session (SessionArg): pool or live session to ride.
 
     Returns:
         bytes: raw file content.
     """
-    window = range_header(offset, size)
-    headers = {"Range": window} if window else None
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as resp:
-            resp.raise_for_status()
-            data = await resp.read()
-            return window_if_unranged(data, resp.status, offset, size)
+    data: bytes = await api_request(
+        "GET",
+        url,
+        error_of=status_error,
+        read="bytes",
+        window=window_for(offset, size),
+        session=session,
+    )
+    return data

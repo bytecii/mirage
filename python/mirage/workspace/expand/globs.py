@@ -13,19 +13,27 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import dataclasses
+import posixpath
 
 from mirage.ops.config import NamespaceLinks
 from mirage.ops.namespace_view import child_mount_names, namespace_names
 from mirage.shell.constants import SHOPT_DEFAULTS
-from mirage.shell.errors import ExitSignal
-from mirage.types import PathSpec
-from mirage.utils.glob_walk import (glob_name_matches, glob_pattern, has_glob,
-                                    literal_word, spell_match, unmark_globs)
+from mirage.shell.errors import DiscardSignal
+from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import WALK_ERRORS
+from mirage.utils.glob_walk import (
+    glob_name_matches,
+    glob_pattern,
+    has_glob,
+    literal_word,
+    spell_match,
+    unmark_globs,
+)
 from mirage.utils.key_prefix import mount_key
 from mirage.utils.path import CycleError
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.mount import MountEntry
-from mirage.workspace.session import Session
+from mirage.workspace.session import SessionState
 
 # How deep a `**` descends. bash has no cap, but every level here is one
 # listing per directory, so an accidental `**` over a large tree is
@@ -48,6 +56,7 @@ class GlobOptions:
         globstar (bool): a `**` segment matches zero or more directory
             levels instead of reading as `*`.
     """
+
     nullglob: bool = False
     failglob: bool = False
     globstar: bool = False
@@ -59,27 +68,30 @@ class GlobOptions:
         return self.nullglob or self.failglob or self.globstar
 
 
-def glob_options(session: Session) -> GlobOptions:
+def glob_options(session: SessionState) -> GlobOptions:
     """The session's pathname-expansion options.
 
     Args:
-        session (Session): the session holding the `shopt` table.
+        session (SessionState): the session holding the `shopt` table.
     """
-    return GlobOptions(nullglob=session.shopts.get("nullglob",
-                                                   SHOPT_DEFAULTS["nullglob"]),
-                       failglob=session.shopts.get("failglob",
-                                                   SHOPT_DEFAULTS["failglob"]),
-                       globstar=session.shopts.get("globstar",
-                                                   SHOPT_DEFAULTS["globstar"]))
+    return GlobOptions(
+        nullglob=session.shopts.get("nullglob", SHOPT_DEFAULTS["nullglob"]),
+        failglob=session.shopts.get("failglob", SHOPT_DEFAULTS["failglob"]),
+        globstar=session.shopts.get("globstar", SHOPT_DEFAULTS["globstar"]),
+    )
 
 
-def _namespace_children(registry: MountRegistry, links: NamespaceLinks | None,
-                        directory: str, pattern: str) -> list[str]:
+def _namespace_children(
+    registry: MountRegistry,
+    links: NamespaceLinks | None,
+    directory: str,
+    pattern: str,
+) -> list[str]:
     """Virtual paths a directory owes the namespace, matching a segment.
 
     Child mounts and symlinks are namespace state no backend can see, so
     a glob that stops at one backend misses both: a nested mount's keys
-    live in another resource, and no resource stores a link. This is the
+    live in another VFS, and no VFS stores a link. This is the
     union ``merge_readdir`` already applies to a listing, filtered by the
     glob segment with the same matcher backends use, and session-filtered
     by ``namespace_names`` so a scoped session never learns an ungranted
@@ -94,8 +106,10 @@ def _namespace_children(registry: MountRegistry, links: NamespaceLinks | None,
     base = directory.rstrip("/")
     matcher = glob_pattern(pattern)
     return [
-        f"{base}/{name}" for name in namespace_names(
-            [m.prefix for m in registry.mounts()], links, directory)
+        f"{base}/{name}"
+        for name in namespace_names(
+            [m.prefix for m in registry.mounts()], links, directory
+        )
         if glob_name_matches(name, matcher)
     ]
 
@@ -113,9 +127,14 @@ def _as_spec(match: str | PathSpec, prefix: str) -> PathSpec:
     return PathSpec.from_str_path(full, mount_key(full, prefix))
 
 
-def _merge_namespace(matches: list[str | PathSpec], extra: list[str],
-                     directory: str, prefix: str, registry: MountRegistry,
-                     mount: MountEntry) -> list[PathSpec]:
+def _merge_namespace(
+    matches: list[str | PathSpec],
+    extra: list[str],
+    directory: str,
+    prefix: str,
+    registry: MountRegistry,
+    mount: MountEntry,
+) -> list[PathSpec]:
     """Union a backend's matches with the namespace-owed ones.
 
     Sorted, because bash sorts a pathname expansion and the two sources
@@ -127,7 +146,7 @@ def _merge_namespace(matches: list[str | PathSpec], extra: list[str],
     A match is a child of the directory it was globbed in, so a spec that
     is the directory itself is not one. The shared resolver never answers
     a dir-shaped ask that way, but ``resolve_glob`` is a public hook and a
-    resource reinstating the literal on its own would hand back the spec
+    VFS reinstating the literal on its own would hand back the spec
     it was given. Unlike the word comparison this replaces, the test
     cannot discard a real match: a match is strictly longer than the
     directory holding it, while a word can be spelled exactly like one.
@@ -144,7 +163,8 @@ def _merge_namespace(matches: list[str | PathSpec], extra: list[str],
         mount (MountEntry): the mount owning the glob word.
     """
     specs = [
-        s for s in (_as_spec(m, prefix) for m in matches)
+        s
+        for s in (_as_spec(m, prefix) for m in matches)
         if s.virtual.startswith(directory) and s.virtual != directory
     ]
     seen = {s.virtual for s in specs}
@@ -155,13 +175,15 @@ def _merge_namespace(matches: list[str | PathSpec], extra: list[str],
         # A nested mount root belongs to the mount it opens, not to the
         # one being listed, so it is keyed against its own backend.
         owner = _mount_of(registry, virtual, mount).prefix.rstrip("/")
-        specs.append(PathSpec.from_str_path(virtual, mount_key(virtual,
-                                                               owner)))
+        specs.append(
+            PathSpec.from_str_path(virtual, mount_key(virtual, owner))
+        )
     return sorted(specs, key=lambda s: s.virtual)
 
 
-def _mount_of(registry: MountRegistry, virtual: str,
-              fallback: MountEntry) -> MountEntry:
+def _mount_of(
+    registry: MountRegistry, virtual: str, fallback: MountEntry
+) -> MountEntry:
     """The mount owning a path, falling back to the word's own.
 
     Args:
@@ -210,9 +232,13 @@ def _respell(virtuals: list[str], directory: str) -> list[str]:
     return [f"{base}/{v.rsplit('/', 1)[-1]}" for v in virtuals]
 
 
-async def _level_matches(registry: MountRegistry, mount: MountEntry,
-                         links: NamespaceLinks | None, dir_virtual: str,
-                         seg: str) -> list[str]:
+async def _level_matches(
+    registry: MountRegistry,
+    mount: MountEntry,
+    links: NamespaceLinks | None,
+    dir_virtual: str,
+    seg: str,
+) -> list[str]:
     """One descent step: the owning backend's matches plus the namespace's.
 
     The walk can cross into a nested mount, because a mid-path segment
@@ -231,14 +257,17 @@ async def _level_matches(registry: MountRegistry, mount: MountEntry,
     """
     real = _listing_dir(links, dir_virtual)
     owner = _mount_of(registry, real, mount)
+    await owner.ensure_ready()
     prefix = owner.prefix.rstrip("/")
-    spec = PathSpec(virtual=real,
-                    directory=real,
-                    resource_path=mount_key(real, prefix),
-                    pattern=seg,
-                    resolved=False)
+    spec = PathSpec(
+        virtual=real,
+        directory=real,
+        vfs_path=mount_key(real, prefix),
+        pattern=seg,
+        resolved=False,
+    )
     try:
-        matches = await owner.resource.resolve_glob([spec], prefix=prefix)
+        matches = await owner.expand_glob([spec], prefix)
     except OSError:
         # This parent is not a listable directory; bash skips it during
         # descent. A nested mount root or a link under it is still real.
@@ -250,51 +279,17 @@ async def _level_matches(registry: MountRegistry, mount: MountEntry,
     # segment (`/base/f*/f1` -> `/base/base/f1`); bash keeps the literal
     # because a file is not a directory to descend into.
     out = [
-        v for v in (m.virtual if isinstance(m, PathSpec) else (
-            m if m.startswith(prefix) else prefix + m)
-                    for m in matches) if v.startswith(f"{base}/")
+        v
+        for v in (
+            m.virtual
+            if isinstance(m, PathSpec)
+            else (m if m.startswith(prefix) else prefix + m)
+            for m in matches
+        )
+        if v.startswith(f"{base}/")
     ]
     out.extend(_namespace_children(registry, links, real, seg))
     return out if real == dir_virtual else _respell(out, dir_virtual)
-
-
-async def _walk_segments(item: PathSpec, mount: MountEntry, prefix: str,
-                         registry: MountRegistry,
-                         links: NamespaceLinks | None) -> list[PathSpec]:
-    """Expand a mid-path pattern level by level via resolve_glob.
-
-    A glob in a non-final segment (``s*/x.txt``) cannot resolve in one
-    listing: each glob segment is matched against its (already
-    expanded) parent directory, using the backend's own single-level
-    ``resolve_glob`` per parent, so no backend needs mid-path support.
-    Matches are spelled the way bash expansion implies (typed head +
-    matched tail). An intermediate match that cannot be listed is
-    skipped, matching bash's directories-only descent.
-
-    Args:
-        item (PathSpec): the classify-shaped glob word.
-        mount (MountEntry): the mount owning the word.
-        prefix (str): the mount prefix with no trailing slash.
-    """
-    segments = item.virtual.strip("/").split("/")
-    first = next(i for i, seg in enumerate(segments) if has_glob(seg))
-    walked = len(segments) - first
-    # The head above the first glob segment is a real directory, so a
-    # glob character quoted inside it is part of the name to list.
-    level = [unmark_globs("/" + "/".join(segments[:first]))]
-    for seg in segments[first:]:
-        gathered: list[str] = []
-        for parent in level:
-            gathered.extend(await _level_matches(registry, mount, links,
-                                                 parent.rstrip("/") + "/",
-                                                 seg))
-        # bash sorts a pathname expansion, and the backend and the
-        # namespace are enumerated separately, so the union is ordered
-        # here.
-        level = sorted(set(gathered))
-        if not level:
-            return []
-    return _to_specs(level, item, registry, mount, walked)
 
 
 def _join_spelling(head: str, name: str) -> str:
@@ -310,9 +305,14 @@ def _join_spelling(head: str, name: str) -> str:
     return f"{head.rstrip('/')}/{name}"
 
 
-async def _descend(registry: MountRegistry, mount: MountEntry,
-                   links: NamespaceLinks | None, parent: str, spelled: str,
-                   depth: int) -> list[tuple[str, str]]:
+async def _descend(
+    registry: MountRegistry,
+    mount: MountEntry,
+    links: NamespaceLinks | None,
+    parent: str,
+    spelled: str,
+    depth: int,
+) -> list[tuple[str, str]]:
     """Every entry under a directory, at any depth, with its spelling.
 
     One listing per directory; a child that cannot be listed (a file)
@@ -332,79 +332,124 @@ async def _descend(registry: MountRegistry, mount: MountEntry,
         return []
     out: list[tuple[str, str]] = []
     for child in sorted(
-            set(await _level_matches(registry, mount, links, parent + "/",
-                                     "*"))):
+        set(await _level_matches(registry, mount, links, parent + "/", "*"))
+    ):
         child_spelled = _join_spelling(spelled, child.rsplit("/", 1)[-1])
         out.append((child, child_spelled))
-        out.extend(await _descend(registry, mount, links, child, child_spelled,
-                                  depth + 1))
+        out.extend(
+            await _descend(
+                registry, mount, links, child, child_spelled, depth + 1
+            )
+        )
     return out
 
 
-async def _walk_globstar(item: PathSpec, mount: MountEntry,
-                         registry: MountRegistry,
-                         links: NamespaceLinks | None) -> list[PathSpec]:
-    """Expand a word holding a `**` segment under `shopt -s globstar`.
+async def _walk(
+    item: PathSpec,
+    mount: MountEntry,
+    registry: MountRegistry,
+    links: NamespaceLinks | None,
+    globstar: bool,
+) -> list[PathSpec]:
+    """Expand a word level by level, one segment at a time.
 
-    A `**` segment matches zero or more directory levels: the parent
-    itself (bash spells that one with a trailing slash when the word has
-    a fixed head, `d/**` -> `d/`, and omits it for a bare `**`) plus
-    every descendant. Any other segment matches one level as usual. The
-    spelling is carried level by level rather than derived from a
-    segment count, because a `**` that matched zero levels leaves the
-    typed word and the match with different depths.
+    A glob in a non-final segment (``s*/x.txt``) cannot resolve in one
+    listing, so each segment is matched against its (already expanded)
+    parents with the owning backend's own single-level ``resolve_glob``,
+    and an intermediate match that cannot be listed is skipped, as in
+    bash's directories-only descent. The walk starts at the first glob
+    or dot segment: a ``.`` or ``..`` applies to each parent that is a
+    directory, ``..`` climbing from where a link leads, which is the
+    kernel's walk of ``name/..`` that bash's opendir makes, so a missing
+    or plain-file name in front of one matches nothing. Under
+    ``globstar`` a ``**`` segment matches zero or
+    more directory levels: the parent itself (spelled with a trailing
+    slash when the word has a fixed head, ``d/**`` -> ``d/``, and left
+    out for a bare ``**``) plus every descendant. The spelling is carried
+    level by level, the typed head plus each segment as matched.
 
     Args:
         item (PathSpec): the classify-shaped glob word.
         mount (MountEntry): the mount owning the word.
         registry (MountRegistry): registry holding the mount table.
         links (NamespaceLinks | None): the namespace symlink table.
+        globstar (bool): whether ``**`` reads as any depth.
     """
-    segments = item.virtual.strip("/").split("/")
-    first = next(i for i, seg in enumerate(segments) if has_glob(seg))
-    raw = unmark_globs(item.raw_path)
-    raw_parts = raw.rstrip("/").split("/")
-    raw_head = "/".join(raw_parts[:len(raw_parts) - (len(segments) - first)])
-    if raw.startswith("/") and not raw_head:
-        raw_head = "/"
-    head = unmark_globs("/" + "/".join(segments[:first])).rstrip("/") or "/"
-    level: list[tuple[str, str, bool]] = [(head, raw_head, False)]
-    for seg in segments[first:]:
+    typed = (item.dotted or item.virtual).strip("/").split("/")
+    first = next(
+        i for i, seg in enumerate(typed) if has_glob(seg) or seg in (".", "..")
+    )
+    raw = unmark_globs(item.raw_path).rstrip("/").split("/")
+    spelled_head = "/".join(raw[: len(raw) - (len(typed) - first)])
+    if item.raw_path.startswith("/") and not spelled_head:
+        spelled_head = "/"
+    # The head above the first glob or dot segment is a real directory,
+    # so a glob character quoted inside it is part of the name to list.
+    head = unmark_globs("/" + "/".join(typed[:first]))
+    level = [(head, spelled_head, False)]
+    for seg in typed[first:]:
         gathered: list[tuple[str, str, bool]] = []
         for parent, spelled, _ in level:
-            if seg == "**":
+            if seg in (".", ".."):
+                if await _is_directory(registry, mount, links, parent):
+                    real = (
+                        links.follow(parent) if links is not None else parent
+                    )
+                    gathered.append(
+                        (
+                            posixpath.dirname(real) if seg == ".." else parent,
+                            _join_spelling(spelled, seg),
+                            False,
+                        )
+                    )
+            elif globstar and seg == "**":
                 gathered.append((parent, spelled, True))
-                gathered.extend((v, sp, False) for v, sp in await _descend(
-                    registry, mount, links, parent, spelled, 0))
-                continue
-            for child in await _level_matches(registry, mount, links,
-                                              parent.rstrip("/") + "/", seg):
-                gathered.append(
-                    (child, _join_spelling(spelled,
-                                           child.rsplit("/", 1)[-1]), False))
-        seen: set[str] = set()
-        level = []
-        for entry in sorted(gathered, key=lambda e: e[0]):
-            if entry[0] in seen:
-                continue
-            seen.add(entry[0])
-            level.append(entry)
+                gathered.extend(
+                    (v, sp, False)
+                    for v, sp in await _descend(
+                        registry, mount, links, parent, spelled, 0
+                    )
+                )
+            else:
+                gathered.extend(
+                    (
+                        child,
+                        _join_spelling(spelled, child.rsplit("/", 1)[-1]),
+                        False,
+                    )
+                    for child in await _level_matches(
+                        registry, mount, links, parent.rstrip("/") + "/", seg
+                    )
+                )
+        # bash sorts a pathname expansion, and the backend and the
+        # namespace are enumerated separately, so the union is ordered
+        # here, one entry per spelling.
+        seen: dict[str, tuple[str, str, bool]] = {}
+        for entry in gathered:
+            seen.setdefault(entry[1], entry)
+        level = sorted(seen.values(), key=lambda e: e[1])
         if not level:
             return []
-    # A `**` that matched zero levels at the end of the word is the head
-    # itself, which bash spells with a trailing slash (`d/**` -> `d/`)
-    # and leaves out entirely when there is no head (`**` alone).
     return [
-        dataclasses.replace(PathSpec.from_str_path(
-            v, mount_key(v,
-                         _mount_of(registry, v, mount).prefix.rstrip("/"))),
-                            raw_path=f"{sp.rstrip('/')}/" if is_self else sp)
-        for v, sp, is_self in level if sp or not is_self
+        dataclasses.replace(
+            PathSpec.from_str_path(
+                v,
+                mount_key(v, _mount_of(registry, v, mount).prefix.rstrip("/")),
+            ),
+            raw_path=f"{sp.rstrip('/')}/" if is_self else sp,
+        )
+        for v, sp, is_self in level
+        if sp or not is_self
     ]
 
 
-def _to_specs(virtuals: list[str], item: PathSpec, registry: MountRegistry,
-              mount: MountEntry, walked: int) -> list[PathSpec]:
+def _to_specs(
+    virtuals: list[str],
+    item: PathSpec,
+    registry: MountRegistry,
+    mount: MountEntry,
+    walked: int,
+) -> list[PathSpec]:
     """Key matched virtual paths to their mounts and spell them as typed.
 
     Args:
@@ -416,10 +461,13 @@ def _to_specs(virtuals: list[str], item: PathSpec, registry: MountRegistry,
     """
     raw = unmark_globs(item.raw_path)
     return [
-        dataclasses.replace(PathSpec.from_str_path(
-            v, mount_key(v,
-                         _mount_of(registry, v, mount).prefix.rstrip("/"))),
-                            raw_path=spell_match(raw, v, walked))
+        dataclasses.replace(
+            PathSpec.from_str_path(
+                v,
+                mount_key(v, _mount_of(registry, v, mount).prefix.rstrip("/")),
+            ),
+            raw_path=spell_match(raw, v, walked),
+        )
         for v in virtuals
     ]
 
@@ -446,9 +494,44 @@ def _match_raw(item: PathSpec, match: PathSpec) -> PathSpec:
     # way; only the head that is carried over has to lose its marks.
     if not match.virtual.startswith(unmark_globs(item.directory)):
         return match
-    raw_dir = unmark_globs(raw[:raw.rfind("/") + 1])
-    spelled = raw_dir + match.virtual[len(item.directory):]
+    raw_dir = unmark_globs(raw[: raw.rfind("/") + 1])
+    spelled = raw_dir + match.virtual[len(item.directory) :]
     return dataclasses.replace(match, raw_path=spelled)
+
+
+async def _is_directory(
+    registry: MountRegistry,
+    mount: MountEntry,
+    links: NamespaceLinks | None,
+    virtual: str,
+) -> bool:
+    """Whether a match is a directory, the way a trailing slash asks.
+
+    bash keeps a directory or a symlink to one and drops a regular file
+    or a broken link (bash 5.2, ``*/``). A nested mount root is a
+    directory by construction; anything else is asked of the mount that
+    owns the link-resolved path, one stat per match.
+
+    Args:
+        registry (MountRegistry): registry holding the mount table.
+        mount (MountEntry): the mount owning the typed word.
+        links (NamespaceLinks | None): the namespace symlink table.
+        virtual (str): one match's absolute virtual path.
+    """
+    real = virtual
+    if links is not None:
+        try:
+            real = links.follow(virtual)
+        except CycleError:
+            return False
+    owner = _mount_of(registry, real, mount)
+    if real.rstrip("/") == owner.prefix.rstrip("/"):
+        return True
+    try:
+        row = await owner.execute_op("stat", real)
+    except WALK_ERRORS:
+        return False
+    return isinstance(row, FileStat) and row.type == FileType.DIRECTORY
 
 
 def _has_globstar_segment(item: PathSpec) -> bool:
@@ -469,10 +552,11 @@ async def resolve_globs(
 ) -> list[str | PathSpec]:
     """Resolve glob patterns in PathSpec args, preserving PathSpec type.
 
-    Globs are resolved via resource.resolve_glob. Non-glob PathSpec
-    and plain str items pass through unchanged. Spec-TEXT words never
-    arrive here as PathSpec: per-position kinds keep them plain text at
-    classification time.
+    Globs are resolved via VFS.resolve_glob. Non-glob PathSpec
+    and plain str items pass through unchanged. Spec-TEXT words arrive
+    here as PathSpec only from a native program's line, which bash
+    globs whatever the slot: everywhere else per-position kinds keep
+    them plain text at classification time.
 
     Args:
         classified (list[str | PathSpec]): text arguments (str) and
@@ -500,31 +584,58 @@ async def resolve_globs(
             if mount is None:
                 result.append(item)
                 continue
+            # A trailing slash asks for directories only, and every match
+            # keeps one (`*/` -> `sub/`, and so does `*//`). The slash is
+            # not part of the spelling to rebuild, so it comes off the
+            # word here and goes back on each match; the literal answer
+            # to a zero-match glob is still the word as typed. normpath
+            # already dropped it from `virtual`, which is what tells a
+            # typed word from a directory-shaped spec (#1065).
+            typed = item
+            dirs_only = (
+                item.raw_path.endswith("/") and item.raw_path != item.virtual
+            )
+            if dirs_only:
+                item = dataclasses.replace(
+                    item, raw_path=item.raw_path.rstrip("/")
+                )
             prefix = mount.prefix.rstrip("/")
             # Stamp the backend key so readdir addresses the correct
-            # resource-relative path.
-            item = dataclasses.replace(item,
-                                       resource_path=mount_key(
-                                           item.virtual, prefix))
+            # VFS-relative path.
+            item = dataclasses.replace(
+                item, vfs_path=mount_key(item.virtual, prefix)
+            )
+            await mount.ensure_ready()
             try:
                 # The parent directory is a real directory to list, so a
                 # glob character quoted inside it is part of its name.
                 directory = unmark_globs(item.directory)
-                if opts.globstar and _has_globstar_segment(item):
-                    resolved = await _walk_globstar(item, mount, registry,
-                                                    links)
-                elif has_glob(item.directory):
-                    resolved = await _walk_segments(item, mount, prefix,
-                                                    registry, links)
+                if (
+                    item.dotted
+                    or has_glob(item.directory)
+                    or opts.globstar
+                    and _has_globstar_segment(item)
+                ):
+                    resolved = await _walk(
+                        item, mount, registry, links, opts.globstar
+                    )
                 elif _listing_dir(links, directory) != directory:
                     # The parent is a symlink, so the backend holding the
                     # typed path has nothing to list; _level_matches
                     # follows it and spells the matches back.
                     resolved = _to_specs(
                         sorted(
-                            set(await _level_matches(registry, mount, links,
-                                                     directory, pattern))),
-                        item, registry, mount, 1)
+                            set(
+                                await _level_matches(
+                                    registry, mount, links, directory, pattern
+                                )
+                            )
+                        ),
+                        item,
+                        registry,
+                        mount,
+                        1,
+                    )
                 else:
                     # Asked with the word, a backend that matched nothing
                     # answers with the word (nullglob off), which is
@@ -534,29 +645,51 @@ async def resolve_globs(
                     # spec has no literal to reinstate, so an empty list
                     # means no match and every spec returned is one.
                     resolved = _merge_namespace(
-                        list(await mount.resource.resolve_glob([item.dir],
-                                                               prefix=prefix)),
-                        _namespace_children(registry, links, directory,
-                                            pattern), directory, prefix,
-                        registry, mount)
+                        list(await mount.expand_glob([item.dir], prefix)),
+                        _namespace_children(
+                            registry, links, directory, pattern
+                        ),
+                        directory,
+                        prefix,
+                        registry,
+                        mount,
+                    )
+                if dirs_only:
+                    kept: list[PathSpec] = []
+                    for p in resolved:
+                        if await _is_directory(
+                            registry, mount, links, _as_spec(p, prefix).virtual
+                        ):
+                            kept.append(p)
+                    resolved = kept
                 if not resolved:
                     # bash's three answers to a zero-match glob: the
                     # literal word (default), nothing at all under
                     # nullglob, and a fatal expansion error under
                     # failglob, which ends the line like a bad subscript.
+                    # The literal is resolved, or the command's backend
+                    # would glob it again over the simplified path
+                    # (`missing/../*` as `*`); the pattern stays, so a
+                    # push-down still reads it as no entity name.
                     if opts.failglob:
-                        word = unmark_globs(item.raw_path)
-                        raise ExitSignal(
-                            1,
-                            stderr=f"bash: no match: {word}\n".encode(),
-                            contained_code=1)
+                        word = unmark_globs(typed.raw_path)
+                        raise DiscardSignal(
+                            f"bash: no match: {word}\n".encode()
+                        )
                     if not opts.nullglob:
-                        result.append(item)
+                        result.append(
+                            dataclasses.replace(typed, resolved=True)
+                        )
                     continue
                 for p in resolved:
-                    result.append(_match_raw(item, _as_spec(p, prefix)))
+                    spelled = _match_raw(item, _as_spec(p, prefix))
+                    if dirs_only:
+                        spelled = dataclasses.replace(
+                            spelled, raw_path=spelled.raw_path + "/"
+                        )
+                    result.append(spelled)
             except (ValueError, AttributeError, TypeError):
-                result.append(item)
+                result.append(typed)
         elif isinstance(item, PathSpec):
             result.append(item)
         else:
@@ -590,7 +723,7 @@ async def expand_boundary_globs(
     A glob operand is normally left for the owning backend to resolve,
     which is how a prefix store pushes the listing down. That only holds
     while every match belongs to that backend: a nested mount's root is a
-    child of the directory but its keys live in another resource, so the
+    child of the directory but its keys live in another VFS, so the
     backend answers "no such file" for a name its own listing shows. When
     the glob's fixed head holds a child mount, the word is expanded here
     instead, before routing, so the matches route per mount exactly as
@@ -604,13 +737,19 @@ async def expand_boundary_globs(
     """
     prefixes = [m.prefix for m in registry.mounts()]
     if not any(
-            isinstance(p, PathSpec) and p.pattern
-            and child_mount_names(prefixes, _glob_head(p)) for p in parts):
+        isinstance(p, PathSpec)
+        and p.pattern
+        and child_mount_names(prefixes, _glob_head(p))
+        for p in parts
+    ):
         return parts
     out: list[str | PathSpec] = []
     for item in parts:
-        if (isinstance(item, PathSpec) and item.pattern
-                and child_mount_names(prefixes, _glob_head(item))):
+        if (
+            isinstance(item, PathSpec)
+            and item.pattern
+            and child_mount_names(prefixes, _glob_head(item))
+        ):
             out.extend(await resolve_globs([item], registry, links=links))
         else:
             out.append(item)

@@ -71,10 +71,12 @@ export class JobConsole {
    *
    * Ignored once the job has ended, so a runner still unwinding after a
    * kill cannot append past the ending chunk and strand readers that
-   * already stopped following.
+   * already stopped following. Ignored too once the store is closed: the
+   * console was discarded, and a Redis store written after close would
+   * open a client that nothing quits.
    */
   async emit(channel: Channel, data: Uint8Array): Promise<void> {
-    if (this.finishedFlag) return
+    if (this.finishedFlag || this.backing.closed) return
     await this.backing.append(channel, data)
   }
 
@@ -87,6 +89,7 @@ export class JobConsole {
   async finish(outcome: string): Promise<void> {
     if (this.finishedFlag) return
     this.finishedFlag = true
+    if (this.backing.closed) return
     await this.backing.append(Channel.CONTROL, new TextEncoder().encode(outcome))
   }
 
@@ -118,14 +121,13 @@ export class JobConsole {
    * Resolves on a closed store too, so a console discarded while someone
    * was joining on it does not strand them.
    */
-  async waitFinished(signal?: AbortSignal): Promise<void> {
+  async waitFinished(): Promise<void> {
     let cursor = 0
     for (;;) {
-      signal?.throwIfAborted()
       const [chunks, next] = await this.backing.readFrom(cursor)
       cursor = next
       if (chunks.some((c) => c.channel === Channel.CONTROL)) return
-      await this.backing.wait(cursor, signal)
+      await this.backing.wait(cursor)
       if (this.backing.closed) return
     }
   }

@@ -12,25 +12,31 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { record } from '../../observe/context.ts'
+import { record, startOp } from '../../observe/context.ts'
 import type { RAMAccessor } from '../../accessor/ram.ts'
-import { ResourceName, type PathSpec } from '../../types.ts'
-import { norm, nowIso } from './utils.ts'
+import { VFSName, type PathSpec } from '../../types.ts'
+import { nowIso } from '../../utils/dates.ts'
+import { norm } from '../../utils/path.ts'
 import { invalidateAfterWrite } from '../../cache/context.ts'
+import { checkDestParents, checkWriteTarget } from './dest.ts'
 
 export async function truncate(
   accessor: RAMAccessor,
   path: PathSpec,
   length: number,
+  noCreate = false,
 ): Promise<void> {
-  const start = performance.now()
+  const timer = startOp()
   const p = norm(path.mountPath)
+  checkDestParents(accessor, path, p)
+  checkWriteTarget(accessor, path, p)
+  if (noCreate && !accessor.store.files.has(p)) return
   const existing = accessor.store.files.get(p) ?? new Uint8Array()
   const out = new Uint8Array(length)
   out.set(existing.subarray(0, Math.min(existing.byteLength, length)))
   accessor.store.files.set(p, out)
   accessor.store.modified.set(p, nowIso())
-  record('truncate', p, ResourceName.RAM, 0, start)
+  record('truncate', path.virtual, VFSName.RAM, 0, timer)
   await invalidateAfterWrite(path)
   return Promise.resolve()
 }

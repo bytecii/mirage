@@ -19,34 +19,55 @@ from typing import Any
 
 from mirage.accessor.base import Accessor
 from mirage.cache.context import active_cache_manager
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.cache.read_through import (cache_aware_read_bytes,
-                                       cache_aware_read_stream)
-from mirage.commands.builtin.generic_bind.adapter import (CommandIO,
-                                                          with_hidden_guard)
-from mirage.commands.builtin.generic_bind.builders import _BUILDERS
-from mirage.commands.builtin.generic_bind.provision import default_provision
+from mirage.cache.read_through import (
+    cache_aware_read_bytes,
+    cache_aware_read_stream,
+)
+from mirage.commands.builtin.generic_bind.adapter import (
+    CommandIO,
+    with_dir_guard,
+    with_path_guards,
+    with_policy_guard,
+)
+from mirage.commands.builtin.generic_bind.builders import BUILDERS
+from mirage.commands.builtin.utils.wrap import stream_from_bytes
 from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.types import FileType, PathSpec
-from mirage.utils.errors import MISS_ERRORS, enotdir
+from mirage.types import PathSpec
+from mirage.utils.errors import eisdir
 
 
-def _cached_stat(stat: Callable[..., Any], accessor: Accessor, path: PathSpec,
-                 *args, **kwargs):
+def _cached_stat(
+    stat: Callable[..., Any],
+    accessor: Accessor,
+    path: PathSpec,
+    *args,
+    **kwargs,
+):
     manager = active_cache_manager()
     return _cached_stat_result(manager, stat, accessor, path, *args, **kwargs)
 
 
-async def _cached_stat_result(manager, stat: Callable[...,
-                                                      Any], accessor: Accessor,
-                              path: PathSpec, *args, **kwargs):
+async def _cached_stat_result(
+    manager,
+    stat: Callable[..., Any],
+    accessor: Accessor,
+    path: PathSpec,
+    *args,
+    **kwargs,
+):
     result = await stat(accessor, path, *args, **kwargs)
-    if (result is not None and getattr(result, "size", None) is None
-            and manager is not None):
-        cached = await manager.cached_bytes(path)
-        if cached is not None:
-            result = result.model_copy(update={"size": len(cached)})
+    if (
+        result is not None
+        and getattr(result, "size", None) is None
+        and manager is not None
+    ):
+        # cached_size, not cached_bytes: this runs only where the backend
+        # named no size -- the API mounts -- so gating it would turn a
+        # stat into a backend stat.
+        size = await manager.cached_size(path)
+        if size is not None:
+            result = result.model_copy(update={"size": size})
     return result
 
 
@@ -69,80 +90,58 @@ def with_read_cache(ops: CommandIO) -> CommandIO:
     Args:
         ops (CommandIO): the backend's IO adapter.
     """
+    read_bytes = cache_aware_read_bytes(ops.read_bytes)
     return replace(
         with_stat_cache(ops),
-        read_stream=cache_aware_read_stream(ops.read_stream),
-        read_bytes=cache_aware_read_bytes(ops.read_bytes),
+        read_stream=(
+            functools.partial(stream_from_bytes, read_bytes)
+            if ops.streams_bytes
+            else cache_aware_read_stream(ops.read_stream)
+        ),
+        read_bytes=read_bytes,
     )
 
 
-async def _slash_checked_stat(stat: Callable[..., Any], accessor: Accessor,
-                              path: PathSpec, *args, **kwargs):
-    result = await stat(accessor, path, *args, **kwargs)
-    if (path.raw_path.endswith("/")
-            and getattr(result, "type", None) != FileType.DIRECTORY):
-        raise enotdir(path)
-    return result
-
-
-async def _slash_checked_readdir(readdir: Callable[..., Any],
-                                 stat: Callable[..., Any],
-                                 accessor: Accessor,
-                                 path: PathSpec,
-                                 index: IndexCacheStore = NULL_INDEX):
-    # A listing never reaches the stat wrapper, and on a keyed store it
-    # cannot tell "not a directory" from "no keys under this prefix" on
-    # its own: `ls flink/` answered with an empty listing and exit 0
-    # where GNU says "Not a directory". One stat decides it, and only
-    # for an operand actually typed with a slash.
+async def _slash_checked_write(
+    write: Callable[..., Any],
+    accessor: Accessor,
+    path: PathSpec,
+    *args,
+    **kwargs,
+):
+    # open(2) with O_CREAT refuses a slash-terminated name outright,
+    # before looking anything up: `x/` can only ever be a directory, so
+    # there is nothing to create and nothing to truncate. GNU tee and
+    # truncate both answer `missing/` with "Is a directory" and touch
+    # nothing, and a plain file behind the slash gets the same answer.
+    # Deliberate divergence: under a parent that is itself absent GNU
+    # reports the parent first (ENOENT); the spelling is refused here
+    # without a round trip, so that corner reads EISDIR too.
     if path.raw_path.endswith("/"):
-        # Only a stat that ANSWERS can refuse. On a prefix or synthetic
-        # store a directory is the set of keys under it rather than an
-        # object, so a miss here is not evidence of a non-directory and
-        # the listing is the authority (see "absence takes two
-        # channels"); slack's per-channel directories stat as nothing.
-        # The index rides along: a synthetic backend resolves a path
-        # through it and cannot stat without one (chroma answers
-        # "missing index"), so dropping it here turns the probe into a
-        # crash. It is a declared parameter rather than a dig through
-        # kwargs because the op contract names it, and callers spell it
-        # both positionally and by keyword.
-        try:
-            entry = await stat(accessor, path, index)
-        except MISS_ERRORS:
-            entry = None
-        if entry is not None and entry.type != FileType.DIRECTORY:
-            raise enotdir(path)
-    return await readdir(accessor, path, index)
+        raise eisdir(path)
+    return await write(accessor, path, *args, **kwargs)
 
 
 def with_slash_guard(ops: CommandIO) -> CommandIO:
-    """Return ``ops`` whose ``stat`` honors a trailing slash on an operand.
+    """Return ``ops`` whose writes refuse a slash-terminated operand.
 
-    POSIX resolves ``x/`` as ``x/.``, so the operand has to name a
-    directory: GNU answers ``cat reg/`` with "Not a directory" where
-    plain ``cat reg`` reads the file. Enforcing it on ``stat`` covers
-    every family at once, because the read chokepoint
-    (``dir_aware_stat``) and the metadata commands (ls/du/find/stat)
-    all reach the backend through this slot, and each one already
-    renders whatever strerror it gets in its own GNU voice. ``readdir``
-    is wrapped too, because a listing never stats on its own and a keyed
-    store answers a non-directory prefix with an empty list rather than
-    an error.
-
-    A missing path is left alone: its own ENOENT is already GNU's answer
-    (``cat dangle/`` is "No such file or directory"). The link half is
-    the router's, not this wrapper's: by the time an operand arrives
-    here a trailing slash has already resolved the final symlink, so
-    ``dlink/`` stats the directory it points at and passes.
+    open(2) with O_CREAT answers ``x/`` with EISDIR whether or not
+    anything is there, so ``write``, ``append``, ``pwrite`` and
+    ``truncate`` refuse it before the backend sees it and ``tee missing/``
+    cannot leave a regular file named ``missing`` behind. The read side is
+    the walk guard's: a slashed operand carries a ``dotted`` spelling, so
+    ``dot_refusal`` proves the name a directory there (``cat reg/`` is
+    "Not a directory", ``cat dangle/`` keeps its own ENOENT).
 
     Args:
         ops (CommandIO): the backend's IO adapter.
     """
-    return replace(ops,
-                   stat=functools.partial(_slash_checked_stat, ops.stat),
-                   readdir=functools.partial(_slash_checked_readdir,
-                                             ops.readdir, ops.stat))
+    changes: dict[str, Any] = {
+        slot: functools.partial(_slash_checked_write, getattr(ops, slot))
+        for slot in ("write", "append", "pwrite", "truncate")
+        if getattr(ops, slot) is not None
+    }
+    return replace(ops, **changes)
 
 
 def with_stat_cache(ops: CommandIO) -> CommandIO:
@@ -161,24 +160,90 @@ def with_stat_cache(ops: CommandIO) -> CommandIO:
     return replace(ops, stat=functools.partial(_cached_stat, ops.stat))
 
 
-async def _run_with_namespace_globs(ops: CommandIO, fn: Callable[..., Any],
-                                    accessor: Accessor, paths: list[PathSpec],
-                                    texts: list[str],
-                                    opts: CommandOpts) -> Any:
-    """Run a builder with an adapter whose globs see the namespace.
+async def _probe_answered_stat(
+    stat: Callable[..., Any],
+    accessor: Accessor,
+    path: PathSpec,
+    *args,
+    **kwargs,
+):
+    # The freshness probe already asked the backend this command; asking
+    # again resolves through listings fresh has not re-checked yet.
+    manager = active_cache_manager()
+    probed = None if manager is None else manager.probed_stat(path)
+    if probed is not None:
+        return probed
+    return await stat(accessor, path, *args, **kwargs)
 
-    A nested mount's keys live in another resource and no resource stores
+
+def with_probe_answers(ops: CommandIO) -> CommandIO:
+    """Return ``ops`` whose ``stat`` serves this command's probe answer.
+
+    Under fresh the freshness probe has already asked the backend about
+    the operand (``CacheManager.probed_stat``). It is the backend's own
+    op-table stat, so this goes only on an adapter whose ``stat`` is that
+    function: a per-command stat (dify's light ``ls``) keeps asking, so
+    what it prints never changes with the policy.
+
+    Applied to the raw adapter, below the path guards: a hidden or
+    refused path is answered by its guard before any remembered answer,
+    and every other slot keeps the guard order it always had.
+
+    Args:
+        ops (CommandIO): the backend's raw IO adapter.
+    """
+    return replace(ops, stat=functools.partial(_probe_answered_stat, ops.stat))
+
+
+def _read_wraps(ops: CommandIO) -> CommandIO:
+    return with_slash_guard(with_read_cache(ops))
+
+
+def _stat_wraps(ops: CommandIO) -> CommandIO:
+    return with_slash_guard(with_stat_cache(ops))
+
+
+def _write_wraps(ops: CommandIO) -> CommandIO:
+    return with_slash_guard(ops)
+
+
+async def _run_with_namespace_globs(
+    ops: CommandIO,
+    finish: Callable[[CommandIO], CommandIO],
+    fn: Callable[..., Any],
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> Any:
+    """Run a builder with an adapter that carries the invocation's
+    namespace facts below every guard.
+
+    A nested mount's keys live in another VFS and no VFS stores
     a symlink, so a glob resolved by one backend's readdir misses both,
     while the same names are already merged into a listing. The adapter
     is built once per backend and the names are session-scoped, so the
-    fact is stamped on here, per invocation, from ``opts.ns``:
-    every builder then keeps calling ``ops.resolve_glob`` unchanged.
+    fact is stamped on here, per invocation, from ``opts.ns`` -- and the
+    whole guard chain is applied on top of the stamped copy, so every
+    guard that consumes a namespace fact simply reads it off the
+    adapter it wraps: glob resolution derives from ``glob_children``,
+    the dir guard closes over it, and the hidden guard's rmdir captures
+    it for its emptiness judgment. Binding the guards at registration
+    instead would strand them behind partials built before any
+    invocation exists, which is exactly the wiring that made the rmdir
+    guard blind to a mounted child. The stamp happens whether or not
+    the namespace owes this directory anything, so there is one code
+    path rather than two; the guards read the current session at call
+    time, so per-invocation binding changes cost, not behavior.
 
     ``ops`` stays the first bound argument, because that partial slot is
-    how the adapter is reached for a registered command.
+    how the adapter is reached for a registered command; it arrives raw
+    and is guarded here.
 
     Args:
-        ops (CommandIO): the backend's IO adapter.
+        ops (CommandIO): the backend's raw IO adapter.
+        finish (Callable): the builder tier's cache and slash wraps,
+            chosen at registration from the builder's read/write kind.
         fn (Callable): the builder's command function.
         accessor (Accessor): backend handle.
         paths (list[PathSpec]): the command's path operands.
@@ -186,74 +251,85 @@ async def _run_with_namespace_globs(ops: CommandIO, fn: Callable[..., Any],
         opts (CommandOpts): the per-invocation option bag.
     """
     children = opts.ns.child_mounts if opts.ns is not None else None
-    if children is None:
-        return await fn(ops, accessor, paths, texts, opts)
-    return await fn(replace(ops, glob_children=children), accessor, paths,
-                    texts, opts)
+    links = opts.ns.links if opts.ns is not None else None
+    stamped = replace(
+        ops,
+        glob_children=children,
+        glob_target_stat=(links.target_stat if links is not None else None),
+    )
+    # The policy guard sits outside the cache wraps (`finish`) so a
+    # coded pre_ops deny fires before a warm serve, the dispatcher's
+    # own order at the op door. A probe answer is served below the path
+    # guards (`with_probe_answers` on the raw adapter), so they still
+    # judge every path before it.
+    bound = with_dir_guard(
+        with_policy_guard(finish(with_path_guards(stamped)))
+    )
+    return await fn(bound, accessor, paths, texts, opts)
 
 
 def make_generic_commands(
-    resource: str,
+    vfs: str,
     ops: CommandIO,
     *,
     overrides: set[str] | None = None,
-    provision_overrides: dict[str, Callable[..., Any]] | None = None,
     ops_overrides: dict[str, CommandIO] | None = None,
 ) -> list[Callable[..., Any]]:
     """Generate the default command set for a backend from its ops.
 
     Args:
-        resource (str): resource name the commands register under.
+        vfs (str): VFS name the commands register under.
         ops (CommandIO): the backend's IO adapter.
         overrides (set[str] | None): command names to skip (the backend
             ships its own wrapper for these).
-        provision_overrides (dict[str, Callable] | None): per-command
-            provision functions that replace the catalog default (for a
-            backend whose cost model genuinely differs).
         ops_overrides (dict[str, CommandIO] | None): per-command adapters
             that replace the shared adapter when one command needs a cheaper
             backend operation.
     """
     skip = overrides or set()
-    prov_over = provision_overrides or {}
     ops_over = ops_overrides or {}
+    # A name no builder has does nothing at all, so a misspelled override
+    # left the generic registered beside the bespoke one, and an override
+    # for a command the table never had (mem0's `search`) read as if it
+    # displaced something. Refused at registration, which is import time.
+    known = {b.name for b in BUILDERS}
+    unknown = sorted((set(skip) | set(ops_over)) - known)
+    if unknown:
+        raise ValueError(
+            f"make_generic_commands({vfs!r}): no generic "
+            f"builder named {', '.join(unknown)}"
+        )
     commands: list[Callable[..., Any]] = []
-    for b in _BUILDERS:
+    for b in BUILDERS:
         if b.name in skip:
             continue
-        # Hidden-path enforcement wraps here, once for every generic
-        # command; the raw adapter stays untouched for the ops tables,
-        # whose door does its own enforcement.
-        base_ops = with_hidden_guard(ops_over.get(b.name, ops))
-        # A read-only backend (no write op) can't run the byte-mutation
-        # commands (cp/mv/tee/gunzip/...), so don't register a command that
-        # would crash when invoked.
-        if not base_ops.supports(b.requirements):
-            continue
+        raw = ops_over.get(b.name, ops)
+        finish: Callable[[CommandIO], CommandIO]
         if b.read:
-            cmd_ops = with_read_cache(base_ops)
+            finish = _read_wraps
         elif not b.write:
-            cmd_ops = with_stat_cache(base_ops)
+            finish = _stat_wraps
         else:
-            cmd_ops = base_ops
-        cmd_ops = with_slash_guard(cmd_ops)
-        bound = functools.partial(_run_with_namespace_globs, cmd_ops, b.fn)
-        provision: Callable[..., Any] | None
-        if b.name in prov_over:
-            provision = prov_over[b.name]
-        elif b.provision is not None:
-            provision = b.provision(base_ops.stat)
-        else:
-            provision = default_provision(b.name,
-                                          base_ops.stat,
-                                          resolve_glob=base_ops.resolve_glob,
-                                          readdir=base_ops.readdir)
-        agg = b.aggregate if base_ops.local else None
+            finish = _write_wraps
+        # A per-command adapter with its own stat (dify's light ls) would
+        # otherwise print the probe's full stat under fresh only.
+        answered = (
+            with_probe_answers(raw)
+            if raw.stat is ops.stat and not b.write
+            else raw
+        )
+        bound = functools.partial(
+            _run_with_namespace_globs, answered, finish, b.fn
+        )
+        agg = b.aggregate if raw.local else None
         commands.append(
-            command(b.name,
-                    resource=resource,
-                    spec=SPECS[b.name],
-                    provision=provision,
-                    aggregate=agg,
-                    write=b.write)(bound))
+            command(
+                b.name,
+                vfs=vfs,
+                spec=SPECS[b.name],
+                aggregate=agg,
+                write=b.write,
+                path_guarded=True,
+            )(bound)
+        )
     return commands

@@ -12,134 +12,48 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Any
-
-from mirage.accessor.mongodb import MongoDBAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.mongodb.client import (count_documents, database_exists,
-                                        entity_exists, get_indexes, is_view)
-from mirage.core.mongodb.scope import detect_scope
-from mirage.core.mongodb.types import KIND_TO_DIR, EntityKind, ScopeLevel
-from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.errors import enoent
+from mirage.core.hierarchy.scope import ScopeMatch
+from mirage.core.hierarchy.stat import make_stat
+from mirage.core.mongodb.readdir import database_guard, entity_guard, readdir
+from mirage.core.mongodb.scope import detect_scope, entity_kind
 
 
-async def stat(
-    accessor: MongoDBAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = NULL_INDEX,
-) -> FileStat:
-    scope = detect_scope(path)
-
-    if scope.level == ScopeLevel.ROOT:
-        return FileStat(name="/", type=FileType.DIRECTORY)
-
-    if scope.level == ScopeLevel.DATABASE:
-        if not await database_exists(accessor.client, accessor.config,
-                                     scope.database, accessor):
-            raise enoent(path)
-        return FileStat(
-            name=scope.database,
-            type=FileType.DIRECTORY,
-            extra={"database": scope.database},
-        )
-
-    if scope.level == ScopeLevel.KIND_DIR:
-        if not await database_exists(accessor.client, accessor.config,
-                                     scope.database, accessor):
-            raise enoent(path)
-        return FileStat(
-            name=_kind_dir_name(scope.kind),
-            type=FileType.DIRECTORY,
-            extra={
-                "database": scope.database,
-                "kind": scope.kind
-            },
-        )
-
-    if scope.level == ScopeLevel.ENTITY:
-        if not await entity_exists(accessor.client, accessor.config,
-                                   scope.database, scope.name, scope.kind,
-                                   accessor):
-            raise enoent(path)
-        doc_count = await count_documents(accessor.client, scope.database,
-                                          scope.name)
-        return FileStat(
-            name=scope.name,
-            type=FileType.DIRECTORY,
-            extra={
-                "database": scope.database,
-                "kind": scope.kind,
-                "name": scope.name,
-                "document_count": doc_count,
-            },
-        )
-
-    if scope.level == ScopeLevel.DOCUMENTS:
-        if not await entity_exists(accessor.client, accessor.config,
-                                   scope.database, scope.name, scope.kind,
-                                   accessor):
-            raise enoent(path)
-        return await _documents_stat(accessor, scope.database, scope.kind,
-                                     scope.name)
-
-    if scope.level == ScopeLevel.SCHEMA_JSON:
-        if not await entity_exists(accessor.client, accessor.config,
-                                   scope.database, scope.name, scope.kind,
-                                   accessor):
-            raise enoent(path)
-        return FileStat(
-            name="schema.json",
-            type=FileType.TEXT,
-            extra={
-                "database": scope.database,
-                "kind": scope.kind,
-                "name": scope.name,
-            },
-        )
-
-    if scope.level == ScopeLevel.DATABASE_JSON:
-        if not await database_exists(accessor.client, accessor.config,
-                                     scope.database, accessor):
-            raise enoent(path)
-        return FileStat(
-            name="database.json",
-            type=FileType.TEXT,
-            extra={"database": scope.database},
-        )
-
-    raise enoent(path)
+def _database_extra(match: ScopeMatch) -> dict[str, str]:
+    return {"database": match.slots["database"]}
 
 
-def _kind_dir_name(kind: EntityKind) -> str:
-    return KIND_TO_DIR[kind]
+def _kind_dir_extra(match: ScopeMatch) -> dict[str, str]:
+    return {
+        "database": match.slots["database"],
+        "kind": entity_kind(match),
+    }
 
 
-async def _documents_stat(
-    accessor: MongoDBAccessor,
-    database: str,
-    kind: EntityKind,
-    name: str,
-) -> FileStat:
-    view = (kind == EntityKind.VIEW
-            or await is_view(accessor.client, database, name))
-    doc_count = await count_documents(accessor.client, database, name)
-    if view:
-        index_info: list[dict[str, Any]] = []
-    else:
-        indexes = await get_indexes(accessor.client, database, name)
-        index_info = [{
-            "name": idx.get("name"),
-            "keys": dict(idx.get("key", {}))
-        } for idx in indexes]
-    return FileStat(
-        name="documents.jsonl",
-        type=FileType.TEXT,
-        extra={
-            "database": database,
-            "name": name,
-            "kind": EntityKind.VIEW if view else EntityKind.COLLECTION,
-            "document_count": doc_count,
-            "indexes": index_info,
-        },
-    )
+def _entity_extra(match: ScopeMatch) -> dict[str, str]:
+    return {
+        "database": match.slots["database"],
+        "kind": entity_kind(match),
+        "name": match.slots["name"],
+    }
+
+
+stat = make_stat(
+    detect_scope,
+    readdir,
+    guards={
+        "database": database_guard,
+        "kind_dir": database_guard,
+        "database_json": database_guard,
+        "schema_json": entity_guard,
+        "entity": entity_guard,
+        "documents": entity_guard,
+    },
+    extras={
+        "database": _database_extra,
+        "kind_dir": _kind_dir_extra,
+        "database_json": _database_extra,
+        "schema_json": _entity_extra,
+        "entity": _entity_extra,
+        "documents": _entity_extra,
+    },
+)

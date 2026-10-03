@@ -12,27 +12,42 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from functools import partial
+
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic.zgrep import zgrep as generic_zgrep
-from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          bound_op)
+from mirage.commands.builtin.generic_bind.adapter import (
+    Builder,
+    CommandIO,
+    bound_op,
+)
+from mirage.commands.builtin.utils.links import link_door
 from mirage.commands.config import CommandOpts
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def zgrep(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
-                texts: list[str],
-                opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    resolved = (await ops.resolve_glob(accessor, paths, opts.index)
-                if paths and ops.is_mounted(accessor) else [])
+async def zgrep(
+    ops: CommandIO,
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
+    resolved = (
+        await ops.resolve_glob(accessor, paths, opts.index)
+        if paths and ops.is_mounted(accessor)
+        else []
+    )
     return await generic_zgrep(
         resolved,
         texts,
         opts.flags,
         read_bytes=bound_op(ops.read_bytes, accessor, opts.index),
         stdin=opts.stdin,
+        stat=partial(ops.stat, accessor),
+        door=link_door(opts),
     )
 
 
-BUILDER = Builder('zgrep', zgrep, None, False, None, read=True)
+BUILDER = Builder("zgrep", zgrep, read=True)

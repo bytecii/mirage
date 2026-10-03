@@ -14,8 +14,8 @@
 
 import asyncssh
 
-from mirage.core.ssh.client import _abs
-from mirage.core.ssh.config import SSHConfig
+from mirage.core.ssh.utils import join_root
+from mirage.vfs.ssh.config import SSHConfig
 
 
 async def walk(
@@ -35,12 +35,15 @@ async def walk(
     """
     total = 0
     try:
-        listing = await sftp.readdir(_abs(config, path))
+        listing = await sftp.readdir(join_root(config.root, path))
     except asyncssh.SFTPNoSuchFile:
         raise FileNotFoundError(path)
     for entry in listing:
-        filename = (entry.filename.decode("utf-8") if isinstance(
-            entry.filename, bytes) else entry.filename)
+        filename = (
+            entry.filename.decode("utf-8")
+            if isinstance(entry.filename, bytes)
+            else entry.filename
+        )
         if filename in (".", ".."):
             continue
         child = f"{path.rstrip('/')}/{filename}"

@@ -20,11 +20,13 @@ import pytest
 from mirage.accessor.gdocs import GDocsAccessor
 from mirage.cache.index import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
-from mirage.core.gdocs.client import TokenManager
 from mirage.core.gdocs.read import read, read_doc
-from mirage.resource.gdocs.config import GDocsConfig
+from mirage.core.gdocs.stat import stat
+from mirage.core.google.client import TokenManager
+from mirage.observe.context import RecordingScope
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
+from mirage.vfs.gdocs.config import GDocsConfig
 
 
 @pytest.fixture
@@ -55,14 +57,12 @@ async def test_read_doc(token_manager):
     doc_json = {
         "documentId": "abc123",
         "title": "Test Doc",
-        "body": {
-            "content": []
-        },
+        "body": {"content": []},
     }
     with patch(
-            "mirage.core.gdocs.read.google_get",
-            new_callable=AsyncMock,
-            return_value=doc_json,
+        "mirage.core.gdocs.read.google_get",
+        new_callable=AsyncMock,
+        return_value=doc_json,
     ):
         result = await read_doc(token_manager, "abc123")
         parsed = json.loads(result)
@@ -71,64 +71,95 @@ async def test_read_doc(token_manager):
 
 
 @pytest.mark.asyncio
-async def test_read_via_index(accessor, index):
-    await index.set_dir("/gdocs/owned", [
-        ("2026-04-01_My_Doc__doc1.gdoc.json",
-         IndexEntry(id="abc123",
-                    name="Test Doc",
-                    resource_type="gdocs/file",
-                    vfs_name="2026-04-01_My_Doc__doc1.gdoc.json")),
-    ])
+async def test_read_doc_requests_tab_content(token_manager):
     doc_json = {
         "documentId": "abc123",
         "title": "Test Doc",
-        "body": {
-            "content": []
-        },
+        "tabs": [],
     }
     with patch(
-            "mirage.core.gdocs.read.google_get",
-            new_callable=AsyncMock,
-            return_value=doc_json,
+        "mirage.core.gdocs.read.google_get",
+        new_callable=AsyncMock,
+        return_value=doc_json,
+    ) as mock_get:
+        result = await read_doc(token_manager, "abc123")
+        parsed = json.loads(result)
+        assert parsed["tabs"] == []
+        mock_get.assert_called_once_with(
+            token_manager,
+            "https://docs.googleapis.com/v1/documents/abc123",
+            params={"includeTabsContent": "true"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_read_via_index(accessor, index):
+    await index.set_dir(
+        "/gdocs/owned",
+        [
+            (
+                "2026-04-01_My_Doc__doc1.gdoc.json",
+                IndexEntry(
+                    id="abc123",
+                    name="Test Doc",
+                    resource_type="gdocs/file",
+                    vfs_name="2026-04-01_My_Doc__doc1.gdoc.json",
+                ),
+            ),
+        ],
+    )
+    doc_json = {
+        "documentId": "abc123",
+        "title": "Test Doc",
+        "body": {"content": []},
+    }
+    with patch(
+        "mirage.core.gdocs.read.google_get",
+        new_callable=AsyncMock,
+        return_value=doc_json,
     ):
         result = await read(
             accessor,
             PathSpec(
-                resource_path=mount_key(
-                    "/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json",
-                    "/gdocs"),
+                vfs_path=mount_key(
+                    "/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json", "/gdocs"
+                ),
                 virtual="/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json",
-                directory="/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json"),
-            index)
+                directory="/gdocs/owned/2026-04-01_My_Doc__doc1.gdoc.json",
+            ),
+            index,
+        )
         parsed = json.loads(result)
         assert parsed["documentId"] == "abc123"
 
 
 @pytest.mark.asyncio
 async def test_read_auto_bootstraps_from_empty_index(accessor, index):
-    files = [{
-        "id": "doc1",
-        "name": "Notes",
-        "modifiedTime": "2026-04-01T00:00:00.000Z",
-        "owners": [{
-            "me": True
-        }],
-    }]
+    files = [
+        {
+            "mimeType": "application/vnd.google-apps.document",
+            "id": "doc1",
+            "name": "Notes",
+            "modifiedTime": "2026-04-01T00:00:00.000Z",
+            "owners": [{"me": True}],
+        }
+    ]
     with (
-            patch(
-                "mirage.core.gdocs.readdir.list_all_files",
-                new_callable=AsyncMock,
-                return_value=(files, True),
-            ),
-            patch(
-                "mirage.core.gdocs.read.read_doc",
-                new_callable=AsyncMock,
-                return_value=b'{"documentId":"doc1"}',
-            ),
+        patch(
+            "mirage.core.google.entry.get_file",
+            new_callable=AsyncMock,
+            return_value=files[0],
+        ),
+        patch(
+            "mirage.core.gdocs.read.read_doc",
+            new_callable=AsyncMock,
+            return_value=b'{"documentId":"doc1"}',
+        ),
     ):
         path = PathSpec(
-            resource_path=mount_key(
-                "/gdocs/owned/2026-04-01_Notes__doc1.gdoc.json", "/gdocs"),
+            vfs_path=mount_key(
+                "/gdocs/owned/2026-04-01_Notes__doc1.gdoc.json", "/gdocs"
+            ),
             virtual="/gdocs/owned/2026-04-01_Notes__doc1.gdoc.json",
             directory="/gdocs/owned/2026-04-01_Notes__doc1.gdoc.json",
         )
@@ -137,22 +168,23 @@ async def test_read_auto_bootstraps_from_empty_index(accessor, index):
 
 
 @pytest.mark.asyncio
-async def test_read_missing_file_raises_after_recursion(accessor, index):
+async def test_read_missing_file_raises_by_id(accessor, index):
     with (
-            patch(
-                "mirage.core.gdocs.readdir.list_all_files",
-                new_callable=AsyncMock,
-                return_value=([], True),
-            ),
-            patch(
-                "mirage.core.gdocs.read.read_doc",
-                new_callable=AsyncMock,
-                side_effect=AssertionError("should not call read_doc"),
-            ),
+        patch(
+            "mirage.core.google.entry.get_file",
+            new_callable=AsyncMock,
+            side_effect=FileNotFoundError("missing"),
+        ),
+        patch(
+            "mirage.core.gdocs.read.read_doc",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("should not call read_doc"),
+        ),
     ):
         path = PathSpec(
-            resource_path=mount_key("/gdocs/owned/Missing__xyz.gdoc.json",
-                                    "/gdocs"),
+            vfs_path=mount_key(
+                "/gdocs/owned/Missing__xyz.gdoc.json", "/gdocs"
+            ),
             virtual="/gdocs/owned/Missing__xyz.gdoc.json",
             directory="/gdocs/owned/Missing__xyz.gdoc.json",
         )
@@ -161,24 +193,73 @@ async def test_read_missing_file_raises_after_recursion(accessor, index):
 
 
 @pytest.mark.asyncio
-async def test_read_propagates_parent_refresh_failure(accessor, index):
+async def test_read_propagates_metadata_failure(accessor, index):
     with (
-            patch(
-                "mirage.core.gdocs.readdir.list_all_files",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("google unavailable"),
-            ),
-            patch(
-                "mirage.core.gdocs.read.read_doc",
-                new_callable=AsyncMock,
-                side_effect=AssertionError("should not call read_doc"),
-            ),
+        patch(
+            "mirage.core.google.entry.get_file",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("google unavailable"),
+        ),
+        patch(
+            "mirage.core.gdocs.read.read_doc",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("should not call read_doc"),
+        ),
     ):
         path = PathSpec(
-            resource_path=mount_key("/gdocs/owned/Missing__xyz.gdoc.json",
-                                    "/gdocs"),
+            vfs_path=mount_key(
+                "/gdocs/owned/Missing__xyz.gdoc.json", "/gdocs"
+            ),
             virtual="/gdocs/owned/Missing__xyz.gdoc.json",
             directory="/gdocs/owned/Missing__xyz.gdoc.json",
         )
         with pytest.raises(RuntimeError, match="google unavailable"):
             await read(accessor, path, index)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stamp", "token"),
+    [("2026-04-01T00:00:00.000Z", "2026-04-01T00:00:00.000Z"), ("", None)],
+)
+async def test_read_records_the_token_stat_reports(
+    accessor, index, stamp, token
+):
+    # read: fresh compares this record with stat's fingerprint, so both take
+    # the entry's modified stamp, and an entry without one stamps nothing.
+    name = "2026-04-01_My_Doc__doc1.gdoc.json"
+    target = "/gdocs/owned/" + name
+    await index.set_dir(
+        "/gdocs/owned",
+        [
+            (
+                name,
+                IndexEntry(
+                    id="doc1",
+                    name="My Doc",
+                    resource_type="gdocs/file",
+                    remote_time=stamp,
+                    vfs_name=name,
+                ),
+            ),
+        ],
+    )
+    path = PathSpec(
+        vfs_path=mount_key(target, "/gdocs"), virtual=target, directory=target
+    )
+    scope = RecordingScope()
+    try:
+        with patch(
+            "mirage.core.gdocs.read.read_doc",
+            new_callable=AsyncMock,
+            return_value=b'{"documentId":"doc1"}',
+        ):
+            data = await read(accessor, path, index)
+    finally:
+        scope.close()
+    info = await stat(accessor, path, index)
+
+    assert [
+        (r.op, r.path, r.source, r.bytes, r.fingerprint) for r in scope.records
+    ] == [("read", target, "gdocs", len(data), token)]
+    assert info.fingerprint == token

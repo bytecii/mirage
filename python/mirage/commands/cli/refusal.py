@@ -13,11 +13,14 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from mirage.commands.cli.constants import CLAP_EXIT, USAGE_EXIT
 from mirage.commands.spec.help import operand_slot, option_metavar
 from mirage.commands.spec.types import CommandSpec, UsageStyle
-from mirage.workspace.executor.command.types import ParsedCommand
+
+if TYPE_CHECKING:
+    from mirage.workspace.executor.command.types import ParsedCommand
 
 ARGPARSE_EXIT = 2
 LONG_PREFIX = "--"
@@ -40,8 +43,9 @@ def git_unknown_option(token: str) -> bytes:
     return f"error: unknown {noun} `{token.lstrip('-')}'\n".encode()
 
 
-def clap_supplied(spec: CommandSpec, typed: Sequence[str],
-                  env: Mapping[str, str]) -> list[str]:
+def clap_supplied(
+    spec: CommandSpec, typed: Sequence[str], env: Mapping[str, str]
+) -> list[str]:
     """The options a clap usage line echoes back, in clap's order.
 
     clap reprints the options the line carried, in the order they were
@@ -87,9 +91,13 @@ def clap_operands(spec: CommandSpec) -> list[str]:
     return slots
 
 
-def clap_missing_operands(prog: str, spec: CommandSpec, missing: Sequence[str],
-                          typed: Sequence[str], env: Mapping[str,
-                                                             str]) -> bytes:
+def clap_missing_operands(
+    prog: str,
+    spec: CommandSpec,
+    missing: Sequence[str],
+    typed: Sequence[str],
+    env: Mapping[str, str],
+) -> bytes:
     """clap's refusal for required operands the line did not supply.
 
     Pinned against ntn 0.21.9: the empty slots are listed one per line
@@ -108,13 +116,16 @@ def clap_missing_operands(prog: str, spec: CommandSpec, missing: Sequence[str],
     named = "\n".join(f"  <{name}>" for name in missing)
     bits = [prog, *clap_supplied(spec, typed, env), *clap_operands(spec)]
     usage = " ".join(bits)
-    return ("error: the following required arguments were not provided:\n"
-            f"{named}\n\nUsage: {usage}\n\n"
-            "For more information, try '--help'.\n").encode()
+    return (
+        "error: the following required arguments were not provided:\n"
+        f"{named}\n\nUsage: {usage}\n\n"
+        "For more information, try '--help'.\n"
+    ).encode()
 
 
-def leaf_refusal(style: UsageStyle, argparse_message: bytes,
-                 parsed: ParsedCommand) -> tuple[bytes, int]:
+def leaf_refusal(
+    style: UsageStyle, argparse_message: bytes, parsed: "ParsedCommand"
+) -> tuple[bytes, int]:
     """The message and exit code a leaf answers a bad option with.
 
     A leaf usage error exits 2 under argparse's style regardless of the
@@ -135,6 +146,15 @@ def leaf_refusal(style: UsageStyle, argparse_message: bytes,
         return argparse_message, CLAP_EXIT
     if style is not UsageStyle.GIT:
         return argparse_message, ARGPARSE_EXIT
+    kinds = parsed.option_error_kinds
+    if kinds and kinds[0] == "ambiguous" and parsed.ambiguous_options:
+        token, candidates = parsed.ambiguous_options[0]
+        first, second = (list(candidates) + ["", ""])[:2]
+        line = (
+            f"error: ambiguous option: {token[2:]} "
+            f"(could be {first} or {second})\n"
+        )
+        return line.encode(), USAGE_EXIT
     if parsed.invalid_options:
         return git_unknown_option(parsed.invalid_options[0]), USAGE_EXIT
     return argparse_message, USAGE_EXIT

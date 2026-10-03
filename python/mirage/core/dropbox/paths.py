@@ -24,9 +24,9 @@ def dropbox_path_of(accessor: DropboxAccessor, path: PathSpec) -> str:
         accessor (DropboxAccessor): carries the normalized root_path.
         path (PathSpec): mount path to translate.
     """
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
+    prefix = mount_prefix_of(path.virtual, path.vfs_path)
     p = path.virtual
     if prefix and p.startswith(prefix):
-        p = p[len(prefix):] or "/"
+        p = p[len(prefix) :] or "/"
     key = p.strip("/")
     return accessor.root_path if not key else f"{accessor.root_path}/{key}"

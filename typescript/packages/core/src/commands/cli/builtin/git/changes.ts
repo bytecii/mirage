@@ -15,11 +15,13 @@
 import git from 'isomorphic-git'
 
 import type { LinkView, StatPath } from '../../../../ops/types.ts'
-import type { FileStat } from '../../../../types.ts'
+import { FileType, type FileStat } from '../../../../types.ts'
 import { isMissingPath } from '../../../../utils/errors.ts'
+import { entryMode } from './add.ts'
+import { GITLINK_MODE, SYMLINK } from './constants.ts'
 import { readIndex } from './index_file.ts'
 import { entryBytes, under } from './io.ts'
-import { repoArgs, type Repo } from './repo.ts'
+import { readBlobBytes, type Repo } from './repo.ts'
 import { resolveCommit } from './revparse.ts'
 import { similarityScore } from './similarity.ts'
 import { commitEntries, type TreeEntry } from './tree.ts'
@@ -31,13 +33,14 @@ import type {
   StatusEntry,
   WorkTree,
 } from './types.ts'
-import { scan } from './worktree.ts'
+import { scan, UNTRACKED_NO } from './worktree.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 
 const UNCHANGED = ' '
-const MODIFIED = 'M'
-const ADDED = 'A'
-const DELETED = 'D'
+export const MODIFIED = 'M'
+export const ADDED = 'A'
+export const DELETED = 'D'
+export const TYPE_CHANGED = 'T'
 const RENAMED = 'R'
 const UNTRACKED = '?'
 // git's own two rename knobs: a pair counts as a rename at 60% shared content,
@@ -46,11 +49,16 @@ const UNTRACKED = '?'
 // git gives up rather than answer differently.
 const RENAME_THRESHOLD = 60
 const MAX_RENAME_FILES = 200
-// A regular file, as the mode's type bits spell it. Only these are rename
-// candidates: a symlink and a file that happen to share bytes are not a rename
-// of each other.
+// A regular file, as the mode's type bits spell it. Only these are scored for
+// similarity: a symlink is paired only with another symlink holding the same
+// bytes, since scoring one against a file would pair two unrelated things by
+// the bytes of a path.
 const REGULAR_MODE = '100644'
 const REGULAR_EXEC_MODE = '100755'
+// What a mode says a path is, for pairing within one kind. Only the executable
+// bit separates the two regular modes, and git renames across it.
+const SYMLINK_KIND = 'symlink'
+const REGULAR_KIND = 'regular'
 
 // git spells an unmerged path by which of the three index stages it kept, keyed
 // here as (ancestor, ours, theirs). The pair is the porcelain XY, and the long
@@ -70,6 +78,12 @@ type StagedRow = readonly [string, string | null]
 
 function isRegular(mode: string): boolean {
   return mode === REGULAR_MODE || mode === REGULAR_EXEC_MODE
+}
+
+/** What a mode makes a path, for a rename pair that must not cross kinds. */
+export function kindOf(mode: string): string {
+  if (isRegular(mode)) return REGULAR_KIND
+  return mode === '120000' ? SYMLINK_KIND : mode
 }
 
 /**
@@ -94,23 +108,30 @@ export async function headEntries(repo: Repo): Promise<Map<string, TreeEntry> | 
  * Pair an add with a delete holding byte-identical content.
  *
  * Costs a map rather than a read, so it runs first and takes every pair it can
- * before anything is fetched.
+ * before anything is fetched. Keyed by kind as well as content, because a
+ * symlink and a regular file that happen to share bytes are not a rename of
+ * each other, while a moved symlink is exactly one.
  */
 function exactRenames(
   adds: readonly string[],
   deletes: readonly string[],
   oids: ReadonlyMap<string, string>,
+  kinds: ReadonlyMap<string, string>,
 ): [string, string][] {
+  const key = (path: string): string | undefined => {
+    const oid = oids.get(path)
+    return oid === undefined ? undefined : `${kinds.get(path) ?? ''}:${oid}`
+  }
   const sources = new Map<string, string>()
   for (const path of deletes) {
-    const oid = oids.get(path)
-    if (oid !== undefined && !sources.has(oid)) sources.set(oid, path)
+    const held = key(path)
+    if (held !== undefined && !sources.has(held)) sources.set(held, path)
   }
   const taken = new Set<string>()
   const pairs: [string, string][] = []
   for (const path of adds) {
-    const oid = oids.get(path)
-    const origin = oid === undefined ? undefined : sources.get(oid)
+    const held = key(path)
+    const origin = held === undefined ? undefined : sources.get(held)
     if (origin !== undefined && !taken.has(origin)) {
       taken.add(origin)
       pairs.push([path, origin])
@@ -133,6 +154,7 @@ async function contentRenames(
   adds: readonly string[],
   deletes: readonly string[],
   oids: ReadonlyMap<string, string>,
+  threshold: number = RENAME_THRESHOLD,
 ): Promise<[string, string][]> {
   if (
     adds.length === 0 ||
@@ -145,7 +167,7 @@ async function contentRenames(
   const load = async (oid: string): Promise<Uint8Array> => {
     const held = blobs.get(oid)
     if (held !== undefined) return held
-    const { blob } = await git.readBlob({ ...repoArgs(repo), oid })
+    const blob = await readBlobBytes(repo, oid)
     blobs.set(oid, blob)
     return blob
   }
@@ -161,7 +183,7 @@ async function contentRenames(
       // Negative score so the strongest pair sorts first while paths still
       // tie-break in ascending order, which is what makes two equally similar
       // candidates resolve the same way on every run.
-      if (score >= RENAME_THRESHOLD) candidates.push([-score, fresh, old])
+      if (score >= threshold) candidates.push([-score, fresh, old])
     }
   }
   // Python is `candidates.sort()`, a code-point tuple sort, so the paths
@@ -187,30 +209,34 @@ async function contentRenames(
  * Fold an add and a delete of the same file into one rename.
  *
  * Two passes, git's own order: identical content first, then what is merely
- * similar enough.
+ * similar enough. Both pair within one kind, and only the second is limited to
+ * regular files: a moved symlink is a rename git reports as one.
  */
-async function pairRenames(
+export async function pairRenames(
   repo: Repo,
   staged: ReadonlyMap<string, string>,
   oids: ReadonlyMap<string, string>,
-  regular: ReadonlySet<string>,
+  kinds: ReadonlyMap<string, string>,
+  threshold: number = RENAME_THRESHOLD,
 ): Promise<Map<string, StagedRow>> {
   const pick = (letter: string): string[] =>
     [...staged.entries()]
-      .filter(([path, held]) => held === letter && regular.has(path))
+      .filter(([path, held]) => held === letter && kinds.has(path))
       .map(([path]) => path)
       .sort(compareCodePoints)
   const adds = pick(ADDED)
   const deletes = pick(DELETED)
-  const pairs = exactRenames(adds, deletes, oids)
+  const pairs = exactRenames(adds, deletes, oids, kinds)
   const matchedNew = new Set(pairs.map(([fresh]) => fresh))
   const matchedOld = new Set(pairs.map(([, old]) => old))
+  const scored = (side: string[]): string[] => side.filter((p) => kinds.get(p) === REGULAR_KIND)
   pairs.push(
     ...(await contentRenames(
       repo,
-      adds.filter((p) => !matchedNew.has(p)),
-      deletes.filter((p) => !matchedOld.has(p)),
+      scored(adds.filter((p) => !matchedNew.has(p))),
+      scored(deletes.filter((p) => !matchedOld.has(p))),
       oids,
+      threshold,
     )),
   )
   const paired = new Map(pairs.map(([fresh, old]) => [fresh, [RENAMED, old] as StagedRow]))
@@ -240,13 +266,13 @@ async function stageChanges(
   const tree = head ?? new Map<string, TreeEntry>()
   const staged = new Map<string, string>()
   const oids = new Map<string, string>()
-  const regular = new Set<string>()
+  const kinds = new Map<string, string>()
   for (const [path, entry] of entries) {
     const recorded = tree.get(path)
     if (recorded === undefined) {
       staged.set(path, ADDED)
       oids.set(path, entry.oid)
-      if (isRegular(entry.mode.toString(8))) regular.add(path)
+      kinds.set(path, kindOf(entry.mode.toString(8)))
     } else if (recorded.oid !== entry.oid || Number.parseInt(recorded.mode, 8) !== entry.mode) {
       staged.set(path, MODIFIED)
     }
@@ -255,9 +281,9 @@ async function stageChanges(
     if (entries.has(path) || conflicts.has(path)) continue
     staged.set(path, DELETED)
     oids.set(path, recorded.oid)
-    if (isRegular(recorded.mode)) regular.add(path)
+    kinds.set(path, kindOf(recorded.mode))
   }
-  return pairRenames(repo, staged, oids, regular)
+  return pairRenames(repo, staged, oids, kinds)
 }
 
 /** The two-letter code for each unmerged path. */
@@ -332,13 +358,72 @@ export async function workChanges(
 ): Promise<Map<string, string>> {
   const changes = new Map<string, string>()
   for (const [path, entry] of entries) {
+    // A 160000 entry records another repository's HEAD, and what stands at the
+    // name is a directory, so the walk never finds a file there and every
+    // submodule read as deleted. git compares the submodule's own HEAD, which
+    // is unreadable from here, and says nothing at all when there is none;
+    // saying nothing is both the closest this can get and what keeps a branch
+    // switch away from a submodule from being refused over a file that was
+    // never missing.
+    if (entry.mode === Number.parseInt(GITLINK_MODE, 8)) continue
     const info = found.files.get(path)
     if (info === undefined) changes.set(path, DELETED)
-    else if (await differs(repo, dispatch, worktree, path, entry, info)) {
+    // A symlink and a file holding its target text hash alike.
+    else if ((info.type === FileType.SYMLINK) !== ((entry.mode & 0o170000) === SYMLINK)) {
+      changes.set(path, TYPE_CHANGED)
+    } else if (await differs(repo, dispatch, worktree, path, entry, info)) {
       changes.set(path, MODIFIED)
     }
   }
   return changes
+}
+
+/** The index as entries, path to mode and id, conflict stages left out. */
+export function stagedEntries(state: IndexState): Map<string, TreeEntry> {
+  return new Map(
+    [...state.entries].map(([path, entry]) => [
+      path,
+      { oid: entry.oid, mode: entry.mode.toString(8).padStart(6, '0') },
+    ]),
+  )
+}
+
+/**
+ * The working tree as entries, for the side `git diff` compares.
+ *
+ * The index stands for every file the walk found unchanged; a modified file is
+ * hashed and its blob held on the repo for this invocation only, as git writes
+ * nothing on a diff. Untracked files are not part of it. A path the index holds
+ * only as conflict stages is the file standing there, if any: what a revision
+ * is compared with, while the index side leaves it out (git shows a combined
+ * diff there, which is not offered). Mirrors Python's work_entries.
+ */
+export async function workEntries(
+  repo: Repo,
+  dispatch: Dispatch,
+  statPath: StatPath,
+  state: IndexState,
+  links: LinkView | null = null,
+): Promise<Map<string, TreeEntry>> {
+  const tracked = new Set([...state.entries.keys(), ...state.conflicts.keys()])
+  const found = await scan(dispatch, statPath, repo.location, tracked, UNTRACKED_NO, links)
+  const changes = await workChanges(repo, dispatch, repo.location.worktree, state.entries, found)
+  const entries = stagedEntries(state)
+  for (const path of state.conflicts.keys()) {
+    if (found.files.has(path)) changes.set(path, MODIFIED)
+  }
+  for (const [path, code] of changes) {
+    const info = found.files.get(path)
+    if (code === DELETED || info === undefined) {
+      entries.delete(path)
+      continue
+    }
+    const data = await entryBytes(dispatch, under(repo.location.worktree, path), info)
+    const { oid } = await git.hashBlob({ object: data })
+    repo.held.set(oid, data)
+    entries.set(path, { oid, mode: entryMode(info).toString(8).padStart(6, '0') })
+  }
+  return entries
 }
 
 /**
@@ -394,13 +479,19 @@ export async function collect(
   statPath: StatPath,
   mode: string,
   links: LinkView | null = null,
+  showIgnored = false,
 ): Promise<[StatusEntry[], IndexState, boolean]> {
   const state = await readIndex(repo, dispatch)
   const head = await headEntries(repo)
   const staged = await stageChanges(repo, head, state.entries, new Set(state.conflicts.keys()))
   const tracked = new Set([...state.entries.keys(), ...state.conflicts.keys()])
-  const found = await scan(dispatch, statPath, repo.location, tracked, mode, links)
+  const found = await scan(dispatch, statPath, repo.location, tracked, mode, links, showIgnored)
   const unstaged = await workChanges(repo, dispatch, repo.location.worktree, state.entries, found)
   const rows = merge(staged, unstaged, conflictCodes(state.conflicts), found.untracked)
+  rows.push(
+    ...[...found.ignored]
+      .sort(compareCodePoints)
+      .map((path) => ({ path, indexStatus: '!', treeStatus: '!', original: null })),
+  )
   return [rows, state, head === null]
 }

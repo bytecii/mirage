@@ -102,14 +102,18 @@ def _slot(operand: Operand) -> str:
     return "<path>" if operand.type == "path" else "<text>"
 
 
-def usage_line(name: str, spec: CommandSpec, subcommands: SubcommandRows,
-               style: UsageStyle) -> str:
+def usage_line(
+    name: str,
+    spec: CommandSpec,
+    subcommands: SubcommandRows,
+    style: UsageStyle,
+    synopsis: str | None = None,
+) -> str:
     """The ``Usage:`` line, in the dialect the CLI declares.
 
-    clap spells the option placeholder ``[OPTIONS]`` and the subcommand
-    slot ``<COMMAND>``, and names each operand; the default spells them
-    ``[flags]``, ``<command> [<args>]`` and a generic ``<path>``/
-    ``<text>`` per slot.
+    A ``synopsis`` (the imitated program's own ``--help`` first line,
+    handed in by the registration that knows the spec is the builtin's)
+    is printed as is, whatever the dialect.
 
     Args:
         name (str): command name as invoked.
@@ -117,6 +121,11 @@ def usage_line(name: str, spec: CommandSpec, subcommands: SubcommandRows,
         subcommands (SubcommandRows): child rows, empty for a leaf.
         style (UsageStyle): the dialect.
     """
+    if synopsis is not None:
+        # The builtin that mimics a real program answers with that
+        # program's own first line rather than one synthesized from
+        # its slots.
+        return "Usage: " + synopsis
     clap = style is UsageStyle.CLAP
     bits = [name]
     if spec.options:
@@ -136,10 +145,13 @@ def usage_line(name: str, spec: CommandSpec, subcommands: SubcommandRows,
     return "Usage: " + " ".join(bits)
 
 
-def render_help(name: str,
-                spec: CommandSpec,
-                subcommands: SubcommandRows = (),
-                style: UsageStyle = UsageStyle.ARGPARSE) -> str:
+def render_help(
+    name: str,
+    spec: CommandSpec,
+    subcommands: SubcommandRows = (),
+    style: UsageStyle = UsageStyle.ARGPARSE,
+    synopsis: str | None = None,
+) -> str:
     """Render one command's help; a CLI group is the same shape plus a
     Commands section.
 
@@ -155,6 +167,8 @@ def render_help(name: str,
             and leaves subcommands in declaration order; every other
             style prefixes the description with the program path, calls
             the section ``Flags:`` and sorts.
+        synopsis (str | None): the imitated program's own ``--help``
+            first line, printed in place of the synthesized one.
     """
     clap = style is UsageStyle.CLAP
     lines: list[str] = []
@@ -166,7 +180,7 @@ def render_help(name: str,
         lines.append(f"{name}: {spec.description}")
     lines.append("")
 
-    lines.append(usage_line(name, spec, subcommands, style))
+    lines.append(usage_line(name, spec, subcommands, style, synopsis))
 
     if subcommands:
         lines.append("")
@@ -213,8 +227,9 @@ def clap_unexpected_argument(token: str) -> str:
     return f"error: unexpected argument '{token}' found"
 
 
-def clap_group_refusal(name: str, spec: CommandSpec,
-                       subcommands: SubcommandRows, message: str) -> bytes:
+def clap_group_refusal(
+    name: str, spec: CommandSpec, subcommands: SubcommandRows, message: str
+) -> bytes:
     """A group-level refusal in clap's shape: message, usage, footer.
 
     clap answers with the one usage line, not the whole help page git
@@ -231,5 +246,6 @@ def clap_group_refusal(name: str, spec: CommandSpec,
         message (str): the first line, already worded.
     """
     usage = usage_line(name, spec, subcommands, UsageStyle.CLAP)
-    return (f"{message}\n\n{usage}\n\n"
-            "For more information, try '--help'.\n").encode()
+    return (
+        f"{message}\n\n{usage}\n\nFor more information, try '--help'.\n"
+    ).encode()

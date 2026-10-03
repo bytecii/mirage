@@ -1,142 +1,227 @@
-import { Workspace } from '../../typescript/packages/browser/src/workspace.ts'
-import { RAMResource } from '../../typescript/packages/core/src/resource/ram/ram.ts'
-import { MountMode } from '../../typescript/packages/core/src/types.ts'
-import { JobConsole } from '../../typescript/packages/core/src/shell/console/job_console.ts'
-import { Channel } from '../../typescript/packages/core/src/shell/console/types.ts'
-import { asyncContextIsolatesTasks } from '../../typescript/packages/core/src/utils/async_context.ts'
-import { bindMount, runCase, compare } from '../runners/typescript/execution.ts'
-import type { Case, ExecWorkspace } from '../runners/typescript/types.ts'
-import concurrency from '../shell/jobs/concurrency.json'
-import traps from '../shell/builtins/trap.json'
-import commandRun from '../shell/builtins/command/run.json'
-import commandFunction from '../shell/builtins/command/function.json'
-import commandOperands from '../shell/builtins/command/operands.json'
-import substitutionScope from '../shell/expand/cmdsub/scope.json'
-import substitutionStatus from '../shell/expand/cmdsub/status.json'
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { Channel } from '@struktoai/mirage-core/shell/console/index'
+import { asyncContextIsolatesTasks } from '@struktoai/mirage-core/utils/async_context'
+import { JobConsole, MountMode, RAMVFS, Workspace } from '@struktoai/mirage-browser'
+import {
+  bindMount,
+  compare,
+  runCase,
+  type Case,
+  type ExecWorkspace,
+} from '../runners/typescript/execution.ts'
+import substitutionScope from '../bash/cmdsub/scope.json'
+import substitutionStatus from '../bash/cmdsub/status.json'
+import commandFunction from '../bash/command/function.json'
+import commandRun from '../bash/command/run.json'
+import jobsBackground from '../bash/jobs/bg.json'
+import traps from '../bash/trap/exit.json'
+
+export interface Outcome {
+  name: string
+  error?: string
+}
+
+type Check = (ws: Workspace) => Promise<void>
+
+const DEC = new TextDecoder()
 
 function workspace(): Workspace {
-  return new Workspace({ '/data': new RAMResource() }, { mode: MountMode.WRITE, runtimes: ['vfs'] })
+  return new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.WRITE })
 }
+
 function equal(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected))
     throw new Error(`expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
 }
 
-export async function runSuite(): Promise<{ name: string; error?: string }[]> {
-  const results: { name: string; error?: string }[] = []
-  const tests: [string, (ws: Workspace) => Promise<void>][] = [
-    [
-      'native browser without Node async context',
-      async () => {
-        equal(asyncContextIsolatesTasks, false)
-      },
-    ],
-    ...[
-      ...concurrency.cases,
-      ...traps.cases,
-      ...commandRun.cases,
-      ...commandFunction.cases,
-      ...commandOperands.cases,
-      ...substitutionScope.cases,
-      ...substitutionStatus.cases,
-    ].map(
-      (c) =>
-        [
-          c.id,
-          async (ws: Workspace) => {
-            const bound = bindMount(c as Case, '/data')
-            const result = await runCase(ws as unknown as ExecWorkspace, bound)
-            equal(
-              compare(
-                bound,
-                result.exitCode,
-                result.out,
-                result.err,
-                result.elapsed,
-                result.checkOut,
-              ),
-              [],
-            )
-          },
-        ] as [string, (ws: Workspace) => Promise<void>],
-    ),
-    [
-      'background nested evaluation keeps its fork',
-      async (ws) => {
-        const result = await ws.execute(
-          `X=parent; { X=child; eval 'echo "$X"'; echo "$(echo "$X")"; } & wait; echo "$X"`,
-        )
-        equal(
-          [result.exitCode, result.stdoutText, result.stderrText],
-          [0, 'child\nchild\nparent\n', ''],
-        )
-      },
-    ],
-    [
-      'aborted foreground wait leaves background job running',
-      async (ws) => {
-        await ws.execute('sleep 3600 &')
-        const abort = new AbortController()
-        const waiting = ws.execute('wait', { signal: abort.signal })
-        abort.abort()
-        let error: unknown
-        try {
-          await waiting
-        } catch (caught) {
-          error = caught
-        }
-        equal((error as Error)?.name, 'AbortError')
-        equal(ws.jobTable.get(1)?.status, 'running')
-      },
-    ],
-    [
-      'workspace close settles a running job and its console',
-      async (ws) => {
-        await ws.execute('echo ready; sleep 3600 &')
-        const job = ws.jobTable.get(1)
-        if (!job) throw new Error('missing job')
-        const finished = job.console.waitFinished()
-        await ws.close()
-        await finished
-        equal(job.status, 'killed')
-      },
-    ],
-    [
-      'foreground cancellation stops before its next write',
-      async (ws) => {
-        const console = new JobConsole()
-        const abort = new AbortController()
-        const running = ws.execute('echo ready; sleep 3600; echo BAD > /data/cancelled', {
-          sink: console,
-          signal: abort.signal,
-        })
-        await console.store.wait(0, AbortSignal.timeout(5000))
-        equal(new TextDecoder().decode(await console.snapshot(Channel.STDOUT)), 'ready\n')
-        abort.abort()
-        try {
-          await running
-          throw new Error('execution ignored cancellation')
-        } catch (error) {
-          equal((error as Error).name, 'AbortError')
-        }
-        equal((await ws.execute('test -e /data/cancelled')).exitCode, 1)
-        await console.close()
-      },
-    ],
+async function shell(
+  ws: Workspace,
+  command: string,
+  options: Parameters<Workspace['shell']>[1] = {},
+): Promise<[number, string, string]> {
+  const result = await ws.shell(command, options)
+  return [result.exitCode, result.stdoutText, result.stderrText]
+}
+
+async function aborted(running: Promise<unknown>): Promise<string> {
+  try {
+    await running
+  } catch (error) {
+    return error instanceof Error ? error.name : String(error)
+  }
+  return 'settled'
+}
+
+async function settle(ready: () => Promise<boolean>): Promise<void> {
+  const deadline = performance.now() + 5000
+  while (!(await ready())) {
+    if (performance.now() > deadline) throw new Error('timed out waiting for the line to start')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+function battery(): [string, Check][] {
+  const files = [
+    traps,
+    substitutionScope,
+    substitutionStatus,
+    commandRun,
+    commandFunction,
+    jobsBackground,
   ]
-  for (const [name, run] of tests) {
+  return files.flatMap((file) =>
+    (file.cases as unknown as Case[]).map((c): [string, Check] => [
+      c.id,
+      async (ws) => {
+        const bound = bindMount(c, '/data')
+        const run = await runCase(ws as unknown as ExecWorkspace, bound)
+        equal(compare(bound, run.exitCode, run.out, run.err, run.elapsed, run.checkOut), [])
+      },
+    ]),
+  )
+}
+
+const CHECKS: [string, Check][] = [
+  [
+    'a page has no task-local async context',
+    async () => {
+      equal(asyncContextIsolatesTasks, false)
+    },
+  ],
+  [
+    'per-call env stays with its call under concurrency',
+    async (ws) => {
+      const [left, right] = await Promise.all([
+        shell(ws, "sleep 0.01; eval 'echo $LABEL'; echo $(echo $LABEL)", {
+          env: { LABEL: 'left' },
+        }),
+        shell(ws, "eval 'echo $LABEL'; sleep 0.02; echo $(echo $LABEL)", {
+          env: { LABEL: 'right' },
+        }),
+      ])
+      equal(
+        [left, right],
+        [
+          [0, 'left\nleft\n', ''],
+          [0, 'right\nright\n', ''],
+        ],
+      )
+      equal(await shell(ws, 'echo ${LABEL-unset}'), [0, 'unset\n', ''])
+    },
+  ],
+  [
+    'two sessions meet and run their own exit traps',
+    async (ws) => {
+      ws.createSession('peer')
+      const wait = (file: string): string =>
+        `for i in $(seq 500); do [ -f /data/${file} ] && break; sleep 0.01; done`
+      const met = await Promise.all([
+        shell(ws, `echo left > /data/meet-left; ${wait('meet-right')}; cat /data/meet-right`),
+        shell(ws, `echo right > /data/meet-right; ${wait('meet-left')}; cat /data/meet-left`, {
+          sessionId: 'peer',
+        }),
+      ])
+      equal(met, [
+        [0, 'right\n', ''],
+        [0, 'left\n', ''],
+      ])
+      const trap = (file: string): string =>
+        `bash -c 'trap "sleep .01; echo $LABEL > /data/${file}" EXIT; echo body:$LABEL'`
+      const bodies = await Promise.all([
+        shell(ws, trap('trap-left'), { env: { LABEL: 'left' } }),
+        shell(ws, trap('trap-right'), { env: { LABEL: 'right' }, sessionId: 'peer' }),
+      ])
+      equal(bodies, [
+        [0, 'body:left\n', ''],
+        [0, 'body:right\n', ''],
+      ])
+      equal(await shell(ws, 'cat /data/trap-left /data/trap-right; trap -p'), [
+        0,
+        'left\nright\n',
+        '',
+      ])
+    },
+  ],
+  [
+    'a background evaluation keeps its own fork',
+    async (ws) => {
+      equal(
+        await shell(
+          ws,
+          `X=parent; { X=child; eval 'echo "$X"'; echo "$(echo "$X")"; } & wait; echo "$X"`,
+        ),
+        [0, 'child\nchild\nparent\n', ''],
+      )
+    },
+  ],
+  [
+    'an aborted wait leaves the background job running',
+    async (ws) => {
+      await shell(ws, 'sleep 30 &')
+      const abort = new AbortController()
+      const waiting = ws.shell('wait', { signal: abort.signal })
+      abort.abort()
+      equal(await aborted(waiting), 'AbortError')
+      equal(ws.jobTable.get(1, ws.defaultSessionId)?.status, 'running')
+    },
+  ],
+  [
+    'closing the workspace settles a running job and its console',
+    async (ws) => {
+      await shell(ws, 'sleep 30 &')
+      const job = ws.jobTable.get(1, ws.defaultSessionId)
+      if (job === null) throw new Error('missing job')
+      const finished = job.console.waitFinished()
+      await ws.close()
+      await finished
+      equal(job.status, 'killed')
+    },
+  ],
+  [
+    'cancelling a line stops it before its next write',
+    async (ws) => {
+      const sink = new JobConsole()
+      const abort = new AbortController()
+      const running = ws.shell('echo ready; sleep 30; echo BAD > /data/cancelled', {
+        sink,
+        signal: abort.signal,
+      })
+      await settle(async () => DEC.decode(await sink.snapshot(Channel.STDOUT)) === 'ready\n')
+      abort.abort()
+      equal(await aborted(running), 'AbortError')
+      equal((await shell(ws, 'test -e /data/cancelled'))[0], 1)
+      await sink.close()
+    },
+  ],
+  ...battery(),
+]
+
+/** Run every check on a workspace of its own, recording each outcome. */
+export async function runSuite(): Promise<Outcome[]> {
+  const outcomes: Outcome[] = []
+  for (const [name, check] of CHECKS) {
     const ws = workspace()
     try {
-      await run(ws)
-      results.push({ name })
+      await check(ws)
+      outcomes.push({ name })
     } catch (error) {
-      results.push({
-        name,
-        error: error instanceof Error ? error.message : String(error),
-      })
+      outcomes.push({ name, error: error instanceof Error ? error.message : String(error) })
     } finally {
       await ws.close()
     }
   }
-  return results
+  return outcomes
 }

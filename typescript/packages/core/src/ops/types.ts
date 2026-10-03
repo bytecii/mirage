@@ -26,7 +26,7 @@ export type StatPath = (path: string) => Promise<FileStat | null>
 // readdir one virtual path through the workspace rather than one backend.
 // What a walker whose output is a single document (tree) reads once it
 // reaches a mount boundary, since the subtree below it lives in another
-// resource that the walker's own accessor cannot open.
+// VFS that the walker's own accessor cannot open.
 export type ReaddirPath = (path: string) => Promise<string[]>
 
 // The mount prefix serving a virtual path. A mount boundary is a filesystem
@@ -46,7 +46,7 @@ export type ChildMounts = (parent: string) => string[]
 //
 // A command runs bound to one backend, and that backend cannot see a
 // mount nested inside its own tree: the child's keys live in another
-// resource entirely, so the parent's `readdir` never lists it. A walker
+// VFS entirely, so the parent's `readdir` never lists it. A walker
 // that must account for the whole subtree therefore has to be told, the
 // same way `LinkView` tells it about symlinks.
 //
@@ -59,9 +59,22 @@ export type ChildMounts = (parent: string) => string[]
 // counted the parent backend's shadowed keys by the time any line filter
 // runs, so it reads the boundaries here too and excludes a descendant's
 // subtree while accounting.
+//
+// Two questions, two methods, because one name for both is what let a
+// hidden mount reach a user. **Avoiding** a boundary needs every mount
+// under the path, whatever the session can see: one it cannot see still
+// shadows the parent backend's keys, and those keys must stay out of a
+// walk's entries and a directory's total, or the size alone reports the
+// subtree. **Naming** a boundary needs only the mounts the session may
+// be told about: a member in an archive, a row in a tree, a "different
+// filesystem" warning all hand back a name, and a hidden mount's name is
+// the one thing the hide exists to withhold. A caller that needs both
+// (`tar` prunes by one and warns by the other) reads both.
 export interface MountView {
-  // Mount roots strictly under a path (a walker: tar, zip).
+  // Every mount root strictly under a path, for a caller avoiding one.
   descendants(path: string): string[]
+  // The ones this session may be told about, for a caller naming one.
+  visibleDescendants(path: string): string[]
   // Whether a path is a mount root itself.
   isRoot(path: string): boolean
   // The mount serving a path, so a walker can tell "still mine" from
@@ -110,6 +123,11 @@ export interface SessionView {
   mark(name: string, attr: VarAttr | null, on: boolean): Promise<void>
   // Whether `readonly` has marked the name.
   isReadonly(name: string): boolean
+  // The name of the profile the session runs under, null for an
+  // unrestricted session. What an owner-rendering command (ls -l, stat
+  // %g, find -printf %g) prints in the group column: the profile is the
+  // permission set the session acts with, which is what a group is.
+  profile(): string | null
 }
 
 // The symlink facts a command may consult, as one injected object.
@@ -161,4 +179,8 @@ export interface NamespaceView {
   statOverlay?: StatOverlay
   // Child names the namespace owes a directory (mounts and links).
   childMounts?: ChildMounts
+  // The workspace user (what whoami prints), absent when no agent ever
+  // claimed the workspace. What an owner-rendering command prints in the
+  // owner column for an entry whose backend reports no uid.
+  user?: string
 }

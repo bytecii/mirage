@@ -15,9 +15,8 @@
 import { varsFromEnv } from '../../workspace/session/session.ts'
 import { describe, expect, it } from 'vitest'
 
-import { HISTORY_PREFIX } from '../../resource/history/history.ts'
-import { Session } from '../session/session.ts'
-import { commandName, forkForCall, infrastructurePrefixes } from './utils.ts'
+import { SessionState } from '../session/session.ts'
+import { commandName, forkForCall } from './utils.ts'
 
 describe('commandName', () => {
   it.each([
@@ -31,8 +30,8 @@ describe('commandName', () => {
   })
 })
 
-function makeSession(): Session {
-  return new Session({ sessionId: 's1', cwd: '/home', vars: varsFromEnv({ A: '1', B: '2' }) })
+function makeSession(): SessionState {
+  return new SessionState({ sessionId: 's1', cwd: '/home', vars: varsFromEnv({ A: '1', B: '2' }) })
 }
 
 describe('forkForCall', () => {
@@ -52,17 +51,14 @@ describe('forkForCall', () => {
   it('layers env overrides on top of the session env', () => {
     const session = makeSession()
     const forked = forkForCall(session, undefined, { B: '9', C: '3' })
-    expect(forked.env).toEqual({ A: '1', B: '9', C: '3', PWD: '/home' })
-    expect(session.env).toEqual({ A: '1', B: '2', PWD: '/home' })
-  })
-})
-
-describe('infrastructurePrefixes', () => {
-  it('excludes a user-defined root', () => {
-    expect(infrastructurePrefixes(false)).toEqual(new Set(['/dev', HISTORY_PREFIX]))
-  })
-
-  it('includes the synthetic root anchor', () => {
-    expect(infrastructurePrefixes(true)).toEqual(new Set(['/dev', HISTORY_PREFIX, '/']))
+    expect(forked.env).toEqual({
+      A: '1',
+      B: '9',
+      C: '3',
+      PWD: '/home',
+      PATH: '/usr/bin',
+      IFS: ' \t\n',
+    })
+    expect(session.env).toEqual({ A: '1', B: '2', PWD: '/home', PATH: '/usr/bin', IFS: ' \t\n' })
   })
 })

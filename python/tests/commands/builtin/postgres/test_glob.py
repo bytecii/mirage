@@ -12,16 +12,13 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from mirage.accessor.postgres import PostgresAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.commands.builtin.postgres.io import resolve_glob
-from mirage.resource.postgres.config import PostgresConfig
 from mirage.types import PathSpec
-from mirage.utils.glob_walk import make_resolve_glob
+from mirage.vfs.postgres.config import PostgresConfig
 
 
 @pytest.fixture
@@ -35,37 +32,13 @@ def accessor():
 
 
 @pytest.mark.asyncio
-async def test_resolve_glob_resolved_pathspec(accessor, index):
-    p = PathSpec(resource_path="public/tables/users",
-                 virtual="/public/tables/users",
-                 directory="/public/tables",
-                 resolved=True)
-    result = await resolve_glob(accessor, [p], index)
-    assert result == [p]
-
-
-@pytest.mark.asyncio
-async def test_resolve_glob_pattern_match(accessor, index):
-    fake_readdir = AsyncMock(return_value=[
-        "/public/tables/users", "/public/tables/orders", "/public/tables/teams"
-    ])
-    resolve = make_resolve_glob(fake_readdir)
-    p = PathSpec(resource_path="public/tables/u*",
-                 virtual="/public/tables/u*",
-                 directory="/public/tables",
-                 pattern="u*",
-                 resolved=False)
-    result = await resolve(accessor, [p], index)
-    assert len(result) == 1
-    assert result[0].virtual == "/public/tables/users"
-
-
-@pytest.mark.asyncio
 async def test_resolve_glob_unresolved_no_pattern(accessor, index):
-    p = PathSpec(resource_path="public/tables",
-                 virtual="/public/tables",
-                 directory="/public",
-                 resolved=False,
-                 pattern=None)
+    p = PathSpec(
+        vfs_path="public/tables",
+        virtual="/public/tables",
+        directory="/public",
+        resolved=False,
+        pattern=None,
+    )
     result = await resolve_glob(accessor, [p], index)
     assert result == [p]

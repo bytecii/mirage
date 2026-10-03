@@ -14,110 +14,57 @@
 
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any
 
-from mirage.io.async_line_iterator import AsyncLineIterator
-from mirage.io.types import ByteSource
+from mirage.io.async_line_iterator import SharedInput
+from mirage.policy.types import (
+    AdmissionRules,
+    Decision,
+    HideReason,
+    ProfileScript,
+)
+from mirage.process.config import ProcessPermissions
+from mirage.secrets.config import EnvVar
 from mirage.shell.array import ShellArray
-from mirage.shell.constants import SHELL_ARGV0
+from mirage.shell.constants import (
+    BIN_PREFIX,
+    IFS_DEFAULT,
+    RANDOM,
+    RANDOM_UNSET,
+    SHELL_ARGV0,
+)
+from mirage.shell.descriptors import Descriptor, StreamOwner
 from mirage.shell.types import FunctionBody
-from mirage.shell.variable import (ShellVar, VarAttr, attrs_from_letters,
-                                   stored_attrs, with_value)
-from mirage.types import HiddenPaths, HiddenVars, MountMode
-
-# What a fork of this session carries over. Written down once because
-# `fork` builds a copy from it and `tests/workspace/session/test_session.py`
-# asserts that every dataclass field is either here or in
-# TRANSIENT_FIELDS, so a field added later cannot be silently dropped by
-# a hand-written literal the way `script_name` was.
-INHERITED_FIELDS: tuple[str, ...] = (
-    "session_id",
-    "cwd",
-    "logical_cwd",
-    "vars",
-    "created_at",
-    "exit_trap",
-    "exit_trap_inherited",
-    "functions",
-    "readonly_functions",
-    "last_exit_code",
-    "shell_options",
-    "shopts",
-    "aliases",
-    "umask",
-    "mount_modes",
-    "hidden_paths",
-    "hidden_vars",
-    "generation",
-    "pipeline_timeout_seconds",
-    "last_bg_job_id",
-    "positional_args",
-    "script_name",
-    "exec_stdout",
-    "exec_stdout_append",
-    "exec_stderr",
-    "exec_stderr_append",
-    "exec_stdin",
-    "_exec_opened",
-    "_getopts_pos",
-    "_getopts_optind",
+from mirage.shell.variable import (
+    ManagedRef,
+    ShellVar,
+    VarAttr,
+    attrs_from_letters,
+    stored_attrs,
+    with_value,
 )
-
-# State that belongs to the line being executed, not to the shell, so a
-# fork starts it fresh: the errexit marker, the source nesting depth, the
-# stdin the caller happened to pass and the running function's locals.
-TRANSIENT_FIELDS: tuple[str, ...] = (
-    "errexit_immune",
-    "eval_depth",
-    "running_exit_trap",
-    "source_depth",
-    "_stdin_buffer",
-    "_stdin_source",
-    "_local_vars",
-    "_local_frames",
-    "_cmdsub_seq",
-    "_cmdsub_status",
-    "_cmdsub_stderr",
-    "_parse_seq",
-    "_parse_current",
-    "_alias_marks",
-    "_alias_stack",
+from mirage.types import (
+    HiddenPaths,
+    HiddenVars,
+    Limit,
+    MountMode,
+    ShowEntry,
+    ShownPaths,
 )
-
-# What a child shell gets its own copy of, and the parent gets back
-# afterwards. A `( … )` subshell and a nested `bash`/`sh` are both child
-# shells and both read this list, so neither can drift into isolating a
-# field the other leaks. `last_exit_code` is deliberately absent: `$?`
-# after a child shell is the child's status, which is the one thing it
-# reports back.
-CHILD_SHELL_FIELDS: tuple[str, ...] = (
-    "cwd",
-    "logical_cwd",
-    "eval_depth",
-    "running_exit_trap",
-    "source_depth",
-    "vars",
-    "exit_trap",
-    "exit_trap_inherited",
-    "functions",
-    "readonly_functions",
-    "shell_options",
-    "shopts",
-    "aliases",
-    "umask",
-    "positional_args",
-    "script_name",
-    "last_bg_job_id",
-    "exec_stdout",
-    "exec_stdout_append",
-    "exec_stderr",
-    "exec_stderr_append",
-    "exec_stdin",
-    "_exec_opened",
-    "_getopts_pos",
-    "_getopts_optind",
+from mirage.workspace.abort import StatusWriter
+from mirage.workspace.session.constants import (
+    CHILD_SHELL_FIELDS,
+    INHERITED_FIELDS,
+)
+from mirage.workspace.session.serialize import (
+    commands_from_dict,
+    commands_to_dict,
+    decision_from_dict,
+    decision_to_dict,
+    script_from_dict,
+    script_to_dict,
 )
 
 
@@ -159,8 +106,9 @@ def vars_from_env(env: Mapping[str, str]) -> dict[str, ShellVar]:
     return {name: ShellVar(value, exported) for name, value in env.items()}
 
 
-def vars_from_dict(env: Mapping[str, str],
-                   attrs: Mapping[str, str]) -> dict[str, ShellVar]:
+def vars_from_dict(
+    env: Mapping[str, str], attrs: Mapping[str, str]
+) -> dict[str, ShellVar]:
     """Variable records for a stored session's two halves.
 
     The restore side of `to_dict`. `env` carries every scalar and
@@ -188,8 +136,114 @@ def vars_from_dict(env: Mapping[str, str],
     return out
 
 
+def vars_from_entries(
+    entries: Mapping[str, str | EnvVar | Mapping[str, Any]],
+) -> dict[str, ShellVar]:
+    """Variable records for a workspace env block.
+
+    The declaration side of the env plane: a bare string is the literal
+    short form (exported, like `vars_from_env`), a mapping is coerced
+    through `EnvVar`, and a managed entry becomes bash's third state --
+    exported, unset -- carrying the pointer as `ManagedRef`. After this
+    translation the session vars are the only truth the fill step
+    reads.
+
+    Args:
+        entries (Mapping[str, str | EnvVar | Mapping[str, Any]]): the
+            env block, name -> entry.
+    """
+    out: dict[str, ShellVar] = {}
+    for name, entry in entries.items():
+        if isinstance(entry, str):
+            entry = EnvVar(value=entry)
+        elif not isinstance(entry, EnvVar):
+            entry = EnvVar.model_validate(entry)
+        attrs = set()
+        if entry.provider is not None:
+            ref = ManagedRef(
+                entry.provider,
+                entry.ref,
+                entry.key or name,
+                entry.fetch == "eager",
+            )
+            attrs.add(VarAttr.EXPORT)
+            if entry.readonly:
+                attrs.add(VarAttr.READONLY)
+            out[name] = ShellVar(None, frozenset(attrs), managed=ref)
+            continue
+        if entry.export:
+            attrs.add(VarAttr.EXPORT)
+        if entry.readonly:
+            attrs.add(VarAttr.READONLY)
+        out[name] = ShellVar(entry.value, frozenset(attrs))
+    return out
+
+
+def vars_to_fields(table: Mapping[str, ShellVar]) -> dict[str, Any]:
+    """The stored shape of a bare variable table.
+
+    The three keys a stored session writes (`to_dict`): ``env`` holds
+    the plain scalars, ``var_attrs`` the letter clusters, ``managed``
+    the pointers -- and a managed name serializes as its pointer, never
+    its value, the same rule the session codec states. This exists for
+    the workspace env template, a variable table with no session around
+    it, so a snapshot or copy can carry the declaration.
+
+    Args:
+        table (Mapping[str, ShellVar]): the variable table.
+    """
+    managed = {
+        name: var.managed
+        for name, var in table.items()
+        if var.managed is not None
+    }
+    fields: dict[str, Any] = {
+        "env": {
+            name: var.value
+            for name, var in table.items()
+            if isinstance(var.value, str) and name not in managed
+        },
+        "var_attrs": {
+            name: stored_attrs(var) for name, var in table.items() if var.attrs
+        },
+    }
+    if managed:
+        refs: dict[str, dict[str, str]] = {}
+        for name, ref in managed.items():
+            entry = {"from": ref.source, "ref": ref.ref, "key": ref.key}
+            if ref.eager:
+                entry["fetch"] = "eager"
+            refs[name] = entry
+        fields["managed"] = refs
+    return fields
+
+
+def vars_from_fields(data: Mapping[str, Any]) -> dict[str, ShellVar]:
+    """The variable table a `vars_to_fields` payload restores.
+
+    `vars_from_dict` reads the two plain halves; each managed name then
+    restores declared-but-unfetched, its value forced back to None so a
+    payload that smuggles one in is discarded rather than trusted --
+    exactly how `from_dict` restores a stored session's vars.
+
+    Args:
+        data (Mapping[str, Any]): the stored fields.
+    """
+    out = vars_from_dict(data.get("env") or {}, data.get("var_attrs") or {})
+    for name, m in (data.get("managed") or {}).items():
+        var = out.get(name, ShellVar(None, frozenset({VarAttr.EXPORT})))
+        out[name] = replace(
+            var,
+            value=None,
+            managed=ManagedRef(
+                m["from"], m["ref"], m["key"], m.get("fetch") == "eager"
+            ),
+        )
+    return out
+
+
 @dataclass
-class Session:
+class SessionState:
     session_id: str
     cwd: str = "/"
     # The spelling `cd` arrived at: `..` simplified textually, symlinks
@@ -214,11 +268,28 @@ class Session:
     # two different frozen things in bash, and each refuses in its own
     # voice.
     readonly_functions: set[str] = field(default_factory=set)
-    exit_trap: str | None = None
-    exit_trap_inherited: bool = False
-    eval_depth: int = field(default=0, repr=False)
-    running_exit_trap: bool = field(default=False, repr=False)
     last_exit_code: int = 0
+    # `${PIPESTATUS[@]}`: the exit status of every segment of the last
+    # pipeline, where a simple command is a one-segment pipeline. Written
+    # only through `record_status` (`executor/statement.py`), the one
+    # door `$?` goes through as well, so the two can never disagree.
+    # Empty in a fresh shell, as bash's is: the first `${PIPESTATUS[*]}`
+    # expands to nothing until a statement records one.
+    pipe_status: tuple[int, ...] = ()
+    # `${FUNCNAME[@]}`: the function frames on the call stack, innermost
+    # first, a sourced file as `source` (`CallStack.function_names`).
+    # Written where a frame is pushed and popped, and answered by the
+    # arrays view before the store, so an assignment to it is ignored.
+    # None once `unset FUNCNAME` has made it an ordinary name, as bash's
+    # unset does for the rest of the shell.
+    function_names: tuple[str, ...] | None = ()
+    # Which line stamped the two fields above, so a cancelled line puts
+    # back only what it overwrote. Two `execute()` calls can share one
+    # session, and a restore of a snapshot older than a concurrent
+    # line's finished status would resurrect a value the shell moved
+    # past. Runtime identity, never serialized: a restored snapshot has
+    # no line running on it.
+    status_writer: StatusWriter | None = None
     shell_options: dict[str, bool] = field(default_factory=dict)
     # `shopt` options, kept apart from `set -o` ones because bash keeps
     # two vocabularies (`shopt -o` is the bridge). Only the names set
@@ -237,7 +308,37 @@ class Session:
     # means unrestricted, the doors enforce (data door for paths, the
     # session door for vars), fork carries them, to_dict serializes.
     hidden_paths: HiddenPaths | None = None
+    # The show half of the path axis: re-opened subtrees and per-subtree
+    # modes, resolved against hidden_paths by anchor depth.
+    shown_paths: ShownPaths | None = None
     hidden_vars: HiddenVars | None = None
+    # The operator's reasons for grouped hides: never rendered to the
+    # agent (a reason on ENOENT would confirm the path exists),
+    # persisted so the host's read-back doors survive a restart.
+    hide_reasons: tuple[HideReason, ...] = ()
+    # The profile's admission rules, compiled: its allow list, its ask and
+    # deny rules, and every rule its mount entries carry. One document,
+    # so there is nothing above it to join with. A durable restriction
+    # like hidden_paths, so it persists with the session record.
+    commands: AdmissionRules | None = None
+    # The profile's per-command script, evaluated by ScriptPolicy at the
+    # admission gate. A durable restriction like commands, so it
+    # persists with the session record.
+    script: ProfileScript | None = None
+    # The name of the profile the session runs under, None for an
+    # unrestricted session. What an owner-rendering command prints as
+    # the group. Stamped by the profile like script, so it persists.
+    profile: str | None = None
+    command_limits: dict[str, Limit] = field(default_factory=dict)
+    terminal_output: bool = True
+    processes: ProcessPermissions = ProcessPermissions()
+    process_id: int | None = None
+    shell_pid: int | None = None
+    process_depth: int = 0
+    # The host's standing answers to asked lines (design 3.9): session
+    # state like functions and cwd, persisted, read and written through
+    # the manager by id so a fork shares them, never another session's.
+    decisions: tuple[Decision, ...] = ()
     generation: int = 0
     pipeline_timeout_seconds: float | None = None
     last_bg_job_id: int | None = None
@@ -246,32 +347,41 @@ class Session:
     # sets it to the script file it is running, or to the name given after
     # `-c`, and restores it afterwards.
     script_name: str | None = None
+    # The `trap ... EXIT` action, run when this shell ends; "" is an
+    # ignored EXIT. A child shell sees its parent's action (`trap -p`
+    # lists it) with `exit_trap_inherited` set, and runs none until it
+    # registers its own. Live shell state: a session store keeps none.
+    exit_trap: str | None = None
+    exit_trap_inherited: bool = False
     # Transient `set -e` marker: True when the failure just returned
     # came from a short-circuited &&/|| branch or a `!`-negated command,
     # which bash exempts from errexit. Reset on every node execution.
     errexit_immune: bool = field(default=False, repr=False)
-    # Depth of nested `source`/`.` execution: `return` is legal and the
-    # program loop absorbs its signal only while a file is being sourced.
-    source_depth: int = field(default=0, repr=False)
-    _stdin_buffer: AsyncLineIterator | None = field(default=None, repr=False)
-    _stdin_source: ByteSource | None = field(default=None, repr=False)
     # Variables shadowed by `local` / `declare` in the running function;
     # a None value means the caller had no variable of that name. One
     # stack, not one per container: a local shadows the whole record, so
     # its value and its attributes are saved and restored together.
-    _local_vars: (dict[str, ShellVar | None]
-                  | None) = field(default=None, repr=False)
+    _local_vars: dict[str, ShellVar | None] | None = field(
+        default=None, repr=False
+    )
     # Every function frame on the call path, outermost first; the last
     # is `_local_vars`. `declare -g` inside a nested call needs the
     # outermost frame that shadows a name, since that frame's saved
     # record is the global one.
-    _local_frames: list[dict[str,
-                             ShellVar | None]] = field(default_factory=list,
-                                                       repr=False)
+    _local_frames: list[dict[str, ShellVar | None]] = field(
+        default_factory=list, repr=False
+    )
+    # The caller's `RANDOM` marker for every frame that shadows the
+    # name, innermost last: a local `RANDOM` is an ordinary variable for
+    # the function's extent, and the generator resumes when it returns.
+    _local_random: list[str | None] = field(default_factory=list, repr=False)
     # Hidden `getopts` state: the 1-based char offset within the current
     # word being scanned, plus the OPTIND value that offset belongs to.
     # A caller resetting OPTIND (e.g. to 1) makes the seen value stale,
     # which restarts the scan, matching bash's internal char pointer.
+    # The status the shell is ending with while its EXIT action runs: a
+    # bare `exit` in the action keeps it, as bash's does.
+    _trap_status: int | None = field(default=None, repr=False)
     _getopts_pos: int = field(default=1, repr=False)
     _getopts_optind: int | None = field(default=None, repr=False)
     # Command-substitution tracking for assignment statements: how many
@@ -282,8 +392,19 @@ class Session:
     # `x=abc` exits 0).
     _cmdsub_seq: int = field(default=0, repr=False)
     _cmdsub_status: int = field(default=0, repr=False)
-    # Diagnostics collected by the current AST node's word expansions.
-    _cmdsub_stderr: bytes = field(default=b"", repr=False)
+    # A pipeline's per-segment statuses, parked by `handle_pipe` for the
+    # statement boundary that closes it to claim. None between them.
+    _pipe_status_pending: tuple[int, ...] | None = field(
+        default=None, repr=False
+    )
+    # `$RANDOM`'s generator state and the seed word it last consumed
+    # (`session/rng.py`). A child shell reseeds, as bash's does, and the
+    # parent gets its own state back (`snapshot` / `restore`).
+    _random_state: int | None = field(default=None, repr=False)
+    _random_seed: str | None = field(default=None, repr=False)
+    _random_last: int = field(default=0, repr=False)
+    # Scoped by the executing node so diagnostics follow its redirections.
+    _diagnostics: list[str | bytes] = field(default_factory=list, repr=False)
     # Alias bookkeeping. bash expands an alias when it *parses* the line
     # that uses it, so a definition takes effect from the next line read
     # (`alias x=..; x` on one line finds no `x`; the same two statements
@@ -297,21 +418,54 @@ class Session:
     # and stdin point after a bare `exec > file` / `exec 2> file` /
     # `exec < file`. None is the terminal (the workspace's own output);
     # `""` is a closed descriptor (`exec >&-`), whose writes are
-    # dropped. `_exec_opened` names the targets already truncated, so a
-    # later statement appends rather than re-truncating.
+    # dropped. `exec_stdin` is the one descriptor an `exec <` opened:
+    # every statement after it reads on from where the one before
+    # stopped, across lines and into a child shell, which shares it as
+    # bash's fork shares fd 0.
+    # `exec_stdout_input` and `exec_stderr_input` are the read end a
+    # stream holds after `exec 1<f` or `exec 1<&0`, which a dup shares
+    # the offset of.
+    descriptors: dict[int, Descriptor] = field(default_factory=dict)
     exec_stdout: str | None = None
     exec_stdout_append: bool = False
+    exec_stdout_input: SharedInput | None = None
     exec_stderr: str | None = None
     exec_stderr_append: bool = False
-    exec_stdin: bytes | None = None
-    _exec_opened: set[str] = field(default_factory=set, repr=False)
+    exec_stderr_input: SharedInput | None = None
+    exec_stdin: SharedInput | None = None
+    exec_stdin_unreadable: bool = False
+    # What fd 0 holds when it is not its own read end: `CLOSED` after
+    # `exec <&-`, a writing stream's identity after `exec 0<&1`, so a
+    # later dup from fd 0 copies that (`exec 2<&0` then writes to
+    # stdout) or is refused (`0: Bad file descriptor`); None for the
+    # read end itself.
+    exec_stdin_identity: str | None = None
     _parse_seq: int = field(default=0, repr=False)
     _parse_current: int = field(default=0, repr=False)
-    _alias_marks: dict[str, tuple[int, int]] = field(default_factory=dict,
-                                                     repr=False)
+    # The owner of this session's terminal streams, which an `exec` copy
+    # of one names (`exec 3>&1`), and whether a line of the session is
+    # running, whose outermost program routes what was written to them.
+    # Each fork gets its own: a child shell writing to its parent's
+    # terminal is writing to a stream it did not open.
+    terminal: StreamOwner = field(default_factory=StreamOwner, repr=False)
+    _line_open: bool = field(default=False, repr=False)
+    _alias_marks: dict[str, tuple[int, int]] = field(
+        default_factory=dict, repr=False
+    )
     _alias_stack: list[str] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
+        # A managed name serializes as its pointer, never its value: a
+        # stored session may leak only where a secret lives. `env` skips
+        # the name (the fetched plaintext must not land in the record)
+        # while `var_attrs` keeps its letters, so a payload with the
+        # `managed` key stripped still restores the name as
+        # attributed-unset rather than dropping it.
+        managed = {
+            name: var.managed
+            for name, var in self.vars.items()
+            if var.managed is not None
+        }
         # `env` is every scalar and `var_attrs` the letters set on the
         # names that carry any, rather than one key holding both: `env`
         # is the shape an embedder writes and another language reads, so
@@ -322,7 +476,7 @@ class Session:
         data = {
             "session_id": self.session_id,
             "cwd": self.cwd,
-            "env": dict(self.env),
+            "env": {n: v for n, v in self.env.items() if n not in managed},
             "created_at": self.created_at,
             "generation": self.generation,
         }
@@ -334,57 +488,167 @@ class Session:
         # so the reload re-exported everything it held.
         data["var_attrs"] = {
             name: stored_attrs(var)
-            for name, var in self.vars.items() if var.attrs
+            for name, var in self.vars.items()
+            if var.attrs
         }
+        if managed:
+            refs: dict[str, dict[str, str]] = {}
+            for name, ref in managed.items():
+                entry = {"from": ref.source, "ref": ref.ref, "key": ref.key}
+                if ref.eager:
+                    entry["fetch"] = "eager"
+                refs[name] = entry
+            data["managed"] = refs
         if self.mount_modes is not None:
             data["mount_modes"] = {
-                prefix: mode.value
-                for prefix, mode in self.mount_modes.items()
+                prefix: mode.value for prefix, mode in self.mount_modes.items()
             }
         if self.hidden_paths is not None:
             data["hidden_paths"] = {
                 "paths": list(self.hidden_paths.paths),
                 "patterns": list(self.hidden_paths.patterns),
             }
+        if self.shown_paths is not None:
+            data["shown_paths"] = {
+                "entries": [
+                    {"path": e.path}
+                    if e.mode is None
+                    else {"path": e.path, "mode": e.mode.value}
+                    for e in self.shown_paths.entries
+                ]
+            }
+        if self.hide_reasons:
+            data["hide_reasons"] = [
+                {"patterns": list(g.patterns), "reason": g.reason}
+                for g in self.hide_reasons
+            ]
         if self.hidden_vars is not None:
             data["hidden_vars"] = {
                 "names": list(self.hidden_vars.names),
                 "patterns": list(self.hidden_vars.patterns),
             }
+        if self.commands is not None:
+            data["commands"] = commands_to_dict(self.commands)
+        if self.script is not None:
+            data["script"] = script_to_dict(self.script)
+        if self.command_limits:
+            data["command_limits"] = {
+                name: limit.model_dump()
+                for name, limit in self.command_limits.items()
+            }
+        if self.processes != ProcessPermissions():
+            data["processes"] = self.processes.model_dump()
+        if self.profile is not None:
+            data["profile"] = self.profile
+        if self.decisions:
+            data["decisions"] = [decision_to_dict(d) for d in self.decisions]
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Session":
-        if "env" in data or "var_attrs" in data:
+    def from_dict(cls, data: dict[str, Any]) -> "SessionState":
+        if "env" in data or "var_attrs" in data or "managed" in data:
             data = dict(data)
             env = data.pop("env", {})
             attrs = data.pop("var_attrs", None)
+            managed = data.pop("managed", None)
             # No `var_attrs` at all means the payload is a bare process
             # environment -- an embedder's dict, or a record another
             # writer hand-built -- so every name in it is exported,
             # which is what a process environment means. With the key
             # present the attributes were recorded and are restored as
             # they were written.
-            data["vars"] = (vars_from_env(env)
-                            if attrs is None else vars_from_dict(env, attrs))
+            out_vars = (
+                vars_from_env(env)
+                if attrs is None
+                else vars_from_dict(env, attrs)
+            )
+            # A managed name restores declared-but-unfetched. The value
+            # is forced back to None: a stored session must never carry
+            # the plaintext, so one a tampered payload smuggles into
+            # `env` is discarded rather than trusted.
+            for name, m in (managed or {}).items():
+                var = out_vars.get(
+                    name, ShellVar(None, frozenset({VarAttr.EXPORT}))
+                )
+                out_vars[name] = replace(
+                    var,
+                    value=None,
+                    managed=ManagedRef(
+                        m["from"],
+                        m["ref"],
+                        m["key"],
+                        m.get("fetch") == "eager",
+                    ),
+                )
+            data["vars"] = out_vars
         modes = data.get("mount_modes")
         paths = data.get("hidden_paths")
+        shown = data.get("shown_paths")
+        reasons = data.get("hide_reasons")
         vars_ = data.get("hidden_vars")
-        if modes is not None or paths is not None or vars_ is not None:
+        commands = data.get("commands")
+        script = data.get("script")
+        decisions = data.get("decisions")
+        limits = data.get("command_limits")
+        processes = data.get("processes")
+        if (
+            modes is not None
+            or paths is not None
+            or shown is not None
+            or reasons is not None
+            or vars_ is not None
+            or commands is not None
+            or script is not None
+            or decisions is not None
+            or limits is not None
+            or processes is not None
+        ):
             data = dict(data)
         if modes is not None:
             data["mount_modes"] = {
-                prefix: MountMode(mode)
-                for prefix, mode in modes.items()
+                prefix: MountMode(mode) for prefix, mode in modes.items()
             }
         if paths is not None:
             data["hidden_paths"] = HiddenPaths(
                 paths=tuple(paths.get("paths", ())),
-                patterns=tuple(paths.get("patterns", ())))
+                patterns=tuple(paths.get("patterns", ())),
+            )
+        if shown is not None:
+            data["shown_paths"] = ShownPaths(
+                entries=tuple(
+                    ShowEntry(
+                        path=e["path"],
+                        mode=MountMode(e["mode"]) if "mode" in e else None,
+                    )
+                    for e in shown.get("entries", ())
+                )
+            )
+        if reasons is not None:
+            data["hide_reasons"] = tuple(
+                HideReason(
+                    patterns=tuple(g.get("patterns", ())),
+                    reason=g.get("reason", ""),
+                )
+                for g in reasons
+            )
         if vars_ is not None:
             data["hidden_vars"] = HiddenVars(
                 names=tuple(vars_.get("names", ())),
-                patterns=tuple(vars_.get("patterns", ())))
+                patterns=tuple(vars_.get("patterns", ())),
+            )
+        if commands is not None:
+            data["commands"] = commands_from_dict(commands)
+        if script is not None:
+            data["script"] = script_from_dict(script)
+        if decisions is not None:
+            data["decisions"] = tuple(decision_from_dict(d) for d in decisions)
+        if limits is not None:
+            data["command_limits"] = {
+                name: Limit.model_validate(limit)
+                for name, limit in limits.items()
+            }
+        if processes is not None:
+            data["processes"] = ProcessPermissions.model_validate(processes)
         return cls(**data)
 
     @property
@@ -413,32 +677,44 @@ class Session:
         mapping read-only is what stops it being walked around by
         assigning into storage.
         """
-        return MappingProxyType({
-            name: var.value
-            for name, var in self.vars.items() if isinstance(var.value, str)
-        })
+        return MappingProxyType(
+            {
+                name: var.value
+                for name, var in self.vars.items()
+                if isinstance(var.value, str)
+            }
+        )
 
     @property
     def arrays(self) -> Mapping[str, ShellArray]:
         """The indexed arrays, by name. Read-only, like `env`."""
-        return MappingProxyType({
-            name: var.value
-            for name, var in self.vars.items() if isinstance(var.value, list)
-        })
+        return MappingProxyType(
+            {
+                name: var.value
+                for name, var in self.vars.items()
+                if isinstance(var.value, list)
+            }
+        )
 
     @property
     def assocs(self) -> Mapping[str, dict[str, str]]:
         """The associative arrays, by name. Read-only, like `env`."""
-        return MappingProxyType({
-            name: var.value
-            for name, var in self.vars.items() if isinstance(var.value, dict)
-        })
+        return MappingProxyType(
+            {
+                name: var.value
+                for name, var in self.vars.items()
+                if isinstance(var.value, dict)
+            }
+        )
 
     @property
     def readonly_vars(self) -> frozenset[str]:
         """The names `readonly` has marked. Read-only, like `env`."""
-        return frozenset(name for name, var in self.vars.items()
-                         if VarAttr.READONLY in var.attrs)
+        return frozenset(
+            name
+            for name, var in self.vars.items()
+            if VarAttr.READONLY in var.attrs
+        )
 
     def __post_init__(self) -> None:
         # bash exports `$PWD` from startup, so a session that has never
@@ -447,10 +723,20 @@ class Session:
         # and listed by `env`. "Exports" is literal -- it carries the
         # attribute, which is what keeps it in `env` now that the
         # process view is the exported set rather than every string.
-        self.vars.setdefault("PWD",
-                             ShellVar(self.cwd, frozenset({VarAttr.EXPORT})))
+        self.vars.setdefault(
+            "PWD", ShellVar(self.cwd, frozenset({VarAttr.EXPORT}))
+        )
+        # bash starts with a PATH when the environment gives it none, and
+        # does not export it: `env` does not list it and a child process,
+        # such as a host interpreter, keeps its own. The one directory here
+        # is where every program's file is.
+        self.vars.setdefault("PATH", ShellVar(BIN_PREFIX, frozenset()))
+        # bash sets IFS at startup and never exports it, so a fresh shell
+        # reads `${#IFS}` as 3 and `OLDIFS=$IFS ... IFS=$OLDIFS` puts the
+        # default back rather than an empty IFS that splits nothing.
+        self.vars.setdefault("IFS", ShellVar(IFS_DEFAULT, frozenset()))
 
-    def fork(self, **overrides: Any) -> "Session":
+    def fork(self, **overrides: Any) -> "SessionState":
         """Return a copy of this session with overrides applied.
 
         Every inherited field is copied deeply enough that mutations on
@@ -470,8 +756,7 @@ class Session:
             **overrides: Field-name kwargs to override on the copy.
         """
         defaults: dict[str, Any] = {
-            name: copy_state(getattr(self, name))
-            for name in INHERITED_FIELDS
+            name: copy_state(getattr(self, name)) for name in INHERITED_FIELDS
         }
         defaults.update(overrides)
         if "cwd" in overrides and "logical_cwd" not in overrides:
@@ -479,10 +764,13 @@ class Session:
             # `$PWD` names where the session is, so it follows the move
             # even when the caller also supplied an env to layer on.
             defaults["vars"] = {
-                **defaults["vars"], "PWD":
-                ShellVar(overrides["cwd"], frozenset({VarAttr.EXPORT}))
+                **defaults["vars"],
+                "PWD": ShellVar(overrides["cwd"], frozenset({VarAttr.EXPORT})),
             }
-        return Session(**defaults)
+        forked = SessionState(**defaults)
+        if self._random_seed == RANDOM_UNSET:
+            forked._random_seed = RANDOM_UNSET
+        return forked
 
     def snapshot(self) -> dict[str, Any]:
         """Copy the state a child shell runs on top of.
@@ -490,10 +778,24 @@ class Session:
         Args:
             None
         """
-        return {
+        saved = {
             name: copy_state(getattr(self, name))
             for name in CHILD_SHELL_FIELDS
         }
+        # A child shell reseeds `$RANDOM`, as bash's does: the generator
+        # starts fresh, and the seed word follows the stored value so an
+        # assignment the parent made is not replayed as a reseed. `unset
+        # RANDOM` stays unset.
+        if self._random_seed != RANDOM_UNSET:
+            var = self.vars.get(RANDOM)
+            self._random_seed = (
+                var.value
+                if var is not None and isinstance(var.value, str)
+                else None
+            )
+            self._random_state = None
+            self._random_last = 0
+        return saved
 
     def restore(self, state: dict[str, Any]) -> None:
         """Put back a snapshot, ending a child shell.

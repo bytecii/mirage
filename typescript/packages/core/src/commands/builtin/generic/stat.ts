@@ -13,30 +13,36 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { operandStat } from '../utils/operands.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { FileType, LINK_TARGET_KEY, type FileStat, type PathSpec } from '../../../types.ts'
-import { isoToEpoch } from '../../../utils/dates.ts'
+import {
+  DEVICE_NUMBERS_KEY,
+  FileType,
+  LINK_TARGET_KEY,
+  type FileStat,
+  type PathSpec,
+} from '../../../types.ts'
+import { isoTimestamp, isoToEpoch } from '../../../utils/dates.ts'
 import { fsErrorLine, isFsError } from '../../../utils/errors.ts'
+import { contentSize, deviceRdev, isDir } from '../../../utils/stat_view.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { lsModeString } from '../utils/formatting.ts'
+import { groupName, identityOf, ownerName, type Identity } from '../utils/identity.ts'
 import { formatRecords } from '../utils/output.ts'
+import { missingOperandError } from '../../spec/usage.ts'
 
 const ENC = new TextEncoder()
 
-const DEFAULT_OWNER = 'user'
-
-const TYPE_LABELS: Record<string, string> = {
+const TYPE_LABELS: Partial<Record<FileType, string>> = {
   [FileType.DIRECTORY]: 'directory',
   [FileType.SYMLINK]: 'symbolic link',
-  [FileType.TEXT]: 'regular file',
-  [FileType.BINARY]: 'regular file',
-  [FileType.JSON]: 'regular file',
-  [FileType.CSV]: 'regular file',
+  [FileType.CHAR_DEVICE]: 'character special file',
+  [FileType.FILE]: 'regular file',
 }
 
 function typeLabel(s: FileStat): string {
-  return s.type ? (TYPE_LABELS[s.type] ?? 'regular file') : 'regular file'
+  return TYPE_LABELS[s.type] ?? 'regular file'
 }
 
 function effectiveMode(s: FileStat): number {
@@ -44,17 +50,15 @@ function effectiveMode(s: FileStat): number {
   if (s.type === FileType.DIRECTORY) return 0o755
   // A symlink carries no permission bits of its own; GNU reports 0777.
   if (s.type === FileType.SYMLINK) return 0o777
+  if (s.type === FileType.CHAR_DEVICE) return 0o666
   return 0o644
 }
 
 function typeBits(s: FileStat): number {
   if (s.type === FileType.DIRECTORY) return 0o040000
   if (s.type === FileType.SYMLINK) return 0o120000
+  if (s.type === FileType.CHAR_DEVICE) return 0o020000
   return 0o100000
-}
-
-function owner(value: number | string | null): string {
-  return value !== null ? String(value) : DEFAULT_OWNER
 }
 
 function epoch(iso: string | null): string {
@@ -162,28 +166,44 @@ function applyFlags(
   return value
 }
 
-function directiveValue(spec: string, s: FileStat, name: string): string {
+function directiveValue(
+  spec: string,
+  s: FileStat,
+  name: string,
+  identity: Identity | null,
+): string {
   if (spec === '%') return '%'
   if (spec === 'n') return name
-  if (spec === 's') return String(s.size ?? 0)
+  if (spec === 's') return !isDir(s) && s.size === null ? '-' : String(contentSize(s))
   if (spec === 'F') return typeLabel(s)
   if (spec === 'a') return effectiveMode(s).toString(8)
   if (spec === 'A') return lsModeString(s)
   if (spec === 'f') return (typeBits(s) | effectiveMode(s)).toString(16)
-  if (spec === 'u' || spec === 'U') return owner(s.uid)
-  if (spec === 'g' || spec === 'G') return owner(s.gid)
+  if (spec === 'u' || spec === 'U') return ownerName(s.uid, identity)
+  if (spec === 'g' || spec === 'G') return groupName(s.gid, identity)
   if (spec === 'x') return s.atime ?? s.modified ?? ''
   if (spec === 'X') return epoch(s.atime ?? s.modified)
-  if (spec === 'y' || spec === 'z') return s.modified ?? ''
-  if (spec === 'Y' || spec === 'Z') return epoch(s.modified)
-  if (spec === 'w') return '-'
-  if (spec === 'W') return '0'
+  if (spec === 'y') return s.modified ?? ''
+  if (spec === 'Y') return epoch(s.modified)
+  if (spec === 'z') return s.ctime ?? '-'
+  if (spec === 'Z') return epoch(s.ctime)
+  if (spec === 'w') return s.birthtime ?? '-'
+  if (spec === 'W') return epoch(s.birthtime)
   if (spec === 'B') return '512'
-  if (spec === 'r' || spec === 'R' || spec === 't' || spec === 'T') return '0'
-  // %Hr/%Lr are rdev major/minor (0, like %r); %Hd/%Ld are device
-  // major/minor, which a VFS has no truthful value for.
+  const device = s.extra[DEVICE_NUMBERS_KEY]
+  const numbers = Array.isArray(device) && device.length === 2 ? (device as [number, number]) : null
+  if (spec === 't') return numbers !== null ? numbers[0].toString(16) : '0'
+  if (spec === 'T') return numbers !== null ? numbers[1].toString(16) : '0'
+  if (spec === 'r' || spec === 'R') {
+    const rdev = deviceRdev(s)
+    return spec === 'r' ? String(rdev) : rdev.toString(16)
+  }
   if (spec.length === 2 && (spec.startsWith('H') || spec.startsWith('L'))) {
-    return spec[1] === 'r' || spec[1] === 'R' ? '0' : '?'
+    if (spec[1] === 'r' || spec[1] === 'R') {
+      if (numbers === null) return '0'
+      return String(spec.startsWith('H') ? numbers[0] : numbers[1])
+    }
+    return '?'
   }
   return '?'
 }
@@ -199,7 +219,12 @@ function nameParts(s: FileStat, name: string, quoted: boolean): string[] {
   return quoted ? parts.map(quoteName) : parts
 }
 
-function renderDirective(d: FormatDirective, s: FileStat, name: string): string {
+function renderDirective(
+  d: FormatDirective,
+  s: FileStat,
+  name: string,
+  identity: Identity | null,
+): string {
   if (d.spec === 'N') {
     // GNU formats the name and a symlink's target as two separate fields,
     // so a width pads each one rather than the joined line.
@@ -208,7 +233,13 @@ function renderDirective(d: FormatDirective, s: FileStat, name: string): string 
       .map((part) => applyFlags(part, d.flags, d.width, d.precision, d.spec))
       .join(' -> ')
   }
-  return applyFlags(directiveValue(d.spec, s, name), d.flags, d.width, d.precision, d.spec)
+  return applyFlags(
+    directiveValue(d.spec, s, name, identity),
+    d.flags,
+    d.width,
+    d.precision,
+    d.spec,
+  )
 }
 
 function isAsciiDigit(char: string | undefined): boolean {
@@ -257,7 +288,7 @@ function parseFormatDirective(fmt: string, start: number): FormatDirective | nul
   return { end: cursor, flags, width, precision, spec }
 }
 
-function formatStat(fmt: string, s: FileStat, name: string): string {
+function formatStat(fmt: string, s: FileStat, name: string, identity: Identity | null): string {
   const parts: string[] = []
   let cursor = 0
   while (cursor < fmt.length) {
@@ -273,10 +304,52 @@ function formatStat(fmt: string, s: FileStat, name: string): string {
       cursor = start + 1
       continue
     }
-    parts.push(renderDirective(directive, s, name))
+    parts.push(renderDirective(directive, s, name, identity))
     cursor = directive.end
   }
   return parts.join('')
+}
+
+// The fraction of a second as the backend spelled it, so both hosts print
+// the digits the stamp carries rather than what their clock type keeps.
+const FRACTION = /\d\d:\d\d:\d\d\.(\d+)/
+
+/** A known timestamp in GNU's layout, in UTC, or '-' when unknown. A naive
+ * stamp is UTC, as everywhere else a backend time is read. */
+function statTime(value: string | null): string {
+  const seconds = isoTimestamp(value)
+  if (seconds === null || value === null) return '-'
+  const whole = new Date(Math.floor(seconds) * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  const fraction = (FRACTION.exec(value)?.[1] ?? '').padEnd(9, '0').slice(0, 9)
+  return `${whole}.${fraction} +0000`
+}
+
+/** GNU coreutils 9.7's default layout, with unknown fields marked. A VFS has
+ * rendered bytes, modes and logical owners, but no device, inode, allocation
+ * blocks, IO block size or link count: those print '?'. An absent size,
+ * owner number or time prints '-'. Each time is the one its directive
+ * prints (`%x %y %z %w`), the name is unquoted as GNU's default prints it,
+ * and times are UTC. */
+function renderStat(s: FileStat, name: string, identity: Identity | null): string {
+  const size = directiveValue('s', s, name, identity)
+  const uid = String(s.uid ?? '-').padStart(5)
+  const gid = String(s.gid ?? '-').padStart(5)
+  const owner = ownerName(s.uid, identity).padStart(8)
+  const group = groupName(s.gid, identity).padStart(8)
+  const links =
+    s.type === FileType.CHAR_DEVICE
+      ? `Links: ${'?'.padEnd(5)} Device type: ${directiveValue('Hr', s, name, identity)},${directiveValue('Lr', s, name, identity)}`
+      : 'Links: ?'
+  return [
+    `  File: ${nameParts(s, name, false).join(' -> ')}`,
+    `  Size: ${size.padEnd(10)}\tBlocks: ${'?'.padEnd(10)} IO Block: ${'?'.padEnd(6)} ${typeLabel(s)}`,
+    `Device: ?\tInode: ${'?'.padEnd(10)}  ${links}`,
+    `Access: (${effectiveMode(s).toString(8).padStart(4, '0')}/${lsModeString(s)})  Uid: (${uid}/${owner})   Gid: (${gid}/${group})`,
+    `Access: ${statTime(s.atime ?? s.modified)}`,
+    `Modify: ${statTime(s.modified)}`,
+    `Change: ${statTime(s.ctime)}`,
+    ` Birth: ${statTime(s.birthtime)}`,
+  ].join('\n')
 }
 
 export async function statGeneric(
@@ -285,13 +358,12 @@ export async function statGeneric(
   stat: (p: PathSpec) => Promise<FileStat>,
 ): Promise<CommandFnResult> {
   const fl = new FlagView(opts.flags, specOf('stat'))
-  if (paths.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('stat: missing operand\n') })]
-  }
+  if (paths.length === 0) throw missingOperandError('stat', null)
   const fmt = fl.asStr('c') ?? fl.asStr('f') ?? null
   const lines: string[] = []
   let err = ''
   const links = fl.asBool('L') ? null : (opts.ns?.links ?? null)
+  const identity = identityOf(opts)
   for (const p of paths) {
     // GNU stat lstats: a symlink operand reports the link itself, not
     // its target, unless -L asks to dereference. A link has no backend
@@ -299,19 +371,15 @@ export async function statGeneric(
     const linked = links?.statAt(p.virtual) ?? null
     if (linked !== null) {
       if (fmt !== null) {
-        lines.push(formatStat(fmt, linked, p.rawPath))
+        lines.push(formatStat(fmt, linked, p.rawPath, identity))
       } else {
-        const sizeStr = linked.size === null ? 'None' : String(linked.size)
-        const modStr = linked.modified ?? 'None'
-        lines.push(
-          `name=${linked.name} size=${sizeStr} modified=${modStr} type=${linked.type ?? 'None'}`,
-        )
+        lines.push(renderStat(linked, p.rawPath, identity))
       }
       continue
     }
     let s: FileStat
     try {
-      s = await stat(p)
+      s = await operandStat(p, stat, opts.statPath, opts.ns?.mounts, opts.ns?.links)
     } catch (e) {
       // GNU stat keeps reporting the remaining operands, exit 1.
       if (!isFsError(e)) throw e
@@ -319,12 +387,9 @@ export async function statGeneric(
       continue
     }
     if (fmt !== null) {
-      lines.push(formatStat(fmt, s, p.rawPath))
+      lines.push(formatStat(fmt, s, p.rawPath, identity))
     } else {
-      const sizeStr = s.size === null ? 'None' : String(s.size)
-      const modStr = s.modified ?? 'None'
-      const typeStr = s.type ?? 'None'
-      lines.push(`name=${s.name} size=${sizeStr} modified=${modStr} type=${typeStr}`)
+      lines.push(renderStat(s, p.rawPath, identity))
     }
   }
   const io = new IOResult({

@@ -22,7 +22,7 @@ SOURCE = Path(__file__).resolve().parents[2] / "mirage"
 # methods, whose parameters the language types as object so that a
 # membership or attribute test on an unrelated value stays legal. The
 # fifth is the guard whose entire job is to catch a value the annotations
-# already claim cannot arrive (a plain string where a PolicyFn belongs),
+# already claim cannot arrive (a plain string where a RoutePolicy belongs),
 # so narrowing it would make its own call sites type errors.
 ALLOWED = {
     # Overrides an external base class that declares `dict[str, object]`;
@@ -30,9 +30,21 @@ ALLOWED = {
     ("agents/openai_agents/sandbox.py", "deserialize_session_state"),
     ("io/types.py", "__setattr__"),
     ("commands/cli/builtin/git/objects.py", "__contains__"),
-    ("resource/dev/dev.py", "__contains__"),
-    ("resource/dev/dev.py", "pop"),
+    ("vfs/dev/store.py", "__contains__"),
+    ("vfs/dev/store.py", "pop"),
     ("workspace/workspace/guard.py", "reject_config_script"),
+    # Override asyncssh.SFTPServer, which types the file handle it hands
+    # back as `object`; `opened` is the one place it is narrowed.
+    ("server/ssh/sftp.py", "opened"),
+    ("server/ssh/sftp.py", "fstat"),
+    ("server/ssh/sftp.py", "fsetstat"),
+    ("server/ssh/sftp.py", "read"),
+    ("server/ssh/sftp.py", "write"),
+    ("server/ssh/sftp.py", "fsync"),
+    ("server/ssh/sftp.py", "close"),
+    ("server/ssh/sftp.py", "lock"),
+    ("server/ssh/sftp.py", "unlock"),
+    ("server/ssh/sftp.py", "fstatvfs"),
 }
 
 
@@ -41,7 +53,8 @@ def _mentions_object(node: ast.AST | None) -> bool:
         return False
     return any(
         isinstance(child, ast.Name) and child.id == "object"
-        for child in ast.walk(node))
+        for child in ast.walk(node)
+    )
 
 
 def _target_name(node: ast.AnnAssign) -> str:
@@ -75,7 +88,8 @@ def test_annotations_name_a_real_type():
             if isinstance(node, ast.AnnAssign):
                 name = _target_name(node)
                 if (rel, name) not in ALLOWED and _mentions_object(
-                        node.annotation):
+                    node.annotation
+                ):
                     offenders.append(f"{rel}: {name}")
                 continue
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -84,14 +98,19 @@ def test_annotations_name_a_real_type():
                 continue
             args = node.args
             annotated = [
-                *args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg,
-                args.kwarg
+                *args.posonlyargs,
+                *args.args,
+                *args.kwonlyargs,
+                args.vararg,
+                args.kwarg,
             ]
-            named = [arg.annotation
-                     for arg in annotated if arg is not None] + [node.returns]
+            named = [
+                arg.annotation for arg in annotated if arg is not None
+            ] + [node.returns]
             if any(_mentions_object(item) for item in named):
                 offenders.append(f"{rel}: {node.name}")
     assert not offenders, (
         "annotate the real type (FlagValue for a parsed flag, JsonValue "
-        "for a decoded payload, PathSpec for a path), not `object`:\n" +
-        "\n".join(offenders))
+        "for a decoded payload, PathSpec for a path), not `object`:\n"
+        + "\n".join(offenders)
+    )

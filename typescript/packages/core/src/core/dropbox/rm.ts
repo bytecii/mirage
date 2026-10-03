@@ -13,8 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { DropboxAccessor } from '../../accessor/dropbox.ts'
-import { invalidateAfterUnlink } from '../../cache/context.ts'
-import { record } from '../../observe/context.ts'
+import { invalidateSubtree } from '../../cache/context.ts'
+import { record, startOp } from '../../observe/context.ts'
 import type { PathSpec } from '../../types.ts'
 import { enoent } from '../../utils/errors.ts'
 import { DropboxApiError } from './client.ts'
@@ -25,14 +25,14 @@ import { dropboxPathOf } from './paths.ts'
 // delete_v2 removes folders recursively, so rm -r maps to one call.
 export async function rmR(accessor: DropboxAccessor, path: PathSpec): Promise<void> {
   const apiPath = dropboxPathOf(accessor, path)
-  const startMs = performance.now()
+  const timer = startOp()
   try {
     await deletePath(accessor.tokenManager, apiPath)
   } catch (err) {
     if (err instanceof DropboxApiError && err.status === 409) throw enoent(path.virtual)
     throw err
   }
-  record('rm_r', path.virtual, 'dropbox', 0, startMs)
-  await invalidateAfterUnlink(path)
+  record('rm_r', path.virtual, 'dropbox', 0, timer)
+  await invalidateSubtree(path)
   await invalidateAncestors(path)
 }

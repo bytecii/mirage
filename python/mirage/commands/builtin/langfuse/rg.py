@@ -12,80 +12,24 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from functools import partial
+
 from mirage.accessor.langfuse import LangfuseAccessor
-from mirage.commands.builtin.generic.rg import rg as generic_rg
-from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.grep_helper import compile_pattern, pattern_arg
-from mirage.commands.builtin.langfuse.grep import (_filter_traces,
-                                                   _format_dataset_results,
-                                                   _format_prompt_results,
-                                                   _format_session_results)
-from mirage.commands.builtin.langfuse.io import resolve_glob
-from mirage.commands.config import CommandOpts
-from mirage.commands.errors import UsageError
-from mirage.commands.registry import command
+from mirage.commands.builtin.generic_bind.search import run_search
+from mirage.commands.builtin.langfuse.io import IO
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
-from mirage.core.langfuse.client import (fetch_datasets, fetch_prompts,
-                                         fetch_sessions, fetch_traces)
-from mirage.core.langfuse.read import read as langfuse_read
-from mirage.core.langfuse.readdir import readdir as _readdir
-from mirage.core.langfuse.scope import detect_scope
-from mirage.core.langfuse.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
+_search = partial(run_search, IO, "rg")
 
-@command("rg", resource="langfuse", spec=SPECS["rg"])
-async def rg(accessor: LangfuseAccessor, paths: list[PathSpec],
-             texts: list[str],
-             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(opts.flags, spec=SPECS["rg"])
-    pattern_str = pattern_arg(texts, fl)
-    if pattern_str is None:
-        raise UsageError("rg: usage: rg [flags] pattern [path]")
-    i = fl.as_bool("i")
-    w = fl.as_bool("w")
-    F = fl.as_bool("F")
-    pat = compile_pattern(pattern_str, i, F, w)
 
-    config = accessor.config
-    limit = config.default_search_limit
-
-    if paths and "\n" not in pattern_str:
-        scope = detect_scope(paths[0])
-
-        if scope.level == "traces" or scope.level == "root":
-            traces = await fetch_traces(
-                accessor.api,
-                limit=limit,
-            )
-            return _filter_traces(traces, pat)
-
-        if scope.level == "sessions":
-            sessions = await fetch_sessions(
-                accessor.api,
-                limit=limit,
-            )
-            return _format_session_results(sessions, pat)
-
-        if scope.level == "prompts":
-            prompts = await fetch_prompts(accessor.api)
-            return _format_prompt_results(prompts, pat)
-
-        if scope.level == "datasets":
-            datasets = await fetch_datasets(accessor.api)
-            return _format_dataset_results(datasets, pat)
-
-    resolved = await resolve_glob(accessor, paths,
-                                  index=opts.index) if paths else []
-    return await generic_rg(
-        resolved,
-        texts,
-        opts.flags,
-        readdir=bound_op(_readdir, accessor, opts.index),
-        stat=bound_op(_stat, accessor, opts.index),
-        read_bytes=bound_op(langfuse_read, accessor, opts.index),
-        read_stream=None,
-        stdin=opts.stdin,
-    )
+@command("rg", vfs="langfuse", spec=SPECS["rg"])
+async def rg(
+    accessor: LangfuseAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
+    return await _search(accessor, paths, texts, opts)

@@ -13,22 +13,18 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { GSlidesAccessor } from '../../../accessor/gslides.ts'
-import { ResourceName } from '../../../types.ts'
-import type { ProvisionFn, RegisteredCommand } from '../../config.ts'
+import { VFSName } from '../../../types.ts'
+import type { RegisteredCommand } from '../../config.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
-import { GSLIDES_IO } from './io.ts'
-import { fileReadProvision } from './_provision.ts'
+import { IO } from './io.ts'
 import { GSLIDES_RM } from './rm.ts'
 
 // Slides API passthroughs live in the gws CLI
 // (commands/cli/builtin/gws), installed by name; the mount only serves
 // the filesystem surface.
 export const GSLIDES_COMMANDS: readonly RegisteredCommand[] = [
-  ...makeGenericCommands<GSlidesAccessor>(ResourceName.GSLIDES, GSLIDES_IO, {
-    provisionOverrides: {
-      grep: fileReadProvision as ProvisionFn,
-      rg: fileReadProvision as ProvisionFn,
-    },
+  ...makeGenericCommands<GSlidesAccessor>(VFSName.GSLIDES, IO, {
+    overrides: new Set(['rm']),
   }),
   ...GSLIDES_RM,
 ]

@@ -12,64 +12,58 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stripSlash } from '../../utils/slash.ts'
 import { describe, expect, it } from 'vitest'
 
-import { resolveLanceDBConfig } from '../../resource/lancedb/config.ts'
+import {
+  resolveLanceDBConfig,
+  type LanceDBConfig,
+  type LanceDBConfigResolved,
+} from '../../vfs/lancedb/config.ts'
 import { PathSpec } from '../../types.ts'
-import { ScopeLevel, detectScope } from './scope.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { INVALID, makeDetectScope, type DetectFn } from '../hierarchy/scope.ts'
+import { filtersOf } from '../vector/scope.ts'
+import { scopesFor } from './scope.ts'
 
-const config = resolveLanceDBConfig({
-  uri: '/tmp/db',
-  groupBy: ['label', 'kind'],
-  idColumn: 'id',
-  blobColumn: 'image_bytes',
-  blobExt: 'png',
-  vectorColumn: 'vector',
-})
+function cfg(over: Partial<LanceDBConfig> = {}): LanceDBConfigResolved {
+  return resolveLanceDBConfig({
+    uri: '/tmp/db',
+    groupBy: ['label', 'kind'],
+    idColumn: 'id',
+    blobColumn: 'image_bytes',
+    blobExt: 'png',
+    vectorColumn: 'vector',
+    ...over,
+  })
+}
+
+const config = cfg()
+
+function detect(c: LanceDBConfigResolved): DetectFn {
+  return makeDetectScope(scopesFor(c))
+}
 
 function ps(p: string): PathSpec {
-  return new PathSpec({ resourcePath: stripSlash(p), virtual: p, directory: p })
+  return new PathSpec({ vfsPath: stripSlash(p), virtual: p, directory: p })
 }
 
 describe('lancedb scope', () => {
-  it('root in multi-table mode', () => {
-    expect(detectScope(ps('/'), config).level).toBe(ScopeLevel.ROOT)
-  })
-
-  it('table is a group dir', () => {
-    const s = detectScope(ps('/animals'), config)
-    expect(s.level).toBe(ScopeLevel.GROUP_DIR)
-    expect(s.table).toBe('animals')
-    expect(s.filters).toEqual({})
-  })
-
-  it('nested group dir binds a filter', () => {
-    expect(detectScope(ps('/animals/cat'), config).filters).toEqual({ label: 'cat' })
-  })
-
   it('row card', () => {
-    const s = detectScope(ps('/animals/cat/big/3.md'), config)
-    expect(s.level).toBe(ScopeLevel.ROW)
-    expect(s.rowId).toBe('3')
-    expect(s.blob).toBe(false)
-    expect(s.filters).toEqual({ label: 'cat', kind: 'big' })
+    const match = detect(config)(ps('/animals/cat/big/3.md'))
+    expect(match.kind).toBe('row_card')
+    expect(match.slots.row_id).toBe('3')
+    expect(filtersOf(config.groupBy, match)).toEqual({ label: 'cat', kind: 'big' })
   })
 
   it('row blob', () => {
-    const s = detectScope(ps('/animals/cat/big/3.png'), config)
-    expect(s.blob).toBe(true)
+    const match = detect(config)(ps('/animals/cat/big/3.png'))
+    expect(match.kind).toBe('row_blob')
+    expect(match.slots.row_id).toBe('3')
   })
 
-  it('single-table pin elides the table level', () => {
-    const pinned = resolveLanceDBConfig({
-      uri: '/tmp/db',
-      table: 'animals',
-      groupBy: ['label', 'kind'],
-      idColumn: 'id',
-    })
-    const s = detectScope(ps('/cat/big'), pinned)
-    expect(s.level).toBe(ScopeLevel.GROUP_DIR)
-    expect(s.filters).toEqual({ label: 'cat', kind: 'big' })
+  it('blob leaf needs a blob column', () => {
+    const blobless = resolveLanceDBConfig({ uri: '/tmp/db', groupBy: ['label', 'kind'] })
+    const match = detect(blobless)(ps('/animals/cat/big/3.png'))
+    expect(match.kind).toBe(INVALID)
   })
 })

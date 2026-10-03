@@ -12,11 +12,38 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Sequence
-from typing import NamedTuple
+from collections.abc import Awaitable, Sequence
+from typing import NamedTuple, Protocol
 
+from mirage.commands.spec.argmatch import ArgmatchChoices
 from mirage.commands.spec.types import FlagValue
+from mirage.io import IOResult
+from mirage.io.types import ByteSource
+from mirage.shell.call_stack import CallStack
+from mirage.shell.console import JobConsole
+from mirage.shell.types import TSNodeLike
 from mirage.types import PathSpec
+from mirage.workspace.session import SessionState
+from mirage.workspace.types import ExecutionNode
+
+
+class ExecuteNodeFn(Protocol):
+    """The executor's statement runner, re-entered for function bodies.
+
+    ``handle_command`` receives it from the node dispatcher so a shell
+    function can execute each statement of its body through the full
+    executor without a circular import.
+    """
+
+    def __call__(
+        self,
+        node: TSNodeLike,
+        session: SessionState,
+        stdin: ByteSource | None,
+        call_stack: CallStack,
+        *,
+        sink: JobConsole | None = None,
+    ) -> Awaitable[tuple[ByteSource | None, IOResult, ExecutionNode]]: ...
 
 
 class ParsedCommand(NamedTuple):
@@ -28,7 +55,13 @@ class ParsedCommand(NamedTuple):
     ambiguous_options: list[tuple[str, tuple[str, ...]]]
     option_error_kinds: list[str]
     needs_value_options: list[str]
-    invalid_value_options: list[tuple[str, str, tuple[str, ...]]]
+    # The two wordings GNU picks between for a refused choice value, in
+    # scan order: `invalid argument` for a value that matches no
+    # candidate, `ambiguous argument` for one that prefixes candidates
+    # spanning two or more values. option_error_kinds orders them
+    # against each other and against every other refusal on the line.
+    invalid_value_options: list[tuple[str, str, ArgmatchChoices]]
+    ambiguous_value_options: list[tuple[str, str, ArgmatchChoices]]
     invalid_int_options: list[tuple[str, str]]
     invalid_float_options: list[tuple[str, str]]
     missing_required_options: list[str]

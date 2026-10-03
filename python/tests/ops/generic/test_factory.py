@@ -12,28 +12,25 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import errno
 from unittest.mock import AsyncMock
 
 import pytest
 
 from mirage.accessor.base import NOOPAccessor
+from mirage.cache.index import NULL_INDEX
 from mirage.commands.builtin.generic_bind import CommandIO
 from mirage.ops.generic import make_generic_ops
 from mirage.ops.registry import OpsRegistry
-from mirage.types import PathSpec
+from mirage.types import FileStat, FileType, PathSpec
 
 
 class _S3Error(Exception):
-
     def __init__(self, code: str, status: int) -> None:
         super().__init__(code)
         self.response = {
-            "Error": {
-                "Code": code
-            },
-            "ResponseMetadata": {
-                "HTTPStatusCode": status
-            },
+            "Error": {"Code": code},
+            "ResponseMetadata": {"HTTPStatusCode": status},
         }
 
 
@@ -41,21 +38,24 @@ PATH = PathSpec.from_str_path("/x/a.txt", "a.txt")
 
 
 def make_table(**kwargs) -> CommandIO:
-    return CommandIO(readdir=AsyncMock(return_value=["/x/a.txt"]),
-                     read_bytes=AsyncMock(return_value=b"data"),
-                     read_stream=AsyncMock(),
-                     stat=AsyncMock(),
-                     is_mounted=lambda a: True,
-                     **kwargs)
+    return CommandIO(
+        readdir=AsyncMock(return_value=["/x/a.txt"]),
+        read_bytes=AsyncMock(return_value=b"data"),
+        read_stream=AsyncMock(),
+        stat=AsyncMock(),
+        is_mounted=lambda a: True,
+        **kwargs,
+    )
 
 
 def rows(ops) -> set:
-    return {(o.name, o.resource, o.filetype, o.write) for o in ops}
+    return {(o.name, o.vfs, o.filetype, o.write) for o in ops}
 
 
 def test_read_only_table_emits_trio():
     ops = make_generic_ops("x", make_table())
     assert rows(ops) == {
+        ("glob", "x", None, False),
         ("read", "x", None, False),
         ("readdir", "x", None, False),
         ("stat", "x", None, False),
@@ -63,17 +63,20 @@ def test_read_only_table_emits_trio():
 
 
 def test_full_table_emits_mutations():
-    table = make_table(write=AsyncMock(),
-                       mkdir=AsyncMock(),
-                       unlink=AsyncMock(),
-                       rmdir=AsyncMock(),
-                       rename=AsyncMock(),
-                       create=AsyncMock(),
-                       truncate=AsyncMock(),
-                       append=AsyncMock(),
-                       set_attrs=AsyncMock())
+    table = make_table(
+        write=AsyncMock(),
+        mkdir=AsyncMock(),
+        unlink=AsyncMock(),
+        rmdir=AsyncMock(),
+        rename=AsyncMock(),
+        create=AsyncMock(),
+        truncate=AsyncMock(),
+        append=AsyncMock(),
+        set_attrs=AsyncMock(),
+    )
     names = {(o.name, o.write) for o in make_generic_ops("x", table)}
     assert names == {
+        ("glob", False),
         ("read", False),
         ("readdir", False),
         ("stat", False),
@@ -85,19 +88,20 @@ def test_full_table_emits_mutations():
         ("create", True),
         ("truncate", True),
         ("append", True),
+        ("pwrite", True),
         ("setattr", True),
     }
 
 
-def test_multi_resource_fan_out():
+def test_multi_vfs_fan_out():
     ops = make_generic_ops(["a", "b"], make_table())
-    assert {o.resource for o in ops} == {"a", "b"}
-    assert len(ops) == 6
+    assert {o.vfs for o in ops} == {"a", "b"}
+    assert len(ops) == 8
 
 
 def test_overrides_skip_names():
     ops = make_generic_ops("x", make_table(), overrides={"readdir"})
-    assert {o.name for o in ops} == {"read", "stat"}
+    assert {o.name for o in ops} == {"glob", "read", "stat"}
 
 
 def test_emits_no_filetype_scoped_ops():
@@ -114,6 +118,153 @@ async def test_read_wrapper_forwards_index():
     result = await read.fn(acc, PATH, index=None)
     assert result == b"data"
     table.read_bytes.assert_awaited_once_with(acc, PATH, None)
+
+
+@pytest.mark.asyncio
+async def test_emulated_append_reads_current_bytes_and_creates_missing():
+    table = make_table(write=AsyncMock())
+    table.read_bytes.side_effect = [b"old", b"oldnew", FileNotFoundError()]
+    op = next(o for o in make_generic_ops("x", table) if o.name == "append")
+    acc = NOOPAccessor()
+    for data in (b"new", b"!", b"created"):
+        await op.fn(acc, PATH, data)
+    assert [call.args[2] for call in table.write.await_args_list] == [
+        b"oldnew",
+        b"oldnew!",
+        b"created",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_emulated_append_forwards_index():
+    table = make_table(write=AsyncMock())
+    op = next(o for o in make_generic_ops("x", table) if o.name == "append")
+    acc = NOOPAccessor()
+    await op.fn(acc, PATH, b"new", index=NULL_INDEX)
+    table.read_bytes.assert_awaited_once_with(acc, PATH, NULL_INDEX)
+
+
+@pytest.mark.asyncio
+async def test_emulated_append_does_not_overwrite_after_read_failure():
+    table = make_table(write=AsyncMock())
+    table.read_bytes.side_effect = PermissionError(PATH.virtual)
+    op = next(o for o in make_generic_ops("x", table) if o.name == "append")
+    with pytest.raises(PermissionError):
+        await op.fn(NOOPAccessor(), PATH, b"new")
+    table.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_emulated_empty_append_stats_instead_of_rewriting():
+    table = make_table(write=AsyncMock())
+    table.stat.side_effect = [
+        FileStat(name="a.txt", type=FileType.FILE),
+        FileNotFoundError(),
+        FileStat(name="a.txt", type=FileType.DIRECTORY),
+    ]
+    op = next(o for o in make_generic_ops("x", table) if o.name == "append")
+    acc = NOOPAccessor()
+    await op.fn(acc, PATH, b"", index=NULL_INDEX)
+    table.stat.assert_awaited_once_with(acc, PATH, NULL_INDEX)
+    table.write.assert_not_awaited()
+    await op.fn(acc, PATH, b"")
+    table.write.assert_awaited_once_with(acc, PATH, b"")
+    with pytest.raises(IsADirectoryError):
+        await op.fn(acc, PATH, b"")
+    table.read_bytes.assert_not_awaited()
+    assert table.write.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_emulated_empty_pwrite_stats_instead_of_rewriting():
+    table = make_table(write=AsyncMock())
+    table.stat.side_effect = [
+        FileStat(name="a.txt", type=FileType.FILE),
+        FileNotFoundError(),
+        FileStat(name="a.txt", type=FileType.DIRECTORY),
+    ]
+    op = next(o for o in make_generic_ops("x", table) if o.name == "pwrite")
+    acc = NOOPAccessor()
+    await op.fn(acc, PATH, b"", 0, index=NULL_INDEX)
+    table.stat.assert_awaited_once_with(acc, PATH, NULL_INDEX)
+    table.write.assert_not_awaited()
+    table.read_bytes.assert_not_awaited()
+    await op.fn(acc, PATH, b"", 0)
+    table.write.assert_awaited_once_with(acc, PATH, b"")
+    table.read_bytes.assert_not_awaited()
+    with pytest.raises(IsADirectoryError):
+        await op.fn(acc, PATH, b"", 0)
+    assert table.write.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_native_append_skips_emulation_and_overrides_still_win():
+    table = make_table(write=AsyncMock(), append=AsyncMock())
+    ops = make_generic_ops("x", table)
+    op = next(o for o in ops if o.name == "append")
+    acc = NOOPAccessor()
+    await op.fn(acc, PATH, b"new")
+    table.append.assert_awaited_once_with(acc, PATH, b"new")
+    table.read_bytes.assert_not_awaited()
+    table.write.assert_not_awaited()
+    assert not any(
+        o.name == "append"
+        for o in make_generic_ops(
+            "x", make_table(write=AsyncMock()), overrides={"append"}
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_emulated_pwrite_splices_pads_and_creates_missing():
+    table = make_table(write=AsyncMock())
+    table.read_bytes.side_effect = [b"hello", b"ab", FileNotFoundError()]
+    op = next(o for o in make_generic_ops("x", table) if o.name == "pwrite")
+    acc = NOOPAccessor()
+    for data, offset in ((b"XY", 1), (b"z", 4), (b"new", 2)):
+        await op.fn(acc, PATH, data, offset)
+    assert [call.args[2] for call in table.write.await_args_list] == [
+        b"hXYlo",
+        b"ab\0\0z",
+        b"\0\0new",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_emulated_pwrite_forwards_index_and_keeps_a_failed_read():
+    table = make_table(write=AsyncMock())
+    table.read_bytes.side_effect = PermissionError(PATH.virtual)
+    op = next(o for o in make_generic_ops("x", table) if o.name == "pwrite")
+    acc = NOOPAccessor()
+    with pytest.raises(PermissionError):
+        await op.fn(acc, PATH, b"new", 0, index=NULL_INDEX)
+    table.read_bytes.assert_awaited_once_with(acc, PATH, NULL_INDEX)
+    table.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_pwrite_skips_emulation():
+    table = make_table(write=AsyncMock(), pwrite=AsyncMock())
+    op = next(o for o in make_generic_ops("x", table) if o.name == "pwrite")
+    acc = NOOPAccessor()
+    await op.fn(acc, PATH, b"XY", 3, index=NULL_INDEX)
+    table.pwrite.assert_awaited_once_with(acc, PATH, b"XY", 3)
+    table.read_bytes.assert_not_awaited()
+    table.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", [True, False])
+async def test_pwrite_refuses_a_negative_offset_before_any_io(native):
+    table = make_table(
+        write=AsyncMock(), pwrite=AsyncMock() if native else None
+    )
+    op = next(o for o in make_generic_ops("x", table) if o.name == "pwrite")
+    with pytest.raises(OSError) as exc:
+        await op.fn(NOOPAccessor(), PATH, b"Z", -1)
+    assert exc.value.errno == errno.EINVAL
+    table.read_bytes.assert_not_awaited()
+    table.write.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -227,8 +378,9 @@ async def test_a_window_past_the_end_reads_empty_not_416():
     refused = _S3Error("InvalidRange", 416)
     native = AsyncMock(side_effect=refused)
     table = make_table(read_range=native)
-    assert await read_op(table).fn(NOOPAccessor(), PATH, offset=99,
-                                   size=2) == b""
+    assert (
+        await read_op(table).fn(NOOPAccessor(), PATH, offset=99, size=2) == b""
+    )
     native.assert_awaited_once()
 
 
@@ -247,7 +399,22 @@ async def test_a_zero_length_read_asks_the_backend_nothing():
     # either fetch the whole object or be refused.
     native = AsyncMock(return_value=b"ng")
     table = make_table(read_range=native)
-    assert await read_op(table).fn(NOOPAccessor(), PATH, offset=1,
-                                   size=0) == b""
+    assert (
+        await read_op(table).fn(NOOPAccessor(), PATH, offset=1, size=0) == b""
+    )
     native.assert_not_awaited()
     table.read_bytes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_emulated_truncate_refuses_no_create_before_io():
+    write = AsyncMock()
+    table = make_table(write=write)
+    read = table.read_bytes
+    ops = make_generic_ops("x", table, emulate_truncate=True)
+    truncate = next(o for o in ops if o.name == "truncate")
+    with pytest.raises(OSError) as error:
+        await truncate.fn(NOOPAccessor(), PATH, 2, no_create=True)
+    assert error.value.errno == errno.ENOTSUP
+    read.assert_not_called()
+    write.assert_not_called()

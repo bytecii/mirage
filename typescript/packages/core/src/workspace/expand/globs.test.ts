@@ -13,71 +13,122 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { BaseResource, type Resource } from '../../resource/base.ts'
-import { MountMode, PathSpec } from '../../types.ts'
+import type { NamespaceLinks } from '../../ops/config.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../../vfs/base.ts'
+import { RAMVFS } from '../../vfs/ram/ram.ts'
+import { FileStat, FileType, MountMode, PathSpec } from '../../types.ts'
+import { enoent } from '../../utils/errors.ts'
+import { mountKey } from '../../utils/key_prefix.ts'
+import { getTestParser } from '../fixtures/workspace_fixture.ts'
 import { MountRegistry } from '../mount/registry.ts'
-import { resolveGlobs, type ResourceWithGlob } from './globs.ts'
+import { Workspace } from '../workspace/workspace.ts'
+import { resolveGlobs } from './globs.ts'
 
-class PlainResource extends BaseResource implements Resource {
-  readonly kind = 'plain'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
+class PlainVFS extends BaseVFS {
+  override readonly name = 'plain'
   override close(): Promise<void> {
     return Promise.resolve()
   }
 }
 
-// A resource that implements nullglob-off on its own: a no-match ask comes
-// back as the spec it was handed. `glob` is a public hook, so the shape
-// resolveGlobs sends is not a contract it can rely on.
-class EchoGlobResource extends BaseResource implements ResourceWithGlob {
-  readonly kind = 'echo'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
+// A VFS that implements nullglob-off on its own: a no-match ask comes
+// back as the spec it was handed. The glob op is the driver's own, so the
+// shape resolveGlobs sends is not a contract it can rely on.
+class EchoGlobVFS extends BaseVFS {
+  override readonly name = 'echo'
   override close(): Promise<void> {
     return Promise.resolve()
   }
-  glob(paths: readonly PathSpec[]): Promise<PathSpec[]> {
-    return Promise.resolve([...paths])
+  override ops(): readonly RegisteredOp[] {
+    return [
+      {
+        name: 'glob',
+        vfs: this.name,
+        filetype: null,
+        write: false,
+        fn: (_accessor, path) => Promise.resolve([path]),
+      },
+    ]
   }
 }
 
-class GlobResource extends BaseResource implements ResourceWithGlob {
-  readonly kind = 'glob'
+// A VFS whose stat answers only once its mount was readied, the way a
+// mount nothing has touched yet behaves.
+class LazyDirVFS extends BaseVFS {
+  override readonly name = 'lazy'
+  ready = false
+  override close(): Promise<void> {
+    return Promise.resolve()
+  }
+  override ops(): readonly RegisteredOp[] {
+    return [
+      {
+        name: 'stat',
+        vfs: this.name,
+        filetype: null,
+        write: false,
+        fn: (_accessor, path) => {
+          if (!this.ready) return Promise.reject(enoent(path))
+          return Promise.resolve(
+            new FileStat({ name: path.virtual.split('/').pop() ?? '', type: FileType.DIRECTORY }),
+          )
+        },
+      },
+    ]
+  }
+}
+
+// One link, from the globbed directory into a second mount.
+function linkTo(target: string): NamespaceLinks {
+  return {
+    follow: (p) => (p === '/ram/lnk' ? target : p),
+    isLink: (p) => p === '/ram/lnk',
+    readlink: (p) => (p === '/ram/lnk' ? target : null),
+    linkStatAt: () => null,
+    symlinkTargets: () => new Map([['/ram/lnk', target]]),
+  }
+}
+
+class GlobVFS extends BaseVFS {
+  override readonly name = 'glob'
   constructor(private readonly results: PathSpec[]) {
     super()
   }
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }
-  glob(): Promise<PathSpec[]> {
-    return Promise.resolve(this.results)
+  override ops(): readonly RegisteredOp[] {
+    return [
+      {
+        name: 'glob',
+        vfs: this.name,
+        filetype: null,
+        write: false,
+        fn: () => Promise.resolve(this.results),
+      },
+    ]
   }
 }
 
 describe('resolveGlobs', () => {
   it('passes through plain strings', async () => {
-    const reg = new MountRegistry({ '/ram': new PlainResource() }, MountMode.WRITE)
+    const reg = new MountRegistry({ '/ram': new PlainVFS() }, MountMode.WRITE)
     const out = await resolveGlobs(['-l', 'text'], reg)
     expect(out).toEqual(['-l', 'text'])
   })
 
   it('passes through non-glob PathSpecs', async () => {
-    const reg = new MountRegistry({ '/ram': new PlainResource() }, MountMode.WRITE)
+    const reg = new MountRegistry({ '/ram': new PlainVFS() }, MountMode.WRITE)
     const p = PathSpec.fromStrPath('/ram/x.txt')
     const out = await resolveGlobs([p], reg)
     expect(out).toEqual([p])
   })
 
-  it('passes through glob PathSpecs when the resource lacks glob', async () => {
-    const reg = new MountRegistry({ '/ram': new PlainResource() }, MountMode.WRITE)
+  it('passes through glob PathSpecs when the VFS lacks glob', async () => {
+    const reg = new MountRegistry({ '/ram': new PlainVFS() }, MountMode.WRITE)
     const p = new PathSpec({
-      resourcePath: 'ram/*.txt',
+      vfsPath: 'ram/*.txt',
       virtual: '/ram/*.txt',
       directory: '/ram/',
       pattern: '*.txt',
@@ -88,14 +139,36 @@ describe('resolveGlobs', () => {
     expect(out[0]).toBe(p)
   })
 
-  it('expands glob PathSpecs through resource.glob', async () => {
-    const res = new GlobResource([
+  // A trailing slash keeps a link to a directory, and the directory can live
+  // in a mount nothing has touched yet: the owner is readied before it is
+  // asked, as it is before a listing.
+  it('readies the mount a trailing-slash match links into before statting it', async () => {
+    const other = new LazyDirVFS()
+    const reg = new MountRegistry({ '/ram': new GlobVFS([]), '/other': other }, MountMode.WRITE)
+    reg.mountFor('/other/dir').beforeUse = () => {
+      other.ready = true
+      return Promise.resolve()
+    }
+    const p = new PathSpec({
+      vfsPath: 'ram/*',
+      virtual: '/ram/*',
+      directory: '/ram/',
+      pattern: '*',
+      resolved: false,
+      rawPath: '*/',
+    })
+    const out = await resolveGlobs([p], reg, false, linkTo('/other/dir'))
+    expect(out.map((x) => (x as PathSpec).rawPath)).toEqual(['lnk/'])
+  })
+
+  it('expands glob PathSpecs through the glob op', async () => {
+    const res = new GlobVFS([
       PathSpec.fromStrPath('/ram/a.txt'),
       PathSpec.fromStrPath('/ram/b.txt'),
     ])
     const reg = new MountRegistry({ '/ram': res }, MountMode.WRITE)
     const p = new PathSpec({
-      resourcePath: 'ram/*.txt',
+      vfsPath: 'ram/*.txt',
       virtual: '/ram/*.txt',
       directory: '/ram/',
       pattern: '*.txt',
@@ -114,13 +187,13 @@ describe('resolveGlobs', () => {
   // with nullglob off. The two are byte-identical, so the real match was
   // thrown away.
   it('keeps a match named exactly like the glob word', async () => {
-    const res = new GlobResource([
+    const res = new GlobVFS([
       PathSpec.fromStrPath('/ram/*a.txt'),
       PathSpec.fromStrPath('/ram/xa.txt'),
     ])
     const reg = new MountRegistry({ '/ram': res }, MountMode.WRITE)
     const p = new PathSpec({
-      resourcePath: 'ram/*a.txt',
+      vfsPath: 'ram/*a.txt',
       virtual: '/ram/*a.txt',
       directory: '/ram/',
       pattern: '*a.txt',
@@ -134,10 +207,10 @@ describe('resolveGlobs', () => {
   // The echoed spec is the directory, which is not a child of itself, so
   // it is no match and the word stays literal rather than expanding to
   // `/ram/`.
-  it('takes no match from a resource that reinstates the literal itself', async () => {
-    const reg = new MountRegistry({ '/ram': new EchoGlobResource() }, MountMode.WRITE)
+  it('takes no match from a VFS that reinstates the literal itself', async () => {
+    const reg = new MountRegistry({ '/ram': new EchoGlobVFS() }, MountMode.WRITE)
     const p = new PathSpec({
-      resourcePath: 'ram/*.nope',
+      vfsPath: 'ram/*.nope',
       virtual: '/ram/*.nope',
       directory: '/ram/',
       pattern: '*.nope',
@@ -150,10 +223,10 @@ describe('resolveGlobs', () => {
   })
 
   it('keeps the literal word on zero matches (bash nullglob off)', async () => {
-    const res = new GlobResource([])
+    const res = new GlobVFS([])
     const reg = new MountRegistry({ '/ram': res }, MountMode.WRITE)
     const p = new PathSpec({
-      resourcePath: 'ram/*.nope',
+      vfsPath: 'ram/*.nope',
       virtual: '/ram/*.nope',
       directory: '/ram/',
       pattern: '*.nope',
@@ -171,15 +244,15 @@ describe('resolveGlobs', () => {
 describe('matchRaw via resolveGlobs', () => {
   it('relative glob matches spelled as typed', async () => {
     const match = new PathSpec({
-      resourcePath: 'ram/sub/a.txt',
+      vfsPath: 'ram/sub/a.txt',
       virtual: '/ram/sub/a.txt',
       directory: '/ram/sub/',
       resolved: true,
     })
-    const res = new GlobResource([match])
+    const res = new GlobVFS([match])
     const reg = new MountRegistry({ '/ram': res }, MountMode.WRITE)
     const p = new PathSpec({
-      resourcePath: 'ram/sub/*.txt',
+      vfsPath: 'ram/sub/*.txt',
       virtual: '/ram/sub/*.txt',
       directory: '/ram/sub/',
       pattern: '*.txt',
@@ -193,15 +266,15 @@ describe('matchRaw via resolveGlobs', () => {
 
   it('absolute glob matches keep the virtual path', async () => {
     const match = new PathSpec({
-      resourcePath: 'ram/a.txt',
+      vfsPath: 'ram/a.txt',
       virtual: '/ram/a.txt',
       directory: '/ram/',
       resolved: true,
     })
-    const res = new GlobResource([match])
+    const res = new GlobVFS([match])
     const reg = new MountRegistry({ '/ram': res }, MountMode.WRITE)
     const p = new PathSpec({
-      resourcePath: 'ram/*.txt',
+      vfsPath: 'ram/*.txt',
       virtual: '/ram/*.txt',
       directory: '/ram/',
       pattern: '*.txt',
@@ -213,10 +286,10 @@ describe('matchRaw via resolveGlobs', () => {
   })
 
   it('zero-match relative glob keeps the typed literal', async () => {
-    const res = new GlobResource([])
+    const res = new GlobVFS([])
     const reg = new MountRegistry({ '/ram': res }, MountMode.WRITE)
     const p = new PathSpec({
-      resourcePath: 'ram/*.nope',
+      vfsPath: 'ram/*.nope',
       virtual: '/ram/*.nope',
       directory: '/ram/',
       pattern: '*.nope',
@@ -225,5 +298,64 @@ describe('matchRaw via resolveGlobs', () => {
     })
     const out = await resolveGlobs([p], reg)
     expect((out[0] as PathSpec).rawPath).toBe('*.nope')
+  })
+})
+
+// A RAM mount whose `glob` op records the keys it was handed.
+class KeyRecordingRAM extends RAMVFS {
+  readonly seen: [string, string][] = []
+
+  override ops(): readonly RegisteredOp[] {
+    const table = super.ops()
+    const derived = table.find((ro) => ro.name === 'glob' && ro.filetype === null)
+    if (derived === undefined) throw new Error('RAM serves no glob op')
+    const seen = this.seen
+    return [
+      ...table.filter((ro) => ro !== derived),
+      {
+        ...derived,
+        fn: (accessor, path, args, kwargs) => {
+          const spec = path
+          seen.push([spec.virtual, spec.vfsPath])
+          return derived.fn(accessor, path, args, kwargs)
+        },
+      },
+    ]
+  }
+}
+
+// The `glob` op never sees the mount prefix: the mount stamps each spec's
+// `vfsPath` with `mountKey(virtual, prefix)` before the op runs, on every
+// door that expands a word (the workspace expander, its mid-path and
+// globstar walks, and the builtins' operands). Pinned the same way in
+// python's test_globs.py.
+describe('the glob op under a non-root mount prefix', () => {
+  it('is handed keys below the prefix on every expansion path', async () => {
+    const vfs = new KeyRecordingRAM()
+    const ws = new Workspace(
+      { '/mnt/x/': vfs },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    for (const line of [
+      'mkdir -p /mnt/x/team/sub',
+      'printf 1 > /mnt/x/team/f1',
+      'printf 2 > /mnt/x/tea.txt',
+      'printf 3 > /mnt/x/other',
+    ]) {
+      await ws.shell(line)
+    }
+    const cases: [string, string][] = [
+      ['echo /mnt/x/*', '/mnt/x/other /mnt/x/tea.txt /mnt/x/team'],
+      ['echo /mnt/x/*/f*', '/mnt/x/team/f1'],
+      ['cd /mnt/x && echo tea*', 'tea.txt team'],
+      ['shopt -s globstar; echo /mnt/x/**/f1', '/mnt/x/team/f1'],
+      ['touch /mnt/x/tea* && echo touched', 'touched'],
+    ]
+    for (const [line, want] of cases) {
+      expect((await ws.shell(line)).stdoutText.trim(), line).toBe(want)
+    }
+    expect(vfs.seen.length).toBeGreaterThan(0)
+    expect(vfs.seen.filter(([v, key]) => key !== mountKey(v, '/mnt/x'))).toEqual([])
+    await ws.close()
   })
 })

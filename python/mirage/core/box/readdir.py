@@ -16,7 +16,7 @@ from typing import Any
 
 from mirage.accessor.box import BoxAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
-from mirage.core.box.api import list_folder_items
+from mirage.core.box.api import absent_on_404, list_folder_items
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
@@ -38,7 +38,7 @@ async def readdir(
     index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
     virtual = path_spec.virtual
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
     path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     virtual_key = prefix + "/" + key if key else prefix or "/"
@@ -55,7 +55,8 @@ async def readdir(
             parent_virtual = virtual_key.rstrip("/").rsplit("/", 1)[0] or "/"
             if parent_virtual != virtual_key:
                 parent_path = PathSpec.from_str_path(
-                    parent_virtual, mount_key(parent_virtual, prefix))
+                    parent_virtual, mount_key(parent_virtual, prefix)
+                )
                 await readdir(accessor, parent_path, index)
                 result = await index.get(virtual_key)
             if result.entry is None:
@@ -66,7 +67,9 @@ async def readdir(
             raise NotADirectoryError(virtual)
         folder_id = result.entry.id
 
-    items = await list_folder_items(accessor.token_manager, folder_id)
+    items = await absent_on_404(
+        virtual, lambda: list_folder_items(accessor.token_manager, folder_id)
+    )
     entries: list[tuple[str, IndexEntry, bool]] = []
     for it in items:
         if it.get("type") == "web_link":

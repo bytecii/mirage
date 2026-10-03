@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../../ops/registry.ts'
-import { RAMResource } from '../../resource/ram/ram.ts'
+import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { MountMode } from '../../types.ts'
 import { getTestParser, stderrStr, stdoutStr } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace.ts'
@@ -27,14 +27,14 @@ const ENC = new TextEncoder()
 
 async function makeTwoRamWs(): Promise<Workspace> {
   const parser = await getTestParser()
-  const ram1 = new RAMResource()
-  const ram2 = new RAMResource()
+  const ram1 = new RAMVFS()
+  const ram2 = new RAMVFS()
   ram1.store.files.set('/file.txt', ENC.encode('line1\nline2\nline3\nline4\nline5\n'))
   ram2.store.files.set('/file.txt', ENC.encode('aaa\nbbb\nccc\n'))
 
   const registry = new OpsRegistry()
-  registry.registerResource(ram1)
-  registry.registerResource(ram2)
+  registry.registerVfs(ram1)
+  registry.registerVfs(ram2)
 
   return new Workspace(
     { '/a': ram1, '/b': ram2 },
@@ -46,7 +46,7 @@ async function runCmd(
   ws: Workspace,
   cmd: string,
 ): Promise<{ out: string; err: string; code: number }> {
-  const io = await ws.execute(cmd)
+  const io = await ws.shell(cmd)
   return { out: stdoutStr(io), err: stderrStr(io), code: io.exitCode }
 }
 
@@ -101,13 +101,13 @@ describe('cross-mount errors (port of tests/workspace/test_cross_mount_errors.py
 
 async function makeReadonlySrcWs(): Promise<Workspace> {
   const parser = await getTestParser()
-  const ro = new RAMResource()
-  const rw = new RAMResource()
+  const ro = new RAMVFS()
+  const rw = new RAMVFS()
   ro.store.files.set('/report.csv', ENC.encode('name,age\nalice,30\n'))
 
   const registry = new OpsRegistry()
-  registry.registerResource(ro)
-  registry.registerResource(rw)
+  registry.registerVfs(ro)
+  registry.registerVfs(rw)
 
   return new Workspace(
     { '/mail': [ro, MountMode.READ], '/scratch': [rw, MountMode.EXEC] },
@@ -122,7 +122,7 @@ describe('cross-mount mv with an unremovable source', () => {
     const ws = await makeReadonlySrcWs()
     const r = await runCmd(ws, 'mv /mail/report.csv /scratch/x.csv')
     expect(r.code).toBe(1)
-    expect(r.err).toBe("mv: cannot remove '/mail/report.csv': Permission denied\n")
+    expect(r.err).toBe("mv: cannot remove '/mail/report.csv': Read-only file system\n")
     const kept = await runCmd(ws, 'cat /scratch/x.csv')
     expect([kept.out, kept.code]).toEqual(['name,age\nalice,30\n', 0])
     const src = await runCmd(ws, 'cat /mail/report.csv')

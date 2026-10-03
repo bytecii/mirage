@@ -18,7 +18,8 @@ from datetime import datetime
 import aiofiles.os
 
 from mirage.accessor.disk import DiskAccessor
-from mirage.core.disk.stat import _resolve
+from mirage.core.disk.errors import disk_errors
+from mirage.core.disk.utils import resolve_inside
 from mirage.types import PathSpec
 
 aio_chmod = aiofiles.os.wrap(os.chmod)
@@ -57,9 +58,9 @@ async def set_attrs(
     Returns:
         dict[str, int | str]: requested fields the inode does not hold.
     """
-    p = _resolve(accessor.root, path.mount_path)
-    if not await aiofiles.os.path.exists(p):
-        raise FileNotFoundError(path.raw_path)
+    p = await resolve_inside(accessor.root, path)
+    with disk_errors(path.virtual):
+        await aiofiles.os.stat(p)
     residual: dict[str, int | str] = {}
     if mode is not None:
         keep = 0o700 if await aiofiles.os.path.isdir(p) else 0o600
@@ -72,9 +73,15 @@ async def set_attrs(
         residual["gid"] = gid
     if atime is not None or mtime is not None:
         st = await aiofiles.os.stat(p)
-        new_atime = (datetime.fromisoformat(atime).timestamp()
-                     if atime is not None else st.st_atime)
-        new_mtime = (datetime.fromisoformat(mtime).timestamp()
-                     if mtime is not None else st.st_mtime)
+        new_atime = (
+            datetime.fromisoformat(atime).timestamp()
+            if atime is not None
+            else st.st_atime
+        )
+        new_mtime = (
+            datetime.fromisoformat(mtime).timestamp()
+            if mtime is not None
+            else st.st_mtime
+        )
         await aio_utime(p, (new_atime, new_mtime))
     return residual

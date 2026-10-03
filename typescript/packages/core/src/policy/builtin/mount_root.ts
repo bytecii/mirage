@@ -23,12 +23,46 @@ import type { PathSpec } from '../../types.ts'
  * the refusal by link kind ("failed to create symbolic link" vs
  * "failed to create link").
  */
-function hasSymlinkFlag(argv: readonly string[]): boolean {
+const LN_VALUED_SHORTS = 'tS'
+const LN_VALUED_LONGS: ReadonlySet<string> = new Set(['--target-directory', '--suffix'])
+
+// Whether ln's raw argv carries one short flag or its long spelling. The
+// scan is option-aware so an operand cannot pose as a flag: it stops at
+// `--`, skips the value of a valued option (`-t DIR`, `-S SUF`, their
+// long forms), and inside a cluster stops at the first valued letter,
+// whose remainder is its attached value (`-SfooT` carries no -T).
+export function lnFlagPresent(argv: readonly string[], letter: string, long: string): boolean {
+  let skip = false
   for (const tok of argv) {
-    if (tok === '--symbolic') return true
-    if (tok.startsWith('-') && !tok.startsWith('--') && tok.includes('s')) return true
+    if (skip) {
+      skip = false
+      continue
+    }
+    if (tok === '--') return false
+    if (tok === long) return true
+    if (tok.startsWith('--')) {
+      skip = LN_VALUED_LONGS.has(tok)
+      continue
+    }
+    if (!tok.startsWith('-') || tok.length < 2) continue
+    for (let pos = 1; pos < tok.length; pos++) {
+      const ch = tok[pos]
+      if (ch === letter) return true
+      if (ch !== undefined && LN_VALUED_SHORTS.includes(ch)) {
+        skip = pos === tok.length - 1
+        break
+      }
+    }
   }
   return false
+}
+
+function hasNoTargetFlag(argv: readonly string[]): boolean {
+  return lnFlagPresent(argv, 'T', '--no-target-directory')
+}
+
+function hasSymlinkFlag(argv: readonly string[]): boolean {
+  return lnFlagPresent(argv, 's', '--symbolic')
 }
 
 /**
@@ -46,17 +80,20 @@ export function hasParentsFlag(argv: readonly string[]): boolean {
   return false
 }
 
-function deny(message: string, exitCode = 1): Deny {
-  return { kind: 'deny', message, exitCode }
+// Every mount-root refusal is about one operand and speaks in the
+// command's own voice: the door prefixes the command name and picks the
+// exit code from the operand table (1, tar 2).
+function deny(reason: string): Deny {
+  return { kind: 'deny', reason, scope: 'operand' }
 }
 
 // The first of these paths that is a mount root, if any.
 function firstRoot(
-  isRoot: (virtual: string) => boolean,
+  namesRoot: (path: PathSpec) => boolean,
   paths: readonly PathSpec[],
 ): PathSpec | null {
   for (const path of paths) {
-    if (isRoot(path.virtual)) return path
+    if (namesRoot(path)) return path
   }
   return null
 }
@@ -90,16 +127,22 @@ function firstRoot(
 export class MountRootPolicy implements Policy {
   preCommand(ctx: CommandContext): Action | null {
     if (ctx.paths.length === 0) return null
-    const isRoot = (virtual: string): boolean => ctx.registry.isMountRoot(virtual)
+    // An operand the kernel walk refused (`walkError`) names nothing,
+    // whatever its `virtual` reads as: the empty name simplifies to the
+    // working directory, which can be a mount root, and the command
+    // reports it ENOENT rather than busy. Mirrors Python's names_root.
+    const namesRoot = (p: PathSpec): boolean =>
+      p.walkError === null && ctx.registry.isMountRoot(p.virtual)
     const cmd = ctx.command
+    const operands = ctx.operands ?? ctx.paths
 
     if (cmd === 'rm' || cmd === 'rmdir') {
       for (const p of ctx.paths) {
-        if (isRoot(p.virtual)) {
+        if (namesRoot(p)) {
           return deny(
             cmd === 'rmdir'
-              ? `rmdir: failed to remove '${p.virtual}': Device or resource busy\n`
-              : `rm: cannot remove '${p.virtual}': Device or resource busy\n`,
+              ? `failed to remove '${p.virtual}': Device or resource busy`
+              : `cannot remove '${p.virtual}': Device or resource busy`,
           )
         }
       }
@@ -107,11 +150,12 @@ export class MountRootPolicy implements Policy {
     }
 
     if (cmd === 'mv') {
-      if (ctx.paths[0] !== undefined && isRoot(ctx.paths[0].virtual)) {
+      // The source is a slot, so it is read off the positionals:
+      // `mv -t /mnt f` moves INTO a mount root, which is ordinary.
+      const source = operands[0]
+      if (source !== undefined && namesRoot(source)) {
         const dst = ctx.paths[1] !== undefined ? ctx.paths[1].virtual : '?'
-        return deny(
-          `mv: cannot move '${ctx.paths[0].virtual}' to '${dst}': Device or resource busy\n`,
-        )
+        return deny(`cannot move '${source.virtual}' to '${dst}': Device or resource busy`)
       }
       return null
     }
@@ -120,42 +164,43 @@ export class MountRootPolicy implements Policy {
       // GNU mkdir -p makes "already exists" a no-op.
       if (hasParentsFlag(ctx.argv)) return null
       for (const p of ctx.paths) {
-        if (isRoot(p.virtual)) {
-          return deny(`mkdir: cannot create directory '${p.virtual}': File exists\n`)
+        if (namesRoot(p)) {
+          return deny(`cannot create directory '${p.virtual}': File exists`)
         }
       }
       return null
     }
 
     if (cmd === 'touch') {
-      for (const p of ctx.paths) {
-        if (isRoot(p.virtual)) {
-          return deny(`touch: cannot touch '${p.virtual}': Is a directory\n`)
+      // Positionals only: `-r REF` is read, never touched.
+      for (const p of operands) {
+        if (namesRoot(p)) {
+          return deny(`cannot touch '${p.virtual}': Is a directory`)
         }
       }
       return null
     }
 
     if (cmd === 'ln') {
+      // A mount root is refused only as the link NAME. Without -T a
+      // directory operand is the directory to link into, GNU's rule, and
+      // creating inside a mount is ordinary.
       const last = ctx.paths[ctx.paths.length - 1]
-      if (last !== undefined && isRoot(last.virtual)) {
+      if (last !== undefined && hasNoTargetFlag(ctx.argv) && namesRoot(last)) {
         const kind = hasSymlinkFlag(ctx.argv) ? 'symbolic link' : 'link'
-        return deny(`ln: failed to create ${kind} '${last.virtual}': File exists\n`)
+        return deny(`failed to create ${kind} '${last.virtual}': File exists`)
       }
       return null
     }
 
-    const operands = ctx.operands ?? ctx.paths
-
     if (cmd === 'tar') {
       // Only -c reads the filesystem; -t and -x match their operands
       // against names inside the archive.
-      const root = isCreateMode(ctx.argv) ? firstRoot(isRoot, operands) : null
+      const root = isCreateMode(ctx.argv) ? firstRoot(namesRoot, operands) : null
       if (root !== null) {
         return deny(
-          `tar: ${root.rawPath}: Cannot open: Device or resource busy\n` +
-            `tar: Error is not recoverable: exiting now\n`,
-          2,
+          `${root.rawPath}: Cannot open: Device or resource busy\n` +
+            `tar: Error is not recoverable: exiting now`,
         )
       }
       return null
@@ -164,9 +209,9 @@ export class MountRootPolicy implements Policy {
     if (cmd === 'zip') {
       // The first operand is the archive being written, not a source;
       // only what follows it is read.
-      const root = firstRoot(isRoot, operands.slice(1))
+      const root = firstRoot(namesRoot, operands.slice(1))
       if (root !== null) {
-        return deny(`zip: cannot read '${root.rawPath}': Device or resource busy\n`)
+        return deny(`cannot read '${root.rawPath}': Device or resource busy`)
       }
       return null
     }
@@ -174,9 +219,9 @@ export class MountRootPolicy implements Policy {
     if (cmd === 'cp') {
       // The last operand is the destination, and copying INTO a mount is
       // ordinary; only the sources are refused.
-      const root = firstRoot(isRoot, operands.slice(0, -1))
+      const root = firstRoot(namesRoot, operands.slice(0, -1))
       if (root !== null) {
-        return deny(`cp: cannot copy '${root.rawPath}': Device or resource busy\n`)
+        return deny(`cannot copy '${root.rawPath}': Device or resource busy`)
       }
       return null
     }

@@ -3,15 +3,27 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from mirage.commands.builtin.utils.constants import (
+    STDIN_HEADER_NAME,
+    STDIN_OPERAND,
+)
 from mirage.commands.builtin.utils.lines import split_lines
-from mirage.commands.builtin.utils.operands import (materialized_read,
-                                                    merge_split_errors,
-                                                    normalized_read,
-                                                    split_readable)
-from mirage.commands.builtin.utils.stream import _resolve_source
+from mirage.commands.builtin.utils.operands import (
+    materialized_read,
+    merge_split_errors,
+    normalized_read,
+    split_readable,
+)
+from mirage.commands.builtin.utils.stream import (
+    is_stdin,
+    resolve_source,
+    stdin_stat,
+    stdin_stream,
+)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
 from mirage.utils.errors import WALK_ERRORS, fs_strerror
@@ -55,19 +67,22 @@ def parse_flags(flags: Mapping[str, FlagValue], name: str) -> ChecksumFlags:
 
 
 class Digest(Protocol):
+    def update(self, data: bytes) -> None: ...
 
-    def update(self, data: bytes) -> None:
-        ...
-
-    def hexdigest(self) -> str:
-        ...
+    def hexdigest(self) -> str: ...
 
 
 DigestFactory = Callable[..., Digest]
 
 
-def _hash_line(digest: str, label: str, algorithm: str, binary: bool,
-               tag: bool, zero: bool) -> bytes:
+def _hash_line(
+    digest: str,
+    label: str,
+    algorithm: str,
+    binary: bool,
+    tag: bool,
+    zero: bool,
+) -> bytes:
     ending = "\0" if zero else "\n"
     if tag:
         return f"{algorithm.upper()} ({label}) = {digest}{ending}".encode()
@@ -75,9 +90,15 @@ def _hash_line(digest: str, label: str, algorithm: str, binary: bool,
     return f"{digest} {marker}{label}{ending}".encode()
 
 
-async def _hash_stream(source: AsyncIterator[bytes], label: str,
-                       factory: DigestFactory, algorithm: str, binary: bool,
-                       tag: bool, zero: bool) -> AsyncIterator[bytes]:
+async def _hash_stream(
+    source: AsyncIterator[bytes],
+    label: str,
+    factory: DigestFactory,
+    algorithm: str,
+    binary: bool,
+    tag: bool,
+    zero: bool,
+) -> AsyncIterator[bytes]:
     h = factory()
     async for chunk in source:
         h.update(chunk)
@@ -97,11 +118,16 @@ async def _hash_multi(
         h = factory()
         async for chunk in read_stream(p):
             h.update(chunk)
-        yield _hash_line(h.hexdigest(), p.raw_path, algorithm, binary, tag,
-                         zero)
+        yield _hash_line(
+            h.hexdigest(), p.raw_path, algorithm, binary, tag, zero
+        )
 
 
 _PLAIN_LINE = re.compile(r"^([0-9a-fA-F]+) [ *](.*)$")
+
+# GNU reads a check line as properly formatted only when its digest has
+# the algorithm's full length in hex.
+HEX_DIGITS = {"md5": 32, "sha1": 40, "sha256": 64, "sha384": 96, "sha512": 128}
 
 
 def _parse_check_line(line: str, algorithm: str) -> tuple[str, str] | None:
@@ -117,17 +143,24 @@ def _parse_check_line(line: str, algorithm: str) -> tuple[str, str] | None:
     """
     tagged = re.match(
         rf"^{re.escape(algorithm.upper())} \((.*)\) = "
-        r"([0-9a-fA-F]+)$", line)
+        r"([0-9a-fA-F]+)$",
+        line,
+    )
     if tagged is not None:
-        return tagged.group(2).lower(), tagged.group(1)
-    plain = _PLAIN_LINE.match(line)
-    if plain is None:
+        digest, name = tagged.group(2), tagged.group(1)
+    else:
+        plain = _PLAIN_LINE.match(line)
+        if plain is None:
+            return None
+        digest, name = plain.group(1), plain.group(2)
+    if len(digest) != HEX_DIGITS.get(algorithm, len(digest)):
         return None
-    return plain.group(1).lower(), plain.group(2)
+    return digest.lower(), name
 
 
-def _resolve_check_target(filename: str, cwd: str,
-                          mount_prefix: str) -> PathSpec:
+def _resolve_check_target(
+    filename: str, cwd: str, mount_prefix: str
+) -> PathSpec:
     """PathSpec for a recorded name, resolved like GNU against the cwd.
 
     Args:
@@ -136,17 +169,20 @@ def _resolve_check_target(filename: str, cwd: str,
         mount_prefix (str): the checksum file's mount prefix.
     """
     virtual = resolve_path(filename, cwd)
-    return PathSpec(virtual=virtual,
-                    directory=virtual,
-                    resource_path=mount_key(virtual, mount_prefix))
+    return PathSpec(
+        virtual=virtual,
+        directory=virtual,
+        vfs_path=mount_key(virtual, mount_prefix),
+    )
 
 
 def _count_noun(count: int, singular: str, plural: str) -> str:
     return singular if count == 1 else f"{count} {plural}"
 
 
-def _check_list_error(algorithm: str, path: PathSpec,
-                      exc: BaseException) -> bytes:
+def _check_list_error(
+    algorithm: str, path: PathSpec, exc: BaseException
+) -> bytes:
     """GNU stderr line for a checksum-list operand that cannot be read.
 
     GNU verifies every ``--check`` operand in turn and keeps going when
@@ -160,8 +196,11 @@ def _check_list_error(algorithm: str, path: PathSpec,
         exc (BaseException): the failure raised by the list read.
     """
     label = path.raw_path or path.virtual
-    detail = ("read error" if isinstance(exc, IsADirectoryError) else
-              (fs_strerror(exc) or str(exc)))
+    detail = (
+        "read error"
+        if isinstance(exc, IsADirectoryError)
+        else (fs_strerror(exc) or str(exc))
+    )
     return f"{algorithm}sum: {label}: {detail}\n".encode()
 
 
@@ -172,6 +211,7 @@ async def _hash_check(
     factory: DigestFactory,
     algorithm: str,
     cwd: str,
+    cwd_prefix: str,
     strict: bool,
     ignore_missing: bool,
     status: bool,
@@ -180,8 +220,18 @@ async def _hash_check(
 ) -> tuple[bytes, bytes | None, int]:
     prog = f"{algorithm}sum"
     data = (await read_bytes(path)).decode(errors="replace")
-    mount_prefix = mount_prefix_of(path.virtual, path.resource_path)
-    check_label = path.raw_path or path.virtual
+    # A list read from stdin names files on the mount the command runs on.
+    mount_prefix = (
+        cwd_prefix
+        if is_stdin(path)
+        else mount_prefix_of(path.virtual, path.vfs_path)
+    )
+    # GNU quotes its stdin name, which holds a space.
+    check_label = (
+        f"'{STDIN_HEADER_NAME}'"
+        if path.raw_path == "-"
+        else path.raw_path or path.virtual
+    )
     lines: list[str] = []
     stderr_lines: list[str] = []
     parsed_lines = 0
@@ -198,7 +248,8 @@ async def _hash_check(
             if warn:
                 stderr_lines.append(
                     f"{prog}: {check_label}: {lineno}: improperly formatted "
-                    f"{algorithm.upper()} checksum line")
+                    f"{algorithm.upper()} checksum line"
+                )
             continue
         parsed_lines += 1
         expected_hash, filename = parsed
@@ -210,8 +261,9 @@ async def _hash_check(
         except WALK_ERRORS as exc:
             # GNU --ignore-missing skips only absence; a permission or
             # transport-shaped failure still reports and fails the check.
-            if ignore_missing and isinstance(exc,
-                                             (FileNotFoundError, ValueError)):
+            if ignore_missing and isinstance(
+                exc, (FileNotFoundError, ValueError)
+            ):
                 continue
             strerror = fs_strerror(exc) or str(exc)
             stderr_lines.append(f"{prog}: {filename}: {strerror}")
@@ -234,33 +286,48 @@ async def _hash_check(
     if not parsed_lines:
         stderr_lines.append(
             f"{prog}: {check_label}: no properly formatted checksum lines "
-            "found")
+            "found"
+        )
         return b"", ("\n".join(stderr_lines) + "\n").encode(), 1
     nothing_verified = ignore_missing and not verified
     if not status:
         if malformed:
             noun = _count_noun(malformed, "1 line is", "lines are")
             stderr_lines.append(
-                f"{prog}: WARNING: {noun} improperly formatted")
+                f"{prog}: WARNING: {noun} improperly formatted"
+            )
         if read_failures:
             noun = _count_noun(read_failures, "1 listed file", "listed files")
             stderr_lines.append(f"{prog}: WARNING: {noun} could not be read")
         if mismatched:
-            noun = _count_noun(mismatched, "1 computed checksum",
-                               "computed checksums")
+            noun = _count_noun(
+                mismatched, "1 computed checksum", "computed checksums"
+            )
             stderr_lines.append(f"{prog}: WARNING: {noun} did NOT match")
         if nothing_verified:
             stderr_lines.append(f"{prog}: {check_label}: no file was verified")
-    stderr = ("\n".join(stderr_lines) +
-              "\n").encode() if stderr_lines else None
-    exit_code = 1 if (mismatched or read_failures or nothing_verified or
-                      (strict and malformed)) else 0
-    output = b"" if status else (("\n".join(lines) +
-                                  "\n").encode() if lines else b"")
+    stderr = (
+        ("\n".join(stderr_lines) + "\n").encode() if stderr_lines else None
+    )
+    exit_code = (
+        1
+        if (
+            mismatched
+            or read_failures
+            or nothing_verified
+            or (strict and malformed)
+        )
+        else 0
+    )
+    output = (
+        b""
+        if status
+        else (("\n".join(lines) + "\n").encode() if lines else b"")
+    )
     return output, stderr, exit_code
 
 
-async def hashsum(
+async def checksum(
     paths: list[PathSpec],
     *,
     factory: DigestFactory,
@@ -280,7 +347,11 @@ async def hashsum(
     cwd: PathSpec | str = "/",
 ) -> tuple[ByteSource | None, IOResult]:
     if check and paths:
-        cwd_dir = cwd.virtual if isinstance(cwd, PathSpec) else (cwd or "/")
+        if isinstance(cwd, PathSpec):
+            cwd_dir = cwd.virtual
+            cwd_prefix = mount_prefix_of(cwd.virtual, cwd.vfs_path)
+        else:
+            cwd_dir, cwd_prefix = cwd or "/", ""
         outs: list[bytes] = []
         errs: list[bytes] = []
         exit_code = 0
@@ -288,11 +359,20 @@ async def hashsum(
         # turn and keeps going when one cannot be read (coreutils 9.7).
         for p in paths:
             try:
-                out, stderr, code = await _hash_check(p, read_bytes,
-                                                      read_stream, factory,
-                                                      algorithm, cwd_dir,
-                                                      strict, ignore_missing,
-                                                      status, quiet, warn)
+                out, stderr, code = await _hash_check(
+                    p,
+                    read_bytes,
+                    read_stream,
+                    factory,
+                    algorithm,
+                    cwd_dir,
+                    cwd_prefix,
+                    strict,
+                    ignore_missing,
+                    status,
+                    quiet,
+                    warn,
+                )
             except WALK_ERRORS as exc:
                 errs.append(_check_list_error(algorithm, p, exc))
                 exit_code = 1
@@ -302,17 +382,20 @@ async def hashsum(
                 errs.append(stderr)
             if code:
                 exit_code = 1
-        return b"".join(outs), IOResult(exit_code=exit_code,
-                                        stderr=b"".join(errs) or None)
+        return b"".join(outs), IOResult(
+            exit_code=exit_code, stderr=b"".join(errs) or None
+        )
     if paths:
-        return _hash_multi(paths, read_stream, factory, algorithm, binary, tag,
-                           zero), IOResult(cache=[p.mount_path for p in paths])
-    source = _resolve_source(stdin)
-    return _hash_stream(source, "-", factory, algorithm, binary, tag,
-                        zero), IOResult()
+        return _hash_multi(
+            paths, read_stream, factory, algorithm, binary, tag, zero
+        ), IOResult(cache=[p.mount_path for p in paths if not is_stdin(p)])
+    source = resolve_source(stdin)
+    return _hash_stream(
+        source, "-", factory, algorithm, binary, tag, zero
+    ), IOResult()
 
 
-async def hashsum_generic(
+async def checksum_generic(
     paths: list[PathSpec],
     texts: list[str],
     opts: CommandOpts,
@@ -342,34 +425,43 @@ async def hashsum_generic(
         name (str): The invoked command name, for its spec and stderr.
     """
     parsed = parse_flags(opts.flags, name)
-    if parsed.check and paths:
-        return await hashsum(paths,
-                             factory=factory,
-                             algorithm=algorithm,
-                             read_bytes=materialized_read(stream),
-                             read_stream=normalized_read(stream),
-                             stdin=opts.stdin,
-                             check=True,
-                             strict=parsed.strict,
-                             ignore_missing=parsed.ignore_missing,
-                             status=parsed.status,
-                             quiet=parsed.quiet,
-                             warn=parsed.warn,
-                             cwd=opts.cwd)
+    stat = stdin_stat(stat)
+    stream = stdin_stream(stream, opts.stdin)
+    if parsed.check:
+        # With no operand the checksum list is stdin.
+        return await checksum(
+            paths or [STDIN_OPERAND],
+            factory=factory,
+            algorithm=algorithm,
+            read_bytes=materialized_read(stream),
+            read_stream=normalized_read(stream),
+            stdin=opts.stdin,
+            check=True,
+            strict=parsed.strict,
+            ignore_missing=parsed.ignore_missing,
+            status=parsed.status,
+            quiet=parsed.quiet,
+            warn=parsed.warn,
+            cwd=opts.cwd,
+        )
     readable, err = await split_readable(paths, stat, name)
     if err and not readable:
         return None, IOResult(exit_code=1, stderr=err)
     return await merge_split_errors(
-        await hashsum(readable,
-                      factory=factory,
-                      algorithm=algorithm,
-                      read_bytes=materialized_read(stream),
-                      read_stream=normalized_read(stream),
-                      stdin=opts.stdin,
-                      binary=parsed.binary,
-                      tag=parsed.tag,
-                      zero=parsed.zero,
-                      cwd=opts.cwd), err)
+        await checksum(
+            readable,
+            factory=factory,
+            algorithm=algorithm,
+            read_bytes=materialized_read(stream),
+            read_stream=normalized_read(stream),
+            stdin=opts.stdin,
+            binary=parsed.binary,
+            tag=parsed.tag,
+            zero=parsed.zero,
+            cwd=opts.cwd,
+        ),
+        err,
+    )
 
 
-__all__ = ["Digest", "DigestFactory", "hashsum", "hashsum_generic"]
+__all__ = ["Digest", "DigestFactory", "checksum", "checksum_generic"]

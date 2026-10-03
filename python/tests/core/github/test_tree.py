@@ -13,17 +13,32 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from urllib.parse import quote, unquote
 
+import aiohttp
 import pytest
 
 from mirage.accessor.github import GitHubAccessor
-from mirage.cache.index import NULL_INDEX
+from mirage.cache.file.ram import RAMFileCacheStore
+from mirage.cache.index import NULL_INDEX, Evicted, IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
+from mirage.cache.index.view import IndexView
+from mirage.core.github.client import GitHubApiError
 from mirage.core.github.config import GitHubConfig
-from mirage.core.github.tree import (ensure_live_index, fetch_dir_tree,
-                                     fetch_tree, index_rows)
+from mirage.core.github.tree import (
+    ensure_live_snapshot,
+    ensure_tree,
+    fetch_dir_page,
+    fetch_dir_tree,
+    fetch_tree,
+    index_rows,
+    point_row,
+    refill_snapshot,
+    seed_index,
+)
 from mirage.core.github.tree_entry import TreeEntry
+from tests.fixtures.github_api import FakeGitHub, blob_sha, serve
 
 
 @pytest.fixture
@@ -32,61 +47,70 @@ def config():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "feature/topic",
+        "release#1",
+        "literal%2Fref",
+        "feature/topic:docs/nested",
+    ],
+)
+@patch("mirage.core.github.client.api_request")
+async def test_tree_requests_encode_reference_once(mock_request, config, ref):
+    mock_request.return_value = {"tree": [], "truncated": False}
+    await fetch_tree(config, "o", "r", ref)
+    await fetch_dir_page(config, "o", "r", ref)
+    await fetch_dir_tree(config, "o", "r", ref)
+    encoded = quote(ref, safe="")
+    expected = f"https://api.github.com/repos/o/r/git/trees/{encoded}"
+    assert [call.args[1] for call in mock_request.await_args_list] == [
+        expected
+    ] * 3
+    assert mock_request.await_args_list[0].kwargs["params"] == {
+        "recursive": "1"
+    }
+    assert mock_request.await_args_list[1].kwargs["params"] is None
+    assert mock_request.await_args_list[2].kwargs["params"] is None
+
+
+@pytest.mark.asyncio
 @patch("mirage.core.github.tree.github_get")
 async def test_fetch_tree_parses_entries(mock_get, config):
     mock_get.return_value = {
-        "truncated":
-        False,
+        "truncated": False,
         "tree": [
-            {
-                "path": "src",
-                "type": "tree",
-                "sha": "aaa",
-                "size": None
-            },
-            {
-                "path": "src/main.py",
-                "type": "blob",
-                "sha": "bbb",
-                "size": 120
-            },
+            {"path": "src", "type": "tree", "sha": "aaa", "size": None},
+            {"path": "src/main.py", "type": "blob", "sha": "bbb", "size": 120},
         ],
     }
-    tree, truncated = await fetch_tree(config, "acme", "proj", "main")
+    tree, truncated, _ = await fetch_tree(config, "acme", "proj", "main")
     assert "src" in tree
     assert "src/main.py" in tree
-    assert tree["src"] == TreeEntry(path="src",
-                                    type="tree",
-                                    sha="aaa",
-                                    size=None)
-    assert tree["src/main.py"] == TreeEntry(path="src/main.py",
-                                            type="blob",
-                                            sha="bbb",
-                                            size=120)
+    assert tree["src"] == TreeEntry(
+        path="src", type="tree", sha="aaa", size=None
+    )
+    assert tree["src/main.py"] == TreeEntry(
+        path="src/main.py", type="blob", sha="bbb", size=120
+    )
 
 
 @pytest.mark.asyncio
 @patch("mirage.core.github.tree.github_get")
 async def test_fetch_tree_excludes_submodule_gitlinks(mock_get, config):
     mock_get.return_value = {
-        "truncated":
-        False,
+        "truncated": False,
         "tree": [
             {
                 "path": "extern",
                 "mode": "160000",
                 "type": "commit",
-                "sha": "ccc"
+                "sha": "ccc",
             },
-            {
-                "path": "main.py",
-                "type": "blob",
-                "sha": "bbb",
-                "size": 7
-            },
+            {"path": "main.py", "type": "blob", "sha": "bbb", "size": 7},
         ],
     }
-    tree, _ = await fetch_tree(config, "acme", "proj", "main")
+    tree, _, _ = await fetch_tree(config, "acme", "proj", "main")
     assert "extern" not in tree
     assert list(tree) == ["main.py"]
 
@@ -100,14 +124,9 @@ async def test_fetch_dir_tree_excludes_submodule_gitlinks(mock_get, config):
                 "path": "extern",
                 "mode": "160000",
                 "type": "commit",
-                "sha": "ccc"
+                "sha": "ccc",
             },
-            {
-                "path": "main.py",
-                "type": "blob",
-                "sha": "bbb",
-                "size": 7
-            },
+            {"path": "main.py", "type": "blob", "sha": "bbb", "size": 7},
         ]
     }
     entries = await fetch_dir_tree(config, "acme", "proj", "sha1")
@@ -133,6 +152,7 @@ async def test_fetch_tree_passes_params(mock_get, config):
         "/repos/{owner}/{repo}/git/trees/{ref}",
         params={"recursive": "1"},
         base_url=None,
+        session=None,
         owner="acme",
         repo="proj",
         ref="v1",
@@ -141,100 +161,110 @@ async def test_fetch_tree_passes_params(mock_get, config):
 
 def _tree_payload() -> dict:
     return {
-        "truncated":
-        False,
+        "truncated": False,
         "tree": [
-            {
-                "path": "data",
-                "type": "tree",
-                "sha": "t1",
-                "size": None
-            },
-            {
-                "path": "data/keep.txt",
-                "type": "blob",
-                "sha": "b1",
-                "size": 4
-            },
+            {"path": "data", "type": "tree", "sha": "t1", "size": None},
+            {"path": "data/keep.txt", "type": "blob", "sha": "b1", "size": 4},
         ],
     }
 
 
 def _accessor(config):
     tree = {
-        "data":
-        TreeEntry(path="data", type="tree", sha="t1", size=None),
-        "data/keep.txt":
-        TreeEntry(path="data/keep.txt", type="blob", sha="b1", size=4),
+        "data": TreeEntry(path="data", type="tree", sha="t1", size=None),
+        "data/keep.txt": TreeEntry(
+            path="data/keep.txt", type="blob", sha="b1", size=4
+        ),
     }
     return GitHubAccessor(config, "acme", "proj", "main", "main", tree=tree)
 
 
 @pytest.mark.asyncio
 @patch("mirage.core.github.tree.github_get")
-async def test_ensure_live_index_refetches_the_build_tree(mock_get, config):
+async def test_ensure_live_snapshot_refetches_the_build_tree(mock_get, config):
     # The build tree is only true at build time: a mount's first read can
     # come long after it, so reusing it would key an index built from a
     # repository several external writes ago.
     mock_get.return_value = _tree_payload()
     index = RAMIndexCacheStore(ttl=600)
     accessor = _accessor(config)
-    assert await ensure_live_index(accessor, index, "/gh") is True
+    assert await ensure_live_snapshot(accessor, index, "/gh") is not None
     mock_get.assert_awaited_once()
     assert (await index.list_dir("/gh/data")).entries == ["/gh/data/keep.txt"]
 
 
 @pytest.mark.asyncio
 @patch("mirage.core.github.tree.github_get")
-async def test_ensure_live_index_refetches_a_dropped_listing(mock_get, config):
+async def test_ensure_live_snapshot_refetches_a_dropped_listing(
+    mock_get, config
+):
     mock_get.return_value = _tree_payload()
     index = RAMIndexCacheStore(ttl=600)
     accessor = _accessor(config)
-    await ensure_live_index(accessor, index, "/gh")
+    await ensure_live_snapshot(accessor, index, "/gh")
     # What invalidation does: drop the row rather than expire it, which
     # is why the readers' EXPIRED probe never fires.
     await index.invalidate_dir("/gh")
     await index.invalidate_dir("/gh/data")
-    assert await ensure_live_index(accessor, index, "/gh") is True
+    assert await ensure_live_snapshot(accessor, index, "/gh") is not None
     assert mock_get.await_count == 2
     assert (await index.list_dir("/gh/data")).entries == ["/gh/data/keep.txt"]
 
 
 @pytest.mark.asyncio
 @patch("mirage.core.github.tree.github_get")
-async def test_ensure_live_index_leaves_a_live_index_alone(mock_get, config):
+async def test_ensure_live_snapshot_refetches_an_expired_listing(
+    mock_get, config
+):
     mock_get.return_value = _tree_payload()
     index = RAMIndexCacheStore(ttl=600)
     accessor = _accessor(config)
-    await ensure_live_index(accessor, index, "/gh")
+    await ensure_live_snapshot(accessor, index, "/gh")
+    await index.invalidate()
+    assert await ensure_live_snapshot(accessor, index, "/gh") is not None
+    assert mock_get.await_count == 2
+    assert (await index.list_dir("/gh/data")).entries == ["/gh/data/keep.txt"]
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.github.tree.github_get")
+async def test_ensure_live_snapshot_leaves_a_live_index_alone(
+    mock_get, config
+):
+    mock_get.return_value = _tree_payload()
+    index = RAMIndexCacheStore(ttl=600)
+    accessor = _accessor(config)
+    await ensure_live_snapshot(accessor, index, "/gh")
     mock_get.reset_mock()
-    assert await ensure_live_index(accessor, index, "/gh") is False
+    assert await ensure_live_snapshot(accessor, index, "/gh") is None
     mock_get.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @patch("mirage.core.github.tree.github_get")
-async def test_ensure_live_index_skips_a_truncated_tree(mock_get, config):
+async def test_ensure_live_snapshot_skips_a_truncated_tree(mock_get, config):
     index = RAMIndexCacheStore(ttl=600)
     accessor = _accessor(config)
     accessor.truncated = True
-    assert await ensure_live_index(accessor, index, "/gh") is False
+    assert await ensure_live_snapshot(accessor, index, "/gh") is None
     mock_get.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_ensure_live_index_skips_the_null_index(config):
-    assert await ensure_live_index(_accessor(config), NULL_INDEX, "") is False
+async def test_ensure_live_snapshot_skips_the_null_index(config):
+    assert (
+        await ensure_live_snapshot(_accessor(config), NULL_INDEX, "") is None
+    )
 
 
 def test_index_rows_key_by_mount_absolute_path():
     # Every other backend keys its index this way, which is what lets the
     # shared CacheManager spell an eviction without knowing the backend.
     tree = {
-        "data":
-        TreeEntry(path="data", type="tree", sha="t1", size=None),
-        "data/keep.txt":
-        TreeEntry(path="data/keep.txt", type="blob", sha="b1", size=4),
+        "data": TreeEntry(path="data", type="tree", sha="t1", size=None),
+        "data/keep.txt": TreeEntry(
+            path="data/keep.txt", type="blob", sha="b1", size=4
+        ),
     }
     entries, children = index_rows(tree, "/gh")
     assert sorted(entries) == ["/gh/data", "/gh/data/keep.txt"]
@@ -243,7 +273,8 @@ def test_index_rows_key_by_mount_absolute_path():
 
 def test_index_rows_root_mount_keeps_bare_paths():
     entries, children = index_rows(
-        {"a.txt": TreeEntry(path="a.txt", type="blob", sha="b", size=1)}, "")
+        {"a.txt": TreeEntry(path="a.txt", type="blob", sha="b", size=1)}, ""
+    )
     assert sorted(entries) == ["/a.txt"]
     assert sorted(children) == ["/"]
 
@@ -251,3 +282,275 @@ def test_index_rows_root_mount_keeps_bare_paths():
 def test_index_rows_gives_an_empty_repo_a_root_row():
     _entries, children = index_rows({}, "/gh")
     assert children == {"/gh": []}
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.github.repo.github_get")
+@patch("mirage.core.github.tree.github_get")
+async def test_an_unpinned_mount_reads_the_repos_default_branch(
+    mock_tree_get, mock_repo_get, config
+):
+    """An unresolved ref must be settled before the tree is fetched.
+
+    ``accessor.ref`` is None until something resolves it, so reading it
+    straight sends `ref=None` to the one request the whole mount is built
+    on. This pins the resolution, not the config default -- the mount that
+    supplies the default lives a layer up, in
+    tests/vfs/github/test_lazy_hydration.py.
+    """
+    mock_repo_get.return_value = {"default_branch": "master"}
+    mock_tree_get.return_value = {"truncated": False, "tree": []}
+    accessor = GitHubAccessor(config, "acme", "proj")
+    await ensure_tree(accessor)
+    assert mock_tree_get.await_args.kwargs["ref"] == "master"
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.github.repo.github_get")
+@patch("mirage.core.github.tree.github_get")
+async def test_a_pinned_mount_reads_its_ref_and_never_asks_for_the_branch(
+    mock_tree_get, mock_repo_get, config
+):
+    mock_tree_get.return_value = {"truncated": False, "tree": []}
+    accessor = GitHubAccessor(config, "acme", "proj", "release-2")
+    await ensure_tree(accessor)
+    assert mock_tree_get.await_args.kwargs["ref"] == "release-2"
+    mock_repo_get.assert_not_awaited()
+
+
+def _served_accessor(gh: FakeGitHub, ref: str = "main") -> GitHubAccessor:
+    return GitHubAccessor(
+        GitHubConfig(token="t", base_url=gh.url), "o", "r", ref
+    )
+
+
+# The same rows as tree.test.ts: a parent Octokit would rewrite unencoded
+# (two or more lowercase letters), its uppercase control, a nested parent a
+# raw slash would split, characters that truncate or template a URL, and a
+# ref with a slash in it.
+ENCODED = [
+    ("main", "src"),
+    ("main", "Src"),
+    ("main", "docs/sub"),
+    ("main", "a b"),
+    ("main", "a#b"),
+    ("main", "a?b"),
+    ("main", "a%b"),
+    ("main", "ü"),
+    ("main", "x:y"),
+    ("main", "a{b}"),
+    ("release/1.80", "docs/sub"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ref,parent", ENCODED)
+async def test_a_point_request_sends_ref_and_parent_as_one_segment(
+    ref, parent
+):
+    data = b"payload"
+    with serve(FakeGitHub(files={parent + "/f.txt": data}, ref=ref)) as gh:
+        found = await point_row(_served_accessor(gh, ref), parent + "/f.txt")
+        # The fake routes only a single segment; a raw "/" inside it is
+        # never routed, so the row would be missing and the request unlogged.
+        assert found is not None and found[0] is not None
+        assert found[0].sha == blob_sha(data)
+        ((route, raw),) = gh.log
+        assert route == "dir"
+        assert "/" not in raw
+        assert unquote(raw) == f"{ref}:{parent}"
+
+
+@pytest.mark.asyncio
+async def test_a_root_child_asks_for_the_ref_itself():
+    with serve(FakeGitHub(files={"a.txt": b"a"})) as gh:
+        found = await point_row(_served_accessor(gh), "a.txt")
+        assert found is not None and found[0] is not None
+        assert gh.log == [("dir", "main")]
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.github.tree.github_get")
+async def test_a_directory_page_carries_truncation(mock_get, config):
+    mock_get.return_value = {
+        "truncated": True,
+        "tree": [
+            {"path": "a.py", "type": "blob", "sha": "a", "size": 1},
+            {"path": "vendor", "type": "commit", "sha": "c"},
+        ],
+    }
+    entries, truncated = await fetch_dir_page(config, "o", "r", "sha")
+    assert truncated is True
+    # A gitlink has no blob and no size; the page drops it like the tree.
+    assert [e.path for e in entries] == ["a.py"]
+    mock_get.return_value = {**mock_get.return_value, "truncated": False}
+    assert await fetch_dir_tree(config, "o", "r", "sha") == entries
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.github.tree.github_get")
+async def test_a_directory_page_without_a_tree_is_refused(mock_get, config):
+    mock_get.return_value = {"message": "something else"}
+    with pytest.raises(GitHubApiError, match="carries no tree"):
+        await fetch_dir_page(config, "o", "r", "sha")
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.github.tree.github_get")
+async def test_a_directory_tree_github_cut_short_is_refused(mock_get, config):
+    # The fallback walk caches what it gets as the whole directory; a name
+    # past GitHub's cut would read as absent, and a fresh probe as gone.
+    mock_get.return_value = {
+        "truncated": True,
+        "tree": [{"path": "a.py", "type": "blob", "sha": "a", "size": 1}],
+    }
+    with pytest.raises(GitHubApiError, match="truncated the tree listing"):
+        await fetch_dir_tree(config, "o", "r", "sha")
+
+
+@pytest.mark.asyncio
+async def test_the_point_answers():
+    files = {"docs/a.txt": b"alpha", "docs/b.txt": b"bravo"}
+    with serve(FakeGitHub(files=dict(files))) as gh:
+        accessor = _served_accessor(gh)
+        row, truncated = await point_row(accessor, "docs/a.txt")
+        assert (row.sha, truncated) == (blob_sha(b"alpha"), False)
+        assert await point_row(accessor, "docs/nope.txt") == (None, False)
+        gh.truncated_dirs["docs"] = 1
+        assert await point_row(accessor, "docs/b.txt") == (None, True)
+        gh.truncated_dirs.clear()
+        # A missing directory, a deleted ref and a path through a file all
+        # defer to the tree rather than answering absent.
+        assert await point_row(accessor, "gone/a.txt") is None
+        assert await point_row(accessor, "docs/a.txt/x") is None
+        assert (
+            await point_row(_served_accessor(gh, "deleted"), "docs/a.txt")
+            is None
+        )
+        for status in (401, 403, 409, 429, 500):
+            gh.fail["dir"] = (status, "refused")
+            with pytest.raises(aiohttp.ClientResponseError) as caught:
+                await point_row(accessor, "docs/a.txt")
+            assert caught.value.status == status
+        gh.fail["dir"] = (404, "Not Found")
+        assert await point_row(accessor, "docs/a.txt") is None
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_point_answer_is_refused():
+    with serve(FakeGitHub(files={"docs/a.txt": b"a"})) as gh:
+        accessor = _served_accessor(gh)
+        with patch(
+            "mirage.core.github.tree.github_get", AsyncMock(return_value={})
+        ):
+            with pytest.raises(GitHubApiError, match="carries no tree"):
+                await point_row(accessor, "docs/a.txt")
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_seed_keeps_rows_it_does_not_name():
+    accessor = _accessor(GitHubConfig(token="t"))
+    accessor.truncated = True
+    index = RAMIndexCacheStore(ttl=600)
+    await index.set_dir(
+        "/gh/data",
+        [
+            (
+                "keep.txt",
+                IndexEntry(id="b1", name="keep.txt", resource_type="file"),
+            ),
+            (
+                "other.txt",
+                IndexEntry(id="b2", name="other.txt", resource_type="file"),
+            ),
+        ],
+    )
+    seed_index(accessor, index, "/gh")
+    assert (await index.get("/gh/data/other.txt")).entry.id == "b2"
+
+
+def _ledgered(store: RAMIndexCacheStore) -> tuple[list[Evicted], IndexView]:
+    gone: list[Evicted] = []
+
+    async def on_gone(children: list[Evicted]) -> None:
+        gone.extend(children)
+
+    return gone, IndexView(
+        store, RAMFileCacheStore(), "/gh", lambda _key: True, on_gone=on_gone
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "removed, reported",
+    [
+        (["d1/a.txt"], [Evicted("/gh/d1/a.txt", folder=False)]),
+        (["d1/a.txt", "d1/b.txt"], [Evicted("/gh/d1", folder=True)]),
+    ],
+)
+async def test_a_refill_reports_what_left_the_repository(removed, reported):
+    # The refill wipes the index before seeding the new tree, so without
+    # the diff a file removed upstream keeps its cached bytes and overlay.
+    files = {"d1/a.txt": b"a", "d1/b.txt": b"b", "top.txt": b"t"}
+    with serve(FakeGitHub(files=dict(files))) as gh:
+        accessor = _served_accessor(gh)
+        gone, index = _ledgered(RAMIndexCacheStore())
+        await refill_snapshot(accessor, index, "/gh")
+        for path in removed:
+            del gh.files[path]
+        await refill_snapshot(accessor, index, "/gh")
+        assert gone == reported
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before, after", [(True, False), (False, True)])
+async def test_a_truncated_tree_on_either_side_reports_nothing(before, after):
+    # A truncated tree names only some paths, so a path missing from it is
+    # not a path the repository lost.
+    files = {"d1/a.txt": b"a", "top.txt": b"t"}
+    with serve(
+        FakeGitHub(files=dict(files), truncated_recursive=before)
+    ) as gh:
+        accessor = _served_accessor(gh)
+        gone, index = _ledgered(RAMIndexCacheStore())
+        await refill_snapshot(accessor, index, "/gh")
+        gh.truncated_recursive = after
+        del gh.files["d1/a.txt"]
+        await refill_snapshot(accessor, index, "/gh")
+        assert gone == []
+
+
+@pytest.mark.asyncio
+async def test_the_first_refill_reports_nothing():
+    with serve(FakeGitHub(files={"top.txt": b"t"})) as gh:
+        accessor = _served_accessor(gh)
+        gone, index = _ledgered(RAMIndexCacheStore())
+        await refill_snapshot(accessor, index, "/gh")
+        assert gone == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("truncated,drop_sha", [(True, False), (False, True)])
+async def test_a_refill_with_no_whole_head_stores_no_version(
+    truncated, drop_sha
+):
+    files = {"d1/a.txt": b"a", "top.txt": b"t"}
+    with serve(
+        FakeGitHub(
+            files=dict(files), truncated_recursive=truncated, drop_sha=drop_sha
+        )
+    ) as gh:
+        accessor = _served_accessor(gh)
+        index = RAMIndexCacheStore()
+        snapshot = await refill_snapshot(accessor, index, "/gh")
+        assert snapshot.version is None
+        assert accessor.tree_version is None
+        assert (await index.list_dir("/gh")).version is None
+
+
+@pytest.mark.asyncio
+async def test_a_bare_tree_fetch_stamps_the_head_it_answered():
+    with serve(FakeGitHub(files={"top.txt": b"t"})) as gh:
+        accessor = _served_accessor(gh)
+        await ensure_tree(accessor)
+        assert accessor.tree_version == gh.head()

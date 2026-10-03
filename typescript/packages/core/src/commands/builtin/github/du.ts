@@ -13,17 +13,50 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { GitHubAccessor } from '../../../accessor/github.ts'
-import { size as githubDu, entries as githubDuAll } from '../../../core/github/du/index.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
-import { GITHUB_IO } from './io.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
+import { withPathGuards, withPolicyGuard } from '../generic_bind/adapter.ts'
+import { IO } from './io.ts'
+import { ensureLiveTree } from '../../../core/github/tree.ts'
+import { VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { metadataProvision } from './_provision.ts'
 import { IOResult } from '../../../io/types.ts'
-import { runDu } from '../generic/du.ts'
+import { DEFAULT_MAX_DU_ENTRIES, runDu } from '../generic/du.ts'
+import { WalkBudget, walkEntries, walkSize } from '../generic_bind/builders/du.ts'
+import type { DuEntries } from '../../../vfs/types.ts'
+import { stripSlash } from '../../../utils/slash.ts'
+import { mountPrefixOf } from '../../../utils/key_prefix.ts'
+import { compareCodePoints } from '../../../utils/sort.ts'
 
-const resolveGlob = resolveGlobOf(GITHUB_IO)
+const resolveGlob = resolveGlobOf(IO)
+
+/**
+ * Every blob and every directory at or under `path`, and the blobs' sum.
+ *
+ * Read off the git tree rather than the index: the tree is keyed
+ * repo-relative, which is the space these comparisons are in, so both come
+ * back mount-relative. A blob of unknown size counts 0, as the walked du
+ * counts any file. A directory comes back on its own because one holding no
+ * blob (only a submodule, which the tree drops) still gets du's 0 row.
+ */
+function subtree(accessor: GitHubAccessor, path: PathSpec): [DuEntries, string[]] {
+  const key = stripSlash(path.vfsPath)
+  const prefix = key === '' ? '' : `${key}/`
+  const blobs: [string, number][] = []
+  const directories: string[] = []
+  let total = 0
+  for (const [p, entry] of Object.entries(accessor.tree)) {
+    if (p !== key && !p.startsWith(prefix)) continue
+    if (entry.type === 'blob') {
+      blobs.push([`/${p}`, entry.size ?? 0])
+      total += entry.size ?? 0
+    } else {
+      directories.push(`/${p}`)
+    }
+  }
+  blobs.sort((a, b) => compareCodePoints(a[0], b[0]))
+  return [[blobs, total], directories]
+}
 
 async function duCommand(
   accessor: GitHubAccessor,
@@ -32,21 +65,51 @@ async function duCommand(
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
   const idx = opts.index ?? undefined
+  // Sizes come from accessor.tree, so the first callback brings it live,
+  // after du has validated its flags: an invalid line must cost no fetch.
+  // Once per line, so one du reads one tree.
+  let probe: Promise<void> | undefined
+  const live = (): Promise<void> =>
+    (probe ??= ensureLiveTree(accessor, idx, opts.mountPrefix ?? ''))
+  const budget = new WalkBudget(IO.maxDuEntries ?? DEFAULT_MAX_DU_ENTRIES)
   const out = await runDu(
     paths,
     opts,
-    (targets) => resolveGlob(accessor, targets, idx),
-    (p) => GITHUB_IO.stat(accessor, p, idx),
-    (p) => githubDu(accessor, p, idx),
-    (p) => githubDuAll(accessor, p, idx),
+    async (targets) => {
+      await live()
+      return resolveGlob(accessor, targets, idx)
+    },
+    async (p) => {
+      await live()
+      return IO.stat(accessor, p, idx)
+    },
+    // A truncated tree names only some paths and is never refetched, so it
+    // is walked folder by folder, as a backend with no tree would be.
+    async (p) => {
+      await live()
+      if (accessor.truncated)
+        return walkSize(withPolicyGuard(withPathGuards(IO)), accessor, idx, budget, p)
+      return subtree(accessor, p)[0][1]
+    },
+    async (p) => {
+      await live()
+      if (accessor.truncated)
+        return walkEntries(withPolicyGuard(withPathGuards(IO)), accessor, idx, budget, p)
+      const [entries, directories] = subtree(accessor, p)
+      const mount = mountPrefixOf(p.virtual, p.vfsPath)
+      budget.directories.push(...directories.map((d) => `${mount}${d}`))
+      return entries
+    },
+    () => budget.hit,
+    () => budget.unreadable,
+    () => budget.directories,
   )
   return [out.stdout, new IOResult({ stderr: out.stderr, exitCode: out.exitCode })]
 }
 
 export const GITHUB_DU = command({
   name: 'du',
-  resource: ResourceName.GITHUB,
+  vfs: VFSName.GITHUB,
   spec: specOf('du'),
   fn: duCommand,
-  provision: metadataProvision,
 })

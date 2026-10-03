@@ -14,34 +14,21 @@
 
 import type { ChromaAccessor } from '../../accessor/chroma.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
-import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { decodeBase64 } from '../../utils/base64.ts'
 import { gunzip } from '../../utils/compress.ts'
-import { rstripSlash, stripSlash } from '../../utils/slash.ts'
-import { gnuBasename, parent } from '../../utils/path.ts'
+import { gnuBasename } from '../../utils/path.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { dirRows, dropCollisions, normalizeSlug, scalarString } from '../slug_tree/rows.ts'
+import { SlugTree } from '../slug_tree/tree.ts'
+import type { DirRows } from '../slug_tree/types.ts'
 import { fetchPathTree } from './client.ts'
-import { compareCodePoints } from '../../utils/sort.ts'
 
 const DEC = new TextDecoder('utf-8', { fatal: false })
 
 export type ChromaPathTree = Record<string, Record<string, unknown>>
 
-export async function ensureTree(
-  accessor: ChromaAccessor,
-  index: IndexCacheStore,
-  prefix = '',
-): Promise<void> {
-  const rootKey = mountRoot(prefix)
-  const listing = await index.listDir(rootKey)
-  if (listing.entries !== undefined && listing.entries !== null) return
-
-  const pathTree = await parsePathTree(await fetchPathTree(accessor))
-  const dirEntries = buildDirEntries(pathTree, prefix)
-  for (const directory of [...dirEntries.keys()].sort(compareCodePoints)) {
-    const entries = dirEntries.get(directory) ?? []
-    const sorted = [...entries].sort((a, b) => compareCodePoints(a[0], b[0]))
-    await index.setDir(directory, sorted)
-  }
+async function loadTree(accessor: ChromaAccessor, prefix: string): Promise<DirRows> {
+  return buildDirEntries(await parsePathTree(await fetchPathTree(accessor)), prefix)
 }
 
 export async function parsePathTree(raw: string): Promise<ChromaPathTree> {
@@ -68,124 +55,50 @@ export async function parsePathTree(raw: string): Promise<ChromaPathTree> {
   return result
 }
 
-export function buildDirEntries(
-  pathTree: ChromaPathTree,
-  prefix: string,
-): Map<string, [string, IndexEntry][]> {
+export function buildDirEntries(pathTree: ChromaPathTree, prefix: string): DirRows {
   const files = new Map<string, Record<string, unknown>>()
   for (const [rawSlug, metadata] of Object.entries(pathTree)) {
-    const path = normalizeSlug(rawSlug)
+    const path = normalizeSlug(rawSlug, 'Chroma path')
     if (files.has(path)) {
       throw new Error(`Duplicate Chroma path '${stripSlash(path)}'`)
     }
     files.set(path, metadata)
   }
-
-  raiseOnCollisions(new Set(files.keys()))
-  const directories = collectDirectories(new Set(files.keys()))
-  const dirEntries = new Map<string, [string, IndexEntry][]>()
-  for (const directory of directories) {
-    dirEntries.set(virtualPath(directory, prefix), [])
-  }
-
-  for (const directory of [...directories].sort(compareCodePoints)) {
-    if (directory === '/') continue
-    const entry = new IndexEntry({
-      id: stripSlash(directory),
-      name: gnuBasename(directory),
-      resourceType: 'folder',
-    })
-    dirEntries.get(virtualPath(parent(directory), prefix))?.push([entry.name, entry])
-  }
-
-  for (const path of [...files.keys()].sort(compareCodePoints)) {
-    const metadata = files.get(path) ?? {}
-    const slug = stripSlash(path)
-    const updatedAt = metadataOrNull(metadata, 'updated_at')
-    // The path tree's `size` describes the producer's source document, not
-    // the chunk join mirage serves, so it rides in extra and never becomes
-    // the reported byte length: ensureDirSizes measures the rendered bytes.
-    const entry = new IndexEntry({
-      id: slug,
-      name: gnuBasename(path),
-      resourceType: 'file',
-      remoteTime: updatedAt ?? '',
-      extra: {
-        slug,
-        source_size: metadataIntOrNull(metadata, 'size'),
-        created_at: metadataOrNull(metadata, 'created_at'),
-        updated_at: updatedAt,
-      },
-    })
-    dirEntries.get(virtualPath(parent(path), prefix))?.push([entry.name, entry])
-  }
-  return dirEntries
+  return dirRows(dropCollisions(files, refuseCollision), prefix, fileEntry)
 }
 
-export function normalizeSlug(value: string): string {
-  const parts = stripSlash(value)
-    .split('/')
-    .filter((part) => part !== '')
-  if (parts.length === 0) {
-    throw new Error('Invalid empty Chroma path')
-  }
-  for (const part of parts) {
-    if (part === '.' || part === '..') {
-      throw new Error(`Invalid Chroma path segment: '${part}'`)
-    }
-  }
-  return '/' + parts.join('/')
+function refuseCollision(ancestor: string, path: string): void {
+  throw new Error(
+    `Path collision: Chroma path '${stripSlash(ancestor)}' is both a file and a ` +
+      `directory prefix for '${path}'.`,
+  )
 }
 
-function raiseOnCollisions(paths: ReadonlySet<string>): void {
-  for (const path of [...paths].sort(compareCodePoints)) {
-    const parts = stripSlash(path).split('/')
-    for (let i = 1; i < parts.length; i++) {
-      const ancestor = '/' + parts.slice(0, i).join('/')
-      if (paths.has(ancestor)) {
-        throw new Error(
-          `Path collision: Chroma path '${stripSlash(ancestor)}' is both a file and a ` +
-            `directory prefix for '${path}'.`,
-        )
-      }
-    }
-  }
+function fileEntry(path: string, metadata: Record<string, unknown>): IndexEntry {
+  const slug = stripSlash(path)
+  const updatedAt = scalarString(metadata.updated_at)
+  // The path tree's `size` describes the producer's source document, not
+  // the chunk join mirage serves, so it rides in extra and never becomes
+  // the reported byte length: ensureDirSizes measures the rendered bytes.
+  return new IndexEntry({
+    id: slug,
+    name: gnuBasename(path),
+    resourceType: 'file',
+    remoteTime: updatedAt ?? '',
+    extra: {
+      slug,
+      source_size: metadataIntOrNull(metadata.size),
+      created_at: scalarString(metadata.created_at),
+      updated_at: updatedAt,
+    },
+  })
 }
 
-function collectDirectories(paths: ReadonlySet<string>): Set<string> {
-  const directories = new Set<string>(['/'])
-  for (const path of paths) {
-    const parts = stripSlash(path).split('/')
-    for (let i = 1; i < parts.length; i++) {
-      directories.add('/' + parts.slice(0, i).join('/'))
-    }
-  }
-  return directories
-}
-
-function metadataOrNull(metadata: Record<string, unknown>, key: string): string | null {
-  const value = metadata[key]
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return null
-}
-
-function metadataIntOrNull(metadata: Record<string, unknown>, key: string): number | null {
-  const value = metadata[key]
+function metadataIntOrNull(value: unknown): number | null {
   if (typeof value === 'boolean' || value === undefined || value === null) return null
   if (typeof value === 'number') return Math.trunc(value)
   if (typeof value === 'string' && /^\d+$/.test(value)) return Number.parseInt(value, 10)
   return null
 }
 
-function mountRoot(prefix: string): string {
-  const stripped = rstripSlash(prefix)
-  return stripped !== '' ? stripped : '/'
-}
-
-export function virtualPath(path: string, prefix: string): string {
-  const root = mountRoot(prefix)
-  if (path === '/') return root
-  if (root === '/') return path
-  return root + path
-}
+export const CHROMA_TREE = new SlugTree<ChromaAccessor>(loadTree)

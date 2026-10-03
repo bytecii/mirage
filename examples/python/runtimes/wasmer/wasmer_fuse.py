@@ -25,7 +25,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.resource.s3 import S3Config, S3Resource
+from mirage.vfs.s3 import S3VFS, S3Config
 
 load_dotenv(".env.development")
 
@@ -44,17 +44,22 @@ def s3_config() -> S3Config:
 def main():
     wasmer = shutil.which("wasmer")
     if wasmer is None:
-        print("wasmer CLI not found on PATH; install from https://wasmer.io",
-              file=sys.stderr)
+        print(
+            "wasmer CLI not found on PATH; install from https://wasmer.io",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print("=== Mirage FUSE-mounting S3 on the host ===")
-    with Workspace({
-            "/s3/":
-            Mount(S3Resource(s3_config()),
-                  mode=MountMode.READ,
-                  backend=MountBackend.FUSE)
-    }) as ws:
+    with Workspace(
+        {
+            "/s3/": Mount(
+                S3VFS(s3_config()),
+                mode=MountMode.READ,
+                backend=MountBackend.FUSE,
+            )
+        }
+    ) as ws:
         host_s3 = ws.fuse_mountpoint
         print(f"  host mountpoint: {host_s3}")
 
@@ -84,7 +89,7 @@ def main():
             print(f"\n=== exit code: {result.returncode} ===", file=sys.stderr)
             sys.exit(result.returncode)
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(rec.bytes for rec in records)
         print(
             f"\nMirage served {len(records)} ops, {total} bytes to the sandbox"

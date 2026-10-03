@@ -20,6 +20,7 @@ class StateKey(StrEnum):
     MIRAGE_VERSION = "mirage_version"
     MOUNTS = "mounts"
     SESSIONS = "sessions"
+    ENV = "env"
     DEFAULT_SESSION_ID = "default_session_id"
     DEFAULT_AGENT_ID = "default_agent_id"
     CURRENT_AGENT_ID = "current_agent_id"
@@ -36,9 +37,12 @@ class MountKey(StrEnum):
     INDEX = "index"
     PREFIX = "prefix"
     MODE = "mode"
-    CONSISTENCY = "consistency"
-    RESOURCE_CLASS = "resource_class"
-    RESOURCE_STATE = "resource_state"
+    READ = "read"
+    TTL = "ttl"
+    VFS_CLASS = "vfs_class"
+    VFS_REF = "vfs_ref"
+    INDEX_CONFIG = "index_config"
+    VFS_STATE = "vfs_state"
 
 
 class CacheKey(StrEnum):
@@ -66,9 +70,10 @@ class JobKey(StrEnum):
     SESSION_ID = "session_id"
 
 
-class ResourceStateKey(StrEnum):
+class VFSStateKey(StrEnum):
     TYPE = "type"
     CONFIG = "config"
+    NEEDS_OVERRIDE = "needs_override"
     FILES = "files"
     DIRS = "dirs"
     MODIFIED = "modified"
@@ -77,7 +82,7 @@ class ResourceStateKey(StrEnum):
 
 # The four below name sub-shapes that typescript spells as literals at
 # the point of use rather than as a frozen table (`keys.ts` stops at
-# ResourceStateKey). They belong to the same snapshot vocabulary, so
+# VFSStateKey). They belong to the same snapshot vocabulary, so
 # they live here too instead of staying behind in `types.py`.
 # NodeMetaKey is the exception: it names NodeMeta's own fields, so it
 # lives beside NodeMeta in `mount/namespace/namespace.py`. Snapshot

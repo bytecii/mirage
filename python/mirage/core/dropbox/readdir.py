@@ -36,8 +36,9 @@ def dropbox_path_from_key(root: str, key: str) -> str:
     return f"{root}/{key}"
 
 
-async def _metadata_or_none(accessor: DropboxAccessor,
-                            key: str) -> dict[str, Any] | None:
+async def _metadata_or_none(
+    accessor: DropboxAccessor, key: str
+) -> dict[str, Any] | None:
     path = dropbox_path_from_key(accessor.root_path, key.strip("/"))
     try:
         return await get_metadata(accessor.token_manager, path)
@@ -62,7 +63,7 @@ async def readdir(
     path_spec: PathSpec,
     index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
     path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     virtual_key = prefix + "/" + key if key else prefix or "/"
@@ -82,9 +83,12 @@ async def readdir(
         # and let the walk pick the errno, at one request per component
         # on this failure path only.
         if exc.status == 409:
-            raise await listing_error(path_spec.virtual, path,
-                                      partial(_is_file, accessor),
-                                      partial(_is_dir, accessor)) from exc
+            raise await listing_error(
+                path_spec.virtual,
+                path,
+                partial(_is_file, accessor),
+                partial(_is_dir, accessor),
+            ) from exc
         raise
 
     entries: list[tuple[str, IndexEntry, bool]] = []

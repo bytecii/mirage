@@ -14,7 +14,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { PostgresAccessor } from '../../accessor/postgres.ts'
-import { resolvePostgresConfig } from '../../resource/postgres/config.ts'
+import { resolvePostgresConfig } from '../../vfs/postgres/config.ts'
 import type { PgDriver } from './_driver.ts'
 import * as client from './client.ts'
 
@@ -254,5 +254,21 @@ describe('fetchAllRelationships', () => {
         kind: 'many_to_one',
       },
     ])
+  })
+})
+
+describe('fetchBoundedRows', () => {
+  it.each([0, 100, 101])('handles a %i-byte result and a colliding column', async (size) => {
+    const { accessor, query } = makeAccessor((sql) =>
+      sql.includes('information_schema.columns')
+        ? [{ column_name: '__mirage_bytes', data_type: 'text', is_nullable: 'YES' }]
+        : [{ __mirage_bytes: null, __mirage_bytes_: size }],
+    )
+    const rows = await client.fetchBoundedRows(accessor, 'public', 'users', {
+      limit: 11,
+      maxBytes: 100,
+    })
+    expect(rows).toEqual(size === 0 ? [] : size > 100 ? null : [{ __mirage_bytes: null }])
+    expect(query.mock.calls[1]?.[1]).toEqual([11, 100])
   })
 })

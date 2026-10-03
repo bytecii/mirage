@@ -15,29 +15,26 @@
 from mirage.commands.spec.types import CommandSpec, Operand, Option
 
 SPECS: dict[str, CommandSpec] = {
-    'cat':
-    CommandSpec(
+    "cat": CommandSpec(
         options=(
-            Option(short="-n", long="--number"),
             Option(short="-b", long="--number-nonblank"),
-            Option(short="-E", long="--show-ends"),
-            Option(short="-T", long="--show-tabs"),
+            Option(short="-n", long="--number"),
+            Option(short="-s", long="--squeeze-blank"),
             Option(short="-v", long="--show-nonprinting"),
+            Option(short="-E", long="--show-ends"),
             Option(short="-e"),
             Option(short="-t"),
+            Option(short="-T", long="--show-tabs"),
             Option(short="-A", long="--show-all"),
-            Option(short="-s", long="--squeeze-blank"),
             Option(short="-u"),
         ),
         rest=Operand(type="path"),
     ),
-    'head':
-    CommandSpec(
+    "head": CommandSpec(
         options=(
-            Option(short="-n",
-                   long="--lines",
-                   type="str",
-                   numeric_shorthand=True),
+            Option(
+                short="-n", long="--lines", type="str", numeric_shorthand=True
+            ),
             Option(short="-c", long="--bytes", type="str"),
             Option(short="-q", long="--quiet"),
             Option(long="--silent"),
@@ -46,36 +43,72 @@ SPECS: dict[str, CommandSpec] = {
         ),
         rest=Operand(type="path"),
     ),
-    'tail':
-    CommandSpec(
+    "tail": CommandSpec(
         options=(
             Option(short="-n", type="str", numeric_shorthand=True),
             Option(short="-c", type="str"),
             Option(short="-q"),
             Option(short="-v"),
-            Option(short="-f", long="--follow"),
+            # GNU: -f never takes an argument; only --follow= carries the
+            # descriptor/name choice, so the short stays clusterable.
+            Option(
+                short="-f",
+                long="--follow",
+                type="str",
+                value_optional=True,
+                short_value=False,
+            ),
+            Option(short="-F"),
+            Option(long="--retry"),
+            Option(short="-s", long="--sleep-interval", type="str"),
         ),
         rest=Operand(type="path"),
     ),
-    'nl':
-    CommandSpec(
+    "nl": CommandSpec(
         options=(
-            Option(short="-b", long="--body-numbering", type="str"),
-            Option(short="-d", long="--section-delimiter", type="str"),
-            Option(short="-f", long="--footer-numbering", type="str"),
-            Option(short="-h", long="--header-numbering", type="str"),
-            Option(short="-l", long="--join-blank-lines", type="str"),
-            Option(short="-n", long="--number-format", type="str"),
+            Option(
+                short="-b", long="--body-numbering", type="str", multiple=True
+            ),
+            Option(
+                short="-v",
+                long="--starting-line-number",
+                type="str",
+                multiple=True,
+            ),
+            Option(
+                short="-f",
+                long="--footer-numbering",
+                type="str",
+                multiple=True,
+            ),
+            Option(
+                short="-h",
+                long="--header-numbering",
+                type="str",
+                multiple=True,
+            ),
+            Option(
+                short="-l",
+                long="--join-blank-lines",
+                type="str",
+                multiple=True,
+            ),
             Option(short="-p", long="--no-renumber"),
-            Option(short="-v", long="--starting-line-number", type="str"),
-            Option(short="-i", long="--line-increment", type="str"),
-            Option(short="-w", long="--number-width", type="str"),
             Option(short="-s", long="--number-separator", type="str"),
+            Option(short="-d", long="--section-delimiter", type="str"),
+            Option(
+                short="-i", long="--line-increment", type="str", multiple=True
+            ),
+            Option(
+                short="-w", long="--number-width", type="str", multiple=True
+            ),
+            Option(
+                short="-n", long="--number-format", type="str", multiple=True
+            ),
         ),
         rest=Operand(type="path"),
     ),
-    'tac':
-    CommandSpec(
+    "tac": CommandSpec(
         options=(
             Option(short="-b", long="--before"),
             Option(short="-r", long="--regex"),
@@ -83,8 +116,7 @@ SPECS: dict[str, CommandSpec] = {
         ),
         rest=Operand(type="path"),
     ),
-    'column':
-    CommandSpec(
+    "column": CommandSpec(
         options=(
             Option(short="-t"),
             Option(short="-s", type="str"),
@@ -92,8 +124,7 @@ SPECS: dict[str, CommandSpec] = {
         ),
         rest=Operand(type="path"),
     ),
-    'fold':
-    CommandSpec(
+    "fold": CommandSpec(
         options=(
             Option(short="-w", long="--width", type="str"),
             Option(short="-s", long="--spaces"),
@@ -102,8 +133,7 @@ SPECS: dict[str, CommandSpec] = {
         ),
         rest=Operand(type="path"),
     ),
-    'fmt':
-    CommandSpec(
+    "fmt": CommandSpec(
         options=(
             Option(short="-w", long="--width", type="str"),
             Option(short="-g", long="--goal", type="str"),
@@ -115,18 +145,15 @@ SPECS: dict[str, CommandSpec] = {
         ),
         rest=Operand(type="path"),
     ),
-    'rev':
-    CommandSpec(rest=Operand(type="path")),
-    'expand':
-    CommandSpec(
+    "rev": CommandSpec(rest=Operand(type="path")),
+    "expand": CommandSpec(
         options=(
-            Option(short="-t", long="--tabs", type="str"),
+            Option(short="-t", long="--tabs", type="str", multiple=True),
             Option(short="-i", long="--initial"),
         ),
         rest=Operand(type="path"),
     ),
-    'unexpand':
-    CommandSpec(
+    "unexpand": CommandSpec(
         options=(
             Option(short="-t", long="--tabs", type="str"),
             Option(short="-a", long="--all"),
@@ -134,21 +161,20 @@ SPECS: dict[str, CommandSpec] = {
         ),
         rest=Operand(type="path"),
     ),
-    'look':
-    CommandSpec(
-        options=(Option(short="-f"), ),
+    "look": CommandSpec(
+        options=(Option(short="-f"),),
         positional=(
             Operand(type="str"),
             Operand(type="path"),
         ),
     ),
-    'od':
-    CommandSpec(
+    "od": CommandSpec(
         options=(
             Option(short="-A", long="--address-radix", type="str"),
             Option(short="-j", long="--skip-bytes", type="str"),
             Option(short="-N", long="--read-bytes", type="str"),
             Option(short="-t", long="--format", type="str", multiple=True),
+            Option(short="-c", type="bool"),
         ),
         rest=Operand(type="path"),
     ),

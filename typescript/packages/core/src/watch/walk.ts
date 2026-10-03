@@ -22,7 +22,7 @@ import {
   type StatFn,
   type WalkEntry,
 } from '../types.ts'
-import { isEnoent } from '../utils/errors.ts'
+import { isEnoent, isEnotdir } from '../utils/errors.ts'
 import { mountKey, mountPrefixOf } from '../utils/key_prefix.ts'
 import { rstripSlash } from '../utils/slash.ts'
 import { statFingerprint } from './fingerprint.ts'
@@ -88,7 +88,7 @@ function specAt(virtual: string, prefix: string): PathSpec {
     virtual,
     directory: virtual,
     resolved: false,
-    resourcePath: mountKey(virtual, prefix),
+    vfsPath: mountKey(virtual, prefix),
   })
 }
 
@@ -104,7 +104,7 @@ async function statAt(
     // Removed between the readdir and the stat; the next pull reports
     // the DELETE from the snapshot diff. Only absence is swallowed, an
     // API error still propagates.
-    if (isEnoent(error)) return null
+    if (isEnoent(error) || isEnotdir(error)) return null
     throw error
   }
 }
@@ -120,7 +120,7 @@ async function* descend(
   try {
     children = await readdir(spec, index)
   } catch (error) {
-    if (isEnoent(error)) return
+    if (isEnoent(error) || isEnotdir(error)) return
     throw error
   }
   for (const child of children) {
@@ -169,7 +169,7 @@ export class ReaddirWalk {
   }
 
   async *walk(root: PathSpec): AsyncGenerator<WalkEntry> {
-    const prefix = mountPrefixOf(root.virtual, root.resourcePath)
+    const prefix = mountPrefixOf(root.virtual, root.vfsPath)
     yield* descend(this.readdir, this.stat, root, new RAMIndexCacheStore(), prefix)
   }
 }

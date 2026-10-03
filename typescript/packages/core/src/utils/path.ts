@@ -60,6 +60,102 @@ export function posixNormpath(path: string): string {
   return joined === '' ? '.' : joined
 }
 
+const DOTS = new Set(['.', '..'])
+
+/**
+ * The absolute spelling of a typed path whose dots a walk proves.
+ *
+ * The kernel resolves `.` and `..` against the directory they sit in, so
+ * every component in front of one has to be a directory, while the textual
+ * simplification a virtual path gets lets `nope/../f` reach `f` past a
+ * missing `nope`. This keeps the spelling a walk needs. A trailing slash is
+ * kept too, since `x/` resolves as `x/.` and so names a directory. Null when
+ * neither follows a named component: a leading climb (`../x`) only walks up
+ * from `base`, a directory already, so the common `cd ..` and `cat ../f`
+ * cost nothing. Mirrors Python's dotted_spelling.
+ */
+export function dottedSpelling(word: string, base = '/'): string | null {
+  const parts = word.split('/').filter((part) => part !== '')
+  let lead = 0
+  while (lead < parts.length && DOTS.has(parts[lead] ?? '')) lead += 1
+  const rest = parts.slice(lead)
+  const slashed = rest.length > 0 && word.endsWith('/') && !DOTS.has(rest[rest.length - 1] ?? '')
+  if (!slashed && !rest.some((part) => DOTS.has(part))) return null
+  const start = resolvePath(
+    parts.slice(0, lead).join('/') || '.',
+    word.startsWith('/') ? '/' : base,
+  )
+  return `${rstripSlash(start)}/${rest.join('/')}${slashed ? '/' : ''}`
+}
+
+/**
+ * The directories a walk of `dotted` has to find, in walk order.
+ *
+ * Whatever stands in front of a `.` or `..` is where it resolves, so it has
+ * to be a directory; each is spelled as the walk has simplified it so far,
+ * and the root, always one, is left out. Mirrors Python's dot_prefixes.
+ */
+export function dotPrefixes(
+  dotted: string,
+  follow: ((path: string) => string) | null = null,
+): string[] {
+  let current = '/'
+  const found: string[] = []
+  for (const part of dotted.split('/').filter((p) => p !== '')) {
+    if (DOTS.has(part)) {
+      if (follow !== null) current = follow(current)
+      if (current !== '/' && !found.includes(current)) found.push(current)
+      if (part === '..') current = parent(current)
+      continue
+    }
+    current = `${rstripSlash(current)}/${part}`
+  }
+  return found
+}
+
+/**
+ * The names a walk of `dotted` enters, each with its spelling in `raw`.
+ *
+ * What `mkdir -p` creates on the way and names when it cannot: GNU makes each
+ * component as it reaches it, so `mkdir -p nope/../m` leaves `nope` behind as
+ * well as `m`, and a plain file in the way is quoted as the operand spells it
+ * (`'a.txt'`, not the absolute path). Only the typed components are entered:
+ * the directory a relative word starts from is there already. Mirrors
+ * Python's walk_nodes.
+ */
+export function walkNodes(
+  dotted: string,
+  raw: string,
+  follow: ((path: string) => string) | null = null,
+): [string, string][] {
+  const typed = raw.split('/').filter((part) => part !== '')
+  let lead = 0
+  while (lead < typed.length && DOTS.has(typed[lead] ?? '')) lead += 1
+  const parts = dotted.split('/').filter((part) => part !== '')
+  const start = parts.slice(0, parts.length - (typed.length - lead))
+  let current = `/${start.join('/')}`
+  const head = raw.startsWith('/') ? '/' : ''
+  const entered: [string, string][] = []
+  for (let index = lead; index < typed.length - 1; index++) {
+    const part = typed[index] ?? ''
+    if (DOTS.has(part)) {
+      if (follow !== null) {
+        try {
+          current = follow(current)
+        } catch (err) {
+          if (!(err instanceof CycleError)) throw err
+          return entered
+        }
+      }
+      if (part === '..') current = parent(current)
+      continue
+    }
+    current = `${rstripSlash(current)}/${part}`
+    entered.push([current, head + typed.slice(0, index + 1).join('/')])
+  }
+  return entered
+}
+
 export function expandTilde(word: string, home: string | null): string {
   if (home === null) return word
   if (word === '~') return home
@@ -82,10 +178,10 @@ export function respellRaw(paths: string[], virtual: string, raw: string): strin
 // where a path belongs. Mirrors Python's drop_trailing_segments.
 export function dropTrailingSegments(path: string, count: number): string {
   if (count <= 0) return path
-  const parts = rstripSlash(path).split('/')
-  if (count >= parts.filter((part) => part !== '').length) return path
-  const joined = parts.slice(0, parts.length - count).join('/')
-  return joined === '' ? '/' : joined
+  if (count >= path.split('/').filter((part) => part !== '').length) return path
+  let head = rstripSlash(path)
+  for (let i = 0; i < count; i++) head = rstripSlash(head.slice(0, head.lastIndexOf('/')))
+  return head === '' ? '/' : head
 }
 
 export function respellOne(path: string, virtual: string, raw: string): string {
@@ -139,33 +235,29 @@ export class CycleError extends Error {
   }
 }
 
-function isLinkPrefix(key: string, path: string): boolean {
-  return path === key || path.startsWith(key + '/')
-}
-
-// Follow the symlink table over a whole-path lookup: repeatedly substitute the
-// longest link prefix that matches `path` until no link applies, resolving
-// relative targets lazily against the link's own parent. Throws CycleError
-// once the hop count is exceeded (POSIX ELOOP).
 export function resolveSymlinks(path: string, links: Map<string, string>): string {
-  if (links.size === 0) return path
-  for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
-    let best: string | null = null
-    let bestTarget = ''
-    for (const [key, value] of links) {
-      if (isLinkPrefix(key, path) && (best === null || key.length > best.length)) {
-        best = key
-        bestTarget = value
-      }
+  const pending = path.split('/').reverse()
+  const resolved: string[] = []
+  let hops = 0
+  while (pending.length > 0) {
+    const part = pending.pop() ?? ''
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      resolved.pop()
+      continue
     }
-    if (best === null) return path
-    let target = bestTarget
-    if (!target.startsWith('/')) {
-      target = norm(parent(best) + '/' + target)
+    const candidate = '/' + [...resolved, part].join('/')
+    const target = links.get(candidate)
+    if (target === undefined) {
+      resolved.push(part)
+      continue
     }
-    path = target + path.slice(best.length)
+    if (++hops > MAX_SYMLINK_HOPS) throw new CycleError(path)
+    if (target.startsWith('/')) resolved.length = 0
+    pending.push(...target.split('/').reverse())
   }
-  throw new CycleError(path)
+  const suffix = resolved.length > 0 && path.endsWith('/') ? '/' : ''
+  return '/' + resolved.join('/') + suffix
 }
 
 export function gnuBasename(path: string, suffix?: string): string {

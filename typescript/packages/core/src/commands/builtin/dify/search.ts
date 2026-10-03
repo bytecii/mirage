@@ -12,74 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountPrefixOf } from '../../../utils/key_prefix.ts'
-import type { DifyAccessor } from '../../../accessor/dify.ts'
-import { searchSegments } from '../../../core/dify/search.ts'
-import { resolveGlobOf } from '../generic_bind/index.ts'
-import { DIFY_IO } from './io.ts'
-import { IOResult } from '../../../io/types.ts'
-import type { PathSpec } from '../../../types.ts'
-import { ResourceName } from '../../../types.ts'
-import { rstripSlash } from '../../../utils/slash.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
-import { specOf } from '../../spec/builtins.ts'
-import { defaultPaths } from '../utils/operands.ts'
-import { FlagView } from '../../spec/types.ts'
+import { VFSName } from '../../../types.ts'
+import { makeSearch } from '../generic/search.ts'
+import { IO } from './io.ts'
 
-const resolveGlob = resolveGlobOf(DIFY_IO)
-
-const ENC = new TextEncoder()
-
-function isMountRoot(path: PathSpec): boolean {
-  let root =
-    mountPrefixOf(path.virtual, path.resourcePath) !== ''
-      ? rstripSlash(mountPrefixOf(path.virtual, path.resourcePath))
-      : '/'
-  root = root !== '' ? root : '/'
-  const value = rstripSlash(path.virtual) !== '' ? rstripSlash(path.virtual) : '/'
-  return value === '/' || value === root
-}
-
-async function searchCommand(
-  accessor: DifyAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const query = texts[0]
-  if (query === undefined || query === '') {
-    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode('search: query is required\n') })]
-  }
-  const index = opts.index ?? undefined
-  const targetPaths = defaultPaths(paths, opts.cwd, opts.mountPrefix ?? '')
-  const mountPrefix =
-    (targetPaths[0] === undefined
-      ? undefined
-      : mountPrefixOf(targetPaths[0].virtual, targetPaths[0].resourcePath)) ?? ''
-  const resolvedPaths = targetPaths.some(isMountRoot)
-    ? []
-    : await resolveGlob(accessor, targetPaths, index)
-  const fl = new FlagView(opts.flags, specOf('search'))
-  const method = fl.asStr('method') ?? 'semantic'
-  const topK = fl.asInt('top_k') ?? 10
-  const threshold = fl.asFloat('threshold') ?? 0
-  try {
-    const out = await searchSegments(accessor, query, resolvedPaths, index, {
-      method,
-      topK,
-      threshold,
-      mountPrefix,
-    })
-    return [out, new IOResult()]
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-  }
-}
-
-export const DIFY_SEARCH = command({
-  name: 'search',
-  resource: ResourceName.DIFY,
-  spec: specOf('search'),
-  fn: searchCommand,
-})
+export const DIFY_SEARCH = makeSearch(VFSName.DIFY, IO.search, (fl) => ({
+  top_k: fl.asInt('top_k') ?? 10,
+  method: fl.asStr('method') ?? 'semantic',
+  threshold: fl.asFloat('threshold') ?? 0,
+}))

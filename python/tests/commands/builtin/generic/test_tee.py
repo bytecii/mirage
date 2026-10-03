@@ -1,9 +1,12 @@
+import errno
+
 import pytest
 
 from mirage.commands.builtin.generic.tee import TeeFlags, parse_flags, tee
-from mirage.commands.spec import SPECS, parse_command
 from mirage.io.stream import materialize
-from mirage.types import PathSpec
+from mirage.types import FileStat, FileType, MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
+from mirage.workspace import Workspace
 
 
 def _spec(path: str) -> PathSpec:
@@ -19,138 +22,6 @@ class _SdkError(Exception):
     The TypeScript sink rejects with a plain ``Error`` for the same
     reason, so both suites drive the loop with a non-filesystem failure.
     """
-
-
-def test_parse_flags_append_short_and_long():
-    assert parse_flags({"append": True}) == TeeFlags(append=True)
-
-
-def test_parse_flags_i_and_p_are_noops():
-    assert parse_flags({
-        "ignore_interrupts": True,
-        "p": True
-    }) == TeeFlags(append=False)
-
-
-def test_parse_flags_reads_the_exit_warn_axis():
-    # Value validation lives in the spec's choices=. Only the exit/warn
-    # axis is observable here: the -nopipe half distinguishes a pipe sink
-    # from a file sink, and every operand tee writes is a file.
-    for mode in ("warn", "warn-nopipe"):
-        assert parse_flags({"output_error":
-                            mode}) == TeeFlags(stop_on_error=False)
-    for mode in ("exit", "exit-nopipe"):
-        assert parse_flags({"output_error":
-                            mode}) == TeeFlags(stop_on_error=True)
-
-
-def test_a_bare_output_error_means_warn():
-    # GNU 9.7.
-    assert parse_flags({"output_error": True}) == TeeFlags(stop_on_error=False)
-
-
-def test_bad_output_error_mode_is_reported_by_the_parser():
-    parsed = parse_command(SPECS["tee"], ["--output-error=bogus", "/f.txt"],
-                           cwd="/")
-    assert parsed.invalid_value_options == [
-        ("--output-error", "bogus", ("warn", "warn-nopipe", "exit",
-                                     "exit-nopipe")),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_write_error_passes_stdout_and_exits_one():
-
-    async def _write(_p, _d):
-        raise OSError("disk full")
-
-    async def _read(_p):
-        if False:
-            yield b""
-
-    source, io = await tee([_spec("/out.txt")], (),
-                           read_stream=_read,
-                           write_bytes=_write,
-                           stdin=b"hello",
-                           flags={})
-    # GNU tee still copies stdin to stdout on a write error.
-    assert await materialize(source) == b"hello"
-    assert io.exit_code == 1
-    assert await materialize(io.stderr) == b"tee: /out.txt: disk full\n"
-    assert not io.writes
-
-
-@pytest.mark.asyncio
-async def test_an_sdk_write_failure_is_diagnosed_not_raised():
-    # Narrowing the catch to OSError let one unreachable operand abort the
-    # whole command on every remote backend, because none of their SDK
-    # error classes is an OSError.
-
-    async def _write(_p, _d):
-        raise _SdkError("An error occurred (AccessDenied)")
-
-    async def _read(_p):
-        if False:
-            yield b""
-
-    source, io = await tee([_spec("/a.txt"), _spec("/b.txt")], (),
-                           read_stream=_read,
-                           write_bytes=_write,
-                           stdin=b"hello",
-                           flags={})
-    assert await materialize(source) == b"hello"
-    assert io.exit_code == 1
-    assert await materialize(
-        io.stderr) == (b"tee: /a.txt: An error occurred (AccessDenied)\n"
-                       b"tee: /b.txt: An error occurred (AccessDenied)\n")
-
-
-@pytest.mark.asyncio
-async def test_unusable_destination_reports_the_gnu_strerror():
-    # A recognized filesystem refusal carries only the path as its message,
-    # so the strerror has to come from the shared table (GNU:
-    # "tee: X: No such file or directory"). A transport error keeps its own
-    # message instead, which the test above pins.
-
-    async def _write(p, _d):
-        raise FileNotFoundError(p.virtual)
-
-    async def _read(_p):
-        if False:
-            yield b""
-
-    source, io = await tee([_spec("/nodir/out.txt")], (),
-                           read_stream=_read,
-                           write_bytes=_write,
-                           stdin=b"hello",
-                           flags={})
-    assert await materialize(source) == b"hello"
-    assert io.exit_code == 1
-    assert await materialize(
-        io.stderr) == (b"tee: /nodir/out.txt: No such file or directory\n")
-
-
-@pytest.mark.asyncio
-async def test_writes_stdin_and_reports_cache():
-    written = {}
-
-    async def _write(p, d):
-        written[p.mount_path] = d
-
-    async def _read(_p):
-        if False:
-            yield b""
-
-    source, io = await tee([_spec("/out.txt")], (),
-                           read_stream=_read,
-                           write_bytes=_write,
-                           stdin=b"hello",
-                           flags={})
-    assert await materialize(source) == b"hello"
-    assert io.exit_code == 0
-    assert written["/out.txt"] == b"hello"
-    assert io.writes == {"/out.txt": b"hello"}
-    assert io.cache == ["/out.txt"]
 
 
 def _sink(fail: frozenset[str] = frozenset()):
@@ -169,21 +40,69 @@ async def _empty(_p):
         yield b""
 
 
+def test_parse_flags_reads_the_exit_warn_axis():
+    # Value validation lives in the spec's choices=. Only the exit/warn
+    # axis is observable here: the -nopipe half distinguishes a pipe sink
+    # from a file sink, and every operand tee writes is a file.
+    for mode in ("warn", "warn-nopipe"):
+        assert parse_flags({"output_error": mode}) == TeeFlags(
+            stop_on_error=False
+        )
+    for mode in ("exit", "exit-nopipe"):
+        assert parse_flags({"output_error": mode}) == TeeFlags(
+            stop_on_error=True
+        )
+
+
+def test_a_bare_output_error_means_warn():
+    # GNU 9.7.
+    assert parse_flags({"output_error": True}) == TeeFlags(stop_on_error=False)
+
+
 @pytest.mark.asyncio
-async def test_every_operand_is_written():
+@pytest.mark.parametrize(
+    "error",
+    [OSError("disk full"), _SdkError("An error occurred (AccessDenied)")],
+)
+async def test_a_write_error_is_diagnosed_and_stdout_still_copied(error):
+
+    async def _write(_p, _d):
+        raise error
+
+    source, io = await tee(
+        [_spec("/a.txt"), _spec("/b.txt")],
+        (),
+        read_stream=_empty,
+        write_bytes=_write,
+        stdin=b"hello",
+        flags={},
+    )
+    assert await materialize(source) == b"hello"
+    assert io.exit_code == 1
+    assert await materialize(io.stderr) == (
+        f"tee: /a.txt: {error}\ntee: /b.txt: {error}\n".encode()
+    )
+    assert not io.writes
+
+
+@pytest.mark.asyncio
+async def test_every_operand_is_written_and_reported():
     # GNU 9.7: `printf x | tee a b c` puts x in all three. Both generics
     # used to write paths[0] and silently drop the rest, while the spec
     # declared a variadic rest operand.
     written, write = _sink()
     source, io = await tee(
-        [_spec("/a"), _spec("/b"), _spec("/c")], (),
+        [_spec("/a"), _spec("/b"), _spec("/c")],
+        (),
         read_stream=_empty,
         write_bytes=write,
         stdin=b"hi",
-        flags={})
+        flags={},
+    )
     assert written == {"/a": b"hi", "/b": b"hi", "/c": b"hi"}
     assert await materialize(source) == b"hi"
     assert io.exit_code == 0
+    assert io.writes == {"/a": b"hi", "/b": b"hi", "/c": b"hi"}
     assert io.cache == ["/a", "/b", "/c"]
 
 
@@ -192,11 +111,13 @@ async def test_one_bad_operand_does_not_stop_the_others():
     # GNU pins: `tee p bad q` writes p and q, diagnoses bad, exits 1.
     written, write = _sink(frozenset({"/bad"}))
     source, io = await tee(
-        [_spec("/p"), _spec("/bad"), _spec("/q")], (),
+        [_spec("/p"), _spec("/bad"), _spec("/q")],
+        (),
         read_stream=_empty,
         write_bytes=write,
         stdin=b"x",
-        flags={})
+        flags={},
+    )
     assert written == {"/p": b"x", "/q": b"x"}
     assert io.exit_code == 1
     assert await materialize(io.stderr) == b"tee: /bad: disk full\n"
@@ -207,43 +128,110 @@ async def test_one_bad_operand_does_not_stop_the_others():
 async def test_output_error_exit_stops_at_the_first_failure():
     written, write = _sink(frozenset({"/bad"}))
     _source, io = await tee(
-        [_spec("/p"), _spec("/bad"), _spec("/q")], (),
+        [_spec("/p"), _spec("/bad"), _spec("/q")],
+        (),
         read_stream=_empty,
         write_bytes=write,
         stdin=b"x",
-        flags={"output_error": "exit"})
+        flags={"output_error": "exit"},
+    )
     assert written == {"/p": b"x"}
     assert io.exit_code == 1
 
 
 @pytest.mark.asyncio
-async def test_each_failing_operand_is_diagnosed():
-    _written, write = _sink(frozenset({"/b1", "/b2"}))
-    _source, io = await tee([_spec("/b1"), _spec("/b2")], (),
-                            read_stream=_empty,
-                            write_bytes=write,
-                            stdin=b"x",
-                            flags={})
-    assert await materialize(io.stderr
-                             ) == b"tee: /b1: disk full\ntee: /b2: disk full\n"
+async def test_an_output_that_fails_to_empty_is_the_one_reported():
+    written, write = _sink(frozenset({"/denied"}))
+
+    async def _stat(p: PathSpec) -> FileStat:
+        kind = FileType.DIRECTORY if p.virtual == "/dir" else FileType.FILE
+        return FileStat(name=p.virtual[1:], type=kind)
+
+    source, io = await tee(
+        [_spec("/good"), _spec("/denied"), _spec("/dir")],
+        (),
+        read_stream=_empty,
+        write_bytes=write,
+        stdin=b"x",
+        flags={"output_error": "exit"},
+        stat=_stat,
+    )
+    assert source is None
+    assert written == {"/good": b""}
+    assert (io.writes, io.cache) == ({"/good": b""}, ["/good"])
     assert io.exit_code == 1
+    assert await materialize(io.stderr) == b"tee: /denied: disk full\n"
 
 
 @pytest.mark.asyncio
-async def test_append_to_a_missing_file_creates_it():
+async def test_a_refused_probe_leaves_the_open_to_the_write():
     written, write = _sink()
 
-    async def _missing(p):
-        raise FileNotFoundError(p.virtual)
-        yield b""
+    async def _stat(p: PathSpec) -> FileStat:
+        if p.virtual == "/locked":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return FileStat(name=p.virtual[1:], type=FileType.FILE)
 
-    _source, io = await tee([_spec("/new")], (),
-                            read_stream=_missing,
-                            write_bytes=write,
-                            stdin=b"hi",
-                            flags={"append": True})
-    assert written == {"/new": b"hi"}
+    source, io = await tee(
+        [_spec("/good"), _spec("/locked")],
+        (),
+        read_stream=_empty,
+        write_bytes=write,
+        stdin=b"x",
+        flags={"output_error": "exit"},
+        stat=_stat,
+    )
+    assert await materialize(source) == b"x"
+    assert written == {"/good": b"x", "/locked": b"x"}
     assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outputs,append,refused,written,stderr",
+    [
+        (
+            ["/good", "/locked"],
+            False,
+            {"/locked"},
+            {"/good": b""},
+            b"tee: /locked: disk full\n",
+        ),
+        (
+            ["/locked", "/gone/x"],
+            True,
+            set(),
+            {"/locked": b""},
+            b"tee: /gone/x: No such file or directory\n",
+        ),
+        (["/bad", "/locked"], False, {"/bad"}, {}, b"tee: /bad: disk full\n"),
+    ],
+)
+async def test_an_unprobed_output_is_opened_in_order_before_any_data(
+    outputs, append, refused, written, stderr
+):
+    sunk, write = _sink(frozenset(refused))
+
+    async def _stat(p: PathSpec) -> FileStat:
+        if p.virtual == "/locked":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        if p.virtual.startswith("/gone"):
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory")
+        return FileStat(name=p.virtual[1:], type=FileType.FILE)
+
+    source, io = await tee(
+        [_spec(o) for o in outputs],
+        (),
+        read_stream=_empty,
+        write_bytes=write,
+        stdin=b"x",
+        flags={"output_error": "exit", "append": append},
+        stat=_stat,
+    )
+    assert source is None
+    assert sunk == written
+    assert io.exit_code == 1
+    assert await materialize(io.stderr) == stderr
 
 
 @pytest.mark.asyncio
@@ -254,12 +242,15 @@ async def test_a_native_append_skips_the_read_modify_write():
     async def _append(p, d):
         appended[p.mount_path] = d
 
-    _source, io = await tee([_spec("/n")], (),
-                            read_stream=_empty,
-                            write_bytes=write,
-                            append_bytes=_append,
-                            stdin=b"add",
-                            flags={"append": True})
+    _source, io = await tee(
+        [_spec("/n")],
+        (),
+        read_stream=_empty,
+        write_bytes=write,
+        append_bytes=_append,
+        stdin=b"add",
+        flags={"append": True},
+    )
     assert appended == {"/n": b"add"}
     assert written == {}
     # Listed as written but not as cacheable: the resulting content is not
@@ -275,10 +266,35 @@ async def test_without_a_native_append_it_reads_and_rewrites():
     async def _old(_p):
         yield b"old"
 
-    _source, io = await tee([_spec("/n")], (),
-                            read_stream=_old,
-                            write_bytes=write,
-                            stdin=b"add",
-                            flags={"append": True})
+    _source, io = await tee(
+        [_spec("/n")],
+        (),
+        read_stream=_old,
+        write_bytes=write,
+        stdin=b"add",
+        flags={"append": True},
+    )
     assert written == {"/n": b"oldadd"}
     assert io.cache == ["/n"]
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_mount_runs_tee_and_refuses_its_file_operand():
+    # With no operand tee only copies stdin to stdout, so a read-only cwd
+    # runs it like any reader. With one, the copy still reaches stdout and
+    # the file is refused at its write, as GNU tee reports it.
+    vfs = RAMVFS()
+    ws = Workspace({"/ro/": (vfs, MountMode.READ)})
+    bare = await ws.shell("cd /ro && tee", stdin=b"x\n")
+    assert (bare.exit_code, await bare.materialize_stdout(), bare.stderr) == (
+        0,
+        b"x\n",
+        None,
+    )
+    named = await ws.shell("tee /ro/out.txt", stdin=b"x\n")
+    assert (
+        named.exit_code,
+        await named.materialize_stdout(),
+        named.stderr,
+    ) == (1, b"x\n", b"tee: /ro/out.txt: Read-only file system\n")
+    assert vfs._store.files == {}

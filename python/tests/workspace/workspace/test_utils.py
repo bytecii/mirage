@@ -14,30 +14,28 @@
 
 import pytest
 
-from mirage.resource.history import HISTORY_PREFIX
-from mirage.workspace.session.session import Session, vars_from_env
-from mirage.workspace.workspace.utils import (command_name, fork_for_call,
-                                              infrastructure_prefixes)
+from mirage.workspace.session.session import SessionState, vars_from_env
+from mirage.workspace.workspace.utils import command_name, fork_for_call
 
 
-@pytest.mark.parametrize("line,expected", [
-    ("ls -la /tmp", "ls"),
-    ("  ls  ", "ls"),
-    ("", ""),
-    ("   ", ""),
-    ("\tcat\tfile", "cat"),
-])
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("ls -la /tmp", "ls"),
+        ("  ls  ", "ls"),
+        ("", ""),
+        ("   ", ""),
+        ("\tcat\tfile", "cat"),
+    ],
+)
 def test_command_name_reads_the_leading_word(line, expected):
     assert command_name(line) == expected
 
 
-def _session() -> Session:
-    return Session(session_id="s1",
-                   cwd="/home",
-                   vars=vars_from_env({
-                       "A": "1",
-                       "B": "2"
-                   }))
+def _session() -> SessionState:
+    return SessionState(
+        session_id="s1", cwd="/home", vars=vars_from_env({"A": "1", "B": "2"})
+    )
 
 
 def test_no_overrides_reuses_the_persistent_session():
@@ -56,13 +54,18 @@ def test_cwd_override_forks_without_touching_the_original():
 def test_env_override_layers_on_top_of_the_session_env():
     session = _session()
     forked = fork_for_call(session, None, {"B": "9", "C": "3"})
-    assert forked.env == {"A": "1", "B": "9", "C": "3", "PWD": "/home"}
-    assert session.env == {"A": "1", "B": "2", "PWD": "/home"}
-
-
-def test_infrastructure_prefixes_excludes_a_user_defined_root():
-    assert infrastructure_prefixes(False) == {"/dev", HISTORY_PREFIX}
-
-
-def test_infrastructure_prefixes_includes_the_implicit_root():
-    assert infrastructure_prefixes(True) == {"/dev", HISTORY_PREFIX, "/"}
+    assert forked.env == {
+        "A": "1",
+        "B": "9",
+        "C": "3",
+        "PWD": "/home",
+        "PATH": "/usr/bin",
+        "IFS": " \t\n",
+    }
+    assert session.env == {
+        "A": "1",
+        "B": "2",
+        "PWD": "/home",
+        "PATH": "/usr/bin",
+        "IFS": " \t\n",
+    }

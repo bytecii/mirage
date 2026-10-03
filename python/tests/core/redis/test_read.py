@@ -19,16 +19,16 @@ import pytest_asyncio
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.core.redis.read import read_bytes
-from mirage.resource.redis.store import RedisStore
 from mirage.types import PathSpec
+from mirage.vfs.redis.store import RedisStore
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
 
 
 @pytest_asyncio.fixture()
-async def accessor():
-    s = RedisStore(url=REDIS_URL, key_prefix="test:read:")
+async def accessor(redis_prefix):
+    s = RedisStore(url=REDIS_URL, key_prefix=redis_prefix)
     await s.clear()
     await s.add_dir("/")
     await s.add_dir("/sub")
@@ -44,9 +44,10 @@ async def accessor():
 async def test_read_bytes(accessor):
     result = await read_bytes(
         accessor,
-        PathSpec(resource_path="hello.txt",
-                 virtual="/hello.txt",
-                 directory="/hello.txt"))
+        PathSpec(
+            vfs_path="hello.txt", virtual="/hello.txt", directory="/hello.txt"
+        ),
+    )
     assert result == b"hello world"
 
 
@@ -54,9 +55,12 @@ async def test_read_bytes(accessor):
 async def test_read_bytes_nested(accessor):
     result = await read_bytes(
         accessor,
-        PathSpec(resource_path="sub/nested.txt",
-                 virtual="/sub/nested.txt",
-                 directory="/sub/nested.txt"))
+        PathSpec(
+            vfs_path="sub/nested.txt",
+            virtual="/sub/nested.txt",
+            directory="/sub/nested.txt",
+        ),
+    )
     assert result == b"nested"
 
 
@@ -65,51 +69,53 @@ async def test_read_bytes_not_found(accessor):
     with pytest.raises(FileNotFoundError):
         await read_bytes(
             accessor,
-            PathSpec(resource_path="nope.txt",
-                     virtual="/nope.txt",
-                     directory="/nope.txt"))
+            PathSpec(
+                vfs_path="nope.txt", virtual="/nope.txt", directory="/nope.txt"
+            ),
+        )
 
 
 @pytest.mark.asyncio
-async def test_read_bytes_empty_file():
-    s = RedisStore(url=REDIS_URL, key_prefix="test:read:e:")
+async def test_read_bytes_empty_file(redis_prefix):
+    s = RedisStore(url=REDIS_URL, key_prefix=f"{redis_prefix}e:")
     await s.clear()
     await s.set_file("/empty", b"")
     a = RedisAccessor(s)
     result = await read_bytes(
-        a, PathSpec(resource_path="empty",
-                    virtual="/empty",
-                    directory="/empty"))
+        a, PathSpec(vfs_path="empty", virtual="/empty", directory="/empty")
+    )
     assert result == b""
     await s.clear()
     await s.close()
 
 
 @pytest.mark.asyncio
-async def test_read_bytes_binary_data():
-    s = RedisStore(url=REDIS_URL, key_prefix="test:read:b:")
+async def test_read_bytes_binary_data(redis_prefix):
+    s = RedisStore(url=REDIS_URL, key_prefix=f"{redis_prefix}b:")
     await s.clear()
     data = bytes(range(256))
     await s.set_file("/bin", data)
     a = RedisAccessor(s)
     result = await read_bytes(
-        a, PathSpec(resource_path="bin", virtual="/bin", directory="/bin"))
+        a, PathSpec(vfs_path="bin", virtual="/bin", directory="/bin")
+    )
     assert result == data
     await s.clear()
     await s.close()
 
 
 @pytest.mark.asyncio
-async def test_read_bytes_normalizes_path():
-    s = RedisStore(url=REDIS_URL, key_prefix="test:read:n:")
+async def test_read_bytes_normalizes_path(redis_prefix):
+    s = RedisStore(url=REDIS_URL, key_prefix=f"{redis_prefix}n:")
     await s.clear()
     await s.set_file("/file.txt", b"data")
     a = RedisAccessor(s)
     result = await read_bytes(
         a,
-        PathSpec(resource_path="file.txt",
-                 virtual="file.txt",
-                 directory="file.txt"))
+        PathSpec(
+            vfs_path="file.txt", virtual="file.txt", directory="file.txt"
+        ),
+    )
     assert result == b"data"
     await s.clear()
     await s.close()
@@ -118,32 +124,69 @@ async def test_read_bytes_normalizes_path():
 @pytest.mark.asyncio
 async def test_read_bytes_window_uses_getrange(accessor):
     """A window is sliced by redis, and the bounds are inclusive."""
-    spec = PathSpec(resource_path="hello.txt",
-                    virtual="/hello.txt",
-                    directory="/hello.txt")
-    assert await read_bytes(accessor, offset=6, size=5,
-                            path_spec=spec) == b"world"
-    assert await read_bytes(accessor, offset=6, size=None,
-                            path_spec=spec) == b"world"
-    assert await read_bytes(accessor, offset=0, size=5,
-                            path_spec=spec) == b"hello"
+    spec = PathSpec(
+        vfs_path="hello.txt", virtual="/hello.txt", directory="/hello.txt"
+    )
+    assert (
+        await read_bytes(accessor, offset=6, size=5, path_spec=spec)
+        == b"world"
+    )
+    assert (
+        await read_bytes(accessor, offset=6, size=None, path_spec=spec)
+        == b"world"
+    )
+    assert (
+        await read_bytes(accessor, offset=0, size=5, path_spec=spec)
+        == b"hello"
+    )
 
 
 @pytest.mark.asyncio
 async def test_read_bytes_window_past_eof_is_empty(accessor):
-    spec = PathSpec(resource_path="hello.txt",
-                    virtual="/hello.txt",
-                    directory="/hello.txt")
+    spec = PathSpec(
+        vfs_path="hello.txt", virtual="/hello.txt", directory="/hello.txt"
+    )
     assert await read_bytes(accessor, offset=99, size=5, path_spec=spec) == b""
+
+
+@pytest.mark.asyncio
+async def test_read_bytes_zero_length_is_empty_and_preserves_missing(
+    redis_prefix,
+):
+    store = RedisStore(url=REDIS_URL, key_prefix=redis_prefix)
+    try:
+        await store.set_file("/data", b"payload")
+        await store.set_file("/empty", b"")
+        accessor = RedisAccessor(store)
+        data = PathSpec(vfs_path="data", virtual="/data", directory="/data")
+        empty = PathSpec(
+            vfs_path="empty", virtual="/empty", directory="/empty"
+        )
+        missing = PathSpec(
+            vfs_path="missing", virtual="/missing", directory="/missing"
+        )
+        assert await read_bytes(accessor, data, offset=0, size=0) == b""
+        assert await read_bytes(accessor, data, offset=4, size=0) == b""
+        assert await read_bytes(accessor, empty, offset=0, size=0) == b""
+        assert await read_bytes(accessor, empty, offset=4, size=0) == b""
+        with pytest.raises(FileNotFoundError):
+            await read_bytes(accessor, missing, offset=0, size=0)
+        with pytest.raises(FileNotFoundError):
+            await read_bytes(accessor, missing, offset=4, size=0)
+    finally:
+        await store.clear()
+        await store.close()
 
 
 @pytest.mark.asyncio
 async def test_read_bytes_window_on_a_missing_key_still_raises(accessor):
     """GETRANGE answers "" for a missing key, so EXISTS decides absence."""
     with pytest.raises(FileNotFoundError):
-        await read_bytes(accessor,
-                         PathSpec(resource_path="nope.txt",
-                                  virtual="/nope.txt",
-                                  directory="/nope.txt"),
-                         offset=1,
-                         size=2)
+        await read_bytes(
+            accessor,
+            PathSpec(
+                vfs_path="nope.txt", virtual="/nope.txt", directory="/nope.txt"
+            ),
+            offset=1,
+            size=2,
+        )

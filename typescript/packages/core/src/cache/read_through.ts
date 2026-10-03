@@ -48,8 +48,7 @@ async function serveBytes(
   produce: () => Promise<Uint8Array>,
 ): Promise<Uint8Array> {
   if (manager !== null && path instanceof PathSpec) {
-    const cached = await manager.cachedBytes(path)
-    if (cached !== null) return cached
+    return manager.readThrough(path, produce)
   }
   return produce()
 }
@@ -69,8 +68,9 @@ export function cacheAwareReadStream<A extends Accessor>(raw: OpStream<A>): OpSt
 
 /** Wrap a backend `readBytes` op (factory shape) for warm read-through. */
 export function cacheAwareReadBytes<A extends Accessor>(raw: OpBytes<A>): OpBytes<A> {
+  const manager = activeCacheManager()
   return (accessor, path, index) =>
-    serveBytes(activeCacheManager(), path, () => raw(accessor, path, index))
+    serveBytes(manager ?? activeCacheManager(), path, () => raw(accessor, path, index))
 }
 
 /**
@@ -100,13 +100,3 @@ export function cacheAwareStreamEager(raw: PathStream): PathStream {
  * range-read fast path (e.g. `head -c N`) serve from a fully cached file
  * without a partial backend fetch. `n = null` returns the whole cached blob.
  */
-export async function cachedPrefixBytes(
-  path: PathSpec,
-  n: number | null,
-): Promise<Uint8Array | null> {
-  const manager = activeCacheManager()
-  if (manager === null || !(path instanceof PathSpec)) return null
-  const cached = await manager.cachedBytes(path)
-  if (cached === null) return null
-  return n === null ? cached : cached.slice(0, n)
-}

@@ -18,7 +18,7 @@ import * as browserPkg from './index.ts'
 describe('@struktoai/mirage-browser barrel exports', () => {
   it('re-exports core symbols', () => {
     expect(browserPkg.MountMode).toBeDefined()
-    expect(browserPkg.RAMResource).toBeDefined()
+    expect(browserPkg.RAMVFS).toBeDefined()
     expect(browserPkg.OpsRegistry).toBeDefined()
     expect(browserPkg.PathSpec).toBeDefined()
   })
@@ -28,9 +28,27 @@ describe('@struktoai/mirage-browser barrel exports', () => {
     expect(typeof browserPkg.Workspace).toBe('function')
   })
 
-  it('exports OPFSResource', () => {
-    expect(browserPkg.OPFSResource).toBeDefined()
-    expect(typeof browserPkg.OPFSResource).toBe('function')
+  it('registers E2B only after importing its core subpath', async () => {
+    expect(browserPkg).not.toHaveProperty('E2BRuntime')
+    expect(browserPkg.knownRuntimes()).not.toContain('e2b')
+    const { E2BRuntime } = await import('@struktoai/mirage-core/runtime/sandbox/e2b/runtime')
+    expect(browserPkg.knownRuntimes()).toContain('e2b')
+    const workspace = new browserPkg.Workspace(
+      {},
+      {
+        runtimes: [
+          new E2BRuntime({ captures: ['python3'], config: { sandboxId: 'test' } }),
+          'workspace',
+        ],
+      },
+    )
+    expect(workspace).toBeInstanceOf(browserPkg.Workspace)
+    await workspace.close()
+  })
+
+  it('exports OPFSVFS', () => {
+    expect(browserPkg.OPFSVFS).toBeDefined()
+    expect(typeof browserPkg.OPFSVFS).toBe('function')
   })
 
   it('exports OPFS_OPS array', () => {

@@ -175,6 +175,102 @@
         "stdout": "/data/guard/g.txt\n/data/guard/sub/g.txt\n/data/guard/sub/s.txt\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "guard_cp_slashed_under_missing_parent",
+      "seq": 637,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "cp /data/guard/g.txt /data/guard/nodir/missing/",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cp: cannot create regular file '/data/guard/nodir/missing/': No such file or directory\n"
+      }
+    },
+    {
+      "id": "guard_cp_dir_to_slashed_missing",
+      "seq": 638,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "cp -r /data/guard/sub /data/guard/copied/ && test -f /data/guard/copied/s.txt && rm -r /data/guard/copied",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "guard_cp_refusals_name_operands_as_typed",
+      "seq": 639,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "(cd /data && mkdir -p r10g/s && cp a.txt a.txt; echo rc=$?; cp -r r10g r10g/s; echo rc=$?; cp -r r10g a.txt; echo rc=$?; cp r10g r10gx; echo rc=$?; rm -r r10g)",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nrc=1\nrc=1\nrc=1\n",
+        "stderr": "cp: 'a.txt' and 'a.txt' are the same file\ncp: cannot copy a directory, 'r10g', into itself, 'r10g/s/r10g'\ncp: cannot overwrite non-directory 'a.txt' with directory 'r10g'\ncp: -r not specified; omitting directory 'r10g'\n"
+      }
     }
   ]
 }

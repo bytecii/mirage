@@ -16,11 +16,11 @@ from mirage.commands.cli.types import CLIInvocation
 from mirage.core.notion.config import NotionConfig
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
-from mirage.resource.secrets import reveal_secret
+from mirage.vfs.secrets import reveal_secret
 
 
 async def token(
-        inv: CLIInvocation[NotionConfig]
+    inv: CLIInvocation[NotionConfig],
 ) -> tuple[ByteSource | None, IOResult]:
     secret = reveal_secret(inv.config.api_key)
     return yield_bytes(f"{secret}\n".encode()), IOResult()

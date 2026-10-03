@@ -23,14 +23,82 @@
         "nextcloud",
         "box"
       ],
-      "command": "rg -v error /data/r4/app.log",
+      "command": "rg -v error /data/r4/app.log; rg -v --no-invert-match error /data/r4/app.log",
       "expect": {
         "exit": 0,
-        "stdout": "warning: low memory\ninfo: all good\nnote: done\n",
+        "stdout": "warning: low memory\ninfo: all good\nnote: done\nerror: disk full\nerror: timeout\n",
         "stderr": ""
       },
       "flags": [
         "v"
+      ]
+    },
+    {
+      "id": "rg_v_keeps_a_carriage_return_in_the_line",
+      "seq": 612140,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "printf 'a\\r\\nb\\r\\n' > /data/rvcrlf.txt; rg -n -v zzz /data/rvcrlf.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "1:a\r\n2:b\r\n",
+        "stderr": ""
+      },
+      "flags": [
+        "v",
+        "n"
+      ]
+    },
+    {
+      "id": "rg_v_does_not_count_a_last_empty_line",
+      "seq": 612141,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "printf 'a\\r\\nb\\r\\n' > /data/rvcrlf.txt; rg -c -v zzz /data/rvcrlf.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      },
+      "flags": [
+        "v",
+        "c"
       ]
     }
   ]

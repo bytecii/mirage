@@ -12,21 +12,29 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from functools import partial
 from typing import Any
 
+from mirage.context import clear_program_invocation, reset_program_invocation
 from mirage.io import IOResult
+from mirage.io.async_line_iterator import share
 from mirage.io.stream import async_chain
 from mirage.io.types import ByteSource
+from mirage.policy.decisions import Decisions
+from mirage.policy.types import HandOff
 from mirage.shell.call_stack import CallStack
+from mirage.shell.console import JobConsole
 from mirage.shell.constants import ERREXIT_EXEMPT_TYPES
-from mirage.shell.errors import ExitSignal
+from mirage.shell.errors import ReturnSignal
+from mirage.shell.job_table import JobTable
 from mirage.shell.variable import ShellVar
 from mirage.types import PathSpec, word_text
-from mirage.workspace.executor.control import ReturnSignal
-from mirage.workspace.executor.statement import (finish_statement,
-                                                 prepend_exit_output)
-from mirage.workspace.executor.types import ExecuteNodeFn
-from mirage.workspace.session import Session
+from mirage.workspace.executor.command.types import ExecuteNodeFn
+from mirage.workspace.executor.control import UNWINDING, carried
+from mirage.workspace.executor.jobs import run_statement
+from mirage.workspace.executor.statement import fd0_binding, finish_statement
+from mirage.workspace.session import SessionState
+from mirage.workspace.session.state import restore_locals
 from mirage.workspace.types import ExecutionNode
 
 
@@ -34,9 +42,14 @@ async def run_shell_function(
     execute_node: ExecuteNodeFn,
     cmd_name: str,
     parts: list[str | PathSpec],
-    session: Session,
+    session: SessionState,
     stdin: ByteSource | None,
     call_stack: CallStack | None,
+    job_table: JobTable | None = None,
+    agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
+    sink: JobConsole | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Run a user-defined shell function's body statement by statement.
 
@@ -50,16 +63,30 @@ async def run_shell_function(
         cmd_name (str): the function's name (already resolved).
         parts (list[str | PathSpec]): classified command words; the
             tail becomes the function's positional arguments as typed.
-        session (Session): session whose env/arrays host the locals.
+        session (SessionState): session whose env/arrays host the locals.
         stdin (ByteSource | None): stdin forwarded to each statement.
         call_stack (CallStack | None): the caller's stack, or a fresh
             one for a top-level call.
+        job_table (JobTable | None): the job plane for a body statement
+            ending in ``&``.
+        agent_id (str | None): agent identity for job bookkeeping.
+        handed (HandOff | None): approval claims inherited by a job.
+        decisions (Decisions | None): ledger that holds those claims.
+        sink (JobConsole | None): where each statement writes as it
+            finishes, None to return the body's output.
     """
     func_body = session.functions[cmd_name]
+    if sink is not None:
+        execute_node = partial(execute_node, sink=sink)
+    # The body's statements read the caller's stdin in turn.
+    stdin = share(stdin)
     cs = call_stack if call_stack is not None else CallStack()
     # Positional args carry the word as typed ($1 stays sub/a.txt).
     text_args = [word_text(p) for p in parts[1:]]
     cs.push(text_args, function_name=cmd_name)
+    outer_names = session.function_names
+    if outer_names is not None:
+        session.function_names = cs.function_names()
     # One stack: a local shadows the whole record, so the caller's
     # value and attributes are saved and put back together.
     saved_locals: dict[str, ShellVar | None] = {}
@@ -69,43 +96,65 @@ async def run_shell_function(
     outer_locals = session._local_vars
     session._local_vars = saved_locals
     session._local_frames.append(saved_locals)
+    # The body is shell code: the builtins it runs are the shell's,
+    # whatever `xargs` or `env` marked the line that called it.
+    marked = clear_program_invocation()
     try:
         all_stdout: list[Any] = []
         merged_io = IOResult()
         last_exec = ExecutionNode(command=cmd_name, exit_code=0)
+        bound = fd0_binding(session)
         for cmd in func_body:
             try:
-                stdout, io, last_exec = await execute_node(
-                    cmd, session, stdin, cs)
-            except ExitSignal as sig:
-                combined = async_chain(*all_stdout) if all_stdout else None
-                raise await prepend_exit_output(sig, combined, merged_io)
+                stdout, io, last_exec = await run_statement(
+                    execute_node,
+                    cmd,
+                    session,
+                    stdin,
+                    bound,
+                    cs,
+                    job_table,
+                    agent_id,
+                    handed,
+                    decisions,
+                )
             except ReturnSignal as sig:
+                if sig.stdout is not None:
+                    all_stdout.append(sig.stdout)
                 if sig.stderr:
                     merged_io = await merged_io.merge(
-                        IOResult(stderr=sig.stderr))
+                        IOResult(stderr=sig.stderr)
+                    )
                 merged_io.exit_code = sig.exit_code
                 break
+            except UNWINDING as sig:
+                raise await carried(
+                    sig,
+                    async_chain(all_stdout) if all_stdout else None,
+                    merged_io,
+                )
             # $? tracks each statement inside the body, so a bare
             # `return` (and mid-function $?) sees the last command.
-            stdout = await finish_statement(stdout, io, session)
+            stdout = await finish_statement(stdout, io, session, cmd)
             if stdout is not None:
                 all_stdout.append(stdout)
             merged_io = await merged_io.merge(io)
-            if (io.exit_code != 0 and session.shell_options.get("errexit")
-                    and cmd.type not in ERREXIT_EXEMPT_TYPES
-                    and not session.errexit_immune):
+            if (
+                io.exit_code != 0
+                and session.shell_options.get("errexit")
+                and cmd.type not in ERREXIT_EXEMPT_TYPES
+                and not session.errexit_immune
+            ):
                 merged_io.exit_code = io.exit_code
                 break
-        combined = async_chain(*all_stdout) if all_stdout else None
+        combined = async_chain(all_stdout) if all_stdout else None
         last_exec.exit_code = merged_io.exit_code
         return combined, merged_io, last_exec
     finally:
+        reset_program_invocation(marked)
         cs.pop()
-        for key, old in saved_locals.items():
-            if old is None:
-                session.vars.pop(key, None)
-            else:
-                session.vars[key] = old
+        if session.function_names is not None:
+            session.function_names = outer_names
+        restore_locals(session, saved_locals)
         session._local_frames.pop()
         session._local_vars = outer_locals

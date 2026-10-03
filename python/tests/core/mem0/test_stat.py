@@ -6,27 +6,26 @@ from mirage.cache.index import RAMIndexCacheStore
 from mirage.core.mem0.read import read
 from mirage.core.mem0.readdir import readdir
 from mirage.core.mem0.stat import stat
-from mirage.resource.mem0.config import Mem0Config
-from mirage.types import FileType, PathSpec
+from mirage.types import ContentType, FileType, PathSpec
+from mirage.vfs.mem0.config import Mem0Config
 
 
 class FakeClient:
-
     def __init__(self):
         self.get_calls = 0
 
     async def get_all(self, options=None):
         return {
-            "count":
-            1,
-            "next":
-            None,
-            "results": [{
-                "id": "aaa",
-                "memory": "x",
-                "created_at": "2026-06-15T00:34:18-07:00",
-                "updated_at": "2026-06-15T00:34:22-07:00"
-            }]
+            "count": 1,
+            "next": None,
+            "results": [
+                {
+                    "id": "aaa",
+                    "memory": "x",
+                    "created_at": "2026-06-15T00:34:18-07:00",
+                    "updated_at": "2026-06-15T00:34:22-07:00",
+                }
+            ],
         }
 
     async def get(self, memory_id):
@@ -35,18 +34,23 @@ class FakeClient:
             "id": memory_id,
             "memory": "x",
             "created_at": "2026-06-15T00:00:00-07:00",
-            "updated_at": "2026-06-15T09:00:00-07:00"
+            "updated_at": "2026-06-15T09:00:00-07:00",
         }
 
 
 class CreatedOnlyClient(FakeClient):
-
-    async def get(self, memory_id):
+    async def get_all(self, options=None):
         return {
-            "id": memory_id,
-            "memory": "x",
-            "created_at": "2026-06-15T00:00:00-07:00",
-            "updated_at": None,
+            "count": 1,
+            "next": None,
+            "results": [
+                {
+                    "id": "aaa",
+                    "memory": "x",
+                    "created_at": "2026-06-15T00:00:00-07:00",
+                    "updated_at": None,
+                }
+            ],
         }
 
 
@@ -59,8 +63,8 @@ def _accessor():
 @pytest.mark.asyncio
 async def test_stat_root_is_dir():
     s = await stat(
-        _accessor(),
-        PathSpec(virtual="/mem", directory="/mem", resource_path=""))
+        _accessor(), PathSpec(virtual="/mem", directory="/mem", vfs_path="")
+    )
     assert s.type == FileType.DIRECTORY
 
 
@@ -68,13 +72,13 @@ async def test_stat_root_is_dir():
 async def test_stat_memory_from_cache_has_times():
     acc = _accessor()
     index = RAMIndexCacheStore()
-    root = PathSpec(virtual="/mem", directory="/mem", resource_path="")
+    root = PathSpec(virtual="/mem", directory="/mem", vfs_path="")
     await readdir(acc, root, index)
-    fpath = PathSpec(virtual="/mem/aaa.json",
-                     directory="/mem",
-                     resource_path="aaa.json")
+    fpath = PathSpec(
+        virtual="/mem/aaa.json", directory="/mem", vfs_path="aaa.json"
+    )
     s = await stat(acc, fpath, index)
-    assert s.type == FileType.JSON
+    assert s.content == ContentType.JSON
     assert s.name == "aaa.json"
     assert s.modified == "2026-06-15T00:34:22-07:00"
     assert s.extra["created_at"] == "2026-06-15T00:34:18-07:00"
@@ -83,23 +87,25 @@ async def test_stat_memory_from_cache_has_times():
 
 
 @pytest.mark.asyncio
-async def test_stat_memory_fallback_get():
+async def test_stat_of_a_memory_outside_the_scope_is_enoent():
+    # The scoped listing is the proof, as it is for read: a by-id fetch
+    # answered for another user's memory the listing never showed.
     acc = _accessor()
-    fpath = PathSpec(virtual="/mem/zzz.json",
-                     directory="/mem",
-                     resource_path="zzz.json")
-    s = await stat(acc, fpath, RAMIndexCacheStore())
-    assert s.modified == "2026-06-15T09:00:00-07:00"
-    assert acc._client.get_calls == 1
+    fpath = PathSpec(
+        virtual="/mem/zzz.json", directory="/mem", vfs_path="zzz.json"
+    )
+    with pytest.raises(FileNotFoundError):
+        await stat(acc, fpath, RAMIndexCacheStore())
+    assert acc._client.get_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_stat_falls_back_to_created_at():
     acc = _accessor()
     acc._client = CreatedOnlyClient()
-    fpath = PathSpec(virtual="/mem/zzz.json",
-                     directory="/mem",
-                     resource_path="zzz.json")
+    fpath = PathSpec(
+        virtual="/mem/aaa.json", directory="/mem", vfs_path="aaa.json"
+    )
     s = await stat(acc, fpath, RAMIndexCacheStore())
     assert s.modified == "2026-06-15T00:00:00-07:00"
 
@@ -109,19 +115,20 @@ async def test_stat_invalid_enoent():
     with pytest.raises(FileNotFoundError):
         await stat(
             _accessor(),
-            PathSpec(virtual="/mem/.x", directory="/mem", resource_path=".x"))
+            PathSpec(virtual="/mem/.x", directory="/mem", vfs_path=".x"),
+        )
 
 
 @pytest.mark.asyncio
 async def test_stat_size_matches_read_for_every_file():
-    # The fskit invariant behind SIZES_ALWAYS_KNOWN: the size stat reports
+    # The fskit invariant behind sizes_always_known: the size stat reports
     # from the listing must equal the byte length a read delivers.
     acc = _accessor()
     index = RAMIndexCacheStore()
-    root = PathSpec(virtual="/mem", directory="/mem", resource_path="")
+    root = PathSpec(virtual="/mem", directory="/mem", vfs_path="")
     for child in await readdir(acc, root, index):
         name = child.rsplit("/", 1)[-1]
-        fpath = PathSpec(virtual=child, directory="/mem", resource_path=name)
+        fpath = PathSpec(virtual=child, directory="/mem", vfs_path=name)
         info = await stat(acc, fpath, index)
         if info.type == FileType.DIRECTORY:
             continue

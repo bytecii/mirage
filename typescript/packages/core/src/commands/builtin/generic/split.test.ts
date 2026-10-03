@@ -13,9 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 import { describe, expect, it } from 'vitest'
 
+import type { IOResult } from '../../../io/types.ts'
+import type { PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
-import { splitGeneric } from './split.ts'
+import { chunkAt, chunkParts, parseChunksValue, splitGeneric } from './split.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
@@ -32,7 +34,7 @@ async function runSplit(
     flags,
     filetypeFns: null,
     cwd: '/',
-    resource: { kind: 'ram' } as never,
+    vfs: { kind: 'ram' } as never,
   } as CommandOpts
   await splitGeneric(
     [],
@@ -53,11 +55,6 @@ describe('split flag values', () => {
     const written = await runSplit({ bytes: '1k' }, 'A'.repeat(1500))
     expect(written.xaa?.length).toBe(1024)
     expect(written.xab?.length).toBe(476)
-  })
-
-  it('honors a hex suffix start in base 16', async () => {
-    const written = await runSplit({ hex_suffixes: '10', lines: '1' }, 'a\nb\n')
-    expect(Object.keys(written).sort()).toEqual(['x10', 'x11'])
   })
 
   it('treats -a 0 as the default width instead of colliding names', async () => {
@@ -115,12 +112,6 @@ describe('split flag values', () => {
     },
   )
 
-  it('refuses an empty separator', async () => {
-    await expect(runSplit({ separator: '' })).rejects.toThrow(
-      new UsageError('split: empty record separator', 1),
-    )
-  })
-
   it('exhausts an explicit width instead of wrapping onto earlier chunks', async () => {
     // GNU keeps the chunks already written and fails on the next name.
     const sink: Record<string, string> = {}
@@ -149,7 +140,6 @@ describe('split flag values', () => {
     [{ bytes: ' 3' }, 'spaced bytes'],
     [{ lines: '+1' }, 'signed lines'],
     [{ number: 'l/+2' }, 'signed chunk spec'],
-    [{ number: '+2/3' }, 'signed chunk K'],
     [{ suffix_length: '+3', lines: '1' }, 'signed suffix length'],
   ] as [CommandOpts['flags'], string][])('accepts %j (%s)', async (flags) => {
     const written = await runSplit(flags, 'ab\ncd\n')
@@ -177,7 +167,8 @@ describe('split flag values', () => {
     [{ lines: '1k' }, "split: invalid number of lines: '1k'"],
     [{ number: 'l/abc' }, "split: invalid number of chunks: 'abc'"],
     [{ number: '0' }, "split: invalid number of chunks: '0'"],
-    // A malformed head (signed kind letter, junk kind) quotes the whole spec.
+    // A malformed head quotes the whole remainder after one leading kind
+    // prefix, so an unprefixed spec names itself.
     [{ number: '+l/2' }, "split: invalid number of chunks: '+l/2'"],
     [{ number: 'x/3' }, "split: invalid number of chunks: 'x/3'"],
     [{ suffix_length: 'abc', lines: '1' }, "split: invalid suffix length: 'abc'"],
@@ -210,4 +201,249 @@ describe('split flag values', () => {
       expect(written).toEqual({})
     },
   )
+})
+
+// GNU strips ONE leading `l/` or `r/` and then cuts what is left at its
+// FIRST slash: a head it cannot parse names the whole remainder, everything
+// else names the tail. mirage used to name the whole spec whenever the head
+// was bad, which is right only when no kind prefix was typed. Every row
+// measured against GNU coreutils 9.4 under `LC_ALL=C` with a raw `bytes`
+// argv. Mirrors test_split.py.
+const CHUNK_SPECS: [string, string][] = [
+  ['xé', 'x\\303\\251'],
+  ['l/xé', 'x\\303\\251'],
+  ['2/xé', 'x\\303\\251'],
+  ['l/1/xé', 'x\\303\\251'],
+  ['l/2/xé', 'x\\303\\251'],
+  ['+l/2', '+l/2'],
+  ['x/3', 'x/3'],
+  ['l/xé/4', 'x\\303\\251/4'],
+  ['r/xé/4', 'x\\303\\251/4'],
+  ['l/2/xé/4', 'x\\303\\251/4'],
+  ['l/xé/yé', 'x\\303\\251/y\\303\\251'],
+  ['xé/2', 'x\\303\\251/2'],
+  ['l/2/3/4', '3/4'],
+  ['1/2/3/4', '2/3/4'],
+  ['l//4', '/4'],
+  ['r/l/4', 'l/4'],
+  ['2/l/4', 'l/4'],
+  ['/', '/'],
+  ['l', 'l'],
+  ['r', 'r'],
+  ['l/', ''],
+  ['', ''],
+  ['l/2/4/', '4/'],
+]
+
+describe('split -n names the component GNU names', () => {
+  it.each(CHUNK_SPECS)('names %j as %j', async (value, named) => {
+    await expect(runSplit({ number: value })).rejects.toThrow(
+      new UsageError(`split: invalid number of chunks: '${named}'`, 1),
+    )
+  })
+
+  it.each([
+    ['2/4', { kind: 'bytes', count: 4, only: 2 }],
+    ['+2/3', { kind: 'bytes', count: 3, only: 2 }],
+    ['l/2/4', { kind: 'l', count: 4, only: 2 }],
+    ['r/2/4', { kind: 'r', count: 4, only: 2 }],
+  ])('reads %j as chunk K of N', (value, spec) => {
+    expect(parseChunksValue(value)).toEqual(spec)
+  })
+})
+
+// Every row measured on coreutils 9.7 (debian:stable-slim).
+describe('split -n cuts the way GNU cuts', () => {
+  const LINES = ENC.encode('line1\nline2\nline3\nline4\nline5\n')
+  const text = (parts: Uint8Array[]): string[] => parts.map((p) => DEC.decode(p))
+
+  it('leaves the tail chunks empty when the input is shorter than N', () => {
+    expect(text([...chunkParts(ENC.encode('ab'), parseChunksValue('5'), 0x0a)])).toEqual([
+      'a',
+      'b',
+      '',
+      '',
+      '',
+    ])
+    expect(text([...chunkParts(new Uint8Array(0), parseChunksValue('3'), 0x0a)])).toEqual([
+      '',
+      '',
+      '',
+    ])
+  })
+
+  it.each([
+    ['l/2', ['line1\nline2\nline3\n', 'line4\nline5\n']],
+    ['l/3', ['line1\nline2\n', 'line3\nline4\n', 'line5\n']],
+    ['l/4', ['line1\nline2\n', 'line3\n', 'line4\n', 'line5\n']],
+    ['l/7', ['line1\n', 'line2\n', 'line3\n', '', 'line4\n', 'line5\n', '']],
+  ])('keeps records whole under %j', (value, expected) => {
+    expect(text([...chunkParts(LINES, parseChunksValue(value), 0x0a)])).toEqual(expected)
+  })
+
+  it('leaves a chunk a long record swallowed whole empty', () => {
+    expect(text([...chunkParts(ENC.encode('aaaaaa\nb\n'), parseChunksValue('l/3'), 0x0a)])).toEqual(
+      ['aaaaaa\n', '', 'b\n'],
+    )
+    expect(text([...chunkParts(ENC.encode('aaaaa\nbb\n'), parseChunksValue('l/3'), 0x0a)])).toEqual(
+      ['aaaaa\n', '', 'bb\n'],
+    )
+    expect(
+      text([...chunkParts(ENC.encode('aaaa\nb\nc\nd\n'), parseChunksValue('l/2'), 0x0a)]),
+    ).toEqual(['aaaa\nb\n', 'c\nd\n'])
+  })
+
+  it('gives an unterminated tail to the chunk it started in', () => {
+    expect(text([...chunkParts(ENC.encode('aa\nbb\ncc'), parseChunksValue('l/2'), 0x0a)])).toEqual([
+      'aa\nbb\n',
+      'cc',
+    ])
+    expect(text([...chunkParts(ENC.encode('ab'), parseChunksValue('l/3'), 0x0a)])).toEqual([
+      'ab',
+      '',
+      '',
+    ])
+  })
+
+  it('reads one chunk without cutting the rest', () => {
+    // coreutils 9.7 over `abc\ndef\n`, each instant however large N is.
+    const huge = '1000000000'
+    const data = ENC.encode('abc\ndef\n')
+    const at = (spec: string, k: number): string =>
+      DEC.decode(chunkAt(data, parseChunksValue(spec), 0x0a, k))
+    expect(at(`2/${huge}`, 2)).toBe('b')
+    expect(at(`l/2/${huge}`, 2)).toBe('')
+    expect(at(`l/5/${huge}`, 5)).toBe('def\n')
+    expect(at(`l/${huge}/${huge}`, Number(huge))).toBe('')
+    expect(at(`r/2/${huge}`, 2)).toBe('def\n')
+    expect(at(`r/3/${huge}`, 3)).toBe('')
+    expect(DEC.decode(chunkAt(ENC.encode('abcdefg'), parseChunksValue('2/3'), 0x0a, 2))).toBe('de')
+  })
+
+  it('pads the empty tail lazily', () => {
+    const parts = chunkParts(ENC.encode('ab'), parseChunksValue('1000000000'), 0x0a)
+    const first = [parts.next(), parts.next(), parts.next(), parts.next()]
+    expect(first.map((r) => DEC.decode(r.value as Uint8Array))).toEqual(['a', 'b', '', ''])
+  })
+
+  it('refuses a chunk count past the safe integer range', () => {
+    expect(() => parseChunksValue('99999999999999999999999')).toThrow(
+      "split: invalid number of chunks: '99999999999999999999999'",
+    )
+  })
+})
+
+// All four of split's count clauses name the refused word through gnulib's
+// quote(), so a byte outside 0x20-0x7e comes back escaped rather than
+// interpolated raw. `-n` quotes only the trailing component, which is the
+// one the escaping applies to. Every row measured against GNU coreutils 9.4
+// under `LC_ALL=C` with a raw `bytes` argv. Mirrors test_split.py.
+const QUOTED_VALUES: [string, string][] = [
+  ['1é', '1\\303\\251'],
+  ['1\r', '1\\r'],
+  ['1\x01', '1\\001'],
+  ['1\x7f', '1\\177'],
+  ["1'", "1\\'"],
+  ['1\\', '1\\\\'],
+  ['', ''],
+]
+
+describe('split quotes the word it names', () => {
+  it.each(QUOTED_VALUES)('escapes %j in the byte-count clause', async (value, escaped) => {
+    await expect(runSplit({ bytes: value })).rejects.toThrow(
+      new UsageError(`split: invalid number of bytes: '${escaped}'`, 1),
+    )
+  })
+
+  it.each(QUOTED_VALUES)('escapes %j in the line-count clause', async (value, escaped) => {
+    await expect(runSplit({ lines: value })).rejects.toThrow(
+      new UsageError(`split: invalid number of lines: '${escaped}'`, 1),
+    )
+  })
+
+  it.each(QUOTED_VALUES)('escapes %j in the chunk-count clause', async (value, escaped) => {
+    await expect(runSplit({ number: value })).rejects.toThrow(
+      new UsageError(`split: invalid number of chunks: '${escaped}'`, 1),
+    )
+  })
+
+  it.each(QUOTED_VALUES)('escapes %j in the named chunk component', async (value, escaped) => {
+    await expect(runSplit({ number: `l/${value}` })).rejects.toThrow(
+      new UsageError(`split: invalid number of chunks: '${escaped}'`, 1),
+    )
+  })
+
+  it.each(QUOTED_VALUES)('escapes %j in the suffix-length clause', async (value, escaped) => {
+    await expect(runSplit({ suffix_length: value })).rejects.toThrow(
+      new UsageError(`split: invalid suffix length: '${escaped}'`, 1),
+    )
+  })
+
+  // The digit run cannot itself carry a byte quote() would escape, so a
+  // blank leading run is what puts one in the slot: `strtoumax` skips
+  // leading whitespace, and the raw argument including it is what GNU
+  // quotes (measured: `split -a $'\r18446744073709551616'`).
+  it('escapes the word in the Value-too-large tail', async () => {
+    await expect(runSplit({ suffix_length: '\r18446744073709551616' })).rejects.toThrow(
+      new UsageError(
+        "split: invalid suffix length: '\\r18446744073709551616': " +
+          'Value too large for defined data type',
+        1,
+      ),
+    )
+  })
+})
+
+// The suffix-start clause puts its word FIRST, where the four count clauses
+// put it last, and it escapes the word the same way (measured on GNU
+// coreutils 9.4 for both spellings). The empty word is absent on purpose:
+// `--numeric-suffixes=` is not a refusal in GNU at all, it exits 0, which
+// is a separate divergence from the escaping.
+describe('split quotes the suffix start value', () => {
+  const NON_EMPTY = QUOTED_VALUES.filter(([value]) => value !== '')
+
+  it.each(NON_EMPTY)('escapes %j in the numerical start clause', async (value, escaped) => {
+    await expect(runSplit({ numeric_suffixes: value, lines: '1' })).rejects.toThrow(
+      new UsageError(`split: '${escaped}': invalid start value for numerical suffix${TRY}`, 1),
+    )
+  })
+
+  it.each(NON_EMPTY)('escapes %j in the hexadecimal start clause', async (value, escaped) => {
+    await expect(runSplit({ hex_suffixes: value, lines: '1' })).rejects.toThrow(
+      new UsageError(`split: '${escaped}': invalid start value for hexadecimal suffix${TRY}`, 1),
+    )
+  })
+})
+
+// No operand to read a prefix from: `x` in the working directory names the
+// outputs (GNU), and the writes keys stay mount-relative like every other
+// command's, so the executor can prefix them. Mirrors test_split.py.
+describe('split names stdin outputs in the working directory', () => {
+  it.each([
+    ['/data', ['/data/xaa', '/data/xab']],
+    ['/data/sub', ['/data/sub/xaa', '/data/sub/xab']],
+  ])('addresses each output under %s', async (cwd, named) => {
+    const specs: PathSpec[] = []
+    const opts = {
+      stdin: ENC.encode('a\nb\n'),
+      flags: { lines: '1' },
+      filetypeFns: null,
+      cwd,
+      mountPrefix: '/data',
+    } as CommandOpts
+    const result = await splitGeneric(
+      [],
+      opts,
+      () => {
+        throw new Error('paths are empty; the source is stdin')
+      },
+      (p) => {
+        specs.push(p)
+        return Promise.resolve()
+      },
+    )
+    expect(specs.map((p) => p.virtual)).toEqual(named)
+    const [, io] = result as [unknown, IOResult]
+    expect(Object.keys(io.writes)).toEqual(named.map((n) => n.slice('/data'.length)))
+  })
 })

@@ -15,12 +15,11 @@
 import asyncio
 import json
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.hf_models import HfModelsConfig, HfModelsResource
+from mirage.vfs.hf_models import HfModelsConfig, HfModelsVFS
 
 load_dotenv(".env.development")
 
@@ -28,16 +27,15 @@ config = HfModelsConfig(
     repo_id=os.environ.get("HF_MODEL_REPO", "sapientinc/HRM-Text-1B"),
     token=os.environ.get("HF_TOKEN"),
 )
-resource = HfModelsResource(config)
+vfs = HfModelsVFS(config)
 
 
 async def main():
-    with Workspace({"/m/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
-        print(f"=== VFS: {resource.accessor.bucket_uri} ===")
+    with Workspace({"/m/": vfs}, mode=MountMode.READ) as ws:
+        print(f"=== VFS: {vfs.accessor.bucket_uri} ===")
 
         print("\n--- os.listdir('/m') ---")
-        root_entries = vos.listdir("/m")
+        root_entries = os.listdir("/m")
         for e in root_entries:
             print(f"  {e}")
 
@@ -45,8 +43,12 @@ async def main():
             print("\n--- read /m/config.json + parse ---")
             with open("/m/config.json") as f:
                 cfg = json.load(f)
-            for k in ("model_type", "architectures", "hidden_size",
-                      "num_hidden_layers"):
+            for k in (
+                "model_type",
+                "architectures",
+                "hidden_size",
+                "num_hidden_layers",
+            ):
                 if k in cfg:
                     print(f"  {k}: {cfg[k]}")
 
@@ -54,11 +56,11 @@ async def main():
         if weight_files:
             print("\n--- weights present (sizes only, not downloaded) ---")
             for wf in weight_files[:5]:
-                size = vos.path.getsize(f"/m/{wf}")
+                size = os.path.getsize(f"/m/{wf}")
                 print(f"  {wf}: {size:>12,} bytes")
 
         print("\n--- shell view ---")
-        r = await ws.execute("ls -lh /m/")
+        r = await ws.shell("ls -lh /m/")
         print(await r.stdout_str())
 
 

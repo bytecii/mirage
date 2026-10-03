@@ -17,13 +17,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mirage.accessor.linear import LinearAccessor
-from mirage.cache.index import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.linear.config import LinearConfig
-from mirage.core.linear.normalize import (normalize_comment, normalize_issue,
-                                          normalize_team, normalize_user,
-                                          to_json_bytes, to_jsonl_bytes)
+from mirage.core.linear.normalize import (
+    normalize_comment,
+    normalize_issue,
+    normalize_team,
+    normalize_user,
+    to_json_bytes,
+)
 from mirage.core.linear.readdir import readdir
+from mirage.core.render.json import jsonl_bytes_by_created_at
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
 
@@ -43,137 +47,167 @@ def index():
 @pytest.mark.asyncio
 async def test_readdir_root(accessor, index):
     result = await readdir(
-        accessor, PathSpec(resource_path="", virtual="/", directory="/"),
-        index)
+        accessor, PathSpec(vfs_path="", virtual="/", directory="/"), index
+    )
     assert result == ["/teams"]
 
 
 @pytest.mark.asyncio
 async def test_readdir_teams(accessor, index):
-    teams = [{
-        "id": "TEAM1",
-        "key": "ENG",
-        "name": "Engineering",
-        "updatedAt": "2026-04-05T00:00:00Z",
-        "states": {
-            "nodes": []
-        },
-    }]
-    with patch("mirage.core.linear.readdir.list_teams",
-               new_callable=AsyncMock,
-               return_value=teams):
+    teams = [
+        {
+            "id": "TEAM1",
+            "key": "ENG",
+            "name": "Engineering",
+            "updatedAt": "2026-04-05T00:00:00Z",
+            "states": {"nodes": []},
+        }
+    ]
+    with patch(
+        "mirage.core.linear.readdir.list_teams",
+        new_callable=AsyncMock,
+        return_value=teams,
+    ):
         result = await readdir(
             accessor,
-            PathSpec(resource_path="teams",
-                     virtual="/teams",
-                     directory="/teams"), index)
+            PathSpec(vfs_path="teams", virtual="/teams", directory="/teams"),
+            index,
+        )
     assert result == ["/teams/ENG__Engineering__TEAM1"]
     team_entry = await index.get("/teams/ENG__Engineering__TEAM1")
     assert team_entry.entry is not None
     assert team_entry.entry.extra["team_key"] == "ENG"
     assert team_entry.entry.extra["team_name"] == "Engineering"
-    assert team_entry.entry.extra["team_json_size"] == len(
-        to_json_bytes(normalize_team(teams[0])))
+    assert team_entry.entry.extra["json_size"] == len(
+        to_json_bytes(normalize_team(teams[0]))
+    )
 
 
 @pytest.mark.asyncio
 async def test_readdir_teams_keeps_prefix_on_warm_cache_hit(accessor, index):
-    teams = [{
-        "id": "TEAM1",
-        "key": "ENG",
-        "name": "Engineering",
-        "updatedAt": "2026-04-05T00:00:00Z",
-        "states": {
-            "nodes": []
-        },
-    }]
-    spec = PathSpec(resource_path=mount_key("/linear/teams", "/linear"),
-                    virtual="/linear/teams",
-                    directory="/linear/teams")
-    with patch("mirage.core.linear.readdir.list_teams",
-               new_callable=AsyncMock,
-               return_value=teams):
+    teams = [
+        {
+            "id": "TEAM1",
+            "key": "ENG",
+            "name": "Engineering",
+            "updatedAt": "2026-04-05T00:00:00Z",
+            "states": {"nodes": []},
+        }
+    ]
+    spec = PathSpec(
+        vfs_path=mount_key("/linear/teams", "/linear"),
+        virtual="/linear/teams",
+        directory="/linear/teams",
+    )
+    with patch(
+        "mirage.core.linear.readdir.list_teams",
+        new_callable=AsyncMock,
+        return_value=teams,
+    ):
         cold = await readdir(accessor, spec, index)
         warm = await readdir(accessor, spec, index)
     assert cold == ["/linear/teams/ENG__Engineering__TEAM1"]
     assert warm == cold
 
 
+_TEAM_STUB = {
+    "id": "TEAM1",
+    "key": "ENG",
+    "name": "Engineering",
+    "updatedAt": "2026-04-05T00:00:00Z",
+    "states": {"nodes": []},
+}
+
+
 @pytest.mark.asyncio
 async def test_readdir_team_members(accessor, index):
-    await index.put(
-        "/teams/ENG__Engineering__TEAM1",
-        IndexEntry(
-            id="TEAM1",
-            name="Engineering",
-            resource_type="linear/team",
-            remote_time="2026-04-05T00:00:00Z",
-            vfs_name="ENG__Engineering__TEAM1",
+    users = [
+        {
+            "id": "USER1",
+            "name": "Alice",
+            "displayName": "Alice",
+            "email": "alice@example.com",
+            "updatedAt": "2026-04-05T00:00:00Z",
+        }
+    ]
+    with (
+        patch(
+            "mirage.core.linear.readdir.list_teams",
+            new_callable=AsyncMock,
+            return_value=[_TEAM_STUB],
         ),
-    )
-    users = [{
-        "id": "USER1",
-        "name": "Alice",
-        "displayName": "Alice",
-        "email": "alice@example.com",
-        "updatedAt": "2026-04-05T00:00:00Z",
-    }]
-    with patch("mirage.core.linear.readdir.list_team_members",
-               new_callable=AsyncMock,
-               return_value=users):
+        patch(
+            "mirage.core.linear.readdir.list_team_members",
+            new_callable=AsyncMock,
+            return_value=users,
+        ),
+    ):
         result = await readdir(
             accessor,
-            PathSpec(resource_path="teams/ENG__Engineering__TEAM1/members",
-                     virtual="/teams/ENG__Engineering__TEAM1/members",
-                     directory="/teams/ENG__Engineering__TEAM1/members"),
+            PathSpec(
+                vfs_path="teams/ENG__Engineering__TEAM1/members",
+                virtual="/teams/ENG__Engineering__TEAM1/members",
+                directory="/teams/ENG__Engineering__TEAM1/members",
+            ),
             index,
         )
     assert result == [
         "/teams/ENG__Engineering__TEAM1/members/Alice__USER1.json"
     ]
     member_entry = await index.get(
-        "/teams/ENG__Engineering__TEAM1/members/Alice__USER1.json")
+        "/teams/ENG__Engineering__TEAM1/members/Alice__USER1.json"
+    )
     assert member_entry.entry is not None
     assert member_entry.entry.size == len(
-        to_json_bytes(normalize_user(users[0])))
+        to_json_bytes(normalize_user(users[0]))
+    )
 
 
 @pytest.mark.asyncio
 async def test_readdir_issue_folder(accessor, index):
-    await index.put(
-        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1",
-        IndexEntry(
-            id="ISSUE1",
-            name="ENG-123",
-            resource_type="linear/issue",
-            remote_time="2026-04-05T00:00:00Z",
-            vfs_name="ENG-123__ISSUE1",
-            extra={
-                "issue_key": "ENG-123",
-                "issue_json_size": 42
+    issue = {
+        "id": "ISSUE1",
+        "identifier": "ENG-123",
+        "title": "Fix reads",
+        "description": "reads return empty",
+        "updatedAt": "2026-04-05T00:00:00Z",
+    }
+    comments = [
+        {
+            "id": "CMT1",
+            "body": "first",
+            "url": "https://linear.app/c/1",
+            "createdAt": "2026-04-05T00:00:00Z",
+            "updatedAt": "2026-04-06T00:00:00Z",
+            "user": {
+                "id": "USER1",
+                "name": "Alice",
+                "displayName": "Alice",
+                "email": "alice@example.com",
             },
+        }
+    ]
+    with (
+        patch(
+            "mirage.core.linear.readdir.list_teams",
+            new_callable=AsyncMock,
+            return_value=[_TEAM_STUB],
         ),
-    )
-    comments = [{
-        "id": "CMT1",
-        "body": "first",
-        "url": "https://linear.app/c/1",
-        "createdAt": "2026-04-05T00:00:00Z",
-        "updatedAt": "2026-04-06T00:00:00Z",
-        "user": {
-            "id": "USER1",
-            "name": "Alice",
-            "displayName": "Alice",
-            "email": "alice@example.com",
-        },
-    }]
-    with patch("mirage.core.linear.readdir.list_issue_comments",
-               new_callable=AsyncMock,
-               return_value=comments):
+        patch(
+            "mirage.core.linear.readdir.list_team_issues",
+            new_callable=AsyncMock,
+            return_value=[issue],
+        ),
+        patch(
+            "mirage.core.linear.readdir.list_issue_comments",
+            new_callable=AsyncMock,
+            return_value=comments,
+        ),
+    ):
         result = await readdir(
             accessor,
             PathSpec(
-                resource_path=_ISSUE_DIR.strip("/"),
+                vfs_path=_ISSUE_DIR.strip("/"),
                 virtual=_ISSUE_DIR,
                 directory=_ISSUE_DIR,
             ),
@@ -184,65 +218,25 @@ async def test_readdir_issue_folder(accessor, index):
         "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/comments.jsonl",
     ]
     issue_file = await index.get(
-        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/issue.json")
-    assert issue_file.entry is not None
-    assert issue_file.entry.size == 42
-    comments_file = await index.get(
-        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/comments.jsonl")
-    assert comments_file.entry is not None
-    expected = to_jsonl_bytes([
-        normalize_comment(comments[0], issue_id="ISSUE1", issue_key="ENG-123")
-    ])
-    assert comments_file.entry.size == len(expected)
-    assert comments_file.entry.remote_time == "2026-04-06T00:00:00Z"
-
-
-@pytest.mark.asyncio
-async def test_readdir_issue_folder_fetches_issue_when_unsized(
-        accessor, index):
-    # An entry indexed before size push-down has no issue_json_size; the
-    # readdir falls back to one issue fetch so the files are still sized.
-    await index.put(
-        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1",
-        IndexEntry(
-            id="ISSUE1",
-            name="ENG-123",
-            resource_type="linear/issue",
-            remote_time="2026-04-05T00:00:00Z",
-            vfs_name="ENG-123__ISSUE1",
-        ),
+        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/issue.json"
     )
-    issue = {
-        "id": "ISSUE1",
-        "identifier": "ENG-123",
-        "title": "Fix reads",
-        "description": "reads return empty",
-        "updatedAt": "2026-04-05T00:00:00Z",
-    }
-    with patch("mirage.core.linear.readdir.get_issue",
-               new_callable=AsyncMock,
-               return_value=issue) as fetched, \
-         patch("mirage.core.linear.readdir.list_issue_comments",
-               new_callable=AsyncMock,
-               return_value=[]):
-        await readdir(
-            accessor,
-            PathSpec(
-                resource_path=_ISSUE_DIR.strip("/"),
-                virtual=_ISSUE_DIR,
-                directory=_ISSUE_DIR,
-            ),
-            index,
-        )
-    fetched.assert_awaited_once()
-    issue_file = await index.get(
-        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/issue.json")
     assert issue_file.entry is not None
+    # issue.json is sized from the issue the team listing already fetched,
+    # never from a per-issue refetch.
     assert issue_file.entry.size == len(to_json_bytes(normalize_issue(issue)))
     comments_file = await index.get(
-        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/comments.jsonl")
+        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/comments.jsonl"
+    )
     assert comments_file.entry is not None
-    assert comments_file.entry.size == 0
+    expected = jsonl_bytes_by_created_at(
+        [
+            normalize_comment(
+                comments[0], issue_id="ISSUE1", issue_key="ENG-123"
+            )
+        ]
+    )
+    assert comments_file.entry.size == len(expected)
+    assert comments_file.entry.remote_time == "2026-04-06T00:00:00Z"
 
 
 @pytest.mark.asyncio
@@ -252,9 +246,13 @@ async def test_readdir_unrecognized_path_raises(accessor, index):
     with pytest.raises(FileNotFoundError):
         await readdir(
             accessor,
-            PathSpec(resource_path="__nf_missing__",
-                     virtual="/__nf_missing__",
-                     directory="/__nf_missing__"), index)
+            PathSpec(
+                vfs_path="__nf_missing__",
+                virtual="/__nf_missing__",
+                directory="/__nf_missing__",
+            ),
+            index,
+        )
 
 
 @pytest.mark.asyncio
@@ -262,6 +260,10 @@ async def test_readdir_unrecognized_nested_path_raises(accessor, index):
     with pytest.raises(FileNotFoundError):
         await readdir(
             accessor,
-            PathSpec(resource_path="teams/x/nope/deeper",
-                     virtual="/teams/x/nope/deeper",
-                     directory="/teams/x/nope/deeper"), index)
+            PathSpec(
+                vfs_path="teams/x/nope/deeper",
+                virtual="/teams/x/nope/deeper",
+                directory="/teams/x/nope/deeper",
+            ),
+            index,
+        )

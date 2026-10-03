@@ -35,7 +35,7 @@ def emit(obj: Any, human: Callable[[Any], str] | None = None) -> None:
     if human is not None and sys.stdout.isatty():
         typer.echo(human(obj))
         return
-    typer.echo(json.dumps(obj, indent=2, default=str))
+    typer.echo(json.dumps(obj, indent=2, default=str, ensure_ascii=False))
 
 
 def fail(message: str, exit_code: int = 1) -> NoReturn:
@@ -98,6 +98,7 @@ def format_table(headers: list[str], rows: list[list[str]]) -> str:
             widths[i] = max(widths[i], len(cell))
     lines = ["  ".join(h.ljust(w) for h, w in zip(headers, widths)).rstrip()]
     for row in rows:
-        lines.append("  ".join(c.ljust(w)
-                               for c, w in zip(row, widths)).rstrip())
+        lines.append(
+            "  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip()
+        )
     return "\n".join(lines)

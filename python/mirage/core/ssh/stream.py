@@ -15,22 +15,23 @@
 import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
-from mirage.core.ssh.client import _abs
-from mirage.core.ssh.read import read_bytes
+from mirage.core.ssh.utils import join_root
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
 
-async def read_stream(accessor: SSHAccessor,
-                      path_spec: PathSpec,
-                      index=None,
-                      chunk_size: int = 8192):
+async def read_stream(
+    accessor: SSHAccessor,
+    path_spec: PathSpec,
+    index=None,
+    chunk_size: int = 8192,
+):
     virtual = path_spec.virtual
     path = path_spec.mount_path
     config = accessor.config
     sftp = await accessor.sftp()
     try:
-        remote_path = _abs(config, path)
+        remote_path = join_root(config.root, path)
         async with sftp.open(remote_path, "rb") as f:
             while True:
                 chunk = await f.read(chunk_size)
@@ -39,16 +40,3 @@ async def read_stream(accessor: SSHAccessor,
                 yield chunk
     except asyncssh.SFTPNoSuchFile:
         raise enoent(virtual)
-
-
-async def range_read(accessor: SSHAccessor, path: PathSpec, start: int,
-                     end: int) -> bytes:
-    """Read a byte range, in the resource API's end-exclusive spelling.
-
-    Args:
-        accessor (SSHAccessor): SSH accessor.
-        path (PathSpec): the path to read.
-        start (int): first byte to read.
-        end (int): one past the last byte to read.
-    """
-    return await read_bytes(accessor, path, offset=start, size=end - start)

@@ -15,7 +15,7 @@
 import json
 
 from mirage.commands.cli.types import CLIInvocation
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.gmail.send import reply_message
 from mirage.core.google.client import TokenManager
 from mirage.core.google.config import GoogleConfig
@@ -24,12 +24,14 @@ from mirage.io.types import ByteSource, IOResult
 
 
 async def reply(
-        inv: CLIInvocation[GoogleConfig]
+    inv: CLIInvocation[GoogleConfig],
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(inv.flags)
-    result = await reply_message(TokenManager(inv.config),
-                                 fl.as_str("message_id") or "",
-                                 fl.as_str("body") or "")
-    out = json.dumps(result, ensure_ascii=False,
-                     separators=(",", ":")).encode()
+    async with TokenManager(inv.config) as tm:
+        result = await reply_message(
+            tm, fl.as_str("message_id") or "", fl.as_str("body") or ""
+        )
+    out = json.dumps(
+        result, ensure_ascii=False, separators=(",", ":")
+    ).encode()
     return yield_bytes(out), IOResult()

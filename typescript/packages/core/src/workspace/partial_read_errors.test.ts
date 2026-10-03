@@ -15,7 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../ops/registry.ts'
 import { MountMode } from '../types.ts'
-import { RAMResource } from '../resource/ram/ram.ts'
+import { RAMVFS } from '../vfs/ram/ram.ts'
 import { getTestParser } from './fixtures/workspace_fixture.ts'
 import { Workspace } from './workspace/workspace.ts'
 
@@ -25,22 +25,22 @@ import { Workspace } from './workspace/workspace.ts'
 async function makeWs(): Promise<Workspace> {
   const parser = await getTestParser()
   const ops = new OpsRegistry()
-  const a = new RAMResource()
-  const b = new RAMResource()
-  ops.registerResource(a)
-  ops.registerResource(b)
+  const a = new RAMVFS()
+  const b = new RAMVFS()
+  ops.registerVfs(a)
+  ops.registerVfs(b)
   const ws = new Workspace(
     { '/a': a, '/b': b },
     { mode: MountMode.WRITE, ops, shellParser: parser },
   )
-  await ws.execute('echo aaa > /a/f.txt')
+  await ws.shell('echo aaa > /a/f.txt')
   return ws
 }
 
 async function run(cmd: string): Promise<[string, string, number]> {
   const ws = await makeWs()
   try {
-    const result = await ws.execute(cmd)
+    const result = await ws.shell(cmd)
     return [result.stdoutText, result.stderrText, result.exitCode]
   } finally {
     await ws.close()
@@ -90,21 +90,21 @@ describe('single-mount partial output on missing operands', () => {
   it('head good then missing keeps banner and content', async () => {
     const [out, err, code] = await run('head -n 1 /a/f.txt /a/missing.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('head: /a/missing.txt: No such file or directory\n')
+    expect(err).toBe("head: cannot open '/a/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 
   it('head missing first has no leading blank line', async () => {
     const [out, err, code] = await run('head -n 1 /a/missing.txt /a/f.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('head: /a/missing.txt: No such file or directory\n')
+    expect(err).toBe("head: cannot open '/a/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 
   it('tail good then missing keeps banner and content', async () => {
     const [out, err, code] = await run('tail -n 1 /a/f.txt /a/missing.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('tail: /a/missing.txt: No such file or directory\n')
+    expect(err).toBe("tail: cannot open '/a/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 
@@ -120,11 +120,14 @@ describe('cross-mount partial output matches single-mount bytes', () => {
   it('sed keeps partial output across mounts', async () => {
     const ws = await makeWs()
     try {
-      await ws.execute("printf '1\\n2\\n' > /a/n.txt")
-      const result = await ws.execute('sed s/1/X/ /a/n.txt /b/missing.txt')
+      await ws.shell("printf '1\\n2\\n' > /a/n.txt")
+      const result = await ws.shell('sed s/1/X/ /a/n.txt /b/missing.txt')
       expect(result.stdoutText).toBe('X\n2\n')
-      expect(result.stderrText).toBe('sed: /b/missing.txt: No such file or directory\n')
-      expect(result.exitCode).toBe(1)
+      expect(result.stderrText).toBe("sed: can't read /b/missing.txt: No such file or directory\n")
+      // GNU sed exits 2 when it cannot open an operand, whichever mount it
+      // lives on. The cross-mount combiner used to flatten it to the
+      // fetch's own code, which made this disagree with single-mount.
+      expect(result.exitCode).toBe(2)
     } finally {
       await ws.close()
     }
@@ -133,10 +136,12 @@ describe('cross-mount partial output matches single-mount bytes', () => {
   it('sort aborts across mounts like single-mount', async () => {
     const ws = await makeWs()
     try {
-      const result = await ws.execute('sort /a/f.txt /b/missing.txt')
+      const result = await ws.shell('sort /a/f.txt /b/missing.txt')
       expect(result.stdoutText).toBe('')
-      expect(result.stderrText).toBe('sort: /b/missing.txt: No such file or directory\n')
-      expect(result.exitCode).toBe(1)
+      expect(result.stderrText).toBe(
+        'sort: cannot read: /b/missing.txt: No such file or directory\n',
+      )
+      expect(result.exitCode).toBe(2)
     } finally {
       await ws.close()
     }
@@ -145,8 +150,8 @@ describe('cross-mount partial output matches single-mount bytes', () => {
   it('nl reports its own name through the stream strategy', async () => {
     const ws = await makeWs()
     try {
-      await ws.execute("printf '1\\n2\\n' > /a/n.txt")
-      const result = await ws.execute('nl /a/n.txt /b/missing.txt')
+      await ws.shell("printf '1\\n2\\n' > /a/n.txt")
+      const result = await ws.shell('nl /a/n.txt /b/missing.txt')
       expect(result.stdoutText).toBe('     1\t1\n     2\t2\n')
       expect(result.stderrText).toBe('nl: /b/missing.txt: No such file or directory\n')
       expect(result.exitCode).toBe(1)
@@ -158,8 +163,8 @@ describe('cross-mount partial output matches single-mount bytes', () => {
   it('md5 keeps partial output across mounts', async () => {
     const ws = await makeWs()
     try {
-      await ws.execute("printf '1\\n2\\n' > /a/n.txt")
-      const result = await ws.execute('md5 /a/n.txt /b/missing.txt')
+      await ws.shell("printf '1\\n2\\n' > /a/n.txt")
+      const result = await ws.shell('md5 /a/n.txt /b/missing.txt')
       expect(result.stdoutText).toBe('6ddb4095eb719e2a9f0a3f95677d24e0  /a/n.txt\n')
       expect(result.stderrText).toBe('md5: /b/missing.txt: No such file or directory\n')
       expect(result.exitCode).toBe(1)
@@ -185,14 +190,14 @@ describe('cross-mount partial output matches single-mount bytes', () => {
   it('head good then missing keeps banner and content', async () => {
     const [out, err, code] = await run('head -n 1 /a/f.txt /b/missing.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('head: /b/missing.txt: No such file or directory\n')
+    expect(err).toBe("head: cannot open '/b/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 
   it('tail good then missing keeps banner and content', async () => {
     const [out, err, code] = await run('tail -n 1 /a/f.txt /b/missing.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('tail: /b/missing.txt: No such file or directory\n')
+    expect(err).toBe("tail: cannot open '/b/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 })
@@ -200,19 +205,19 @@ describe('cross-mount partial output matches single-mount bytes', () => {
 async function makeNumberedWs(): Promise<Workspace> {
   const parser = await getTestParser()
   const ops = new OpsRegistry()
-  const a = new RAMResource()
-  ops.registerResource(a)
+  const a = new RAMVFS()
+  ops.registerVfs(a)
   const ws = new Workspace({ '/a': a }, { mode: MountMode.WRITE, ops, shellParser: parser })
-  await ws.execute("printf '1\\n2\\n' > /a/f.txt && printf '3\\n4\\n' > /a/g.txt")
-  await ws.execute("printf 'hello\\n' > /a/h.txt")
+  await ws.shell("printf '1\\n2\\n' > /a/f.txt && printf '3\\n4\\n' > /a/g.txt")
+  await ws.shell("printf 'hello\\n' > /a/h.txt")
   return ws
 }
 
 async function runNumbered(cmds: string[]): Promise<[string, string, number]> {
   const ws = await makeNumberedWs()
   try {
-    let result = await ws.execute(cmds[0] ?? '')
-    for (const cmd of cmds.slice(1)) result = await ws.execute(cmd)
+    let result = await ws.shell(cmds[0] ?? '')
+    for (const cmd of cmds.slice(1)) result = await ws.shell(cmd)
     return [result.stdoutText, result.stderrText, result.exitCode]
   } finally {
     await ws.close()
@@ -271,7 +276,6 @@ describe('rest of the read family keeps partial output past missing', () => {
       'a6e2b7a040683432de03a18fd8a1939a2fdf82585b364bfc874bdd4095c4cae1  /a/f.txt\n',
       'sha256sum',
     ],
-    ['tac /a/f.txt /a/missing.txt', '2\n1\n', 'tac'],
     ['rev /a/f.txt /a/missing.txt', '1\n2\n', 'rev'],
     ['cut -c1 /a/f.txt /a/missing.txt', '1\n2\n', 'cut'],
     ['expand /a/f.txt /a/missing.txt', '1\n2\n', 'expand'],
@@ -279,14 +283,29 @@ describe('rest of the read family keeps partial output past missing', () => {
     ['fold /a/f.txt /a/missing.txt', '1\n2\n', 'fold'],
     ['fmt /a/f.txt /a/missing.txt', '1 2\n', 'fmt'],
   ]
+  // tac and fmt name the open that failed (FAILURE_WORDING); the rest
+  // print the plain line.
+  const WORDED: Record<string, string> = {
+    tac: "tac: failed to open '/a/missing.txt' for reading: No such file or directory\n",
+    fmt: "fmt: cannot open '/a/missing.txt' for reading: No such file or directory\n",
+  }
   for (const [cmd, expected, name] of CASES) {
     it(`${name} keeps partial output`, async () => {
       const [out, err, code] = await runNumbered([cmd])
       expect(out).toBe(expected)
-      expect(err).toBe(`${name}: /a/missing.txt: No such file or directory\n`)
+      expect(err).toBe(WORDED[name] ?? `${name}: /a/missing.txt: No such file or directory\n`)
       expect(code).toBe(1)
     })
   }
+
+  it('tac keeps partial output and names the failed open', async () => {
+    const [out, err, code] = await runNumbered(['tac /a/f.txt /a/missing.txt'])
+    expect(out).toBe('2\n1\n')
+    expect(err).toBe(
+      "tac: failed to open '/a/missing.txt' for reading: No such file or directory\n",
+    )
+    expect(code).toBe(1)
+  })
 
   it('strings keeps partial output', async () => {
     const [out, err, code] = await runNumbered(['strings /a/h.txt /a/missing.txt'])
@@ -301,7 +320,7 @@ describe('rest of the read family keeps partial output past missing', () => {
       'zcat /a/z1.txt.gz /a/missing.gz',
     ])
     expect(out).toBe('z\n')
-    expect(err).toBe('zcat: /a/missing.gz: No such file or directory\n')
+    expect(err).toBe('gzip: /a/missing.gz: No such file or directory\n')
     expect(code).toBe(1)
   })
 
@@ -316,22 +335,28 @@ describe('rest of the read family keeps partial output past missing', () => {
 
   it('stat keeps the good row past missing', async () => {
     const [out, err, code] = await runNumbered(['stat /a/f.txt /a/missing.txt'])
-    expect(out).toContain('name=f.txt')
-    expect(err).toBe('stat: /a/missing.txt: No such file or directory\n')
+    expect(out).toContain('File: /a/f.txt')
+    expect(err).toBe("stat: cannot statx '/a/missing.txt': No such file or directory\n")
     expect(code).toBe(1)
   })
 
   it('sed keeps partial output past missing', async () => {
+    // GNU sed exits 2 when it cannot open an operand (sed 4.9); a
+    // directory, which it opens and then fails to read, is 4.
     const [out, err, code] = await runNumbered(['sed s/1/X/ /a/f.txt /a/missing.txt'])
     expect(out).toBe('X\n2\n')
-    expect(err).toBe('sed: /a/missing.txt: No such file or directory\n')
-    expect(code).toBe(1)
+    expect(err).toBe("sed: can't read /a/missing.txt: No such file or directory\n")
+    expect(code).toBe(2)
   })
 
   it('sort still aborts on missing', async () => {
+    // GNU sort needs all input before emitting anything, so no partial
+    // output; it reports the operand in its own `cannot read:` words and
+    // exits 2 (coreutils 9.7), which is sort's code for any failed read,
+    // not just a directory.
     const [out, err, code] = await runNumbered(['sort /a/f.txt /a/missing.txt'])
     expect(out).toBe('')
-    expect(err).toBe('sort: /a/missing.txt: No such file or directory\n')
-    expect(code).toBe(1)
+    expect(err).toBe('sort: cannot read: /a/missing.txt: No such file or directory\n')
+    expect(code).toBe(2)
   })
 })

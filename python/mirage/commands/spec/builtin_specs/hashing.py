@@ -15,17 +15,17 @@
 from mirage.commands.spec.types import CommandSpec, Operand, Option
 
 SPECS: dict[str, CommandSpec] = {
-    'md5':
-    CommandSpec(rest=Operand(type="path")),
-    'diff':
-    CommandSpec(
+    "md5": CommandSpec(rest=Operand(type="path")),
+    "diff": CommandSpec(
         options=(
             Option(short="-i"),
             Option(short="-w"),
             Option(short="-b"),
             Option(short="-e"),
             Option(short="-u"),
-            Option(short="-q"),
+            Option(short="-U", type="str"),
+            Option(long="--unified", type="str", value_optional=True),
+            Option(short="-q", long="--brief"),
             Option(short="-r"),
         ),
         positional=(
@@ -33,98 +33,91 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="path"),
         ),
     ),
-    'base64':
-    CommandSpec(
+    "base64": CommandSpec(
         options=(
             Option(short="-d", long="--decode"),
             Option(short="-D"),
             Option(short="-w", long="--wrap", type="str"),
             Option(short="-i", long="--ignore-garbage"),
         ),
-        positional=(Operand(type="path"), ),
+        positional=(Operand(type="path"),),
     ),
-    'md5sum':
-    CommandSpec(
+    "md5sum": CommandSpec(
         options=(
             Option(short="-c", long="--check"),
             Option(short="-b", long="--binary"),
-            Option(short="-t", long="--text"),
             Option(long="--tag"),
+            Option(short="-t", long="--text"),
             Option(short="-w", long="--warn"),
             Option(short="-z", long="--zero"),
-            Option(long="--strict"),
-            Option(long="--ignore-missing"),
             Option(long="--status"),
+            Option(long="--ignore-missing"),
+            Option(long="--strict"),
             Option(long="--quiet"),
         ),
         rest=Operand(type="path"),
     ),
-    'sha1sum':
-    CommandSpec(
+    "sha1sum": CommandSpec(
         options=(
             Option(short="-c", long="--check"),
             Option(short="-b", long="--binary"),
-            Option(short="-t", long="--text"),
             Option(long="--tag"),
+            Option(short="-t", long="--text"),
             Option(short="-w", long="--warn"),
             Option(short="-z", long="--zero"),
-            Option(long="--strict"),
-            Option(long="--ignore-missing"),
             Option(long="--status"),
+            Option(long="--ignore-missing"),
+            Option(long="--strict"),
             Option(long="--quiet"),
         ),
         rest=Operand(type="path"),
     ),
-    'sha256sum':
-    CommandSpec(
+    "sha256sum": CommandSpec(
         options=(
             Option(short="-c", long="--check"),
             Option(short="-b", long="--binary"),
-            Option(short="-t", long="--text"),
             Option(long="--tag"),
+            Option(short="-t", long="--text"),
             Option(short="-w", long="--warn"),
             Option(short="-z", long="--zero"),
-            Option(long="--strict"),
-            Option(long="--ignore-missing"),
             Option(long="--status"),
+            Option(long="--ignore-missing"),
+            Option(long="--strict"),
             Option(long="--quiet"),
         ),
         rest=Operand(type="path"),
     ),
-    'sha384sum':
-    CommandSpec(
+    "sha384sum": CommandSpec(
         options=(
             Option(short="-c", long="--check"),
             Option(short="-b", long="--binary"),
-            Option(short="-t", long="--text"),
             Option(long="--tag"),
+            Option(short="-t", long="--text"),
             Option(short="-w", long="--warn"),
             Option(short="-z", long="--zero"),
-            Option(long="--strict"),
-            Option(long="--ignore-missing"),
             Option(long="--status"),
+            Option(long="--ignore-missing"),
+            Option(long="--strict"),
             Option(long="--quiet"),
         ),
         rest=Operand(type="path"),
     ),
-    'sha512sum':
-    CommandSpec(
+    "sha512sum": CommandSpec(
         options=(
             Option(short="-c", long="--check"),
             Option(short="-b", long="--binary"),
-            Option(short="-t", long="--text"),
             Option(long="--tag"),
+            Option(short="-t", long="--text"),
             Option(short="-w", long="--warn"),
             Option(short="-z", long="--zero"),
-            Option(long="--strict"),
-            Option(long="--ignore-missing"),
             Option(long="--status"),
+            Option(long="--ignore-missing"),
+            Option(long="--strict"),
             Option(long="--quiet"),
         ),
         rest=Operand(type="path"),
     ),
-    'xxd':
-    CommandSpec(
+    "xxd": CommandSpec(
         options=(
             Option(short="-r"),
             Option(short="-p"),
@@ -139,8 +132,7 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="path"),
         ),
     ),
-    'patch':
-    CommandSpec(
+    "patch": CommandSpec(
         options=(
             Option(short="-p", type="str"),
             Option(short="-R"),
@@ -152,22 +144,25 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="path"),
         ),
     ),
-    'cmp':
-    CommandSpec(
+    "cmp": CommandSpec(
         options=(
-            Option(short="-l"),
-            Option(short="-s"),
-            Option(short="-n", type="str"),
-            Option(short="-b"),
-            Option(short="-i", type="str"),
+            Option(short="-l", long="--verbose"),
+            Option(short="-s", long="--quiet"),
+            Option(long="--silent"),
+            Option(short="-n", long="--bytes", type="str"),
+            Option(short="-b", long="--print-bytes"),
+            Option(short="-i", long="--ignore-initial", type="str"),
         ),
+        # FILE1 [FILE2 [SKIP1 [SKIP2]]]: the skips are byte counts, read
+        # as -i reads its own (diffutils 3.10).
         positional=(
             Operand(type="path"),
             Operand(type="path"),
+            Operand(type="str"),
+            Operand(type="str"),
         ),
     ),
-    'iconv':
-    CommandSpec(
+    "iconv": CommandSpec(
         options=(
             Option(short="-f", type="str"),
             Option(short="-t", type="str"),

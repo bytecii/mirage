@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import errno
 import os
 
 import pytest
@@ -26,16 +27,16 @@ from mirage.core.redis.rm import rm_r
 from mirage.core.redis.rmdir import rmdir
 from mirage.core.redis.truncate import truncate
 from mirage.core.redis.unlink import unlink
-from mirage.resource.redis.store import RedisStore
 from mirage.types import PathSpec
+from mirage.vfs.redis.store import RedisStore
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
 
 
 @pytest_asyncio.fixture()
-async def accessor():
-    s = RedisStore(url=REDIS_URL, key_prefix="test:fops:")
+async def accessor(redis_prefix):
+    s = RedisStore(url=REDIS_URL, key_prefix=redis_prefix)
     await s.clear()
     await s.add_dir("/")
     await s.add_dir("/dir")
@@ -48,11 +49,11 @@ async def accessor():
 
 
 @pytest_asyncio.fixture()
-async def mk_store():
+async def mk_store(redis_prefix):
     stores = []
 
     async def _make(prefix):
-        s = RedisStore(url=REDIS_URL, key_prefix=prefix)
+        s = RedisStore(url=REDIS_URL, key_prefix=redis_prefix + prefix)
         await s.clear()
         await s.add_dir("/")
         stores.append(s)
@@ -68,12 +69,13 @@ async def mk_store():
 async def test_copy(accessor):
     await copy(
         accessor,
-        PathSpec(resource_path="file.txt",
-                 virtual="/file.txt",
-                 directory="/file.txt"),
-        PathSpec(resource_path="copy.txt",
-                 virtual="/copy.txt",
-                 directory="/copy.txt"))
+        PathSpec(
+            vfs_path="file.txt", virtual="/file.txt", directory="/file.txt"
+        ),
+        PathSpec(
+            vfs_path="copy.txt", virtual="/copy.txt", directory="/copy.txt"
+        ),
+    )
     assert await accessor.store.get_file("/copy.txt") == b"hello"
     assert await accessor.store.get_file("/file.txt") == b"hello"
     assert await accessor.store.get_modified("/copy.txt") is not None
@@ -85,24 +87,28 @@ async def test_copy_not_found(mk_store):
     with pytest.raises(FileNotFoundError):
         await copy(
             a,
-            PathSpec(resource_path="nope.txt",
-                     virtual="/nope.txt",
-                     directory="/nope.txt"),
-            PathSpec(resource_path="dst.txt",
-                     virtual="/dst.txt",
-                     directory="/dst.txt"))
+            PathSpec(
+                vfs_path="nope.txt", virtual="/nope.txt", directory="/nope.txt"
+            ),
+            PathSpec(
+                vfs_path="dst.txt", virtual="/dst.txt", directory="/dst.txt"
+            ),
+        )
 
 
 @pytest.mark.asyncio
 async def test_rename_file(accessor):
     await rename(
         accessor,
-        PathSpec(resource_path="file.txt",
-                 virtual="/file.txt",
-                 directory="/file.txt"),
-        PathSpec(resource_path="renamed.txt",
-                 virtual="/renamed.txt",
-                 directory="/renamed.txt"))
+        PathSpec(
+            vfs_path="file.txt", virtual="/file.txt", directory="/file.txt"
+        ),
+        PathSpec(
+            vfs_path="renamed.txt",
+            virtual="/renamed.txt",
+            directory="/renamed.txt",
+        ),
+    )
     assert await accessor.store.has_file("/renamed.txt")
     assert not await accessor.store.has_file("/file.txt")
     assert await accessor.store.get_file("/renamed.txt") == b"hello"
@@ -112,10 +118,9 @@ async def test_rename_file(accessor):
 async def test_rename_directory(accessor):
     await rename(
         accessor,
-        PathSpec(resource_path="dir", virtual="/dir", directory="/dir"),
-        PathSpec(resource_path="newdir",
-                 virtual="/newdir",
-                 directory="/newdir"))
+        PathSpec(vfs_path="dir", virtual="/dir", directory="/dir"),
+        PathSpec(vfs_path="newdir", virtual="/newdir", directory="/newdir"),
+    )
     assert await accessor.store.has_dir("/newdir")
     assert not await accessor.store.has_dir("/dir")
     assert await accessor.store.has_file("/newdir/child.txt")
@@ -128,24 +133,27 @@ async def test_rename_not_found(mk_store):
     with pytest.raises(FileNotFoundError):
         await rename(
             a,
-            PathSpec(resource_path="nope", virtual="/nope", directory="/nope"),
-            PathSpec(resource_path="dst", virtual="/dst", directory="/dst"))
+            PathSpec(vfs_path="nope", virtual="/nope", directory="/nope"),
+            PathSpec(vfs_path="dst", virtual="/dst", directory="/dst"),
+        )
 
 
 @pytest.mark.asyncio
 async def test_rm_r_file(accessor):
     await rm_r(
         accessor,
-        PathSpec(resource_path="file.txt",
-                 virtual="/file.txt",
-                 directory="/file.txt"))
+        PathSpec(
+            vfs_path="file.txt", virtual="/file.txt", directory="/file.txt"
+        ),
+    )
     assert not await accessor.store.has_file("/file.txt")
 
 
 @pytest.mark.asyncio
 async def test_rm_r_directory(accessor):
-    await rm_r(accessor,
-               PathSpec(resource_path="dir", virtual="/dir", directory="/dir"))
+    await rm_r(
+        accessor, PathSpec(vfs_path="dir", virtual="/dir", directory="/dir")
+    )
     assert not await accessor.store.has_dir("/dir")
     assert not await accessor.store.has_file("/dir/child.txt")
 
@@ -155,18 +163,21 @@ async def test_rmdir_empty(mk_store):
     a = await mk_store("test:fops:rd:")
     await a.store.add_dir("/empty")
     await rmdir(
-        a, PathSpec(resource_path="empty",
-                    virtual="/empty",
-                    directory="/empty"))
+        a, PathSpec(vfs_path="empty", virtual="/empty", directory="/empty")
+    )
     assert not await a.store.has_dir("/empty")
 
 
 @pytest.mark.asyncio
 async def test_rmdir_not_empty(accessor):
-    with pytest.raises(OSError, match="directory not empty"):
+    # The condition, not the wording: this raised a bare OSError whose
+    # only signal was its message, which `classify` cannot name at all.
+    with pytest.raises(OSError) as excinfo:
         await rmdir(
             accessor,
-            PathSpec(resource_path="dir", virtual="/dir", directory="/dir"))
+            PathSpec(vfs_path="dir", virtual="/dir", directory="/dir"),
+        )
+    assert excinfo.value.errno == errno.ENOTEMPTY
 
 
 @pytest.mark.asyncio
@@ -174,17 +185,18 @@ async def test_rmdir_not_found(mk_store):
     a = await mk_store("test:fops:rd2:")
     with pytest.raises(FileNotFoundError):
         await rmdir(
-            a,
-            PathSpec(resource_path="nope", virtual="/nope", directory="/nope"))
+            a, PathSpec(vfs_path="nope", virtual="/nope", directory="/nope")
+        )
 
 
 @pytest.mark.asyncio
 async def test_unlink(accessor):
     await unlink(
         accessor,
-        PathSpec(resource_path="file.txt",
-                 virtual="/file.txt",
-                 directory="/file.txt"))
+        PathSpec(
+            vfs_path="file.txt", virtual="/file.txt", directory="/file.txt"
+        ),
+    )
     assert not await accessor.store.has_file("/file.txt")
 
 
@@ -194,9 +206,10 @@ async def test_unlink_not_found(mk_store):
     with pytest.raises(FileNotFoundError):
         await unlink(
             a,
-            PathSpec(resource_path="nope.txt",
-                     virtual="/nope.txt",
-                     directory="/nope.txt"))
+            PathSpec(
+                vfs_path="nope.txt", virtual="/nope.txt", directory="/nope.txt"
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -230,9 +243,11 @@ async def test_truncate_to_zero(accessor):
 async def test_append_to_existing(accessor):
     await append_bytes(
         accessor,
-        PathSpec(resource_path="file.txt",
-                 virtual="/file.txt",
-                 directory="/file.txt"), b" world")
+        PathSpec(
+            vfs_path="file.txt", virtual="/file.txt", directory="/file.txt"
+        ),
+        b" world",
+    )
     assert await accessor.store.get_file("/file.txt") == b"hello world"
 
 
@@ -241,9 +256,9 @@ async def test_append_to_new(mk_store):
     a = await mk_store("test:fops:ap:")
     await append_bytes(
         a,
-        PathSpec(resource_path="new.txt",
-                 virtual="/new.txt",
-                 directory="/new.txt"), b"data")
+        PathSpec(vfs_path="new.txt", virtual="/new.txt", directory="/new.txt"),
+        b"data",
+    )
     assert await a.store.get_file("/new.txt") == b"data"
 
 
@@ -254,9 +269,13 @@ async def test_append_into_missing_parent_leaves_no_orphan(mk_store):
     with pytest.raises(FileNotFoundError):
         await append_bytes(
             a,
-            PathSpec(resource_path="missing/new.txt",
-                     virtual="/missing/new.txt",
-                     directory="/missing/new.txt"), b"data")
+            PathSpec(
+                vfs_path="missing/new.txt",
+                virtual="/missing/new.txt",
+                directory="/missing/new.txt",
+            ),
+            b"data",
+        )
     assert not await a.store.has_file("/missing/new.txt")
 
 
@@ -267,9 +286,13 @@ async def test_append_under_a_plain_file_is_not_a_directory(mk_store):
     with pytest.raises(NotADirectoryError):
         await append_bytes(
             a,
-            PathSpec(resource_path="plain/new.txt",
-                     virtual="/plain/new.txt",
-                     directory="/plain/new.txt"), b"data")
+            PathSpec(
+                vfs_path="plain/new.txt",
+                virtual="/plain/new.txt",
+                directory="/plain/new.txt",
+            ),
+            b"data",
+        )
     assert not await a.store.has_file("/plain/new.txt")
 
 
@@ -277,47 +300,89 @@ async def test_append_under_a_plain_file_is_not_a_directory(mk_store):
 async def test_append_multiple(mk_store):
     a = await mk_store("test:fops:ap2:")
     await append_bytes(
-        a, PathSpec(resource_path="f.txt",
-                    virtual="/f.txt",
-                    directory="/f.txt"), b"a")
+        a,
+        PathSpec(vfs_path="f.txt", virtual="/f.txt", directory="/f.txt"),
+        b"a",
+    )
     await append_bytes(
-        a, PathSpec(resource_path="f.txt",
-                    virtual="/f.txt",
-                    directory="/f.txt"), b"b")
+        a,
+        PathSpec(vfs_path="f.txt", virtual="/f.txt", directory="/f.txt"),
+        b"b",
+    )
     await append_bytes(
-        a, PathSpec(resource_path="f.txt",
-                    virtual="/f.txt",
-                    directory="/f.txt"), b"c")
+        a,
+        PathSpec(vfs_path="f.txt", virtual="/f.txt", directory="/f.txt"),
+        b"c",
+    )
     assert await a.store.get_file("/f.txt") == b"abc"
 
 
 @pytest.mark.asyncio
 async def test_exists_file(accessor):
-    assert await exists(
-        accessor,
-        PathSpec(resource_path="file.txt",
-                 virtual="/file.txt",
-                 directory="/file.txt")) is True
+    assert (
+        await exists(
+            accessor,
+            PathSpec(
+                vfs_path="file.txt", virtual="/file.txt", directory="/file.txt"
+            ),
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
 async def test_exists_dir(accessor):
-    assert await exists(
-        accessor,
-        PathSpec(resource_path="dir", virtual="/dir",
-                 directory="/dir")) is True
+    assert (
+        await exists(
+            accessor,
+            PathSpec(vfs_path="dir", virtual="/dir", directory="/dir"),
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
 async def test_exists_root(accessor):
-    assert await exists(accessor,
-                        PathSpec(resource_path="", virtual="/",
-                                 directory="/")) is True
+    assert (
+        await exists(
+            accessor, PathSpec(vfs_path="", virtual="/", directory="/")
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
 async def test_exists_missing(mk_store):
     a = await mk_store("test:fops:ex:")
-    assert await exists(
-        a, PathSpec(resource_path="nope", virtual="/nope",
-                    directory="/nope")) is False
+    assert (
+        await exists(
+            a, PathSpec(vfs_path="nope", virtual="/nope", directory="/nope")
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_truncate_no_create_after_deletion(accessor, monkeypatch):
+    store = accessor.store
+    mutate = store.truncate_file
+
+    async def delete_then_truncate(path, length, modified, no_create=False):
+        await store.del_file(path)
+        await store.del_modified(path)
+        return await mutate(path, length, modified, no_create)
+
+    monkeypatch.setattr(store, "truncate_file", delete_then_truncate)
+    await truncate(accessor, PathSpec.from_str_path("/file.txt"), 2, True)
+    assert await store.get_file("/file.txt") is None
+    assert await store.get_modified("/file.txt") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("length", [0, 2, 8])
+async def test_truncate_existing_atomically_resizes(accessor, length):
+    await truncate(accessor, PathSpec.from_str_path("/file.txt"), length, True)
+    assert await accessor.store.get_file("/file.txt") == b"hello"[
+        :length
+    ].ljust(length, b"\0")
+    assert await accessor.store.get_modified("/file.txt") is not None

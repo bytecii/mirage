@@ -1,9 +1,11 @@
 import re
+from collections.abc import Callable
 from decimal import ROUND_HALF_EVEN, ROUND_UP, Context, Decimal
 
 from mirage.commands.builtin.utils.lines import split_lines
-from mirage.commands.builtin.utils.stream import _read_stdin_async
+from mirage.commands.builtin.utils.stream import read_stdin_async
 from mirage.commands.errors import UsageError
+from mirage.commands.quote import quote_text
 from mirage.io.types import ByteSource, IOResult
 
 _SUFFIX_ORDER = ("", "K", "M", "G", "T", "P", "E", "Z", "Y", "R", "Q")
@@ -17,10 +19,7 @@ _NUMBER_RE = re.compile(r"(-?(?:[0-9]*\.[0-9]+|[0-9]+))(.*)", re.DOTALL)
 _UNIT_EXPONENTS = {
     "K": 1,
     "k": 1,
-    **{
-        u: i
-        for i, u in enumerate(_SUFFIX_ORDER) if i >= 2
-    },
+    **{u: i for i, u in enumerate(_SUFFIX_ORDER) if i >= 2},
 }
 
 
@@ -52,9 +51,36 @@ def _suffix_error(value: str, junk: str) -> UsageError:
         junk (str): the unusable tail, or "" for the whole-field shape.
     """
     if not junk:
-        return UsageError(f"numfmt: invalid suffix in input: '{value}'", 2)
-    return UsageError(f"numfmt: invalid suffix in input '{value}': '{junk}'",
-                      2)
+        return UsageError(
+            f"numfmt: invalid suffix in input: '{quote_text(value)}'", 2
+        )
+    return UsageError(
+        f"numfmt: invalid suffix in input '{quote_text(value)}': "
+        f"'{quote_text(junk)}'",
+        2,
+    )
+
+
+def _missing_i_error(value: str) -> UsageError:
+    """GNU's ``--from=iec-i`` complaint that the ``i`` is absent, exit 2.
+
+    The ``i`` test sits OUTSIDE the suffix branch in GNU's
+    ``simple_strtod_human``, so it answers for every field whose unit
+    letter is not followed by an ``i`` -- a field with no unit at all
+    included. Measured on coreutils 9.4: ``1``, ``1.5``, ``1K``, ``1Kx``,
+    ``1KB`` and ``1KII`` all get this clause, while ``1Kii`` and ``1KiB``
+    consume the ``i`` and report their leftover as an invalid suffix
+    instead, and ``1i`` never reaches it because ``i`` is not a unit
+    letter.
+
+    Args:
+        value (str): the whole input field, as typed.
+    """
+    return UsageError(
+        f"numfmt: missing 'i' suffix in input: '{quote_text(value)}' "
+        "(e.g Ki/Mi/Gi)",
+        2,
+    )
 
 
 def _scale_of(value: str, suffix: str, from_mode: str) -> tuple[int, int]:
@@ -64,7 +90,9 @@ def _scale_of(value: str, suffix: str, from_mode: str) -> tuple[int, int]:
     letter, iec-i requires the trailing 'i', and auto takes either and lets
     the 'i' pick base 1024. Nothing may follow (pinned against coreutils
     9.7), which is why `1KiB` is refused everywhere -- it used to be read
-    as a kilobyte in both languages.
+    as a kilobyte in both languages. Under iec-i a tail that does not
+    START with the 'i' is the missing-'i' clause rather than an invalid
+    suffix: `1Ké` and `1Kx` both name the whole field (coreutils 9.4).
 
     Args:
         value (str): the whole input field, for the error messages.
@@ -76,12 +104,8 @@ def _scale_of(value: str, suffix: str, from_mode: str) -> tuple[int, int]:
         raise _suffix_error(value, "")
     tail = suffix[1:]
     if from_mode == "iec-i":
-        if not tail:
-            raise UsageError(
-                f"numfmt: missing 'i' suffix in input: '{value}' "
-                "(e.g Ki/Mi/Gi)", 2)
-        if tail[0] != "i":
-            raise _suffix_error(value, tail)
+        if tail[:1] != "i":
+            raise _missing_i_error(value)
         if tail[1:]:
             raise _suffix_error(value, tail[1:])
         return 1024, exponent
@@ -115,27 +139,33 @@ def _parse_number(value: str, from_mode: str) -> tuple[Decimal, int]:
             ``auto``.
     """
     match = _NUMBER_RE.fullmatch(value)
-    if match is None or (match.group(2).startswith(".")
-                         and "." not in match.group(1)):
-        raise UsageError(f"numfmt: invalid number: '{value}'", 2)
+    if match is None or (
+        match.group(2).startswith(".") and "." not in match.group(1)
+    ):
+        raise UsageError(f"numfmt: invalid number: '{quote_text(value)}'", 2)
     digits, suffix = match.group(1), match.group(2)
     number = Decimal(digits)
     _, _, fraction = digits.partition(".")
     if not suffix:
+        if from_mode == "iec-i":
+            raise _missing_i_error(value)
         return number, len(fraction)
     if suffix[0] not in _UNIT_EXPONENTS:
         raise _suffix_error(value, "")
     if from_mode == "none":
         raise UsageError(
-            f"numfmt: rejecting suffix in input: '{value}' "
-            "(consider using --from)", 2)
+            f"numfmt: rejecting suffix in input: '{quote_text(value)}' "
+            "(consider using --from)",
+            2,
+        )
     base, exponent = _scale_of(value, suffix, from_mode)
     ctx = _context_for(value)
     return ctx.multiply(number, ctx.power(Decimal(base), exponent)), 0
 
 
-def _format_number(number: Decimal, to_mode: str, grouping: bool,
-                   decimals: int) -> str:
+def _format_number(
+    number: Decimal, to_mode: str, grouping: bool, decimals: int
+) -> str:
     """Render a value the way GNU numfmt does for the given --to mode.
 
     GNU rounds away from zero, keeping one decimal only while the scaled
@@ -157,11 +187,14 @@ def _format_number(number: Decimal, to_mode: str, grouping: bool,
         decimals (int): Decimal places for ``--to=none``.
     """
     if to_mode == "none":
-        number = number.quantize(Decimal(1).scaleb(-decimals),
-                                 rounding=ROUND_UP,
-                                 context=_context_for(str(number)))
-        return format(number,
-                      f",.{decimals}f" if grouping else f".{decimals}f")
+        number = number.quantize(
+            Decimal(1).scaleb(-decimals),
+            rounding=ROUND_UP,
+            context=_context_for(str(number)),
+        )
+        return format(
+            number, f",.{decimals}f" if grouping else f".{decimals}f"
+        )
     base = Decimal(1000 if to_mode == "si" else 1024)
     display = _SI_DISPLAY if to_mode == "si" else _SUFFIX_ORDER
     power = 0
@@ -174,8 +207,9 @@ def _format_number(number: Decimal, to_mode: str, grouping: bool,
         number /= base
         power += 1
     places = 1 if power and abs(number) < 10 else 0
-    number = number.quantize(Decimal(1).scaleb(-places),
-                             rounding=ROUND_HALF_EVEN)
+    number = number.quantize(
+        Decimal(1).scaleb(-places), rounding=ROUND_HALF_EVEN
+    )
     suffix = display[power]
     if to_mode == "iec-i" and power:
         suffix += "i"
@@ -183,14 +217,16 @@ def _format_number(number: Decimal, to_mode: str, grouping: bool,
     return format(number, spec) + suffix
 
 
-def _convert_field(value: str, to_mode: str, from_mode: str, suffix: str,
-                   grouping: bool) -> str:
+def _convert_field(
+    value: str, to_mode: str, from_mode: str, suffix: str, grouping: bool
+) -> str:
     number, decimals = _parse_number(value.removesuffix(suffix), from_mode)
     return _format_number(number, to_mode, grouping, decimals) + suffix
 
 
-def _convert_line(line: str, to_mode: str, from_mode: str, suffix: str,
-                  grouping: bool) -> str:
+def _convert_line(
+    line: str, to_mode: str, from_mode: str, suffix: str, grouping: bool
+) -> str:
     """Reformat the first field of a record, preserving the rest verbatim.
 
     GNU ``numfmt`` converts only ``--field`` (1 by default) and copies the
@@ -207,8 +243,11 @@ def _convert_line(line: str, to_mode: str, from_mode: str, suffix: str,
     if match is None:
         return line
     lead, field, rest = match.groups()
-    return lead + _convert_field(field, to_mode, from_mode, suffix,
-                                 grouping) + rest
+    return (
+        lead
+        + _convert_field(field, to_mode, from_mode, suffix, grouping)
+        + rest
+    )
 
 
 async def numfmt(
@@ -219,21 +258,25 @@ async def numfmt(
     suffix: str = "",
     grouping: bool = False,
 ) -> tuple[ByteSource | None, IOResult]:
+    convert: Callable[[str, str, str, str, bool], str]
     if texts:
-        output = [
-            _convert_field(value, to_mode, from_mode, suffix, grouping)
-            for value in texts
-        ]
+        fields, convert = list(texts), _convert_field
     else:
-        raw = await _read_stdin_async(stdin)
+        raw = await read_stdin_async(stdin)
         data = raw.decode(errors="replace") if raw is not None else ""
-        output = [
-            _convert_line(line, to_mode, from_mode, suffix, grouping)
-            for line in split_lines(data)
-        ]
-    if not output:
-        return b"", IOResult()
-    return ("\n".join(output) + "\n").encode(), IOResult()
+        fields, convert = split_lines(data), _convert_line
+    printed = ""
+    for value in fields:
+        try:
+            printed += convert(value, to_mode, from_mode, suffix, grouping)
+        except UsageError as exc:
+            # GNU aborts at the first invalid number, after printing the
+            # ones before it.
+            return printed.encode() or None, IOResult(
+                exit_code=exc.exit_code, stderr=f"{exc}\n".encode()
+            )
+        printed += "\n"
+    return printed.encode(), IOResult()
 
 
 __all__ = ["numfmt"]

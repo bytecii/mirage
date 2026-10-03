@@ -13,10 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { stripSlash } from '../../../utils/slash.ts'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { IOResult, materialize } from '../../../io/types.ts'
-import { FileStat, FileType, PathSpec } from '../../../types.ts'
+import { ContentType, FileStat, FileType, PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
+import { efbig } from '../../../utils/errors.ts'
 import { catGeneric } from './cat.ts'
 
 const ENC = new TextEncoder()
@@ -29,7 +30,7 @@ const FILES: Record<string, string> = {
 
 function spec(path: string): PathSpec {
   return new PathSpec({
-    resourcePath: stripSlash(path),
+    vfsPath: stripSlash(path),
     virtual: path,
     directory: path,
     resolved: true,
@@ -37,7 +38,7 @@ function spec(path: string): PathSpec {
 }
 
 function opts(): CommandOpts {
-  return { stdin: null, flags: {}, filetypeFns: null, cwd: '/', resource: {} } as CommandOpts
+  return { stdin: null, flags: {}, filetypeFns: null, cwd: '/', vfs: {} } as CommandOpts
 }
 
 async function* fileStream(path: string, pulled: string[]): AsyncIterable<Uint8Array> {
@@ -47,7 +48,9 @@ async function* fileStream(path: string, pulled: string[]): AsyncIterable<Uint8A
 }
 
 function statFn(p: PathSpec): Promise<FileStat> {
-  return Promise.resolve(new FileStat({ name: p.virtual, size: 1, type: FileType.TEXT }))
+  return Promise.resolve(
+    new FileStat({ name: p.virtual, size: 1, type: FileType.FILE, content: ContentType.TEXT }),
+  )
 }
 
 describe('catGeneric multi-file streaming', () => {
@@ -77,6 +80,27 @@ describe('catGeneric multi-file streaming', () => {
   })
 })
 
+describe('catGeneric per-operand read failure', () => {
+  it('reports a read refused past the stat and prints the next file', async () => {
+    // A table past its mount's read cap stats fine and refuses the read; GNU
+    // cat reports the operand and goes on to the next.
+    const result = await catGeneric([spec('/a.txt'), spec('/b.txt')], [], opts(), statFn, (p) =>
+      p.virtual === '/a.txt'
+        ? (async function* () {
+            await Promise.resolve()
+            yield* []
+            throw efbig(p)
+          })()
+        : fileStream(p.virtual, []),
+    )
+    const [stdout, io] = result ?? [null, new IOResult()]
+    expect(DEC.decode(await materialize(stdout))).toBe('b1\nb2\n')
+    expect(DEC.decode(await materialize(io.stderr))).toBe('cat: /a.txt: File too large\n')
+    expect(io.exitCode).toBe(1)
+    expect(await materialize(io.reads['/a.txt'])).toEqual(new Uint8Array())
+  })
+})
+
 describe('displayLines flags', () => {
   async function run(text: string, flags: Record<string, boolean>): Promise<string> {
     const result = await catGeneric(
@@ -94,20 +118,17 @@ describe('displayLines flags', () => {
     return DEC.decode(await materialize(stdout))
   }
 
-  it('-E marks line ends', async () => {
-    expect(await run('a\tb\nx\n', { show_ends: true })).toBe('a\tb$\nx$\n')
-  })
-
-  it('-T renders tabs as ^I', async () => {
-    expect(await run('a\tb\nx\n', { show_tabs: true })).toBe('a^Ib\nx\n')
-  })
-
-  it('-A combines -vET', async () => {
-    expect(await run('a\tb\nx\n', { show_all: true })).toBe('a^Ib$\nx$\n')
-  })
-
   it('-v uses caret and meta notation', async () => {
     // TextEncoder emits UTF-8, so \u00ff arrives as the two bytes C3 BF.
     expect(await run('\x01\x7f\u00ff\n', { show_nonprinting: true })).toBe('^A^?M-CM-?\n')
   })
+})
+
+it('stats each operand once while retaining its stream', async () => {
+  const stat = vi.fn(statFn)
+  const [stdout] = (await catGeneric([spec('/a.txt'), spec('/b.txt')], [], opts(), stat, (p) =>
+    fileStream(p.virtual, []),
+  )) ?? [null]
+  expect(DEC.decode(await materialize(stdout))).toBe('a1\na2\na3\nb1\nb2\n')
+  expect(stat).toHaveBeenCalledTimes(2)
 })

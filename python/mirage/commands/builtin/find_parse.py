@@ -12,54 +12,133 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import math
+import re
+import string
+import time
 from dataclasses import dataclass, field
+from datetime import timezone
 
-from mirage.commands.builtin.find_eval import (And, Empty, Name, Not, Or, Path,
-                                               PredNode, TrueNode, Type)
-from mirage.commands.builtin.find_helper import _parse_mtime, _parse_size
+from mirage.commands.builtin import constants
+from mirage.commands.builtin.find_eval import (
+    Action,
+    ActionKind,
+    And,
+    Empty,
+    Mtime,
+    Name,
+    Not,
+    Or,
+    Path,
+    PredNode,
+    Prune,
+    TrueNode,
+    Type,
+    tree_has_action,
+    tree_has_prune,
+    without_prune,
+)
+from mirage.commands.builtin.types import (
+    ExecAction,
+    FindAction,
+    PrintfAction,
+    RowAction,
+)
 from mirage.commands.errors import FindParseError
+from mirage.utils.dates import parse_date_expr
 
-_VALUE_PREDICATES = frozenset({
-    "-name",
-    "-iname",
-    "-path",
-    "-type",
-    "-size",
-    "-mtime",
-    "-maxdepth",
-    "-mindepth",
-    "-printf",
-})
 
-_BARE_PREDICATES = frozenset({
-    "-empty",
-    "-print",
-    "-print0",
-    "-delete",
-    "-ls",
-    "-depth",
-})
+def parse_depth(value: str, flag: str) -> int:
+    """One -maxdepth/-mindepth argument as an int, or GNU's refusal.
 
-_OPERATORS = frozenset({
-    "-not",
-    "!",
-    "-o",
-    "-or",
-    "-a",
-    "-and",
-    "(",
-    ")",
-})
+    Args:
+        value (str): the argument as typed.
+        flag (str): the flag it filled, for the error message.
+    """
+    try:
+        return int(value)
+    except ValueError:
+        raise FindParseError(
+            f"find: invalid argument '{value}' to '{flag}'"
+        ) from None
 
-_EXPRESSION_TOKENS = _VALUE_PREDICATES | _BARE_PREDICATES | _OPERATORS
 
-_VALID_TYPES = frozenset({"b", "c", "d", "p", "f", "l", "s"})
+def parse_size(spec: str) -> tuple[int | None, int | None]:
+    """One -size argument as inclusive byte bounds.
 
-_MAX_DEPTH = 100
+    The last character names the unit (b, c, w, k, M, G); a bare
+    number counts 512-byte blocks, like b. GNU rounds the file size up
+    to whole units before comparing, and +N / -N are strict: +N keeps
+    ceil(size/unit) > N, -N keeps ceil(size/unit) < N, N alone keeps
+    ceil(size/unit) == N. Expressed as inclusive byte bounds: +N ->
+    [N*unit + 1, inf), -N -> [0, (N-1)*unit], N -> [(N-1)*unit + 1,
+    N*unit]. N past UINTMAX is invalid in any unit, as GNU's get_num
+    refuses it.
+
+    Args:
+        spec (str): the argument as typed.
+    """
+    units = {"b": 512, "c": 1, "w": 2, "k": 1024, "M": 1024**2, "G": 1024**3}
+    if not spec:
+        raise FindParseError("find: invalid null argument to -size")
+    if spec[-1] in string.digits:
+        unit, body = units["b"], spec
+    elif spec[-1] in units:
+        unit, body = units[spec[-1]], spec[:-1]
+    else:
+        raise FindParseError(f"find: invalid -size type `{spec[-1]}'")
+    sign = body[:1] if body.startswith(("+", "-")) else ""
+    number = body[len(sign) :]
+    if (
+        not re.fullmatch(rf"{constants.C_SPACE}\+?[0-9]+", number)
+        or int(number) > constants.UINTMAX
+    ):
+        raise FindParseError(f"find: Invalid argument `{spec}' to -size")
+    n = int(number)
+    if sign == "+":
+        return n * unit + 1, None
+    if sign == "-":
+        return None, (n - 1) * unit
+    return (n - 1) * unit + 1, n * unit
+
+
+def parse_mtime(spec: str) -> tuple[float | None, float | None]:
+    """One -mtime argument as inclusive epoch-second bounds.
+
+    Args:
+        spec (str): the argument as typed.
+    """
+    now = time.time()
+    day = 86400
+    try:
+        n = int(spec.lstrip("+-"))
+    except ValueError:
+        raise FindParseError(
+            f"find: invalid argument '{spec}' to '-mtime'"
+        ) from None
+    if spec.startswith("+"):
+        return None, now - n * day
+    if spec.startswith("-"):
+        return now - n * day, None
+    return now - (n + 1) * day, now - n * day
 
 
 @dataclass
 class FindExpr:
+    """One parsed find expression: the predicate tree plus everything
+    the flat window lifts out of it.
+
+    The tests that a backend can answer per entry stay in ``tree``; the
+    windows (depth, size, mtime) and the actions are global to the
+    expression, because a native find op evaluates the tree and the
+    executor applies the actions to what came back. A time test also
+    sits in the tree as an ``Mtime`` node, for its position alone: a
+    ``-prune`` after it fires only where the test holds. ``newer`` holds
+    ``-newer`` reference operands as typed, for the executor to resolve
+    against the dispatcher into ``-newermt`` bounds before any backend
+    sees the expression.
+    """
+
     tree: PredNode
     maxdepth: int | None = None
     mindepth: int | None = None
@@ -68,7 +147,20 @@ class FindExpr:
     mtime_min: float | None = None
     mtime_max: float | None = None
     uses_empty: bool = False
-    printf: str | None = None
+    # In the order written: GNU runs actions per position, so
+    # `-exec echo {} ";" -print -exec echo again {} ";"` alternates the
+    # three per match.
+    actions: list[FindAction] = field(default_factory=list)
+    newer: list[str] = field(default_factory=list)
+    # GNU's -depth: every directory's contents come before the directory
+    # itself. -delete turns it on, since a directory can only be removed
+    # once what it holds is gone.
+    depth_first: bool = False
+
+    @property
+    def execs(self) -> list[ExecAction]:
+        """The ``-exec`` actions, in order."""
+        return [a for a in self.actions if isinstance(a, ExecAction)]
 
 
 @dataclass
@@ -76,8 +168,314 @@ class _State:
     tokens: list[str]
     pos: int = 0
     depth: int = 0
+    # Parentheses and negations enclosing the current token.
+    nested: int = 0
+    in_or: bool = False
+    positional: bool = False
+    depth_option: bool = False
     mtime_seen: bool = False
+    newer_token: str | None = None
     expr: FindExpr = field(default_factory=lambda: FindExpr(tree=TrueNode()))
+
+
+def _merge_window(state: _State, lo: float | None, hi: float | None) -> None:
+    """Fold one mtime window into the expression's single window.
+
+    The flat window cannot evaluate a time test per predicate node, so
+    repeated ones fold by where they sit. In the top-level ``-a`` chain
+    every test must hold, so the windows intersect: ``-newer old -newer
+    new`` keeps only what is newer than both, and ``-mtime +2 -mtime
+    -1`` keeps nothing, as GNU answers. Under ``-o``, ``!`` or
+    parentheses the window cannot be exact, so they widen to the union:
+    the tautology ``-mtime +0 -o -mtime -1`` imposes no bounds instead
+    of last-wins dropping everything (documented divergence from GNU:
+    such a window over-matches).
+
+    Args:
+        state (_State): parser state carrying the expression.
+        lo (float | None): inclusive lower bound, epoch seconds.
+        hi (float | None): inclusive upper bound, epoch seconds.
+    """
+    if not state.mtime_seen:
+        state.expr.mtime_min, state.expr.mtime_max = lo, hi
+        state.mtime_seen = True
+        return
+    if state.nested == 0 and not state.in_or:
+        state.expr.mtime_min = (
+            lo
+            if state.expr.mtime_min is None
+            else state.expr.mtime_min
+            if lo is None
+            else max(state.expr.mtime_min, lo)
+        )
+        state.expr.mtime_max = (
+            hi
+            if state.expr.mtime_max is None
+            else state.expr.mtime_max
+            if hi is None
+            else min(state.expr.mtime_max, hi)
+        )
+        return
+    state.expr.mtime_min = (
+        None
+        if state.expr.mtime_min is None or lo is None
+        else min(state.expr.mtime_min, lo)
+    )
+    state.expr.mtime_max = (
+        None
+        if state.expr.mtime_max is None or hi is None
+        else max(state.expr.mtime_max, hi)
+    )
+
+
+def strictly_after(timestamp: float) -> float:
+    """The inclusive lower bound that means "later than ``timestamp``".
+
+    ``-newer`` and ``-newermt`` are strict (GNU: modified *more recently
+    than*), and the window is inclusive, so the bound is the next
+    representable float: exact, where adding an epsilon would either
+    miss a timestamp or admit the reference itself.
+
+    Args:
+        timestamp (float): the reference time, epoch seconds.
+    """
+    return math.nextafter(timestamp, math.inf)
+
+
+def parse_newermt(value: str) -> float:
+    """One ``-newermt`` argument as the reference epoch time.
+
+    Args:
+        value (str): a GNU date expression, with naive times read as UTC.
+    """
+    try:
+        ts = parse_date_expr(value, tz=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        ts = None
+    if ts is None:
+        raise FindParseError(
+            "find: I cannot figure out how to interpret "
+            f"'{value}' as a date or time"
+        )
+    return ts.timestamp()
+
+
+def _parse_exec(state: _State) -> ExecAction:
+    """The words after ``-exec`` up to ``;`` or a ``{} +``.
+
+    GNU's rules, in GNU's words: no terminator is a missing argument, a
+    ``+`` counts as the terminator only right after a word holding
+    ``{}``, and the batched form allows exactly one ``{}`` and only by
+    itself.
+
+    Args:
+        state (_State): parser state, positioned after ``-exec``.
+    """
+    argv: list[str] = []
+    batch = False
+    while True:
+        tok = _advance(state)
+        if tok is None:
+            raise FindParseError("find: missing argument to `-exec'")
+        if tok == constants.EXEC_END:
+            break
+        if (
+            tok == constants.EXEC_BATCH_END
+            and argv
+            and constants.EXEC_PLACEHOLDER in argv[-1]
+        ):
+            batch = True
+            break
+        argv.append(tok)
+    if not argv:
+        raise FindParseError("find: missing argument to `-exec'")
+    if batch:
+        for word in argv:
+            if (
+                constants.EXEC_PLACEHOLDER in word
+                and word != constants.EXEC_PLACEHOLDER
+            ):
+                raise FindParseError(
+                    "find: In '-exec ... {} +' the '{}' must appear by "
+                    f"itself, but you specified '{word}'"
+                )
+        if argv.count(constants.EXEC_PLACEHOLDER) > 1:
+            raise FindParseError(
+                "find: Only one instance of {} is supported with -exec ... +"
+            )
+    return ExecAction(argv=tuple(argv), batch=batch)
+
+
+def _check_window_placement(state: _State, token: str) -> None:
+    if state.nested > 0 or state.in_or:
+        raise FindParseError(
+            f"find: {token} is supported only in a top-level -a chain, "
+            "not under -o, ! or parentheses"
+        )
+
+
+def _action_node(
+    state: _State, kind: ActionKind, batch: bool = False
+) -> Action:
+    """The tree node for an action just parsed.
+
+    An action inside parentheses or under ``!`` makes the expression
+    positional: the tree decides per entry which action is reached,
+    rather than the chain running them all in order.
+
+    Args:
+        state (_State): parser state.
+        kind (ActionKind): the action's word without the dash.
+        batch (bool): an ``-exec ... {} +``.
+    """
+    if state.nested > 0:
+        state.positional = True
+    return Action(kind, batch)
+
+
+_POSITIONAL = "under -o, ! or parentheses"
+
+
+def _check_positional(node: PredNode) -> None:
+    """Refuse a tree in which reaching an action does not end evaluation.
+
+    The executor runs the one action on every kept row, so the tree may
+    reach an action only where GNU would then evaluate nothing else: as
+    the last factor of its ``-a`` chain (a factor holding one counts),
+    with the chain's ``-o`` short-circuiting on the true it returns, and
+    never under ``!``, which would turn that true into a false the
+    enclosing ``-o`` carries on from. ``( -name a -print ) -print``
+    would print ``a`` twice and ``-print -name x -o -print`` prints
+    every row twice, and neither fits one action per row.
+
+    Args:
+        node (PredNode): the predicate tree.
+    """
+    if isinstance(node, Not):
+        if tree_has_action(node.kid):
+            raise FindParseError(
+                f"find: {_first_action(node.kid)} is not supported under !"
+            )
+        _check_positional(node.kid)
+    elif isinstance(node, And):
+        for kid in node.kids[:-1]:
+            if tree_has_action(kid):
+                raise FindParseError(
+                    f"find: {_first_action(kid)} must end its -a chain "
+                    f"{_POSITIONAL}"
+                )
+        for kid in node.kids:
+            _check_positional(kid)
+    elif isinstance(node, Or):
+        for kid in node.kids:
+            _check_positional(kid)
+
+
+def _holds_exec_result(node: PredNode) -> bool:
+    if isinstance(node, Action):
+        return node.kind == "exec" and not node.batch
+    if isinstance(node, Not):
+        return _holds_exec_result(node.kid)
+    if isinstance(node, (And, Or)):
+        return any(_holds_exec_result(kid) for kid in node.kids)
+    return False
+
+
+def _check_exec_result(node: PredNode) -> None:
+    """Refuse an ``-exec ... ;`` whose exit status picks the next arm.
+
+    GNU's ``-exec ... ;`` is false when its command fails, so an ``-o``
+    arm ending in one hands the failing rows to the next arm (``-type d
+    -exec false ; -o -prune`` prunes exactly the directories the
+    command rejects). The executor learns the status only after the
+    walk, once the tree has decided every row, so such an -exec may
+    stand only where nothing follows it. ``-exec ... +`` is true
+    whatever the command exits, as GNU's is, and sits anywhere an
+    action may.
+
+    Args:
+        node (PredNode): the predicate tree.
+    """
+    if isinstance(node, Or):
+        for kid in node.kids[:-1]:
+            if _holds_exec_result(kid):
+                raise FindParseError(
+                    f"find: -exec must end the expression {_POSITIONAL}"
+                )
+    if isinstance(node, Not):
+        _check_exec_result(node.kid)
+    elif isinstance(node, (And, Or)):
+        for kid in node.kids:
+            _check_exec_result(kid)
+
+
+def _first_action(node: PredNode) -> str:
+    if isinstance(node, Action):
+        return f"-{node.kind}"
+    if isinstance(node, Not):
+        return _first_action(node.kid)
+    if isinstance(node, (And, Or)):
+        for kid in node.kids:
+            if tree_has_action(kid):
+                return _first_action(kid)
+    raise AssertionError(f"no action under {node!r}")
+
+
+def _settle_actions(state: _State) -> None:
+    """Reduce a positional expression's actions to the one it may hold.
+
+    Every action written is in the tree, so the rows are exact; the
+    executor then runs ``actions`` on each row without knowing which
+    node reached it, which is only right when they are all the same
+    action (``-name a -print -o -name b -print``), never ``-print`` on
+    one arm and ``-print0``, a different ``-exec`` or a different
+    ``-printf`` format on the other.
+
+    Args:
+        state (_State): parser state, tree parsed.
+    """
+    if not state.positional:
+        return
+    _check_positional(state.expr.tree)
+    distinct: list[FindAction] = []
+    for action in state.expr.actions:
+        if action not in distinct:
+            distinct.append(action)
+    if len(distinct) > 1:
+        first, second = distinct[0], distinct[1]
+        if isinstance(first, ExecAction) and isinstance(second, ExecAction):
+            raise FindParseError(
+                f"find: -exec may run only one command {_POSITIONAL}"
+            )
+        if isinstance(first, PrintfAction) and isinstance(
+            second, PrintfAction
+        ):
+            raise FindParseError(
+                f"find: -printf may print only one format {_POSITIONAL}"
+            )
+        raise FindParseError(
+            f"find: {_action_word(first)} and "
+            f"{_action_word(second)} cannot be combined "
+            f"{_POSITIONAL}"
+        )
+    _check_exec_result(state.expr.tree)
+    state.expr.actions = distinct
+
+
+def _action_word(action: FindAction) -> str:
+    if isinstance(action, ExecAction):
+        return "-exec"
+    if isinstance(action, PrintfAction):
+        return "-printf"
+    return f"-{action.kind}"
+
+
+_DELETE_PRUNE = (
+    "find: The -delete action automatically turns on -depth, "
+    "but -prune does nothing when -depth is in effect.  If you "
+    "want to carry on anyway, just explicitly use the -depth "
+    "option."
+)
 
 
 def _peek(state: _State) -> str | None:
@@ -108,7 +506,8 @@ def _after_operator(state: _State, op: str) -> None:
         raise FindParseError(f"find: expected an expression after '{op}'")
     if tok == ")":
         raise FindParseError(
-            f"find: expected an expression between '{op}' and ')'")
+            f"find: expected an expression between '{op}' and ')'"
+        )
 
 
 def _type_node(value: str) -> Type:
@@ -116,40 +515,43 @@ def _type_node(value: str) -> Type:
         return Type("f")
     if value in ("d", "directory"):
         return Type("d")
-    if value in _VALID_TYPES:
+    if value in constants.FIND_VALID_TYPES:
         return Type(value)
     raise FindParseError(f"find: Unknown argument to -type: {value}")
 
 
-def _int_arg(value: str, flag: str) -> int:
-    try:
-        return int(value)
-    except ValueError as exc:
-        raise FindParseError(
-            f"find: invalid argument '{value}' to '{flag}'") from exc
-
-
-def _size_arg(value: str) -> tuple[int | None, int | None]:
-    try:
-        return _parse_size(value)
-    except (ValueError, IndexError) as exc:
-        raise FindParseError(
-            f"find: invalid argument '{value}' to '-size'") from exc
-
-
 def _mtime_arg(value: str) -> tuple[float | None, float | None]:
     try:
-        return _parse_mtime(value)
+        return parse_mtime(value)
     except (ValueError, IndexError) as exc:
         raise FindParseError(
-            f"find: invalid argument '{value}' to '-mtime'") from exc
+            f"find: invalid argument '{value}' to '-mtime'"
+        ) from exc
 
 
 def _parse_primary(state: _State) -> PredNode:
     tok = _advance(state)
     if tok is None:
         raise FindParseError("find: expected predicate")
-    if tok in _VALUE_PREDICATES:
+    if (
+        state.expr.actions
+        and state.nested == 0
+        and not state.in_or
+        and (
+            tok in ("-empty", "-prune")
+            or tok
+            in constants.FIND_VALUE_PREDICATES
+            - {"-printf", "-maxdepth", "-mindepth"}
+        )
+    ):
+        # Along a top-level -a chain the actions run in order on every
+        # row the tree kept, so a test after one would apply to the
+        # actions before it too. Elsewhere the tree itself decides
+        # (`_check_positional`).
+        raise FindParseError(
+            f"find: {tok}: tests after actions are not supported"
+        )
+    if tok in constants.FIND_VALUE_PREDICATES:
         value = _advance(state)
         if value is None:
             raise FindParseError(f"find: missing argument to '{tok}'")
@@ -162,60 +564,81 @@ def _parse_primary(state: _State) -> PredNode:
         if tok == "-type":
             return _type_node(value)
         if tok == "-printf":
-            # An action, not a test: it always matches, replaces the
-            # default -print rendering, and one format applies to every
-            # row (GNU evaluates actions per expression position, which
-            # the flat window cannot express; a single trailing -printf,
-            # the way agents write it, renders identically).
-            state.expr.printf = value
-            return TrueNode()
+            # An action, not a test: it always matches and replaces the
+            # default -print rendering, at its position in the chain.
+            state.expr.actions.append(PrintfAction(value))
+            return _action_node(state, "printf")
         if tok == "-maxdepth":
-            state.expr.maxdepth = _int_arg(value, "-maxdepth")
+            state.expr.maxdepth = parse_depth(value, "-maxdepth")
             return TrueNode()
         if tok == "-mindepth":
-            state.expr.mindepth = _int_arg(value, "-mindepth")
+            state.expr.mindepth = parse_depth(value, "-mindepth")
             return TrueNode()
         if tok == "-size":
-            state.expr.min_size, state.expr.max_size = _size_arg(value)
+            state.expr.min_size, state.expr.max_size = parse_size(value)
             return TrueNode()
-        # The flat window cannot evaluate -mtime per predicate node, so
-        # repeated -mtime flatten to the union of their windows: the
-        # tautology `-mtime +0 -o -mtime -1` imposes no bounds instead
-        # of last-wins dropping everything. An AND of disjoint windows
-        # over-matches (documented divergence from GNU).
+        if tok in ("-newer", "-newermt"):
+            _check_window_placement(state, tok)
+            state.newer_token = tok
+        if tok == "-newer":
+            # Resolved by the executor (`find_refs.py`) into -newermt,
+            # since only the dispatcher can stat the reference.
+            state.expr.newer.append(value)
+            return TrueNode()
+        if tok == "-newermt":
+            lower = strictly_after(parse_newermt(value))
+            _merge_window(state, lower, None)
+            return Mtime(lower, None)
         mt_lo, mt_hi = _mtime_arg(value)
-        if not state.mtime_seen:
-            state.expr.mtime_min, state.expr.mtime_max = mt_lo, mt_hi
-            state.mtime_seen = True
-        else:
-            state.expr.mtime_min = (None if state.expr.mtime_min is None
-                                    or mt_lo is None else min(
-                                        state.expr.mtime_min, mt_lo))
-            state.expr.mtime_max = (None if state.expr.mtime_max is None
-                                    or mt_hi is None else max(
-                                        state.expr.mtime_max, mt_hi))
-        return TrueNode()
+        _merge_window(state, mt_lo, mt_hi)
+        return Mtime(mt_lo, mt_hi)
+    if tok in constants.FIND_EXEC_PREDICATES:
+        action = _parse_exec(state)
+        state.expr.actions.append(action)
+        return _action_node(state, "exec", action.batch)
     if tok == "-empty":
         state.expr.uses_empty = True
         return Empty()
-    if tok in _BARE_PREDICATES:
+    if tok in constants.FIND_ROW_ACTIONS:
+        kind = constants.FIND_ROW_ACTIONS[tok]
+        state.expr.actions.append(RowAction(kind))
+        if tok == "-delete":
+            state.expr.depth_first = True
+        return _action_node(state, kind)
+    if tok == "-prune":
+        return Prune()
+    if tok == "-depth":
+        # Spelled out, unlike the -depth that -delete turns on: only this
+        # one lets a -prune ride beside -delete, as a knowing no-op.
+        state.expr.depth_first = True
+        state.depth_option = True
+        return TrueNode()
+    if tok in constants.FIND_BARE_PREDICATES:
         return TrueNode()
     raise FindParseError(f"find: unknown predicate '{tok}'")
 
 
 def _parse_factor(state: _State) -> PredNode:
     state.depth += 1
-    if state.depth > _MAX_DEPTH:
+    if state.depth > constants.FIND_MAX_DEPTH:
         raise FindParseError("find: expression too deeply nested")
     try:
         tok = _peek(state)
         if tok is not None and tok in ("-not", "!"):
             _advance(state)
             _after_operator(state, tok)
-            return Not(_parse_factor(state))
+            state.nested += 1
+            try:
+                return Not(_parse_factor(state))
+            finally:
+                state.nested -= 1
         if tok == "(":
             _advance(state)
-            node = _parse_or(state)
+            state.nested += 1
+            try:
+                node = _parse_or(state)
+            finally:
+                state.nested -= 1
             if _peek(state) != ")":
                 raise FindParseError("find: unbalanced parentheses")
             _advance(state)
@@ -248,6 +671,13 @@ def _parse_or(state: _State) -> PredNode:
             break
         _advance(state)
         _after_operator(state, tok)
+        # Each arm reaches its own actions, and a window under one cannot
+        # be exact.
+        state.positional = True
+        if state.nested == 0:
+            state.in_or = True
+            if state.newer_token is not None:
+                _check_window_placement(state, state.newer_token)
         terms.append(_parse_and(state))
     return terms[0] if len(terms) == 1 else Or(terms)
 
@@ -265,9 +695,44 @@ def find_expr_tail(raw_argv: list[str]) -> list[str]:
         start += 1
     for i in range(start, len(raw_argv)):
         tok = raw_argv[i]
-        if tok in _EXPRESSION_TOKENS or (tok.startswith("-") and len(tok) > 1):
+        if tok in constants.FIND_EXPRESSION_TOKENS or (
+            tok.startswith("-") and len(tok) > 1
+        ):
             return raw_argv[i:]
     return []
+
+
+def exec_spans(argv: list[str]) -> list[tuple[int, int]]:
+    """The argv index ranges, inclusive, that ``-exec`` owns.
+
+    Every word from ``-exec`` to its terminator is the action's, never
+    an operand of find's own: the classifier reads this so ``echo``,
+    ``{}`` and ``;`` are not turned into start points. A span with no
+    terminator runs to the end; the parser reports that one.
+
+    Args:
+        argv (list[str]): the command's words, without the name.
+    """
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] not in constants.FIND_EXEC_PREDICATES:
+            i += 1
+            continue
+        start = i
+        i += 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok == constants.EXEC_END or (
+                tok == constants.EXEC_BATCH_END
+                and i > start + 1
+                and constants.EXEC_PLACEHOLDER in argv[i - 1]
+            ):
+                break
+            i += 1
+        spans.append((start, min(i, len(argv) - 1)))
+        i += 1
+    return spans
 
 
 def parse_find_expression(tokens: list[str]) -> FindExpr:
@@ -278,4 +743,12 @@ def parse_find_expression(tokens: list[str]) -> FindExpr:
     if _peek(state) is not None:
         raise FindParseError(f"find: unexpected token '{_peek(state)}'")
     state.expr.tree = tree
+    _settle_actions(state)
+    if tree_has_prune(tree) and state.expr.depth_first:
+        # GNU's words: -delete turns -depth on, and a -prune under -depth
+        # is a no-op the line surely did not mean; spelling -depth out
+        # takes the no-op knowingly.
+        if not state.depth_option:
+            raise FindParseError(_DELETE_PRUNE)
+        state.expr.tree = without_prune(tree)
     return state.expr

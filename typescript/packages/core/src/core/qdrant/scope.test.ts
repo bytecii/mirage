@@ -12,68 +12,65 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stripSlash } from '../../utils/slash.ts'
 import { describe, expect, it } from 'vitest'
 
-import { resolveQdrantConfig } from '../../resource/qdrant/config.ts'
+import {
+  resolveQdrantConfig,
+  type QdrantConfig,
+  type QdrantConfigResolved,
+} from '../../vfs/qdrant/config.ts'
 import { PathSpec } from '../../types.ts'
-import { ScopeLevel, detectScope } from './scope.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { INVALID, makeDetectScope, type DetectFn } from '../hierarchy/scope.ts'
+import { filtersOf } from '../vector/scope.ts'
+import { scopesFor } from './scope.ts'
 
-const config = resolveQdrantConfig({
-  groupBy: ['label', 'kind'],
-  idField: 'id',
-  textField: 'name',
-  blobField: 'image_bytes',
-  blobExt: 'png',
-  vectorField: 'vector',
-})
+function cfg(over: Partial<QdrantConfig> = {}): QdrantConfigResolved {
+  return resolveQdrantConfig({
+    groupBy: ['label', 'kind'],
+    idField: 'id',
+    textField: 'name',
+    blobField: 'image_bytes',
+    blobExt: 'png',
+    vectorField: 'vector',
+    ...over,
+  })
+}
+
+const config = cfg()
+
+function detect(c: QdrantConfigResolved): DetectFn {
+  return makeDetectScope(scopesFor(c))
+}
 
 function ps(p: string): PathSpec {
-  return new PathSpec({ resourcePath: stripSlash(p), virtual: p, directory: p })
+  return new PathSpec({ vfsPath: stripSlash(p), virtual: p, directory: p })
 }
 
 describe('qdrant scope', () => {
-  it('root in multi-collection mode', () => {
-    expect(detectScope(ps('/'), config).level).toBe(ScopeLevel.ROOT)
-  })
-
-  it('collection is a group dir', () => {
-    const s = detectScope(ps('/animals'), config)
-    expect(s.level).toBe(ScopeLevel.GROUP_DIR)
-    expect(s.table).toBe('animals')
-    expect(s.filters).toEqual({})
-  })
-
-  it('nested group dir binds a filter', () => {
-    expect(detectScope(ps('/animals/cat'), config).filters).toEqual({ label: 'cat' })
-  })
-
   it('row json', () => {
-    const s = detectScope(ps('/animals/cat/big/3.json'), config)
-    expect(s.level).toBe(ScopeLevel.ROW)
-    expect(s.rowId).toBe('3')
-    expect(s.kind).toBe('json')
-    expect(s.filters).toEqual({ label: 'cat', kind: 'big' })
+    const match = detect(config)(ps('/animals/cat/big/3.json'))
+    expect(match.kind).toBe('row_json')
+    expect(match.slots.row_id).toBe('3')
+    expect(filtersOf(config.groupBy, match)).toEqual({ label: 'cat', kind: 'big' })
   })
 
   it('row text', () => {
-    const s = detectScope(ps('/animals/cat/big/3.txt'), config)
-    expect(s.kind).toBe('txt')
+    const match = detect(config)(ps('/animals/cat/big/3.txt'))
+    expect(match.kind).toBe('row_text')
+    expect(match.slots.row_id).toBe('3')
   })
 
   it('row blob', () => {
-    const s = detectScope(ps('/animals/cat/big/3.png'), config)
-    expect(s.kind).toBe('blob')
+    const match = detect(config)(ps('/animals/cat/big/3.png'))
+    expect(match.kind).toBe('row_blob')
+    expect(match.slots.row_id).toBe('3')
   })
 
-  it('single-collection pin elides the collection level', () => {
-    const pinned = resolveQdrantConfig({
-      collection: 'animals',
-      groupBy: ['label', 'kind'],
-      idField: 'id',
-    })
-    const s = detectScope(ps('/cat/big'), pinned)
-    expect(s.level).toBe(ScopeLevel.GROUP_DIR)
-    expect(s.filters).toEqual({ label: 'cat', kind: 'big' })
+  it('text and blob leaves need their config fields', () => {
+    const bare = resolveQdrantConfig({ groupBy: ['label', 'kind'] })
+    expect(detect(bare)(ps('/animals/cat/big/3.txt')).kind).toBe(INVALID)
+    expect(detect(bare)(ps('/animals/cat/big/3.png')).kind).toBe(INVALID)
+    expect(detect(bare)(ps('/animals/cat/big/3.json')).kind).toBe('row_json')
   })
 })

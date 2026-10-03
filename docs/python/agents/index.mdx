@@ -1,5 +1,5 @@
 ---
-title: Agents
+title: Overview
 description: Drop a Mirage workspace into the Python agent framework you already use.
 icon: robot
 ---
@@ -11,7 +11,6 @@ uv add 'mirage-ai[openai]'        # openai-agents
 uv add 'mirage-ai[deepagents]'    # LangChain deepagents
 uv add 'mirage-ai[openhands]'     # OpenHands SDK
 uv add 'mirage-ai[pydantic-ai]'   # pydantic-ai
-uv add 'mirage-ai[camel]'         # CAMEL-AI
 uv add 'mirage-ai[agno]'          # Agno
 uv add 'mirage-ai[claude-agent-sdk]'  # Claude Agent SDK
 ```
@@ -31,9 +30,6 @@ Haystack is the exception: deepset maintains it in their own repository, so it i
   <Card title="pydantic-ai" icon="/images/pydantic-logo.svg" href="/python/agents/pydantic-ai">
     For pydantic-ai and pydantic-deepagents.
   </Card>
-  <Card title="CAMEL-AI" icon="/images/camel-logo.svg" href="/python/agents/camel">
-    For CAMEL-AI's `ChatAgent`.
-  </Card>
   <Card title="Agno" icon="/images/agno-logo.svg" href="/python/agents/agno">
     For Agno's `Agent` via `MirageToolkit`.
   </Card>
@@ -47,7 +43,7 @@ Haystack is the exception: deepset maintains it in their own repository, so it i
     For `claude-agent-sdk` via an in-process MCP server.
   </Card>
   <Card title="Codex" icon="/images/openai-logo.svg" href="/python/agents/codex">
-    Same pattern as Claude Code: mount, then `codex`.
+    Mount with FUSE, then `codex`, or run Codex's own tools in a workspace over SSH.
   </Card>
   <Card title="Grok Build" icon="terminal" href="/python/agents/grok-build">
     Mount a workspace via FUSE and run `grok` against it.

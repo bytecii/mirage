@@ -12,50 +12,46 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { VFSAdapter } from '../../../vfs/adapter.ts'
+
 import type { BoxAccessor } from '../../../accessor/box.ts'
-import { size as boxDu, entries as boxDuAll } from '../../../core/box/du/index.ts'
+import { makeWalkedDu } from '../../../core/generic/du.ts'
+import { narrowPaths as boxNarrowPaths } from '../../../core/box/search.ts'
 import { read as boxRead, stream as boxStream } from '../../../core/box/read.ts'
 import { readdir as boxReaddir } from '../../../core/box/readdir.ts'
 import { stat as boxStat } from '../../../core/box/stat.ts'
-import {
-  copy as boxCopy,
-  create as boxCreate,
-  exists as boxExists,
-  mkdir as boxMkdir,
-  rename as boxRename,
-  rmR as boxRmR,
-  rmdir as boxRmdir,
-  truncate as boxTruncate,
-  unlink as boxUnlink,
-  write as boxWrite,
-} from '../../../core/box/write.ts'
+import { copy as boxCopy } from '../../../core/box/copy.ts'
+import { create as boxCreate } from '../../../core/box/create.ts'
+import { exists as boxExists } from '../../../core/box/exists.ts'
+import { mkdir as boxMkdir } from '../../../core/box/mkdir.ts'
+import { rename as boxRename } from '../../../core/box/rename.ts'
+import { rmR as boxRmR, rmdir as boxRmdir } from '../../../core/box/rmdir.ts'
+import { truncate as boxTruncate } from '../../../core/box/truncate.ts'
+import { unlink as boxUnlink } from '../../../core/box/unlink.ts'
+import { write as boxWrite } from '../../../core/box/write.ts'
 import { type CommandIO, rangeOf } from '../generic_bind/index.ts'
 
-export const BOX_IO: CommandIO<BoxAccessor> = {
-  readdir: boxReaddir,
-  readBytes: boxRead,
-  readRange: rangeOf(boxRead),
-  readStream: boxStream,
-  stat: boxStat,
+export const IO: CommandIO<BoxAccessor> = new VFSAdapter<BoxAccessor>({
+  read: { readdir: boxReaddir, readBytes: boxRead, stat: boxStat },
+  native: {
+    readRange: rangeOf(boxRead),
+    readStream: boxStream,
+    du: makeWalkedDu(boxStat, boxReaddir),
+    exists: boxExists,
+  },
+  writes: {
+    write: boxWrite,
+    mkdir: boxMkdir,
+    unlink: boxUnlink,
+    rmdir: boxRmdir,
+    rmR: boxRmR,
+    rename: boxRename,
+    copy: boxCopy,
+    dirCopy: boxCopy,
+    create: boxCreate,
+    truncate: boxTruncate,
+  },
+  contentSearch: { narrowPaths: boxNarrowPaths, enabled: (accessor) => accessor.contentSearch },
   isMounted: () => true,
   local: false,
-  du: { size: boxDu, entries: boxDuAll },
-  write: boxWrite,
-  exists: boxExists,
-  mkdir: boxMkdir,
-  unlink: boxUnlink,
-  rmdir: boxRmdir,
-  rmR: boxRmR,
-  rename: boxRename,
-  copy: boxCopy,
-  dirCopy: boxCopy,
-  create: boxCreate,
-  truncate: boxTruncate,
-  // No `find` slot on purpose, matching python. A native op is worth
-  // wiring only when it pushes the search down to the API; Box has no
-  // such call, so the op could only re-walk readdir/stat — which is what
-  // the find and cp builders already do, except they walk with the
-  // mount's own index, the namespace stat overlay (`find -mtime` after a
-  // `touch -d`) and the symlink table (`-empty`). Wiring the walk as an
-  // op silently dropped all three.
-}
+}).toCommandIO()

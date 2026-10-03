@@ -16,8 +16,26 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import Any, Callable, ClassVar
 
+from mirage.runtime.binding import WorkspaceBinding
 from mirage.runtime.config import RuntimeConfig
-from mirage.runtime.types import RuntimeReach, ScriptSource
+from mirage.runtime.errors import UnsupportedExecutionError
+from mirage.runtime.mixin import (
+    EvaluatorMixin,
+    LineExecutorMixin,
+    ProcessExecutorMixin,
+)
+from mirage.runtime.types import (
+    ExecutionRequest,
+    FilesystemOperation,
+    ProcessExecution,
+    RunResult,
+    RuntimeCapabilities,
+    RuntimeContext,
+    RuntimeReach,
+    ScriptSource,
+    ShellExecution,
+)
+from mirage.utils.activity import Activity
 
 
 class Runtime(ABC):
@@ -41,18 +59,19 @@ class Runtime(ABC):
     name: str
     captures: tuple[str, ...] = ()
     # Which doors this runtime's code has to the outside world (see
-    # RuntimeReach): "vfs" when the workspace dispatch is its only
+    # RuntimeReach): "workspace" when the workspace dispatch is its only
     # one, as the bridged engines (monty, quickjs, wasi) and the vfs
     # routing marker declare, "process" or "remote" when the code can
     # act around that gate. The default is "process", the no-promise
     # claim, so a custom runtime must declare a narrower reach
     # explicitly rather than inherit it. Embedders read the aggregate:
-    # only a world in which every runtime reaches "vfs" makes "agent
+    # only a world in which every runtime reaches "workspace" makes "agent
     # code cannot bypass mount modes and policy" a true statement; one
     # wider runtime voids it.
     reach: RuntimeReach = "process"
+    filesystem: ClassVar[tuple[FilesystemOperation, ...]] = ()
     # Per-line admission script for the routing ladder, answering "do
-    # I want this line": a callable taking a PolicyContext, or a
+    # I want this line": a callable taking a RouteContext, or a
     # config-borne ScriptSource. None = always willing. Policy, not
     # capability: it can only refuse lines the captures already allow.
     script: Callable[..., Any] | ScriptSource | None = None
@@ -60,17 +79,22 @@ class Runtime(ABC):
     # loud, so runtimes need no per-field rejection code.
     config_cls: ClassVar[type[RuntimeConfig]] = RuntimeConfig
     config: RuntimeConfig = RuntimeConfig()
+    _binding: WorkspaceBinding | None = None
+    _activity: Activity | None = None
+    _retired: bool = False
 
     def __init__(
-            self,
-            captures: Sequence[str] | None = None,
-            config: RuntimeConfig | dict[str, Any] | None = None,
-            script: Callable[..., Any] | ScriptSource | None = None) -> None:
+        self,
+        captures: Sequence[str] | None = None,
+        config: RuntimeConfig | dict[str, Any] | None = None,
+        script: Callable[..., Any] | ScriptSource | None = None,
+    ) -> None:
         """Every runtime is constructed the same way.
 
         Args:
             captures (Sequence[str] | None): commands this runtime
-                claims, overriding the class default; ("*",) claims
+                claims, overriding the class default; EXTERNAL_COMMANDS
+                captures unresolved program names. ("*",) claims
                 every line for a line-executing runtime. None keeps
                 the default.
             config (RuntimeConfig | dict[str, Any] | None): the
@@ -85,6 +109,91 @@ class Runtime(ABC):
             self.captures = tuple(captures)
         self.config = self.config_cls.coerce(config)
         self.script = script
+
+    @property
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(
+            process=isinstance(self, ProcessExecutorMixin),
+            shell=isinstance(self, LineExecutorMixin),
+            evaluate=isinstance(self, EvaluatorMixin),
+            reach=self.reach,
+            filesystem=self.filesystem,
+        )
+
+    def bind(self, binding: WorkspaceBinding) -> None:
+        """Bind this instance to one workspace."""
+        if self._retired:
+            raise ValueError(
+                f"{self.name}: runtime was removed from its workspace; "
+                "construct a new one"
+            )
+        if self._binding is not None and self._binding is not binding:
+            raise ValueError(
+                f"{self.name}: runtime is already bound to another workspace"
+            )
+        self._binding = binding
+
+    async def execute(
+        self, request: ExecutionRequest, context: RuntimeContext | None = None
+    ) -> RunResult:
+        """Execute directly, or under the bound workspace's captured context.
+
+        This is the engine door. Workspace.shell remains the shell admission
+        and routing door, as it was for callers of run and run_line.
+        """
+        release = self.admit()
+        try:
+            if context is None and self._binding is not None:
+                context = self._binding.capture()
+            if context is not None:
+                if context.binding is not self._binding:
+                    raise ValueError(
+                        f"{self.name}: context belongs to another binding"
+                    )
+                return await context.scope.run(
+                    lambda: self._execute(request, context)
+                )
+            return await self._execute(request, None)
+        finally:
+            release()
+
+    def admit(self) -> Callable[[], None]:
+        """Count one unit of work, refused once the runtime is retired."""
+        if self._retired:
+            raise RuntimeError(
+                f"{self.name}: runtime was removed from the workspace"
+            )
+        if self._activity is None:
+            self._activity = Activity()
+        return self._activity.acquire()
+
+    async def retire(self) -> None:
+        """Refuse new executions and binds, then wait for running ones."""
+        self._retired = True
+        if self._activity is not None:
+            await self._activity.wait()
+
+    def _capture_context(self) -> RuntimeContext | None:
+        return self._binding.capture() if self._binding is not None else None
+
+    async def _execute(
+        self, request: ExecutionRequest, context: RuntimeContext | None
+    ) -> RunResult:
+        if isinstance(request, ProcessExecution) and isinstance(
+            self, ProcessExecutorMixin
+        ):
+            if not request.argv:
+                raise ValueError("process argv must not be empty")
+            return await self.run_process(request)
+        if isinstance(request, ShellExecution) and isinstance(
+            self, LineExecutorMixin
+        ):
+            return await self.run_line(
+                request.line, request.stdin, request.env, request.cwd.virtual
+            )
+        raise UnsupportedExecutionError(
+            f"{self.name}: {request.kind} execution is unsupported"
+        )
 
     async def close(self) -> None:
         """Release engine resources. Default: nothing held."""

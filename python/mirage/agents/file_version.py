@@ -15,14 +15,16 @@
 import base64
 import hashlib
 
-from mirage.workspace.workspace import Workspace
+from mirage.ops.ops import Ops
+from mirage.workspace.workspace import Session, Workspace
 
 
 class StaleMirageFileError(Exception):
-
     def __init__(self, path: str) -> None:
-        super().__init__(f"File changed since it was last read: {path}. "
-                         f"Read the file again before modifying it.")
+        super().__init__(
+            f"File changed since it was last read: {path}. "
+            f"Read the file again before modifying it."
+        )
         self.path = path
 
 
@@ -54,15 +56,27 @@ class FileVersionTracker:
 
     Args:
         workspace (Workspace): The workspace to read and write through.
-        enabled (bool): False serves every call unchecked, which is
-            what `mirage mcp --no-stale-write-protection` asks for.
+        enabled (bool): False serves every call unchecked.
+        session_id (str | None): The session the reads and writes run
+            as; the workspace's default session when None.
     """
 
-    def __init__(self, workspace: Workspace, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        workspace: Workspace,
+        enabled: bool = True,
+        session_id: str | None = None,
+    ) -> None:
         self._ws = workspace
+        self.vfs: Ops = (
+            workspace.vfs
+            if session_id is None
+            else Session(workspace, session_id).vfs
+        )
         self._enabled = enabled
         self._read_versions: dict[str, str] = {}
         self._edit_versions: dict[str, str] = {}
+        self._seen: set[str] = set()
 
     def _key(self, path: str) -> str:
         """The stamp key for a path: one key per file, not per spelling.
@@ -82,9 +96,9 @@ class FileVersionTracker:
         return self._ws.namespace.follow(path)
 
     async def _current_version(self, path: str) -> str | None:
-        if not await self._ws.ops.exists(path):
+        if not await self.vfs.exists(path):
             return None
-        return fingerprint(await self._ws.ops.read(path))
+        return fingerprint(await self.vfs.read(path))
 
     async def _assert_version(self, path: str, expected: str) -> None:
         if await self._current_version(path) != expected:
@@ -104,6 +118,26 @@ class FileVersionTracker:
             self._read_versions[key] = version
         self._edit_versions.pop(key, None)
 
+    def has_read(self, path: str) -> bool:
+        """Whether a write may overwrite the file: the agent was shown all
+        of it, or wrote all of it, since this tracker started, or nothing
+        is checked. A read of a few lines does not count, so a write never
+        replaces lines the agent did not see.
+
+        Args:
+            path (str): Virtual path.
+        """
+        return not self._enabled or self._key(path) in self._seen
+
+    def mark_seen(self, path: str) -> None:
+        """Record that the agent was shown all of the file.
+
+        Args:
+            path (str): Virtual path.
+        """
+        if self._enabled:
+            self._seen.add(self._key(path))
+
     async def read(self, path: str) -> bytes:
         """Read a file and record what the agent was shown.
 
@@ -113,7 +147,7 @@ class FileVersionTracker:
         Returns:
             bytes: The stored bytes.
         """
-        content = await self._ws.ops.read(path)
+        content = await self.vfs.read(path)
         if self._enabled:
             self._read_versions[self._key(path)] = fingerprint(content)
         return content
@@ -130,7 +164,7 @@ class FileVersionTracker:
         Raises:
             StaleMirageFileError: The file moved since it was last read.
         """
-        content = await self._ws.ops.read(path)
+        content = await self.vfs.read(path)
         if not self._enabled:
             return content
         key = self._key(path)
@@ -156,8 +190,10 @@ class FileVersionTracker:
             read_version = self._read_versions.get(key)
             if read_version is not None:
                 await self._assert_version(path, read_version)
-        await self._ws.ops.write(path, content.encode("utf-8"))
+        await self.vfs.write(path, content.encode("utf-8"))
         await self._record_write(path, key)
+        if self._enabled:
+            self._seen.add(key)
 
     async def write_edit(self, path: str, content: str) -> None:
         """Write an edit, refusing if it moved since it was read for edit.
@@ -174,5 +210,5 @@ class FileVersionTracker:
             edit_version = self._edit_versions.get(key)
             if edit_version is not None:
                 await self._assert_version(path, edit_version)
-        await self._ws.ops.write(path, content.encode("utf-8"))
+        await self.vfs.write(path, content.encode("utf-8"))
         await self._record_write(path, key)

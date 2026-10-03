@@ -35,9 +35,9 @@ class JobConsole:
             rebuilding a finished console from a snapshot.
     """
 
-    def __init__(self,
-                 store: ConsoleStore | None = None,
-                 finished: bool = False) -> None:
+    def __init__(
+        self, store: ConsoleStore | None = None, finished: bool = False
+    ) -> None:
         self._store = store if store is not None else RAMConsoleStore()
         self._finished = finished
 
@@ -66,13 +66,15 @@ class JobConsole:
 
         Ignored once the job has ended, so a runner still unwinding after
         a kill cannot append past the ending chunk and strand readers
-        that already stopped following.
+        that already stopped following. Ignored too once the store is
+        closed: the console was discarded, and a Redis store written
+        after close would open a client that nothing closes.
 
         Args:
             channel (Channel): which stream the bytes came from.
             data (bytes): the payload.
         """
-        if self._finished:
+        if self._finished or self._store.closed:
             return
         await self._store.append(channel, data)
 
@@ -88,11 +90,13 @@ class JobConsole:
         if self._finished:
             return
         self._finished = True
+        if self._store.closed:
+            return
         await self._store.append(Channel.CONTROL, outcome.encode())
 
-    async def read_from(self,
-                        seq: int,
-                        limit: int | None = None) -> ReadResult:
+    async def read_from(
+        self, seq: int, limit: int | None = None
+    ) -> ReadResult:
         """Read chunks at or after a cursor.
 
         Args:
@@ -150,8 +154,9 @@ class JobConsole:
         """
         chunks, _, _ = await self._store.read_from(0)
         if channel is None:
-            return b"".join(c.data for c in chunks
-                            if c.channel != Channel.CONTROL)
+            return b"".join(
+                c.data for c in chunks if c.channel != Channel.CONTROL
+            )
         return b"".join(c.data for c in chunks if c.channel == channel)
 
     async def close(self) -> None:

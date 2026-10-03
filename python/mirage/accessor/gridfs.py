@@ -15,31 +15,14 @@
 import asyncio
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
 from pymongo import AsyncMongoClient
 
 from mirage.accessor.base import Accessor
-from mirage.resource.secrets import reveal_secret
-from mirage.utils import key_prefix as kp
-
-
-class GridFSConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    uri: SecretStr
-    database: str
-    bucket: str = "fs"
-    key_prefix: str | None = None
-    chunk_size_bytes: int | None = None
-
-    @field_validator("key_prefix")
-    @classmethod
-    def _normalize_key_prefix(cls, v: str | None) -> str | None:
-        return kp.normalize(v) or None
+from mirage.vfs.gridfs.config import GridFSConfig
+from mirage.vfs.secrets import reveal_secret
 
 
 class GridFSAccessor(Accessor):
-
     def __init__(self, config: GridFSConfig) -> None:
         self.config = config
         self._clients: dict[int, AsyncMongoClient[dict[str, Any]]] = {}

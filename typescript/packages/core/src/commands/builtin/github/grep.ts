@@ -18,14 +18,15 @@ import { readdir as githubReaddir } from '../../../core/github/readdir.ts'
 import { stat as githubStat } from '../../../core/github/stat.ts'
 import { stream as githubStream } from '../../../core/github/read.ts'
 import { IOResult } from '../../../io/types.ts'
-import { type FileStat, ResourceName, type PathSpec } from '../../../types.ts'
+import { type FileStat, VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { prefixAggregate } from '../aggregators.ts'
-import { patternArg } from '../grep_helper.ts'
-import { grepGeneric } from '../generic/grep.ts'
-import { narrowScope } from './pushdown.ts'
-import { FlagView } from '../../spec/types.ts'
+import { grepNeedsEveryFile } from '../grep_pushdown.ts'
+import { patternArg } from '../grep_pattern.ts'
+import { grepGeneric, labelled } from '../generic/grep.ts'
+import { narrowScope, scopeRefusal } from './pushdown.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 
 const ENC = new TextEncoder()
 
@@ -51,16 +52,19 @@ async function grepCommand(
       recursive,
       fl.asBool('w'),
       opts.index ?? undefined,
+      grepNeedsEveryFile(fl),
     )
+    if (narrowed.usedSearch) opts = labelled(opts)
     resolved = narrowed.resolved
+    if (narrowed.usedSearch && resolved.length === 0) {
+      return [new Uint8Array(), new IOResult({ exitCode: 1 })]
+    }
     if (narrowed.fileCount > SCOPE_ERROR) {
       return [
         null,
         new IOResult({
           exitCode: 1,
-          stderr: ENC.encode(
-            `grep: ${String(narrowed.fileCount)} files in scope, narrow the path, or use -w to enable code search\n`,
-          ),
+          stderr: ENC.encode(scopeRefusal('grep', narrowed.fileCount, fl.asBool('w'))),
         }),
       ]
     }
@@ -75,7 +79,7 @@ async function grepCommand(
 
 export const GITHUB_GREP = command({
   name: 'grep',
-  resource: ResourceName.GITHUB,
+  vfs: VFSName.GITHUB,
   spec: specOf('grep'),
   fn: grepCommand,
   aggregate: prefixAggregate,

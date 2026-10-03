@@ -36,16 +36,16 @@ stdout_of() { jq -r '.stdout // .result.stdout // empty'; }
 
 seed() {
   local cli="$1" id="$2"
-  $cli execute -w "$id" -c "echo cross-history-marker" >/dev/null
-  $cli execute -w "$id" -c "printf 'ram-a\nram-b\n' > /ram/f.txt" >/dev/null
-  $cli execute -w "$id" -c "printf 'disk-1\ndisk-2\ndisk-3\n' > /disk/g.txt" >/dev/null
-  $cli execute -w "$id" -c "printf 'redis-x\nredis-y\n' > /redis/h.txt" >/dev/null
-  $cli execute -w "$id" -c "printf 'minio-1\nminio-2\n' > /minio/data/x.txt" >/dev/null
-  $cli execute -w "$id" -c "printf '1\n2\n3\n4\n5\n' > /guard/big.txt" >/dev/null
-  $cli execute -w "$id" -c "ln -s /ram/f.txt /ram/l.txt" >/dev/null
-  $cli execute -w "$id" -c "chmod 640 /ram/f.txt && chown 500:dev /ram/f.txt" >/dev/null
-  $cli execute -w "$id" -c "touch -t 202601021530 /ram/f.txt" >/dev/null
-  $cli execute -w "$id" -c "echo cross-history-marker" >/dev/null
+  $cli shell -w "$id" -c "echo cross-history-marker" >/dev/null
+  $cli shell -w "$id" -c "printf 'ram-a\nram-b\n' > /ram/f.txt" >/dev/null
+  $cli shell -w "$id" -c "printf 'disk-1\ndisk-2\ndisk-3\n' > /disk/g.txt" >/dev/null
+  $cli shell -w "$id" -c "printf 'redis-x\nredis-y\n' > /redis/h.txt" >/dev/null
+  $cli shell -w "$id" -c "printf 'minio-1\nminio-2\n' > /minio/data/x.txt" >/dev/null
+  $cli shell -w "$id" -c "printf '1\n2\n3\n4\n5\n' > /guard/big.txt" >/dev/null
+  $cli shell -w "$id" -c "ln -s /ram/f.txt /ram/l.txt" >/dev/null
+  $cli shell -w "$id" -c "chmod 640 /ram/f.txt && chown 500:dev /ram/f.txt" >/dev/null
+  $cli shell -w "$id" -c "touch -t 202601021530 /ram/f.txt" >/dev/null
+  $cli shell -w "$id" -c "echo cross-history-marker" >/dev/null
 }
 
 # The /guard mount in cross.yaml caps `cat` at 2 lines. Limits apply at
@@ -54,7 +54,7 @@ seed() {
 check_limit() {
   local cli="$1" name="$2"
   local lines
-  lines="$($cli execute -w cross_w -c "cat /guard/big.txt" | stdout_of | grep -c .)"
+  lines="$($cli shell -w cross_w -c "cat /guard/big.txt" | stdout_of | grep -c .)"
   if [ "$lines" == "2" ]; then
     echo "  OK   limit caps cat to 2 lines ($name)"
   else
@@ -95,7 +95,7 @@ run_direction() {
   local expected=()
   local i
   for i in "${!FINGERPRINTS[@]}"; do
-    expected[$i]="$($writer_cli execute -w cross_w -c "${FINGERPRINTS[$i]}" | stdout_of)"
+    expected[$i]="$($writer_cli shell -w cross_w -c "${FINGERPRINTS[$i]}" | stdout_of)"
   done
   $writer_cli workspace snapshot cross_w "$tar" >/dev/null
   $writer_cli workspace delete cross_w >/dev/null 2>&1 || true
@@ -105,7 +105,7 @@ run_direction() {
   $reader_cli workspace load "$tar" "$YAML" --id cross_r >/dev/null
   for i in "${!FINGERPRINTS[@]}"; do
     local got
-    got="$($reader_cli execute -w cross_r -c "${FINGERPRINTS[$i]}" | stdout_of)"
+    got="$($reader_cli shell -w cross_r -c "${FINGERPRINTS[$i]}" | stdout_of)"
     if [ "$got" == "${expected[$i]}" ]; then
       echo "  OK   ${FINGERPRINTS[$i]} => $(printf '%q' "$got")"
     else
@@ -119,8 +119,62 @@ run_direction() {
   freeport
 }
 
+# The same round trip with the file cache on Redis instead of RAM. The
+# snapshot step is the one under test: `workspace snapshot` used to raise
+# when the cache store was not the RAM one, so a deployment with a shared
+# Redis cache could not be snapshotted at all. Nothing is restored INTO
+# the Redis cache on load; the reader must answer through the backend.
+CACHE_YAML="$HERE/cross_cache.yaml"
+CACHE_FINGERPRINTS=(
+  "cat /minio/data/c.txt"
+  "cat /ram/c.txt"
+)
+
+run_cache_direction() {
+  local writer_cli="$1" writer_name="$2" reader_cli="$3" reader_name="$4"
+  local tar="$CROSS_SNAPSHOT_ROOT/cross-cache-${writer_name}-to-${reader_name}.tar"
+  echo
+  echo "===== $writer_name snapshot under a redis file cache -> $reader_name load ====="
+  freeport
+  $writer_cli workspace delete cross_cw >/dev/null 2>&1 || true
+  $writer_cli workspace create "$CACHE_YAML" --id cross_cw >/dev/null
+  $writer_cli shell -w cross_cw -c "printf 'cached-1\ncached-2\n' > /minio/data/c.txt" >/dev/null
+  $writer_cli shell -w cross_cw -c "printf 'ram-c\n' > /ram/c.txt" >/dev/null
+  local expected=()
+  local i
+  for i in "${!CACHE_FINGERPRINTS[@]}"; do
+    expected[$i]="$($writer_cli shell -w cross_cw -c "${CACHE_FINGERPRINTS[$i]}" | stdout_of)"
+  done
+  if $writer_cli workspace snapshot cross_cw "$tar" >/dev/null; then
+    echo "  OK   snapshot written under a redis cache ($writer_name)"
+  else
+    echo "  FAIL snapshot under a redis cache ($writer_name)"
+    fail=1
+  fi
+  $writer_cli workspace delete cross_cw >/dev/null 2>&1 || true
+  freeport
+  $reader_cli workspace delete cross_cr >/dev/null 2>&1 || true
+  $reader_cli workspace load "$tar" "$CACHE_YAML" --id cross_cr >/dev/null
+  for i in "${!CACHE_FINGERPRINTS[@]}"; do
+    local got
+    got="$($reader_cli shell -w cross_cr -c "${CACHE_FINGERPRINTS[$i]}" | stdout_of)"
+    if [ "$got" == "${expected[$i]}" ]; then
+      echo "  OK   ${CACHE_FINGERPRINTS[$i]} => $(printf '%q' "$got")"
+    else
+      echo "  FAIL ${CACHE_FINGERPRINTS[$i]}"
+      echo "       expected $(printf '%q' "${expected[$i]}")"
+      echo "       got      $(printf '%q' "$got")"
+      fail=1
+    fi
+  done
+  $reader_cli workspace delete cross_cr >/dev/null 2>&1 || true
+  freeport
+}
+
 run_direction "$PY_CLI" "py" "$TS_CLI" "ts"
 run_direction "$TS_CLI" "ts" "$PY_CLI" "py"
+run_cache_direction "$PY_CLI" "py" "$TS_CLI" "ts"
+run_cache_direction "$TS_CLI" "ts" "$PY_CLI" "py"
 
 if [ "$fail" != "0" ]; then
   echo

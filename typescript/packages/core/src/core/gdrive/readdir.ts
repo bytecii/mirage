@@ -15,6 +15,7 @@
 import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GDriveAccessor } from '../../accessor/gdrive.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
+import { entryOrWarm } from '../../cache/index/warm.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { MIME_TO_EXT, listFiles, listSharedDrives } from '../google/drive.ts'
@@ -28,17 +29,23 @@ export const DIRECTORY_RESOURCE_TYPES: ReadonlySet<string> = new Set([
   'gdrive/shared_drive',
 ])
 
-const FOLDER_MIME = 'application/vnd.google-apps.folder'
-const DOC_MIME = 'application/vnd.google-apps.document'
-const SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
-const SLIDE_MIME = 'application/vnd.google-apps.presentation'
+// Docs, Sheets and Slides: rendered to JSON rather than downloaded, and
+// carrying no content hash.
+export const NATIVE_RESOURCE_TYPES: ReadonlySet<string> = new Set([
+  'gdrive/gdoc',
+  'gdrive/gsheet',
+  'gdrive/gslide',
+])
 
-function resourceTypeFor(mime: string): string {
-  if (mime === FOLDER_MIME) return 'gdrive/folder'
-  if (mime === DOC_MIME) return 'gdrive/gdoc'
-  if (mime === SHEET_MIME) return 'gdrive/gsheet'
-  if (mime === SLIDE_MIME) return 'gdrive/gslide'
-  return 'gdrive/file'
+const RESOURCE_TYPES: Readonly<Record<string, string>> = {
+  'application/vnd.google-apps.folder': 'gdrive/folder',
+  'application/vnd.google-apps.document': 'gdrive/gdoc',
+  'application/vnd.google-apps.spreadsheet': 'gdrive/gsheet',
+  'application/vnd.google-apps.presentation': 'gdrive/gslide',
+}
+
+export function resourceTypeFor(mime: string): string {
+  return RESOURCE_TYPES[mime] ?? 'gdrive/file'
 }
 
 function uniqueSharedDriveName(name: string, existingNames: Set<string>): string {
@@ -57,8 +64,8 @@ export async function readdir(
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<string[]> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const key = (path.pattern !== null ? path.dir : path).resourcePath
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
+  const key = (path.pattern !== null ? path.dir : path).vfsPath
   const virtualKey = key !== '' ? `${prefix}/${key}` : prefix !== '' ? prefix : '/'
 
   if (index !== undefined) {
@@ -79,21 +86,15 @@ export async function readdir(
       e.code = 'ENOENT'
       throw e
     }
-    let result = await index.get(virtualKey)
-    if (result.entry === undefined || result.entry === null) {
-      const parentOriginal = rstripSlash(path.virtual).replace(/\/[^/]+$/, '') || '/'
-      if (parentOriginal !== path.virtual) {
-        const parentPath = PathSpec.fromStrPath(parentOriginal, mountKey(parentOriginal, prefix))
-        await readdir(accessor, parentPath, index)
-        result = await index.get(virtualKey)
-      }
-      if (result.entry === undefined || result.entry === null) {
-        const e = new Error(`ENOENT: ${path.virtual}`) as Error & { code: string }
-        e.code = 'ENOENT'
-        throw e
-      }
+    const parentOriginal = rstripSlash(virtualKey).replace(/\/[^/]+$/, '') || '/'
+    const parentPath = PathSpec.fromStrPath(parentOriginal, mountKey(parentOriginal, prefix))
+    const entry = await entryOrWarm(index, virtualKey, () => readdir(accessor, parentPath, index))
+    if (entry === null) {
+      const e = new Error(`ENOENT: ${path.virtual}`) as Error & { code: string }
+      e.code = 'ENOENT'
+      throw e
     }
-    if (!DIRECTORY_RESOURCE_TYPES.has(result.entry.resourceType)) {
+    if (!DIRECTORY_RESOURCE_TYPES.has(entry.resourceType)) {
       // Listing a file's id answers with an empty child set rather than an
       // error, so without this the recursion above reported
       // `ls /data/a.txt/x` as ENOENT where opendir(2) says ENOTDIR. The
@@ -102,8 +103,8 @@ export async function readdir(
       // of it with no extra request.
       throw enotdir(path.virtual)
     }
-    folderId = result.entry.id
-    const entryDriveId = result.entry.extra.drive_id
+    folderId = entry.id
+    const entryDriveId = entry.extra.drive_id
     driveId = typeof entryDriveId === 'string' ? entryDriveId : null
   }
 
@@ -113,19 +114,24 @@ export async function readdir(
     const mime = f.mimeType ?? ''
     const ext = MIME_TO_EXT[mime] ?? ''
     const filename = ext !== '' ? `${f.name}${ext}` : f.name
-    const isDir = mime === FOLDER_MIME
+    const resourceType = resourceTypeFor(mime)
+    const isDir = resourceType === 'gdrive/folder'
     const sizeRaw = f.size ?? f.quotaBytesUsed ?? '0'
     const sizeNum = Number.parseInt(sizeRaw, 10)
     const sourceSize = Number.isFinite(sizeNum) && sizeNum > 0 ? sizeNum : null
-    const resourceType = resourceTypeFor(mime)
     // Binary files download raw, so Drive's size is the rendered byte length
     // and stays. Google-apps files (gdoc/gsheet/gslide) render to JSON, so
     // Drive's source size must not become FileStat.size (render-derived or
     // null, see the CLAUDE.md FUSE rules); it lives in extra instead.
     const extra: Record<string, unknown> = f.driveId !== undefined ? { drive_id: f.driveId } : {}
+    // Carried so stat answers the read's token without a request.
+    if (typeof f.md5Checksum === 'string' && f.md5Checksum !== '')
+      extra.md5_checksum = f.md5Checksum
+    if (typeof f.headRevisionId === 'string' && f.headRevisionId !== '')
+      extra.head_revision_id = f.headRevisionId
     let size: number | null = null
     if (resourceType === 'gdrive/file') {
-      size = sourceSize
+      size = f.size !== undefined ? Number.parseInt(f.size, 10) : null
     } else if (sourceSize !== null) {
       extra.source_size = sourceSize
     }
@@ -184,9 +190,9 @@ export async function readdir(
       // Caching a listing we know is short would pin a My-Drive-only root
       // until the entry expires, so the mount would keep hiding Shared
       // Drives after the cause clears (a just-granted scope) with no way to
-      // force a refresh. The entries are still real, so cache those and
-      // leave the directory uncached: child lookups stay warm and the next
-      // readdir retries enumeration.
+      // force a refresh. Retain the returned metadata, but leave the
+      // directory uncached: subsequent child lookups and readdir both
+      // retry enumeration before trusting the entries.
       const childPrefix = virtualKey === '/' ? '/' : `${virtualKey}/`
       for (const e of entries) await index.put(childPrefix + e.name, e.entry)
     }

@@ -21,29 +21,64 @@ DISPATCH_READ_OPS = frozenset({"read", "read_bytes"})
 # file-cache eviction, parent index invalidation, and overlay time
 # clearing (plus the observed-mtime stamp for the content writes in
 # ``STAMP_WRITE_OPS``).
-DISPATCH_WRITE_OPS = frozenset({
-    "write", "write_bytes", "append", "unlink", "create", "truncate", "mkdir",
-    "rmdir", "rename"
-})
+DISPATCH_WRITE_OPS = frozenset(
+    {
+        "write",
+        "write_bytes",
+        "append",
+        "pwrite",
+        "unlink",
+        "create",
+        "truncate",
+        "mkdir",
+        "rmdir",
+        "rename",
+    }
+)
 
 # What the admission gates classify as a write (``OpsContext.write``).
 # A superset of DISPATCH_WRITE_OPS: setattr mutates the mount but keeps
 # its own overlay bookkeeping in ``_apply_setattr``, and symlink writes
 # only the node table, so both need write admission without joining the
 # post-write invalidation path.
-POLICY_WRITE_OPS = DISPATCH_WRITE_OPS | frozenset({"setattr", "symlink"})
+POLICY_WRITE_OPS = DISPATCH_WRITE_OPS | frozenset(
+    {"setattr", "symlink", "setxattr", "removexattr"}
+)
+
+# The extended-attribute ops, which the node table answers: what a caller
+# sets is stored on the path's node beside the overlay's mode and times.
+XATTR_OPS = frozenset({"getxattr", "listxattr", "setxattr", "removexattr"})
 
 # Ops the node table itself answers: a symlink is namespace state with
 # no backend behind it, so the door is the authority for both
 # directions (create and readlink) rather than a router to a mount.
 NAMESPACE_TABLE_OPS = frozenset({"symlink", "readlink"})
 
-# Ops that create the path they name. A hidden target refuses these as
-# EACCES rather than ENOENT, because "does not exist" is nonsense as
-# the answer to a create the caller is spelling out; every other op on
-# a hidden path answers ENOENT, the no-name-leak rule.
-HIDDEN_CREATE_OPS = frozenset(
-    {"write", "write_bytes", "append", "create", "mkdir", "symlink"})
+# Ops the node table answers when the path itself is a link, and only
+# then. The name is the whole of what exists there, so forwarding one
+# reaches a backend that has never heard of it: an unlink answered
+# ENOENT with the link still in the table, and a rename moved nothing.
+# ``stat`` joins them only under ``nofollow``, which is how a caller
+# spells lstat; a following stat arrives already resolved to its target.
+LINK_ENTRY_OPS = frozenset({"unlink", "rename", "stat"})
+
+# Ops that open the regular file they name with O_CREAT, which answers
+# a slash-terminated name (`x/`, only ever a directory) with EISDIR.
+FILE_CREATE_OPS = frozenset(
+    {"write", "write_bytes", "append", "pwrite", "create"}
+)
+
+# Ops that create the path they name. A hidden target refuses these
+# through `hidden_refusal` with `create` set: EACCES when the directory
+# the create lands in is visible (a hidden name there reads as a file
+# the session cannot write), ENOENT when that directory is hidden too,
+# the same answer every read gives for it. Every other op on a hidden
+# path answers ENOENT, the no-name-leak rule.
+HIDDEN_CREATE_OPS = FILE_CREATE_OPS | {"truncate", "mkdir", "symlink"}
+
+# Ops that create the name itself: an existing one answers EEXIST, before
+# a trailing slash on it is judged.
+ENTRY_CREATE_OPS = frozenset({"mkdir", "symlink"})
 
 # The attribute fields a setattr op can carry, in one place so the
 # requested/residual split and the overlay write read the same names.

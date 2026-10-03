@@ -1,6 +1,6 @@
 ---
 title: Watch Matrix
-description: TypeScript watch delivery support and the pull or push detection paths available for each resource.
+description: TypeScript watch delivery support and the pull or push detection paths available for each VFS.
 icon: table-cells
 ---
 
@@ -10,23 +10,23 @@ Watching has two independent halves:
 
 - **Delivery** (`ws.watch()` and `ws.notify()`) works on **every mount**.
   Mirage invalidates caches, matches scopes, and delivers the event stream.
-- **Detection** is backend-specific. **Pull** marks resources whose
+- **Detection** is backend-specific. **Pull** marks mounts whose
   `deltaHook()` ships with Mirage. **Push signal** names the provider mechanism
   that your application can map to a `FileEvent`.
 
-| Resource              | Pull (`deltaHook`)            | Fingerprint       | Push signal (provider-side)                |
+| VFS              | Pull (`deltaHook`)            | Fingerprint       | Push signal (provider-side)                |
 | --------------------- | ----------------------------- | ----------------- | ------------------------------------------ |
 | Nextcloud             | ✓ recursive PROPFIND          | WebDAV ETag       | `webhook_listeners` app (Nextcloud 30+)    |
 | S3 / S3-compatible    | ✓ recursive `ListObjectsV2`   | object ETag       | S3 Event Notifications (SQS/EventBridge)   |
 | GitHub                | ✓ recursive git tree          | blob sha          | repository webhooks                        |
-| Dropbox               | ✓ recursive `list_folder`     | `content_hash`    | Dropbox webhooks + cursor delta            |
+| Dropbox               | ✓ `list_folder/continue` (walk is reset) | `content_hash` | [`list_folder/longpoll` + cursor delta](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/dropbox/watch.ts)            |
 | GridFS                | ✓ `fs.files` prefix query     | revision ObjectId | MongoDB change streams                     |
 | Hugging Face          | ✓ recursive tree listing      | Hub ETag          | —                                          |
 | Disk                  | ✓ recursive directory walk    | mtime\|size       | inotify / FSEvents, `DiskEventHook`        |
 | SSH / SFTP            | ✓ per-directory descent       | mtime\|size       | —                                          |
 | Google Drive          | ✓ per-folder descent          | `modifiedTime`    | `changes.watch` push channels              |
 | OneDrive / SharePoint | ✓ per-folder descent          | `cTag`            | Graph change notifications + delta API     |
-| Box                   | ✓ per-folder descent          | content `sha1`    | Box `/events` long poll                    |
+| Box                   | ✓ `/events` stream (walk is reset) | content `sha1` | Box `/events` long poll, `BoxEventHook` |
 | Slack                 | —                             | —                 | Events API, mapped by `SlackEventHook`     |
 | Redis                 | —                             | —                 | keyspace notifications, `RedisEventHook`   |
 | RAM, others           | —                             | —                 | no external writers to observe             |
@@ -45,9 +45,11 @@ Not every hook costs the same, and the poll cadence should follow the shape:
 - **One request per pull**, whatever the tree: GitHub (one recursive tree
   call), Nextcloud (one recursive PROPFIND), Hugging Face, and GridFS (one
   prefix query). S3 is one request per 1000 keys.
-- **One request per directory**: Google Drive, OneDrive/SharePoint and Box key
+- **One request per directory**: Google Drive and OneDrive/SharePoint key
   their trees by opaque id and offer no whole-subtree listing, so the walk
-  descends folder by folder. SFTP does too, for the same reason.
+  descends folder by folder. SFTP does too, for the same reason. Box has the
+  same tree, but its pull reads the `/events` stream instead: an idle pull is
+  one request, and the per-folder walk only runs as the reset.
 
 Where a provider offers a native cursor (Dropbox `list_folder/continue`, Graph
 `/delta`, Drive `changes.list`), that is a **faster** pull, not a more correct
@@ -109,7 +111,7 @@ import {
 } from "@struktoai/mirage-core";
 
 async function* walk(root: PathSpec): AsyncGenerator<WalkEntry> {
-  for await (const object of listObjects(root.resourcePath)) {
+  for await (const object of listObjects(root.vfsPath)) {
     yield {
       virtual: `/s3/${object.key}`,
       isDir: false,
@@ -140,11 +142,41 @@ writes neither loop itself:
   parent's readdir populated; a null index makes every path below the root read
   as absent.
 
-Backends with a native cursor API can implement `pull(root, checkpoint)`
-directly. The opaque checkpoint can be a Dropbox cursor, a Microsoft Graph
-delta link, or any other serialized provider state. Keep the walk as the reset
-path, though. A cursor is a promise the server keeps, and when it breaks
-(`path/reset`, `resyncRequired`) a full listing is the only answer.
+The [Dropbox longpoll example](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/dropbox/watch.ts) owns the loop in the embedding
+program: establish a baseline with `pull`, wait for `list_folder/longpoll`,
+then pull and `notify` each change. No EventHook or library background loop is
+needed. The example extracts the cursor from the **latest** v1 checkpoint
+(`_dbx: 1`, `c`), while passing the entire checkpoint back to `pull`. This is
+Dropbox-specific example code; other consumers should treat checkpoints as opaque.
+On reset, pull with the old checkpoint so the existing hook can relist and diff
+against its saved snapshot. A missing watch root retries after 30 seconds.
+
+Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, and `DROPBOX_REFRESH_TOKEN`;
+optionally set `DROPBOX_ROOT_PATH`. From `typescript/`, run
+`pnpm --filter @struktoai/mirage-examples exec tsx dropbox/watch.ts`. Ctrl-C
+stops polling and finishes closing the workspace. Because `DeltaHook.pull`
+has no cancellation parameter, this standalone example then allows one more
+second before exiting with status 130 if an in-flight pull still holds the
+process open. The deadline never interrupts workspace cleanup.
+
+Dropbox's [longpoll endpoint](https://docs.dropboxapi.com/dropbox-api/api-reference/user-endpoints/files/list-folder-longpoll)
+uses the notification host without an Authorization header. Its timeout is
+30–480 seconds; the HTTP timeout must also allow up to 90 seconds of server
+jitter. The returned `backoff` is a required minimum delay before the next
+longpoll, including a response with no changes. The examples let transport or
+unexpected API failures surface and close their resources on cancellation.
+
+Dropbox `pull` already uses `list_folder/continue` and keeps the listing walk
+as the reset path. Box `pull` reads the account's `/events` stream from a
+stored `stream_position` and places each event through its `path_collection`.
+Box never refuses an old position and may repeat an event or send it out of
+order, so the tree is walked again once the last walk is two weeks old, and
+whenever an event moves the watch root itself or a folder above it. Other
+backends with a native cursor can do the same. The opaque checkpoint can be a
+Dropbox cursor, a Microsoft Graph delta link, or any other serialized provider
+state. Keep the walk as the reset path, though. A cursor is a promise the
+server keeps, and when it breaks (`path/reset`, `resyncRequired`) a full
+listing is the only answer.
 
 A walk that knows it saw only part of the tree must throw
 `IncompleteWalkError` rather than return what it has. A snapshot diff reads

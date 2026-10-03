@@ -47,7 +47,7 @@ write_yaml() {
 mode: WRITE
 mounts:
   /data:
-    resource: ram
+    vfs: ram
 clis:
   tally:
     cli: $ref
@@ -68,9 +68,9 @@ probe() {
     emit "$lang.$tag.sum=WORKSPACE_CREATE_FAILED"
     return
   fi
-  emit "$lang.$tag.sum=$($cli execute -w "$id" -c 'tally sum 2 3 4' </dev/null | sout | tr -d '\n')"
-  emit "$lang.$tag.man=$($cli execute -w "$id" -c 'man tally | grep -c sum' </dev/null | sout | tr -d '\n')"
-  emit "$lang.$tag.type=$($cli execute -w "$id" -c 'type -t tally' </dev/null | sout | tr -d '\n')"
+  emit "$lang.$tag.sum=$($cli shell -w "$id" -c 'tally sum 2 3 4' </dev/null | sout | tr -d '\n')"
+  emit "$lang.$tag.man=$($cli shell -w "$id" -c 'man tally | grep -c sum' </dev/null | sout | tr -d '\n')"
+  emit "$lang.$tag.type=$($cli shell -w "$id" -c 'type -t tally' </dev/null | sout | tr -d '\n')"
   $cli workspace delete "$id" >/dev/null 2>&1 </dev/null || true
 }
 
@@ -129,7 +129,7 @@ expect() {
 for case in py.py ts.mjs ts.ts ts.js; do
   expect "$case.sum" "total 9 kg"
   expect "$case.man" "1"
-  expect "$case.type" "cli"
+  expect "$case.type" "file"
 done
 expect "py.missing_export" "refused_naming_the_export"
 expect "ts.missing_export" "refused_naming_the_export"

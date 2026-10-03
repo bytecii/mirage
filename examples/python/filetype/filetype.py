@@ -17,11 +17,11 @@ import json
 import struct
 
 from mirage import MountMode, Workspace
-from mirage.commands.registry import RegisteredCommand
+from mirage.commands.config import RegisteredCommand
 from mirage.commands.spec import SPECS
 from mirage.core.ram.read import read_bytes
 from mirage.io.types import IOResult
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
 MAGIC = b"TALLY1"
 
@@ -43,32 +43,35 @@ async def tally_cat(accessor, paths, *texts, **kwargs):
     raw = await read_bytes(accessor, path)
     if not raw.startswith(MAGIC):
         return None, IOResult(exit_code=1, stderr=b"cat: not a tally file\n")
-    size = struct.unpack("<I", raw[len(MAGIC):len(MAGIC) + 4])[0]
-    body = json.loads(raw[len(MAGIC) + 4:len(MAGIC) + 4 + size])
+    size = struct.unpack("<I", raw[len(MAGIC) : len(MAGIC) + 4])[0]
+    body = json.loads(raw[len(MAGIC) + 4 : len(MAGIC) + 4 + size])
     out = "".join(f"{k} {v}\n" for k, v in body.items())
     return out.encode(), IOResult(cache=[path.mount_path])
 
 
 async def main() -> None:
-    ws = Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
 
-    await ws.ops.write("/data/hits.tally", encode({"alpha": 3, "beta": 11}))
-    await ws.ops.write("/data/notes.txt", b"plain text\n")
+    await ws.vfs.write("/data/hits.tally", encode({"alpha": 3, "beta": 11}))
+    await ws.vfs.write("/data/notes.txt", b"plain text\n")
 
     mount = ws.mount("/data/")
     mount.register(
-        RegisteredCommand("cat",
-                          spec=SPECS["cat"],
-                          resource="ram",
-                          filetype=".tally",
-                          fn=tally_cat))
+        RegisteredCommand(
+            "cat",
+            spec=SPECS["cat"],
+            vfs="ram",
+            filetype=".tally",
+            fn=tally_cat,
+        )
+    )
 
     # .tally routes to the renderer above; .txt falls back to the generic cat.
-    print((await ws.execute("cat /data/hits.tally")).stdout.decode(), end="")
-    print((await ws.execute("cat /data/notes.txt")).stdout.decode(), end="")
+    print((await ws.shell("cat /data/hits.tally")).stdout.decode(), end="")
+    print((await ws.shell("cat /data/notes.txt")).stdout.decode(), end="")
 
     # The renderer composes with the rest of the shell like any other command.
-    out = await ws.execute("cat /data/hits.tally | sort -k2 -n | tail -1")
+    out = await ws.shell("cat /data/hits.tally | sort -k2 -n | tail -1")
     print("largest:", out.stdout.decode().strip())
 
 

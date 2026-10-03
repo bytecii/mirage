@@ -14,7 +14,8 @@
 
 import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../ops/registry.ts'
-import { RAMResource } from '../resource/ram/ram.ts'
+import { PyodideRuntime } from '../runtime/python/pyodide/runtime.ts'
+import { RAMVFS } from '../vfs/ram/ram.ts'
 import { MountMode } from '../types.ts'
 import { getTestParser, stdoutStr } from './fixtures/workspace_fixture.ts'
 import { Workspace } from './workspace/workspace.ts'
@@ -22,83 +23,81 @@ import { Workspace } from './workspace/workspace.ts'
 describe('Workspace + Python mount', () => {
   it('Workspace.addMount makes paths visible inside Python after it loads', async () => {
     const parser = await getTestParser()
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const ops = new OpsRegistry()
-    ops.registerResource(ram)
+    ops.registerVfs(ram)
     const ws = new Workspace({}, { mode: MountMode.EXEC, ops, shellParser: parser })
-    ws.addMount('/ram', ram, MountMode.WRITE)
-    await ws.fs.writeFile('/ram/hello.txt', 'world')
-    const io = await ws.execute(`python3 -c "with open('/ram/hello.txt') as f: print(f.read())"`)
-    expect(io.exitCode).toBe(0)
+    ws.addMount('/ram', ram, MountMode.EXEC)
+    await ws.vfs.write('/ram/hello.txt', 'world')
+    const io = await ws.shell(`python3 -c "with open('/ram/hello.txt') as f: print(f.read())"`)
+    expect(io.exitCode, new TextDecoder().decode(io.stderr)).toBe(0)
     expect(stdoutStr(io)).toContain('world')
     await ws.close()
   }, 90_000)
 
   it('Python writes flush back through the bridge', async () => {
     const parser = await getTestParser()
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const ops = new OpsRegistry()
-    ops.registerResource(ram)
+    ops.registerVfs(ram)
     const ws = new Workspace({}, { mode: MountMode.EXEC, ops, shellParser: parser })
-    ws.addMount('/ram', ram, MountMode.WRITE)
-    const io = await ws.execute(
-      `python3 -c "with open('/ram/out.txt', 'wb') as f: f.write(b'data')"`,
-    )
-    expect(io.exitCode).toBe(0)
-    const back = await ws.fs.readFile('/ram/out.txt')
+    ws.addMount('/ram', ram, MountMode.EXEC)
+    const io = await ws.shell(`python3 -c "with open('/ram/out.txt', 'wb') as f: f.write(b'data')"`)
+    expect(io.exitCode, new TextDecoder().decode(io.stderr)).toBe(0)
+    const back = await ws.vfs.read('/ram/out.txt')
     expect(new TextDecoder().decode(back)).toBe('data')
     await ws.close()
   }, 90_000)
 
   it('Workspace.addMount does not load Pyodide when no Python ever runs', async () => {
     const parser = await getTestParser()
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const ops = new OpsRegistry()
-    ops.registerResource(ram)
+    ops.registerVfs(ram)
     const ws = new Workspace({}, { mode: MountMode.EXEC, ops, shellParser: parser })
-    ws.addMount('/ram', ram, MountMode.WRITE)
-    await ws.fs.writeFile('/ram/never.txt', 'unused')
-    const io = await ws.execute('echo hello')
-    expect(io.exitCode).toBe(0)
+    ws.addMount('/ram', ram, MountMode.EXEC)
+    await ws.vfs.write('/ram/never.txt', 'unused')
+    const io = await ws.shell('echo hello')
+    expect(io.exitCode, new TextDecoder().decode(io.stderr)).toBe(0)
     expect(stdoutStr(io)).toBe('hello\n')
     await ws.close()
   }, 30_000)
 
-  it('unmount drains in-flight Python addMount before closing the resource', async () => {
+  it('unmount drains in-flight Python addMount before closing the VFS', async () => {
     const parser = await getTestParser()
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const ops = new OpsRegistry()
-    ops.registerResource(ram)
+    ops.registerVfs(ram)
     const ws = new Workspace({}, { mode: MountMode.EXEC, ops, shellParser: parser })
-    ws.addMount('/ram', ram, MountMode.WRITE)
-    await ws.fs.writeFile('/ram/seed.txt', 'seed')
-    const io = await ws.execute(`python3 -c "pass"`)
-    expect(io.exitCode).toBe(0)
+    ws.addMount('/ram', ram, MountMode.EXEC)
+    await ws.vfs.write('/ram/seed.txt', 'seed')
+    const io = await ws.shell(`python3 -c "pass"`)
+    expect(io.exitCode, new TextDecoder().decode(io.stderr)).toBe(0)
     await ws.unmount('/ram/')
-    const ram2 = new RAMResource()
-    ops.registerResource(ram2)
+    const ram2 = new RAMVFS()
+    ops.registerVfs(ram2)
     ws.addMount('/ram', ram2, MountMode.WRITE)
-    await ws.fs.writeFile('/ram/post.txt', 'post')
-    expect(new TextDecoder().decode(await ws.fs.readFile('/ram/post.txt'))).toBe('post')
+    await ws.vfs.write('/ram/post.txt', 'post')
+    expect(new TextDecoder().decode(await ws.vfs.read('/ram/post.txt'))).toBe('post')
     await ws.close()
   }, 90_000)
 
   it('Python writes a 50KB chunked file end-to-end', async () => {
     const parser = await getTestParser()
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const ops = new OpsRegistry()
-    ops.registerResource(ram)
+    ops.registerVfs(ram)
     const ws = new Workspace({}, { mode: MountMode.EXEC, ops, shellParser: parser })
-    ws.addMount('/ram', ram, MountMode.WRITE)
+    ws.addMount('/ram', ram, MountMode.EXEC)
     const code =
       "data = b'X' * 1024\n" +
       "with open('/ram/big.bin', 'wb') as f:\n" +
       '    for _ in range(50):\n' +
       '        f.write(data)\n'
-    await ws.fs.writeFile('/ram/chunked.py', code)
-    const io = await ws.execute('python3 /ram/chunked.py')
-    expect(io.exitCode).toBe(0)
-    const back = await ws.fs.readFile('/ram/big.bin')
+    await ws.vfs.write('/ram/chunked.py', code)
+    const io = await ws.shell('python3 /ram/chunked.py')
+    expect(io.exitCode, new TextDecoder().decode(io.stderr)).toBe(0)
+    const back = await ws.vfs.read('/ram/big.bin')
     expect(back.length).toBe(50 * 1024)
     expect(back[0]).toBe(0x58)
     expect(back[back.length - 1]).toBe(0x58)
@@ -107,19 +106,19 @@ describe('Workspace + Python mount', () => {
 
   it('PIL saves an image to a mounted prefix and loads it back', async () => {
     const parser = await getTestParser()
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const ops = new OpsRegistry()
-    ops.registerResource(ram)
+    ops.registerVfs(ram)
     const ws = new Workspace(
       {},
       {
         mode: MountMode.EXEC,
         ops,
         shellParser: parser,
-        python: { autoLoadFromImports: true },
+        runtimes: [new PyodideRuntime({ config: { autoLoadFromImports: true } }), 'workspace'],
       },
     )
-    ws.addMount('/ram', ram, MountMode.WRITE)
+    ws.addMount('/ram', ram, MountMode.EXEC)
     const code =
       'from PIL import Image\n' +
       "img = Image.new('RGB', (4, 4), color='red')\n" +
@@ -127,11 +126,11 @@ describe('Workspace + Python mount', () => {
       "loaded = Image.open('/ram/icon.png')\n" +
       'loaded.load()\n' +
       'print(loaded.size)\n'
-    await ws.fs.writeFile('/ram/pil_demo.py', code)
-    const io = await ws.execute('python3 /ram/pil_demo.py')
-    expect(io.exitCode).toBe(0)
+    await ws.vfs.write('/ram/pil_demo.py', code)
+    const io = await ws.shell('python3 /ram/pil_demo.py')
+    expect(io.exitCode, new TextDecoder().decode(io.stderr)).toBe(0)
     expect(stdoutStr(io)).toContain('(4, 4)')
-    const bytes = await ws.fs.readFile('/ram/icon.png')
+    const bytes = await ws.vfs.read('/ram/icon.png')
     expect(bytes.length).toBeGreaterThan(0)
     expect(bytes[0]).toBe(0x89)
     expect(bytes[1]).toBe(0x50)

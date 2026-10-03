@@ -12,8 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Resource } from '@struktoai/mirage-core/resource/base'
-import { HISTORY_PREFIX } from '@struktoai/mirage-core/resource/history/history'
+import type { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+import { BIN_PREFIX } from '@struktoai/mirage-core/shell/constants'
+import { HISTORY_PREFIX } from '@struktoai/mirage-core/vfs/history/history'
 import { normMountPrefix } from '@struktoai/mirage-core/workspace/snapshot/utils'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import type { WorkspaceEntry } from './registry.ts'
@@ -25,7 +26,11 @@ import type {
   WorkspaceInternals,
 } from './schemas.ts'
 
-const AUTO_PREFIXES = new Set(['/dev/', normMountPrefix(HISTORY_PREFIX)])
+const AUTO_PREFIXES = new Set([
+  '/dev/',
+  normMountPrefix(HISTORY_PREFIX),
+  normMountPrefix(BIN_PREFIX),
+])
 const DESCRIPTION_MAX = 120
 
 function isAutoPrefix(prefix: string): boolean {
@@ -36,10 +41,20 @@ function userMounts(ws: Workspace) {
   return ws.mounts().filter((m) => !isAutoPrefix(m.prefix))
 }
 
-function describeResource(resource: Resource): string {
-  const raw = resource.prompt ?? ''
-  if (raw.length <= DESCRIPTION_MAX) return raw
-  return raw.slice(0, DESCRIPTION_MAX - 1).trimEnd() + '\u2026'
+/**
+ * Shorten a VFS's prompt to the description budget.
+ *
+ * The budget counts characters, which python's `len` reads as code points and
+ * `String.length` reads as UTF-16 units. Measuring in units would ellipsize a
+ * prompt python leaves whole and could cut a surrogate pair in half, so this
+ * measures and slices `Array.from` -- the same fix `sanitizeLabel` carries.
+ */
+export function describeVfs(vfs: BaseVFS): string {
+  const raw = vfs.prompt ?? ''
+  const points = Array.from(raw)
+  if (points.length <= DESCRIPTION_MAX) return raw
+  const cut = points.slice(0, DESCRIPTION_MAX - 1).join('')
+  return cut.trimEnd() + '\u2026'
 }
 
 async function buildInternals(ws: Workspace): Promise<WorkspaceInternals> {
@@ -48,7 +63,7 @@ async function buildInternals(ws: Workspace): Promise<WorkspaceInternals> {
     cacheBytes: cache.cacheSize,
     cacheEntries: cache.cacheEntries ?? null,
     historyLength: (await ws.history()).length,
-    inFlightJobs: ws.jobTable.listJobs().length,
+    inFlightJobs: ws.jobTable.allJobs().length,
   }
 }
 
@@ -69,9 +84,9 @@ export async function makeDetail(entry: WorkspaceEntry, verbose = false): Promis
   const mounts = userMounts(ws)
   const mountSummaries: MountSummary[] = mounts.map((m) => ({
     prefix: m.prefix,
-    resource: m.resource.kind,
+    vfs: m.vfs.name,
     mode: m.mode,
-    description: describeResource(m.resource),
+    description: describeVfs(m.vfs),
   }))
   const sessions: SessionSummary[] = ws.listSessions().map((s) => ({
     sessionId: s.sessionId,

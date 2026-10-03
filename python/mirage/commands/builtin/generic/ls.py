@@ -1,19 +1,50 @@
+import functools
+import logging
+import posixpath
+import string
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
+from typing import Any
 
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.commands.builtin.utils.formatting import format_ls_long
-from mirage.commands.builtin.utils.output import (format_optional_records,
-                                                  format_records)
+from mirage.commands.builtin.utils import formatting
+from mirage.commands.builtin.utils.identity import Identity, identity_of
+from mirage.commands.builtin.utils.output import (
+    format_optional_records,
+    format_records,
+)
 from mirage.commands.config import CommandOpts
+from mirage.commands.errors import UsageError, is_entry_error
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.argmatch import ArgmatchKind, ArgmatchMatch, argmatch
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
+from mirage.commands.spec.usage import (
+    argmatch_error,
+    argmatch_line,
+    usage_hint,
+)
+from mirage.errors.classify import failure_text
 from mirage.io.types import IOResult
-from mirage.ops.types import ChildMounts, LinkView
-from mirage.types import FileStat, FileType, LsSortBy, PathSpec
-from mirage.utils.errors import fs_strerror
-from mirage.utils.key_prefix import rekey
+from mirage.ops.types import ChildMounts, LinkView, MountView, StatPath
+from mirage.types import (
+    LINK_TARGET_KEY,
+    FileStat,
+    FileType,
+    LsIndicator,
+    LsLinkMode,
+    LsSortBy,
+    LsTimeKind,
+    PathSpec,
+)
+from mirage.utils.errors import DotWalkError, DotWalkLoop, fs_strerror
+from mirage.utils.key_prefix import mount_prefix_of, rekey, under_path
 from mirage.utils.path import CycleError, respell_one
+from mirage.utils.quote import escape_name
+from mirage.utils.stat_view import content_size
+from mirage.utils.width import char_width
+
+logger = logging.getLogger(__name__)
 
 Readdir = Callable[[PathSpec, IndexCacheStore | None], Awaitable[list[str]]]
 Stat = Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]]
@@ -26,37 +57,403 @@ LS_FAILURE = 2
 @dataclass(frozen=True, slots=True)
 class LsFlags:
     long: bool = False
-    one_per_line: bool = False
     all_files: bool = False
+    show_dot_entries: bool = False
     human: bool = False
     sort_by: LsSortBy = LsSortBy.NAME
     reverse: bool = False
     recursive: bool = False
     list_dir: bool = False
-    classify: bool = False
+    indicator: LsIndicator = LsIndicator.NONE
     deref: bool = False
+    follow_args: bool = False
+    time_kind: LsTimeKind = LsTimeKind.MTIME
+    group_dirs_first: bool = False
+    columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS
+    escape: bool = False
+    hyperlink: bool = False
+
+
+# GNU's own `sort_args`, in its own order, which is what `--sort=x`
+# lists back. `name` is deliberately absent: coreutils 9.4 refuses
+# `ls --sort=name` (name order is what no `--sort` at all means), and a
+# word mirage accepted but GNU did not was also a word missing from the
+# list GNU prints.
+_SORT_WORDS = {
+    "none": LsSortBy.NONE,
+    "time": LsSortBy.TIME,
+    "size": LsSortBy.SIZE,
+    "extension": LsSortBy.EXTENSION,
+    "version": LsSortBy.VERSION,
+    "width": LsSortBy.WIDTH,
+}
+_SORT_FLAGS = {
+    "t": LsSortBy.TIME,
+    "S": LsSortBy.SIZE,
+    "X": LsSortBy.EXTENSION,
+    "v": LsSortBy.VERSION,
+    "U": LsSortBy.NONE,
+}
+_TIME_GROUPS = (
+    ("atime", "access", "use"),
+    ("ctime", "status"),
+    ("mtime", "modification"),
+    ("birth", "creation"),
+)
+_TIME_KINDS = {
+    "atime": LsTimeKind.ATIME,
+    "ctime": LsTimeKind.CTIME,
+    "mtime": LsTimeKind.MTIME,
+    "birth": LsTimeKind.BIRTH,
+}
+# GNU's `when` words, shared by --hyperlink and --classify.
+_WHEN_GROUPS = (
+    ("always", "yes", "force"),
+    ("never", "no", "none"),
+    ("auto", "tty", "if-tty"),
+)
+_INDICATOR_GROUPS = tuple((style.value,) for style in LsIndicator)
+# The four spellings of an indicator style; the last one typed wins.
+_INDICATOR_DESTS = ("classify", "file_type", "p", "indicator_style")
+# The three spellings of a command-line link policy; the last one wins.
+_DEREF_DESTS = (
+    "dereference",
+    "dereference_command_line",
+    "dereference_command_line_symlink_to_dir",
+)
+
+
+def _grouped_argument_error(
+    option: str,
+    value: str,
+    groups: tuple[tuple[str, ...], ...],
+    kind: ArgmatchKind,
+) -> UsageError:
+    """GNU's ARGMATCH refusal for an option whose values have aliases,
+    listed one group per line (``--time``, ``--hyperlink``); exit 1, as
+    ls answers it.
+
+    Args:
+        option (str): the option's long spelling.
+        value (str): the rejected value, as typed; the shared renderer
+            escapes it.
+        groups (tuple[tuple[str, ...], ...]): the valid values, aliases
+            grouped.
+        kind (ArgmatchKind): the wording the match answered with --
+            ``ls --hyperlink=a`` spans three values and is ambiguous,
+            ``--hyperlink=zzz`` spans none and is invalid.
+    """
+    return argmatch_error("ls", option, value, groups, 1, kind)
+
+
+def _sort_flag(fl: FlagView) -> tuple[LsSortBy, bool]:
+    """The sort key the line asked for, last spelling winning, and
+    whether it asked at all.
+
+    Args:
+        fl (FlagView): the ls flag view.
+    """
+    typed = fl.typed_order("t", "S", "X", "v", "U", "sort")
+    if not typed:
+        return LsSortBy.NAME, False
+    last = typed[-1]
+    if last != "sort":
+        return _SORT_FLAGS[last], True
+    word = fl.as_str("sort") or ""
+    words = tuple(_SORT_WORDS)
+    match = argmatch(word, words)
+    if not isinstance(match, ArgmatchMatch):
+        raise argmatch_error("ls", "--sort", word, words, 1, match.kind)
+    return _SORT_WORDS[match.word], True
+
+
+def _time_flag(fl: FlagView) -> LsTimeKind:
+    """Which timestamp ``-c``, ``-u`` or ``--time`` asked for, last one
+    winning.
+
+    Args:
+        fl (FlagView): the ls flag view.
+    """
+    typed = fl.typed_order("c", "u", "time")
+    if not typed:
+        return LsTimeKind.MTIME
+    last = typed[-1]
+    if last == "c":
+        return LsTimeKind.CTIME
+    if last == "u":
+        return LsTimeKind.ATIME
+    word = fl.as_str("time") or ""
+    match = argmatch(word, _TIME_GROUPS)
+    if not isinstance(match, ArgmatchMatch):
+        raise _grouped_argument_error("--time", word, _TIME_GROUPS, match.kind)
+    return _TIME_KINDS[match.word]
+
+
+def _time_style_flag(fl: FlagView) -> str:
+    """``--time-style``, validated the way GNU words it (exit 2).
+
+    A ``posix-`` prefix short-circuits the whole option: GNU's loop
+    strips each one and, outside a hard LC_TIME locale, jumps straight
+    to the locale style without looking at what follows. mirage has no
+    other locale, so every ``posix-`` spelling is the locale style and
+    none of them is ever refused -- measured on coreutils 9.4, where
+    ``posix-full-iso``, ``posix-l``, ``posix-zzz``, ``posix-`` and
+    ``posix-+%H:%M`` all exit 0 and all print what ``locale`` prints.
+    The matcher therefore has to run after that check, not before: the
+    remainder is not a candidate word at all.
+
+    Args:
+        fl (FlagView): the ls flag view.
+    """
+    style = fl.as_str("time_style")
+    if style is None:
+        return "locale"
+    if style.startswith("posix-"):
+        return "locale"
+    if style.startswith("+"):
+        return style
+    match = argmatch(style, formatting.LS_TIME_STYLES)
+    if isinstance(match, ArgmatchMatch):
+        return match.word
+    # ls hand-writes this block rather than letting argmatch print
+    # `time_style_args`, so it is the one ARGMATCH refusal in the repo
+    # whose candidates are neither quoted nor a subset of the words it
+    # accepts -- and the one that exits 2, ls's own `usage (LS_FAILURE)`.
+    # The first line is still argmatch's, so `--time-style=lo` spans
+    # long-iso and locale and reads `ambiguous argument 'lo'`.
+    raise UsageError(
+        f"{argmatch_line('ls', 'time style', style, match.kind)}\n"
+        "Valid arguments are:\n"
+        "  - [posix-]full-iso\n"
+        "  - [posix-]long-iso\n"
+        "  - [posix-]iso\n"
+        "  - [posix-]locale\n"
+        "  - +FORMAT (e.g., +%H:%M) for a 'date'-style format\n"
+        f"{usage_hint('ls')}",
+        2,
+    )
+
+
+def _hyperlink_flag(fl: FlagView) -> bool:
+    """Whether ``--hyperlink`` asked for OSC 8 links: ``always`` does,
+    ``never`` does not, and ``auto`` does not either, since command
+    output here is never a terminal.
+
+    Args:
+        fl (FlagView): the ls flag view.
+    """
+    raw = fl.raw("hyperlink")
+    if raw is None or raw is False:
+        return False
+    if raw is True:
+        return True
+    word = str(raw)
+    match = argmatch(word, _WHEN_GROUPS)
+    if not isinstance(match, ArgmatchMatch):
+        raise _grouped_argument_error(
+            "--hyperlink", word, _WHEN_GROUPS, match.kind
+        )
+    return match.word == "always"
+
+
+def _indicator_word(fl: FlagView, dest: str) -> LsIndicator:
+    """The style one indicator option asks for, checked as GNU checks it.
+
+    ``-F`` and a bare ``--classify`` classify; ``--classify=WHEN`` does
+    for ``always`` and never otherwise, since output here is never a
+    terminal. A refused value is GNU's ARGMATCH refusal, exit 1.
+
+    Args:
+        fl (FlagView): the ls flag view.
+        dest (str): one of the indicator options' dests.
+    """
+    if dest == "p":
+        return LsIndicator.SLASH
+    if dest == "file_type":
+        return LsIndicator.FILE_TYPE
+    raw = fl.raw(dest)
+    if dest == "classify" and raw is True:
+        return LsIndicator.CLASSIFY
+    word = str(raw)
+    option = "--classify" if dest == "classify" else "--indicator-style"
+    groups = _WHEN_GROUPS if dest == "classify" else _INDICATOR_GROUPS
+    match = argmatch(word, groups)
+    if not isinstance(match, ArgmatchMatch):
+        raise _grouped_argument_error(option, word, groups, match.kind)
+    if dest == "indicator_style":
+        return LsIndicator(match.word)
+    return (
+        LsIndicator.CLASSIFY if match.word == "always" else (LsIndicator.NONE)
+    )
+
+
+def indicator_flag(fl: FlagView) -> LsIndicator:
+    """The indicator style a line asks for.
+
+    The last of ``-F``/``--classify[=WHEN]``, ``-p``, ``--file-type`` and
+    ``--indicator-style`` wins, and every one is checked on the way, as
+    GNU checks each value while it reads the options (coreutils 9.7).
+
+    Args:
+        fl (FlagView): the ls flag view.
+    """
+    style = LsIndicator.NONE
+    for dest in fl.typed_order(*_INDICATOR_DESTS):
+        style = _indicator_word(fl, dest)
+    return style
+
+
+def link_mode(fl: FlagView) -> LsLinkMode:
+    """Which command-line links GNU ls resolves before it lists them.
+
+    ls.c settles it once: the last of ``-L``, ``-H`` and
+    ``--dereference-command-line-symlink-to-dir`` wins, and with none of
+    them ``-d``, a long format or the classify style resolve no link
+    while anything else resolves one that leads to a directory
+    (coreutils 9.7). A value the command refuses leaves the style
+    unclassified, since that line fails before it lists anything.
+
+    Args:
+        fl (FlagView): the ls flag view.
+    """
+    typed = fl.typed_order(*_DEREF_DESTS)
+    if typed:
+        return (
+            LsLinkMode.DIRECTORY
+            if typed[-1] == "dereference_command_line_symlink_to_dir"
+            else LsLinkMode.ALL
+        )
+    long = any(
+        fl.as_bool(dest) for dest in ("args_l", "g", "o", "numeric_uid_gid")
+    )
+    try:
+        classify = indicator_flag(fl) is LsIndicator.CLASSIFY
+    except UsageError as exc:
+        logger.debug("ls: the command refuses this line itself: %s", exc)
+        classify = False
+    if fl.as_bool("directory") or long or classify:
+        return LsLinkMode.NONE
+    return LsLinkMode.DIRECTORY
+
+
+def _block_size_error(text: str, refusal: formatting.BlockSizeRefusal) -> str:
+    """GNU's three ``--block-size`` refusals, worded as ls words them.
+
+    Measured on coreutils 9.7: ``ls: invalid --block-size argument
+    'x'``, ``ls: invalid suffix in --block-size argument '1x'`` and
+    ``ls: --block-size argument '99999999999999999999' too large``. The
+    word is quoted but NOT escaped, which is GNU's own split (xstrtol's
+    fatal path prints the argument as is, where argmatch's runs it
+    through ``quote()``): ``ls --block-size=1é`` reports the two UTF-8
+    bytes intact.
+
+    Args:
+        text (str): the option value as typed.
+        refusal (BlockSizeRefusal): which failure the parser reported.
+    """
+    quoted = f"'{text}'"
+    if refusal is formatting.BlockSizeRefusal.TOO_LARGE:
+        return f"ls: --block-size argument {quoted} too large"
+    if refusal is formatting.BlockSizeRefusal.INVALID_SUFFIX:
+        return f"ls: invalid suffix in --block-size argument {quoted}"
+    return f"ls: invalid --block-size argument {quoted}"
 
 
 def parse_flags(flags: Mapping[str, FlagValue]) -> LsFlags:
+    """Parse the ls flag bag once into a frozen struct.
+
+    GNU's rules that are easy to get wrong: ``-g``, ``-o`` and ``-n``
+    imply the long format, and ``-1`` never undoes it in either order
+    (GNU ignores ``-1`` beside ``-l``, and with no terminal there are
+    never columns, so ``-1`` has nothing else to do); ``-n`` prints the
+    same columns as ``-l``,
+    because a mirage owner is already the id (an agent, a profile) and
+    never a name looked up from one; the last of ``-t``, ``-S``, ``-X``,
+    ``-v``, ``-U`` and ``--sort`` wins, as does the last of ``-c``, ``-u``
+    and ``--time``; and ``-c`` or ``-u`` with neither ``-l`` nor a sort
+    sorts by that time; and the later of ``-h`` and ``--block-size``
+    wins. Raises ``UsageError`` for a value GNU refuses, with GNU's
+    exit status for that option.
+
+    Args:
+        flags (Mapping[str, FlagValue]): flags for the shared ls spec.
+    """
     fl = FlagView(flags, spec=SPECS["ls"])
-    if fl.as_bool("t"):
-        sort_by = LsSortBy.TIME
-    elif fl.as_bool("S"):
-        sort_by = LsSortBy.SIZE
-    else:
-        sort_by = LsSortBy.NAME
-    return LsFlags(
-        long=fl.as_bool("args_l"),
-        one_per_line=fl.as_bool("args_1"),
-        all_files=fl.as_bool("a") or fl.as_bool("A"),
-        human=fl.as_bool("h"),
-        sort_by=sort_by,
-        reverse=fl.as_bool("r"),
-        recursive=fl.as_bool("R"),
-        list_dir=fl.as_bool("d"),
-        classify=fl.as_bool("F"),
-        deref=fl.as_bool("L"),
+    sort_by, sorted_explicitly = _sort_flag(fl)
+    time_kind = _time_flag(fl)
+    no_owner = fl.as_bool("g")
+    no_group = fl.as_bool("o")
+    long = (
+        fl.as_bool("args_l")
+        or no_owner
+        or no_group
+        or fl.as_bool("numeric_uid_gid")
     )
+    if (
+        not sorted_explicitly
+        and time_kind is not LsTimeKind.MTIME
+        and not long
+    ):
+        sort_by = LsSortBy.TIME
+    block = None
+    block_text = fl.as_str("block_size")
+    if block_text is not None:
+        parsed_block = formatting.parse_block_size(block_text)
+        if isinstance(parsed_block, formatting.BlockSizeRefusal):
+            raise UsageError(_block_size_error(block_text, parsed_block), 2)
+        block = parsed_block
+        # The later of -h and --block-size wins (GNU: `--block-size=1 -h`
+        # prints 1.5K, `-h --block-size=1` prints 1536); the value is
+        # still checked either way.
+        if (
+            fl.typed_order("human_readable", "block_size")[-1]
+            == "human_readable"
+        ):
+            block = None
+    columns = formatting.LsColumns(
+        owner=not no_owner,
+        group=not no_group,
+        inode=fl.as_bool("inode"),
+        context=fl.as_bool("context"),
+        time_kind=time_kind,
+        time_style=_time_style_flag(fl),
+        block_size=block,
+    )
+    return LsFlags(
+        long=long,
+        all_files=fl.as_bool("all") or fl.as_bool("almost_all"),
+        show_dot_entries=fl.as_bool("all"),
+        human=fl.as_bool("human_readable"),
+        sort_by=sort_by,
+        reverse=fl.as_bool("reverse"),
+        recursive=fl.as_bool("recursive"),
+        list_dir=fl.as_bool("directory"),
+        indicator=indicator_flag(fl),
+        # -L alone dereferences what a listing finds; -H and its sibling
+        # stop at the command line, and the last of the three wins.
+        deref=fl.typed_order(*_DEREF_DESTS)[-1:] == ["dereference"],
+        follow_args=link_mode(fl) is LsLinkMode.ALL,
+        time_kind=time_kind,
+        group_dirs_first=fl.as_bool("group_directories_first"),
+        columns=columns,
+        hyperlink=_hyperlink_flag(fl),
+        escape=fl.as_bool("escape"),
+    )
+
+
+def ls_options(flags: Mapping[str, FlagValue]) -> dict[str, Any]:
+    """Parsed ls flags as the generic's own keyword arguments.
+
+    ``LsFlags`` names every field after the ``ls`` parameter it feeds,
+    so both entry points -- the single-mount ``ls_generic`` and the
+    cross-mount relay -- share one mapping instead of restating it. A
+    shallow view, so the nested column struct rides through whole.
+
+    Args:
+        flags (Mapping[str, FlagValue]): Flags for the shared ls spec.
+    """
+    parsed = parse_flags(flags)
+    return {f.name: getattr(parsed, f.name) for f in fields(parsed)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +481,7 @@ class Operand:
     for a plain listing, the whole pre-order subtree under ``-R``. Both
     empty means the operand could not be accessed.
     """
+
     path: PathSpec
     row: FileStat | None
     groups: list[tuple[PathSpec, list[FileStat]]]
@@ -123,58 +521,386 @@ def exit_status_for(warnings: list[LsWarning]) -> int:
     return LS_MINOR_PROBLEM if warnings else LS_OK
 
 
-# GNU -F suffixes: a directory gets "/", a symlink "@". The link mark
-# rides the row's type, so it needs no separate lookup.
-_CLASSIFY_SUFFIX = {FileType.DIRECTORY: "/", FileType.SYMLINK: "@"}
+def type_indicator(entry: FileStat | None, style: LsIndicator) -> str:
+    """The mark GNU appends to a name for a style (ls.c's
+    get_type_indicator, coreutils 9.7).
+
+    A directory is ``/`` in every style but none; ``slash`` marks nothing
+    else. A link is ``@`` and a FIFO ``|``; an executable regular file is
+    ``*``, but only under classify. The mark rides the row's own type and
+    mode, so it needs no separate lookup.
+
+    Args:
+        entry (FileStat | None): the row, or None for an entry nothing
+            could stat (a dangling link's target), which takes no mark.
+        style (LsIndicator): the indicator style.
+    """
+    if entry is None or style is LsIndicator.NONE:
+        return ""
+    if entry.type == FileType.DIRECTORY:
+        return "/"
+    if style is LsIndicator.SLASH:
+        return ""
+    if entry.type == FileType.SYMLINK:
+        return "@"
+    if entry.type == FileType.FIFO:
+        return "|"
+    if (
+        style is LsIndicator.CLASSIFY
+        and entry.type == FileType.FILE
+        and entry.mode is not None
+        and entry.mode & 0o111
+    ):
+        return "*"
+    return ""
 
 
-def format_simple(entries: list[FileStat],
-                  *,
-                  classify: bool = False) -> list[str]:
+def format_simple(
+    entries: list[FileStat],
+    *,
+    indicator: LsIndicator = LsIndicator.NONE,
+    columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS,
+    names: list[str] | None = None,
+) -> list[str]:
+    """Short rows: the name, the indicator style's mark, and
+    ``-i``/``-Z``'s lead.
+
+    Args:
+        entries (list[FileStat]): the rows.
+        indicator (LsIndicator): the indicator style.
+        columns (formatting.LsColumns): the requested columns.
+        names (list[str] | None): the name per row when the caller
+            decorated it (``--hyperlink``), else the row's own.
+    """
+    lead = formatting.ls_prefix(columns)
+    return [
+        lead
+        + (names[i] if names is not None else e.name)
+        + type_indicator(e, indicator)
+        for i, e in enumerate(entries)
+    ]
+
+
+def long_names(
+    entries: list[FileStat],
+    names: list[str] | None,
+    indicator: LsIndicator,
+    targets: list[FileStat | None],
+) -> list[str] | None:
+    """The long format's name column with the indicator style's marks.
+
+    GNU marks a row after its name, but a link after its target, with the
+    target's own mark, and only under file-type and classify: ``dl ->
+    sub/``, ``dang -> nowhere`` (coreutils 9.7). None when no mark is
+    asked for, so the row's own column stands.
+
+    Args:
+        entries (list[FileStat]): the rows.
+        names (list[str] | None): the decorated names, if any.
+        indicator (LsIndicator): the indicator style.
+        targets (list[FileStat | None]): what each link row leads to,
+            None for a row that is no link or leads nowhere.
+    """
+    if indicator is LsIndicator.NONE:
+        return names
     out: list[str] = []
-    for e in entries:
-        suffix = ""
-        if classify and e.type is not None:
-            suffix = _CLASSIFY_SUFFIX.get(e.type, "")
-        out.append(e.name + suffix)
+    for i, e in enumerate(entries):
+        name = names[i] if names is not None else formatting.ls_name(e)
+        if e.type != FileType.SYMLINK:
+            out.append(name + type_indicator(e, indicator))
+        elif indicator is LsIndicator.SLASH:
+            out.append(name)
+        else:
+            out.append(name + type_indicator(targets[i], indicator))
     return out
 
 
-def _primary_value(entry: FileStat, sort_by: LsSortBy) -> str | int:
+async def link_targets(
+    entries: list[FileStat],
+    virtuals: list[str],
+    links: LinkView | None,
+    long: bool,
+    indicator: LsIndicator,
+) -> list[FileStat | None]:
+    """What each link row leads to, when the long format marks it.
+
+    Args:
+        entries (list[FileStat]): the rows.
+        virtuals (list[str]): each row's virtual path.
+        links (LinkView | None): the namespace's symlink facts.
+        long (bool): the long format.
+        indicator (LsIndicator): the indicator style.
+    """
+    wanted = (
+        long
+        and links is not None
+        and indicator in (LsIndicator.FILE_TYPE, LsIndicator.CLASSIFY)
+    )
+    out: list[FileStat | None] = []
+    for e, virtual in zip(entries, virtuals):
+        if wanted and links is not None and e.type == FileType.SYMLINK:
+            out.append(await links.target_stat(virtual))
+        else:
+            out.append(None)
+    return out
+
+
+def _is_digit(c: int) -> bool:
+    """Whether a byte is an ASCII digit.
+
+    Args:
+        c (int): one byte.
+    """
+    return 0x30 <= c <= 0x39
+
+
+def _is_alpha(c: int) -> bool:
+    """Whether a byte is an ASCII letter.
+
+    Args:
+        c (int): one byte.
+    """
+    return 0x41 <= c <= 0x5A or 0x61 <= c <= 0x7A
+
+
+def _version_order(c: int) -> int:
+    """gnulib ``filevercmp``'s byte order: a tilde sorts before the end
+    of the string, ASCII letters by code, and every other byte after the
+    letters. gnulib classifies in the C locale one byte at a time, so a
+    multibyte letter such as ``é`` is two bytes past the letters, not a
+    letter.
+
+    Args:
+        c (int): one byte.
+    """
+    if _is_digit(c):
+        return 0
+    if _is_alpha(c):
+        return c
+    if c == 0x7E:
+        return -1
+    return c + 256
+
+
+def _verrevcmp(a: bytes, b: bytes) -> int:
+    """Debian's version comparison as gnulib's ``verrevcmp`` runs it:
+    alternating non-digit and digit runs, the digit runs compared as
+    numbers.
+
+    Args:
+        a (bytes): left operand.
+        b (bytes): right operand.
+    """
+    i = j = 0
+    while i < len(a) or j < len(b):
+        while (i < len(a) and not _is_digit(a[i])) or (
+            j < len(b) and not _is_digit(b[j])
+        ):
+            ac = _version_order(a[i]) if i < len(a) else 0
+            bc = _version_order(b[j]) if j < len(b) else 0
+            if ac != bc:
+                return ac - bc
+            i += 1
+            j += 1
+        while i < len(a) and a[i] == 0x30:
+            i += 1
+        while j < len(b) and b[j] == 0x30:
+            j += 1
+        first_diff = 0
+        while (
+            i < len(a) and j < len(b) and _is_digit(a[i]) and _is_digit(b[j])
+        ):
+            if not first_diff:
+                first_diff = a[i] - b[j]
+            i += 1
+            j += 1
+        if i < len(a) and _is_digit(a[i]):
+            return 1
+        if j < len(b) and _is_digit(b[j]):
+            return -1
+        if first_diff:
+            return first_diff
+    return 0
+
+
+def _version_prefix_len(s: bytes) -> int:
+    """How much of a name ``filevercmp`` compares first: everything but
+    a trailing run of suffixes (``.txt``, ``.tar.gz``, ``~``).
+
+    Args:
+        s (bytes): the name.
+    """
+    n = len(s)
+    i = 0
+    prefix = 0
+    while True:
+        if i == n:
+            return prefix
+        i += 1
+        prefix = i
+        while (
+            i + 1 < n
+            and s[i] == 0x2E
+            and (_is_alpha(s[i + 1]) or s[i + 1] == 0x7E)
+        ):
+            i += 2
+            while i < n and (
+                _is_alpha(s[i]) or _is_digit(s[i]) or s[i] == 0x7E
+            ):
+                i += 1
+
+
+def filevercmp(a: str, b: str) -> int:
+    """gnulib's ``filevercmp``, the order behind ``ls -v``: the empty
+    name, ``.`` and ``..`` first, then hidden names, then the names
+    compared as versions with their suffixes set aside, the suffixes
+    breaking a tie. The comparison runs over the names' UTF-8 bytes,
+    which is what GNU sees; a lone surrogate maps back to the byte it
+    was decoded from.
+
+    Args:
+        a (str): left name.
+        b (str): right name.
+    """
+    if a == b:
+        return 0
+    for special in ("", ".", ".."):
+        if a == special:
+            return -1
+        if b == special:
+            return 1
+    a_hidden, b_hidden = a.startswith("."), b.startswith(".")
+    if a_hidden != b_hidden:
+        return -1 if a_hidden else 1
+    ab = a.encode("utf-8", "surrogateescape")
+    bb = b.encode("utf-8", "surrogateescape")
+    result = _verrevcmp(
+        ab[: _version_prefix_len(ab)], bb[: _version_prefix_len(bb)]
+    )
+    if result == 0:
+        result = _verrevcmp(ab, bb)
+    if result == 0:
+        result = (ab > bb) - (ab < bb)
+    return result
+
+
+def name_width(name: str) -> int:
+    """The columns a name occupies, the key ``--sort=width`` compares:
+    GNU measures the rendered width, so a wide character counts two
+    and a combining mark none.
+
+    Args:
+        name (str): the entry name.
+    """
+    return sum(char_width(ch) for ch in name)
+
+
+def _extension(name: str) -> str:
+    """The key ``ls -X`` compares first: the name from its last dot,
+    empty for a name without one.
+
+    Args:
+        name (str): the entry name.
+    """
+    dot = name.rfind(".")
+    return name[dot:] if dot >= 0 else ""
+
+
+def _primary_value(
+    entry: FileStat, sort_by: LsSortBy, time_kind: LsTimeKind
+) -> str | int:
     if sort_by is LsSortBy.TIME:
-        return entry.modified or ""
+        return formatting.time_of(entry, time_kind) or ""
     if sort_by is LsSortBy.SIZE:
-        return entry.size or 0
+        # A row whose stat failed sorts as 0, as GNU's zeroed stat does.
+        if entry.extra.get(formatting.STAT_FAILED_KEY):
+            return 0
+        return content_size(entry)
     return entry.name
 
 
-def _order_rows(rows: list[FileStat], sort_by: LsSortBy,
-                reverse: bool) -> list[int]:
+def _order_rows(
+    rows: list[FileStat],
+    sort_by: LsSortBy,
+    reverse: bool,
+    *,
+    time_kind: LsTimeKind = LsTimeKind.MTIME,
+    group_dirs_first: bool = False,
+    escape: bool = False,
+) -> list[int]:
     """Indices of ``rows`` in GNU ls order.
 
     GNU's `-t`/`-S` comparators fall back to the name when the timestamps or
     sizes tie, and `-r` negates the whole comparison, tie-break included. A
     stable name sort followed by the primary key reproduces the first half;
-    reversing the finished order reproduces the second.
+    reversing the finished order reproduces the second. `-X` and
+    `--sort=width` are stable sorts over the name order too; `-v` is
+    gnulib's version order; `-U` keeps the listing order, and `-r` does
+    not reverse it (GNU's `-r` reverses while sorting, and `-U` does not
+    sort). `--group-directories-first` partitions the finished
+    order, so the directories come first in every sort but `-U`, where
+    GNU ignores it.
 
     Args:
         rows (list[FileStat]): The stats to order.
         sort_by (LsSortBy): The active sort key.
         reverse (bool): Whether `-r` is in effect.
+        time_kind (LsTimeKind): Which timestamp `-t` compares.
+        group_dirs_first (bool): `--group-directories-first`.
     """
-    order = sorted(range(len(rows)), key=lambda i: rows[i].name)
-    if sort_by is not LsSortBy.NAME:
-        # -t and -S list newest/largest first.
-        order.sort(key=lambda i: _primary_value(rows[i], sort_by),
-                   reverse=True)
-    if reverse:
+    if sort_by is LsSortBy.NONE:
+        order = list(range(len(rows)))
+    elif sort_by is LsSortBy.VERSION:
+
+        def by_version(i: int, j: int) -> int:
+            return filevercmp(rows[i].name, rows[j].name)
+
+        order = sorted(range(len(rows)), key=functools.cmp_to_key(by_version))
+    else:
+        order = sorted(range(len(rows)), key=lambda i: rows[i].name)
+        if sort_by is LsSortBy.EXTENSION:
+            order.sort(key=lambda i: _extension(rows[i].name))
+        elif sort_by is LsSortBy.WIDTH:
+            order.sort(
+                key=lambda i: name_width(
+                    escape_name(rows[i].name) if escape else rows[i].name
+                )
+            )
+        elif sort_by is not LsSortBy.NAME:
+            # -t and -S list newest/largest first.
+            order.sort(
+                key=lambda i: _primary_value(rows[i], sort_by, time_kind),
+                reverse=True,
+            )
+    if reverse and sort_by is not LsSortBy.NONE:
         order.reverse()
+    if group_dirs_first and sort_by is not LsSortBy.NONE:
+        order = [i for i in order if rows[i].type is FileType.DIRECTORY] + [
+            i for i in order if rows[i].type is not FileType.DIRECTORY
+        ]
     return order
 
 
-def sort_stats(entries: list[FileStat], sort_by: LsSortBy,
-               reverse: bool) -> list[FileStat]:
-    return [entries[i] for i in _order_rows(entries, sort_by, reverse)]
+def sort_stats(
+    entries: list[FileStat],
+    sort_by: LsSortBy,
+    reverse: bool,
+    *,
+    time_kind: LsTimeKind = LsTimeKind.MTIME,
+    group_dirs_first: bool = False,
+    escape: bool = False,
+) -> list[FileStat]:
+    return [
+        entries[i]
+        for i in _order_rows(
+            entries,
+            sort_by,
+            reverse,
+            time_kind=time_kind,
+            group_dirs_first=group_dirs_first,
+            escape=escape,
+        )
+    ]
 
 
 async def _file_entry(
@@ -218,11 +944,12 @@ async def _deref_entry(
         target = links.resolve(child)
     except CycleError:
         return None
-    spec = PathSpec(virtual=target,
-                    directory=target,
-                    resolved=False,
-                    resource_path=rekey(directory.virtual,
-                                        directory.resource_path, target))
+    spec = PathSpec(
+        virtual=target,
+        directory=target,
+        resolved=False,
+        vfs_path=rekey(directory.virtual, directory.vfs_path, target),
+    )
     try:
         return (await stat(spec, index)).model_copy(update={"name": link.name})
     except (OSError, ValueError):
@@ -251,11 +978,63 @@ def _link_row(path: PathSpec, links: LinkView | None) -> FileStat | None:
 
 def _child_spec(path: PathSpec, name: str) -> PathSpec:
     child = path.child(name)
-    return PathSpec(virtual=child,
-                    directory=child,
-                    resolved=False,
-                    resource_path=rekey(path.virtual, path.resource_path,
-                                        child))
+    return PathSpec(
+        virtual=child,
+        directory=child,
+        resolved=False,
+        vfs_path=rekey(path.virtual, path.vfs_path, child),
+    )
+
+
+async def _mount_row(
+    directory: PathSpec,
+    name: str,
+    stat_path: StatPath | None,
+) -> FileStat:
+    """The row for a child mount, carrying its real type.
+
+    No backend can supply it: the parent's cannot see into the child
+    mount, and the child's own answers its root with that mount's name
+    for itself (``/``), which is why the row is renamed here the way the
+    relay renames one. So the fact comes through the dispatcher, which
+    routes to whichever mount owns the path.
+
+    A mount root is not always a directory -- every workspace mounts
+    ``/.bash_history`` as a whole mount serving one file -- and calling
+    one a directory suffixes it with ``/`` under ``-F``, renders it
+    ``drwxr-xr-x`` under ``-l``, and offers it to ``-R`` as something to
+    descend. GNU lists a file that happens to be a mountpoint as an
+    ordinary file row (pinned on coreutils 9.7 over a ``mount --bind``
+    of one file onto another). Directory is the fallback for a caller
+    with no dispatcher, which is the only thing that absence can mean.
+
+    Args:
+        directory (PathSpec): the directory being listed.
+        name (str): the child's own name.
+        stat_path (StatPath | None): dispatcher-backed stat of one path.
+    """
+    if stat_path is not None:
+        row = await stat_path(directory.child(name))
+        if row is not None:
+            return row.model_copy(update={"name": name})
+    return FileStat(name=name, type=FileType.DIRECTORY)
+
+
+def _stat_failed_row(entry: str) -> FileStat:
+    """The row for an entry the listing named but its stat could not describe.
+
+    GNU keeps it, since readdir is what named it, and ``?`` stands for
+    every fact only the stat knows; its type is a directory's when the
+    listing slash-marked it, and unknown otherwise.
+
+    Args:
+        entry (str): the entry path from the backend readdir.
+    """
+    return FileStat(
+        name=entry.rstrip("/").rsplit("/", 1)[-1],
+        type=(FileType.DIRECTORY if entry.endswith("/") else FileType.FILE),
+        extra={formatting.STAT_FAILED_KEY: True},
+    )
 
 
 async def _stat_entries(
@@ -268,8 +1047,17 @@ async def _stat_entries(
     links: LinkView | None = None,
     deref: bool = False,
     child_mounts: ChildMounts | None = None,
+    stat_path: StatPath | None = None,
+    stat_needed: bool = True,
 ) -> tuple[list[FileStat], list[LsWarning]]:
     """Stat every name in a directory, plus the symlinks living there.
+
+    An entry whose stat fails keeps its row and never fails the whole
+    directory, whatever the error: a dropped connection on a mount
+    whose stat is a request costs that entry alone, as any failed stat
+    does in GNU's gobble_file. It is reported, and the exit is 1, only
+    when the listing prints something the stat supplies
+    (``stat_needed``). One entry at a time, as GNU's lstat loop goes.
 
     Args:
         path (PathSpec): the directory being listed.
@@ -288,47 +1076,71 @@ async def _stat_entries(
         child_mounts (ChildMounts | None): session-filtered child-mount
             names under a directory. A nested mount is namespace
             structure the backend readdir cannot name, merged here like
-            a link row.
+            a link row. GNU lists a mountpoint as an ordinary entry of
+            its parent, so the merge is unconditional: withholding it
+            under ``-R`` dropped the row whenever the parent's backend
+            held no key of that name.
+        stat_path (StatPath | None): dispatcher-backed stat, which is
+            the only way to learn a child mount's real type. See
+            ``_mount_row``.
+        stat_needed (bool): the listing prints something an entry's
+            stat supplies, so a failed one is reported. See
+            ``stat_needed``.
     """
     stats: list[FileStat] = []
     warnings: list[LsWarning] = []
     for entry in names:
-        entry_spec = PathSpec(virtual=entry,
-                              directory=entry,
-                              resolved=False,
-                              resource_path=rekey(path.virtual,
-                                                  path.resource_path, entry))
+        entry_spec = PathSpec(
+            virtual=entry,
+            directory=entry,
+            resolved=False,
+            vfs_path=rekey(path.virtual, path.vfs_path, entry),
+        )
         try:
             s = await stat(entry_spec, index)
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
+            if not is_entry_error(exc):
+                raise
+            s = _stat_failed_row(entry)
+            if not all_files and s.name.startswith("."):
+                continue
+            stats.append(s)
+            if not stat_needed:
+                logger.debug("ls: stat %s: %r", entry, exc)
+                continue
             # An entry below an operand is never a command-line arg, so
             # GNU treats it as a minor problem (exit 1).
             warnings.append(
                 LsWarning(
-                    f"ls: cannot access '{entry}': {fs_strerror(exc) or exc}",
-                    False))
+                    f"ls: cannot access '{entry.rstrip('/')}': "
+                    f"{failure_text(exc)}",
+                    False,
+                )
+            )
             continue
         if not all_files and s.name.startswith("."):
             continue
         stats.append(s)
     seen = {s.name for s in stats}
-    for link in (links.children(path.virtual) if links is not None else []):
+    for link in links.children(path.virtual) if links is not None else []:
         if link.name in seen:
             continue
         if not all_files and link.name.startswith("."):
             continue
         seen.add(link.name)
-        resolved = (await _deref_entry(path, link, links, stat, index)
-                    if deref and links is not None else None)
+        resolved = (
+            await _deref_entry(path, link, links, stat, index)
+            if deref and links is not None
+            else None
+        )
         stats.append(resolved if resolved is not None else link)
-    for name in (child_mounts(path.virtual)
-                 if child_mounts is not None else []):
+    for name in child_mounts(path.virtual) if child_mounts is not None else []:
         if name in seen:
             continue
         if not all_files and name.startswith("."):
             continue
         seen.add(name)
-        stats.append(FileStat(name=name, type=FileType.DIRECTORY))
+        stats.append(await _mount_row(path, name, stat_path))
     return stats, warnings
 
 
@@ -345,7 +1157,14 @@ async def probe_operand(
     index: IndexCacheStore = NULL_INDEX,
     links: LinkView | None = None,
     deref: bool = False,
+    follow_args: bool = False,
     child_mounts: ChildMounts | None = None,
+    mounts: MountView | None = None,
+    stat_path: StatPath | None = None,
+    time_kind: LsTimeKind = LsTimeKind.MTIME,
+    group_dirs_first: bool = False,
+    stat_needed: bool = True,
+    escape: bool = False,
 ) -> tuple[Operand, list[LsWarning]]:
     """List one operand and report whether it turned out to be a directory.
 
@@ -361,18 +1180,54 @@ async def probe_operand(
             a failure to a minor problem (exit 1).
         index (IndexCacheStore): listing cache.
         links (LinkView | None): the namespace's symlink facts.
+        deref (bool): ``-L``, report what a listed link leads to.
+        follow_args (bool): the command line's links were resolved on
+            request (``-L``, ``-H``), so one that loops is an error
+            rather than a link to list.
         child_mounts (ChildMounts | None): session-filtered child-mount
-            names. Under ``-R`` a backend-served listing withholds the
-            merge and a child-mount root is never descended (the walk
-            cannot read another mount's backend, so the cross-mount
-            fan-out assembles those groups); a directory only the
-            namespace serves still renders its own group from it.
+            names, merged into every listing: a mountpoint is an
+            ordinary directory entry of its parent, ``-R`` or not.
+        mounts (MountView | None): the mount boundaries this walk's
+            ``readdir`` cannot cross. Under ``-R`` such a root is listed
+            but never descended, because that listing is another
+            backend's and the cross-mount fan-out assembles the group;
+            a namespace-only directory *above* one is descended, since
+            no other run renders it. None for a walk that can cross --
+            the relay's readdir routes per path, so it descends a
+            nested mount itself.
+        stat_path (StatPath | None): dispatcher-backed stat, for the
+            child-mount rows no backend can supply.
+        time_kind (LsTimeKind): which timestamp ``-t`` compares.
+        group_dirs_first (bool): ``--group-directories-first``.
+        stat_needed (bool): report an entry whose stat failed. See
+            ``stat_needed``.
     """
     warnings: list[LsWarning] = []
     structure_only = False
     try:
         names = await readdir(path, index)
     except (OSError, ValueError) as exc:
+        if isinstance(exc, DotWalkError):
+            # The operand did not resolve, so neither the path it
+            # simplifies to nor the names the namespace owes it answer.
+            # A command-line link whose stat loops is the exception: GNU
+            # lstats it then and lists the link itself, unless -L or -H
+            # asked for the target (ls.c's gobble_file, coreutils 9.7).
+            if (
+                isinstance(exc, DotWalkLoop)
+                and command_line_arg
+                and not follow_args
+            ):
+                link_row = _link_row(path, links)
+                if link_row is not None:
+                    return Operand(path, link_row, []), warnings
+            warnings.append(
+                LsWarning(
+                    f"ls: cannot access '{path.raw_path}': {fs_strerror(exc)}",
+                    command_line_arg,
+                )
+            )
+            return Operand(path, None, []), warnings
         row = await _file_entry(path, stat, index)
         if row is not None:
             return Operand(path, row, []), warnings
@@ -380,18 +1235,25 @@ async def probe_operand(
         if link_row is not None:
             return Operand(path, link_row, []), warnings
         if child_mounts is None or not child_mounts(path.virtual):
+            # GNU words a directory it may not read differently from
+            # one it cannot stat: the entry is there, opening it is
+            # what failed.
+            verb = (
+                "cannot open directory"
+                if isinstance(exc, PermissionError)
+                else "cannot access"
+            )
             warnings.append(
                 LsWarning(
-                    f"ls: cannot access '{path.raw_path}': "
-                    f"{fs_strerror(exc) or exc}", command_line_arg))
+                    f"ls: {verb} '{path.raw_path}': {fs_strerror(exc) or exc}",
+                    command_line_arg,
+                )
+            )
             return Operand(path, None, []), warnings
         # No backend serves it, but the namespace owes it children (a
         # nested mount, a link's ancestors), so the door lists it as a
         # directory and ls must agree: the merge below renders those
-        # rows from an empty backend listing. Under -R this group still
-        # renders; only descent into a child-mount root is withheld,
-        # because that listing is another backend's and the cross-mount
-        # fan-out assembles it.
+        # rows from an empty backend listing.
         names = []
         structure_only = True
 
@@ -414,33 +1276,50 @@ async def probe_operand(
         index=index,
         links=links,
         deref=deref,
-        child_mounts=child_mounts if structure_only else
-        (None if recursive else child_mounts))
+        child_mounts=child_mounts,
+        stat_path=stat_path,
+        stat_needed=stat_needed,
+    )
     warnings.extend(entry_ws)
-    entries = sort_stats(entries, sort_by, reverse)
+    entries = sort_stats(
+        entries,
+        sort_by,
+        reverse,
+        time_kind=time_kind,
+        group_dirs_first=group_dirs_first,
+        escape=escape,
+    )
     groups: list[tuple[PathSpec, list[FileStat]]] = [(path, entries)]
     if recursive:
         for entry in entries:
             if entry.type != FileType.DIRECTORY:
                 continue
             child_path = _child_spec(path, entry.name)
-            if structure_only and (child_mounts is None
-                                   or not child_mounts(child_path.virtual)):
-                # A child-mount root: its listing is another backend's,
-                # so the cross-mount fan-out renders that group.
+            if mounts is not None and mounts.is_root(child_path.virtual):
+                # A nested mount's root. Its row belongs here, but its
+                # listing is another backend's, which this walk cannot
+                # read: the cross-mount fan-out renders that group.
                 continue
-            child, child_ws = await probe_operand(child_path,
-                                                  readdir=readdir,
-                                                  stat=stat,
-                                                  all_files=all_files,
-                                                  sort_by=sort_by,
-                                                  reverse=reverse,
-                                                  recursive=True,
-                                                  command_line_arg=False,
-                                                  index=index,
-                                                  links=links,
-                                                  deref=deref,
-                                                  child_mounts=child_mounts)
+            child, child_ws = await probe_operand(
+                child_path,
+                readdir=readdir,
+                stat=stat,
+                all_files=all_files,
+                sort_by=sort_by,
+                reverse=reverse,
+                recursive=True,
+                command_line_arg=False,
+                index=index,
+                links=links,
+                deref=deref,
+                child_mounts=child_mounts,
+                mounts=mounts,
+                stat_path=stat_path,
+                time_kind=time_kind,
+                group_dirs_first=group_dirs_first,
+                stat_needed=stat_needed,
+                escape=escape,
+            )
             groups.extend(child.groups)
             warnings.extend(child_ws)
     return Operand(path, None, groups), warnings
@@ -461,6 +1340,11 @@ async def walk(
     links: LinkView | None = None,
     deref: bool = False,
     child_mounts: ChildMounts | None = None,
+    mounts: MountView | None = None,
+    stat_path: StatPath | None = None,
+    time_kind: LsTimeKind = LsTimeKind.MTIME,
+    group_dirs_first: bool = False,
+    escape: bool = False,
 ) -> WalkResult:
     """Flat listing for one operand: a directory's entries, or the operand
     itself when it is not one. ``recursive`` flattens the whole subtree in
@@ -481,6 +1365,13 @@ async def walk(
         links (LinkView | None): the namespace's symlink facts.
         child_mounts (ChildMounts | None): session-filtered child-mount
             names to merge into a directory listing.
+        mounts (MountView | None): the boundaries this walk's readdir
+            cannot cross, so ``-R`` lists a nested mount's root without
+            descending it.
+        stat_path (StatPath | None): dispatcher-backed stat, for the
+            child-mount rows no backend can supply.
+        time_kind (LsTimeKind): which timestamp ``-t`` compares.
+        group_dirs_first (bool): ``--group-directories-first``.
     """
     if list_dir:
         link_row = _link_row(path, links)
@@ -489,33 +1380,49 @@ async def walk(
         try:
             listed = await stat(path, index)
         except (OSError, ValueError) as exc:
-            if child_mounts is not None and child_mounts(path.virtual):
+            if (
+                not isinstance(exc, DotWalkError)
+                and child_mounts is not None
+                and child_mounts(path.virtual)
+            ):
                 # No backend serves it, but the namespace owes it
                 # children, so the door stats it as a directory and -d
                 # must print the same row.
                 return WalkResult(
-                    [FileStat(name=path.raw_path, type=FileType.DIRECTORY)])
+                    [FileStat(name=path.raw_path, type=FileType.DIRECTORY)]
+                )
             detail = fs_strerror(exc) or exc
-            return WalkResult(warnings=[
-                LsWarning(f"ls: cannot access '{path.raw_path}': {detail}",
-                          command_line_arg)
-            ],
-                              listed=False)
+            return WalkResult(
+                warnings=[
+                    LsWarning(
+                        f"ls: cannot access '{path.raw_path}': {detail}",
+                        command_line_arg,
+                    )
+                ],
+                listed=False,
+            )
         # GNU ls -d prints the operand as given.
         return WalkResult([listed.model_copy(update={"name": path.raw_path})])
 
-    operand, warnings = await probe_operand(path,
-                                            readdir=readdir,
-                                            stat=stat,
-                                            all_files=all_files,
-                                            sort_by=sort_by,
-                                            reverse=reverse,
-                                            recursive=recursive,
-                                            command_line_arg=command_line_arg,
-                                            index=index,
-                                            links=links,
-                                            deref=deref,
-                                            child_mounts=child_mounts)
+    operand, warnings = await probe_operand(
+        path,
+        readdir=readdir,
+        stat=stat,
+        all_files=all_files,
+        sort_by=sort_by,
+        reverse=reverse,
+        recursive=recursive,
+        command_line_arg=command_line_arg,
+        index=index,
+        links=links,
+        deref=deref,
+        child_mounts=child_mounts,
+        mounts=mounts,
+        stat_path=stat_path,
+        time_kind=time_kind,
+        group_dirs_first=group_dirs_first,
+        escape=escape,
+    )
     if operand.row is not None:
         return WalkResult([operand.row], warnings)
     entries = [e for _, group in operand.groups for e in group]
@@ -550,12 +1457,114 @@ async def _sorted_operands(
     reverse: bool,
     stat: Stat,
     index: IndexCacheStore,
+    time_kind: LsTimeKind = LsTimeKind.MTIME,
+    escape: bool = False,
 ) -> list[Operand]:
     keys = [
         await _operand_key(o, sort_by=sort_by, stat=stat, index=index)
         for o in operands
     ]
-    return [operands[i] for i in _order_rows(keys, sort_by, reverse)]
+    return [
+        operands[i]
+        for i in _order_rows(
+            keys, sort_by, reverse, time_kind=time_kind, escape=escape
+        )
+    ]
+
+
+def _hyperlinked(name: str, virtual: str) -> str:
+    """A name wrapped in the OSC 8 hyperlink GNU emits under
+    ``--hyperlink``, pointing at the entry's virtual path.
+
+    Args:
+        name (str): the name as rendered.
+        virtual (str): the entry's absolute virtual path.
+    """
+    return f"\x1b]8;;file://{uri_escape(virtual)}\x07{name}\x1b]8;;\x07"
+
+
+URI_SAFE = frozenset(string.ascii_letters + string.digits + "~_-./")
+
+
+def uri_escape(path: str) -> str:
+    """Percent-encode a path for a ``file:`` URI the way GNU ls does:
+    every byte outside the unreserved set and ``/`` is ``%xx`` in
+    lowercase hex, so a space, ``?`` or ``#`` cannot end the path.
+
+    Args:
+        path (str): the absolute virtual path.
+    """
+    return "".join(
+        c if c in URI_SAFE else "".join(f"%{b:02x}" for b in c.encode())
+        for c in path
+    )
+
+
+def _decorated_names(
+    entries: list[FileStat], hrefs: list[str] | None, long: bool, escape: bool
+) -> list[str] | None:
+    """The name column with escapes and hyperlinks, None when undecorated.
+
+    Args:
+        entries (list[FileStat]): the rows.
+        hrefs (list[str] | None): each row's virtual path, when linking.
+        long (bool): whether the long format's ``-> target`` applies.
+        escape (bool): render names and targets with GNU ``-b`` escapes.
+    """
+    if hrefs is None and not escape:
+        return None
+    out: list[str] = []
+    for i, e in enumerate(entries):
+        name = escape_name(e.name) if escape else e.name
+        if hrefs is not None:
+            name = _hyperlinked(name, hrefs[i])
+        target = e.extra.get(LINK_TARGET_KEY)
+        if long and e.type is FileType.SYMLINK and isinstance(target, str):
+            name += " -> " + (escape_name(target) if escape else target)
+        out.append(name)
+    return out
+
+
+def stat_needed(
+    *,
+    long: bool,
+    sort_by: LsSortBy,
+    columns: formatting.LsColumns,
+    hyperlink: bool,
+    recursive: bool,
+    indicator: LsIndicator,
+    group_dirs_first: bool,
+) -> bool:
+    """Whether GNU's ls would stat a listed entry to print this listing.
+
+    That is when a failed stat reaches stderr: the long format, a time
+    or size sort, ``-i``, ``-Z`` and ``--hyperlink`` read the stat
+    (GNU's format_needs_stat), and ``-R``, ``-F`` and
+    ``--group-directories-first`` read the type (format_needs_type),
+    which a mirage listing never carries, as a readdir without d_type
+    does not. A plain listing prints the names readdir gave and nothing
+    else. Mirrors TS ``statNeeded``.
+
+    Args:
+        long (bool): the long format (``-l``, ``-g``, ``-o``, ``-n``).
+        sort_by (LsSortBy): the active sort key.
+        columns (formatting.LsColumns): ``-i`` and ``-Z`` ride here.
+        hyperlink (bool): ``--hyperlink``.
+        recursive (bool): ``-R``.
+        indicator (LsIndicator): the indicator style, which reads the
+            type whatever the style.
+        group_dirs_first (bool): ``--group-directories-first``.
+    """
+    return (
+        long
+        or sort_by in (LsSortBy.TIME, LsSortBy.SIZE)
+        or columns.inode
+        or columns.context
+        or hyperlink
+        or recursive
+        or indicator is not LsIndicator.NONE
+        or group_dirs_first
+    )
 
 
 def _render_group(
@@ -563,21 +1572,42 @@ def _render_group(
     entries: list[FileStat],
     *,
     long: bool,
-    one_per_line: bool,
     human: bool,
-    classify: bool,
+    indicator: LsIndicator,
+    identity: Identity | None,
+    columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS,
+    escape: bool = False,
+    hrefs: list[str] | None = None,
+    targets: list[FileStat | None] | None = None,
 ) -> None:
-    if long and not one_per_line:
-        results.extend(format_ls_long(entries, human=human))
+    names = _decorated_names(entries, hrefs, long, escape)
+    if long:
+        results.extend(
+            formatting.format_ls_long(
+                entries,
+                human=human,
+                identity=identity,
+                columns=columns,
+                names=long_names(
+                    entries, names, indicator, targets or [None] * len(entries)
+                ),
+            )
+        )
     else:
-        results.extend(format_simple(entries, classify=classify))
+        results.extend(
+            format_simple(
+                entries, indicator=indicator, columns=columns, names=names
+            )
+        )
 
 
-def _finish(results: list[str],
-            warnings: list[LsWarning]) -> tuple[bytes, IOResult]:
+def _finish(
+    results: list[str], warnings: list[LsWarning]
+) -> tuple[bytes, IOResult]:
     stderr = format_optional_records([w.message for w in warnings])
     return format_records(results), IOResult(
-        stderr=stderr, exit_code=exit_status_for(warnings))
+        stderr=stderr, exit_code=exit_status_for(warnings)
+    )
 
 
 async def ls(
@@ -586,18 +1616,27 @@ async def ls(
     readdir: Readdir,
     stat: Stat,
     long: bool = False,
-    one_per_line: bool = False,
     all_files: bool = False,
+    show_dot_entries: bool = False,
     human: bool = False,
     sort_by: LsSortBy = LsSortBy.NAME,
     reverse: bool = False,
     recursive: bool = False,
     list_dir: bool = False,
-    classify: bool = False,
+    indicator: LsIndicator = LsIndicator.NONE,
     index: IndexCacheStore = NULL_INDEX,
     links: LinkView | None = None,
     deref: bool = False,
+    follow_args: bool = False,
     child_mounts: ChildMounts | None = None,
+    mounts: MountView | None = None,
+    stat_path: StatPath | None = None,
+    identity: Identity | None = None,
+    time_kind: LsTimeKind = LsTimeKind.MTIME,
+    group_dirs_first: bool = False,
+    columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS,
+    escape: bool = False,
+    hyperlink: bool = False,
 ) -> tuple[bytes, IOResult]:
     results: list[str] = []
     warnings: list[LsWarning] = []
@@ -606,74 +1645,194 @@ async def ls(
         # -d turns every operand into a plain row, sorted together and
         # printed with no headers.
         rows: list[FileStat] = []
+        row_hrefs: list[str] = []
         for p in paths:
-            result = await walk(p,
-                                readdir=readdir,
-                                stat=stat,
-                                list_dir=True,
-                                index=index,
-                                links=links,
-                                deref=deref,
-                                child_mounts=child_mounts)
+            result = await walk(
+                p,
+                readdir=readdir,
+                stat=stat,
+                list_dir=True,
+                index=index,
+                links=links,
+                deref=deref,
+                child_mounts=child_mounts,
+                mounts=mounts,
+                stat_path=stat_path,
+            )
             rows.extend(result.entries)
+            row_hrefs.extend(p.virtual for _ in result.entries)
             warnings.extend(result.warnings)
         if len(rows) > 1:
-            rows = sort_stats(rows, sort_by, reverse)
-        _render_group(results,
-                      rows,
-                      long=long,
-                      one_per_line=one_per_line,
-                      human=human,
-                      classify=classify)
+            order = _order_rows(
+                rows,
+                sort_by,
+                reverse,
+                time_kind=time_kind,
+                group_dirs_first=group_dirs_first,
+                escape=escape,
+            )
+            rows = [rows[i] for i in order]
+            row_hrefs = [row_hrefs[i] for i in order]
+        _render_group(
+            results,
+            rows,
+            long=long,
+            human=human,
+            indicator=indicator,
+            identity=identity,
+            columns=columns,
+            escape=escape,
+            hrefs=row_hrefs if hyperlink else None,
+            targets=await link_targets(
+                rows, row_hrefs, links, long, indicator
+            ),
+        )
         return _finish(results, warnings)
 
+    needed = stat_needed(
+        long=long,
+        sort_by=sort_by,
+        columns=columns,
+        hyperlink=hyperlink,
+        recursive=recursive,
+        indicator=indicator,
+        group_dirs_first=group_dirs_first,
+    )
     operands: list[Operand] = []
     for p in paths:
-        operand, p_ws = await probe_operand(p,
-                                            readdir=readdir,
-                                            stat=stat,
-                                            all_files=all_files,
-                                            sort_by=sort_by,
-                                            reverse=reverse,
-                                            recursive=recursive,
-                                            index=index,
-                                            links=links,
-                                            deref=deref,
-                                            child_mounts=child_mounts)
+        operand, p_ws = await probe_operand(
+            p,
+            readdir=readdir,
+            stat=stat,
+            all_files=all_files,
+            sort_by=sort_by,
+            reverse=reverse,
+            recursive=recursive,
+            index=index,
+            links=links,
+            deref=deref,
+            follow_args=follow_args,
+            child_mounts=child_mounts,
+            mounts=mounts,
+            stat_path=stat_path,
+            time_kind=time_kind,
+            group_dirs_first=group_dirs_first,
+            stat_needed=needed,
+            escape=escape,
+        )
         warnings.extend(p_ws)
         operands.append(operand)
     if len(operands) > 1:
-        operands = await _sorted_operands(operands,
-                                          sort_by=sort_by,
-                                          reverse=reverse,
-                                          stat=stat,
-                                          index=index)
+        operands = await _sorted_operands(
+            operands,
+            sort_by=sort_by,
+            reverse=reverse,
+            stat=stat,
+            index=index,
+            time_kind=time_kind,
+            escape=escape,
+        )
 
     # GNU names every listed directory once there is more than one operand
     # (or under -R); a lone directory operand is listed bare.
     headed = recursive or len(paths) > 1
     rows = [o.row for o in operands if o.row is not None]
-    _render_group(results,
-                  rows,
-                  long=long,
-                  one_per_line=one_per_line,
-                  human=human,
-                  classify=classify)
+    row_paths = [o.path.virtual for o in operands if o.row is not None]
+    _render_group(
+        results,
+        rows,
+        long=long,
+        human=human,
+        indicator=indicator,
+        identity=identity,
+        columns=columns,
+        escape=escape,
+        hrefs=row_paths if hyperlink else None,
+        targets=await link_targets(rows, row_paths, links, long, indicator),
+    )
     printed = bool(rows)
     for operand in operands:
         for dir_spec, entries in operand.groups:
+            if show_dot_entries:
+                dots = []
+                prefix = mount_prefix_of(dir_spec.virtual, dir_spec.vfs_path)
+                for name in (".", ".."):
+                    target = posixpath.normpath(
+                        posixpath.join(dir_spec.virtual, name)
+                    )
+                    row = FileStat(name=name, type=FileType.DIRECTORY)
+                    # Only the namespace can stat a parent outside this
+                    # mount; otherwise keep the synthetic directory row.
+                    if needed and (
+                        stat_path is not None or under_path(target, prefix)
+                    ):
+                        try:
+                            if stat_path is not None:
+                                found = await stat_path(target)
+                            else:
+                                found = await stat(
+                                    PathSpec(
+                                        virtual=target,
+                                        directory=target,
+                                        vfs_path=rekey(
+                                            dir_spec.virtual,
+                                            dir_spec.vfs_path,
+                                            target,
+                                        ),
+                                    ),
+                                    index,
+                                )
+                            if found is not None:
+                                row = found.model_copy(update={"name": name})
+                        except (OSError, ValueError) as exc:
+                            logger.debug("ls: stat %s: %r", target, exc)
+                            row = _stat_failed_row(name)
+                            warnings.append(
+                                LsWarning(
+                                    f"ls: cannot access '{name}': "
+                                    f"{fs_strerror(exc) or exc}",
+                                    False,
+                                )
+                            )
+                    dots.append(row)
+                entries = sort_stats(
+                    dots + entries,
+                    sort_by,
+                    reverse,
+                    time_kind=time_kind,
+                    group_dirs_first=group_dirs_first,
+                    escape=escape,
+                )
             if headed:
                 if printed:
                     results.append("")
-                header = respell_one(dir_spec.virtual, operand.path.virtual,
-                                     operand.path.raw_path)
-                results.append(f"{header}:")
-            _render_group(results,
-                          entries,
-                          long=long,
-                          one_per_line=one_per_line,
-                          human=human,
-                          classify=classify)
+                header = respell_one(
+                    dir_spec.virtual,
+                    operand.path.virtual,
+                    operand.path.raw_path,
+                )
+                results.append(f"{escape_name(header) if escape else header}:")
+            # GNU 9.7 prints allocated blocks here; VFS has no allocation
+            # metadata, so report unknown instead of inventing a block count.
+            if long:
+                results.append("total ?" if entries else "total 0")
+            entry_paths = [
+                posixpath.join(dir_spec.virtual, e.name) for e in entries
+            ]
+            _render_group(
+                results,
+                entries,
+                long=long,
+                human=human,
+                indicator=indicator,
+                identity=identity,
+                columns=columns,
+                escape=escape,
+                hrefs=entry_paths if hyperlink else None,
+                targets=await link_targets(
+                    entries, entry_paths, links, long, indicator
+                ),
+            )
             printed = True
 
     return _finish(results, warnings)
@@ -690,8 +1849,8 @@ async def ls_generic(
 
     The wiring resolves globs, defaults the operands from the cwd, and
     binds the backend ops (including the stat overlay); flag semantics
-    live here, and the namespace facts (links, child mounts) and index
-    ride ``opts``.
+    live here, and the namespace facts (links, child mounts), the
+    identity the owner columns render, and the index ride ``opts``.
 
     Args:
         paths (list[PathSpec]): Glob-resolved operands, cwd-defaulted.
@@ -701,24 +1860,18 @@ async def ls_generic(
         readdir (Readdir): Bound readdir called as ``readdir(p, index)``.
         stat (Stat): Bound (overlaid) stat called as ``stat(p, index)``.
     """
-    parsed = parse_flags(opts.flags)
     return await ls(
         paths,
         readdir=readdir,
         stat=stat,
-        long=parsed.long,
-        one_per_line=parsed.one_per_line,
-        all_files=parsed.all_files,
-        human=parsed.human,
-        sort_by=parsed.sort_by,
-        reverse=parsed.reverse,
-        recursive=parsed.recursive,
-        list_dir=parsed.list_dir,
-        classify=parsed.classify,
         index=opts.index,
         links=opts.ns.links if opts.ns is not None else None,
-        deref=parsed.deref,
-        child_mounts=opts.ns.child_mounts if opts.ns is not None else None)
+        child_mounts=opts.ns.child_mounts if opts.ns is not None else None,
+        mounts=opts.ns.mounts if opts.ns is not None else None,
+        stat_path=opts.stat_path,
+        identity=identity_of(opts),
+        **ls_options(opts.flags),
+    )
 
 
 __all__ = [

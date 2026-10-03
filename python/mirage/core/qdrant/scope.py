@@ -12,101 +12,46 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Literal, TypeAlias
+from mirage.accessor.qdrant import QdrantAccessor
+from mirage.core.hierarchy.bind import per_accessor
+from mirage.core.hierarchy.codec import JSON_NAME, PATH_SAFE, RAW, Codec
+from mirage.core.hierarchy.scope import DetectFn, Scope, make_detect_scope
+from mirage.core.vector.scope import blob_leaf, row_scopes
+from mirage.core.vector.types import Leaf
+from mirage.types import ContentType
+from mirage.vfs.qdrant.config import QdrantConfig
 
-from mirage.resource.qdrant.config import QdrantConfig
-from mirage.types import PathSpec
-
-
-class ScopeLevel(str, Enum):
-    ROOT = "root"
-    GROUP_DIR = "group_dir"
-    ROW = "row"
-    UNKNOWN = "unknown"
+TXT = Codec(suffix=".txt")
 
 
-@dataclass(frozen=True)
-class QdrantRootScope:
-    resource_path: str = "/"
-    level: Literal[ScopeLevel.ROOT] = field(default=ScopeLevel.ROOT,
-                                            init=False)
+def scopes_for(config: QdrantConfig) -> tuple[Scope, ...]:
+    """The mount's scope table, shaped by its config.
 
+    A pinned ``collection`` removes the leading collection segment, and
+    ``text_field`` / ``blob_field`` each add a leaf suffix beside the
+    ``.json`` row. A group slot decodes through ``PATH_SAFE``, so its
+    filter holds the exact value the directory was rendered from; a
+    ``basename_fields`` slot stays ``RAW`` because its rendering drops
+    the value's parents and the lister resolves it against the payload
+    instead.
 
-@dataclass(frozen=True)
-class QdrantGroupScope:
-    table: str
-    filters: dict[str, str] = field(default_factory=dict)
-    resource_path: str = "/"
-    level: Literal[ScopeLevel.GROUP_DIR] = field(default=ScopeLevel.GROUP_DIR,
-                                                 init=False)
-
-
-@dataclass(frozen=True)
-class QdrantRowScope:
-    table: str
-    row_id: str
-    kind: str
-    filters: dict[str, str] = field(default_factory=dict)
-    resource_path: str = "/"
-    level: Literal[ScopeLevel.ROW] = field(default=ScopeLevel.ROW, init=False)
-
-
-@dataclass(frozen=True)
-class QdrantUnknownScope:
-    resource_path: str = "/"
-    level: Literal[ScopeLevel.UNKNOWN] = field(default=ScopeLevel.UNKNOWN,
-                                               init=False)
-
-
-QdrantScope: TypeAlias = (QdrantRootScope | QdrantGroupScope | QdrantRowScope
-                          | QdrantUnknownScope)
-
-
-def _parse_row_file(name: str, config: QdrantConfig) -> tuple[str, str] | None:
-    if name.endswith(".json"):
-        return name[:-len(".json")], "json"
-    if config.text_field and name.endswith(".txt"):
-        return name[:-len(".txt")], "txt"
+    Args:
+        config (QdrantConfig): the mount's config.
+    """
+    leaves: list[Leaf] = [("row_json", JSON_NAME, ContentType.TEXT)]
+    if config.text_field:
+        leaves.append(("row_text", TXT, ContentType.TEXT))
     if config.blob_field:
-        suffix = "." + config.blob_ext
-        if name.endswith(suffix):
-            return name[:-len(suffix)], "blob"
-    return None
+        leaves.append(blob_leaf(config.blob_ext))
+    groups = [
+        RAW if column in config.basename_fields else PATH_SAFE
+        for column in config.group_by
+    ]
+    return row_scopes(bool(config.collection), groups, leaves)
 
 
-def detect_scope(path: PathSpec, config: QdrantConfig) -> QdrantScope:
-    raw = path.mount_path
-    key = raw.strip("/")
-    segs = key.split("/") if key else []
+def _detect(accessor: QdrantAccessor) -> DetectFn:
+    return make_detect_scope(scopes_for(accessor.config))
 
-    if config.collection:
-        table = config.collection
-        rest = segs
-    else:
-        if not segs:
-            return QdrantRootScope(resource_path=raw)
-        table = segs[0]
-        rest = segs[1:]
 
-    gb = config.group_by
-    n = len(gb)
-
-    if len(rest) <= n:
-        filters = {gb[i]: rest[i] for i in range(len(rest))}
-        return QdrantGroupScope(table=table,
-                                filters=filters,
-                                resource_path=raw)
-
-    if len(rest) == n + 1:
-        filters = {gb[i]: rest[i] for i in range(n)}
-        parsed = _parse_row_file(rest[n], config)
-        if parsed is not None:
-            return QdrantRowScope(table=table,
-                                  filters=filters,
-                                  row_id=parsed[0],
-                                  kind=parsed[1],
-                                  resource_path=raw)
-
-    return QdrantUnknownScope(resource_path=raw)
+detect_for = per_accessor(_detect)

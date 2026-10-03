@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it, vi } from 'vitest'
-import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { MountMode } from '@struktoai/mirage-core/types'
 import { Workspace } from '@struktoai/mirage-node'
 import { newWorkspaceId } from '@struktoai/mirage-core/utils/ids'
@@ -29,7 +29,7 @@ describe('newWorkspaceId', () => {
 describe('WorkspaceRegistry', () => {
   it('add/get/list/remove', async () => {
     const r = new WorkspaceRegistry()
-    const ws = new Workspace({ '/': new RAMResource() }, { mode: MountMode.WRITE })
+    const ws = new Workspace({ '/': new RAMVFS() }, { mode: MountMode.WRITE })
     const entry = r.add(ws)
     expect(r.has(entry.id)).toBe(true)
     expect(r.list()).toHaveLength(1)
@@ -37,11 +37,26 @@ describe('WorkspaceRegistry', () => {
     expect(r.has(entry.id)).toBe(false)
   })
 
+  it('joins an overlapping remove instead of deleting the id again', async () => {
+    // A second deletion of its own would stop the runner again and run
+    // its cleanup, then release the id after a create had reused it.
+    const r = new WorkspaceRegistry()
+    const entry = r.add(new Workspace({ '/': new RAMVFS() }, { mode: MountMode.WRITE }), 'w')
+    const stop = vi.spyOn(entry.runner, 'stop')
+    const cleanup = vi.fn(() => Promise.resolve())
+    const [first, second] = await Promise.all([r.remove('w', cleanup), r.remove('w', cleanup)])
+    expect(first).toBe(entry)
+    expect(second).toBe(entry)
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(cleanup).toHaveBeenCalledTimes(1)
+    expect(r.has('w')).toBe(false)
+  })
+
   it('rejects duplicate ids', () => {
     const r = new WorkspaceRegistry()
-    const ws = new Workspace({ '/': new RAMResource() }, { mode: MountMode.WRITE })
+    const ws = new Workspace({ '/': new RAMVFS() }, { mode: MountMode.WRITE })
     r.add(ws, 'fixed')
-    const ws2 = new Workspace({ '/': new RAMResource() }, { mode: MountMode.WRITE })
+    const ws2 = new Workspace({ '/': new RAMVFS() }, { mode: MountMode.WRITE })
     expect(() => r.add(ws2, 'fixed')).toThrow(/already exists/)
   })
 
@@ -54,7 +69,7 @@ describe('WorkspaceRegistry', () => {
         tripped = true
       },
     })
-    const ws = new Workspace({ '/': new RAMResource() }, { mode: MountMode.WRITE })
+    const ws = new Workspace({ '/': new RAMVFS() }, { mode: MountMode.WRITE })
     const entry = r.add(ws)
     await r.remove(entry.id)
     await vi.advanceTimersByTimeAsync(60)

@@ -13,18 +13,31 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
+from functools import partial
 
 from mirage.accessor.gdrive import GDriveAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.cache.index.warm import entry_or_warm
 from mirage.core.gdrive import DIRECTORY_RESOURCE_TYPES
 from mirage.core.gdrive.resolve import root_context
-from mirage.core.google.drive import (MIME_TO_EXT, list_files,
-                                      list_shared_drives)
+from mirage.core.google.drive import (
+    FOLDER_MIME,
+    MIME_TO_EXT,
+    list_files,
+    list_shared_drives,
+)
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent, enotdir
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 
 logger = logging.getLogger(__name__)
+
+_RESOURCE_TYPES = {
+    FOLDER_MIME: "gdrive/folder",
+    "application/vnd.google-apps.document": "gdrive/gdoc",
+    "application/vnd.google-apps.spreadsheet": "gdrive/gsheet",
+    "application/vnd.google-apps.presentation": "gdrive/gslide",
+}
 
 
 def unique_shared_drive_name(name: str, existing_names: set[str]) -> str:
@@ -38,13 +51,22 @@ def unique_shared_drive_name(name: str, existing_names: set[str]) -> str:
     return filename
 
 
+def resource_type_for(mime: str) -> str:
+    """The gdrive resource type of a Drive MIME type.
+
+    Args:
+        mime (str): the item's ``mimeType``.
+    """
+    return _RESOURCE_TYPES.get(mime, "gdrive/file")
+
+
 async def readdir(
     accessor: GDriveAccessor,
     path_spec: PathSpec,
     index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
     virtual = path_spec.virtual
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
     path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     virtual_key = prefix + "/" + key if key else prefix or "/"
@@ -59,17 +81,16 @@ async def readdir(
     if not key:
         folder_id, drive_id = await root_context(accessor)
     else:
-        result = await index.get(virtual_key)
-        if result.entry is None:
-            parent_virtual = virtual_key.rstrip("/").rsplit("/", 1)[0] or "/"
-            if parent_virtual != virtual_key:
-                parent_path = PathSpec.from_str_path(
-                    parent_virtual, mount_key(parent_virtual, prefix))
-                await readdir(accessor, parent_path, index)
-                result = await index.get(virtual_key)
-            if result.entry is None:
-                raise enoent(virtual)
-        if result.entry.resource_type not in DIRECTORY_RESOURCE_TYPES:
+        parent_virtual = virtual_key.rstrip("/").rsplit("/", 1)[0] or "/"
+        parent_path = PathSpec.from_str_path(
+            parent_virtual, mount_key(parent_virtual, prefix)
+        )
+        entry = await entry_or_warm(
+            index, virtual_key, partial(readdir, accessor, parent_path, index)
+        )
+        if entry is None:
+            raise enoent(virtual)
+        if entry.resource_type not in DIRECTORY_RESOURCE_TYPES:
             # Listing a file's id answers with an empty child set rather
             # than an error, so without this the recursion above reported
             # `ls /data/a.txt/x` as ENOENT where opendir(2) says ENOTDIR.
@@ -77,12 +98,12 @@ async def readdir(
             # `readdir_error` performs, already done and already paid for,
             # so the errno falls out of it with no extra request.
             raise enotdir(virtual)
-        folder_id = result.entry.id
-        drive_id = result.entry.extra.get("drive_id")
+        folder_id = entry.id
+        drive_id = entry.extra.get("drive_id")
 
-    files = await list_files(accessor.token_manager,
-                             folder_id=folder_id,
-                             drive_id=drive_id)
+    files = await list_files(
+        accessor.token_manager, folder_id=folder_id, drive_id=drive_id
+    )
     entries = []
     for f in files:
         mime = f.get("mimeType", "")
@@ -92,26 +113,22 @@ async def readdir(
             filename = f"{name}{ext}"
         else:
             filename = name
-        is_dir = mime == "application/vnd.google-apps.folder"
-        if is_dir:
-            rt = "gdrive/folder"
-        elif mime == "application/vnd.google-apps.document":
-            rt = "gdrive/gdoc"
-        elif mime == "application/vnd.google-apps.spreadsheet":
-            rt = "gdrive/gsheet"
-        elif mime == "application/vnd.google-apps.presentation":
-            rt = "gdrive/gslide"
-        else:
-            rt = "gdrive/file"
+        rt = resource_type_for(mime)
+        is_dir = rt == "gdrive/folder"
         source_size = int(f.get("size") or f.get("quotaBytesUsed") or 0)
         extra = {"drive_id": f.get("driveId")} if f.get("driveId") else {}
+        # Carried so stat answers the read's token without a request.
+        if f.get("md5Checksum"):
+            extra["md5_checksum"] = f["md5Checksum"]
+        if f.get("headRevisionId"):
+            extra["head_revision_id"] = f["headRevisionId"]
         # Binary files download raw, so Drive's size is the rendered byte
         # length and stays. Google-apps files (gdoc/gsheet/gslide) render to
         # JSON, so Drive's source size must not become FileStat.size
         # (render-derived or None, see the CLAUDE.md FUSE rules); it lives in
         # extra instead.
         if rt == "gdrive/file":
-            size = source_size or None
+            size = int(f["size"]) if f.get("size") is not None else None
         else:
             size = None
             if source_size:
@@ -163,8 +180,8 @@ async def readdir(
         # until the entry expires, so the mount would keep hiding Shared
         # Drives after the cause clears (a just-granted scope) with no way to
         # force a refresh. The entries are still real, so cache those and
-        # leave the directory uncached: child lookups stay warm and the next
-        # readdir retries enumeration.
+        # leave the directory uncached. Child lookups must refresh until a
+        # complete parent listing can prove the cached metadata is current.
         child_prefix = "/" if virtual_key == "/" else virtual_key + "/"
         for name, entry, _ in entries:
             await index.put(child_prefix + name, entry)

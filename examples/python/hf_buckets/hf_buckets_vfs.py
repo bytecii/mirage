@@ -14,12 +14,11 @@
 
 import asyncio
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.hf_buckets import HfBucketsConfig, HfBucketsResource
+from mirage.vfs.hf_buckets import HfBucketsConfig, HfBucketsVFS
 
 load_dotenv(".env.development")
 
@@ -27,27 +26,26 @@ config = HfBucketsConfig(
     bucket=os.environ["HF_BUCKET_NAME"],
     token=os.environ["HF_TOKEN"],
 )
-resource = HfBucketsResource(config)
+vfs = HfBucketsVFS(config)
 
 
 async def main():
-    with Workspace({"/hf/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
+    with Workspace({"/hf/": vfs}, mode=MountMode.READ) as ws:
         print("=== VFS: open() reads from HF Bucket transparently ===")
 
         print("\n--- os.listdir('/hf') ---")
-        root_entries = vos.listdir("/hf")
+        root_entries = os.listdir("/hf")
         for e in root_entries:
             print(f"  {e}")
 
         data_dir = "/hf"
-        if "data" in root_entries and vos.path.isdir("/hf/data"):
+        if "data" in root_entries and os.path.isdir("/hf/data"):
             data_dir = "/hf/data"
             print(f"\n--- os.listdir('{data_dir}') ---")
-            for e in vos.listdir(data_dir):
+            for e in os.listdir(data_dir):
                 print(f"  {e}")
 
-        entries = vos.listdir(data_dir)
+        entries = os.listdir(data_dir)
         target = None
         for entry in entries:
             if entry.endswith(".jsonl") or entry.endswith(".json"):
@@ -63,12 +61,12 @@ async def main():
                     print(f"  [{i}] {line.strip()[:100]}")
 
         print("\n--- VFS commands ---")
-        r = await ws.execute(f"ls {data_dir}")
+        r = await ws.shell(f"ls {data_dir}")
         print(f"  ls {data_dir}: {(await r.stdout_str()).strip()}")
         if target:
-            r = await ws.execute(f"head -n 3 {target}")
+            r = await ws.shell(f"head -n 3 {target}")
             print(f"  head -n 3:\n{(await r.stdout_str()).rstrip()}")
-            r = await ws.execute(f"wc -l {target}")
+            r = await ws.shell(f"wc -l {target}")
             print(f"  wc -l: {(await r.stdout_str()).strip()}")
 
 

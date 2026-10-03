@@ -15,12 +15,14 @@
 import asyncio
 from collections.abc import AsyncIterator
 
-from mirage.commands import COMMANDS as _CMDS
-from mirage.resource.ram import RAMResource
+from mirage.commands.builtin.ram import COMMANDS
+from mirage.commands.config import CommandCatalog
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
-ram_cat = _CMDS["cat"]
+_CMDS = CommandCatalog(COMMANDS)
+ram_cat = _CMDS.require("cat").fn
 
 
 def _cat_ops():
@@ -35,8 +37,9 @@ def _spying_stream(real_stream, pulled: list[str]):
     return factory
 
 
-async def _spy_iter(source: AsyncIterator[bytes], name: str,
-                    pulled: list[str]) -> AsyncIterator[bytes]:
+async def _spy_iter(
+    source: AsyncIterator[bytes], name: str, pulled: list[str]
+) -> AsyncIterator[bytes]:
     first = True
     async for chunk in source:
         if first:
@@ -46,11 +49,11 @@ async def _spy_iter(source: AsyncIterator[bytes], name: str,
 
 
 def _seeded_ws() -> Workspace:
-    ws = Workspace({"/data": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
 
     async def seed():
-        await ws.execute("tee /data/a.txt > /dev/null", stdin=b"a1\na2\na3\n")
-        await ws.execute("tee /data/b.txt > /dev/null", stdin=b"b1\nb2\n")
+        await ws.shell("tee /data/a.txt > /dev/null", stdin=b"a1\na2\na3\n")
+        await ws.shell("tee /data/b.txt > /dev/null", stdin=b"b1\nb2\n")
 
     asyncio.run(seed())
     return ws
@@ -67,7 +70,7 @@ def _spy_cat_reads(ws, command, pulled):
 
 
 async def _run_and_collect(ws, command):
-    result = await ws.execute(command)
+    result = await ws.shell(command)
     out = await result.stdout_str()
     await ws.close()
     return out

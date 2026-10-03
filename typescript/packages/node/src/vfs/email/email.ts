@@ -1,0 +1,76 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+
+import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
+import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
+
+import { VFSName } from '@struktoai/mirage-core/types'
+
+import { EmailAccessor } from '../../accessor/email.ts'
+import { EMAIL_COMMANDS } from '../../commands/builtin/email/index.ts'
+
+import { EMAIL_OPS } from '../../ops/email/index.ts'
+import {
+  redactEmailConfig,
+  type EmailConfig,
+  type EmailConfigRedacted,
+} from '../../core/email/config.ts'
+import { PROMPT, WRITE_PROMPT } from './prompt.ts'
+
+export interface EmailVFSState {
+  type: string
+  config: EmailConfigRedacted
+}
+
+export class EmailVFS extends BaseVFS {
+  override readonly name: string = VFSName.EMAIL
+  override readonly cachesReads: boolean = true
+  // Every listed file carries an exact size: .email.json is rendered at
+  // readdir from the full message source the listing already fetches, and an
+  // attachment's size is its decoded payload length.
+  override readonly sizesAlwaysKnown: boolean = true
+  override readonly indexTtl: number = 86_400
+  override readonly prompt: string = PROMPT
+  override readonly writePrompt: string = WRITE_PROMPT
+  readonly config: EmailConfig
+  override readonly accessor: EmailAccessor
+
+  constructor(config: EmailConfig) {
+    super()
+    this.config = config
+    this.accessor = new EmailAccessor(config)
+  }
+
+  override async close(): Promise<void> {
+    await this.accessor.close()
+    await super.close()
+  }
+
+  override commands(): readonly RegisteredCommand[] {
+    return EMAIL_COMMANDS
+  }
+
+  override ops(): readonly RegisteredOp[] {
+    return EMAIL_OPS
+  }
+
+  override getState(): Promise<EmailVFSState> {
+    return Promise.resolve({
+      type: this.name,
+      config: redactEmailConfig(this.config),
+    })
+  }
+}

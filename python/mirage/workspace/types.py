@@ -12,11 +12,18 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from dataclasses import asdict, dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any
 
+from mirage.io import IOResult
 from mirage.observe import OpRecord
 from mirage.types import PathSpec
+
+# Runs one text line in a session (`execute_fn(line, session_id=...)`):
+# what `eval`, `source`, `xargs` and find's `-exec` hand their inner
+# line to.
+ExecuteLine = Callable[..., Awaitable[IOResult]]
 
 
 @dataclass
@@ -33,6 +40,10 @@ class ExecutionNode:
         paths (list[PathSpec]): Classified path operands of a leaf mount
             command. Transient (not serialized): lets the lazy-stream drain
             respell filesystem errors as typed, like the eager chokepoint.
+        refused (bool): The admission gate refused the line, so it never
+            ran. Transient: the redirect layer reads it to leave output
+            targets untouched, where an ordinary failure still creates
+            and truncates them as bash's open-before-exec would.
     """
 
     command: str | None = None
@@ -42,6 +53,7 @@ class ExecutionNode:
     children: list["ExecutionNode"] = field(default_factory=list)
     records: list[OpRecord] = field(default_factory=list)
     paths: list[PathSpec] = field(default_factory=list)
+    refused: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -54,5 +66,5 @@ class ExecutionNode:
         if self.children:
             d["children"] = [c.to_dict() for c in self.children]
         if self.records:
-            d["records"] = [asdict(r) for r in self.records]
+            d["records"] = [r.to_dict() for r in self.records]
         return d

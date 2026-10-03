@@ -15,13 +15,15 @@
 from typing import Any
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.general.interpreter import (CPYTHON_ARGV0,
-                                                         resolve_source,
-                                                         run_code)
-from mirage.commands.config import CommandOpts
-from mirage.commands.registry import command
+from mirage.commands.builtin.general.interpreter import (
+    CPYTHON_ARGV0,
+    resolve_source,
+    run_code,
+    runtime_version,
+)
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import CommandOutput
 from mirage.types import PathSpec
 
@@ -32,13 +34,26 @@ async def _python3(
     texts: list[str],
     opts: CommandOpts,
 ) -> CommandOutput:
+    label = opts.command or "python3"
     fl = FlagView(opts.flags, spec=SPECS["python3"])
-    error, prepared = await resolve_source("python3", paths, texts,
-                                           fl.as_str("c"), opts.stdin,
-                                           opts.dispatch,
-                                           opts.cwd, opts.exec_allowed,
-                                           fl.as_str("m"), CPYTHON_ARGV0,
-                                           fl.as_bool("x"))
+    if fl.as_bool("version"):
+        return await runtime_version(
+            label, opts.runtime, opts.env, opts.runtime_unavailable
+        )
+    error, prepared = await resolve_source(
+        label,
+        paths,
+        texts,
+        fl.as_str("c"),
+        opts.stdin,
+        opts.dispatch,
+        opts.cwd,
+        opts.exec_allowed,
+        fl.as_str("m"),
+        CPYTHON_ARGV0,
+        fl.as_bool("x"),
+        exec_path_allowed=opts.exec_path_allowed,
+    )
     if error is not None or prepared is None:
         assert error is not None
         return error
@@ -62,9 +77,16 @@ async def _python3(
         "X": fl.as_list("X"),
         "check_hash_based_pycs": fl.as_str("check_hash_based_pycs"),
     }
-    return await run_code("python3", prepared, opts.env, init_flags,
-                          opts.runtime, opts.runtime_unavailable)
+    return await run_code(
+        label,
+        prepared,
+        opts.env,
+        init_flags,
+        opts.runtime,
+        opts.runtime_unavailable,
+        cwd=opts.cwd,
+    )
 
 
-python3 = command("python3", resource=None, spec=SPECS["python3"])(_python3)
-python_cmd = command("python", resource=None, spec=SPECS["python"])(_python3)
+python3 = command("python3", vfs=None, spec=SPECS["python3"])(_python3)
+python_cmd = command("python", vfs=None, spec=SPECS["python"])(_python3)

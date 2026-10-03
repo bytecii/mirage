@@ -15,8 +15,8 @@
 import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
-from mirage.cache.context import invalidate_after_unlink
-from mirage.core.ssh.client import _abs
+from mirage.cache.context import invalidate_subtree
+from mirage.core.ssh.utils import join_root
 from mirage.types import PathSpec
 
 
@@ -28,11 +28,11 @@ async def rm_r(accessor: SSHAccessor, path_spec: PathSpec) -> None:
         await _rm_r_inner(sftp, config, path)
     except asyncssh.SFTPNoSuchFile:
         raise FileNotFoundError(path)
-    await invalidate_after_unlink(path_spec)
+    await invalidate_subtree(path_spec)
 
 
 async def _rm_r_inner(sftp, config, path: str) -> None:
-    remote = _abs(config, path)
+    remote = join_root(config.root, path)
     # lstat, not stat: rm never follows symlinks (a link to a directory
     # must be unlinked, not recursed into), and a dangling link is still
     # removable. Mirrors the TS core, which already uses lstat here.

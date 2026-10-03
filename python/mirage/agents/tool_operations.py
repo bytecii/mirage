@@ -12,12 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import posixpath
 import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from mirage.agents.file_version import FileVersionTracker, StaleMirageFileError
-from mirage.agents.io_text import decode, io_to_str
+from mirage.agents.io_text import decode, io_to_str, replace_text
 from mirage.io.types import IOResult
+from mirage.ops.ops import Ops
 from mirage.utils.path import gnu_dirname
 from mirage.workspace.workspace import Workspace
 
@@ -68,48 +72,58 @@ def number_lines(text: str, offset: int, limit: int) -> str:
         lines = [part + "\n" for part in parts[:-1]]
         if parts[-1]:
             lines.append(parts[-1])
-    sliced = lines[offset:offset + limit]
-    return "".join(f"{i + offset + 1:>6}\t{line}"
-                   for i, line in enumerate(sliced))
+    sliced = lines[offset : offset + limit]
+    return "".join(
+        f"{i + offset + 1:>6}\t{line}" for i, line in enumerate(sliced)
+    )
 
 
-async def ensure_parents(ws: Workspace, path: str) -> None:
+async def ensure_parents(vfs: Ops, path: str) -> None:
     """Create the directories a new file needs, parents first.
 
     Args:
-        ws (Workspace): The workspace to create them in.
+        vfs (Ops): The op facade to create them through.
         path (str): Virtual path of the file about to be written.
     """
     parent = gnu_dirname(path)
     if parent in ("/", "", "."):
         return
-    if await ws.ops.exists(parent):
+    if await vfs.exists(parent):
         return
-    await ensure_parents(ws, parent)
+    await ensure_parents(vfs, parent)
     try:
-        await ws.ops.mkdir(parent)
+        await vfs.mkdir(parent)
     except OSError:
-        if not await ws.ops.exists(parent):
+        if not await vfs.exists(parent):
             raise
 
 
 class MirageToolOperations:
-    """The six agent tools, independent of any agent framework.
+    """The agent tools, independent of any agent framework.
 
     Args:
         workspace (Workspace): The workspace the tools act on.
         stale_write_protection (bool): False lets an agent overwrite a
             file that changed since it read it.
+        session_id (str | None): The session the tools act as, with its
+            cwd, environment and mount grants; None is the workspace's
+            default session.
     """
 
-    def __init__(self,
-                 workspace: Workspace,
-                 stale_write_protection: bool = True) -> None:
+    def __init__(
+        self,
+        workspace: Workspace,
+        stale_write_protection: bool = True,
+        session_id: str | None = None,
+    ) -> None:
         self._ws = workspace
-        self._versions = FileVersionTracker(workspace, stale_write_protection)
+        self._session_id = session_id
+        self._versions = FileVersionTracker(
+            workspace, stale_write_protection, session_id
+        )
 
-    async def execute(self, command: str) -> ToolResult:
-        """Run a shell-style command line.
+    async def shell(self, command: str) -> ToolResult:
+        """Run a command line in the session's shell.
 
         Args:
             command (str): The command line to run.
@@ -117,12 +131,13 @@ class MirageToolOperations:
         Returns:
             ToolResult: The command's rendered output.
         """
-        return _io_result(await self._ws.execute(command))
+        return _io_result(
+            await self._ws.shell(command, session_id=self._session_id)
+        )
 
-    async def read(self,
-                   path: str,
-                   offset: int = 0,
-                   limit: int = DEFAULT_READ_LIMIT) -> ToolResult:
+    async def read(
+        self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT
+    ) -> ToolResult:
         """Read a file as line-numbered text.
 
         Args:
@@ -136,13 +151,22 @@ class MirageToolOperations:
         try:
             data = await self._versions.read(path)
         except (OSError, ValueError) as exc:
-            if not await self._ws.ops.exists(path):
+            if not await self._versions.vfs.exists(path):
                 return ToolResult(f"Error: file '{path}' not found", True)
             return ToolResult(f"Error: {exc}", True)
-        return ToolResult(number_lines(decode(data), offset, limit))
+        text = decode(data)
+        lines = text.count("\n") + (1 if text and text[-1] != "\n" else 0)
+        if offset <= 0 and offset + limit >= lines:
+            self._versions.mark_seen(path)
+        return ToolResult(number_lines(text, offset, limit))
 
     async def write(self, path: str, content: str) -> ToolResult:
-        """Create a file, refusing to clobber an existing one.
+        """Write a file; an existing one must have been read in full first.
+
+        A new file is created with its missing parents. An existing one
+        is overwritten only when the agent was shown all of it and it did
+        not change since, so a write never clobbers text the agent has not
+        seen.
 
         Args:
             path (str): Virtual path.
@@ -151,17 +175,28 @@ class MirageToolOperations:
         Returns:
             ToolResult: The confirmation, or the failure.
         """
-        if await self._ws.ops.exists(path):
-            return ToolResult(f"Error: file '{path}' already exists", True)
-        await ensure_parents(self._ws, path)
-        await self._versions.write(path, content)
+        if await self._versions.vfs.exists(
+            path
+        ) and not self._versions.has_read(path):
+            return ToolResult(
+                f"Error: file '{path}' exists; read all of it before "
+                "overwriting it",
+                True,
+            )
+        try:
+            await ensure_parents(self._versions.vfs, path)
+            await self._versions.write(path, content)
+        except (StaleMirageFileError, OSError, ValueError) as exc:
+            return ToolResult(f"Error: {exc}", True)
         return ToolResult(f"Written: {path}")
 
-    async def edit(self,
-                   path: str,
-                   old_string: str,
-                   new_string: str,
-                   replace_all: bool = False) -> ToolResult:
+    async def edit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> ToolResult:
         """Replace a string in an existing file.
 
         Args:
@@ -178,22 +213,24 @@ class MirageToolOperations:
         except StaleMirageFileError as exc:
             return ToolResult(f"Error: {exc}", True)
         except (OSError, ValueError) as exc:
-            if not await self._ws.ops.exists(path):
+            if not await self._versions.vfs.exists(path):
                 return ToolResult(f"Error: file '{path}' not found", True)
             return ToolResult(f"Error: {exc}", True)
-        count = content.count(old_string)
+        new_content, count = replace_text(
+            content, old_string, new_string, replace_all
+        )
         if count == 0:
             return ToolResult(
-                f"Error: string not found in file: '{old_string}'", True)
+                f"Error: string not found in file: '{old_string}'", True
+            )
         if count > 1 and not replace_all:
             return ToolResult(
                 f"Error: string appears {count} times. Pass replace_all=true",
-                True)
-        new_content = content.replace(old_string, new_string,
-                                      -1 if replace_all else 1)
+                True,
+            )
         try:
             await self._versions.write_edit(path, new_content)
-        except StaleMirageFileError as exc:
+        except (StaleMirageFileError, OSError, ValueError) as exc:
             return ToolResult(f"Error: {exc}", True)
         occurrences = count if replace_all else 1
         return ToolResult(f"Edited: {path} ({occurrences} occurrence(s))")
@@ -207,22 +244,150 @@ class MirageToolOperations:
         Returns:
             ToolResult: The listing, or the failure.
         """
-        return _io_result(await self._ws.execute(f"ls {shlex.quote(path)}"))
+        return _io_result(
+            await self._ws.shell(
+                f"ls {shlex.quote(path)}", session_id=self._session_id
+            )
+        )
 
-    async def grep(self, pattern: str, path: str) -> ToolResult:
-        """Search recursively for a pattern.
+    async def grep(
+        self,
+        pattern: str,
+        path: str,
+        *,
+        ignore_case: bool = False,
+        fixed_strings: bool = False,
+        include: str | None = None,
+        context: int | None = None,
+        files_with_matches: bool = False,
+        count: bool = False,
+        max_count: int | None = None,
+    ) -> ToolResult:
+        """Search recursively for a pattern, as ``grep -rn`` does.
+
+        Each option is the GNU grep flag of the same name, and the line
+        runs in the session's shell, so the search is the shell's own:
+        the same policy, push-down and history as typing it.
 
         Args:
             pattern (str): The regex to search for.
             path (str): Virtual path to search under.
+            ignore_case (bool): ``-i``.
+            fixed_strings (bool): ``-F``.
+            include (str | None): ``--include``, a file-name glob.
+            context (int | None): ``-C``, lines around each match.
+            files_with_matches (bool): ``-l``.
+            count (bool): ``-c``.
+            max_count (int | None): ``-m``, matches per file.
 
         Returns:
             ToolResult: The matches.
         """
-        io = await self._ws.execute(
-            f"grep -rn {shlex.quote(pattern)} {shlex.quote(path)}")
+        words = ["grep", "-rn"]
+        if ignore_case:
+            words.append("-i")
+        if fixed_strings:
+            words.append("-F")
+        if files_with_matches:
+            words.append("-l")
+        if count:
+            words.append("-c")
+        if max_count is not None:
+            words += ["-m", str(max_count)]
+        if context is not None:
+            words += ["-C", str(context)]
+        if include is not None:
+            words.append(shlex.quote(f"--include={include}"))
+        words += ["-e", shlex.quote(pattern), shlex.quote(path)]
+        io = await self._ws.shell(" ".join(words), session_id=self._session_id)
         # grep exits 1 for "no match", which is a normal empty answer,
         # and >1 for a real failure (bad regex, unreadable path). Only
         # the second is a tool error; reporting the first as one would
         # tell the agent its search broke every time nothing matched.
         return ToolResult(io_to_str(io), io.exit_code > 1)
+
+    async def glob(self, pattern: str, path: str = "/") -> ToolResult:
+        """Find files, not directories, whose path matches a pattern.
+
+        The pattern is expanded by ``Workspace.glob``, the shell's own
+        resolver: ``**`` matches any number of directories, and a
+        relative pattern is matched under ``path``. A symlink to a file
+        counts; a dangling one does not.
+
+        Args:
+            pattern (str): A pathname pattern such as ``**/*.py``.
+            path (str): Directory a relative pattern is matched under.
+
+        Returns:
+            ToolResult: One path per line, sorted.
+        """
+        matches = await self._ws.glob(
+            posixpath.join(path, pattern), session_id=self._session_id
+        )
+        files = [
+            match
+            for match in matches
+            if await self._ws.vfs.is_file(match, session_id=self._session_id)
+        ]
+        return ToolResult("".join(f"{match}\n" for match in files))
+
+    async def call(
+        self, name: str, arguments: Mapping[str, Any]
+    ) -> ToolResult:
+        """Run one tool by name with its JSON input.
+
+        The one entry every door shares: MCP, the HTTP routes, the CLI
+        and the agent adapters hand a tool's name and its input, as the
+        tool's ``*_INPUT`` schema reads it, to this method, so each
+        tool answers the same way through each of them.
+
+        Args:
+            name (str): ``shell``, ``read``, ``write``, ``edit``, ``ls``,
+                ``grep`` or ``glob``.
+            arguments (Mapping[str, Any]): the tool's input, already
+                checked against its schema.
+
+        Returns:
+            ToolResult: The tool's answer.
+
+        Raises:
+            KeyError: No tool has the name.
+        """
+        if name == "shell":
+            return await self.shell(arguments["command"])
+        if name == "read":
+            return await self.read(
+                arguments["path"],
+                int(arguments.get("offset", 0)),
+                int(arguments.get("limit", DEFAULT_READ_LIMIT)),
+            )
+        if name == "write":
+            return await self.write(arguments["path"], arguments["content"])
+        if name == "edit":
+            return await self.edit(
+                arguments["path"],
+                arguments["old_string"],
+                arguments["new_string"],
+                bool(arguments.get("replace_all", False)),
+            )
+        if name == "ls":
+            return await self.ls(arguments["path"])
+        if name == "grep":
+            return await self.grep(
+                arguments["pattern"],
+                arguments["path"],
+                ignore_case=bool(arguments.get("ignore_case", False)),
+                fixed_strings=bool(arguments.get("fixed_strings", False)),
+                include=arguments.get("include"),
+                context=arguments.get("context"),
+                files_with_matches=bool(
+                    arguments.get("files_with_matches", False)
+                ),
+                count=bool(arguments.get("count", False)),
+                max_count=arguments.get("max_count"),
+            )
+        if name == "glob":
+            return await self.glob(
+                arguments["pattern"], arguments.get("path", "/")
+            )
+        raise KeyError(name)

@@ -19,8 +19,8 @@ import pytest
 
 from mirage.accessor.s3 import S3Accessor
 from mirage.core.s3.readdir import readdir
-from mirage.resource.s3 import S3Config
 from mirage.types import PathSpec
+from mirage.vfs.s3 import S3Config
 from tests.e2e.s3_mock import patch_s3_multi
 
 _TREE = {
@@ -39,13 +39,14 @@ def _accessor(key_prefix: str | None = None) -> S3Accessor:
             aws_access_key_id="fake",
             aws_secret_access_key="fake",
             key_prefix=key_prefix,
-        ))
+        )
+    )
 
 
 def _path(virtual: str) -> PathSpec:
-    return PathSpec(virtual=virtual,
-                    directory=virtual,
-                    resource_path=virtual.strip("/"))
+    return PathSpec(
+        virtual=virtual, directory=virtual, vfs_path=virtual.strip("/")
+    )
 
 
 def _readdir(store: dict[str, bytes], virtual: str, key_prefix: str = ""):
@@ -53,7 +54,8 @@ def _readdir(store: dict[str, bytes], virtual: str, key_prefix: str = ""):
     stack.enter_context(patch_s3_multi({"test-bucket": store}))
     try:
         return asyncio.run(
-            readdir(_accessor(key_prefix or None), _path(virtual)))
+            readdir(_accessor(key_prefix or None), _path(virtual))
+        )
     finally:
         stack.close()
 

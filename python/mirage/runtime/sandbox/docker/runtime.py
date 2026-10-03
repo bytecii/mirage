@@ -12,9 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import asyncio
-
 from mirage.runtime.sandbox.base import RemoteSandbox
+from mirage.runtime.sandbox.cli import run_cli
 from mirage.runtime.sandbox.docker.config import DockerConfig
 from mirage.runtime.sandbox.docker.constants import DOCKER_CLI_HINT
 from mirage.runtime.types import RunResult
@@ -38,37 +37,33 @@ class DockerRuntime(RemoteSandbox):
     config_cls = DockerConfig
     config: DockerConfig
 
-    async def _docker(self,
-                      args: list[str],
-                      stdin: bytes | None = None) -> tuple[bytes, bytes, int]:
+    async def _docker(
+        self, args: list[str], stdin: bytes | None = None
+    ) -> tuple[bytes, bytes, int]:
         """One docker CLI invocation; the seam tests override."""
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "docker",
-                *args,
-                stdin=(asyncio.subprocess.PIPE
-                       if stdin is not None else asyncio.subprocess.DEVNULL),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            raise RuntimeError(DOCKER_CLI_HINT) from None
-        stdout, stderr = await process.communicate(stdin)
-        return stdout, stderr, process.returncode or 0
+        return await run_cli("docker", DOCKER_CLI_HINT, args, stdin)
 
     async def connect(self) -> None:
-        stdout, stderr, code = await self._docker([
-            "inspect", "--format", "{{.State.Running}}", self.config.container
-        ])
+        stdout, stderr, code = await self._docker(
+            [
+                "inspect",
+                "--format",
+                "{{.State.Running}}",
+                self.config.container,
+            ]
+        )
         if code != 0:
             raise RuntimeError(
-                f"docker inspect failed: {stderr.decode().strip()}")
+                f"docker inspect failed: {stderr.decode().strip()}"
+            )
         if stdout.decode().strip() != "true":
             raise RuntimeError(
-                f"container {self.config.container} is not running")
+                f"container {self.config.container} is not running"
+            )
 
-    async def exec_line(self, line: str, stdin: bytes | None,
-                        env: dict[str, str], cwd: str) -> RunResult:
+    async def exec_line(
+        self, line: str, stdin: bytes | None, env: dict[str, str], cwd: str
+    ) -> RunResult:
         args = ["exec", "-i", "-w", cwd]
         for key, value in env.items():
             args += ["-e", f"{key}={value}"]

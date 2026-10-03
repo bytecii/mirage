@@ -13,54 +13,11 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from functools import partial
-from urllib.parse import quote
 
 from mirage.accessor.onedrive import OneDriveConfig
-# yapf: disable
-from mirage.core.msgraph.client import (MAX_BACKOFF, RETRY_STATUSES,
-                                        GraphError, graph_delete, graph_get,
-                                        graph_get_bytes, graph_list,
-                                        graph_patch, graph_post,
-                                        graph_post_monitor, graph_put_bytes,
-                                        graph_stream, headers, id_segment,
-                                        new_session, poll_monitor,
-                                        upload_chunk)
-# yapf: enable
+from mirage.core.msgraph.client import encoded_path, id_segment
 from mirage.core.msgraph.config import graph_api
-from mirage.core.msgraph.drive_ops import DriveLoc
-from mirage.types import PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
-
-__all__ = [
-    "graph_api",
-    "drive_loc",
-    "MAX_BACKOFF",
-    "RETRY_STATUSES",
-    "GraphError",
-    "drive_base",
-    "drive_ref_path",
-    "graph_delete",
-    "graph_get",
-    "graph_get_bytes",
-    "graph_list",
-    "graph_patch",
-    "graph_post",
-    "graph_post_monitor",
-    "graph_put_bytes",
-    "graph_stream",
-    "headers",
-    "id_segment",
-    "item_url",
-    "new_session",
-    "poll_monitor",
-    "split_path",
-    "upload_chunk",
-]
-
-
-def split_path(path: PathSpec) -> tuple[str, str]:
-    prefix = mount_prefix_of(path.virtual, path.resource_path) or ""
-    return prefix, path.resource_path
+from mirage.core.msgraph.drive import DriveLoc
 
 
 def drive_base(config: OneDriveConfig) -> str:
@@ -98,30 +55,54 @@ def _full_path(config: OneDriveConfig, path: str) -> str:
     return prefix or p
 
 
-def item_url(config: OneDriveConfig, path: str, action: str = "") -> str:
+def full_item_url(config: OneDriveConfig, full: str, action: str = "") -> str:
+    """Graph URL of a drive item by its path from the drive root.
+
+    Unlike :func:`item_url`, ``full`` is not placed under the mount's
+    ``key_prefix``: this is how the prefix folders themselves are reached.
+
+    Args:
+        config (OneDriveConfig): mount config.
+        full (str): path from the drive root; empty for the root itself.
+        action (str): a trailing Graph segment such as ``/children``.
+    """
     base = drive_base(config)
-    full = _full_path(config, path)
+    full = full.strip("/")
     if not full:
         return f"{base}/root{action}"
-    stem = f"{base}/root:/{quote(full, safe='/')}"
+    stem = f"{base}/root:/{encoded_path(full)}"
     if action:
         return f"{stem}:{action}"
     return stem
 
 
+def item_url(config: OneDriveConfig, path: str, action: str = "") -> str:
+    return full_item_url(config, _full_path(config, path), action)
+
+
 def drive_ref_path(config: OneDriveConfig, folder: str = "") -> str:
-    # `folder` is resource-relative; the key_prefix must apply here exactly
-    # like item_url, or copy/rename destinations land at the drive root.
-    base = drive_base(config)[len(graph_api(config)):]
+    """A ``parentReference`` path for a mount-relative folder.
+
+    The ``key_prefix`` applies here exactly like :func:`item_url`, or
+    copy and rename destinations land at the drive root.
+
+    Args:
+        config (OneDriveConfig): mount config.
+        folder (str): mount-relative folder; empty for the mount root.
+    """
+    base = drive_base(config)[len(graph_api(config)) :]
     full = _full_path(config, folder)
     if full:
-        return f"{base}/root:/{quote(full, safe='/')}"
+        return f"{base}/root:/{encoded_path(full)}"
     return f"{base}/root:"
 
 
-def drive_loc(config: OneDriveConfig, stripped: str) -> DriveLoc:
-    return DriveLoc(drive="",
-                    path=stripped,
-                    virt=stripped,
-                    url=partial(item_url, config),
-                    ref=partial(drive_ref_path, config))
+def drive_loc(config: OneDriveConfig, path: str) -> DriveLoc:
+    stripped = path.strip("/")
+    return DriveLoc(
+        drive="",
+        path=stripped,
+        virt=stripped,
+        url=partial(item_url, config),
+        ref=partial(drive_ref_path, config),
+    )

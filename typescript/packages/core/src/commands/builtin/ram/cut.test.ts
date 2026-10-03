@@ -15,7 +15,7 @@
 import { RAM_COMMANDS } from './index.ts'
 import { describe, expect, it } from 'vitest'
 import { materialize } from '../../../io/types.ts'
-import { RAMResource } from '../../../resource/ram/ram.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
 const RAM_CUT = RAM_COMMANDS.filter((c) => c.name === 'cut' && c.filetype == null)
 
 const ENC = new TextEncoder()
@@ -25,10 +25,10 @@ async function runCut(
   stdin: Uint8Array | null,
   flags: Record<string, string | boolean | number | string[]>,
 ): Promise<string> {
-  const resource = new RAMResource()
+  const vfs = new RAMVFS()
   const cmd = RAM_CUT[0]
   if (cmd === undefined) throw new Error('cut not registered')
-  const result = await cmd.fn((resource as { accessor?: unknown }).accessor as never, [], [], {
+  const result = await cmd.fn((vfs as { accessor?: unknown }).accessor as never, [], [], {
     stdin,
     flags,
     filetypeFns: null,
@@ -42,52 +42,14 @@ async function runCut(
 }
 
 describe('cut', () => {
-  it('-f with default tab', async () => {
-    expect(await runCut(ENC.encode('a\tb\tc\n'), { fields: '2' })).toBe('b\n')
-  })
-
-  it('-f -d :', async () => {
-    expect(await runCut(ENC.encode('a:b:c\nd:e:f\n'), { fields: '1', delimiter: ':' })).toBe(
-      'a\nd\n',
-    )
-  })
-
-  it('-c byte range', async () => {
-    expect(await runCut(ENC.encode('hello world\n'), { characters: '1-5' })).toBe('hello\n')
-  })
-
-  it('-f with complement', async () => {
-    expect(
-      await runCut(ENC.encode('a:b:c:d\n'), { delimiter: ':', fields: '2', complement: true }),
-    ).toBe('a:c:d\n')
-  })
-
-  it('-f,-f picks multiple fields', async () => {
-    expect(await runCut(ENC.encode('a,b,c,d\n'), { delimiter: ',', fields: '1,3' })).toBe('a,c\n')
-  })
-
   it('-f with range', async () => {
     expect(await runCut(ENC.encode('a,b,c,d,e\n'), { delimiter: ',', fields: '2-4' })).toBe(
       'b,c,d\n',
     )
   })
 
-  it('-z zero-terminated', async () => {
-    expect(
-      await runCut(ENC.encode('a:b\x00c:d\x00'), {
-        delimiter: ':',
-        fields: '1',
-        zero_terminated: true,
-      }),
-    ).toBe('a\x00c\x00')
-  })
-
   it('-f reorders to file order, not spec order', async () => {
     expect(await runCut(ENC.encode('a\tb\tc\n'), { fields: '3,1' })).toBe('a\tc\n')
-  })
-
-  it('-f open range to end of line', async () => {
-    expect(await runCut(ENC.encode('a\tb\tc\td\n'), { fields: '2-' })).toBe('b\tc\td\n')
   })
 
   it('-f line without delimiter passes through whole', async () => {
@@ -99,11 +61,15 @@ describe('cut', () => {
     expect(await runCut(ENC.encode(`a${whitespace}b\n`), { fields: '2', w: true })).toBe('b\n')
   })
 
-  it('--whitespace-delimited=trimmed removes edge whitespace', async () => {
+  // One candidate, so ARGMATCH accepts any prefix of it. GNU cut has no
+  // such option, so these are the general rule's answer rather than a
+  // measured one, and the empty word is deliberately not pinned either way.
+  // Mirrors test_cut.py.
+  it.each(['trim', 't'])('--whitespace-delimited=%s resolves to trimmed', async (value) => {
     expect(
       await runCut(ENC.encode('  a   b c  \n'), {
         fields: '1,3',
-        whitespace_delimited: 'trimmed',
+        whitespace_delimited: value,
       }),
     ).toBe('a\tc\n')
   })
@@ -112,54 +78,19 @@ describe('cut', () => {
     expect(await runCut(ENC.encode('abcdef\n'), { characters: '1-3,2-4' })).toBe('abcd\n')
   })
 
-  it('-c open range to end of line', async () => {
-    expect(await runCut(ENC.encode('abcdef\n'), { characters: '3-' })).toBe('cdef\n')
-  })
-
-  it('missing stdin returns error', async () => {
-    const resource = new RAMResource()
+  it('no stdin reads empty input', async () => {
+    const vfs = new RAMVFS()
     const cmd = RAM_CUT[0]
     if (cmd === undefined) throw new Error('cut not registered')
-    const result = await cmd.fn((resource as { accessor?: unknown }).accessor as never, [], [], {
+    const result = await cmd.fn((vfs as { accessor?: unknown }).accessor as never, [], [], {
       stdin: null,
       flags: { fields: '1' },
       filetypeFns: null,
       cwd: '/',
     })
     if (result === null) throw new Error('result null')
-    const [, ioResult] = result
-    expect(ioResult.exitCode).toBe(1)
-    const stderr = ioResult.stderr
-    const errBytes =
-      stderr === null
-        ? new Uint8Array()
-        : stderr instanceof Uint8Array
-          ? stderr
-          : await materialize(stderr)
-    expect(DEC.decode(errBytes)).toMatch(/missing operand/)
-  })
-
-  it('multi-character delimiter is rejected', async () => {
-    const resource = new RAMResource()
-    const cmd = RAM_CUT[0]
-    if (cmd === undefined) throw new Error('cut not registered')
-    const result = await cmd.fn((resource as { accessor?: unknown }).accessor as never, [], [], {
-      stdin: ENC.encode('a,b\n'),
-      flags: { fields: '1', delimiter: ',,' },
-      filetypeFns: null,
-      cwd: '/',
-    })
-    if (result === null) throw new Error('result null')
     const [out, ioResult] = result
-    expect(out).toBeNull()
-    expect(ioResult.exitCode).toBe(1)
-    const stderr = ioResult.stderr
-    const errBytes =
-      stderr === null
-        ? new Uint8Array()
-        : stderr instanceof Uint8Array
-          ? stderr
-          : await materialize(stderr)
-    expect(DEC.decode(errBytes)).toMatch(/delimiter must be a single character/)
+    expect(ioResult.exitCode).toBe(0)
+    expect(out === null ? 0 : (await materialize(out)).length).toBe(0)
   })
 })

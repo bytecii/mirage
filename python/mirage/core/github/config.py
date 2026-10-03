@@ -12,14 +12,20 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 
 class GitHubConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     token: SecretStr
     owner: str | None = None
     repo: str | None = None
-    ref: str = "main"
+    # None means "whatever the repository's default branch is", resolved on
+    # the first read through ``ensure_ref``. It is not a synonym for "main":
+    # defaulting to that string mounted a nonexistent ref on every repo whose
+    # default is `master`, and the tree fetch 404s rather than falling back.
+    ref: str | None = None
     base_url: str | None = None
 
 
@@ -31,6 +37,8 @@ class GhConfig(BaseModel):
     carries it. `branch` stands in the same way for the checked-out branch,
     which is what `{branch}` expands to in an endpoint.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     token: SecretStr
     base_url: str | None = None

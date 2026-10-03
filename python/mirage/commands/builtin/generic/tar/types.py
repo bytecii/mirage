@@ -1,12 +1,14 @@
 from dataclasses import dataclass
+from tarfile import TarFile
 from typing import Literal, TypeAlias
 
 from mirage.commands.builtin.generic.archive.types import MemberKind
 from mirage.types import PathSpec
+from mirage.utils.errors import GzipDataError
 
 CompressionSuffix: TypeAlias = Literal["", ":gz", ":bz2", ":xz"]
 WriteMode: TypeAlias = Literal["w", "w:gz", "w:bz2", "w:xz"]
-ReadMode: TypeAlias = Literal["r", "r:gz", "r:bz2", "r:xz"]
+ReadMode: TypeAlias = Literal["r", "r:", "r:gz", "r:bz2", "r:xz"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,12 +27,16 @@ class Member:
             a directory or a symlink, neither of which has content.
         target (str): a symlink's target, verbatim as stored; empty for
             every other kind.
+        spelled (str): the path as the operand was typed, before the
+            member-name strip: what a diagnostic about the member names
+            (GNU reports ``/t/priv``, not ``t/priv``).
     """
 
     name: str
     kind: MemberKind
     path: PathSpec | None = None
     target: str = ""
+    spelled: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,3 +58,12 @@ class CreateResult:
     notices: tuple[str, ...]
     exit_code: int
     write: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ReadResult:
+    """An opened archive, its gzip failure and independent tar diagnostics."""
+
+    archive: TarFile | None
+    failure: GzipDataError | None
+    notices: tuple[str, ...] = ()

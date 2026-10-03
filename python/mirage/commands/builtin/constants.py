@@ -13,8 +13,10 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import re
+from collections.abc import Mapping
 from enum import Enum
 
+from mirage.commands.builtin.types import RowActionKind
 from mirage.commands.builtin.utils.size_suffix import size_suffixes
 
 
@@ -23,6 +25,41 @@ class PatternType(str, Enum):
     SIMPLE = "simple"
     REGEX = "regex"
 
+
+# Extensions a recursive grep skips without reading. Two families, and
+# the second is load-bearing for any remote mount: the columnar formats
+# were here first, and the model-weight formats joined them because a
+# `grep -r` over a Hugging Face model repo otherwise downloads every
+# checkpoint in it to search bytes that cannot contain a text match --
+# 41 GB of transfer for one grep of openai/gpt-oss-20b. GNU has no such
+# list (it sniffs the bytes it has already read off local disk), so this
+# is a deliberate divergence that only costs a network fetch, and `-a`
+# turns it off exactly as GNU's own binary handling does.
+BINARY_EXTENSIONS = frozenset(
+    {
+        ".parquet",
+        ".orc",
+        ".feather",
+        ".arrow",
+        ".ipc",
+        ".hdf5",
+        ".h5",
+        ".safetensors",
+        ".gguf",
+        ".ggml",
+        ".bin",
+        ".pt",
+        ".pth",
+        ".ckpt",
+        ".onnx",
+        ".npy",
+        ".npz",
+        ".msgpack",
+        ".tflite",
+        ".pb",
+        ".model",
+    }
+)
 
 FILE_MIME_MAP: dict[str, str] = {
     "text": "text/plain; charset=us-ascii",
@@ -42,32 +79,145 @@ FILE_MIME_MAP: dict[str, str] = {
 # the target would have sniffed as.
 MIME_SYMLINK = "inode/symlink; charset=binary"
 
-# od and split both read their counts with xstrtoumax, which skips leading
+# od, split and cmp all read their counts with xstrtoumax, which skips leading
 # whitespace and allows one '+' before the digits, so `-b +10` and `-b " 10"`
 # are valid while `+ 10`, `++10`, `-10` and a trailing space are not.
 # `[0-9]` not `\d`: GNU is ASCII-only, while python's `\d` would accept other
 # Unicode decimal digits.
 UINTMAX = 2**64 - 1
+INTMAX = 2**63 - 1
 
 OD_SIZE_UNITS = size_suffixes("bkKmMGTPE")
 # Q/R/Y/Z are in GNU od's suffix set but always overflow uintmax, so they
 # report as too-large rather than as unknown suffixes.
 OD_OVERFLOW_UNITS = size_suffixes("QRYZ")
+
+# The bytes C `isspace` accepts, which every gnulib scanner skips before
+# the sign. Spelled out rather than written `\s`: python's `\s` also
+# matches 0x1c-0x1f and JavaScript's matches every Unicode space, and GNU
+# refuses both, so a shorthand would accept more than the C library does.
+C_SPACE = r"[ \t\n\v\f\r]*"
+
 # strtoumax base 0: after the whitespace and sign above, 0x… is hex, a leading
 # 0 is octal, else decimal; the unconsumed remainder is the suffix. The sign
 # stays outside group 1 so the radix is picked from the digits alone
 # (`-N +0x10` is hex, `-N +010` is octal).
-OD_COUNT_PATTERN = re.compile(
-    r"^[ \t\n\v\f\r]*\+?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$")
+XSTRTOUMAX_PATTERN = re.compile(
+    rf"^{C_SPACE}\+?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$"
+)
+
+# GNU cmp (diffutils 3.10) shares od's grammar above but not its letter set:
+# no b/c/w, lowercase only up to k, and its gnulib predates Q/R, so `0Q`
+# is an invalid value where `0Z` is a valid zero. Its ceiling is INTMAX, not
+# UINTMAX, and an overflowing value reports as the same "invalid ... value"
+# as a bad suffix rather than as too-large.
+CMP_SIZE_UNITS = size_suffixes("kKMGTPEZY")
 
 # GNU split's letter set: every uppercase power letter plus b, and lowercase
 # k/m only (pinned against coreutils 9.7). Unlike od, split is base-10 only:
 # hex and octal spellings are invalid numbers.
 SPLIT_BYTE_UNITS = size_suffixes("bkKmMEGPQRTYZ")
-SPLIT_COUNT_PATTERN = re.compile(r"[ \t\n\v\f\r]*\+?[0-9]+")
+SPLIT_BYTE_SUFFIXES = sorted(SPLIT_BYTE_UNITS, key=len, reverse=True)
+SPLIT_COUNT_PATTERN = re.compile(rf"{C_SPACE}\+?[0-9]+")
 # Suffix start values are the exception to the grammar above: coreutils 9.7
 # rejects both `--numeric-suffixes=+5` and `=" 5"`, so they keep the strict
 # digits-only form.
 SPLIT_DIGITS = re.compile(r"[0-9]+")
-SPLIT_HEX_DIGITS = re.compile(r"[0-9a-fA-F]+")
+SPLIT_HEX_DIGITS = re.compile(r"[0-9a-f]+")
 SPLIT_TRY_HELP = "\nTry 'split --help' for more information."
+
+# gzip 1.13's file naming. The suffix gzip writes and looks for unless -S
+# names another; the suffixes it always recognizes on a name it
+# decompresses, compared without regard to ASCII case; the ones it tries in
+# turn on a name that does not exist, the -S suffix first; and the longest
+# -S suffix it accepts, in bytes.
+GZIP_SUFFIX = ".gz"
+GZIP_KNOWN_SUFFIXES = (".gz", ".z", ".taz", ".tgz", "-gz", "-z", "_z")
+GZIP_RETRY_SUFFIXES = (".gz", ".z", "-z", ".Z")
+# The suffixes gzip -d turns into .tar rather than dropping.
+GZIP_TAR_SUFFIXES = (".tgz", ".taz")
+GZIP_MAX_SUFFIX = 30
+
+# GNU answers a missing script with its whole thirty-nine line usage block
+# and exit 1; mirage names the problem in one line instead, because the
+# block is GNU's own prose and reproducing it buys a mirage user nothing.
+# `no input files` and its exit 4 are GNU's exact spelling for `sed -i`
+# with no operands, and mirage reuses them when there is no stdin either --
+# it has no terminal for GNU's blocking read to reach. Both live here so
+# the generic and its builder cannot drift apart again; there used to be
+# four spellings across the two languages.
+SED_MISSING_SCRIPT = "sed: missing script"
+SED_NO_INPUT_FILES = "sed: no input files"
+SED_NO_INPUT_EXIT = 4
+
+# The word an `-exec` argument that stands for the match is spelled as.
+EXEC_PLACEHOLDER = "{}"
+# The two terminators of an `-exec` argument list: `;` ends a per-match
+# run, `+` ends a batched run and only when it follows a bare `{}`.
+EXEC_END = ";"
+EXEC_BATCH_END = "+"
+
+FIND_VALUE_PREDICATES = frozenset(
+    {
+        "-name",
+        "-iname",
+        "-path",
+        "-type",
+        "-size",
+        "-mtime",
+        "-maxdepth",
+        "-mindepth",
+        "-printf",
+        "-newer",
+        "-newermt",
+    }
+)
+
+# `-exec` takes every word up to its terminator, so it is neither a
+# value predicate nor a bare one.
+FIND_EXEC_PREDICATES = frozenset({"-exec"})
+
+FIND_BARE_PREDICATES = frozenset(
+    {
+        "-empty",
+        "-print",
+        "-print0",
+        "-delete",
+        "-ls",
+        "-depth",
+        "-xdev",
+        "-mount",
+        "-prune",
+    }
+)
+
+FIND_OPERATORS = frozenset(
+    {
+        "-not",
+        "!",
+        "-o",
+        "-or",
+        "-a",
+        "-and",
+        "(",
+        ")",
+    }
+)
+
+FIND_EXPRESSION_TOKENS = (
+    FIND_VALUE_PREDICATES
+    | FIND_BARE_PREDICATES
+    | FIND_OPERATORS
+    | FIND_EXEC_PREDICATES
+)
+
+FIND_VALID_TYPES = frozenset({"b", "c", "d", "p", "f", "l", "s"})
+
+FIND_MAX_DEPTH = 100
+
+FIND_ROW_ACTIONS: Mapping[str, RowActionKind] = {
+    "-print": "print",
+    "-print0": "print0",
+    "-ls": "ls",
+    "-delete": "delete",
+}

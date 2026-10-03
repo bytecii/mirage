@@ -30,6 +30,9 @@ def envelope(uid: str, day: int) -> dict:
         "subject": f"s{uid}",
         "date": f"Mon, {day:02d} Feb 2026 10:00:00 +0000",
         "internal_date": f"{day:02d}-Feb-2026 10:00:00 +0000",
+        "body_text": f"body {uid}",
+        "body_html": f"<p>body {uid}</p>",
+        "snippet": f"body {uid}",
     }
 
 
@@ -47,10 +50,12 @@ def patched(monkeypatch):
     async def fake_headers(accessor, folder, uids):
         return [envelope(uid, index + 1) for index, uid in enumerate(uids)]
 
-    monkeypatch.setitem(list_envelopes.__globals__, "list_message_uids",
-                        fake_uids)
-    monkeypatch.setitem(list_envelopes.__globals__, "fetch_headers",
-                        fake_headers)
+    monkeypatch.setitem(
+        list_envelopes.__globals__, "list_message_uids", fake_uids
+    )
+    monkeypatch.setitem(
+        list_envelopes.__globals__, "fetch_headers", fake_headers
+    )
     return seen
 
 
@@ -77,10 +82,8 @@ async def test_mailbox_flag_selects_the_folder(patched):
 @pytest.mark.asyncio
 async def test_pages_count_from_one(patched):
     out, _ = await list_envelopes(
-        CLIInvocation(CONFIG, flags={
-            "page": 2,
-            "page_size": 2
-        }))
+        CLIInvocation(CONFIG, flags={"page": 2, "page_size": 2})
+    )
     data = json.loads(await materialize(out))
     assert [d["uid"] for d in data] == ["1"]
 
@@ -101,10 +104,8 @@ async def test_empty_result_skips_the_header_fetch(patched, monkeypatch):
 @pytest.mark.asyncio
 async def test_only_the_pages_asked_for_are_fetched(patched):
     await list_envelopes(
-        CLIInvocation(CONFIG, flags={
-            "page": 2,
-            "page_size": 2
-        }))
+        CLIInvocation(CONFIG, flags={"page": 2, "page_size": 2})
+    )
     # Not the whole mailbox: one page-worth of headers per page asked for.
     assert patched["budget"] == 4
 
@@ -112,8 +113,22 @@ async def test_only_the_pages_asked_for_are_fetched(patched):
 @pytest.mark.asyncio
 async def test_the_account_window_caps_the_fetch(patched):
     await list_envelopes(
-        CLIInvocation(CONFIG, flags={
-            "page": 100,
-            "page_size": 25
-        }))
+        CLIInvocation(CONFIG, flags={"page": 100, "page_size": 25})
+    )
     assert patched["budget"] == CONFIG.max_messages
+
+
+@pytest.mark.asyncio
+async def test_a_listing_is_header_only(patched):
+    # Listing fetches every full source, because attachment metadata lives
+    # in the MIME structure, but the listing is the envelope: a page of 25
+    # messages must not carry 25 HTML bodies. `message read` and the mounted
+    # .email.json keep them (#1067).
+    out, _ = await list_envelopes(CLIInvocation(CONFIG))
+    data = json.loads(await materialize(out))
+    assert data
+    for row in data:
+        assert "body_text" not in row
+        assert "body_html" not in row
+        assert "snippet" not in row
+        assert row["subject"] == f"s{row['uid']}"

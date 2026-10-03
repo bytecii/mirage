@@ -21,8 +21,8 @@ from mirage.accessor.jaeger import JaegerAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.jaeger.client import JaegerApiError
 from mirage.core.jaeger.read import read
-from mirage.resource.jaeger.config import JaegerConfig
 from mirage.types import PathSpec
+from mirage.vfs.jaeger.config import JaegerConfig
 
 TRACE_A = "a" * 32
 
@@ -39,36 +39,35 @@ def index():
 
 def spec(path: str) -> PathSpec:
     virtual = f"/{path}"
-    return PathSpec(resource_path=path, virtual=virtual, directory=virtual)
+    return PathSpec(vfs_path=path, virtual=virtual, directory=virtual)
 
 
 def known_service():
-    return patch("mirage.core.jaeger.readdir.fetch_services",
-                 new_callable=AsyncMock,
-                 return_value=["checkout"])
+    return patch(
+        "mirage.core.jaeger.readdir.fetch_services",
+        new_callable=AsyncMock,
+        return_value=["checkout"],
+    )
 
 
 @pytest.mark.asyncio
 async def test_read_trace(accessor, index):
     doc = {
         "traceID": TRACE_A,
-        "spans": [{
-            "operationName": "POST /checkout",
-            "processID": "p1"
-        }],
-        "processes": {
-            "p1": {
-                "serviceName": "checkout"
-            }
-        },
+        "spans": [{"operationName": "POST /checkout", "processID": "p1"}],
+        "processes": {"p1": {"serviceName": "checkout"}},
     }
     with known_service():
-        with patch("mirage.core.jaeger.read.fetch_trace",
-                   new_callable=AsyncMock,
-                   return_value=doc):
-            raw = await read(accessor,
-                             spec(f"services/checkout/traces/{TRACE_A}.json"),
-                             index)
+        with patch(
+            "mirage.core.jaeger.read.fetch_trace",
+            new_callable=AsyncMock,
+            return_value=doc,
+        ):
+            raw = await read(
+                accessor,
+                spec(f"services/checkout/traces/{TRACE_A}.json"),
+                index,
+            )
     assert json.loads(raw) == doc
 
 
@@ -78,37 +77,41 @@ async def test_read_trace_rejects_foreign_service(accessor, index):
     # would otherwise serve any trace through any service directory.
     doc = {
         "traceID": TRACE_A,
-        "spans": [{
-            "operationName": "POST /checkout",
-            "processID": "p1"
-        }],
-        "processes": {
-            "p1": {
-                "serviceName": "checkout"
-            }
-        },
+        "spans": [{"operationName": "POST /checkout", "processID": "p1"}],
+        "processes": {"p1": {"serviceName": "checkout"}},
     }
-    with patch("mirage.core.jaeger.readdir.fetch_services",
-               new_callable=AsyncMock,
-               return_value=["checkout", "search"]):
-        with patch("mirage.core.jaeger.read.fetch_trace",
-                   new_callable=AsyncMock,
-                   return_value=doc):
+    with patch(
+        "mirage.core.jaeger.readdir.fetch_services",
+        new_callable=AsyncMock,
+        return_value=["checkout", "search"],
+    ):
+        with patch(
+            "mirage.core.jaeger.read.fetch_trace",
+            new_callable=AsyncMock,
+            return_value=doc,
+        ):
             with pytest.raises(FileNotFoundError):
-                await read(accessor,
-                           spec(f"services/search/traces/{TRACE_A}.json"),
-                           index)
+                await read(
+                    accessor,
+                    spec(f"services/search/traces/{TRACE_A}.json"),
+                    index,
+                )
 
 
 @pytest.mark.asyncio
 async def test_read_trace_rejects_unknown_service(accessor, index):
     with known_service():
-        with patch("mirage.core.jaeger.read.fetch_trace",
-                   new_callable=AsyncMock,
-                   return_value={"traceID": TRACE_A}) as fetch:
+        with patch(
+            "mirage.core.jaeger.read.fetch_trace",
+            new_callable=AsyncMock,
+            return_value={"traceID": TRACE_A},
+        ) as fetch:
             with pytest.raises(FileNotFoundError):
-                await read(accessor,
-                           spec(f"services/nope/traces/{TRACE_A}.json"), index)
+                await read(
+                    accessor,
+                    spec(f"services/nope/traces/{TRACE_A}.json"),
+                    index,
+                )
     fetch.assert_not_awaited()
 
 
@@ -116,11 +119,14 @@ async def test_read_trace_rejects_unknown_service(accessor, index):
 async def test_read_operations(accessor, index):
     ops = [{"name": "POST /checkout", "spanKind": "server"}]
     with known_service():
-        with patch("mirage.core.jaeger.read.fetch_operations",
-                   new_callable=AsyncMock,
-                   return_value=ops):
-            raw = await read(accessor,
-                             spec("services/checkout/operations.json"), index)
+        with patch(
+            "mirage.core.jaeger.read.fetch_operations",
+            new_callable=AsyncMock,
+            return_value=ops,
+        ):
+            raw = await read(
+                accessor, spec("services/checkout/operations.json"), index
+            )
     assert json.loads(raw) == ops
 
 
@@ -132,34 +138,43 @@ async def test_read_malformed_trace_id_is_enoent(accessor, index):
     with known_service():
         with patch("mirage.core.jaeger.read.fetch_trace", fake):
             with pytest.raises(FileNotFoundError):
-                await read(accessor, spec("services/checkout/traces/zzz.json"),
-                           index)
+                await read(
+                    accessor, spec("services/checkout/traces/zzz.json"), index
+                )
     fake.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_read_missing_trace_is_enoent(accessor, index):
     with known_service():
-        with patch("mirage.core.jaeger.read.fetch_trace",
-                   new_callable=AsyncMock,
-                   side_effect=JaegerApiError("trace not found", 404)):
+        with patch(
+            "mirage.core.jaeger.read.fetch_trace",
+            new_callable=AsyncMock,
+            side_effect=JaegerApiError("trace not found", 404),
+        ):
             with pytest.raises(FileNotFoundError):
-                await read(accessor,
-                           spec(f"services/checkout/traces/{TRACE_A}.json"),
-                           index)
+                await read(
+                    accessor,
+                    spec(f"services/checkout/traces/{TRACE_A}.json"),
+                    index,
+                )
 
 
 @pytest.mark.asyncio
 async def test_read_server_error_propagates(accessor, index):
     # A server fault must not read as "this trace does not exist".
     with known_service():
-        with patch("mirage.core.jaeger.read.fetch_trace",
-                   new_callable=AsyncMock,
-                   side_effect=JaegerApiError("boom", 500)):
+        with patch(
+            "mirage.core.jaeger.read.fetch_trace",
+            new_callable=AsyncMock,
+            side_effect=JaegerApiError("boom", 500),
+        ):
             with pytest.raises(JaegerApiError):
-                await read(accessor,
-                           spec(f"services/checkout/traces/{TRACE_A}.json"),
-                           index)
+                await read(
+                    accessor,
+                    spec(f"services/checkout/traces/{TRACE_A}.json"),
+                    index,
+                )
 
 
 @pytest.mark.asyncio
@@ -170,6 +185,7 @@ async def test_read_unknown_service_is_enoent(accessor, index):
 
 
 @pytest.mark.asyncio
-async def test_read_directory_is_enoent(accessor, index):
-    with pytest.raises(FileNotFoundError):
+async def test_read_directory_is_eisdir(accessor, index):
+    # A matched directory kind is a real node being read as a file.
+    with pytest.raises(IsADirectoryError):
         await read(accessor, spec("services"), index)

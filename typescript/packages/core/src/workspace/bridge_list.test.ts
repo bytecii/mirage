@@ -14,53 +14,138 @@
 
 import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../ops/registry.ts'
-import { RAMResource } from '../resource/ram/ram.ts'
+import { RAMVFS } from '../vfs/ram/ram.ts'
+import { MontyRuntime } from '../runtime/python/monty/index.ts'
+import { PrefixResolver } from '../runtime/resolver.ts'
 import type { BridgeDispatchFn } from '../runtime/types.ts'
-import type { VFSEntry } from '../runtime/vfs.ts'
+import { RuntimeVFS } from '../runtime/vfs.ts'
 import { MountMode } from '../types.ts'
+import { getTestParser } from './fixtures/workspace_fixture.ts'
 import { Workspace } from './workspace/workspace.ts'
+import { FILE_MODE, LINK_MODE } from '../utils/stat_view.ts'
 
-function bridgeOn(ws: Workspace): BridgeDispatchFn {
-  return (ws as unknown as { buildWorkspaceBridge(): BridgeDispatchFn }).buildWorkspaceBridge()
-}
-
-function mkWorld(): { ws: Workspace; ops: OpsRegistry; resource: RAMResource } {
-  const resource = new RAMResource()
+function mkWorld(): { ws: Workspace; ops: OpsRegistry; vfs: RAMVFS } {
+  const vfs = new RAMVFS()
   const ops = new OpsRegistry()
-  for (const op of resource.ops()) ops.register(op)
-  const ws = new Workspace({ '/data': resource }, { mode: MountMode.WRITE, ops })
-  return { ws, ops, resource }
+  for (const op of vfs.ops()) ops.register(op)
+  const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE, ops })
+  return { ws, ops, vfs }
 }
 
-// The bridge readdir is the sandboxed runtimes' directory read: what it
-// swallows, a guest can never see, and what it fails, pyodide's
-// syncMounts treats as the whole tree.
-describe('workspace bridge readdir', () => {
-  it('a dangling link degrades to a zero row instead of failing the listing', async () => {
+// The door a sandboxed runtime holds, over this workspace's own bridge
+// and the same two sources the workspace hands its runtimes: the mount
+// prefixes and the node table's link names.
+function doorOn(ws: Workspace): RuntimeVFS {
+  const bridge = (
+    ws as unknown as { buildWorkspaceBridge(): BridgeDispatchFn }
+  ).buildWorkspaceBridge()
+  return new RuntimeVFS(
+    bridge,
+    new PrefixResolver(
+      () => ['/data/'],
+      (directory) => ws.namespace.linkNamesUnder(directory),
+    ),
+  )
+}
+
+// The runtime door's readdir is the sandboxed runtimes' directory read:
+// what it fails, a guest sees as the whole directory failing, so one
+// entry's stat never fails it; that entry's own stat still reports why.
+describe('runtime door readdir', () => {
+  // A link row is stat'd without following, so a dangling target never
+  // reaches the backend: the node table answers with the link's own row.
+  it('lists a dangling link as its own row instead of failing the listing', async () => {
     const { ws } = mkWorld()
-    await ws.fs.writeFile('/data/a.txt', 'hi')
+    await ws.vfs.write('/data/a.txt', 'hi')
     await ws.namespace.symlink('/data/lnk', '/data/gone', 1)
-    const entries = (await bridgeOn(ws)('readdir', '/data')) as VFSEntry[]
+    const entries = await doorOn(ws).readdir('/data')
     const row = entries.find((e) => e.path.endsWith('/lnk'))
-    expect(row).toMatchObject({ size: 0, isDir: false, isLink: true })
+    expect(row).toMatchObject({
+      size: '/data/gone'.length,
+      isDir: false,
+      isLink: true,
+      mode: LINK_MODE,
+    })
   })
 
-  it('a non-missing stat failure propagates instead of degrading the row', async () => {
-    // Only a genuine missing path (the dangling-link race above) may
-    // read back as a zero row; authorization failures, timeouts, and
-    // backend bugs must surface, or an incomplete listing replaces a
-    // healthy snapshot.
-    const { ws, ops, resource } = mkWorld()
-    await ws.fs.writeFile('/data/a.txt', 'hi')
+  it('a failing entry stat leaves the row unclassified and surfaces on its own stat', async () => {
+    // An authorization failure, a timeout or a backend bug on one entry
+    // does not fail the directory, the way a kernel readdir never stats.
+    // It is not swallowed either: the row carries no mode, and the
+    // guest's own stat of the entry asks again and gets the failure.
+    const { ws, ops, vfs } = mkWorld()
+    await ws.vfs.write('/data/a.txt', 'hi')
     ops.register({
       name: 'stat',
-      resource: resource.kind,
+      vfs: vfs.name,
       filetype: null,
       fn: () => {
         throw new Error('401 Unauthorized')
       },
       write: false,
     })
-    await expect(bridgeOn(ws)('readdir', '/data')).rejects.toThrow('401 Unauthorized')
+    const door = doorOn(ws)
+    expect(await door.readdir('/data')).toEqual([{ path: '/data/a.txt', size: 0, isDir: false }])
+    await expect(door.stat('/data/a.txt')).rejects.toThrow('401 Unauthorized')
   })
+
+  // A live link lists as itself, the row lstat gives, not its target's:
+  // the size is the target path's length.
+  it('lists a live link as its own row, not its target', async () => {
+    const { ws } = mkWorld()
+    await ws.vfs.write('/data/a.txt', 'hello')
+    await ws.namespace.symlink('/data/lnk', '/data/a.txt', 1)
+    const entries = await doorOn(ws).readdir('/data')
+    expect(entries.find((e) => e.path.endsWith('/lnk'))).toMatchObject({
+      size: '/data/a.txt'.length,
+      isDir: false,
+      isLink: true,
+      mode: LINK_MODE,
+    })
+    const plain = entries.find((e) => e.path.endsWith('/a.txt'))
+    expect(plain).toMatchObject({ path: '/data/a.txt', size: 5, isDir: false, mode: FILE_MODE })
+    expect(plain?.isLink).toBeUndefined()
+  })
+
+  // Dispatch follows the alias and answers with the target's entries,
+  // so the marks have to come from the target too. Reading them off the
+  // typed path left a link inside an aliased directory unmarked, and a
+  // directory link there then read as a directory a guest walk descends.
+  it('marks the links inside a directory reached through a link', async () => {
+    const { ws } = mkWorld()
+    await ws.dispatch('mkdir', '/data/real')
+    await ws.vfs.write('/data/real/t.txt', 'hi')
+    await ws.namespace.symlink('/data/real/lk', '/data/real/t.txt', 1)
+    await ws.namespace.symlink('/data/alias', '/data/real', 1)
+    const entries = await doorOn(ws).readdir('/data/alias')
+    expect(entries.find((e) => e.path.endsWith('/lk'))).toMatchObject({ isLink: true })
+  })
+})
+
+// The wiring itself: the workspace hands its runtimes a resolver that
+// reaches the node table, so a guest predicate answers about a link the
+// shell made without a readlink of its own.
+describe('a guest sees the marks the workspace wired', () => {
+  it('answers is_symlink for a link the shell made', async () => {
+    const vfs = new RAMVFS()
+    const ops = new OpsRegistry()
+    for (const op of vfs.ops()) ops.register(op)
+    const ws = new Workspace(
+      { '/data': vfs },
+      {
+        mode: MountMode.EXEC,
+        ops,
+        shellParser: await getTestParser(),
+        runtimes: [new MontyRuntime()],
+      },
+    )
+    await ws.shell('echo hi > /data/a.txt')
+    await ws.shell('ln -s /data/a.txt /data/lnk')
+    const io = await ws.shell(
+      'python3 -c "from pathlib import Path;' +
+        " print(Path('/data/lnk').is_symlink(), Path('/data/a.txt').is_symlink())\"",
+    )
+    expect(new TextDecoder().decode(io.stdout).trim()).toBe('True False')
+    await ws.close()
+  }, 30_000)
 })

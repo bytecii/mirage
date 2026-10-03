@@ -35,7 +35,7 @@ import type { Workspace } from './workspace/workspace.ts'
  * ```ts
  * const runner = new WorkspaceRunner(new Workspace({ '/': ram }))
  * try {
- *   const result = await runner.call(runner.ws.execute('ls /'))
+ *   const result = await runner.call(runner.ws.shell('ls /'))
  * } finally {
  *   await runner.stop()
  * }
@@ -57,7 +57,7 @@ export class WorkspaceRunner {
    * single event loop interleaves this call with other work as usual.
    *
    * @param p a promise produced from the workspace API (e.g.
-   *   `runner.ws.execute('ls /')`).
+   *   `runner.ws.shell('ls /')`).
    */
   async call<T>(p: Promise<T>): Promise<T> {
     if (this.stopped) throw new Error('WorkspaceRunner is stopped')
@@ -65,13 +65,13 @@ export class WorkspaceRunner {
   }
 
   /**
-   * Close the workspace and mark the runner as stopped. Idempotent;
-   * concurrent calls are deduplicated.
+   * Close the workspace (delete it, with `delete`) and mark the runner as
+   * stopped. Idempotent; concurrent calls are deduplicated.
    */
-  async stop(): Promise<void> {
+  async stop(options: { delete?: boolean } = {}): Promise<void> {
     if (this.stopped) return this.stopping ?? Promise.resolve()
     this.stopped = true
-    this.stopping = this.ws.close()
+    this.stopping = options.delete === true ? this.ws.delete() : this.ws.close()
     await this.stopping
   }
 }

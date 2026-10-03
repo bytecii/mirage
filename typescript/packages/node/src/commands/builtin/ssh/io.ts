@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { VFSAdapter } from '@struktoai/mirage-core/vfs/adapter'
+
 import { type CommandIO, rangeOf } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
 import type { SSHAccessor } from '../../../accessor/ssh.ts'
 import { appendBytes as sshAppend } from '../../../core/ssh/append.ts'
@@ -22,6 +24,7 @@ import { size as sshDu, entries as sshDuAll } from '../../../core/ssh/du/index.t
 import { exists as sshExists } from '../../../core/ssh/exists.ts'
 import { find as sshFind } from '../../../core/ssh/find.ts'
 import { mkdir as sshMkdir } from '../../../core/ssh/mkdir.ts'
+import { pwrite as sshPwrite } from '../../../core/ssh/pwrite.ts'
 import { read as sshRead } from '../../../core/ssh/read.ts'
 import { readdir as sshReaddir } from '../../../core/ssh/readdir.ts'
 import { rename as sshRename } from '../../../core/ssh/rename.ts'
@@ -34,27 +37,31 @@ import { truncate as sshTruncate } from '../../../core/ssh/truncate.ts'
 import { unlink as sshUnlink } from '../../../core/ssh/unlink.ts'
 import { writeBytes as sshWrite } from '../../../core/ssh/write.ts'
 
-export const SSH_IO: CommandIO<SSHAccessor> = {
+export const IO: CommandIO<SSHAccessor> = new VFSAdapter<SSHAccessor>({
+  read: { readdir: sshReaddir, readBytes: sshRead, stat: sshStat },
+  native: {
+    readRange: rangeOf(sshRead),
+    readStream: sshStream,
+    exists: sshExists,
+    find: sshFind,
+    du: { size: sshDu, entries: sshDuAll },
+  },
+  writes: {
+    write: sshWrite,
+    mkdir: (accessor, path, parents) => sshMkdir(accessor, path, parents === true),
+    unlink: sshUnlink,
+    rmdir: sshRmdir,
+    rmR: sshRmR,
+    rename: sshRename,
+    copy: sshCopy,
+    create: sshCreate,
+    truncate: sshTruncate,
+    append: sshAppend,
+    pwrite: sshPwrite,
+    setAttrs: sshSetAttrs,
+  },
   maxGlobMatches: SCOPE_ERROR,
-  readdir: sshReaddir,
-  readBytes: sshRead,
-  readRange: rangeOf(sshRead),
-  readStream: sshStream,
-  stat: sshStat,
+  maxDuEntries: null,
   isMounted: () => true,
   local: false,
-  write: sshWrite,
-  exists: sshExists,
-  mkdir: (accessor, path, parents) => sshMkdir(accessor, path, parents === true),
-  unlink: sshUnlink,
-  rmdir: sshRmdir,
-  rmR: sshRmR,
-  rename: sshRename,
-  copy: sshCopy,
-  create: sshCreate,
-  truncate: sshTruncate,
-  append: sshAppend,
-  find: sshFind,
-  du: { size: sshDu, entries: sshDuAll },
-  setAttrs: sshSetAttrs,
-}
+}).toCommandIO()

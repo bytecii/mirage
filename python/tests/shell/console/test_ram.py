@@ -182,16 +182,3 @@ async def test_append_survives_a_waiter_whose_loop_closed():
     chunk = await store.append(Channel.STDOUT, b"a")
 
     assert chunk.seq == 0
-
-
-@pytest.mark.asyncio
-async def test_cancelled_wait_does_not_retain_a_reader():
-    store = RAMConsoleStore()
-    waiting = asyncio.create_task(store.wait(0))
-    await asyncio.sleep(0)
-    waiting.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await waiting
-    assert store._waiters == []
-    await store.append(Channel.STDOUT, b"still usable")
-    await store.wait(0)

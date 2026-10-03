@@ -24,7 +24,7 @@ from pathlib import Path
 CONFIG_YAML = """\
 mounts:
   /:
-    resource: ram
+    vfs: ram
     mode: WRITE
 """
 
@@ -39,8 +39,10 @@ def run(env: dict, *args: str) -> dict | list:
     cmd = [sys.executable, "-m", "mirage.cli.main", *args]
     proc = subprocess.run(cmd, env=env, capture_output=True, timeout=60)
     if proc.returncode != 0:
-        raise RuntimeError(f"mirage {' '.join(args)} exited "
-                           f"{proc.returncode}\n{proc.stderr.decode()}")
+        raise RuntimeError(
+            f"mirage {' '.join(args)} exited "
+            f"{proc.returncode}\n{proc.stderr.decode()}"
+        )
     out = proc.stdout.strip()
     return json.loads(out) if out else {}
 
@@ -75,20 +77,20 @@ def main() -> None:
         wid = run(env, "workspace", "create", str(cfg))["id"]
         print("=== create workspace (ram mount) ===")
 
-        run(env, "execute", "-w", wid, "-c", "echo one > /a.txt")
+        run(env, "shell", "-w", wid, "-c", "echo one > /a.txt")
         run(env, "workspace", "commit", wid, "-m", "first")
         print("=== committed 'first' on main ===")
 
         run(env, "workspace", "branch", wid, "exp")
         print("=== branched exp from main ===")
 
-        run(env, "execute", "-w", wid, "-c", "echo two > /a.txt")
-        run(env, "execute", "-w", wid, "-c", "echo new > /b.txt")
+        run(env, "shell", "-w", wid, "-c", "echo two > /a.txt")
+        run(env, "shell", "-w", wid, "-c", "echo new > /b.txt")
         run(env, "workspace", "commit", wid, "-b", "exp", "-m", "on exp")
         print("=== committed 'on exp' on exp ===")
 
-        run(env, "execute", "-w", wid, "-c", "echo three > /a.txt")
-        run(env, "execute", "-w", wid, "-c", "rm /b.txt")
+        run(env, "shell", "-w", wid, "-c", "echo three > /a.txt")
+        run(env, "shell", "-w", wid, "-c", "rm /b.txt")
         run(env, "workspace", "commit", wid, "-b", "main", "-m", "second")
         print("=== committed 'second' on main ===")
 
@@ -100,7 +102,8 @@ def main() -> None:
             [sys.executable, "-m", "mirage.cli.main", "daemon", "stop"],
             env=env,
             capture_output=True,
-            timeout=30)
+            timeout=30,
+        )
         shutil.rmtree(work, ignore_errors=True)
 
 

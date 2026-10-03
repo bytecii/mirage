@@ -15,8 +15,7 @@
 from mirage.commands.spec.types import CommandSpec, Operand, Option
 
 SPECS: dict[str, CommandSpec] = {
-    'wc':
-    CommandSpec(
+    "wc": CommandSpec(
         options=(
             Option(short="-l", long="--lines"),
             Option(short="-w", long="--words"),
@@ -27,33 +26,32 @@ SPECS: dict[str, CommandSpec] = {
         ),
         rest=Operand(type="path"),
     ),
-    'sort':
-    CommandSpec(
+    "sort": CommandSpec(
         options=(
             Option(short="-r", long="--reverse"),
             Option(short="-n", long="--numeric-sort"),
             Option(short="-u", long="--unique"),
-            Option(short="-f", long="--ignore-case"),
+            Option(short="-b", long="--ignore-leading-blanks"),
             Option(short="-k", long="--key", type="str", multiple=True),
             Option(short="-t", long="--field-separator", type="str"),
             Option(short="-h", long="--human-numeric-sort"),
             Option(short="-V", long="--version-sort"),
             Option(short="-s", long="--stable"),
-            Option(short="-M", long="--month-sort"),
-            Option(short="-b", long="--ignore-leading-blanks"),
+            Option(short="-m", long="--merge"),
+            Option(short="-f", long="--ignore-case"),
             Option(short="-c"),
+            Option(short="-C"),
             Option(long="--check", type="str", value_optional=True),
             Option(short="-d", long="--dictionary-order"),
             Option(short="-g", long="--general-numeric-sort"),
             Option(short="-i", long="--ignore-nonprinting"),
-            Option(short="-m", long="--merge"),
-            Option(short="-o", long="--output", type="path"),
+            Option(short="-M", long="--month-sort"),
+            Option(short="-o", long="--output", type="path", multiple=True),
             Option(short="-z", long="--zero-terminated"),
         ),
         rest=Operand(type="path"),
     ),
-    'uniq':
-    CommandSpec(
+    "uniq": CommandSpec(
         options=(
             Option(short="-c", long="--count"),
             Option(short="-d", long="--repeated"),
@@ -72,8 +70,7 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="path"),
         ),
     ),
-    'cut':
-    CommandSpec(
+    "cut": CommandSpec(
         options=(
             Option(short="-f", long="--fields", type="str"),
             Option(short="-F", type="str"),
@@ -86,33 +83,32 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-O", type="str"),
             Option(long="--output-delimiter", type="str"),
             Option(short="-w"),
-            Option(long="--whitespace-delimited",
-                   type="str",
-                   value_optional=True),
+            Option(
+                long="--whitespace-delimited", type="str", value_optional=True
+            ),
             Option(short="-z", long="--zero-terminated"),
         ),
         rest=Operand(type="path"),
     ),
-    'echo':
-    CommandSpec(
+    "echo": CommandSpec(
         options=(Option(short="-n"), Option(short="-e")),
         rest=Operand(type="str"),
     ),
-    'tee':
-    CommandSpec(
+    "tee": CommandSpec(
         options=(
             Option(short="-a", long="--append"),
             Option(short="-i", long="--ignore-interrupts"),
             Option(short="-p"),
-            Option(long="--output-error",
-                   type="str",
-                   value_optional=True,
-                   choices=("warn", "warn-nopipe", "exit", "exit-nopipe")),
+            Option(
+                long="--output-error",
+                type="str",
+                value_optional=True,
+                choices=("warn", "warn-nopipe", "exit", "exit-nopipe"),
+            ),
         ),
         rest=Operand(type="path"),
     ),
-    'tr':
-    CommandSpec(
+    "tr": CommandSpec(
         options=(
             Option(short="-d", long="--delete"),
             Option(short="-s", long="--squeeze-repeats"),
@@ -125,8 +121,7 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="str"),
         ),
     ),
-    'paste':
-    CommandSpec(
+    "paste": CommandSpec(
         options=(
             Option(short="-d", long="--delimiters", type="str"),
             Option(short="-s", long="--serial"),
@@ -134,28 +129,30 @@ SPECS: dict[str, CommandSpec] = {
         ),
         rest=Operand(type="path"),
     ),
-    'printf':
-    CommandSpec(
-        positional=(Operand(type="str"), ),
+    "printf": CommandSpec(
+        positional=(Operand(type="str"),),
         rest=Operand(type="str"),
     ),
-    'seq':
-    CommandSpec(
+    "seq": CommandSpec(
         description="Print a sequence of numbers.",
         options=(
             Option(
                 short="-s",
                 type="str",
-                description=("Use the given string as separator "
-                             "between numbers."),
+                description=(
+                    "Use the given string as separator between numbers."
+                ),
             ),
-            Option(short="-w",
-                   description="Pad numbers with zeros to equal width."),
+            Option(
+                short="-w",
+                description="Pad numbers with zeros to equal width.",
+            ),
             Option(
                 short="-f",
                 type="str",
-                description=("Format each number with a printf-style "
-                             "format string."),
+                description=(
+                    "Format each number with a printf-style format string."
+                ),
             ),
         ),
         positional=(
@@ -164,20 +161,34 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="str"),
         ),
     ),
-    'split':
-    CommandSpec(
+    "split": CommandSpec(
         options=(
-            Option(short="-l", long="--lines", type="str"),
+            # GNU's obsolete -NUM is a line count (DIGIT_OPTIONS reads
+            # its digits inside a cluster too). One divergence: GNU adds
+            # its `Try` hint when a zero count came as digits (`split
+            # -0`) and not for `-l 0`, and the bag cannot tell the two
+            # apart, so both refuse without it.
+            Option(
+                short="-l", long="--lines", type="str", numeric_shorthand=True
+            ),
             Option(short="-b", long="--bytes", type="str"),
             Option(short="-n", long="--number", type="str"),
-            Option(short="-d",
-                   long="--numeric-suffixes",
-                   type="str",
-                   value_optional=True),
-            Option(short="-x",
-                   long="--hex-suffixes",
-                   type="str",
-                   value_optional=True),
+            # GNU: -d/-x never take an argument; only --numeric-suffixes=
+            # and --hex-suffixes= carry one, so `-d10` is -d and ten lines.
+            Option(
+                short="-d",
+                long="--numeric-suffixes",
+                type="str",
+                value_optional=True,
+                short_value=False,
+            ),
+            Option(
+                short="-x",
+                long="--hex-suffixes",
+                type="str",
+                value_optional=True,
+                short_value=False,
+            ),
             Option(short="-a", long="--suffix-length", type="str"),
             Option(long="--additional-suffix", type="str"),
             Option(short="-t", long="--separator", type="str"),
@@ -187,20 +198,20 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="path"),
         ),
     ),
-    'shuf':
-    CommandSpec(
+    "shuf": CommandSpec(
         options=(
-            Option(short="-n", long="--head-count", type="str"),
+            Option(short="-n", long="--head-count", type="str", multiple=True),
             Option(short="-e", long="--echo"),
             Option(short="-z", long="--zero-terminated"),
             Option(short="-r", long="--repeat"),
-            Option(short="-i", long="--input-range", type="str"),
-            Option(short="-o", long="--output", type="path"),
+            Option(
+                short="-i", long="--input-range", type="str", multiple=True
+            ),
+            Option(short="-o", long="--output", type="path", multiple=True),
         ),
         rest=Operand(type="path"),
     ),
-    'comm':
-    CommandSpec(
+    "comm": CommandSpec(
         options=(
             Option(short="-1"),
             Option(short="-2"),
@@ -216,25 +227,22 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="path"),
         ),
     ),
-    'csplit':
-    CommandSpec(
+    "csplit": CommandSpec(
         options=(
             Option(short="-f", long="--prefix", type="path"),
             Option(short="-n", long="--digits", type="str"),
-            Option(short="-b", long="--suffix-format", type="str"),
+            Option(long="--silent"),
             Option(short="-k", long="--keep-files"),
             Option(short="-s", long="--quiet"),
-            Option(long="--silent"),
+            Option(short="-b", long="--suffix-format", type="str"),
             Option(long="--suppress-matched"),
             Option(short="-z", long="--elide-empty-files"),
         ),
-        positional=(Operand(type="path"), ),
+        positional=(Operand(type="path"),),
         rest=Operand(type="str"),
     ),
-    'tsort':
-    CommandSpec(positional=(Operand(type="path"), )),
-    'join':
-    CommandSpec(
+    "tsort": CommandSpec(positional=(Operand(type="path"),)),
+    "join": CommandSpec(
         options=(
             Option(short="-t", type="str"),
             Option(short="-1", type="str"),
@@ -255,11 +263,19 @@ SPECS: dict[str, CommandSpec] = {
             Operand(type="path"),
         ),
     ),
-    'numfmt':
-    CommandSpec(
+    "numfmt": CommandSpec(
         options=(
-            Option(long="--to", type="str"),
-            Option(long="--from", type="str"),
+            # GNU's argmatch tables, in GNU's order: `--to=auto` is not
+            # an output mode, and an unknown word answers with the
+            # shared ARGMATCH refusal (coreutils 9.7).
+            Option(
+                long="--to", type="str", choices=("none", "si", "iec", "iec-i")
+            ),
+            Option(
+                long="--from",
+                type="str",
+                choices=("none", "auto", "si", "iec", "iec-i"),
+            ),
             Option(long="--suffix", type="str"),
             Option(long="--grouping"),
         ),

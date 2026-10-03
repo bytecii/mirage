@@ -12,80 +12,29 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Any
-
 from mirage.accessor.qdrant import QdrantAccessor
-from mirage.core.qdrant.query import search_rows
+from mirage.core.qdrant.naming import group_name, row_stem
+from mirage.core.qdrant.payload import field_value
 from mirage.core.qdrant.render import render_json, render_text
-from mirage.resource.qdrant.config import QdrantConfig
-from mirage.types import PathSpec
+from mirage.core.vector.types import Row
 
 
-def _content_ext(row: dict[str, Any], config: QdrantConfig) -> str:
-    if config.text_field and row.get(config.text_field) is not None:
-        return "txt"
-    return "json"
+def hit(accessor: QdrantAccessor, row: Row) -> tuple[list[str], bytes]:
+    """A ranked point's path below its collection, and its body.
 
+    The source text when the point has one, its ``.json`` otherwise.
 
-def _target_table(paths: list[PathSpec], config: QdrantConfig) -> str | None:
-    if config.collection:
-        return config.collection
-    for path in paths:
-        raw = path.mount_path if isinstance(path, PathSpec) else path
-        key = raw.strip("/")
-        if key:
-            return key.split("/")[0]
-    return None
-
-
-def _canonical_path(row: dict[str, Any], config: QdrantConfig, table: str,
-                    mount_prefix: str) -> str:
-    segs: list[str] = []
-    if not config.collection:
-        segs.append(str(table))
-    for column in config.group_by:
-        if column in row and row[column] is not None:
-            segs.append(str(row[column]))
-    segs.append(f"{row[config.id_field]}.{_content_ext(row, config)}")
-    prefix = mount_prefix.rstrip("/")
-    return prefix + "/" + "/".join(segs)
-
-
-def _block(row: dict[str, Any], config: QdrantConfig, table: str,
-           mount_prefix: str) -> str:
-    path = _canonical_path(row, config, table, mount_prefix)
-    score = row.get("_score")
-    header = path if score is None else f"{path}:{float(score):.4f}"
-    body_row = {k: v for k, v in row.items() if k != "_score"}
-    if _content_ext(row, config) == "txt":
-        content = render_text(body_row, config).decode().rstrip("\n")
-    else:
-        content = render_json(body_row, config).decode().rstrip("\n")
-    return f"{header}\n{content}"
-
-
-async def search_rows_output(
-    accessor: QdrantAccessor,
-    query: str,
-    paths: list[PathSpec],
-    top_k: int,
-    threshold: float,
-    mount_prefix: str,
-) -> bytes:
-    if not query:
-        raise ValueError("search: query is required")
-    if top_k <= 0:
-        raise ValueError("search: top-k must be positive")
-    table = _target_table(paths, accessor.config)
-    if table is None:
-        raise FileNotFoundError("search: no table to search")
-    rows = await search_rows(accessor, table, query, top_k)
-    blocks: list[str] = []
-    for row in rows:
-        score = row.get("_score")
-        if threshold > 0 and score is not None and float(score) < threshold:
-            continue
-        blocks.append(_block(row, accessor.config, table, mount_prefix))
-    if not blocks:
-        return b""
-    return ("\n".join(blocks) + "\n").encode()
+    Args:
+        accessor (QdrantAccessor): the mount's accessor.
+        row (Row): the ranked point.
+    """
+    config = accessor.config
+    segments = [
+        group_name(value, basename=column in config.basename_fields)
+        for column in config.group_by
+        if (value := field_value(row, column)) is not None
+    ]
+    stem = row_stem(row, config)
+    if config.text_field and field_value(row, config.text_field) is not None:
+        return segments + [f"{stem}.txt"], render_text(row, config)
+    return segments + [f"{stem}.json"], render_json(row, config)

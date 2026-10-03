@@ -16,15 +16,25 @@ import { describe, expect, it } from 'vitest'
 import {
   ambiguousOptionError,
   extraOperandError,
+  missingOperandError,
   invalidFloatError,
   invalidIntError,
+  argmatchError,
+  argmatchLine,
+  argmatchValidBlock,
   invalidArgumentError,
   missingRequiredError,
   missingValueError,
   oldOptionError,
+  unexpectedValueError,
   unknownOptionError,
+  rgUnknownFlag,
+  similarRgFlags,
+  readFailExitCode,
+  readFailExitCodeFromLine,
   usageExitCode,
 } from './usage.ts'
+import { argmatch } from './argmatch.ts'
 
 const td = new TextDecoder()
 
@@ -111,6 +121,119 @@ describe('invalidArgumentError', () => {
     )
     expect(code).toBe(1)
   })
+
+  // Measured on GNU coreutils 9.4 under `LC_ALL=C LANG=C TZ=UTC` with a raw
+  // `bytes` argv (ground truth QS.1 and QS.3a). Mirrors test_usage.py.
+  it('escapes the word through gnulib quote()', () => {
+    const [msg, code] = invalidArgumentError('tee', '--output-error', 'xé', ['warn'])
+    expect(new TextDecoder().decode(msg)).toBe(
+      "tee: invalid argument 'x\\303\\251' for '--output-error'\n" +
+        "Valid arguments are:\n  - 'warn'\n" +
+        "Try 'tee --help' for more information.\n",
+    )
+    expect(code).toBe(1)
+  })
+
+  // gnulib's argmatch matches on a prefix and `''` is a prefix of every
+  // candidate, so the empty word comes back AMBIGUOUS -- through the
+  // ordinary rule, not a special case: it matches all four candidates, which
+  // are four different values. Measured the same way at `tail --follow=`,
+  // `sort --check=`, `wc --total=`, `uniq --all-repeated=`, `uniq --group=`,
+  // `ls --format=`, `ls -l --time-style=` and `cp --update=`.
+  it('words an empty value as ambiguous, not invalid', () => {
+    const choices = ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']
+    const refusal = argmatch('', choices)
+    expect(refusal).toEqual({ matched: false, kind: 'ambiguous' })
+    const kind = refusal.matched ? 'invalid' : refusal.kind
+    const [msg, code] = invalidArgumentError('tee', '--output-error', '', choices, undefined, kind)
+    expect(new TextDecoder().decode(msg).split('\n')[0]).toBe(
+      "tee: ambiguous argument '' for '--output-error'",
+    )
+    expect(code).toBe(1)
+  })
+
+  // Measured on coreutils 9.4 by stripping the first line from each pair of
+  // refusals: `ls --quoting-style=l` vs `=zzz`, `ls -l --time=c` vs `=zzz`,
+  // `ls --color=a` vs `=zzz`, `wc --total=a` vs `=zzz` and
+  // `ls -l --time-style=l` vs `=zzz` all agree byte for byte below line 1.
+  it('differs from the ambiguous refusal only in the first line', () => {
+    const choices = [
+      ['atime', 'access', 'use'],
+      ['ctime', 'status'],
+    ]
+    const [amb, ambCode] = invalidArgumentError(
+      'du',
+      '--time',
+      'a',
+      choices,
+      undefined,
+      'ambiguous',
+    )
+    const [inv, invCode] = invalidArgumentError('du', '--time', 'zzz', choices)
+    const ambText = new TextDecoder().decode(amb)
+    const invText = new TextDecoder().decode(inv)
+    expect(ambText.split('\n')[0]).toBe("du: ambiguous argument 'a' for '--time'")
+    expect(invText.split('\n')[0]).toBe("du: invalid argument 'zzz' for '--time'")
+    expect(ambText.slice(ambText.indexOf('\n'))).toBe(invText.slice(invText.indexOf('\n')))
+    expect(ambCode).toBe(1)
+    expect(invCode).toBe(1)
+  })
+})
+
+describe('argmatchLine and argmatchValidBlock', () => {
+  // The wording is the caller's match result, not a re-derivation: there is
+  // no empty-string branch, because a slot whose candidates all mean one
+  // value ACCEPTS the empty word and only the caller holding the candidates
+  // can tell.
+  it('words the kind the caller matched', () => {
+    expect(argmatchLine('ls', 'time style', 'x')).toBe("ls: invalid argument 'x' for 'time style'")
+    expect(argmatchLine('ls', 'time style', 'x', 'ambiguous')).toBe(
+      "ls: ambiguous argument 'x' for 'time style'",
+    )
+    expect(argmatchLine('ls', 'time style', '', 'ambiguous')).toBe(
+      "ls: ambiguous argument '' for 'time style'",
+    )
+  })
+
+  // GNU `sort --check=x` prints `  - 'quiet', 'silent'` on ONE line:
+  // `argmatch_valid` starts a new row only when the VALUE changes.
+  it('joins aliases of one value on one row', () => {
+    expect(argmatchValidBlock([['quiet', 'silent'], ['diagnose-first']])).toBe(
+      "Valid arguments are:\n  - 'quiet', 'silent'\n  - 'diagnose-first'",
+    )
+  })
+})
+
+describe('argmatchError', () => {
+  it('words the ambiguous kind over the same block', () => {
+    const err = argmatchError(
+      'sort',
+      '--check',
+      '',
+      [['quiet', 'silent'], ['diagnose-first']],
+      1,
+      'ambiguous',
+    )
+    expect(err.message).toBe(
+      "sort: ambiguous argument '' for '--check'\n" +
+        "Valid arguments are:\n  - 'quiet', 'silent'\n  - 'diagnose-first'\n" +
+        "Try 'sort --help' for more information.",
+    )
+    expect(err.exitCode).toBe(1)
+  })
+
+  it('carries the block and the code it was given', () => {
+    const err = argmatchError('sort', '--check', 'x', [['quiet', 'silent'], ['diagnose-first']], 1)
+    expect(err.message).toBe(
+      "sort: invalid argument 'x' for '--check'\n" +
+        "Valid arguments are:\n  - 'quiet', 'silent'\n  - 'diagnose-first'\n" +
+        "Try 'sort --help' for more information.",
+    )
+    // sort's other usage errors are 2; gnulib's `argmatch_die` always calls
+    // `usage (EXIT_FAILURE)`, so this one is 1.
+    expect(err.exitCode).toBe(1)
+    expect(usageExitCode('sort')).toBe(2)
+  })
 })
 
 describe('missingRequiredError', () => {
@@ -164,5 +287,255 @@ describe('oldOptionError', () => {
     )
     // tar's own fatal error, not argp's 64.
     expect(code).toBe(2)
+  })
+})
+
+describe('readFailExitCode', () => {
+  const fsErr = (code: string, msg = '/x'): Error => Object.assign(new Error(msg), { code })
+
+  it('reads the code off the command, not the errno', () => {
+    expect(readFailExitCode('cat', fsErr('ENOENT'))).toBe(1)
+    expect(readFailExitCode('sort', fsErr('ENOENT'))).toBe(2)
+    expect(readFailExitCode('sort', fsErr('EISDIR'))).toBe(2)
+    expect(readFailExitCode('unzip', fsErr('ENOENT'))).toBe(9)
+    // A read the mount refuses to render whole (EFBIG) is a failed read too.
+    expect(readFailExitCode('rg', fsErr('EFBIG'))).toBe(2)
+    expect(readFailExitCode('cat', fsErr('EFBIG'))).toBe(1)
+  })
+
+  it('splits by errno for the commands that do', () => {
+    // sed opens the directory and fails on the read (4) where a missing
+    // file fails at open (2); the gzip family calls a directory a warning
+    // (2) and a missing file an error (1). zgrep opens its operands itself,
+    // so a failed read that reaches here is grep's trouble, 2 either way.
+    expect(readFailExitCode('sed', fsErr('EISDIR'))).toBe(4)
+    expect(readFailExitCode('sed', fsErr('ENOENT'))).toBe(2)
+    expect(readFailExitCode('zcat', fsErr('EISDIR'))).toBe(2)
+    expect(readFailExitCode('zcat', fsErr('ENOENT'))).toBe(1)
+    expect(readFailExitCode('zgrep', fsErr('EISDIR'))).toBe(2)
+    expect(readFailExitCode('zgrep', fsErr('ENOENT'))).toBe(2)
+  })
+
+  it('ignores anything that is not a failed read', () => {
+    // The executor's chokepoints catch every error a command can throw,
+    // so a table keyed by command has to be gated on the narrow errno
+    // set. A bad script is not a filesystem error at all, and EACCES is
+    // as often a write refusal as a read one: `sed -i` on a backend with
+    // no write op is refused with EACCES and must stay 1, which is what
+    // integ's lancedb_sed_i_readonly and notion_sed_i_readonly pin.
+    expect(readFailExitCode('sed', fsErr('EACCES', '-i not supported'))).toBe(1)
+    expect(readFailExitCode('sed', new Error('bad script'))).toBe(1)
+    expect(readFailExitCode('sort', fsErr('EACCES'))).toBe(1)
+    expect(readFailExitCode('sort', new Error('transport'))).toBe(1)
+  })
+})
+
+describe('readFailExitCodeFromLine', () => {
+  it('reads the terminal errno, not one spelled inside the path', () => {
+    // The cross-mount stream path only has the rendered line, and the
+    // errno is its LAST field. A path is free to spell a strerror itself,
+    // and scanning the whole line read this directory as ENOENT.
+    const line = 'sed: /ram/No such file or directory: Is a directory\n'
+    expect(readFailExitCodeFromLine('sed', line)).toBe(4)
+    expect(readFailExitCodeFromLine('cat', line)).toBe(1)
+    expect(
+      readFailExitCodeFromLine('sed', 'sed: /ram/Is a directory: No such file or directory\n'),
+    ).toBe(2)
+  })
+
+  it('takes the most severe of a multi-line blob', () => {
+    // One fetch renders several lines when the operand was a glob the
+    // owning mount expanded, and sed's rule is the most severe.
+    const blob = 'sed: /ram/nope: No such file or directory\nsed: /ram/dir: Is a directory\n'
+    expect(readFailExitCodeFromLine('sed', blob)).toBe(4)
+    expect(readFailExitCodeFromLine('sort', blob)).toBe(2)
+  })
+
+  it('keeps the catch-all for anything that is not a failed read', () => {
+    expect(readFailExitCodeFromLine('sed', 'sed: -e expression #1: unknown\n')).toBe(1)
+    expect(readFailExitCodeFromLine('sed', '')).toBe(1)
+    expect(readFailExitCodeFromLine('sed', 'sed: /ram/Is a directory\n')).toBe(1)
+  })
+})
+
+describe('curl wording', () => {
+  const dec = new TextDecoder()
+  const hint = "curl: try 'curl --help' or 'curl --manual' for more information\n"
+
+  it('exits 2 on a usage error', () => {
+    expect(usageExitCode('curl')).toBe(2)
+  })
+
+  it('reports an unknown option in curl words, a cluster letter dashed', () => {
+    // Pinned on curl 8.14.1 (debian:stable-slim).
+    const [long, code] = unknownOptionError('curl', '--bogus')
+    expect(dec.decode(long)).toBe(`curl: option --bogus: is unknown\n${hint}`)
+    expect(code).toBe(2)
+    const [short] = unknownOptionError('curl', 'Y')
+    expect(dec.decode(short)).toBe(`curl: option -Y: is unknown\n${hint}`)
+  })
+
+  it('reports a missing parameter in curl words', () => {
+    const [short, code] = missingValueError('curl', 'm')
+    expect(dec.decode(short)).toBe(`curl: option -m: requires parameter\n${hint}`)
+    expect(code).toBe(2)
+    const [long] = missingValueError('curl', '--max-time')
+    expect(dec.decode(long)).toBe(`curl: option --max-time: requires parameter\n${hint}`)
+  })
+
+  it('reports a bad number in curl words', () => {
+    const [line, code] = invalidFloatError('curl', '--max-time', 'abc')
+    expect(dec.decode(line)).toBe(
+      `curl: option --max-time: expected a proper numerical parameter\n${hint}`,
+    )
+    expect(code).toBe(2)
+  })
+})
+
+// GNU getopt_long refuses a value on a BOOLEAN long option with its own
+// message, which is not the unrecognized-option one: it names the option and
+// drops the value, where the unrecognized message quotes the whole token.
+// Measured on GNU grep 3.11 and coreutils 9.4 (new ground-truth section W):
+// `grep --byte-offset=2`, `nl --help=2`, `cut --complement=2`, `sed --debug=2`.
+// The per-tool usage block GNU prints between the message and the hint is
+// omitted here, as it is for every other refusal in this module.
+describe('unexpectedValueError', () => {
+  it('names the option without the value', () => {
+    const [msg, code] = unexpectedValueError('grep', '--byte-offset=2')
+    expect(new TextDecoder().decode(msg)).toBe(
+      "grep: option '--byte-offset' doesn't allow an argument\n" +
+        "Try 'grep --help' for more information.\n",
+    )
+    expect(code).toBe(2)
+  })
+
+  // coreutils exit 1 where grep and sort exit 2.
+  it.each<[string, number]>([
+    ['nl', 1],
+    ['cut', 1],
+    ['wc', 1],
+    ['sort', 2],
+  ])('carries %s exit code', (name, expected) => {
+    const [msg, code] = unexpectedValueError(name, '--bogus-bool=2')
+    expect(
+      new TextDecoder()
+        .decode(msg)
+        .startsWith(`${name}: option '--bogus-bool' doesn't allow an argument\n`),
+    ).toBe(true)
+    expect(code).toBe(expected)
+  })
+
+  // An empty value is still a value, and a second `=` is part of it.
+  it.each(['--byte-offset=', '--byte-offset=2=3'])('names only the option for %s', (token) => {
+    const [msg] = unexpectedValueError('grep', token)
+    expect(
+      new TextDecoder()
+        .decode(msg)
+        .startsWith("grep: option '--byte-offset' doesn't allow an argument\n"),
+    ).toBe(true)
+  })
+
+  // curl, python, jq and find answer this as an unknown option, each measured:
+  // `curl --silent=2` is `option --silent=2: is unknown`, `python3
+  // --version=2` is `unknown option --version=2`, and `jq --tab=2` is jq's own
+  // unknown-option line. Routing them through the getopt_long wording would put
+  // GNU's words in a program that does not use GNU's parser.
+  it('keeps the unknown wording for a program that is not getopt_long', () => {
+    const dec = new TextDecoder()
+    const [curl, curlCode] = unexpectedValueError('curl', '--silent=2')
+    expect(dec.decode(curl).startsWith('curl: option --silent=2: is unknown\n')).toBe(true)
+    expect(curlCode).toBe(2)
+    const [jq] = unexpectedValueError('jq', '--tab=2')
+    expect(dec.decode(jq).startsWith("jq: unrecognized option '--tab=2'\n")).toBe(true)
+    const [py] = unexpectedValueError('python3', '--version=2')
+    expect(dec.decode(py).startsWith('unknown option --version=2\n')).toBe(true)
+    const [find] = unexpectedValueError('find', '--help=2')
+    expect(dec.decode(find)).toBe("find: unknown predicate `--help=2'\n")
+  })
+})
+
+// getopt prints `argv[optind]` with a plain `%s`, never quote(). Every
+// coreutils clause that names a *value* runs it through gnulib's `quote()`
+// (an `é` comes back as `\303\251`), but the unrecognized-option clause is
+// getopt's own and carries the token's bytes as typed. Measured under
+// `LC_ALL=C` with a raw `bytes` argv on coreutils 9.4: `cut --zzz=é`
+// reports `'--zzz=é'` with the two UTF-8 bytes intact, and
+// `wc --zzz=$'\001'` carries the raw 0x01. Same for nl, expand, shuf,
+// tail, split, du, sort, uniq, ls and cp. This asymmetry is deliberate; do
+// not route this clause through quote(). Mirrors test_usage.py.
+describe('unknownOptionError leaves the token unescaped', () => {
+  it.each([
+    ['cut', '--zzz=é'],
+    ['wc', '--zzz=\x01'],
+  ])('keeps %s’s token as typed', (cmd, token) => {
+    const [msg] = unknownOptionError(cmd, token)
+    expect(td.decode(msg).startsWith(`${cmd}: unrecognized option '${token}'\n`)).toBe(true)
+  })
+})
+
+describe('missingOperandError', () => {
+  // argv[argc - 1] once getopt permuted: the last operand, or join's literal
+  // last word, since it reads operands in order. With no operand coreutils
+  // says a bare `missing operand`, while diffutils names the line's last word
+  // and else the program itself (coreutils 9.7, diffutils 3.10). Mirrors
+  // python's test_missing_operand_error_matches_gnu.
+  const hint = (cmd: string, prefixed: boolean): string =>
+    `${prefixed ? `${cmd}: ` : ''}Try '${cmd} --help' for more information.`
+  it.each([
+    ['comm', null, [], 'comm: missing operand', false, 1],
+    ['comm', null, ['-1'], 'comm: missing operand', false, 1],
+    ['comm', 'a.txt', ['a.txt', '-1'], "comm: missing operand after 'a.txt'", false, 1],
+    ['join', 'a.txt', [], "join: missing operand after 'a.txt'", false, 1],
+    ['join', 'a.txt', ['a.txt', '-t', ','], "join: missing operand after ','", false, 1],
+    ['cmp', null, [], "cmp: missing operand after 'cmp'", true, 2],
+    ['cmp', null, ['-s'], "cmp: missing operand after '-s'", true, 2],
+    ['diff', 'a.txt', [], "diff: missing operand after 'a.txt'", true, 2],
+    ['diff', 'a.txt', ['a.txt', '-u'], "diff: missing operand after 'a.txt'", true, 2],
+    ['diff', null, ['-u'], "diff: missing operand after '-u'", true, 2],
+  ] as const)('matches GNU for %s %s %j', (cmd, last, argv, line, prefixed, code) => {
+    const err = missingOperandError(cmd, last, argv)
+    expect([err.message, err.exitCode]).toEqual([`${line}\n${hint(cmd, prefixed)}`, code])
+  })
+})
+
+// ripgrep 14.1.1's refusals: no usage hint, and the similar flags its own
+// table holds. Mirrors `test_usage.py`.
+describe('rgUnknownFlag', () => {
+  it.each([
+    ['--pcr', 'rg: unrecognized flag --pcr\n'],
+    ['--pcr=x', 'rg: unrecognized flag --pcr\n'],
+    ['y', 'rg: unrecognized flag -y\n'],
+    ['--pcre', 'rg: unrecognized flag --pcre\n\nsimilar flags that are available: --pcre2\n'],
+    [
+      '--no-pcr',
+      'rg: unrecognized flag --no-pcr\n\nsimilar flags that are available: --no-pcre2\n',
+    ],
+    [
+      '--colo',
+      'rg: unrecognized flag --colo\n\nsimilar flags that are available: --color, --colors\n',
+    ],
+    [
+      '--ignore-cas',
+      'rg: unrecognized flag --ignore-cas\n\nsimilar flags that are available: --ignore-case, ' +
+        '--ignore-file, --ignore, --ignore-dot, --ignore-vcs\n',
+    ],
+    [
+      '--context-sep',
+      'rg: unrecognized flag --context-sep\n\nsimilar flags that are available: --context, ' +
+        '--context-separator, --no-context-separator, --field-context-separator\n',
+    ],
+    [
+      '--heading-x',
+      'rg: unrecognized flag --heading-x\n\nsimilar flags that are available: --heading, --no-heading\n',
+    ],
+  ])('refuses %j in ripgrep words', (token, stderr) => {
+    const want: [Uint8Array, number] = [new TextEncoder().encode(stderr), 2]
+    expect(unknownOptionError('rg', token)).toEqual(want)
+    expect(rgUnknownFlag(token)).toEqual(want)
+  })
+
+  it("keeps ripgrep's order", () => {
+    expect(similarRgFlags('colo')).toEqual(['color', 'colors'])
+    expect(similarRgFlags('pcr')).toEqual([])
   })
 })

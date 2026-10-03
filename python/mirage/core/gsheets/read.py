@@ -12,24 +12,25 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import posixpath
-from functools import partial
-
 from mirage.accessor.gsheets import GSheetsAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.cache.index.warm import entry_or_warm
-from mirage.core.gsheets.client import TokenManager, google_get, sheets_base
-from mirage.core.gsheets.readdir import readdir
+from mirage.cache.index import IndexCacheStore
+from mirage.core.google.client import TokenManager, google_get, sheets_base
+from mirage.core.google.entry import resolve_app_entry
+from mirage.core.gsheets.constants import MIME
+from mirage.core.gsheets.scope import detect_scope
+from mirage.core.hierarchy.read import make_read
+from mirage.core.hierarchy.scope import ScopeMatch
 from mirage.core.render.json import compact_json_bytes
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
-from mirage.utils.errors import enoent
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
+from mirage.vfs.gsheets.sheet_entry import make_filename
 
 GRID_DATA_PARAM = "true"
 
 
-async def read_spreadsheet(token_manager: TokenManager,
-                           spreadsheet_id: str) -> bytes:
+async def read_spreadsheet(
+    token_manager: TokenManager, spreadsheet_id: str
+) -> bytes:
     """Fetch full spreadsheet JSON, cell values included.
 
     `spreadsheets.get` returns no grid data unless asked, so without
@@ -44,13 +45,15 @@ async def read_spreadsheet(token_manager: TokenManager,
         bytes: JSON response as bytes.
     """
     url = f"{sheets_base(token_manager)}/spreadsheets/{spreadsheet_id}"
-    data = await google_get(token_manager, url,
-                            {"includeGridData": GRID_DATA_PARAM})
+    data = await google_get(
+        token_manager, url, {"includeGridData": GRID_DATA_PARAM}
+    )
     return compact_json_bytes(data)
 
 
-async def read_values(token_manager: TokenManager, spreadsheet_id: str,
-                      range_: str) -> bytes:
+async def read_values(
+    token_manager: TokenManager, spreadsheet_id: str, range_: str
+) -> bytes:
     """Read cell values via Values API. Returns JSON array.
 
     Args:
@@ -67,21 +70,32 @@ async def read_values(token_manager: TokenManager, spreadsheet_id: str,
     return compact_json_bytes(data)
 
 
-async def read(
+async def _read_file(
     accessor: GSheetsAccessor,
+    match: ScopeMatch,
     path: PathSpec,
-    index: IndexCacheStore = NULL_INDEX,
+    index: IndexCacheStore,
 ) -> bytes:
-    virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    key = path.resource_path
-    virtual_key = prefix + "/" + key if prefix else "/" + key
-    parent_key = posixpath.dirname(virtual_key) or "/"
-    parent_path = PathSpec.from_str_path(parent_key,
-                                         mount_key(parent_key, prefix))
-    warm = (partial(readdir, accessor, parent_path, index)
-            if parent_key != virtual_key else None)
-    entry = await entry_or_warm(index, virtual_key, warm)
-    if entry is None:
-        raise enoent(virtual)
-    return await read_spreadsheet(accessor.token_manager, entry.id)
+    entry = await resolve_app_entry(
+        accessor.token_manager,
+        match,
+        path,
+        index,
+        MIME,
+        "gsheets/file",
+        make_filename,
+    )
+    timer = start_op()
+    data = await read_spreadsheet(accessor.token_manager, entry.id)
+    record(
+        "read",
+        path.virtual,
+        "gsheets",
+        len(data),
+        timer,
+        fingerprint=entry.remote_time or None,
+    )
+    return data
+
+
+read = make_read(detect_scope, readers={"file": _read_file})

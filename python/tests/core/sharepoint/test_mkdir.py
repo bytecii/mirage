@@ -1,10 +1,10 @@
 import pytest
 from aioresponses import CallbackResult, aioresponses
+from yarl import URL
 
 from mirage.accessor.sharepoint import SharePointAccessor, SharePointConfig
-from mirage.core.sharepoint.client import GraphError
+from mirage.core.msgraph.client import GraphError
 from mirage.core.sharepoint.mkdir import mkdir
-from mirage.core.sharepoint.resolve import _drive_cache, _site_cache
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
 
@@ -15,25 +15,17 @@ _DRIVE = f"{_BASE}/drives/{_DRIVE_ID}"
 
 
 def _accessor() -> SharePointAccessor:
-    return SharePointAccessor(SharePointConfig(access_token="tok"))
+    accessor = SharePointAccessor(SharePointConfig(access_token="tok"))
+    accessor.site_cache["Engineering"] = _SITE_ID
+    accessor.drive_cache[(_SITE_ID, "Documents")] = _DRIVE_ID
+    return accessor
 
 
 def _spec(rel: str) -> PathSpec:
     virtual = f"/sp/Engineering/Documents/{rel}"
-    return PathSpec(resource_path=mount_key(virtual, "/sp"),
-                    virtual=virtual,
-                    directory=virtual)
-
-
-@pytest.fixture(autouse=True)
-def _seeded_caches():
-    _site_cache.clear()
-    _drive_cache.clear()
-    _site_cache["Engineering"] = _SITE_ID
-    _drive_cache[(_SITE_ID, "Documents")] = _DRIVE_ID
-    yield
-    _site_cache.clear()
-    _drive_cache.clear()
+    return PathSpec(
+        vfs_path=mount_key(virtual, "/sp"), virtual=virtual, directory=virtual
+    )
 
 
 @pytest.mark.asyncio
@@ -58,11 +50,10 @@ async def test_mkdir_tolerates_existing_item():
         m.post(
             _DRIVE + "/root/children",
             status=409,
-            payload={"error": {
-                "code": "nameAlreadyExists",
-                "message": "x"
-            }})
+            payload={"error": {"code": "nameAlreadyExists", "message": "x"}},
+        )
         await mkdir(_accessor(), _spec("new"))
+        assert len(m.requests[("POST", URL(_DRIVE + "/root/children"))]) == 1
 
 
 @pytest.mark.asyncio
@@ -71,10 +62,8 @@ async def test_mkdir_raises_on_other_errors():
         m.post(
             _DRIVE + "/root/children",
             status=507,
-            payload={"error": {
-                "code": "insufficientStorage",
-                "message": "x"
-            }})
+            payload={"error": {"code": "insufficientStorage", "message": "x"}},
+        )
         with pytest.raises(GraphError):
             await mkdir(_accessor(), _spec("new"))
 
@@ -95,3 +84,72 @@ async def test_mkdir_parents_creates_each_level():
         _DRIVE + "/root/children",
         _DRIVE + "/root:/a:/children",
     ]
+
+
+_NOT_FOUND = {"error": {"code": "itemNotFound", "message": "x"}}
+
+
+def _scoped_accessor() -> SharePointAccessor:
+    accessor = SharePointAccessor(
+        SharePointConfig(
+            access_token="tok",
+            site="Engineering",
+            drive="Documents",
+            key_prefix="team/root",
+        )
+    )
+    accessor.site_cache["Engineering"] = _SITE_ID
+    accessor.drive_cache[(_SITE_ID, "Documents")] = _DRIVE_ID
+    return accessor
+
+
+def _scoped_spec(rel: str) -> PathSpec:
+    virtual = f"/sp/{rel}"
+    return PathSpec(
+        vfs_path=mount_key(virtual, "/sp"), virtual=virtual, directory=virtual
+    )
+
+
+def _recording(posts: list[str], status: int = 201):
+
+    def _cb(url, **kwargs):
+        posts.append(f"{status} {url}")
+        payload = {"id": "1"} if status < 400 else _NOT_FOUND
+        return CallbackResult(status=status, payload=payload)
+
+    return _cb
+
+
+@pytest.mark.asyncio
+async def test_mkdir_creates_a_missing_mount_root_then_retries():
+    posts: list[str] = []
+    with aioresponses() as m:
+        m.post(
+            _DRIVE + "/root:/team/root:/children",
+            callback=_recording(posts, 404),
+        )
+        m.post(_DRIVE + "/root/children", callback=_recording(posts))
+        m.post(_DRIVE + "/root:/team:/children", callback=_recording(posts))
+        m.post(
+            _DRIVE + "/root:/team/root:/children", callback=_recording(posts)
+        )
+        await mkdir(_scoped_accessor(), _scoped_spec("lt"))
+    assert posts == [
+        "404 " + _DRIVE + "/root:/team/root:/children",
+        "201 " + _DRIVE + "/root/children",
+        "201 " + _DRIVE + "/root:/team:/children",
+        "201 " + _DRIVE + "/root:/team/root:/children",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mkdir_does_not_retry_a_404_below_the_mount_root():
+    posts: list[str] = []
+    with aioresponses() as m:
+        m.post(
+            _DRIVE + "/root:/team/root/a:/children",
+            callback=_recording(posts, 404),
+        )
+        with pytest.raises(GraphError):
+            await mkdir(_scoped_accessor(), _scoped_spec("a/b"))
+    assert posts == ["404 " + _DRIVE + "/root:/team/root/a:/children"]

@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { RAMIndexCacheStore } from '../../../cache/index/ram.ts'
 import { materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
-import { FakeSlackTransport, makeFakeResource, seedChannel } from './_test_util.ts'
+import { FakeSlackTransport, makeFakeVfs, seedChannel } from './_test_util.ts'
 import { SLACK_COMMANDS } from './index.ts'
 
 const SLACK_JQ = SLACK_COMMANDS.filter((c) => c.name === 'jq' && c.filetype == null)
@@ -33,8 +33,8 @@ async function runJq(
   const cmd = SLACK_JQ[0]
   if (cmd === undefined) throw new Error('jq not registered')
   const transport = options.transport ?? new FakeSlackTransport()
-  const resource = makeFakeResource(transport)
-  const result = await cmd.fn(resource.accessor, paths, texts, {
+  const vfs = makeFakeVfs(transport)
+  const result = await cmd.fn(vfs.accessor, paths, texts, {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -53,7 +53,7 @@ async function runJq(
 }
 
 describe('slack jq', () => {
-  it('extracts .text from jsonl messages with .[].text', async () => {
+  it('extracts .text from each jsonl message', async () => {
     const idx = new RAMIndexCacheStore()
     await seedChannel(idx, '/mnt/slack', 'general__C1', 'C1', { dates: ['2024-01-01'] })
     const transport = new FakeSlackTransport((endpoint) => {
@@ -61,8 +61,8 @@ describe('slack jq', () => {
         return {
           ok: true,
           messages: [
-            { ts: '1.0', text: 'hello' },
-            { ts: '2.0', text: 'world' },
+            { ts: '1704067201.000000', text: 'hello' },
+            { ts: '1704067202.000000', text: 'world' },
           ],
         }
       }
@@ -74,13 +74,10 @@ describe('slack jq', () => {
           virtual: '/mnt/slack/channels/general__C1/2024-01-01/chat.jsonl',
           directory: '/mnt/slack/channels/general__C1/',
           resolved: false,
-          resourcePath: mountKey(
-            '/mnt/slack/channels/general__C1/2024-01-01/chat.jsonl',
-            '/mnt/slack',
-          ),
+          vfsPath: mountKey('/mnt/slack/channels/general__C1/2024-01-01/chat.jsonl', '/mnt/slack'),
         }),
       ],
-      ['.[].text'],
+      ['.text'],
       { raw_output: true },
       { index: idx, transport },
     )

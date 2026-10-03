@@ -13,21 +13,38 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+from functools import partial
 from typing import Any, Callable
 
 from mirage.commands.builtin.utils.limit import guard_output
+from mirage.context import reset_admission, set_admission
 from mirage.io import IOResult
 from mirage.io.stream import materialize
-from mirage.policy import ExecuteResultContext, post_execute_gate
-from mirage.runtime.policy import PolicyDecision
+from mirage.policy import (
+    ExecuteResultContext,
+    HandOff,
+    post_execute_gate,
+    refusal_of,
+    render_deny,
+)
+from mirage.runtime.routing import RouteDecision
 from mirage.runtime.types import DispatchFn
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
+from mirage.shell.call_stack import CallStack
+from mirage.shell.console import JobConsole
+from mirage.shell.helpers import input_substitution_redirect
 from mirage.shell.job_table import JobTable
-from mirage.types import Producer
+from mirage.types import PathSpec, Producer
+from mirage.workspace.execution import ExecutionScope
+from mirage.workspace.executor.builtins.scope import _to_scope
+from mirage.workspace.executor.redirect import handle_redirect
+from mirage.workspace.expand.redirects import expand_redirects
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
+from mirage.workspace.node.admission import Refused, admit
 from mirage.workspace.node.execute_node import execute_node
-from mirage.workspace.session import Session
+from mirage.workspace.node.occurrence import claimant_for
+from mirage.workspace.session import SessionState, session_view
 from mirage.workspace.types import ExecutionNode
 
 
@@ -39,10 +56,15 @@ async def run_command_tree(
     execute_fn: Callable[..., Any],
     agent_id: str,
     ast: Any,
-    session: Session,
+    session: SessionState,
     stdin: Any,
     cancel: asyncio.Event | None,
-    routing_decision: PolicyDecision | None = None,
+    routing_decision: RouteDecision | None = None,
+    handed: HandOff | None = None,
+    sink: JobConsole | None = None,
+    command_substitution: bool = False,
+    call_stack: CallStack | None = None,
+    execution_scope: ExecutionScope | None = None,
 ) -> tuple[IOResult, ExecutionNode]:
     """Run a parsed command tree and finalize its output stream.
 
@@ -63,45 +85,119 @@ async def run_command_tree(
         execute_fn (Callable): recursive execute (for source/eval).
         agent_id (str): current agent ID for jobs.
         ast (Any): parsed tree-sitter root node.
-        session (Session): shell session state.
+        session (SessionState): shell session state.
         stdin (Any): input stream.
         cancel (asyncio.Event | None): event used to abort mid-flight.
-        routing_decision (PolicyDecision | None): the typed line's routing
+        routing_decision (RouteDecision | None): the typed line's routing
             decision, threaded to every command dispatch; None runs on
             the static bindings.
+        handed (HandOff | None): the line's hand-off, threaded to every
+            command's gate.
+        command_substitution (bool): capture a lone input redirect's data
+            using the same expansion, dispatcher and output gates.
+        call_stack (CallStack | None): the frames of the caller the tree
+            runs in place of (``eval``), None for a line of its own.
 
     Returns:
         tuple[IOResult, ExecutionNode]: the finalized result (with
         ``io.stdout`` set to the barrier-resolved value) and the
         execution node.
     """
-    stdout, io, exec_node = await execute_node(
+    run = partial(
+        execute_node,
         dispatch,
         registry,
         namespace,
         job_table,
         execute_fn,
         agent_id,
-        ast,
-        session,
-        stdin,
         cancel=cancel,
         routing_decision=routing_decision,
+        handed=handed,
+        sink=sink,
+        execution_scope=execution_scope or ExecutionScope(),
     )
+    redirect = (
+        input_substitution_redirect(ast) if command_substitution else None
+    )
+    if redirect is None:
+        stdout, io, exec_node = await run(ast, session, stdin, call_stack)
+    else:
+        redirects, _ = await expand_redirects(
+            [redirect],
+            session,
+            execute_fn,
+            registry,
+            view=session_view(session, registry.policies),
+        )
+        # Bash's implicit file read has cat's policy identity, without
+        # invoking a function/alias or expanding the filename a second time.
+        target = redirects[0].target
+        paths = (
+            [target]
+            if isinstance(target, PathSpec)
+            else [_to_scope(target)]
+            if isinstance(target, str)
+            else []
+        )
+        verdict = await admit(
+            "cat",
+            [],
+            [],
+            session,
+            registry,
+            namespace,
+            agent_id,
+            redirects=paths,
+            cancel=cancel,
+            claimant=claimant_for(ast, handed),
+            intrinsic=True,
+        )
+        if isinstance(verdict, Refused):
+            stdout = None
+            io = IOResult(
+                exit_code=verdict.exit_code,
+                stderr=verdict.stderr,
+                refusal=verdict.refusal,
+            )
+            exec_node = ExecutionNode(
+                command="cat",
+                exit_code=verdict.exit_code,
+                stderr=verdict.stderr,
+                refused=True,
+            )
+        else:
+            token = set_admission(verdict)
+            try:
+                stdout, io, exec_node = await handle_redirect(
+                    run,
+                    dispatch,
+                    None,
+                    redirects,
+                    session,
+                    stdin,
+                    capture_input=True,
+                )
+            finally:
+                reset_admission(token)
     stdout = await apply_barrier(stdout, io, BarrierPolicy.VALUE)
     # The boundary consultation: the envelope's producer facts become
     # the post_execute context; the built-in cap and any user policies
     # answer with Limits (tightest merged), enforced by guard_output.
-    ctx = ExecuteResultContext(producer=io.producer or Producer(command=""),
-                               exit_code=io.exit_code)
+    ctx = ExecuteResultContext(
+        producer=io.producer or Producer(command=""), exit_code=io.exit_code
+    )
     deny, bound = await post_execute_gate(registry.policies, ctx)
     if deny is not None:
         existing = await materialize(io.stderr) if io.stderr else b""
-        io.stderr = existing + deny.message.encode()
-        io.exit_code = deny.exit_code
+        err, code = render_deny(ctx.producer.command or "line", deny)
+        io.stderr = existing + err
+        io.exit_code = code
         io.stdout = None
+        io.refusal = refusal_of(deny)
         return io, exec_node
     stdout, io.stderr, io.exit_code = await guard_output(
-        stdout, io.stderr, io.exit_code, bound)
+        stdout, io.stderr, io.exit_code, bound
+    )
     io.stdout = stdout
     return io, exec_node

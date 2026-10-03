@@ -13,8 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 """Drive every Mirage tool through the Claude Agent SDK.
 
-Gives a Sonnet agent a task that exercises all six tools the Mirage
-MCP server exposes (execute_command, read, write, edit, ls, grep)
+Gives a Sonnet agent a task that exercises every tool the Mirage
+MCP server exposes (shell, read, write, edit, ls, grep, glob)
 against a RAM-backed workspace, prints each tool call, and verifies
 the final file contents.
 
@@ -25,13 +25,17 @@ Usage:
 
 import asyncio
 
-from claude_agent_sdk import (AssistantMessage, ResultMessage, ToolUseBlock,
-                              query)
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    ToolUseBlock,
+    query,
+)
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
 from mirage.agents.claude_agent_sdk import build_options
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
 load_dotenv(".env.development")
 
@@ -43,18 +47,19 @@ Use exactly one mirage tool per step and do them in order:
 3. Use the read tool on '/notes.txt'.
 4. Use the edit tool on '/notes.txt' to replace 'beta' with 'BETA'.
 5. Use the grep tool to search for 'a' in '/notes.txt'.
-6. Use the execute_command tool to run: cat /notes.txt | sort | wc -l
+6. Use the shell tool to run: cat /notes.txt | sort | wc -l
+7. Use the glob tool to find '*.txt' under '/'.
 Briefly report what each step returned.
 """
 
 EXPECTED = {
     f"mcp__mirage__{name}"
-    for name in ("execute_command", "read", "write", "edit", "ls", "grep")
+    for name in ("shell", "read", "write", "edit", "ls", "grep", "glob")
 }
 
 
 async def main() -> None:
-    ws = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
     options = build_options(ws)
     options.model = "claude-sonnet-4-6"
     options.permission_mode = "bypassPermissions"
@@ -73,10 +78,14 @@ async def main() -> None:
     print("\n=== tools used ===")
     print(used)
     missing = EXPECTED - set(used)
-    print("all six tools exercised:", not missing, "| missing:", missing
-          or "none")
+    print(
+        "every tool exercised:",
+        not missing,
+        "| missing:",
+        missing or "none",
+    )
 
-    final = await ws.ops.read("/notes.txt")
+    final = await ws.vfs.read("/notes.txt")
     print("\n=== /notes.txt final content (from the Mirage workspace) ===")
     print(final.decode("utf-8"))
 

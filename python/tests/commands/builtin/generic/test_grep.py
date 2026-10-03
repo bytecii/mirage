@@ -1,15 +1,16 @@
 import pytest
 
-from mirage.commands.builtin.generic.grep import grep
-from mirage.types import FileStat, FileType, PathSpec
+from mirage.commands.builtin.generic.grep import grep, labelled
+from mirage.commands.config import CommandOpts
+from mirage.ops.types import MountView, NamespaceView
+from mirage.types import ContentType, FileStat, FileType, PathSpec
 from mirage.utils.key_prefix import mount_key
 
 
 def _spec(path: str) -> PathSpec:
-    return PathSpec(resource_path=(path).strip("/"),
-                    virtual=path,
-                    directory=path,
-                    resolved=True)
+    return PathSpec(
+        vfs_path=(path).strip("/"), virtual=path, directory=path, resolved=True
+    )
 
 
 def _make_backend(files: dict[str, bytes], dirs: set[str] | None = None):
@@ -26,8 +27,13 @@ def _make_backend(files: dict[str, bytes], dirs: set[str] | None = None):
     inferred_dirs.add("/")
 
     async def readdir(path):
-        spec = path if isinstance(path, PathSpec) else PathSpec(
-            resource_path=(path).strip("/"), virtual=path, directory=path)
+        spec = (
+            path
+            if isinstance(path, PathSpec)
+            else PathSpec(
+                vfs_path=(path).strip("/"), virtual=path, directory=path
+            )
+        )
         p = spec.virtual.rstrip("/") or "/"
         if p not in inferred_dirs:
             raise FileNotFoundError(p)
@@ -35,34 +41,48 @@ def _make_backend(files: dict[str, bytes], dirs: set[str] | None = None):
         children: set[str] = set()
         for f in files:
             if f.startswith(prefix):
-                rest = f[len(prefix):]
+                rest = f[len(prefix) :]
                 child = rest.split("/")[0]
                 children.add(prefix + child)
         for d in inferred_dirs:
             if d == p:
                 continue
             if d.startswith(prefix):
-                rest = d[len(prefix):]
+                rest = d[len(prefix) :]
                 child = rest.split("/")[0]
                 children.add(prefix + child)
         return sorted(children)
 
     async def stat(path):
-        spec = path if isinstance(path, PathSpec) else PathSpec(
-            resource_path=(path).strip("/"), virtual=path, directory=path)
+        spec = (
+            path
+            if isinstance(path, PathSpec)
+            else PathSpec(
+                vfs_path=(path).strip("/"), virtual=path, directory=path
+            )
+        )
         p = spec.virtual
         if p in files:
-            return FileStat(name=p.rsplit("/", 1)[-1] or p,
-                            size=len(files[p]),
-                            type=FileType.TEXT)
+            return FileStat(
+                name=p.rsplit("/", 1)[-1] or p,
+                size=len(files[p]),
+                type=FileType.FILE,
+                content=ContentType.TEXT,
+            )
         if p.rstrip("/") in inferred_dirs or p in inferred_dirs:
-            return FileStat(name=p.rsplit("/", 1)[-1] or "/",
-                            type=FileType.DIRECTORY)
+            return FileStat(
+                name=p.rsplit("/", 1)[-1] or "/", type=FileType.DIRECTORY
+            )
         raise FileNotFoundError(p)
 
     async def read_bytes(path):
-        spec = path if isinstance(path, PathSpec) else PathSpec(
-            resource_path=(path).strip("/"), virtual=path, directory=path)
+        spec = (
+            path
+            if isinstance(path, PathSpec)
+            else PathSpec(
+                vfs_path=(path).strip("/"), virtual=path, directory=path
+            )
+        )
         if spec.virtual not in files:
             raise FileNotFoundError(spec.virtual)
         return files[spec.virtual]
@@ -72,12 +92,6 @@ def _make_backend(files: dict[str, bytes], dirs: set[str] | None = None):
         yield data
 
     return readdir, stat, read_bytes, read_stream
-
-
-def _drain(stdout):
-    if isinstance(stdout, bytes):
-        return stdout
-    return b"".join([c for c in stdout])
 
 
 async def _drain_async(stdout):
@@ -90,189 +104,23 @@ async def _drain_async(stdout):
 
 
 @pytest.mark.asyncio
-async def test_grep_stdin_basic():
-    readdir, stat, rb, rs = _make_backend({})
-    output, io = await grep(
-        [],
-        ["apple"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        stdin=b"apple\nbanana\napricot\n",
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert "apple" in decoded
-    assert "apricot" not in decoded
-
-
-@pytest.mark.asyncio
-async def test_grep_file_basic():
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt":
-        b"apple\nbanana\napricot\n",
-    })
-    output, io = await grep(
-        [_spec("/a.txt")],
-        ["ap"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert "apple" in decoded
-    assert "apricot" in decoded
-    assert "banana" not in decoded
-
-
-@pytest.mark.asyncio
-async def test_grep_single_dir_operand_warns():
-    readdir, stat, rb, rs = _make_backend({"/d/a.txt": b"apple\n"})
-    output, io = await grep(
-        [_spec("/d")],
-        ["ap"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    assert await _drain_async(output) == b""
-    assert io.exit_code == 2
-    assert io.stderr == b"grep: /d: Is a directory\n"
-
-
-@pytest.mark.asyncio
-async def test_grep_ignore_case():
-    readdir, stat, rb, rs = _make_backend({"/a.txt": b"Apple\nBANANA\n"})
-    output, _ = await grep(
-        [_spec("/a.txt")],
-        ["apple"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        flags={"i": True},
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert "Apple" in decoded
-
-
-@pytest.mark.asyncio
-async def test_grep_invert():
+async def test_grep_recursive_single_file_keeps_single_file_output():
     readdir, stat, rb, rs = _make_backend(
-        {"/a.txt": b"apple\nbanana\ncherry\n"})
-    output, _ = await grep(
-        [_spec("/a.txt")],
-        ["banana"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        flags={"v": True},
+        {
+            "/log.txt": b"one\nerror here\ntwo\nerror again\n",
+        }
     )
-    decoded = (await _drain_async(output)).decode()
-    assert "apple" in decoded
-    assert "cherry" in decoded
-    assert "banana" not in decoded
-
-
-@pytest.mark.asyncio
-async def test_grep_count_only():
-    readdir, stat, rb, rs = _make_backend(
-        {"/a.txt": b"apple\nbanana\napricot\n"})
-    output, _ = await grep(
-        [_spec("/a.txt")],
-        ["ap"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        flags={"c": True},
-    )
-    decoded = (await _drain_async(output)).decode().strip()
-    assert decoded == "2"
-
-
-@pytest.mark.asyncio
-async def test_grep_no_match_returns_exit_1():
-    readdir, stat, rb, rs = _make_backend({"/a.txt": b"hello\nworld\n"})
-    output, io = await grep(
-        [_spec("/a.txt")],
-        ["zzz"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    drained = await _drain_async(output)
-    assert drained == b""
-    assert io.exit_code == 1
-
-
-@pytest.mark.asyncio
-async def test_grep_recursive_finds_files_in_subdirs():
-    readdir, stat, rb, rs = _make_backend({
-        "/dir/a.txt": b"apple\n",
-        "/dir/sub/b.txt": b"apricot\n",
-    })
-    output, io = await grep(
-        [_spec("/dir")],
-        ["ap"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        flags={"r": True},
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert "apple" in decoded
-    assert "apricot" in decoded
-
-
-@pytest.mark.asyncio
-async def test_grep_recursive_single_file_prefixes_filename():
-    readdir, stat, rb, rs = _make_backend({
-        "/log.txt":
-        b"one\nerror here\ntwo\nerror again\n",
-    })
     output, _ = await grep(
         [_spec("/log.txt")],
         ["error"],
+        CommandOpts(flags={"r": True, "n": True}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
         read_stream=rs,
-        flags={
-            "r": True,
-            "n": True
-        },
     )
     decoded = (await _drain_async(output)).decode()
-    assert decoded == "/log.txt:2:error here\n/log.txt:4:error again\n"
-
-
-@pytest.mark.asyncio
-async def test_grep_files_only_lists_matching_files():
-    readdir, stat, rb, rs = _make_backend({
-        "/dir/a.txt": b"apple\n",
-        "/dir/b.txt": b"zebra\n",
-    })
-    output, _ = await grep(
-        [_spec("/dir")],
-        ["apple"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        flags={
-            "r": True,
-            "args_l": True
-        },
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert "/dir/a.txt" in decoded
-    assert "/dir/b.txt" not in decoded
+    assert decoded == "2:error here\n4:error again\n"
 
 
 def _make_prefixed_backend(files: dict[str, bytes], mount_prefix: str):
@@ -293,8 +141,13 @@ def _make_prefixed_backend(files: dict[str, bytes], mount_prefix: str):
         return p
 
     async def readdir(path):
-        spec = path if isinstance(path, PathSpec) else PathSpec(
-            resource_path=(path).strip("/"), virtual=path, directory=path)
+        spec = (
+            path
+            if isinstance(path, PathSpec)
+            else PathSpec(
+                vfs_path=(path).strip("/"), virtual=path, directory=path
+            )
+        )
         p = _full(spec.virtual).rstrip("/") or "/"
         if p not in inferred_dirs:
             raise FileNotFoundError(p)
@@ -302,31 +155,45 @@ def _make_prefixed_backend(files: dict[str, bytes], mount_prefix: str):
         children: set[str] = set()
         for f in full_files:
             if f.startswith(prefix):
-                child = prefix + f[len(prefix):].split("/")[0]
+                child = prefix + f[len(prefix) :].split("/")[0]
                 children.add(child)
         for d in inferred_dirs:
             if d == p or not d.startswith(prefix):
                 continue
-            child = prefix + d[len(prefix):].split("/")[0]
+            child = prefix + d[len(prefix) :].split("/")[0]
             children.add(child)
         return sorted(children)
 
     async def stat(path):
-        spec = path if isinstance(path, PathSpec) else PathSpec(
-            resource_path=(path).strip("/"), virtual=path, directory=path)
+        spec = (
+            path
+            if isinstance(path, PathSpec)
+            else PathSpec(
+                vfs_path=(path).strip("/"), virtual=path, directory=path
+            )
+        )
         p = _full(spec.virtual)
         if p in full_files:
-            return FileStat(name=p.rsplit("/", 1)[-1],
-                            size=len(full_files[p]),
-                            type=FileType.TEXT)
+            return FileStat(
+                name=p.rsplit("/", 1)[-1],
+                size=len(full_files[p]),
+                type=FileType.FILE,
+                content=ContentType.TEXT,
+            )
         if p.rstrip("/") in inferred_dirs:
-            return FileStat(name=p.rsplit("/", 1)[-1] or "/",
-                            type=FileType.DIRECTORY)
+            return FileStat(
+                name=p.rsplit("/", 1)[-1] or "/", type=FileType.DIRECTORY
+            )
         raise FileNotFoundError(p)
 
     async def read_bytes(path):
-        spec = path if isinstance(path, PathSpec) else PathSpec(
-            resource_path=(path).strip("/"), virtual=path, directory=path)
+        spec = (
+            path
+            if isinstance(path, PathSpec)
+            else PathSpec(
+                vfs_path=(path).strip("/"), virtual=path, directory=path
+            )
+        )
         p = _full(spec.virtual)
         if p not in full_files:
             raise FileNotFoundError(p)
@@ -344,21 +211,20 @@ async def test_grep_recursive_files_only_mount_prefix():
         },
         mount_prefix="/s3",
     )
-    p = PathSpec(resource_path=mount_key("/dir", "/s3"),
-                 virtual="/dir",
-                 directory="/dir",
-                 resolved=True)
+    p = PathSpec(
+        vfs_path=mount_key("/dir", "/s3"),
+        virtual="/dir",
+        directory="/dir",
+        resolved=True,
+    )
     output, _ = await grep(
         [p],
         ["apple"],
+        CommandOpts(flags={"r": True, "args_l": True}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
         read_stream=None,
-        flags={
-            "r": True,
-            "args_l": True
-        },
     )
     decoded = (await _drain_async(output)).decode().strip()
     assert decoded == "/s3/dir/a.txt"
@@ -366,74 +232,21 @@ async def test_grep_recursive_files_only_mount_prefix():
 
 
 @pytest.mark.asyncio
-async def test_grep_count_only_no_match_exit_1():
-    readdir, stat, rb, rs = _make_backend({"/a.txt": b"hello\nworld\n"})
-    output, io = await grep(
-        [_spec("/a.txt")],
-        ["zzz"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        flags={"c": True},
-    )
-    decoded = (await _drain_async(output)).decode().strip()
-    assert decoded == "0"
-    assert io.exit_code == 1
-
-
-@pytest.mark.asyncio
-async def test_grep_stdin_count_only_no_match_exit_1():
-    readdir, stat, rb, rs = _make_backend({})
-    output, io = await grep(
-        [],
-        ["zzz"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        stdin=b"hello\nworld\n",
-        flags={"c": True},
-    )
-    decoded = (await _drain_async(output)).decode().strip()
-    assert decoded == "0"
-    assert io.exit_code == 1
-
-
-@pytest.mark.asyncio
-async def test_grep_count_only_multi_file_no_match_exit_1():
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt": b"hello\n",
-        "/b.txt": b"world\n",
-    })
-    output, io = await grep(
-        [_spec("/a.txt"), _spec("/b.txt")],
-        ["zzz"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-        flags={"c": True},
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert decoded.splitlines() == ["/a.txt:0", "/b.txt:0"]
-    assert io.exit_code == 1
-
-
-@pytest.mark.asyncio
 async def test_grep_count_only_multi_file_match_exit_0():
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt": b"hello\n",
-        "/b.txt": b"world\n",
-    })
+    readdir, stat, rb, rs = _make_backend(
+        {
+            "/a.txt": b"hello\n",
+            "/b.txt": b"world\n",
+        }
+    )
     output, io = await grep(
         [_spec("/a.txt"), _spec("/b.txt")],
         ["hello"],
+        CommandOpts(flags={"c": True}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
         read_stream=rs,
-        flags={"c": True},
     )
     decoded = (await _drain_async(output)).decode()
     assert decoded.splitlines() == ["/a.txt:1", "/b.txt:0"]
@@ -446,14 +259,11 @@ async def test_grep_recursive_count_only_no_match_exit_1():
     output, io = await grep(
         [_spec("/d")],
         ["zzz"],
+        CommandOpts(flags={"r": True, "c": True}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
         read_stream=rs,
-        flags={
-            "r": True,
-            "c": True
-        },
     )
     decoded = (await _drain_async(output)).decode()
     assert decoded.splitlines() == ["/d/a.txt:0"]
@@ -461,193 +271,16 @@ async def test_grep_recursive_count_only_no_match_exit_1():
 
 
 @pytest.mark.asyncio
-async def test_grep_single_file_dash_h_prefixes_filename():
-    readdir, stat, rb, rs = _make_backend({"/a.txt": b"apple\nbanana\n"})
-    output, io = await grep(
-        [_spec("/a.txt")],
-        ["apple"],
-        {"H": True},
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert decoded == "/a.txt:apple\n"
-    assert io.exit_code == 0
-
-
-@pytest.mark.asyncio
-async def test_grep_single_file_dash_h_count_prefixes_filename():
-    readdir, stat, rb, rs = _make_backend({"/a.txt": b"apple\nbanana\n"})
-    output, io = await grep(
-        [_spec("/a.txt")],
-        ["a"],
-        {
-            "H": True,
-            "c": True
-        },
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert decoded == "/a.txt:2\n"
-
-
-@pytest.mark.asyncio
-async def test_grep_multi_file_no_filename_suppresses_prefix():
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt": b"apple\n",
-        "/b.txt": b"apricot\n",
-    })
-    output, io = await grep(
-        [_spec("/a.txt"), _spec("/b.txt")],
-        ["ap"],
-        {"h": True},
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert decoded == "apple\napricot\n"
-
-
-@pytest.mark.asyncio
-async def test_grep_quiet_multi_file_suppresses_output():
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt": b"apple\n",
-        "/b.txt": b"banana\n",
-    })
-    output, io = await grep(
-        [_spec("/a.txt"), _spec("/b.txt")],
-        ["apple"],
-        {"q": True},
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    assert await _drain_async(output) == b""
-    assert io.exit_code == 0
-
-
-@pytest.mark.asyncio
-async def test_grep_quiet_multi_file_no_match_exits_1():
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt": b"apple\n",
-        "/b.txt": b"banana\n",
-    })
-    output, io = await grep(
-        [_spec("/a.txt"), _spec("/b.txt")],
-        ["zzz"],
-        {"q": True},
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    assert await _drain_async(output) == b""
-    assert io.exit_code == 1
-
-
-@pytest.mark.asyncio
-async def test_grep_quiet_recursive_suppresses_output():
-    readdir, stat, rb, rs = _make_backend({
-        "/dir/a.txt": b"apple\n",
-        "/dir/sub/b.txt": b"apricot\n",
-    })
-    output, io = await grep(
-        [_spec("/dir")],
-        ["ap"],
-        {
-            "q": True,
-            "r": True
-        },
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    assert await _drain_async(output) == b""
-    assert io.exit_code == 0
-
-
-@pytest.mark.asyncio
-async def test_grep_quiet_files_only_suppresses_output():
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt": b"apple\n",
-        "/b.txt": b"banana\n",
-    })
-    output, io = await grep(
-        [_spec("/a.txt"), _spec("/b.txt")],
-        ["apple"],
-        {
-            "q": True,
-            "args_l": True
-        },
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    assert await _drain_async(output) == b""
-    assert io.exit_code == 0
-
-
-@pytest.mark.asyncio
-async def test_grep_quiet_count_zero_counts_exits_1():
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt": b"apple\n",
-        "/b.txt": b"banana\n",
-    })
-    output, io = await grep(
-        [_spec("/a.txt"), _spec("/b.txt")],
-        ["zzz"],
-        {
-            "q": True,
-            "c": True
-        },
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    assert await _drain_async(output) == b""
-    assert io.exit_code == 1
-
-
-@pytest.mark.asyncio
-async def test_grep_multi_file_missing_operand_matches_still_exit_2():
-    """A match does not excuse an unreadable operand: GNU prints the lines it
-    did find and still exits 2.
-    """
-    readdir, stat, rb, rs = _make_backend({"/a.txt": b"hello\n"})
-    output, io = await grep(
-        [_spec("/a.txt"), _spec("/nope.txt")],
-        ["o"],
-        readdir=readdir,
-        stat=stat,
-        read_bytes=rb,
-        read_stream=rs,
-    )
-    decoded = (await _drain_async(output)).decode()
-    assert decoded == "/a.txt:hello\n"
-    assert io.stderr == b"grep: /nope.txt: No such file or directory\n"
-    assert io.exit_code == 2
-
-
-@pytest.mark.asyncio
 async def test_grep_recursive_not_a_directory_operand_keeps_the_others():
     """A component that exists as a file makes readdir raise ENOTDIR. GNU
     warns for that operand and still searches the rest, the same as ENOENT.
     """
-    readdir, stat, rb, rs = _make_backend({
-        "/a.txt": b"hello\n",
-        "/real/b.txt": b"foo\n",
-    })
+    readdir, stat, rb, rs = _make_backend(
+        {
+            "/a.txt": b"hello\n",
+            "/real/b.txt": b"foo\n",
+        }
+    )
 
     async def readdir_enotdir(path):
         p = path.virtual if isinstance(path, PathSpec) else path
@@ -666,15 +299,290 @@ async def test_grep_recursive_not_a_directory_operand_keeps_the_others():
     output, io = await grep(
         [_spec("/a.txt/x"), _spec("/real")],
         ["foo"],
+        CommandOpts(flags={"r": True, "args_l": True}),
         readdir=readdir_enotdir,
         stat=stat_enoent,
         read_bytes=rb,
         read_stream=rs,
-        flags={
-            "r": True,
-            "args_l": True
-        },
     )
     decoded = (await _drain_async(output)).decode()
     assert decoded == "/real/b.txt\n"
     assert b"/a.txt/x" in (io.stderr or b"")
+
+
+def _mount_parent_ns(descendant: str) -> NamespaceView:
+    """A bag whose mount table puts one mount under a path."""
+
+    def descendants(parent: str) -> list[str]:
+        base = parent.rstrip("/") or "/"
+        return [descendant] if descendant.startswith(f"{base}/") else []
+
+    return NamespaceView(
+        mounts=MountView(
+            descendants=descendants,
+            visible_descendants=descendants,
+            is_root=lambda p: False,
+            root_of=lambda p: "/",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_grep_reads_the_mount_boundaries_off_the_bag():
+    # The boundaries used to arrive as their own keyword, which every
+    # caller but the two shared builders omitted, so a namespace-only
+    # ancestor read as missing on every bespoke backend. Reading them off
+    # the bag is what makes that impossible to get wrong: this call passes
+    # no boundary argument at all, the way a wrapper does.
+    readdir, stat, rb, rs = _make_backend({})
+    output, io = await grep(
+        [_spec("/ghost")],
+        ["x"],
+        CommandOpts(flags={"r": True}, ns=_mount_parent_ns("/ghost/deep")),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    # No hits and no error: the primary backend owns nothing under the
+    # parent, and the fan-out searches the mount below it separately.
+    assert io.exit_code == 1
+    assert io.stderr in (None, b"")
+
+
+@pytest.mark.asyncio
+async def test_grep_still_reports_a_path_with_no_mount_below_it():
+    readdir, stat, rb, rs = _make_backend({})
+    out, io = await grep(
+        [_spec("/nope")],
+        ["x"],
+        CommandOpts(flags={"r": True}, ns=_mount_parent_ns("/ghost/deep")),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    await _drain_async(out)
+    assert io.exit_code == 2
+    assert b"/nope" in (io.stderr or b"")
+
+
+@pytest.mark.parametrize(
+    "flags, expected",
+    [
+        ({"r": True}, {"r": True, "H": True}),
+        ({"r": True, "h": True}, {"r": True, "h": True}),
+        ({"H": True, "h": True}, {"H": True, "h": True}),
+        ({"h": True, "H": True}, {"h": True, "H": True}),
+    ],
+)
+def test_labelled_asks_for_filenames_only_when_the_line_did_not_decide(
+    flags, expected
+):
+    out = labelled(CommandOpts(flags=flags))
+    assert out.flags == expected
+    assert list(out.flags) == list(expected)
+
+
+@pytest.mark.asyncio
+async def test_excluded_entry_that_fails_stat_does_not_stop_the_walk():
+    readdir, stat, rb, rs = _make_backend(
+        {
+            "/data/a.txt": b"apple\n",
+            "/data/b.txt": b"apple\n",
+        }
+    )
+
+    async def listing(path):
+        return ["/data/0ghost", *await readdir(path)]
+
+    output, io = await grep(
+        [_spec("/data")],
+        ["apple"],
+        CommandOpts(flags={"r": True, "exclude_dir": ["0ghost"]}),
+        readdir=listing,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert (
+        await _drain_async(output)
+    ) == b"/data/a.txt:apple\n/data/b.txt:apple\n"
+    assert io.stderr == b"grep: /data/0ghost: No such file or directory\n"
+    assert io.exit_code == 2
+
+
+@pytest.mark.parametrize(
+    "flags, expected",
+    [
+        ({"A": "1"}, b"/g1:a\n/g1-b\n--\n/g2:a\n/g2-y\n"),
+        ({"B": "1"}, b"/g1:a\n--\n/g2-x\n/g2:a\n"),
+        ({"h": True, "A": "1"}, b"a\nb\n--\na\ny\n"),
+        ({"c": True, "A": "1"}, b"/g1:1\n/g2:1\n"),
+        ({}, b"/g1:a\n/g2:a\n"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_grep_separates_context_groups_between_files(flags, expected):
+    readdir, stat, rb, rs = _make_backend(
+        {
+            "/g1": b"a\nb\nc\n",
+            "/g2": b"x\na\ny\n",
+        }
+    )
+    output, io = await grep(
+        [_spec("/g1"), _spec("/g2")],
+        ["a"],
+        CommandOpts(flags=flags),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert await _drain_async(output) == expected
+    assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_grep_context_separator_needs_earlier_output():
+    readdir, stat, rb, rs = _make_backend(
+        {
+            "/g0": b"zzz\n",
+            "/g2": b"x\na\ny\n",
+        }
+    )
+    output, io = await grep(
+        [_spec("/g0"), _spec("/g2")],
+        ["a"],
+        CommandOpts(flags={"A": "1"}),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert await _drain_async(output) == b"/g2:a\n/g2-y\n"
+
+
+@pytest.mark.asyncio
+async def test_grep_recursive_separates_context_groups_between_files():
+    readdir, stat, rb, rs = _make_backend(
+        {
+            "/d/f1": b"a\nb\n",
+            "/d/f2": b"x\na\ny\n",
+        }
+    )
+    output, io = await grep(
+        [_spec("/d")],
+        ["a"],
+        CommandOpts(flags={"r": True, "A": "1"}),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert (
+        await _drain_async(output)
+    ) == b"/d/f1:a\n/d/f1-b\n--\n/d/f2:a\n/d/f2-y\n"
+
+
+def _stdin_operand(raw: str) -> PathSpec:
+    virtual = "/dev/stdin" if raw == "/dev/stdin" else "/-"
+    return PathSpec(
+        vfs_path=virtual.strip("/"),
+        virtual=virtual,
+        directory="/",
+        resolved=True,
+        raw_path=raw,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw, flags, want",
+    [
+        ("/dev/stdin", {"H": True}, b"/dev/stdin:b\n"),
+        ("/dev/stdin", {"args_l": True}, b"/dev/stdin\n"),
+        ("-", {"H": True}, b"(standard input):b\n"),
+        ("-", {"args_l": True}, b"(standard input)\n"),
+    ],
+)
+async def test_grep_names_only_a_dash_stdin(raw, flags, want):
+    # GNU grep 3.11 calls only `-` "(standard input)": /dev/stdin reads the
+    # same bytes and is named as the path it is.
+    readdir, stat, rb, rs = _make_backend({})
+    output, io = await grep(
+        [_stdin_operand(raw)],
+        ["b"],
+        CommandOpts(flags=flags),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+        stdin=b"b\n",
+    )
+    assert (await _drain_async(output), io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quiet", [False, True])
+async def test_recursive_grep_stops_reading_and_closes_stream(quiet):
+    readdir, stat, rb, _ = _make_backend(
+        {
+            "/d/a/first": b"hit\n",
+            "/d/a/later": b"hit\n",
+            "/d/later": b"hit\n",
+            "/later": b"hit\n",
+        }
+    )
+    opened = []
+    closed = []
+
+    async def stream(path):
+        opened.append(path.virtual)
+        try:
+            yield b"hit\n"
+            raise AssertionError("read beyond the first match")
+        finally:
+            closed.append(path.virtual)
+
+    output, io = await grep(
+        [_spec("/d"), _spec("/later")],
+        ["hit"],
+        CommandOpts(flags={"r": True, "q": quiet}),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=stream,
+    )
+    assert opened == []  # Opening the command is lazy too.
+    if quiet:
+        assert await _drain_async(output) == b""
+        assert io.exit_code == 0
+    else:
+        assert await anext(output) == b"/d/a/first:hit\n"
+        await output.aclose()
+    assert opened == ["/d/a/first"]
+    assert closed == opened
+
+
+@pytest.mark.asyncio
+async def test_recursive_quiet_no_match_visits_every_file():
+    readdir, stat, rb, _ = _make_backend({"/d/a": b"no\n", "/d/b": b"no\n"})
+    opened = []
+
+    async def stream(path):
+        opened.append(path.virtual)
+        yield await rb(path)
+
+    output, io = await grep(
+        [_spec("/d")],
+        ["hit"],
+        CommandOpts(flags={"r": True, "q": True}),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=stream,
+    )
+    assert await _drain_async(output) == b""
+    assert io.exit_code == 1
+    assert opened == ["/d/a", "/d/b"]

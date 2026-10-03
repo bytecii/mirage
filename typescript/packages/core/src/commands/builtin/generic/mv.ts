@@ -24,29 +24,41 @@ import {
   type StatFn,
 } from '../../../types.ts'
 import { UsageError } from '../../errors.ts'
-import { DEFAULT_BACKUP_SUFFIX, backupControl, siblingPath } from '../utils/backup.ts'
-import { backendKeyDefault, copyTargets, pathExists, type BackendKeyFn } from '../utils/copy.ts'
+import { backupControl, siblingPath } from '../utils/backup.ts'
+import { DEFAULT_BACKUP_SUFFIX } from '../utils/constants.ts'
+import {
+  STAT_REFUSALS,
+  backendKeyDefault,
+  copyTargets,
+  pathExists,
+  type BackendKeyFn,
+} from '../utils/copy.ts'
 import { fsStrerror, isFsError } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import {
+  type TransferLinks,
+  linkStat,
+  renameLink,
   backupDisplaces,
   backupRaw,
   copyEntries,
   cpWalk,
-  entryKind,
+  destKind,
   sourceKind,
   makeBackup,
   overwriteGate,
   overwriteTypeError,
+  slashRefusesFile,
   splitOperands,
   suffixFlag,
   targetDirError,
   targetFlags,
+  updateGates,
   updateMode,
   wrapTargetDir,
   type TransferPolicy,
 } from './cp.ts'
-import type { FlagView } from '../../spec/types.ts'
+import type { FlagView } from '../../spec/flag_view.ts'
 
 const ENC = new TextEncoder()
 
@@ -87,7 +99,7 @@ function isPrimitiveMove(strategy: MoveStrategy): strategy is PrimitiveMove {
 // no-ops (non-interactive control plane: overwrite always proceeds unless
 // -n/--update say otherwise), and --strip-trailing-slashes is a no-op
 // because PathSpec already normalizes trailing slashes.
-export function parseMvFlags(fl: FlagView): MvFlags {
+export function parseFlags(fl: FlagView): MvFlags {
   const update = updateMode('mv', fl)
   const suffix = suffixFlag(fl)
   const control = backupControl('mv', backupRaw(fl), suffix)
@@ -162,7 +174,7 @@ async function removeEntries(
       failed.push(base)
       continue
     }
-    const spec = PathSpec.fromStrPath(node.path, rekey(src.virtual, src.resourcePath, node.path))
+    const spec = PathSpec.fromStrPath(node.path, rekey(src.virtual, src.vfsPath, node.path))
     try {
       if (node.isDir) await strategy.rmdir(spec)
       else await strategy.unlink(spec)
@@ -235,19 +247,19 @@ async function exchangePair(
 ): Promise<void> {
   if (isPrimitiveMove(strategy)) {
     errors.push(
-      `mv: cannot exchange '${src.virtual}' and '${target.virtual}': Invalid cross-device link`,
+      `mv: cannot exchange '${src.rawPath}' and '${target.rawPath}': Invalid cross-device link`,
     )
     return
   }
   if (!(await pathExists(stat, src)) || !(await pathExists(stat, target))) {
     errors.push(
-      `mv: cannot exchange '${src.virtual}' and '${target.virtual}': No such file or directory`,
+      `mv: cannot exchange '${src.rawPath}' and '${target.rawPath}': No such file or directory`,
     )
     return
   }
   const holding = await holdingPath(stat, target)
   if (holding === null) {
-    errors.push(`mv: cannot exchange '${src.virtual}' and '${target.virtual}': File exists`)
+    errors.push(`mv: cannot exchange '${src.rawPath}' and '${target.rawPath}': File exists`)
     return
   }
   let staged = false
@@ -262,17 +274,17 @@ async function exchangePair(
     if (!isFsError(err)) throw err
     const restored = await undoExchange(strategy, src, target, holding, staged, swapped)
     errors.push(
-      `mv: cannot exchange '${src.virtual}' and '${target.virtual}': ${String(fsStrerror(err))}`,
+      `mv: cannot exchange '${src.rawPath}' and '${target.rawPath}': ${String(fsStrerror(err))}`,
     )
     if (!restored) {
       writes[holding.mountPath] = new Uint8Array()
-      errors.push(`mv: '${src.virtual}' left at '${holding.virtual}' after a failed exchange`)
+      errors.push(`mv: '${src.rawPath}' left at '${holding.rawPath}' after a failed exchange`)
     }
     return
   }
   writes[src.mountPath] = new Uint8Array()
   writes[target.mountPath] = new Uint8Array()
-  if (lines !== undefined) lines.push(`exchanged '${src.virtual}' <-> '${target.virtual}'`)
+  if (lines !== undefined) lines.push(`exchanged '${src.rawPath}' <-> '${target.rawPath}'`)
 }
 
 // Move sources to a destination, fanning out into a directory. NativeMove
@@ -292,12 +304,22 @@ export async function mvGeneric(
   index?: IndexCacheStore,
   backendKey?: BackendKeyFn,
   readdir?: ReaddirFn,
+  // Judges one (source, target) pair before the move touches anything,
+  // the backup included, throwing to refuse it; the adapter wires the
+  // hidden-reveal check here so a refused move mutates nothing (no
+  // half-copy, no destination renamed aside by -b). Consulted only for
+  // a directory source, since a file carries nothing below it to
+  // reveal.
+  guard?: (src: PathSpec, dst: PathSpec) => void,
+  copies?: TransferLinks,
 ): Promise<[ByteSource | null, IOResult]> {
+  if (copies !== undefined) stat = (path) => linkStat(copies, path)
   const keyOf = backendKey ?? backendKeyDefault
   const [sources, dstOperand] = splitOperands('mv', paths, flags.targetDir, flags.noTargetDir)
   let dst: PathSpec
   let dstIsDir: boolean
   let dstExists: boolean
+  let dstErr: string | null = null
   if (dstOperand === null) {
     const firstSource = sources[0]
     if (firstSource === undefined) return [null, new IOResult()]
@@ -317,9 +339,10 @@ export async function mvGeneric(
     dstExists = true
   } else {
     dst = dstOperand
-    const probe = await entryKind(stat, dst)
+    const probe = await destKind(stat, dst)
     dstExists = probe.exists
     dstIsDir = probe.isDir
+    dstErr = probe.strerror
   }
   let versionReaddir = readdir
   if (versionReaddir === undefined && isPrimitiveMove(strategy)) {
@@ -332,17 +355,30 @@ export async function mvGeneric(
     backup: flags.backup,
     suffix: flags.suffix,
   }
+  const renames: [string, string][] = []
   const writes: Record<string, ByteSource> = {}
   const lines: string[] = []
   const errors: string[] = []
-  for (const [src, target] of copyTargets(sources, dst, dstIsDir, dstExists)) {
+  const created = new Set<string>()
+  for (const [src, target] of copyTargets(sources, dst, dstIsDir, dstExists, dstErr)) {
     const { exists: srcExists, isDir: srcIsDir, strerror: srcErr } = await sourceKind(stat, src)
     if (!srcExists) {
-      errors.push(`mv: cannot stat '${src.virtual}': ${String(srcErr)}`)
+      errors.push(`mv: cannot stat '${src.rawPath}': ${String(srcErr)}`)
+      continue
+    }
+    if (target.walkError !== null && target.rawPath === '') {
+      // GNU stats an empty destination as the directory it is typed in
+      // (gnulib reads the name as `.`): a file cannot overwrite it, and a
+      // directory renamed onto it is busy (coreutils 9.7).
+      errors.push(
+        srcIsDir
+          ? `mv: cannot move '${src.rawPath}' to '': Device or resource busy`
+          : `mv: cannot overwrite directory '' with non-directory '${src.rawPath}'`,
+      )
       continue
     }
     if (keyOf(src) === keyOf(target)) {
-      errors.push(`mv: '${src.virtual}' and '${target.virtual}' are the same file`)
+      errors.push(`mv: '${src.rawPath}' and '${target.rawPath}' are the same file`)
       continue
     }
     if (flags.exchange) {
@@ -359,11 +395,30 @@ export async function mvGeneric(
     }
     if (keyOf(target).startsWith(keyOf(src) + '/')) {
       errors.push(
-        `mv: cannot move '${src.virtual}' to a subdirectory of itself, '${target.virtual}'`,
+        `mv: cannot move '${src.rawPath}' to a subdirectory of itself, '${target.rawPath}'`,
       )
       continue
     }
-    const { exists: targetExists, isDir: targetIsDir } = await entryKind(stat, target)
+    const probe =
+      !flags.noTargetDir && target.virtual === dst.virtual
+        ? { exists: dstExists, isDir: dstIsDir, strerror: dstErr }
+        : await destKind(stat, target)
+    const { exists: targetExists, isDir: targetIsDir, strerror: targetErr } = probe
+    // mv's own order: the destination's stat refuses before the rename
+    // does. A chain that is merely absent is left to the backend rename
+    // below, which answers ENOENT in the same words (and on a dirless
+    // store may well succeed), unless a slash asked for a directory a
+    // file source can never be.
+    if (targetErr !== null && STAT_REFUSALS.has(targetErr)) {
+      errors.push(`mv: cannot stat '${target.rawPath}': ${targetErr}`)
+      continue
+    }
+    if (slashRefusesFile(target, targetExists, srcIsDir)) {
+      errors.push(
+        `mv: cannot move '${src.rawPath}' to '${target.rawPath}': ${targetErr ?? 'Not a directory'}`,
+      )
+      continue
+    }
     const mismatch = overwriteTypeError('mv', src, srcIsDir, target, targetExists, targetIsDir)
     if (mismatch !== null) {
       errors.push(mismatch)
@@ -371,8 +426,16 @@ export async function mvGeneric(
     }
     if (flags.noCopy && isPrimitiveMove(strategy)) {
       errors.push(
-        `mv: cannot move '${src.virtual}' to '${target.virtual}': Invalid cross-device link`,
+        `mv: cannot move '${src.rawPath}' to '${target.rawPath}': Invalid cross-device link`,
       )
+      continue
+    }
+    if (
+      !srcIsDir &&
+      created.has(keyOf(target)) &&
+      !(flags.noClobber || updateGates(flags.update) || flags.backup === 'numbered')
+    ) {
+      errors.push(`mv: will not overwrite just-created '${target.rawPath}' with '${src.rawPath}'`)
       continue
     }
     if (!(await overwriteGate(policy, stat, src, target, errors))) continue
@@ -390,26 +453,61 @@ export async function mvGeneric(
         if (!isFsError(err)) throw err
         // Reading it as "empty" would clobber a directory whose contents
         // could not be verified.
-        errors.push(`mv: cannot overwrite '${target.virtual}': ${String(fsStrerror(err))}`)
+        errors.push(`mv: cannot overwrite '${target.rawPath}': ${String(fsStrerror(err))}`)
         continue
       }
       if (children.length > 0) {
-        errors.push(`mv: cannot overwrite '${target.virtual}': Directory not empty`)
+        errors.push(`mv: cannot overwrite '${target.rawPath}': Directory not empty`)
         continue
       }
     }
+    // The reveal guard answers before the backup so a refused move
+    // cannot leave the destination renamed aside; only a directory
+    // source has anything below it to re-anchor, so a file passes.
+    if (guard !== undefined && srcIsDir) {
+      try {
+        guard(src, target)
+      } catch (err) {
+        if (!isFsError(err)) throw err
+        errors.push(
+          `mv: cannot move '${src.rawPath}' to '${target.rawPath}': ${String(fsStrerror(err))}`,
+        )
+        continue
+      }
+    }
+    const sourceLink = copies !== undefined && copies.links.statAt(src.virtual) !== null
+    const backupStrategy =
+      copies !== undefined
+        ? { rename: (a: PathSpec, b: PathSpec) => renameLink(copies, a, b) }
+        : strategy
     const made = await makeBackup(
       policy,
-      strategy,
+      backupStrategy,
       stat,
       versionReaddir,
       target,
       writes,
       errors,
       index,
+      copies,
     )
     if (!made.ok) continue
-    if (isPrimitiveMove(strategy)) {
+    if (made.backup !== null && copies === undefined && !isPrimitiveMove(strategy)) {
+      renames.push([target.virtual, made.backup.virtual])
+    }
+    if (copies !== undefined && sourceLink) {
+      try {
+        await renameLink(copies, src, target)
+      } catch (err) {
+        if (!isFsError(err)) throw err
+        errors.push(
+          `mv: cannot move '${src.rawPath}' to '${target.rawPath}': ${String(fsStrerror(err))}`,
+        )
+        continue
+      }
+      writes[src.mountPath] = new Uint8Array()
+      writes[target.mountPath] = new Uint8Array()
+    } else if (isPrimitiveMove(strategy)) {
       const entries = await cpWalk(strategy.readdir, stat, src, index)
       const { copiedAll, wroteAny } = await copyEntries(
         'mv',
@@ -420,6 +518,7 @@ export async function mvGeneric(
         entries,
         errors,
         index,
+        { copies },
       )
       if (wroteAny) writes[target.mountPath] = new Uint8Array()
       // GNU keeps the whole source tree when any copy failed; the
@@ -440,20 +539,22 @@ export async function mvGeneric(
         // aborted command: GNU reports it and keeps going with the
         // remaining sources.
         errors.push(
-          `mv: cannot move '${src.virtual}' to '${target.virtual}': ${String(fsStrerror(err))}`,
+          `mv: cannot move '${src.rawPath}' to '${target.rawPath}': ${String(fsStrerror(err))}`,
         )
         continue
       }
       writes[src.mountPath] = new Uint8Array()
       writes[target.mountPath] = new Uint8Array()
     }
+    if (!sourceLink && !isPrimitiveMove(strategy)) renames.push([src.virtual, target.virtual])
+    if (!srcIsDir) created.add(keyOf(target))
     if (flags.verbose) {
-      let line = `renamed '${src.virtual}' -> '${target.virtual}'`
-      if (made.backup !== null) line += ` (backup: '${made.backup.virtual}')`
+      let line = `renamed '${src.rawPath}' -> '${target.rawPath}'`
+      if (made.backup !== null) line += ` (backup: '${made.backup.rawPath}')`
       lines.push(line)
     }
   }
   const output: ByteSource | null = lines.length > 0 ? ENC.encode(lines.join('\n') + '\n') : null
   const stderr = errors.length > 0 ? ENC.encode(errors.join('\n') + '\n') : null
-  return [output, new IOResult({ writes, stderr, exitCode: errors.length > 0 ? 1 : 0 })]
+  return [output, new IOResult({ writes, renames, stderr, exitCode: errors.length > 0 ? 1 : 0 })]
 }

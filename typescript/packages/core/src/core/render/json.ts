@@ -33,9 +33,52 @@ export function compactJsonBytes(value: unknown): Uint8Array {
   return ENC.encode(compactJsonText(value))
 }
 
+/**
+ * Spell a number the way ECMAScript's `Number::toString` does, which is what
+ * `JSON.stringify` writes for a finite one. `String()` is the spec here; the
+ * python twin reproduces its layout from `repr`, whose digits agree and whose
+ * exponent thresholds and padding do not. A non-finite value has no JSON
+ * spelling and renders `null`, as `JSON.stringify` does.
+ */
+export function numberText(value: number): string {
+  return Number.isFinite(value) ? String(value) : 'null'
+}
+
+/**
+ * Spell a payload value as text, as compact JSON in both languages.
+ *
+ * A string is itself; anything else renders as compact JSON, so a boolean
+ * spells `true` rather than Python's `True`, a number lays out as
+ * `numberText` says, and an object or array spells as one JSON literal rather
+ * than `[object Object]`, its numbers included. Path labels and group values
+ * are built from this, so one collection grows one tree.
+ */
+export function valueText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'number') return numberText(value)
+  return compactJsonText(value)
+}
+
+// JSON.stringify supplies ECMAScript number spelling, including nested cells.
 // An empty row list renders as empty bytes rather than a lone newline, so an
 // empty .jsonl leaf sizes and reads as a zero-byte file.
 export function jsonlBytes(rows: readonly unknown[]): Uint8Array {
   if (rows.length === 0) return new Uint8Array()
   return ENC.encode(rows.map((row) => compactJsonText(row)).join('\n') + '\n')
+}
+
+// A comment feed arrives in whatever order the API paginated it, and a file
+// that reads the same twice needs a stable order. `created_at` is the one
+// field every comment normalizer emits, and a row missing it sorts first
+// rather than throwing.
+export function jsonlBytesByCreatedAt(rows: readonly { created_at?: string | null }[]): Uint8Array {
+  const ordered = [...rows].sort((a, b) => {
+    const ka = a.created_at ?? ''
+    const kb = b.created_at ?? ''
+    if (ka < kb) return -1
+    if (ka > kb) return 1
+    return 0
+  })
+  return jsonlBytes(ordered)
 }

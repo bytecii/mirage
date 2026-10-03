@@ -14,9 +14,9 @@
 
 import pytest
 
-from mirage.commands.builtin.utils.formatting import (_human_size,
-                                                      format_ls_long)
-from mirage.types import FileStat, FileType
+from mirage.commands.builtin.utils.formatting import format_ls_long, human_size
+from mirage.commands.builtin.utils.identity import Identity
+from mirage.types import DEVICE_NUMBERS_KEY, ContentType, FileStat, FileType
 
 # Read off GNU coreutils 9.7 (`ls -lh` on a file of each size, debian
 # stable-slim). The three rows that matter are the ones a plain
@@ -54,23 +54,72 @@ GNU_HUMAN_SIZES = [
 
 @pytest.mark.parametrize(("size", "expected"), GNU_HUMAN_SIZES)
 def test_human_size_matches_gnu(size: int, expected: str):
-    assert _human_size(size) == expected
+    assert human_size(size) == expected
 
 
 def test_format_ls_long_regular_file():
-    stat = FileStat(name="file.txt",
-                    size=5,
-                    type=FileType.TEXT,
-                    modified="2026-01-01T00:00:00Z")
+    stat = FileStat(
+        name="file.txt",
+        size=5,
+        type=FileType.FILE,
+        content=ContentType.TEXT,
+        modified="2026-01-01T00:00:00Z",
+    )
     [line] = format_ls_long([stat])
-    assert line == "-rw-r--r-- 1 user user 5 Jan  1 00:00 file.txt"
+    assert line == "-rw-r--r-- 1 - - 5 Jan  1  2026 file.txt"
+
+
+def test_format_ls_long_owner_is_user_and_group_is_profile():
+    stat = FileStat(
+        name="file.txt",
+        size=5,
+        type=FileType.FILE,
+        modified="2026-01-01T00:00:00Z",
+    )
+    identity = Identity(user="alice", profile="admin")
+    [line] = format_ls_long([stat], identity=identity)
+    assert line == "-rw-r--r-- 1 alice admin 5 Jan  1  2026 file.txt"
+    # A reported uid/gid (disk, or a chown in the overlay) wins over both.
+    owned = stat.model_copy(update={"uid": 501, "gid": "staff"})
+    [line] = format_ls_long([owned], identity=identity)
+    assert line == "-rw-r--r-- 1 501 staff 5 Jan  1  2026 file.txt"
+    # Half an identity fills half the columns.
+    [line] = format_ls_long([stat], identity=Identity(profile="admin"))
+    assert line == "-rw-r--r-- 1 - admin 5 Jan  1  2026 file.txt"
+
+
+def test_format_ls_long_metadata_less_row_keeps_the_owner_columns():
+    # A synthetic directory with neither size nor mtime shows DIR_SIZE
+    # and `-` for the time rather than inventing the epoch, and still
+    # names who the session is; a file with neither shows `-` for both.
+    stat = FileStat(name="dev", type=FileType.DIRECTORY)
+    [line] = format_ls_long([stat])
+    assert line == "drwxr-xr-x 1 - - 4096 - dev"
+    [line] = format_ls_long([stat], identity=Identity(profile="admin"))
+    assert line == "drwxr-xr-x 1 - admin 4096 - dev"
+    [line] = format_ls_long([stat], human=True)
+    assert line == "drwxr-xr-x 1 - - 4.0K - dev"
+    [line] = format_ls_long([FileStat(name="page", type=FileType.FILE)])
+    assert line == "-rw-r--r-- 1 - - - - page"
+
+
+def test_format_ls_long_device_row():
+    null = FileStat(
+        name="null",
+        type=FileType.CHAR_DEVICE,
+        extra={DEVICE_NUMBERS_KEY: (1, 3)},
+    )
+    [line] = format_ls_long([null], identity=Identity(user="alice"))
+    assert line == "crw-rw-rw- 1 alice - 1, 3 - null"
 
 
 def test_format_ls_long_directory():
-    stat = FileStat(name="sub",
-                    size=0,
-                    type=FileType.DIRECTORY,
-                    modified="2026-01-01T00:00:00Z")
+    stat = FileStat(
+        name="sub",
+        size=0,
+        type=FileType.DIRECTORY,
+        modified="2026-01-01T00:00:00Z",
+    )
     [line] = format_ls_long([stat])
     assert line.startswith("drwxr-xr-x ")
     assert line.endswith(" sub")
@@ -78,31 +127,46 @@ def test_format_ls_long_directory():
 
 def test_format_ls_long_size_alignment():
     stats = [
-        FileStat(name="a",
-                 size=5,
-                 type=FileType.TEXT,
-                 modified="2026-01-01T00:00:00Z"),
-        FileStat(name="b",
-                 size=1234,
-                 type=FileType.TEXT,
-                 modified="2026-01-01T00:00:00Z"),
+        FileStat(
+            name="a",
+            size=5,
+            type=FileType.FILE,
+            content=ContentType.TEXT,
+            modified="2026-01-01T00:00:00Z",
+        ),
+        FileStat(
+            name="b",
+            size=1234,
+            type=FileType.FILE,
+            content=ContentType.TEXT,
+            modified="2026-01-01T00:00:00Z",
+        ),
     ]
     lines = format_ls_long(stats)
-    assert "    5 Jan  1 00:00 a" in lines[0]
-    assert " 1234 Jan  1 00:00 b" in lines[1]
+    assert "    5 Jan  1  2026 a" in lines[0]
+    assert " 1234 Jan  1  2026 b" in lines[1]
 
 
 def test_format_ls_long_human_size():
-    stat = FileStat(name="big",
-                    size=2048,
-                    type=FileType.TEXT,
-                    modified="2026-01-01T00:00:00Z")
+    stat = FileStat(
+        name="big",
+        size=2048,
+        type=FileType.FILE,
+        content=ContentType.TEXT,
+        modified="2026-01-01T00:00:00Z",
+    )
     [line] = format_ls_long([stat], human=True)
     assert "2.0K" in line
     assert " 2048 " not in line
 
 
 def test_format_ls_long_missing_modified():
-    stat = FileStat(name="x", size=0, type=FileType.TEXT, modified=None)
+    stat = FileStat(
+        name="x",
+        size=0,
+        type=FileType.FILE,
+        content=ContentType.TEXT,
+        modified=None,
+    )
     [line] = format_ls_long([stat])
-    assert "Jan  1 00:00" in line
+    assert line == "-rw-r--r-- 1 - - 0 - x"

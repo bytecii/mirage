@@ -1,30 +1,34 @@
 import subprocess
+import sys
+from unittest.mock import Mock
 
 import pytest
 
 from mirage import MountMode, Workspace
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
 
 class _FakeThread:
-
     def __init__(self):
         self.alive = True
 
 
 def _fake_mount(monkeypatch):
-    monkeypatch.setattr("mirage.workspace.fuse.mount_background",
-                        lambda ops, mountpoint, root_prefix="", session=None,
-                        backend=None: _FakeThread())
+    monkeypatch.setattr(
+        "mirage.workspace.fuse.mount_background",
+        lambda ops, mountpoint, root_prefix="", session=None, backend=None: (
+            _FakeThread()
+        ),
+    )
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "mirage.workspace.fuse.unmount_with_fusermount",
+        lambda _mountpoint: None,
+    )
 
 
 def _ws():
-    return Workspace({
-        "/a/": RAMResource(),
-        "/b/": RAMResource()
-    },
-                     mode=MountMode.WRITE)
+    return Workspace({"/a/": RAMVFS(), "/b/": RAMVFS()}, mode=MountMode.WRITE)
 
 
 def test_no_fuse_mounts_returns_empty_and_none():
@@ -66,3 +70,37 @@ def test_deregister_removes_entry(monkeypatch):
         ws.remove_fuse_mount("/a/")
         assert ws.fuse_mountpoints == {}
         assert ws.fuse_mountpoint is None
+
+
+def test_failed_removal_keeps_entry_for_a_retry(monkeypatch):
+    _fake_mount(monkeypatch)
+    with _ws() as ws:
+        ws.add_fuse_mount("/a/", "/tmp/mp-a")
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(
+            "mirage.workspace.fuse.unmount_with_fusermount",
+            Mock(side_effect=[OSError("busy"), None]),
+        )
+        with pytest.raises(OSError, match="busy"):
+            ws.remove_fuse_mount("/a/")
+        assert ws.fuse_mountpoints == {"/a/": "/tmp/mp-a"}
+        ws.remove_fuse_mount("/a/")
+        assert ws.fuse_mountpoints == {}
+
+
+def test_removal_keeps_a_mount_added_while_unmounting(monkeypatch):
+    _fake_mount(monkeypatch)
+    with _ws() as ws:
+        ws.add_fuse_mount("/a/", "/tmp/mp-a")
+        monkeypatch.setattr(sys, "platform", "linux")
+        unmount = Mock(
+            side_effect=lambda _mountpoint: ws.add_fuse_mount(
+                "/a/", "/tmp/mp-a2"
+            )
+        )
+        monkeypatch.setattr(
+            "mirage.workspace.fuse.unmount_with_fusermount", unmount
+        )
+        ws.remove_fuse_mount("/a/")
+        unmount.side_effect = None
+        assert ws.fuse_mountpoints == {"/a/": "/tmp/mp-a2"}

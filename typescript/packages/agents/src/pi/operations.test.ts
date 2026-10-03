@@ -14,22 +14,32 @@
 
 import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '@struktoai/mirage-core/ops/registry'
-import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
+import type { Action, CommandContext, Policy } from '@struktoai/mirage-core/policy/index'
 import { MountMode } from '@struktoai/mirage-core/types'
 import { Workspace } from '@struktoai/mirage-node'
+import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
 import { mirageOperations } from './operations.ts'
 
-function mkWs(): Workspace {
-  const ram = new RAMResource()
+function mkWs(policies: Policy[] = []): Workspace {
+  const ram = new RAMVFS()
   const ops = new OpsRegistry()
   for (const op of ram.ops()) ops.register(op)
-  return new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops })
+  return new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops, policies })
+}
+
+async function streamed(ws: Workspace, command: string): Promise<[string, number | null]> {
+  const chunks: Buffer[] = []
+  const result = await mirageOperations(ws).bash.exec(command, '/', {
+    onData: (data) => chunks.push(data),
+  })
+  return [Buffer.concat(chunks).toString(), result.exitCode]
 }
 
 describe('mirageOperations.read', () => {
   it('reads file as Buffer', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/hello.txt', 'hi')
+    await ws.vfs.write('/hello.txt', 'hi')
     const ops = mirageOperations(ws)
     const buf = await ops.read.readFile('/hello.txt')
     expect(Buffer.isBuffer(buf)).toBe(true)
@@ -47,14 +57,14 @@ describe('mirageOperations.write', () => {
     const ws = mkWs()
     const ops = mirageOperations(ws)
     await ops.write.writeFile('/out.txt', 'data')
-    expect(await ws.fs.readFileText('/out.txt')).toBe('data')
+    expect(await ws.vfs.cat('/out.txt')).toBe('data')
   })
 
   it('mkdir creates nested directories', async () => {
     const ws = mkWs()
     const ops = mirageOperations(ws)
     await ops.write.mkdir('/a/b/c')
-    expect(await ws.fs.isDir('/a/b/c')).toBe(true)
+    expect(await ws.vfs.isDir('/a/b/c')).toBe(true)
   })
 
   it('mkdir is idempotent', async () => {
@@ -62,26 +72,26 @@ describe('mirageOperations.write', () => {
     const ops = mirageOperations(ws)
     await ops.write.mkdir('/a/b')
     await ops.write.mkdir('/a/b')
-    expect(await ws.fs.isDir('/a/b')).toBe(true)
+    expect(await ws.vfs.isDir('/a/b')).toBe(true)
   })
 })
 
 describe('mirageOperations.edit', () => {
   it('round-trips read + write', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'old')
+    await ws.vfs.write('/f.txt', 'old')
     const ops = mirageOperations(ws)
     const buf = await ops.edit.readFile('/f.txt')
     await ops.edit.writeFile('/f.txt', `${buf.toString()} + new`)
-    expect(await ws.fs.readFileText('/f.txt')).toBe('old + new')
+    expect(await ws.vfs.cat('/f.txt')).toBe('old + new')
   })
 
   it('rejects an edit after the file changed since the agent read it', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'original')
+    await ws.vfs.write('/f.txt', 'original')
     const ops = mirageOperations(ws)
     await ops.read.readFile('/f.txt')
-    await ws.fs.writeFile('/f.txt', 'changed elsewhere')
+    await ws.vfs.write('/f.txt', 'changed elsewhere')
 
     await expect(ops.edit.readFile('/f.txt')).rejects.toThrow(
       'File changed since it was last read: /f.txt',
@@ -93,40 +103,40 @@ describe('mirageOperations.edit', () => {
 
   it('rejects a write when the file changes while an edit is in progress', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'original')
+    await ws.vfs.write('/f.txt', 'original')
     const ops = mirageOperations(ws)
     await ops.edit.readFile('/f.txt')
-    await ws.fs.writeFile('/f.txt', 'changed elsewhere')
+    await ws.vfs.write('/f.txt', 'changed elsewhere')
 
     await expect(ops.edit.writeFile('/f.txt', 'replacement')).rejects.toThrow(
       'Read the file again before modifying it',
     )
-    expect(await ws.fs.readFileText('/f.txt')).toBe('changed elsewhere')
+    expect(await ws.vfs.cat('/f.txt')).toBe('changed elsewhere')
   })
 })
 
 describe('mirageOperations stale write protection', () => {
   it('rejects an overwrite after the file changed since the agent read it', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'original')
+    await ws.vfs.write('/f.txt', 'original')
     const ops = mirageOperations(ws)
     await ops.read.readFile('/f.txt')
-    await ws.fs.writeFile('/f.txt', 'changed elsewhere')
+    await ws.vfs.write('/f.txt', 'changed elsewhere')
 
     await expect(ops.write.writeFile('/f.txt', 'replacement')).rejects.toThrow(
       'Read the file again before modifying it',
     )
-    expect(await ws.fs.readFileText('/f.txt')).toBe('changed elsewhere')
+    expect(await ws.vfs.cat('/f.txt')).toBe('changed elsewhere')
   })
 
   it('can disable stale write protection', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/f.txt', 'original')
+    await ws.vfs.write('/f.txt', 'original')
     const ops = mirageOperations(ws, { staleWriteProtection: false })
     await ops.read.readFile('/f.txt')
-    await ws.fs.writeFile('/f.txt', 'changed elsewhere')
+    await ws.vfs.write('/f.txt', 'changed elsewhere')
     await ops.write.writeFile('/f.txt', 'replacement')
-    expect(await ws.fs.readFileText('/f.txt')).toBe('replacement')
+    expect(await ws.vfs.cat('/f.txt')).toBe('replacement')
   })
 })
 
@@ -150,7 +160,7 @@ describe('mirageOperations.bash', () => {
 
   it('runs commands from the cwd supplied by Pi', async () => {
     const ws = mkWs()
-    await ws.fs.mkdir('/nested')
+    await ws.vfs.mkdir('/nested')
     const ops = mirageOperations(ws)
     const chunks: Buffer[] = []
     await ops.bash.exec('pwd', '/nested', {
@@ -186,7 +196,7 @@ describe('mirageOperations.bash', () => {
 describe('mirageOperations.grep', () => {
   it('isDirectory + readFile', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/a.txt', 'alpha\nbeta\n')
+    await ws.vfs.write('/a.txt', 'alpha\nbeta\n')
     const ops = mirageOperations(ws)
     expect(await ops.grep.isDirectory('/')).toBe(true)
     expect(await ops.grep.isDirectory('/a.txt')).toBe(false)
@@ -197,10 +207,10 @@ describe('mirageOperations.grep', () => {
 describe('mirageOperations.find', () => {
   it('glob walks workspace and matches pattern', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/a.ts', 'x')
-    await ws.fs.mkdir('/sub')
-    await ws.fs.writeFile('/sub/b.ts', 'y')
-    await ws.fs.writeFile('/sub/c.txt', 'z')
+    await ws.vfs.write('/a.ts', 'x')
+    await ws.vfs.mkdir('/sub')
+    await ws.vfs.write('/sub/b.ts', 'y')
+    await ws.vfs.write('/sub/c.txt', 'z')
     const ops = mirageOperations(ws)
     const matches = await ops.find.glob('**/*.ts', '/', { ignore: [], limit: 100 })
     expect(matches.sort()).toEqual(['/a.ts', '/sub/b.ts'])
@@ -208,9 +218,9 @@ describe('mirageOperations.find', () => {
 
   it('glob respects limit', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/a.ts', 'x')
-    await ws.fs.writeFile('/b.ts', 'y')
-    await ws.fs.writeFile('/c.ts', 'z')
+    await ws.vfs.write('/a.ts', 'x')
+    await ws.vfs.write('/b.ts', 'y')
+    await ws.vfs.write('/c.ts', 'z')
     const ops = mirageOperations(ws)
     const matches = await ops.find.glob('**/*.ts', '/', { ignore: [], limit: 2 })
     expect(matches.length).toBe(2)
@@ -218,9 +228,9 @@ describe('mirageOperations.find', () => {
 
   it('glob honors ignore patterns', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/keep.ts', 'x')
-    await ws.fs.mkdir('/skip')
-    await ws.fs.writeFile('/skip/y.ts', 'y')
+    await ws.vfs.write('/keep.ts', 'x')
+    await ws.vfs.mkdir('/skip')
+    await ws.vfs.write('/skip/y.ts', 'y')
     const ops = mirageOperations(ws)
     const matches = await ops.find.glob('**/*.ts', '/', {
       ignore: ['skip/**', 'skip'],
@@ -231,7 +241,7 @@ describe('mirageOperations.find', () => {
 
   it('exists', async () => {
     const ws = mkWs()
-    await ws.fs.writeFile('/x.txt', 'x')
+    await ws.vfs.write('/x.txt', 'x')
     const ops = mirageOperations(ws)
     expect(await ops.find.exists('/x.txt')).toBe(true)
     expect(await ops.find.exists('/nope.txt')).toBe(false)
@@ -241,14 +251,72 @@ describe('mirageOperations.find', () => {
 describe('mirageOperations.ls', () => {
   it('exists + stat + readdir', async () => {
     const ws = mkWs()
-    await ws.fs.mkdir('/d')
-    await ws.fs.writeFile('/d/x.txt', 'x')
-    await ws.fs.writeFile('/d/y.txt', 'y')
+    await ws.vfs.mkdir('/d')
+    await ws.vfs.write('/d/x.txt', 'x')
+    await ws.vfs.write('/d/y.txt', 'y')
     const ops = mirageOperations(ws)
     expect(await ops.ls.exists('/d')).toBe(true)
     const stat = await ops.ls.stat('/d')
     expect(stat.isDirectory()).toBe(true)
     const entries = await ops.ls.readdir('/d')
     expect(entries.sort()).toEqual(['x.txt', 'y.txt'])
+  })
+})
+
+describe('mirageOperations.bash and a refusal', () => {
+  class NoDeletes implements Policy {
+    preCommand(ctx: CommandContext): Action | null {
+      if (ctx.command === 'rm') return { kind: 'deny', reason: 'no deletes' }
+      if (ctx.command === 'cat' && ctx.argv.includes('/x')) {
+        return { kind: 'deny', reason: '/x: frozen', scope: 'operand' }
+      }
+      return null
+    }
+  }
+
+  it('names the reason after a bare Permission denied', async () => {
+    const ws = mkWs([new NoDeletes()])
+    await ws.vfs.write('/x', 'hush')
+    const [data, exitCode] = await streamed(ws, 'rm /x')
+    expect(exitCode).toBe(126)
+    expect(data).toBe('rm: Permission denied\npolicy denied: no deletes\n')
+  })
+
+  it('does not repeat a reason the streamed line already carries', async () => {
+    const ws = mkWs([new NoDeletes()])
+    await ws.vfs.write('/x', 'hush')
+    const [data, exitCode] = await streamed(ws, 'cat /x')
+    expect(exitCode).toBe(1)
+    expect(data).toBe('cat: /x: frozen\n')
+  })
+})
+
+async function guardedWs(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/': new RAMVFS(), '/vault': new RAMVFS() },
+    {
+      mode: MountMode.WRITE,
+      profiles: { guarded: parseSessionProfile({ paths: { hide: ['/vault'] } }) },
+    },
+  )
+  await ws.shell('echo key > /vault/key.txt')
+  ws.createSession('agent', { profile: 'guarded' })
+  return ws
+}
+
+describe('mirageOperations sessionId', () => {
+  it('acts as the session, under its profile', async () => {
+    const ws = await guardedWs()
+    const ops = mirageOperations(ws, { sessionId: 'agent' })
+    const chunks: Buffer[] = []
+    const ran = await ops.bash.exec('cat /vault/key.txt', '/', {
+      onData: (data) => chunks.push(data),
+    })
+    await expect(ops.read.readFile('/vault/key.txt')).rejects.toThrow()
+    expect(await ops.find.exists('/vault/key.txt')).toBe(false)
+    expect(await ops.ls.readdir('/')).not.toContain('vault')
+    expect(ran.exitCode).not.toBe(0)
+    expect((await mirageOperations(ws).read.readFile('/vault/key.txt')).toString()).toBe('key\n')
+    await ws.close()
   })
 })

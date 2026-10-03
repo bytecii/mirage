@@ -15,12 +15,11 @@
 import asyncio
 import json
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.postgres import PostgresConfig, PostgresResource
+from mirage.vfs.postgres import PostgresConfig, PostgresVFS
 
 load_dotenv(".env.development")
 
@@ -29,16 +28,15 @@ config = PostgresConfig(
     max_read_rows=200,
     max_read_bytes=1024 * 1024,
 )
-resource = PostgresResource(config=config)
+vfs = PostgresVFS(config=config)
 
 
 async def main():
-    with Workspace({"/pg/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
+    with Workspace({"/pg/": vfs}, mode=MountMode.READ) as ws:
         print("=== VFS MODE: open() reads from Postgres ===\n")
 
         print("--- os.listdir(/pg) — root entries ---")
-        for e in vos.listdir("/pg"):
+        for e in os.listdir("/pg"):
             print(f"  {e}")
 
         print("\n--- read /pg/database.json ---")
@@ -46,20 +44,22 @@ async def main():
             db_json = json.loads(f.read())
         print(f"  database: {db_json['database']}")
         print(f"  schemas: {db_json['schemas']}")
-        print(f"  tables: {len(db_json['tables'])} | "
-              f"views: {len(db_json['views'])} | "
-              f"relationships: {len(db_json['relationships'])}")
+        print(
+            f"  tables: {len(db_json['tables'])} | "
+            f"views: {len(db_json['views'])} | "
+            f"relationships: {len(db_json['relationships'])}"
+        )
 
         if "public" not in db_json["schemas"]:
             print("\nno public schema")
             return
 
         print("\n--- os.listdir(/pg/public) ---")
-        for e in vos.listdir("/pg/public"):
+        for e in os.listdir("/pg/public"):
             print(f"  {e}")
 
         print("\n--- os.listdir(/pg/public/tables) ---")
-        tables = vos.listdir("/pg/public/tables")
+        tables = os.listdir("/pg/public/tables")
         for t in tables[:5]:
             print(f"  {t}")
         if len(tables) > 5:
@@ -73,7 +73,7 @@ async def main():
         entity_dir = f"/pg/public/tables/{target}"
 
         print(f"\n--- os.listdir({entity_dir}) ---")
-        for e in vos.listdir(entity_dir):
+        for e in os.listdir(entity_dir):
             print(f"  {e}")
 
         sch_path = f"{entity_dir}/schema.json"
@@ -81,8 +81,10 @@ async def main():
         with open(sch_path) as f:
             sch = json.loads(f.read())
         print(f"  name={sch['name']} kind={sch['kind']}")
-        print(f"  columns: {[c['name'] for c in sch['columns'][:6]]}" +
-              (" ..." if len(sch["columns"]) > 6 else ""))
+        print(
+            f"  columns: {[c['name'] for c in sch['columns'][:6]]}"
+            + (" ..." if len(sch["columns"]) > 6 else "")
+        )
         print(f"  primary_key: {sch['primary_key']}")
         print(f"  foreign_keys: {len(sch['foreign_keys'])}")
         print(f"  row_count_estimate: {sch['row_count_estimate']}")
@@ -107,11 +109,11 @@ async def main():
                     break
                 print(f"  {line.rstrip()[:120]}")
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(r.bytes for r in records)
         print(f"\nStats: {len(records)} ops, {total} bytes transferred")
 
-    await resource.accessor.close()
+    await vfs.accessor.close()
 
 
 asyncio.run(main())

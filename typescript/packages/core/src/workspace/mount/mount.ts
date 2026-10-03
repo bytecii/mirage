@@ -12,41 +12,81 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ContextScope } from '../../utils/context_scope.ts'
+import { captureSessionContext } from '../../context/session_context.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
-import { type Accessor, NOOPAccessor } from '../../accessor/base.ts'
+import { coerceReadPolicy } from './read_policy.ts'
+import { KeyLock } from '../../cache/lock.ts'
+import type { IndexConfig } from '../../cache/index/config.ts'
+import { buildIndex } from '../../cache/index/factory.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type {
   CommandFn,
   CommandFnResult,
   CommandOpts,
+  ExecContext,
   RegisteredCommand,
 } from '../../commands/config.ts'
+import { hasInjectedVersion } from '../../commands/spec/standard.ts'
+import { ROOT_CWD } from '../../commands/constants.ts'
 import type { OpKwargs } from '../../ops/registry.ts'
-import type { NamespaceView, ReaddirPath, SessionView, StatPath } from '../../ops/types.ts'
+import type { LinkView } from '../../ops/types.ts'
 
-const NOOP_ACCESSOR = new NOOPAccessor()
 import { getExtension } from '../../commands/resolve.ts'
 import { resolveLimit } from '../../policy/index.ts'
-import { CommandTimeoutError, runWithTimeout } from '../../commands/builtin/utils/limit.ts'
+import { runWithTimeout } from '../../commands/builtin/utils/limit.ts'
+import { CommandTimeoutError, UsageError } from '../../commands/errors.ts'
+import { readFailExitCode } from '../../commands/spec/usage.ts'
+import { materialize } from '../../io/types.ts'
+import { flagOccurrences } from '../../commands/spec/flag_view.ts'
 import type { CommandSpec, FlagValue } from '../../commands/spec/types.ts'
 import { CachableAsyncIterator } from '../../io/cachable_iterator.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { IOResult } from '../../io/types.ts'
-import { runWithCacheManager } from '../../cache/context.ts'
+import { captureCacheContext, runWithCacheManager } from '../../cache/context.ts'
+import { captureCommandScope } from '../../cache/index/scope.ts'
 import type { CacheManager } from '../../cache/manager.ts'
 import { mergeSignals } from '../abort.ts'
-import { runWithMountPrefix, runWithRevisions, withMountPrefix } from '../../observe/context.ts'
+import {
+  captureRecordingContext,
+  runWithMountContext,
+  runWithRevisions,
+  withMountContext,
+} from '../../observe/context.ts'
+import { uuid7 } from '../../utils/ids.ts'
+import { VFSActivity } from './activity.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import type { Resource } from '../../resource/base.ts'
-import { type Limit, ConsistencyPolicy, MountMode, PathSpec } from '../../types.ts'
-import type { Runtime } from '../../runtime/base.ts'
-import type { DispatchFn } from '../../runtime/types.ts'
-import { eaccesReadOnly, enotsup } from '../../utils/errors.ts'
+import type { BaseVFS } from '../../vfs/base.ts'
+import {
+  type Limit,
+  type ReadSpec,
+  DEFAULT_READ_SPEC,
+  FileType,
+  MountMode,
+  PathSpec,
+} from '../../types.ts'
+import { ebusy, enotsup, formatFsError } from '../../utils/errors.ts'
 import { rstripSlash } from '../../utils/slash.ts'
-import { effectiveMountMode } from '../../context/session_context.ts'
+import {
+  effectiveMountMode,
+  requirePathsWritable,
+  runWithMountGate,
+  runWithWalkProbe,
+  strongestModeUnder,
+} from '../../context/session_context.ts'
+import { dispatchStat, linkFollow } from '../../commands/builtin/utils/paths.ts'
+import type { DispatchFn } from '../../runtime/types.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 
 type CmdKey = string
 type OpKey = string
+
+// Ops that mutate everything under their endpoints in one backend call
+// (a directory rename relocates its whole subtree), so the door also
+// refuses a read-only region below either endpoint. The removal ops
+// stay per-path: the runtimes compose rmtree from unlink/rmdir, and
+// each of those answers for its own path above.
+const SUBTREE_OPS = new Set(['rename'])
 
 function cmdKey(name: string, filetype: string | null): CmdKey {
   return `${name}\u0000${filetype ?? ''}`
@@ -60,22 +100,51 @@ function opKey(name: string, filetype: string | null): OpKey {
   return `${name}\u0000${filetype ?? ''}`
 }
 
-function crossKey(name: string, targetResource: string): string {
-  return `${name}\u0000${targetResource}`
-}
-
 export interface MountInit {
   prefix: string
-  resource: Resource
+  vfs: BaseVFS
   mode?: MountMode
-  consistency?: ConsistencyPolicy
+  /** How this mount's cached bytes are revalidated. */
+  read?: ReadSpec
+  // The store this mount runs its driver under; the registry builds
+  // one, shared with any alias of the same instance. A bare entry gets
+  // a RAM store at the driver's TTL.
+  index?: IndexCacheStore
+  indexConfig?: IndexConfig | undefined
+  // The `vfs:` value the driver was built from, recorded for snapshots;
+  // null for one constructed in code.
+  vfsRef?: string | null
+}
+
+// What the command tier's walk guard proves an operand's `.` and `..` with:
+// the handler reaches its backend past the door, so the door's stat and link
+// follow are bound around it. No dispatcher (a mount driven directly) binds
+// nothing. Mirrors the Python set_walk_probe binding in Mount.execute_cmd.
+function withWalkProbe<T>(
+  prefix: string,
+  dispatch: DispatchFn | undefined,
+  links: LinkView | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (dispatch === undefined) return fn()
+  return runWithWalkProbe(prefix, { stat: dispatchStat(dispatch), follow: linkFollow(links) }, fn)
 }
 
 export class MountEntry {
+  readonly mountId = uuid7()
   readonly prefix: string
-  readonly resource: Resource
-  readonly mode: MountMode
-  readonly consistency: ConsistencyPolicy
+  readonly vfs: BaseVFS
+  mode: MountMode
+  readonly read: ReadSpec
+  // `index` is this same store scoped by the cache manager, which is
+  // what ops and commands receive.
+  readonly indexStore: IndexCacheStore
+  readonly indexConfig: IndexConfig | undefined
+  readonly vfsRef: string | null
+  activity = new VFSActivity()
+  retiring = false
+  beforeUse: (() => Promise<void>) | null = null
+  private readonly readyLock = new KeyLock()
 
   /**
    * Per-path revision pins installed at Workspace.load time. Read
@@ -94,7 +163,6 @@ export class MountEntry {
   readonly commandLimits = new Map<string, Limit>()
   private readonly ops = new Map<OpKey, RegisteredOp>()
   private readonly generalOps = new Map<string, RegisteredOp>()
-  private readonly crossCmds = new Map<string, RegisteredCommand>()
   // first token -> descending token counts of multi-word command names
   // (e.g. "gws docs documents get"); backs longest-prefix command
   // resolution. null until first built; invalidated on register.
@@ -112,9 +180,114 @@ export class MountEntry {
       throw new Error(`prefix must not contain //: ${prefix}`)
     }
     this.prefix = prefix
-    this.resource = init.resource
+    this.vfs = init.vfs
     this.mode = init.mode ?? MountMode.READ
-    this.consistency = init.consistency ?? ConsistencyPolicy.LAZY
+    // A frozen copy carrying the coerced policy, not the caller's object.
+    //
+    // Frozen because Python's `ReadSpec` is a frozen dataclass, so the
+    // same spec cannot be edited after the mount-time verdict passed it;
+    // a plain JS object can, which would let a caller flip a RAM mount to
+    // `fresh` behind the verdict's back.
+    //
+    // Coerced because `ReadPolicy` is a string-const object: a runtime
+    // spec carrying `'FRESH'` matches no `===` downstream -- the gate, the
+    // routing reconcile -- so the mount would pass its capability check
+    // and then read as `bounded` everywhere, which is the silent
+    // downgrade the policy exists to remove. The Python twin normalizes
+    // at this same point.
+    const spec = init.read ?? DEFAULT_READ_SPEC
+    this.read = Object.freeze({ ...spec, policy: coerceReadPolicy(spec.policy) })
+    this.indexStore = init.index ?? buildIndex(undefined, init.vfs.indexTtl)
+    this.indexConfig = init.indexConfig === undefined ? undefined : { ...init.indexConfig }
+    this.vfsRef = init.vfsRef ?? null
+  }
+
+  /** Whether the op table serves `name`, on any level of the cascade. */
+  hasOp(name: string): boolean {
+    return this.resolveCascade(name, null, this.ops, this.generalOps).length > 0
+  }
+
+  /**
+   * Expand glob words through the `glob` op, one pattern spec at a time;
+   * a driver whose table carries none leaves every word as typed. The
+   * mount stamps each word's mount-relative key before the op sees it,
+   * since the key is the placement's to know, and keeps the VFS retained
+   * while the walk reads metadata.
+   */
+  async expandGlob(paths: readonly PathSpec[], prefix: string): Promise<PathSpec[]> {
+    const levels = this.resolveCascade('glob', null, this.ops, this.generalOps)
+    if (levels.length === 0) return [...paths]
+    return this.use(async () => {
+      const manager = this.cacheManager
+      if (manager === null) return this.runGlob(levels, paths, prefix, this.indexStore)
+      return manager.withMutation(async () => {
+        await this.ensureReady()
+        return this.runGlob(levels, paths, prefix, manager.scopeIndexLocked(this.indexStore))
+      })
+    })
+  }
+
+  private async runGlob(
+    levels: readonly RegisteredOp[],
+    paths: readonly PathSpec[],
+    prefix: string,
+    index: IndexCacheStore,
+  ): Promise<PathSpec[]> {
+    const kwargs: OpKwargs = { index }
+    const out: PathSpec[] = []
+    for (const p of paths) {
+      const spec = prefix
+        ? new PathSpec({
+            virtual: p.virtual,
+            directory: p.directory,
+            ...(p.pattern !== null ? { pattern: p.pattern } : {}),
+            resolved: p.resolved,
+            vfsPath: mountKey(p.virtual, prefix),
+            rawPath: p.rawPath,
+          })
+        : p
+      for (const op of levels) {
+        const matches = await op.fn(this.vfs.accessor, spec, [], kwargs)
+        if (matches !== null && matches !== undefined) {
+          out.push(...(matches as PathSpec[]))
+          break
+        }
+      }
+    }
+    return out
+  }
+
+  /** Metadata access bound to this mount's ownership. */
+  get index(): IndexCacheStore {
+    return this.cacheManager?.scopeIndex(this.indexStore) ?? this.indexStore
+  }
+
+  /** Finish deferred mount preparation before any backend or cache read. */
+  async use<T>(fn: () => Promise<T>): Promise<T> {
+    await this.ensureReady()
+    this.checkActive()
+    const release = this.activity.acquire()
+    try {
+      return await fn()
+    } finally {
+      release()
+    }
+  }
+
+  async ensureReady(): Promise<void> {
+    this.checkActive()
+    if (this.beforeUse === null) return
+    await this.readyLock.withLock('', async () => {
+      if (this.beforeUse !== null) {
+        await this.beforeUse()
+        this.beforeUse = null
+      }
+    })
+    this.checkActive()
+  }
+
+  private checkActive(): void {
+    if (this.retiring) throw ebusy(this.prefix)
   }
 
   /**
@@ -144,8 +317,8 @@ export class MountEntry {
       const specific = this.cmds.get(cmdKey(cmdName, extension))
       if (specific !== undefined) return specific
     }
-    const byResource = this.cmds.get(cmdKey(cmdName, null))
-    if (byResource !== undefined) return byResource
+    const byVfs = this.cmds.get(cmdKey(cmdName, null))
+    if (byVfs !== undefined) return byVfs
     const general = this.generalCmds.get(cmdName)
     if (general !== undefined) return general
     // Fall back to any filetype variant so callers without an extension can
@@ -193,10 +366,6 @@ export class MountEntry {
       }
     }
     return 1
-  }
-
-  isGeneralCommand(cmdName: string): boolean {
-    return this.generalCmds.has(cmdName)
   }
 
   allCommands(): readonly RegisteredCommand[] {
@@ -271,16 +440,6 @@ export class MountEntry {
     return sortFiletypeMap(result)
   }
 
-  // ── cross-mount registration ─────────────────────
-
-  registerCross(cmd: RegisteredCommand, targetResourceType: string): void {
-    this.crossCmds.set(crossKey(cmd.name, targetResourceType), cmd)
-  }
-
-  resolveCross(cmdName: string, targetResourceType: string): RegisteredCommand | null {
-    return this.crossCmds.get(crossKey(cmdName, targetResourceType)) ?? null
-  }
-
   // ── op registration ───────────────────────────────
 
   registerOp(op: RegisteredOp): void {
@@ -294,14 +453,14 @@ export class MountEntry {
   /**
    * Batch-register commands and ops. Mirrors Python's
    * `Mount.register_fns(...)`. Each entry is a `RegisteredCommand` or
-   * `RegisteredOp`; commands with `resource: null` go to the general
-   * table, ops with `resource: null` likewise. Multi-resource entries
-   * (sharing the same name across resources) are filtered to this
-   * mount's resource kind; if a name has entries but none match this
+   * `RegisteredOp`; commands with `vfs: null` go to the general
+   * table, ops with `vfs: null` likewise. Multi-VFS entries
+   * (sharing the same name across mounts) are filtered to this
+   * mount's VFS kind; if a name has entries but none match this
    * mount, throw.
    */
   registerFns(items: readonly (RegisteredCommand | RegisteredOp)[]): void {
-    const kind = this.resource.kind
+    const kind = this.vfs.name
     interface Group<T> {
       toRegister: T[]
       attempted: Set<string>
@@ -315,23 +474,23 @@ export class MountEntry {
           g = { toRegister: [], attempted: new Set() }
           opGroups.set(item.name, g)
         }
-        if (item.resource === null || item.resource === kind) g.toRegister.push(item)
-        else g.attempted.add(item.resource)
+        if (item.vfs === null || item.vfs === kind) g.toRegister.push(item)
+        else g.attempted.add(item.vfs)
       } else {
         let g = cmdGroups.get(item.name)
         if (!g) {
           g = { toRegister: [], attempted: new Set() }
           cmdGroups.set(item.name, g)
         }
-        if (item.resource === null || item.resource === kind) g.toRegister.push(item)
-        else g.attempted.add(item.resource)
+        if (item.vfs === null || item.vfs === kind) g.toRegister.push(item)
+        else g.attempted.add(item.vfs)
       }
     }
     for (const [name, g] of cmdGroups) {
       if (g.toRegister.length === 0) {
         const list = [...g.attempted].sort(compareCodePoints)
         throw new Error(
-          `command '${name}' is for resource(s) [${list.map((r) => `'${r}'`).join(', ')}], not '${kind}'`,
+          `command '${name}' is for VFS(s) [${list.map((r) => `'${r}'`).join(', ')}], not '${kind}'`,
         )
       }
     }
@@ -339,19 +498,19 @@ export class MountEntry {
       if (g.toRegister.length === 0) {
         const list = [...g.attempted].sort(compareCodePoints)
         throw new Error(
-          `op '${name}' is for resource(s) [${list.map((r) => `'${r}'`).join(', ')}], not '${kind}'`,
+          `op '${name}' is for VFS(s) [${list.map((r) => `'${r}'`).join(', ')}], not '${kind}'`,
         )
       }
     }
     for (const g of cmdGroups.values()) {
       for (const cmd of g.toRegister) {
-        if (cmd.resource === null) this.registerGeneral(cmd)
+        if (cmd.vfs === null) this.registerGeneral(cmd)
         else this.register(cmd)
       }
     }
     for (const g of opGroups.values()) {
       for (const o of g.toRegister) {
-        if (o.resource === null) this.registerGeneralOp(o)
+        if (o.vfs === null) this.registerGeneralOp(o)
         else this.registerOp(o)
       }
     }
@@ -368,8 +527,8 @@ export class MountEntry {
       const specific = table.get(cmdKey(name, extension))
       if (specific !== undefined) levels.push(specific)
     }
-    const byResource = table.get(cmdKey(name, null))
-    if (byResource !== undefined) levels.push(byResource)
+    const byVfs = table.get(cmdKey(name, null))
+    if (byVfs !== undefined) levels.push(byVfs)
     const generalEntry = general.get(name)
     if (generalEntry !== undefined) levels.push(generalEntry)
     return levels
@@ -382,160 +541,223 @@ export class MountEntry {
     paths: PathSpec[],
     texts: string[],
     flags: Record<string, FlagValue>,
-    opts: {
-      stdin?: ByteSource | null
-      cwd?: string
-      dispatch?: DispatchFn
-      sessionId?: string
-      env?: Record<string, string>
-      sessionView?: SessionView
-      execAllowed?: boolean
-      runtime?: Runtime
-      ns?: NamespaceView
-      statPath?: StatPath
-      readdirPath?: ReaddirPath
-      signal?: AbortSignal
-      limitOverride?: Limit | null
-    } = {},
+    context: ExecContext = {},
   ): Promise<[ByteSource | null, IOResult]> {
-    const extension =
-      paths.length > 0 && paths[0] !== undefined ? getExtension(paths[0].virtual) : null
+    return this.use(async (): Promise<[ByteSource | null, IOResult]> => {
+      let extension =
+        paths.length > 0 && paths[0] !== undefined ? getExtension(paths[0].virtual) : null
+      // A filetype handler is selected from the operand's NAME, and a
+      // directory can carry any extension, so the cascade would hand a
+      // renderer a directory to read. One stat settles it, and only when a
+      // handler for this exact extension exists, so a mount with no
+      // filetype registrations never reaches the probe. The built-in is
+      // what a directory should get: it owns GNU's `Is a directory`
+      // wording, and the renderer owns nothing but its own format.
+      // The DISPATCHER's stat, not the backend's, so a mount root and a
+      // namespace-only directory answer too; null means neither plane saw
+      // anything, in which case the renderer reports its own miss.
+      const first = paths[0]
+      if (
+        extension !== null &&
+        extension !== '' &&
+        first !== undefined &&
+        context.statPath !== undefined &&
+        this.cmds.has(cmdKey(cmdName, extension))
+      ) {
+        const entry = await context.statPath(first.virtual)
+        if (entry !== null && entry.type === FileType.DIRECTORY) extension = null
+      }
 
-    const handlers = this.resolveCascade(cmdName, extension, this.cmds, this.generalCmds)
-    if (handlers.length === 0) {
-      return [
-        null,
-        new IOResult({
-          exitCode: 127,
-          stderr: new TextEncoder().encode(`${cmdName}: command not found`),
-        }),
-      ]
-    }
+      const handlers = this.resolveCascade(cmdName, extension, this.cmds, this.generalCmds)
+      if (handlers.length === 0) {
+        return [
+          null,
+          new IOResult({
+            exitCode: 127,
+            stderr: new TextEncoder().encode(`${cmdName}: command not found`),
+          }),
+        ]
+      }
 
-    const mountPrefix = rstripSlash(this.prefix)
-    const filetypeFns = this.filetypeHandlers(cmdName)
-    const isFiletypeCmd =
-      extension !== null && extension !== '' && this.cmds.has(cmdKey(cmdName, extension))
+      const mountPrefix = rstripSlash(this.prefix)
+      const filetypeFns = this.filetypeHandlers(cmdName)
+      const isFiletypeCmd =
+        extension !== null && extension !== '' && this.cmds.has(cmdKey(cmdName, extension))
 
-    const prefixedPaths = paths.map(
-      (p) =>
+      const stamp = (p: PathSpec): PathSpec =>
         new PathSpec({
           virtual: p.virtual,
           directory: p.directory,
           pattern: p.pattern,
           resolved: p.resolved,
-          resourcePath: mountKey(p.virtual, mountPrefix),
+          vfsPath: mountKey(p.virtual, mountPrefix),
           rawPath: p.rawPath,
-        }),
-    )
+          dotted: p.dotted,
+          walkError: p.walkError,
+        })
+      const prefixedPaths = paths.map(stamp)
+      // Stamp this mount's backend key onto path-shaped flag values so
+      // backend reads can address them: a single PathSpec (awk -f, tar -f)
+      // or a list (repeated grep -f, jq's --rawfile pairs). Everything else
+      // passes through unchanged. Mirrors Python's execute_cmd.
+      const stampedFlags: Record<string, FlagValue> = { ...flags }
+      flagOccurrences(stampedFlags).push(...flagOccurrences(flags))
+      for (const [key, value] of Object.entries(flags)) {
+        if (value instanceof PathSpec) stampedFlags[key] = stamp(value)
+        else if (Array.isArray(value) && value.some((item) => item instanceof PathSpec)) {
+          const items: readonly (string | PathSpec)[] = value
+          stampedFlags[key] = items.map((item) => (item instanceof PathSpec ? stamp(item) : item))
+        }
+      }
 
-    const expandedPaths =
-      this.resource.glob !== undefined ? await this.resource.glob(prefixedPaths) : prefixedPaths
+      // A pattern operand travels to the handler whole. The handler
+      // resolves it once, through the shared adapter, which is where the
+      // namespace facts (links, nested mount roots, a trailing slash) are
+      // in view; the VFS's glob hook serves the shell tier and cannot
+      // see them, so expanding here would lose what the handler needs.
+      // Python's dispatcher never expands either.
 
-    const accessor = (this.resource as { accessor?: Accessor }).accessor ?? NOOP_ACCESSOR
-    const cmdOpts: CommandOpts = {
-      stdin: opts.stdin ?? null,
-      flags,
-      filetypeFns: isFiletypeCmd ? null : filetypeFns,
-      mountPrefix,
-      cwd: opts.cwd ?? '/',
-      ...(this.resource.index !== undefined ? { index: this.resource.index } : {}),
-      ...(opts.dispatch !== undefined ? { dispatch: opts.dispatch } : {}),
-      ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
-      ...(opts.env !== undefined ? { env: opts.env } : {}),
-      ...(opts.sessionView !== undefined ? { sessionView: opts.sessionView } : {}),
-      ...(opts.execAllowed !== undefined ? { execAllowed: opts.execAllowed } : {}),
-      ...(opts.runtime !== undefined ? { runtime: opts.runtime } : {}),
-      ...(opts.ns !== undefined ? { ns: opts.ns } : {}),
-      ...(opts.statPath !== undefined ? { statPath: opts.statPath } : {}),
-      ...(opts.readdirPath !== undefined ? { readdirPath: opts.readdirPath } : {}),
-    }
+      const accessor = this.vfs.accessor
+      const cmdOpts: CommandOpts = {
+        stdin: context.stdin ?? null,
+        flags: stampedFlags,
+        filetypeFns: isFiletypeCmd ? null : filetypeFns,
+        mountPrefix,
+        command: cmdName,
+        cwd: context.cwd ?? ROOT_CWD,
+        index: this.index,
+        ...(context.dispatch !== undefined ? { dispatch: context.dispatch } : {}),
+        ...(context.sessionId !== undefined ? { sessionId: context.sessionId } : {}),
+        ...(context.env !== undefined ? { env: context.env } : {}),
+        ...(context.sessionView !== undefined ? { sessionView: context.sessionView } : {}),
+        ...(context.processes !== undefined ? { processes: context.processes } : {}),
+        ...(context.execAllowed !== undefined ? { execAllowed: context.execAllowed } : {}),
+        ...(context.execPathAllowed !== undefined
+          ? { execPathAllowed: context.execPathAllowed }
+          : {}),
+        ...(context.runtime !== undefined ? { runtime: context.runtime } : {}),
+        ...(context.ns !== undefined ? { ns: context.ns } : {}),
+        ...(context.statPath !== undefined ? { statPath: context.statPath } : {}),
+        ...(context.readdirPath !== undefined ? { readdirPath: context.readdirPath } : {}),
+        ...(context.shell !== undefined ? { shell: context.shell } : {}),
+        ...(context.argv !== undefined ? { argv: context.argv } : {}),
+      }
 
-    return runWithMountPrefix(mountPrefix, () =>
-      runWithCacheManager(this.cacheManager, () =>
-        runWithRevisions(
-          this.revisions.size > 0 ? this.revisions : null,
-          async (): Promise<[ByteSource | null, IOResult]> => {
-            // --help / --version short-circuit inside the handler
-            // wrapper and never touch the backend, so a read-only mount
-            // answers them like GNU instead of refusing them as writes.
-            const infoOnly = flags.help === true || flags.version === true
-            for (const cmd of handlers) {
-              if (cmd.write && !infoOnly && this.effectiveMode() === MountMode.READ) {
-                return [
-                  null,
-                  new IOResult({
-                    exitCode: 1,
-                    stderr: new TextEncoder().encode(
-                      `${cmdName}: read-only mount at ${this.prefix}`,
-                    ),
-                  }),
-                ]
-              }
-              // The dispatch-level guard only sees default limits
-              // (the mount is unknown before routing), so the
-              // mount-resolved timeout must also bound the command
-              // body: eager commands do their work inside cmd.fn,
-              // where the stream-consumption guard never runs.
-              // limitOverride carries the origin mount's cap across
-              // a warm-cache redirect; a null one is "no opinion" and
-              // must not shadow the serving mount's own table (a
-              // path-less command with cwd outside every mount resolves
-              // no origin, but the serving mount's cap still applies —
-              // python always reads the serving mount).
-              const resolvedLimit = resolveLimit(
-                cmdName,
-                [],
-                cmd.limit,
-                opts.limitOverride ?? this.commandLimits.get(cmdName) ?? null,
-              )
-              const cmdTimeout = resolvedLimit !== null ? resolvedLimit.timeoutSeconds : null
-              // runWithTimeout abandons the promise, it cannot cancel
-              // it; the aborted signal lets a runtime kill what it
-              // spawned (python cancels the task instead). The ambient
-              // opts.signal is a background job's kill channel, folded
-              // into the same wire. timeoutSeconds rides along so an
-              // engine that executes on the event loop (quickjs) can
-              // interrupt itself when the timer cannot fire.
-              const guard = cmdTimeout !== null && cmdTimeout > 0 ? new AbortController() : null
-              const runSignal = mergeSignals(guard?.signal, opts.signal)
-              const runOpts =
-                runSignal !== undefined
-                  ? {
-                      ...cmdOpts,
-                      signal: runSignal,
-                      ...(cmdTimeout !== null && cmdTimeout > 0
-                        ? { timeoutSeconds: cmdTimeout }
-                        : {}),
+      // What the command tier's mode guard reads: each write the handler
+      // makes is held to its own region's mode.
+      return runWithMountGate(this.prefix, this.mode, () =>
+        withWalkProbe(this.prefix, context.dispatch, context.ns?.links, () =>
+          runWithMountContext(
+            () =>
+              runWithCacheManager(this.cacheManager, () =>
+                runWithRevisions(
+                  this.revisions.size > 0 ? this.revisions : null,
+                  async (): Promise<[ByteSource | null, IOResult]> => {
+                    for (const cmd of handlers) {
+                      // Only wrapper-owned responses bypass the write guard.
+                      const infoOnly =
+                        flags.help === true ||
+                        (flags.version === true && hasInjectedVersion(cmd.spec))
+                      // A command whose I/O runs under the path guards is
+                      // refused where it writes, because only the write knows
+                      // whether a line writes: `gzip -c`, `tar -t` and
+                      // `split -n 1/2` read a read-only mount like any reader,
+                      // and `gzip f` is refused at the write of `f.gz`, in
+                      // gzip's own GNU voice. A write command that reaches its
+                      // service some other way (trello's id-addressed card
+                      // writes, a custom backend's own verb) is refused here,
+                      // before it runs, because no door would see its write.
+                      // strongestModeUnder, not effectiveMode: a mount whose
+                      // only writable region is a show entry still runs it.
+                      // The trailing newline is load-bearing: stderr
+                      // accumulates across a line.
+                      if (
+                        cmd.write &&
+                        !cmd.pathGuarded &&
+                        !infoOnly &&
+                        strongestModeUnder(this.prefix, this.mode) === MountMode.READ
+                      ) {
+                        return [
+                          null,
+                          new IOResult({
+                            exitCode: 1,
+                            stderr: new TextEncoder().encode(
+                              `${cmdName}: read-only mount at ${this.prefix}\n`,
+                            ),
+                          }),
+                        ]
+                      }
+                      // The dispatch-level guard only sees default limits
+                      // (the mount is unknown before routing), so the
+                      // mount-resolved timeout must also bound the command
+                      // body: eager commands do their work inside cmd.fn,
+                      // where the stream-consumption guard never runs.
+                      // limitOverride is the caller's profile, mount and
+                      // workspace entry; a null one is "no opinion" and must
+                      // not shadow this mount's own table.
+                      const resolvedLimit = resolveLimit(
+                        cmdName,
+                        [],
+                        cmd.limit,
+                        context.limitOverride ?? this.commandLimits.get(cmdName) ?? null,
+                      )
+                      const cmdTimeout =
+                        resolvedLimit !== null ? resolvedLimit.timeoutSeconds : null
+                      // runWithTimeout abandons the promise, it cannot cancel
+                      // it; the aborted signal lets a runtime kill what it
+                      // spawned (python cancels the task instead). The ambient
+                      // context.signal is a background job's kill channel, folded
+                      // into the same wire. timeoutSeconds rides along so an
+                      // engine that executes on the event loop (quickjs) can
+                      // interrupt itself when the timer cannot fire.
+                      const guard =
+                        cmdTimeout !== null && cmdTimeout > 0 ? new AbortController() : null
+                      const runSignal = mergeSignals(guard?.signal, context.signal)
+                      const runOpts =
+                        runSignal !== undefined
+                          ? {
+                              ...cmdOpts,
+                              signal: runSignal,
+                              ...(cmdTimeout !== null && cmdTimeout > 0
+                                ? { timeoutSeconds: cmdTimeout }
+                                : {}),
+                            }
+                          : cmdOpts
+                      let result: CommandFnResult
+                      try {
+                        result = await runWithTimeout(
+                          Promise.resolve(cmd.fn(accessor, prefixedPaths, texts, runOpts)),
+                          cmdTimeout,
+                          cmdName,
+                        )
+                      } catch (err) {
+                        if (guard !== null && err instanceof CommandTimeoutError) guard.abort()
+                        throw err
+                      }
+                      if (result !== null) {
+                        result[1].producer = {
+                          command: cmdName,
+                          prefixes: [this.prefix],
+                          declared: cmd.limit ?? null,
+                        }
+                        const [stdout, io] = wrapMountStreams(result, this.mountId, this.activity)
+                        return [
+                          stdout !== null && !(stdout instanceof Uint8Array)
+                            ? commandOutput(stdout, io, cmdName, prefixedPaths)
+                            : stdout,
+                          io,
+                        ]
+                      }
                     }
-                  : cmdOpts
-              let result: CommandFnResult
-              try {
-                result = await runWithTimeout(
-                  Promise.resolve(cmd.fn(accessor, expandedPaths, texts, runOpts)),
-                  cmdTimeout,
-                  cmdName,
-                )
-              } catch (err) {
-                if (guard !== null && err instanceof CommandTimeoutError) guard.abort()
-                throw err
-              }
-              if (result !== null) {
-                // A warm-cache redirect already resolved the origin
-                // mount's cap (limitOverride); fold it as the
-                // declared bound since the origin prefix is not ours.
-                result[1].producer =
-                  opts.limitOverride != null
-                    ? { command: cmdName, prefixes: [], declared: resolvedLimit }
-                    : { command: cmdName, prefixes: [this.prefix], declared: cmd.limit ?? null }
-                return wrapMountStreams(result, mountPrefix)
-              }
-            }
-            return [null, new IOResult()]
-          },
+                    return [null, new IOResult()]
+                  },
+                ),
+              ),
+            this.mountId,
+          ),
         ),
-      ),
-    )
+      )
+    })
   }
 
   async executeOp(
@@ -544,71 +766,119 @@ export class MountEntry {
     args: readonly unknown[] = [],
     kwargs: OpKwargs = {},
   ): Promise<unknown> {
-    const filetype = getExtension(path)
-    const levels = this.resolveCascade(opName, filetype, this.ops, this.generalOps)
-    if (levels.length === 0) {
-      throw enotsup(this.resource.kind, opName, path)
-    }
-    if (this.effectiveMode() === MountMode.READ && levels.some((o) => o.write)) {
-      throw eaccesReadOnly(`mount ${this.prefix} is read-only`, path)
-    }
-    const mountPrefix = rstripSlash(this.prefix)
-    const lastSlash = path.lastIndexOf('/')
-    const scope = new PathSpec({
-      virtual: path,
-      directory: lastSlash > 0 ? path.slice(0, lastSlash + 1) : '/',
-      resourcePath: mountKey(path, mountPrefix),
+    return this.use(async (): Promise<unknown> => {
+      const filetype = getExtension(path)
+      const levels = this.resolveCascade(opName, filetype, this.ops, this.generalOps)
+      if (levels.length === 0) {
+        throw enotsup(this.vfs.name, opName, path)
+      }
+      if (levels.some((o) => o.write)) {
+        const dst = kwargs.dst
+        const endpoints = [PathSpec.fromStrPath(path)]
+        if (dst instanceof PathSpec) endpoints.push(dst)
+        requirePathsWritable(endpoints, this.prefix, this.mode, SUBTREE_OPS.has(opName))
+      }
+      const mountPrefix = rstripSlash(this.prefix)
+      const lastSlash = path.lastIndexOf('/')
+      const scope = new PathSpec({
+        virtual: path,
+        directory: lastSlash > 0 ? path.slice(0, lastSlash + 1) : '/',
+        vfsPath: mountKey(path, mountPrefix),
+      })
+      const effectiveKwargs: OpKwargs = {
+        ...kwargs,
+        ...(kwargs.index === undefined ? { index: this.index } : {}),
+        ...(filetype !== null && kwargs.filetype === undefined ? { filetype } : {}),
+      }
+      const accessor = this.vfs.accessor
+      // Per-op caps are policy and fire at the op door (postOps); only
+      // the timeout stays here, bounding the backend call itself.
+      const opOverride = this.commandLimits.get(opName) ?? null
+      const opTimeout = opOverride !== null ? opOverride.timeoutSeconds : null
+      return runWithMountContext(
+        () =>
+          runWithRevisions(this.revisions.size > 0 ? this.revisions : null, async () => {
+            for (const op of levels) {
+              const result = await runWithTimeout(
+                Promise.resolve(op.fn(accessor, scope, args, effectiveKwargs)),
+                opTimeout,
+                opName,
+              )
+              if (result !== null && result !== undefined) {
+                return wrapOpStream(result, this.mountId, this.activity)
+              }
+            }
+            return null
+          }),
+        this.mountId,
+      )
     })
-    const effectiveKwargs: OpKwargs = {
-      ...kwargs,
-      ...(kwargs.index === undefined && this.resource.index !== undefined
-        ? { index: this.resource.index }
-        : {}),
-      ...(filetype !== null && kwargs.filetype === undefined ? { filetype } : {}),
-    }
-    const accessor = this.resource.accessor ?? NOOP_ACCESSOR
-    // Per-op caps are policy and fire at the op door (postOps); only
-    // the timeout stays here, bounding the backend call itself.
-    const opOverride = this.commandLimits.get(opName) ?? null
-    const opTimeout = opOverride !== null ? opOverride.timeoutSeconds : null
-    return runWithMountPrefix(mountPrefix, () =>
-      runWithRevisions(this.revisions.size > 0 ? this.revisions : null, async () => {
-        for (const op of levels) {
-          const result = await runWithTimeout(
-            Promise.resolve(op.fn(accessor, scope, args, effectiveKwargs)),
-            opTimeout,
-            opName,
-          )
-          if (result !== null && result !== undefined) return result
-        }
-        return null
-      }),
-    )
   }
 }
 
-// Push `mountPrefix` back during lazy consumption of anything the command
-// handed back, so a deferred backend read names its record the same way an
-// eager one does. Dedup by identity: a stream that appears both as the
+async function* commandOutput(
+  source: AsyncIterable<Uint8Array>,
+  io: IOResult,
+  command: string,
+  paths: PathSpec[],
+): AsyncIterable<Uint8Array> {
+  try {
+    yield* source
+  } catch (err) {
+    if (err instanceof CommandTimeoutError || (err instanceof Error && err.name === 'AbortError'))
+      throw err
+    const existing = await materialize(io.stderr)
+    const message = formatFsError(command, err, paths)
+    const stderr = new Uint8Array(existing.length + message.length)
+    stderr.set(existing)
+    stderr.set(message, existing.length)
+    io.stderr = stderr
+    io.exitCode = err instanceof UsageError ? err.exitCode : readFailExitCode(command, err)
+  }
+}
+
+/** Preserve a streaming operation's recording owner after its dispatch frame exits. */
+export function wrapOpStream(result: unknown, mountId: string, activity: VFSActivity): unknown {
+  if (result instanceof CachableAsyncIterator) {
+    result.wrapSource((source) => withMountContext(source, mountId))
+    return activity.hold(result)
+  }
+  if (result !== null && typeof result === 'object' && Symbol.asyncIterator in result) {
+    return activity.hold(withMountContext(result as AsyncIterable<Uint8Array>, mountId))
+  }
+  return result
+}
+
+// Push `mountId` back during lazy consumption of anything the command
+// handed back, so a deferred backend read attributes its record the same
+// way an eager one does. Dedup by identity: a stream that appears both as the
 // primary stdout and in IOResult.reads/writes is wrapped once.
 // Mirrors python's _wrap_cmd_streams.
 function wrapMountStreams(
   result: [ByteSource | null, IOResult],
-  mountPrefix: string,
+  mountId: string,
+  activity: VFSActivity,
 ): [ByteSource | null, IOResult] {
   const [stream, io] = result
   const seen = new Map<ByteSource, ByteSource>()
+  const scope = new ContextScope([
+    ...captureSessionContext(),
+    ...captureRecordingContext(),
+    captureCacheContext(),
+    captureCommandScope(),
+  ])
   const wrap = (obj: ByteSource): ByteSource => {
     if (obj instanceof Uint8Array) return obj
     const hit = seen.get(obj)
     if (hit !== undefined) return hit
     let wrapped: ByteSource
     if (obj instanceof CachableAsyncIterator) {
-      obj.wrapSource((src) => withMountPrefix(mountPrefix, src))
+      obj.wrapSource((src) => scope.stream(withMountContext(src, mountId)))
       wrapped = obj
     } else {
-      wrapped = withMountPrefix(mountPrefix, obj)
+      wrapped = scope.stream(withMountContext(obj, mountId))
     }
+    wrapped = activity.hold(wrapped)
     seen.set(obj, wrapped)
     return wrapped
   }

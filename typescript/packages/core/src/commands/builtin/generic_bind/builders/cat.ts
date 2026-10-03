@@ -16,14 +16,14 @@ import { concatAggregate } from '../../aggregators.ts'
 import { catGeneric } from '../../generic/cat.ts'
 import { type Builder, dirAwareStat, resolveGlobOf } from '../adapter.ts'
 
-export const CAT_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'cat',
   read: true,
   aggregate: concatAggregate,
   fn: async (ops, accessor, paths, texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return catGeneric(resolved, texts, opts, dirAwareStat(ops, accessor, idx), (p) =>
+    return catGeneric(resolved, texts, opts, dirAwareStat(ops, accessor, opts), (p) =>
       ops.readStream(accessor, p, idx),
     )
   },

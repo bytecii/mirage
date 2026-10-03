@@ -18,7 +18,7 @@ import { runWithCacheManager } from '../../cache/context.ts'
 import { copy } from './copy.ts'
 import { rename } from './rename.ts'
 import { resolveGlobOf } from '../../commands/builtin/generic_bind/index.ts'
-import { DATABRICKS_VOLUME_IO } from '../../commands/builtin/databricks_volume/io.ts'
+import { IO } from '../../commands/builtin/databricks_volume/io.ts'
 import { PathSpec } from '../../types.ts'
 import {
   jsonResponse,
@@ -30,11 +30,25 @@ import {
   type FetchCall,
 } from './_test_util.ts'
 
-const resolveGlob = resolveGlobOf(DATABRICKS_VOLUME_IO)
+const resolveGlob = resolveGlobOf(IO)
 
 class FakeManager {
+  listingTrusted(_folder: string): boolean {
+    return false
+  }
+
+  probedStat(): null {
+    return null
+  }
+
+  readThrough(_path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array> {
+    return fetch()
+  }
+
   writes: string[] = []
+  ancestors: string[] = []
   unlinks: string[] = []
+  subtrees: string[] = []
 
   invalidateAfterWrite(path: string | PathSpec): Promise<void> {
     this.writes.push(typeof path === 'string' ? path : path.mountPath)
@@ -46,7 +60,21 @@ class FakeManager {
     return Promise.resolve()
   }
 
+  invalidateAncestors(path: PathSpec): Promise<void> {
+    this.ancestors.push(path.virtual)
+    return Promise.resolve()
+  }
+
+  invalidateSubtree(path: string | PathSpec): Promise<void> {
+    this.subtrees.push(typeof path === 'string' ? path : path.mountPath)
+    return Promise.resolve()
+  }
+
   cachedBytes(_path: PathSpec): Promise<Uint8Array | null> {
+    return Promise.resolve(null)
+  }
+
+  cachedSize(_path: PathSpec): Promise<number | null> {
     return Promise.resolve(null)
   }
 }
@@ -141,7 +169,8 @@ describe('copy', () => {
     // The destination's own listing must go (a merge target can pre-exist)
     // along with every ancestor listing create_directory materialized.
     expect(manager.unlinks).toEqual(['/deep/dst'])
-    expect(manager.writes).toEqual(['/deep'])
+    expect(manager.writes).toEqual([])
+    expect(manager.ancestors).toEqual(['/volume/deep/dst'])
   })
 
   it('refuses copying a directory into its own subtree before any write', async () => {
@@ -226,7 +255,7 @@ describe('resolveGlob', () => {
       directory: '/volume/',
       pattern: '*.md',
       resolved: false,
-      resourcePath: mountKey('/volume/*.md', '/volume'),
+      vfsPath: mountKey('/volume/*.md', '/volume'),
     })
     const resolved = await resolveGlob(makeAccessor(), [pattern])
     expect(resolved.map((p) => p.virtual)).toEqual(['/volume/a.md', '/volume/c.md'])

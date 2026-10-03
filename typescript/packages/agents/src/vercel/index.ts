@@ -13,176 +13,98 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { encodeBase64 } from '@struktoai/mirage-core/utils/base64'
-import { gnuDirname } from '@struktoai/mirage-core/utils/path'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
-import { tool, type ToolSet } from 'ai'
-import { z } from 'zod'
-import { readWorkspaceFile } from '../read-file.ts'
+import { jsonSchema, tool, type ToolSet } from 'ai'
+import {
+  EDIT_DESCRIPTION,
+  EDIT_INPUT,
+  GLOB_DESCRIPTION,
+  GLOB_INPUT,
+  GREP_DESCRIPTION,
+  GREP_INPUT,
+  LS_DESCRIPTION,
+  LS_INPUT,
+  READ_DESCRIPTION,
+  READ_INPUT,
+  SHELL_DESCRIPTION,
+  SHELL_INPUT,
+  WRITE_DESCRIPTION,
+  WRITE_INPUT,
+} from '../tool_descriptions.ts'
+import {
+  MirageToolOperations,
+  type MirageToolOperationsOptions,
+  type ToolResult,
+} from '../tool_operations.ts'
 
-async function ensureParent(ws: Workspace, path: string): Promise<void> {
-  const parent = gnuDirname(path)
-  if (parent === '/' || parent === '' || parent === '.') return
-  if (await ws.fs.exists(parent)) return
-  await ensureParent(ws, parent)
-  try {
-    await ws.fs.mkdir(parent)
-  } catch (err) {
-    if (!(await ws.fs.exists(parent))) throw err
-  }
+interface Answer {
+  text: string
+  isError: boolean
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  return encodeBase64(bytes)
-}
-
-type ReadFileResult =
-  | { kind: 'text'; path: string; mimeType: string; content: string; bytes: number }
+type ReadAnswer =
+  | Answer
   | { kind: 'media'; path: string; mimeType: string; base64: string; bytes: number }
-  | { kind: 'binary'; path: string; mimeType: string; bytes: number; note: string }
-  | { error: string }
 
-function isError(r: ReadFileResult): r is { error: string } {
-  return 'error' in r
+function answer(result: ToolResult): Answer {
+  return { text: result.content[0]?.text ?? '', isError: result.isError === true }
 }
 
-async function readFileResult(ws: Workspace, path: string): Promise<ReadFileResult> {
-  try {
-    const result = await readWorkspaceFile(ws, path)
-    if (result.kind === 'text') return result
-    if (result.kind === 'image' || result.kind === 'file') {
-      return {
-        kind: 'media',
-        path: result.path,
-        mimeType: result.mimeType,
-        base64: bytesToBase64(result.data),
-        bytes: result.bytes,
-      }
-    }
-    return result
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) }
-  }
-}
-
-export function mirageTools(ws: Workspace): ToolSet {
+/**
+ * Mirage's tool table as AI SDK tools: shell, read, write, edit, ls, grep
+ * and glob, each with the shared input schema and answering
+ * `{ text, isError }` as the MCP tool of the same name does. `read` also
+ * hands an image or a PDF to the model as a file, which the AI SDK can
+ * carry and the text answer cannot.
+ */
+export function mirageTools(ws: Workspace, options: MirageToolOperationsOptions = {}): ToolSet {
+  const operations = new MirageToolOperations(ws, options)
+  const mirageTool = (name: string, description: string, input: object) =>
+    tool({
+      description,
+      inputSchema: jsonSchema<Record<string, unknown>>(input as never),
+      execute: async (args: Record<string, unknown>) => answer(await operations.call(name, args)),
+    })
   return {
-    execute: tool({
-      description:
-        'Execute a shell command in the Mirage workspace and return stdout, stderr, and exitCode.',
-      inputSchema: z.object({
-        command: z.string().describe('The shell command to execute.'),
-      }),
-      execute: async ({ command }) => {
-        const io = await ws.execute(command)
+    shell: mirageTool('shell', SHELL_DESCRIPTION, SHELL_INPUT),
+    read: tool({
+      description: `${READ_DESCRIPTION} Images and PDFs come back as files the model can see.`,
+      inputSchema: jsonSchema<Record<string, unknown>>(READ_INPUT as never),
+      execute: async (args: Record<string, unknown>): Promise<ReadAnswer> => {
+        const out = await operations.readMedia(
+          args.path as string,
+          args.offset as number | undefined,
+          args.limit as number | undefined,
+        )
+        if ('content' in out) return answer(out)
         return {
-          stdout: io.stdoutText,
-          stderr: io.stderrText,
-          exitCode: io.exitCode,
+          kind: 'media',
+          path: out.path,
+          mimeType: out.mimeType,
+          base64: encodeBase64(out.data),
+          bytes: out.bytes,
         }
       },
-    }),
-
-    readFile: tool({
-      description:
-        'Read a file from the Mirage workspace. Text files (utf-8 source/data) come back as text; PDFs and images (png/jpeg/gif/webp) come back as base64 media that is forwarded to the model as a multimodal attachment; other binaries return a metadata stub.',
-      inputSchema: z.object({
-        path: z.string().describe('Absolute path inside the workspace.'),
-      }),
-      execute: async ({ path }): Promise<ReadFileResult> => readFileResult(ws, path),
       toModelOutput: ({ output }) => {
-        const out: ReadFileResult = output
-        if (isError(out)) return { type: 'error-text', value: out.error }
-        if (out.kind === 'text') return { type: 'text', value: out.content }
-        if (out.kind === 'media') {
+        const out: ReadAnswer = output
+        if ('kind' in out) {
           return {
             type: 'content',
             value: [
-              {
-                type: 'text',
-                text: `[${out.path}] ${out.mimeType} (${String(out.bytes)} bytes)`,
-              },
-              {
-                type: 'file',
-                data: { type: 'data', data: out.base64 },
-                mediaType: out.mimeType,
-              },
+              { type: 'text', text: `[${out.path}] ${out.mimeType} (${String(out.bytes)} bytes)` },
+              { type: 'file', data: { type: 'data', data: out.base64 }, mediaType: out.mimeType },
             ],
           }
         }
-        return { type: 'text', value: out.note }
+        return out.isError
+          ? { type: 'error-text', value: out.text }
+          : { type: 'text', value: out.text }
       },
     }),
-
-    writeFile: tool({
-      description:
-        'Write content to a file in the Mirage workspace. Creates missing parent directories.',
-      inputSchema: z.object({
-        path: z.string().describe('Absolute path inside the workspace.'),
-        content: z.string().describe('UTF-8 text content to write.'),
-      }),
-      execute: async ({ path, content }) => {
-        await ensureParent(ws, path)
-        await ws.fs.writeFile(path, content)
-        return { path }
-      },
-    }),
-
-    editFile: tool({
-      description:
-        'Replace a string inside an existing file. Errors if the string appears more than once unless replaceAll is true.',
-      inputSchema: z.object({
-        path: z.string().describe('Absolute path of the file to edit.'),
-        oldString: z.string().describe('The exact string to replace.'),
-        newString: z.string().describe('The replacement string.'),
-        replaceAll: z
-          .boolean()
-          .optional()
-          .describe('Replace every occurrence rather than requiring a unique match.'),
-      }),
-      execute: async ({ path, oldString, newString, replaceAll }) => {
-        let current: string
-        try {
-          current = await ws.fs.readFileText(path)
-        } catch {
-          return { error: `Error: file '${path}' not found` }
-        }
-        const count = current.split(oldString).length - 1
-        if (count === 0) {
-          return { error: `Error: string not found in file: '${oldString}'` }
-        }
-        if (count > 1 && replaceAll !== true) {
-          return {
-            error: `Error: string '${oldString}' appears ${String(count)} times. Use replaceAll=true`,
-          }
-        }
-        const next =
-          replaceAll === true
-            ? current.split(oldString).join(newString)
-            : current.replace(oldString, newString)
-        await ws.fs.writeFile(path, next)
-        return { path, occurrences: replaceAll === true ? count : 1 }
-      },
-    }),
-
-    ls: tool({
-      description: 'List entries of a directory in the Mirage workspace.',
-      inputSchema: z.object({
-        path: z.string().describe('Absolute directory path inside the workspace.'),
-      }),
-      execute: async ({ path }) => {
-        let entries: string[]
-        try {
-          entries = await ws.fs.readdir(path)
-        } catch (err) {
-          return { error: err instanceof Error ? err.message : String(err) }
-        }
-        const files: { path: string; is_dir: boolean }[] = []
-        for (const entry of entries) {
-          const isDir = await ws.fs.isDir(entry)
-          files.push({ path: entry, is_dir: isDir })
-        }
-        return { files }
-      },
-    }),
+    write: mirageTool('write', WRITE_DESCRIPTION, WRITE_INPUT),
+    edit: mirageTool('edit', EDIT_DESCRIPTION, EDIT_INPUT),
+    ls: mirageTool('ls', LS_DESCRIPTION, LS_INPUT),
+    grep: mirageTool('grep', GREP_DESCRIPTION, GREP_INPUT),
+    glob: mirageTool('glob', GLOB_DESCRIPTION, GLOB_INPUT),
   }
 }

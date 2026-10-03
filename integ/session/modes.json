@@ -5,6 +5,7 @@
       "seq": 920001,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "command": "mkdir -p /data/sess /data2/sess && echo hello > /data/sess/a.txt && echo aside > /data2/sess/s.txt",
@@ -19,6 +20,7 @@
       "seq": 920002,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "reader",
@@ -34,6 +36,7 @@
       "seq": 920003,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "reader",
@@ -41,7 +44,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "rm: read-only mount at /data/\n"
+        "stderr": "rm: cannot remove '/data/sess/a.txt': Read-only file system\n"
       }
     },
     {
@@ -49,6 +52,7 @@
       "seq": 920004,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "reader",
@@ -56,7 +60,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "/data/sess/new.txt: Permission denied\n"
+        "stderr": "/data/sess/new.txt: Read-only file system\n"
       }
     },
     {
@@ -64,6 +68,7 @@
       "seq": 920005,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "command": "test -e /data/sess/new.txt || echo absent",
@@ -74,10 +79,11 @@
       }
     },
     {
-      "id": "sess_ungranted_mount_denied",
+      "id": "sess_hidden_mount_reads_as_absent",
       "seq": 920006,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "reader",
@@ -85,7 +91,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "cat: session 'reader' not allowed to access mount '/data2'\n"
+        "stderr": "cat: /data2/sess/s.txt: No such file or directory\n"
       }
     },
     {
@@ -93,6 +99,7 @@
       "seq": 920007,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "writer",
@@ -104,13 +111,14 @@
       }
     },
     {
-      "id": "sess_list_form_inherits_mount_mode",
+      "id": "sess_an_unnamed_mount_keeps_its_own_mode",
       "seq": 920008,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
-      "session": "lister",
+      "session": "unnamed",
       "command": "echo l > /data/sess/l.txt && cat /data/sess/l.txt",
       "expect": {
         "exit": 0,
@@ -123,6 +131,7 @@
       "seq": 920009,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "capped",
@@ -130,7 +139,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "/ro/sess_y.txt: Permission denied\n"
+        "stderr": "/ro/sess_y.txt: Read-only file system\n"
       }
     },
     {
@@ -138,6 +147,7 @@
       "seq": 920010,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "reader",
@@ -153,6 +163,7 @@
       "seq": 920011,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "command": "rm -r /data/sess /data2/sess",
@@ -176,7 +187,7 @@
       }
     },
     {
-      "id": "sess_root_unlisted_denied",
+      "id": "sess_root_hidden_reads_as_absent",
       "seq": 920021,
       "targets": [
         "ram-root"
@@ -186,7 +197,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "cat: session 'no_root' not allowed to access mount '/'\n"
+        "stderr": "cat: /root.txt: No such file or directory\n"
       }
     },
     {
@@ -214,7 +225,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "/root.txt: Permission denied\n"
+        "stderr": "/root.txt: Read-only file system\n"
       }
     },
     {
@@ -235,9 +246,10 @@
       "seq": 920012,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
-      "command": "ln -s /data/sess/a.txt /data/sess/al && ln -s /data2/sess/s.txt /data2/sess/sl",
+      "command": "mkdir -p /data/sess /data2/sess && ln -s /data/sess/a.txt /data/sess/al && ln -s /data2/sess/s.txt /data2/sess/sl",
       "expect": {
         "exit": 0,
         "stdout": "",
@@ -249,6 +261,7 @@
       "seq": 920013,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "reader",
@@ -260,10 +273,11 @@
       }
     },
     {
-      "id": "sess_readlink_ungranted_denied",
+      "id": "sess_readlink_hidden_denied",
       "seq": 920014,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "session": "reader",
@@ -271,6 +285,325 @@
       "expect": {
         "exit": 1,
         "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sess_read_grant_blocks_link_rm",
+      "seq": 920015,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "session": "reader",
+      "command": "rm /data/sess/al",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: cannot remove '/data/sess/al': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_read_grant_blocks_forced_link_rm",
+      "seq": 920016,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "session": "reader",
+      "command": "rm -f /data/sess/al",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: cannot remove '/data/sess/al': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_read_grant_blocks_unlink",
+      "seq": 920017,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "session": "reader",
+      "command": "unlink /data/sess/al",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "unlink: cannot unlink '/data/sess/al': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_read_grant_blocks_link_create",
+      "seq": 920018,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "session": "reader",
+      "command": "ln -s /data/sess/a.txt /data/sess/nl",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "ln: failed to create symbolic link '/data/sess/nl': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_read_grant_blocks_link_mv",
+      "seq": 920019,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "session": "reader",
+      "command": "mv /data/sess/al /data/sess/moved",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "mv: cannot move '/data/sess/al' to '/data/sess/moved': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_denied_link_writes_changed_nothing",
+      "seq": 920025,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "readlink /data/sess/al; readlink /data/sess/nl || echo no-nl; readlink /data/sess/moved || echo no-moved",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/sess/a.txt\nno-nl\nno-moved\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sess_root_link_seed",
+      "seq": 920030,
+      "targets": [
+        "ram-root"
+      ],
+      "command": "ln -s /root.txt /rootlk",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sess_root_read_grant_blocks_link_create",
+      "seq": 920031,
+      "targets": [
+        "ram-root"
+      ],
+      "session": "root_ro",
+      "command": "ln -s /root.txt /rootlk2",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "ln: failed to create symbolic link '/rootlk2': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_root_read_grant_blocks_link_rm",
+      "seq": 920032,
+      "targets": [
+        "ram-root"
+      ],
+      "session": "root_ro",
+      "command": "rm /rootlk",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: cannot remove '/rootlk': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_root_read_grant_blocks_link_mv",
+      "seq": 920033,
+      "targets": [
+        "ram-root"
+      ],
+      "session": "root_ro",
+      "command": "mv /rootlk /rootlk3",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "mv: cannot move '/rootlk' to '/rootlk3': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_root_grant_still_links_on_data",
+      "seq": 920034,
+      "targets": [
+        "ram-root"
+      ],
+      "session": "root_ro",
+      "command": "ln -s /root.txt /data/datalk && readlink /data/datalk",
+      "expect": {
+        "exit": 0,
+        "stdout": "/root.txt\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sess_root_denied_link_writes_changed_nothing",
+      "seq": 920035,
+      "targets": [
+        "ram-root"
+      ],
+      "command": "readlink /rootlk; readlink /rootlk2 || echo no-rootlk2; readlink /rootlk3 || echo no-rootlk3",
+      "expect": {
+        "exit": 0,
+        "stdout": "/root.txt\nno-rootlk2\nno-rootlk3\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sess_read_mount_refuses_link_create",
+      "seq": 920040,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "ln -s /ro/y.txt /ro/rolink && readlink /ro/rolink",
+      "note": "Mount mode gates namespace writes as well as backend writes.",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "ln: failed to create symbolic link '/ro/rolink': Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_read_mount_still_refuses_the_backend_write",
+      "seq": 920041,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "echo x > /ro/nope.txt",
+      "note": "The same read-only mount refuses content writes.",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "/ro/nope.txt: Read-only file system\n"
+      }
+    },
+    {
+      "id": "sess_read_mount_refused_link_is_absent",
+      "seq": 920042,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "readlink /ro/rolink || echo absent",
+      "note": "A refused namespace write leaves no link.",
+      "expect": {
+        "exit": 0,
+        "stdout": "absent\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sess_mutation_prep",
+      "seq": 920043,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sess && echo original > /data/sess/guard.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sess_read_append",
+      "seq": 920044,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "echo x >> /data/sess/guard.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "/data/sess/guard.txt: Read-only file system\n"
+      },
+      "session": "reader"
+    },
+    {
+      "id": "sess_read_exec_append",
+      "seq": 920045,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "exec >> /data/sess/guard.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "/data/sess/guard.txt: Read-only file system\n"
+      },
+      "session": "reader"
+    },
+    {
+      "id": "sess_read_chmod",
+      "seq": 920046,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "chmod 600 /data/sess/guard.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "chmod: changing permissions of '/data/sess/guard.txt': Read-only file system\n"
+      },
+      "session": "reader"
+    },
+    {
+      "id": "sess_read_find_delete",
+      "seq": 920047,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "find /data/sess/guard.txt -delete",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "find: cannot delete '/data/sess/guard.txt': Read-only file system\n"
+      },
+      "session": "reader"
+    },
+    {
+      "id": "sess_read_mutations_leave_content",
+      "seq": 920048,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cat /data/sess/guard.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "original\n",
         "stderr": ""
       }
     }

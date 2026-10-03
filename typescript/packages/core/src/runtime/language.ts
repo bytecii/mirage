@@ -13,8 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Runtime } from './base.ts'
-import type { MountResolver } from './resolver.ts'
-import type { BridgeDispatchFn, RunArgs, RunResult, RuntimeLanguage } from './types.ts'
+import { UnsupportedExecutionError } from './errors.ts'
+import type {
+  ExecutionRequest,
+  RunArgs,
+  RunResult,
+  RuntimeLanguage,
+  RuntimeCapabilities,
+  RuntimeContext,
+} from './types.ts'
 
 /**
  * A runtime that interprets one language's code inside a command.
@@ -32,21 +39,48 @@ import type { BridgeDispatchFn, RunArgs, RunResult, RuntimeLanguage } from './ty
  * their language tier (PythonRuntime, JsRuntime) rather than declaring
  * it per class.
  *
- * How an implementation sees workspace files is its own concern: a
- * sandboxed interpreter bridges file I/O through the workspace
- * dispatch attached here, while a host subprocess only sees the host
- * filesystem and keeps the default no-op attach.
+ * A host adapter receives data, namespace and gated session views through
+ * WorkspaceBinding and its per-execution RuntimeContext. Guests receive
+ * only RunArgs.env,
+ * a copy whose writes do not mutate the Mirage session; the adapter must
+ * explicitly use the gated SessionView for any intended session write.
  */
 export abstract class LanguageRuntime extends Runtime {
   abstract readonly language: RuntimeLanguage
 
-  /**
-   * Late-wire workspace I/O into a user-constructed instance. The
-   * workspace attaches its dispatch at construction; runtimes that
-   * never touch workspace files keep the default no-op.
-   */
-  attach(_dispatch: BridgeDispatchFn, _resolver: MountResolver): void {
-    // runtimes that never touch workspace files keep the no-op
+  override get capabilities(): RuntimeCapabilities {
+    return { ...super.capabilities, languages: [this.language] }
+  }
+
+  protected override async executeRequest(
+    request: ExecutionRequest,
+    context?: RuntimeContext,
+  ): Promise<RunResult> {
+    if (request.kind === 'code') {
+      if (request.language !== this.language)
+        throw new UnsupportedExecutionError(
+          `${this.name}: ${request.language} execution is unsupported`,
+        )
+      return this.executeCode(request, context)
+    }
+    return super.executeRequest(request, context)
+  }
+
+  protected executeCode(args: RunArgs, _context?: RuntimeContext): Promise<RunResult> {
+    return this.run(args)
+  }
+
+  /** Report the bound interpreter's version. */
+  version(
+    _env: Record<string, string>,
+    _signal?: AbortSignal,
+    _timeoutSeconds?: number,
+  ): Promise<RunResult> {
+    return Promise.resolve({
+      stdout: new Uint8Array(),
+      stderr: new TextEncoder().encode(`${this.name}: version information unavailable\n`),
+      exitCode: 1,
+    })
   }
 
   /** Execute one program and return its captured outcome. */

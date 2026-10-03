@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { concat } from '../../../io/cachable_iterator.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
@@ -22,8 +22,10 @@ import { gnuBasename } from '../../../utils/path.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import type { CommandOpts } from '../../config.ts'
 import { formatFsError, isFsError } from '../../../utils/errors.ts'
-import { edScript, normalDiff, unifiedDiff } from '../diff_helper.ts'
-import { extraOperandError } from '../../spec/usage.ts'
+import { edScript, normalDiff, unifiedDiff } from '../diff_format.ts'
+import { extraOperandError, missingOperandError } from '../../spec/usage.ts'
+import { isStdin, stdinStat, stdinStream } from '../utils/stream.ts'
+import { UsageError } from '../../errors.ts'
 import { CommandName } from '../../spec/types.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
 
@@ -40,6 +42,7 @@ interface DiffFlags {
   e: boolean
   q: boolean
   u: boolean
+  context: number
 }
 
 function childSpec(parent: PathSpec, name: string): PathSpec {
@@ -48,7 +51,8 @@ function childSpec(parent: PathSpec, name: string): PathSpec {
     virtual: childPath,
     directory: childPath,
     resolved: false,
-    resourcePath: mountKey(childPath, mountPrefixOf(parent.virtual, parent.resourcePath)),
+    vfsPath: mountKey(childPath, mountPrefixOf(parent.virtual, parent.vfsPath)),
+    rawPath: `${rstripSlash(parent.rawPath)}/${name}`,
   })
 }
 
@@ -88,14 +92,15 @@ async function diffPair(
     textB = textB.replace(/[ \t]+/g, ' ')
   }
   if (flags.q) {
-    if (textA !== textB) return ENC.encode(`Files ${path1.virtual} and ${path2.virtual} differ\n`)
+    if (textA !== textB) return ENC.encode(`Files ${path1.rawPath} and ${path2.rawPath} differ\n`)
     return new Uint8Array(0)
   }
   const aLines = splitLinesKeepEnds(textA)
   const bLines = splitLinesKeepEnds(textB)
   let result: string[]
   if (flags.e) result = edScript(aLines, bLines)
-  else if (flags.u) result = unifiedDiff(aLines, bLines, path1.virtual, path2.virtual)
+  else if (flags.u)
+    result = unifiedDiff(aLines, bLines, path1.rawPath, path2.rawPath, flags.context)
   else result = normalDiff(aLines, bLines)
   return ENC.encode(result.join(''))
 }
@@ -113,8 +118,8 @@ async function diffDirs(
   const namesA = new Set(rawA.map((e) => gnuBasename(e)))
   const namesB = new Set(rawB.map((e) => gnuBasename(e)))
   const names = [...new Set([...namesA, ...namesB])].sort(compareCodePoints)
-  const left = rstripSlash(dirA.virtual)
-  const right = rstripSlash(dirB.virtual)
+  const left = rstripSlash(dirA.rawPath)
+  const right = rstripSlash(dirB.rawPath)
   const parts: Uint8Array[] = []
   for (const name of names) {
     if (!namesB.has(name)) {
@@ -135,18 +140,18 @@ async function diffDirs(
       const body = await diffPair(stream, childA, childB, flags)
       if (body.byteLength > 0) {
         if (flags.q) parts.push(body)
-        else parts.push(concat([ENC.encode(`diff -r ${childA.virtual} ${childB.virtual}\n`), body]))
+        else parts.push(concat([ENC.encode(`diff -r ${childA.rawPath} ${childB.rawPath}\n`), body]))
       }
     } else if (aDir) {
       parts.push(
         ENC.encode(
-          `File ${childA.virtual} is a directory while file ${childB.virtual} is a regular file\n`,
+          `File ${childA.rawPath} is a directory while file ${childB.rawPath} is a regular file\n`,
         ),
       )
     } else {
       parts.push(
         ENC.encode(
-          `File ${childA.virtual} is a regular file while file ${childB.virtual} is a directory\n`,
+          `File ${childA.rawPath} is a regular file while file ${childB.rawPath} is a directory\n`,
         ),
       )
     }
@@ -157,28 +162,61 @@ async function diffDirs(
 export async function diffGeneric(
   paths: PathSpec[],
   opts: CommandOpts,
-  stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
+  read: (p: PathSpec) => AsyncIterable<Uint8Array>,
   readdir?: Readdir,
-  stat?: Stat,
+  backendStat?: Stat,
 ): Promise<[ByteSource | null, IOResult]> {
   const fl = new FlagView(opts.flags, specOf('diff'))
-  if (paths.length > 2) throw extraOperandError(CommandName.DIFF, paths[2]?.rawPath ?? '')
-  if (paths.length < 2) {
-    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode('diff: requires two paths\n') })]
+  let context = -1
+  let unified = fl.asBool('u')
+  for (const [, value] of fl.occurrences('U', 'unified')) {
+    unified = true
+    if (value === true) context = Math.max(context, 3)
+    else if (
+      typeof value === 'string' &&
+      (value === '' || /^[ \t\n\r\v\f]*[+-]?[0-9]+$/.test(value)) &&
+      Number(value) >= 0
+    )
+      context = Math.max(context, Math.min(Number(value), Number.MAX_SAFE_INTEGER))
+    else
+      throw new UsageError(
+        `diff: invalid context length '${String(value)}'\ndiff: Try 'diff --help' for more information.`,
+      )
   }
+  if (paths.length > 2) throw extraOperandError(CommandName.DIFF, paths[2]?.rawPath ?? '')
+  if (paths.length < 2)
+    throw missingOperandError(CommandName.DIFF, paths[0]?.rawPath ?? null, opts.argv ?? [])
   const flags: DiffFlags = {
     i: fl.asBool('i'),
     w: fl.asBool('w'),
     b: fl.asBool('b'),
     e: fl.asBool('e'),
-    q: fl.asBool('q'),
-    u: fl.asBool('u'),
+    q: fl.asBool('brief'),
+    u: unified,
+    context: context === -1 ? 3 : context,
   }
   const p0 = paths[0]
   const p1 = paths[1]
   if (p0 === undefined || p1 === undefined) return [null, new IOResult()]
+  // Both name the one stdin, which GNU sees as the same file.
+  if (isStdin(p0) && isStdin(p1)) return [null, new IOResult()]
+  const stream = stdinStream(read, opts.stdin)
+  const stat = backendStat === undefined ? undefined : stdinStat(backendStat)
+  const dash0 = p0.rawPath === '-'
+  const dash1 = p1.rawPath === '-'
   let output: Uint8Array | undefined
   try {
+    if (dash0 !== dash1 && stat !== undefined) {
+      if ((await stat(dash0 ? p1 : p0)).type === FileType.DIRECTORY) {
+        return [
+          null,
+          new IOResult({
+            exitCode: 2,
+            stderr: ENC.encode("diff: cannot compare '-' to a directory\n"),
+          }),
+        ]
+      }
+    }
     if (fl.asBool('r') && readdir !== undefined && stat !== undefined) {
       const bothDirs =
         (await stat(p0)).type === FileType.DIRECTORY && (await stat(p1)).type === FileType.DIRECTORY
@@ -193,5 +231,8 @@ export async function diffGeneric(
   }
   const exitCode = output.byteLength > 0 ? 1 : 0
   const out: ByteSource = output
-  return [out, new IOResult({ exitCode, cache: [p0.mountPath, p1.mountPath] })]
+  return [
+    out,
+    new IOResult({ exitCode, cache: paths.filter((p) => !isStdin(p)).map((p) => p.mountPath) }),
+  ]
 }

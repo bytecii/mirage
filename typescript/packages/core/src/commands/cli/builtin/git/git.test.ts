@@ -14,20 +14,20 @@
 
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { IOResult } from '../../../../io/types.ts'
 import { OpsRegistry } from '../../../../ops/registry.ts'
-import { RAMResource } from '../../../../resource/ram/ram.ts'
-import { createShellParser } from '../../../../shell/syntax/parse.ts'
-import type { ShellParser } from '../../../../shell/types.ts'
+import { RAMVFS } from '../../../../vfs/ram/ram.ts'
+import { createShellParser, type ShellParser } from '../../../../shell/parse/index.ts'
 import { MountMode } from '../../../../types.ts'
 import { Workspace } from '../../../../workspace/workspace/workspace.ts'
 import { GIT } from './index.ts'
+import * as gitFsModule from './fs.ts'
 import { ensureDir } from './io.ts'
 import type { Dispatch } from './types.ts'
 
@@ -61,7 +61,7 @@ function realGit(args: string[]): string {
 }
 
 async function run(line: string): Promise<[number, string, string]> {
-  const result = await ws.execute(`git -C /repo ${line}`)
+  const result = await ws.shell(`git -C /repo ${line}`)
   return [result.exitCode, DEC.decode(result.stdout), DEC.decode(result.stderr)]
 }
 
@@ -70,9 +70,9 @@ beforeAll(async () => {
   repoPath = join(tmp, 'repo')
   execFileSync('bash', [BUILDER, repoPath], { stdio: 'ignore' })
 
-  const ram = new RAMResource()
+  const ram = new RAMVFS()
   const registry = new OpsRegistry()
-  registry.registerResource(ram)
+  registry.registerVfs(ram)
   parser = await createShellParser({ engineWasm, grammarWasm })
   ws = new Workspace(
     { '/repo': ram },
@@ -92,6 +92,57 @@ beforeAll(async () => {
 
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true })
+})
+
+it.each([
+  'remote -v',
+  'config --get user.name',
+  'show-ref',
+  'rev-list --all --count',
+  'rev-list HEAD',
+  'log -1 --date=iso --format=%ad',
+  'log -1 --date=iso-strict --format=%ad',
+  'log -1 --format=%aI%n%ai%n%cI%n%ci',
+  'log -1 --pretty=raw',
+  'log --oneline --decorate -2',
+  'log --decorate -1',
+  'branch -a -vv',
+  'show --name-status --format= HEAD',
+  'show --summary --format=%h HEAD~1',
+  'diff-tree --no-commit-id --name-only -r HEAD',
+  'diff-tree HEAD',
+  'diff-tree -r HEAD',
+])('read command matches native Git: %s', async (command) => {
+  expect(await run(command)).toEqual([0, realGit(command.split(' ')), ''])
+})
+
+it.each([
+  'rev-list --all --count',
+  'log --all --format=%H',
+  'show --stat --format=%s HEAD~1',
+  'diff HEAD~2 HEAD~1',
+])('reads each pack and index once per invocation: %s', async (command) => {
+  const reads = new Map<string, number>()
+  const original = gitFsModule.gitFs
+  const spy = vi.spyOn(gitFsModule, 'gitFs').mockImplementation((dispatch, location) =>
+    original((op, path, args, kwargs) => {
+      if (op === 'read' && (path.virtual.endsWith('.pack') || path.virtual.endsWith('.idx'))) {
+        reads.set(path.virtual, (reads.get(path.virtual) ?? 0) + 1)
+      }
+      return dispatch(op, path, args, kwargs)
+    }, location),
+  )
+  try {
+    for (let invocation = 0; invocation < 2; invocation++) {
+      reads.clear()
+      expect(await run(command)).toEqual([0, realGit(command.split(' ')), ''])
+      expect([...reads.keys()].filter((path) => path.endsWith('.pack'))).toHaveLength(1)
+      expect([...reads.keys()].filter((path) => path.endsWith('.idx'))).toHaveLength(1)
+      expect([...reads.values()]).toEqual([1, 1])
+    }
+  } finally {
+    spy.mockRestore()
+  }
 })
 
 describe('git log', () => {
@@ -121,6 +172,16 @@ describe('git log', () => {
     expect(out).toBe(realGit(['log', '--oneline', 'HEAD~2']))
   })
 
+  it.each([
+    'log --oneline --max-count=2',
+    'log --oneline --max-count 2',
+    'log --oneline --grep=delta --grep first',
+    'log --oneline --grep=ADD -i --max-count=2 --reverse',
+    'log --oneline --all --regexp-ignore-case --grep=^ADD --author=INTEG',
+  ])('matches native Git for the message and count limits: %s', async (command) => {
+    expect(await run(command)).toEqual([0, realGit(command.split(' ')), ''])
+  })
+
   it('finds the commit that introduced a string with the pickaxe', async () => {
     const [, out] = await run('log --oneline -S delta')
     expect(out).toBe(realGit(['log', '--oneline', '-S', 'delta']))
@@ -133,9 +194,9 @@ describe('git log', () => {
   })
 
   it('refuses an option this build lacks rather than reading it as a revision', async () => {
-    const [code, , err] = await run('log --graph')
+    const [code, , err] = await run('log --simplify-by-decoration')
     expect(code).toBe(128)
-    expect(err).toBe('fatal: unrecognized argument: --graph\n')
+    expect(err).toBe('fatal: unrecognized argument: --simplify-by-decoration\n')
   })
 
   it('matches --all byte for byte, topic branch included', async () => {
@@ -190,9 +251,9 @@ describe('git log', () => {
   })
 
   it('says unsupported for a real preset this build lacks', async () => {
-    const [code, , err] = await run('log --pretty=raw')
+    const [code, , err] = await run('log --pretty=email')
     expect(code).toBe(128)
-    expect(err).toContain('unsupported --pretty format: raw')
+    expect(err).toContain('unsupported --pretty format: email')
   })
 
   it('keeps empty format entries as separators byte for byte', async () => {
@@ -206,7 +267,7 @@ describe('git log', () => {
   })
 
   it('emits %xHH as a raw byte, not UTF-8 of the code point', async () => {
-    const result = await ws.execute("git -C /repo log -n 1 --format='a%x80b'")
+    const result = await ws.shell("git -C /repo log -n 1 --format='a%x80b'")
     const real = execFileSync('git', ['-C', repoPath, 'log', '-n', '1', '--format=a%x80b'])
     expect(Array.from(result.stdout)).toEqual(Array.from(real))
   })
@@ -273,9 +334,9 @@ describe('git show', () => {
   })
 
   it('refuses an option this build lacks', async () => {
-    const [code, , err] = await run('show --raw HEAD')
+    const [code, , err] = await run('show --word-diff HEAD')
     expect(code).toBe(128)
-    expect(err).toBe('fatal: unrecognized argument: --raw\n')
+    expect(err).toBe('fatal: unrecognized argument: --word-diff\n')
   })
 
   it('prints a format: header with no trailing newline like git', async () => {
@@ -363,7 +424,7 @@ describe('git branch', () => {
 
 describe('the git root', () => {
   it('refuses an unknown verb', async () => {
-    const result = await ws.execute('git nosuchverb')
+    const result = await ws.shell('git nosuchverb')
     expect(result.exitCode).toBe(1)
     expect(DEC.decode(result.stderr)).toBe(
       "git: 'nosuchverb' is not a git command. See 'git --help'.\n",
@@ -371,7 +432,7 @@ describe('the git root', () => {
   })
 
   it('reports a directory that is not a repository', async () => {
-    const result = await ws.execute('git -C / log')
+    const result = await ws.shell('git -C / log')
     expect(result.exitCode).toBe(128)
     expect(DEC.decode(result.stderr)).toBe(
       'fatal: not a git repository (or any of the parent directories): .git\n',
@@ -381,7 +442,7 @@ describe('the git root', () => {
   // git tells the two apart: a directory it could not enter is not the same
   // complaint as a directory holding no repository.
   it('reports a directory that is not there as a chdir failure', async () => {
-    const result = await ws.execute('git -C /repo/nowhere log')
+    const result = await ws.shell('git -C /repo/nowhere log')
     expect(result.exitCode).toBe(128)
     expect(DEC.decode(result.stderr)).toBe(
       "fatal: cannot change to '/repo/nowhere': No such file or directory\n",
@@ -392,10 +453,54 @@ describe('the git root', () => {
   // looks: discovery walks upwards, so tolerating it would run in the
   // repository above and let a write verb mutate one nobody named.
   it('reports a file operand as a chdir failure too', async () => {
-    const result = await ws.execute('git -C /repo/letters.txt log')
+    const result = await ws.shell('git -C /repo/letters.txt log')
     expect(result.exitCode).toBe(128)
     expect(DEC.decode(result.stderr)).toBe(
       "fatal: cannot change to '/repo/letters.txt': Not a directory\n",
     )
   })
+})
+
+it('matches native remote URLs and tracking branches', async () => {
+  const original = readFileSync(join(repoPath, '.git/config'))
+  try {
+    realGit(['remote', 'add', 'origin', 'https://example.com/org/repo.git'])
+    realGit(['remote', 'set-url', '--push', 'origin', 'ssh://git@example.com/org/repo.git'])
+    realGit(['update-ref', 'refs/remotes/origin/main', 'HEAD~1'])
+    realGit(['branch', '--set-upstream-to=origin/main', 'main'])
+    const ram = new RAMVFS()
+    const registry = new OpsRegistry()
+    registry.registerVfs(ram)
+    const remoteWs = new Workspace(
+      { '/repo': ram },
+      { mode: MountMode.WRITE, ops: registry, shellParser: parser },
+    )
+    const dispatch: Dispatch = async (op, path, args = [], kwargs = {}) => [
+      await remoteWs.dispatch(op, path.virtual, args, kwargs),
+      new IOResult(),
+    ]
+    for (const rel of walk(repoPath)) {
+      const target = `/repo/${rel}`
+      await ensureDir(dispatch, target.slice(0, target.lastIndexOf('/')))
+      await remoteWs.dispatch('write', target, [new Uint8Array(readFileSync(join(repoPath, rel)))])
+    }
+    remoteWs.registerCli('git', GIT)
+    for (const command of [
+      'remote',
+      'remote -v',
+      'config --get remote.origin.url',
+      'branch -a -vv',
+      'branch -v',
+    ]) {
+      const result = await remoteWs.shell(`git -C /repo ${command}`)
+      expect([result.exitCode, DEC.decode(result.stdout), DEC.decode(result.stderr)]).toEqual([
+        0,
+        realGit(command.split(' ')),
+        '',
+      ])
+    }
+  } finally {
+    writeFileSync(join(repoPath, '.git/config'), original)
+    realGit(['update-ref', '-d', 'refs/remotes/origin/main'])
+  }
 })

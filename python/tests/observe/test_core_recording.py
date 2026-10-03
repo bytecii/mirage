@@ -14,9 +14,11 @@
 
 import asyncio
 
+from mirage.core.ram.read import read_bytes
 from mirage.observe.context import RecordingScope
-from mirage.resource.ram import RAMResource
 from mirage.types import PathSpec
+from mirage.vfs.ram import RAMVFS
+from tests.fixtures.driver_ops import ops
 
 
 def _run(coro):
@@ -24,11 +26,11 @@ def _run(coro):
 
 
 def test_memory_read_records_bytes():
-    mem = RAMResource()
+    mem = RAMVFS()
     mem._store.files["/hello.txt"] = b"hello world"
     scope = RecordingScope()
     records = scope.records
-    data = _run(mem.read_bytes(PathSpec.from_str_path("/hello.txt")))
+    data = _run(read_bytes(mem.accessor, PathSpec.from_str_path("/hello.txt")))
     scope.close()
     assert data == b"hello world"
     assert len(records) == 1
@@ -38,11 +40,11 @@ def test_memory_read_records_bytes():
 
 
 def test_memory_write_records_bytes():
-    mem = RAMResource()
+    mem = RAMVFS()
     mem._store.dirs.add("/")
     scope = RecordingScope()
     records = scope.records
-    _run(mem.write(PathSpec.from_str_path("/hello.txt"), b"hello"))
+    _run(ops(mem).write(PathSpec.from_str_path("/hello.txt"), b"hello"))
     scope.close()
     assert len(records) == 1
     assert records[0].op == "write"
@@ -50,7 +52,7 @@ def test_memory_write_records_bytes():
 
 
 def test_no_recording_context_is_noop():
-    mem = RAMResource()
+    mem = RAMVFS()
     mem._store.files["/hello.txt"] = b"hello"
-    data = _run(mem.read_bytes(PathSpec.from_str_path("/hello.txt")))
+    data = _run(read_bytes(mem.accessor, PathSpec.from_str_path("/hello.txt")))
     assert data == b"hello"

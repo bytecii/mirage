@@ -17,11 +17,174 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
 
+from mirage.commands.spec.usage import read_fail_exit
+from mirage.io.stream import ensure_stream
 from mirage.io.types import ByteSource, IOResult, materialize
-from mirage.types import (FileType, PathSpec, PolymorphicReadFn, ReadBytesFn,
-                          StatFn)
-from mirage.utils.errors import FS_ERRORS, eisdir, fs_error_line
-from mirage.utils.stream import ensure_stream
+from mirage.ops.types import LinkView, MountView, StatPath
+from mirage.types import (
+    FileStat,
+    FileType,
+    PathSpec,
+    PolymorphicReadFn,
+    ReadBytesFn,
+    StatFn,
+)
+from mirage.utils.errors import FS_ERRORS, DotWalkError, eisdir, fs_error_line
+
+
+def mount_points(mounts: MountView | None, directory: str) -> list[str]:
+    """The mount roots a walk of ``directory`` reaches first, sorted.
+
+    Each one is the edge of the directory's own filesystem: the roots
+    under no other visible mount below the directory, so a mount nested
+    in a mount is not one of them.
+
+    Args:
+        mounts (MountView | None): the mount boundaries.
+        directory (str): the directory walked, a virtual path.
+    """
+    if mounts is None:
+        return []
+    roots = mounts.visible_descendants(directory)
+    return sorted(
+        root
+        for root in roots
+        if not any(root.startswith(other + "/") for other in roots)
+    )
+
+
+def operand_name(path: PathSpec) -> str:
+    """What a stat row's ``name`` should say for this operand.
+
+    The basename, or ``/`` for the workspace root, which is the spelling
+    ``namespace_stat`` already uses for a namespace-only directory.
+
+    Args:
+        path (PathSpec): the operand.
+    """
+    return path.virtual.rstrip("/").rsplit("/", 1)[-1] or "/"
+
+
+async def operand_stat(
+    path: PathSpec,
+    *,
+    stat_fn: StatFn,
+    stat_path: StatPath | None = None,
+    mounts: MountView | None = None,
+    links: LinkView | None = None,
+) -> FileStat:
+    """Stat one operand the way a reporting command needs it.
+
+    Two things no single backend stat can get right, both about paths
+    that are namespace structure rather than backend state:
+
+    A path that only exists because mounts or links sit under it (``/repos``
+    when ``/repos/alpha`` is mounted) has no backend to answer for it, so the
+    backend stat raises and the operand reads as absent. ``stat_path``
+    routes through the dispatcher, which answers such a path from the
+    namespace, so it is asked second and only on a miss. Its row is
+    already named from the path.
+
+    A mount root has a backend, but that backend names its own root
+    rather than the path: ram answers ``/``, and disk answers the host
+    directory's basename, which leaks the path behind the mount. So the
+    row is renamed here, the way ``ls`` renames a child-mount row for the
+    same reason.
+
+    Args:
+        path (PathSpec): the operand to stat.
+        stat_fn (StatFn): the backend stat.
+        stat_path (StatPath | None): dispatcher-backed stat of one path;
+            absent outside a workspace.
+        mounts (MountView | None): the mount boundaries; absent outside a
+            workspace.
+        links (LinkView | None): namespace links, including descendants
+            that can make an otherwise absent directory exist.
+
+    Raises:
+        OSError: neither channel could answer, re-raised from the backend
+            so the caller reports the error it would have reported.
+    """
+    try:
+        row = await stat_fn(path)
+    except DotWalkError:
+        # The operand did not resolve, so no namespace structure under
+        # the path it simplifies to can answer for it.
+        raise
+    except FS_ERRORS:
+        if (
+            mounts is not None
+            and not mounts.visible_descendants(path.virtual)
+            and (links is None or not links.subtree(path.virtual))
+        ):
+            raise
+        fallback = None if stat_path is None else await stat_path(path.virtual)
+        if fallback is None:
+            raise
+        return fallback
+    if mounts is not None and mounts.is_root(path.virtual):
+        return row.model_copy(update={"name": operand_name(path)})
+    return row
+
+
+async def split_readable_coded(
+    paths: list[PathSpec],
+    stat: StatFn,
+    cmd_name: str,
+) -> tuple[list[PathSpec], bytes, int]:
+    """``split_readable``, plus the exit code the failures add up to.
+
+    The code is the gzip family's, which is the only reason this variant
+    exists: gzip reports a directory as a warning (2) and a missing file
+    as an error (1), where every other command in the family answers the
+    same number whichever failure is asked, so ``split_readable`` just
+    drops this one.
+
+    Its rule is not "the last failure wins". An error is recorded
+    outright while a warning is recorded only when nothing has failed
+    yet, so the error outranks the warning in either order: ``zcat nope
+    dir`` and ``zcat dir nope`` are both 1, and only an invocation with
+    no error at all (``zcat dir ok.gz``) is 2. That is gzip's own code:
+    ``progerror`` assigns ``exit_code = ERROR`` unconditionally while the
+    ``WARN`` macro assigns ``only if (exit_code == OK)`` (gzip 1.13,
+    pinned on debian:stable-slim). A command whose rule is different
+    again has to own its own loop: GNU sed takes the most severe code,
+    and ``sed_generic`` does that itself.
+
+    Args:
+        paths (list[PathSpec]): Glob-resolved operands in command order.
+        stat (StatFn): Bound stat called as ``stat(path)``.
+        cmd_name (str): Command name for the stderr prefix.
+
+    Returns:
+        tuple[list[PathSpec], bytes, int]: Readable operands, the
+        concatenated stderr lines, and the exit code (0 when none
+        failed).
+    """
+    readable: list[PathSpec] = []
+    err = b""
+    code = 0
+    for p in paths:
+        failure: BaseException | None = None
+        try:
+            st = await stat(p)
+        except FS_ERRORS as exc:
+            failure = exc
+        else:
+            if getattr(st, "type", None) == FileType.DIRECTORY:
+                failure = eisdir(p)
+        if failure is None:
+            readable.append(p)
+            continue
+        err += fs_error_line(cmd_name, p, failure).encode()
+        # A directory is gzip's warning and everything else its error, so
+        # the directory yields to a code already recorded. Keyed on the
+        # errno rather than on which branch reported it, because a keyed
+        # backend raises EISDIR from the stat where an explicit directory
+        # returns a row.
+        if code == 0 or not isinstance(failure, IsADirectoryError):
+            code = read_fail_exit(cmd_name, failure)
+    return readable, err, code
 
 
 async def split_readable(
@@ -52,18 +215,7 @@ async def split_readable(
         tuple[list[PathSpec], bytes]: Readable operands in order, and the
         concatenated stderr lines for the failed ones (``b""`` if none).
     """
-    readable: list[PathSpec] = []
-    err = b""
-    for p in paths:
-        try:
-            st = await stat(p)
-        except FS_ERRORS as exc:
-            err += fs_error_line(cmd_name, p, exc).encode()
-            continue
-        if getattr(st, "type", None) == FileType.DIRECTORY:
-            err += fs_error_line(cmd_name, p, eisdir(p)).encode()
-            continue
-        readable.append(p)
+    readable, err, _ = await split_readable_coded(paths, stat, cmd_name)
     return readable, err
 
 
@@ -117,50 +269,61 @@ async def read_operands(
     return ok, err
 
 
-def operands_io(err: bytes, cache: list[str] | None = None) -> IOResult:
+def operands_io(
+    err: bytes, cache: list[str] | None = None, exit_code: int = 1
+) -> IOResult:
     """IOResult carrying operand-split stderr lines.
 
-    Exit 1 when any operand failed, exit 0 otherwise; mirrors
-    ``operandsIo`` in operands.ts.
+    Exit ``exit_code`` when any operand failed, exit 0 otherwise; mirrors
+    ``operandsIo`` in operands.ts. The default is 1, which is every GNU
+    command in this family except the gzip one, whose code depends on the
+    errno and which passes the number ``split_readable_coded`` reports.
 
     Args:
         err (bytes): Concatenated stderr lines, ``b""`` for none.
         cache (list[str] | None): Paths worth caching, if any.
+        exit_code (int): The code to report when ``err`` is non-empty.
     """
-    return IOResult(exit_code=0 if not err else 1,
-                    stderr=err or None,
-                    cache=cache if cache is not None else [])
+    return IOResult(
+        exit_code=0 if not err else exit_code,
+        stderr=err or None,
+        cache=cache if cache is not None else [],
+    )
 
 
 async def merge_split_errors(
     result: tuple[ByteSource | None, IOResult],
     err: bytes,
+    exit_code: int = 1,
 ) -> tuple[ByteSource | None, IOResult]:
     """Attach ``split_readable`` stderr lines to a generic's result.
 
     Args:
         result (tuple[ByteSource | None, IOResult]): The body's return.
         err (bytes): Stderr lines for the operands dropped by the split;
-            when non-empty the command exits 1, per GNU.
+            when non-empty the command exits ``exit_code``.
+        exit_code (int): The code to report, 1 for every GNU command in
+            this family except the gzip one (see ``operands_io``).
     """
     if not err:
         return result
     out, io = result
     existing = await materialize(io.stderr) if io.stderr else b""
     io.stderr = existing + err
-    io.exit_code = 1
+    io.exit_code = exit_code
     return out, io
 
 
 async def _awaited_stream(
-        source: "Awaitable[bytes | AsyncIterator[bytes]]"
+    source: "Awaitable[bytes | AsyncIterator[bytes]]",
 ) -> AsyncIterator[bytes]:
     async for chunk in ensure_stream(await source):
         yield chunk
 
 
-def _call_normalized(read: PolymorphicReadFn,
-                     path: PathSpec) -> AsyncIterator[bytes]:
+def _call_normalized(
+    read: PolymorphicReadFn, path: PathSpec
+) -> AsyncIterator[bytes]:
     # The reader is invoked NOW, not when the returned stream is first
     # drained: a cache-aware factory reader captures the active cache
     # manager at call time, inside the command's cache-manager scope,
@@ -173,7 +336,8 @@ def _call_normalized(read: PolymorphicReadFn,
 
 
 def normalized_read(
-        read: PolymorphicReadFn) -> Callable[[PathSpec], AsyncIterator[bytes]]:
+    read: PolymorphicReadFn,
+) -> Callable[[PathSpec], AsyncIterator[bytes]]:
     """Normalize a polymorphic bound reader to always yield a stream.
 
     The loose ``read`` contract lets a backend hand back bytes, an

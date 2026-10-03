@@ -23,12 +23,10 @@ logger = logging.getLogger(__name__)
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DEFAULT_TZ = "UTC"
-# The rolling window a bare readdir of a calendar reports. A calendar is
-# unbounded in both directions and the API offers no descending startTime
-# order, so a full listing means paging to the end; the window is stated in
-# the mount prompt rather than applied silently, and any date glob escapes it.
-WINDOW_BACK_DAYS = 30
 WINDOW_AHEAD_DAYS = 90
+# A Monday, so the 7-day buckets tiled from it are ISO weeks.
+BUCKET_EPOCH = date(1970, 1, 5)
+SPAN_SEP = "--"
 
 
 def zone(tz: str) -> ZoneInfo:
@@ -46,8 +44,9 @@ def zone(tz: str) -> ZoneInfo:
         # A calendar can name a zone this platform's tzdata does not carry.
         # Failing the whole listing over it would let one bad calendar hide
         # every other one, so fall back loudly and keep going.
-        logger.debug("gcal: unknown time zone %r, bucketing in %s", tz,
-                     DEFAULT_TZ)
+        logger.debug(
+            "gcal: unknown time zone %r, bucketing in %s", tz, DEFAULT_TZ
+        )
         return ZoneInfo(DEFAULT_TZ)
 
 
@@ -65,38 +64,112 @@ def local_midnight(day: str, tz: str) -> datetime:
     return datetime(parts[0], parts[1], parts[2], tzinfo=zone(tz))
 
 
-def day_bounds(day: str, tz: str) -> tuple[str, str]:
-    """The RFC3339 timeMin/timeMax pair covering one local day.
+def day_bounds(day: str, tz: str, days: int = 1) -> tuple[str, str]:
+    """The RFC3339 timeMin/timeMax pair covering local days from one day.
 
-    Computed as consecutive local midnights rather than start + 24h: a local
-    day is 23 or 25 hours on the two DST transitions each year, and adding a
-    fixed day would drop or double an hour of events.
+    Computed as local midnights rather than start + 24h: a local day is 23
+    or 25 hours on the two DST transitions each year, and adding a fixed
+    day would drop or double an hour of events.
 
     Args:
-        day (str): a floating date, ``YYYY-MM-DD``.
+        day (str): the first floating date, ``YYYY-MM-DD``.
         tz (str): IANA time zone name.
+        days (int): how many consecutive days the pair covers.
 
     Returns:
         tuple[str, str]: (timeMin, timeMax) as RFC3339 with offsets.
     """
     start = local_midnight(day, tz)
-    nxt = (start.date() + timedelta(days=1)).isoformat()
+    nxt = (start.date() + timedelta(days=days)).isoformat()
     return start.isoformat(), local_midnight(nxt, tz).isoformat()
 
 
-def window_bounds(today: date, tz: str) -> tuple[str, str]:
-    """The RFC3339 pair for the default listing window around a day.
+def bucket_start(day: date, size: int) -> date:
+    """The first day of the bucket that holds a day.
+
+    Buckets tile a fixed grid from ``BUCKET_EPOCH`` rather than one centred
+    on today, so a directory name means the same days whenever it is
+    listed. The first bucket of the calendar era is cut short at
+    ``date.min`` instead of starting before it.
 
     Args:
-        today (date): the day the window is centred on.
-        tz (str): IANA time zone name.
+        day (date): any day.
+        size (int): the mount's bucket length in days.
+    """
+    ordinal = day.toordinal()
+    offset = (ordinal - BUCKET_EPOCH.toordinal()) % size
+    return date.fromordinal(max(ordinal - offset, 1))
+
+
+def bucket_name(start: date, size: int) -> str:
+    """The directory name of the bucket opening on a day.
+
+    A one-day bucket is spelled as the day, which keeps the default tree
+    as it was; a longer one names its first and last day, so the name says
+    which days it holds without the reader knowing the mount's size.
+
+    Args:
+        start (date): the bucket's first day.
+        size (int): the bucket length in days.
+    """
+    if size == 1:
+        return start.isoformat()
+    last = start + timedelta(days=size - 1)
+    return f"{start.isoformat()}{SPAN_SEP}{last.isoformat()}"
+
+
+def valid_bucket(name: str) -> bool:
+    """Whether a name is shaped like a bucket: a real day or a span of two.
+
+    Shape only: whether the bucket lies on a mount's grid depends on that
+    mount's size, which ``parse_bucket`` checks.
+
+    Args:
+        name (str): the candidate directory name.
+    """
+    first, sep, last = name.partition(SPAN_SEP)
+    return valid_day(first) and (not sep or valid_day(last))
+
+
+def parse_bucket(name: str, size: int) -> date | None:
+    """The first day of the bucket a name spells on a mount's grid.
+
+    Each bucket has exactly one spelling per mount: a span off the grid,
+    of the wrong length, or a bare day on a multi-day mount spells none.
+
+    Args:
+        name (str): the directory name.
+        size (int): the mount's bucket length in days.
 
     Returns:
-        tuple[str, str]: (timeMin, timeMax) as RFC3339 with offsets.
+        date | None: the bucket's first day, or None.
     """
-    lo = (today - timedelta(days=WINDOW_BACK_DAYS)).isoformat()
-    hi = (today + timedelta(days=WINDOW_AHEAD_DAYS)).isoformat()
-    return day_bounds(lo, tz)[0], day_bounds(hi, tz)[1]
+    if not valid_bucket(name):
+        return None
+    start = date.fromisoformat(name.partition(SPAN_SEP)[0])
+    if bucket_start(start, size) != start or bucket_name(start, size) != name:
+        return None
+    return start
+
+
+def window_bounds(today: date, tz: str, size: int = 1) -> tuple[None, str]:
+    """The default listing bounds: all past events and a future horizon.
+
+    The horizon, the end of the bucket holding the day
+    ``WINDOW_AHEAD_DAYS`` past today, is what keeps a recurring event
+    without an end from expanding forever; ending on a bucket edge decides
+    the last bucket on all of its days.
+
+    Args:
+        today (date): the day the future horizon is measured from.
+        tz (str): IANA time zone name.
+        size (int): the mount's bucket length in days.
+
+    Returns:
+        tuple[None, str]: no timeMin and an RFC3339 timeMax.
+    """
+    last = bucket_start(today + timedelta(days=WINDOW_AHEAD_DAYS), size)
+    return None, day_bounds(last.isoformat(), tz, size)[1]
 
 
 def valid_day(day: str) -> bool:
@@ -115,15 +188,6 @@ def valid_day(day: str) -> bool:
     except ValueError:
         return False
     return True
-
-
-def is_all_day(slot: dict[str, JsonValue]) -> bool:
-    """Whether an event time slot is a floating all-day date.
-
-    Args:
-        slot (dict): an event's ``start`` or ``end`` object.
-    """
-    return "date" in slot and "dateTime" not in slot
 
 
 def slot_instant(slot: dict[str, JsonValue], tz: str) -> datetime | None:
@@ -155,8 +219,9 @@ def slot_instant(slot: dict[str, JsonValue], tz: str) -> datetime | None:
     return None
 
 
-def event_span(event: dict[str, JsonValue],
-               tz: str) -> tuple[datetime, datetime] | None:
+def event_span(
+    event: dict[str, JsonValue], tz: str
+) -> tuple[datetime, datetime] | None:
     """The absolute [start, end) span of an event.
 
     An all-day event's ``end.date`` is exclusive, so a one-day event is
@@ -201,8 +266,10 @@ def days_covered(span: tuple[datetime, datetime], tz: str) -> list[str]:
     zi = zone(tz)
     first = span[0].astimezone(zi).date()
     last = span[1].astimezone(zi).date()
-    if span[1] > span[0] and span[1].astimezone(
-            zi).time() == datetime.min.time():
+    if (
+        span[1] > span[0]
+        and span[1].astimezone(zi).time() == datetime.min.time()
+    ):
         last = last - timedelta(days=1)
     if last < first:
         last = first

@@ -12,15 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace.expand.classify.relative import relative_spec
 from mirage.workspace.mount import MountRegistry
 
 
 def _registry() -> MountRegistry:
     registry = MountRegistry()
-    registry.mount("/ram/", RAMResource(), MountMode.WRITE)
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
     return registry
 
 
@@ -51,7 +51,7 @@ def test_dotdot_normalizes():
 
 def test_unmounted_stays_text():
     registry = MountRegistry()
-    registry.mount("/ram/", RAMResource(), MountMode.WRITE)
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
     assert relative_spec("a.txt", registry, "/elsewhere") == "a.txt"
 
 
@@ -60,3 +60,17 @@ def test_raw_path_round_trip():
     assert isinstance(result, PathSpec)
     assert result.raw_path == "./sub/a.txt"
     assert result.virtual == "/ram/sub/a.txt"
+
+
+def test_empty_word_is_refused_by_the_walk_not_read_as_the_cwd():
+    result = relative_spec("", _registry(), "/ram/sub")
+    assert isinstance(result, PathSpec)
+    assert result.virtual == "/ram/sub"
+    assert result.raw_path == ""
+    assert result.walk_error == "ENOENT"
+
+
+def test_a_named_word_carries_no_walk_error():
+    result = relative_spec("sub/a.txt", _registry(), "/ram")
+    assert isinstance(result, PathSpec)
+    assert result.walk_error is None

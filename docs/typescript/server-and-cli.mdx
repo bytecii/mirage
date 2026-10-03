@@ -29,7 +29,7 @@ Write a YAML config:
 # config.yaml
 mounts:
   /:
-    resource: ram
+    vfs: ram
     mode: write
 ```
 
@@ -48,11 +48,39 @@ The CLI:
 
 ```bash
 # synchronous, blocks until the command finishes
-mirage execute -w <workspace-id> -c "ls /"
+mirage shell -w <workspace-id> -c "ls /"
 
 # background, returns a job id immediately; poll/wait later
-mirage execute --bg -w <workspace-id> -c "wc -l /large.csv"
+mirage shell --bg -w <workspace-id> -c "wc -l /large.csv"
 mirage job wait <job-id>
+```
+
+Piped input is uploaded as a binary multipart `stdin` file, preserving empty
+input and arbitrary bytes. HTTP clients can send `request` (the JSON shell
+options) and `stdin` as multipart parts for synchronous or background execution.
+The JSON `stdinBase64` form remains available for small requests; multipart
+avoids its base64 expansion and the daemon's JSON request-size limit. Input is
+buffered before execution.
+
+Each call has a job record containing its workspace and resolved session ID.
+Calls without a session ID use the workspace's default session. Foreground
+calls on the same session queue; other sessions and workspaces can progress
+concurrently. A queued job is `pending`, becomes `running` after acquiring its
+session, and becomes `stopping` when cancellation is accepted. `cancelRequested`
+records that intent; `canceled` is published after the managed call settles.
+A wait timeout returns the latest snapshot without canceling the job.
+
+Job records stay in the server's memory: running jobs are never evicted, and
+up to 1,024 completed jobs are kept for one hour.
+
+Shell evaluation yields cooperatively between nodes. Blocking Python CLI
+callbacks run in owned threads; cancellation waits for the callback to return.
+JavaScript callbacks and CPU-heavy runtimes still need to yield or run in an
+isolated worker. A scheduling checkpoint cannot interrupt arbitrary synchronous
+code.
+
+```bash
+cat report.json | mirage shell -w <workspace-id> -c 'cat > /report.json'
 ```
 
 ## Workspace lifecycle
@@ -62,7 +90,7 @@ mirage job wait <job-id>
 | `mirage workspace create <config.yaml>` | Create; auto-spawns daemon if needed. |
 | `mirage workspace list` | List active workspaces. |
 | `mirage workspace get <id> [--verbose]` | Show one workspace's detail. |
-| `mirage workspace delete <id>` | Stop and remove. |
+| `mirage workspace delete <id>` | Stop it and delete its state (links, history, sessions, versions). |
 | `mirage workspace clone <src> [--id NEW] [--at REF]` | New workspace from the source; `--at REF` clones a past version, else the live state. |
 | `mirage workspace snapshot <id> <out.tar>` | Snapshot to tar. |
 
@@ -136,8 +164,8 @@ The daemon speaks the same `/v1/...` protocol as Python's `mirage` CLI. A Python
 | File | Purpose |
 |---|---|
 | [`packages/server/src/app.ts`](https://github.com/strukto-ai/mirage/blob/main/typescript/packages/server/src/app.ts) | Fastify app factory. |
-| [`packages/server/src/routers/`](https://github.com/strukto-ai/mirage/tree/main/typescript/packages/server/src/routers) | health / workspaces / sessions / execute / jobs. |
+| [`packages/server/src/routers/`](https://github.com/strukto-ai/mirage/tree/main/typescript/packages/server/src/routers) | health / workspaces / sessions / shell / jobs. |
 | [`packages/server/src/bin/daemon.ts`](https://github.com/strukto-ai/mirage/blob/main/typescript/packages/server/src/bin/daemon.ts) | `mirage-daemon` bin. |
 | [`packages/cli/src/main.ts`](https://github.com/strukto-ai/mirage/blob/main/typescript/packages/cli/src/main.ts) | CLI program wiring. |
-| [`packages/cli/src/{workspace,session,execute,provision,job,daemon}.ts`](https://github.com/strukto-ai/mirage/tree/main/typescript/packages/cli/src) | Per-subcommand modules. |
+| [`packages/cli/src/{workspace,session,shell,job,daemon}.ts`](https://github.com/strukto-ai/mirage/tree/main/typescript/packages/cli/src) | Per-subcommand modules. |
 | [`packages/cli/src/client.ts`](https://github.com/strukto-ai/mirage/blob/main/typescript/packages/cli/src/client.ts) | HTTP client + auto-spawn. |

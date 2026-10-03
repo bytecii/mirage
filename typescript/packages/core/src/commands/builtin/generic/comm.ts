@@ -13,20 +13,17 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { extraOperandError } from '../../spec/usage.ts'
+import { extraOperandError, missingOperandError } from '../../spec/usage.ts'
+import { stdinStream } from '../utils/stream.ts'
 import { CommandName } from '../../spec/types.ts'
+import { splitLines } from '../utils/lines.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function splitLinesNoTrailing(text: string): string[] {
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped === '' ? [] : stripped.split('\n')
-}
 
 type MergeEntry = [number, string]
 
@@ -102,21 +99,20 @@ function isSorted(lines: readonly string[]): boolean {
 export async function commGeneric(
   paths: PathSpec[],
   opts: CommandOpts,
-  stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
+  read: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
   const fl = new FlagView(opts.flags, specOf('comm'))
   if (paths.length > 2) throw extraOperandError(CommandName.COMM, paths[2]?.rawPath ?? '')
-  if (paths.length < 2) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('comm: requires two paths\n') })]
-  }
+  if (paths.length < 2) throw missingOperandError(CommandName.COMM, paths[0]?.rawPath ?? null)
   const p1 = paths[0]
   const p2 = paths[1]
   if (p1 === undefined || p2 === undefined) return [null, new IOResult()]
+  const stream = stdinStream(read, opts.stdin)
   const data1 = DEC.decode(await materialize(stream(p1)))
   const data2 = DEC.decode(await materialize(stream(p2)))
   const zeroTerminated = fl.asBool('zero_terminated')
-  const lines1 = zeroTerminated ? data1.replace(/\0$/, '').split('\0') : splitLinesNoTrailing(data1)
-  const lines2 = zeroTerminated ? data2.replace(/\0$/, '').split('\0') : splitLinesNoTrailing(data2)
+  const lines1 = zeroTerminated ? data1.replace(/\0$/, '').split('\0') : splitLines(data1)
+  const lines2 = zeroTerminated ? data2.replace(/\0$/, '').split('\0') : splitLines(data2)
   let stderr = ''
   if (fl.asBool('check_order')) {
     if (!isSorted(lines1)) stderr = 'comm: file 1 is not in sorted order\n'

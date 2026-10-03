@@ -13,8 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { DropboxAccessor } from '../../accessor/dropbox.ts'
-import { invalidateAfterUnlink } from '../../cache/context.ts'
-import { record } from '../../observe/context.ts'
+import { invalidateSubtree } from '../../cache/context.ts'
+import { record, startOp } from '../../observe/context.ts'
 import type { PathSpec } from '../../types.ts'
 import { enoent } from '../../utils/errors.ts'
 import { DropboxApiError } from './client.ts'
@@ -34,7 +34,7 @@ export async function rename(
 ): Promise<void> {
   const from = dropboxPathOf(accessor, src)
   const to = dropboxPathOf(accessor, dst)
-  const startMs = performance.now()
+  const timer = startOp()
   try {
     await movePath(accessor.tokenManager, from, to)
   } catch (err) {
@@ -49,9 +49,9 @@ export async function rename(
     await deletePath(accessor.tokenManager, to)
     await movePath(accessor.tokenManager, from, to)
   }
-  record('rename', src.virtual, 'dropbox', 0, startMs)
-  await invalidateAfterUnlink(src)
+  record('rename', src.virtual, 'dropbox', 0, timer)
+  await invalidateSubtree(src)
   await invalidateAncestors(src)
-  await invalidateAfterUnlink(dst)
+  await invalidateSubtree(dst)
   await invalidateAncestors(dst)
 }

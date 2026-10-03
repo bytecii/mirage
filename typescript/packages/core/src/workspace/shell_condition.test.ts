@@ -15,11 +15,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { IOResult } from '../io/types.ts'
 import type { FileStat } from '../types.ts'
-import { FileType } from '../types.ts'
+import { ContentType, FileType } from '../types.ts'
+import { efbig } from '../utils/errors.ts'
 import { handleTest } from './executor/builtins/condition/index.ts'
-import type { DispatchFn } from './executor/cross_mount.ts'
+import type { DispatchFn } from '../runtime/types.ts'
 import type { Namespace } from './mount/namespace/namespace.ts'
-import type { Session } from './session/session.ts'
+import type { SessionState } from './session/session.ts'
 import type { Workspace } from './workspace/workspace.ts'
 import { makeIntegrationWS, run, runExit, runResult } from './fixtures/integration_fixture.ts'
 
@@ -27,8 +28,8 @@ let ws: Workspace
 
 beforeAll(async () => {
   ws = (await makeIntegrationWS({ 'plain.txt': 'apple\nbanana\n' })).ws
-  await ws.execute('mkdir -p /data/sub')
-  await ws.execute("printf '' > /data/empty.txt")
+  await ws.shell('mkdir -p /data/sub')
+  await ws.shell("printf '' > /data/empty.txt")
 })
 
 afterAll(async () => {
@@ -57,12 +58,12 @@ describe('test/[ file operators', () => {
   })
 
   it('-x true after chmod', async () => {
-    await ws.execute('chmod +x /data/plain.txt')
+    await ws.shell('chmod +x /data/plain.txt')
     expect(await runExit(ws, '[ -x /data/plain.txt ]')).toBe(0)
   })
 
   it('-L on links, files, and dangling links', async () => {
-    await ws.execute('ln -s /data/plain.txt /data/zl && ln -s /data/nope /data/zd')
+    await ws.shell('ln -s /data/plain.txt /data/zl && ln -s /data/nope /data/zd')
     expect(await runExit(ws, '[ -L /data/zl ]')).toBe(0)
     expect(await runExit(ws, '[ -h /data/zl ]')).toBe(0)
     expect(await runExit(ws, '[ -L /data/plain.txt ]')).toBe(1)
@@ -199,7 +200,7 @@ const stubNamespace = {
   isLink: () => false,
 } as unknown as Namespace
 
-const stubSession = { cwd: '/data', env: {}, arrays: {} } as unknown as Session
+const stubSession = { cwd: '/data', env: {}, arrays: {} } as unknown as SessionState
 
 /**
  * Mimics a prefix store (s3/gridfs/hf/nextcloud): stat never sees
@@ -219,13 +220,23 @@ function prefixStoreDispatch(listing: string[]): DispatchFn {
 
 /**
  * Mimics an API backend (dropbox/gdrive/box) whose stat reports
- * size-unknown for a regular file.
+ * size-unknown for a regular file; `content` is what read returns, or
+ * throws.
  */
-function unknownSizeDispatch(content: Uint8Array): DispatchFn {
-  const stat = { name: 'x', size: null, type: FileType.TEXT, mode: null } as unknown as FileStat
+function unknownSizeDispatch(content: Uint8Array | Error): DispatchFn {
+  const stat = {
+    name: 'x',
+    size: null,
+    type: FileType.FILE,
+    content: ContentType.TEXT,
+    mode: null,
+  } as unknown as FileStat
   const dispatch = (op: string) => {
     if (op === 'stat') return Promise.resolve([stat, new IOResult({})])
-    if (op === 'read') return Promise.resolve([content, new IOResult({})])
+    if (op === 'read') {
+      if (content instanceof Error) return Promise.reject(content)
+      return Promise.resolve([content, new IOResult({})])
+    }
     return Promise.reject(new Error(`unexpected op ${op}`))
   }
   return dispatch as unknown as DispatchFn
@@ -255,6 +266,11 @@ describe('cloud-backend stat/readdir shapes', () => {
     expect(await stubExit(unknownSizeDispatch(new Uint8Array([120])), ['-s', '/data/zt.txt'])).toBe(
       0,
     )
+  })
+
+  it('-s is true for a file too large to render', async () => {
+    const dispatch = unknownSizeDispatch(efbig('/data/zbig.jsonl'))
+    expect(await stubExit(dispatch, ['-s', '/data/zbig.jsonl'])).toBe(0)
   })
 
   it('-e/-f answer from stat alone without reading', async () => {

@@ -13,28 +13,25 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { MongoDBAccessor } from '../../../accessor/mongodb.ts'
-import { ResourceName } from '../../../types.ts'
+import { VFSName } from '../../../types.ts'
 import type { RegisteredCommand } from '../../config.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
 import { MONGODB_CAT } from './cat.ts'
 import { MONGODB_GREP } from './grep.ts'
-import { MONGODB_IO } from './io.ts'
+import { IO } from './io.ts'
 import { MONGODB_RG } from './rg.ts'
 import { MONGODB_TAIL } from './tail.ts'
 import { MONGODB_WC } from './wc.ts'
-import { withDefaultProvisions } from '../generic_bind/provision.ts'
-import { resolveGlobOf } from '../generic_bind/adapter.ts'
 
 const MONGODB_OVERRIDES = new Set(['cat', 'grep', 'rg', 'tail', 'wc'])
 
 export const MONGODB_COMMANDS: readonly RegisteredCommand[] = [
-  ...makeGenericCommands<MongoDBAccessor>(ResourceName.MONGODB, MONGODB_IO, {
+  ...makeGenericCommands<MongoDBAccessor>(VFSName.MONGODB, IO, {
     overrides: MONGODB_OVERRIDES,
   }),
-  ...withDefaultProvisions(
-    [...MONGODB_CAT, ...MONGODB_GREP, ...MONGODB_RG, ...MONGODB_TAIL, ...MONGODB_WC],
-    MONGODB_IO.stat,
-    resolveGlobOf(MONGODB_IO),
-    MONGODB_IO.readdir,
-  ),
+  ...MONGODB_CAT,
+  ...MONGODB_GREP,
+  ...MONGODB_RG,
+  ...MONGODB_TAIL,
+  ...MONGODB_WC,
 ]

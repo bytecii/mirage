@@ -4,7 +4,7 @@
       "id": "numfmt_to_none_prints_every_digit",
       "seq": 960020,
       "note": "GNU 9.7 renders --to=none in fixed notation; this used to print 1e+24 in TypeScript.",
-      "targets": ["ram", "disk"],
+      "targets": ["ram", "opfs", "disk"],
       "command": "numfmt --from=si 1Y",
       "expect": {
         "exit": 0,
@@ -17,7 +17,7 @@
       "id": "numfmt_to_none_keeps_input_precision",
       "seq": 960021,
       "note": "GNU 9.7 echoes an unscaled value at the precision it was typed with.",
-      "targets": ["ram", "disk"],
+      "targets": ["ram", "opfs", "disk"],
       "command": "numfmt 1.000",
       "expect": {
         "exit": 0,
@@ -29,7 +29,7 @@
       "id": "numfmt_iec_refuses_a_byte_suffix",
       "seq": 960022,
       "note": "GNU 9.7 takes one unit letter and nothing after it, so 1KiB is not a kilobyte; both languages used to accept it.",
-      "targets": ["ram", "disk"],
+      "targets": ["ram", "opfs", "disk"],
       "command": "numfmt --from=iec 1KiB",
       "expect": {
         "exit": 2,
@@ -42,7 +42,7 @@
       "id": "numfmt_iec_i_demands_its_i",
       "seq": 960023,
       "note": "GNU 9.7 requires the trailing i under --from=iec-i.",
-      "targets": ["ram", "disk"],
+      "targets": ["ram", "opfs", "disk"],
       "command": "numfmt --from=iec-i 1K",
       "expect": {
         "exit": 2,
@@ -55,13 +55,93 @@
       "id": "numfmt_no_from_points_at_from",
       "seq": 960024,
       "note": "GNU 9.7 names --from when the suffix is a real unit but no scaling was requested.",
-      "targets": ["ram", "disk"],
+      "targets": ["ram", "opfs", "disk"],
       "command": "numfmt 1K",
       "expect": {
         "exit": 2,
         "stdout": "",
         "stderr": "numfmt: rejecting suffix in input: '1K' (consider using --from)\n"
       }
+    },
+    {
+      "id": "numfmt_invalid_suffix_quotes_the_field",
+      "seq": 960025,
+      "targets": ["ram", "opfs", "disk"],
+      "command": "numfmt '1é'",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "numfmt: invalid suffix in input: '1\\303\\251'\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "numfmt_rejecting_suffix_quotes_the_field",
+      "seq": 960026,
+      "targets": ["ram", "opfs", "disk"],
+      "command": "numfmt '1Ké'",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "numfmt: rejecting suffix in input: '1K\\303\\251' (consider using --from)\n"
+      },
+      "flags": []
+    },
+    {
+      "id": "numfmt_iec_i_missing_i_names_a_bare_number",
+      "seq": 14102201,
+      "targets": ["ram", "opfs", "disk"],
+      "command": "numfmt --from=iec-i 1",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "numfmt: missing 'i' suffix in input: '1' (e.g Ki/Mi/Gi)\n"
+      },
+      "flags": [
+        "from"
+      ]
+    },
+    {
+      "id": "numfmt_iec_i_names_the_leftover_past_its_i",
+      "seq": 14102202,
+      "targets": ["ram", "opfs", "disk"],
+      "command": "numfmt --from=iec-i 1Kii",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "numfmt: invalid suffix in input '1Kii': 'i'\n"
+      },
+      "flags": [
+        "from"
+      ]
+    },
+    {
+      "id": "numfmt_iec_i_lone_i_is_not_a_unit",
+      "seq": 14102203,
+      "targets": ["ram", "opfs", "disk"],
+      "command": "numfmt --from=iec-i 1i",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "numfmt: invalid suffix in input: '1i'\n"
+      },
+      "flags": [
+        "from"
+      ]
+    },
+    {
+      "id": "numfmt_iec_takes_no_trailing_i",
+      "seq": 14102204,
+      "targets": ["ram", "opfs", "disk"],
+      "command": "numfmt --from=iec 1Ki",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "numfmt: invalid suffix in input '1Ki': 'i'\n"
+      },
+      "flags": [
+        "from"
+      ]
     }
   ]
 }

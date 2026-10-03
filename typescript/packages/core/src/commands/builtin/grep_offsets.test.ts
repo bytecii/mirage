@@ -1,0 +1,235 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { describe, expect, it, vi } from 'vitest'
+import {
+  decodeLine,
+  encodeLine,
+  lineOffsets,
+  matchOffset,
+  MatchOffsets,
+  prefixOf,
+  rgPieces,
+  rustMatches,
+} from './grep_offsets.ts'
+
+describe('lineOffsets', () => {
+  it('counts the terminator the line iterator strips', () => {
+    // abc\ndefabc\nabc abc\n -- section Q1 of the GNU truth file.
+    expect(lineOffsets(['abc', 'defabc', 'abc abc'])).toEqual([0, 4, 11])
+  })
+
+  it('counts bytes rather than characters', () => {
+    // `caf` + U+00E9 (two bytes) + a space is six bytes, so line two starts
+    // at 10 rather than at the code-unit index 9.
+    expect(lineOffsets(['café abc', 'xéy abc'])).toEqual([0, 10])
+  })
+
+  it('does not read past the last line', () => {
+    // A file with no final newline still reports 0 for its one line; the
+    // extra byte the accumulator adds is never read.
+    expect(lineOffsets(['no-newline-abc'])).toEqual([0])
+  })
+
+  it('is empty for no lines', () => {
+    expect(lineOffsets([])).toEqual([])
+  })
+})
+
+describe('matchOffset', () => {
+  it('adds the line start in bytes', () => {
+    expect(matchOffset(10, 'xéy abc', 4)).toBe(15)
+  })
+
+  it('is the line start for a match at the start of a line', () => {
+    expect(matchOffset(11, 'abc abc', 0)).toBe(11)
+  })
+})
+
+describe('prefixOf', () => {
+  it('puts the line number before the byte offset', () => {
+    expect(prefixOf(2, 4)).toBe('2:4:')
+  })
+
+  it('omits a field that is off', () => {
+    expect([prefixOf(2, null), prefixOf(null, 4)]).toEqual(['2:', '4:'])
+  })
+
+  it('is empty when neither flag is set', () => {
+    expect(prefixOf(null, null)).toBe('')
+  })
+
+  it('renders a context line with dashes throughout', () => {
+    expect(prefixOf(3, 12, false)).toBe('3-12-')
+  })
+})
+
+describe('decodeLine', () => {
+  it('carries one invalid byte as one code unit', () => {
+    // A replacing decode reads 0xff as U+FFFD, which is three bytes wide, so
+    // every offset past it ran ahead of GNU's.
+    expect(decodeLine(new Uint8Array([0xff, 0x61]))).toBe('\udcffa')
+  })
+
+  it('leaves valid UTF-8 alone', () => {
+    expect(decodeLine(new TextEncoder().encode('café abc'))).toBe('café abc')
+  })
+
+  it('round trips through encodeLine', () => {
+    const raw = new Uint8Array([0xff, 0x61, 0xc3, 0xa9, 0xfe])
+    expect(encodeLine(decodeLine(raw))).toEqual(raw)
+  })
+})
+
+describe('offsets over a smuggled byte', () => {
+  it('counts an invalid byte as one byte of the line start', () => {
+    // `\xff` is one byte, so the second line starts at 2 -- GNU's answer for
+    // `grep -b a` over `\xff\na\n`, where a replacing decode said 4.
+    expect(lineOffsets([decodeLine(new Uint8Array([0xff])), 'a'])).toEqual([0, 2])
+  })
+
+  it('counts an invalid byte as one byte inside the line', () => {
+    // `grep -bo a` over `\xffa\n` is `1:a` on GNU grep 3.11.
+    expect(matchOffset(0, decodeLine(new Uint8Array([0xff, 0x61])), 1)).toBe(1)
+  })
+})
+
+it('advances through Unicode and escaped bytes without recounting prefixes', () => {
+  const offsets = new MatchOffsets(10, 'é😀a\udcffé😀a')
+  expect([offsets.at(3), offsets.at(8)]).toEqual([16, 24])
+})
+
+it('keeps surrogate pairs intact between non-Unicode regex matches', () => {
+  const offsets = new MatchOffsets(0, '𐂀😀x')
+  expect([0, 1, 2, 3, 4].map((index) => offsets.at(index))).toEqual([0, 3, 4, 7, 8])
+})
+
+it.each([
+  [[0xef, 0xbb, 0xbf, 0x61], '\ufeffa'],
+  [[0xc0, 0xaf, 0xc1, 0xbf], '\udcc0\udcaf\udcc1\udcbf'],
+  [[0xe0, 0x80, 0x80, 0xed, 0xa0, 0x80], '\udce0\udc80\udc80\udced\udca0\udc80'],
+  [[0xf0, 0x80, 0x80, 0x80], '\udcf0\udc80\udc80\udc80'],
+  [[0xf4, 0x90, 0x80, 0x80, 0xf5, 0xff], '\udcf4\udc90\udc80\udc80\udcf5\udcff'],
+  [[0xc2, 0x41, 0xe1, 0x80, 0x42, 0xf0, 0x90, 0x80], '\udcc2A\udce1\udc80B\udcf0\udc90\udc80'],
+  [
+    [
+      0xef, 0xbb, 0xbf, 0xff, 0xc2, 0x80, 0xe0, 0xa0, 0x80, 0xed, 0x9f, 0xbf, 0xf0, 0x90, 0x82,
+      0x80, 0xf4, 0x8f, 0xbf, 0xbf,
+    ],
+    '\ufeff\udcff\u0080\u0800\ud7ff𐂀\u{10ffff}',
+  ],
+] as const)('decodes UTF-8 boundaries without replacing bytes: %j', (bytes, expected) => {
+  const raw = new Uint8Array(bytes)
+  expect(decodeLine(raw)).toBe(expected)
+  expect(encodeLine(decodeLine(raw))).toEqual(raw)
+})
+
+it('decodes a large malformed line with bounded native decoder calls', () => {
+  const expected = ('x'.repeat(8190) + '𐂀\udcffé').repeat(4)
+  const raw = encodeLine(expected)
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode')
+  try {
+    expect(decodeLine(raw)).toBe(expected)
+    expect(decode.mock.calls.length).toBeLessThanOrEqual(2)
+  } finally {
+    decode.mockRestore()
+  }
+})
+
+describe('rustMatches', () => {
+  it('resumes one character after an empty match', () => {
+    // `rg -o 'x*'` over `abc` prints four empty lines on ripgrep 14.1.1.
+    expect(rustMatches(/x*/, 'abc')).toEqual([
+      [0, ''],
+      [1, ''],
+      [2, ''],
+      [3, ''],
+    ])
+  })
+
+  it('skips an empty match where a match ended', () => {
+    // `rg -o 'b*'` over `abc` is an empty line, `b`, an empty line.
+    expect(rustMatches(/b*/, 'abc')).toEqual([
+      [0, ''],
+      [1, 'b'],
+      [3, ''],
+    ])
+  })
+
+  it('skips it after every non-empty match', () => {
+    // `rg -o '[0-9]*'` over `1a22b` prints `1`, `22` and an empty line.
+    expect(rustMatches(/[0-9]*/, '1a22b')).toEqual([
+      [0, '1'],
+      [2, '22'],
+      [5, ''],
+    ])
+  })
+
+  it('takes the first alternative that matches', () => {
+    // `rg -o 'o|'` over `foo` is an empty line, `o`, `o`.
+    expect(rustMatches(/o|/, 'foo')).toEqual([
+      [0, ''],
+      [1, 'o'],
+      [2, 'o'],
+    ])
+  })
+
+  it('sees the text before where it resumes', () => {
+    // `rg -o '\b'` over `ab` is two empty lines: no boundary inside `ab`.
+    expect(rustMatches(/\b/, 'ab')).toEqual([
+      [0, ''],
+      [2, ''],
+    ])
+  })
+
+  it('anchors only at the line start', () => {
+    // `rg -o '^'` over `ab` is one empty line.
+    expect(rustMatches(/^/, 'ab')).toEqual([[0, '']])
+  })
+
+  it('steps over a surrogate pair as one character', () => {
+    expect(rustMatches(/x*/, 'é😀')).toEqual([
+      [0, ''],
+      [1, ''],
+      [3, ''],
+    ])
+  })
+
+  it('ignores the global and sticky state of the pattern it is given', () => {
+    const pat = /a/gy
+    pat.lastIndex = 2
+    expect(rustMatches(pat, 'aba')).toEqual([
+      [0, 'a'],
+      [2, 'a'],
+    ])
+  })
+
+  it('is empty for no match', () => {
+    expect(rustMatches(/y/, 'x')).toEqual([])
+  })
+})
+
+describe('rgPieces', () => {
+  it('is the matches when there are any', () => {
+    expect(rgPieces(/[0-9]/, 'a1b2c')).toEqual([
+      [1, '1'],
+      [3, '2'],
+    ])
+  })
+
+  it('prints a line without a match whole', () => {
+    // `rg -ov y` over `x` prints `x`, as a context line under -o prints.
+    expect(rgPieces(/y/, 'x')).toEqual([[0, 'x']])
+  })
+})

@@ -15,17 +15,16 @@
 from collections.abc import Callable
 from typing import Any
 
-import tree_sitter
-
 from mirage.ops.types import SessionView
 from mirage.shell.call_stack import CallStack
 from mirage.shell.escapes import decode_ansi_c
-from mirage.shell.syntax.helpers import get_text
+from mirage.shell.helpers import get_text
 from mirage.shell.types import NodeType as NT
+from mirage.shell.types import TSNodeLike
 from mirage.utils.glob_walk import escape_glob
 from mirage.utils.path import expand_tilde
 from mirage.workspace.expand.node import expand_node
-from mirage.workspace.session import Session
+from mirage.workspace.session import SessionState
 from mirage.workspace.session.shell_dirs import home_dir
 
 
@@ -47,46 +46,9 @@ def _unquoted_pattern(text: str) -> str:
     return "".join(out)
 
 
-async def _quoted_string_pattern(
-    ts_node: tree_sitter.Node,
-    session: Session,
-    execute_fn: Callable[..., Any],
-    call_stack: CallStack | None,
-    view: SessionView | None = None,
-) -> str:
-    """A double-quoted pattern segment: everything in it is literal.
-
-    Mirrors expand_node's string walk (dquote skipping, the multi-line
-    newline re-emit), but the value of each piece - string content and
-    quoted expansions alike - is escaped so its glob characters match
-    themselves.
-
-    Args:
-        ts_node (tree_sitter.Node): the string node.
-        session (Session): shell session state.
-        execute_fn (Callable): evaluator for command substitutions.
-        call_stack (CallStack | None): function-call scope, if any.
-    """
-    parts: list[str] = []
-    prev_end_row = None
-    for child in ts_node.children:
-        if prev_end_row is not None:
-            parts.append("\n" * (child.start_point[0] - prev_end_row))
-        prev_end_row = child.end_point[0]
-        if child.type == NT.DQUOTE:
-            continue
-        expanded = await expand_node(child,
-                                     session,
-                                     execute_fn,
-                                     call_stack,
-                                     view=view)
-        parts.append(escape_glob(expanded))
-    return "".join(parts)
-
-
 async def expand_pattern(
-    ts_node: tree_sitter.Node,
-    session: Session,
+    ts_node: TSNodeLike,
+    session: SessionState,
     execute_fn: Callable[..., Any],
     call_stack: CallStack | None = None,
     view: SessionView | None = None,
@@ -102,8 +64,8 @@ async def expand_pattern(
     matches the word ``a b``.
 
     Args:
-        ts_node (tree_sitter.Node): one pattern node.
-        session (Session): shell session state.
+        ts_node (TSNodeLike): one pattern node.
+        session (SessionState): shell session state.
         execute_fn (Callable): evaluator for command substitutions.
         call_stack (CallStack | None): function-call scope, if any.
     """
@@ -118,19 +80,19 @@ async def expand_pattern(
     if ntype == NT.ANSI_C_STRING:
         return escape_glob(decode_ansi_c(get_text(ts_node)[2:-1]))
     if ntype == NT.STRING:
-        return await _quoted_string_pattern(ts_node,
-                                            session,
-                                            execute_fn,
-                                            call_stack,
-                                            view=view)
+        return escape_glob(
+            await expand_node(
+                ts_node, session, execute_fn, call_stack, view=view
+            )
+        )
     if ntype == NT.TRANSLATED_STRING:
         for child in ts_node.named_children:
             if child.type == NT.STRING:
-                return await _quoted_string_pattern(child,
-                                                    session,
-                                                    execute_fn,
-                                                    call_stack,
-                                                    view=view)
+                return escape_glob(
+                    await expand_node(
+                        child, session, execute_fn, call_stack, view=view
+                    )
+                )
         return ""
     if ntype == NT.CONCATENATION:
         parts = []
@@ -139,17 +101,18 @@ async def expand_pattern(
             # A $"..." inside a concatenation arrives as an anonymous
             # `$` token followed by the string node; the `$` is the
             # translation marker, not text (same rule as expand_node).
-            if (child.type == "$" and position + 1 < len(children)
-                    and children[position + 1].type == NT.STRING):
+            if (
+                child.type == "$"
+                and position + 1 < len(children)
+                and children[position + 1].type == NT.STRING
+            ):
                 continue
-            parts.append(await expand_pattern(child,
-                                              session,
-                                              execute_fn,
-                                              call_stack,
-                                              view=view))
+            parts.append(
+                await expand_pattern(
+                    child, session, execute_fn, call_stack, view=view
+                )
+            )
         return "".join(parts)
-    return await expand_node(ts_node,
-                             session,
-                             execute_fn,
-                             call_stack,
-                             view=view)
+    return await expand_node(
+        ts_node, session, execute_fn, call_stack, view=view
+    )

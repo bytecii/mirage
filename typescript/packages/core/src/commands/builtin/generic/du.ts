@@ -13,21 +13,31 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
-import { hiddenPathsActive, pathAllowed } from '../../../context/session_context.ts'
-import { isMissingPath } from '../../../utils/errors.ts'
+import {
+  hiddenPathsIntersect,
+  pathAllowed,
+  pathRulesActive,
+} from '../../../context/session_context.ts'
+import {
+  ZERO_LENGTH_NAME,
+  fsStrerror,
+  isDotWalkError,
+  isMissingPath,
+} from '../../../utils/errors.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { respellRaw } from '../../../utils/path.ts'
 import { lstripSlash, rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import { formatRecords } from '../utils/output.ts'
 import { humanSize } from '../utils/formatting.ts'
+import { quoteText } from '../../quote.ts'
 import type { LinkView, MountView, StatPath } from '../../../ops/types.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
 
-export type DuEntries = [entries: [string, number][], total: number]
+import type { DuEntries } from '../../../vfs/types.ts'
 export type ComputeSize = (p: PathSpec) => Promise<number>
 export type ComputeEntries = (p: PathSpec) => Promise<DuEntries>
 
@@ -94,7 +104,7 @@ const TRUNCATED_NOTE = 'du: walk stopped early: the reported sizes are incomplet
  * ahead of the mutually-exclusive checks that run once the whole line is
  * parsed. All three exit 1, du's usage-error code.
  */
-export function parseDuFlags(opts: CommandOpts): DuFlags {
+export function parseFlags(opts: CommandOpts): DuFlags {
   const fl = new FlagView(opts.flags, specOf('du'))
   const s = fl.asBool('s')
   const a = fl.asBool('a')
@@ -103,7 +113,7 @@ export function parseDuFlags(opts: CommandOpts): DuFlags {
   if (typeof raw === 'string') {
     maxDepth = parseDepth(raw)
     if (maxDepth === null) {
-      throw new UsageError(`du: invalid maximum depth '${raw}'\n${USAGE_HINT}`, 1)
+      throw new UsageError(`du: invalid maximum depth '${quoteText(raw)}'\n${USAGE_HINT}`, 1)
     }
   }
   if (s && a) {
@@ -139,7 +149,7 @@ function cwdSpec(cwd: string, mountPrefix?: string): PathSpec {
   // the cwd with the mount prefix removed: from /ram the backend must be
   // asked for its own root, not for a 'ram' entry inside itself.
   return new PathSpec({
-    resourcePath: mountPrefix === undefined ? stripSlash(dir) : mountKey(dir, mountPrefix),
+    vfsPath: mountPrefix === undefined ? stripSlash(dir) : mountKey(dir, mountPrefix),
     virtual: dir,
     directory: dir,
     resolved: false,
@@ -152,7 +162,12 @@ function cwdSpec(cwd: string, mountPrefix?: string): PathSpec {
 async function duHasContent(computeEntries: ComputeEntries, path: PathSpec): Promise<boolean> {
   try {
     const [entries] = await computeEntries(path)
-    return entries.length > 0
+    // The visibility filter is what makes this safe to ask after the
+    // dispatcher already said no: `computeEntries` runs on the bound
+    // accessor, which knows nothing of hides, so counting its raw answer
+    // would confirm a walled-off subtree's parent. Entries are lifted onto
+    // virtual paths first, since that is the space a hide is written in.
+    return toVirtual(entries, path).some(([leaf]) => pathAllowed(leaf))
   } catch {
     // This runs only after stat already failed, to tell an implicit
     // directory from an absent path. Backends raise their own error types
@@ -172,17 +187,46 @@ async function duHasContent(computeEntries: ComputeEntries, path: PathSpec): Pro
  * A failed stat is not proof of absence, and du runs bound to one backend, so
  * its own stat cannot see two things that make a path a real directory: a
  * mount nested below it and a symlink below it are both namespace state, held
- * in another resource or in no resource at all. `statPath` is the channel that
+ * in another VFS or in no VFS at all. `statPath` is the channel that
  * knows, because it resolves through the dispatcher rather than one accessor,
- * and it is the same probe `find` classifies its start point with. Session
+ * and it is the same probe `find` classifies its start point with. SessionState
  * filtering rides along with it: a mount the session may not see contributes
  * no directory here, so absence stays the answer for it.
  *
- * `hasContent` is the last resort behind that, for a backend that never
+ * `hasContent` is the second channel behind that, for a backend that never
  * materialises a directory entry for its own mount root (redis is one) while
- * the subtree below it is full.
+ * the subtree below it is full. It counts only what the session may see, so
+ * it cannot re-open what the first channel closed.
  */
 const ENOENT_TEXT = 'No such file or directory'
+
+/**
+ * Whether one operand is there at all, before anything is measured.
+ *
+ * A point lookup alone cannot decide, so this asks both channels a
+ * backend can answer on, the way `find` classifies its start point: on a
+ * prefix store a directory is not an object, it is the set of keys under
+ * it, so `stat` misses what a listing would show (redis never
+ * materialises an entry for its own mount root). Absence takes both
+ * coming back empty.
+ *
+ * Where a dispatcher is wired it replaces the bound backend's stat,
+ * because that stat sees one accessor and knows nothing of hides:
+ * trusting it answered `0 <path>` for a hidden directory and confirmed
+ * to the agent what the profile was not meant to show it. The content probe
+ * behind it counts only what the session may see, so it cannot re-open
+ * what the first channel closed.
+ */
+async function duOperandExists(
+  path: PathSpec,
+  stattable: boolean,
+  hasContent: ((p: PathSpec) => Promise<boolean>) | undefined,
+  statPath: StatPath | null,
+): Promise<boolean> {
+  if (statPath === null && stattable) return true
+  if (statPath !== null && (await statPath(path.virtual)) !== null) return true
+  return hasContent !== undefined && (await hasContent(path))
+}
 
 async function duOperands(
   paths: PathSpec[],
@@ -224,14 +268,16 @@ async function duOperands(
         missing.push([path.rawPath, 'Not a directory'])
         continue
       }
+      // The operand did not resolve, so no channel asked about the path
+      // it simplifies to can find it there.
+      if (isDotWalkError(err)) {
+        missing.push([path.rawPath, fsStrerror(err) ?? ENOENT_TEXT])
+        continue
+      }
       if (!isMissingPath(err)) throw err
       stattable = false
     }
-    if (!stattable && statPath !== null && (await statPath(path.virtual)) !== null) {
-      present.push(path)
-      continue
-    }
-    if (!stattable && !(hasContent !== undefined && (await hasContent(path)))) {
+    if (!(await duOperandExists(path, stattable, hasContent, statPath))) {
       missing.push([path.rawPath, ENOENT_TEXT])
       continue
     }
@@ -265,7 +311,7 @@ function depthOf(entryPath: string, basePath: string): number {
  * recover it.
  */
 export function toVirtual(entries: [string, number][], path: PathSpec): [string, number][] {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   if (!prefix) return [...entries]
   return entries.map(([entry, size]) => [`${prefix}/${lstripSlash(entry)}`, size])
 }
@@ -301,9 +347,9 @@ export function separateTotal(entries: [string, number][], root: string): number
 export function rollup(
   entries: [string, number][],
   root: string,
-  // `dirs`: paths that are directories even though no leaf points at
-  // them. mirage cannot otherwise see an empty directory, so this is the
-  // one case it can: an empty mount still gets GNU's `0` row.
+  // `dirs`: paths that are directories even though no leaf may point at
+  // them: the directories a walk met (an empty one, or one it could not
+  // open) and the roots of descendant mounts, which still get GNU's `0` row.
   opts: {
     all: boolean
     maxDepth: number | null
@@ -420,6 +466,7 @@ async function duOne(
   flags: DuFlags,
   links: LinkView | null,
   mounts: MountView | null,
+  directories?: () => readonly string[],
 ): Promise<[string[], number]> {
   const label = path.rawPath
 
@@ -436,7 +483,13 @@ async function duOne(
   if (roots.length > 0) leaves = dropShadowed(leaves, roots)
   const linkTotal = leaves.reduce((acc, [, size]) => acc + size, 0)
 
-  if (flags.s && !flags.S && roots.length === 0 && !hiddenPathsActive()) {
+  if (
+    flags.s &&
+    !flags.S &&
+    roots.length === 0 &&
+    !hiddenPathsIntersect(path.virtual) &&
+    !pathRulesActive()
+  ) {
     // The one-total fast path trusts the backend's own sum, which a
     // session hiding paths cannot: hidden leaves would be counted into
     // a total their names never justify, so that session takes the
@@ -447,7 +500,15 @@ async function duOne(
 
   const [raw, rawTotal] = await computeEntries(path)
   let total = rawTotal + linkTotal
-  if (raw.length === 0 && leaves.length === 0) {
+  const rootKey = norm(path.virtual)
+  const under = rootKey.replace(/\/$/, '') + '/'
+  const dirs = (directories?.() ?? []).filter(
+    (d) =>
+      norm(d).startsWith(under) &&
+      pathAllowed(d) &&
+      !roots.some((r) => norm(d) === r || norm(d).startsWith(r + '/')),
+  )
+  if (raw.length === 0 && leaves.length === 0 && dirs.length === 0) {
     // A backend that can only produce a size degrades to one total; it
     // cannot enumerate, so shadowed keys cannot be excluded either.
     const fallback = await computeSize(path)
@@ -468,7 +529,6 @@ async function duOne(
     entries = dropShadowed(entries, roots)
     total = entries.reduce((acc, [, size]) => acc + size, 0)
   }
-  const rootKey = norm(path.virtual)
   // A file operand walks to itself. GNU prints it once, with or without -a,
   // never as a leaf line plus a roll-up line. GNU scopes -S to directories, so
   // a file operand keeps its own size in both its row and the grand total.
@@ -487,6 +547,7 @@ async function duOne(
   const rows = rollup(entries, path.virtual, {
     all: flags.a,
     maxDepth: flags.maxDepth,
+    dirs,
     separateDirs: flags.S,
   })
   const shown = respellRaw(
@@ -515,8 +576,10 @@ export async function runDu(
   computeSize: ComputeSize,
   computeEntries: ComputeEntries,
   truncated?: () => boolean,
+  unreadable?: () => readonly string[],
+  directories?: () => readonly string[],
 ): Promise<DuOutput> {
-  const flags = parseDuFlags(opts)
+  const flags = parseFlags(opts)
   // -L dereferences: the operand was already rewritten at dispatch, and
   // withholding the link table stops the links below it from being
   // counted as entries in their own right, which is what GNU does (it
@@ -543,6 +606,8 @@ export async function runDu(
     truncated,
     links,
     opts.ns?.mounts ?? null,
+    unreadable,
+    directories,
   )
 }
 
@@ -556,7 +621,13 @@ export async function runDu(
  * prints the rest. `truncated` is read after the walks to ask whether any of
  * them hit its entry cap. `mounts` marks the descendant boundaries: leaves
  * under one are shadowed and dropped from every row and total (see
- * `dropShadowed`).
+ * `dropShadowed`). `unreadable` is read after the walks for the directories a
+ * walk could not open (a rule refused them below the operand): GNU names each
+ * one, counts what it could, and exits 1; the line is spelled as the operand
+ * was typed, and follows the unreadable-operand lines since those are known
+ * before any walk. `directories` is read after each operand's walk for every
+ * directory it met, so one no file points at (empty, or refused) still gets
+ * GNU's row.
  */
 export async function duGeneric(
   paths: PathSpec[],
@@ -567,13 +638,24 @@ export async function duGeneric(
   truncated?: () => boolean,
   links: LinkView | null = null,
   mounts: MountView | null = null,
+  unreadable?: () => readonly string[],
+  directories?: () => readonly string[],
 ): Promise<DuOutput> {
   const fmt = (size: number): string => (flags.h ? humanSize(size) : String(size))
 
   const lines: string[] = []
   let grand = 0
   for (const root of paths) {
-    const [block, total] = await duOne(root, computeSize, computeEntries, fmt, flags, links, mounts)
+    const [block, total] = await duOne(
+      root,
+      computeSize,
+      computeEntries,
+      fmt,
+      flags,
+      links,
+      mounts,
+      directories,
+    )
     lines.push(...block)
     grand += total
   }
@@ -582,8 +664,16 @@ export async function duGeneric(
   if (flags.c) lines.push(`${fmt(grand)}\ttotal`)
 
   const notes = flags.warning === undefined ? [] : [flags.warning]
-  notes.push(...missing.map(([raw, detail]) => `du: cannot access '${raw}': ${detail}`))
+  notes.push(
+    ...missing.map(([raw, detail]) =>
+      raw === '' ? `du: ${ZERO_LENGTH_NAME}` : `du: cannot access '${raw}': ${detail}`,
+    ),
+  )
   let exitCode = missing.length > 0 ? 1 : 0
+  for (const virtual of unreadable?.() ?? []) {
+    notes.push(`du: cannot read directory '${respellUnder(virtual, paths)}': Permission denied`)
+    exitCode = 1
+  }
   if (truncated?.() === true) {
     notes.push(TRUNCATED_NOTE)
     exitCode = 1
@@ -591,4 +681,15 @@ export async function duGeneric(
   const stderr =
     notes.length > 0 ? new TextEncoder().encode(`${notes.join('\n')}\n`) : new Uint8Array(0)
   return { stdout: formatRecords(lines), stderr, exitCode }
+}
+
+// Spell a walked path as the operand it lies under was typed.
+function respellUnder(virtual: string, paths: readonly PathSpec[]): string {
+  for (const path of paths) {
+    const base = rstripSlash(path.virtual) || '/'
+    if (virtual === base || virtual.startsWith(`${rstripSlash(base)}/`)) {
+      return respellRaw([virtual], path.virtual, path.rawPath)[0] ?? virtual
+    }
+  }
+  return virtual
 }

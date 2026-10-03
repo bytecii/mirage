@@ -19,13 +19,12 @@ import pytest
 
 from mirage import MountMode, Workspace
 from mirage.ops import Ops
-from mirage.resource.gdocs import GDocsConfig, GDocsResource
+from mirage.vfs.gdocs import GDocsConfig, GDocsVFS
 
 
 def _make_gdocs_ops() -> Ops:
-    resource = GDocsResource(
-        config=GDocsConfig(client_id="x", refresh_token="y"))
-    return Workspace({"/gdocs/": resource}, mode=MountMode.READ).ops
+    vfs = GDocsVFS(config=GDocsConfig(client_id="x", refresh_token="y"))
+    return Workspace({"/gdocs/": vfs}, mode=MountMode.READ).vfs
 
 
 @pytest.mark.asyncio
@@ -41,11 +40,12 @@ async def test_read_doc():
     ops = _make_gdocs_ops()
     doc_json = json.dumps({"documentId": "doc1", "title": "Report"}).encode()
     with patch(
-            "mirage.ops.gdocs.read.core_read",
-            new_callable=AsyncMock,
-            return_value=doc_json,
+        "mirage.ops.gdocs.read.core_read",
+        new_callable=AsyncMock,
+        return_value=doc_json,
     ):
         result = await ops.read(
-            "/gdocs/owned/2026-04-01_Report__doc1.gdoc.json")
+            "/gdocs/owned/2026-04-01_Report__doc1.gdoc.json"
+        )
         parsed = json.loads(result)
         assert parsed["documentId"] == "doc1"

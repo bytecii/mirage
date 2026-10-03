@@ -53,13 +53,19 @@ export function registerSessionCommands(program: Command): void {
     .option('--id <sessionId>')
     .option(
       '-m, --mount <prefix>',
-      "restrict session to a mount, optionally capping its mode: '/data:read' " +
-        "(alias '/data:r'), '/scratch:rw', '/bin:rwx', or a bare '/data' to keep " +
-        "the mount's own mode; repeatable",
+      "narrow a mount's mode for this session: '/data:read' (alias '/data:r'), " +
+        "'/scratch:rw', '/bin:rwx', or a bare '/data' to keep the mount's own " +
+        'mode; repeatable. This narrows only: a mount you do not name keeps its ' +
+        'own mode, and keeping a session away from one is a hide in its profile',
       (value: string, prev: string[]) => prev.concat([value]),
       [] as string[],
     )
-    .action(async (wsId: string, opts: { id?: string; mount?: string[] }) => {
+    .option(
+      '-p, --profile <name>',
+      "the profile this session runs under, by name from the workspace's profiles; " +
+        'omit it to take the workspace default',
+    )
+    .action(async (wsId: string, opts: { id?: string; mount?: string[]; profile?: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
       const body: Record<string, unknown> = {}
@@ -67,9 +73,10 @@ export function registerSessionCommands(program: Command): void {
       if (opts.mount !== undefined && opts.mount.length > 0) {
         body.mounts = parseMountModes(opts.mount)
       }
+      if (opts.profile !== undefined) body.profile = opts.profile
       emit(
         await handleResponse(
-          await c.request('POST', `/v1/workspaces/${wsId}/sessions`, {
+          await c.request('POST', `/v1/workspaces/${encodeURIComponent(wsId)}/sessions`, {
             body: JSON.stringify(body),
           }),
         ),
@@ -82,7 +89,11 @@ export function registerSessionCommands(program: Command): void {
     .action(async (wsId: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      emit(await handleResponse(await c.request('GET', `/v1/workspaces/${wsId}/sessions`)))
+      emit(
+        await handleResponse(
+          await c.request('GET', `/v1/workspaces/${encodeURIComponent(wsId)}/sessions`),
+        ),
+      )
     })
 
   sess
@@ -94,7 +105,10 @@ export function registerSessionCommands(program: Command): void {
       await c.ensureRunning({ allowSpawn: false })
       emit(
         await handleResponse(
-          await c.request('DELETE', `/v1/workspaces/${wsId}/sessions/${sessionId}`),
+          await c.request(
+            'DELETE',
+            `/v1/workspaces/${encodeURIComponent(wsId)}/sessions/${encodeURIComponent(sessionId)}`,
+          ),
         ),
       )
     })

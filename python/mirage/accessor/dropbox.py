@@ -18,7 +18,7 @@ from mirage.accessor.base import Accessor
 
 if TYPE_CHECKING:
     from mirage.core.dropbox.client import DropboxTokenManager
-    from mirage.resource.dropbox.config import DropboxConfig
+    from mirage.vfs.dropbox.config import DropboxConfig
 
 
 def normalize_dropbox_root_path(value: str | None) -> str:
@@ -37,9 +37,9 @@ def normalize_dropbox_root_path(value: str | None) -> str:
 
 
 class DropboxAccessor(Accessor):
-
-    def __init__(self, config: "DropboxConfig",
-                 token_manager: "DropboxTokenManager") -> None:
+    def __init__(
+        self, config: "DropboxConfig", token_manager: "DropboxTokenManager"
+    ) -> None:
         self.config = config
         self.token_manager = token_manager
         self.root_path = normalize_dropbox_root_path(config.root_path)

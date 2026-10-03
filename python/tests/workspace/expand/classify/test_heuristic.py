@@ -12,17 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace.expand.classify.heuristic import classify_word
 from mirage.workspace.mount import MountRegistry
 
 
 def _ram_registry() -> MountRegistry:
     registry = MountRegistry()
-    resource = RAMResource()
-    resource._store.dirs.add("/")
-    registry.mount("/ram/", resource, MountMode.WRITE)
+    vfs = RAMVFS()
+    vfs._store.dirs.add("/")
+    registry.mount("/ram/", vfs, MountMode.WRITE)
     return registry
 
 
@@ -50,9 +50,9 @@ def test_classify_already_unescaped_absolute():
 
 def test_classify_quoted_path():
     registry = MountRegistry()
-    resource = RAMResource()
-    resource._store.dirs.add("/")
-    registry.mount("/ram/", resource, MountMode.WRITE)
+    vfs = RAMVFS()
+    vfs._store.dirs.add("/")
+    registry.mount("/ram/", vfs, MountMode.WRITE)
     result = classify_word("/ram/Zecheng's Server/", registry, "/")
     assert isinstance(result, PathSpec)
     assert result.virtual == "/ram/Zecheng's Server"
@@ -60,13 +60,13 @@ def test_classify_quoted_path():
 
 def test_bare_filename_stays_text():
     registry = MountRegistry()
-    registry.mount("/ram/", RAMResource(), MountMode.WRITE)
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
     assert classify_word("file.txt", registry, "/ram") == "file.txt"
 
 
 def test_relative_subdir_path_resolves():
     registry = MountRegistry()
-    registry.mount("/ram/", RAMResource(), MountMode.WRITE)
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
     result = classify_word("sub/file.txt", registry, "/ram")
     assert isinstance(result, PathSpec)
     assert result.virtual == "/ram/sub/file.txt"
@@ -74,14 +74,34 @@ def test_relative_subdir_path_resolves():
 
 def test_relative_glob_resolves_against_cwd():
     registry = MountRegistry()
-    registry.mount("/ram/", RAMResource(), MountMode.WRITE)
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
     result = classify_word("*.txt", registry, "/ram")
     assert isinstance(result, PathSpec)
     assert result.pattern == "*.txt"
     assert result.directory == "/ram/"
 
 
-def test_bare_glob_operator_stays_text():
+# bash expands every unquoted glob word, a bare `*` included (`echo *`
+# lists the directory); a quoted one arrives without glob marks and is
+# text, which is how `expr 4 '*' 3` keeps its operator.
+def test_a_bare_glob_is_a_pattern_under_cwd():
     registry = MountRegistry()
-    registry.mount("/ram/", RAMResource(), MountMode.WRITE)
-    assert classify_word("*", registry, "/ram") == "*"
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
+    result = classify_word("*", registry, "/ram")
+    assert isinstance(result, PathSpec)
+    assert result.pattern == "*"
+    assert result.directory == "/ram/"
+
+
+def test_a_glob_with_no_name_character_still_globs():
+    registry = MountRegistry()
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
+    result = classify_word("*-*", registry, "/ram")
+    assert isinstance(result, PathSpec)
+    assert result.pattern == "*-*"
+
+
+def test_a_glob_beside_shell_syntax_stays_text():
+    registry = MountRegistry()
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
+    assert classify_word("x=*", registry, "/ram") == "x=*"

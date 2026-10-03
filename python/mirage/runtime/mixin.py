@@ -14,7 +14,12 @@
 
 from abc import ABC, abstractmethod
 
-from mirage.runtime.types import EvalResult, EvalValue, RunResult
+from mirage.runtime.types import (
+    EvalResult,
+    EvalValue,
+    ProcessExecution,
+    RunResult,
+)
 
 
 class EvaluatorMixin(ABC):
@@ -37,11 +42,13 @@ class EvaluatorMixin(ABC):
     """
 
     @abstractmethod
-    async def eval(self,
-                   code: str,
-                   *,
-                   inputs: dict[str, EvalValue] | None = None,
-                   session: str | None = None) -> EvalResult:
+    async def eval(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, EvalValue] | None = None,
+        session: str | None = None,
+    ) -> EvalResult:
         """Evaluate one program and return its last expression.
 
         Args:
@@ -66,18 +73,20 @@ class LineExecutorMixin(ABC):
     also inherits this owns any line routed to it wholesale: pipes,
     redirects, and every command in the line run inside the runtime's
     world (its own cat, its own grep), the workspace shell never
-    splits the line. A line lands on it when the runtime captures one
-    of the line's commands or "*". Interpreter runtimes never inherit
+    splits the line. Only an explicit "*" capture delegates a whole
+    workspace line. Named captures receive one safely quoted command.
+    Interpreter runtimes never inherit
     it: they are the engine inside one command (python3, node), never
-    the line. The vfs runtime does not either: a line resolved to vfs
-    runs on the workspace executor inline, so there is no delegate to
-    call. Capability is detected by type (isinstance), never by
+    the line. The workspace runtime does not either: a line resolved to
+    workspace runs on the workspace executor inline, so there is no delegate
+    to call. Capability is detected by type (isinstance), never by
     probing for a method or a flag.
     """
 
     @abstractmethod
-    async def run_line(self, line: str, stdin: bytes | None,
-                       env: dict[str, str], cwd: str) -> RunResult:
+    async def run_line(
+        self, line: str, stdin: bytes | None, env: dict[str, str], cwd: str
+    ) -> RunResult:
         """Execute one raw command line wholesale.
 
         Args:
@@ -86,3 +95,11 @@ class LineExecutorMixin(ABC):
             env (dict[str, str]): the session environment.
             cwd (str): the session working directory.
         """
+
+
+class ProcessExecutorMixin(ABC):
+    """Execute an argv request without shell interpretation."""
+
+    @abstractmethod
+    async def run_process(self, request: ProcessExecution) -> RunResult:
+        """Run a process with the request's cwd, environment and stdin."""

@@ -21,33 +21,36 @@ from mirage import MountMode, Workspace
 from mirage.cache.index import IndexCacheStore
 from mirage.cache.index.config import IndexEntry
 from mirage.ops import Ops
-from mirage.resource.gslides import GSlidesConfig, GSlidesResource
+from mirage.vfs.gslides import GSlidesConfig, GSlidesVFS
 
 
 def _make_gslides_ops() -> tuple[Ops, IndexCacheStore]:
-    # Mounting re-derives the resource's index from the workspace's
-    # config, so the store to seed is the one the mount ends up with.
-    resource = GSlidesResource(
-        config=GSlidesConfig(client_id="x", refresh_token="y"))
-    ws = Workspace({"/gslides/": resource}, mode=MountMode.READ)
-    return ws.ops, resource.index
+    # The store to seed is the one the mount runs the driver under.
+    vfs = GSlidesVFS(config=GSlidesConfig(client_id="x", refresh_token="y"))
+    ws = Workspace({"/gslides/": vfs}, mode=MountMode.READ)
+    return ws.vfs, ws.mount("/gslides/").index_store
 
 
 @pytest.mark.asyncio
 async def test_readdir():
     ops, index = _make_gslides_ops()
-    await index.set_dir("/gslides/owned", [(
-        "deck.gslide.json",
-        IndexEntry(
-            id="slide1",
-            name="Deck",
-            resource_type="gslides/slide",
-            remote_time="2026-04-01T00:00:00Z",
-            vfs_name="deck.gslide.json",
-        ),
-    )])
+    await index.set_dir(
+        "/gslides/owned",
+        [
+            (
+                "Deck__slide1.gslide.json",
+                IndexEntry(
+                    id="slide1",
+                    name="Deck",
+                    resource_type="gslides/slide",
+                    remote_time="2026-04-01T00:00:00Z",
+                    vfs_name="Deck__slide1.gslide.json",
+                ),
+            )
+        ],
+    )
     result = await ops.readdir("/gslides/owned")
-    assert "/gslides/owned/deck.gslide.json" in result
+    assert "/gslides/owned/Deck__slide1.gslide.json" in result
 
 
 @pytest.mark.asyncio
@@ -55,10 +58,10 @@ async def test_read_presentation():
     ops, _ = _make_gslides_ops()
     pres_json = json.dumps({"presentationId": "slide1"}).encode()
     with patch(
-            "mirage.ops.gslides.read.core_read",
-            new_callable=AsyncMock,
-            return_value=pres_json,
+        "mirage.ops.gslides.read.core_read",
+        new_callable=AsyncMock,
+        return_value=pres_json,
     ):
-        result = await ops.read("/gslides/owned/deck.gslide.json")
+        result = await ops.read("/gslides/owned/Deck__slide1.gslide.json")
         parsed = json.loads(result)
         assert parsed["presentationId"] == "slide1"

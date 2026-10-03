@@ -1,15 +1,17 @@
 import json
 
 from mirage.core.qdrant.render import render_json, render_text
-from mirage.resource.qdrant.config import QdrantConfig
+from mirage.vfs.qdrant.config import QdrantConfig
 
 
 def _cfg() -> QdrantConfig:
-    return QdrantConfig(id_field="id",
-                        text_field="name",
-                        blob_field="image_bytes",
-                        blob_ext="png",
-                        vector_field="vector")
+    return QdrantConfig(
+        id_field="id",
+        text_field="name",
+        blob_field="image_bytes",
+        blob_ext="png",
+        vector_field="vector",
+    )
 
 
 def test_render_json_omits_vector_and_blob():
@@ -36,3 +38,20 @@ def test_render_text_returns_source_text():
 
 def test_render_text_empty_when_field_missing():
     assert render_text({"id": 3}, _cfg()) == b""
+
+
+def test_nested_text_and_blob_fields_are_resolved_consistently():
+    config = QdrantConfig(
+        text_field="document.text", blob_field="document.blob"
+    )
+    row = {"id": 3, "document": {"text": "chunk", "blob": "Ynl0ZXM="}}
+    assert render_text(row, config) == b"chunk\n"
+    assert json.loads(render_json(row, config)) == {
+        "id": 3,
+        "document": {"text": "chunk"},
+    }
+
+
+def test_render_text_spells_a_non_string_value_as_its_json_does():
+    # ``str(True)`` would write ``True`` where TypeScript writes ``true``.
+    assert render_text({"id": 3, "name": True}, _cfg()) == b"true\n"

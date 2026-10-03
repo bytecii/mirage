@@ -15,20 +15,19 @@
 import type { DiskAccessor } from '../../accessor/disk.ts'
 import { writeFile } from 'node:fs/promises'
 import { invalidateAfterWrite } from '@struktoai/mirage-core/cache/context'
-import { record } from '@struktoai/mirage-core/observe/context'
-import { ResourceName } from '@struktoai/mirage-core/types'
+import { record, startOp } from '@struktoai/mirage-core/observe/context'
+import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { diskError } from './errors.ts'
-import { resolveSafe } from './utils.ts'
+import { resolveInside } from './utils.ts'
 
 export async function writeBytes(
   accessor: DiskAccessor,
   p: PathSpec,
   data: Uint8Array,
 ): Promise<void> {
-  const start = performance.now()
-  const virtual = p.mountPath
-  const full = resolveSafe(accessor.root, virtual)
+  const timer = startOp()
+  const full = await resolveInside(accessor.root, p)
   // A write is not `mkdir -p`: GNU reports ENOENT on a missing parent
   // rather than building the chain, and the store-backed backends refuse
   // the same way. Only the virtual path may reach a stderr line.
@@ -37,6 +36,6 @@ export async function writeBytes(
   } catch (err) {
     throw diskError(err, p)
   }
-  record('write', virtual, ResourceName.DISK, data.byteLength, start)
+  record('write', p.virtual, VFSName.DISK, data.byteLength, timer)
   await invalidateAfterWrite(p)
 }

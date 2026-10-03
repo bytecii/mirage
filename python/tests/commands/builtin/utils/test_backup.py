@@ -14,17 +14,18 @@
 
 import pytest
 
-from mirage.commands.builtin.utils.backup import (backup_control,
-                                                  backup_target, parent_path,
-                                                  sibling_path)
+from mirage.commands.builtin.utils.backup import (
+    backup_control,
+    backup_target,
+    parent_path,
+    sibling_path,
+)
 from mirage.commands.errors import UsageError
 from mirage.types import PathSpec
 
 
 def _spec(path: str) -> PathSpec:
-    return PathSpec(virtual=path,
-                    directory=path,
-                    resource_path=path.strip("/"))
+    return PathSpec(virtual=path, directory=path, vfs_path=path.strip("/"))
 
 
 def _listing(children: list[str]):
@@ -57,14 +58,25 @@ def test_backup_control_invalid_argument():
     assert "Try 'mv --help' for more information." in message
 
 
+def test_an_empty_backup_control_is_the_default_not_a_refusal():
+    """GNU ACCEPTS `cp --backup=`, exit 0, and backs up as `existing`.
+
+    gnulib's `xget_version` only calls argmatch when
+    `version && *version`, so an empty control is the bare `--backup`.
+    Measured on coreutils 9.4: `cp --backup= src bk` exits 0 and writes
+    `bk~`. mirage used to answer `invalid argument ''` and exit 1.
+    """
+    assert backup_control("cp", "", None) == "existing"
+
+
 def test_sibling_and_parent_paths():
     target = _spec("/data/sub/b.txt")
     backup = sibling_path(target, "~")
     assert backup.virtual == "/data/sub/b.txt~"
-    assert backup.resource_path == "data/sub/b.txt~"
+    assert backup.vfs_path == "data/sub/b.txt~"
     parent = parent_path(target)
     assert parent.virtual == "/data/sub"
-    assert parent.resource_path == "data/sub"
+    assert parent.vfs_path == "data/sub"
     assert parent_path(_spec("/b.txt")).virtual == "/"
 
 
@@ -101,8 +113,9 @@ async def test_backup_target_numbered_ignores_unicode_digits():
 
 @pytest.mark.asyncio
 async def test_backup_target_existing_falls_back_to_simple():
-    picked = await backup_target(_listing(["/d/b.txt"]), _spec("/d/b.txt"),
-                                 "existing", ".bak")
+    picked = await backup_target(
+        _listing(["/d/b.txt"]), _spec("/d/b.txt"), "existing", ".bak"
+    )
     assert picked is not None
     assert picked.virtual == "/d/b.txt.bak"
 
@@ -121,3 +134,64 @@ async def test_backup_target_ignores_other_names():
     picked = await backup_target(listing, _spec("/d/b.txt"), "existing", "~")
     assert picked is not None
     assert picked.virtual == "/d/b.txt~"
+
+
+# The backup-type clause names the refused control through gnulib's
+# quote(), so a byte outside 0x20-0x7e comes back escaped rather than
+# interpolated raw. Rows measured against GNU coreutils 9.4 under
+# `LC_ALL=C` with a raw `bytes` argv (`cp --backup=<w>`). Mirrored in
+# backup.test.ts.
+@pytest.mark.parametrize(
+    "value,escaped",
+    [
+        ("xé", r"x\303\251"),
+        ("x\r", r"x\r"),
+        ("x\x01", r"x\001"),
+        ("x\x7f", r"x\177"),
+        ("x'", r"x\'"),
+        ("x\\", r"x\\"),
+    ],
+)
+def test_backup_type_clause_quotes_the_word(value, escaped):
+    with pytest.raises(UsageError) as exc:
+        backup_control("cp", value, None)
+    assert str(exc.value) == (
+        f"cp: invalid argument '{escaped}' for 'backup type'\n"
+        "Valid arguments are:\n"
+        "  - 'none', 'off'\n"
+        "  - 'simple', 'never'\n"
+        "  - 'existing', 'nil'\n"
+        "  - 'numbered', 't'\n"
+        "Try 'cp --help' for more information."
+    )
+    assert exc.value.exit_code == 1
+
+
+# gnulib resolves an unambiguous prefix, and each control's canonical
+# word IS the control, so `--backup=e` is `existing` and `=t` is
+# `numbered`. Measured on coreutils 9.4: `cp --backup=e`, `=s` and `=t`
+# all exit 0.
+def test_backup_control_accepts_an_unambiguous_prefix():
+    assert backup_control("cp", "e", None) == "existing"
+    assert backup_control("cp", "s", None) == "simple"
+    assert backup_control("cp", "t", None) == "numbered"
+    assert backup_control("cp", "nu", None) == "numbered"
+    assert backup_control("cp", "of", None) == "none"
+
+
+def test_backup_control_refuses_a_prefix_spanning_two_values():
+    """`cp --backup=n` is `ambiguous argument 'n'`, exit 1 (measured).
+
+    `n` starts `none`, `never`, `nil` and `numbered`, which are four
+    different controls, so gnulib refuses it rather than picking one.
+    """
+    with pytest.raises(UsageError) as exc:
+        backup_control("cp", "n", None)
+    assert str(exc.value) == (
+        "cp: ambiguous argument 'n' for 'backup type'\n"
+        "Valid arguments are:\n"
+        "  - 'none', 'off'\n  - 'simple', 'never'\n"
+        "  - 'existing', 'nil'\n  - 'numbered', 't'\n"
+        "Try 'cp --help' for more information."
+    )
+    assert exc.value.exit_code == 1

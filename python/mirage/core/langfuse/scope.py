@@ -12,69 +12,77 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from dataclasses import dataclass
+from mirage.core.hierarchy.codec import INT_JSON, JSON_NAME, JSONL_NAME
+from mirage.core.hierarchy.scope import Scope, Slot, make_detect_scope
+from mirage.types import ContentType
 
-from mirage.types import PathSpec
+TOP_LEVEL_DIRS = ["traces", "sessions", "prompts", "datasets"]
 
+# One description of the tree: readdir, stat, read AND the grep/rg
+# search push-down all classify through it, so the file surface and the
+# search surface cannot disagree about what a path means (they used to
+# be two hand-maintained dispatch ladders).
+SCOPES = (
+    Scope(kind="traces", segments=("traces",), probed=False),
+    Scope(
+        kind="trace",
+        segments=("traces", Slot("trace_id", JSON_NAME)),
+        leaf=True,
+        filetype=ContentType.JSON,
+    ),
+    Scope(kind="sessions", segments=("sessions",), probed=False),
+    Scope(kind="session", segments=("sessions", Slot("session_id"))),
+    Scope(
+        kind="session_trace",
+        segments=("sessions", Slot("session_id"), Slot("trace_id", JSON_NAME)),
+        leaf=True,
+        filetype=ContentType.JSON,
+    ),
+    Scope(kind="prompts", segments=("prompts",), probed=False),
+    Scope(kind="prompt", segments=("prompts", Slot("prompt_name"))),
+    # A version that is not a plain ASCII integer cannot name a prompt
+    # version, so it fails the scope match and reads as ENOENT instead
+    # of an int() crash (python) or a digit-prefix guess (typescript).
+    Scope(
+        kind="prompt_version",
+        segments=("prompts", Slot("prompt_name"), Slot("version", INT_JSON)),
+        leaf=True,
+        filetype=ContentType.JSON,
+    ),
+    Scope(kind="datasets", segments=("datasets",), probed=False),
+    Scope(kind="dataset", segments=("datasets", Slot("dataset_name"))),
+    Scope(
+        kind="dataset_items",
+        segments=("datasets", Slot("dataset_name"), "items.jsonl"),
+        leaf=True,
+        filetype=ContentType.TEXT,
+    ),
+    Scope(kind="runs", segments=("datasets", Slot("dataset_name"), "runs")),
+    Scope(
+        kind="dataset_run",
+        segments=(
+            "datasets",
+            Slot("dataset_name"),
+            "runs",
+            Slot("run_name", JSONL_NAME),
+        ),
+        leaf=True,
+        filetype=ContentType.TEXT,
+    ),
+)
 
-@dataclass
-class LangfuseScope:
-    level: str
-    resource_type: str | None = None
-    resource_id: str | None = None
-    sub_resource: str | None = None
-    resource_path: str = "/"
+detect_scope = make_detect_scope(SCOPES)
 
-
-def detect_scope(path: PathSpec) -> LangfuseScope:
-    raw = path.mount_path if isinstance(path, PathSpec) else path
-    key = raw.strip("/")
-
-    if not key:
-        return LangfuseScope(level="root")
-
-    parts = key.split("/")
-
-    if parts[0] in ("traces", "sessions", "prompts", "datasets"):
-        rtype = parts[0]
-        if len(parts) == 1:
-            return LangfuseScope(
-                level=rtype,
-                resource_type=rtype,
-                resource_path=raw,
-            )
-        if len(parts) == 2:
-            if parts[1].endswith(".json") or parts[1].endswith(".jsonl"):
-                return LangfuseScope(
-                    level="file",
-                    resource_type=rtype,
-                    resource_id=parts[1].split(".")[0],
-                    resource_path=raw,
-                )
-            return LangfuseScope(
-                level=rtype,
-                resource_type=rtype,
-                resource_id=parts[1],
-                resource_path=raw,
-            )
-        if len(parts) == 3:
-            return LangfuseScope(
-                level="file",
-                resource_type=rtype,
-                resource_id=parts[1],
-                sub_resource=parts[2],
-                resource_path=raw,
-            )
-        if len(parts) == 4:
-            return LangfuseScope(
-                level="file",
-                resource_type=rtype,
-                resource_id=parts[1],
-                sub_resource=parts[3],
-                resource_path=raw,
-            )
-
-    # An unrecognized path is not the mount root: falling back to "root" made
-    # the grep/rg search push-down treat any bogus path as "search every
-    # trace", answering a missing file with the whole mount and exit 0.
-    return LangfuseScope(level="unknown", resource_path=raw)
+# The kinds the grep/rg push-down may answer with a whole-container
+# search; leaves and unrecognized paths fall through to the generic
+# per-file scan.
+SEARCH_KINDS = {
+    "root": "traces",
+    "traces": "traces",
+    "sessions": "sessions",
+    "session": "sessions",
+    "prompts": "prompts",
+    "prompt": "prompts",
+    "datasets": "datasets",
+    "dataset": "datasets",
+}

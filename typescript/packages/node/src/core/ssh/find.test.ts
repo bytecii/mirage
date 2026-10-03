@@ -86,7 +86,7 @@ describe('core/ssh/find', () => {
     expect(await find(accessor, spec('/'), { maxDepth: 0, type: 'f' })).toEqual([])
   })
 
-  it('size filters apply to files only, directories pass', async () => {
+  it('size filters count a directory as DIR_SIZE bytes', async () => {
     const accessor = makeFakeAccessor({
       files: new Map([
         ['/one.txt', { data: new Uint8Array(1) }],
@@ -98,8 +98,13 @@ describe('core/ssh/find', () => {
         ['/sub', { size: 4096 }],
       ]),
     })
-    const out = await find(accessor, spec('/'), { maxSize: 5 })
-    expect(out).toEqual(['/', '/one.txt', '/sub'])
+    expect(await find(accessor, spec('/'), { maxSize: 5 })).toEqual(['/one.txt'])
+    expect(await find(accessor, spec('/'), { minSize: 5 })).toEqual([
+      '/',
+      '/big.txt',
+      '/sub',
+      '/sub/f.txt',
+    ])
   })
 
   it('does not emit the start directory under -type f', async () => {
@@ -119,6 +124,19 @@ describe('core/ssh/find', () => {
     expect(files).not.toContain('/sub')
     const dirs = await find(accessor, spec('/sub'), { type: 'd' })
     expect(dirs).toContain('/sub')
+  })
+
+  it('judges the start directory by the mtime window like its descendants', async () => {
+    const accessor = makeFakeAccessor({
+      files: new Map([['/sub/c.json', { data: new Uint8Array(), attrs: { mtime: 100 } }]]),
+      dirs: new Map([
+        ['/', {}],
+        ['/sub', { mtime: 100 }],
+      ]),
+    })
+    expect(await find(accessor, spec('/sub'), { mtimeMin: 200 })).toEqual([])
+    expect(await find(accessor, spec('/sub'), { mtimeMin: 50 })).toEqual(['/sub', '/sub/c.json'])
+    expect(await find(accessor, spec('/sub'), { mtimeMax: 50 })).toEqual([])
   })
 
   it('returns empty for missing root', async () => {

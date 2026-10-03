@@ -16,31 +16,32 @@ from collections.abc import AsyncIterator
 
 from mirage.accessor.ram import RAMAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.ram.dest import lookup_error
 from mirage.observe.context import record_stream
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.path import norm
 
 
-async def stream(accessor: RAMAccessor,
-                 path_spec: PathSpec) -> AsyncIterator[bytes]:
+async def stream(
+    accessor: RAMAccessor, path_spec: PathSpec
+) -> AsyncIterator[bytes]:
     virtual = path_spec.virtual
-    path = norm(path_spec.resource_path)
+    path = norm(path_spec.vfs_path)
     store = accessor.store
     key = norm(path)
     if key not in store.files:
-        raise enoent(virtual)
+        raise lookup_error(store, path_spec, key)
     data = store.files[key]
-    rec = record_stream("read", path, "ram")
+    rec = record_stream("read", virtual, "ram")
     if rec is not None:
         rec.bytes = len(data)
     yield data
 
 
 async def read_stream(
-        accessor: RAMAccessor,
-        path: PathSpec,
-        index: IndexCacheStore = NULL_INDEX) -> AsyncIterator[bytes]:
+    accessor: RAMAccessor, path: PathSpec, index: IndexCacheStore = NULL_INDEX
+) -> AsyncIterator[bytes]:
     try:
         async for chunk in stream(accessor, path):
             yield chunk

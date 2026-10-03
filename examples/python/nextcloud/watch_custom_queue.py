@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
 from mirage.accessor.nextcloud import NextcloudAccessor
-from mirage.resource.nextcloud import NextcloudConfig, NextcloudResource
 from mirage.types import PathSpec
+from mirage.vfs.nextcloud import NextcloudConfig, NextcloudVFS
 from mirage.watch import DeltaHook, RAMWatchQueue, Watcher
 
 load_dotenv(".env.development")
@@ -20,7 +20,7 @@ config = NextcloudConfig(
     username=os.environ.get("NEXTCLOUD_USERNAME", "admin"),
     password=os.environ.get("NEXTCLOUD_PASSWORD", "admin123"),
 )
-ws = Workspace({MOUNT: NextcloudResource(config)}, mode=MountMode.WRITE)
+ws = Workspace({MOUNT: NextcloudVFS(config)}, mode=MountMode.WRITE)
 # A separate accessor plays the "external writer": a teammate, a cron
 # job, anything mutating Nextcloud behind the workspace's back.
 external = NextcloudAccessor(config).operator()
@@ -30,7 +30,8 @@ external = NextcloudAccessor(config).operator()
 # gets a tiny RAM queue (3 pending paths) so a burst overflows and
 # collapses into one UNKNOWN "re-inventory" event.
 ws.attach_watch_runtime(
-    Watcher(ws.registry, queue_factory=partial(RAMWatchQueue, max_pending=3)))
+    Watcher(ws.registry, queue_factory=partial(RAMWatchQueue, max_pending=3))
+)
 
 
 class ConsumerPoller:
@@ -49,9 +50,10 @@ class ConsumerPoller:
 
 
 async def main() -> None:
-    root = PathSpec.from_str_path(f"{MOUNT}/{FOLDER}", resource_path=FOLDER)
+    root = PathSpec.from_str_path(f"{MOUNT}/{FOLDER}", vfs_path=FOLDER)
     poller = ConsumerPoller(
-        ws.registry.mount_for(MOUNT).resource.delta_hook(), root)
+        ws.registry.mount_for(MOUNT).vfs.delta_hook(), root
+    )
     await external.create_dir(FOLDER + "/")
     await poller.pump()  # baseline: emits nothing
 
@@ -65,16 +67,17 @@ async def main() -> None:
     event = await first
     print(f"  {event.kind.value} {event.path.virtual}")
 
-    print("burst of 5 while the consumer is busy -> queue (cap 3)"
-          " collapses:")
+    print("burst of 5 while the consumer is busy -> queue (cap 3) collapses:")
     for i in range(5):
         await external.write(f"{FOLDER}/bulk-{i}.txt", b"row")
     await poller.pump()
     event = await agen.__anext__()
-    print(f"  {event.kind.value} {event.path.virtual}"
-          "  (precision degraded, dirtiness kept)")
+    print(
+        f"  {event.kind.value} {event.path.virtual}"
+        "  (precision degraded, dirtiness kept)"
+    )
 
-    result = await ws.execute(f"ls {MOUNT}/{FOLDER}")
+    result = await ws.shell(f"ls {MOUNT}/{FOLDER}")
     listing = (await result.stdout_str()).split()
     print(f"  re-inventory: {len(listing)} entries, guaranteed fresh")
 

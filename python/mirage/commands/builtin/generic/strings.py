@@ -2,13 +2,20 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from mirage.commands.builtin.utils.operands import (materialized_read,
-                                                    merge_split_errors,
-                                                    split_readable)
-from mirage.commands.builtin.utils.stream import _read_stdin_async
+from mirage.commands.builtin.utils.operands import (
+    materialized_read,
+    merge_split_errors,
+    split_readable,
+)
+from mirage.commands.builtin.utils.stream import (
+    read_stdin_async,
+    stdin_stat,
+    stdin_stream,
+)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
 
@@ -41,7 +48,7 @@ async def strings(
             if matches:
                 parts.append(b"\n".join(matches) + b"\n")
         return b"".join(parts), IOResult()
-    raw = await _read_stdin_async(stdin)
+    raw = await read_stdin_async(stdin)
     if raw is None:
         raw = b""
     matches = re.findall(pattern, raw)
@@ -66,15 +73,22 @@ async def strings_generic(
         stream (PolymorphicReadFn): Bound reader called as
             ``stream(path)``.
     """
+    # binutils strings never reads `-` as stdin; only /dev/stdin is.
+    stat = stdin_stat(stat, dash=False)
+    stream = stdin_stream(stream, opts.stdin, dash=False)
     parsed = parse_flags(opts.flags)
     readable, err = await split_readable(paths, stat, "strings")
     if err and not readable:
         return None, IOResult(exit_code=1, stderr=err)
     return await merge_split_errors(
-        await strings(readable,
-                      read_bytes=materialized_read(stream),
-                      stdin=opts.stdin,
-                      min_len=parsed.min_len), err)
+        await strings(
+            readable,
+            read_bytes=materialized_read(stream),
+            stdin=opts.stdin,
+            min_len=parsed.min_len,
+        ),
+        err,
+    )
 
 
 __all__ = ["strings", "strings_generic"]

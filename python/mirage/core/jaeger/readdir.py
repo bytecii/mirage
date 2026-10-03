@@ -13,74 +13,32 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.jaeger import JaegerAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
-from mirage.core.jaeger.client import (fetch_operations, fetch_services,
-                                       fetch_traces, is_trace_id)
-from mirage.core.jaeger.scope import (OPERATIONS_FILE, TOP_LEVEL_DIRS,
-                                      detect_scope)
+from mirage.cache.index import IndexEntry
+from mirage.core.hierarchy.readdir import DirListing, make_readdir
+from mirage.core.hierarchy.scope import ScopeMatch
+from mirage.core.jaeger.client import (
+    fetch_operations,
+    fetch_services,
+    fetch_traces,
+    is_trace_id,
+)
+from mirage.core.jaeger.scope import (
+    OPERATIONS_FILE,
+    TOP_LEVEL_DIRS,
+    detect_scope,
+)
 from mirage.core.render.json import json_bytes
-from mirage.types import PathSpec
 from mirage.utils.errors import enoent
-from mirage.utils.key_prefix import mount_prefix_of
 
 
-async def readdir(
-    accessor: JaegerAccessor,
-    path_spec: PathSpec,
-    index: IndexCacheStore = NULL_INDEX,
-) -> list[str]:
-    """List directory contents.
-
-    Args:
-        accessor (JaegerAccessor): jaeger accessor.
-        path_spec (PathSpec): resource-relative path.
-        index (IndexCacheStore): index cache.
-
-    Returns:
-        list[str]: virtual child paths.
-
-    Raises:
-        FileNotFoundError: the path is not a jaeger directory.
-    """
-    virtual = path_spec.virtual
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
-    path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
-    key = path.strip("/")
-
-    if key and any(p.startswith(".") for p in key.split("/")):
-        raise enoent(virtual)
-
-    virtual_key = prefix + "/" + key if key else prefix or "/"
-    scope = detect_scope(path)
-
-    if scope.level == "root":
-        return [f"{prefix}/{d}" for d in TOP_LEVEL_DIRS]
-
-    if scope.level == "services":
-        return await _readdir_services(accessor, virtual_key, index, prefix)
-
-    if scope.level == "service":
-        assert scope.service is not None
-        await assert_service(accessor, scope.service, virtual)
-        return await _readdir_service(accessor, scope.service, virtual_key,
-                                      index, prefix)
-
-    if scope.level == "traces":
-        assert scope.service is not None
-        await assert_service(accessor, scope.service, virtual)
-        return await _readdir_traces(accessor, scope.service, virtual_key,
-                                     index, prefix)
-
-    raise enoent(virtual)
-
-
-async def assert_service(accessor: JaegerAccessor, service: str,
-                         virtual: str) -> None:
+async def assert_service(
+    accessor: JaegerAccessor, service: str, virtual: str
+) -> None:
     """Raise ENOENT unless the service is known to Jaeger.
 
-    The operations endpoint answers 200 with an empty list for a service that
-    was never seen, so an unknown service would otherwise look like an empty
-    directory instead of a missing one.
+    The operations endpoint answers 200 with an empty list for a service
+    that was never seen, so an unknown service would otherwise look like
+    an empty directory instead of a missing one.
 
     Args:
         accessor (JaegerAccessor): jaeger accessor.
@@ -95,76 +53,65 @@ async def assert_service(accessor: JaegerAccessor, service: str,
         raise enoent(virtual)
 
 
-async def _readdir_service(
-    accessor: JaegerAccessor,
-    service: str,
-    virtual_key: str,
-    index: IndexCacheStore,
-    prefix: str,
-) -> list[str]:
-    listing = await index.list_dir(virtual_key)
-    if listing.entries is not None:
-        return listing.entries
-    # One operations call per service directory actually entered: nothing in
-    # the services listing carries operation names, so operations.json can
-    # only be sized here, and only for services the caller opens.
-    operations = await fetch_operations(accessor, service)
-    entries = [
-        (OPERATIONS_FILE,
-         IndexEntry(
-             id=f"{service}/operations",
-             name=OPERATIONS_FILE,
-             resource_type="jaeger/operations",
-             vfs_name=OPERATIONS_FILE,
-             size=len(json_bytes(operations)),
-         )),
-        ("traces",
-         IndexEntry(
-             id=f"{service}/traces",
-             name="traces",
-             resource_type="jaeger/traces_dir",
-             vfs_name="traces",
-         )),
-    ]
-    await index.set_dir(virtual_key, entries)
-    return [f"{prefix}/services/{service}/{name}" for name, _ in entries]
+async def service_guard(
+    accessor: JaegerAccessor, match: ScopeMatch, virtual: str
+) -> None:
+    await assert_service(accessor, match.slots["service"], virtual)
 
 
-async def _readdir_services(
-    accessor: JaegerAccessor,
-    virtual_key: str,
-    index: IndexCacheStore,
-    prefix: str,
-) -> list[str]:
-    listing = await index.list_dir(virtual_key)
-    if listing.entries is not None:
-        return listing.entries
+async def _list_services(
+    accessor: JaegerAccessor, match: ScopeMatch
+) -> list[tuple[str, IndexEntry]]:
     services = await fetch_services(accessor)
-    entries = []
-    names = []
-    for service in services:
-        entry = IndexEntry(
-            id=service,
-            name=service,
-            resource_type="jaeger/service",
-            vfs_name=service,
+    return [
+        (
+            service,
+            IndexEntry(
+                id=service,
+                name=service,
+                resource_type="jaeger/service",
+                vfs_name=service,
+            ),
         )
-        entries.append((service, entry))
-        names.append(f"{prefix}/services/{service}")
-    await index.set_dir(virtual_key, entries)
-    return names
+        for service in services
+    ]
 
 
-async def _readdir_traces(
-    accessor: JaegerAccessor,
-    service: str,
-    virtual_key: str,
-    index: IndexCacheStore,
-    prefix: str,
-) -> list[str]:
-    listing = await index.list_dir(virtual_key)
-    if listing.entries is not None:
-        return listing.entries
+async def _list_service(
+    accessor: JaegerAccessor, match: ScopeMatch
+) -> list[tuple[str, IndexEntry]]:
+    service = match.slots["service"]
+    # One operations call per service directory actually entered: nothing
+    # in the services listing carries operation names, so operations.json
+    # can only be sized here, and only for services the caller opens.
+    operations = await fetch_operations(accessor, service)
+    return [
+        (
+            OPERATIONS_FILE,
+            IndexEntry(
+                id=f"{service}/operations",
+                name=OPERATIONS_FILE,
+                resource_type="jaeger/operations",
+                vfs_name=OPERATIONS_FILE,
+                size=len(json_bytes(operations)),
+            ),
+        ),
+        (
+            "traces",
+            IndexEntry(
+                id=f"{service}/traces",
+                name="traces",
+                resource_type="jaeger/traces_dir",
+                vfs_name="traces",
+            ),
+        ),
+    ]
+
+
+async def _list_traces(
+    accessor: JaegerAccessor, match: ScopeMatch
+) -> DirListing:
+    service = match.slots["service"]
     traces = await fetch_traces(
         accessor,
         service,
@@ -172,16 +119,16 @@ async def _readdir_traces(
         from_timestamp=accessor.config.default_from_timestamp,
         to_timestamp=accessor.config.default_to_timestamp,
     )
-    entries = []
-    names = []
+    entries: list[tuple[str, IndexEntry]] = []
     for trace in traces:
         trace_id = str(trace.get("traceID", ""))
         if not is_trace_id(trace_id):
             continue
         filename = f"{trace_id}.json"
         # The search endpoint returns complete trace documents, so the
-        # rendered size is free here. Span order may differ from the by-id
-        # fetch, but reordering the same spans leaves the byte length equal.
+        # rendered size is free here. Span order may differ from the
+        # by-id fetch, but reordering the same spans leaves the byte
+        # length equal.
         entry = IndexEntry(
             id=trace_id,
             name=trace_id,
@@ -190,6 +137,21 @@ async def _readdir_traces(
             size=len(json_bytes(trace)),
         )
         entries.append((filename, entry))
-        names.append(f"{prefix}/services/{service}/traces/{filename}")
-    await index.set_dir(virtual_key, entries)
-    return names
+    # The newest default_trace_limit traces: one that ages out of the page
+    # is still in Jaeger, so the listing evicts nothing.
+    return DirListing(entries=entries, window=True)
+
+
+readdir = make_readdir(
+    detect_scope,
+    listers={
+        "services": _list_services,
+        "service": _list_service,
+        "traces": _list_traces,
+    },
+    static_root=tuple(TOP_LEVEL_DIRS),
+    guards={
+        "service": service_guard,
+        "traces": service_guard,
+    },
+)

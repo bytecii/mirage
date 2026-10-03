@@ -16,27 +16,32 @@ import asyncio
 from functools import partial
 from unittest.mock import AsyncMock, MagicMock
 
+from mirage.commands.config import ExecContext
 from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.policy import Policies
 from mirage.shell import parse
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
+from mirage.shell.errors import ReturnSignal
 from mirage.shell.job_table import JobTable
 from mirage.types import MountMode, PathSpec
 from mirage.workspace.cli.registry import CLIRegistry
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.node.execute_node import execute_node as _execute_node
-from mirage.workspace.session import Session
+from mirage.workspace.session import SessionState
 from mirage.workspace.session.session import vars_from_env
 
 
 def execute_node(dispatch, registry, *args, **kwargs):
-    return _execute_node(dispatch, registry, Namespace(registry), *args,
-                         **kwargs)
+    return _execute_node(
+        dispatch, registry, Namespace(registry), *args, **kwargs
+    )
 
 
 def _session(cwd="/", env=None):
-    return Session(session_id="test", cwd=cwd, vars=vars_from_env(env or {}))
+    return SessionState(
+        session_id="test", cwd=cwd, vars=vars_from_env(env or {})
+    )
 
 
 def _mock_dispatch():
@@ -78,13 +83,15 @@ async def _no_match_resolve_glob(scopes, prefix=""):
 def _mock_registry():
     mount = MagicMock()
     mount.prefix = "/data/"
+    mount.ensure_ready = AsyncMock()
     mount.mode = MountMode.EXEC
     mount.execute_cmd = AsyncMock(return_value=(b"ok\n", IOResult()))
-    mount.resource = MagicMock()
-    mount.resource.resolve_glob = _no_match_resolve_glob
+    mount.vfs = MagicMock()
+    mount.vfs.resolve_glob = _no_match_resolve_glob
     mount.spec_for = MagicMock(return_value=None)
 
     reg = MagicMock()
+    reg.file_cache = None
     reg.mount_for = MagicMock(return_value=mount)
     reg.try_mount_for = MagicMock(return_value=mount)
     reg.resolve_mount = AsyncMock(return_value=mount)
@@ -97,16 +104,12 @@ def _mock_registry():
     return reg, mount
 
 
-async def _sort_execute_cmd(name,
-                            paths,
-                            texts,
-                            flag_kwargs,
-                            *,
-                            stdin=None,
-                            **kwargs):
+async def _sort_execute_cmd(
+    name, paths, texts, flag_kwargs, context=ExecContext()
+):
     """Mock execute_cmd that sorts stdin for sort command."""
-    if name == "sort" and stdin:
-        data = stdin if isinstance(stdin, bytes) else b""
+    if name == "sort" and context.stdin:
+        data = context.stdin if isinstance(context.stdin, bytes) else b""
         lines = data.decode().strip().split("\n")
         lines.sort()
         return "\n".join(lines).encode() + b"\n", IOResult()
@@ -125,20 +128,19 @@ async def _aexec(cmd, session=None, dispatch=None, registry=None, env=None):
     execute_fn = AsyncMock(return_value=IOResult())
     node = parse(cmd)
 
-    stdout, io, exec_node = await execute_node(dispatch, reg, job_table,
-                                               execute_fn, "agent-1", node,
-                                               session)
+    stdout, io, exec_node = await execute_node(
+        dispatch, reg, job_table, execute_fn, "agent-1", node, session
+    )
     stdout = await apply_barrier(stdout, io, BarrierPolicy.VALUE)
     return stdout, io, exec_node, session, mount, dispatch
 
 
 def _exec(cmd, session=None, dispatch=None, registry=None, env=None):
     return _run(
-        _aexec(cmd,
-               session=session,
-               dispatch=dispatch,
-               registry=registry,
-               env=env))
+        _aexec(
+            cmd, session=session, dispatch=dispatch, registry=registry, env=env
+        )
+    )
 
 
 # ── simple commands ─────────────────────────────
@@ -171,7 +173,8 @@ def test_trailing_comment_is_ignored_at_program_level():
     # for `cmd # text`. Previously this raised
     # "unsupported tree-sitter node type: comment".
     stdout, io, _, _, mount, _ = _exec(
-        "cat /data/file.txt        # -l, -a clustered")
+        "cat /data/file.txt        # -l, -a clustered"
+    )
     mount.execute_cmd.assert_called_once()
     assert io.exit_code == 0
 
@@ -187,7 +190,8 @@ def test_comment_inside_compound_statement_is_skipped():
     # Comments can also appear inside `{ ... }` blocks. The compound_statement
     # named_children iterator must skip them rather than dispatching them.
     _, io, _, _, mount, _ = _exec(
-        "{ cat /data/a.txt; # mid-block comment\ncat /data/b.txt; }")
+        "{ cat /data/a.txt; # mid-block comment\ncat /data/b.txt; }"
+    )
     assert mount.execute_cmd.call_count == 2
     assert io.exit_code == 0
 
@@ -302,13 +306,15 @@ def test_semicolons():
 
 def test_if_true_branch():
     _, _, _, session, _, _ = _exec(
-        "if true; then export R=yes; else export R=no; fi")
+        "if true; then export R=yes; else export R=no; fi"
+    )
     assert session.env["R"] == "yes"
 
 
 def test_if_false_branch():
     _, _, _, session, _, _ = _exec(
-        "if false; then export R=yes; else export R=no; fi")
+        "if false; then export R=yes; else export R=no; fi"
+    )
     assert session.env["R"] == "no"
 
 
@@ -340,7 +346,8 @@ def test_while_false_no_execute():
 
 def test_case_match():
     _, _, _, session, _, _ = _exec(
-        "case hello in hello) export M=yes;; world) export M=no;; esac")
+        "case hello in hello) export M=yes;; world) export M=no;; esac"
+    )
     assert session.env["M"] == "yes"
 
 
@@ -466,12 +473,16 @@ def test_unsupported_node_raises():
     fake_node.text = b"some_unknown_type_xyz"
 
     stdout, io, _ = _run(
-        execute_node(dispatch, reg, job_table, execute_fn, "agent-1",
-                     fake_node, session))
+        execute_node(
+            dispatch, reg, job_table, execute_fn, "agent-1", fake_node, session
+        )
+    )
     assert stdout is None
     assert io.exit_code == 2
-    assert (_run(materialize(io.stderr)) ==
-            b"mirage: unsupported shell construct: some_unknown_type_xyz\n")
+    assert (
+        _run(materialize(io.stderr))
+        == b"mirage: unsupported shell construct: some_unknown_type_xyz\n"
+    )
 
 
 # ── read ────────────────────────────────────────
@@ -486,14 +497,17 @@ def test_read_from_bytes():
     node = parse("read VAR")
 
     _, io, _ = _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "agent-1",
-                     node,
-                     session,
-                     stdin=b"hello world\n"))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "agent-1",
+            node,
+            session,
+            stdin=b"hello world\n",
+        )
+    )
     assert io.exit_code == 0
     assert session.env["VAR"] == "hello world"
 
@@ -502,7 +516,17 @@ def test_read_from_bytes():
 
 
 def test_shift():
+    # bash: shifting past `$#` (here, with no positionals at all) is a
+    # silent exit 1.
     _, io, _, _, _, _ = _exec("shift")
+    assert io.exit_code == 1
+
+
+# ── trap ────────────────────────────────────────
+
+
+def test_trap():
+    _, io, _, _, _, _ = _exec("trap")
     assert io.exit_code == 0
 
 
@@ -511,7 +535,6 @@ def test_shift():
 
 def test_return_raises_inside_function_frame():
     from mirage.shell.call_stack import CallStack
-    from mirage.workspace.executor.control import ReturnSignal
 
     dispatch = _mock_dispatch()
     reg, _ = _mock_registry()
@@ -524,8 +547,18 @@ def test_return_raises_inside_function_frame():
 
     try:
         _run(
-            execute_node(dispatch, reg, job_table, execute_fn, "agent-1", node,
-                         session, None, cs))
+            execute_node(
+                dispatch,
+                reg,
+                job_table,
+                execute_fn,
+                "agent-1",
+                node,
+                session,
+                None,
+                cs,
+            )
+        )
         assert False, "should have raised ReturnSignal"
     except ReturnSignal as e:
         assert e.exit_code == 42
@@ -540,8 +573,10 @@ def test_return_top_level_fails_and_continues():
     node = parse("return 42")
 
     _, io, _ = _run(
-        execute_node(dispatch, reg, job_table, execute_fn, "agent-1", node,
-                     session))
+        execute_node(
+            dispatch, reg, job_table, execute_fn, "agent-1", node, session
+        )
+    )
     assert io.exit_code == 2
     assert b"can only `return'" in io.stderr
 
@@ -560,8 +595,10 @@ def test_break_outside_loop_absorbed():
     node = parse("break")
 
     _, io, _ = _run(
-        execute_node(dispatch, reg, job_table, execute_fn, "agent-1", node,
-                     session))
+        execute_node(
+            dispatch, reg, job_table, execute_fn, "agent-1", node, session
+        )
+    )
     assert io.exit_code == 0
 
 
@@ -574,8 +611,10 @@ def test_continue_outside_loop_absorbed():
     node = parse("continue")
 
     _, io, _ = _run(
-        execute_node(dispatch, reg, job_table, execute_fn, "agent-1", node,
-                     session))
+        execute_node(
+            dispatch, reg, job_table, execute_fn, "agent-1", node, session
+        )
+    )
     assert io.exit_code == 0
 
 
@@ -591,8 +630,10 @@ def test_eval():
     node = parse("eval echo hello")
 
     _, io, _ = _run(
-        execute_node(dispatch, reg, job_table, execute_fn, "agent-1", node,
-                     session))
+        execute_node(
+            dispatch, reg, job_table, execute_fn, "agent-1", node, session
+        )
+    )
     execute_fn.assert_called_once()
     assert "echo hello" in execute_fn.call_args[0][0]
 
@@ -609,8 +650,10 @@ def test_source():
     node = parse("source /script.sh")
 
     _, io, _ = _run(
-        execute_node(dispatch, reg, job_table, execute_fn, "agent-1", node,
-                     session))
+        execute_node(
+            dispatch, reg, job_table, execute_fn, "agent-1", node, session
+        )
+    )
     execute_fn.assert_called_once()
 
 
@@ -622,46 +665,47 @@ def test_source():
 
 
 def test_if_inside_for():
-    _, _, _, session, _, _ = _exec("for x in a b c; do "
-                                   "if true; then export COUNT=yes; fi; "
-                                   "done")
+    _, _, _, session, _, _ = _exec(
+        "for x in a b c; do if true; then export COUNT=yes; fi; done"
+    )
     assert session.env["COUNT"] == "yes"
 
 
 def test_for_with_break_via_if():
-    _, _, _, session, _, _ = _exec("for x in a b c; do "
-                                   "export LAST=ran; "
-                                   "if true; then break; fi; "
-                                   "done")
+    _, _, _, session, _, _ = _exec(
+        "for x in a b c; do export LAST=ran; if true; then break; fi; done"
+    )
     assert session.env["LAST"] == "ran"
 
 
 def test_nested_if():
-    _, _, _, session, _, _ = _exec("if true; then "
-                                   "if true; then export DEEP=yes; fi; "
-                                   "fi")
+    _, _, _, session, _, _ = _exec(
+        "if true; then if true; then export DEEP=yes; fi; fi"
+    )
     assert session.env["DEEP"] == "yes"
 
 
 def test_nested_if_outer_false():
-    _, _, _, session, _, _ = _exec("if false; then "
-                                   "if true; then export DEEP=yes; fi; "
-                                   "fi")
+    _, _, _, session, _, _ = _exec(
+        "if false; then if true; then export DEEP=yes; fi; fi"
+    )
     assert "DEEP" not in session.env
 
 
 def test_elif_chain():
-    _, _, _, session, _, _ = _exec("if false; then export R=a; "
-                                   "elif false; then export R=b; "
-                                   "elif true; then export R=c; "
-                                   "else export R=d; fi")
+    _, _, _, session, _, _ = _exec(
+        "if false; then export R=a; "
+        "elif false; then export R=b; "
+        "elif true; then export R=c; "
+        "else export R=d; fi"
+    )
     assert session.env["R"] == "c"
 
 
 def test_for_inside_if():
-    _, _, _, session, _, _ = _exec("if true; then "
-                                   "for x in 1 2 3; do export N=loop; done; "
-                                   "fi")
+    _, _, _, session, _, _ = _exec(
+        "if true; then for x in 1 2 3; do export N=loop; done; fi"
+    )
     assert session.env["N"] == "loop"
 
 
@@ -696,7 +740,8 @@ def test_and_then_or():
 
 def test_or_then_and():
     _, _, _, session, _, _ = _exec(
-        "false || export A=fallback && export B=after")
+        "false || export A=fallback && export B=after"
+    )
     assert session.env["A"] == "fallback"
     assert session.env["B"] == "after"
 
@@ -715,17 +760,18 @@ def test_or_short_circuit_skips_rest():
 
 
 def test_semicolons_with_if():
-    _, _, _, session, _, _ = _exec("export A=1; "
-                                   "if true; then export B=2; fi; "
-                                   "export C=3")
+    _, _, _, session, _, _ = _exec(
+        "export A=1; if true; then export B=2; fi; export C=3"
+    )
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"
     assert session.env["C"] == "3"
 
 
 def test_many_semicolons():
-    _, _, _, session, _, _ = _exec("export A=1; export B=2; export C=3; "
-                                   "export D=4; export E=5")
+    _, _, _, session, _, _ = _exec(
+        "export A=1; export B=2; export C=3; export D=4; export E=5"
+    )
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"
     assert session.env["C"] == "3"
@@ -762,18 +808,16 @@ def test_redirect_with_pipeline():
 
 
 def test_case_wildcard():
-    _, _, _, session, _, _ = _exec("case hello in "
-                                   "world) export M=no;; "
-                                   "hel*) export M=yes;; "
-                                   "esac")
+    _, _, _, session, _, _ = _exec(
+        "case hello in world) export M=no;; hel*) export M=yes;; esac"
+    )
     assert session.env["M"] == "yes"
 
 
 def test_case_fall_through_first_match():
-    _, _, _, session, _, _ = _exec("case abc in "
-                                   "abc) export M=first;; "
-                                   "abc) export M=second;; "
-                                   "esac")
+    _, _, _, session, _, _ = _exec(
+        "case abc in abc) export M=first;; abc) export M=second;; esac"
+    )
     assert session.env["M"] == "first"
 
 
@@ -786,9 +830,9 @@ def test_function_then_call():
 
 
 def test_function_override():
-    _, _, _, session, _, _ = _exec("f() { export V=first; }; "
-                                   "f() { export V=second; }; "
-                                   "f")
+    _, _, _, session, _, _ = _exec(
+        "f() { export V=first; }; f() { export V=second; }; f"
+    )
     assert session.env["V"] == "second"
 
 
@@ -802,7 +846,8 @@ def test_negated_in_if():
 
 def test_negated_true_in_if():
     _, _, _, session, _, _ = _exec(
-        "if ! true; then export N=yes; else export N=no; fi")
+        "if ! true; then export N=yes; else export N=no; fi"
+    )
     assert session.env["N"] == "no"
 
 
@@ -811,15 +856,17 @@ def test_negated_true_in_if():
 
 def test_while_true_with_break():
     _, io, _, session, _, _ = _exec(
-        "while true; do export RAN=yes; break; done")
+        "while true; do export RAN=yes; break; done"
+    )
     assert session.env["RAN"] == "yes"
     assert io.exit_code == 0
 
 
 def test_while_cap_emits_warning():
     """When _MAX_WHILE is hit, stderr carries a clear warning."""
-    _, io, _, _, _, _ = _exec("while true; do export X=$X.; done",
-                              env={"X": ""})
+    _, io, _, _, _, _ = _exec(
+        "while true; do export X=$X.; done", env={"X": ""}
+    )
     assert io.stderr is not None
     stderr_bytes = io.stderr if isinstance(io.stderr, bytes) else b""
     assert b"terminated after" in stderr_bytes
@@ -827,10 +874,9 @@ def test_while_cap_emits_warning():
 
 
 def test_for_continue_skips_body():
-    _, _, _, session, _, _ = _exec("for x in a b c; do "
-                                   "continue; "
-                                   "export NEVER=yes; "
-                                   "done")
+    _, _, _, session, _, _ = _exec(
+        "for x in a b c; do continue; export NEVER=yes; done"
+    )
     assert "NEVER" not in session.env
 
 
@@ -839,7 +885,8 @@ def test_for_continue_skips_body():
 
 def test_and_or_semicolon_mix():
     _, _, _, session, _, _ = _exec(
-        "export A=1; true && export B=2; false || export C=3")
+        "export A=1; true && export B=2; false || export C=3"
+    )
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"
     assert session.env["C"] == "3"
@@ -857,36 +904,35 @@ def test_pipeline_and_list():
 
 def test_for_with_if_and_subshell():
     session = _session(env={"OUTER": "keep"})
-    _exec("for x in a b; do "
-          "if true; then (export OUTER=nope); fi; "
-          "done",
-          session=session)
+    _exec(
+        "for x in a b; do if true; then (export OUTER=nope); fi; done",
+        session=session,
+    )
     assert session.env["OUTER"] == "keep"
 
 
 def test_if_with_for_and_break():
-    _, _, _, session, _, _ = _exec("if true; then "
-                                   "for x in 1 2 3; do "
-                                   "export ITER=yes; break; "
-                                   "done; "
-                                   "fi")
+    _, _, _, session, _, _ = _exec(
+        "if true; then for x in 1 2 3; do export ITER=yes; break; done; fi"
+    )
     assert session.env["ITER"] == "yes"
 
 
 def test_nested_for():
-    _, _, _, session, _, _ = _exec("for a in x y; do "
-                                   "for b in 1 2; do "
-                                   "export INNER=ran; "
-                                   "done; done")
+    _, _, _, session, _, _ = _exec(
+        "for a in x y; do for b in 1 2; do export INNER=ran; done; done"
+    )
     assert session.env["INNER"] == "ran"
 
 
 def test_case_inside_for():
-    _, _, _, session, _, _ = _exec("for x in hello world; do "
-                                   "case x in "
-                                   "hello) export H=yes;; "
-                                   "world) export W=yes;; "
-                                   "esac; done")
+    _, _, _, session, _, _ = _exec(
+        "for x in hello world; do "
+        "case x in "
+        "hello) export H=yes;; "
+        "world) export W=yes;; "
+        "esac; done"
+    )
     assert "H" not in session.env
 
 
@@ -907,13 +953,15 @@ def test_subshell_with_pipeline():
 
 def test_function_with_if():
     _, _, _, session, _, _ = _exec(
-        "check() { if true; then export OK=yes; fi; }; check")
+        "check() { if true; then export OK=yes; fi; }; check"
+    )
     assert session.env["OK"] == "yes"
 
 
 def test_function_with_for():
     _, _, _, session, _, _ = _exec(
-        "loop() { for x in a b; do export L=ran; done; }; loop")
+        "loop() { for x in a b; do export L=ran; done; }; loop"
+    )
     assert session.env["L"] == "ran"
 
 
@@ -936,7 +984,7 @@ def test_command_file_becomes_globscope():
 
 
 def test_command_glob_becomes_globscope():
-    """cat /data/*.txt → unresolved PathSpec passed to resource."""
+    """cat /data/*.txt → unresolved PathSpec passed to VFS."""
     _, _, _, _, mount, _ = _exec("cat /data/*.txt")
     scopes = mount.execute_cmd.call_args[0][1]
     assert len(scopes) == 1
@@ -948,7 +996,7 @@ def test_command_glob_becomes_globscope():
 
 
 def test_command_question_glob():
-    """cat /data/file?.txt → unresolved PathSpec passed to resource."""
+    """cat /data/file?.txt → unresolved PathSpec passed to VFS."""
     _, _, _, _, mount, _ = _exec("cat /data/file?.txt")
     scopes = mount.execute_cmd.call_args[0][1]
     assert isinstance(scopes[0], PathSpec)
@@ -957,7 +1005,7 @@ def test_command_question_glob():
 
 
 def test_command_bracket_glob():
-    """cat /data/file[0-9].txt → unresolved PathSpec passed to resource."""
+    """cat /data/file[0-9].txt → unresolved PathSpec passed to VFS."""
     _, _, _, _, mount, _ = _exec("cat /data/file[0-9].txt")
     scopes = mount.execute_cmd.call_args[0][1]
     assert isinstance(scopes[0], PathSpec)
@@ -1005,15 +1053,17 @@ def test_command_flags_stay_text():
     assert "pattern" in texts
 
 
-def test_execute_cmd_receives_three_positional_args():
-    """execute_cmd is called with (cmd_name, paths, texts, flag_kwargs)."""
+def test_execute_cmd_receives_the_positional_args_and_one_context():
+    """execute_cmd is called with (cmd_name, paths, texts, flag_kwargs,
+    context) — the workspace's side arrives as one ExecContext value."""
     _, _, _, _, mount, _ = _exec("cat /data/file.txt")
     args = mount.execute_cmd.call_args[0]
-    assert len(args) == 4
+    assert len(args) == 5
     assert args[0] == "cat"
     assert isinstance(args[1], list)
     assert isinstance(args[2], list)
     assert isinstance(args[3], dict)
+    assert isinstance(args[4], ExecContext)
 
 
 def test_flag_kwargs_is_empty_without_spec():
@@ -1059,7 +1109,7 @@ def test_var_expands_to_file():
 
 
 def test_var_expands_to_glob():
-    """cat $P → unresolved glob PathSpec passed to resource."""
+    """cat $P → unresolved glob PathSpec passed to VFS."""
     _, _, _, _, mount, _ = _exec("cat $P", env={"P": "/data/*.csv"})
     scopes = mount.execute_cmd.call_args[0][1]
     assert len(scopes) == 1
@@ -1085,7 +1135,7 @@ def test_concatenation_var_path():
 
 
 def test_concatenation_var_glob():
-    """cat $DIR/*.csv → unresolved glob PathSpec passed to resource."""
+    """cat $DIR/*.csv → unresolved glob PathSpec passed to VFS."""
     _, _, _, _, mount, _ = _exec("cat $DIR/*.csv", env={"DIR": "/data"})
     scopes = mount.execute_cmd.call_args[0][1]
     assert len(scopes) == 1
@@ -1099,18 +1149,17 @@ def test_concatenation_var_glob():
 
 def test_export_expands_var_value():
     """export DIR=$BASE/sub → DIR=/data/sub."""
-    _, _, _, session, _, _ = _exec("export DIR=$BASE/sub",
-                                   env={"BASE": "/data"})
+    _, _, _, session, _, _ = _exec(
+        "export DIR=$BASE/sub", env={"BASE": "/data"}
+    )
     assert session.env["DIR"] == "/data/sub"
 
 
 def test_export_multiple_with_expansion():
     """export A=$X B=$Y → both expanded."""
-    _, _, _, session, _, _ = _exec("export A=$X B=$Y",
-                                   env={
-                                       "X": "1",
-                                       "Y": "2"
-                                   })
+    _, _, _, session, _, _ = _exec(
+        "export A=$X B=$Y", env={"X": "1", "Y": "2"}
+    )
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"
 
@@ -1121,8 +1170,9 @@ def test_declare_expands_value():
     Spelled `declare` rather than `local` because `local` outside a
     function is refused, as GNU refuses it.
     """
-    _, _, _, session, _, _ = _exec("declare V=$BASE/file",
-                                   env={"BASE": "/data"})
+    _, _, _, session, _, _ = _exec(
+        "declare V=$BASE/file", env={"BASE": "/data"}
+    )
     assert session.env["V"] == "/data/file"
 
 
@@ -1137,33 +1187,34 @@ def test_for_literal_values():
 
 def test_for_var_expansion():
     """for f in $A $B → expanded values."""
-    _, _, _, session, _, _ = _exec("for f in $A $B; do export LAST=$f; done",
-                                   env={
-                                       "A": "first",
-                                       "B": "second"
-                                   })
+    _, _, _, session, _, _ = _exec(
+        "for f in $A $B; do export LAST=$f; done",
+        env={"A": "first", "B": "second"},
+    )
     assert session.env["LAST"] == "second"
 
 
 def test_for_path_becomes_globscope():
     """for f in /data/a.txt /data/b.txt → iterates PathSpec paths."""
     _, _, _, session, _, _ = _exec(
-        "for f in /data/a.txt /data/b.txt; do export LAST=$f; done")
+        "for f in /data/a.txt /data/b.txt; do export LAST=$f; done"
+    )
     assert session.env["LAST"] == "/data/b.txt"
 
 
 def test_for_mixed_paths_and_text():
     """for f in /data/a.txt hello /data/b.txt → last is /data/b.txt."""
     _, _, _, session, _, _ = _exec(
-        "for f in /data/a.txt hello /data/b.txt; do "
-        "export N=$f; done")
+        "for f in /data/a.txt hello /data/b.txt; do export N=$f; done"
+    )
     assert session.env["N"] == "/data/b.txt"
 
 
 def test_for_glob_values():
     """for f in /data/*.csv → glob PathSpec, original preserved."""
     _, _, _, session, _, _ = _exec(
-        "for f in /data/*.csv; do export LAST=$f; done")
+        "for f in /data/*.csv; do export LAST=$f; done"
+    )
     assert session.env["LAST"] == "/data/*.csv"
 
 
@@ -1172,22 +1223,25 @@ def test_for_glob_values():
 
 def test_case_var_match():
     """case $X in hello) → matches when X=hello."""
-    _, _, _, session, _, _ = _exec("case $X in hello) export M=yes;; esac",
-                                   env={"X": "hello"})
+    _, _, _, session, _, _ = _exec(
+        "case $X in hello) export M=yes;; esac", env={"X": "hello"}
+    )
     assert session.env["M"] == "yes"
 
 
 def test_case_var_no_match():
     """case $X in hello) → no match when X=world."""
-    _, _, _, session, _, _ = _exec("case $X in hello) export M=yes;; esac",
-                                   env={"X": "world"})
+    _, _, _, session, _, _ = _exec(
+        "case $X in hello) export M=yes;; esac", env={"X": "world"}
+    )
     assert "M" not in session.env
 
 
 def test_case_var_wildcard():
     """case $X in hel*) → wildcard matches."""
-    _, _, _, session, _, _ = _exec("case $X in hel*) export M=yes;; esac",
-                                   env={"X": "hello"})
+    _, _, _, session, _, _ = _exec(
+        "case $X in hel*) export M=yes;; esac", env={"X": "hello"}
+    )
     assert session.env["M"] == "yes"
 
 
@@ -1204,8 +1258,9 @@ def test_redirect_static_path():
 
 def test_redirect_var_target():
     """echo hello > $OUT → expanded to /data/out.txt."""
-    _, _, _, _, _, dispatch = _exec("echo hello > $OUT",
-                                    env={"OUT": "/data/out.txt"})
+    _, _, _, _, _, dispatch = _exec(
+        "echo hello > $OUT", env={"OUT": "/data/out.txt"}
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) > 0
     assert write_calls[0][0][1].virtual == "/data/out.txt"
@@ -1213,18 +1268,19 @@ def test_redirect_var_target():
 
 def test_redirect_concat_target():
     """echo hello > $DIR/out.txt → /data/out.txt."""
-    _, _, _, _, _, dispatch = _exec("echo hello > $DIR/out.txt",
-                                    env={"DIR": "/data"})
+    _, _, _, _, _, dispatch = _exec(
+        "echo hello > $DIR/out.txt", env={"DIR": "/data"}
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) > 0
     assert write_calls[0][0][1].virtual == "/data/out.txt"
 
 
 def test_redirect_append():
-    """echo hello >> /data/out.txt → dispatch cat then tee."""
+    """Append routes through the op door without a content pre-read."""
     _, _, _, _, _, dispatch = _exec("echo hello >> /data/out.txt")
     ops = [c[0][0] for c in dispatch.call_args_list]
-    assert "write" in ops
+    assert ops == ["append"]
 
 
 def test_redirect_stdin():
@@ -1244,9 +1300,9 @@ def test_cd_var_expansion():
     stat = MagicMock()
     stat.type = "directory"
     dispatch.return_value = (stat, IOResult())
-    _, io, _, session, _, _ = _exec("cd $DIR",
-                                    dispatch=dispatch,
-                                    env={"DIR": "/data"})
+    _, io, _, session, _, _ = _exec(
+        "cd $DIR", dispatch=dispatch, env={"DIR": "/data"}
+    )
     assert io.exit_code == 0
     assert session.cwd == "/data"
 
@@ -1257,9 +1313,9 @@ def test_cd_concat_expansion():
     stat = MagicMock()
     stat.type = "directory"
     dispatch.return_value = (stat, IOResult())
-    _, io, _, session, _, _ = _exec("cd $BASE/sub",
-                                    dispatch=dispatch,
-                                    env={"BASE": "/data"})
+    _, io, _, session, _, _ = _exec(
+        "cd $BASE/sub", dispatch=dispatch, env={"BASE": "/data"}
+    )
     assert io.exit_code == 0
     assert session.cwd == "/data/sub"
 
@@ -1275,8 +1331,9 @@ def test_source_var_expansion():
     execute_fn = AsyncMock(return_value=IOResult())
     session = _session(env={"SCRIPT": "/data/init.sh"})
     node = parse("source $SCRIPT")
-    _run(execute_node(dispatch, reg, job_table, execute_fn, "a", node,
-                      session))
+    _run(
+        execute_node(dispatch, reg, job_table, execute_fn, "a", node, session)
+    )
     read_calls = [c for c in dispatch.call_args_list if c[0][0] == "read"]
     assert len(read_calls) > 0
     assert read_calls[0][0][1].virtual == "/data/init.sh"
@@ -1347,7 +1404,8 @@ def test_brace_group_status_after_true_then_false():
 
 def test_brace_group_with_if():
     _, _, _, session, _, _ = _exec(
-        "{ if true; then export A=1; fi; export B=2; }")
+        "{ if true; then export A=1; fi; export B=2; }"
+    )
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"
 
@@ -1364,8 +1422,9 @@ def test_brace_group_in_pipeline():
 
 def test_pipeline_redirect_expansion():
     """cat $F | grep p > /data/out → tee to correct target."""
-    _, _, _, _, _, dispatch = _exec("cat $F | grep p > /data/out",
-                                    env={"F": "/data/input.txt"})
+    _, _, _, _, _, dispatch = _exec(
+        "cat $F | grep p > /data/out", env={"F": "/data/input.txt"}
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) == 1
     assert write_calls[0][0][1].virtual == "/data/out"
@@ -1379,17 +1438,17 @@ def test_for_with_command_expansion():
 
 def test_if_with_var_condition():
     """if [ $X = yes ]; then export R=ok; fi → expands $X."""
-    _, _, _, session, _, _ = _exec("if true; then export R=$V; fi",
-                                   env={"V": "expanded"})
+    _, _, _, session, _, _ = _exec(
+        "if true; then export R=$V; fi", env={"V": "expanded"}
+    )
     assert session.env["R"] == "expanded"
 
 
 def test_nested_for_expansion():
     """Nested for — LAST set to last concatenated value."""
-    _, _, _, session, _, _ = _exec("for a in x y; do "
-                                   "for b in 1 2; do "
-                                   "export LAST=$a$b; "
-                                   "done; done")
+    _, _, _, session, _, _ = _exec(
+        "for a in x y; do for b in 1 2; do export LAST=$a$b; done; done"
+    )
     assert session.env["LAST"] == "y2"
 
 
@@ -1403,14 +1462,16 @@ def test_nested_for_expansion():
 def test_for_glob_value_classified():
     """for f in /data/*.txt → PathSpec original as env value."""
     _, _, _, session, _, _ = _exec(
-        "for f in /data/*.txt; do export LAST=$f; done")
+        "for f in /data/*.txt; do export LAST=$f; done"
+    )
     assert session.env["LAST"] == "/data/*.txt"
 
 
 def test_for_var_expanded_to_path():
     """for f in $DIR → expanded to /data/sub, stored as path string."""
-    _, _, _, session, _, _ = _exec("for f in $DIR; do export GOT=$f; done",
-                                   env={"DIR": "/data/sub"})
+    _, _, _, session, _, _ = _exec(
+        "for f in $DIR; do export GOT=$f; done", env={"DIR": "/data/sub"}
+    )
     assert session.env["GOT"] == "/data/sub"
 
 
@@ -1426,8 +1487,9 @@ def test_for_cmd_sub_expanded():
     session = _session()
     node = parse("for f in $(listcmd); do export LAST=$f; done")
 
-    _run(execute_node(dispatch, reg, job_table, execute_fn, "a", node,
-                      session))
+    _run(
+        execute_node(dispatch, reg, job_table, execute_fn, "a", node, session)
+    )
     # $(listcmd) output split on \n → 3 iterations
     assert session.env["LAST"] == "gamma"
 
@@ -1435,9 +1497,9 @@ def test_for_cmd_sub_expanded():
 def test_for_mixed_glob_var_text():
     """for f in /s3/*.csv $DIR/file.txt hello → all classified correctly."""
     _, _, _, session, _, _ = _exec(
-        "for f in /s3/*.csv $DIR/file.txt hello; do "
-        "export LAST=$f; done",
-        env={"DIR": "/data"})
+        "for f in /s3/*.csv $DIR/file.txt hello; do export LAST=$f; done",
+        env={"DIR": "/data"},
+    )
     # 3 iterations: PathSpec, PathSpec, "hello"
     assert session.env["LAST"] == "hello"
 
@@ -1448,7 +1510,8 @@ def test_for_mixed_glob_var_text():
 def test_select_glob_value():
     """select f in /data/*.csv → PathSpec original as value."""
     _, _, _, session, _, _ = _exec_with_stdin(
-        "select f in /data/*.csv; do export GOT=$f; break; done", stdin=b"1\n")
+        "select f in /data/*.csv; do export GOT=$f; break; done", stdin=b"1\n"
+    )
     assert session.env["GOT"] == "/data/*.csv"
 
 
@@ -1457,10 +1520,8 @@ def test_select_var_expanded():
     _, _, _, session, _, _ = _exec_with_stdin(
         "select f in $A $B; do export LAST=$f; break; done",
         stdin=b"1\n",
-        env={
-            "A": "first",
-            "B": "second"
-        })
+        env={"A": "first", "B": "second"},
+    )
     assert session.env["LAST"] == "first"
 
 
@@ -1470,7 +1531,8 @@ def test_select_var_expanded():
 def test_case_glob_pattern_matches():
     """case hello.txt in *.txt) → pattern is literal glob for fnmatch."""
     _, _, _, session, _, _ = _exec(
-        "case hello.txt in *.txt) export M=yes;; esac")
+        "case hello.txt in *.txt) export M=yes;; esac"
+    )
     assert session.env["M"] == "yes"
 
 
@@ -1478,7 +1540,8 @@ def test_case_expanded_word_glob_pattern():
     """case $F in *.csv) → $F expanded, matched against pattern."""
     _, _, _, session, _, _ = _exec(
         "case $F in *.csv) export M=yes;; *.txt) export M=no;; esac",
-        env={"F": "data.csv"})
+        env={"F": "data.csv"},
+    )
     assert session.env["M"] == "yes"
 
 
@@ -1486,7 +1549,8 @@ def test_case_expanded_word_no_glob_match():
     """case $F in *.csv) → $F=data.txt doesn't match *.csv."""
     _, _, _, session, _, _ = _exec(
         "case $F in *.csv) export M=csv;; *.txt) export M=txt;; esac",
-        env={"F": "data.txt"})
+        env={"F": "data.txt"},
+    )
     assert session.env["M"] == "txt"
 
 
@@ -1494,7 +1558,7 @@ def test_case_expanded_word_no_glob_match():
 
 
 def test_cmd_concat_var_glob():
-    """cat $DIR/*.txt → unresolved glob PathSpec passed to resource."""
+    """cat $DIR/*.txt → unresolved glob PathSpec passed to VFS."""
     _, _, _, _, mount, _ = _exec("cat $DIR/*.txt", env={"DIR": "/data"})
     scopes = mount.execute_cmd.call_args[0][1]
     assert len(scopes) == 1
@@ -1525,8 +1589,9 @@ def test_cmd_cmd_sub_as_arg():
     session = _session()
     node = parse("cat $(echo /data/file.txt)")
 
-    _run(execute_node(dispatch, reg, job_table, execute_fn, "a", node,
-                      session))
+    _run(
+        execute_node(dispatch, reg, job_table, execute_fn, "a", node, session)
+    )
     scopes = mount.execute_cmd.call_args[0][1]
     assert len(scopes) == 1
     assert isinstance(scopes[0], PathSpec)
@@ -1535,11 +1600,9 @@ def test_cmd_cmd_sub_as_arg():
 
 def test_cmd_multiple_concat_paths():
     """diff $A/x.txt $B/y.txt → two PathSpecs with correct directories."""
-    _, _, _, _, mount, _ = _exec("diff $A/x.txt $B/y.txt",
-                                 env={
-                                     "A": "/s3",
-                                     "B": "/data"
-                                 })
+    _, _, _, _, mount, _ = _exec(
+        "diff $A/x.txt $B/y.txt", env={"A": "/s3", "B": "/data"}
+    )
     scopes = mount.execute_cmd.call_args[0][1]
     assert len(scopes) == 2
     assert isinstance(scopes[0], PathSpec)
@@ -1563,8 +1626,9 @@ def test_assign_cmd_sub():
     session = _session()
     node = parse("VAR=$(echo result_value)")
 
-    _run(execute_node(dispatch, reg, job_table, execute_fn, "a", node,
-                      session))
+    _run(
+        execute_node(dispatch, reg, job_table, execute_fn, "a", node, session)
+    )
     assert session.env["VAR"] == "result_value"
 
 
@@ -1576,11 +1640,9 @@ def test_assign_concat():
 
 def test_assign_nested_concat():
     """OUT=${BASE}/${SUB}/file.txt → fully expanded."""
-    _, _, _, session, _, _ = _exec("OUT=${BASE}/${SUB}/file.txt",
-                                   env={
-                                       "BASE": "/data",
-                                       "SUB": "reports"
-                                   })
+    _, _, _, session, _, _ = _exec(
+        "OUT=${BASE}/${SUB}/file.txt", env={"BASE": "/data", "SUB": "reports"}
+    )
     assert session.env["OUT"] == "/data/reports/file.txt"
 
 
@@ -1589,8 +1651,9 @@ def test_assign_nested_concat():
 
 def test_redirect_concat_var_target():
     """echo x > $DIR/out.txt → target expanded to /data/out.txt."""
-    _, _, _, _, _, dispatch = _exec("echo x > $DIR/out.txt",
-                                    env={"DIR": "/data"})
+    _, _, _, _, _, dispatch = _exec(
+        "echo x > $DIR/out.txt", env={"DIR": "/data"}
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) == 1
     assert write_calls[0][0][1].virtual == "/data/out.txt"
@@ -1608,8 +1671,9 @@ def test_redirect_cmd_sub_target():
     session = _session()
     node = parse("echo x > $(echo /data/out.txt)")
 
-    _run(execute_node(dispatch, reg, job_table, execute_fn, "a", node,
-                      session))
+    _run(
+        execute_node(dispatch, reg, job_table, execute_fn, "a", node, session)
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) == 1
     assert write_calls[0][0][1].virtual == "/data/out.txt"
@@ -1625,7 +1689,8 @@ def test_redirect_stderr_path():
     stdout, io, _, _, _, dispatch = _exec(
         "cat /data/missing.txt 2> /data/err.log",
         dispatch=dispatch,
-        registry=(reg, mount))
+        registry=(reg, mount),
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) == 1
     assert write_calls[0][0][1].virtual == "/data/err.log"
@@ -1633,20 +1698,21 @@ def test_redirect_stderr_path():
 
 
 def test_redirect_append_var():
-    """echo x >> $LOG → expanded, cat+tee dispatched."""
-    _, _, _, _, _, dispatch = _exec("echo x >> $LOG",
-                                    env={"LOG": "/data/app.log"})
+    """echo x >> $LOG → expanded, append dispatched."""
+    _, _, _, _, _, dispatch = _exec(
+        "echo x >> $LOG", env={"LOG": "/data/app.log"}
+    )
     ops = [c[0][0] for c in dispatch.call_args_list]
-    assert "read" in ops
-    assert "write" in ops
-    write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
+    assert ops == ["append"]
+    write_calls = [c for c in dispatch.call_args_list if c[0][0] == "append"]
     assert write_calls[0][0][1].virtual == "/data/app.log"
 
 
 def test_redirect_stdin_var():
     """sort < $INPUT → expanded, cat dispatched for input."""
-    _, _, _, _, _, dispatch = _exec("sort < $INPUT",
-                                    env={"INPUT": "/data/in.txt"})
+    _, _, _, _, _, dispatch = _exec(
+        "sort < $INPUT", env={"INPUT": "/data/in.txt"}
+    )
     read_calls = [c for c in dispatch.call_args_list if c[0][0] == "read"]
     assert len(read_calls) == 1
     assert read_calls[0][0][1].virtual == "/data/in.txt"
@@ -1669,10 +1735,8 @@ def test_full_pipeline_with_expansion():
     """cat $DIR/in.txt | grep $PAT > $DIR/out.txt → all expanded."""
     _, _, _, _, mount, dispatch = _exec(
         "cat $DIR/in.txt | grep $PAT > $DIR/out.txt",
-        env={
-            "DIR": "/data",
-            "PAT": "error"
-        })
+        env={"DIR": "/data", "PAT": "error"},
+    )
     # cat should receive PathSpec for /data/in.txt
     # grep should receive "error" as text arg
     # redirect should tee to /data/out.txt
@@ -1684,7 +1748,8 @@ def test_full_pipeline_with_expansion():
 def test_for_with_redirect_expansion():
     """for f in a b; do echo $f > /data/$f.txt; done → 2 tee calls."""
     _, _, _, _, _, dispatch = _exec(
-        "for f in a b; do echo $f > /data/$f.txt; done")
+        "for f in a b; do echo $f > /data/$f.txt; done"
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) == 2
     targets = {c[0][1].virtual for c in write_calls}
@@ -1695,7 +1760,8 @@ def test_for_with_redirect_expansion():
 def test_nested_expansion_in_for_body():
     """for d in /s3 /data; do cat $d/file.txt; done → paths classified."""
     _, _, _, _, mount, _ = _exec(
-        "for d in /s3 /data; do cat $d/file.txt; done")
+        "for d in /s3 /data; do cat $d/file.txt; done"
+    )
     assert mount.execute_cmd.call_count == 2
     # Each call should have a PathSpec path
     for call in mount.execute_cmd.call_args_list:
@@ -1711,7 +1777,8 @@ def test_nested_expansion_in_for_body():
 def test_for_multi_statement_body():
     """for x in a b; do export V=$x; export W=done; done → both run."""
     _, _, _, session, _, _ = _exec(
-        "for x in a b; do export V=$x; export W=done; done")
+        "for x in a b; do export V=$x; export W=done; done"
+    )
     assert session.env["V"] == "b"
     assert session.env["W"] == "done"
 
@@ -1719,24 +1786,28 @@ def test_for_multi_statement_body():
 def test_for_break_in_multi_body():
     """for x in a b c; do export V=$x; break; done → breaks after first."""
     _, _, _, session, _, _ = _exec(
-        "for x in a b c; do export V=$x; break; done")
+        "for x in a b c; do export V=$x; break; done"
+    )
     assert session.env["V"] == "a"
 
 
 def test_for_continue_in_multi_body():
     """for x in a b c; do continue; export SKIP=yes; done → SKIP never set."""
     _, _, _, session, _, _ = _exec(
-        "for x in a b c; do continue; export SKIP=yes; done")
+        "for x in a b c; do continue; export SKIP=yes; done"
+    )
     assert "SKIP" not in session.env
 
 
 def test_for_break_after_condition():
     """Conditional break in multi-statement for body."""
-    _, _, _, session, _, _ = _exec("for x in a b c; do "
-                                   "export V=$x; "
-                                   "if true; then break; fi; "
-                                   "export AFTER=no; "
-                                   "done")
+    _, _, _, session, _, _ = _exec(
+        "for x in a b c; do "
+        "export V=$x; "
+        "if true; then break; fi; "
+        "export AFTER=no; "
+        "done"
+    )
     assert session.env["V"] == "a"
     assert "AFTER" not in session.env
 
@@ -1744,14 +1815,16 @@ def test_for_break_after_condition():
 def test_while_multi_statement_body():
     """while true; do export RAN=yes; break; done → both run, then break."""
     _, _, _, session, _, _ = _exec(
-        "while true; do export RAN=yes; break; done")
+        "while true; do export RAN=yes; break; done"
+    )
     assert session.env["RAN"] == "yes"
 
 
 def test_while_continue_in_multi_body():
     """while true; do export N=yes; continue; done → N set, hits MAX_WHILE."""
     _, io, _, session, _, _ = _exec(
-        "while true; do export N=yes; continue; done")
+        "while true; do export N=yes; continue; done"
+    )
     assert session.env["N"] == "yes"
     assert io.exit_code == 0
 
@@ -1759,14 +1832,16 @@ def test_while_continue_in_multi_body():
 def test_select_break_in_multi_body():
     """select f in a b c → choice 2 sets the variable, break ends it."""
     _, _, _, session, _, _ = _exec_with_stdin(
-        "select f in a b c; do export V=$f; break; done", stdin=b"2\n")
+        "select f in a b c; do export V=$f; break; done", stdin=b"2\n"
+    )
     assert session.env["V"] == "b"
 
 
 def test_for_multi_with_redirect():
     """Multi-statement for body with redirect."""
     _, _, _, session, _, dispatch = _exec(
-        "for f in a b; do echo $f > /data/$f.txt; export DONE=yes; done")
+        "for f in a b; do echo $f > /data/$f.txt; export DONE=yes; done"
+    )
     assert session.env["DONE"] == "yes"
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) == 2
@@ -1775,7 +1850,8 @@ def test_for_multi_with_redirect():
 def test_for_multi_with_pipeline():
     """Multi-statement for body with pipeline."""
     _, _, _, session, _, _ = _exec(
-        "for f in a b; do echo $f | cat; export DONE=yes; done")
+        "for f in a b; do echo $f | cat; export DONE=yes; done"
+    )
     assert session.env["DONE"] == "yes"
 
 
@@ -1787,7 +1863,7 @@ def test_for_multi_with_pipeline():
 async def _async_iter(data: bytes):
     """Create an async iterator yielding data in chunks."""
     for i in range(0, len(data), 4):
-        yield data[i:i + 4]
+        yield data[i : i + 4]
 
 
 def test_read_from_bytes_stdin():
@@ -1800,14 +1876,17 @@ def test_read_from_bytes_stdin():
     node = parse("read VAR")
 
     _, io, _ = _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "a",
-                     node,
-                     session,
-                     stdin=b"hello world\n"))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=b"hello world\n",
+        )
+    )
     assert io.exit_code == 0
     assert session.env["VAR"] == "hello world"
 
@@ -1823,14 +1902,17 @@ def test_read_from_async_iterator_stdin():
 
     stdin_stream = _async_iter(b"streamed data\n")
     _, io, _ = _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "a",
-                     node,
-                     session,
-                     stdin=stdin_stream))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=stdin_stream,
+        )
+    )
     assert io.exit_code == 0
     assert session.env["VAR"] == "streamed data"
 
@@ -1845,14 +1927,17 @@ def test_read_from_none_stdin():
     node = parse("read VAR")
 
     _, io, _ = _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "a",
-                     node,
-                     session,
-                     stdin=None))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=None,
+        )
+    )
     assert io.exit_code == 1
     assert session.env["VAR"] == ""
 
@@ -1867,14 +1952,17 @@ def test_read_multivar_from_bytes():
     node = parse("read A B C")
 
     _, io, _ = _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "a",
-                     node,
-                     session,
-                     stdin=b"x y z"))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=b"x y z",
+        )
+    )
     assert session.env["A"] == "x"
     assert session.env["B"] == "y"
     assert session.env["C"] == "z"
@@ -1891,14 +1979,17 @@ def test_read_multivar_from_stream():
 
     stdin_stream = _async_iter(b"first second third")
     _, io, _ = _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "a",
-                     node,
-                     session,
-                     stdin=stdin_stream))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=stdin_stream,
+        )
+    )
     assert session.env["A"] == "first"
     assert session.env["B"] == "second third"
 
@@ -1913,14 +2004,17 @@ def test_read_multiline_takes_first():
     node = parse("read VAR")
 
     _, io, _ = _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "a",
-                     node,
-                     session,
-                     stdin=b"line1\nline2\nline3"))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=b"line1\nline2\nline3",
+        )
+    )
     assert session.env["VAR"] == "line1"
 
 
@@ -1943,7 +2037,8 @@ def test_redirect_stdin_from_file():
     node = parse("sort < /data/input.txt")
 
     stdout, io, _ = _run(
-        execute_node(dispatch, reg, job_table, execute_fn, "a", node, session))
+        execute_node(dispatch, reg, job_table, execute_fn, "a", node, session)
+    )
     read_calls = [c for c in dispatch.call_args_list if c[0][0] == "read"]
     assert len(read_calls) == 1
     assert read_calls[0][0][1].virtual == "/data/input.txt"
@@ -1966,14 +2061,16 @@ def _exec_with_stdin(cmd, stdin, env=None):
         job_table = JobTable()
         execute_fn = AsyncMock(return_value=IOResult())
         node = parse(cmd)
-        stdout, io, exec_node = await execute_node(dispatch,
-                                                   reg,
-                                                   job_table,
-                                                   execute_fn,
-                                                   "a",
-                                                   node,
-                                                   session,
-                                                   stdin=stdin)
+        stdout, io, exec_node = await execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=stdin,
+        )
         stdout = await apply_barrier(stdout, io, BarrierPolicy.VALUE)
         return stdout, io, exec_node, session, mount, dispatch
 
@@ -1987,7 +2084,8 @@ def test_for_stdin_bytes_shared_across_iterations():
     read consumes one line per call.
     """
     _, _, _, session, _, _ = _exec_with_stdin(
-        "for x in a b; do read LINE; done", stdin=b"first\nsecond\n")
+        "for x in a b; do read LINE; done", stdin=b"first\nsecond\n"
+    )
     # read takes first line, then second — both accessible
     assert "LINE" in session.env
 
@@ -2004,7 +2102,8 @@ def test_for_stdin_async_iterator_materialized():
         yield b"beta\n"
 
     _, _, _, session, _, _ = _exec_with_stdin(
-        "for x in a b; do read LINE; done", stdin=_stream())
+        "for x in a b; do read LINE; done", stdin=_stream()
+    )
     assert "LINE" in session.env
 
 
@@ -2024,7 +2123,8 @@ def test_while_read_consumes_lazily():
 
     _, _, _, session, _, _ = _exec_with_stdin(
         "while read LINE; do export LAST=$LINE; done; export N_PULLS=done",
-        stdin=_lazy_stream())
+        stdin=_lazy_stream(),
+    )
     assert session.env.get("LAST") == "line999"
     assert pulls == 1000
 
@@ -2047,9 +2147,10 @@ def test_while_read_break_stops_pulling():
     _, _, _, session, _, _ = _exec_with_stdin(
         "while read LINE; do "
         "  export LAST=$LINE; "
-        "  if [ \"$LINE\" = \"line4\" ]; then break; fi; "
+        '  if [ "$LINE" = "line4" ]; then break; fi; '
         "done",
-        stdin=_lazy_stream())
+        stdin=_lazy_stream(),
+    )
     assert session.env.get("LAST") == "line4"
     assert pulls < 50, f"expected lazy pulls (~5), got {pulls}"
 
@@ -2057,14 +2158,16 @@ def test_while_read_break_stops_pulling():
 def test_for_stdin_none_no_crash():
     """for x in a b; do read V; done with stdin=None."""
     _, io, _, session, _, _ = _exec_with_stdin(
-        "for x in a b; do read LINE; done", stdin=None)
+        "for x in a b; do read LINE; done", stdin=None
+    )
     assert session.env.get("LINE", "") == ""
 
 
 def test_while_stdin_bytes():
     """while loop materializes stdin before iterating."""
-    _, _, _, session, _, _ = _exec_with_stdin("while false; do read V; done",
-                                              stdin=b"data\n")
+    _, _, _, session, _, _ = _exec_with_stdin(
+        "while false; do read V; done", stdin=b"data\n"
+    )
     # while false → body never executes, but no crash
     assert "V" not in session.env
 
@@ -2076,8 +2179,9 @@ def test_while_stdin_async_iterator():
         yield b"line1\n"
         yield b"line2\n"
 
-    _, _, _, session, _, _ = _exec_with_stdin("while false; do read V; done",
-                                              stdin=_stream())
+    _, _, _, session, _, _ = _exec_with_stdin(
+        "while false; do read V; done", stdin=_stream()
+    )
     assert "V" not in session.env
 
 
@@ -2087,16 +2191,18 @@ def test_body_sequential_reads_advance_buffer():
     First read sets A=hello, advances buffer.
     Second read sets B=world from remaining buffer.
     """
-    _, _, _, session, mount, _ = _exec_with_stdin("read A; read B",
-                                                  stdin=b"hello\nworld\n")
+    _, _, _, session, mount, _ = _exec_with_stdin(
+        "read A; read B", stdin=b"hello\nworld\n"
+    )
     assert session.env["A"] == "hello"
     assert session.env["B"] == "world"
 
 
 def test_pipeline_stdin_flows_through():
     """echo data | cat → pipe connects stdout to stdin."""
-    _, _, exec_node, _, mount, _ = _exec_with_stdin("echo data | cat",
-                                                    stdin=None)
+    _, _, exec_node, _, mount, _ = _exec_with_stdin(
+        "echo data | cat", stdin=None
+    )
     assert exec_node.op == "|"
     assert mount.execute_cmd.call_count == 1
 
@@ -2109,7 +2215,8 @@ def test_select_stdin_materialized():
         yield b"choice\n"
 
     _, _, _, session, _, _ = _exec_with_stdin(
-        "select f in a b; do export GOT=$f; break; done", stdin=_stream())
+        "select f in a b; do export GOT=$f; break; done", stdin=_stream()
+    )
     assert session.env["GOT"] == ""
     assert session.env["REPLY"] == "choice"
 
@@ -2117,14 +2224,16 @@ def test_select_stdin_materialized():
 def test_for_with_cmd_using_stdin():
     """for x in a b; do cat; done with stdin."""
     _, _, _, _, mount, _ = _exec_with_stdin(
-        "for x in a b; do cat /data/f.txt; done", stdin=b"piped data")
+        "for x in a b; do cat /data/f.txt; done", stdin=b"piped data"
+    )
     assert mount.execute_cmd.call_count == 2
 
 
 def test_subshell_stdin_passthrough():
     """(read V) with stdin → read gets stdin inside subshell."""
-    _, _, _, session, _, _ = _exec_with_stdin("(read V)",
-                                              stdin=b"subshell data")
+    _, _, _, session, _, _ = _exec_with_stdin(
+        "(read V)", stdin=b"subshell data"
+    )
     # subshell restores env, so V is lost — but no crash
     assert "V" not in session.env
 
@@ -2145,14 +2254,17 @@ def test_redirect_stdin_with_async_iterator():
     node = parse("sort < /data/input.txt")
 
     stdout, io, _ = _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "a",
-                     node,
-                     session,
-                     stdin=_stream()))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=_stream(),
+        )
+    )
     read_calls = [c for c in dispatch.call_args_list if c[0][0] == "read"]
     assert len(read_calls) == 1
     assert io.exit_code == 0
@@ -2166,8 +2278,9 @@ def test_redirect_stdin_with_async_iterator():
 
 def test_sequential_reads_advance_through_lines():
     """read A; read B; read C with 3 lines → each gets one line."""
-    _, _, _, session, _, _ = _exec_with_stdin("read A; read B; read C",
-                                              stdin=b"first\nsecond\nthird\n")
+    _, _, _, session, _, _ = _exec_with_stdin(
+        "read A; read B; read C", stdin=b"first\nsecond\nthird\n"
+    )
     assert session.env["A"] == "first"
     assert session.env["B"] == "second"
     assert session.env["C"] == "third"
@@ -2175,8 +2288,9 @@ def test_sequential_reads_advance_through_lines():
 
 def test_read_past_end_returns_empty():
     """read A; read B with 1 line → A=line, B=empty, exit=1."""
-    _, io, _, session, _, _ = _exec_with_stdin("read A; read B",
-                                               stdin=b"only\n")
+    _, io, _, session, _, _ = _exec_with_stdin(
+        "read A; read B", stdin=b"only\n"
+    )
     assert session.env["A"] == "only"
     assert session.env["B"] == ""
 
@@ -2188,7 +2302,8 @@ def test_for_loop_read_advances_buffer():
     """
     _, _, _, session, _, _ = _exec_with_stdin(
         "for x in 1 2 3; do read LINE; export L_$x=$LINE; done",
-        stdin=b"alpha\nbeta\ngamma\n")
+        stdin=b"alpha\nbeta\ngamma\n",
+    )
     # export L_$x doesn't work ($ in key), but LINE advances
     assert session.env.get("LINE") == "gamma"
 
@@ -2200,8 +2315,8 @@ def test_while_read_pattern():
     then read returns 1 → while exits.
     """
     _, io, _, session, _, _ = _exec_with_stdin(
-        "while read LINE; do export LAST=$LINE; done",
-        stdin=b"aaa\nbbb\nccc\n")
+        "while read LINE; do export LAST=$LINE; done", stdin=b"aaa\nbbb\nccc\n"
+    )
     assert session.env["LAST"] == "ccc"
     assert io.exit_code == 0
 
@@ -2209,14 +2324,16 @@ def test_while_read_pattern():
 def test_while_read_single_line():
     """while read LINE; do ...; done with one line."""
     _, _, _, session, _, _ = _exec_with_stdin(
-        "while read LINE; do export GOT=$LINE; done", stdin=b"only_line\n")
+        "while read LINE; do export GOT=$LINE; done", stdin=b"only_line\n"
+    )
     assert session.env["GOT"] == "only_line"
 
 
 def test_while_read_empty_stdin():
     """while read LINE; do ...; done with empty stdin → body never runs."""
     _, io, _, session, _, _ = _exec_with_stdin(
-        "while read LINE; do export RAN=yes; done", stdin=b"")
+        "while read LINE; do export RAN=yes; done", stdin=b""
+    )
     assert "RAN" not in session.env
 
 
@@ -2228,7 +2345,8 @@ def test_while_read_async_iterator():
         yield b"y\n"
 
     _, _, _, session, _, _ = _exec_with_stdin(
-        "while read LINE; do export LAST=$LINE; done", stdin=_stream())
+        "while read LINE; do export LAST=$LINE; done", stdin=_stream()
+    )
     assert session.env["LAST"] == "y"
 
 
@@ -2243,14 +2361,17 @@ def test_buffer_reset_after_loop():
     node = parse("for x in a; do read V; done")
 
     _run(
-        execute_node(dispatch,
-                     reg,
-                     job_table,
-                     execute_fn,
-                     "a",
-                     node,
-                     session,
-                     stdin=b"inner\n"))
+        execute_node(
+            dispatch,
+            reg,
+            job_table,
+            execute_fn,
+            "a",
+            node,
+            session,
+            stdin=b"inner\n",
+        )
+    )
     # Buffer should be restored to outer value after loop
     assert session._stdin_buffer == b"outer\n"
 
@@ -2300,7 +2421,8 @@ def test_shift_removes_positional():
 def test_nested_function_calls():
     """inner() { export V=$1; }; outer() { inner hello; }; outer."""
     _, _, _, session, _, _ = _exec(
-        "inner() { export V=$1; }; outer() { inner hello; }; outer")
+        "inner() { export V=$1; }; outer() { inner hello; }; outer"
+    )
     assert session.env["V"] == "hello"
 
 
@@ -2311,7 +2433,8 @@ def test_function_args_isolated():
     → inner has no args, A=''
     """
     _, _, _, session, _, _ = _exec(
-        "inner() { export A=$1; }; outer() { inner; }; outer hello")
+        "inner() { export A=$1; }; outer() { inner; }; outer hello"
+    )
     assert session.env["A"] == ""
 
 
@@ -2334,7 +2457,8 @@ def test_if_multi_statement_body():
 def test_if_else_multi_statement():
     """if false; then ...; else export A=1; export B=2; fi."""
     _, _, _, session, _, _ = _exec(
-        "if false; then export X=no; else export A=1; export B=2; fi")
+        "if false; then export X=no; else export A=1; export B=2; fi"
+    )
     assert "X" not in session.env
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"
@@ -2342,9 +2466,11 @@ def test_if_else_multi_statement():
 
 def test_elif_multi_statement():
     """elif branch with multiple statements."""
-    _, _, _, session, _, _ = _exec("if false; then export X=no; "
-                                   "elif true; then export A=1; export B=2; "
-                                   "fi")
+    _, _, _, session, _, _ = _exec(
+        "if false; then export X=no; "
+        "elif true; then export A=1; export B=2; "
+        "fi"
+    )
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"
 
@@ -2365,7 +2491,8 @@ def test_function_shift_then_use():
 def test_function_multi_with_control():
     """f() { export A=1; if true; then export B=2; fi; export C=3; }; f."""
     _, _, _, session, _, _ = _exec(
-        "f() { export A=1; if true; then export B=2; fi; export C=3; }; f")
+        "f() { export A=1; if true; then export B=2; fi; export C=3; }; f"
+    )
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"
     assert session.env["C"] == "3"
@@ -2377,7 +2504,8 @@ def test_function_multi_with_control():
 def test_while_read_counts_lines():
     """while read LINE; do export N=...; done — count iterations."""
     _, _, _, session, _, _ = _exec_with_stdin(
-        "while read LINE; do export LAST=$LINE; done", stdin=b"a\nb\nc\n")
+        "while read LINE; do export LAST=$LINE; done", stdin=b"a\nb\nc\n"
+    )
     assert session.env["LAST"] == "c"
 
 
@@ -2385,7 +2513,8 @@ def test_while_read_with_break():
     """while read LINE; do ...; break; done — reads one line then stops."""
     _, _, _, session, _, _ = _exec_with_stdin(
         "while read LINE; do export FIRST=$LINE; break; done",
-        stdin=b"line1\nline2\n")
+        stdin=b"line1\nline2\n",
+    )
     assert session.env["FIRST"] == "line1"
 
 
@@ -2393,7 +2522,8 @@ def test_while_read_multivar():
     """while read A B; do ...; done — splits each line."""
     _, _, _, session, _, _ = _exec_with_stdin(
         "while read K V; do export LAST_K=$K; export LAST_V=$V; done",
-        stdin=b"key1 val1\nkey2 val2\n")
+        stdin=b"key1 val1\nkey2 val2\n",
+    )
     assert session.env["LAST_K"] == "key2"
     assert session.env["LAST_V"] == "val2"
 
@@ -2414,17 +2544,20 @@ def test_nested_if_while_for():
         "for w in $LINE; do "
         "export LAST=$w; "
         "done; done; fi",
-        stdin=b"hello world\n")
+        stdin=b"hello world\n",
+    )
     assert session.env["LAST"] == "world"
 
 
 def test_for_if_pipeline():
     """for loop with if condition and pipeline in body."""
-    _, _, _, session, mount, _ = _exec("for x in a b c; do "
-                                       "if true; then "
-                                       "echo $x | cat; "
-                                       "export DONE=$x; "
-                                       "fi; done")
+    _, _, _, session, mount, _ = _exec(
+        "for x in a b c; do "
+        "if true; then "
+        "echo $x | cat; "
+        "export DONE=$x; "
+        "fi; done"
+    )
     assert session.env["DONE"] == "c"
     assert mount.execute_cmd.call_count == 3
 
@@ -2432,18 +2565,20 @@ def test_for_if_pipeline():
 def test_function_with_while_read():
     """Function using while read pattern."""
     _, _, _, session, _, _ = _exec_with_stdin(
-        "process() { while read LINE; do "
-        "export LAST=$LINE; done; }; process",
-        stdin=b"x\ny\nz\n")
+        "process() { while read LINE; do export LAST=$LINE; done; }; process",
+        stdin=b"x\ny\nz\n",
+    )
     assert session.env["LAST"] == "z"
 
 
 def test_nested_functions():
     """Three levels of function nesting."""
-    _, _, _, session, _, _ = _exec("a() { export DEPTH=1; b; }; "
-                                   "b() { export DEPTH=2; c; }; "
-                                   "c() { export DEPTH=3; }; "
-                                   "a")
+    _, _, _, session, _, _ = _exec(
+        "a() { export DEPTH=1; b; }; "
+        "b() { export DEPTH=2; c; }; "
+        "c() { export DEPTH=3; }; "
+        "a"
+    )
     assert session.env["DEPTH"] == "3"
 
 
@@ -2451,27 +2586,29 @@ def test_function_with_args_and_loop():
     """Function with positional args, $@ splits on whitespace."""
     _, _, _, session, _, _ = _exec(
         "proc() { for f in $@; do export LAST=$f; done; }; "
-        "proc alpha beta gamma")
+        "proc alpha beta gamma"
+    )
     assert session.env["LAST"] == "gamma"
 
 
 def test_case_in_for():
     """case inside for loop — pattern matching per iteration."""
-    _, _, _, session, _, _ = _exec("for f in a.csv b.txt c.csv; do "
-                                   "case $f in "
-                                   "*.csv) export CSV=$f;; "
-                                   "*.txt) export TXT=$f;; "
-                                   "esac; done")
+    _, _, _, session, _, _ = _exec(
+        "for f in a.csv b.txt c.csv; do "
+        "case $f in "
+        "*.csv) export CSV=$f;; "
+        "*.txt) export TXT=$f;; "
+        "esac; done"
+    )
     assert session.env["CSV"] == "c.csv"
     assert session.env["TXT"] == "b.txt"
 
 
 def test_if_and_or_in_for():
     """for loop with && and || in body."""
-    _, _, _, session, _, _ = _exec("for x in a b; do "
-                                   "true && export OK=$x; "
-                                   "false || export FALL=$x; "
-                                   "done")
+    _, _, _, session, _, _ = _exec(
+        "for x in a b; do true && export OK=$x; false || export FALL=$x; done"
+    )
     assert session.env["OK"] == "b"
     assert session.env["FALL"] == "b"
 
@@ -2479,18 +2616,17 @@ def test_if_and_or_in_for():
 def test_subshell_in_while():
     """Subshell inside while — env isolated per iteration."""
     session = _session(env={"OUTER": "keep"})
-    _exec_with_stdin("while read LINE; do "
-                     "(export OUTER=nope); "
-                     "done",
-                     stdin=b"a\nb\n")
+    _exec_with_stdin(
+        "while read LINE; do (export OUTER=nope); done", stdin=b"a\nb\n"
+    )
     assert session.env["OUTER"] == "keep"
 
 
 def test_redirect_in_for_with_expansion():
     """for loop writing to different files via redirect."""
-    _, _, _, _, _, dispatch = _exec("for name in alpha beta; do "
-                                    "echo $name > /data/${name}.txt; "
-                                    "done")
+    _, _, _, _, _, dispatch = _exec(
+        "for name in alpha beta; do echo $name > /data/${name}.txt; done"
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) == 2
     targets = {c[0][1].virtual for c in write_calls}
@@ -2500,9 +2636,9 @@ def test_redirect_in_for_with_expansion():
 
 def test_function_calling_function_with_redirect():
     """Function A calls function B, output redirected."""
-    _, _, _, _, _, dispatch = _exec("inner() { echo result; }; "
-                                    "outer() { inner > /data/out.txt; }; "
-                                    "outer")
+    _, _, _, _, _, dispatch = _exec(
+        "inner() { echo result; }; outer() { inner > /data/out.txt; }; outer"
+    )
     write_calls = [c for c in dispatch.call_args_list if c[0][0] == "write"]
     assert len(write_calls) == 1
     assert write_calls[0][0][1].virtual == "/data/out.txt"
@@ -2516,7 +2652,8 @@ def test_while_read_with_case():
         "err*) export ERR=$LINE;; "
         "*) export OK=$LINE;; "
         "esac; done",
-        stdin=b"error: bad\ninfo: good\n")
+        stdin=b"error: bad\ninfo: good\n",
+    )
     assert session.env["ERR"] == "error: bad"
     assert session.env["OK"] == "info: good"
 
@@ -2528,7 +2665,8 @@ def test_export_in_elif_chain():
         "elif false; then export R=b; "
         "elif false; then export R=c; "
         "elif true; then export R=d; export S=also; "
-        "else export R=e; fi")
+        "else export R=e; fi"
+    )
     assert session.env["R"] == "d"
     assert session.env["S"] == "also"
 
@@ -2536,10 +2674,9 @@ def test_export_in_elif_chain():
 def test_nested_while_loops():
     """Nested while loops with different stdin buffers."""
     _, _, _, session, _, _ = _exec_with_stdin(
-        "while read OUTER; do "
-        "export LAST_OUTER=$OUTER; "
-        "break; done",
-        stdin=b"line1\nline2\n")
+        "while read OUTER; do export LAST_OUTER=$OUTER; break; done",
+        stdin=b"line1\nline2\n",
+    )
     assert session.env["LAST_OUTER"] == "line1"
 
 
@@ -2673,7 +2810,7 @@ def test_printf_newline():
 
 def test_printf_no_args():
     stdout, io, _, _, _, _ = _exec("printf")
-    assert io.exit_code == 0
+    assert io.exit_code == 2
     assert stdout == b""
 
 
@@ -2716,7 +2853,9 @@ def test_sleep_invalid():
 def test_sleep_no_args():
     _, io, _, _, _, _ = _exec("sleep")
     assert io.exit_code == 1
-    assert io.stderr == b"sleep: missing operand\n"
+    assert io.stderr == (
+        b"sleep: missing operand\nTry 'sleep --help' for more information.\n"
+    )
 
 
 # ── nested / combined builtins ─────────────────
@@ -2747,7 +2886,8 @@ def test_echo_in_while():
 
 def test_echo_and_export():
     stdout, _, _, session, _, _ = _exec(
-        "echo before; export V=set; echo after")
+        "echo before; export V=set; echo after"
+    )
     assert session.env["V"] == "set"
     assert b"after\n" in stdout
 
@@ -2768,9 +2908,11 @@ def test_printf_in_function():
 
 def test_sort_in_while_read():
     stdout, _, _, session, _, _ = _exec_with_stdin(
-        "sort | while read LINE; do export LAST=$LINE; done",
-        stdin=b"banana\napple\n")
-    assert session.env.get("LAST") is not None
+        "sort | while read LINE; do export LAST=$LINE; echo $LAST; done",
+        stdin=b"banana\napple\n",
+    )
+    assert stdout == b"ok\n"
+    assert session.env.get("LAST") is None
 
 
 def test_echo_redirect_then_cat():
@@ -2837,13 +2979,13 @@ def test_background_does_not_block():
 
 
 def test_multiple_background():
-    """sleep 0 &; sleep 0 &; export DONE=yes."""
+    """sleep 0 & sleep 0 & export DONE=yes."""
     _, _, _, session, _, _ = _exec("sleep 0 & sleep 0 & export DONE=yes")
     assert session.env["DONE"] == "yes"
 
 
 def test_background_in_sequence():
-    """export A=1; sleep 0 &; export B=2."""
+    """export A=1; sleep 0 & export B=2."""
     _, _, _, session, _, _ = _exec("export A=1; sleep 0 & export B=2")
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"

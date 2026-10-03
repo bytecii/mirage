@@ -12,41 +12,67 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { yieldBytes } from '../../../io/stream.ts'
+import { concat } from '../../../io/cachable_iterator.ts'
+import { chunks } from '../../../io/cooperative.ts'
+import { ensureStream } from '../../../io/stream.ts'
 import { type ByteSource, IOResult, materialize } from '../../../io/types.ts'
 import { type Limit, OnExceed } from '../../../types.ts'
+import { CommandTimeoutError, LimitExceededError } from '../../errors.ts'
 
 const NEWLINE = 0x0a
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
 
-export class CommandTimeoutError extends Error {
-  readonly command: string
-  readonly seconds: number
-  constructor(command: string, seconds: number) {
-    super(`${command}: timed out after ${String(seconds)}s`)
-    this.name = 'CommandTimeoutError'
-    this.command = command
-    this.seconds = seconds
-  }
+const TIMED_OUT = Symbol('timed-out')
+
+/**
+ * What a row-pushing command says when a mount's ceiling cut it short.
+ *
+ * `head -n` / `tail -n` on a database mount push the count into the query,
+ * and the mount caps how many rows one read may return. A count past the
+ * ceiling used to be clamped to it in silence, printing fewer lines than GNU
+ * would with exit 0; the rows up to the ceiling are still printed, but this
+ * notice goes to stderr and the command exits 1, as `du` does when its walk
+ * stops early. Mirrors `row_cap_notice` in `utils/limit.py`.
+ */
+export function rowCapNotice(
+  command: string,
+  operand: string,
+  count: number,
+  unit: string,
+  knob: string,
+): Uint8Array {
+  return ENC.encode(
+    `${command}: ${operand}: stopped at ${String(count)} ${unit} (${knob}); the output is incomplete\n`,
+  )
 }
 
 /**
- * A hard cap refused output the producer had already made.
- *
- * The cap is applied to a result that exists: at an op door the
- * backend has already moved those bytes, and the door reports that
- * through the caller's `OpReport` before the cap runs, so this error
- * carries no accounting of its own.
+ * Stream `src`, then append whatever `notices` gathered to `io`. The rows a
+ * pushed-down read returns are only counted once the read has run, which is
+ * while the command's output streams, so the notice and the failing status
+ * land on `io` after the stream drains, the way `truncateStream` settles an
+ * output cap. Mirrors `note_after` in `utils/limit.py`.
  */
-export class LimitExceededError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'LimitExceededError'
+export async function* noteAfter(
+  src: ByteSource,
+  io: IOResult,
+  notices: readonly Uint8Array[],
+): AsyncIterable<Uint8Array> {
+  yield* ensureStream(src)
+  if (notices.length === 0) return
+  const existing = io.stderr !== null ? await materialize(io.stderr) : new Uint8Array()
+  const total = notices.reduce((n, notice) => n + notice.byteLength, existing.byteLength)
+  const merged = new Uint8Array(total)
+  merged.set(existing, 0)
+  let at = existing.byteLength
+  for (const notice of notices) {
+    merged.set(notice, at)
+    at += notice.byteLength
   }
+  io.stderr = merged
+  io.exitCode = 1
 }
-
-const TIMED_OUT = Symbol('timed-out')
 
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
   return new Promise<T | typeof TIMED_OUT>((resolve, reject) => {
@@ -71,7 +97,7 @@ async function* withTimeout(
   seconds: number,
   command: string,
 ): AsyncIterableIterator<Uint8Array> {
-  const iterable: AsyncIterable<Uint8Array> = src instanceof Uint8Array ? yieldBytes(src) : src
+  const iterable = ensureStream(src)
   const iterator = iterable[Symbol.asyncIterator]()
   const deadline = performance.now() + seconds * 1000
   for (;;) {
@@ -106,89 +132,120 @@ export async function runWithTimeout<T>(
   return result
 }
 
-function trimToLines(buf: Uint8Array, maxLines: number): Uint8Array {
-  let count = 0
-  for (let i = 0; i < buf.byteLength; i++) {
-    if (buf[i] === NEWLINE) {
-      count++
-      if (count === maxLines) return buf.subarray(0, i + 1)
-    }
-  }
-  return buf
-}
-
 function buildNotice(limit: Limit): Uint8Array {
   const parts: string[] = []
   if (limit.maxLines !== null) parts.push(`${String(limit.maxLines)} lines`)
   if (limit.maxBytes !== null) parts.push(`${String(limit.maxBytes)} bytes`)
   const detail = parts.join(' / ')
   return ENC.encode(
-    `output truncated at limit (${detail}); ` +
-      `narrow with grep, or read more with head -n / tail -n / ` +
-      `a more specific path\n`,
+    `output truncated at limit (${detail}); narrow the selection or raise command_limits for this command\n`,
   )
 }
 
-function concat(chunks: Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
+export async function* truncateStream(
+  src: ByteSource,
+  io: IOResult,
+  limit: Limit,
+): AsyncIterable<Uint8Array> {
+  const maxBytes = limit.maxBytes
+  const iterable = ensureStream(src)
+  if (maxBytes === null) {
+    yield* iterable
+    return
   }
-  return out
+  let emitted = 0
+  for await (const chunk of iterable) {
+    const remaining = maxBytes - emitted
+    if (chunk.byteLength <= remaining) {
+      yield chunk
+      emitted += chunk.byteLength
+      continue
+    }
+    if (remaining > 0) yield chunk.subarray(0, remaining)
+    const existing = io.stderr !== null ? await materialize(io.stderr) : new Uint8Array()
+    const notice = buildNotice(limit)
+    const merged = new Uint8Array(existing.byteLength + notice.byteLength)
+    merged.set(existing, 0)
+    merged.set(notice, existing.byteLength)
+    io.stderr = merged
+    if (limit.onExceed === OnExceed.ERROR) io.exitCode = 1
+    return
+  }
 }
 
-function countNewlines(buf: Uint8Array): number {
-  let n = 0
-  for (let i = 0; i < buf.byteLength; i++) {
-    if (buf[i] === NEWLINE) n++
+async function* boundedStream(
+  src: ByteSource,
+  io: IOResult,
+  limit: Limit,
+  command = '',
+): AsyncIterable<Uint8Array> {
+  let total = 0
+  let lines = 0
+  const iterable = ensureStream(src)
+  for await (const chunk of iterable) {
+    let end =
+      limit.maxBytes === null
+        ? chunk.byteLength
+        : Math.min(chunk.byteLength, Math.max(0, limit.maxBytes - total))
+    if (limit.maxLines !== null) {
+      if (lines >= limit.maxLines) end = 0
+      else {
+        for (let i = 0; i < end; i++) {
+          if (chunk[i] === NEWLINE && ++lines === limit.maxLines) {
+            end = i + 1
+            break
+          }
+        }
+      }
+    }
+    total += end
+    if (end > 0) yield chunk.subarray(0, end)
+    if (end < chunk.byteLength) {
+      const prefix = command === '' ? new Uint8Array() : ENC.encode(`${command}: `)
+      io.stderr = concat([await materialize(io.stderr), prefix, buildNotice(limit)])
+      if (limit.onExceed === OnExceed.ERROR) io.exitCode = 1
+      return
+    }
   }
-  return n
 }
 
 export async function applyLimit(
   src: ByteSource,
   limit: Limit | null,
 ): Promise<[ByteSource | null, IOResult]> {
-  if (limit === null) return [src, new IOResult()]
-  const { maxLines, maxBytes } = limit
-  if (maxLines === null && maxBytes === null) return [src, new IOResult()]
+  const io = new IOResult()
+  if (limit === null || (limit.maxLines === null && limit.maxBytes === null)) return [src, io]
+  const data = await materialize(boundedStream(src, io, limit))
+  return [io.exitCode !== 0 ? null : data, io]
+}
 
-  const chunks: Uint8Array[] = []
-  let total = 0
-  let newlineCount = 0
-  let truncated = false
-
-  const iterable: AsyncIterable<Uint8Array> = src instanceof Uint8Array ? yieldBytes(src) : src
-
-  for await (const chunk of iterable) {
-    chunks.push(chunk)
-    total += chunk.byteLength
-    if (maxLines !== null) newlineCount += countNewlines(chunk)
-    if (maxBytes !== null && total > maxBytes) {
-      truncated = true
-      break
-    }
-    if (maxLines !== null && newlineCount >= maxLines) {
-      truncated = true
-      break
-    }
+async function* errorStream(
+  src: ByteSource,
+  io: IOResult,
+  limit: Limit,
+  command: string,
+): AsyncIterable<Uint8Array> {
+  const outcome = new IOResult()
+  const data = await materialize(boundedStream(src, outcome, limit, command))
+  if (outcome.stderr !== null) {
+    io.stderr = concat([await materialize(io.stderr), await materialize(outcome.stderr)])
   }
+  if (outcome.exitCode !== 0) io.exitCode = outcome.exitCode
+  else if (data.byteLength > 0) yield data
+}
 
-  let data = concat(chunks, total)
-  if (maxBytes !== null && data.byteLength > maxBytes) {
-    data = data.subarray(0, maxBytes)
-  } else if (maxLines !== null && truncated) {
-    data = trimToLines(data, maxLines)
-  }
-
-  if (!truncated) return [data, new IOResult()]
-  const notice = buildNotice(limit)
-  if (limit.onExceed === OnExceed.ERROR) {
-    return [null, new IOResult({ exitCode: 1, stderr: notice })]
-  }
-  return [data, new IOResult({ stderr: notice })]
+/** Attach a terminal cap; its consuming statement settles status and notices. */
+export function guardIO(
+  stdout: ByteSource | null,
+  io: IOResult,
+  limit: Limit | null,
+  command = '',
+): ByteSource | null {
+  if (stdout === null || limit === null || (limit.maxLines === null && limit.maxBytes === null))
+    return stdout
+  return limit.onExceed === OnExceed.ERROR
+    ? errorStream(stdout, io, limit, command)
+    : boundedStream(stdout, io, limit, command)
 }
 
 /**
@@ -204,17 +261,10 @@ export async function guardOutput(
   exitCode: number,
   limit: Limit | null,
 ): Promise<[ByteSource | null, ByteSource | null, number]> {
-  if (stdout === null) return [stdout, stderr, exitCode]
-  const [data, sgIo] = await applyLimit(stdout, limit)
-  if (sgIo.stderr !== null) {
-    const existing = stderr !== null ? await materialize(stderr) : new Uint8Array()
-    const added = await materialize(sgIo.stderr)
-    const merged = new Uint8Array(existing.byteLength + added.byteLength)
-    merged.set(existing, 0)
-    merged.set(added, existing.byteLength)
-    stderr = merged
-  }
-  return [data, stderr, sgIo.exitCode !== 0 ? sgIo.exitCode : exitCode]
+  const io = new IOResult({ stderr, exitCode })
+  const guarded = guardIO(stdout, io, limit)
+  const data = guarded === null ? null : await materialize(guarded)
+  return [data, io.stderr, io.exitCode]
 }
 
 export async function applyOpLimit(result: unknown, limit: Limit | null): Promise<unknown> {
@@ -229,4 +279,21 @@ export async function applyOpLimit(result: unknown, limit: Limit | null): Promis
     throw new LimitExceededError(message.trim())
   }
   return data
+}
+
+/** Capture an invocation's deadline before a lazy producer starts running. */
+export function guardInput(
+  source: ByteSource,
+  opts: { signal?: AbortSignal; timeoutSeconds?: number; command?: string },
+): AsyncIterable<Uint8Array> {
+  const seconds = opts.timeoutSeconds
+  const deadline = seconds !== undefined && seconds > 0 ? performance.now() + seconds * 1000 : null
+  return (async function* () {
+    for await (const chunk of chunks(source, opts.signal)) {
+      if (deadline !== null && performance.now() >= deadline) {
+        throw new CommandTimeoutError(opts.command ?? '?', seconds ?? 0)
+      }
+      yield chunk
+    }
+  })()
 }

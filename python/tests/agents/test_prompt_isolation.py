@@ -19,7 +19,6 @@ import pytest
 
 
 class _BlockDeepagents:
-
     def find_spec(self, name, path=None, target=None):
         if name == "deepagents" or name.startswith("deepagents."):
             raise ModuleNotFoundError(f"blocked import of {name}")
@@ -28,9 +27,12 @@ class _BlockDeepagents:
 
 def _evict_agents_and_deepagents(saved):
     for name in list(sys.modules):
-        if (name == "deepagents" or name.startswith("deepagents.")
-                or name == "mirage.agents"
-                or name.startswith("mirage.agents.")):
+        if (
+            name == "deepagents"
+            or name.startswith("deepagents.")
+            or name == "mirage.agents"
+            or name.startswith("mirage.agents.")
+        ):
             saved[name] = sys.modules.pop(name)
 
 
@@ -50,24 +52,14 @@ def deepagents_blocked():
     finally:
         sys.meta_path.remove(blocker)
         for name in list(sys.modules):
-            if (name == "deepagents" or name.startswith("deepagents.")
-                    or name == "mirage.agents"
-                    or name.startswith("mirage.agents.")):
+            if (
+                name == "deepagents"
+                or name.startswith("deepagents.")
+                or name == "mirage.agents"
+                or name.startswith("mirage.agents.")
+            ):
                 del sys.modules[name]
         sys.modules.update(saved)
-
-
-def test_pydantic_ai_prompt_imports_without_deepagents(deepagents_blocked):
-    mod = importlib.import_module("mirage.agents.pydantic_ai.prompt")
-    assert isinstance(mod.MIRAGE_SYSTEM_PROMPT, str)
-    assert callable(mod.build_system_prompt)
-    assert mod.build_system_prompt() == mod.MIRAGE_SYSTEM_PROMPT
-
-
-def test_openai_agents_prompt_imports_without_deepagents(deepagents_blocked):
-    mod = importlib.import_module("mirage.agents.openai_agents.prompt")
-    assert isinstance(mod.MIRAGE_SYSTEM_PROMPT, str)
-    assert callable(mod.build_system_prompt)
 
 
 def test_pydantic_ai_package_imports_without_deepagents(deepagents_blocked):
@@ -85,14 +77,3 @@ def test_openai_agents_package_imports_without_deepagents(deepagents_blocked):
 def test_langchain_full_import_fails_without_deepagents(deepagents_blocked):
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("mirage.agents.langchain")
-
-
-def test_all_prompts_share_same_content():
-    from mirage.agents.langchain import prompt as lc
-    from mirage.agents.openai_agents import prompt as oa
-    from mirage.agents.prompts import MIRAGE_SYSTEM_PROMPT
-    from mirage.agents.pydantic_ai import prompt as pa
-
-    assert pa.MIRAGE_SYSTEM_PROMPT == MIRAGE_SYSTEM_PROMPT
-    assert oa.MIRAGE_SYSTEM_PROMPT == MIRAGE_SYSTEM_PROMPT
-    assert lc.MIRAGE_SYSTEM_PROMPT == MIRAGE_SYSTEM_PROMPT

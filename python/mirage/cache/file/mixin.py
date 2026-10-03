@@ -17,8 +17,9 @@ from collections.abc import Iterable
 from typing import Any
 
 
-def validate_max_drain_bytes(cache_limit: int,
-                             max_drain_bytes: int | None) -> None:
+def validate_max_drain_bytes(
+    cache_limit: int, max_drain_bytes: int | None
+) -> None:
     if cache_limit < 0:
         raise ValueError("cache_limit must be non-negative")
     if max_drain_bytes is not None and max_drain_bytes < 0:
@@ -28,11 +29,11 @@ def validate_max_drain_bytes(cache_limit: int,
 
 
 class FileCacheMixin:
-    """LRU file cache mixin for resources.
+    """LRU file cache mixin for mounts.
 
     Adds cache tracking (sizes, fingerprints, TTL, LRU order)
-    on top of any resource. Data lives in the resource's storage —
-    subclass implements the cache methods using resource's store.
+    on top of any VFS. Data lives in the VFS's storage —
+    subclass implements the cache methods using VFS's store.
     """
 
     _max_drain_bytes: int | None = None
@@ -41,18 +42,22 @@ class FileCacheMixin:
     async def get(self, key: str) -> bytes | None:
         raise NotImplementedError
 
-    async def set(self,
-                  key: str,
-                  data: bytes,
-                  fingerprint: str | None = None,
-                  ttl: int | None = None) -> None:
+    async def set(
+        self,
+        key: str,
+        data: bytes,
+        fingerprint: str | None = None,
+        ttl: int | None = None,
+    ) -> None:
         raise NotImplementedError
 
-    async def add(self,
-                  key: str,
-                  data: bytes,
-                  fingerprint: str | None = None,
-                  ttl: int | None = None) -> bool:
+    async def add(
+        self,
+        key: str,
+        data: bytes,
+        fingerprint: str | None = None,
+        ttl: int | None = None,
+    ) -> bool:
         raise NotImplementedError
 
     async def remove(self, key: str) -> None:
@@ -64,10 +69,30 @@ class FileCacheMixin:
     async def is_fresh(self, key: str, remote_fingerprint: str) -> bool:
         raise NotImplementedError
 
+    async def is_unbounded(self, key: str) -> bool:
+        """Whether an entry exists for ``key`` and carries no bound.
+
+        A `bounded` mount cannot serve one: nothing stamped a ttl before
+        the read policy existed, and a warm read short-circuits rather
+        than re-setting, so such an entry would never acquire a bound and
+        never expire. Dropping it makes the cold read that follows stamp
+        one.
+
+        Asked as one question rather than ``exists`` plus a ttl lookup so
+        a warm bounded read costs one store round trip, and so a missing
+        entry answers False rather than reading as unbounded.
+
+        Args:
+            key (str): mount-absolute cache key.
+        """
+        raise NotImplementedError
+
     async def clear(self) -> None:
         raise NotImplementedError
 
-    async def evict_prefix(self, prefix: str) -> None:
+    async def evict_prefix(
+        self, prefix: str, *, excluded: tuple[str, ...] = ()
+    ) -> None:
         """Drop every cached entry whose key starts with ``prefix``.
 
         The path-unknown counterpart to :meth:`remove`: a mutation that
@@ -79,6 +104,7 @@ class FileCacheMixin:
         Args:
             prefix (str): Cache-key prefix to drop, normally a mount
                 prefix ending in "/".
+            excluded (tuple[str, ...]): nested mount roots to preserve.
         """
         raise NotImplementedError
 
@@ -100,15 +126,6 @@ class FileCacheMixin:
 
     async def multi_get(self, keys: list[str]) -> list[bytes | None]:
         return [await self.get(k) for k in keys]
-
-    async def multi_set(
-        self,
-        items: list[tuple[str, bytes]],
-        fingerprint: str | None = None,
-        ttl: int | None = None,
-    ) -> None:
-        for key, data in items:
-            await self.set(key, data, fingerprint=fingerprint, ttl=ttl)
 
     @property
     def cache_size(self) -> int | None:

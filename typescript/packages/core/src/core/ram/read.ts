@@ -12,11 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { record } from '../../observe/context.ts'
+import { record, startOp } from '../../observe/context.ts'
 import type { RAMAccessor } from '../../accessor/ram.ts'
-import { ResourceName, type PathSpec } from '../../types.ts'
-import { norm } from './utils.ts'
-import { enoent } from '../../utils/errors.ts'
+import { VFSName, type PathSpec } from '../../types.ts'
+import { norm } from '../../utils/path.ts'
+import { lookupError } from './dest.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 
@@ -41,13 +41,13 @@ export function read(
 ): Promise<Uint8Array> {
   const offset = options?.offset ?? 0
   const size = options?.size ?? null
-  const start = performance.now()
+  const timer = startOp()
   const p = norm(path.mountPath)
   const whole = accessor.store.files.get(p)
   if (whole === undefined) {
-    throw enoent(path)
+    throw lookupError(accessor, path, p)
   }
   const data = offset === 0 && size === null ? whole : sliceWindow(whole, offset, size)
-  record('read', p, ResourceName.RAM, data.byteLength, start)
+  record('read', path.virtual, VFSName.RAM, data.byteLength, timer)
   return Promise.resolve(data)
 }

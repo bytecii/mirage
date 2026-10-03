@@ -2,38 +2,40 @@ import pytest
 from pydantic import ValidationError
 
 from mirage.core.databricks_volume.path import backend_path, virtual_path
-from mirage.resource.databricks_volume import DatabricksVolumeConfig
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
+from mirage.vfs.databricks_volume import DatabricksVolumeConfig
 
 
 def test_backend_path_uses_volume_root_and_strips_mount_prefix(
-        databricks_config):
+    databricks_config,
+):
     path = PathSpec(
-        resource_path=mount_key("/volume/reports/latest.md", "/volume"),
+        vfs_path=mount_key("/volume/reports/latest.md", "/volume"),
         virtual="/volume/reports/latest.md",
         directory="/volume/reports",
     )
-    assert backend_path(
-        databricks_config,
-        path) == ("/Volumes/main/default/agent_files/root/reports/latest.md")
+    assert backend_path(databricks_config, path) == (
+        "/Volumes/main/default/agent_files/root/reports/latest.md"
+    )
 
 
 def test_backend_path_allows_normalized_path_inside_root(databricks_config):
     path = PathSpec(
-        resource_path=mount_key("/volume/reports/../latest.md", "/volume"),
+        vfs_path=mount_key("/volume/reports/../latest.md", "/volume"),
         virtual="/volume/reports/../latest.md",
         directory="/volume/reports",
     )
-    assert backend_path(
-        databricks_config,
-        path) == ("/Volumes/main/default/agent_files/root/latest.md")
+    assert backend_path(databricks_config, path) == (
+        "/Volumes/main/default/agent_files/root/latest.md"
+    )
 
 
 def test_backend_path_rejects_escape_above_configured_root(databricks_config):
     path = PathSpec(
-        resource_path=mount_key(
-            "/volume/../../other_schema/other_volume/secret.txt", "/volume"),
+        vfs_path=mount_key(
+            "/volume/../../other_schema/other_volume/secret.txt", "/volume"
+        ),
         virtual="/volume/../../other_schema/other_volume/secret.txt",
         directory="/volume",
     )

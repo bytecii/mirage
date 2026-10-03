@@ -21,7 +21,6 @@ vi.mock('./client.ts', async () => {
     ...actual,
     googleGet: vi.fn(),
     googleGetBytes: vi.fn(),
-    googleGetStream: vi.fn(),
     googleDelete: vi.fn(),
   }
 })
@@ -31,7 +30,7 @@ import * as client from './client.ts'
 import {
   deleteFile,
   downloadFile,
-  downloadFileStream,
+  getFile,
   listAllFiles,
   listFiles,
   listSharedDrives,
@@ -122,18 +121,49 @@ describe('shared-drive support flags', () => {
     expect(vi.mocked(client.googleGetBytes).mock.calls[0]?.[1]).toContain('supportsAllDrives=true')
   })
 
-  it('downloadFileStream requests supportsAllDrives', async () => {
-    vi.mocked(client.googleGetStream).mockImplementation(async function* () {
-      await Promise.resolve()
-      yield new Uint8Array()
-    })
-    for await (const _chunk of downloadFileStream(STUB_TOKEN_MANAGER, 'file123')) void _chunk
-    expect(vi.mocked(client.googleGetStream).mock.calls[0]?.[1]).toContain('supportsAllDrives=true')
-  })
-
   it('deleteFile requests supportsAllDrives', async () => {
     vi.mocked(client.googleDelete).mockResolvedValue(undefined)
     await deleteFile(STUB_TOKEN_MANAGER, 'file123')
     expect(vi.mocked(client.googleDelete).mock.calls[0]?.[1]).toContain('supportsAllDrives=true')
+  })
+})
+
+describe('the Drive field masks carry both content tokens', () => {
+  beforeEach(() => {
+    vi.mocked(client.googleGet).mockReset()
+  })
+
+  it('asks the listing for them inside files(...)', async () => {
+    // The listing is where the freshness probe gets its token: _probe stats
+    // with an empty index, so stat misses and warms through the parent
+    // readdir, which is this call. Without these the probe's stat falls to
+    // modifiedTime while the read stamps an md5.
+    //
+    // Asserted against the literal `files(` segment rather than the constant,
+    // because a constant-identity assertion moves with the constant and none
+    // of this repo's gdrive fakes honours a `fields` mask -- so this is the
+    // only thing that catches a reverted FIELDS.
+    vi.mocked(client.googleGet).mockResolvedValue({ files: [] })
+    await listFiles(STUB_TOKEN_MANAGER, { folderId: 'root' })
+    const params = vi.mocked(client.googleGet).mock.calls[0]?.[2] as Record<string, unknown>
+    const fields = String(params.fields)
+    const inner = fields.slice(fields.indexOf('files(') + 'files('.length)
+    expect(inner).toContain('md5Checksum')
+    expect(inner).toContain('headRevisionId')
+  })
+
+  it('asks files.get for them unwrapped', async () => {
+    // A files.get answers a bare File resource, so its mask is top-level.
+    // Wrapping these would ask for a field the response has no room for and
+    // Drive would return neither, silently.
+    vi.mocked(client.googleGet).mockResolvedValue({ id: 'f1' })
+    await getFile(STUB_TOKEN_MANAGER, 'f1')
+    const params = vi.mocked(client.googleGet).mock.calls[0]?.[2] as Record<string, unknown>
+    const fields = String(params.fields)
+    expect(fields).toContain('md5Checksum')
+    expect(fields).toContain('headRevisionId')
+    expect(fields).not.toContain('files(')
+    expect(fields).toContain('owners')
+    expect(fields).toContain('trashed')
   })
 })

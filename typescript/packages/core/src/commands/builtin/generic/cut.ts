@@ -12,66 +12,78 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { stdinStream } from '../utils/stream.ts'
+import { quoteText } from '../../quote.ts'
 import { asyncChain } from '../../../io/stream.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { cutStream, parseCutRanges, type CutOptions } from '../cut_helper.ts'
+import { cutStream, parseRanges, type CutOptions } from '../cut_ranges.ts'
 import { resolveSource } from '../utils/stream.ts'
 import { operandsIo, readOperands, singleChunk } from '../utils/operands.ts'
-import type { FlagValue } from '../../spec/types.ts'
+import { argmatch } from '../../spec/argmatch.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { type FlagValue } from '../../spec/types.ts'
+import { specOf } from '../../spec/builtins.ts'
 
 const ENC = new TextEncoder()
 
-function stringFlag(flags: Record<string, FlagValue>, ...names: string[]): string | null {
-  for (const name of names) {
-    const value = flags[name]
-    if (typeof value === 'string') return value
-  }
-  return null
-}
+const WHITESPACE_ARGS: readonly string[] = ['trimmed']
 
-function parseFlags(flags: Record<string, FlagValue>): CutOptions | string {
-  const bytesRange = stringFlag(flags, 'b', 'bytes')
-  const charsRange = stringFlag(flags, 'c', 'characters')
-  const fieldsRange = stringFlag(flags, 'F', 'f', 'fields')
-  const selected = [bytesRange, charsRange, fieldsRange].filter((value) => value !== null)
+function parseFlags(bag: Record<string, FlagValue>): CutOptions | string {
+  const fl = new FlagView(bag, specOf('cut'))
+  const bytesRange = fl.asStr('bytes')
+  const charsRange = fl.asStr('characters')
+  const fieldsRange = fl.asStr('F') ?? fl.asStr('fields')
+  const selected = [bytesRange, charsRange, fieldsRange].filter((value) => value !== undefined)
   if (selected.length === 0) {
     return 'cut: you must specify a list of bytes, characters, or fields\n'
   }
   if (selected.length > 1) return 'cut: only one type of list may be specified\n'
   const mode: CutOptions['mode'] =
-    bytesRange !== null ? 'bytes' : charsRange !== null ? 'characters' : 'fields'
+    bytesRange !== undefined ? 'bytes' : charsRange !== undefined ? 'characters' : 'fields'
   const range = bytesRange ?? charsRange ?? fieldsRange ?? ''
-  const rawWhitespace = flags.whitespace_delimited
+  const rawWhitespace = fl.raw('whitespace_delimited')
   let whitespace: CutOptions['whitespace'] = null
-  if (flags.w === true || typeof flags.F === 'string' || rawWhitespace === true) {
+  if (fl.asBool('w') || fl.asStr('F') !== undefined || rawWhitespace === true) {
     whitespace = 'default'
   } else if (typeof rawWhitespace === 'string') {
-    if (rawWhitespace !== 'trimmed') {
-      return `cut: invalid argument '${rawWhitespace}' for '--whitespace-delimited'\n`
+    // One candidate, so ARGMATCH can only match or not match here: a
+    // prefix of `trimmed` resolves to it, and the refusal keeps cut's own
+    // one-line wording (no candidate block). GNU cut has no such option, so
+    // there is nothing to measure this against: the empty word reaching the
+    // sole candidate as ACCEPTED is what the general rule says, not a probed
+    // answer. It stays the general rule rather than a special case.
+    if (!argmatch(rawWhitespace, WHITESPACE_ARGS).matched) {
+      return (
+        `cut: invalid argument '${quoteText(rawWhitespace)}' for ` + "'--whitespace-delimited'\n"
+      )
     }
     whitespace = 'trimmed'
   }
   if (whitespace !== null && mode !== 'fields') {
     return "cut: '-w' is only meaningful with fields\n"
   }
-  let outputDelimiter = stringFlag(flags, 'args_O', 'output_delimiter')
-  if (typeof flags.F === 'string' && outputDelimiter === null) outputDelimiter = ' '
-  const explicitDelimiter = stringFlag(flags, 'd', 'delimiter')
-  if (explicitDelimiter !== null && Array.from(explicitDelimiter).length !== 1) {
+  let outputDelimiter = fl.asStr('args_O') ?? fl.asStr('output_delimiter')
+  if (fl.asStr('F') !== undefined && outputDelimiter === undefined) outputDelimiter = ' '
+  const explicitDelimiter = fl.asStr('delimiter')
+  if (explicitDelimiter !== undefined && Array.from(explicitDelimiter).length !== 1) {
     return 'cut: the delimiter must be a single character\n'
   }
+  // A refusal arrives as the stderr text to print, the same shape every
+  // other check in this function returns.
+  const ranges = parseRanges(range, mode)
+  if (typeof ranges === 'string') return ranges
   return {
-    ranges: parseCutRanges(range),
+    ranges,
     mode,
     delimiter: explicitDelimiter ?? '\t',
-    complement: flags.complement === true,
-    onlyDelimited: flags.only_delimited === true,
+    complement: fl.asBool('complement'),
+    onlyDelimited: fl.asBool('only_delimited'),
     whitespace,
-    noPartial: flags.no_partial === true,
-    outputDelimiter,
-    zeroTerminated: flags.zero_terminated === true,
+    noPartial: fl.asBool('no_partial'),
+    outputDelimiter: outputDelimiter ?? null,
+    zeroTerminated: fl.asBool('zero_terminated'),
   }
 }
 
@@ -80,6 +92,7 @@ export async function cutGeneric(
   opts: CommandOpts,
   stream: (path: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
+  stream = stdinStream(stream, opts.stdin)
   const parsed = parseFlags(opts.flags)
   if (typeof parsed === 'string') {
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(parsed) })]
@@ -89,12 +102,12 @@ export async function cutGeneric(
     const io = operandsIo(err, { cache: ok.map((operand) => operand.path.virtual) })
     if (ok.length === 0 && err !== '') return [null, io]
     const outputs = ok.map((operand) => cutStream(singleChunk(operand.data), parsed))
-    const out: ByteSource = asyncChain(...outputs)
+    const out: ByteSource = asyncChain(outputs)
     return [out, io]
   }
   let source: AsyncIterable<Uint8Array>
   try {
-    source = resolveSource(opts.stdin, 'cut: missing operand')
+    source = resolveSource(opts.stdin)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${message}\n`) })]

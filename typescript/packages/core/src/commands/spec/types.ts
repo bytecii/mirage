@@ -12,8 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { flagKwargName } from './constants.ts'
-import { compareCodePoints } from '../../utils/sort.ts'
+import type { PathSpec } from '../../types.ts'
+import { ImmutableSet } from '../../utils/immutable_set.ts'
 
 // Command names the spec layer references by value. Not a registry of
 // every command: only names that appear away from their own module
@@ -24,6 +24,7 @@ export enum CommandName {
   BASE64 = 'base64',
   CMP = 'cmp',
   COMM = 'comm',
+  CSPLIT = 'csplit',
   DATE = 'date',
   DIFF = 'diff',
   FIND = 'find',
@@ -35,6 +36,7 @@ export enum CommandName {
   SPLIT = 'split',
   TR = 'tr',
   TSORT = 'tsort',
+  UNAME = 'uname',
   UNIQ = 'uniq',
   XXD = 'xxd',
 }
@@ -199,7 +201,7 @@ export class Option {
     this.pair = init.pair ?? false
     this.valueOptional = init.valueOptional ?? false
     this.shortValue = init.shortValue ?? true
-    this.choices = init.choices ?? []
+    this.choices = Object.freeze([...(init.choices ?? [])])
     this.required = init.required ?? false
     this.default = init.default ?? null
     this.metavar = init.metavar ?? null
@@ -215,9 +217,12 @@ export interface OperandInit {
   type?: ValueType
   /**
    * Flags that make this slot textual even though it is declared 'path'.
-   * jq's `--args` turns the operands after the program into positional
-   * string values rather than input files, which is a property of the
-   * line, not of the slot, so it cannot be spelled in the type alone.
+   * tar's `-x` turns the operands into member names rather than files, and
+   * jq's `--args` turns them into positional string values, which is a
+   * property of the line, not of the slot, so it cannot be spelled in the
+   * type alone. The flag reaches every operand on the line, or only the ones
+   * typed after it for a program that files each operand as it reads it
+   * (IN_ORDER_OPERANDS, jq).
    */
   textWhen?: readonly string[]
   /**
@@ -267,8 +272,8 @@ export class Operand {
 
   constructor(init: OperandInit = {}) {
     this.type = init.type ?? 'path'
-    this.providedBy = init.providedBy ?? []
-    this.textWhen = init.textWhen ?? []
+    this.providedBy = Object.freeze([...(init.providedBy ?? [])])
+    this.textWhen = Object.freeze([...(init.textWhen ?? [])])
     this.name = init.name ?? ''
     this.required = init.required ?? false
     this.remainder = init.remainder ?? false
@@ -292,6 +297,7 @@ export interface CommandSpecInit {
   epilog?: string | null
   oldOptionStyle?: boolean
   operandBase?: string | null
+  allowAbbrev?: boolean
 }
 
 export class CommandSpec {
@@ -313,6 +319,12 @@ export class CommandSpec {
   // every other path-valued flag keeps resolving against the session
   // cwd, which is what GNU does with -f.
   readonly operandBase: string | null
+  // argparse's `allow_abbrev`: whether an unambiguous prefix of a long
+  // option stands for it. getopt_long and argparse both expand one by
+  // default; clap and lexopt (ripgrep) do not, so a program parsed with
+  // either declares false and `--pcr` is refused rather than read as
+  // `--pcre2-unicode`.
+  readonly allowAbbrev: boolean
   // python3's rule: parse options strictly until the first operand,
   // then take every remaining word verbatim. An interpreter needs both
   // halves at once -- an unknown flag before the script is a usage
@@ -321,264 +333,27 @@ export class CommandSpec {
   // express the second.
 
   constructor(init: CommandSpecInit = {}) {
-    this.options = init.options ?? []
-    this.positional = init.positional ?? []
+    this.options = Object.freeze([...(init.options ?? [])])
+    this.positional = Object.freeze([...(init.positional ?? [])])
     this.rest = init.rest ?? null
-    this.ignoreTokens = new Set(init.ignoreTokens ?? [])
+    this.ignoreTokens = new ImmutableSet(init.ignoreTokens ?? [])
     this.description = init.description ?? null
     this.epilog = init.epilog ?? null
     this.oldOptionStyle = init.oldOptionStyle ?? false
     this.operandBase = init.operandBase ?? null
+    this.allowAbbrev = init.allowAbbrev ?? true
     // A subclass (CLISpec) still has its own fields to assign, so only
     // freeze here when constructed directly; subclasses freeze themselves.
     if (new.target === CommandSpec) Object.freeze(this)
   }
 }
 
-export interface ParsedArgsInit {
-  flags: Record<string, FlagValue>
-  args: [string, ValueType][]
-  cachePaths?: string[]
-  pathFlagValues?: string[]
-  rawOperands?: [string, ValueType][]
-  textFlagValues?: string[]
-  warnings?: string[]
-  wordKinds?: (ValueType | null)[]
-  wordBases?: (string | null)[]
-  invalidOptions?: string[]
-  ambiguousOptions?: [string, readonly string[]][]
-  optionErrorKinds?: string[]
-  needsValueOptions?: string[]
-  invalidValueOptions?: [string, string, readonly string[]][]
-  invalidIntOptions?: [string, string][]
-  invalidFloatOptions?: [string, string][]
-  missingRequiredOptions?: string[]
-  /**
-   * Display names of required operand slots the line left empty, in
-   * declaration order. Reported rather than thrown, like every other entry
-   * here, so the dialect that words it is the caller's choice.
-   */
-  missingRequiredOperands?: string[]
-  /**
-   * Dests the line actually carried, in scan order, excluding the ones a
-   * declared default filled in afterwards. A usage line that echoes what was
-   * supplied (clap's) needs exactly this distinction: a defaulted option is
-   * invisible there, a typed one is not.
-   */
-  typedDests?: string[]
-  oldOptionNeedsValue?: string | null
-}
-
-export class ParsedArgs {
-  readonly flags: Record<string, FlagValue>
-  readonly args: [string, ValueType][]
-  readonly cachePaths: string[]
-  readonly pathFlagValues: string[]
-  readonly rawOperands: [string, ValueType][]
-  readonly textFlagValues: string[]
-  readonly warnings: string[]
-  readonly wordKinds: (ValueType | null)[]
-  // Per-position base directory, aligned with wordKinds: the absolute
-  // path a word resolves against when an operandBase option (tar's -C)
-  // moved it, and null when the session cwd still applies. Only a spec
-  // declaring operandBase ever fills this.
-  readonly wordBases: (string | null)[]
-  // GNU-shaped option errors, reported (never thrown) by the parser:
-  // undeclared options ('--bogus' or the offending cluster char 'Y'),
-  // abbreviated longs matching several options (typed prefix, matched
-  // spellings in declaration order), declared value flags that ran out
-  // of line ('--max-depth', 'm'), values outside a declared choices set
-  // (canonical spelling, value, allowed values), non-integer values on
-  // int-typed options (canonical spelling, value), and absent required
-  // options (canonical spelling).
-  readonly invalidOptions: string[]
-  readonly ambiguousOptions: [string, readonly string[]][]
-  // "invalid" / "ambiguous" tags in scan encounter order, so the refusal
-  // names the FIRST offending token like GNU (grep --c --bogus reports
-  // --c; reversed reports --bogus). needsValue is absent by construction:
-  // it only fires on the line's final token, so it can never precede
-  // another scan error.
-  readonly optionErrorKinds: string[]
-  readonly needsValueOptions: string[]
-  readonly invalidValueOptions: [string, string, readonly string[]][]
-  readonly invalidIntOptions: [string, string][]
-  readonly invalidFloatOptions: [string, string][]
-  readonly missingRequiredOptions: string[]
-  readonly missingRequiredOperands: string[]
-  readonly typedDests: string[]
-  // The old-style cluster letter whose argument ran off the end of the
-  // line (`tar xzf` with no archive). Its own report because GNU tar
-  // words it differently and exits differently from every getopt refusal
-  // above, and because it outranks all of them: tar counts the cluster's
-  // argument needs before argp ever validates a letter, so `tar Qf` and
-  // `tar fQ` both name f, not Q.
-  readonly oldOptionNeedsValue: string | null
-
-  constructor(init: ParsedArgsInit) {
-    this.flags = init.flags
-    this.args = init.args
-    this.cachePaths = init.cachePaths ?? []
-    this.pathFlagValues = init.pathFlagValues ?? []
-    this.rawOperands = init.rawOperands ?? []
-    this.textFlagValues = init.textFlagValues ?? []
-    this.warnings = init.warnings ?? []
-    this.wordKinds = init.wordKinds ?? []
-    this.wordBases = init.wordBases ?? []
-    this.invalidOptions = init.invalidOptions ?? []
-    this.ambiguousOptions = init.ambiguousOptions ?? []
-    this.optionErrorKinds = init.optionErrorKinds ?? []
-    this.needsValueOptions = init.needsValueOptions ?? []
-    this.invalidValueOptions = init.invalidValueOptions ?? []
-    this.invalidIntOptions = init.invalidIntOptions ?? []
-    this.invalidFloatOptions = init.invalidFloatOptions ?? []
-    this.missingRequiredOptions = init.missingRequiredOptions ?? []
-    this.missingRequiredOperands = init.missingRequiredOperands ?? []
-    this.typedDests = init.typedDests ?? []
-    this.oldOptionNeedsValue = init.oldOptionNeedsValue ?? null
-  }
-
-  paths(): string[] {
-    return this.args.filter(([, k]) => k === 'path').map(([v]) => v)
-  }
-
-  routingPaths(): string[] {
-    return [...this.paths(), ...this.pathFlagValues]
-  }
-
-  texts(): string[] {
-    return this.args.filter(([, k]) => k !== 'path').map(([v]) => v)
-  }
-
-  flag(
-    name: string,
-    fallback: string | boolean | number | string[] | null = null,
-  ): string | boolean | number | string[] | null {
-    return this.flags[name] ?? fallback
-  }
-}
-
-/**
- * Collect the kwarg names a spec's options can produce.
- *
- * One name per option: the long spelling when an option declares both,
- * matching the parser's canonical dest. Keeping the short spelling here
- * too would let a stale `fl.asBool('a')` stay legal and read false
- * forever after dest unification; canonical-only turns that silent miss
- * into a throw. Mirrors Python's `spec_flag_names`.
- */
-export function specFlagNames(spec: CommandSpec): ReadonlySet<string> {
-  const names = new Set<string>()
-  for (const option of spec.options) {
-    const canonical = option.long ?? option.short
-    if (canonical !== null) names.add(flagKwargName(canonical))
-  }
-  return names
-}
-
-export type FlagValue = string | boolean | number | string[]
-
-/**
- * Typed read-only view over raw flag kwargs.
- *
- * Commands receive flags as an untyped record from the dispatcher; this
- * view is the one sanctioned way to read them, replacing ad-hoc
- * `flags.x === true` checks and typeof chains. Mirrors Python's
- * `FlagView`.
- *
- * When constructed with a spec, reading a name the spec does not declare
- * throws. A missing key is otherwise indistinguishable from "flag not
- * passed", so a typo in the name would silently read as false/undefined.
- */
-export class FlagView {
-  private readonly flags: Readonly<Record<string, FlagValue>>
-  private readonly allowed: ReadonlySet<string> | null
-
-  constructor(flags?: Readonly<Record<string, FlagValue>>, spec?: CommandSpec) {
-    this.flags = flags ?? {}
-    this.allowed = spec === undefined ? null : specFlagNames(spec)
-  }
-
-  private key(name: string): string {
-    if (this.allowed !== null && !this.allowed.has(name)) {
-      throw new Error(
-        `flag '${name}' is not declared by the command spec ` +
-          `(known: ${[...this.allowed].sort(compareCodePoints).join(', ')})`,
-      )
-    }
-    return name
-  }
-
-  /**
-   * The given flag names, ordered as the line first typed them.
-   *
-   * The parser fills the bag in scan order and every hop between
-   * (object spreads, copies) preserves string-key insertion order, so
-   * a key's position is its first occurrence on the line; a flag
-   * supplied by a default or the environment lands after every typed
-   * one. Names the line never carried are dropped. This is what an
-   * order-sensitive option family (grep's --include/--exclude, where
-   * the later kind overrides the earlier) reads, since the bag has no
-   * per-occurrence positions.
-   */
-  typedOrder(...names: string[]): string[] {
-    const wanted = new Set(names.map((n) => this.key(n)))
-    return Object.keys(this.flags).filter((k) => wanted.has(k))
-  }
-
-  asBool(name: string): boolean {
-    const value = this.flags[this.key(name)]
-    if (typeof value === 'boolean') return value
-    // A count flag holds a number; any occurrence reads as set.
-    return typeof value === 'number' && value > 0
-  }
-
-  asInt(name: string): number | undefined {
-    const value = this.flags[this.key(name)]
-    if (typeof value === 'number') return value
-    if (typeof value !== 'string') return undefined
-    // Python's int() is all-or-nothing: it accepts surrounding whitespace
-    // and underscore separators and raises on anything else. parseInt would
-    // instead take the numeric prefix of '5x' and hand back NaN for 'abc',
-    // and NaN still satisfies `number`, so a bad value would flow onward as
-    // a number rather than being rejected.
-    const text = value.trim()
-    if (!/^[+-]?\d+(?:_\d+)*$/.test(text)) {
-      throw new Error(`flag '${name}' expects an integer, got '${value}'`)
-    }
-    return Number.parseInt(text.replaceAll('_', ''), 10)
-  }
-
-  asFloat(name: string): number | undefined {
-    const value = this.flags[this.key(name)]
-    if (typeof value === 'number') return value
-    if (typeof value !== 'string') return undefined
-    // All-or-nothing like Python's float(), mirroring asInt: parseFloat
-    // would take the numeric prefix of '2.5x' and hand back NaN for
-    // 'abc', and NaN still satisfies `number`.
-    const text = value.trim()
-    if (
-      !/^[+-]?(?:\d+(?:_\d+)*(?:\.(?:\d+(?:_\d+)*)?)?|\.\d+(?:_\d+)*)(?:[eE][+-]?\d+(?:_\d+)*)?$/.test(
-        text,
-      )
-    ) {
-      throw new Error(`flag '${name}' expects a number, got '${value}'`)
-    }
-    return Number.parseFloat(text.replaceAll('_', ''))
-  }
-
-  asStr(name: string): string | undefined {
-    const value = this.flags[this.key(name)]
-    return typeof value === 'string' ? value : undefined
-  }
-
-  asList(name: string): string[] {
-    const value = this.flags[this.key(name)]
-    if (Array.isArray(value)) return value.filter((v) => typeof v === 'string')
-    if (typeof value === 'string') return [value]
-    return []
-  }
-
-  raw(name: string): FlagValue | undefined {
-    return this.flags[this.key(name)]
-  }
-}
+// What the parser itself can put in the bag: it works on argv, so every
+// value is still text, or the bool/number a flag's own shape implies.
+export type ParsedFlagValue = string | boolean | number | string[]
+// What a command receives. The executor recovers a PATH-typed value as the
+// PathSpec of the word that spelled it (`parseFlags`), and the mount stamps
+// its backend key (`Mount.executeCmd`), so an error line can name the path
+// as typed. The mixed list is the `pair` shape (jq's `--rawfile name file`).
+// Mirrors Python's FlagValue.
+export type FlagValue = ParsedFlagValue | PathSpec | PathSpec[] | (string | PathSpec)[]

@@ -39,6 +39,19 @@ async def test_wait_finished_survives_an_outcome_bigger_than_the_budget():
 
 
 @pytest.mark.asyncio
+async def test_drops_writes_once_its_store_is_closed():
+    store = RAMConsoleStore()
+    console = JobConsole(store)
+    await store.close()
+    await console.emit(Channel.STDOUT, b"late")
+    await console.finish(KILLED_OUTCOME)
+
+    chunks, _, _ = await store.read_from(0)
+    assert chunks == []
+    assert console.finished
+
+
+@pytest.mark.asyncio
 async def test_emit_then_read_from_the_start(console):
     await console.emit(Channel.STDOUT, b"hello\n")
     await console.emit(Channel.STDERR, b"oops\n")
@@ -167,7 +180,8 @@ async def test_wait_finished_returns_once_the_job_ends(console):
 
 @pytest.mark.asyncio
 async def test_wait_finished_returns_immediately_when_already_finished(
-        console):
+    console,
+):
     await console.finish(exit_outcome(0))
 
     await asyncio.wait_for(console.wait_finished(), timeout=1)

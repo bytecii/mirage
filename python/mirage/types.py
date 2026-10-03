@@ -13,15 +13,32 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, TypeAlias
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    TypeAlias,
+)
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeFloat,
+    NonNegativeInt,
+    model_validator,
+)
 
 if TYPE_CHECKING:
     import aiohttp
+
+    from mirage.policy.types import CommandRule
 
 
 class Aggr:
@@ -48,20 +65,96 @@ def _min_positive(values: Iterable[float | int | None]) -> float | int | None:
 
 class FindType(str, Enum):
     """POSIX `find -type` flag values (`-type d`, `-type f`)."""
+
     DIRECTORY = "d"
     FILE = "f"
 
 
 class LsSortBy(str, Enum):
-    """`ls` sort keys. NAME is default, TIME is `-t`, SIZE is `-S`."""
+    """`ls` sort keys: NAME is the default, TIME `-t`, SIZE `-S`, VERSION
+    `-v`, EXTENSION `-X`, WIDTH `--sort=width`, and NONE `-U`."""
+
     NAME = "name"
     TIME = "time"
     SIZE = "size"
+    VERSION = "version"
+    EXTENSION = "extension"
+    WIDTH = "width"
+    NONE = "none"
+
+
+class LsTimeKind(str, Enum):
+    """Which timestamp `ls` shows and sorts by: `-u`/`--time=atime`,
+    `-c`/`--time=ctime`, `--time=birth`, else the modification time."""
+
+    MTIME = "mtime"
+    ATIME = "atime"
+    CTIME = "ctime"
+    BIRTH = "birth"
+
+
+class LsIndicator(str, Enum):
+    """The mark `ls` appends to a name, `--indicator-style`'s words: `-p`
+    is `slash`, `--file-type` is `file-type` and `-F` is `classify`."""
+
+    NONE = "none"
+    SLASH = "slash"
+    FILE_TYPE = "file-type"
+    CLASSIFY = "classify"
+
+
+class CopyDeref(str, Enum):
+    """Which symlinks `cp` follows: every one (`-L`), only the command
+    line's (`-H`), or none, copying each link as a link (`-P`, `-d`,
+    `-a`, and a recursive copy's default)."""
+
+    ALWAYS = "always"
+    COMMAND_LINE = "command_line"
+    NEVER = "never"
+
+
+class LsLinkMode(str, Enum):
+    """Which command-line symlinks `ls` resolves before it lists them:
+    every one (`-L`, `-H`), only one leading to a directory (the
+    default), or none (`-d`, a long format, `-F`)."""
+
+    ALL = "all"
+    DIRECTORY = "directory"
+    NONE = "none"
 
 
 class FileType(str, Enum):
+    """POSIX file type (the `st_mode` kind), the switch behavior branches on.
+
+    One per entry, always present. Directory and symlink are their own
+    kinds; every regular file is FILE and carries its content shape on
+    FileStat.content. Distinct from ContentType, which is only a
+    rendering hint for a FILE.
+
+    The full POSIX set is enumerated so the model is comprehensive.
+    DIRECTORY, FILE, SYMLINK and CHAR_DEVICE (the /dev mount) are
+    produced today; BLOCK_DEVICE, FIFO and SOCKET are declared but not
+    yet emitted, and the render/derivation tables (find letter, st_mode
+    bits, ls char) grow a row for one the moment a backend starts
+    producing it.
+    """
+
     DIRECTORY = "directory"
+    FILE = "file"
     SYMLINK = "symlink"
+    CHAR_DEVICE = "char_device"
+    BLOCK_DEVICE = "block_device"
+    FIFO = "fifo"
+    SOCKET = "socket"
+
+
+class ContentType(str, Enum):
+    """A regular file's content shape: the rendering hint (file/ls color).
+
+    Only meaningful for a FILE; a directory or symlink carries none. Not
+    a node kind -- nothing branches control flow on it.
+    """
+
     TEXT = "text"
     BINARY = "binary"
     JSON = "json"
@@ -79,6 +172,11 @@ class FileType(str, Enum):
 # target travels with the stat row.
 LINK_TARGET_KEY = "link_target"
 
+# FileStat.extra key holding a device node's logical [major, minor]. A
+# character or block device has no size; its identity is these numbers,
+# which stat, ls -l, file and tar render in place of a byte length.
+DEVICE_NUMBERS_KEY = "device_numbers"
+
 
 class FileStat(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -88,12 +186,26 @@ class FileStat(BaseModel):
     modified: str | None = None
     fingerprint: str | None = None
     revision: str | None = None
-    type: FileType | None = None
+    type: FileType
+    content: ContentType | None = None
     mode: int | None = None
     uid: int | str | None = None
     gid: int | str | None = None
     atime: str | None = None
+    ctime: str | None = None
+    birthtime: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _content_only_on_file(self) -> "FileStat":
+        # content is a FILE's rendering hint; a directory or symlink has
+        # none. None on a FILE means "unknown", which is allowed.
+        if self.type is not FileType.FILE and self.content is not None:
+            raise ValueError(
+                f"content must be None for {self.type.value}, "
+                f"got {self.content.value}"
+            )
+        return self
 
 
 # Any value that survives a JSON round trip: what a decoded payload
@@ -103,8 +215,9 @@ class FileStat(BaseModel):
 # to the same set. Spelled as a string because a recursive alias needs
 # a forward reference until the floor is 3.12 (PEP 695 `type`), so a
 # union with it has to be quoted too: `Awaitable["JsonValue | X"]`.
-JsonValue: TypeAlias = ("None | bool | int | float | str | list[JsonValue]"
-                        " | dict[str, JsonValue]")
+JsonValue: TypeAlias = (
+    "None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]"
+)
 
 # How a >= 400 API response and its body text become the backend's own
 # exception; core/api/client.py's engine calls it, each backend supplies
@@ -119,14 +232,36 @@ ReadStreamFn: TypeAlias = Callable[..., AsyncIterator[bytes]]
 # A "polymorphic" reader is the loose `read` contract head/tail/wc
 # accept: a backend may hand back materialized bytes, an awaitable of
 # bytes, or an async byte stream; ensure_stream normalizes downstream.
-PolymorphicReadResult: TypeAlias = (bytes | AsyncIterator[bytes]
-                                    | Awaitable[bytes | AsyncIterator[bytes]])
+PolymorphicReadResult: TypeAlias = (
+    bytes | AsyncIterator[bytes] | Awaitable[bytes | AsyncIterator[bytes]]
+)
 PolymorphicReadFn: TypeAlias = Callable[..., PolymorphicReadResult]
 CopyFn: TypeAlias = Callable[..., Awaitable[None]]
 MoveFn: TypeAlias = Callable[..., Awaitable[None]]
 FindFn: TypeAlias = Callable[..., Awaitable[list[str]]]
 ReaddirFn: TypeAlias = Callable[..., Awaitable[list[str]]]
 StatFn: TypeAlias = Callable[..., Awaitable["FileStat"]]
+
+
+@dataclass(frozen=True, slots=True)
+class WalkProbe:
+    """What proving a running command's ``.`` and ``..`` reads.
+
+    The command tier reaches its backend past the dispatcher's door, so
+    ``Mount.execute_cmd`` binds the door's facts for it. The kernel walk
+    (``follow_paths``) rewrites an operand to its link's target before
+    the handler runs; ``follow`` is how that operand is still known for
+    the one its dotted spelling names.
+
+    Args:
+        stat (StatFn): the door's stat, raising when nothing is there.
+        follow (Callable[[str], str] | None): resolve a path through the
+            namespace's links (open(2) semantics), None while it holds
+            none.
+    """
+
+    stat: StatFn
+    follow: Callable[[str], str] | None = None
 
 
 class CapacityState(StrEnum):
@@ -140,6 +275,7 @@ class CapacityState(StrEnum):
     or simply not reported yet. df renders real numbers for QUOTA and a
     literal ``-`` for the rest — never a fabricated total.
     """
+
     QUOTA = "quota"
     ELASTIC = "elastic"
     NA = "na"
@@ -160,6 +296,7 @@ class CapacityResult:
         inodes_used (int | None): used inodes.
         inodes_free (int | None): free inodes.
     """
+
     state: CapacityState
     total: int | None = None
     used: int | None = None
@@ -217,14 +354,15 @@ class MountMode(str, Enum):
 class MountBackend(StrEnum):
     """How a mount is exposed to the outside world.
 
-    VFS is the default: the mount lives only inside mirage's own filesystem
-    and is reached through the command surface, with nothing registered with
-    the kernel. FUSE and FSKIT additionally expose it as a real mountpoint.
+    WORKSPACE is the default: the mount lives only inside mirage's own
+    filesystem and is reached through the command surface, with nothing
+    registered with the kernel. FUSE and FSKIT additionally expose it as a
+    real mountpoint.
 
     FSKIT is macOS 15.4+ only and needs no kernel extension. It has no
-    ``direct_io`` equivalent, so it serves correct reads only for resources
-    that set ``SIZES_ALWAYS_KNOWN``; ``mirage.fuse.backend`` warns at mount
-    time about resources whose size-unknown files will read as empty. Writes
+    ``direct_io`` equivalent, so it serves correct reads only for mounts
+    that set ``sizes_always_known``; ``mirage.fuse.backend`` warns at mount
+    time about mounts whose size-unknown files will read as empty. Writes
     are also limited: appends and metadata ops persist, but the macFUSE
     FSKit shim flushes pages a file did not already have (a new file, or
     truncate-then-write) as NUL bytes, a limit pinned in
@@ -233,14 +371,92 @@ class MountBackend(StrEnum):
     degrade every API-backed mount.
     """
 
-    VFS = "vfs"
+    WORKSPACE = "workspace"
     FUSE = "fuse"
     FSKIT = "fskit"
 
 
 # Backends that register a real mountpoint with the kernel.
 KERNEL_BACKENDS: frozenset[MountBackend] = frozenset(
-    {MountBackend.FUSE, MountBackend.FSKIT})
+    {MountBackend.FUSE, MountBackend.FSKIT}
+)
+
+
+class ReadPolicy(str, Enum):
+    """How a mount decides whether cached bytes may be served.
+
+    FRESH revalidates against the backend's content token before serving
+    a cached copy; BOUNDED serves without revalidating, within the
+    staleness bound the mount declares.
+
+    PINNED names the content a commit's fingerprint records. There is no
+    version layer to pin to, so a mount declaring it is refused at mount
+    time rather than quietly degraded to head: the vocabulary is
+    published, so someone will type it, and an informative refusal costs
+    one branch over a generic invalid-value error.
+    """
+
+    FRESH = "fresh"
+    BOUNDED = "bounded"
+    PINNED = "pinned"
+
+
+class ListingVersion(StrEnum):
+    """What a backend's cached listings can be checked against under fresh.
+
+    NONE: nothing, so a listing the running command did not write itself
+    is listed again. MOUNT: one version covers every listing of the mount,
+    and a stat of the mount root answers it. FOLDER: each listing carries
+    its own folder's version, and a stat of that folder answers it. The
+    stored version and the stat's fingerprint must be the same kind of
+    token, since the gate compares them with ``==``.
+    """
+
+    NONE = "none"
+    MOUNT = "mount"
+    FOLDER = "folder"
+
+
+# Maximum lifetime in seconds for cached bodies and listings.
+DEFAULT_READ_TTL: int = 600
+
+
+@dataclass(frozen=True, slots=True)
+class ReadSpec:
+    """One mount's read policy and the bound that goes with it.
+
+    The bound is set under FRESH too, so every cache entry carries one.
+    Two workspaces sharing one Redis cache under different policies would
+    otherwise write entries the other refuses to serve, and bounce them
+    between cold reads indefinitely.
+
+    It is stamped when the entry is written and enforced by the store, so
+    the bound that applies is the writing mount's, not the reading
+    mount's. Those are the same mount inside one workspace; they differ
+    across a shared cache, a lowered ``ttl`` and a restored snapshot, and
+    there the older bound stands until the entry expires. Making the
+    reader authoritative needs a write timestamp every store can read
+    back, which redis does not keep.
+    """
+
+    policy: ReadPolicy = ReadPolicy.BOUNDED
+    ttl: int = DEFAULT_READ_TTL
+
+
+@dataclass(frozen=True, slots=True)
+class CacheFacts:
+    """What the cache write path needs to know about a path's mount.
+
+    Answered per path against the mount table pinned at command start,
+    so a fill that lands after the command is stamped with the bound of
+    the mount that produced the bytes rather than whatever holds the
+    prefix by then. ``cacheable`` is read first and short-circuits, so
+    ``ttl`` is never consulted for a path that is not being cached.
+    """
+
+    cacheable: bool
+    ttl: int
+
 
 MOUNT_MODE_RANK: dict[MountMode, int] = {
     MountMode.READ: 1,
@@ -263,7 +479,7 @@ def weaker_mode(a: MountMode, b: MountMode) -> MountMode:
 class HiddenPaths:
     """What the data door treats as nonexistent for one session.
 
-    A sibling of ``Session.mount_modes``: per-session narrowing that
+    A sibling of ``SessionState.mount_modes``: per-session narrowing that
     the doors enforce, None-on-the-session means unrestricted. Hiding
     is "does not exist", never "forbidden" — matching paths answer
     ENOENT and drop out of listings, the same no-name-leak rule
@@ -285,6 +501,43 @@ class HiddenPaths:
 
 
 @dataclass(frozen=True, slots=True)
+class ShowEntry:
+    """One ``show`` entry of a profile's path axis, compiled.
+
+    Args:
+        path (str): the entry as written: an exact subtree or an
+            anchored pattern, always absolute. A slashless name pattern
+            is refused at validation, because a show anchors to a place
+            and a name pattern names none.
+        mode (MountMode | None): the mode the entry states for its
+            subtree; None for a list-form entry, which inherits the
+            mount's.
+    """
+
+    path: str
+    mode: MountMode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ShownPaths:
+    """The ``show`` half of one session's path axis.
+
+    A sibling of ``HiddenPaths``: per-session state the doors read,
+    None-on-the-session means the document states no show. An entry
+    does two things, each on the one anchor-depth rule: it re-opens a
+    subtree inside a hidden region when its anchor is deeper than the
+    hide's, and it states the mode in force below its anchor when it
+    carries one.
+
+    Args:
+        entries (tuple[ShowEntry, ...]): the entries, in document
+            order.
+    """
+
+    entries: tuple[ShowEntry, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class HiddenVars:
     """What the session door treats as unset for one session.
 
@@ -300,6 +553,53 @@ class HiddenVars:
 
     names: tuple[str, ...] = ()
     patterns: tuple[str, ...] = ()
+
+
+class EntryGate(Protocol):
+    """What a command's own I/O asks before touching an entry it
+    reached below its operands.
+
+    The admission gate judges the paths a line names; a walk (``grep
+    -r``, ``find``, ``du``, ``cp -r``, ``tar``) then reaches entries no
+    rule has seen. The dispatcher binds the admitted command's gate to
+    the session context for the command's run, and the commands tier
+    reads it there, so the tier that enforces the rules never imports
+    the tier that states them.
+
+    Args:
+        scoped (bool): whether a path rule in force reads this command's
+            paths at all; a native walk (a backend's own find or du)
+            yields to the guarded readdir walk while it is set, so each
+            entry passes the gate.
+        granted (tuple[CommandRule, ...]): the ask rules this line runs
+            under a grant for. Read by the op doors, which see the same
+            entries from below and would otherwise re-derive a verdict
+            that knows nothing of the nod the gate already took.
+    """
+
+    @property
+    def scoped(self) -> bool: ...
+
+    @property
+    def granted(self) -> "tuple[CommandRule, ...]": ...
+
+    def check(self, virtual: str) -> None:
+        """Raise when a rule in force refuses this entry for the running
+        command; return when the command may touch it.
+
+        Args:
+            virtual (str): absolute virtual path of the entry.
+        """
+        ...
+
+    def refuses(self, virtual: str) -> bool:
+        """True exactly where ``check`` would raise, for a door that
+        declines instead (the read cache).
+
+        Args:
+            virtual (str): absolute virtual path of the entry.
+        """
+        ...
 
 
 MOUNT_MODE_ALIASES: dict[str, MountMode] = {
@@ -326,19 +626,22 @@ def parse_mount_mode(value: MountMode | str) -> MountMode:
     return alias if alias is not None else MountMode(value)
 
 
-class ConsistencyPolicy(str, Enum):
-    LAZY = "lazy"
-    ALWAYS = "always"
-
-
 class OnExceed(str, Enum):
     ERROR = "error"
     TRUNCATE = "truncate"
 
 
 def _prefer_error(values: Iterable["OnExceed"]) -> "OnExceed":
-    return (OnExceed.ERROR if any(v is OnExceed.ERROR
-                                  for v in values) else OnExceed.TRUNCATE)
+    return (
+        OnExceed.ERROR
+        if any(v is OnExceed.ERROR for v in values)
+        else OnExceed.TRUNCATE
+    )
+
+
+def _min_bound(values: Iterable[int | None]) -> int | None:
+    bounds = [v for v in values if v is not None]
+    return min(bounds) if bounds else None
 
 
 class Limit(BaseModel):
@@ -352,9 +655,15 @@ class Limit(BaseModel):
 
     kind: ClassVar[str] = "limit"
 
-    max_bytes: Annotated[NonNegativeInt | None, Aggr(_min_positive)] = None
-    max_lines: Annotated[NonNegativeInt | None, Aggr(_min_positive)] = None
-    timeout_seconds: Annotated[float | None, Aggr(_min_positive)] = None
+    model_config = ConfigDict(extra="forbid")
+
+    max_bytes: Annotated[NonNegativeInt | None, Aggr(_min_bound)] = None
+    max_lines: Annotated[NonNegativeInt | None, Aggr(_min_bound)] = None
+    timeout_seconds: Annotated[
+        NonNegativeFloat | None,
+        Field(allow_inf_nan=False),
+        Aggr(_min_positive),
+    ] = None
     on_exceed: Annotated[OnExceed, Aggr(_prefer_error)] = OnExceed.TRUNCATE
 
     @classmethod
@@ -376,12 +685,14 @@ class Limit(BaseModel):
         if not present:
             return None
         kwargs: dict[str, Any] = {}
-        for name, field in cls.model_fields.items():
-            rule = next((m for m in field.metadata if isinstance(m, Aggr)),
-                        None)
+        for name, info in cls.model_fields.items():
+            rule = next(
+                (m for m in info.metadata if isinstance(m, Aggr)), None
+            )
             values = [getattr(s, name) for s in present]
-            kwargs[name] = rule.reduce(
-                values) if rule is not None else values[0]
+            kwargs[name] = (
+                rule.reduce(values) if rule is not None else values[0]
+            )
         return cls(**kwargs)
 
 
@@ -391,10 +702,11 @@ class Producer:
 
     Rides the IO envelope from the dispatch site to the workspace
     boundary; merge keeps the rightmost producer, so this names the
-    command whose stream the caller actually sees. Post-layer policies
+    last command that ran, not every byte of a list. Post-layer policies
     (output caps today; budgets and attribution later) read it as
-    context. Facts only: policy decisions never travel on the
-    envelope.
+    context. Facts only: no policy reads a decision off the
+    envelope; the one a chain hands down is written beside it as
+    ``IOResult.refusal`` after the last hook has spoken.
 
     Args:
         command (str): the producing command's name.
@@ -409,25 +721,50 @@ class Producer:
     declared: Limit | None = None
 
 
-class VFSWriteOp(str, Enum):
-    WRITE = "write"
-    UNLINK = "unlink"
-    RMDIR = "rmdir"
-    MKDIR = "mkdir"
-    RENAME = "rename"
-    TRUNCATE = "truncate"
-    CREATE = "create"
-    APPEND = "append"
+RefusalKind = Literal["deny", "pending", "failed"]
+
+# What the kernel walk answers for a path it cannot resolve at all: the
+# empty name (POSIX never resolves a null pathname) or a symlink loop.
+WalkErrno = Literal["ENOENT", "ELOOP"]
+RefusalScope = Literal["command", "operand"]
 
 
-WRITE_OPS = frozenset(VFSWriteOp)
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    """Why a line did not run, for the caller that reads the result.
+
+    stderr keeps bash's voice (``<cmd>: Permission denied``), which
+    says nothing about who refused or why; this record carries that
+    beside the envelope, so a host or an agent adapter can show the
+    reason without the shell having to. None on every run that was
+    not refused, and absent on the 127 ``command not found`` row,
+    which must not reveal that the word names anything.
+
+    Args:
+        kind (RefusalKind): ``deny`` for a policy's refusal, ``pending``
+            for an ask the host has not answered, ``failed`` for a
+            policy that raised and so refused by default.
+        reason (str): the policy's own words, or the ask's.
+        policy (str): the class name of the policy that spoke; empty
+            for an ask, which belongs to the host rather than a policy.
+        scope (RefusalScope): whether the whole command or one operand
+            was refused.
+        ask_id (str | None): the approval id to quote, for ``pending``.
+    """
+
+    kind: RefusalKind
+    reason: str
+    policy: str = ""
+    scope: RefusalScope = "command"
+    ask_id: str | None = None
 
 
-class ResourceName(str, Enum):
+class VFSName(StrEnum):
     DISK = "disk"
     S3 = "s3"
     RAM = "ram"
     GITHUB = "github"
+    WANDB = "wandb"
     LINEAR = "linear"
     GCAL = "gcal"
     GDOCS = "gdocs"
@@ -447,6 +784,19 @@ class ResourceName(str, Enum):
     SSH = "ssh"
     REDIS = "redis"
     GCS = "gcs"
+    OCI = "oci"
+    R2 = "r2"
+    SUPABASE = "supabase"
+    MINIO = "minio"
+    CEPH = "ceph"
+    SEAWEEDFS = "seaweedfs"
+    WASABI = "wasabi"
+    BACKBLAZE = "backblaze"
+    DIGITALOCEAN = "digitalocean"
+    TENCENT = "tencent"
+    ALIYUN = "aliyun"
+    SCALEWAY = "scaleway"
+    QINGSTOR = "qingstor"
     EMAIL = "email"
     DIFY = "dify"
     MEM0 = "mem0"
@@ -463,89 +813,107 @@ class ResourceName(str, Enum):
     QDRANT = "qdrant"
     SHAREPOINT = "sharepoint"
     BOX = "box"
+    AIRTABLE = "airtable"
 
 
 @dataclass(frozen=True, init=False)
 class PathSpec:
     virtual: str
     directory: str
-    resource_path: str
+    vfs_path: str
     raw_path: str
     pattern: str | None = None
     resolved: bool = True
+    # Absolute spelling before dot normalization; excluded from identity.
+    dotted: str | None = field(default=None, compare=False)
+    # What the kernel walk already answered for an operand it cannot
+    # resolve at all, known before the command runs: ENOENT for the
+    # empty name, whose `virtual` reads as the working directory, and
+    # ELOOP for one a symlink loop stands in, which `follow_paths`
+    # leaves unrewritten. Every op that reaches it refuses
+    # (`walk_refusal`), so each command words the refusal as its own.
+    # Out of equality, like `dotted`.
+    walk_error: WalkErrno | None = field(default=None, compare=False)
 
     def __init__(
         self,
         virtual: str,
         directory: str,
-        resource_path: str,
+        vfs_path: str,
         pattern: str | None = None,
         resolved: bool = True,
         raw_path: str | None = None,
+        dotted: str | None = None,
+        walk_error: WalkErrno | None = None,
     ) -> None:
         """Create a path whose stored spelling is always concrete.
 
         Args:
             virtual (str): Absolute path in the workspace.
             directory (str): Directory containing the path.
-            resource_path (str): Path relative to the mounted resource.
+            vfs_path (str): Path relative to the mounted VFS.
             pattern (str | None): Unresolved glob pattern.
             resolved (bool): Whether glob resolution is complete.
             raw_path (str | None): Spelling supplied by the user; defaults
                 to ``virtual`` only at the construction boundary.
+            dotted (str | None): The absolute spelling a dot walk proves,
+                from ``dotted_spelling``.
+            walk_error (WalkErrno | None): The walk's verdict on an
+                operand it cannot resolve, None when it can.
         """
         object.__setattr__(self, "virtual", virtual)
         object.__setattr__(self, "directory", directory)
-        object.__setattr__(self, "resource_path", resource_path)
+        object.__setattr__(self, "vfs_path", vfs_path)
         object.__setattr__(self, "pattern", pattern)
         object.__setattr__(self, "resolved", resolved)
-        object.__setattr__(self, "raw_path",
-                           virtual if raw_path is None else raw_path)
+        object.__setattr__(
+            self, "raw_path", virtual if raw_path is None else raw_path
+        )
+        object.__setattr__(self, "dotted", dotted)
+        object.__setattr__(self, "walk_error", walk_error)
 
     @property
     def mount_path(self) -> str:
         """Mount-relative path with a leading slash.
 
-        Pure formatting of ``resource_path`` ("" -> "/", "sub/x" ->
+        Pure formatting of ``vfs_path`` ("" -> "/", "sub/x" ->
         "/sub/x"); used for byte-accounting keys and path arithmetic that
         work in slash-framed mount-relative space.
         """
-        return "/" + self.resource_path
+        return "/" + self.vfs_path
 
     @property
     def dir(self) -> "PathSpec":
         """Directory PathSpec, carrying pattern for readdir filtering."""
-        # The directory's resource_path is its virtual form with this
+        # The directory's vfs_path is its virtual form with this
         # path's mount prefix removed; the prefix length is recovered from
-        # the (virtual, resource_path) pair. Idempotent for specs that are
+        # the (virtual, vfs_path) pair. Idempotent for specs that are
         # already directories.
-        cut = len(self.virtual.rstrip("/")) - len(self.resource_path)
+        cut = len(self.virtual.rstrip("/")) - len(self.vfs_path)
         return PathSpec(
             virtual=self.directory,
             directory=self.directory,
             pattern=self.pattern,
             resolved=False,
-            resource_path=self.directory[cut:].strip("/"),
+            vfs_path=self.directory[cut:].strip("/"),
         )
 
     def child(self, name: str) -> str:
         return self.virtual.rstrip("/") + "/" + name
 
     @staticmethod
-    def from_str_path(path: str,
-                      resource_path: str | None = None) -> "PathSpec":
-        """Wrap a path string; defaults to a root-mounted resource_path.
+    def from_str_path(path: str, vfs_path: str | None = None) -> "PathSpec":
+        """Wrap a path string; defaults to a root-mounted vfs_path.
 
         Args:
             path (str): virtual path string.
-            resource_path (str | None): backend key; when None the path is
+            vfs_path (str | None): backend key; when None the path is
                 assumed root-mounted (no mount prefix to strip).
         """
         return PathSpec(
             virtual=path,
-            directory=path[:path.rfind("/") + 1] or "/",
-            resource_path=(path.strip("/")
-                           if resource_path is None else resource_path),
+            directory=path[: path.rfind("/") + 1] or "/",
+            vfs_path=(path.strip("/") if vfs_path is None else vfs_path),
         )
 
 
@@ -580,6 +948,7 @@ class FileChangeKind(StrEnum):
         UNKNOWN: precision was lost (queue overflow, checkpoint reset);
             everything under the path must be re-inventoried.
     """
+
     CREATE = "create"
     UPDATE = "update"
     DELETE = "delete"
@@ -605,6 +974,7 @@ class FileMetadata:
         size (int | None): Content size in bytes after the change.
         modified (str | None): Last-modified stamp after the change.
     """
+
     fingerprint: str | None = None
     size: int | None = None
     modified: str | None = None
@@ -629,6 +999,7 @@ class FileEvent:
         metadata (FileMetadata | None): Post-change metadata when the
             source carries it; None otherwise.
     """
+
     kind: FileChangeKind
     path: PathSpec
     timestamp: datetime
@@ -646,6 +1017,7 @@ class Delta:
         checkpoint (str | None): Opaque serialized state to pass to the
             next pull.
     """
+
     changes: tuple[FileEvent, ...]
     checkpoint: str | None
 
@@ -665,6 +1037,7 @@ class WalkEntry:
         modified (str | None): Last-modified stamp, when the listing
             carries it.
     """
+
     virtual: str
     is_dir: bool
     fingerprint: str | None
@@ -685,18 +1058,20 @@ class OverflowPolicy(StrEnum):
         DROP_OLDEST: evict the oldest pending entry.
         ERROR: surface QueueOverflowError to the consumer iterator.
     """
+
     COLLAPSE = "collapse"
     DROP_OLDEST = "drop_oldest"
     ERROR = "error"
 
 
 class DriftPolicy(StrEnum):
-    """Behaviour when a remote resource's live fingerprint differs from
+    """Behaviour when a remote VFS's live fingerprint differs from
     the value recorded at snapshot time.
 
     Values:
         STRICT: raise ContentDriftError on mismatch (default).
         OFF: skip drift checks entirely.
     """
+
     STRICT = "strict"
     OFF = "off"

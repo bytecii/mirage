@@ -12,52 +12,68 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from pathlib import Path
+from stat import S_ISDIR
 
 import aiofiles.os
-from aiofiles.os import path as aio_path
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.timeutil import epoch_to_iso
+from mirage.core.disk.errors import disk_errors
+from mirage.core.disk.listing_version import stamp, wall_ns
+from mirage.core.disk.utils import resolve_inside
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.filetype import guess_type
+from mirage.utils.dates import ns_to_iso
+from mirage.utils.filetype import content_type_for_path
 
 
-def _resolve(root: Path, path: str) -> Path:
-    relative = path.lstrip("/")
-    resolved = (root / relative).resolve()
-    resolved.relative_to(root)
-    return resolved
-
-
-async def stat(accessor: DiskAccessor,
-               path_spec: PathSpec,
-               index: IndexCacheStore = NULL_INDEX) -> FileStat:
+async def stat(
+    accessor: DiskAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+) -> FileStat:
     virtual = path_spec.virtual
-    path = path_spec.mount_path
     root = accessor.root
-    p = _resolve(root, path)
-    if not await aio_path.exists(p):
-        raise FileNotFoundError(virtual)
-    st = await aiofiles.os.stat(p)
-    modified = epoch_to_iso(st.st_mtime)
+    p = await resolve_inside(root, path_spec)
+    now_ns = wall_ns()
+    # One stat, restamped: an existence check first would read ENOTDIR
+    # (a path under a plain file) as plain absence.
+    with disk_errors(virtual):
+        st = await aiofiles.os.stat(p)
+    modified = ns_to_iso(st.st_mtime_ns)
+    # Only BSD and macOS report a birth time, and only as float seconds.
+    born = getattr(st, "st_birthtime", None)
+    birthtime = None
+    if born is not None:
+        birthtime = ns_to_iso(round(born * 1_000_000_000))
     # Fields setattr applies natively (mode, times) read from the real
     # inode, so external chmod/utime stays visible. Ownership can never
     # be applied natively (chown needs privileges), so it lives wholly
     # in the namespace overlay, merged at the stat-merge layer; host
     # uid/gid numbers would also be machine-dependent noise.
-    if await aio_path.isdir(p):
-        return FileStat(name=p.name,
-                        size=None,
-                        modified=modified,
-                        type=FileType.DIRECTORY,
-                        mode=st.st_mode & 0o7777,
-                        atime=epoch_to_iso(st.st_atime))
-    return FileStat(name=p.name,
-                    size=st.st_size,
-                    modified=modified,
-                    fingerprint=modified,
-                    type=guess_type(p.name),
-                    mode=st.st_mode & 0o7777,
-                    atime=epoch_to_iso(st.st_atime))
+    if S_ISDIR(st.st_mode):
+        # A folder's fingerprint is the version its listing is stored at,
+        # so the listing gate's check and the readdir fill agree.
+        version = stamp(st, now_ns) if accessor.folder_versions else None
+        return FileStat(
+            name=p.name,
+            size=None,
+            modified=modified,
+            fingerprint=version,
+            type=FileType.DIRECTORY,
+            mode=st.st_mode & 0o7777,
+            atime=ns_to_iso(st.st_atime_ns),
+            ctime=ns_to_iso(st.st_ctime_ns),
+            birthtime=birthtime,
+        )
+    return FileStat(
+        name=p.name,
+        size=st.st_size,
+        modified=modified,
+        fingerprint=modified,
+        type=FileType.FILE,
+        content=content_type_for_path(p.name),
+        mode=st.st_mode & 0o7777,
+        atime=ns_to_iso(st.st_atime_ns),
+        ctime=ns_to_iso(st.st_ctime_ns),
+        birthtime=birthtime,
+    )

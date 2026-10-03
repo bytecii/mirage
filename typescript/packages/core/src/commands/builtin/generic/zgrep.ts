@@ -12,30 +12,51 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { compilePosixRegex } from '../../../utils/posix.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
-import { gunzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { compilePattern, resolvePatternFromFlags } from '../grep_helper.ts'
-import { readStdinAsync } from '../utils/stream.ts'
+import {
+  NEVER_MATCH,
+  compilePattern,
+  matcherSyntax,
+  patternWarnings,
+  resolvePattern,
+} from '../grep_pattern.ts'
+import { UsageError } from '../../errors.ts'
+import type { RegexSyntax } from '../types.ts'
+import { matchStart, matchText } from '../utils/pcre.ts'
+import { STDIN_OPERAND } from '../utils/constants.ts'
+import { linkDoor } from '../utils/links.ts'
+import { operandLabel } from '../utils/stream.ts'
+import type { StatFn } from './archive/walk.ts'
+import { decompressInputs } from './decompress.ts'
+import { decodeLine, lineOffsets, matchOffset, prefixOf } from '../grep_offsets.ts'
+import { formatRecords } from '../utils/output.ts'
+import { splitLines } from '../utils/lines.ts'
 
 const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
 
-function splitLinesNoTrailing(text: string): string[] {
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped === '' ? [] : stripped.split('\n')
+function anyLineSelected(data: Uint8Array, pattern: RegExp, invert: boolean): boolean {
+  for (const line of splitLines(decodeLine(data))) {
+    let hit = pattern.test(line)
+    if (invert) hit = !hit
+    if (hit) return true
+  }
+  return false
 }
 
 interface ZgrepOpts {
-  ignoreCase: boolean
   invert: boolean
   count: boolean
   lineNumbers: boolean
   onlyMatching: boolean
   maxCount: number | null
+  // -b: the byte offset of each line's start or, under -o, of the match
+  // itself, in the field order GNU grep prints (name, line, byte).
+  byteOffsets: boolean
 }
 
 function zgrepSearch(
@@ -44,14 +65,18 @@ function zgrepSearch(
   opts: ZgrepOpts,
   filename: string | null,
 ): [string[], boolean] {
-  const text = DEC.decode(data)
-  const lines = splitLinesNoTrailing(text)
+  const lines = splitLines(decodeLine(data))
+  const offsets = opts.byteOffsets ? lineOffsets(lines) : []
   const reGlobal = opts.onlyMatching
-    ? new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g')
+    ? compilePosixRegex(
+        pattern.source,
+        pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g',
+      )
     : null
-  const matched: [number, string][] = []
+  const matched: [number, number, string][] = []
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
+    const start = opts.byteOffsets ? (offsets[i] ?? 0) : 0
     if (opts.onlyMatching && !opts.invert && reGlobal !== null) {
       reGlobal.lastIndex = 0
       let m: RegExpExecArray | null
@@ -62,14 +87,14 @@ function zgrepSearch(
       }
       if (hits.length > 0) {
         for (const h of hits) {
-          matched.push([i + 1, h[0]])
+          matched.push([i + 1, matchOffset(start, line, matchStart(h)), matchText(h)])
           if (opts.maxCount !== null && matched.length >= opts.maxCount) break
         }
       }
     } else {
       let hit = pattern.test(line)
       if (opts.invert) hit = !hit
-      if (hit) matched.push([i + 1, line])
+      if (hit) matched.push([i + 1, start, line])
     }
     if (opts.maxCount !== null && matched.length >= opts.maxCount) break
   }
@@ -79,10 +104,10 @@ function zgrepSearch(
     return [[value], matched.length > 0]
   }
   const result: string[] = []
-  for (const [idx, line] of matched) {
+  for (const [idx, offset, line] of matched) {
     let prefix = ''
     if (filename !== null) prefix = filename + ':'
-    if (opts.lineNumbers) prefix += String(idx) + ':'
+    prefix += prefixOf(opts.lineNumbers ? idx : null, opts.byteOffsets ? offset : null)
     result.push(prefix + line)
   }
   return [result, matched.length > 0]
@@ -93,9 +118,10 @@ export async function zgrepGeneric(
   texts: string[],
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
+  stat?: StatFn,
 ): Promise<CommandFnResult> {
   const fl = new FlagView(opts.flags, specOf('zgrep'))
-  const resolution = await resolvePatternFromFlags(
+  const resolution = await resolvePattern(
     'zgrep',
     texts,
     opts.flags,
@@ -104,7 +130,7 @@ export async function zgrepGeneric(
     stream,
   )
   if (resolution.error !== null) {
-    return [null, new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(resolution.error) })]
+    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(resolution.error) })]
   }
   const neverMatch = resolution.neverMatch
   if (resolution.pattern === null) {
@@ -118,8 +144,15 @@ export async function zgrepGeneric(
   }
   const rawPattern = resolution.pattern
   // zgrep is grep over decompressed bytes, so it reads a basic expression
-  // unless -E says otherwise; -G asks for the default explicitly.
-  const basicRegexp = !fl.asBool('E')
+  // unless -E or -P says otherwise, and refuses two matchers as grep does;
+  // -G asks for the default explicitly.
+  let syntax: RegexSyntax
+  try {
+    syntax = matcherSyntax(fl, 'grep', 'P')
+  } catch (err) {
+    if (!(err instanceof UsageError)) throw err
+    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(err.message + '\n') })]
+  }
   const fixedString = fl.asBool('F') && !neverMatch
   const wholeWord = fl.asBool('w')
   const ignoreCase = fl.asBool('i')
@@ -128,84 +161,82 @@ export async function zgrepGeneric(
   const lineNumbers = fl.asBool('n')
   const onlyMatching = fl.asBool('o')
   const quiet = fl.asBool('q')
-  const filesOnly = fl.asBool('args_l')
+  const byteOffsets = fl.asBool('byte_offset')
+  // -l and -L set one mode in grep, so the later one on the line wins.
+  let listing: string | null = null
+  for (const name of fl.typedOrder('args_l', 'files_without_match')) {
+    if (fl.asBool(name)) listing = name
+  }
+  const filesOnly = listing === 'args_l'
+  const filesWithoutMatch = listing === 'files_without_match'
   const forceH = fl.asBool('H')
   const hideH = fl.asBool('h')
   const maxCount = fl.asInt('m') ?? null
-  const pattern = compilePattern(rawPattern, ignoreCase, fixedString, wholeWord, basicRegexp)
+  // GNU grep 3.11 skips regex validation and selection under -m0.
+  const pattern =
+    maxCount === 0
+      ? null
+      : neverMatch
+        ? new RegExp(NEVER_MATCH)
+        : compilePattern(rawPattern, ignoreCase, fixedString, wholeWord, syntax)
 
   const multi = paths.length > 1
   const showFilename = forceH || (multi && !hideH)
   let anyMatch = false
   const allResults: string[] = []
 
-  if (paths.length > 0) {
-    for (const p of paths) {
-      const compressed = await materialize(stream(p))
-      const data = await gunzip(compressed)
-      const fname = showFilename ? p.virtual : null
-      if (filesOnly) {
-        const text = DEC.decode(data)
-        const lines = splitLinesNoTrailing(text)
-        for (const line of lines) {
-          let hit = pattern.test(line)
-          if (invert) hit = !hit
-          if (hit) {
-            allResults.push(p.virtual)
-            anyMatch = true
-            break
-          }
-        }
-      } else {
-        const [result, hadMatch] = zgrepSearch(
-          data,
-          pattern,
-          {
-            ignoreCase,
-            invert,
-            count: countOnly,
-            lineNumbers,
-            onlyMatching,
-            maxCount,
-          },
-          fname,
-        )
-        if (hadMatch) anyMatch = true
-        for (const r of result) allResults.push(r)
-      }
+  const door = linkDoor(opts)
+  // zgrep runs grep, so grep's compile warnings come first, in its name.
+  let errors =
+    pattern === null || neverMatch || fixedString ? '' : patternWarnings(rawPattern, syntax)
+  let failed = false
+  for (const p of paths.length > 0 ? paths : [STDIN_OPERAND]) {
+    // zgrep decompresses each operand with `gzip -cdfq -- FILE`, which
+    // reports its own failures and hands grep what it decoded.
+    const [body, io] = await decompressInputs([p], stream, {
+      stdin: opts.stdin,
+      toStdout: true,
+      force: true,
+      quiet: true,
+      ...(stat !== undefined ? { stat } : {}),
+      door,
+    })
+    const data = await materialize(body)
+    errors += await io.stderrStr()
+    failed ||= io.exitCode === 1
+    if (pattern === null) {
+      if (filesWithoutMatch) allResults.push(p.rawPath)
+      continue
     }
-  } else {
-    const stdinData = await readStdinAsync(opts.stdin)
-    const data =
-      stdinData === null || stdinData.byteLength === 0 ? new Uint8Array(0) : await gunzip(stdinData)
-    if (filesOnly) {
-      const text = DEC.decode(data)
-      const lines = splitLinesNoTrailing(text)
-      for (const line of lines) {
-        let hit = pattern.test(line)
-        if (invert) hit = !hit
-        if (hit) {
-          allResults.push('(standard input)')
-          anyMatch = true
-          break
-        }
-      }
+    // zgrep hands grep a stdin operand as `-`, so -l and -L list it as `-`
+    // while its lines are labelled `(standard input)` (gzip 1.13);
+    // /dev/stdin is named as typed either way.
+    const fname = showFilename ? operandLabel(p, '(standard input)') : null
+    if (filesOnly || filesWithoutMatch) {
+      // -L lists the files that selected nothing; the status still
+      // follows the matching, as GNU grep's does.
+      const matched = anyLineSelected(data, pattern, invert)
+      if (matched === filesOnly) allResults.push(p.rawPath)
+      anyMatch ||= matched
     } else {
-      // GNU zgrep labels stdin "(standard input)" under -H.
       const [result, hadMatch] = zgrepSearch(
         data,
         pattern,
-        { ignoreCase, invert, count: countOnly, lineNumbers, onlyMatching, maxCount },
-        forceH ? '(standard input)' : null,
+        { invert, count: countOnly, lineNumbers, onlyMatching, maxCount, byteOffsets },
+        fname,
       )
       if (hadMatch) anyMatch = true
       for (const r of result) allResults.push(r)
     }
   }
 
-  if (quiet) return [null, new IOResult({ exitCode: anyMatch ? 0 : 1 })]
-  const exitCode = anyMatch ? 0 : 1
-  if (allResults.length === 0) return [null, new IOResult({ exitCode })]
-  const result: ByteSource = ENC.encode(allResults.join('\n') + '\n')
-  return [result, new IOResult({ exitCode })]
+  // gzip's failure is exit 2 even beside a match, -q included (zgrep 1.13
+  // takes the more serious status of gzip's and grep's per file).
+  const exitCode = failed ? 2 : anyMatch ? 0 : 1
+  const stderr = errors === '' ? null : ENC.encode(errors)
+  // Under -m0, GNU still prints -L's operands even with -q.
+  if ((quiet && maxCount !== 0) || allResults.length === 0)
+    return [null, new IOResult({ exitCode, stderr })]
+  const result: ByteSource = formatRecords(allResults)
+  return [result, new IOResult({ exitCode, stderr })]
 }

@@ -18,7 +18,7 @@ import type * as DriveModule from '../google/drive.ts'
 
 vi.mock('../google/drive.ts', async () => {
   const actual = await vi.importActual<typeof DriveModule>('../google/drive.ts')
-  return { ...actual, listAllFiles: vi.fn() }
+  return { ...actual, listAllFiles: vi.fn(), getFile: vi.fn() }
 })
 
 import { GDocsAccessor } from '../../accessor/gdocs.ts'
@@ -54,7 +54,7 @@ describe('gdocs readdir', () => {
         virtual: '/gdocs/owned/2026-05-*',
         directory: '/gdocs/owned',
         pattern: '2026-05-*',
-        resourcePath: mountKey('/gdocs/owned/2026-05-*', '/gdocs'),
+        vfsPath: mountKey('/gdocs/owned/2026-05-*', '/gdocs'),
       }),
       index,
     )
@@ -78,7 +78,7 @@ describe('gdocs readdir', () => {
       new PathSpec({
         virtual: '/gdocs/owned',
         directory: '/gdocs/owned',
-        resourcePath: mountKey('/gdocs/owned', '/gdocs'),
+        vfsPath: mountKey('/gdocs/owned', '/gdocs'),
       }),
       index,
     )
@@ -103,7 +103,7 @@ describe('gdocs readdir', () => {
         virtual: '/gdocs/owned/*foo*',
         directory: '/gdocs/owned',
         pattern: '*foo*',
-        resourcePath: mountKey('/gdocs/owned/*foo*', '/gdocs'),
+        vfsPath: mountKey('/gdocs/owned/*foo*', '/gdocs'),
       }),
       index,
     )
@@ -143,7 +143,7 @@ describe('gdocs readdir', () => {
         virtual: '/gdocs/owned/2026-05-*',
         directory: '/gdocs/owned',
         pattern: '2026-05-*',
-        resourcePath: mountKey('/gdocs/owned/2026-05-*', '/gdocs'),
+        vfsPath: mountKey('/gdocs/owned/2026-05-*', '/gdocs'),
       }),
       index,
     )
@@ -152,7 +152,7 @@ describe('gdocs readdir', () => {
       new PathSpec({
         virtual: '/gdocs/owned',
         directory: '/gdocs/owned',
-        resourcePath: mountKey('/gdocs/owned', '/gdocs'),
+        vfsPath: mountKey('/gdocs/owned', '/gdocs'),
       }),
       index,
     )
@@ -173,6 +173,14 @@ describe('gdocs readdir', () => {
       complete: true,
     })
 
+    vi.mocked(drive.getFile).mockResolvedValue({
+      id: 'may1',
+      name: 'MayDoc',
+      mimeType: 'application/vnd.google-apps.document',
+      modifiedTime: '2026-05-15T00:00:00.000Z',
+      owners: [{ me: false }],
+    })
+
     const accessor = makeAccessor()
     const index = new RAMIndexCacheStore()
     const listed = await readdir(
@@ -181,7 +189,7 @@ describe('gdocs readdir', () => {
         virtual: '/gdocs/shared/2026-05-*',
         directory: '/gdocs/shared',
         pattern: '2026-05-*',
-        resourcePath: mountKey('/gdocs/shared/2026-05-*', '/gdocs'),
+        vfsPath: mountKey('/gdocs/shared/2026-05-*', '/gdocs'),
       }),
       index,
     )
@@ -193,7 +201,7 @@ describe('gdocs readdir', () => {
       new PathSpec({
         virtual: matched,
         directory: matched,
-        resourcePath: mountKey(matched, '/gdocs'),
+        vfsPath: mountKey(matched, '/gdocs'),
       }),
       index,
     )
@@ -221,7 +229,7 @@ describe('gdocs readdir', () => {
       new PathSpec({
         virtual: '/gdocs/owned',
         directory: '/gdocs/owned',
-        resourcePath: mountKey('/gdocs/owned', '/gdocs'),
+        vfsPath: mountKey('/gdocs/owned', '/gdocs'),
       }),
       index,
     )
@@ -238,7 +246,7 @@ describe('gdocs readdir', () => {
       new PathSpec({
         virtual: listedPath,
         directory: listedPath,
-        resourcePath: mountKey(listedPath, '/gdocs'),
+        vfsPath: mountKey(listedPath, '/gdocs'),
       }),
       index,
     )
@@ -270,7 +278,7 @@ describe('gdocs incomplete search', () => {
     const owned = new PathSpec({
       virtual: '/gdocs/owned',
       directory: '/gdocs/owned',
-      resourcePath: mountKey('/gdocs/owned', '/gdocs'),
+      vfsPath: mountKey('/gdocs/owned', '/gdocs'),
     })
     const listed = await readdir(accessor, owned, index)
     expect(listed).toHaveLength(1)

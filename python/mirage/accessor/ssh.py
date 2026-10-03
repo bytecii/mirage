@@ -12,17 +12,41 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+from pathlib import Path
+from typing import Any
+
 import asyncssh
 
 from mirage.accessor.base import Accessor
-from mirage.core.ssh.client import _connect_kwargs
-from mirage.core.ssh.config import SSHConfig
+from mirage.concurrency.limiter import settle
+from mirage.vfs.secrets import reveal_secret
+from mirage.vfs.ssh.config import SSHConfig
+
+
+def _connect_kwargs(config: SSHConfig) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"host": config.host}
+    if config.hostname:
+        kwargs["host"] = config.hostname
+    if config.port:
+        kwargs["port"] = config.port
+    if config.username:
+        kwargs["username"] = config.username
+    if config.password is not None:
+        kwargs["password"] = reveal_secret(config.password)
+    if config.identity_file:
+        kwargs["client_keys"] = [str(Path(config.identity_file).expanduser())]
+        if config.passphrase is not None:
+            kwargs["passphrase"] = reveal_secret(config.passphrase)
+    kwargs["known_hosts"] = config.known_hosts
+    kwargs["login_timeout"] = config.timeout
+    return kwargs
 
 
 class SSHAccessor(Accessor):
-
     def __init__(self, config: SSHConfig) -> None:
         self.config = config
+        self._lock = asyncio.Lock()
         self._conn: asyncssh.SSHClientConnection | None = None
         self._sftp: asyncssh.SFTPClient | None = None
 
@@ -31,14 +55,22 @@ class SSHAccessor(Accessor):
         return self.config.root
 
     async def sftp(self) -> asyncssh.SFTPClient:
-        if self._sftp is not None:
+        async with self._lock:
+            if self._sftp is None:
+                conn = await asyncssh.connect(**_connect_kwargs(self.config))
+                try:
+                    self._sftp = await conn.start_sftp_client()
+                except BaseException:
+                    conn.close()
+                    await settle(asyncio.ensure_future(conn.wait_closed()))
+                    raise
+                self._conn = conn
             return self._sftp
-        self._conn = await asyncssh.connect(**_connect_kwargs(self.config))
-        self._sftp = await self._conn.start_sftp_client()
-        return self._sftp
 
     async def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-            self._sftp = None
+        async with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                await self._conn.wait_closed()
+                self._conn = None
+                self._sftp = None

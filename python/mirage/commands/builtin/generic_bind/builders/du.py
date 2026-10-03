@@ -12,19 +12,23 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 from mirage.accessor.base import Accessor
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.generic.du import (ComputeEntries, ComputeSize,
-                                                DuEntries, du_generic)
-from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          OperationFn)
+from mirage.commands.builtin.generic.du import (
+    ComputeEntries,
+    ComputeSize,
+    du_generic,
+)
+from mirage.commands.builtin.generic_bind.adapter import Builder, CommandIO
 from mirage.commands.config import CommandOpts
+from mirage.context import path_rules_active
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
 from mirage.utils.key_prefix import mount_key, mount_prefix_of, rekey
+from mirage.vfs.types import DuEntries, OperationFn
 
 
 @dataclass(slots=True)
@@ -37,13 +41,25 @@ class WalkBudget:
     walk of a real workspace is tens of thousands of requests. The budget
     stops the walk and records that the answer is partial.
 
+    It also collects the directories the walk could not open (a rule
+    refused them below the operand), which the generic reports after
+    the walks the way GNU names an unreadable directory, and every
+    directory it met, which is how one no file points at (an empty one,
+    or a refused one) still gets GNU's row.
+
     Args:
         remaining (int | None): entries still allowed, or None for no cap.
         hit (bool): whether the cap was reached.
+        unreadable (list[str]): virtual paths of the directories the
+            walk could not open, in the order it met them.
+        directories (list[str]): virtual paths of every directory the
+            walk met, the operand's own included.
     """
 
     remaining: int | None
     hit: bool = False
+    unreadable: list[str] = field(default_factory=list)
+    directories: list[str] = field(default_factory=list)
 
     def spend(self) -> bool:
         """Charge one entry to the budget.
@@ -70,32 +86,43 @@ async def _walk(
 ) -> int:
     try:
         info = await ops.stat(accessor, path, index)
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
+        return 0
+    except PermissionError:
+        # A refused stat is the same fact as a refused listing: a rule
+        # denying the path outright refuses before the walk learns it is
+        # a directory, and GNU still names it and exits 1.
+        budget.unreadable.append(path.virtual)
         return 0
     if info.type != FileType.DIRECTORY:
         size = info.size or 0
         if entries is not None:
-            prefix = mount_prefix_of(path.virtual, path.resource_path)
+            prefix = mount_prefix_of(path.virtual, path.vfs_path)
             entries.append(("/" + mount_key(path.virtual, prefix), size))
         return size
+    budget.directories.append(path.virtual)
     try:
         children = await ops.readdir(accessor, path, index)
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
+        return 0
+    except PermissionError:
+        budget.unreadable.append(path.virtual)
         return 0
     total = 0
     for child in children:
         if not budget.spend():
             break
-        child_spec = PathSpec(virtual=child,
-                              directory=child,
-                              resolved=False,
-                              resource_path=rekey(path.virtual,
-                                                  path.resource_path, child))
+        child_spec = PathSpec(
+            virtual=child,
+            directory=child,
+            resolved=False,
+            vfs_path=rekey(path.virtual, path.vfs_path, child),
+        )
         total += await _walk(ops, accessor, index, child_spec, budget, entries)
     return total
 
 
-async def _walk_size(
+async def walk_size(
     ops: CommandIO,
     accessor: Accessor,
     index: IndexCacheStore,
@@ -105,7 +132,7 @@ async def _walk_size(
     return await _walk(ops, accessor, index, path, budget, None)
 
 
-async def _walk_entries(
+async def walk_entries(
     ops: CommandIO,
     accessor: Accessor,
     index: IndexCacheStore,
@@ -136,13 +163,18 @@ async def _op_entries(
     return await op(accessor, path, index)
 
 
-async def _resolve(ops: CommandIO, accessor: Accessor, index: IndexCacheStore,
-                   targets: list[PathSpec]) -> list[PathSpec]:
+async def _resolve(
+    ops: CommandIO,
+    accessor: Accessor,
+    index: IndexCacheStore,
+    targets: list[PathSpec],
+) -> list[PathSpec]:
     return await ops.resolve_glob(accessor, targets, index)
 
 
-async def _stat(ops: CommandIO, accessor: Accessor, index: IndexCacheStore,
-                path: PathSpec):
+async def _stat(
+    ops: CommandIO, accessor: Accessor, index: IndexCacheStore, path: PathSpec
+):
     return await ops.stat(accessor, path, index)
 
 
@@ -150,31 +182,51 @@ def _budget_hit(budget: WalkBudget) -> bool:
     return budget.hit
 
 
-async def du(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
-             texts: list[str],
-             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+def _budget_unreadable(budget: WalkBudget) -> list[str]:
+    return budget.unreadable
+
+
+def _budget_directories(budget: WalkBudget) -> list[str]:
+    return budget.directories
+
+
+async def du(
+    ops: CommandIO,
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
-        raise ValueError("du: no resource")
+        raise ValueError("du: no VFS")
     budget = WalkBudget(ops.max_du_entries)
     native = ops.du
     compute_size: ComputeSize
     compute_entries: ComputeEntries
-    if native is None:
-        compute_size = partial(_walk_size, ops, accessor, opts.index, budget)
-        compute_entries = partial(_walk_entries, ops, accessor, opts.index,
-                                  budget)
+    # A native du sums the raw tree; under a path rule the walk is what
+    # reports a directory the rule refuses to open, where GNU does.
+    if native is None or path_rules_active():
+        compute_size = partial(walk_size, ops, accessor, opts.index, budget)
+        compute_entries = partial(
+            walk_entries, ops, accessor, opts.index, budget
+        )
     else:
         compute_size = partial(_op_size, native.size, accessor, opts.index)
-        compute_entries = partial(_op_entries, native.entries, accessor,
-                                  opts.index)
-    return await du_generic(paths,
-                            list(texts),
-                            opts,
-                            partial(_resolve, ops, accessor, opts.index),
-                            partial(_stat, ops, accessor, opts.index),
-                            compute_size,
-                            compute_entries,
-                            truncated=partial(_budget_hit, budget))
+        compute_entries = partial(
+            _op_entries, native.entries, accessor, opts.index
+        )
+    return await du_generic(
+        paths,
+        list(texts),
+        opts,
+        partial(_resolve, ops, accessor, opts.index),
+        partial(_stat, ops, accessor, opts.index),
+        compute_size,
+        compute_entries,
+        truncated=partial(_budget_hit, budget),
+        unreadable=partial(_budget_unreadable, budget),
+        directories=partial(_budget_directories, budget),
+    )
 
 
-BUILDER = Builder('du', du, None, False, None)
+BUILDER = Builder("du", du)

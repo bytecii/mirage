@@ -16,7 +16,7 @@ import { SlackAccessor, type SlackResourceLike } from '../../../accessor/slack.t
 import { IndexEntry } from '../../../cache/index/config.ts'
 import type { RAMIndexCacheStore } from '../../../cache/index/ram.ts'
 import type { SlackResponse, SlackTransport } from '../../../core/slack/client.ts'
-import type { Resource } from '../../../resource/base.ts'
+import { BaseVFS } from '../../../vfs/base.ts'
 
 export interface FakeCall {
   endpoint: string
@@ -39,19 +39,15 @@ export class FakeSlackTransport implements SlackTransport {
   }
 }
 
-export function makeFakeResource(transport: SlackTransport): SlackResourceLike {
-  const accessor = new SlackAccessor(transport)
-  const resource: Resource & { accessor: SlackAccessor } = {
-    kind: 'slack',
-    accessor,
-    open: () => Promise.resolve(),
-    close: () => Promise.resolve(),
-    getState: () => ({ type: 'slack' }),
-    loadState: () => {
-      // Nothing to take back.
-    },
+class FakeSlackVFS extends BaseVFS implements SlackResourceLike {
+  override readonly name = 'slack'
+  constructor(override readonly accessor: SlackAccessor) {
+    super()
   }
-  return resource as SlackResourceLike
+}
+
+export function makeFakeVfs(transport: SlackTransport): SlackResourceLike {
+  return new FakeSlackVFS(new SlackAccessor(transport))
 }
 
 export async function seedChannel(
@@ -112,24 +108,4 @@ export async function seedChannel(
       await index.setDir(`${dateKey}/files`, [])
     }
   }
-}
-
-export async function seedUser(
-  index: RAMIndexCacheStore,
-  prefix: string,
-  filename: string,
-  userId: string,
-): Promise<void> {
-  const usersKey = `${prefix}/users`
-  await index.setDir(usersKey, [
-    [
-      filename,
-      new IndexEntry({
-        id: userId,
-        name: filename.split('__')[0] ?? filename,
-        resourceType: 'slack/user',
-        vfsName: filename,
-      }),
-    ],
-  ])
 }

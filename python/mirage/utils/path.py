@@ -12,8 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import errno
+import os
 import posixpath
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from mirage.utils.fnmatch import fnmatch
 
@@ -41,7 +43,8 @@ def glob_prefix_match(path: str, pattern: str) -> bool:
         return False
     return all(
         fnmatch(seg, pat)
-        for seg, pat in zip(path_segs[:len(pat_segs)], pat_segs))
+        for seg, pat in zip(path_segs[: len(pat_segs)], pat_segs)
+    )
 
 
 def norm(path: str) -> str:
@@ -149,29 +152,135 @@ def resolve_path(path: str, cwd: str) -> str:
     return resolved
 
 
+_DOTS = (".", "..")
+
+
+def dotted_spelling(word: str, base: str = "/") -> str | None:
+    """The absolute spelling of a typed path whose dots a walk proves.
+
+    The kernel resolves ``.`` and ``..`` against the directory they sit
+    in, so every component in front of one has to be a directory, while
+    the textual simplification a virtual path gets lets ``nope/../f``
+    reach ``f`` past a missing ``nope``. This keeps the spelling a walk
+    needs. A trailing slash is kept too, since ``x/`` resolves as ``x/.``
+    and so names a directory. None when neither follows a named
+    component: a leading climb (``../x``) only walks up from ``base``, a
+    directory already, so the common ``cd ..`` and ``cat ../f`` cost
+    nothing.
+
+    Args:
+        word (str): the path as typed, absolute or relative.
+        base (str): the directory a relative word resolves against (the
+            cwd, or tar's ``-C`` directory).
+    """
+    parts = [part for part in word.split("/") if part]
+    lead = 0
+    while lead < len(parts) and parts[lead] in _DOTS:
+        lead += 1
+    rest = parts[lead:]
+    slashed = bool(rest) and word.endswith("/") and rest[-1] not in _DOTS
+    if not slashed and not any(part in _DOTS for part in rest):
+        return None
+    start = resolve_path(
+        "/".join(parts[:lead]) or ".", "/" if word.startswith("/") else base
+    )
+    return start.rstrip("/") + "/" + "/".join(rest) + "/" * slashed
+
+
+def dot_prefixes(
+    dotted: str, follow: Callable[[str], str] | None = None
+) -> list[str]:
+    """The directories a walk of ``dotted`` has to find, in walk order.
+
+    Whatever stands in front of a ``.`` or ``..`` is where it resolves,
+    so it has to be a directory; each is spelled as the walk has
+    simplified it so far, and the root, always one, is left out.
+
+    Args:
+        dotted (str): an absolute spelling from :func:`dotted_spelling`.
+        follow (Callable[[str], str] | None): the namespace's link
+            resolution, None while it holds no link.
+    """
+    current = "/"
+    found: list[str] = []
+    for part in (p for p in dotted.split("/") if p):
+        if part in _DOTS:
+            if follow is not None:
+                current = follow(current)
+            if current != "/" and current not in found:
+                found.append(current)
+            if part == "..":
+                current = parent(current)
+            continue
+        current = current.rstrip("/") + "/" + part
+    return found
+
+
+def walk_nodes(
+    dotted: str, raw: str, follow: Callable[[str], str] | None = None
+) -> list[tuple[str, str]]:
+    """The intermediate names a walk enters, each with its spelling.
+
+    What ``mkdir -p`` creates on the way and names when it cannot: GNU
+    makes each component as it reaches it, so ``mkdir -p nope/../m``
+    leaves ``nope`` behind as well as ``m``, and a plain file in the way
+    is quoted as the operand spells it (``'a.txt'``, not the absolute
+    path). Only the typed components are entered: the directory a
+    relative word starts from is there already.
+
+    Args:
+        dotted (str): an absolute spelling from :func:`dotted_spelling`.
+        raw (str): the operand as typed, whose prefixes spell each name.
+        follow (Callable[[str], str] | None): the namespace's link
+            resolution, None while it holds no link.
+    """
+    typed = [part for part in raw.split("/") if part]
+    lead = 0
+    while lead < len(typed) and typed[lead] in _DOTS:
+        lead += 1
+    parts = [part for part in dotted.split("/") if part]
+    start = parts[: len(parts) - (len(typed) - lead)]
+    current = "/" + "/".join(start)
+    head = "/" if raw.startswith("/") else ""
+    entered: list[tuple[str, str]] = []
+    for index in range(lead, len(typed) - 1):
+        part = typed[index]
+        if part in _DOTS:
+            if follow is not None:
+                try:
+                    current = follow(current)
+                except CycleError:
+                    return entered
+            current = parent(current) if part == ".." else current
+            continue
+        current = current.rstrip("/") + "/" + part
+        entered.append((current, head + "/".join(typed[: index + 1])))
+    return entered
+
+
 MAX_SYMLINK_HOPS = 40
 
 
-class CycleError(Exception):
+class CycleError(OSError):
     """Raised when symlink resolution exceeds the maximum hop count.
 
     Mirrors POSIX ELOOP (a loop such as ``a -> b -> a`` or an unbounded
-    expansion such as ``a -> a/x``). Command boundaries render this as the
-    GNU ``strerror`` text "Too many levels of symbolic links".
+    expansion such as ``a -> a/x``) as the OSError the kernel raises.
+
+    Args:
+        path (str): the path whose resolution looped.
     """
 
-
-def _is_link_prefix(key: str, path: str) -> bool:
-    return path == key or path.startswith(key + "/")
+    def __init__(self, path: str) -> None:
+        super().__init__(errno.ELOOP, os.strerror(errno.ELOOP), path)
 
 
 def resolve_symlinks(path: str, links: dict[str, str]) -> str:
     """Resolve symlink prefixes in ``path`` until stable.
 
-    Repeatedly replaces the longest dict key that is a path-boundary prefix
-    of ``path`` with its target, mirroring filesystem symlink following
-    (``/a/b`` is a prefix of ``/a/b/c`` but not ``/a/bc``). Relative targets
-    are resolved against the link's own parent directory.
+    Walks components in order, expanding links before interpreting a later
+    ``..``. Relative targets start at the link's parent; absolute targets
+    restart at the root. Every caller therefore receives a canonical path.
 
     Args:
         path (str): An absolute virtual path.
@@ -184,21 +293,30 @@ def resolve_symlinks(path: str, links: dict[str, str]) -> str:
         CycleError: If resolution exceeds ``MAX_SYMLINK_HOPS`` (a loop or
             unbounded expansion), matching POSIX ELOOP.
     """
-    if not links:
-        return path
-    for _ in range(MAX_SYMLINK_HOPS):
-        best: str | None = None
-        for key in links:
-            if _is_link_prefix(key, path) and (best is None
-                                               or len(key) > len(best)):
-                best = key
-        if best is None:
-            return path
-        target = links[best]
-        if not target.startswith("/"):
-            target = norm(parent(best) + "/" + target)
-        path = target + path[len(best):]
-    raise CycleError(path)
+    pending = list(reversed(path.split("/")))
+    resolved: list[str] = []
+    hops = 0
+    while pending:
+        part = pending.pop()
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if resolved:
+                resolved.pop()
+            continue
+        candidate = "/" + "/".join([*resolved, part])
+        target = links.get(candidate)
+        if target is None:
+            resolved.append(part)
+            continue
+        hops += 1
+        if hops > MAX_SYMLINK_HOPS:
+            raise CycleError(path)
+        if target.startswith("/"):
+            resolved.clear()
+        pending.extend(reversed(target.split("/")))
+    suffix = "/" if resolved and path.endswith("/") else ""
+    return "/" + "/".join(resolved) + suffix
 
 
 def expand_tilde(word: str, home: str | None) -> str:
@@ -297,8 +415,8 @@ def respell_one(path: str, original: str, raw: str) -> str:
         return raw or "."
     if path.startswith(base + "/"):
         if raw == "":
-            return path[len(base) + 1:]
-        return raw.rstrip("/") + path[len(base):]
+            return path[len(base) + 1 :]
+        return raw.rstrip("/") + path[len(base) :]
     return path
 
 
@@ -316,6 +434,7 @@ def drop_trailing_segments(path: str, count: int) -> str:
         drop_trailing_segments("a/b/c", 1)   -> "a/b"
         drop_trailing_segments("/x/y/z", 2)  -> "/x"
         drop_trailing_segments("a/b", 5)     -> "a/b"   # clamped
+        drop_trailing_segments("a//b//c", 2) -> "a"
 
     Args:
         path (str): The path as typed.
@@ -323,11 +442,12 @@ def drop_trailing_segments(path: str, count: int) -> str:
     """
     if count <= 0:
         return path
-    parts = path.rstrip("/").split("/")
-    if count >= len([part for part in parts if part]):
+    if count >= len([part for part in path.split("/") if part]):
         return path
-    joined = "/".join(parts[:-count])
-    return joined if joined else "/"
+    head = path.rstrip("/")
+    for _ in range(count):
+        head = head[: head.rfind("/")].rstrip("/")
+    return head or "/"
 
 
 def gnu_basename(path: str, suffix: str | None = None) -> str:
@@ -337,9 +457,9 @@ def gnu_basename(path: str, suffix: str | None = None) -> str:
     if i == 0:
         return "/" if path else ""
     j = path.rfind("/", 0, i)
-    base = path[j + 1:i]
+    base = path[j + 1 : i]
     if suffix and base != suffix and base.endswith(suffix):
-        base = base[:len(base) - len(suffix)]
+        base = base[: len(base) - len(suffix)]
     return base
 
 

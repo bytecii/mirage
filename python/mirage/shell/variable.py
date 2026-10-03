@@ -40,6 +40,7 @@ class VarAttr(StrEnum):
     *is*, so storing it a second time as an attribute would let the two
     contradict each other. `attr_letters` derives them from the value.
     """
+
     INTEGER = "i"
     NAMEREF = "n"
     READONLY = "r"
@@ -51,9 +52,37 @@ class VarAttr(StrEnum):
 
 class VarKind(StrEnum):
     """What a variable's value is, derived from the value itself."""
+
     SCALAR = "scalar"
     INDEXED = "indexed"
     ASSOC = "assoc"
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedRef:
+    """Where a managed variable's value comes from.
+
+    A managed variable is an ordinary `ShellVar` carrying one of these:
+    the pointer is host configuration (a YAML/in-app env entry), never
+    something an agent line can spell, and it is what serializes -- the
+    fetched value never does. All fill-step state rides here so a
+    session can carry managed entries the workspace never declared.
+
+    Args:
+        source (str): registered source name (`env`, `dotenv`, `aws-sm`,
+            or a user-registered one).
+        ref (str): the source's address for one secret (a secret id, a
+            dotenv path; `""` where the source has no sub-address).
+        key (str): which field of the fetched secret this variable
+            reads; defaults to the variable's own name at declaration.
+        eager (bool): join every line's fetch set instead of waiting
+            for a line that references the name.
+    """
+
+    source: str
+    ref: str
+    key: str
+    eager: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,9 +107,29 @@ class ShellVar:
             other, `${ONLY-d}` expands to `d` while `${EMPTY-d}` does
             not, and `env` carries the empty one but not the unset one.
         attrs (frozenset[VarAttr]): the attributes set on the name.
+        managed (ManagedRef | None): set when the value comes from a
+            secrets source. Unfetched is exactly the third state above:
+            value None with attributes, so `env_snapshot`'s existing
+            value check already omits it. `with_value` deliberately
+            carries this field (the fill step writes through it) and
+            `detach` is the agent-write arm.
     """
+
     value: ShellValue | None = None
     attrs: frozenset[VarAttr] = field(default_factory=frozenset)
+    managed: ManagedRef | None = None
+
+
+class TempEnv(dict[str, ShellVar | None]):
+    """The records a prefix assignment shadowed for one function call.
+
+    bash runs ``x=1 f`` with ``x`` in a scope of its own around the
+    function, its temporary environment: the caller's value comes back
+    when the call returns, ``unset x`` inside reveals it, and an
+    ``export`` or ``readonly`` of the name lets the value outlive the
+    call. A frame of this type on the call path is that scope; a plain
+    frame holds a function's ``local`` shadows.
+    """
 
 
 def var_kind(var: ShellVar) -> VarKind:
@@ -109,6 +158,20 @@ def with_value(var: ShellVar, value: ShellValue | None) -> ShellVar:
     return replace(var, value=value)
 
 
+def detach(var: ShellVar) -> ShellVar:
+    """The variable with its managed pointer dropped, value kept.
+
+    An agent write to a managed name shadows session-locally: the
+    record becomes a plain variable for this session only, so the fill
+    step never clobbers it and the declaration (new sessions fetch
+    fresh) and the remote store are untouched by construction.
+
+    Args:
+        var (ShellVar): the variable to copy.
+    """
+    return replace(var, managed=None)
+
+
 def with_attr(var: ShellVar, attr: VarAttr, on: bool = True) -> ShellVar:
     """The variable with one attribute turned on or off.
 
@@ -124,8 +187,9 @@ def with_attr(var: ShellVar, attr: VarAttr, on: bool = True) -> ShellVar:
     return replace(var, attrs=frozenset(attrs))
 
 
-def coerce_scalar(text: str, attrs: frozenset[VarAttr],
-                  integer: Coercer | None) -> str:
+def coerce_scalar(
+    text: str, attrs: frozenset[VarAttr], integer: Coercer | None
+) -> str:
     """Apply the value-shaping attributes to one scalar being stored.
 
     bash applies these at assignment, not at read: `declare -l s; s=ABC`
@@ -152,8 +216,9 @@ def coerce_scalar(text: str, attrs: frozenset[VarAttr],
     return text
 
 
-def coerce_value(value: ShellValue, attrs: frozenset[VarAttr],
-                 integer: Coercer | None) -> ShellValue:
+def coerce_value(
+    value: ShellValue, attrs: frozenset[VarAttr], integer: Coercer | None
+) -> ShellValue:
     """`coerce_scalar` lifted over every value shape.
 
     An array applies the attribute per element, which is GNU's

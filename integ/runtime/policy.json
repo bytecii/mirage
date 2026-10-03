@@ -7,11 +7,11 @@
         "runtimes": [
           "monty",
           "local",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -49,11 +49,11 @@
             "script": "'use-local' not in ctx['line']"
           },
           "local",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -82,11 +82,11 @@
             "name": "monty",
             "script": "False"
           },
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -113,14 +113,14 @@
         "runtimes": [
           "monty",
           "local",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         },
-        "policy": "'local' if 'go-local' in ctx['line'] else None"
+        "route_policy": "'local' if 'go-local' in ctx['line'] else None"
       },
       "steps": [
         {
@@ -144,11 +144,11 @@
       "world": {
         "runtimes": [
           "monty",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -181,11 +181,11 @@
       "world": {
         "runtimes": [
           "quickjs",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -218,11 +218,11 @@
             "name": "monty",
             "script": "ctx['command'] == 'python3'"
           },
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "pipe.py": "print('came-through-pipe')"
             }
@@ -247,7 +247,7 @@
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "a.txt": "hello\n"
             }
@@ -299,7 +299,7 @@
       "steps": [
         {
           "command": "echo hi",
-          "runtime": "vfs",
+          "runtime": "workspace",
           "expect": {
             "throws_contains": "not a runtime you can select"
           }
@@ -314,10 +314,10 @@
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         },
-        "policy": "'nope'"
+        "route_policy": "'nope'"
       },
       "steps": [
         {
@@ -341,7 +341,7 @@
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -366,7 +366,7 @@
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -400,7 +400,7 @@
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -409,7 +409,7 @@
           "command": "python -c \"print(1)\"",
           "expect": {
             "exit": 127,
-            "stderr_contains": "python3: command not found"
+            "stderr_contains": "python: command not found"
           }
         }
       ]
@@ -419,21 +419,21 @@
       "world": {
         "runtimes": [
           "monty",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         },
-        "policy": "{'deny': 'python3 is blocked here'} if ctx['command'] == 'python3' else None"
+        "route_policy": "{'deny': 'python3 is blocked here'} if ctx['command'] == 'python3' else None"
       },
       "steps": [
         {
           "command": "python3 -c \"print(1)\"",
           "expect": {
             "exit": 126,
-            "stderr": "python3: policy denied: python3 is blocked here\n"
+            "stderr": "python3: Permission denied\n"
           }
         },
         {
@@ -450,14 +450,14 @@
       "world": {
         "runtimes": [
           "monty",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         },
-        "policy": "{'runtime': 'monty'}"
+        "route_policy": "{'runtime': 'monty'}"
       },
       "steps": [
         {
@@ -474,14 +474,14 @@
       "world": {
         "runtimes": [
           "monty",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         },
-        "policy": "{'runtme': 'monty'}"
+        "route_policy": "{'runtme': 'monty'}"
       },
       "steps": [
         {
@@ -500,11 +500,11 @@
             "name": "monty",
             "script": "{'deny': 'nope'}"
           },
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -522,7 +522,7 @@
       "world": {
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "a.txt": "hello\n"
             }
@@ -533,7 +533,7 @@
             "name": "deny_flag",
             "command": "grep",
             "flag": "-r",
-            "message": "grep: recursive search is not allowed here\n"
+            "reason": "recursive search is not allowed here"
           }
         ]
       },
@@ -541,9 +541,9 @@
         {
           "command": "grep -r hello /ram",
           "expect": {
-            "exit": 1,
+            "exit": 126,
             "stdout": "",
-            "stderr": "grep: recursive search is not allowed here\n"
+            "stderr": "grep: Permission denied\n"
           }
         },
         {
@@ -561,7 +561,7 @@
       "world": {
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "open.txt": "free\n"
             }
@@ -606,7 +606,7 @@
       "world": {
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "x.sealed": "nope\n",
               "y.txt": "yes\n"
@@ -640,7 +640,7 @@
       "world": {
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "clean.txt": "hello\n",
               "secret.txt": "TOPSECRET plans\n"
@@ -674,7 +674,7 @@
       "world": {
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "big.log": "abcdefghij\n",
               "note.txt": "abcdefghij\n",
@@ -720,7 +720,7 @@
       "world": {
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "data.txt": "1\n2\n3\n4\n5\n"
             },
@@ -762,7 +762,7 @@
       "world": {
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "data.txt": "1\n2\n3\n4\n5\n"
             }
@@ -800,7 +800,7 @@
       "world": {
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         },
         "policies": [
@@ -813,9 +813,204 @@
         {
           "command": "echo hi",
           "expect": {
+            "exit": 126,
+            "stdout": "",
+            "stderr_contains": "echo: Permission denied"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hook_pre_command_sync",
+      "note": "The same policy written as a plain function: python `def` instead of `async def`, TypeScript a value instead of a promise. The seam awaits whatever a hook returns, so both shapes decide identically; before that a plain `def` raised inside python's fail-closed arm and every command read `policy X failed`.",
+      "world": {
+        "mounts": {
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "a.txt": "hello\n"
+            }
+          }
+        },
+        "policies": [
+          {
+            "name": "deny_flag",
+            "command": "grep",
+            "flag": "-r",
+            "reason": "recursive search is not allowed here",
+            "sync": true
+          }
+        ]
+      },
+      "steps": [
+        {
+          "command": "grep -r hello /ram",
+          "expect": {
+            "exit": 126,
+            "stdout": "",
+            "stderr": "grep: Permission denied\n"
+          }
+        },
+        {
+          "command": "grep hello /ram/a.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "hello\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "hook_pre_ops_sync",
+      "note": "The same policy written as a plain function: python `def` instead of `async def`, TypeScript a value instead of a promise. The seam awaits whatever a hook returns, so both shapes decide identically; before that a plain `def` raised inside python's fail-closed arm and every command read `policy X failed`.",
+      "world": {
+        "mounts": {
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "open.txt": "free\n"
+            }
+          }
+        },
+        "policies": [
+          {
+            "name": "lock_writes",
+            "prefix": "/ram/locked/",
+            "sync": true
+          }
+        ]
+      },
+      "steps": [
+        {
+          "command": "echo hi > /ram/locked/f.txt",
+          "expect": {
             "exit": 1,
             "stdout": "",
-            "stderr_contains": "policy Boom failed"
+            "stderr": "/ram/locked/f.txt: Permission denied\n"
+          }
+        },
+        {
+          "command": "echo hi > /ram/note.txt && cat /ram/note.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "hi\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "cat /ram/open.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "free\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "hook_post_ops_sync",
+      "note": "The same policy written as a plain function: python `def` instead of `async def`, TypeScript a value instead of a promise. The seam awaits whatever a hook returns, so both shapes decide identically; before that a plain `def` raised inside python's fail-closed arm and every command read `policy X failed`.",
+      "world": {
+        "mounts": {
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "clean.txt": "hello\n",
+              "secret.txt": "TOPSECRET plans\n"
+            }
+          }
+        },
+        "policies": [
+          {
+            "name": "redact_reads",
+            "marker": "TOPSECRET",
+            "sync": true
+          }
+        ]
+      },
+      "steps": [
+        {
+          "read_op": "/ram/clean.txt",
+          "expect": {
+            "content": "hello\n"
+          }
+        },
+        {
+          "read_op": "/ram/secret.txt",
+          "expect": {
+            "errno": "EACCES"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hook_post_execute_sync",
+      "note": "The same policy written as a plain function: python `def` instead of `async def`, TypeScript a value instead of a promise. The seam awaits whatever a hook returns, so both shapes decide identically; before that a plain `def` raised inside python's fail-closed arm and every command read `policy X failed`.",
+      "world": {
+        "mounts": {
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "data.txt": "1\n2\n3\n4\n5\n"
+            },
+            "limits": {
+              "cat": {
+                "max_lines": 3
+              }
+            }
+          }
+        },
+        "policies": [
+          {
+            "name": "line_cap",
+            "max_lines": 2,
+            "sync": true
+          }
+        ]
+      },
+      "steps": [
+        {
+          "command": "cat /ram/data.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "1\n2\n",
+            "stderr_contains": "output truncated"
+          }
+        },
+        {
+          "command": "head -n 1 /ram/data.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "1\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "hook_post_execute_fail_closed_sync",
+      "note": "A hook that throws synchronously fails closed exactly like one that throws after an await: the call itself sits inside the guarded arm.",
+      "world": {
+        "mounts": {
+          "/ram": {
+            "vfs": "ram"
+          }
+        },
+        "policies": [
+          {
+            "name": "boom",
+            "sync": true
+          }
+        ]
+      },
+      "steps": [
+        {
+          "command": "echo hi",
+          "expect": {
+            "exit": 126,
+            "stdout": "",
+            "stderr_contains": "echo: Permission denied"
           }
         }
       ]

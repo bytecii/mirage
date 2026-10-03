@@ -14,9 +14,11 @@
 
 import asyncio
 
-from mirage.commands.builtin.generic.archive.extract import (dir_exists,
-                                                             ensure_dir,
-                                                             extract_dest)
+from mirage.commands.builtin.generic.archive.extract import (
+    dir_exists,
+    ensure_dir,
+    extract_dest,
+)
 from mirage.types import FileStat, FileType, PathSpec
 
 
@@ -27,9 +29,7 @@ def test_extract_dest_prefers_the_explicit_operand():
 
 
 def test_extract_dest_falls_back_to_cwd_per_space():
-    cwd = PathSpec(virtual="/work/sub",
-                   directory="/work/sub",
-                   resource_path="sub")
+    cwd = PathSpec(virtual="/work/sub", directory="/work/sub", vfs_path="sub")
     assert extract_dest(None, cwd, True) == "/work/sub"
     assert extract_dest(None, cwd, False) == "/sub"
 
@@ -43,9 +43,11 @@ def _stat_factory(dirs: set[str]):
 
     async def stat(path: PathSpec) -> FileStat:
         if path.virtual in dirs:
-            return FileStat(path=path.virtual,
-                            name=path.virtual.rsplit("/", 1)[-1],
-                            type=FileType.DIRECTORY)
+            return FileStat(
+                path=path.virtual,
+                name=path.virtual.rsplit("/", 1)[-1],
+                type=FileType.DIRECTORY,
+            )
         raise FileNotFoundError(path.virtual)
 
     return stat

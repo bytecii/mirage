@@ -22,11 +22,7 @@ def document(document_id: str, name: str, slug: str | None = None) -> dict:
         "archived": False,
         "tokens": 4,
         "data_source_type": "upload_file",
-        "data_source_detail_dict": {
-            "upload_file": {
-                "size": 12
-            }
-        },
+        "data_source_detail_dict": {"upload_file": {"size": 12}},
         "created_at": 1716282000,
     }
 
@@ -37,7 +33,8 @@ def accessor() -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_search_command_resolves_globs_and_passes_multiple_documents(
-        monkeypatch):
+    monkeypatch,
+):
     from mirage.commands.builtin.dify import search as command_search
     from mirage.core.dify import search, tree
 
@@ -51,21 +48,27 @@ async def test_search_command_resolves_globs_and_passes_multiple_documents(
 
     async def search_segments(accessor, query, paths, index, **kwargs):
         calls.append((paths, kwargs))
-        return b"api\nauth"
+        return b"api\nauth\n"
 
     monkeypatch.setattr(tree, "list_all_documents", list_documents)
     monkeypatch.setattr(search, "search_segments", search_segments)
 
-    stdout, io = await command_search(accessor(), [
-        PathSpec(resource_path=mount_key('/knowledge/guides/*.md',
-                                         '/knowledge'),
-                 virtual='/knowledge/guides/*.md',
-                 directory='/knowledge/guides',
-                 pattern='*.md',
-                 resolved=False)
-    ], ['login'], CommandOpts(index=RAMIndexCacheStore()))
+    stdout, io = await command_search(
+        accessor(),
+        [
+            PathSpec(
+                vfs_path=mount_key("/knowledge/guides/*.md", "/knowledge"),
+                virtual="/knowledge/guides/*.md",
+                directory="/knowledge/guides",
+                pattern="*.md",
+                resolved=False,
+            )
+        ],
+        ["login"],
+        CommandOpts(index=RAMIndexCacheStore()),
+    )
 
-    assert await materialize(stdout) == b"api\nauth"
+    assert await materialize(stdout) == b"api\nauth\n"
     assert io.reads == {}
     assert io.cache == []
     assert [path.virtual for path in calls[0][0]] == [
@@ -84,20 +87,31 @@ async def test_search_command_root_searches_whole_dataset(monkeypatch):
 
     async def search_segments(accessor, query, paths, index, **kwargs):
         calls.append((paths, kwargs))
-        return b"dataset"
+        return b"dataset\n"
 
     monkeypatch.setattr(search, "search_segments", search_segments)
-    root = PathSpec(resource_path=mount_key("/knowledge", "/knowledge"),
-                    virtual="/knowledge",
-                    directory="/knowledge")
+    root = PathSpec(
+        vfs_path=mount_key("/knowledge", "/knowledge"),
+        virtual="/knowledge",
+        directory="/knowledge",
+    )
 
-    stdout, _ = await command_search(accessor(), [root], ['anything'],
-                                     CommandOpts(index=RAMIndexCacheStore()))
+    stdout, _ = await command_search(
+        accessor(),
+        [root],
+        ["anything"],
+        CommandOpts(index=RAMIndexCacheStore()),
+    )
 
-    assert await materialize(stdout) == b"dataset"
-    assert calls == [([], {
-        "method": "semantic",
-        "top_k": 10,
-        "threshold": 0.0,
-        "mount_prefix": "/knowledge"
-    })]
+    assert await materialize(stdout) == b"dataset\n"
+    assert calls == [
+        (
+            [],
+            {
+                "method": "semantic",
+                "top_k": 10,
+                "threshold": 0.0,
+                "mount_prefix": "/knowledge",
+            },
+        )
+    ]

@@ -12,11 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GmailAccessor } from '../../accessor/gmail.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
-import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { PathSpec } from '../../types.ts'
+import { NAME_MAX_BYTES, byteLength, sanitizeLabel } from '../../utils/sanitize.ts'
+import { compareCodePoints } from '../../utils/sort.ts'
+import { makeReaddir, type DirListing, type Listed } from '../hierarchy/readdir.ts'
+import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { listLabels } from './labels.ts'
 import type { GmailMessageRaw } from './messages.ts'
 import {
@@ -26,27 +27,29 @@ import {
   listMessages,
   messageJsonBytes,
 } from './messages.ts'
-import { enoent } from '../../utils/errors.ts'
-import { compareCodePoints } from '../../utils/sort.ts'
+import { detectScope } from './scope.ts'
+import { globSpan, hasGlobSpan } from '../../utils/glob_walk.ts'
+import { dateDirToGmailQuery, spanToGmailQuery } from './date_query.ts'
 
 const TITLE_MAX = 80
-const UNSAFE = /[^\w\s\-.]/g
-const MULTI_UNDERSCORE = /_+/g
+const MSG_SUFFIX = '.gmail.json'
+const MAX_MESSAGES = 50
 
-export function sanitize(text: string): string {
-  if (text.trim() === '') return 'No_Subject'
-  let cleaned = text.replace(UNSAFE, '_').replace(/ /g, '_').replace(MULTI_UNDERSCORE, '_')
-  let start = 0
-  let end = cleaned.length
-  while (start < end && cleaned.charCodeAt(start) === 95) start++
-  while (end > start && cleaned.charCodeAt(end - 1) === 95) end--
-  cleaned = cleaned.slice(start, end)
-  if (cleaned.length > TITLE_MAX) cleaned = `${cleaned.slice(0, TITLE_MAX - 3)}...`
-  return cleaned
-}
+export const sanitize = (text: string, maxBytes?: number): string =>
+  sanitizeLabel(text, {
+    fallback: 'No_Subject',
+    maxLen: TITLE_MAX,
+    ...(maxBytes !== undefined ? { maxBytes } : {}),
+  })
 
-function msgFilename(subject: string, msgId: string): string {
-  return `${sanitize(subject)}__${msgId}.gmail.json`
+/**
+ * 80 characters is 240 bytes of CJK, which overflows the 255-byte NAME_MAX
+ * once the id and `.gmail.json` are added; the filesystem rejects the name
+ * outright. So the subject takes what the id and the suffix leave.
+ */
+export function msgFilename(subject: string, msgId: string): string {
+  const fixed = 2 + byteLength(msgId) + MSG_SUFFIX.length
+  return `${sanitize(subject, NAME_MAX_BYTES - fixed)}__${msgId}${MSG_SUFFIX}`
 }
 
 function dateFromInternal(internalDate: string | undefined): string {
@@ -60,150 +63,177 @@ function dateFromInternal(internalDate: string | undefined): string {
   return `${yyyy}-${mm}-${dd}`
 }
 
-export async function readdir(
-  accessor: GmailAccessor,
-  path: PathSpec,
-  index?: IndexCacheStore,
-): Promise<string[]> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const key = (path.pattern !== null ? path.dir : path).resourcePath
-  const virtualKey = key !== '' ? `${prefix}/${key}` : prefix !== '' ? prefix : '/'
-  const parts = key === '' ? [] : key.split('/')
-  const depth = parts.length
+function attachmentEntries(raw: GmailMessageRaw): [string, IndexEntry][] {
+  return extractAttachments(raw.payload).map(
+    (att) =>
+      [
+        att.filename,
+        new IndexEntry({
+          id: att.attachmentId,
+          name: att.filename,
+          resourceType: 'gmail/attachment',
+          vfsName: att.filename,
+          size: att.size,
+        }),
+      ] as [string, IndexEntry],
+  )
+}
 
-  if (depth === 0) {
-    if (index !== undefined) {
-      const cached = await index.listDir(virtualKey)
-      if (cached.entries !== undefined && cached.entries !== null) return cached.entries
+/** One date directory's children, plus its attachment-dir seeds. */
+function dateChildren(raws: readonly GmailMessageRaw[]): {
+  children: [string, IndexEntry][]
+  seeds: Record<string, [string, IndexEntry][]>
+} {
+  const children: [string, IndexEntry][] = []
+  const seeds: Record<string, [string, IndexEntry][]> = {}
+  for (const raw of raws) {
+    const mid = raw.id ?? ''
+    const headers = raw.payload?.headers ?? []
+    const subject = extractHeader(headers, 'Subject') || 'No Subject'
+    const filename = msgFilename(subject, mid)
+    // The listing already fetched the full message, so the exact rendered
+    // .gmail.json length is free; sizeEstimate is the source message size
+    // and stays in extra.
+    children.push([
+      filename,
+      new IndexEntry({
+        id: mid,
+        name: subject,
+        resourceType: 'gmail/message',
+        vfsName: filename,
+        size: messageJsonBytes(raw).byteLength,
+        extra: raw.sizeEstimate != null ? { size_estimate: raw.sizeEstimate } : {},
+      }),
+    ])
+    const attEntries = attachmentEntries(raw)
+    if (attEntries.length > 0) {
+      const attDirName = filename.replace('.gmail.json', '')
+      children.push([
+        attDirName,
+        new IndexEntry({
+          id: mid,
+          name: attDirName,
+          resourceType: 'gmail/attachment_dir',
+          vfsName: attDirName,
+        }),
+      ])
+      seeds[attDirName] = attEntries
     }
-    const labels = await listLabels(accessor.tokenManager)
-    const entries: [string, IndexEntry][] = []
-    for (const lb of labels) {
-      const name = lb.type === 'system' ? lb.id : (lb.name ?? lb.id)
-      const entry = new IndexEntry({
+  }
+  return { children, seeds }
+}
+
+async function groupByDate(
+  accessor: GmailAccessor,
+  msgIds: readonly { id: string }[],
+): Promise<Map<string, GmailMessageRaw[]>> {
+  const groups = new Map<string, GmailMessageRaw[]>()
+  for (const m of msgIds) {
+    const raw = await getMessageRaw(accessor.tokenManager, m.id)
+    const dateStr = dateFromInternal(raw.internalDate)
+    let bucket = groups.get(dateStr)
+    if (bucket === undefined) {
+      bucket = []
+      groups.set(dateStr, bucket)
+    }
+    bucket.push(raw)
+  }
+  return groups
+}
+
+async function listRoot(accessor: GmailAccessor, _match: ScopeMatch): Promise<Listed | null> {
+  const labels = await listLabels(accessor.tokenManager)
+  return labels.map((lb) => {
+    const name = lb.type === 'system' ? lb.id : (lb.name ?? lb.id)
+    return [
+      name,
+      new IndexEntry({
         id: lb.id,
         name,
         resourceType: 'gmail/label',
         vfsName: name,
-      })
-      entries.push([name, entry])
-    }
-    if (index !== undefined) await index.setDir(virtualKey, entries)
-    return entries.map(([name]) => `${prefix}/${name}`)
-  }
+      }),
+    ] as [string, IndexEntry]
+  })
+}
 
-  if (depth === 1) {
-    const labelName = parts[0] ?? ''
-    if (index !== undefined) {
-      const cached = await index.listDir(virtualKey)
-      if (cached.entries !== undefined && cached.entries !== null) return cached.entries
-    }
-    if (index === undefined) throw enoent(path.virtual)
-    const labelKey = prefix !== '' ? `${prefix}/${labelName}` : `/${labelName}`
-    let result = await index.get(labelKey)
-    if (result.entry === undefined || result.entry === null) {
-      try {
-        const root = new PathSpec({
-          virtual: prefix !== '' ? prefix : '/',
-          directory: prefix !== '' ? prefix : '/',
-          resourcePath: mountKey(prefix !== '' ? prefix : '/', prefix),
-        })
-        await readdir(accessor, root, index)
-        result = await index.get(labelKey)
-      } catch {
-        // ignore — falls through to ENOENT below
-      }
-    }
-    if (result.entry === undefined || result.entry === null) throw enoent(path.virtual)
-    const labelId = result.entry.id
-    const msgIds = await listMessages(accessor.tokenManager, { labelId, maxResults: 50 })
-    const dateGroups = new Map<string, GmailMessageRaw[]>()
-    for (const m of msgIds) {
-      const mid = m.id
-      const rawMsg = await getMessageRaw(accessor.tokenManager, mid)
-      const dateStr = dateFromInternal(rawMsg.internalDate)
-      let bucket = dateGroups.get(dateStr)
-      if (bucket === undefined) {
-        bucket = []
-        dateGroups.set(dateStr, bucket)
-      }
-      bucket.push(rawMsg)
-    }
-    const sortedDates = [...dateGroups.keys()].sort(compareCodePoints).reverse()
-    const dateEntries: [string, IndexEntry][] = []
-    for (const dateStr of sortedDates) {
-      const dateEntry = new IndexEntry({
+async function listLabel(
+  accessor: GmailAccessor,
+  match: ScopeMatch,
+  own: IndexEntry,
+): Promise<Listed> {
+  // The bare listing is a window, the most recent MAX_MESSAGES, so the day
+  // dirs it mints are whichever days those fell on. A glob pushes its own
+  // span into the query instead of filtering that window, which is the only
+  // way to reach a day older than it.
+  const span = globSpan(match.pattern)
+  const msgIds = await listMessages(accessor.tokenManager, {
+    labelId: own.id,
+    query: span === null ? null : spanToGmailQuery(span[0], span[1]),
+    maxResults: MAX_MESSAGES,
+  })
+  const groups = await groupByDate(accessor, msgIds)
+  const sortedDates = [...groups.keys()].sort(compareCodePoints).reverse()
+  const entries: [string, IndexEntry][] = []
+  const seeds: Record<string, [string, IndexEntry][]> = {}
+  for (const dateStr of sortedDates) {
+    entries.push([
+      dateStr,
+      new IndexEntry({
         id: dateStr,
         name: dateStr,
         resourceType: 'gmail/date',
         vfsName: dateStr,
-      })
-      dateEntries.push([dateStr, dateEntry])
-      const msgEntries: [string, IndexEntry][] = []
-      for (const rawMsg of dateGroups.get(dateStr) ?? []) {
-        const mid = rawMsg.id ?? ''
-        const headers = rawMsg.payload?.headers ?? []
-        const subject = extractHeader(headers, 'Subject') || 'No Subject'
-        const filename = msgFilename(subject, mid)
-        // The listing already fetched the full message, so the exact
-        // rendered .gmail.json length is free; sizeEstimate is the source
-        // message size and stays in extra.
-        const msgEntry = new IndexEntry({
-          id: mid,
-          name: subject,
-          resourceType: 'gmail/message',
-          vfsName: filename,
-          size: messageJsonBytes(rawMsg).byteLength,
-          extra: rawMsg.sizeEstimate != null ? { size_estimate: rawMsg.sizeEstimate } : {},
-        })
-        msgEntries.push([filename, msgEntry])
-        const attachments = extractAttachments(rawMsg.payload)
-        if (attachments.length > 0) {
-          const attDirName = filename.replace('.gmail.json', '')
-          const attDirEntry = new IndexEntry({
-            id: mid,
-            name: attDirName,
-            resourceType: 'gmail/attachment_dir',
-            vfsName: attDirName,
-          })
-          msgEntries.push([attDirName, attDirEntry])
-          const attEntries: [string, IndexEntry][] = []
-          for (const att of attachments) {
-            const attEntry = new IndexEntry({
-              id: att.attachmentId,
-              name: att.filename,
-              resourceType: 'gmail/attachment',
-              vfsName: att.filename,
-              size: att.size,
-            })
-            attEntries.push([att.filename, attEntry])
-          }
-          const attDirVKey = `${virtualKey}/${dateStr}/${attDirName}`
-          await index.setDir(attDirVKey, attEntries)
-        }
-      }
-      const dateVKey = `${virtualKey}/${dateStr}`
-      await index.setDir(dateVKey, msgEntries)
+        extra: { label_id: own.id },
+      }),
+    ])
+    const { children, seeds: attSeeds } = dateChildren(groups.get(dateStr) ?? [])
+    seeds[dateStr] = children
+    for (const [attDir, attEntries] of Object.entries(attSeeds)) {
+      seeds[`${dateStr}/${attDir}`] = attEntries
     }
-    await index.setDir(virtualKey, dateEntries)
-    return dateEntries.map(([name]) => `${prefix}/${key}/${name}`)
   }
-
-  if (depth === 2 || depth === 3) {
-    if (index === undefined) throw enoent(path.virtual)
-    let cached = await index.listDir(virtualKey)
-    if (cached.entries !== undefined && cached.entries !== null) return cached.entries
-    const labelPath = prefix !== '' ? `${prefix}/${parts[0] ?? ''}` : `/${parts[0] ?? ''}`
-    const labelSpec = new PathSpec({
-      virtual: labelPath,
-      directory: labelPath,
-      resourcePath: mountKey(labelPath, prefix),
-    })
-    await readdir(accessor, labelSpec, index)
-    cached = await index.listDir(virtualKey)
-    if (cached.entries !== undefined && cached.entries !== null) return cached.entries
-    throw enoent(path.virtual)
-  }
-
-  throw enoent(path.virtual)
+  return { entries, seeds, partial: span !== null, window: true }
 }
+
+async function listDay(
+  accessor: GmailAccessor,
+  match: ScopeMatch,
+  label: IndexEntry,
+): Promise<Listed> {
+  // The proof is the label entry, not the day's own: a date query answers for
+  // any well-formed day, including days the label's bounded recent listing
+  // never minted. A day proven by its own entry could only ever be a day
+  // inside that window, which is the case the seed already covers.
+  const day = match.slots.day ?? ''
+  const dateQuery = dateDirToGmailQuery(day)
+  if (dateQuery === null) return []
+  const msgIds = await listMessages(accessor.tokenManager, {
+    labelId: label.id,
+    query: dateQuery,
+    maxResults: MAX_MESSAGES,
+  })
+  const groups = await groupByDate(accessor, msgIds)
+  const { children, seeds } = dateChildren(groups.get(day) ?? [])
+  const listing: DirListing = { entries: children, seeds, window: true }
+  return listing
+}
+
+async function listAttachmentDir(
+  accessor: GmailAccessor,
+  _match: ScopeMatch,
+  own: IndexEntry,
+): Promise<Listed> {
+  const raw = await getMessageRaw(accessor.tokenManager, own.id)
+  return attachmentEntries(raw)
+}
+
+export const readdir = makeReaddir<GmailAccessor>(detectScope, {
+  listers: { root: listRoot },
+  entryListers: {
+    label: listLabel,
+    attachment_dir: listAttachmentDir,
+  },
+  parentEntryListers: { day: listDay },
+  patternKinds: { label: hasGlobSpan },
+})

@@ -20,27 +20,52 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import (BaseModel, ConfigDict, Field, field_validator,
-                      model_validator)
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
-from mirage.accessor.s3 import S3Config
 from mirage.cache.file.config import CacheConfig, RedisCacheConfig
 from mirage.cache.index.config import IndexConfig, RedisIndexConfig
 from mirage.commands.cli.types import CLISpec
-from mirage.policy import GuardSpec
-from mirage.resource.registry import build_resource
+from mirage.policy.profile import SessionProfile
 from mirage.runtime.base import Runtime
 from mirage.runtime.table import build_runtime
 from mirage.runtime.types import Language, ScriptSource
+from mirage.secrets.config import EnvVar, SecretSource
+from mirage.secrets.sources import (
+    config_holds_pointer,
+    resolve_config_secrets,
+    resolve_sources_for,
+)
 from mirage.shell.console import JobConsole
 from mirage.shell.job_table import ConsoleFactory
-from mirage.types import (KERNEL_BACKENDS, ConsistencyPolicy, Limit,
-                          MountBackend, MountMode)
+from mirage.types import (
+    KERNEL_BACKENDS,
+    Limit,
+    MountBackend,
+    MountMode,
+    ReadPolicy,
+    parse_mount_mode,
+)
+from mirage.vfs.loader import load_attr
+from mirage.vfs.registry import build_vfs
+from mirage.vfs.s3.config import S3Config
+from mirage.workspace.mount.read_policy import (
+    coerce_read_policy,
+    coerce_read_ttl,
+    resolve_read_spec,
+)
 from mirage.workspace.mount.spec import Mount
-from mirage.workspace.store import (DEFAULT_STATE_ROOT,
-                                    DiskWorkspaceStateStore,
-                                    RAMWorkspaceStateStore,
-                                    WorkspaceStateStore)
+from mirage.workspace.store import (
+    DEFAULT_STATE_ROOT,
+    DiskWorkspaceStateStore,
+    RAMWorkspaceStateStore,
+    WorkspaceStateStore,
+)
 
 try:
     from mirage.workspace.store import RedisWorkspaceStateStore
@@ -62,15 +87,7 @@ def _coerce_mount_mode(value):
     if isinstance(value, MountMode):
         return value
     if isinstance(value, str):
-        return MountMode(value.lower())
-    return value
-
-
-def _coerce_consistency(value):
-    if isinstance(value, ConsistencyPolicy):
-        return value
-    if isinstance(value, str):
-        return ConsistencyPolicy(value.lower())
+        return parse_mount_mode(value.lower())
     return value
 
 
@@ -78,7 +95,6 @@ _VAR_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
 
 class _EnvInterpolator:
-
     def __init__(self, env: dict[str, str], missing: list[str]) -> None:
         self.env = env
         self.missing = missing
@@ -276,23 +292,9 @@ class StoreBlock(BaseModel):
                     f"config `store.{group}` cannot be s3: the s3 store hosts "
                     f"only the sessions+meta group; keep the {group} plane on "
                     "ram or redis and pass the s3 store as the 'workspace' "
-                    "group override")
+                    "group override"
+                )
         return self
-
-
-class GuardBlock(BaseModel):
-    """One declarative command guard (the yaml ``guards:`` entries).
-
-    Compiled to a GuardSpec: refuse the named commands (all commands
-    when empty) whenever an operand matches one of the ``*``/``?``
-    path patterns (regardless of operands when empty).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    reason: str
-    commands: list[str] = Field(default_factory=list)
-    paths: list[str] = Field(default_factory=list)
 
 
 class CLIBlock(BaseModel):
@@ -308,6 +310,7 @@ class CLIBlock(BaseModel):
     mode and never shares a mount's credentials: a binary has no mode,
     the credential does.
     """
+
     model_config = ConfigDict(extra="forbid")
 
     cli: str | None = None
@@ -321,21 +324,41 @@ class CLIBlock(BaseModel):
             raise ValueError("a clis entry takes exactly one of cli or script")
         if self.runtime is not None and self.script is None:
             raise ValueError(
-                "runtime pins the script's runtime; it takes script")
+                "runtime pins the script's runtime; it takes script"
+            )
+        # A pointer may only fill a config that a model validates,
+        # because the model is what a snapshot redacts by. A script's
+        # config is opaque: nothing declares which key is a credential,
+        # so the snapshot captures it verbatim, and a pointer resolved
+        # into it would be written out as the value it fetched. The
+        # block refuses rather than the dump, so every door that reads
+        # a config inherits the rule.
+        if self.script is not None and config_holds_pointer(self.config):
+            raise ValueError(
+                "a script's config is opaque and a pointer in it would be "
+                "written into every snapshot; read the credential from a "
+                "managed env var instead"
+            )
         return self
 
 
 class MountBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    resource: str
+    vfs: str
     mode: MountMode | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     command_limits: dict[str, Limit] = Field(default_factory=dict)
-    # How the mount is exposed: vfs (default, mirage's own filesystem only),
-    # fuse, or fskit. mountpoint is honored by the kernel backends.
-    backend: MountBackend = MountBackend.VFS
+    # How the mount is exposed: workspace (default, mirage's own filesystem
+    # only), fuse, or fskit. mountpoint is honored by the kernel backends.
+    backend: MountBackend = MountBackend.WORKSPACE
     mountpoint: str | None = None
+    # How cached bytes for this mount are revalidated, and the bound
+    # that goes with `bounded`. The bound lives only here, where no
+    # other `ttl` does: at workspace level it would sit beside
+    # `index: {ttl:}` and mean a different thing.
+    read: ReadPolicy | None = None
+    ttl: int | None = None
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -343,6 +366,46 @@ class MountBlock(BaseModel):
         if v is None:
             return v
         return _coerce_mount_mode(v)
+
+    @field_validator("read", mode="before")
+    @classmethod
+    def _v_read(cls, v):
+        if v is None:
+            return v
+        return coerce_read_policy(v)
+
+    @field_validator("ttl", mode="before")
+    @classmethod
+    def _v_ttl(cls, v):
+        # Ahead of pydantic's own coercion, which is lax where this key
+        # cannot afford to be: `ttl: "30"` arrives as 30 and `ttl: true`
+        # as 1, so a document TypeScript refuses outright would load
+        # here and the two hosts would disagree about the same bytes --
+        # `ttl: true` silently bounding the mount at one second. The
+        # snapshot door reads its bound through the same coercer.
+        if v is None:
+            return v
+        return coerce_read_ttl(v)
+
+    @model_validator(mode="after")
+    def _v_bound(self) -> "MountBlock":
+        # Two dependent-key rules, refused here rather than in the mount
+        # verdict: by the time a ReadSpec exists its ttl has already
+        # defaulted, so `bounded` written without a bound is
+        # indistinguishable from `read:` left out entirely.
+        if self.ttl is not None and self.read is None:
+            raise ValueError("ttl pins the read bound; it takes read: bounded")
+        if self.read is ReadPolicy.BOUNDED and self.ttl is None:
+            raise ValueError("read: bounded needs a bound; set ttl:")
+        # Last, so the dependent-key rules name the missing key first,
+        # as TypeScript's `validateReadBlock` does. `resolve_read_spec`
+        # refuses this too, but only at `to_workspace_kwargs`, which is
+        # a door later than the one TypeScript refuses it at: the shared
+        # `integ/fixtures/config/rejected.json` loads the config and
+        # nothing more.
+        if self.ttl is not None and self.ttl < 1:
+            raise ValueError(f"ttl must be at least 1 second, got {self.ttl}")
+        return self
 
 
 def _is_script_path(value: str) -> bool:
@@ -353,7 +416,7 @@ def _is_script_path(value: str) -> bool:
     policy engine.
 
     Args:
-        value (str): a yaml ``script``/``policy`` value.
+        value (str): a yaml ``script``/``route_policy`` value.
     """
     return "\n" not in value and value.strip().endswith((".py", ".js", ".mjs"))
 
@@ -367,26 +430,47 @@ def _load_script_source(value: str) -> ScriptSource:
     only door for script source.
 
     Args:
-        value (str): the yaml ``script``/``policy`` value.
+        value (str): the yaml ``script``/``route_policy`` value.
 
     Raises:
         ValueError: the value is not a script path.
         FileNotFoundError: the referenced file does not exist.
     """
     if not _is_script_path(value):
-        raise ValueError("a config script must reference a .py/.js file "
-                         f"(e.g. script: guard.py), got {value!r}")
+        raise ValueError(
+            "a config script must reference a .py/.js file "
+            f"(e.g. script: guard.py), got {value!r}"
+        )
     path = Path(value.strip())
-    language: Language = ("js" if path.suffix in (".js", ".mjs") else "python")
-    return ScriptSource(path.read_text(),
-                        language=language,
-                        module=path.suffix == ".mjs")
+    language: Language = "js" if path.suffix in (".js", ".mjs") else "python"
+    return ScriptSource(
+        path.read_text(), language=language, module=path.suffix == ".mjs"
+    )
+
+
+def _load_profile_policy(profile: SessionProfile) -> SessionProfile:
+    """Embed a profile's path-form policy program as source.
+
+    Args:
+        profile (SessionProfile): the profile as validated; returned
+            as is when it states no policy or already carries source.
+    """
+    policy = profile.policy
+    if policy is None or not isinstance(policy.script, str):
+        return profile
+    return profile.model_copy(
+        update={
+            "policy": policy.model_copy(
+                update={"script": _load_script_source(policy.script)}
+            )
+        }
+    )
 
 
 def _absolutize_scripts(raw: dict[str, Any], base: Path) -> None:
     """Resolve relative script paths against the config file's dir.
 
-    A path-form ``script``/``policy`` in a config file means "next to
+    A path-form ``script``/``route_policy`` in a config file means "next to
     the file" (the docker build-context model), never "wherever the
     server happens to run". Mutates the parsed mapping in place;
     in-memory dict configs are untouched by the loader.
@@ -395,80 +479,146 @@ def _absolutize_scripts(raw: dict[str, Any], base: Path) -> None:
         raw (dict[str, Any]): the parsed config mapping.
         base (Path): directory containing the config file.
     """
-    policy = raw.get("policy")
-    if isinstance(policy, str) and _is_script_path(policy) \
-            and not Path(policy.strip()).is_absolute():
-        raw["policy"] = str(base / policy.strip())
+    policy = raw.get("route_policy")
+    if (
+        isinstance(policy, str)
+        and _is_script_path(policy)
+        and not Path(policy.strip()).is_absolute()
+    ):
+        raw["route_policy"] = str(base / policy.strip())
     runtimes = raw.get("runtimes")
     if isinstance(runtimes, list):
-        for entry in runtimes:
+        for i, entry in enumerate(runtimes):
             if isinstance(entry, dict):
                 _absolutize_script_key(entry, base)
+                _absolutize_code_ref(entry, "name", base)
+            elif isinstance(entry, str):
+                runtimes[i] = _rebase_code_ref(entry, base)
     clis = raw.get("clis")
     if isinstance(clis, dict):
         for block in clis.values():
             if isinstance(block, dict):
                 _absolutize_script_key(block, base)
-                _absolutize_cli_ref(block, base)
+                _absolutize_code_ref(block, "cli", base)
+    mounts = raw.get("mounts")
+    if isinstance(mounts, dict):
+        for block in mounts.values():
+            if isinstance(block, dict):
+                _absolutize_code_ref(block, "vfs", base)
+    profiles = raw.get("profiles")
+    if isinstance(profiles, dict):
+        for block in profiles.values():
+            # A profile's policy block carries its program the way a
+            # clis entry does, so its script rebases the same way.
+            policy = block.get("policy") if isinstance(block, dict) else None
+            if isinstance(policy, dict):
+                _absolutize_script_key(policy, base)
 
 
 def _absolutize_script_key(entry: dict[str, Any], base: Path) -> None:
     """Rebase one mapping's relative ``script`` path onto ``base``.
 
     Args:
-        entry (dict[str, Any]): a ``runtimes`` or ``clis`` mapping
-            entry, mutated in place.
+        entry (dict[str, Any]): a ``runtimes``, ``clis`` or profile
+            ``policy`` mapping entry, mutated in place.
         base (Path): directory containing the config file.
     """
     script = entry.get("script")
-    if isinstance(script, str) and _is_script_path(script) \
-            and not Path(script.strip()).is_absolute():
+    if (
+        isinstance(script, str)
+        and _is_script_path(script)
+        and not Path(script.strip()).is_absolute()
+    ):
         entry["script"] = str(base / script.strip())
 
 
-def _absolutize_cli_ref(entry: dict[str, Any], base: Path) -> None:
-    """Rebase one ``clis`` entry's path-form ``cli`` reference.
+def _absolutize_code_ref(entry: dict[str, Any], key: str, base: Path) -> None:
+    """Rebase a path-form colon reference under ``key``.
 
-    ``cli: ./tool.py:TREE`` means "next to the config file", the same
-    build-context rule ``script:`` follows; without this the pointer
-    reaches ``load_attr`` relative and resolves against the server
-    process's cwd. A module dotpath (``pkg.mod:TREE``) is left alone:
-    importlib resolves it, not the filesystem. The split matches
-    ``load_attr``'s own test, so the two cannot disagree about what a
-    path is.
+    ``cli: ./tool.py:TREE``, ``vfs: ./wiki.py:WikiVFS`` and a
+    runtime entry's ``name: ./box.py:EchoBox`` all mean "next to the
+    config file", the same build-context rule ``script:`` follows;
+    without this the pointer reaches ``load_attr`` relative and resolves
+    against the server process's cwd. A module dotpath (``pkg.mod:TREE``)
+    is left alone: importlib resolves it, not the filesystem. The split
+    matches ``load_attr``'s own test, so the two cannot disagree about
+    what a path is.
 
     Args:
-        entry (dict[str, Any]): a ``clis`` mapping entry, mutated in
-            place.
+        entry (dict[str, Any]): a ``clis``, ``mounts`` or ``runtimes``
+            mapping entry, mutated in place.
+        key (str): the field holding the reference, ``cli``,
+            ``vfs`` or ``name``.
         base (Path): directory containing the config file.
     """
-    ref = entry.get("cli")
-    if not isinstance(ref, str) or ":" not in ref:
-        return
+    ref = entry.get(key)
+    if isinstance(ref, str):
+        entry[key] = _rebase_code_ref(ref, base)
+
+
+def _rebase_code_ref(ref: str, base: Path) -> str:
+    """``ref`` with a relative path-form source rebased onto ``base``.
+
+    Anything that is not a relative path-form reference (a bare name, a
+    module dotpath, an absolute path) comes back unchanged, so the bare
+    string runtime entry (``- ./box.py:EchoBox`` beside ``- monty``) reads
+    the same way the keyed forms do.
+
+    Args:
+        ref (str): a config value that may be a ``source:attr`` reference.
+        base (Path): directory containing the config file.
+    """
+    if ":" not in ref:
+        return ref
     source, attr = ref.rsplit(":", 1)
     if "/" not in source and not source.endswith(".py"):
-        return
+        return ref
     if Path(source).is_absolute():
-        return
-    entry["cli"] = f"{base / source}:{attr}"
+        return ref
+    return f"{base / source}:{attr}"
+
+
+def _runtime_class(ref: str) -> type[Runtime]:
+    """Load the ``Runtime`` subclass a ``source:Class`` reference names.
+
+    The runtime twin of the ``vfs:`` and ``cli:`` reference forms:
+    a deployment ships a runtime as a file and names it from yaml with no
+    host program calling ``register_runtime``. The class is constructed
+    with the uniform ``(captures, config, script)`` options like a
+    builtin, so the entry's other keys reach it unchanged.
+
+    Args:
+        ref (str): ``./box.py:EchoBox`` or ``pkg.mod:EchoBox``.
+
+    Raises:
+        ValueError: the reference does not load, or names something
+            that is not a ``Runtime`` subclass.
+    """
+    loaded = load_attr(ref)
+    if not (isinstance(loaded, type) and issubclass(loaded, Runtime)):
+        raise ValueError(f"{ref!r} is not a Runtime subclass")
+    return loaded
 
 
 def _build_runtime_entries(
-        entries: list[str | dict[str, Any]]) -> list["Runtime | str"]:
+    entries: list[str | dict[str, Any]],
+) -> list["Runtime | str"]:
     """Turn config runtime entries into workspace runtime entries.
 
     Args:
-        entries (list[str | dict[str, Any]]): name strings, or maps
-            carrying a name plus the uniform runtime options
-            (``captures``, ``config``, ``script``).
+        entries (list[str | dict[str, Any]]): names, or maps carrying a
+            name plus the uniform runtime options (``captures``,
+            ``config``, ``script``). A name is a registered runtime or a
+            ``source:Class`` reference to a ``Runtime`` subclass.
 
     Raises:
-        ValueError: a map entry without a name, or a non-path script.
+        ValueError: a map entry without a name, a non-path script, or a
+            reference that is not a ``Runtime`` subclass.
     """
     out: list[Runtime | str] = []
     for entry in entries:
         if isinstance(entry, str):
-            out.append(entry)
+            out.append(_runtime_class(entry)() if ":" in entry else entry)
             continue
         options = dict(entry)
         name = options.pop("name", None)
@@ -477,9 +627,13 @@ def _build_runtime_entries(
         script = options.pop("script", None)
         if script is not None and not isinstance(script, str):
             raise ValueError(
-                "a runtime entry script must be a .py path string")
+                "a runtime entry script must be a .py path string"
+            )
         if script is not None:
             options["script"] = _load_script_source(script)
+        if ":" in name:
+            out.append(_runtime_class(name)(**options))
+            continue
         out.append(build_runtime(name, **options))
     return out
 
@@ -497,9 +651,11 @@ def _cli_entry(name: str, block: CLIBlock) -> str | CLISpec:
         block (CLIBlock): the validated entry.
     """
     if block.script is not None:
-        return CLISpec(name=name,
-                       script=_load_script_source(block.script),
-                       runtime=block.runtime)
+        return CLISpec(
+            name=name,
+            script=_load_script_source(block.script),
+            runtime=block.runtime,
+        )
     if block.cli is None:
         raise ValueError(f"clis entry {name!r} takes cli or script")
     return block.cli
@@ -509,6 +665,7 @@ class WorkspaceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mounts: dict[str, MountBlock]
+    command_limits: dict[str, Limit] | None = None
     # Installed CLIs, fully separate from mounts: key = installed head
     # word, value names a registered CLISpec plus its own config.
     clis: dict[str, CLIBlock] | None = None
@@ -516,16 +673,22 @@ class WorkspaceConfig(BaseModel):
     # with a name plus the uniform runtime options ({name: wasi,
     # config: {home: /opt/...}}). Unset = the default world.
     runtimes: list[str | dict[str, Any]] | None = None
-    # Global policy script: a .py path whose content is embedded at
-    # load. Its last expression names the runtime for the line, or
+    # Global route-policy script: a .py path whose content is embedded
+    # at load. Its last expression names the runtime for the line, or
     # None to fall to entry scripts.
-    policy: str | None = None
-    # Declarative command guards, checked after the built-in POSIX
-    # mount-root rules; the policy script is the line-level
-    # counterpart.
-    guards: list[GuardBlock] | None = None
+    route_policy: str | None = None
+    # The permission documents: one profile per name. A profile is the whole
+    # document a session runs under, so there is no workspace-wide
+    # block; the policy script is the line-level counterpart.
+    profiles: dict[str, SessionProfile] | None = None
+    # The profile a session gets when it names none; `default` when unset
+    # and a profile of that name exists.
+    profile: str | None = None
     mode: MountMode = MountMode.WRITE
-    consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY
+    # The read policy a mount inherits when it declares none. There is
+    # deliberately no workspace-level bound: `ttl:` exists only inside a
+    # mount block, where it cannot be confused with `index: {ttl:}`.
+    read: ReadPolicy | None = None
     default_session_id: str | None = None
     default_agent_id: str | None = None
     workspace_id: str | None = None
@@ -536,45 +699,75 @@ class WorkspaceConfig(BaseModel):
     # stream per job, so a reader in another process can follow a
     # running job; ram (the default) keeps consoles in memory.
     console: ConsoleBlock | None = None
+    # The environment plane: one map, name -> entry. A bare string is
+    # the literal short form; a mapping is an EnvVar, either a literal
+    # with attrs or a managed pointer (`from`/`ref`/`key`/`fetch`).
+    env: dict[str, str | EnvVar] | None = None
+    # The source table: one map, instance name -> declaration, spelled
+    # the way `mounts:` is. A managed env entry's `from` names an
+    # instance here, or a source directly when the deployment has one
+    # account of it and nothing to configure.
+    secrets: dict[str, SecretSource] | None = None
 
     @field_validator("mode", mode="before")
     @classmethod
     def _v_mode(cls, v):
         return _coerce_mount_mode(v)
 
-    @field_validator("consistency", mode="before")
+    @field_validator("read", mode="before")
     @classmethod
-    def _v_cons(cls, v):
-        return _coerce_consistency(v)
+    def _v_read_default(cls, v):
+        if v is None:
+            return v
+        return coerce_read_policy(v)
+
+    @model_validator(mode="after")
+    def _v_profile(self) -> "WorkspaceConfig":
+        # The workspace's default profile must be one it defines; the
+        # loader's contract is a ValueError for a bad document.
+        if self.profile is not None and self.profile not in (
+            self.profiles or {}
+        ):
+            raise ValueError(f"unknown profile {self.profile!r}")
+        return self
 
     def to_workspace_kwargs(self) -> dict[str, Any]:
         """Produce kwargs ready to splat into ``Workspace(**kwargs)``.
 
         Synchronous, and must stay that way: this is the YAML door, and
-        :func:`mirage.resource.registry.build_resource` behind it is the
+        :func:`mirage.vfs.registry.build_vfs` behind it is the
         one every embedder calls. A backend needing I/O hydrates lazily
         instead of moving that cost into construction; see
-        ``build_resource`` for the full rule. Deliberately diverges from
+        ``build_vfs`` for the full rule. Deliberately diverges from
         the TypeScript ``configToWorkspaceArgs``, which is async.
 
         Returns:
-            dict[str, Any]: resource instances, cache config, and
+            dict[str, Any]: VFS instances, cache config, and
                 workspace-level settings, in the shape the
                 ``Workspace`` constructor expects.
         """
-        resources: dict[str, Mount] = {}
+        mounts: dict[str, Mount] = {}
+        default_read = resolve_read_spec(self.read, None)
         for prefix, block in self.mounts.items():
-            prov = build_resource(block.resource, block.config)
+            prov = build_vfs(block.vfs, block.config)
             mode = block.mode if block.mode is not None else self.mode
-            resources[prefix] = Mount(
-                resource=prov,
+            read = (
+                default_read
+                if block.read is None
+                else resolve_read_spec(block.read, block.ttl)
+            )
+            mounts[prefix] = Mount(
+                vfs=prov,
                 mode=mode,
                 command_limits=block.command_limits,
+                read=read,
+                vfs_ref=block.vfs,
             )
         kwargs: dict[str, Any] = {
-            "resources": resources,
+            "mounts": mounts,
+            "command_limits": self.command_limits,
             "mode": self.mode,
-            "consistency": self.consistency,
+            "read": default_read,
             "session_id": self.default_session_id,
             "agent_id": self.default_agent_id,
         }
@@ -591,14 +784,23 @@ class WorkspaceConfig(BaseModel):
             kwargs["console_factory"] = _build_console_factory(self.console)
         if self.runtimes is not None:
             kwargs["runtimes"] = _build_runtime_entries(self.runtimes)
-        if self.policy is not None:
-            kwargs["policy"] = _load_script_source(self.policy)
-        if self.guards is not None:
-            kwargs["guards"] = [
-                GuardSpec(reason=g.reason,
-                          commands=tuple(g.commands),
-                          paths=tuple(g.paths)) for g in self.guards
-            ]
+        if self.route_policy is not None:
+            kwargs["route_policy"] = _load_script_source(self.route_policy)
+        if self.profiles is not None:
+            kwargs["profiles"] = {
+                name: _load_profile_policy(profile)
+                for name, profile in self.profiles.items()
+            }
+        if self.profile is not None:
+            kwargs["profile"] = self.profile
+        # Passed through as-is: this door is sync, and env-plane
+        # resolution is async at command time, so no fetching here.
+        if self.env is not None:
+            kwargs["env"] = self.env
+        # Same reason: building a source reads its bootstrap pointers,
+        # which the workspace does once, before its first fetch.
+        if self.secrets is not None:
+            kwargs["secrets"] = self.secrets
 
         if self.clis is not None:
             kwargs["clis"] = {
@@ -610,7 +812,7 @@ class WorkspaceConfig(BaseModel):
     def kernel_mounts(self) -> dict[str, tuple[MountBackend, str | None]]:
         """Declarative kernel mounts keyed by mount prefix.
 
-        Mounts left on the default ``vfs`` backend are absent: they are
+        Mounts left on the default ``workspace`` backend are absent: they are
         served inside mirage's own filesystem and register nothing with the
         kernel.
 
@@ -665,67 +867,149 @@ def _redis_console(block: RedisConsoleBlock, job_id: int) -> JobConsole:
         job_id (int): the job the console is being built for.
     """
     if RedisConsoleStore is None:
-        raise ImportError("A redis console requires the 'redis' extra. "
-                          "Install with: pip install mirage-ai[redis]")
+        raise ImportError(
+            "A redis console requires the 'redis' extra. "
+            "Install with: pip install mirage-ai[redis]"
+        )
     prefix = f"{block.key_prefix}{uuid.uuid4().hex[:12]}:{job_id}:"
-    return JobConsole(store=RedisConsoleStore(
-        url=block.url, key_prefix=prefix, ttl_seconds=block.ttl_seconds))
+    return JobConsole(
+        store=RedisConsoleStore(
+            url=block.url, key_prefix=prefix, ttl_seconds=block.ttl_seconds
+        )
+    )
 
 
 def _build_console_factory(block: RedisConsoleBlock) -> ConsoleFactory:
     if RedisConsoleStore is None:
-        raise ImportError("A redis console requires the 'redis' extra. "
-                          "Install with: pip install mirage-ai[redis]")
+        raise ImportError(
+            "A redis console requires the 'redis' extra. "
+            "Install with: pip install mirage-ai[redis]"
+        )
     return functools.partial(_redis_console, block)
 
 
 def _build_store_group(
-    block: RamStoreBlock | DiskStoreBlock | RedisStoreBlock | S3StoreBlock
+    block: RamStoreBlock | DiskStoreBlock | RedisStoreBlock | S3StoreBlock,
 ) -> WorkspaceStateStore:
     if isinstance(block, DiskStoreBlock):
         return DiskWorkspaceStateStore(root=block.root)
     if isinstance(block, RedisStoreBlock):
         if RedisWorkspaceStateStore is None:
-            raise ImportError("A redis store requires the 'redis' extra. "
-                              "Install with: pip install mirage-ai[redis]")
-        return RedisWorkspaceStateStore(url=block.url,
-                                        key_prefix=block.key_prefix)
+            raise ImportError(
+                "A redis store requires the 'redis' extra. "
+                "Install with: pip install mirage-ai[redis]"
+            )
+        return RedisWorkspaceStateStore(
+            url=block.url, key_prefix=block.key_prefix
+        )
     if isinstance(block, S3StoreBlock):
         if S3WorkspaceStateStore is None:
-            raise ImportError("An s3 store requires the 's3' extra. "
-                              "Install with: pip install mirage-ai[s3]")
+            raise ImportError(
+                "An s3 store requires the 's3' extra. "
+                "Install with: pip install mirage-ai[s3]"
+            )
         return S3WorkspaceStateStore(block)
     return RAMWorkspaceStateStore()
 
 
 def _build_state_store(block: StoreBlock) -> WorkspaceStateStore:
-    namespace = _build_store_group(
-        block.namespace) if block.namespace is not None else None
-    observer = _build_store_group(
-        block.observer) if block.observer is not None else None
-    workspace = _build_store_group(
-        block.workspace) if block.workspace is not None else None
+    namespace = (
+        _build_store_group(block.namespace)
+        if block.namespace is not None
+        else None
+    )
+    observer = (
+        _build_store_group(block.observer)
+        if block.observer is not None
+        else None
+    )
+    workspace = (
+        _build_store_group(block.workspace)
+        if block.workspace is not None
+        else None
+    )
     if block.type == "redis":
         if RedisWorkspaceStateStore is None:
-            raise ImportError("A redis store requires the 'redis' extra. "
-                              "Install with: pip install mirage-ai[redis]")
-        return RedisWorkspaceStateStore(url=block.url,
-                                        key_prefix=block.key_prefix,
-                                        namespace=namespace,
-                                        observer=observer,
-                                        workspace=workspace)
+            raise ImportError(
+                "A redis store requires the 'redis' extra. "
+                "Install with: pip install mirage-ai[redis]"
+            )
+        return RedisWorkspaceStateStore(
+            url=block.url,
+            key_prefix=block.key_prefix,
+            namespace=namespace,
+            observer=observer,
+            workspace=workspace,
+        )
     if block.type == "disk":
-        return DiskWorkspaceStateStore(root=block.root,
-                                       namespace=namespace,
-                                       observer=observer,
-                                       workspace=workspace)
-    return RAMWorkspaceStateStore(namespace=namespace,
-                                  observer=observer,
-                                  workspace=workspace)
+        return DiskWorkspaceStateStore(
+            root=block.root,
+            namespace=namespace,
+            observer=observer,
+            workspace=workspace,
+        )
+    return RAMWorkspaceStateStore(
+        namespace=namespace, observer=observer, workspace=workspace
+    )
 
 
-def load_config(source: str | Path | dict[str, Any],
-                env: dict[str, str] | None = None) -> WorkspaceConfig:
+async def resolve_secrets(config: "WorkspaceConfig") -> "WorkspaceConfig":
+    """A config with every mount and CLI pointer replaced by its secret.
+
+    The async half of the YAML door, and the reason
+    :meth:`WorkspaceConfig.to_workspace_kwargs` can stay sync: a
+    `{from, ref, key}` in `mounts.*.config` or `clis.*.config` is
+    fetched here, so `build_vfs` receives the credential itself
+    and no VFS config, client or backend learns that this plane
+    exists. Mirrors the TypeScript `configToWorkspaceArgs`, which does
+    the same thing inline because it is async already.
+
+    A `secrets:` block is not required: `fetch_secret` builds an
+    undeclared builtin source from ambient defaults, so
+    `{from: env, key: TOKEN}` resolves with no block at all and the
+    walk runs either way. A config holding no pointer does no I/O.
+
+    Args:
+        config (WorkspaceConfig): the validated config.
+
+    Returns:
+        WorkspaceConfig: the same config, pointers resolved.
+
+    Raises:
+        SecretsError: a source could not answer, or answered without
+            the wanted field.
+    """
+    configs = [block.config for block in config.mounts.values()]
+    configs += [block.config for block in (config.clis or {}).values()]
+    sources = await resolve_sources_for(config.secrets, configs)
+    mounts = {
+        prefix: block.model_copy(
+            update={
+                "config": await resolve_config_secrets(
+                    block.config, sources, f"mounts.{prefix}.config"
+                )
+            }
+        )
+        for prefix, block in config.mounts.items()
+    }
+    update: dict[str, Any] = {"mounts": mounts}
+    if config.clis is not None:
+        update["clis"] = {
+            name: block.model_copy(
+                update={
+                    "config": await resolve_config_secrets(
+                        block.config, sources, f"clis.{name}.config"
+                    )
+                }
+            )
+            for name, block in config.clis.items()
+        }
+    return config.model_copy(update=update)
+
+
+def load_config(
+    source: str | Path | dict[str, Any], env: dict[str, str] | None = None
+) -> WorkspaceConfig:
     """Load a workspace config from a YAML / JSON file or a raw dict.
 
     Performs ``${VAR}`` env interpolation before validation. If any
@@ -750,7 +1034,8 @@ def load_config(source: str | Path | dict[str, Any],
         raw = dict(source)
     if not isinstance(raw, dict):
         raise ValueError(
-            f"config source must be a mapping, got {type(raw).__name__}")
+            f"config source must be a mapping, got {type(raw).__name__}"
+        )
     use_env = env if env is not None else dict(os.environ)
     interpolated = _interpolate_env(raw, use_env)
     if base is not None:

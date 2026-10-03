@@ -20,8 +20,13 @@ import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, isTypeMismatch, iterEntries, norm, resolveDirHandle } from './utils.ts'
 
 export async function readdir(accessor: OPFSAccessor, path: PathSpec): Promise<string[]> {
-  const root = accessor.rootHandle
-  const virtual = path.pattern !== null ? path.directory : path.mountPath
+  const root = await accessor.root()
+  // A pattern spec addresses the directory whose entries the glob filters,
+  // and the rest of this function works in mount-relative space, so the
+  // directory has to be read off `dir` rather than off the virtual
+  // `directory` string (python strips the prefix by hand for the same
+  // reason).
+  const virtual = (path.pattern !== null ? path.dir : path).mountPath
   let dir: FileSystemDirectoryHandle
   try {
     dir = await resolveDirHandle(root, virtual, { create: false })
@@ -40,6 +45,6 @@ export async function readdir(accessor: OPFSAccessor, path: PathSpec): Promise<s
   }
   const base = norm(virtual)
   const dirPrefix = base === '/' ? '/' : `${base}/`
-  const mountPrefix = mountPrefixOf(path.virtual, path.resourcePath)
+  const mountPrefix = mountPrefixOf(path.virtual, path.vfsPath)
   return names.map((n) => `${mountPrefix}${dirPrefix}${n}`).sort(compareCodePoints)
 }

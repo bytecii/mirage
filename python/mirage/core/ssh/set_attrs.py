@@ -17,7 +17,7 @@ from datetime import datetime
 import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
-from mirage.core.ssh.client import _abs
+from mirage.core.ssh.utils import join_root
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
@@ -57,7 +57,7 @@ async def set_attrs(
         not hold.
     """
     sftp = await accessor.sftp()
-    remote = _abs(accessor.config, path.mount_path)
+    remote = join_root(accessor.config.root, path.mount_path)
     try:
         attrs = await sftp.stat(remote)
     except asyncssh.SFTPNoSuchFile:
@@ -74,9 +74,15 @@ async def set_attrs(
     if gid is not None:
         residual["gid"] = gid
     if atime is not None or mtime is not None:
-        new_atime = (datetime.fromisoformat(atime).timestamp()
-                     if atime is not None else attrs.atime or 0.0)
-        new_mtime = (datetime.fromisoformat(mtime).timestamp()
-                     if mtime is not None else attrs.mtime or 0.0)
+        new_atime = (
+            datetime.fromisoformat(atime).timestamp()
+            if atime is not None
+            else attrs.atime or 0.0
+        )
+        new_mtime = (
+            datetime.fromisoformat(mtime).timestamp()
+            if mtime is not None
+            else attrs.mtime or 0.0
+        )
         await sftp.utime(remote, times=(new_atime, new_mtime))
     return residual

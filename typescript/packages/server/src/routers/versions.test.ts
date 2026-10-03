@@ -36,7 +36,7 @@ describe('versions router', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/v1/workspaces',
-      payload: { config: { mounts: { '/': { resource: 'ram', mode: 'write' } } } },
+      payload: { config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
     })
     expect(res.statusCode).toBe(201)
     return res.json<{ id: string }>().id
@@ -45,7 +45,7 @@ describe('versions router', () => {
   async function write(id: string, command: string): Promise<void> {
     const res = await app.inject({
       method: 'POST',
-      url: `/v1/workspaces/${id}/execute`,
+      url: `/v1/workspaces/${id}/shell`,
       payload: { command },
     })
     expect(res.statusCode).toBe(200)
@@ -54,7 +54,7 @@ describe('versions router', () => {
   async function cat(id: string, path: string): Promise<string> {
     const res = await app.inject({
       method: 'POST',
-      url: `/v1/workspaces/${id}/execute`,
+      url: `/v1/workspaces/${id}/shell`,
       payload: { command: `cat ${path}` },
     })
     return res.json<{ stdout: string }>().stdout
@@ -156,6 +156,40 @@ describe('versions router', () => {
     const newId = res.json<{ id: string }>().id
     expect(newId).not.toBe(id)
     expect(await cat(newId, '/b.txt')).toBe('base\n')
+  })
+
+  it('clones from a version with its own secret declarations', async () => {
+    // A version store holds no `secrets:` block, and the live source
+    // may be gone, so the request names the declarations itself.
+    const id = await createWs()
+    const version = await commit(id, 'base')
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces/clone',
+      payload: { sourceId: id, at: version, secrets: { prod: { source: 'env' } } },
+    })
+    expect(res.statusCode).toBe(201)
+    const newId = res.json<{ id: string }>().id
+    expect(newId).not.toBe(id)
+
+    // A declaration the host cannot resolve proves the override is
+    // read rather than ignored, and answers 400 rather than 500.
+    const bad = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces/clone',
+      payload: { sourceId: id, at: version, secrets: { prod: { source: 'nope' } } },
+    })
+    expect(bad.statusCode).toBe(400)
+    expect(bad.json<{ detail: string }>().detail).toContain('nope')
+
+    // A block the schema itself refuses throws a zod error rather than
+    // a SecretsError, and is the same bad request.
+    const malformed = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces/clone',
+      payload: { sourceId: id, at: version, secrets: { prod: { nosource: true } } },
+    })
+    expect(malformed.statusCode).toBe(400)
   })
 
   it('returns empty log before any commit', async () => {

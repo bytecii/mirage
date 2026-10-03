@@ -13,10 +13,17 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { seedVar } from './state.ts'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import type { AdmissionRules, Decision } from '../../policy/types.ts'
+import type { CompiledProfile } from '../../policy/profile.ts'
+import { Outcome, Scope } from '../../policy/types.ts'
+import { ScriptSource } from '../../runtime/routing/types.ts'
 import { MountMode } from '../../types.ts'
 import { SessionManager } from './manager.ts'
 import { RAMSessionStore } from './ram.ts'
+import { SessionState, varsFromEntries } from './session.ts'
+import type { SessionFields } from './store.ts'
+import { VarAttr, type ShellVar } from '../../shell/variable.ts'
 
 describe('SessionManager', () => {
   it('seeds the default session on construction', () => {
@@ -111,7 +118,7 @@ describe('SessionManager with a SessionStore', () => {
     await m.ensureLoaded()
     const s = m.get('restored')
     expect(s.cwd).toBe('/w')
-    expect(s.env).toEqual({ K: 'v', PWD: '/w' })
+    expect(s.env).toEqual({ K: 'v', PWD: '/w', PATH: '/usr/bin', IFS: ' \t\n' })
     expect(s.mountModes?.get('/data')).toBe(MountMode.READ)
   })
 
@@ -131,7 +138,7 @@ describe('SessionManager with a SessionStore', () => {
     const m = new SessionManager('def', store)
     await m.ensureLoaded()
     expect(m.cwd).toBe('/w')
-    expect(m.env).toEqual({ A: '1', PWD: '/w' })
+    expect(m.env).toEqual({ A: '1', PWD: '/w', PATH: '/usr/bin', IFS: ' \t\n' })
   })
 
   it('default session adopts stored hidden specs', async () => {
@@ -152,6 +159,101 @@ describe('SessionManager with a SessionStore', () => {
     const dflt = m.get('def')
     expect(dflt.hiddenPaths).toEqual({ paths: ['/s3/secrets'], patterns: ['*.key'] })
     expect(dflt.hiddenVars).toEqual({ names: ['SLACK_TOKEN'], patterns: [] })
+  })
+
+  it('default session adopts a stored profile script', async () => {
+    // The profile script is a durable restriction like the hidden
+    // shapes: a store written by a scripted deployment must not wake a
+    // daemon configured without a default profile unjudged, and the
+    // next flush must not erase the script from the record.
+    const store = new RAMSessionStore()
+    await store.set('def', {
+      session_id: 'def',
+      cwd: '/w',
+      env: {},
+      script: { profile: 'judge', language: 'js', source: 'null', runtime: 'quickjs' },
+    })
+    const m = new SessionManager('def', store)
+    await m.ensureLoaded()
+    const expected = {
+      profile: 'judge',
+      script: new ScriptSource('null', 'js'),
+      runtime: 'quickjs',
+    }
+    expect(m.get('def').script).toEqual(expected)
+    expect(m.scriptOf('def')).toEqual(expected)
+  })
+
+  it('default session adopts a stored path axis', async () => {
+    // The show half and the reasons table are durable restrictions
+    // like the hides beside them: dropped here, a restarted daemon's
+    // carve-out would vanish and the next flush would erase both from
+    // the store.
+    const store = new RAMSessionStore()
+    await store.set('def', {
+      session_id: 'def',
+      cwd: '/w',
+      env: {},
+      hidden_paths: { paths: ['/repo'], patterns: [] },
+      shown_paths: { entries: [{ path: '/repo/public', mode: 'read' }, { path: '/repo/notes' }] },
+      hide_reasons: [{ patterns: ['/repo'], reason: 'keep the bulk out of context' }],
+    })
+    const m = new SessionManager('def', store)
+    await m.ensureLoaded()
+    const dflt = m.get('def')
+    expect(dflt.shownPaths).toEqual({
+      entries: [
+        { path: '/repo/public', mode: MountMode.READ },
+        { path: '/repo/notes', mode: null },
+      ],
+    })
+    expect(dflt.hideReasons).toEqual([
+      { patterns: ['/repo'], reason: 'keep the bulk out of context' },
+    ])
+    expect(m.hideReasonsOf('def')).toEqual(dflt.hideReasons)
+    expect(m.hideReasonsOf('stranger')).toEqual([])
+  })
+
+  it('defaultProfile shapes the default session and outranks a stale record', async () => {
+    // A record written before the profile existed (or under an older
+    // one) must not wake the primary agent unrestricted: the document
+    // wins the narrowing fields after hydration, the record keeps the
+    // scratch state (cwd, env), and the next flush rewrites the record.
+    const store = new RAMSessionStore()
+    await store.set('def', {
+      session_id: 'def',
+      cwd: '/w',
+      env: { A: '1' },
+      mount_modes: { '/s3': 'write', '/other': 'write' },
+    })
+    const m = new SessionManager('def', store)
+    m.defaultProfile = {
+      mountModes: new Map([['/s3', MountMode.READ]]),
+      hiddenPaths: { paths: ['/s3/secrets'], patterns: [] },
+      hiddenVars: { names: ['SLACK_TOKEN'], patterns: [] },
+      env: { PAGER: 'cat' },
+      cwd: '/s3',
+      commands: null,
+    }
+    const dflt = m.get('def')
+    expect(dflt.cwd).toBe('/s3')
+    expect(dflt.env.PAGER).toBe('cat')
+    expect(dflt.hiddenVars).toEqual({ names: ['SLACK_TOKEN'], patterns: [] })
+    await m.ensureLoaded()
+    expect(dflt.cwd).toBe('/w')
+    expect(dflt.env.A).toBe('1')
+    expect(dflt.mountModes).toEqual(new Map([['/s3', MountMode.READ]]))
+    expect(dflt.hiddenPaths).toEqual({ paths: ['/s3/secrets'], patterns: [] })
+    await m.flush()
+    const stored = (await store.load()).get('def') as {
+      mount_modes: Record<string, string>
+      hidden_paths: { paths: string[] }
+    }
+    expect(stored.mount_modes).toEqual({ '/s3': 'read' })
+    expect(stored.hidden_paths.paths).toEqual(['/s3/secrets'])
+    // null is "no default profile", not "clear the session".
+    m.defaultProfile = null
+    expect(dflt.mountModes).toEqual(new Map([['/s3', MountMode.READ]]))
   })
 
   it('flush writes every session through', async () => {
@@ -253,4 +355,397 @@ describe('SessionManager dirty flush + CAS', () => {
     await m.flush()
     expect((await store.load()).get('s2')?.generation).toBe(4)
   })
+})
+
+describe('SessionManager admission rules', () => {
+  it("commandsOf answers the session's own rules", () => {
+    const m = new SessionManager('def')
+    const early = m.create('early')
+    const own: AdmissionRules = { allow: ['ls'], ask: [], deny: [] }
+    const late = m.create('late')
+    late.commands = own
+    expect(m.commandsOf('late')).toBe(own)
+    // A session the profile never narrowed states no rules, and so does an
+    // id the manager does not know (the empty id of an unbound door
+    // included), unless a default profile says otherwise.
+    expect(m.commandsOf('early')).toBeNull()
+    expect(m.commandsOf('nobody')).toBeNull()
+    expect(m.commandsOf('')).toBeNull()
+    expect(early.commands).toBeNull()
+    // With a default profile compiled in, an unknown id answers its rules
+    // rather than nothing, so an unbound door still fails toward refusal.
+    m.defaultProfile = {
+      mountModes: null,
+      hiddenPaths: null,
+      hiddenVars: null,
+      env: null,
+      cwd: null,
+      commands: { allow: ['cat'], ask: [], deny: [] },
+    }
+    expect(m.commandsOf('nobody')).toEqual({ allow: ['cat'], ask: [], deny: [] })
+    expect(m.commandsOf('')).toEqual({ allow: ['cat'], ask: [], deny: [] })
+  })
+
+  it('the rules ride the session record', async () => {
+    const store = new RAMSessionStore()
+    await store.set('restored', {
+      session_id: 'restored',
+      cwd: '/w',
+      env: {},
+      created_at: 1.0,
+      commands: {
+        allow: ['ls', 'git log'],
+        ask: [],
+        deny: [{ reason: 'no', commands: ['rm'], paths: [] }],
+      },
+    })
+    await store.set('def', {
+      session_id: 'def',
+      cwd: '/w',
+      env: {},
+      created_at: 1.0,
+      commands: { allow: ['cat'], ask: [], deny: [] },
+    })
+    const m = new SessionManager('def', store)
+    await m.ensureLoaded()
+    const restored = m.get('restored')
+    expect(restored.commands).toEqual({
+      allow: ['ls', 'git log'],
+      ask: [],
+      deny: [{ reason: 'no', commands: ['rm'], paths: [], mount: '' }],
+    })
+    expect(m.commandsOf('restored')).toBe(restored.commands)
+    // The default session adopts its stored rules like its hidden paths.
+    expect(m.get('def').commands).toEqual({ allow: ['cat'], ask: [], deny: [] })
+    await m.flush()
+    const stored = await store.load()
+    const record = stored.get('restored') as {
+      commands: { allow: string[]; deny: { reason: string }[] }
+    }
+    expect(record.commands.allow).toEqual(['ls', 'git log'])
+    expect(record.commands.deny[0]?.reason).toBe('no')
+  })
+})
+
+describe('SessionManager decision ledger', () => {
+  const RULE = { reason: 'sign-off', commands: ['git push'], paths: [], mount: '' }
+
+  function record(id: string, sessionId: string): Decision {
+    return {
+      id,
+      sessionId,
+      agentId: 'a',
+      command: 'git',
+      argv: ['push'],
+      cwd: '/repo',
+      paths: [],
+      reason: 'sign-off',
+      rule: RULE,
+      outcome: Outcome.ALLOW,
+      scope: Scope.SESSION,
+      note: '',
+    }
+  }
+
+  it('live on the registered session and persist', async () => {
+    const store = new RAMSessionStore()
+    const m = new SessionManager('def', store)
+    await m.ensureLoaded()
+    const live = m.create('agent')
+    expect(m.decisionsOf('agent')).toEqual([])
+    const entry = record('d1', 'agent')
+    // Written by id onto the registered session, so a fork made before
+    // or after reads the same answers through the manager, whatever
+    // its own copy holds; durable at the next flush.
+    const fork = live.fork()
+    m.setDecisions('agent', [entry])
+    expect(live.decisions).toEqual([entry])
+    expect(fork.decisions).toEqual([])
+    expect(m.decisionsOf(fork.sessionId)).toEqual([entry])
+    expect(m.decisionSessions()).toEqual(['agent'])
+    await m.flush()
+    const stored = (await store.load()).get('agent') as {
+      decisions: { outcome: string; scope: string }[]
+    }
+    expect(stored.decisions[0]?.outcome).toBe('allow')
+    expect(stored.decisions[0]?.scope).toBe('session')
+    // A manager reading that record back holds the answer.
+    const again = new SessionManager('def', store)
+    await again.ensureLoaded()
+    expect(again.decisionsOf('agent')).toEqual([entry])
+    expect(() => m.decisionsOf('nobody')).toThrow(/unknown session/)
+  })
+
+  it('hydrate onto the default session', async () => {
+    const store = new RAMSessionStore()
+    const m = new SessionManager('def', store)
+    await m.ensureLoaded()
+    const entry = record('d2', 'def')
+    m.setDecisions('def', [entry])
+    await m.flush()
+    // The default session takes the stored durable fields on reopen;
+    // the records are among them, so an approved line does not ask
+    // again after a restart and the next flush keeps the answer.
+    const again = new SessionManager('def', store)
+    await again.ensureLoaded()
+    expect(again.decisionsOf('def')).toEqual([entry])
+    await again.flush()
+    const stored = (await store.load()).get('def') as { decisions: { scope: string }[] }
+    expect(stored.decisions[0]?.scope).toBe('session')
+  })
+})
+
+describe('hasManagedEnv', () => {
+  const managed: ShellVar = {
+    value: null,
+    attrs: new Set([VarAttr.Export]),
+    managed: { source: 'env', ref: '', key: 'TOKEN', eager: false },
+  }
+
+  it('is false for a plain manager and sticky-true once seeded', () => {
+    expect(new SessionManager('s').hasManagedEnv).toBe(false)
+    const mgr = new SessionManager('s', undefined, { TOKEN: managed })
+    expect(mgr.hasManagedEnv).toBe(true)
+  })
+
+  it('a created session with its own managed entry flips it', () => {
+    const mgr = new SessionManager('s')
+    expect(mgr.hasManagedEnv).toBe(false)
+    mgr.create('s2', { env: { TOKEN: { from: 'env' } } })
+    expect(mgr.hasManagedEnv).toBe(true)
+  })
+
+  it('create seeds the workspace template and session entries win', () => {
+    const mgr = new SessionManager('s', undefined, { TOKEN: managed })
+    const session = mgr.create('s2', { env: { TOKEN: 'literal', OWN: { from: 'env' } } })
+    expect(session.vars.TOKEN?.managed).toBeUndefined()
+    expect(session.vars.TOKEN?.value).toBe('literal')
+    expect(session.vars.OWN?.managed?.source).toBe('env')
+    // The template itself is untouched: a third session still gets the
+    // managed TOKEN.
+    expect(mgr.create('s3', {}).vars.TOKEN?.managed).not.toBeUndefined()
+  })
+
+  it('a snapshot carrying a pointer flips it', async () => {
+    const mgr = new SessionManager('s')
+    const snap = new SessionState({ sessionId: 'restored', vars: { TOKEN: managed } })
+    await mgr.replaceFromSnapshot([snap])
+    expect(mgr.hasManagedEnv).toBe(true)
+  })
+
+  it('a hydrated record carrying a pointer flips it', async () => {
+    const store = new RAMSessionStore()
+    await store.casSet(
+      'other',
+      {
+        session_id: 'other',
+        cwd: '/',
+        env: {},
+        var_attrs: { TOKEN: 'x' },
+        managed: { TOKEN: { from: 'env', ref: '', key: 'TOKEN' } },
+        generation: 1,
+      } as unknown as SessionFields,
+      0,
+    )
+    const mgr = new SessionManager('s', store)
+    await mgr.ensureLoaded()
+    expect(mgr.hasManagedEnv).toBe(true)
+    expect(mgr.get('other').vars.TOKEN?.managed?.source).toBe('env')
+  })
+})
+
+describe('restoreSeed', () => {
+  it('templates later sessions and arms the managed flag', () => {
+    const mgr = new SessionManager('default')
+    expect(mgr.hasManagedEnv).toBe(false)
+    const seed = varsFromEntries({
+      TOKEN: { from: 'aws-sm', ref: 'prod' },
+      MODE: 'x',
+    })
+    mgr.restoreSeed(seed)
+    expect(mgr.hasManagedEnv).toBe(true)
+    const created = mgr.create('later')
+    expect(created.vars.MODE?.value).toBe('x')
+    expect(created.vars.TOKEN?.managed).not.toBeUndefined()
+    expect(mgr.seedVars).toEqual(seed)
+  })
+})
+
+describe('seed merge on hydration', () => {
+  it('merges env entries the record predates, record entries winning', async () => {
+    const store = new RAMSessionStore()
+    const old = new SessionManager('default', store)
+    old.get('default').vars.KEPT = { value: 'stored', attrs: new Set() }
+    old.create('agent')
+    old.get('agent').vars.KEPT = { value: 'agent', attrs: new Set() }
+    await old.ensureLoaded()
+    await old.flush()
+    const seeds = varsFromEntries({
+      TOKEN: { from: 'aws-sm', ref: 'prod' },
+      KEPT: 'seeded',
+    })
+    const fresh = new SessionManager('default', store, seeds)
+    await fresh.ensureLoaded()
+    expect(fresh.get('default').vars.TOKEN?.managed).not.toBeUndefined()
+    expect(fresh.get('default').vars.KEPT?.value).toBe('stored')
+    expect(fresh.get('agent').vars.TOKEN?.managed).not.toBeUndefined()
+    expect(fresh.get('agent').vars.KEPT?.value).toBe('agent')
+    expect(fresh.hasManagedEnv).toBe(true)
+  })
+
+  it('lands the merged seed durably on the next flush', async () => {
+    const store = new RAMSessionStore()
+    const old = new SessionManager('default', store)
+    await old.ensureLoaded()
+    await old.flush()
+    const seeds = varsFromEntries({ TOKEN: { from: 'aws-sm', ref: 'p' } })
+    const fresh = new SessionManager('default', store, seeds)
+    await fresh.ensureLoaded()
+    await fresh.flush()
+    const entries = await store.load()
+    const record = entries.get('default') as { managed?: Record<string, { ref: string }> }
+    expect(record.managed?.TOKEN?.ref).toBe('p')
+  })
+})
+
+it.each([false, true])(
+  'publishes profile changes only after persistence (failure=%s)',
+  async (failure) => {
+    const store = new RAMSessionStore()
+    const manager = new SessionManager('default', store)
+    const original: CompiledProfile = {
+      mountModes: new Map([['/data', MountMode.READ]]),
+      hiddenPaths: { paths: ['/data/secret'], patterns: [] },
+      hiddenVars: { names: ['TOKEN'], patterns: [] },
+      env: null,
+      cwd: null,
+      commands: { allow: ['cat'], ask: [], deny: [] },
+      script: { profile: 'judge', script: new ScriptSource('null', 'js'), runtime: 'quickjs' },
+    }
+    manager.defaultProfile = original
+    await manager.flush()
+    const session = manager.get('default')
+    const before = session.toJSON()
+    const persisted = await store.load()
+    let enter = (): void => undefined
+    let resume = (): void => undefined
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve
+    })
+    const release = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const casSet = store.casSet.bind(store)
+    const spy = vi.spyOn(store, 'casSet').mockImplementation(async (...args) => {
+      enter()
+      await release
+      if (failure) throw new Error('store unavailable')
+      return casSet(...args)
+    })
+    const cleared: CompiledProfile = {
+      mountModes: null,
+      hiddenPaths: null,
+      hiddenVars: null,
+      env: null,
+      cwd: null,
+      commands: null,
+    }
+    const updating = manager.setProfile('default', cleared).then(
+      (value) => value,
+      (error: unknown) => error,
+    )
+    try {
+      await entered
+      expect(session.toJSON()).toEqual(before)
+      expect(manager.commandsOf('')).toEqual(original.commands)
+      expect(manager.scriptOf('')).toEqual(original.script)
+      session.cwd = '/changed-during-write'
+      resume()
+      if (failure) {
+        expect(await updating).toEqual(new Error('store unavailable'))
+        expect(session.toJSON()).toEqual({ ...before, cwd: session.cwd })
+        expect(await store.load()).toEqual(persisted)
+        expect(manager.commandsOf('')).toEqual(original.commands)
+        expect(manager.scriptOf('')).toEqual(original.script)
+      } else {
+        expect(await updating).toBe(session)
+        expect(session.mountModes).toBeNull()
+        expect(session.hiddenPaths).toBeNull()
+        expect(manager.commandsOf('')).toBeNull()
+        expect(manager.scriptOf('')).toBeNull()
+      }
+      expect(session.cwd).toBe('/changed-during-write')
+      spy.mockRestore()
+      await manager.flush()
+      expect((await store.load()).get('default')).toEqual(session.toJSON())
+    } finally {
+      resume()
+      await updating
+      spy.mockRestore()
+    }
+  },
+)
+
+it.each([false, true])(
+  'session close waits for profile persistence (failure=%s)',
+  async (failure) => {
+    const store = new RAMSessionStore()
+    const manager = new SessionManager('default', store)
+    manager.create('agent')
+    let enter = (): void => undefined
+    let resume = (): void => undefined
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve
+    })
+    const release = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const casSet = store.casSet.bind(store)
+    const spy = vi.spyOn(store, 'casSet').mockImplementation(async (...args) => {
+      enter()
+      await release
+      if (failure) throw new Error('store unavailable')
+      return casSet(...args)
+    })
+    const updating = manager
+      .setProfile('agent', {
+        mountModes: null,
+        hiddenPaths: null,
+        hiddenVars: null,
+        env: null,
+        cwd: null,
+        commands: null,
+      })
+      .catch((error: unknown) => error)
+    let closing: Promise<void> | undefined
+    try {
+      await entered
+      let closed = false
+      closing = manager.close('agent').then(() => {
+        closed = true
+      })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(closed).toBe(false)
+      resume()
+      await updating
+      await closing
+      expect(() => manager.get('agent')).toThrow('unknown session')
+      expect((await store.load()).has('agent')).toBe(false)
+    } finally {
+      resume()
+      await updating
+      await closing
+      spy.mockRestore()
+    }
+  },
+)
+
+it('a final flush after session deletion does not recreate it', async () => {
+  const store = new RAMSessionStore()
+  const manager = new SessionManager('default', store)
+  manager.create('gone')
+  await manager.flush('gone')
+  await manager.close('gone')
+  await manager.flush('gone')
+  expect((await store.load()).has('gone')).toBe(false)
 })

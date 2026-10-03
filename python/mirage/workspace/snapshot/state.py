@@ -13,52 +13,103 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import importlib
+import logging
 import tempfile
 from typing import Any, cast, get_args
 
 from pydantic import BaseModel
 
+from mirage.cache.file.ram import RAMFileCacheStore
 from mirage.commands.cli.types import CLISpec
 from mirage.observe.log_entry import EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE
-from mirage.resource.history import HISTORY_PREFIX
-from mirage.resource.registry import REGISTRY, resolve_class
-from mirage.resource.secrets import (has_redacted_secret, redacted_config_dump,
-                                     revealed_config_dump)
 from mirage.runtime.types import Language, ScriptSource
-from mirage.shell.console import (KILLED_OUTCOME, Channel, ConsoleChunk,
-                                  JobConsole, RAMConsoleStore, exit_outcome)
+from mirage.shell.console import (
+    KILLED_OUTCOME,
+    Channel,
+    ConsoleChunk,
+    JobConsole,
+    RAMConsoleStore,
+    exit_outcome,
+)
+from mirage.shell.constants import BIN_PREFIX
 from mirage.shell.job_table import Job, JobStatus
-from mirage.types import ConsistencyPolicy, JsonValue, MountMode, ResourceName
+from mirage.shell.variable import ShellVar
+from mirage.types import JsonValue, MountMode, ReadSpec, VFSName
 from mirage.version import __version__
+from mirage.vfs.history import HISTORY_PREFIX
+from mirage.vfs.loader import SCRIPT_MODULE_NAME
+from mirage.vfs.registry import (
+    REGISTRY,
+    VFSEntry,
+    resolve_class,
+    resolve_entry,
+    unknown_kwargs,
+)
+from mirage.vfs.secrets import (
+    has_redacted_secret,
+    redacted_config_dump,
+    revealed_config_dump,
+)
 from mirage.workspace.mount.namespace import NodeMeta
-from mirage.workspace.session.session import Session
+from mirage.workspace.mount.read_policy import resolve_read_spec
+from mirage.workspace.mount.spec import Mount
+from mirage.workspace.session.resolve import narrow
+from mirage.workspace.session.session import (
+    SessionState,
+    vars_from_fields,
+    vars_to_fields,
+)
 from mirage.workspace.session.shell_dirs import set_cwd
-from mirage.workspace.snapshot.config import MountArgs
-from mirage.workspace.snapshot.drift import (capture_fingerprints,
-                                             live_only_mount_prefixes)
-from mirage.workspace.snapshot.keys import (CacheKey, CLIKey, JobKey, MountKey,
-                                            ResourceStateKey, ScriptKey,
-                                            SessionKey, StateKey)
+from mirage.workspace.session.state import gate_restored_vars
+from mirage.workspace.snapshot.config import (
+    MountArgs,
+    index_config_dump,
+    restore_index_config,
+)
+from mirage.workspace.snapshot.drift import (
+    capture_fingerprints,
+    live_only_mount_prefixes,
+)
+from mirage.workspace.snapshot.keys import (
+    CacheKey,
+    CLIKey,
+    JobKey,
+    MountKey,
+    ScriptKey,
+    StateKey,
+    VFSStateKey,
+)
 from mirage.workspace.snapshot.utils import FORMAT_VERSION, norm_mount_prefix
+
+logger = logging.getLogger(__name__)
 
 # A per-name override for restoring installed CLIs: a plain mapping is a
 # fresh config (the spec resolves from the snapshot's registry key); a
 # (spec, config) tuple carries a live spec too, which is how copy()
 # shares directly installed programs.
-CLIOverrides = dict[str, dict[str, Any]
-                    | tuple[str | CLISpec, dict[str, Any] | None]]
+CLIOverrides = dict[
+    str, dict[str, Any] | tuple[str | CLISpec, dict[str, Any] | None]
+]
+
+# What a snapshot restores into the env plane, once the gate has passed
+# it: the parsed session tables and the env template (None when the
+# snapshot carries none).
+RestoredEnv = tuple[list[SessionState], dict[str, ShellVar] | None]
 
 
-def cli_config_dump(config: BaseModel | dict[str, JsonValue] | None,
-                    reveal: bool = False) -> dict[str, Any] | None:
+def cli_config_dump(
+    config: BaseModel | dict[str, JsonValue] | None, reveal: bool = False
+) -> dict[str, Any] | None:
     """Serialize an installation's config for a snapshot.
 
     A model-backed config redacts (or reveals, for a same-process copy)
     its schema-declared secrets. A script install's config is an opaque
     mapping instead: with no ``config_model`` nothing declares which
     keys are secret, so it is captured verbatim rather than guessed at,
-    and a script CLI that needs a credential should read it from the
-    environment.
+    and a script CLI that needs a credential reads it from a managed
+    env var. The yaml door refuses a secrets pointer in a script's
+    config for exactly this reason (``CLIBlock``): resolved, the value
+    would sit in this verbatim capture.
 
     Args:
         config (BaseModel | dict[str, JsonValue] | None): the validated
@@ -69,8 +120,11 @@ def cli_config_dump(config: BaseModel | dict[str, JsonValue] | None,
     if config is None:
         return None
     if isinstance(config, BaseModel):
-        return (revealed_config_dump(config)
-                if reveal else redacted_config_dump(config))
+        return (
+            revealed_config_dump(config)
+            if reveal
+            else redacted_config_dump(config)
+        )
     return dict(config)
 
 
@@ -122,44 +176,73 @@ def cli_spec_from_entry(entry: dict[str, Any]) -> str | CLISpec:
     name = str(entry[CLIKey.SPEC])
     language = script.get(ScriptKey.LANGUAGE)
     if language not in get_args(Language):
-        raise ValueError(f"snapshot cli {name!r}: unknown script language "
-                         f"{language!r}")
-    return CLISpec(name=name,
-                   script=ScriptSource(str(script[ScriptKey.SOURCE]),
-                                       language=cast(Language, language),
-                                       module=bool(script.get(
-                                           ScriptKey.MODULE))),
-                   runtime=entry.get(CLIKey.RUNTIME))
+        raise ValueError(
+            f"snapshot cli {name!r}: unknown script language {language!r}"
+        )
+    return CLISpec(
+        name=name,
+        script=ScriptSource(
+            str(script[ScriptKey.SOURCE]),
+            language=cast(Language, language),
+            module=bool(script.get(ScriptKey.MODULE)),
+        ),
+        runtime=entry.get(CLIKey.RUNTIME),
+    )
 
 
 async def to_state_dict(ws) -> dict[str, Any]:
-    auto_prefixes = {"/dev/", norm_mount_prefix(HISTORY_PREFIX)}
+    auto_prefixes = {
+        "/dev/",
+        norm_mount_prefix(HISTORY_PREFIX),
+        norm_mount_prefix(BIN_PREFIX),
+    }
 
+    mounted = ws._registry.mounts()
+    for mount in mounted:
+        await mount.ensure_ready()
     mounts_state = []
-    for idx, m in enumerate(mt for mt in ws._registry.mounts()
-                            if mt.prefix not in auto_prefixes):
-        mounts_state.append({
-            MountKey.INDEX: idx,
-            MountKey.PREFIX: m.prefix,
-            MountKey.MODE: m.mode.value,
-            MountKey.CONSISTENCY: m.consistency.value,
-            MountKey.RESOURCE_CLASS:
-            f"{type(m.resource).__module__}.{type(m.resource).__name__}",
-            MountKey.RESOURCE_STATE: m.resource.get_state(),
-        })
+    for idx, m in enumerate(
+        mt for mt in mounted if mt.prefix not in auto_prefixes
+    ):
+        async with m.use():
+            vfs_state = m.vfs.get_state()
+        mounts_state.append(
+            {
+                MountKey.INDEX: idx,
+                MountKey.PREFIX: m.prefix,
+                MountKey.MODE: m.mode.value,
+                MountKey.READ: m.read.policy.value,
+                MountKey.TTL: m.read.ttl,
+                MountKey.VFS_CLASS: f"{type(m.vfs).__module__}.{type(m.vfs).__name__}",
+                MountKey.VFS_REF: m.vfs_ref,
+                MountKey.INDEX_CONFIG: index_config_dump(m.index_config),
+                MountKey.VFS_STATE: vfs_state,
+            }
+        )
 
+    # Only a RAM cache holds entries the snapshot can carry; a Redis
+    # cache lives outside the workspace and is skipped on both sides
+    # (see `_restore_cache`), as TypeScript's `toStateDict` does.
     cache = ws._cache
-    cache_entries = [{
-        CacheKey.KEY: k,
-        CacheKey.DATA: cache._store.files.get(k, b""),
-        CacheKey.FINGERPRINT: e.fingerprint,
-        CacheKey.TTL: e.ttl,
-        CacheKey.CACHED_AT: e.cached_at,
-        CacheKey.SIZE: e.size,
-    } for k, e in cache._entries.items()]
+    cache_entries = (
+        [
+            {
+                CacheKey.KEY: k,
+                CacheKey.DATA: cache._store.files.get(k, b""),
+                CacheKey.FINGERPRINT: e.fingerprint,
+                CacheKey.TTL: e.ttl,
+                CacheKey.CACHED_AT: e.cached_at,
+                CacheKey.SIZE: e.size,
+            }
+            for k, e in cache._entries.items()
+        ]
+        if isinstance(cache, RAMFileCacheStore)
+        else []
+    )
 
     history_events = [
-        e for e in await ws.observer.events()
+        e
+        for e in await ws.observer.events()
         if e.get("type") in (EVENT_COMMAND, EVENT_CLEAR, EVENT_DELETE)
     ]
 
@@ -169,10 +252,13 @@ async def to_state_dict(ws) -> dict[str, Any]:
     ]
 
     finished_jobs = [
-        await _job_to_dict(j) for j in ws.job_table.list_jobs()
+        await _job_to_dict(j)
+        for j in ws.job_table.all_jobs()
         if j.status != JobStatus.RUNNING
     ]
 
+    if mounted != ws._registry.mounts() or any(m.retiring for m in mounted):
+        raise RuntimeError("mounts changed during snapshot")
     fingerprints = capture_fingerprints(ws)
     live_only_mounts = live_only_mount_prefixes(ws)
 
@@ -181,9 +267,10 @@ async def to_state_dict(ws) -> dict[str, Any]:
         StateKey.MIRAGE_VERSION: __version__,
         StateKey.MOUNTS: mounts_state,
         StateKey.SESSIONS: [s.to_dict() for s in ws._session_mgr.list()],
+        StateKey.ENV: vars_to_fields(ws._session_mgr.seed_vars),
         StateKey.DEFAULT_SESSION_ID: ws._session_mgr.default_id,
         StateKey.DEFAULT_AGENT_ID: ws._default_agent_id,
-        StateKey.CURRENT_AGENT_ID: ws._current_agent_id,
+        StateKey.CURRENT_AGENT_ID: ws._default_agent_id,
         StateKey.CACHE: {
             CacheKey.LIMIT: cache.cache_limit,
             CacheKey.MAX_DRAIN_BYTES: cache.max_drain_bytes,
@@ -201,12 +288,45 @@ async def to_state_dict(ws) -> dict[str, Any]:
     }
 
 
-def build_mount_args(state: dict[str, Any],
-                     resources: dict[str, Any] | None = None,
-                     clis: CLIOverrides | None = None) -> MountArgs:
+def check_format_version(state: dict[str, Any]) -> None:
+    """Refuse a snapshot this loader cannot read.
+
+    An absent version is v3 or older, not "current". It used to be
+    harmless because every key the loader read had a default; v4 makes
+    the read policy required, so an unversioned dict would land on a
+    bare KeyError instead of this message.
+
+    Both doors run it. ``build_mount_args`` builds a workspace from the
+    state; ``apply_state_dict`` restores into one that already exists,
+    and is what ``version checkout``, ``version restore`` and the agent
+    sandbox's hydrate call. Checking in one door only meant the same
+    bytes were refused through ``Workspace.load`` and half-restored
+    through a checkout.
+
+    Args:
+        state (dict[str, Any]): the snapshot state.
+
+    Raises:
+        ValueError: the snapshot predates this loader's format.
+    """
+    saved_version = state.get(StateKey.VERSION)
+    if saved_version is None or saved_version < FORMAT_VERSION:
+        shown = "unversioned" if saved_version is None else f"v{saved_version}"
+        raise ValueError(
+            f"snapshot format {shown} not supported "
+            f"(loader expects v{FORMAT_VERSION}); "
+            "regenerate via `mirage workspace snapshot`"
+        )
+
+
+def build_mount_args(
+    state: dict[str, Any],
+    mounts: dict[str, Any] | None = None,
+    clis: CLIOverrides | None = None,
+) -> MountArgs:
     """Translate a state dict into Workspace constructor inputs.
 
-    Validates that every mount with redacted secrets has a resource
+    Validates that every mount with redacted secrets has a VFS
     override, and every CLI installed with a redacted config has a
     fresh config override.
     Does NOT construct a Workspace — that's the caller's job.
@@ -215,29 +335,30 @@ def build_mount_args(state: dict[str, Any],
         ValueError: if any redacted mount or CLI lacks an override, or
             if the snapshot is from an unsupported format version.
     """
-    saved_version = state.get(StateKey.VERSION)
-    if saved_version is not None and saved_version < FORMAT_VERSION:
-        raise ValueError(f"snapshot format v{saved_version} not supported "
-                         f"(loader expects v{FORMAT_VERSION}); "
-                         "regenerate via `mirage workspace snapshot`")
+    check_format_version(state)
 
-    overrides = {norm_mount_prefix(k): v for k, v in (resources or {}).items()}
+    overrides = {norm_mount_prefix(k): v for k, v in (mounts or {}).items()}
 
     missing = [
-        m[MountKey.PREFIX] for m in state[StateKey.MOUNTS]
-        if requires_resource_override(m)
+        m[MountKey.PREFIX]
+        for m in state[StateKey.MOUNTS]
+        if requires_vfs_override(m)
         and norm_mount_prefix(m[MountKey.PREFIX]) not in overrides
     ]
     if missing:
         raise ValueError(
-            "Workspace.load: resources= must include overrides for: "
-            f"{missing}. These mounts were saved with redacted creds "
-            "or transient connection state and need fresh resources.")
+            "Workspace.load: mounts= must include overrides for: "
+            f"{missing}. A listed mount was saved with redacted "
+            "credentials, asked to be handed back live (needs_override), "
+            "or names a class this process cannot import; register the "
+            "class (register_vfs) or pass a live instance."
+        )
 
     cli_overrides = clis or {}
     cli_entries = state.get(StateKey.CLIS) or []
     missing_clis = [
-        e[CLIKey.NAME] for e in cli_entries
+        e[CLIKey.NAME]
+        for e in cli_entries
         if has_redacted_secret(e[CLIKey.CONFIG])
         and e[CLIKey.NAME] not in cli_overrides
     ]
@@ -245,14 +366,66 @@ def build_mount_args(state: dict[str, Any],
         raise ValueError(
             "Workspace.load: clis= must include fresh configs for: "
             f"{missing_clis}. These CLIs were saved with redacted "
-            "config secrets.")
+            "config secrets."
+        )
 
-    mount_args: dict[str, tuple[Any, ...]] = {}
+    mount_args: dict[str, Mount] = {}
     for m in state[StateKey.MOUNTS]:
         prefix = norm_mount_prefix(m[MountKey.PREFIX])
-        prov = (overrides[prefix]
-                if prefix in overrides else _construct_resource(m))
-        mount_args[m[MountKey.PREFIX]] = (prov, MountMode(m[MountKey.MODE]))
+        override = overrides.get(prefix)
+        # A live override placed as a ``Mount`` names the door it came
+        # through; a bare VFS, or a rebuilt one, keeps the saved
+        # reference so a second round trip rebuilds through the same
+        # door.
+        if isinstance(override, Mount):
+            prov, ref = override.vfs, override.vfs_ref
+        else:
+            prov = override if override is not None else _construct_vfs(m)
+            ref = m.get(MountKey.VFS_REF)
+        # Named, never `.get(default)` and never a bare subscript: a
+        # dict labelled v4 with the key missing would silently install a
+        # default on a mount that was saved otherwise, which is the
+        # whole failure this version bump exists to prevent -- and the
+        # subscript said so as `KeyError: 'read'`, which names neither
+        # the mount nor the fix. `mode`, subscripted below, is the same
+        # shape of required key. TypeScript refuses it here too.
+        if MountKey.READ not in m or MountKey.TTL not in m:
+            raise ValueError(
+                f"Workspace.load: mount {m[MountKey.PREFIX]!r} is missing "
+                "its read policy; regenerate the snapshot"
+            )
+        # Through the coercer, so a junk policy or a null/non-positive
+        # bound is refused here rather than restoring a mount whose
+        # bound can never expire.
+        read = resolve_read_spec(m[MountKey.READ], m[MountKey.TTL])
+        # The saved policy belongs to the backend that was saved. A mount
+        # handed back through `mounts=` -- which a redacted-credential
+        # mount *must* be -- may be a different backend entirely, and
+        # carrying `fresh` onto one that cannot revalidate would refuse a
+        # restore that used to succeed. The override keeps its own
+        # policy, else the default; TypeScript applies the same rule to
+        # its stand-in.
+        if override is not None:
+            read = (
+                override.read
+                if isinstance(override, Mount) and override.read is not None
+                else ReadSpec()
+            )
+        # command_limits is deliberately absent: a mount entry has never
+        # carried one, so there is nothing to restore. Emitting Mount
+        # objects makes the slot exist, but filling it needs a new
+        # snapshot key, which is not this change.
+        mount_args[m[MountKey.PREFIX]] = Mount(
+            vfs=prov,
+            mode=MountMode(m[MountKey.MODE]),
+            read=read,
+            vfs_ref=ref,
+            index=restore_index_config(
+                m.get(MountKey.INDEX_CONFIG),
+                override.index if isinstance(override, Mount) else None,
+                prefix,
+            ),
+        )
 
     cli_args: dict[str, tuple[str | CLISpec, dict[str, Any] | None]] = {}
     for e in cli_entries:
@@ -260,46 +433,85 @@ def build_mount_args(state: dict[str, Any],
         if isinstance(override, tuple):
             # copy() shares the live spec alongside the revealed config,
             # so a directly installed (never registry-named) spec
-            # survives the round trip like a shared live resource.
+            # survives the round trip like a shared live VFS.
             cli_args[e[CLIKey.NAME]] = override
         elif override is not None:
             cli_args[e[CLIKey.NAME]] = (cli_spec_from_entry(e), override)
         else:
-            cli_args[e[CLIKey.NAME]] = (cli_spec_from_entry(e),
-                                        e[CLIKey.CONFIG])
+            cli_args[e[CLIKey.NAME]] = (
+                cli_spec_from_entry(e),
+                e[CLIKey.CONFIG],
+            )
 
     return MountArgs(
         mount_args=mount_args,
-        consistency=ConsistencyPolicy.LAZY,
         default_session_id=state[StateKey.DEFAULT_SESSION_ID],
         default_agent_id=state.get(StateKey.DEFAULT_AGENT_ID),
         clis=cli_args or None,
     )
 
 
-async def apply_state_dict(ws, state: dict[str, Any]) -> None:
+async def apply_state_dict(
+    ws, state: dict[str, Any], *, replace_cache: bool = False
+) -> None:
     """Restore post-construction state into an already-built Workspace.
 
-    Restores: resource load_state (content, fresh disk root, etc.),
+    Restores: VFS load_state (content, fresh disk root, etc.),
     sessions, cache entries, history, finished jobs.
 
     Workspace must already have its mounts constructed via the args
     from build_mount_args. This function is purely additive — it does
     not construct anything.
+
+    Every session table and the env template clear the target's
+    ``pre_session`` gate first (``_gate_restored_state``), before any
+    mount, session or template lands, so a refusal aborts the load with
+    the workspace as it was. A snapshot mount with no mount at that
+    exact prefix here is not restored and is reported at warning level.
+
+    Args:
+        ws (Workspace): the target workspace.
+        state (dict[str, Any]): the snapshot state.
+        replace_cache (bool): drop the live cache once the gate has
+            passed, ahead of the mounts' load_state, so the snapshot's
+            entries are all that is left. A checkout onto a running
+            workspace asks for this; a workspace built for the state
+            has nothing to drop. It sits behind the gate because the
+            callers used to clear before calling, and a refused
+            checkout then still sent every cached read back to an
+            origin that may have moved.
     """
+    check_format_version(state)
+    sessions, seed_vars = await _gate_restored_state(ws, state)
+    if replace_cache:
+        await ws._cache.clear()
     # load_state runs for ALL mounts (overridden too), so disk content
     # is written into the new root, redis content into the new URL, etc.
-    # Cred-only resources (S3 et al.) define load_state as no-op.
+    # Cred-only mounts (S3 et al.) define load_state as no-op.
     for m in state[StateKey.MOUNTS]:
         mount = ws._registry.try_mount_for_prefix(m[MountKey.PREFIX])
         if mount is None:
+            # Exact-prefix lookup: a snapshot prefix this workspace does
+            # not mount is never resolved to an ancestor (that would load
+            # state into the wrong VFS), and it is said out loud,
+            # since a renamed or missing mount otherwise left no trace.
+            logger.warning(
+                "Workspace.load: snapshot mount %s has no mount at that "
+                "prefix in this workspace; its state was not restored",
+                m[MountKey.PREFIX],
+            )
             continue
-        mount.resource.load_state(m[MountKey.RESOURCE_STATE])
+        mount.vfs.load_state(m[MountKey.VFS_STATE])
 
-    await _restore_sessions(ws, state)
-    ws._current_agent_id = state.get(StateKey.CURRENT_AGENT_ID,
-                                     ws._default_agent_id)
-
+    await _restore_sessions(ws, state, sessions)
+    # The env template is constructor state the rebuilt workspace was
+    # never given: without it a session created after the load starts
+    # bare while restored ones carry every workspace env entry.
+    if seed_vars is not None:
+        ws._session_mgr.restore_seed(seed_vars)
+    # current_agent_id is not restored: the agent of a line is carried
+    # per execution (the call's agent_id, else the default), never held
+    # on the workspace, so the key only mirrors default_agent_id.
     _restore_cache(ws, state)
     await _restore_history(ws, state)
     _restore_jobs(ws, state)
@@ -314,21 +526,72 @@ async def _restore_nodes(ws, state: dict[str, Any]) -> None:
     await ws._namespace.replace_nodes(entries)
 
 
-async def _restore_sessions(ws, state: dict[str, Any]) -> None:
+async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
+    """Vet every env input the snapshot carries before any of it lands.
+
+    Each session table and the env template fire the ``pre_session``
+    gate (``gate_restored_vars``) here, ahead of the mounts' load_state
+    and the session writes: a refusal that arrived once an earlier
+    session had already been overwritten left the workspace in a state
+    no snapshot describes, and one its close then persisted. The
+    template is gated under the id the restore makes the default
+    session, which is the session a live write of it would land in.
+
+    Each table is judged under the policy the target gives its
+    session, never the one the snapshot's own profile compiled, which
+    was the source deployment's and does not land: the live session's
+    for an id the target already has, and the default profile's for
+    one the restore will create, which is what ``script_of`` answers
+    for an id the manager does not know and the profile
+    ``_restore_sessions`` then puts the created session under.
+
+    Args:
+        ws (Workspace): the target workspace.
+        state (dict[str, Any]): the snapshot state.
+
+    Returns:
+        The parsed session tables, and the env template or None when
+        the snapshot carries none.
+    """
+    sessions = [
+        SessionState.from_dict(s_data)
+        for s_data in state.get(StateKey.SESSIONS, [])
+    ]
+    for fields in sessions:
+        await gate_restored_vars(ws.policies, fields.session_id, fields.vars)
+    seed = state.get(StateKey.ENV)
+    if not seed:
+        return sessions, None
+    default_sid = state.get(StateKey.DEFAULT_SESSION_ID)
+    seed_vars = vars_from_fields(seed)
+    await gate_restored_vars(
+        ws.policies,
+        ws._session_mgr.default_id if default_sid is None else default_sid,
+        seed_vars,
+    )
+    return sessions, seed_vars
+
+
+async def _restore_sessions(
+    ws, state: dict[str, Any], tables: list[SessionState]
+) -> None:
     default_sid = state.get(StateKey.DEFAULT_SESSION_ID)
     if default_sid is not None:
         # The snapshot's default session identity wins over the live
         # one, and the discovery record's pointer follows it.
         ws._session_mgr.adopt_default(default_sid)
         ws._default_session_id = default_sid
-        await ws._state_store.replace_meta(ws._workspace_id, {
-            "workspace_id": ws._workspace_id,
-            "default_session_id": default_sid,
-        })
+        await ws._state_store.replace_meta(
+            ws._workspace_id,
+            {
+                "workspace_id": ws._workspace_id,
+                "default_session_id": default_sid,
+            },
+        )
         ws._meta_written = True
     restored: list[Any] = []
-    for s_data in state.get(StateKey.SESSIONS, []):
-        sid = s_data[SessionKey.SESSION_ID]
+    for fields in tables:
+        sid = fields.session_id
         if sid == default_sid:
             session = ws._session_mgr.get(sid)
         else:
@@ -339,7 +602,16 @@ async def _restore_sessions(ws, state: dict[str, Any]) -> None:
                 # running workspace): the restored state wins, matching
                 # the replace_from_snapshot contract below.
                 session = ws._session_mgr.get(sid)
-        fields = Session.from_dict(s_data)
+            else:
+                # A session the restore creates is one created without
+                # a profile name, so it runs under the document's
+                # default: the policy `_gate_restored_state` judged its
+                # table under, where a bare session ran under none.
+                # Stamped ahead of the table so the grants below stay
+                # the snapshot's, as they do for a session that exists.
+                compiled = ws._session_mgr.default_profile
+                if compiled is not None:
+                    narrow(session, compiled)
         set_cwd(session, fields.cwd)
         session.vars = fields.vars
         session.mount_modes = fields.mount_modes
@@ -359,6 +631,10 @@ def _restore_cache(ws, state: dict[str, Any]) -> None:
         # outside the workspace and isn't part of the snapshot anyway.
         return
     from mirage.cache.file.entry import CacheEntry
+
+    # A snapshot is a third door into the entry table, and a document is
+    # not obliged to spell "no token" the way this version does, so each
+    # token is folded the way the live write doors fold it.
     for entry in cache_state.get(CacheKey.ENTRIES, []):
         key = entry[CacheKey.KEY]
         data = entry[CacheKey.DATA]
@@ -366,7 +642,7 @@ def _restore_cache(ws, state: dict[str, Any]) -> None:
         cache._entries[key] = CacheEntry(
             size=entry.get(CacheKey.SIZE, len(data)),
             cached_at=entry.get(CacheKey.CACHED_AT, 0),
-            fingerprint=entry.get(CacheKey.FINGERPRINT),
+            fingerprint=entry.get(CacheKey.FINGERPRINT) or None,
             ttl=entry.get(CacheKey.TTL),
         )
         cache._cache_size += entry.get(CacheKey.SIZE, len(data))
@@ -379,11 +655,8 @@ async def _restore_history(ws, state: dict[str, Any]) -> None:
 
 
 def _restore_jobs(ws, state: dict[str, Any]) -> None:
-    max_id = 0
     for job_d in state.get(StateKey.JOBS, []):
-        max_id = max(max_id, job_d.get(JobKey.ID, 0))
-        ws.job_table._jobs[job_d[JobKey.ID]] = _job_from_dict(job_d)
-    ws.job_table._next_id = max_id + 1
+        ws.job_table.load(_job_from_dict(job_d))
 
 
 async def _job_to_dict(job) -> dict[str, Any]:
@@ -412,8 +685,9 @@ async def _job_to_dict(job) -> dict[str, Any]:
     }
 
 
-def _restored_console(d: dict[str, Any], exit_code: int,
-                      status: JobStatus) -> JobConsole:
+def _restored_console(
+    d: dict[str, Any], exit_code: int, status: JobStatus
+) -> JobConsole:
     """Rebuild a finished job's console from its serialized output.
 
     Args:
@@ -423,22 +697,30 @@ def _restored_console(d: dict[str, Any], exit_code: int,
     """
     ts = d.get(JobKey.CREATED_AT, 0.0)
     chunks: list[ConsoleChunk] = []
-    for channel, key in ((Channel.STDOUT, JobKey.STDOUT), (Channel.STDERR,
-                                                           JobKey.STDERR)):
+    for channel, key in (
+        (Channel.STDOUT, JobKey.STDOUT),
+        (Channel.STDERR, JobKey.STDERR),
+    ):
         data = d.get(key, b"") or b""
         if data:
             chunks.append(
-                ConsoleChunk(seq=len(chunks),
-                             ts=ts,
-                             channel=channel,
-                             data=data))
-    outcome = (KILLED_OUTCOME
-               if status == JobStatus.KILLED else exit_outcome(exit_code))
+                ConsoleChunk(
+                    seq=len(chunks), ts=ts, channel=channel, data=data
+                )
+            )
+    outcome = (
+        KILLED_OUTCOME
+        if status == JobStatus.KILLED
+        else exit_outcome(exit_code)
+    )
     chunks.append(
-        ConsoleChunk(seq=len(chunks),
-                     ts=ts,
-                     channel=Channel.CONTROL,
-                     data=outcome.encode()))
+        ConsoleChunk(
+            seq=len(chunks),
+            ts=ts,
+            channel=Channel.CONTROL,
+            data=outcome.encode(),
+        )
+    )
     return JobConsole(RAMConsoleStore(chunks=chunks), finished=True)
 
 
@@ -459,41 +741,82 @@ def _job_from_dict(d: dict[str, Any]):
     )
 
 
-def _construct_resource(mount_state: dict[str, Any]):
-    cls = _resource_class_for(mount_state)
-    resource_state = mount_state[MountKey.RESOURCE_STATE]
-    ptype = resource_state.get(ResourceStateKey.TYPE, "")
+def _construct_vfs(mount_state: dict[str, Any]):
+    """Rebuild a saved mount's VFS the way ``build_vfs`` would.
 
-    if ptype == ResourceName.RAM:
-        return cls()
-    if ptype == ResourceName.DISK:
-        return cls(root=tempfile.mkdtemp(prefix="mirage-disk-"))
-    if ptype == ResourceName.REDIS:
+    Args:
+        mount_state (dict[str, Any]): one captured ``mounts`` entry that
+            ``requires_vfs_override`` answered False for.
+    """
+    cls, entry = _saved_class(mount_state)
+    if cls is None:
+        raise ValueError(
+            f"cannot rebuild the mount at {mount_state[MountKey.PREFIX]}: "
+            f"{mount_state[MountKey.VFS_CLASS]} is not importable"
+        )
+    vfs_state = mount_state[MountKey.VFS_STATE]
+    ptype = vfs_state.get(VFSStateKey.TYPE, "")
+
+    if ptype == VFSName.RAM:
+        built = cls()
+    elif ptype == VFSName.DISK:
+        saved = vfs_state.get(VFSStateKey.CONFIG) or {}
+        knobs = {}
+        if "folder_versions" in saved:
+            knobs["folder_versions"] = saved["folder_versions"]
+        for key in unknown_kwargs(cls, knobs):
+            del knobs[key]
+        built = cls(root=tempfile.mkdtemp(prefix="mirage-disk-"), **knobs)
+    elif ptype == VFSName.REDIS:
         raise ValueError(
             f"Redis mount at {mount_state[MountKey.PREFIX]} requires "
-            "resources= override")
+            "mounts= override"
+        )
+    else:
+        config = vfs_state.get(VFSStateKey.CONFIG)
+        config_cls = _saved_config_class(cls, entry)
+        if config is None:
+            built = cls()
+        elif config_cls is not None:
+            built = cls(config_cls(**config))
+        else:
+            built = cls(**config)
+    return built
 
-    config = resource_state.get(ResourceStateKey.CONFIG)
-    if config is None:
-        return cls()
-    config_cls = _config_class_for(cls)
-    if config_cls is not None:
-        return cls(config_cls(**config))
-    return cls()
 
+def requires_vfs_override(mount_state: dict[str, Any]) -> bool:
+    """Whether a saved mount must be handed back live rather than rebuilt.
 
-def requires_resource_override(mount_state: dict[str, Any]) -> bool:
-    resource_state = mount_state[MountKey.RESOURCE_STATE]
-    config = resource_state.get(ResourceStateKey.CONFIG)
-    config_cls = _config_class_for(_resource_class_for(mount_state))
-    return has_redacted_secret(config, config_cls)
+    Three reasons, and TypeScript's ``vfsStateRequiresOverride``
+    reads the first two the same way: the VFS said so
+    (``needs_override``, which a driver built from a table writes by
+    default because the base cannot know a subclass's constructor), a
+    config secret was redacted, or the class is one this process cannot
+    import (a script file loaded under the loader's module name with no
+    reference recorded, or a class from a package that is not
+    installed). The redaction check scans every saved value rather than
+    the secret fields of the class the mount resolves to: an alias
+    VFS (MinIO) saves its own config under its parent's ``type``,
+    so that class named the wrong fields and a redacted key rebuilt as
+    the literal marker.
+
+    Args:
+        mount_state (dict[str, Any]): one captured ``mounts`` entry.
+    """
+    vfs_state = mount_state[MountKey.VFS_STATE]
+    if vfs_state.get(VFSStateKey.NEEDS_OVERRIDE) is True:
+        return True
+    cls, _entry = _saved_class(mount_state)
+    if cls is None:
+        return True
+    return has_redacted_secret(vfs_state.get(VFSStateKey.CONFIG))
 
 
 def reusable_clis(ws) -> CLIOverrides:
     """Live-install overrides a same-process copy reinstalls from.
 
     Each override carries the live CLISpec and the revealed config, the
-    way remote mounts share their live resources: a directly installed
+    way remote mounts share their live mounts: a directly installed
     spec (never named in the global registry) and a redacted secret
     both survive without a registry lookup.
 
@@ -502,18 +825,21 @@ def reusable_clis(ws) -> CLIOverrides:
     """
     overrides: CLIOverrides = {}
     for name, install in ws._registry.clis.items().items():
-        overrides[name] = (install.spec,
-                           cli_config_dump(install.config, reveal=True))
+        overrides[name] = (
+            install.spec,
+            cli_config_dump(install.config, reveal=True),
+        )
     return overrides
 
 
-def reusable_resources(mounts: list[Any], state: dict[str,
-                                                      Any]) -> dict[str, Any]:
-    """Live resources a copy should share with its origin.
+def reusable_mounts(
+    mounts: list[Any], state: dict[str, Any]
+) -> dict[str, Any]:
+    """Live mounts a copy should share with its origin.
 
     Remote backends (S3, Redis, GDrive) stay shared: their state
     redacts the secrets a reconstruction would need. Local content
-    resources (RAM, Disk) are rebuilt fresh so the copy's writes do
+    mounts (RAM, Disk) are rebuilt fresh so the copy's writes do
     not clobber the original's data. The auto mounts are excluded
     because the new workspace mounts its own.
 
@@ -521,28 +847,123 @@ def reusable_resources(mounts: list[Any], state: dict[str,
         mounts (list[Any]): the origin's mount entries.
         state (dict[str, Any]): the origin's state dict.
     """
-    auto = {"/dev/", norm_mount_prefix(HISTORY_PREFIX)}
-    live = {m.prefix: m.resource for m in mounts if m.prefix not in auto}
+    auto = {
+        "/dev/",
+        norm_mount_prefix(HISTORY_PREFIX),
+        norm_mount_prefix(BIN_PREFIX),
+    }
+    live = {m.prefix: m.vfs for m in mounts if m.prefix not in auto}
     return {
         m[MountKey.PREFIX]: live[m[MountKey.PREFIX]]
         for m in state[StateKey.MOUNTS]
-        if requires_resource_override(m) and m[MountKey.PREFIX] in live
+        if requires_vfs_override(m) and m[MountKey.PREFIX] in live
     }
 
 
-def _resource_class_for(mount_state: dict[str, Any]):
-    ptype = mount_state[MountKey.RESOURCE_STATE].get(ResourceStateKey.TYPE, "")
-    if ptype in REGISTRY:
-        return resolve_class(REGISTRY[ptype].resource_path)
-    cls_path = mount_state[MountKey.RESOURCE_CLASS]
-    mod_name, cls_name = cls_path.rsplit(".", 1)
-    return getattr(importlib.import_module(mod_name), cls_name)
+def _saved_entry(mount_state: dict[str, Any]) -> VFSEntry | None:
+    """The registry entry a saved mount rebuilds through, or None.
+
+    The ``vfs_ref`` the registry built the mount from when one was
+    recorded (a registered name, or a colon reference, which is how a
+    mount declared as ``./wiki.py:WikiVFS`` comes back), else the
+    builtin entry whose class is the saved class, else the VFS's
+    ``type``, the last locator a VFS constructed in code leaves. The
+    ref comes first because ``type`` is the class's ``name`` and a
+    subclass inherits it: an alias registered over a builtin, or a
+    script subclassing one, reports the builtin's type and rebuilt as
+    the builtin while the type was consulted first. A recorded ref this
+    process cannot resolve is not a reason to fall back to that guess;
+    ``_saved_class`` imports the class the snapshot names as the last
+    resort, and the loader asks for an override when even that fails.
+
+    Args:
+        mount_state (dict[str, Any]): one captured ``mounts`` entry.
+    """
+    ref = mount_state.get(MountKey.VFS_REF)
+    if ref:
+        return resolve_entry(ref)
+    entry = _builtin_entry_for_class(mount_state[MountKey.VFS_CLASS])
+    if entry is not None:
+        return entry
+    ptype = mount_state[MountKey.VFS_STATE].get(VFSStateKey.TYPE, "")
+    return resolve_entry(ptype) if ptype else None
 
 
-def _config_class_for(resource_cls):
-    mod = importlib.import_module(resource_cls.__module__)
-    for name in dir(mod):
-        obj = getattr(mod, name)
-        if isinstance(obj, type) and name.endswith("Config"):
-            return obj
+def _builtin_entry_for_class(cls_path: str) -> VFSEntry | None:
+    """The builtin entry that builds exactly the saved class, or None.
+
+    A mount constructed in code records no ref, and its ``type`` is the
+    class's ``name``, which a subclass inherits unless it declares its
+    own: a subclass of a builtin that keeps the builtin's name saves its
+    own config under the builtin's type, and rebuilding through the
+    type's entry hands that config to the builtin's config class, which
+    refuses the keys it does not know. (The S3-compatible aliases once
+    did exactly this under ``s3``; each now carries its own name.) The
+    saved class path names the class that was running, so the entry
+    whose class it is -- matched by identity, after narrowing by class
+    name so only that candidate is imported -- is the one to rebuild
+    through.
+
+    Args:
+        cls_path (str): the saved ``module.ClassName``.
+    """
+    mod_name, separator, cls_name = cls_path.rpartition(".")
+    if not separator:
+        return None
+    if mod_name == SCRIPT_MODULE_NAME:
+        return None
+    for entry in REGISTRY.values():
+        ref = entry.vfs_path
+        name = ref.__name__ if isinstance(ref, type) else ref.rsplit(":")[-1]
+        if name != cls_name:
+            continue
+        cls = resolve_class(ref)
+        if f"{cls.__module__}.{cls.__name__}" == cls_path:
+            return entry
     return None
+
+
+def _saved_class(
+    mount_state: dict[str, Any],
+) -> tuple[type | None, VFSEntry | None]:
+    """The class a saved mount is rebuilt from, with its registry entry.
+
+    ``(None, None)`` when this process cannot reach the class: it ran
+    from a script file with no reference recorded, or its package is not
+    installed. The caller decides what that means (an override is
+    required); nothing here guesses.
+
+    Args:
+        mount_state (dict[str, Any]): one captured ``mounts`` entry.
+    """
+    entry = _saved_entry(mount_state)
+    if entry is not None:
+        return resolve_class(entry.vfs_path), entry
+    cls_path = mount_state[MountKey.VFS_CLASS]
+    mod_name, separator, cls_name = cls_path.rpartition(".")
+    if not separator or mod_name == SCRIPT_MODULE_NAME:
+        return None, None
+    try:
+        module = importlib.import_module(mod_name)
+    except ImportError as exc:
+        logger.debug("saved VFS class %s is not importable: %s", cls_path, exc)
+        return None, None
+    return getattr(module, cls_name, None), None
+
+
+def _saved_config_class(vfs_cls: type, entry: VFSEntry | None) -> type | None:
+    """The typed config a saved mount's constructor takes, or None.
+
+    The registry entry's config class when the entry declares one, else
+    the class's own ``CONFIG_CLS``: exactly what ``build_vfs``
+    reads. It used to scan the class's module for the first name ending
+    in ``Config``, which picked a neighbour by alphabet.
+
+    Args:
+        vfs_cls (type): the VFS class being rebuilt.
+        entry (VFSEntry | None): its registry entry, when it has one.
+    """
+    if entry is not None and entry.config_path is not None:
+        return resolve_class(entry.config_path)
+    ref = getattr(vfs_cls, "CONFIG_CLS", None)
+    return None if ref is None else resolve_class(ref)

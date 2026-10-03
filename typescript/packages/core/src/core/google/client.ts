@@ -25,8 +25,9 @@ import {
   TOKEN_BUFFER_SECONDS,
   TOKEN_URL,
 } from './constants.ts'
+import { apiRequest } from '../api/client.ts'
 import { TokenManager as OAuthTokenManager } from '../api/oauth.ts'
-import { rangeHeader, windowOf, type ByteWindow } from '../../utils/ranges.ts'
+import { type ByteWindow } from '../../utils/ranges.ts'
 
 export function tokenUrl(config: GoogleConfig): string {
   return config.apiBase !== undefined ? `${config.apiBase}/token` : TOKEN_URL
@@ -82,6 +83,12 @@ export class GoogleApiError extends Error {
 }
 
 export async function refreshAccessToken(config: GoogleConfig): Promise<[string, number]> {
+  if (config.clientId === undefined || config.refreshToken === undefined) {
+    throw new Error(
+      'refreshAccessToken needs clientId and refreshToken; this config authenticates with a ' +
+        'pre-minted accessToken',
+    )
+  }
   const body = new URLSearchParams({
     client_id: config.clientId,
     refresh_token: config.refreshToken,
@@ -90,16 +97,12 @@ export async function refreshAccessToken(config: GoogleConfig): Promise<[string,
   if (config.clientSecret !== undefined && config.clientSecret !== '') {
     body.set('client_secret', config.clientSecret)
   }
-  const r = await fetch(tokenUrl(config), {
-    method: 'POST',
+  const data = (await apiRequest('POST', tokenUrl(config), {
+    errorOf: (r, text) =>
+      new GoogleApiError(`Google token refresh → ${String(r.status)} ${text}`, r.status),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
-  })
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new GoogleApiError(`Google token refresh → ${String(r.status)} ${text}`, r.status)
-  }
-  const data = (await r.json()) as { access_token: string; expires_in: number }
+  })) as { access_token: string; expires_in: number }
   return [data.access_token, data.expires_in]
 }
 
@@ -111,8 +114,23 @@ export class TokenManager extends OAuthTokenManager {
     this.config = config
   }
 
+  /**
+   * A supplied token short-circuits the grant entirely, and is read every
+   * call rather than cached: a provider callable is the caller's own cache,
+   * and caching its answer here would outlive the refresh it just performed.
+   * Mirrors python's `TokenManager.get_token`.
+   */
+  override async getToken(): Promise<string> {
+    const supplied = this.config.accessToken
+    if (supplied !== undefined) return typeof supplied === 'function' ? await supplied() : supplied
+    return super.getToken()
+  }
+
   protected async refreshPair(): Promise<[string, number]> {
     if (this.config.refreshFn !== undefined) {
+      if (this.config.refreshToken === undefined) {
+        throw new Error('refreshFn needs a refreshToken to hand to the caller')
+      }
       const result = await this.config.refreshFn(this.config.refreshToken)
       return [result.accessToken, result.expiresIn]
     }
@@ -125,39 +143,26 @@ export async function googleHeaders(tm: TokenManager): Promise<Record<string, st
   return { Authorization: `Bearer ${token}` }
 }
 
-function buildUrl(url: string, params?: Record<string, string | number>): string {
-  if (params === undefined) return url
-  const u = new URL(url)
-  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v))
-  return u.toString()
-}
-
 export async function googleGet(
   tm: TokenManager,
   url: string,
   params?: Record<string, string | number>,
 ): Promise<unknown> {
-  const headers = await googleHeaders(tm)
-  const r = await fetch(buildUrl(url, params), { headers })
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new GoogleApiError(`Google GET ${url} → ${String(r.status)} ${text}`, r.status)
-  }
-  return r.json()
+  return apiRequest('GET', url, {
+    errorOf: (r, text) =>
+      new GoogleApiError(`Google GET ${url} → ${String(r.status)} ${text}`, r.status),
+    headers: await googleHeaders(tm),
+    params,
+  })
 }
 
 export async function googlePost(tm: TokenManager, url: string, json: unknown): Promise<unknown> {
-  const headers = await googleHeaders(tm)
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify(json),
+  return apiRequest('POST', url, {
+    errorOf: (r, text) =>
+      new GoogleApiError(`Google POST ${url} → ${String(r.status)} ${text}`, r.status),
+    headers: { ...(await googleHeaders(tm)), 'Content-Type': 'application/json' },
+    json,
   })
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new GoogleApiError(`Google POST ${url} → ${String(r.status)} ${text}`, r.status)
-  }
-  return r.json()
 }
 
 export async function googlePatch(
@@ -166,18 +171,13 @@ export async function googlePatch(
   json: unknown,
   params?: Record<string, string>,
 ): Promise<unknown> {
-  const headers = await googleHeaders(tm)
-  const full = params !== undefined ? `${url}?${new URLSearchParams(params).toString()}` : url
-  const r = await fetch(full, {
-    method: 'PATCH',
-    headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify(json),
+  return apiRequest('PATCH', url, {
+    errorOf: (r, text) =>
+      new GoogleApiError(`Google PATCH ${url} → ${String(r.status)} ${text}`, r.status),
+    headers: { ...(await googleHeaders(tm)), 'Content-Type': 'application/json' },
+    params,
+    json,
   })
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new GoogleApiError(`Google PATCH ${url} → ${String(r.status)} ${text}`, r.status)
-  }
-  return r.json()
 }
 
 // Raw byte payloads (upload endpoints).
@@ -189,27 +189,22 @@ export async function googleSendBytes(
   contentType: string,
   params?: Record<string, string>,
 ): Promise<unknown> {
-  const headers = await googleHeaders(tm)
-  const full = params !== undefined ? `${url}?${new URLSearchParams(params).toString()}` : url
-  const r = await fetch(full, {
-    method,
-    headers: { ...headers, 'Content-Type': contentType },
+  return apiRequest(method, url, {
+    errorOf: (r, text) =>
+      new GoogleApiError(`Google ${method} ${url} → ${String(r.status)} ${text}`, r.status),
+    headers: { ...(await googleHeaders(tm)), 'Content-Type': contentType },
+    params,
     body: data as unknown as BodyInit,
   })
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new GoogleApiError(`Google ${method} ${url} → ${String(r.status)} ${text}`, r.status)
-  }
-  return r.json()
 }
 
 export async function googleDelete(tm: TokenManager, url: string): Promise<void> {
-  const headers = await googleHeaders(tm)
-  const r = await fetch(url, { method: 'DELETE', headers })
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new GoogleApiError(`Google DELETE ${url} → ${String(r.status)} ${text}`, r.status)
-  }
+  await apiRequest('DELETE', url, {
+    errorOf: (r, text) =>
+      new GoogleApiError(`Google DELETE ${url} → ${String(r.status)} ${text}`, r.status),
+    headers: await googleHeaders(tm),
+    read: 'none',
+  })
 }
 
 export async function googleGetBytes(
@@ -217,30 +212,12 @@ export async function googleGetBytes(
   url: string,
   window?: ByteWindow,
 ): Promise<Uint8Array> {
-  const headers = await googleHeaders(tm)
-  const range = window === undefined ? null : rangeHeader(window.offset, window.size)
-  if (range !== null) headers.Range = range
-  const r = await fetch(url, { headers, redirect: 'follow' })
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new GoogleApiError(`Google GET ${url} → ${String(r.status)} ${text}`, r.status)
-  }
-  const buf = await r.arrayBuffer()
-  return windowOf(new Uint8Array(buf), r.status, window)
-}
-
-export async function* googleGetStream(tm: TokenManager, url: string): AsyncIterable<Uint8Array> {
-  const headers = await googleHeaders(tm)
-  const r = await fetch(url, { headers, redirect: 'follow' })
-  if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new GoogleApiError(`Google GET ${url} → ${String(r.status)} ${text}`, r.status)
-  }
-  if (r.body === null) return
-  const reader = r.body.getReader()
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) break
-    yield value
-  }
+  const data = await apiRequest('GET', url, {
+    errorOf: (r, text) =>
+      new GoogleApiError(`Google GET ${url} → ${String(r.status)} ${text}`, r.status),
+    headers: await googleHeaders(tm),
+    read: 'bytes',
+    window,
+  })
+  return data as Uint8Array
 }

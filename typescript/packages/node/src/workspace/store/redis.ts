@@ -23,7 +23,7 @@ import type {
 } from '@struktoai/mirage-core/workspace/store/base'
 import { RedisObserverStore } from '../../observe/redis_store.ts'
 import { loadOptionalPeer } from '../../optional_peer.ts'
-import { RedisNamespaceStore } from '../namespace/redis.ts'
+import { RedisNamespaceStore } from '../mount/namespace/redis.ts'
 import { CAS_SCRIPT, RedisSessionStore } from '../session/redis.ts'
 
 export interface RedisWorkspaceStateStoreOptions extends WorkspaceStateStoreOverrides {
@@ -142,6 +142,15 @@ export class RedisWorkspaceStateStore extends WorkspaceStateStore {
       arguments: [workspaceId, JSON.stringify(fields), String(expectedGeneration)],
     })
     return result === 1
+  }
+
+  protected async forgetSelf(workspaceId: string): Promise<void> {
+    for (const handles of [this.namespaces, this.observers, this.sessionTables]) {
+      await handles.get(workspaceId)?.close()
+      handles.delete(workspaceId)
+    }
+    const c = await this.client()
+    await c.hDel(this.metaKey, workspaceId)
   }
 
   protected async closeSelf(): Promise<void> {

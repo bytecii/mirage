@@ -4,16 +4,18 @@ icon: /images/huggingface-logo.svg
 description: Mount a Hugging Face Space repo as a Mirage filesystem in TypeScript.
 ---
 
-`HfSpacesResource` mounts a [Hugging Face Space](https://huggingface.co/spaces)
+`HfSpacesVFS` mounts a [Hugging Face Space](https://huggingface.co/spaces)
 repo (app code, README, config, requirements) at a prefix such as `/s/`.
-The TypeScript backend mirrors the [Python one](/python/resource/hf_spaces) and
+The TypeScript backend mirrors the [Python one](/python/vfs/hf_spaces) and
 returns identical results.
 
 For credential setup, see [HF Spaces Setup](/home/setup/hf_spaces).
 
 <Note>
-Node only. The backend uses the native [opendal](https://www.npmjs.com/package/opendal)
-binding, which does not run in the browser.
+Node only: the VFS ships in `@struktoai/mirage-node`. It needs no native
+binding, though, because it speaks the Hub API over the runtime's own `fetch`.
+The [opendal](https://www.npmjs.com/package/opendal) binding belongs to
+[HF Buckets](/typescript/setup/hf_buckets), which is a different product.
 </Note>
 
 ## Node
@@ -23,9 +25,9 @@ pnpm add @struktoai/mirage-node
 ```
 
 ```ts
-import { HfSpacesResource, MountMode, Workspace } from '@struktoai/mirage-node'
+import { HfSpacesVFS, MountMode, Workspace } from '@struktoai/mirage-node'
 
-const space = new HfSpacesResource({
+const space = new HfSpacesVFS({
   repoId: 'HuggingFaceBio/carbon-demo', // "namespace/space-name"
   token: process.env.HF_TOKEN, // optional for public spaces
   // Optional:
@@ -35,11 +37,36 @@ const space = new HfSpacesResource({
 
 const ws = new Workspace({ '/s/': space }, { mode: MountMode.READ })
 
-console.log((await ws.execute('ls /s/')).stdoutText)
-console.log((await ws.execute("find /s/ -name '*.py'")).stdoutText)
-console.log((await ws.execute('cat /s/README.md | head -n 15')).stdoutText)
+console.log((await ws.shell('ls /s/')).stdoutText)
+console.log((await ws.shell("find /s/ -name '*.py'")).stdoutText)
+console.log((await ws.shell('cat /s/README.md | head -n 15')).stdoutText)
 ```
+
+## Reading, not writing
+
+This mount is read-only, the way a [`github`](/typescript/setup/github) mount is. A Hub write is
+a **commit**, and a POSIX write cannot say where a commit ends, so `echo >`,
+`rm`, `cp` and `mv` are refused here rather than silently making one commit
+per file. The [`hf` CLI](/typescript/cli/hf) is the write half: `hf download --local-dir`
+puts a copy on a ram or disk mount, which is an ordinary writable filesystem,
+and `hf upload` sends it back as a single commit.
+
+## Listings under `fresh`
+
+Under `read: fresh`, a cached listing is checked against the commit the
+`revision` resolves to: one small check per command
+(`revision/{rev}?expand[]=sha`), after which every cached listing of the
+mount at that commit is served. A mount whose `revision` is a full 40- or
+64-hex commit sha is checked the same way, with that one small request
+per command: a branch or tag named like the sha could take the name, and
+mirage does not assume which one the Hub resolves. With a
+`keyPrefix`, the stored version is that commit joined with the prefix, so mounts
+of different subtrees sharing an index never share a version. See
+[listings under `fresh`](/home/cache#listings-under-fresh).
 
 ## Shell Commands
 
-Same set as [HF Buckets](/typescript/setup/hf_buckets#shell-commands).
+Every read command in [HF Buckets'](/typescript/setup/hf_buckets#read-commands) set works here, as
+do the text processing and path utilities, which only read. What does not is
+the [File Operations](/typescript/setup/hf_buckets#file-operations) group: this mount is read-only,
+so `rm` and `touch` are refused, as is any command asked to write into it.

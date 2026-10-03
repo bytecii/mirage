@@ -14,13 +14,15 @@
 
 import { describe, expect, it } from 'vitest'
 import { PathSpec, type ReaddirFn } from '../../../types.ts'
+import type { UsageError } from '../../errors.ts'
 import { backupControl, backupTarget, parentPath, siblingPath } from './backup.ts'
+import { stripSlash } from '../../../utils/slash.ts'
 
 function spec(path: string): PathSpec {
   return new PathSpec({
     virtual: path,
     directory: path,
-    resourcePath: path.replace(/^\/+|\/+$/g, ''),
+    vfsPath: stripSlash(path),
   })
 }
 
@@ -38,8 +40,47 @@ describe('backupControl', () => {
     expect(backupControl('cp', 'nil', null)).toBe('existing')
     expect(backupControl('cp', 'never', null)).toBe('simple')
     expect(backupControl('cp', 'off', null)).toBe('none')
+    // An EMPTY control is the default, not a refusal: gnulib's
+    // `xget_version` only calls argmatch when `version && *version`, so
+    // `cp --backup=` is `cp --backup`. Measured on coreutils 9.4: exit 0,
+    // and it writes the `existing` backup. Mirrors test_backup.py.
+    expect(backupControl('cp', '', null)).toBe('existing')
     // -S SUFFIX alone enables backups (GNU 9.7).
     expect(backupControl('cp', undefined, '.bak')).toBe('existing')
+  })
+
+  // gnulib resolves an unambiguous prefix, and each control's canonical
+  // word IS the control, so `--backup=e` is `existing` and `=t` is
+  // `numbered`. Measured on coreutils 9.4: `cp --backup=e`, `=s` and `=t`
+  // all exit 0. Mirrors test_backup.py.
+  it('accepts an unambiguous prefix', () => {
+    expect(backupControl('cp', 'e', null)).toBe('existing')
+    expect(backupControl('cp', 's', null)).toBe('simple')
+    expect(backupControl('cp', 't', null)).toBe('numbered')
+    expect(backupControl('cp', 'nu', null)).toBe('numbered')
+    expect(backupControl('cp', 'of', null)).toBe('none')
+  })
+
+  // `cp --backup=n` starts none, never, nil and numbered, which are four
+  // different controls, so gnulib refuses it rather than picking one
+  // (measured: `ambiguous argument 'n'`, exit 1).
+  it('rejects a prefix spanning two values as ambiguous', () => {
+    let message = ''
+    let code = 0
+    try {
+      backupControl('cp', 'n', null)
+    } catch (err) {
+      message = (err as Error).message
+      code = (err as UsageError).exitCode
+    }
+    expect(message).toBe(
+      "cp: ambiguous argument 'n' for 'backup type'\n" +
+        'Valid arguments are:\n' +
+        "  - 'none', 'off'\n  - 'simple', 'never'\n" +
+        "  - 'existing', 'nil'\n  - 'numbered', 't'\n" +
+        "Try 'cp --help' for more information.",
+    )
+    expect(code).toBe(1)
   })
 
   it('rejects an invalid control with the GNU listing', () => {
@@ -60,10 +101,10 @@ describe('siblingPath and parentPath', () => {
     const target = spec('/data/sub/b.txt')
     const backup = siblingPath(target, '~')
     expect(backup.virtual).toBe('/data/sub/b.txt~')
-    expect(backup.resourcePath).toBe('data/sub/b.txt~')
+    expect(backup.vfsPath).toBe('data/sub/b.txt~')
     const parent = parentPath(target)
     expect(parent.virtual).toBe('/data/sub')
-    expect(parent.resourcePath).toBe('data/sub')
+    expect(parent.vfsPath).toBe('data/sub')
     expect(parentPath(spec('/b.txt')).virtual).toBe('/')
   })
 })
@@ -99,5 +140,31 @@ describe('backupTarget', () => {
     const lister = listing(['/d/bb.txt.~4~', '/d/b.txt.bak', '/d/b.txt~'])
     const picked = await backupTarget(lister, spec('/d/b.txt'), 'existing', '~')
     expect(picked?.virtual).toBe('/d/b.txt~')
+  })
+})
+
+// The backup-type clause names the refused control through gnulib's
+// quote(), so a byte outside 0x20-0x7e comes back escaped rather than
+// interpolated raw. Every row measured against GNU coreutils 9.4 under
+// `LC_ALL=C` with a raw `bytes` argv (`cp --backup=<w>`). Mirrors
+// test_backup.py.
+describe('backupControl quotes the control it names', () => {
+  it.each([
+    ['xé', 'x\\303\\251'],
+    ['x\r', 'x\\r'],
+    ['x\x01', 'x\\001'],
+    ['x\x7f', 'x\\177'],
+    ["x'", "x\\'"],
+    ['x\\', 'x\\\\'],
+  ])('escapes %j in the backup-type clause', (value, escaped) => {
+    expect(() => backupControl('cp', value, null)).toThrow(
+      `cp: invalid argument '${escaped}' for 'backup type'\n` +
+        'Valid arguments are:\n' +
+        "  - 'none', 'off'\n" +
+        "  - 'simple', 'never'\n" +
+        "  - 'existing', 'nil'\n" +
+        "  - 'numbered', 't'\n" +
+        "Try 'cp --help' for more information.",
+    )
   })
 })

@@ -14,13 +14,13 @@
 
 import pytest
 
-from mirage import MountMode, RAMResource, Workspace
+from mirage import RAMVFS, MountMode, Workspace
 from mirage.agents.pydantic_ai.backend import PydanticAIWorkspace
 
 
 @pytest.fixture
 def workspace():
-    return Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    return Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
 
 
 @pytest.fixture
@@ -87,8 +87,9 @@ async def test_als_info(backend):
 
 @pytest.mark.asyncio
 async def test_agrep_raw(backend):
-    await backend.awrite("/search.txt",
-                         "hello world\ngoodbye world\nhello again")
+    await backend.awrite(
+        "/search.txt", "hello world\ngoodbye world\nhello again"
+    )
     result = await backend.agrep_raw("hello", path="/")
     assert isinstance(result, list)
     assert len(result) >= 2
@@ -124,3 +125,22 @@ async def test_exists(backend):
     assert not await backend.aexists("/missing.txt")
     await backend.awrite("/exists.txt", "content")
     assert await backend.aexists("/exists.txt")
+
+
+@pytest.mark.asyncio
+async def test_file_operations_act_as_the_session():
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"guarded": {"paths": {"hide": ["/vault"]}}},
+    )
+    await ws.shell("echo key > /vault/key.txt")
+    ws.create_session("agent", profile="guarded")
+    backend = PydanticAIWorkspace(ws, session_id="agent")
+    try:
+        exists = await backend.aexists("/vault/key.txt")
+        read = await backend.aread("/vault/key.txt")
+    finally:
+        await ws.close()
+    assert exists is False
+    assert read.startswith("Error: ")

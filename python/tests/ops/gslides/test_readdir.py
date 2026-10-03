@@ -36,9 +36,11 @@ readdir = _op("readdir")
 
 
 def _scope(path: str, prefix: str = "/gslides") -> PathSpec:
-    return PathSpec(resource_path=mount_key(path, prefix),
-                    virtual=path,
-                    directory=path.rsplit("/", 1)[0] or "/")
+    return PathSpec(
+        vfs_path=mount_key(path, prefix),
+        virtual=path,
+        directory=path.rsplit("/", 1)[0] or "/",
+    )
 
 
 @pytest.fixture
@@ -64,8 +66,10 @@ async def test_readdir_owned_serves_cached_listing(accessor, index):
         name="Deck",
         resource_type="gslides/slide",
         remote_time="2026-04-01T00:00:00Z",
-        vfs_name="deck.gslide.json",
+        vfs_name="Deck__slide1.gslide.json",
     )
-    await index.set_dir("/gslides/owned", [("deck.gslide.json", entry)])
+    await index.set_dir(
+        "/gslides/owned", [("Deck__slide1.gslide.json", entry)]
+    )
     result = await readdir(accessor, _scope("/gslides/owned"), index=index)
-    assert "/gslides/owned/deck.gslide.json" in result
+    assert "/gslides/owned/Deck__slide1.gslide.json" in result

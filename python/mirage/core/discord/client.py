@@ -17,17 +17,22 @@ from typing import Any
 
 import aiohttp
 
-from mirage.core.api.client import RetryPolicy, api_request, status_error
+from mirage.core.api.client import (
+    RetryPolicy,
+    SessionArg,
+    api_request,
+    status_error,
+)
 from mirage.core.discord.config import DiscordConfig
 from mirage.core.discord.constants import DISCORD_API, MAX_RETRIES
-from mirage.resource.secrets import reveal_secret
+from mirage.vfs.secrets import reveal_secret
 
 # GET is the only verb that waits out a 429: reads are safe to repeat, and
 # the delay comes from the JSON body's retry_after (Discord's convention).
 # Mutations surface the 429 immediately so the caller decides.
-_RATE_LIMIT_RETRY = RetryPolicy(statuses=frozenset({429}),
-                                max_retries=MAX_RETRIES - 1,
-                                delay_source="body")
+_RATE_LIMIT_RETRY = RetryPolicy(
+    statuses=frozenset({429}), max_retries=MAX_RETRIES - 1, delay_source="body"
+)
 
 
 def discord_headers(config: DiscordConfig) -> dict[str, str]:
@@ -53,20 +58,21 @@ def _retry_after_of(body: str) -> Any:
 def _get_error(resp: aiohttp.ClientResponse, body: str) -> Exception:
     if resp.status == 429:
         return RuntimeError(f"Rate limited after {MAX_RETRIES} retries")
-    return status_error(resp)
+    return status_error(resp, body)
 
 
 def _mutation_error(resp: aiohttp.ClientResponse, body: str) -> Exception:
     if resp.status == 429:
         retry = _retry_after_of(body)
         return RuntimeError(f"Rate limited, retry after {retry}s")
-    return status_error(resp)
+    return status_error(resp, body)
 
 
 async def discord_get(
     config: DiscordConfig,
     endpoint: str,
     params: dict[str, Any] | None = None,
+    session: SessionArg = None,
 ) -> dict[str, Any] | list[Any]:
     data: dict[str, Any] | list[Any] = await api_request(
         "GET",
@@ -75,6 +81,7 @@ async def discord_get(
         headers=discord_headers(config),
         params=params,
         retry=_RATE_LIMIT_RETRY,
+        session=session,
     )
     return data
 
@@ -83,6 +90,7 @@ async def discord_post(
     config: DiscordConfig,
     endpoint: str,
     body: dict[str, Any] | None = None,
+    session: SessionArg = None,
 ) -> dict[str, Any]:
     data: dict[str, Any] = await api_request(
         "POST",
@@ -90,13 +98,13 @@ async def discord_post(
         error_of=_mutation_error,
         headers=discord_headers(config),
         json_body=body or {},
+        session=session,
     )
     return data
 
 
 async def discord_put(
-    config: DiscordConfig,
-    endpoint: str,
+    config: DiscordConfig, endpoint: str, session: SessionArg = None
 ) -> None:
     await api_request(
         "PUT",
@@ -104,6 +112,7 @@ async def discord_put(
         error_of=_mutation_error,
         headers=discord_headers(config),
         read="none",
+        session=session,
     )
 
 
@@ -111,6 +120,7 @@ async def discord_patch(
     config: DiscordConfig,
     endpoint: str,
     body: dict[str, Any] | None = None,
+    session: SessionArg = None,
 ) -> dict[str, Any]:
     data: dict[str, Any] = await api_request(
         "PATCH",
@@ -118,13 +128,13 @@ async def discord_patch(
         error_of=_mutation_error,
         headers=discord_headers(config),
         json_body=body or {},
+        session=session,
     )
     return data
 
 
 async def discord_delete(
-    config: DiscordConfig,
-    endpoint: str,
+    config: DiscordConfig, endpoint: str, session: SessionArg = None
 ) -> None:
     await api_request(
         "DELETE",
@@ -132,4 +142,5 @@ async def discord_delete(
         error_of=_mutation_error,
         headers=discord_headers(config),
         read="none",
+        session=session,
     )

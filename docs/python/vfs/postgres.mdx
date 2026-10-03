@@ -1,0 +1,45 @@
+---
+title: Postgres
+icon: /images/postgres-logo.svg
+description: Mount a Postgres database as a read-only filesystem of schemas, tables, and rows.
+---
+
+`PostgresVFS` connects to a Postgres database via a DSN and exposes its schemas and tables as a tree the agent can list, read, and grep.
+
+## Config
+
+```python
+from mirage.vfs.postgres import PostgresConfig, PostgresVFS
+
+vfs = PostgresVFS(PostgresConfig(
+    dsn="postgres://user:pass@host:5432/db?sslmode=require",
+    schemas=["public", "analytics"],   # optional allowlist
+    default_row_limit=1000,
+    max_read_rows=10_000,
+    max_read_bytes=10 * 1024 * 1024,
+))
+```
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `dsn` | required | Postgres connection string. Redacted in snapshots. |
+| `schemas` | `None` | Optional list to limit which schemas appear in the tree. |
+| `default_row_limit` | `1000` | Rows a windowed read returns when it passes an offset but no limit. |
+| `max_read_rows` | `10_000` | Hard ceiling per read. A whole read past it is refused; `head -n` / `tail -n` past it print that many rows, then a notice on stderr, and exit 1. |
+| `max_read_bytes` | `10 MiB` | Hard ceiling per read. |
+
+For DSN format and permissions, see [Postgres Setup](/home/setup/postgres).
+
+## Mount mode
+
+`read` only. Postgres mounts are read-only at the VFS level.
+
+## Snapshot behavior
+
+The DSN is redacted on snapshot. Loading a snapshot back requires a config file that supplies a fresh DSN.
+
+## File size and `du`
+
+`rows.jsonl` is rendered on demand. `stat -c %s` and `ls -l` show `-` when its rendered byte length is unknown; physical table storage is never used as a file size. `stat` checks existence and type without fetching columns, row counts, or relation sizes. Planner counts cannot identify content changes, so they are not used as a content fingerprint.
+
+The metadata JSON files expose explicitly named row and storage estimates. Use `wc -c rows.jsonl` for the rendered byte count; reading the whole export is subject to the configured row and byte limits.

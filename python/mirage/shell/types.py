@@ -12,14 +12,65 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
-import tree_sitter
 
-FunctionBody: TypeAlias = list[tree_sitter.Node]
+class TSNodeLike(Protocol):
+    @property
+    def type(self) -> str: ...
+
+    @property
+    def text(self) -> bytes | None: ...
+
+    @property
+    def id(self) -> int: ...
+
+    @property
+    def start_byte(self) -> int: ...
+
+    @property
+    def end_byte(self) -> int: ...
+
+    @property
+    def start_point(self) -> tuple[int, int]: ...
+
+    @property
+    def end_point(self) -> tuple[int, int]: ...
+
+    @property
+    def children(self) -> Sequence["TSNodeLike"]: ...
+
+    @property
+    def named_children(self) -> Sequence["TSNodeLike"]: ...
+
+    @property
+    def parent(self) -> "TSNodeLike | None": ...
+
+    @property
+    def prev_sibling(self) -> "TSNodeLike | None": ...
+
+    @property
+    def next_sibling(self) -> "TSNodeLike | None": ...
+
+    @property
+    def child_count(self) -> int: ...
+
+    @property
+    def is_named(self) -> bool: ...
+
+    @property
+    def is_missing(self) -> bool: ...
+
+    @property
+    def has_error(self) -> bool: ...
+
+    def child_by_field_name(self, name: str) -> "TSNodeLike | None": ...
+
+
+FunctionBody: TypeAlias = list[TSNodeLike]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,9 +92,19 @@ class ElementOps:
             assignments included, so ``i=2, a[i]`` reads the new ``i``.
         read (Callable[[str, str], str | None]): the element's stored
             text, None when the element is unset.
+        is_assoc (Callable[[str], bool] | None): whether a name holds an
+            associative array, whose subscript is a key. Given, the
+            evaluator evaluates an indexed subscript itself, in its own
+            record, and hands ``resolve`` the index; absent, ``resolve``
+            evaluates the subscript text (a caller outside a session).
+        holds_array (Callable[[str], bool] | None): whether a name holds
+            an array, indexed or associative, empty or not.
     """
+
     resolve: Callable[[str, str, Mapping[str, str]], str]
     read: Callable[[str, str], str | None]
+    is_assoc: Callable[[str], bool] | None = None
+    holds_array: Callable[[str], bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +118,7 @@ class ArithWrite:
             an array, or the scalar itself).
         value (str): the stored decimal text.
     """
+
     name: str
     key: str | None
     value: str
@@ -75,12 +137,15 @@ class ArithResult:
             name aliases element 0 and ``((a[0]=1, a=2))`` has to
             leave 2.
     """
+
     value: int
     writes: tuple[ArithWrite, ...] = ()
 
 
 class NodeType(StrEnum):
     """Tree-sitter-bash node types."""
+
+    TIMED_STATEMENT = "timed_statement"
     COMMAND = "command"
     PIPELINE = "pipeline"
     LIST = "list"
@@ -146,6 +211,9 @@ class NodeType(StrEnum):
     REDIRECT_APPEND = ">>"
     REDIRECT_IN = "<"
     REDIRECT_STDERR = ">&"
+    REDIRECT_DUP_IN = "<&"
+    REDIRECT_CLOSE_OUT = ">&-"
+    REDIRECT_CLOSE_IN = "<&-"
     REDIRECT_BOTH = "&>"
     REDIRECT_BOTH_APPEND = "&>>"
     HEREDOC_START_TOKEN = "<<"
@@ -199,6 +267,7 @@ class OptionWord:
             out of them and refuses the rest.
         consumed (int): words the option took, 2 for the `-o NAME` form.
     """
+
     settings: tuple[tuple[str, bool], ...] = ()
     other: str = ""
     consumed: int = 1
@@ -208,9 +277,19 @@ class RedirectKind(StrEnum):
     STDOUT = "stdout"
     STDERR = "stderr"
     STDIN = "stdin"
+    READWRITE = "readwrite"
     STDERR_TO_STDOUT = "stderr_to_stdout"
     HEREDOC = "heredoc"
     HERESTRING = "herestring"
+    # `N>&word` with a word that is neither a number nor `-` on a
+    # descriptor other than 1: bash refuses it as `word: ambiguous
+    # redirect` before the command runs, so the target is kept for the
+    # message and nothing is opened.
+    AMBIGUOUS = "ambiguous"
+    # A heredoc whose body failed to expand: bash fails the command with
+    # the expansion's status and diagnostic and goes on with the line,
+    # so the error is kept as the target and nothing is read.
+    UNEXPANDED = "unexpanded"
 
 
 @dataclass
@@ -225,9 +304,19 @@ class Redirect:
         append (bool): whether the write appends rather than truncates.
         clobber (bool): whether the operator was `>|`, which overrides
             `set -C` for this one redirect and nothing else.
-        pipeline (Any): the process substitution feeding the target.
+        pipeline (Any): the node a heredoc's operator line pipes the
+            command into (`cat <<EOF | tr`), run on the command's
+            stdout.
         expand_vars (bool): whether the target undergoes expansion.
+        continuation (tuple[tuple[str, Any], ...]): the `&&`/`||`
+            steps a heredoc's operator line carries past the delimiter
+            word (`false <<EOF || echo x`), each an operator and its
+            right operand, in the order bash applies them to the
+            statement. tree-sitter parses that tail inside the
+            heredoc_redirect node, so it is detached here and applied
+            by the executor around the whole statement.
     """
+
     fd: int
     target: Any
     target_node: Any = None
@@ -236,6 +325,45 @@ class Redirect:
     clobber: bool = False
     pipeline: Any = None
     expand_vars: bool = True
+    continuation: tuple[tuple[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineStages:
+    """A pipeline as bash reads it, whatever shape the parse gave it.
+
+    Args:
+        commands (tuple[Any, ...]): the stages in order, a leading
+            ``!`` unwrapped.
+        stderr_flags (tuple[bool, ...]): per stage, whether ``|&``
+            follows it.
+        redirects (tuple[tuple[Redirect, ...], ...]): per stage, the
+            redirects the parse hoisted off it, in source order; empty
+            for a stage that holds its own.
+        negated (bool): a leading ``!`` negates the pipeline's status.
+        lead (tuple[Any, str, Any] | None): the ``left, op, right`` of a
+            list the parse pulled into the first stage. Its left side
+            runs first and its operator decides whether the pipeline
+            runs at all; its right operand is where the pipeline starts
+            and stands for it in the connection.
+    """
+
+    commands: tuple[Any, ...]
+    stderr_flags: tuple[bool, ...]
+    redirects: tuple[tuple[Redirect, ...], ...]
+    negated: bool = False
+    lead: tuple[Any, str, Any] | None = None
+
+
+class ProcessSubDirection(StrEnum):
+    """Which way a process substitution carries bytes.
+
+    `<(cmd)` is INPUT (the inner command's stdout feeds our stdin),
+    `>(cmd)` is OUTPUT (our stdout feeds the inner command's stdin).
+    """
+
+    INPUT = "input"
+    OUTPUT = "output"
 
 
 class ShellBuiltin(StrEnum):
@@ -243,69 +371,151 @@ class ShellBuiltin(StrEnum):
 
     Commands that don't touch the filesystem.
     Handled directly by the executor, not dispatched
-    to mounts.
+    to mounts. Listed by tier and group (``BUILTIN_GROUP``
+    below is the source of truth).
     """
-    # session state
+
+    # grammar: the shell's own language
+    # -- working directory
     PWD = "pwd"
     CD = "cd"
+    # -- variables and positional parameters
     EXPORT = "export"
     UNSET = "unset"
     LOCAL = "local"
+    # declare / typeset / readonly are parser-owned (the declaration
+    # node runs them, they never reach the executor's table); rows here
+    # so `type` reports them and the tiers file them as grammar.
+    DECLARE = "declare"
+    TYPESET = "typeset"
+    READONLY = "readonly"
     SET = "set"
-    PRINTENV = "printenv"
-    ENV = "env"
-    WHOAMI = "whoami"
-    MAN = "man"
-    HISTORY = "history"
-    # control
-    TRUE = "true"
-    FALSE = "false"
-    COLON = ":"
-    SOURCE = "source"
-    DOT = "."
-    EVAL = "eval"
     READ = "read"
     MAPFILE = "mapfile"
     READARRAY = "readarray"
     SHIFT = "shift"
     GETOPTS = "getopts"
+    LET = "let"
+    # -- shell state
     TRAP = "trap"
     SHOPT = "shopt"
     UMASK = "umask"
     ALIAS = "alias"
     UNALIAS = "unalias"
-    LET = "let"
     EXEC = "exec"
+    # -- conditions
     TEST = "test"
     BRACKET = "["
     DOUBLE_BRACKET = "[["
-    # job control
+    # -- output
+    ECHO = "echo"
+    PRINTF = "printf"
+    # -- running lines
+    SOURCE = "source"
+    DOT = "."
+    EVAL = "eval"
+    COMMAND = "command"
+    # -- name lookup
+    TYPE = "type"
+    WHICH = "which"
+    # -- status and control flow
+    TRUE = "true"
+    FALSE = "false"
+    COLON = ":"
+    BREAK = "break"
+    CONTINUE = "continue"
+    RETURN = "return"
+    EXIT = "exit"
+    # tools: programs the line invokes
+    # -- environment and identity
+    PRINTENV = "printenv"
+    ENV = "env"
+    WHOAMI = "whoami"
+    # -- manuals and history
+    MAN = "man"
+    HISTORY = "history"
+    # -- job control
     WAIT = "wait"
     FG = "fg"
     KILL = "kill"
     JOBS = "jobs"
     DISOWN = "disown"
     PS = "ps"
-    # output / text processing (no filesystem)
-    ECHO = "echo"
-    PRINTF = "printf"
+    # -- clock
     SLEEP = "sleep"
-    # nested shells
+    # -- nested shells
     BASH = "bash"
     SH = "sh"
-    # python exec
+    # -- interpreters
     PYTHON = "python"
     PYTHON3 = "python3"
-    # javascript exec
     NODE = "node"
     JS = "js"
-    # commands handled by executor
+    # -- command runners
     XARGS = "xargs"
     TIMEOUT = "timeout"
-    COMMAND = "command"
-    TYPE = "type"
-    WHICH = "which"
-    BREAK = "break"
-    CONTINUE = "continue"
-    RETURN = "return"
-    EXIT = "exit"
+
+
+class BuiltinTier(StrEnum):
+    """Which of two things a shell builtin is, as taxonomy.
+
+    ``GRAMMAR`` is the shell's own language: it moves session state,
+    control flow, or the line's own streams, and never reaches a backend
+    except through the op dispatcher. ``TOOL`` is a program the line
+    invokes that a real system ships as a separate binary, or that
+    reaches beyond the session (an interpreter, the job table, the
+    history recording). The permission layer reads no tier: every
+    builtin is a subject of a command allowlist exactly like an
+    installed command, and both tiers are deniable by name.
+    """
+
+    GRAMMAR = "grammar"
+    TOOL = "tool"
+
+
+class BuiltinGroup(StrEnum):
+    """The family a shell builtin belongs to, one level below the tier.
+
+    Every group sits in exactly one tier (``GROUP_TIER``), so filing a
+    word in a group also files its tier; ``BUILTIN_GROUP`` is the one
+    row per word. A listing (bare ``man``) or a rule can name a group
+    where it would otherwise have to spell out the words.
+    """
+
+    # grammar
+    WORKING_DIRECTORY = "working-directory"
+    VARIABLES = "variables"
+    SHELL_STATE = "shell-state"
+    CONDITIONS = "conditions"
+    OUTPUT = "output"
+    RUNNING_LINES = "running-lines"
+    NAME_LOOKUP = "name-lookup"
+    CONTROL_FLOW = "control-flow"
+    # tools
+    ENVIRONMENT = "environment"
+    MANUALS_AND_HISTORY = "manuals-and-history"
+    JOB_CONTROL = "job-control"
+    CLOCK = "clock"
+    NESTED_SHELLS = "nested-shells"
+    INTERPRETERS = "interpreters"
+    COMMAND_RUNNERS = "command-runners"
+
+
+@dataclass(frozen=True, slots=True)
+class BacktickSegment:
+    """One piece of a backtick region as the evaluator lexes it: a
+    command a pair encloses, or the literal text between two pairs.
+
+    Args:
+        text (str): the segment's text, a command's with its escapes
+            resolved, as the nested line parses it.
+        command (bool): whether a pair encloses it.
+        start (int): where the segment's raw text starts in the region.
+        end (int): the index after its last raw character; for a
+            command, the closing backtick's.
+    """
+
+    text: str
+    command: bool
+    start: int
+    end: int

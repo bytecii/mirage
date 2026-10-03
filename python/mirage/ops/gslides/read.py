@@ -19,14 +19,16 @@ from mirage.types import PathSpec
 from mirage.utils.ranges import slice_window
 
 
-@op("read", resource=["gslides", "gdrive"], filetype=".gslide.json")
-async def read(accessor: GSlidesAccessor,
-               path: PathSpec,
-               *,
-               index,
-               offset: int = 0,
-               size: int | None = None,
-               **kwargs) -> bytes:
+@op("read", vfs=["gslides", "gdrive"], filetype=".gslide.json")
+async def read(
+    accessor: GSlidesAccessor,
+    path: PathSpec,
+    *,
+    index,
+    offset: int = 0,
+    size: int | None = None,
+    **kwargs,
+) -> bytes:
     """Read the rendered document, optionally only a byte range of it.
 
     A backend that registers its own read op does not go through the

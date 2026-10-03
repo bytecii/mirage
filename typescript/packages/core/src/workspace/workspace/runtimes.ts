@@ -12,82 +12,63 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { parsedCommands, type PolicyDecision } from '../../runtime/policy/index.ts'
+import { type RouteDecision } from '../../runtime/routing/index.ts'
 import type { Runtime, RuntimeEntry } from '../../runtime/base.ts'
 import { rejectConfigScript } from './guard.ts'
-import { LanguageRuntime } from '../../runtime/language.ts'
+import type { WorkspaceBinding } from '../../runtime/binding.ts'
 import { isLineExecutor, type LineExecutor } from '../../runtime/mixin.ts'
 import {
   bindCommands,
   buildRuntime,
   DEFAULT_ENTRIES,
-  DEFAULT_PYTHON,
-  VFSRuntime,
+  WorkspaceRuntime,
   wholeLineRuntime,
 } from '../../runtime/table.ts'
-import type { MountResolver } from '../../runtime/resolver.ts'
-import type { BridgeDispatchFn } from '../../runtime/types.ts'
-import type { TSNodeLike } from '../../shell/types.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 
 export interface RuntimesInit {
   registry: MountRegistry
   /** The `runtimes` option: instances and name shorthands, or undefined for the default world. */
   entries: RuntimeEntry[] | undefined
-  /** `options.python`, forwarded into the default python engine's build. */
-  pythonConfig: Record<string, unknown>
-  bridge: () => BridgeDispatchFn
-  resolver: MountResolver
-  registerCloser: (fn: () => Promise<void>) => void
+  binding: WorkspaceBinding
 }
 
 /**
  * The workspace's ordered runtime world; the first capturer binds each
  * command. Mirrors the Python `Runtimes` in `workspace/runtimes.py`.
  *
+ * Owns the entry list and everything that reads or changes it: building
+ * it from config, adding and removing entries, closing them, and
+ * answering which entry takes a whole line.
+ *
  * The TypeScript engines construct lazily (missing wasm surfaces at run
- * time), so defaults and explicit entries build the same way. The vfs
- * runtime is required: every world names an executor for unclaimed
- * commands, so an omitted entry appends the default unconditional one.
+ * time), so defaults and explicit entries build the same way. The
+ * workspace runtime is required: every world names an executor for
+ * unclaimed commands, so an omitted entry appends the default
+ * unconditional one.
  */
 export class Runtimes {
-  readonly entries: Runtime[] = []
-  bindings: Record<string, Runtime>
+  entries: readonly Runtime[] = []
+  bindings: Record<string, Runtime> = Object.create(null) as Record<string, Runtime>
   private readonly registry: MountRegistry
-  private readonly bridge: () => BridgeDispatchFn
-  private readonly resolver: MountResolver
-  private readonly registerCloser: (fn: () => Promise<void>) => void
+  private readonly binding: WorkspaceBinding
+  private readonly retiring = new Map<Runtime, Promise<void>>()
 
   constructor(init: RuntimesInit) {
     this.registry = init.registry
-    this.bridge = init.bridge
-    this.resolver = init.resolver
-    this.registerCloser = init.registerCloser
-    if (init.entries === undefined) {
-      for (const name of DEFAULT_ENTRIES) {
-        this.entries.push(
-          buildRuntime(name, name === DEFAULT_PYTHON ? { config: { ...init.pythonConfig } } : {}),
-        )
-      }
-    } else {
-      for (const entry of init.entries) {
-        this.entries.push(typeof entry === 'string' ? buildRuntime(entry) : entry)
-      }
+    this.binding = init.binding
+    const entries: Runtime[] = (init.entries ?? DEFAULT_ENTRIES).map((entry) =>
+      typeof entry === 'string' ? buildRuntime(entry) : entry,
+    )
+    if (!entries.some((entry) => entry.name === 'workspace')) {
+      entries.push(new WorkspaceRuntime())
     }
-    if (!this.entries.some((entry) => entry.name === 'vfs')) {
-      this.entries.push(new VFSRuntime())
-    }
-    init.registry.vfsRuntime =
-      this.entries.find((entry): entry is VFSRuntime => entry instanceof VFSRuntime) ?? null
-    // The live array: add() pushes into it, so the registry view never
-    // goes stale (Python re-assigns per add instead).
-    init.registry.runtimeEntries = this.entries
-    for (const entry of this.entries) {
+    for (const entry of entries) {
       rejectConfigScript(`runtime '${entry.name}' script`, entry.script)
-      if (entry instanceof LanguageRuntime) entry.attach(this.bridge(), this.resolver)
-      this.registerCloser(() => entry.close())
     }
-    this.bindings = bindCommands(this.entries)
+    const bindings = bindCommands(entries)
+    for (const entry of entries) entry.bind(this.binding)
+    this.install(entries, bindings)
   }
 
   /**
@@ -103,33 +84,68 @@ export class Runtimes {
     rejectConfigScript(`runtime '${entry.name}' script`, entry.script)
     const candidate = [...this.entries, entry]
     const bindings = bindCommands(candidate)
-    if (entry instanceof LanguageRuntime) entry.attach(this.bridge(), this.resolver)
-    this.registerCloser(() => entry.close())
-    this.entries.push(entry)
-    this.bindings = bindings
+    entry.bind(this.binding)
+    this.install(candidate, bindings)
     return entry
+  }
+
+  /** Unbind an entry's commands now and close it once it is idle. */
+  async remove(name: string): Promise<void> {
+    if (name === 'workspace') {
+      throw new Error(
+        'cannot remove the workspace runtime: it serves every command no other runtime captures',
+      )
+    }
+    const entry = this.entries.find((candidate) => candidate.name === name)
+    if (entry === undefined) throw new Error(`no runtime entry: '${name}'`)
+    const remaining = this.entries.filter((candidate) => candidate !== entry)
+    this.install(remaining, bindCommands(remaining))
+    const closing = retire(entry).finally(() => {
+      this.retiring.delete(entry)
+    })
+    this.retiring.set(entry, closing)
+    await closing
+  }
+
+  /** Close every entry, including the ones still being removed. */
+  async close(): Promise<void> {
+    const results = await Promise.allSettled([
+      ...this.entries.map((entry) => entry.close()),
+      ...this.retiring.values(),
+    ])
+    const failures = results.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []))
+    if (failures.length > 0)
+      throw failures.length === 1
+        ? failures[0]
+        : new AggregateError(failures, 'runtime close failed')
+  }
+
+  private install(entries: readonly Runtime[], bindings: Record<string, Runtime>): void {
+    this.entries = entries
+    this.bindings = bindings
+    this.registry.runtimeEntries = entries
+    this.registry.workspaceRuntime =
+      entries.find((entry): entry is WorkspaceRuntime => entry instanceof WorkspaceRuntime) ?? null
   }
 
   /**
    * The runtime taking this whole line, null for the executor.
    *
    * A runtime carrying LineExecutor takes the raw line when the line's
-   * resolved bindings place one of its commands (or "*") on it;
+   * resolved bindings explicitly place "*" on it;
    * everything else walks the executor's tree. The common world has no
    * such runtime, so this is a cheap scan.
    */
-  wholeLineFor(
-    rootNode: TSNodeLike,
-    decision: PolicyDecision | null,
-  ): (Runtime & LineExecutor) | null {
+  wholeLineFor(decision: RouteDecision | null): (Runtime & LineExecutor) | null {
     const candidates = this.entries.some((entry) => isLineExecutor(entry))
     if (!candidates) return null
     const bindings: Record<string, Runtime | null> =
       decision !== null ? decision.bindings : this.bindings
-    const commands = parsedCommands(rootNode, this.registry.clis.names())
-    return wholeLineRuntime(
-      bindings,
-      commands.map((parsed) => parsed.command),
-    )
+    return wholeLineRuntime(bindings)
   }
+}
+
+async function retire(entry: Runtime): Promise<void> {
+  await entry.retire()
+  await entry.close()
 }

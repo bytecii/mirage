@@ -15,12 +15,11 @@
 import asyncio
 import json
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.seaweedfs import SeaweedFSConfig, SeaweedFSResource
+from mirage.vfs.seaweedfs import SeaweedFSConfig, SeaweedFSVFS
 
 load_dotenv(".env.development")
 
@@ -31,35 +30,38 @@ config = SeaweedFSConfig(
     secret_access_key=os.environ.get("SEAWEEDFS_SECRET_KEY", "any"),
 )
 
-resource = SeaweedFSResource(config)
+vfs = SeaweedFSVFS(config)
 
 
 async def main():
-    with Workspace({"/seaweedfs/": resource}, mode=MountMode.WRITE) as ws:
-        vos = sys.modules["os"]
-        print(f"=== VFS MODE: open() reads SeaweedFS at {config.endpoint_url} "
-              f"transparently ===\n")
+    with Workspace({"/seaweedfs/": vfs}, mode=MountMode.WRITE) as ws:
+        print(
+            f"=== VFS MODE: open() reads SeaweedFS at {config.endpoint_url} "
+            f"transparently ===\n"
+        )
 
         # Seed a few objects so the demo is self-contained.
-        await ws.ops.write(
+        await ws.vfs.write(
             "/seaweedfs/data/example.jsonl",
             b'{"event":"queue-operation","tool":"mirage"}\n'
             b'{"event":"read","tool":"mirage"}\n'
-            b'{"event":"queue-operation","tool":"other"}\n')
-        await ws.ops.write(
+            b'{"event":"queue-operation","tool":"other"}\n',
+        )
+        await ws.vfs.write(
             "/seaweedfs/data/config.json",
-            b'{"name":"mirage","version":1,"tags":["s3","seaweedfs"]}')
-        await ws.ops.write("/seaweedfs/notes.txt", b"hello from seaweedfs\n")
+            b'{"name":"mirage","version":1,"tags":["s3","seaweedfs"]}',
+        )
+        await ws.vfs.write("/seaweedfs/notes.txt", b"hello from seaweedfs\n")
 
         print("--- os.listdir() root ---")
-        for e in vos.listdir("/seaweedfs"):
+        for e in os.listdir("/seaweedfs"):
             print(f"  {e}")
 
         print("\n--- os.path.isdir() on prefix ---")
-        print(f"  /seaweedfs/data: {vos.path.isdir('/seaweedfs/data')}")
+        print(f"  /seaweedfs/data: {os.path.isdir('/seaweedfs/data')}")
 
         print("\n--- os.listdir() data ---")
-        for e in vos.listdir("/seaweedfs/data"):
+        for e in os.listdir("/seaweedfs/data"):
             print(f"  {e}")
 
         print("\n--- open() + read example.jsonl (first 3 lines) ---")
@@ -71,27 +73,33 @@ async def main():
                 print(f"  [{i}] {json.dumps(rec)[:100]}...")
 
         print("\n--- os.path.exists() ---")
-        print(f"  example.jsonl: "
-              f"{vos.path.exists('/seaweedfs/data/example.jsonl')}")
-        print(f"  nonexistent: {vos.path.exists('/seaweedfs/data/nope.txt')}")
+        print(
+            f"  example.jsonl: "
+            f"{os.path.exists('/seaweedfs/data/example.jsonl')}"
+        )
+        print(f"  nonexistent: {os.path.exists('/seaweedfs/data/nope.txt')}")
 
         print("\n--- os.path.getsize() ---")
-        print(f"  notes.txt: {vos.path.getsize('/seaweedfs/notes.txt')} bytes")
+        print(f"  notes.txt: {os.path.getsize('/seaweedfs/notes.txt')} bytes")
 
         print("\n--- VFS commands ---")
-        result = await ws.execute("grep -c queue-operation "
-                                  "/seaweedfs/data/example.jsonl")
+        result = await ws.shell(
+            "grep -c queue-operation /seaweedfs/data/example.jsonl"
+        )
         print(f"  grep matches: {(await result.stdout_str()).strip()}")
-        result = await ws.execute("jq .tags /seaweedfs/data/config.json")
+        result = await ws.shell("jq .tags /seaweedfs/data/config.json")
         print(f"  jq .tags    : {(await result.stdout_str()).strip()}")
 
         print("\n--- cleanup ---")
-        for key in ("/seaweedfs/data/example.jsonl",
-                    "/seaweedfs/data/config.json", "/seaweedfs/notes.txt"):
-            await ws.execute(f"rm {key}")
+        for key in (
+            "/seaweedfs/data/example.jsonl",
+            "/seaweedfs/data/config.json",
+            "/seaweedfs/notes.txt",
+        ):
+            await ws.shell(f"rm {key}")
         print("  cleaned")
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(r.bytes for r in records)
         print(f"\nStats: {len(records)} ops, {total} bytes transferred")
 

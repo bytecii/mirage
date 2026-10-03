@@ -13,40 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from dataclasses import dataclass
-from enum import StrEnum
 
 from mirage.types import PathSpec
-
-
-class AwkCmpOp(StrEnum):
-    EQ = "=="
-    NE = "!="
-    GT = ">"
-    LT = "<"
-    GE = ">="
-    LE = "<="
-
-
-class AwkBoolOp(StrEnum):
-    AND = "&&"
-    OR = "||"
-
-
-class AwkBlock(StrEnum):
-    BEGIN = "BEGIN"
-    END = "END"
-
-
-class AwkBuiltin(StrEnum):
-    NR = "NR"
-    NF = "NF"
-    REC = "$0"
-
-
-FIELD_PREFIX = "$"
-PRINT_STMT = "print"
-
-CMP_OP_PATTERN = r"==|!=|>=|<=|>|<"
 
 USAGE = "awk: usage: awk [-F fs] [-v var=val] 'program' [file ...]"
 
@@ -59,13 +27,6 @@ class AwkFlags:
 
 
 __all__ = [
-    "AwkBlock",
     "AwkFlags",
-    "AwkBoolOp",
-    "AwkBuiltin",
-    "AwkCmpOp",
-    "CMP_OP_PATTERN",
-    "FIELD_PREFIX",
-    "PRINT_STMT",
     "USAGE",
 ]

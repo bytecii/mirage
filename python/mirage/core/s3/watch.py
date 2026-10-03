@@ -15,10 +15,14 @@
 from collections.abc import AsyncIterator
 
 from mirage.accessor.s3 import S3Accessor
-from mirage.core.s3.client import (_client_kwargs, _key, _strip_prefix,
-                                   async_session)
-from mirage.core.timeutil import to_iso_z
+from mirage.core.s3.client import (
+    _client_kwargs,
+    _key,
+    _strip_prefix,
+    async_session,
+)
 from mirage.types import PathSpec, WalkEntry
+from mirage.utils.dates import to_iso_z
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.watch.base import DeltaHook
 from mirage.watch.delta import ListingDeltaHook
@@ -42,7 +46,7 @@ class S3Walk:
 
     def __init__(self, accessor: S3Accessor) -> None:
         """Args:
-            accessor (S3Accessor): Backend handle.
+        accessor (S3Accessor): Backend handle.
         """
         self._accessor = accessor
 
@@ -53,41 +57,46 @@ class S3Walk:
             root (PathSpec): Watch root (mount-virtual path).
         """
         config = self._accessor.config
-        prefix = mount_prefix_of(root.virtual, root.resource_path)
+        prefix = mount_prefix_of(root.virtual, root.vfs_path)
         stem = _key(root.mount_path, config).rstrip("/")
         base = (stem + "/") if stem else ""
         files: list[str] = []
         markers: list[str] = []
-        session = async_session(config)
-        async with session.client(**_client_kwargs(config)) as client:
-            paginator = client.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=config.bucket,
-                                                 Prefix=stem):
-                for obj in page.get("Contents") or []:
-                    okey = obj["Key"]
-                    if not (okey == stem or okey.startswith(base)):
-                        continue
-                    relative = _strip_prefix(okey, config)
-                    virtual = (prefix.rstrip("/") + "/" +
-                               relative.lstrip("/") if prefix else "/" +
-                               relative.lstrip("/"))
-                    if okey.endswith("/"):
-                        # A directory marker: mirage's own mkdir writes
-                        # one. It carries an ETag and a size, but it is
-                        # not a file, so synth_dirs reports it instead.
-                        markers.append(virtual.rstrip("/"))
-                        continue
-                    files.append(virtual)
-                    last_mod = obj.get("LastModified")
-                    modified = to_iso_z(last_mod) if last_mod else None
-                    size = obj.get("Size")
-                    etag = (obj.get("ETag") or "").strip('"') or None
-                    yield WalkEntry(virtual=virtual,
-                                    is_dir=False,
-                                    fingerprint=stat_fingerprint(
-                                        etag, modified, size),
-                                    size=size,
-                                    modified=modified)
+        client = await self._accessor.cached_client(
+            lambda: async_session(config).client(**_client_kwargs(config))
+        )
+        paginator = client.get_paginator("list_objects_v2")
+        async for page in paginator.paginate(
+            Bucket=config.bucket, Prefix=stem
+        ):
+            for obj in page.get("Contents") or []:
+                okey = obj["Key"]
+                if not (okey == stem or okey.startswith(base)):
+                    continue
+                relative = _strip_prefix(okey, config)
+                virtual = (
+                    prefix.rstrip("/") + "/" + relative.lstrip("/")
+                    if prefix
+                    else "/" + relative.lstrip("/")
+                )
+                if okey.endswith("/"):
+                    # A directory marker: mirage's own mkdir writes
+                    # one. It carries an ETag and a size, but it is
+                    # not a file, so synth_dirs reports it instead.
+                    markers.append(virtual.rstrip("/"))
+                    continue
+                files.append(virtual)
+                last_mod = obj.get("LastModified")
+                modified = to_iso_z(last_mod) if last_mod else None
+                size = obj.get("Size")
+                etag = (obj.get("ETag") or "").strip('"') or None
+                yield WalkEntry(
+                    virtual=virtual,
+                    is_dir=False,
+                    fingerprint=stat_fingerprint(etag, modified, size),
+                    size=size,
+                    modified=modified,
+                )
         for entry in synth_dirs(root.virtual, files, markers):
             yield entry
 

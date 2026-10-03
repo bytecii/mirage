@@ -12,39 +12,32 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { seedVar } from '../session/state.ts'
-import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
+import { lineBuffer } from '../../io/async_line_iterator.ts'
 import { asyncChain } from '../../io/stream.ts'
 import type { ByteSource } from '../../io/types.ts'
-import { IOResult } from '../../io/types.ts'
+import { IOResult, materialize } from '../../io/types.ts'
+import { concat } from '../../io/cachable_iterator.ts'
+import type { HandOff } from '../../policy/types.ts'
+import type { Decisions } from '../../policy/decisions.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
 import { type Policies } from '../../policy/index.ts'
 import { applyBarrier, BarrierPolicy } from '../../shell/barrier.ts'
-import { ExitSignal, ArithError, ReadonlyError } from '../../shell/errors.ts'
-import { finishStatement, prependExitOutput } from './statement.ts'
+import { ArithError, ExitSignal, ReadonlyError, ReturnSignal } from '../../shell/errors.ts'
+import { fd0Binding, finishStatement, recordStatus } from './statement.ts'
+import { pipelineTransparent } from '../../shell/node_kind.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import { ERREXIT_EXEMPT_TYPES } from '../../shell/constants.ts'
+import { Channel, type JobConsole } from '../../shell/console/index.ts'
+import { readReply } from './builtins/read/index.ts'
 import type { PathSpec } from '../../types.ts'
 import { wordText } from '../../types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
-import type { Session } from '../session/session.ts'
-import { sessionView } from '../session/state.ts'
+import type { SessionState } from '../session/session.ts'
+import { sessionView, visibleEnv } from '../session/state.ts'
 import { ExecutionNode } from '../types.ts'
-import type { ExecuteNodeFn } from './types.ts'
+import { type ExecuteNodeFn, runStatement } from './jobs.ts'
+import type { JobTable } from '../../shell/job_table/index.ts'
 import { fnmatch } from '../../utils/fnmatch.ts'
-
-function installStdinBuffer(
-  session: Session,
-  stdin: ByteSource | null,
-): [AsyncLineIterator | null, ByteSource | null] {
-  const prev = session.stdinBuffer
-  if (stdin !== null) {
-    const source = stdin instanceof Uint8Array ? asyncChain(stdin) : stdin
-    session.stdinBuffer = new AsyncLineIterator(source)
-    return [prev, null]
-  }
-  return [prev, stdin]
-}
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
 
@@ -76,21 +69,44 @@ export class ContinueSignal extends Error {
   }
 }
 
+/**
+ * Execute a list of body commands sequentially.
+ *
+ * A statement ending in `&` is launched as a job through `runStatement`
+ * rather than run inline; `jobTable` and `agentId` are the job plane it
+ * needs.
+ */
 async function executeBody(
   executeNode: ExecuteNodeFn,
   body: readonly TSNodeLike[],
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null,
   callStack: CallStack | null,
+  jobTable: JobTable | null,
+  agentId: string | null,
+  handed: HandOff | null,
+  decisions: Decisions | null,
 ): Promise<Result> {
   const allStdout: (ByteSource | null)[] = []
   let mergedIo = new IOResult()
   let lastExec = new ExecutionNode({ command: '', exitCode: 0 })
+  const bound = fd0Binding(session)
   for (const cmd of body) {
     try {
-      const [rawStdout, io, execNode] = await executeNode(cmd, session, stdin, callStack)
+      const [rawStdout, io, execNode] = await runStatement(
+        executeNode,
+        cmd,
+        session,
+        stdin,
+        bound,
+        callStack,
+        jobTable,
+        agentId,
+        handed,
+        decisions,
+      )
       lastExec = execNode
-      const stdout = await finishStatement(rawStdout, io, session)
+      const stdout = await finishStatement(rawStdout, io, session, cmd)
       allStdout.push(stdout)
       mergedIo = await mergedIo.merge(io)
       if (
@@ -103,21 +119,14 @@ async function executeBody(
         break
       }
     } catch (sig) {
-      if (sig instanceof ExitSignal)
-        throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
-      if (sig instanceof BreakSignal) {
-        if (sig.stdout !== null) allStdout.push(sig.stdout)
-        mergedIo = await mergedIo.merge(sig.io)
-        const combined = chainNonNull(allStdout)
-        throw new BreakSignal(combined, mergedIo, sig.levels)
+      if (!isUnwinding(sig)) throw sig
+      // The control builtin is a statement the loop leaves through
+      // rather than closes, so its own status is recorded here: bash
+      // leaves `${PIPESTATUS[@]}` at `0` after `break`.
+      if (sig instanceof BreakSignal || sig instanceof ContinueSignal) {
+        recordStatus(session, sig.io.exitCode)
       }
-      if (sig instanceof ContinueSignal) {
-        if (sig.stdout !== null) allStdout.push(sig.stdout)
-        mergedIo = await mergedIo.merge(sig.io)
-        const combined = chainNonNull(allStdout)
-        throw new ContinueSignal(combined, mergedIo, sig.levels)
-      }
-      throw sig
+      throw await carried(sig, chainNonNull(allStdout), mergedIo)
     }
   }
   const combined = chainNonNull(allStdout)
@@ -127,7 +136,92 @@ async function executeBody(
 function chainNonNull(sources: readonly (ByteSource | null)[]): ByteSource | null {
   const nonNull = sources.filter((s): s is ByteSource => s !== null)
   if (nonNull.length === 0) return null
-  return asyncChain(...nonNull)
+  return asyncChain(nonNull)
+}
+
+export type Unwinding = BreakSignal | ContinueSignal | ReturnSignal | ExitSignal
+
+export function isUnwinding(err: unknown): err is Unwinding {
+  return (
+    err instanceof BreakSignal ||
+    err instanceof ContinueSignal ||
+    err instanceof ReturnSignal ||
+    err instanceof ExitSignal
+  )
+}
+
+/**
+ * An unwinding `break`, `continue`, `return` or `exit` with the output the
+ * construct it leaves had produced put in front of its own, which that
+ * construct would otherwise drop on the way out (bash wrote it as it went).
+ * Mirrors Python's carried.
+ */
+export async function carried(
+  sig: Unwinding,
+  stdout: ByteSource | null,
+  io: IOResult,
+): Promise<Unwinding> {
+  if (sig instanceof BreakSignal || sig instanceof ContinueSignal) {
+    const Signal = sig instanceof BreakSignal ? BreakSignal : ContinueSignal
+    return new Signal(chainNonNull([stdout, sig.stdout]), await io.merge(sig.io), sig.levels)
+  }
+  const stderr = concat([await materialize(io.stderr), sig.stderr])
+  if (sig instanceof ReturnSignal) {
+    return new ReturnSignal(sig.exitCode, stderr, chainNonNull([stdout, sig.stdout]))
+  }
+  sig.stdout = concat([await materialize(stdout), sig.stdout ?? new Uint8Array()])
+  sig.stderr = stderr
+  return sig
+}
+
+/**
+ * What a child shell reports when an `Unwinding` ends it: what it wrote, its
+ * diagnostic, and its status, `exit`'s contained one, `return`'s own, or that
+ * of `break` or `continue`. Mirrors Python's ended.
+ */
+export function ended(sig: Unwinding): IOResult {
+  if (sig instanceof BreakSignal || sig instanceof ContinueSignal) {
+    return new IOResult({ stdout: sig.stdout, stderr: sig.io.stderr, exitCode: sig.io.exitCode })
+  }
+  return new IOResult({
+    stdout: sig.stdout,
+    stderr: sig.stderr.byteLength > 0 ? sig.stderr : null,
+    exitCode: sig instanceof ExitSignal ? sig.containedCode : sig.exitCode,
+  })
+}
+
+/**
+ * Take the diagnostic an `Unwinding` carries, for the redirects it was
+ * written under to route. Mirrors Python's take_stderr.
+ */
+export async function takeStderr(sig: Unwinding): Promise<Uint8Array> {
+  if (sig instanceof BreakSignal || sig instanceof ContinueSignal) {
+    const diagnostic = await materialize(sig.io.stderr)
+    sig.io.stderr = null
+    return diagnostic
+  }
+  const diagnostic = sig.stderr
+  sig.stderr = new Uint8Array()
+  return diagnostic
+}
+
+/**
+ * Fold a `break` or `continue` into the loop it reached; one aimed further
+ * out (`break 2`) goes on with a level spent and the loop's output in front
+ * of its own. Mirrors Python's _absorbed.
+ */
+async function absorbed(
+  sig: BreakSignal | ContinueSignal,
+  allStdout: (ByteSource | null)[],
+  mergedIo: IOResult,
+): Promise<IOResult> {
+  allStdout.push(sig.stdout)
+  const merged = await mergedIo.merge(sig.io)
+  if (sig.levels > 1) {
+    const Signal = sig instanceof BreakSignal ? BreakSignal : ContinueSignal
+    throw new Signal(chainNonNull(allStdout), merged, sig.levels - 1)
+  }
+  return merged
 }
 
 function collectLoopResult(
@@ -144,20 +238,56 @@ export async function handleIf(
   executeNode: ExecuteNodeFn,
   branches: readonly [TSNodeLike, TSNodeLike[]][],
   elseBody: TSNodeLike[] | null,
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
+  jobTable: JobTable | null = null,
+  agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
+  const bound = fd0Binding(session)
   for (const [condition, body] of branches) {
-    const [condStdout, condIo] = await executeNode(condition, session, stdin, callStack)
+    const [condStdout, condIo] = await runStatement(
+      executeNode,
+      condition,
+      session,
+      stdin,
+      bound,
+      callStack,
+      jobTable,
+      agentId,
+      handed,
+      decisions,
+    )
     await applyBarrier(condStdout, condIo, BarrierPolicy.STATUS)
-    session.lastExitCode = condIo.exitCode
+    recordStatus(session, condIo.exitCode, pipelineTransparent(condition))
     if (condIo.exitCode === 0) {
-      return executeBody(executeNode, body, session, stdin, callStack)
+      return executeBody(
+        executeNode,
+        body,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        agentId,
+        handed,
+        decisions,
+      )
     }
   }
   if (elseBody !== null) {
-    return executeBody(executeNode, elseBody, session, stdin, callStack)
+    return executeBody(
+      executeNode,
+      elseBody,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      handed,
+      decisions,
+    )
   }
   return [null, new IOResult(), new ExecutionNode({ exitCode: 0 })]
 }
@@ -172,10 +302,14 @@ export async function handleFor(
   variable: string,
   values: readonly (string | PathSpec)[],
   body: readonly TSNodeLike[],
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
   policies: Policies | null = null,
+  jobTable: JobTable | null = null,
+  agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   let mergedIo = new IOResult()
   const allStdout: (ByteSource | null)[] = []
@@ -187,63 +321,46 @@ export async function handleFor(
     const err = new TextEncoder().encode(`bash: ${variable}: readonly variable\n`)
     return collectLoopResult([], new IOResult({ exitCode: 1, stderr: err }), 'for')
   }
-  const savedValue = session.env[variable]
-  const hadKey = variable in session.env
-  const [prevBuffer, bodyStdin] = installStdinBuffer(session, stdin)
-  stdin = bodyStdin
-
-  try {
-    for (const val of values) {
-      if (session.shellOptions.noexec === true) break
-      // env stores strings only; bash keeps `for f in sub/*.txt`
-      // matches relative, so the loop variable takes the typed form.
-      // The write goes through the session door; a policy denial
-      // aborts the loop before its body runs.
-      const textVal = wordText(val)
-      try {
-        await view.set(variable, textVal)
-      } catch (err) {
-        if (!(err instanceof PolicyDenied)) throw err
-        mergedIo = await mergedIo.merge(
-          new IOResult({ exitCode: 1, stderr: new TextEncoder().encode(`${err.message}\n`) }),
-        )
-        break
-      }
-      try {
-        const [stdout, io] = await executeBody(executeNode, body, session, stdin, callStack)
-        allStdout.push(stdout)
-        mergedIo = await mergedIo.merge(io)
-      } catch (sig) {
-        if (sig instanceof ExitSignal)
-          throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
-        if (sig instanceof BreakSignal) {
-          if (sig.stdout !== null) allStdout.push(sig.stdout)
-          mergedIo = await mergedIo.merge(sig.io)
-          if (sig.levels > 1) {
-            throw new BreakSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
-          }
-          break
-        }
-        if (sig instanceof ContinueSignal) {
-          if (sig.stdout !== null) allStdout.push(sig.stdout)
-          mergedIo = await mergedIo.merge(sig.io)
-          if (sig.levels > 1) {
-            throw new ContinueSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
-          }
-          continue
-        }
-        throw sig
-      }
+  for (const val of values) {
+    if (session.shellOptions.noexec === true) break
+    // env stores strings only; bash keeps `for f in sub/*.txt`
+    // matches relative, so the loop variable takes the typed form.
+    // The write goes through the session door; a policy denial
+    // aborts the loop before its body runs.
+    const textVal = wordText(val)
+    try {
+      await view.set(variable, textVal)
+    } catch (err) {
+      if (!(err instanceof PolicyDenied)) throw err
+      mergedIo = await mergedIo.merge(
+        new IOResult({ exitCode: 1, stderr: new TextEncoder().encode(`${err.message}\n`) }),
+      )
+      break
     }
-  } finally {
-    if (hadKey && savedValue !== undefined) {
-      seedVar(session, variable, savedValue)
-    } else {
-      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-      delete session.vars[variable]
+    try {
+      const [stdout, io] = await executeBody(
+        executeNode,
+        body,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        agentId,
+        handed,
+        decisions,
+      )
+      allStdout.push(stdout)
+      mergedIo = await mergedIo.merge(io)
+    } catch (sig) {
+      if (!(sig instanceof BreakSignal || sig instanceof ContinueSignal)) throw sig
+      mergedIo = await absorbed(sig, allStdout, mergedIo)
+      if (sig instanceof BreakSignal) break
+      continue
     }
-    session.stdinBuffer = prevBuffer
   }
+  // The loop variable is an ordinary variable in bash and keeps its
+  // last value after the loop (`for X in a b; do :; done; echo $X`
+  // prints b); nothing is put back.
   return collectLoopResult(allStdout, mergedIo, 'for')
 }
 
@@ -251,84 +368,90 @@ async function conditionLoop(
   executeNode: ExecuteNodeFn,
   condition: TSNodeLike,
   body: readonly TSNodeLike[],
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null,
   callStack: CallStack | null,
+  jobTable: JobTable | null,
+  agentId: string | null,
+  handed: HandOff | null,
+  decisions: Decisions | null,
   label: string,
   breakOnZero: boolean,
 ): Promise<Result> {
   let mergedIo = new IOResult()
   const allStdout: (ByteSource | null)[] = []
   let hitLimit = true
-  const [prevBuffer, bodyStdin] = installStdinBuffer(session, stdin)
-  stdin = bodyStdin
-
-  try {
-    for (let i = 0; i < MAX_WHILE; i++) {
-      if (session.shellOptions.noexec === true) {
-        hitLimit = false
-        break
-      }
-      const [condStdout, condIo] = await executeNode(condition, session, stdin, callStack)
-      await applyBarrier(condStdout, condIo, BarrierPolicy.STATUS)
-      session.lastExitCode = condIo.exitCode
-      if (breakOnZero && condIo.exitCode === 0) {
-        hitLimit = false
-        break
-      }
-      if (!breakOnZero && condIo.exitCode !== 0) {
-        hitLimit = false
-        break
-      }
-      try {
-        const [stdout, io] = await executeBody(executeNode, body, session, stdin, callStack)
-        allStdout.push(stdout)
-        mergedIo = await mergedIo.merge(io)
-      } catch (sig) {
-        if (sig instanceof ExitSignal)
-          throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
-        if (sig instanceof BreakSignal) {
-          hitLimit = false
-          if (sig.stdout !== null) allStdout.push(sig.stdout)
-          mergedIo = await mergedIo.merge(sig.io)
-          if (sig.levels > 1) {
-            throw new BreakSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
-          }
-          break
-        }
-        if (sig instanceof ContinueSignal) {
-          if (sig.stdout !== null) allStdout.push(sig.stdout)
-          mergedIo = await mergedIo.merge(sig.io)
-          if (sig.levels > 1) {
-            throw new ContinueSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
-          }
-          continue
-        }
-        throw sig
-      }
+  const bound = fd0Binding(session)
+  for (let i = 0; i < MAX_WHILE; i++) {
+    if (session.shellOptions.noexec === true) {
+      hitLimit = false
+      break
     }
-
-    if (hitLimit) {
-      const warn = new TextEncoder().encode(
-        `warning: ${label} loop terminated after ${MAX_WHILE.toString()} iterations\n`,
+    const [condStdout, condIo] = await runStatement(
+      executeNode,
+      condition,
+      session,
+      stdin,
+      bound,
+      callStack,
+      jobTable,
+      agentId,
+      handed,
+      decisions,
+    )
+    await applyBarrier(condStdout, condIo, BarrierPolicy.STATUS)
+    recordStatus(session, condIo.exitCode, pipelineTransparent(condition))
+    if (breakOnZero && condIo.exitCode === 0) {
+      hitLimit = false
+      break
+    }
+    if (!breakOnZero && condIo.exitCode !== 0) {
+      hitLimit = false
+      break
+    }
+    try {
+      const [stdout, io] = await executeBody(
+        executeNode,
+        body,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        agentId,
+        handed,
+        decisions,
       )
-      const existing = mergedIo.stderr
-      if (existing instanceof Uint8Array && existing.byteLength > 0) {
-        const combined = new Uint8Array(existing.byteLength + warn.byteLength)
-        combined.set(existing, 0)
-        combined.set(warn, existing.byteLength)
-        mergedIo.stderr = combined
-      } else {
-        mergedIo.stderr = warn
+      allStdout.push(stdout)
+      mergedIo = await mergedIo.merge(io)
+    } catch (sig) {
+      if (!(sig instanceof BreakSignal || sig instanceof ContinueSignal)) throw sig
+      mergedIo = await absorbed(sig, allStdout, mergedIo)
+      if (sig instanceof BreakSignal) {
+        hitLimit = false
+        break
       }
+      continue
     }
-    return collectLoopResult(allStdout, mergedIo, label)
-  } finally {
-    session.stdinBuffer = prevBuffer
   }
+
+  if (hitLimit) {
+    const warn = new TextEncoder().encode(
+      `warning: ${label} loop terminated after ${MAX_WHILE.toString()} iterations\n`,
+    )
+    const existing = mergedIo.stderr
+    if (existing instanceof Uint8Array && existing.byteLength > 0) {
+      const combined = new Uint8Array(existing.byteLength + warn.byteLength)
+      combined.set(existing, 0)
+      combined.set(warn, existing.byteLength)
+      mergedIo.stderr = combined
+    } else {
+      mergedIo.stderr = warn
+    }
+  }
+  return collectLoopResult(allStdout, mergedIo, label)
 }
 
-export type CforEval = (expr: TSNodeLike | null, dflt: number) => Promise<number>
+export type CforEval = (exprs: readonly TSNodeLike[], dflt: number) => Promise<number>
 
 /**
  * Run bash's C-style for: ((init; cond; update)) around a body.
@@ -342,140 +465,189 @@ export type CforEval = (expr: TSNodeLike | null, dflt: number) => Promise<number
  */
 export async function handleCfor(
   executeNode: ExecuteNodeFn,
-  exprs: readonly (TSNodeLike | null)[],
+  exprs: readonly (readonly TSNodeLike[])[],
   body: readonly TSNodeLike[],
   evalExpr: CforEval,
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
+  jobTable: JobTable | null = null,
+  agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   let mergedIo = new IOResult()
   const allStdout: (ByteSource | null)[] = []
   let hitLimit = true
-  const [prevBuffer, bodyStdin] = installStdinBuffer(session, stdin)
-  stdin = bodyStdin
-
   try {
-    try {
-      await evalExpr(exprs[0] ?? null, 0)
-      for (let i = 0; i < MAX_WHILE; i++) {
-        if (session.shellOptions.noexec === true) {
+    await evalExpr(exprs[0] ?? [], 0)
+    for (let i = 0; i < MAX_WHILE; i++) {
+      if (session.shellOptions.noexec === true) {
+        hitLimit = false
+        break
+      }
+      if ((await evalExpr(exprs[1] ?? [], 1)) === 0) {
+        hitLimit = false
+        break
+      }
+      try {
+        const [stdout, io] = await executeBody(
+          executeNode,
+          body,
+          session,
+          stdin,
+          callStack,
+          jobTable,
+          agentId,
+          handed,
+          decisions,
+        )
+        allStdout.push(stdout)
+        mergedIo = await mergedIo.merge(io)
+      } catch (sig) {
+        if (!(sig instanceof BreakSignal || sig instanceof ContinueSignal)) throw sig
+        mergedIo = await absorbed(sig, allStdout, mergedIo)
+        if (sig instanceof BreakSignal) {
           hitLimit = false
           break
         }
-        if ((await evalExpr(exprs[1] ?? null, 1)) === 0) {
-          hitLimit = false
-          break
-        }
-        try {
-          const [stdout, io] = await executeBody(executeNode, body, session, stdin, callStack)
-          allStdout.push(stdout)
-          mergedIo = await mergedIo.merge(io)
-        } catch (sig) {
-          if (sig instanceof ExitSignal)
-            throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
-          if (sig instanceof BreakSignal) {
-            hitLimit = false
-            if (sig.stdout !== null) allStdout.push(sig.stdout)
-            mergedIo = await mergedIo.merge(sig.io)
-            if (sig.levels > 1) {
-              throw new BreakSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
-            }
-            break
-          }
-          if (sig instanceof ContinueSignal) {
-            if (sig.stdout !== null) allStdout.push(sig.stdout)
-            mergedIo = await mergedIo.merge(sig.io)
-            if (sig.levels > 1) {
-              throw new ContinueSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
-            }
-            await evalExpr(exprs[2] ?? null, 0)
-            continue
-          }
-          throw sig
-        }
-        await evalExpr(exprs[2] ?? null, 0)
+        await evalExpr(exprs[2] ?? [], 0)
+        continue
       }
-    } catch (err) {
-      // PolicyDenied is a header expression assigning a hidden name,
-      // refused by the same door as any denied assignment.
-      if (
-        !(err instanceof ArithError) &&
-        !(err instanceof ReadonlyError) &&
-        !(err instanceof PolicyDenied)
-      ) {
-        throw err
-      }
-      const prefix = err instanceof ArithError ? 'bash: ((: ' : 'bash: '
-      const errBytes = new TextEncoder().encode(`${prefix}${err.message}\n`)
-      mergedIo = await mergedIo.merge(new IOResult({ exitCode: 1, stderr: errBytes }))
-      mergedIo.exitCode = 1
-      return collectLoopResult(allStdout, mergedIo, 'for')
+      await evalExpr(exprs[2] ?? [], 0)
     }
-    if (hitLimit) {
-      const warn = new TextEncoder().encode(
-        `warning: for loop terminated after ${MAX_WHILE.toString()} iterations\n`,
-      )
-      const existing = mergedIo.stderr
-      if (existing instanceof Uint8Array && existing.byteLength > 0) {
-        const combined = new Uint8Array(existing.byteLength + warn.byteLength)
-        combined.set(existing, 0)
-        combined.set(warn, existing.byteLength)
-        mergedIo.stderr = combined
-      } else {
-        mergedIo.stderr = warn
-      }
+  } catch (err) {
+    // PolicyDenied is a header expression assigning a hidden name,
+    // refused by the same door as any denied assignment.
+    if (
+      !(err instanceof ArithError) &&
+      !(err instanceof ReadonlyError) &&
+      !(err instanceof PolicyDenied)
+    ) {
+      throw err
     }
+    const prefix = err instanceof ArithError ? 'bash: ((: ' : 'bash: '
+    const errBytes = new TextEncoder().encode(`${prefix}${err.message}\n`)
+    mergedIo = await mergedIo.merge(new IOResult({ exitCode: 1, stderr: errBytes }))
+    mergedIo.exitCode = 1
     return collectLoopResult(allStdout, mergedIo, 'for')
-  } finally {
-    session.stdinBuffer = prevBuffer
   }
+  if (hitLimit) {
+    const warn = new TextEncoder().encode(
+      `warning: for loop terminated after ${MAX_WHILE.toString()} iterations\n`,
+    )
+    const existing = mergedIo.stderr
+    if (existing instanceof Uint8Array && existing.byteLength > 0) {
+      const combined = new Uint8Array(existing.byteLength + warn.byteLength)
+      combined.set(existing, 0)
+      combined.set(warn, existing.byteLength)
+      mergedIo.stderr = combined
+    } else {
+      mergedIo.stderr = warn
+    }
+  }
+  return collectLoopResult(allStdout, mergedIo, 'for')
 }
 
 export function handleWhile(
   executeNode: ExecuteNodeFn,
   condition: TSNodeLike,
   body: readonly TSNodeLike[],
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
+  jobTable: JobTable | null = null,
+  agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
-  return conditionLoop(executeNode, condition, body, session, stdin, callStack, 'while', false)
+  return conditionLoop(
+    executeNode,
+    condition,
+    body,
+    session,
+    stdin,
+    callStack,
+    jobTable,
+    agentId,
+    handed,
+    decisions,
+    'while',
+    false,
+  )
 }
 
 export function handleUntil(
   executeNode: ExecuteNodeFn,
   condition: TSNodeLike,
   body: readonly TSNodeLike[],
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
+  jobTable: JobTable | null = null,
+  agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
-  return conditionLoop(executeNode, condition, body, session, stdin, callStack, 'until', true)
+  return conditionLoop(
+    executeNode,
+    condition,
+    body,
+    session,
+    stdin,
+    callStack,
+    jobTable,
+    agentId,
+    handed,
+    decisions,
+    'until',
+    true,
+  )
 }
 
 export async function handleCase(
   executeNode: ExecuteNodeFn,
   word: string,
   items: readonly [readonly string[], readonly TSNodeLike[], string][],
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
+  jobTable: JobTable | null = null,
+  agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   const allStdout: ByteSource[] = []
   let mergedIo = new IOResult()
   let lastExec = new ExecutionNode({ command: 'case', exitCode: 0 })
-  let stageStdin = stdin
   let ran = false
   let fallthrough = false
+  const bound = fd0Binding(session)
   for (const [patterns, body, terminator] of items) {
     if (!(fallthrough || patterns.some((p) => fnmatch(word, p)))) continue
     ran = true
     for (const stmt of body) {
-      const [rawStdout, io, execNode] = await executeNode(stmt, session, stageStdin, callStack)
-      stageStdin = null
+      let result: Result
+      try {
+        result = await runStatement(
+          executeNode,
+          stmt,
+          session,
+          stdin,
+          bound,
+          callStack,
+          jobTable,
+          agentId,
+          handed,
+          decisions,
+        )
+      } catch (sig) {
+        if (!isUnwinding(sig)) throw sig
+        throw await carried(sig, chainNonNull(allStdout), mergedIo)
+      }
+      const [rawStdout, io, execNode] = result
       lastExec = execNode
-      const stdout = await finishStatement(rawStdout, io, session)
+      const stdout = await finishStatement(rawStdout, io, session, stmt)
       if (stdout !== null) allStdout.push(stdout)
       mergedIo = await mergedIo.merge(io)
     }
@@ -491,130 +663,135 @@ export async function handleCase(
   if (!ran) return [null, new IOResult(), new ExecutionNode({ command: 'case', exitCode: 0 })]
   const first = allStdout[0]
   if (allStdout.length === 1 && first !== undefined) return [first, mergedIo, lastExec]
-  const combined = allStdout.length > 0 ? asyncChain(...allStdout) : null
+  const combined = allStdout.length > 0 ? asyncChain(allStdout) : null
   return [combined, mergedIo, lastExec]
 }
 
 /**
- * Run bash's select loop: menu to stderr, choice read from stdin.
- *
- * Each iteration prompts with PS3's default `#? `, reads one line,
- * stores it raw in REPLY, and sets the variable to the chosen value
- * (empty for an out-of-range or non-numeric reply, like bash). An
- * empty reply redisplays the menu without running the body; EOF ends
- * the loop.
+ * bash's select menu (print_select_list, bash 5.2): column-major in
+ * `$COLUMNS` (80 when unset or not positive), each cell padded with tabs
+ * to an 8-wide stop, one entry per row when they all fit on one.
+ */
+function selectMenu(words: readonly string[], columns: string): string {
+  const width = parseInt(/^\s*[+-]?\d+/.exec(columns)?.[0] ?? '0', 10)
+  const indexLen = String(words.length).length
+  const cell = Math.max(...words.map((w) => Array.from(w).length)) + indexLen + 4
+  let rows = Math.ceil(words.length / Math.max(Math.floor((width > 0 ? width : 80) / cell), 1))
+  if (rows === 1) rows = words.length
+  const lines: string[] = []
+  for (let row = 0; row < rows; row++) {
+    let line = ''
+    let col = 0
+    for (let ind = row, pos = 0; ind < words.length; ind += rows, pos++) {
+      while (col < pos * cell) {
+        const tab = Math.floor((pos * cell) / 8) > Math.floor(col / 8)
+        line += tab ? '\t' : ' '
+        col = tab ? col + 8 - (col % 8) : col + 1
+      }
+      const label = String(ind + 1).padStart(pos === 0 ? String(rows).length : indexLen)
+      const text = `${label}) ${words[ind] ?? ''}`
+      line += text
+      col += Array.from(text).length
+    }
+    lines.push(line + '\n')
+  }
+  return lines.join('')
+}
+
+/**
+ * Run bash's select loop: menu to stderr, choice read from stdin. Each
+ * iteration prompts with `$PS3` (`#? ` when unset), takes a line the way a
+ * bare `read` does into REPLY, and sets the variable to the chosen entry
+ * (empty for an out-of-range or non-numeric reply, like bash). An empty
+ * reply redisplays the menu without running the body, and so does a body
+ * that empties REPLY; end of input prints a newline and ends the loop with
+ * status 1. An empty list runs nothing. `sink` is where the body's
+ * statements write as they finish, so the loop's own newline lands in
+ * order.
  */
 export async function handleSelect(
   executeNode: ExecuteNodeFn,
   variable: string,
   values: readonly (string | PathSpec)[],
   body: readonly TSNodeLike[],
-  session: Session,
+  session: SessionState,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
   policies: Policies | null = null,
+  jobTable: JobTable | null = null,
+  agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
+  signal?: AbortSignal,
+  sink?: JobConsole,
 ): Promise<Result> {
+  const enc = new TextEncoder()
   let mergedIo = new IOResult()
   const allStdout: (ByteSource | null)[] = []
   const view = sessionView(session, policies)
-  const savedValue = session.env[variable]
-  const hadKey = variable in session.env
-  const [prevBuffer, bodyStdin] = installStdinBuffer(session, stdin)
-  stdin = bodyStdin
-
-  const menu = new TextEncoder().encode(
-    values.map((v, i) => `${(i + 1).toString()}) ${wordText(v)}\n`).join(''),
-  )
-  mergedIo = await mergedIo.merge(new IOResult({ stderr: menu }))
-  try {
-    for (let i = 0; i < MAX_WHILE; i++) {
-      if (session.shellOptions.noexec === true) break
-      mergedIo = await mergedIo.merge(new IOResult({ stderr: new TextEncoder().encode('#? ') }))
-      const lineBytes = session.stdinBuffer !== null ? await session.stdinBuffer.readline() : null
-      if (lineBytes === null) {
-        // bash terminates the prompt line with a newline when the
-        // choice read hits EOF.
-        allStdout.push(new TextEncoder().encode('\n'))
-        break
-      }
-      const reply = new TextDecoder().decode(lineBytes).replace(/\n$/, '')
-      if (reply === '') {
-        mergedIo = await mergedIo.merge(new IOResult({ stderr: menu }))
-        continue
-      }
-      let choice = ''
-      if (/^\d+$/.test(reply.trim())) {
-        const idx = parseInt(reply.trim(), 10)
-        if (idx >= 1 && idx <= values.length) {
-          choice = wordText(values[idx - 1] ?? '')
-        }
-      }
-      // REPLY and the select variable are session writes, so they clear
-      // the preSession gate like the for-loop variable.
-      // REPLY and the select variable go through the session door like
-      // the for-loop variable; readonly is the shell's own rule,
-      // checked before the door is asked.
-      const frozen = ['REPLY', variable].find((n) => view.isReadonly(n))
-      if (frozen !== undefined) {
-        const err = new TextEncoder().encode(`bash: ${frozen}: readonly variable\n`)
-        mergedIo = await mergedIo.merge(new IOResult({ exitCode: 1, stderr: err }))
-        break
-      }
-      try {
-        await view.set('REPLY', reply)
-        await view.set(variable, choice)
-      } catch (err) {
-        if (!(err instanceof PolicyDenied)) throw err
-        mergedIo = await mergedIo.merge(
-          new IOResult({ exitCode: 1, stderr: new TextEncoder().encode(`${err.message}\n`) }),
-        )
-        break
-      }
-      try {
-        const [stdout, io] = await executeBody(executeNode, body, session, null, callStack)
-        allStdout.push(stdout)
-        mergedIo = await mergedIo.merge(io)
-      } catch (sig) {
-        if (sig instanceof ExitSignal)
-          throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
-        if (sig instanceof BreakSignal) {
-          if (sig.stdout !== null) allStdout.push(sig.stdout)
-          mergedIo = await mergedIo.merge(sig.io)
-          if (sig.levels > 1) {
-            throw new BreakSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
-          }
-          break
-        }
-        if (sig instanceof ContinueSignal) {
-          if (sig.stdout !== null) allStdout.push(sig.stdout)
-          mergedIo = await mergedIo.merge(sig.io)
-          if (sig.levels > 1) {
-            throw new ContinueSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
-          }
-          continue
-        }
-        throw sig
-      }
+  const lines = stdin !== null ? lineBuffer(stdin) : null
+  const words = values.map((v) => wordText(v))
+  let showMenu = words.length > 0
+  for (let i = 0; i < (words.length > 0 ? MAX_WHILE : 0); i++) {
+    if (session.shellOptions.noexec === true) break
+    const env = visibleEnv(session)
+    const menu = showMenu ? selectMenu(words, env.COLUMNS ?? '') : ''
+    const prompt = menu + (env.PS3 ?? '#? ')
+    mergedIo = await mergedIo.merge(
+      new IOResult({ stderr: prompt !== '' ? enc.encode(prompt) : null }),
+    )
+    const reply = lines !== null ? await readReply(lines, signal) : null
+    // A failed choice read (end of input, a readonly REPLY) ends the prompt
+    // line; a readonly loop variable fails after it.
+    let frozen: string | null = null
+    if (reply !== null && view.isReadonly('REPLY')) frozen = 'REPLY'
+    else if (reply !== null && reply !== '' && view.isReadonly(variable)) frozen = variable
+    if (reply === null || frozen === 'REPLY') {
+      if (sink !== undefined) await sink.emit(Channel.STDOUT, enc.encode('\n'))
+      else allStdout.push(enc.encode('\n'))
     }
-  } finally {
-    if (hadKey && savedValue !== undefined) {
-      seedVar(session, variable, savedValue)
-    } else {
-      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-      delete session.vars[variable]
+    if (reply === null || frozen !== null) {
+      const err = frozen !== null ? enc.encode(`bash: ${frozen}: readonly variable\n`) : null
+      mergedIo = await mergedIo.merge(new IOResult({ exitCode: 1, stderr: err }))
+      break
     }
-    session.stdinBuffer = prevBuffer
+    const number = /^\s*([+-]?\d+)[ \t]*$/.exec(reply)
+    const index = number !== null ? Number(number[1]) : 0
+    try {
+      await view.set('REPLY', reply)
+      showMenu = reply === ''
+      if (showMenu) continue
+      await view.set(variable, index >= 1 && index <= words.length ? (words[index - 1] ?? '') : '')
+    } catch (err) {
+      if (!(err instanceof PolicyDenied)) throw err
+      mergedIo = await mergedIo.merge(
+        new IOResult({ exitCode: 1, stderr: enc.encode(`${err.message}\n`) }),
+      )
+      break
+    }
+    try {
+      const [stdout, io] = await executeBody(
+        executeNode,
+        body,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        agentId,
+        handed,
+        decisions,
+      )
+      allStdout.push(stdout)
+      mergedIo = await mergedIo.merge(io)
+    } catch (sig) {
+      if (!(sig instanceof BreakSignal || sig instanceof ContinueSignal)) throw sig
+      mergedIo = await absorbed(sig, allStdout, mergedIo)
+      if (sig instanceof BreakSignal) break
+    }
+    showMenu = (visibleEnv(session).REPLY ?? '') === ''
   }
+  // The loop variable is an ordinary variable in bash and keeps its
+  // last value after the loop (`for X in a b; do :; done; echo $X`
+  // prints b); nothing is put back.
   return collectLoopResult(allStdout, mergedIo, 'select')
-}
-
-export class ReturnSignal extends Error {
-  readonly exitCode: number
-  readonly stderr: Uint8Array
-  constructor(exitCode: number, stderr: Uint8Array = new Uint8Array()) {
-    super('return')
-    this.name = 'ReturnSignal'
-    this.exitCode = exitCode
-    this.stderr = stderr
-  }
 }

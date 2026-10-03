@@ -14,13 +14,19 @@
 
 from datetime import datetime
 
-from mirage.cache.index.config import IndexEntry, ListResult, LookupResult
+from mirage.cache.index.config import (
+    Evicted,
+    IndexEntry,
+    IndexSnapshot,
+    ListResult,
+    LookupResult,
+)
 
 
 class IndexCacheStore:
-    """Per-resource metadata index for remote resources.
+    """Per-VFS metadata index for remote mounts.
 
-    Abstract base. Maps resource paths to IndexEntry metadata.
+    Abstract base. Maps VFS paths to IndexEntry metadata.
     Subclasses implement storage and concurrency.
     """
 
@@ -28,36 +34,136 @@ class IndexCacheStore:
         super().__init__()
         self._closed = False
 
-    async def get(self, resource_path: str) -> LookupResult:
+    @property
+    def ttl(self) -> float:
+        """Seconds a listing lives when its writer names no expiry."""
         raise NotImplementedError
 
-    def seed(self, entries: dict[str, IndexEntry],
-             children: dict[str, list[str]], expires_at: datetime) -> None:
-        """Queue a synchronous metadata snapshot for the next lookup."""
+    def scope_snapshot(self, snapshot: IndexSnapshot) -> IndexSnapshot:
+        """Apply this index's ownership rules to a refill snapshot.
+
+        Args:
+            snapshot (IndexSnapshot): rows returned by the current refill.
+        """
+        return snapshot
+
+    async def get(self, vfs_path: str) -> LookupResult:
         raise NotImplementedError
 
-    async def put(self, resource_path: str, entry: IndexEntry) -> None:
+    def seed(
+        self,
+        entries: dict[str, IndexEntry],
+        children: dict[str, list[str]],
+        expires_at: datetime,
+        *,
+        version: str | None = None,
+    ) -> None:
+        """Merge a snapshot; flush deferred writes before operations or close.
+
+        Repeated seeds merge by path. Clear discards queued snapshots.
+
+        Args:
+            entries (dict[str, IndexEntry]): rows by path.
+            children (dict[str, list[str]]): each listed folder's children.
+            expires_at (datetime): when the listings expire.
+            version (str | None): the backend version the snapshot was read
+                at; it replaces the version of every listed folder, and
+                None clears it.
+        """
         raise NotImplementedError
 
-    async def list_dir(self, resource_path: str) -> ListResult:
+    async def put(self, vfs_path: str, entry: IndexEntry) -> None:
+        raise NotImplementedError
+
+    async def list_dir(self, vfs_path: str) -> ListResult:
         raise NotImplementedError
 
     async def set_dir(
         self,
-        resource_path: str,
+        vfs_path: str,
         entries: list[tuple[str, IndexEntry]],
         expired_at: datetime | None = None,
-    ) -> None:
+        *,
+        window: bool = False,
+        excluded: tuple[str, ...] = (),
+        version: str | None = None,
+    ) -> list[Evicted]:
+        """Cache a complete directory listing.
+
+        A complete listing names every child, so a child the previous
+        listing named and this one does not is gone: its row goes, and a
+        gone directory takes its listing and every row beneath it. Rows
+        only ``put`` wrote were never named, so they stay. A window (the
+        newest N messages, the last N days) is served as the listing but
+        proves nothing absent, so it evicts nothing.
+
+        Args:
+            vfs_path (str): the listed directory's virtual path.
+            entries (list[tuple[str, IndexEntry]]): every child.
+            expired_at (datetime | None): optional freshness deadline.
+            window (bool): the entries are a capped window, not every
+                child.
+            excluded (tuple[str, ...]): nested mount roots to preserve.
+            version (str | None): the backend version the listing was read
+                at; it replaces the stored one, and None clears it.
+
+        Returns:
+            list[Evicted]: the children the previous listing named and
+            this one does not.
+        """
         raise NotImplementedError
+
+    async def report_gone(self, gone: list[Evicted]) -> None:
+        """Hand children a re-list found gone to the mount's cleanup.
+
+        A raw store belongs to no mount, so there is nothing to clean.
+
+        Args:
+            gone (list[Evicted]): the children the backend no longer has.
+        """
+        return None
 
     async def entries(self) -> dict[str, IndexEntry]:
         raise NotImplementedError
 
-    async def invalidate_dir(self, resource_path: str) -> None:
+    async def set_partial_dir(
+        self,
+        vfs_path: str,
+        entries: list[tuple[str, IndexEntry]],
+        expired_at: datetime | None = None,
+    ) -> None:
+        """Cache observed children without claiming a complete directory.
+
+        Stores supporting partial freshness return these keys under
+        ``ListResult.partial_entries`` until expiry or invalidation. A
+        partial listing proves nothing complete, so it carries no version.
+        The default preserves the conservative put-only behavior for custom
+        stores: their next lookup refreshes the parent.
+
+        Args:
+            vfs_path (str): the listed directory's virtual path.
+            entries (list[tuple[str, IndexEntry]]): observed children.
+            expired_at (datetime | None): optional freshness deadline.
+        """
+        await self.invalidate_dir(vfs_path)
+        for name, entry in entries:
+            await self.put(f"{vfs_path.rstrip('/')}/{name}", entry)
+
+    async def invalidate_entry(self, vfs_path: str) -> None:
+        """Drop one metadata row while preserving listing history.
+
+        Args:
+            vfs_path (str): mount-absolute entry key.
+        """
         raise NotImplementedError
 
-    async def invalidate_prefix(self, resource_path: str) -> None:
-        """Drop ``resource_path`` and everything cached below it.
+    async def invalidate_dir(self, vfs_path: str) -> None:
+        raise NotImplementedError
+
+    async def invalidate_prefix(
+        self, vfs_path: str, *, excluded: tuple[str, ...] = ()
+    ) -> None:
+        """Drop ``vfs_path`` and everything cached below it.
 
         ``invalidate_dir`` drops one directory's listing and its direct
         children's entries, which is enough for a mutation that named a
@@ -66,7 +172,8 @@ class IndexCacheStore:
         cached independently and nothing above them expires them.
 
         Args:
-            resource_path (str): Mount-absolute root of the subtree.
+            vfs_path (str): Mount-absolute root of the subtree.
+            excluded (tuple[str, ...]): nested mount roots to preserve.
         """
         raise NotImplementedError
 

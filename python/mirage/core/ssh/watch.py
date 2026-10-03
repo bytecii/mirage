@@ -17,19 +17,19 @@ from collections.abc import AsyncIterator
 import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
-from mirage.core.ssh.client import _abs
-from mirage.core.ssh.config import SSHConfig
-from mirage.core.timeutil import epoch_to_iso
+from mirage.core.ssh.utils import join_root
 from mirage.types import PathSpec, WalkEntry
+from mirage.utils.dates import epoch_to_iso
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.vfs.ssh.config import SSHConfig
 from mirage.watch.base import DeltaHook
 from mirage.watch.delta import ListingDeltaHook
 from mirage.watch.fingerprint import stat_fingerprint
 
 
 async def _descend(
-        sftp: asyncssh.SFTPClient, config: SSHConfig,
-        path: str) -> AsyncIterator[tuple[str, bool, str | None, int | None]]:
+    sftp: asyncssh.SFTPClient, config: SSHConfig, path: str
+) -> AsyncIterator[tuple[str, bool, str | None, int | None]]:
     """Yield (mount-relative path, is_dir, mtime, size) under a path.
 
     One ``readdir`` per directory, which is one round trip per
@@ -42,12 +42,15 @@ async def _descend(
         path (str): Mount-relative directory to descend into.
     """
     try:
-        listing = await sftp.readdir(_abs(config, path))
+        listing = await sftp.readdir(join_root(config.root, path))
     except asyncssh.SFTPNoSuchFile:
         return
     for entry in listing:
-        filename = (entry.filename.decode("utf-8") if isinstance(
-            entry.filename, bytes) else entry.filename)
+        filename = (
+            entry.filename.decode("utf-8")
+            if isinstance(entry.filename, bytes)
+            else entry.filename
+        )
         if filename in (".", ".."):
             continue
         child = f"{path.rstrip('/')}/{filename}"
@@ -57,8 +60,9 @@ async def _descend(
             async for row in _descend(sftp, config, child):
                 yield row
             continue
-        modified = epoch_to_iso(
-            attrs.mtime) if attrs.mtime is not None else None
+        modified = (
+            epoch_to_iso(attrs.mtime) if attrs.mtime is not None else None
+        )
         yield child, False, modified, attrs.size
 
 
@@ -76,7 +80,7 @@ class SSHWalk:
 
     def __init__(self, accessor: SSHAccessor) -> None:
         """Args:
-            accessor (SSHAccessor): Backend handle.
+        accessor (SSHAccessor): Backend handle.
         """
         self._accessor = accessor
 
@@ -87,19 +91,22 @@ class SSHWalk:
             root (PathSpec): Watch root (mount-virtual path).
         """
         accessor = self._accessor
-        prefix = mount_prefix_of(root.virtual, root.resource_path)
+        prefix = mount_prefix_of(root.virtual, root.vfs_path)
         sftp = await accessor.sftp()
         async for relative, is_dir, modified, size in _descend(
-                sftp, accessor.config, root.mount_path):
-            virtual = (prefix.rstrip("/") + relative if prefix else relative)
+            sftp, accessor.config, root.mount_path
+        ):
+            virtual = prefix.rstrip("/") + relative if prefix else relative
             if is_dir:
                 yield WalkEntry(virtual=virtual, is_dir=True, fingerprint=None)
                 continue
-            yield WalkEntry(virtual=virtual,
-                            is_dir=False,
-                            fingerprint=stat_fingerprint(None, modified, size),
-                            size=size,
-                            modified=modified)
+            yield WalkEntry(
+                virtual=virtual,
+                is_dir=False,
+                fingerprint=stat_fingerprint(None, modified, size),
+                size=size,
+                modified=modified,
+            )
 
 
 def build_delta_hook(accessor: SSHAccessor) -> DeltaHook:

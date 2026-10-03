@@ -58,10 +58,10 @@
       "targets": [
         "cli-gh"
       ],
-      "command": "gh api repos/integ/repo-cli | head -3",
+      "command": "gh api repos/integ/repo-cli | jq -c '{name, full_name}'",
       "expect": {
         "exit": 0,
-        "stdout": "{\n  \"name\": \"repo-cli\",\n  \"full_name\": \"integ/repo-cli\",\n",
+        "stdout": "{\"name\":\"repo-cli\",\"full_name\":\"integ/repo-cli\"}\n",
         "stderr": ""
       }
     },
@@ -100,8 +100,8 @@
       "command": "gh api repos/integ/repo-cli/contents/NOTES.md -X PUT -f message=again -f content=b3RoZXIK",
       "expect": {
         "exit": 1,
-        "stdout": "",
-        "stderr": "gh api: NOTES.md does not match\n"
+        "stdout": "{\"message\":\"NOTES.md does not match\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: NOTES.md does not match (HTTP 409)\n"
       }
     },
     {
@@ -113,8 +113,8 @@
       "command": "gh api repos/integ/repo-cli/contents/ABSENT.md -X PUT -f message=x -f content=eAo= -f sha=deadbeef",
       "expect": {
         "exit": 1,
-        "stdout": "",
-        "stderr": "gh api: Invalid request.\n\n\"sha\" wasn't supplied.\n"
+        "stdout": "{\"message\":\"Invalid request.\\n\\n\\\"sha\\\" wasn't supplied.\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: Invalid request.\n\n\"sha\" wasn't supplied. (HTTP 422)\n"
       }
     },
     {
@@ -139,8 +139,8 @@
       "command": "gh api repos/integ/nope",
       "expect": {
         "exit": 1,
-        "stdout": "",
-        "stderr": "gh api: Not Found\n"
+        "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: Not Found (HTTP 404)\n"
       }
     },
     {
@@ -149,10 +149,10 @@
       "targets": [
         "cli-gh"
       ],
-      "command": "gh api repos/integ/repo-cli/issues -f title=hi -F draft=false | head -4",
+      "command": "gh api repos/integ/repo-cli/issues -f title=hi -F draft=false | jq -c '{number, title, body}'",
       "expect": {
         "exit": 0,
-        "stdout": "{\n  \"number\": 1,\n  \"title\": \"hi\",\n  \"body\": \"\",\n",
+        "stdout": "{\"number\":1,\"title\":\"hi\",\"body\":\"\"}\n",
         "stderr": ""
       }
     },
@@ -178,7 +178,7 @@
       "command": "gh repo fork integ/repo-cli --fork-name forked",
       "expect": {
         "exit": 0,
-        "stdout": "\u2713 Created fork integ-user/forked\n",
+        "stdout": "✓ Created fork integ-user/forked\n",
         "stderr": ""
       }
     },
@@ -191,7 +191,7 @@
       "command": "gh repo rename renamed -R integ-user/forked",
       "expect": {
         "exit": 0,
-        "stdout": "\u2713 Renamed repository integ-user/renamed\n",
+        "stdout": "✓ Renamed repository integ-user/renamed\n",
         "stderr": ""
       }
     },
@@ -214,10 +214,10 @@
       "targets": [
         "cli-gh"
       ],
-      "command": "gh api /repos/integ/repo-cli | head -2",
+      "command": "gh api /repos/integ/repo-cli | jq -r .name",
       "expect": {
         "exit": 0,
-        "stdout": "{\n  \"name\": \"repo-cli\",\n",
+        "stdout": "repo-cli\n",
         "stderr": ""
       }
     },
@@ -227,10 +227,10 @@
       "targets": [
         "cli-gh"
       ],
-      "command": "gh api -X GET repos/integ/repo-cli/contents/README.md -F ref=main | head -2",
+      "command": "gh api -X GET repos/integ/repo-cli/contents/README.md -F ref=main | jq -r .type",
       "expect": {
         "exit": 0,
-        "stdout": "{\n  \"type\": \"file\",\n",
+        "stdout": "file\n",
         "stderr": ""
       }
     },
@@ -256,7 +256,7 @@
       "command": "type -t gh; which gh",
       "expect": {
         "exit": 0,
-        "stdout": "cli\ngh\n",
+        "stdout": "file\n/usr/bin/gh\n",
         "stderr": ""
       }
     },
@@ -269,7 +269,7 @@
       "command": "man gh | head -8",
       "expect": {
         "exit": 0,
-        "stdout": "gh: GitHub CLI\n\nUsage: gh [flags] <command> [<args>]\n\nCommands:\n  api   Make an authenticated GitHub API request\n  repo  Manage repositories\n\n",
+        "stdout": "gh: GitHub CLI\n\nUsage: gh [flags] <command> [<args>]\n\nCommands:\n  api                  Make an authenticated GitHub API request\n  auth                 Manage authentication\n  issue                Manage issues\n",
         "stderr": ""
       }
     },
@@ -305,10 +305,10 @@
       "targets": [
         "cli-gh"
       ],
-      "command": "gh api 'repos/{owner}/{repo}' | head -2",
+      "command": "gh api 'repos/{owner}/{repo}' | jq -r .name",
       "expect": {
         "exit": 0,
-        "stdout": "{\n  \"name\": \"repo-cli\",\n",
+        "stdout": "repo-cli\n",
         "stderr": ""
       }
     },
@@ -318,10 +318,10 @@
       "targets": [
         "cli-gh"
       ],
-      "command": "gh api -X GET repos/integ/repo-cli/contents/README.md -F ref='{branch}' | head -2",
+      "command": "gh api -X GET repos/integ/repo-cli/contents/README.md -F ref='{branch}' | jq -r .type",
       "expect": {
         "exit": 0,
-        "stdout": "{\n  \"type\": \"file\",\n",
+        "stdout": "file\n",
         "stderr": ""
       }
     },
@@ -334,8 +334,8 @@
       "command": "gh api user/repos -f name=fresh-repo",
       "expect": {
         "exit": 1,
-        "stdout": "",
-        "stderr": "gh api: Resource not accessible by personal access token\n"
+        "stdout": "{\"message\":\"Resource not accessible by personal access token\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: Resource not accessible by personal access token (HTTP 403)\n"
       }
     },
     {
@@ -421,7 +421,7 @@
       "command": "gh api repos/integ/repo-cli/commits/$(gh api repos/integ/repo-cli/commits --jq '.[0].sha') --jq '.files[0] | keys'",
       "expect": {
         "exit": 0,
-        "stdout": "[\"filename\",\"status\"]\n",
+        "stdout": "[\"additions\",\"blob_url\",\"changes\",\"contents_url\",\"deletions\",\"filename\",\"patch\",\"raw_url\",\"sha\",\"status\"]\n",
         "stderr": ""
       },
       "seq": 569033,
@@ -441,6 +441,1904 @@
       "targets": [
         "cli-gh"
       ]
+    },
+    {
+      "id": "gh_api_input_and_silent_create_an_issue",
+      "seq": 569035,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "echo '{\"title\":\"from input\",\"body\":\"input body\"}' > /scratch/issue.json && gh api repos/integ/repo-cli/issues --input /scratch/issue.json --silent && gh issue view 2 --json title,body --jq '[.title,.body]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"from input\",\"input body\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_nested_arrays_reach_the_service",
+      "seq": 569036,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/issues -F title=nested -F 'labels[]=bug' -F 'assignees[]=integ-user' --jq '[.labels[0].name,.assignees[0].login]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"bug\",\"integ-user\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_paginate_slurp_follows_link_headers",
+      "seq": 569037,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'repos/integ/repo-cli/issues?state=all&per_page=1' --paginate --slurp --jq 'map(length)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[1,1,1]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_create_accepts_body_file",
+      "seq": 569038,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "echo 'typed body' > /scratch/body.md && gh issue create --title typed --body-file /scratch/body.md --label docs --assignee integ-user",
+      "expect": {
+        "exit": 0,
+        "stdout": "https://github.com/integ/repo-cli/issues/4\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_edit_comment_close_and_reopen",
+      "seq": 569039,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue edit 4 --title updated --add-label bug && gh issue comment 4 --body note && gh issue close 4 && gh issue reopen 4",
+      "expect": {
+        "exit": 0,
+        "stdout": "https://github.com/integ/repo-cli/issues/4\nhttps://github.com/integ/repo-cli/issues/4#issuecomment-1\n✓ Closed issue integ/repo-cli#4 (updated)\n✓ Reopened issue integ/repo-cli#4 (updated)\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_list_projects_typed_json",
+      "seq": 569040,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue list --limit 1 --json number,title,url --jq '.[0]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"number\":4,\"title\":\"updated\",\"url\":\"https://github.com/integ/repo-cli/issues/4\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_create_requires_explicit_noninteractive_fields",
+      "seq": 569041,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "main=$(gh api repos/integ/repo-cli/git/ref/heads/main --jq .object.sha); for b in feature old docs-pass; do gh api repos/integ/repo-cli/git/refs -f ref=refs/heads/$b -f sha=$main >/dev/null; done; gh api repos/integ/repo-cli/contents/README.md -X PUT -f message='Update README.md' -f branch=feature -f content=IyByZXBvLXYxCgpGaXh0dXJlIHJlcG9zaXRvcnkgZm9yIHRoZSBmYWtlIEdpdEh1YiBBUEkgc2VydmVyLgpjaGFuZ2UK -f sha=$(gh api 'repos/integ/repo-cli/contents/README.md?ref=feature' --jq .sha) >/dev/null; for b in old docs-pass; do gh api repos/integ/repo-cli/contents/$b.md -X PUT -f \"message=Add $b.md\" -f branch=$b -f content=$(printf '%s\\n' $b | base64) >/dev/null; done; head=$(gh api repos/integ/repo-cli/git/ref/heads/feature --jq .object.sha); gh api repos/integ/repo-cli/statuses/$head -f state=success -f context=test -f target_url=https://example.test/check/301 -f 'description=All checks passed' >/dev/null; gh api repos/integ/repo-cli/statuses/$head -f state=success -f context=ci/legacy -f target_url=https://example.test/status/legacy -f 'description=Legacy status passed' >/dev/null; echo 'pull body' | gh pr create --title change --head feature --base main --body-file -",
+      "expect": {
+        "exit": 0,
+        "stdout": "https://github.com/integ/repo-cli/pull/5\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_view_diff_and_checks",
+      "seq": 569042,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 5 --json title,headRefName,baseRefName,url --jq '[.title,.headRefName,.baseRefName,.url]'; gh pr diff 5 | head -1; gh pr checks 5 --json name,bucket --jq '.[0]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"change\",\"feature\",\"main\",\"https://github.com/integ/repo-cli/pull/5\"]\ndiff --git a/README.md b/README.md\n{\"bucket\":\"pass\",\"name\":\"test\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_view_rejects_a_pull_request_number",
+      "seq": 569052,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 5",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gh issue view: #5 is a pull request, not an issue\n"
+      }
+    },
+    {
+      "id": "gh_pr_comment_rejects_an_issue_number",
+      "seq": 569053,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr comment 4 --body no",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gh pr comment: Not Found\n"
+      }
+    },
+    {
+      "id": "gh_release_view_encodes_the_tag_segment",
+      "seq": 569054,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh release create 'v1#hot' --notes hot && gh release view 'v1#hot' --json tagName --jq .tagName",
+      "expect": {
+        "exit": 0,
+        "stdout": "https://github.com/integ/repo-cli/releases/tag/v1#hot\nv1#hot\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_edit_comment_and_merge",
+      "seq": 569043,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr edit 5 --title merged-title --body merged-body && gh pr comment 5 --body review && gh pr merge 5 --squash --subject merged",
+      "expect": {
+        "exit": 0,
+        "stdout": "https://github.com/integ/repo-cli/pull/5\nhttps://github.com/integ/repo-cli/issues/5#issuecomment-2\n✓ Merged pull request integ/repo-cli#5\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_close_is_a_separate_state_transition",
+      "seq": 569044,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr create -t abandoned -H old -B main -b no && gh pr close 6",
+      "expect": {
+        "exit": 0,
+        "stdout": "https://github.com/integ/repo-cli/pull/6\n✓ Closed pull request integ/repo-cli#6 (abandoned)\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_list_and_view_share_structured_output",
+      "seq": 569045,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo list integ --limit 1 --json nameWithOwner --jq '.[0].nameWithOwner'; gh repo view --json defaultBranchRef,url --jq '[.defaultBranchRef.name,.url]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli\n[\"main\",\"https://github.com/integ/repo-cli\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_create_surfaces_token_permissions",
+      "seq": 569046,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo create fresh --private --add-readme",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gh repo create: Resource not accessible by personal access token\n"
+      }
+    },
+    {
+      "id": "gh_release_create_view_and_list",
+      "seq": 569047,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "echo 'release notes' | gh release create v1.0.0 --title One --notes-file - && gh release view v1.0.0 --json tagName,name,body,url,isLatest --jq '[.tagName,.name,.body,.url,.isLatest]' && gh release list --limit 1 --json tagName,isLatest --jq '.[0]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "https://github.com/integ/repo-cli/releases/tag/v1.0.0\n[\"v1.0.0\",\"One\",\"release notes\\n\",\"https://github.com/integ/repo-cli/releases/tag/v1.0.0\",true]\n{\"isLatest\":true,\"tagName\":\"v1.0.0\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_workflow_list_and_view",
+      "seq": 569048,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh workflow list --json id,name,state --jq '.[0]'; gh workflow view ci.yml",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"id\":101,\"name\":\"CI\",\"state\":\"active\"}\nCI - active\nID: 101\nFile: .github/workflows/ci.yml\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_workflow_run_creates_a_visible_run",
+      "seq": 569049,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh workflow run ci.yml --ref main -f mode=fast && gh run list --limit 1 --json databaseId,event --jq '.[0]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"databaseId\":202,\"event\":\"workflow_dispatch\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_run_view_and_rerun",
+      "seq": 569050,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh run view 201 --json databaseId,attempt,status --jq '[.databaseId,.attempt,.status]'; gh run rerun 201; gh run view 201 --json attempt,status --jq '[.attempt,.status]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[201,1,\"completed\"]\n[2,\"queued\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_custom_accept_emits_text_verbatim",
+      "seq": 569051,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/pulls/5 -H 'Accept: application/vnd.github.v3.diff' | head -1",
+      "expect": {
+        "exit": 0,
+        "stdout": "diff --git a/README.md b/README.md\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_list_limits_apply_after_filters_and_preserve_zero",
+      "seq": 569055,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue list --limit 0 --json number; gh pr list --state merged --limit 1 --json number --jq '.[0].number'; gh workflow list --limit 1 --json id --jq '.[0].id'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[]\n5\n101\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_stdin_file_spellings_and_subject_urls",
+      "seq": 569056,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "printf 'spaced' | gh issue create --title spaced -F - >/dev/null; url=$(printf 'attached' | gh issue create --title attached -F-); gh issue close \"$url\" -R missing/repo >/dev/null && gh issue view \"$url\" -R missing/repo --json body,state --jq '[.body,.state]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"attached\",\"CLOSED\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_checks_merge_the_head_commit_statuses",
+      "seq": 569057,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr checks 5 --json name,bucket --jq '.[1:]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[{\"bucket\":\"pass\",\"name\":\"ci/legacy\"}]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_workflow_view_resolves_a_display_name",
+      "seq": 569058,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh workflow view CI; gh workflow view Nightly",
+      "expect": {
+        "exit": 1,
+        "stdout": "CI - active\nID: 101\nFile: .github/workflows/ci.yml\n",
+        "stderr": "gh workflow view: could not find any workflows named Nightly\n"
+      }
+    },
+    {
+      "id": "gh_api_json_keeps_raw_utf8",
+      "seq": 569060,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/issues -f title='héllo ☕' | grep -o '\"title\":\"[^\"]*\"'",
+      "expect": {
+        "exit": 0,
+        "stdout": "\"title\":\"héllo ☕\"\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_typed_json_keeps_raw_utf8",
+      "seq": 569061,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "url=$(gh issue create --title 'naïve 日本' --body ok) && gh issue view \"$url\" --json title",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"title\":\"naïve 日本\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_comments",
+      "seq": 569070,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --comments",
+      "expect": {
+        "exit": 0,
+        "stdout": "author:\tinteg-user\nassociation:\tnone\nedited:\tfalse\nstatus:\tnone\n--\nnote\n--\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_comments_json",
+      "seq": 569071,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json comments --jq '.comments | map(.body)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"note\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_comments_json",
+      "seq": 569072,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 5 --json comments --jq '.comments | map(.body)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"review\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_colon",
+      "seq": 569073,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'search/repositories?q=user:integ' --jq '.items | map(.full_name)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ/repo-cli\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_colon_field",
+      "seq": 569074,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api search/repositories -X GET -f 'q=user:integ' --jq '.items | map(.full_name)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ/repo-cli\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_missing_owner",
+      "seq": 569075,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'search/repositories?q=user:no-such-owner' --jq .total_count",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_comments_text",
+      "seq": 569076,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 5 -c",
+      "expect": {
+        "exit": 0,
+        "stdout": "author:\tinteg-user\nassociation:\tnone\nedited:\tfalse\nstatus:\tnone\n--\nreview\n--\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_comment_metadata",
+      "seq": 569077,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json comments --jq '.comments | map({author: .author, edited: .includesCreatedEdit, minimized: .isMinimized, reason: .minimizedReason, reactions: .reactionGroups, mine: .viewerDidAuthor})'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[{\"author\":{\"login\":\"integ-user\"},\"edited\":false,\"mine\":true,\"minimized\":false,\"reactions\":[],\"reason\":\"\"}]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code_unscoped",
+      "seq": 569078,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api search/code -X GET -f 'q=\"Mixture-of-Depths\"' --jq .total_count",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code_owner",
+      "seq": 569079,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api search/code -X GET -f 'q=import user:integ' --jq '.items | map(.repository.full_name) | unique'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ/repo-cli\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code_every_owner",
+      "seq": 569080,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api search/code -X GET -f q=import --paginate --slurp --jq 'map(.items) | flatten | map(.repository.full_name) | unique'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ-user/renamed\",\"integ/repo-cli\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_view_json_answers_parent",
+      "seq": 569081,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo view --json parent,isFork",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"isFork\":false,\"parent\":null}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_view_json_prints_gh_shapes_sorted",
+      "seq": 569082,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo view --json visibility,stargazerCount,repositoryTopics,primaryLanguage,licenseInfo,isInOrganization,forkCount,defaultBranchRef",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"defaultBranchRef\":{\"name\":\"main\"},\"forkCount\":0,\"isInOrganization\":true,\"licenseInfo\":null,\"primaryLanguage\":{\"name\":\"Python\"},\"repositoryTopics\":null,\"stargazerCount\":0,\"visibility\":\"PUBLIC\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_view_json_refuses_an_unknown_field_as_gh_does",
+      "seq": 569083,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo view --json nosuch 2>&1 | head -3; gh repo view --json nosuch 2>/dev/null; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "Unknown JSON field: \"nosuch\"\nAvailable fields:\n  archivedAt\nexit=1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_view_json_names_a_fork_parent",
+      "seq": 569084,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo view integ-user/renamed --json isFork,parent --jq '.isFork, .parent.name, .parent.owner.login'",
+      "expect": {
+        "exit": 0,
+        "stdout": "true\nrepo-cli\ninteg\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_view_json_missing_repository_is_a_graphql_error",
+      "seq": 569085,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo view integ/nosuch --json name",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gh repo view: GraphQL: Could not resolve to a Repository with the name 'integ/nosuch'. (repository)\n"
+      }
+    },
+    {
+      "id": "gh_repo_list_json_answers_graphql_fields",
+      "seq": 569086,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo list integ --limit 1 --json visibility,name,isFork",
+      "expect": {
+        "exit": 0,
+        "stdout": "[{\"isFork\":false,\"name\":\"repo-cli\",\"visibility\":\"PUBLIC\"}]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues",
+      "seq": 569090,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues updated --repo integ/repo-cli --json number,title,repository --jq \".[0].repository.nameWithOwner\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_repeat_scope",
+      "seq": 569091,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues updated --repo integ/missing --repo integ/repo-cli --json number --jq \"length\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_template",
+      "seq": 569092,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues updated --repo integ/repo-cli --json title --template '{{range .}}{{.title}}{{\"\\n\"}}{{end}}'",
+      "expect": {
+        "exit": 0,
+        "stdout": "updated\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_prs_merged",
+      "seq": 569093,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs --repo integ/repo-cli --merged --json state --jq \"map(.state) | unique | .[]\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "merged\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_prs_draft_false",
+      "seq": 569094,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs --repo integ/repo-cli --draft=false --json isDraft --jq \"map(.isDraft) | unique | .[]\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "false\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_repos",
+      "seq": 569095,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search repos --owner integ --json fullName --jq \".[0].fullName\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code",
+      "seq": 569096,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search code import --repo integ/repo-cli --json path --jq \"length > 0\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "true\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_commits",
+      "seq": 569097,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search commits --repo integ/repo-cli --limit 1 --json repository --jq \".[0].repository.fullName\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_empty",
+      "seq": 569098,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues surely-no-such-title --repo integ/repo-cli --json number",
+      "expect": {
+        "exit": 0,
+        "stdout": "[]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_limit_refused",
+      "seq": 569099,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues bootstrap --limit 0 >/dev/null 2>/dev/null; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_fields_refused",
+      "seq": 569100,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues bootstrap --json nosuch >/dev/null 2>/dev/null; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_template_variables",
+      "seq": 569101,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues updated --repo integ/repo-cli --json number,title --template '{{range $i, $issue := .}}{{$i}}:{{$issue.number}} {{$issue.title}}{{\"\\n\"}}{{end}}'",
+      "expect": {
+        "exit": 0,
+        "stdout": "0:4 updated\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_comments",
+      "seq": 569102,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues --repo integ/repo-cli --comments '>0' --json number,commentsCount --jq 'map([.number, .commentsCount])'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[[4,1]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_sort_comments",
+      "seq": 569103,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues --repo integ/repo-cli --sort comments --limit 1 --json number --jq '.[0].number'",
+      "expect": {
+        "exit": 0,
+        "stdout": "4\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_commenter",
+      "seq": 569104,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues --repo integ/repo-cli --commenter integ-user --json number --jq 'map(.number)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[4]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_no_assignee",
+      "seq": 569105,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues --repo integ/repo-cli --no-assignee --json assignees --jq 'map(.assignees | length) | unique'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[0]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_prs_merged_at",
+      "seq": 569106,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs --repo integ/repo-cli --merged-at '>2025-12-31' --json number --jq 'map(.number)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[5]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_prs_checks",
+      "seq": 569107,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs --repo integ/repo-cli --checks failure --json number",
+      "expect": {
+        "exit": 0,
+        "stdout": "[]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code_repeated_matches",
+      "seq": 569108,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search code parse_step_1 --repo integ/repo-cli",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli:src/parse/step_1.py: def parse_step_1(value: int) -> int:\ninteg/repo-cli:tests/test_parse.py: from src.parse.step_1 import parse_step_1\ninteg/repo-cli:tests/test_parse.py: def test_parse_step_1() -> None:\ninteg/repo-cli:tests/test_parse.py: assert parse_step_1(1) == 2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_file_options_resolve_relative_and_attached_paths",
+      "seq": 569109,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "mkdir -p /scratch/cli-files && echo 'relative body' > /scratch/cli-files/body.md && cd /scratch/cli-files && gh issue edit 4 --body-file ./body.md >/dev/null && gh issue view 4 --json body --jq .body && gh issue edit 4 -Fbody.md >/dev/null && gh issue view 4 --json body --jq .body && gh issue edit 4 --body-file=./body.md >/dev/null && gh issue view 4 --json body --jq .body",
+      "expect": {
+        "exit": 0,
+        "stdout": "relative body\n\nrelative body\n\nrelative body\n\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_file_inputs_resolve_in_cwd",
+      "seq": 569110,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "cd /scratch/cli-files && echo '{}' > request.json && gh api repos/integ/repo-cli --method GET --input ./request.json --jq .full_name && gh api repos/integ/repo-cli --method GET --input=./request.json --jq .full_name && gh api repos/integ/repo-cli --method GET -F body=@./body.md --jq .full_name",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli\ninteg/repo-cli\ninteg/repo-cli\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_file_options_keep_stdin_and_literal_dash_distinct",
+      "seq": 569111,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "cd /scratch/cli-files && printf 'literal' > ./- && gh issue edit 4 --body-file ./- >/dev/null && gh issue view 4 --json body --jq .body && printf 'stdin' | gh issue edit 4 --body-file=- >/dev/null && gh issue view 4 --json body --jq .body && printf '{}' | gh api repos/integ/repo-cli --method GET --input=- --jq .full_name",
+      "expect": {
+        "exit": 0,
+        "stdout": "literal\nstdin\ninteg/repo-cli\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_file_read_errors_preserve_typed_paths",
+      "seq": 569112,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "cd /scratch/cli-files; gh issue edit 4 --body-file ./absent.md; gh release create unused --notes-file ./absent.md; gh api repos/integ/repo-cli --input ./absent.md; gh api repos/integ/repo-cli -F body=@./absent.md",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gh issue edit: read ./absent.md: No such file or directory\ngh release create: read ./absent.md: No such file or directory\ngh api: read ./absent.md: No such file or directory\ngh api: read ./absent.md: No such file or directory\n"
+      }
+    },
+    {
+      "id": "gh_file_read_errors_report_non_directory",
+      "seq": 569113,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "cd /scratch/cli-files; gh issue edit 4 --body-file ./body.md/child; gh api repos/integ/repo-cli -F body=@./body.md/child",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gh issue edit: read ./body.md/child: Not a directory\ngh api: read ./body.md/child: Not a directory\n"
+      }
+    },
+    {
+      "id": "gh_file_options_use_last_value_instead_of_scanning_argv",
+      "seq": 569114,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "cd /scratch/cli-files && printf 'ignored' | gh issue edit 4 --body-file - --body-file ./body.md >/dev/null && gh issue view 4 --json body --jq .body && printf 'last' | gh issue edit 4 --body-file ./body.md --body-file=- >/dev/null && gh issue view 4 --json body --jq .body",
+      "expect": {
+        "exit": 0,
+        "stdout": "relative body\n\nlast\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_error_silent",
+      "seq": 569300,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/nope --silent",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_error_ignores_jq",
+      "seq": 569301,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/nope --jq .message",
+      "expect": {
+        "exit": 1,
+        "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_search_validation_body",
+      "seq": 569302,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'search/issues?q=repo:integ/missing'",
+      "expect": {
+        "exit": 1,
+        "stdout": "{\"message\":\"Validation Failed\",\"errors\":[{\"message\":\"The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.\",\"resource\":\"Search\",\"field\":\"q\",\"code\":\"invalid\"}],\"documentation_url\":\"https://docs.github.com/v3/search/\",\"status\":\"422\"}",
+        "stderr": "gh: Validation Failed (HTTP 422)\n"
+      }
+    },
+    {
+      "id": "gh_search_issues_validation_reason",
+      "seq": 569303,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues needle --repo integ/missing",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "Invalid search query \"needle repo:integ/missing type:issue\".\nThe listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.\n"
+      }
+    },
+    {
+      "id": "gh_search_prs_validation_reason",
+      "seq": 569304,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs needle --repo integ/missing",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "Invalid search query \"needle repo:integ/missing type:pr\".\nThe listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.\n"
+      }
+    },
+    {
+      "id": "gh_search_code_missing_repo_is_empty",
+      "seq": 569305,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search code needle --repo integ/missing --json path",
+      "expect": {
+        "exit": 0,
+        "stdout": "[]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_commits_validation_reason",
+      "seq": 569306,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search commits needle --repo integ/missing",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "Invalid search query \"needle repo:integ/missing\".\nThe listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.\n"
+      }
+    },
+    {
+      "id": "gh_api_error_slurp",
+      "seq": 569307,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/nope --paginate --slurp",
+      "expect": {
+        "exit": 1,
+        "stdout": "[{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}]",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_graphql_field_error",
+      "seq": 569308,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api graphql -f query='{ repository(owner: \"integ\", name: \"missing\") { name } }'",
+      "expect": {
+        "exit": 1,
+        "stdout": "{\"errors\":[{\"message\":\"Could not resolve to a Repository with the name 'integ/missing'.\",\"locations\":[{\"line\":1,\"column\":3}],\"path\":[\"repository\"]}],\"data\":{\"repository\":null}}",
+        "stderr": "gh: Could not resolve to a Repository with the name 'integ/missing'.\n"
+      }
+    },
+    {
+      "id": "gh_api_graphql_error_ignores_jq",
+      "seq": 569309,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api graphql -f query='{ repository(owner: \"integ\", name: \"missing\") { name } }' --jq .data",
+      "expect": {
+        "exit": 1,
+        "stdout": "{\"errors\":[{\"message\":\"Could not resolve to a Repository with the name 'integ/missing'.\",\"locations\":[{\"line\":1,\"column\":3}],\"path\":[\"repository\"]}],\"data\":{\"repository\":null}}",
+        "stderr": "gh: Could not resolve to a Repository with the name 'integ/missing'.\n"
+      }
+    },
+    {
+      "id": "gh_api_graphql_validation_error",
+      "seq": 569310,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api graphql -f query='{ viewer { bogus } }'",
+      "expect": {
+        "exit": 1,
+        "stdout": "{\"errors\":[{\"message\":\"Cannot query field \\\"bogus\\\" on type \\\"User\\\". Did you mean \\\"login\\\"?\",\"locations\":[{\"line\":1,\"column\":12}]}]}",
+        "stderr": "gh: Cannot query field \"bogus\" on type \"User\". Did you mean \"login\"?\n"
+      }
+    },
+    {
+      "id": "gh_api_graphql_answer",
+      "seq": 569311,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api graphql -f query='{ viewer { login } }' --jq .data.viewer.login",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ-user\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_version",
+      "seq": 569312,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh version | sed -E 's/gh version [^ ]+ /gh version VERSION /'",
+      "expect": {
+        "exit": 0,
+        "stdout": "gh version VERSION (Mirage)\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_version_option",
+      "seq": 569313,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh --version | sed -E 's/gh version [^ ]+ /gh version VERSION /'",
+      "expect": {
+        "exit": 0,
+        "stdout": "gh version VERSION (Mirage)\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_view_and_list_json_offer_every_field_gh_does",
+      "seq": 569314,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 5 --json nosuch 2>&1 | grep -c '^  '; gh pr list --json nosuch 2>&1 | grep -c '^  '",
+      "expect": {
+        "exit": 0,
+        "stdout": "46\n46\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_view_json_reads_files_and_commits",
+      "seq": 569315,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 5 --json title,changedFiles,files,commits --jq '[.title, .changedFiles, .files, (.commits | map([.messageHeadline, .authors[0].login]))]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"merged-title\",1,[{\"additions\":1,\"deletions\":0,\"path\":\"README.md\"}],[[\"Update README.md\",\"integ-user\"]]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_view_json_reads_reviews",
+      "seq": 569316,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "url=$(echo 'Fixes #4' | gh pr create --title docs-pass --head docs-pass --base main --body-file -) && gh api \"repos/integ/repo-cli/pulls/${url##*/}/reviews\" -f event=COMMENT -f body=lgtm --jq .state && gh pr view \"$url\" --json reviews,latestReviews --jq '[(.reviews | map([.state, .body, .author.login, .includesCreatedEdit])), .latestReviews]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "COMMENTED\n[[[\"COMMENTED\",\"lgtm\",\"integ-user\",false]],[]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_view_json_reads_review_requests_and_closing_issues",
+      "seq": 569317,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "url=$(gh pr list --head docs-pass --json url --jq '.[0].url') && gh api \"repos/integ/repo-cli/pulls/${url##*/}/requested_reviewers\" -f 'reviewers[]=octo-reviewer' --jq .title && gh pr view \"$url\" --json reviewRequests,closingIssuesReferences --jq '[.reviewRequests, (.closingIssuesReferences | map([.number, .repository.name, .repository.owner.login]))]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "docs-pass\n[[{\"__typename\":\"User\",\"login\":\"octo-reviewer\"}],[[4,\"repo-cli\",\"integ\"]]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_view_json_prints_ghs_own_shapes",
+      "seq": 569318,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view \"$(gh pr list --head docs-pass --json url --jq '.[0].url')\" --json author,mergedBy,headRepository,headRepositoryOwner,reactionGroups,projectCards,projectItems,milestone,autoMergeRequest,assignees,labels,reviewDecision,state,closed,closedAt,mergeable,mergeStateStatus,isCrossRepository",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"assignees\":[],\"author\":{\"id\":\"MDQ6VXNlcmludGVnLXVzZXI=\",\"is_bot\":false,\"login\":\"integ-user\",\"name\":\"integ-user\"},\"autoMergeRequest\":null,\"closed\":false,\"closedAt\":null,\"headRepository\":{\"id\":\"MDEwOlJlcG9zaXRvcnkw\",\"name\":\"repo-cli\",\"nameWithOwner\":\"\"},\"headRepositoryOwner\":{\"id\":\"MDEyOk9yZ2FuaXphdGlvbmludGVn\",\"login\":\"integ\"},\"isCrossRepository\":false,\"labels\":[],\"mergeStateStatus\":\"CLEAN\",\"mergeable\":\"MERGEABLE\",\"mergedBy\":null,\"milestone\":null,\"projectCards\":null,\"projectItems\":[],\"reactionGroups\":[],\"reviewDecision\":\"\",\"state\":\"OPEN\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_view_json_rolls_up_checks_on_the_head_commit",
+      "seq": 569319,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 5 --json statusCheckRollup --jq '.statusCheckRollup | map([.__typename, (.name // .context), (.conclusion // .state), (.workflowName // .targetUrl)])'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[[\"StatusContext\",\"test\",\"SUCCESS\",\"https://example.test/check/301\"],[\"StatusContext\",\"ci/legacy\",\"SUCCESS\",\"https://example.test/status/legacy\"]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_view_json_number_alone_asks_nothing",
+      "seq": 569320,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 999 --json number --jq .number; gh pr view 999 --json title 2>&1; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "999\ngh pr view: GraphQL: Could not resolve to a PullRequest with the number of 999. (repository.pullRequest)\nexit=1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_list_json_reads_graphql_fields",
+      "seq": 569321,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr list --state merged --json number,state,mergedBy,mergeCommit,files --jq 'map([.number, .state, .mergedBy.login, (.mergeCommit.oid | length), (.files | map(.path))])'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[[5,\"MERGED\",\"integ-user\",40,[\"README.md\"]]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_list_json_refuses_project_cards_as_github_does",
+      "seq": 569322,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr list --json projectCards 2>&1; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "gh pr list: GraphQL: Projects (classic) is being deprecated in favor of the new Projects experience, see: https://github.blog/changelog/2024-05-23-sunset-notice-projects-classic/. (repository.pullRequests.nodes.0.projectCards)\nexit=1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_prints_the_body_verbatim",
+      "seq": 569323,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api user; echo '[end]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"login\":\"integ-user\",\"name\":\"integ-user\",\"type\":\"User\"}[end]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_paginate_streams_array_pages_as_one_array",
+      "seq": 569324,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'repos/integ/repo-cli/issues?state=all&per_page=1' --paginate | jq -c 'type, (length > 1)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "\"array\"\ntrue\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_view_and_list_json_offer_every_field_gh_does",
+      "seq": 569325,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json nosuch 2>&1 | grep -c '^  '; gh issue list --json nosuch 2>&1 | grep -c '^  '",
+      "expect": {
+        "exit": 0,
+        "stdout": "21\n21\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_view_json_reads_state_reason_and_closing_pull_requests",
+      "seq": 569326,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json number,state,stateReason,closed,isPinned,closedByPullRequestsReferences --jq '[.number, .state, .stateReason, .closed, .isPinned, (.closedByPullRequestsReferences | map([.number, .repository.name, .repository.owner.login]))]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[4,\"OPEN\",\"REOPENED\",false,false,[[11,\"repo-cli\",\"integ\"]]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_view_json_answers_a_pull_request_number",
+      "seq": 569327,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 5 --json number,title,state,isPinned,stateReason,closedByPullRequestsReferences",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"closedByPullRequestsReferences\":[],\"isPinned\":false,\"number\":5,\"state\":\"MERGED\",\"stateReason\":\"\",\"title\":\"merged-title\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_view_json_prints_ghs_own_shapes",
+      "seq": 569328,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json author,assignees,labels,milestone,reactionGroups,projectItems,closedAt",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"assignees\":[{\"id\":\"MDQ6VXNlcmludGVnLXVzZXI=\",\"login\":\"integ-user\",\"name\":\"integ-user\",\"databaseId\":0}],\"author\":{\"id\":\"MDQ6VXNlcmludGVnLXVzZXI=\",\"is_bot\":false,\"login\":\"integ-user\",\"name\":\"integ-user\"},\"closedAt\":null,\"labels\":[{\"id\":\"MDU6TGFiZWwwOmRvY3M=\",\"name\":\"docs\",\"description\":\"\",\"color\":\"ededed\"},{\"id\":\"MDU6TGFiZWwwOmJ1Zw==\",\"name\":\"bug\",\"description\":\"\",\"color\":\"ededed\"}],\"milestone\":null,\"projectItems\":[],\"reactionGroups\":[]}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_list_json_narrows_by_state_and_label",
+      "seq": 569329,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue list --state all --label bug --json number,state,labels --jq 'map([.number, .state, (.labels | map(.name))])'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[[4,\"OPEN\",[\"docs\",\"bug\"]],[3,\"OPEN\",[\"bug\"]]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_view_json_refuses_project_cards_as_github_does",
+      "seq": 569330,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json projectCards 2>&1; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "gh issue view: GraphQL: Projects (classic) is being deprecated in favor of the new Projects experience, see: https://github.blog/changelog/2024-05-23-sunset-notice-projects-classic/. (repository.issue.projectCards)\nexit=1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_jq_halt_ends_the_output_and_halt_error_fails",
+      "seq": 569331,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api user --jq '.login, halt, .login'; gh api user --jq '\"x\" | halt_error(3)'; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ-user\nexit=1\n",
+        "stderr": "gh api: halt error: x\n"
+      }
+    },
+    {
+      "id": "gh_jq_failure_keeps_the_output_printed_before_it",
+      "seq": 569332,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api user --jq '.login, (\"x\" | halt_error(3))'; echo \"exit=$?\"; gh issue view 4 --json number --jq '.number, (\"y\" | halt_error(3))'; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ-user\nexit=1\n4\nexit=1\n",
+        "stderr": "gh api: halt error: x\ngh issue view: halt error: y\n"
+      }
+    },
+    {
+      "id": "gh_auth_status_configured_token",
+      "seq": 569900,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh auth status | tail -n 2 | sed -E 's/.*account integ-user/account integ-user/'",
+      "expect": {
+        "exit": 0,
+        "stdout": "account integ-user (Mirage configuration)\n  - Active account: true\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_jq_error_reports_as_gojq_does",
+      "seq": 569333,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api user --jq '.login, error(\"boom\")'; echo \"exit=$?\"; gh api user --jq 'error({\"b\": 1, \"a\": [2, \"x\"]})'; echo \"exit=$?\"; gh api user --jq '(try error(.login) catch .), error(\"y\")'; echo \"exit=$?\"; gh api user --jq '{\"b\": 1, \"a\": 2} | halt_error(1)'; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ-user\nexit=1\nexit=1\ninteg-user\nexit=1\nexit=1\n",
+        "stderr": "gh api: error: boom\ngh api: error: {\"a\":[2,\"x\"],\"b\":1}\ngh api: error: y\ngh api: halt error: {\"a\":2,\"b\":1}\n"
+      }
+    },
+    {
+      "id": "gh_typed_jq_error_reports_as_gojq_does",
+      "seq": 569334,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json number --jq '.number, error(\"no \\(.number)\")'; echo \"exit=$?\"; gh issue view 4 --json number --jq '.number, limit(-1; .number)'; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "4\nexit=1\n4\nexit=1\n",
+        "stderr": "gh issue view: error: no 4\ngh issue view: error: limit doesn't support negative count\n"
+      }
+    },
+    {
+      "id": "gh_jq_prints_each_output_as_go_gh_does",
+      "seq": 569335,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api user --jq '.login, 1.5, 0.125, -0.125, 1e21, 3.0, {\"b\": 1, \"a\": \"<&>\"}, [1.5, 1e21, 1e-7], true, null'; gh issue view 4 --json number --jq '{third: (.number / 3), number}, .number / 3'",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ-user\n1.50\n0.12\n-0.12\n1000000000000000000000\n3\n{\"a\":\"\\u003c\\u0026\\u003e\",\"b\":1}\n[1.5,1e+21,1e-7]\ntrue\n\n{\"number\":4,\"third\":1.3333333333333333}\n1.33\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_run_view_log_prints_each_line_behind_its_job_and_step",
+      "seq": 569024,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh run view 201 --log; gh run view 201 --log-failed",
+      "expect": {
+        "exit": 0,
+        "stdout": "test\tSet up job\t2026-01-01T00:00:05.0000000Z Current runner version: '2.330.0'\ntest\tSet up job\t2026-01-01T00:00:05.1000000Z Operating System\ntest\tRun actions/checkout@v4\t2026-01-01T00:00:06.0000000Z ##[group]Run actions/checkout@v4\ntest\tRun actions/checkout@v4\t2026-01-01T00:00:06.2000000Z Syncing repository: integ/repo-cli\ntest\tRun python -m pytest tests\t2026-01-01T00:00:09.0000000Z ##[group]Run python -m pytest tests\ntest\tRun python -m pytest tests\t2026-01-01T00:00:58.0000000Z ============================== 6 passed in 48.90s ==============================\ntest\tComplete job\t2026-01-01T00:00:58.0000000Z Cleaning up orphan processes\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_run_view_log_waits_for_the_run_to_complete",
+      "seq": 569062,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh run view 202 --log --log-failed; gh run view 202 --log-failed",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "specify only one of --log or --log-failed\ngh run view: run 202 is still in progress; logs will be available when it is complete\n"
+      }
+    },
+    {
+      "id": "gh_workflow_list_follows_the_workflow_files",
+      "seq": 569063,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh workflow list --all --json id,name,path,state --jq 'map([.id, .name, .path, .state])'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[[101,\"CI\",\".github/workflows/ci.yml\",\"active\"],[102,\"Archive\",\".github/workflows/archive.yml\",\"disabled_manually\"]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_workflow_view_yaml_prints_the_file",
+      "seq": 569064,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh workflow view CI --yaml | head -4; gh workflow view ci.yml -y -r main | tail -1",
+      "expect": {
+        "exit": 0,
+        "stdout": "name: CI\n\"on\":\n  push:\n    branches: [main]\n      - run: python -m pytest tests\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_workflow_view_ref_needs_yaml_and_a_ref_holding_the_file",
+      "seq": 569065,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh workflow view ci.yml -r main; gh workflow view ci.yml --yaml -r nope",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "`--yaml` required when specifying `--ref`\ngh workflow view: could not find workflow file ci.yml on nope, try specifying a different ref\n"
+      }
+    },
+    {
+      "id": "gh_workflow_run_refuses_a_disabled_workflow",
+      "seq": 569066,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh workflow run archive.yml",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gh workflow run: Cannot trigger a 'workflow_dispatch' on a disabled workflow\n"
+      }
+    },
+    {
+      "id": "gh_api_short_sha_names_its_commit",
+      "seq": 569901,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api \"repos/integ/repo-cli/commits/$(gh api repos/integ/repo-cli/commits --jq '.[-1].sha[0:7]')\" --jq .commit.message; gh api \"repos/integ/repo-cli/contents/README.md?ref=$(gh api repos/integ/repo-cli/commits --jq '.[-1].sha[0:4]')\" --jq .name; gh api repos/integ/repo-cli/commits/abc",
+      "expect": {
+        "exit": 1,
+        "stdout": "Initial commit\nREADME.md\n{\"message\":\"No commit found for SHA: abc\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: No commit found for SHA: abc (HTTP 422)\n"
+      }
+    },
+    {
+      "id": "gh_api_commits_sha_lists_from_that_commit",
+      "seq": 569902,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "test \"$(gh api \"repos/integ/repo-cli/commits?sha=$(gh api repos/integ/repo-cli/commits --jq '.[1].sha[0:7]')\" --jq '.[0].sha')\" = \"$(gh api repos/integ/repo-cli/commits --jq '.[1].sha')\" && echo starts-at-the-commit; gh api 'repos/integ/repo-cli/commits?sha=0000000'",
+      "expect": {
+        "exit": 1,
+        "stdout": "starts-at-the-commit\n{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_pages_site_sets_has_pages",
+      "seq": 569903,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli --jq .has_pages; gh api -X POST repos/integ/repo-cli/pages -f 'source[branch]=main' -f 'source[path]=/' --jq '[.html_url, .source, .status]'; gh api repos/integ/repo-cli --jq .has_pages; gh api -X DELETE repos/integ/repo-cli/pages --silent; gh api repos/integ/repo-cli --jq .has_pages",
+      "expect": {
+        "exit": 0,
+        "stdout": "false\n[\"https://integ.github.io/repo-cli/\",{\"branch\":\"main\",\"path\":\"/\"},\"built\"]\ntrue\nfalse\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_pages_without_a_site_is_github_404",
+      "seq": 569904,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/pages",
+      "expect": {
+        "exit": 1,
+        "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_include_prints_the_status_line_and_headers",
+      "seq": 569905,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api -i repos/integ/repo-cli --jq .name | sed -n '1p;$p'; gh api --include repos/integ/repo-cli | grep -c '^Content-Type: application/json'; gh api -i repos/integ/repo-cli/pages | head -1",
+      "expect": {
+        "exit": 0,
+        "stdout": "HTTP/1.1 200 OK\nrepo-cli\n1\nHTTP/1.1 404 Not Found\n",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_repo_edit_stores_what_it_sends",
+      "seq": 569906,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo edit; gh repo edit --visibility private; gh repo edit --description edited --enable-wiki=false --add-topic cli,agents && gh api repos/integ/repo-cli --jq '[.description, .has_wiki, .topics]' && gh repo edit --remove-topic cli && gh repo view --json description,hasWikiEnabled && gh api repos/integ/repo-cli/topics --jq .names",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"edited\",false,[\"cli\",\"agents\"]]\n{\"description\":\"edited\",\"hasWikiEnabled\":false}\n[\"agents\"]\n",
+        "stderr": "specify properties to edit when not running interactively\nuse of --visibility flag requires --accept-visibility-change-consequences flag\n"
+      }
+    },
+    {
+      "id": "gh_repo_delete_needs_yes_and_a_named_repository",
+      "seq": 569907,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo delete integ-user/doomed; gh repo delete --yes; gh repo fork integ/repo-cli --fork-name doomed > /dev/null && gh workflow list -R integ-user/doomed --json name --jq 'map(.name)' && gh run list -R integ-user/doomed --json databaseId && gh repo delete doomed --yes && gh api repos/integ-user/doomed --silent",
+      "expect": {
+        "exit": 1,
+        "stdout": "[\"Archive\",\"CI\"]\n[]\n",
+        "stderr": "--yes required when not running interactively\ncannot non-interactively delete current repository. Please specify a repository or run interactively\ngh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_workflow_follows_a_workflow_file_added_later",
+      "seq": 569908,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/contents/.github/workflows/build.yml -X PUT -f message=build -f content=bmFtZTogQnVpbGQKb246IHdvcmtmbG93X2Rpc3BhdGNoCg== > /dev/null && gh workflow list --json name --jq 'map(.name)' && gh workflow run build.yml && gh run list --workflow Build --limit 1 --json workflowName,status,event --jq '.[0]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"CI\",\"Build\"]\n{\"event\":\"workflow_dispatch\",\"status\":\"queued\",\"workflowName\":\"Build\"}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_edit_maps_values_and_every_toggle",
+      "seq": 569909,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo fork integ/repo-cli --fork-name settings > /dev/null && gh repo edit integ-user/settings --description '' --homepage https://example.test --default-branch main --visibility private --accept-visibility-change-consequences --template --enable-issues=false --enable-projects=true --enable-wiki=false --enable-discussions --enable-merge-commit=false --enable-squash-merge=true --enable-rebase-merge=false --enable-auto-merge --delete-branch-on-merge=false --allow-forking=true --allow-update-branch=false && gh api repos/integ-user/settings --jq '[.description, .homepage, .default_branch, .visibility, .private, .is_template, .has_issues, .has_projects, .has_wiki, .has_discussions, .allow_merge_commit, .allow_squash_merge, .allow_rebase_merge, .allow_auto_merge, .delete_branch_on_merge, .allow_forking, .allow_update_branch]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"\",\"https://example.test\",\"main\",\"private\",true,true,false,true,false,true,false,true,false,true,false,true,false]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_edit_maps_security_switches",
+      "seq": 569910,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo edit integ-user/settings --enable-advanced-security --enable-secret-scanning=false --enable-secret-scanning-push-protection=true && gh api repos/integ-user/settings --jq .security_and_analysis",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"advanced_security\":{\"status\":\"enabled\"},\"secret_scanning\":{\"status\":\"disabled\"},\"secret_scanning_push_protection\":{\"status\":\"enabled\"}}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_repo_edit_topics_deduplicate_and_remove",
+      "seq": 569911,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api -X PUT repos/integ-user/settings/topics -f 'names[]=keep' --silent && gh repo edit integ-user/settings --add-topic alpha,beta --add-topic alpha --remove-topic beta && gh repo edit integ-user/settings --add-topic alpha --remove-topic missing && gh api repos/integ-user/settings/topics --jq .names",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"keep\",\"alpha\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_invalid_repository_fields_refuse_before_any_write",
+      "seq": 569912,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api -X PATCH repos/integ-user/settings -F name=12 -f description=must-not-land --silent; echo status=$?; gh api -X PATCH repos/integ-user/settings -f name=must-not-rename -F default_branch=false --silent; echo status=$?; gh api repos/integ-user/settings --jq '[.name, .description, .default_branch]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "status=1\nstatus=1\n[\"settings\",\"\",\"main\"]\n",
+        "stderr": "gh: Invalid request.\n\nFor 'properties/name', 12 is not a string. (HTTP 422)\ngh: Invalid request.\n\nFor 'properties/default_branch', false is not a string. (HTTP 422)\n"
+      }
+    },
+    {
+      "id": "gh_api_pages_update_is_atomic_and_delete_has_no_body",
+      "seq": 569913,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api -X POST repos/integ-user/settings/pages -f build_type=workflow --jq '[.build_type, .public]'; gh api -X POST repos/integ-user/settings/pages -f build_type=workflow --silent; echo status=$?; gh api -X PUT repos/integ-user/settings/pages -f 'source[branch]=main' -f 'source[path]=/docs' -f cname=docs.example.test -F https_enforced=false --silent; gh api -X PUT repos/integ-user/settings/pages -f cname=must-not-land -f 'source[branch]=absent' --silent; echo status=$?; gh api repos/integ-user/settings/pages --jq '[.source, .cname, .https_enforced]'; gh api -X DELETE repos/integ-user/settings/pages --include --silent | head -1; gh api repos/integ-user/settings --jq .has_pages",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"workflow\",false]\nstatus=1\nstatus=1\n[{\"branch\":\"main\",\"path\":\"/docs\"},\"docs.example.test\",false]\nHTTP/1.1 204 No Content\nfalse\n",
+        "stderr": "gh: GitHub Pages is already enabled. (HTTP 409)\ngh: Validation Failed (HTTP 422)\n"
+      }
+    },
+    {
+      "id": "gh_api_include_silent_preserves_headers_on_every_page",
+      "seq": 569914,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api --include --silent --paginate 'repos/integ/repo-cli/actions/workflows?per_page=1' | grep '^HTTP/'; gh api --include --silent repos/integ-user/settings/pages | head -1",
+      "expect": {
+        "exit": 0,
+        "stdout": "HTTP/1.1 200 OK\nHTTP/1.1 200 OK\nHTTP/1.1 200 OK\nHTTP/1.1 404 Not Found\n",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_binary_log_archive_survives_redirection_and_unzip",
+      "seq": 568999,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/actions/runs/201/logs > /scratch/run.zip && unzip -p /scratch/run.zip 0_test.txt | head -1; gh api repos/integ/repo-cli/actions/jobs/401/logs | head -1",
+      "expect": {
+        "exit": 0,
+        "stdout": "2026-01-01T00:00:05.0000000Z Current runner version: '2.330.0'\n2026-01-01T00:00:05.0000000Z Current runner version: '2.330.0'\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_workflow_yaml_reads_the_snapshot_and_keeps_its_id_after_recreation",
+      "seq": 569916,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "before=$(gh api repos/integ/repo-cli/commits --jq '.[0].sha[0:7]'); workflow=$(gh api repos/integ/repo-cli/actions/workflows/build.yml --jq .id); blob=$(gh api repos/integ/repo-cli/contents/.github/workflows/build.yml --jq .sha); gh api -X PUT repos/integ/repo-cli/contents/.github/workflows/build.yml -f message=rename -f sha=$blob -f content=bmFtZTogUmVuYW1lZApvbjogcHVzaA== --silent && gh workflow view build.yml --yaml | head -1 && gh workflow view build.yml --yaml --ref $before | head -1; gh workflow run build.yml; echo status=$?; blob=$(gh api repos/integ/repo-cli/contents/.github/workflows/build.yml --jq .sha); gh api -X DELETE repos/integ/repo-cli/contents/.github/workflows/build.yml -f message=remove -f sha=$blob --silent && gh workflow list --json name --jq 'map(.name)' && gh api -X PUT repos/integ/repo-cli/contents/.github/workflows/build.yml -f message=restore -f content=bmFtZTogQnVpbGQKb246IHdvcmtmbG93X2Rpc3BhdGNoCg== --silent && test \"$workflow\" = \"$(gh api repos/integ/repo-cli/actions/workflows/build.yml --jq .id)\" && echo same-workflow",
+      "expect": {
+        "exit": 0,
+        "stdout": "name: Renamed\nname: Build\nstatus=1\n[\"CI\"]\nsame-workflow\n",
+        "stderr": "gh workflow run: Workflow does not have 'workflow_dispatch' trigger\n"
+      }
+    },
+    {
+      "id": "gh_pr_diff_name_only_lists_the_changed_files",
+      "seq": 569917,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr diff 5 --name-only; gh pr diff 5 | tail -2",
+      "expect": {
+        "exit": 0,
+        "stdout": "README.md\n Fixture repository for the fake GitHub API server.\n+change\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_pull_request_files_and_counts_are_its_diff",
+      "seq": 569918,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/pulls/5 --jq '[.additions, .deletions, .changed_files, .commits]'; gh api repos/integ/repo-cli/pulls/5/files --jq 'map([.filename, .status, .additions, .deletions, .patch])'; gh api repos/integ/repo-cli/pulls/5/commits --jq 'map(.commit.message)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[1,0,1,1]\n[[\"README.md\",\"modified\",1,0,\"@@ -1,3 +1,4 @@\\n # repo-v1\\n \\n Fixture repository for the fake GitHub API server.\\n+change\"]]\n[\"Update README.md\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_review_comment_lands_on_a_diff_line",
+      "seq": 569919,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/pulls/5/comments -f body=nice -f path=README.md -F line=4 --jq '[.line, .side, .path, .diff_hunk]'; gh api repos/integ/repo-cli/pulls/5/comments -f body=off -f path=README.md -F line=9 >/dev/null 2>&1; echo \"exit=$?\"; gh api repos/integ/repo-cli/pulls/5/comments --jq 'map(.body)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[4,\"RIGHT\",\"README.md\",\"@@ -1,3 +1,4 @@\\n # repo-v1\\n \\n Fixture repository for the fake GitHub API server.\\n+change\"]\nexit=1\n[\"nice\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_user_search_reads_the_accounts",
+      "seq": 569920,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'search/users?q=integ' --jq '.items | map([.login, .type])'; gh api 'search/users?q=integ type:user' --jq '.items | map(.login)'; gh api users/integ --jq .type; gh api users/nobody",
+      "expect": {
+        "exit": 1,
+        "stdout": "[[\"integ\",\"Organization\"],[\"integ-user\",\"User\"]]\n[\"integ-user\"]\nOrganization\n{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_repository_search_narrows_by_repo_and_created",
+      "seq": 569921,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'search/repositories?q=repo:integ/repo-cli' --jq '[.total_count, (.items | map(.full_name))]'; gh api 'search/repositories?q=repo:integ/repo-cli created:<2000-01-01' --jq .total_count",
+      "expect": {
+        "exit": 0,
+        "stdout": "[1,[\"integ/repo-cli\"]]\n0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_commits_page_and_filter",
+      "seq": 569922,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'repos/integ/repo-cli/commits?per_page=1' --jq length; test \"$(gh api 'repos/integ/repo-cli/commits?per_page=1&page=2' --jq '.[0].sha')\" = \"$(gh api 'repos/integ/repo-cli/commits?per_page=2' --jq '.[1].sha')\" && echo page-two; gh api 'repos/integ/repo-cli/commits?path=missing.txt' --jq length; gh api 'repos/integ/repo-cli/commits?until=2000-01-01T00:00:00Z' --jq 'map(.commit.message)'; gh api 'repos/integ/repo-cli/commits?author=nobody' --jq length",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\npage-two\n0\n[\"Initial commit\"]\n0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_search_scopes_by_owner_kind_and_file",
+      "seq": 569923,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'search/repositories?q=owner:integ' --jq '[.items[].full_name]'; gh api 'search/issues?q=repo:integ/repo-cli is:pr sort:created-asc' --jq '[.items[].number][0:2]'; gh api 'search/issues?q=org:no-such-org-zz9' --silent; echo \"exit=$?\"; gh api 'search/code?q=import repo:integ/repo-cli extension:py' --jq '.items | length > 0'; gh api 'search/code?q=import repo:integ/repo-cli language:Haskell' --jq .total_count",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ/repo-cli\"]\n[5,6]\nexit=1\ntrue\n0\n",
+        "stderr": "gh: Validation Failed (HTTP 422)\n"
+      }
+    },
+    {
+      "id": "gh_api_lists_order_and_hold_pull_requests",
+      "seq": 569924,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'repos/integ/repo-cli/pulls?state=all&sort=created&direction=asc&per_page=1' --jq 'map(.number)'; gh api 'repos/integ/repo-cli/issues?state=all&sort=created&direction=asc&per_page=6' --jq 'map([.number, has(\"pull_request\")])'; gh api 'repos/integ/repo-cli/issues?state=all&since=2100-01-01T00:00:00Z' --jq length",
+      "expect": {
+        "exit": 0,
+        "stdout": "[5]\n[[1,false],[2,false],[3,false],[4,false],[5,true],[6,true]]\n0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_profile_languages_and_rate_limit",
+      "seq": 569925,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api users/integ --jq '[.login, .type, .public_repos]'; gh api repos/integ/repo-cli/languages --jq keys; gh api rate_limit --jq '[.resources.core.limit, .resources.search.limit]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ\",\"Organization\",1]\n[\"Python\"]\n[5000,30]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_statuses_belong_to_their_commit",
+      "seq": 569926,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/commits/feature/status --jq '[.state, .total_count]'; gh api repos/integ/repo-cli/commits/main/status --jq '[.state, .total_count]'; gh api repos/integ/repo-cli/commits/main/check-runs --jq '.check_runs | length'; gh api -X POST repos/integ/repo-cli/check-runs -f name=x -f head_sha=0000000 --silent; echo \"exit=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"success\",2]\n[\"pending\",0]\n0\nexit=1\n",
+        "stderr": "gh: You must authenticate via a GitHub App. (HTTP 403)\n"
+      }
+    },
+    {
+      "id": "gh_api_pull_request_from_a_fork",
+      "seq": 569927,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh repo fork integ/repo-cli --fork-name forked >/dev/null 2>&1; main=$(gh api repos/integ-user/forked/git/ref/heads/main --jq .object.sha); gh api repos/integ-user/forked/git/refs -f ref=refs/heads/from-fork -f sha=$main >/dev/null; gh api repos/integ-user/forked/contents/FORK.md -X PUT -f message='Add FORK.md' -f branch=from-fork -f content=Zm9yawo= >/dev/null; gh api repos/integ/repo-cli/pulls -f title=forked -f head=integ-user:from-fork -f base=main --jq '[.head.label, .head.ref, .head.repo.full_name, .changed_files]'; gh api repos/integ/repo-cli/compare/main...integ-user:from-fork --jq '[.files[].filename]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ-user:from-fork\",\"from-fork\",\"integ-user/forked\",1]\n[\"FORK.md\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_tree_lists_a_nested_directory",
+      "seq": 569928,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'repos/integ/repo-cli/git/trees/main:src?recursive=1' --jq '[.truncated, [.tree[].path | select(startswith(\"auth\"))]]'; gh api 'repos/integ/repo-cli/git/trees/main:src/auth' --jq '[.tree[].path]'; gh api 'repos/integ/repo-cli/git/trees/main:src/nope'; echo exit=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "[false,[\"auth\",\"auth/__init__.py\",\"auth/step_1.py\",\"auth/step_2.py\",\"auth/step_3.py\",\"auth/step_4.py\",\"auth/step_5.py\",\"auth/step_6.py\",\"auth/step_7.py\",\"auth/step_8.py\"]]\n[\"__init__.py\",\"step_1.py\",\"step_2.py\",\"step_3.py\",\"step_4.py\",\"step_5.py\",\"step_6.py\",\"step_7.py\",\"step_8.py\"]\n{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}exit=1\n",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_blob_lands_through_a_tree_and_a_commit",
+      "seq": 569929,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "blob=$(gh api -X POST repos/integ/repo-cli/git/blobs -f encoding=base64 -f content=aGVsbG8gYmxvYgo= --jq .sha); echo $blob; gh api repos/integ/repo-cli/git/blobs/$blob --jq .size; head=$(gh api repos/integ/repo-cli/commits/main --jq .sha); base=$(gh api repos/integ/repo-cli/commits/main --jq .commit.tree.sha); tree=$(gh api repos/integ/repo-cli/git/trees -f base_tree=$base -f 'tree[][path]=BLOB.md' -f 'tree[][mode]=100644' -f 'tree[][type]=blob' -f \"tree[][sha]=$blob\" --jq .sha); commit=$(gh api repos/integ/repo-cli/git/commits -f message='Add BLOB.md' -f tree=$tree -f \"parents[]=$head\" --jq .sha); gh api -X PATCH repos/integ/repo-cli/git/refs/heads/main -f sha=$commit --silent && cat /repo/BLOB.md",
+      "expect": {
+        "exit": 0,
+        "stdout": "038f48ad0beaffbea71d186a05084b79e3870cbf\n11\nhello blob\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_ancestry_suffixes_walk_first_parents",
+      "seq": 569930,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "for f in ONE TWO; do gh api -X PUT repos/integ/repo-cli/contents/$f.md -f message=\"Add $f.md\" -f content=c3VmZml4Cg== --silent; done; head=$(gh api repos/integ/repo-cli/commits/main --jq .sha); gh api \"repos/integ/repo-cli/compare/$head^...$head\" --jq '[.status, .ahead_by, [.files[].filename]]'; gh api 'repos/integ/repo-cli/compare/main~2...main' --jq '[.ahead_by, [.files[].filename]]'; test \"$(gh api 'repos/integ/repo-cli/commits/main~1' --jq .sha)\" = \"$(gh api repos/integ/repo-cli/commits/main --jq '.parents[0].sha')\" && echo first-parent; gh api 'repos/integ/repo-cli/contents/ONE.md?ref=main^' --jq .name; gh api 'repos/integ/repo-cli/commits/main^2'; echo exit=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"ahead\",1,[\"TWO.md\"]]\n[2,[\"ONE.md\",\"TWO.md\"]]\nfirst-parent\nONE.md\n{\"message\":\"No commit found for SHA: main^2\",\"documentation_url\":\"https://docs.github.com/rest\"}exit=1\n",
+        "stderr": "gh: No commit found for SHA: main^2 (HTTP 422)\n"
+      }
+    },
+    {
+      "id": "gh_api_pages_builds_follow_the_site",
+      "seq": 569931,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api repos/integ/repo-cli/pages/builds/latest; echo exit=$?; gh api -X POST repos/integ/repo-cli/pages -f 'source[branch]=main' -f 'source[path]=/' --silent; gh api repos/integ/repo-cli/pages/builds/latest --jq '[.url, .status, .pusher.login]'; test \"$(gh api repos/integ/repo-cli/pages/builds/latest --jq .commit)\" = \"$(gh api repos/integ/repo-cli/commits/main --jq .sha)\" && echo built-head; gh api -X POST repos/integ/repo-cli/pages/builds; echo; gh api -X PUT repos/integ/repo-cli/contents/PAGES.md -f message='Add PAGES.md' -f content=cGFnZXMK --silent; gh api repos/integ/repo-cli/pages/builds --jq 'map(.url | sub(\".*/\"; \"\"))'; test \"$(gh api repos/integ/repo-cli/pages/builds/3 --jq .commit)\" = \"$(gh api repos/integ/repo-cli/commits/main --jq .sha)\" && echo push-built; gh api -X DELETE repos/integ/repo-cli/pages --silent",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/pages/pages#get-latest-pages-build\"}exit=1\n[\"https://api.github.com/repos/integ/repo-cli/pages/builds/1\",\"built\",\"integ-user\"]\nbuilt-head\n{\"url\":\"https://api.github.com/repos/integ/repo-cli/pages/builds/latest\",\"status\":\"queued\"}\n[\"3\",\"2\",\"1\"]\npush-built\n",
+        "stderr": "gh: Not Found (HTTP 404)\n"
+      }
+    },
+    {
+      "id": "gh_api_commits_name_their_parents_and_tree",
+      "seq": 569932,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'repos/integ/repo-cli/commits?per_page=100' --jq '.[-1].parents'; gh api 'repos/integ/repo-cli/commits?per_page=100' --jq '(map(.parents[0].sha) | .[:-1]) == (map(.sha) | .[1:])'; sha=$(gh api repos/integ/repo-cli/commits/main --jq .sha); tree=$(gh api repos/integ/repo-cli/commits/main --jq .commit.tree.sha); test \"$tree\" = \"$(gh api repos/integ/repo-cli/git/commits/$sha --jq .tree.sha)\" && echo same-tree; test \"$(gh api repos/integ/repo-cli/git/trees/$tree --jq .sha)\" = \"$tree\" && echo tree-resolves; gh api repos/integ/repo-cli/commits/main --jq '.parents[0] | keys'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[]\ntrue\nsame-tree\ntree-resolves\n[\"html_url\",\"sha\",\"url\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_historical_directory_survives_fork_and_rename",
+      "seq": 569933,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "dir=$(gh api repos/integ/repo-cli/git/trees/main:src/auth --jq .sha); files=$(gh api repos/integ/repo-cli/git/trees/$dir --jq \"[.tree[].path]\"); gh api -X PUT repos/integ/repo-cli/contents/src/auth/HISTORY.py -f message=history -f content=eCA9IDEK --silent; gh api -X POST repos/integ/repo-cli/forks -f name=directory-fork --silent; gh api -X PATCH repos/integ-user/directory-fork -f name=directory-renamed --silent; test \"$(gh api repos/integ-user/directory-renamed/git/trees/$dir --jq \"[.tree[].path]\")\" = \"$files\" && echo history-preserved; tree=$(gh api -X POST repos/integ-user/directory-renamed/git/trees -f base_tree=$dir -f \"tree[][path]=ADDED.py\" -f \"tree[][content]=added\" --jq .sha); gh api repos/integ-user/directory-renamed/git/trees/$tree --jq '[.tree[].path]'; gh api -X DELETE repos/integ-user/directory-renamed --silent",
+      "expect": {
+        "exit": 0,
+        "stdout": "history-preserved\n[\"ADDED.py\",\"__init__.py\",\"step_1.py\",\"step_2.py\",\"step_3.py\",\"step_4.py\",\"step_5.py\",\"step_6.py\",\"step_7.py\",\"step_8.py\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_api_unknown_tree_base_is_refused",
+      "seq": 569934,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api -X POST repos/integ/repo-cli/git/trees -f base_tree=missing -f 'tree[][path]=BAD.md' -f 'tree[][content]=bad' --silent; echo exit=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "exit=1\n",
+        "stderr": "gh: Invalid request.\n\n\"base_tree\" is invalid. (HTTP 422)\n"
+      }
+    },
+    {
+      "id": "gh_api_tree_traverses_gitlink_only_directories",
+      "seq": 569935,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "base=$(gh api repos/integ/repo-cli/git/trees/main --jq .sha); tree=$(gh api -X POST repos/integ/repo-cli/git/trees -f base_tree=$base -f \"tree[][path]=vendor/nested/library\" -f \"tree[][mode]=160000\" -f \"tree[][type]=commit\" -f \"tree[][sha]=c0ffee0000000000000000000000000000000000\" --jq .sha); dir=$(gh api repos/integ/repo-cli/git/trees/$tree --jq '.tree[] | select(.path == \"vendor\") | .sha'); gh api repos/integ/repo-cli/git/trees/$dir --jq \"[.tree[].path]\"; gh api \"repos/integ/repo-cli/git/trees/$dir?recursive=1\" --jq \"[.tree[] | [.path, .type]]\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"nested\"]\n[[\"nested\",\"tree\"],[\"nested/library\",\"commit\"]]\n",
+        "stderr": ""
+      }
     }
   ]
 }

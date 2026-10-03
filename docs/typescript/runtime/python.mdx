@@ -10,23 +10,93 @@ packages ship two:
 
 | Runtime | Engine | Filesystem | Default |
 | --- | --- | --- | --- |
-| `pyodide` | CPython compiled to WebAssembly ([Pyodide](https://pyodide.org)) | Workspace mounts, preloaded into the WASM filesystem and lazily backfilled | Yes |
+| `pyodide` | CPython compiled to WebAssembly ([Pyodide](https://pyodide.org)) | Workspace mounts, fetched on access in a worker | Yes |
 | `monty` | [Pydantic Monty](https://github.com/pydantic/monty), a sandboxed Python interpreter written in Rust | Workspace mounts only, bridged through Mirage | No |
 
 ## Pyodide (default)
 
 Pyodide is full CPython in WebAssembly: real stdlib, `sys.argv`, stdin,
-and auto-loaded scientific packages. Mirage mirrors the workspace mounts
-into Pyodide's in-memory filesystem, so `open()` and `os.listdir` work on
-mounted paths.
+and auto-loaded scientific packages. `open()` and `os.listdir` access the
+workspace's existing mounts through Pyodide's filesystem adapter.
+
+A script file runs the way CPython runs one: `__file__` is its path made
+absolute against the working directory, tracebacks name it and quote
+its lines, and `sys.path[0]` is the script's own directory, so a module
+beside it imports; `-P` leaves that directory off. For `-c` and stdin,
+`-P` omits the current-directory entry. Configured `sysPath` entries stay
+available in either mode.
+
+The implemented `-P`, `-O`/`-OO`, and `-B` switches are reflected in a
+read-only `sys.flags` view for that invocation. `-O` and `-OO` also compile the
+modules the program imports from source. Interpreter flags and
+import paths are restored when the invocation ends, including on errors.
+
+Installed Python script CLIs receive bare `argv` (including the installed name at index 0) and `stdin` (bytes, or `None` when absent), on both Monty and Pyodide. Pyodide also keeps `sys.argv` and `sys.stdin`. Ordinary `python3` commands retain their interpreter's existing globals.
 
 ```ts
-import { MountMode, RAMResource, Workspace } from '@struktoai/mirage-node'
+import { MountMode, RAMVFS, Workspace } from '@struktoai/mirage-node'
 
-const ws = new Workspace({ '/data': new RAMResource() }, { mode: MountMode.EXEC })
-await ws.execute('echo hello > /data/a.txt')
-const io = await ws.execute(`python3 -c "print(open('/data/a.txt').read().strip())"`)
+const ws = new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.EXEC })
+await ws.shell('echo hello > /data/a.txt')
+const io = await ws.shell(`python3 -c "print(open('/data/a.txt').read().strip())"`)
 ```
+
+### Workspace file access
+
+Pyodide supports `open()`, `os.listdir`, `pathlib`, and native packages
+that use file operations, such as PIL and NumPy. These operations reach
+the same workspace mounts used by shell commands. Symlinks and metadata
+overlays come from the workspace namespace.
+
+Shell commands and direct `run()` or `eval()` calls inherit the current
+workspace directory. An explicit `RunArgs.cwd` overrides it for one run.
+Each console session starts there on its first feed and retains its own
+`os.chdir()` changes, including changes made before an exception. Other
+consoles and one-shot evaluations remain isolated. The Mirage session and
+host process directories are unchanged.
+
+If a console's saved directory has been removed or renamed, the next
+feed reports the filesystem error without executing its code. The console
+then resets its cwd to `/`, retaining its variables so the following feed
+can choose a new directory.
+
+`os.getxattr`, `os.listxattr`, `os.setxattr` and `os.removexattr` reach
+the attributes the shell's `getfattr` and `setfattr` see. They need the
+worker; the fallback below answers them with `OSError` (`ENOTSUP`).
+
+With a worker, files are fetched on first access and cached for that run.
+The cache is discarded before the next execution; it does not track
+external edits to already fetched files during a run. Writes flush through
+workspace operations before later backend reads and when execution ends.
+A failed flush produces stderr and a nonzero exit, and stops later
+mutations. Concurrent writes have no conflict detection.
+
+Worker access requires `SharedArrayBuffer`. Node supports this without
+experimental flags. Browser pages must be cross-origin isolated, typically
+using `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`. Vite consumers must also
+select ES module output for workers:
+
+```ts
+export default defineConfig({
+  worker: { format: 'es' },
+})
+```
+
+When workers or shared memory are unavailable, or a worker cannot start,
+Pyodide falls back to collecting mounted files before execution and
+replaying writes afterward. That fallback reads whole mounts into memory;
+use narrow mount prefixes for large mounts. Neither mode requires JSPI.
+
+Mount workspace files under a non-root prefix such as `/data`. A mount at
+`/` cannot replace Pyodide's own filesystem, which contains its standard
+library. For a non-root cwd inside that unsupported mount, Python keeps
+the interpreter's existing cwd. Supported child mounts retain their
+normal relative file access.
+
+See [Python command usage](/typescript/python#reading-and-writing-mirage-mounts-from-python)
+for examples, or run the
+[Pyodide VFS example](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/pyodide/vfs.ts).
 
 ## Monty
 
@@ -37,10 +107,10 @@ either way Python spells it (`os.getenv` or `os.environ`):
 
 ```ts
 const ws = new Workspace(
-  { '/data': new RAMResource() },
-  { mode: MountMode.EXEC, runtimes: ['monty', 'vfs'] },
+  { '/data': new RAMVFS() },
+  { mode: MountMode.EXEC, runtimes: ['monty', 'workspace'] },
 )
-const io = await ws.execute(
+const io = await ws.shell(
   `python3 -c "from pathlib import Path; print(Path('/data/a.txt').read_text())"`,
 )
 ```
@@ -54,17 +124,74 @@ pnpm add @pydantic/monty
 Without it, selecting monty makes `python3` exit with code 127 and an
 install hint.
 
+### Working directory
+
+Monty commands start in the Mirage shell's current directory. Relative
+`open()` and `pathlib` paths reach the workspace dispatcher as absolute
+virtual paths, so `cd /data; python3 -c "print(open('a.txt').read())"`
+reads `/data/a.txt` through the same mount and policy checks as `cat`.
+The script operand is judged like `cat`'s file too: a rule protecting
+`/data/job.py` refuses `python3 job.py` from `/data`.
+The words after it are the program's argv exactly as typed, globs
+expanded as bash expands them: `python3 job.py data/in.csv` hands the
+script `data/in.csv`, and a word naming another mount is a string the
+script may open, not a second mount for the line.
+`os.getcwd()` and `Path.cwd()` report that virtual directory. Monty 1.0.0's
+JavaScript binding cannot return the native named-tuple stat result that
+`os.chdir()` requires, so changing directories inside the guest raises a
+`RuntimeError` on this host. Use shell `cd` before a command or an explicit
+`RunArgs.cwd` instead; neither changes the host process directory.
+
+A console evaluation session inherits the workspace cwd on its first
+feed and keeps it across later feeds, even if the shell changes directory.
+A new session or one-shot evaluation starts from the current workspace cwd.
+
 ### Differences from CPython
 
+The pinned Monty 1.0.0 lacks `dir()`, `json.load()` and `json.dump()`.
+Use `hasattr(value, 'name')` to check a specific attribute, `json.loads(f.read())` to read JSON, and
+`f.write(json.dumps(value))` to write it. Mirage does not automatically
+switch interpreters when an API is missing. The shared
+`integ/runtime/monty.json` suite records these gaps and the working forms
+so a dependency update can revisit them.
+
+- The importable stdlib is `asyncio`, `base64`, `binascii`, `collections`, `copy`, `dataclasses`,
+  `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`,
+  `random`, `re`, `sys`, `time`, `typing` and `unicodedata`, and each is
+  itself partial (`json` has `loads`/`dumps` but no `load`/`dump`).
+- The parser refuses class inheritance and metaclasses, the
+  `classmethod`/`staticmethod`/`property` method decorators, and `yield`.
+  Plain classes, function decorators, `with`, f-strings and
+  comprehensions all work.
+- Introspection builtins are absent: `dir`, `vars`, `globals`,
+  `help`, `callable`, `issubclass`, `super` and
+  `compile`. There is no `__dict__` on any object, so none of them can
+  be written by hand either.
+- `__file__` is the script's name under the directory the run starts in,
+  so it names the script's own file only when the run starts there.
 - Command-line arguments are the `argv` global; `sys.argv` does not exist.
-- The builtin `open()` is not bridged yet in the JS binding; use
-  `pathlib` (`Path(...).read_text()`, `.write_text()`, `.iterdir()`).
 - No `sys.stdin` and no third-party imports.
 - `os.environ` reflects the session env only.
+- `os.urandom()` returns cryptographic random bytes, capped at 1 MiB per
+  call on both hosts. Larger requests raise `MemoryError`.
+- `Path.iterdir()` yields native `Path` objects on both hosts, including
+  relative paths whose entries can be read directly.
+- `os` has no extended-attribute calls (`os.getxattr` and its siblings);
+  run `getfattr` or `setfattr` in the shell instead.
+- `os.stat()` and `Path.stat()` answer with every attribute CPython's
+  `stat_result` carries, but not its sequence half: `st[6]`, `len(st)`
+  and iterating it raise `TypeError` here and work on the Python host,
+  because the JS input encoder cannot construct a native namedtuple.
+  This also prevents guest `os.chdir()` from validating a destination.
+  Read the fields by name (`st.st_size`, `st.st_mode`).
 
 ## Selecting in YAML
 
-Server workspace config files take a top-level `runtimes` list:
+Server workspace config files take a top-level `runtimes` list. Each
+entry is a name or a mapping with the uniform options (`captures`,
+`config`, `script`); the name is a runtime mirage ships, one the host
+registered with `registerRuntime`, or a `./file.mjs:Class` reference to a
+`Runtime` subclass, the form `vfs:` and `cli:` take:
 
 ```yaml
 runtimes:
@@ -72,11 +199,10 @@ runtimes:
   - name: pyodide # knobs live in the entry's config block
     config:
       home: https://assets.example.com/pyodide/
-  - vfs
-
+  - workspace
 mounts:
   /data:
-    resource: ram
+    vfs: ram
     command_limits:
       python3:
         timeout_seconds: 30
@@ -96,10 +222,38 @@ entries are the `runtimes` workspace option, instances carrying their
 own options:
 
 ```ts
-const ws = new Workspace(resources, {
-  runtimes: [new PyodideRuntime({ config: { home: 'https://assets.example.com/pyodide/' } }), 'vfs'],
+const ws = new Workspace(mounts, {
+  runtimes: [new PyodideRuntime({ config: { home: 'https://assets.example.com/pyodide/' } }), 'workspace'],
 })
 ```
+
+`pyodide.config.initModule` accepts a trusted host module URL or absolute
+Node path. Its default export receives the loaded Pyodide instance before
+`bootstrapCode` runs, and may return a cleanup function. This supports
+registering narrow JavaScript capabilities with `registerJsModule` without
+exposing host globals through `import js`. The initializer also runs inside
+the execution worker; it must not depend on caller-thread state. It has host
+privileges and belongs in deployment configuration, never agent input.
+`POST /v1/workspaces` rejects it in request-supplied runtime configuration.
+Configuring an initializer changes the runtime's declared reach from
+`workspace` to `process`, because registered host capabilities can bypass
+the workspace gate even while `import js` remains sealed.
+Worker termination destroys its isolate; only in-process shutdown invokes
+the returned cleanup function, so extensions must tolerate abrupt shutdown.
+
+## Adding and removing on a live workspace
+
+Runtimes come and go like mounts: `addRuntime` appends an entry (the first
+capturer still wins), `removeRuntime` takes one out, and `runtimes()` lists them. To
+swap engines, remove the old one first:
+
+```ts
+await ws.removeRuntime('pyodide') // python3 rebinds at once
+ws.addRuntime(new MontyRuntime())
+```
+
+A line already running on a removed runtime finishes before it closes;
+a removed instance cannot be added again, and `workspace` is permanent.
 
 ## Resource limits
 
@@ -113,10 +267,57 @@ way. There is no python3-specific limit surface.
 The deadline stops the interpreter, not just the answer. Monty's
 worker process is SIGKILLed when its run trips the deadline (or a
 background job is killed), so a runaway loop never keeps burning.
-Pyodide shares the event loop with the workspace, so the runtime arms
+Pyodide runs in a worker when available, and the runtime arms
 its interrupt buffer from a watchdog thread: the guest gets a
 `KeyboardInterrupt` at the deadline and the run answers 124 even for
 a busy `while True` loop. The watchdog needs `SharedArrayBuffer`
 (always present in Node; in a browser only on cross-origin isolated
 pages) — without it, a busy pyodide loop blocks the event loop until
 it finishes, so prefer monty for untrusted code there.
+
+## Managed child commands
+
+Pyodide's shared-memory worker supports an admitted subprocess bridge:
+
+```python
+import subprocess
+
+result = subprocess.run(["printf", "%s", "hello"],
+                        capture_output=True, text=True, check=True)
+print(result.stdout)
+```
+
+Mirage supplies `subprocess.Popen`; Python's standard `run`, `call`,
+`check_call` and `check_output` use that implementation. `Popen` supports live
+pipes, `poll`, `wait`, `communicate`, termination, timeout retries, text mode,
+`stderr=STDOUT`, and `shell=True` through the workspace's `sh`. `sys.executable`
+points to `/usr/bin/python3`, and `shutil.which` queries the profile's program
+view. Functions and shell-only builtins are not executables.
+
+Only the worker waits synchronously; Mirage's host event loop stays asynchronous.
+Guest environment variables are inherited unless `env` supplies a replacement.
+Writes flush across the filesystem bridge before process operations, and guest
+file caches invalidate after them. A timed-out `wait` or `communicate` leaves the
+child alive; `run` kills and joins it. Unfinished children are cancelled and joined
+when the guest invocation exits.
+
+This is a virtual process interface. Native descriptors, PTYs, process groups,
+user switching, `preexec_fn`, and `asyncio.create_subprocess_exec` are not supplied.
+Stdin inheritance hands off buffered unread input; concurrent descriptor sharing
+and kernel file offsets are not emulated. Termination signals request immediate
+managed cancellation; guest signal handlers are not invoked. Some runtime
+providers buffer output until completion. The bridge requires shared-memory
+workers. Unsupported options fail explicitly.
+
+Monty keeps its normal unsupported `subprocess` import; no custom guest helper
+is injected.
+
+Host applications use the same admitted argv door:
+
+```typescript
+const child = ws.spawn({ argv: ['cat'] })
+const result = await child.communicate(new TextEncoder().encode('hello\n'))
+```
+
+See [managed execution](/home/architecture#managed-execution) for process views,
+lifetimes and provider limits.

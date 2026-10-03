@@ -22,13 +22,16 @@ from pydantic_ai_backends import create_console_toolset
 
 from mirage import MountMode, Workspace
 from mirage.agents.pydantic_ai import PydanticAIWorkspace
-from mirage.resource.slack import SlackConfig, SlackResource
+from mirage.vfs.slack import SlackConfig, SlackVFS
 
 load_dotenv(".env.development")
 
-slack = SlackResource(
-    config=SlackConfig(token=os.environ["SLACK_BOT_TOKEN"],
-                       search_token=os.environ.get("SLACK_USER_TOKEN")))
+slack = SlackVFS(
+    config=SlackConfig(
+        token=os.environ["SLACK_BOT_TOKEN"],
+        search_token=os.environ.get("SLACK_USER_TOKEN"),
+    )
+)
 ws = Workspace({"/slack": slack}, mode=MountMode.READ)
 
 
@@ -44,9 +47,11 @@ agent = Agent(
     system_prompt=ws.file_prompt,
     deps_type=Deps,
     toolsets=[
-        create_console_toolset(require_execute_approval=False,
-                               image_support=True,
-                               document_support=True)
+        create_console_toolset(
+            require_execute_approval=False,
+            image_support=True,
+            document_support=True,
+        )
     ],
 )
 
@@ -54,7 +59,8 @@ agent = Agent(
 def main() -> None:
     task = (
         "Read and summarize the latest PNG and PDF in the slack "
-        "general channel. Open each file with read_file before responding.")
+        "general channel. Open each file with read_file before responding."
+    )
     print(f"=== Task: {task} ===")
     print()
     t0 = time.perf_counter()
@@ -64,13 +70,15 @@ def main() -> None:
     print()
     print(f"--- {elapsed:.1f}s ---")
 
-    records = ws.ops.records
+    records = ws.vfs.records
     if records:
         total = sum(r.bytes for r in records)
         print(f"--- {len(records)} ops, {total:,} bytes ---")
         for r in records:
-            print(f"  {r.op:<8} {r.source:<8} {r.bytes:>10,} B "
-                  f"{r.duration_ms:>5} ms  {r.path}")
+            print(
+                f"  {r.op:<8} {r.source:<8} {r.bytes:>10,} B "
+                f"{r.duration_ms:>5} ms  {r.path}"
+            )
 
 
 if __name__ == "__main__":

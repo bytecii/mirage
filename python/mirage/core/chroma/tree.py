@@ -4,27 +4,22 @@ import json
 from typing import Any
 
 from mirage.accessor.chroma import ChromaAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.cache.index import IndexEntry
 from mirage.core.chroma.client import fetch_path_tree
-from mirage.utils.path import gnu_basename, parent
+from mirage.core.slug_tree.rows import (
+    dir_rows,
+    drop_collisions,
+    normalize_slug,
+)
+from mirage.core.slug_tree.tree import SlugTree
+from mirage.core.slug_tree.types import DirRows
+from mirage.utils.path import gnu_basename
 
 
-async def ensure_tree(
-    accessor: ChromaAccessor,
-    index: IndexCacheStore = NULL_INDEX,
-    prefix: str = '',
-) -> None:
-    root_key = mount_root(prefix)
-    listing = await index.list_dir(root_key)
-    if listing.entries is not None:
-        return
-
-    path_tree = parse_path_tree(await fetch_path_tree(accessor))
-    dir_entries = build_dir_entries(path_tree, prefix)
-    for directory in sorted(dir_entries):
-        await index.set_dir(
-            directory, sorted(dir_entries[directory],
-                              key=lambda item: item[0]))
+async def load_tree(accessor: ChromaAccessor, prefix: str) -> DirRows:
+    return build_dir_entries(
+        parse_path_tree(await fetch_path_tree(accessor)), prefix
+    )
 
 
 def parse_path_tree(raw: str) -> dict[str, dict[str, Any]]:
@@ -47,90 +42,46 @@ def parse_path_tree(raw: str) -> dict[str, dict[str, Any]]:
 
 
 def build_dir_entries(
-    path_tree: dict[str, dict[str, Any]],
-    prefix: str,
-) -> dict[str, list[tuple[str, IndexEntry]]]:
+    path_tree: dict[str, dict[str, Any]], prefix: str
+) -> DirRows:
     files: dict[str, dict[str, Any]] = {}
-    raw_slugs: dict[str, str] = {}
     for raw_slug, metadata in path_tree.items():
-        path = normalize_slug(raw_slug)
+        path = normalize_slug(raw_slug, "Chroma path")
         if path in files:
-            value = path.strip("/")
-            raise ValueError(f"Duplicate Chroma path '{value}'")
+            raise ValueError(f"Duplicate Chroma path '{path.strip('/')}'")
         files[path] = metadata
-        raw_slugs[path] = raw_slug
-
-    raise_on_collisions(files)
-    directories = collect_directories(set(files))
-    dir_entries: dict[str, list[tuple[str, IndexEntry]]] = {
-        virtual_path(directory, prefix): []
-        for directory in directories
-    }
-
-    for directory in sorted(directories):
-        if directory == "/":
-            continue
-        entry = IndexEntry(id=directory.strip("/"),
-                           name=gnu_basename(directory),
-                           resource_type="folder")
-        dir_entries[virtual_path(parent(directory), prefix)].append(
-            (entry.name, entry))
-
-    for path, metadata in sorted(files.items()):
-        slug = path.strip("/")
-        updated_at = metadata_or_none(metadata, "updated_at")
-        # The path tree's `size` describes the producer's source document,
-        # not the chunk join mirage serves, so it rides in extra and never
-        # becomes the reported byte length: sizes.ensure_dir_sizes measures
-        # the rendered bytes instead.
-        entry = IndexEntry(
-            id=slug,
-            name=gnu_basename(path),
-            resource_type="file",
-            remote_time=updated_at or "",
-            extra={
-                "slug": slug,
-                "source_size": metadata_int_or_none(metadata, "size"),
-                "created_at": metadata_or_none(metadata, "created_at"),
-                "updated_at": updated_at,
-            },
-        )
-        dir_entries[virtual_path(parent(path), prefix)].append(
-            (entry.name, entry))
-    return dir_entries
+    return dir_rows(
+        drop_collisions(files, refuse_collision), prefix, file_entry
+    )
 
 
-def normalize_slug(value: str) -> str:
-    parts = [part for part in value.strip("/").split("/") if part]
-    if not parts:
-        raise ValueError("Invalid empty Chroma path")
-    invalid = {".", ".."}
-    for part in parts:
-        if part in invalid:
-            raise ValueError(f"Invalid Chroma path segment: {part!r}")
-    return "/" + "/".join(parts)
+def refuse_collision(ancestor: str, path: str) -> None:
+    raise ValueError(
+        "Path collision: Chroma path "
+        f"'{ancestor.strip('/')}' is both a file and a directory "
+        f"prefix for '{path.strip('/')}'."
+    )
 
 
-def raise_on_collisions(files: dict[str, dict[str, Any]]) -> None:
-    paths = set(files)
-    for path in sorted(paths):
-        parts = path.strip("/").split("/")
-        for index in range(1, len(parts)):
-            ancestor = "/" + "/".join(parts[:index])
-            if ancestor in paths:
-                raise ValueError(
-                    "Path collision: Chroma path "
-                    f"'{ancestor.strip('/')}' is both a file and a directory "
-                    f"prefix for '{path.strip('/')}'.")
-
-
-def collect_directories(paths: set[str]) -> set[str]:
-    directories = {"/"}
-    for path in paths:
-        parts = path.strip("/").split("/")
-        for index in range(1, len(parts)):
-            directories.add("/" + "/".join(parts[:index]))
-    return directories
+def file_entry(path: str, metadata: dict[str, Any]) -> IndexEntry:
+    slug = path.strip("/")
+    updated_at = metadata_or_none(metadata, "updated_at")
+    # The path tree's `size` describes the producer's source document,
+    # not the chunk join mirage serves, so it rides in extra and never
+    # becomes the reported byte length: sizes.ensure_dir_sizes measures
+    # the rendered bytes instead.
+    return IndexEntry(
+        id=slug,
+        name=gnu_basename(path),
+        resource_type="file",
+        remote_time=updated_at or "",
+        extra={
+            "slug": slug,
+            "source_size": metadata_int_or_none(metadata, "size"),
+            "created_at": metadata_or_none(metadata, "created_at"),
+            "updated_at": updated_at,
+        },
+    )
 
 
 def metadata_or_none(metadata: dict[str, Any], key: str) -> str | None:
@@ -153,14 +104,4 @@ def metadata_int_or_none(metadata: dict[str, Any], key: str) -> int | None:
     return None
 
 
-def mount_root(prefix: str) -> str:
-    return prefix.rstrip("/") or "/"
-
-
-def virtual_path(path: str, prefix: str) -> str:
-    root = mount_root(prefix)
-    if path == "/":
-        return root
-    if root == "/":
-        return path
-    return root + path
+CHROMA_TREE = SlugTree(load_tree)

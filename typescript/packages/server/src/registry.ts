@@ -20,6 +20,8 @@ export class WorkspaceEntry {
   readonly id: string
   readonly runner: WorkspaceRunner
   readonly createdAt: number
+  /** The fingerprint of the config it was created from, when it was. */
+  configDigest: string | null = null
 
   constructor(id: string, runner: WorkspaceRunner) {
     this.id = id
@@ -35,6 +37,8 @@ export interface WorkspaceRegistryOptions {
 
 export class WorkspaceRegistry {
   private entries = new Map<string, WorkspaceEntry>()
+  private readonly removals = new Map<string, Promise<WorkspaceEntry>>()
+  private readonly creates = new Map<string, { digest: string; done: Promise<unknown> }>()
   private readonly idleGraceSeconds: number
   private readonly onIdleExit: (() => void) | null
   private idleTimer: NodeJS.Timeout | null = null
@@ -46,6 +50,41 @@ export class WorkspaceRegistry {
 
   has(id: string): boolean {
     return this.entries.has(id)
+  }
+
+  /**
+   * Run one create of `id` at a time. A create of the same config that
+   * arrives while another is building waits for it, then finds the
+   * workspace it registered, rather than building a second over its
+   * state; it would stall on the same secrets and mounts anyway. A
+   * create of another config is not admitted and does not wait, so a
+   * stuck create never holds it: `run` gets `admitted` false.
+   */
+  async creating<T>(
+    id: string,
+    configDigest: string,
+    run: (admitted: boolean) => Promise<T>,
+  ): Promise<T> {
+    for (
+      let pending = this.creates.get(id);
+      pending !== undefined;
+      pending = this.creates.get(id)
+    ) {
+      if (pending.digest !== configDigest) return run(false)
+      await Promise.allSettled([pending.done])
+    }
+    const done = run(true)
+    this.creates.set(id, { digest: configDigest, done })
+    try {
+      return await done
+    } finally {
+      this.creates.delete(id)
+    }
+  }
+
+  /** Whether `id` is still registered only to be deleted. */
+  removing(id: string): boolean {
+    return this.removals.has(id)
   }
 
   get(id: string): WorkspaceEntry {
@@ -71,12 +110,41 @@ export class WorkspaceRegistry {
     return entry
   }
 
-  async remove(id: string): Promise<WorkspaceEntry> {
-    const entry = this.entries.get(id)
-    if (entry === undefined) throw new Error(`workspace not found: ${id}`)
-    this.entries.delete(id)
-    await entry.runner.stop()
-    if (this.entries.size === 0) this.startIdleTimer()
+  /**
+   * Delete `id`: stop its runner and drop its state. The workspace's
+   * links, history, sessions and metadata leave its state store with it,
+   * so a workspace created later under the same id starts empty.
+   * `closeAll` (daemon shutdown) keeps them. The id stays registered
+   * until the deletion is done, so a create under it is refused rather
+   * than registering a workspace whose state this deletion would then
+   * remove; `cleanup` runs inside that window. An overlapping remove of
+   * the same id joins the deletion in flight, so it never unregisters a
+   * workspace created after it.
+   */
+  async remove(id: string, cleanup?: () => Promise<void>): Promise<WorkspaceEntry> {
+    let removal = this.removals.get(id)
+    if (removal === undefined) {
+      const entry = this.entries.get(id)
+      if (entry === undefined) throw new Error(`workspace not found: ${id}`)
+      removal = this.drop(entry, cleanup)
+      this.removals.set(id, removal)
+    }
+    return removal
+  }
+
+  /** Run one deletion, releasing the id once it is done. */
+  private async drop(
+    entry: WorkspaceEntry,
+    cleanup?: () => Promise<void>,
+  ): Promise<WorkspaceEntry> {
+    try {
+      await entry.runner.stop({ delete: true })
+      if (cleanup !== undefined) await cleanup()
+    } finally {
+      this.removals.delete(entry.id)
+      this.entries.delete(entry.id)
+      if (this.entries.size === 0) this.startIdleTimer()
+    }
     return entry
   }
 

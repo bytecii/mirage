@@ -13,17 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { QdrantAccessor } from '../../../accessor/qdrant.ts'
-import { read as qdrantRead } from '../../../core/qdrant/read.ts'
-import { readdir as qdrantReaddir } from '../../../core/qdrant/readdir.ts'
-import { stat as qdrantStat } from '../../../core/qdrant/stat.ts'
+import { read, readdir, SEARCH, stat } from '../../../core/qdrant/tree.ts'
+import { VFSAdapter } from '../../../vfs/adapter.ts'
 import type { CommandIO } from '../generic_bind/index.ts'
-import { streamFromBytes } from '../utils/wrap.ts'
 
-export const QDRANT_IO: CommandIO<QdrantAccessor> = {
-  readdir: qdrantReaddir,
-  readBytes: qdrantRead,
-  readStream: (a, p, i) => streamFromBytes(qdrantRead, a, p, i),
-  stat: qdrantStat,
+export const IO: CommandIO<QdrantAccessor> = new VFSAdapter<QdrantAccessor>({
+  search: SEARCH,
+  read: { readdir, readBytes: read, stat },
   isMounted: () => true,
   local: false,
-}
+}).toCommandIO()

@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mirage.cache.index.config import IndexEntry
+from mirage.core.box.client import BoxApiError
 from mirage.core.box.readdir import readdir
 from mirage.types import PathSpec
 
@@ -39,13 +40,13 @@ async def test_readdir_root_lists_folder_zero(accessor, index):
         },
     ]
     with patch(
-            "mirage.core.box.readdir.list_folder_items",
-            new_callable=AsyncMock,
-            return_value=items,
+        "mirage.core.box.readdir.list_folder_items",
+        new_callable=AsyncMock,
+        return_value=items,
     ) as mock_list:
         result = await readdir(
-            accessor, PathSpec(resource_path="", virtual="/", directory="/"),
-            index)
+            accessor, PathSpec(vfs_path="", virtual="/", directory="/"), index
+        )
     assert result == ["/docs/", "/a.txt"]
     mock_list.assert_awaited_once_with(accessor.token_manager, "0")
     entry = (await index.get("/a.txt")).entry
@@ -60,21 +61,23 @@ async def test_readdir_root_lists_folder_zero(accessor, index):
 
 @pytest.mark.asyncio
 async def test_readdir_box_native_files_surface_raw(accessor, index):
-    items = [{
-        "id": "300",
-        "name": "meeting.boxnote",
-        "type": "file",
-        "size": 42,
-        "modified_at": "2026-04-01T00:00:00+00:00",
-    }]
+    items = [
+        {
+            "id": "300",
+            "name": "meeting.boxnote",
+            "type": "file",
+            "size": 42,
+            "modified_at": "2026-04-01T00:00:00+00:00",
+        }
+    ]
     with patch(
-            "mirage.core.box.readdir.list_folder_items",
-            new_callable=AsyncMock,
-            return_value=items,
+        "mirage.core.box.readdir.list_folder_items",
+        new_callable=AsyncMock,
+        return_value=items,
     ):
         result = await readdir(
-            accessor, PathSpec(resource_path="", virtual="/", directory="/"),
-            index)
+            accessor, PathSpec(vfs_path="", virtual="/", directory="/"), index
+        )
     assert result == ["/meeting.boxnote"]
     entry = (await index.get("/meeting.boxnote")).entry
     assert entry is not None
@@ -83,47 +86,62 @@ async def test_readdir_box_native_files_surface_raw(accessor, index):
 
 @pytest.mark.asyncio
 async def test_readdir_subfolder_resolves_id_via_index(accessor, index):
-    await index.put(
-        "/docs",
-        IndexEntry(id="100",
-                   name="docs",
-                   resource_type="box/folder",
-                   vfs_name="docs"))
-    items = [{
-        "id": "400",
-        "name": "notes.txt",
-        "type": "file",
-        "size": 3,
-        "modified_at": "2026-04-01T00:00:00+00:00",
-    }]
+    await index.set_dir(
+        "/",
+        [
+            (
+                "docs",
+                IndexEntry(
+                    id="100",
+                    name="docs",
+                    resource_type="box/folder",
+                    vfs_name="docs",
+                ),
+            )
+        ],
+    )
+    items = [
+        {
+            "id": "400",
+            "name": "notes.txt",
+            "type": "file",
+            "size": 3,
+            "modified_at": "2026-04-01T00:00:00+00:00",
+        }
+    ]
     with patch(
-            "mirage.core.box.readdir.list_folder_items",
-            new_callable=AsyncMock,
-            return_value=items,
+        "mirage.core.box.readdir.list_folder_items",
+        new_callable=AsyncMock,
+        return_value=items,
     ) as mock_list:
         result = await readdir(
             accessor,
-            PathSpec(resource_path="docs", virtual="/docs", directory="/docs"),
-            index)
+            PathSpec(vfs_path="docs", virtual="/docs", directory="/docs"),
+            index,
+        )
     assert result == ["/docs/notes.txt"]
     mock_list.assert_awaited_once_with(accessor.token_manager, "100")
 
 
 @pytest.mark.asyncio
 async def test_readdir_repopulates_evicted_parent(accessor, index):
-    root_items = [{
-        "id": "100",
-        "name": "docs",
-        "type": "folder",
-        "modified_at": "2026-04-01T00:00:00+00:00",
-    }]
-    docs_items = [{
-        "id": "400",
-        "name": "notes.txt",
-        "type": "file",
-        "size": 3,
-        "modified_at": "2026-04-01T00:00:00+00:00",
-    }]
+    root_items = [
+        {
+            "id": "100",
+            "name": "docs",
+            "type": "folder",
+            "modified_at": "2026-04-01T00:00:00+00:00",
+        }
+    ]
+    docs_items = [
+        {
+            "id": "400",
+            "name": "notes.txt",
+            "type": "file",
+            "size": 3,
+            "modified_at": "2026-04-01T00:00:00+00:00",
+        }
+    ]
 
     async def fake_list(_tm, folder_id, limit=1000):
         if folder_id == "0":
@@ -135,39 +153,79 @@ async def test_readdir_repopulates_evicted_parent(accessor, index):
     with patch("mirage.core.box.readdir.list_folder_items", new=fake_list):
         result = await readdir(
             accessor,
-            PathSpec(resource_path="docs", virtual="/docs", directory="/docs"),
-            index)
+            PathSpec(vfs_path="docs", virtual="/docs", directory="/docs"),
+            index,
+        )
     assert result == ["/docs/notes.txt"]
 
 
 @pytest.mark.asyncio
 async def test_readdir_missing_folder_raises(accessor, index):
     with patch(
-            "mirage.core.box.readdir.list_folder_items",
-            new_callable=AsyncMock,
-            return_value=[],
+        "mirage.core.box.readdir.list_folder_items",
+        new_callable=AsyncMock,
+        return_value=[],
     ):
         with pytest.raises(FileNotFoundError):
             await readdir(
                 accessor,
-                PathSpec(resource_path="ghost",
-                         virtual="/ghost",
-                         directory="/ghost"), index)
+                PathSpec(
+                    vfs_path="ghost", virtual="/ghost", directory="/ghost"
+                ),
+                index,
+            )
 
 
 @pytest.mark.asyncio
 async def test_readdir_serves_cached_listing_without_api_call(accessor, index):
-    entry = IndexEntry(id="1",
-                       name="cached.txt",
-                       resource_type="box/file",
-                       vfs_name="cached.txt")
+    entry = IndexEntry(
+        id="1",
+        name="cached.txt",
+        resource_type="box/file",
+        vfs_name="cached.txt",
+    )
     await index.set_dir("/", [("cached.txt", entry)])
     with patch(
-            "mirage.core.box.readdir.list_folder_items",
-            new_callable=AsyncMock,
+        "mirage.core.box.readdir.list_folder_items",
+        new_callable=AsyncMock,
     ) as mock_list:
         result = await readdir(
-            accessor, PathSpec(resource_path="", virtual="/", directory="/"),
-            index)
+            accessor, PathSpec(vfs_path="", virtual="/", directory="/"), index
+        )
     assert any("cached.txt" in r for r in result)
     mock_list.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_readdir_reads_a_404_listing_as_absence(accessor, index):
+    with patch(
+        "mirage.core.box.readdir.list_folder_items",
+        new_callable=AsyncMock,
+        side_effect=BoxApiError(
+            "Box GET /folders/0/items -> 404 not_found", 404
+        ),
+    ):
+        with pytest.raises(FileNotFoundError):
+            await readdir(
+                accessor,
+                PathSpec(vfs_path="", virtual="/", directory="/"),
+                index,
+            )
+
+
+@pytest.mark.asyncio
+async def test_readdir_keeps_a_throttled_listing_a_failure(accessor, index):
+    with patch(
+        "mirage.core.box.readdir.list_folder_items",
+        new_callable=AsyncMock,
+        side_effect=BoxApiError(
+            "Box GET /folders/0/items -> 429 rate_limit", 429
+        ),
+    ):
+        with pytest.raises(BoxApiError) as caught:
+            await readdir(
+                accessor,
+                PathSpec(vfs_path="", virtual="/", directory="/"),
+                index,
+            )
+    assert caught.value.status == 429

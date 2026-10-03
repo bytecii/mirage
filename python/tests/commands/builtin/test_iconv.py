@@ -14,13 +14,13 @@
 
 import asyncio
 
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 
 def _ws():
-    mem = RAMResource()
+    mem = RAMVFS()
     ws = Workspace(
         {"/data": (mem, MountMode.WRITE)},
         mode=MountMode.WRITE,
@@ -30,7 +30,7 @@ def _ws():
 
 def _run_raw(ws, cmd, cwd="/", stdin=None):
     ws._cwd = cwd
-    io = asyncio.run(ws.execute(cmd, stdin=stdin))
+    io = asyncio.run(ws.shell(cmd, stdin=stdin))
     return io.stdout, io
 
 
@@ -46,9 +46,9 @@ async def _collect(ait):
 
 def test_iconv_utf8_to_latin1():
     ws, _ = _ws()
-    stdout, io = _run_raw(ws,
-                          "iconv -f utf-8 -t latin-1",
-                          stdin="caf\u00e9\n".encode())
+    stdout, io = _run_raw(
+        ws, "iconv -f utf-8 -t latin-1", stdin="caf\u00e9\n".encode()
+    )
     assert io.exit_code == 0
     assert _bytes(stdout) == "caf\u00e9\n".encode("latin-1")
 
@@ -56,8 +56,23 @@ def test_iconv_utf8_to_latin1():
 def test_iconv_output_path_writes_file():
     ws, _ = _ws()
     _run_raw(ws, "bash -c 'echo caf\\xc3\\xa9 > /data/in.txt'")
-    _, io = _run_raw(ws,
-                     "iconv -f utf-8 -t utf-8 -o /data/out.txt /data/in.txt")
+    _, io = _run_raw(
+        ws, "iconv -f utf-8 -t utf-8 -o /data/out.txt /data/in.txt"
+    )
     assert io.exit_code == 0
     stdout, _ = _run_raw(ws, "cat /data/out.txt")
     assert _bytes(stdout).strip() != b""
+
+
+def test_a_read_only_mount_runs_iconv_to_stdout_and_refuses_its_output_file():
+    vfs = RAMVFS()
+    vfs._store.files["/in.txt"] = b"caf\xe9\n"
+    ws = Workspace({"/ro/": (vfs, MountMode.READ)})
+    stdout, io = _run_raw(ws, "iconv -f latin1 -t utf-8 /ro/in.txt")
+    assert (io.exit_code, _bytes(stdout)) == (0, "café\n".encode())
+    stdout, io = _run_raw(ws, "cd /ro && iconv -f latin1 -t utf-8 < in.txt")
+    assert (io.exit_code, _bytes(stdout)) == (0, "café\n".encode())
+    _, io = _run_raw(ws, "iconv -f latin1 -t utf-8 -o /ro/out.txt /ro/in.txt")
+    assert io.exit_code == 1
+    assert io.stderr == b"iconv: /ro/out.txt: Read-only file system\n"
+    assert sorted(vfs._store.files) == ["/in.txt"]

@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Resource } from '../../../resource/base.ts'
+import type { BaseVFS } from '../../../vfs/base.ts'
 import {
   FileStat,
   FileType,
@@ -20,8 +20,9 @@ import {
   type MountMode,
   type PathSpec,
 } from '../../../types.ts'
+import { decodeBase64, encodeBase64 } from '../../../utils/base64.ts'
 import { epochToIso } from '../../../utils/dates.ts'
-import { globPrefixMatch, resolveSymlinks } from '../../../utils/path.ts'
+import { ancestors, globPrefixMatch, resolveSymlinks } from '../../../utils/path.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import type { ResolveFn } from '../../dispatcher/index.ts'
 import type { MountEntry } from '../mount.ts'
@@ -48,7 +49,16 @@ export interface NodeMeta {
   // time at all, so `find -mtime` works on mtime-less backends for
   // files written through mirage.
   observedMtime?: number
+  // Extended attributes a caller set, by name; absent rather than empty.
+  // What a backend reports about the path is not stored here: the door
+  // derives it from stat.
+  xattrs?: Map<string, Uint8Array>
 }
+
+// An extended attribute rides a node's flat field set as one field per
+// name, `xattr:<name>`, its value base64 so every store (a JSON file, a
+// Redis hash, a snapshot) holds the bytes as a string.
+const XATTR_FIELD_PREFIX = 'xattr:'
 
 // Render a symlink node as a stat row. Size is the target string's
 // byte length and mode is left unset so the formatter supplies 0777,
@@ -80,7 +90,7 @@ export interface SetAttrsFields {
   mtime?: number
 }
 
-function metaToFields(meta: NodeMeta): NodeFields {
+export function metaToFields(meta: NodeMeta): NodeFields {
   const out: NodeFields = {}
   if (meta.target !== undefined) out.target = meta.target
   if (meta.mtime !== undefined) out.mtime = meta.mtime
@@ -89,10 +99,13 @@ function metaToFields(meta: NodeMeta): NodeFields {
   if (meta.gid !== undefined) out.gid = meta.gid
   if (meta.atime !== undefined) out.atime = meta.atime
   if (meta.observedMtime !== undefined) out.observed_mtime = meta.observedMtime
+  for (const [name, value] of meta.xattrs ?? []) {
+    out[XATTR_FIELD_PREFIX + name] = encodeBase64(value)
+  }
   return out
 }
 
-function metaFromFields(fields: NodeFields): NodeMeta {
+export function metaFromFields(fields: NodeFields): NodeMeta {
   const meta: NodeMeta = {}
   if (typeof fields.target === 'string') meta.target = fields.target
   if (typeof fields.mtime === 'number') meta.mtime = fields.mtime
@@ -101,12 +114,19 @@ function metaFromFields(fields: NodeFields): NodeMeta {
   if (typeof fields.gid === 'number' || typeof fields.gid === 'string') meta.gid = fields.gid
   if (typeof fields.atime === 'string') meta.atime = fields.atime
   if (typeof fields.observed_mtime === 'number') meta.observedMtime = fields.observed_mtime
+  const xattrs = new Map<string, Uint8Array>()
+  for (const [key, value] of Object.entries(fields)) {
+    if (key.startsWith(XATTR_FIELD_PREFIX) && typeof value === 'string') {
+      xattrs.set(key.slice(XATTR_FIELD_PREFIX.length), decodeBase64(value))
+    }
+  }
+  if (xattrs.size > 0) meta.xattrs = xattrs
   return meta
 }
 
 // Addressing authority: maps virtual paths to their mounts. Owns the mount
 // registry and the per-path node-metadata table (symlinks plus the attribute
-// overlay). Pure addressing: resolve a virtual path to its resource and
+// overlay). Pure addressing: resolve a virtual path to its VFS and
 // backend-relative path, following symlinks and crossing mounts. Holds no
 // cache and performs no backend I/O; op execution and caching live in the
 // Dispatcher, which calls this layer to locate the mount.
@@ -249,6 +269,33 @@ export class Namespace {
     await this.store.set(path, metaToFields(meta))
   }
 
+  // The extended attributes a caller set on a path, by name.
+  xattrs(path: string): Map<string, Uint8Array> {
+    return new Map(this.nodeTable.get(path)?.xattrs ?? [])
+  }
+
+  // Store one extended attribute on a path's node.
+  async setXattr(path: string, name: string, value: Uint8Array): Promise<void> {
+    const meta = this.nodeTable.get(path) ?? {}
+    meta.xattrs ??= new Map()
+    meta.xattrs.set(name, Uint8Array.from(value))
+    this.nodeTable.set(path, meta)
+    await this.store.set(path, metaToFields(meta))
+  }
+
+  // Drop one extended attribute, and the node once it holds nothing.
+  async removeXattr(path: string, name: string): Promise<void> {
+    const meta = this.nodeTable.get(path)
+    if (meta?.xattrs?.delete(name) !== true) return
+    if (meta.xattrs.size === 0) delete meta.xattrs
+    if (Object.keys(meta).length === 0) {
+      this.nodeTable.delete(path)
+      await this.store.delete([path])
+      return
+    }
+    await this.store.set(path, metaToFields(meta))
+  }
+
   // Drop overlay fields that a backend has applied natively. A
   // residual-free native setattr means the real inode now holds the
   // requested value, so a stale overlay field would shadow it forever
@@ -282,6 +329,28 @@ export class Namespace {
     this.nodeTable.delete(path)
     await this.store.delete([path])
     return true
+  }
+
+  async dropOverlaysUnder(
+    paths: readonly string[],
+    excluded: readonly string[] = [],
+  ): Promise<number> {
+    const roots = new Set(paths.map((path) => path.replace(/\/+$/, '') || '/'))
+    const protectedPaths = new Set(excluded.map((path) => path.replace(/\/+$/, '') || '/'))
+    const doomed: string[] = []
+    for (const [key, meta] of this.nodeTable) {
+      if (meta.target !== undefined) continue
+      const lineage = ['/', ...ancestors(key), key.replace(/\/+$/, '') || '/']
+      if (
+        lineage.some((path) => roots.has(path)) &&
+        !lineage.some((path) => protectedPaths.has(path))
+      ) {
+        doomed.push(key)
+      }
+    }
+    for (const key of doomed) this.nodeTable.delete(key)
+    if (doomed.length > 0) await this.store.delete(doomed)
+    return doomed.length
   }
 
   // Drop overlay times after a content write. write(2) refreshes mtime,
@@ -347,6 +416,23 @@ export class Namespace {
     return resolveSymlinks(path, targets)
   }
 
+  // Return `path` with every link above its final name resolved: the walk
+  // the kernel gives a path before the call sees it, where the last
+  // component is the op's own to follow or not (stat against lstat).
+  // Identity when no link sits above the name, a trailing slash included.
+  // Throws CycleError on ELOOP. Mirrors Python's Namespace.follow_parent.
+  followParent(path: string): string {
+    const trimmed = rstripSlash(path)
+    const cut = trimmed.lastIndexOf('/')
+    const name = trimmed.slice(cut + 1)
+    if (cut < 0 || name === '') return path
+    const parent = trimmed.slice(0, cut)
+    const above = parent === '' ? '/' : parent
+    const resolved = this.follow(above)
+    if (resolved === above) return path
+    return rstripSlash(resolved) + path.slice(parent.length)
+  }
+
   // lstat a path: the link's own stat, or null when not a link. A
   // symlink has no backend inode, so the node table is the only
   // authority for it.
@@ -375,26 +461,76 @@ export class Namespace {
   // are namespace state and invisible to a backend readdir, so listing
   // commands merge these rows into the backend's entries.
   linkStatsUnder(directory: string): FileStat[] {
+    return this.linksUnder(directory).map(([name, meta]) => linkStat(name, meta))
+  }
+
+  // The names of the links living directly under a directory. What a
+  // readdir row's link mark needs, which is a name question rather than
+  // a stat one: the door already holds every entry's stat and has only
+  // to learn which of those names the node table owns.
+  //
+  // Resolves a link prefix first, because a listing does: a readdir of
+  // `/data/alias` is dispatched at `/data/real` and answers with that
+  // directory's entries, so the marks have to come from there too or
+  // every link inside an aliased directory reads as whatever its
+  // followed stat said. `linkStatsUnder` needs no such resolution: it is
+  // handed the path the router already rewrote.
+  linkNamesUnder(directory: string): Set<string> {
+    return new Set(this.linksUnder(this.follow(directory)).map(([name]) => name))
+  }
+
+  // The links living directly under a directory, as (name, meta).
+  private linksUnder(directory: string): [string, NodeMeta][] {
     const base = rstripSlash(directory) + '/'
-    const out: FileStat[] = []
+    const out: [string, NodeMeta][] = []
     for (const [path, meta] of this.nodeTable) {
       if (
         meta.target !== undefined &&
         path.startsWith(base) &&
         !path.slice(base.length).includes('/')
       ) {
-        out.push(linkStat(path.slice(base.length), meta))
+        out.push([path.slice(base.length), meta])
       }
     }
     return out
   }
 
-  // Drop every node entry under a directory (`rm -r` semantics).
-  async purgeUnder(directory: string): Promise<number> {
+  /**
+   * Re-anchor every node below one directory onto another.
+   *
+   * A rename moves a whole subtree, and the node table addresses its entries by
+   * absolute path, so a link or an attr overlay below the source names a path
+   * that no longer exists once the backend has moved the bytes. No backend can
+   * report those entries, which is why nothing below the dispatcher can do this.
+   */
+  async renameUnder(src: string, dst: string): Promise<number> {
+    const base = rstripSlash(src) + '/'
+    const moved: [string, NodeMeta][] = []
+    for (const [path, meta] of this.nodeTable) {
+      if (path.startsWith(base)) moved.push([path, meta])
+    }
+    if (moved.length === 0) return 0
+    const landing = rstripSlash(dst)
+    for (const [path] of moved) this.nodeTable.delete(path)
+    for (const [path, meta] of moved) {
+      const target = `${landing}/${path.slice(base.length)}`
+      this.nodeTable.set(target, meta)
+      await this.store.set(target, metaToFields(meta))
+    }
+    await this.store.delete(moved.map(([path]) => path))
+    return moved.length
+  }
+
+  // Drop every node entry under a directory (`rm -r` semantics), except
+  // the entries in `keep`.
+  async purgeUnder(
+    directory: string,
+    keep: ReadonlySet<string> = new Set<string>(),
+  ): Promise<number> {
     const base = rstripSlash(directory) + '/'
     const doomed: string[] = []
     for (const path of this.nodeTable.keys()) {
-      if (path.startsWith(base)) doomed.push(path)
+      if (path.startsWith(base) && !keep.has(path)) doomed.push(path)
     }
     for (const path of doomed) this.nodeTable.delete(path)
     if (doomed.length > 0) await this.store.delete(doomed)
@@ -403,7 +539,7 @@ export class Namespace {
 
   // Map a virtual path to its mount, following the symlink table first when
   // `follow` is set. Throws CycleError when resolution exceeds the hop limit.
-  async resolve(path: string, follow = true): Promise<[Resource, PathSpec, MountMode]> {
+  async resolve(path: string, follow = true): Promise<[BaseVFS, PathSpec, MountMode]> {
     if (follow) path = this.follow(path)
     return this.resolveFn(path)
   }

@@ -20,32 +20,39 @@ from mirage.accessor.dropbox import DropboxAccessor
 from mirage.core.dropbox.client import DropboxTokenManager
 from mirage.core.dropbox.create import create
 from mirage.core.dropbox.write import write_bytes
-from mirage.resource.dropbox.config import DropboxConfig
 from mirage.types import PathSpec
+from mirage.vfs.dropbox.config import DropboxConfig
 
 
 def make_accessor(root_path: str = "/") -> DropboxAccessor:
-    config = DropboxConfig(client_id="c",
-                           client_secret="s",
-                           refresh_token="r",
-                           root_path=root_path)
+    config = DropboxConfig(
+        client_id="c",
+        client_secret="s",
+        refresh_token="r",
+        root_path=root_path,
+    )
     return DropboxAccessor(config, DropboxTokenManager(config))
 
 
 @pytest.mark.asyncio
 async def test_write_uploads_through_subfolder_root():
-    with patch("mirage.core.dropbox.write.dropbox_upload",
-               new_callable=AsyncMock) as upload:
-        await write_bytes(make_accessor("/Team/data"),
-                          PathSpec.from_str_path("/note.txt"), b"hi")
+    with patch(
+        "mirage.core.dropbox.write.dropbox_upload", new_callable=AsyncMock
+    ) as upload:
+        await write_bytes(
+            make_accessor("/Team/data"),
+            PathSpec.from_str_path("/note.txt"),
+            b"hi",
+        )
     assert upload.await_args.args[1] == "/Team/data/note.txt"
     assert upload.await_args.args[2] == b"hi"
 
 
 @pytest.mark.asyncio
 async def test_create_uploads_empty_bytes():
-    with patch("mirage.core.dropbox.write.dropbox_upload",
-               new_callable=AsyncMock) as upload:
+    with patch(
+        "mirage.core.dropbox.write.dropbox_upload", new_callable=AsyncMock
+    ) as upload:
         await create(make_accessor(), PathSpec.from_str_path("/new.txt"))
     assert upload.await_args.args[1] == "/new.txt"
     assert upload.await_args.args[2] == b""

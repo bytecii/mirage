@@ -13,23 +13,31 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.email import EmailAccessor
+from mirage.commands.builtin.email.grep import RG_SEARCH_HONORED
 from mirage.commands.builtin.email.io import resolve_glob
+from mirage.commands.builtin.generic.rg import (
+    parse_flags,
+    refuse_missing_pattern,
+    rg_matcher,
+    rg_syntax,
+)
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.grep_helper import (compile_pattern,
-                                                 grep_count_has_matches,
-                                                 grep_lines, pattern_arg)
+from mirage.commands.builtin.grep_pattern import pattern_arg
+from mirage.commands.builtin.grep_pushdown import (
+    pushdown_operand,
+    search_query,
+)
+from mirage.commands.builtin.grep_scan import grep_lines
 from mirage.commands.builtin.utils.output import format_records
-from mirage.commands.config import CommandOpts
-from mirage.commands.errors import UsageError
-from mirage.commands.registry import command
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.email.client import fetch_message
 from mirage.core.email.read import read as email_read
 from mirage.core.email.readdir import readdir as _readdir
 from mirage.core.email.render import message_json_text
-from mirage.core.email.scope import extract_folder
+from mirage.core.email.scope import NATIVE_KINDS, detect_scope
 from mirage.core.email.search import _build_vfs_path, search_messages
 from mirage.core.email.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
@@ -37,66 +45,76 @@ from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
 
 
-@command("rg", resource="email", spec=SPECS["rg"])
-async def rg(accessor: EmailAccessor, paths: list[PathSpec], texts: list[str],
-             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+@command("rg", vfs="email", spec=SPECS["rg"])
+async def rg(
+    accessor: EmailAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["rg"])
-    pattern_str = pattern_arg(texts, fl)
-    if pattern_str is None:
-        raise UsageError("rg: usage: rg [flags] pattern [path]")
-    i = fl.as_bool("i")
-    v = fl.as_bool("v")
-    n = fl.as_bool("n")
-    c = fl.as_bool("c")
-    args_l = fl.as_bool("args_l")
-    w = fl.as_bool("w")
-    F = fl.as_bool("F")
-    o = fl.as_bool("o")
-    max_count = fl.as_int("m")
-    pat = compile_pattern(pattern_str, i, F, w)
+    pattern_str = pattern_arg(texts, fl, "regexp")
+    f = parse_flags(fl)
+    refuse_missing_pattern(pattern_str, fl, f)
 
-    # IMAP text search takes one pattern; a newline-joined multi -e set
-    # must fall through to the generic so each pattern matches (#347).
-    if paths and "\n" not in pattern_str:
-        folder = extract_folder(paths)
-        if not folder:
-            return b"", IOResult(exit_code=1)
-
-        uids = await search_messages(accessor,
-                                     folder,
-                                     text=pattern_str,
-                                     max_results=accessor.config.max_messages)
+    # IMAP text search takes one pattern; a newline-joined multi -e set must
+    # fall through to the generic so each pattern matches (#347). The rest of
+    # the gate is grep's, from the same table, and reads the scope the same
+    # way: a line the push-down cannot answer takes the generic scan below.
+    # It used to return exit 1 instead, reporting "nothing matched" for a
+    # search it had not run.
+    operand = pushdown_operand(
+        paths, opts.flags, pattern_str, RG_SEARCH_HONORED
+    )
+    # The server is asked for the literal every match must contain, never
+    # the regex's own spelling: IMAP TEXT is a substring search.
+    query = (
+        search_query(pattern_str, f.fixed_string, rg_syntax(f))
+        if pattern_str is not None
+        else None
+    )
+    match = detect_scope(operand) if operand is not None else None
+    if (
+        operand is not None
+        and pattern_str is not None
+        and query is not None
+        and match is not None
+        and match.kind in NATIVE_KINDS
+    ):
+        pat = rg_matcher(pattern_str, False, f)
+        folder = match.slots["folder"]
+        uids = await search_messages(
+            accessor,
+            folder,
+            text=query,
+            max_results=accessor.config.max_messages,
+        )
         if not uids:
             return b"", IOResult(exit_code=1)
 
         all_results: list[str] = []
         any_match = False
-        file_prefix = mount_prefix_of(paths[0].virtual,
-                                      paths[0].resource_path) if paths else ""
+        file_prefix = mount_prefix_of(operand.virtual, operand.vfs_path)
         for uid in uids:
             msg = await fetch_message(accessor, folder, uid)
             msg_text = message_json_text(msg)
             vfs_path = _build_vfs_path(file_prefix, folder, msg)
             lines = msg_text.splitlines()
-            matched = grep_lines(vfs_path,
-                                 lines,
-                                 pat,
-                                 invert=v,
-                                 line_numbers=n,
-                                 count_only=c,
-                                 files_only=args_l,
-                                 only_matching=o,
-                                 max_count=max_count)
-            if c:
-                if not grep_count_has_matches(matched):
-                    continue
-                any_match = True
-                all_results.append(f"{vfs_path}:{matched[0]}")
-                continue
+            matched = grep_lines(
+                vfs_path,
+                lines,
+                pat,
+                invert=False,
+                line_numbers=f.line_numbers,
+                count_only=False,
+                files_only=f.files_only,
+                only_matching=f.only_matching,
+                max_count=f.max_count,
+            )
             if not matched:
                 continue
             any_match = True
-            if args_l:
+            if f.files_only:
                 all_results.append(vfs_path)
                 continue
             for line in matched:
@@ -109,7 +127,7 @@ async def rg(accessor: EmailAccessor, paths: list[PathSpec], texts: list[str],
     return await generic_rg(
         resolved,
         texts,
-        opts.flags,
+        opts,
         readdir=bound_op(_readdir, accessor, opts.index),
         stat=bound_op(_stat, accessor, opts.index),
         read_bytes=bound_op(email_read, accessor, opts.index),

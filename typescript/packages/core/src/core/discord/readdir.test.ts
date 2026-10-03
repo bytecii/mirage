@@ -15,11 +15,16 @@
 import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import { DiscordAccessor } from '../../accessor/discord.ts'
-import { IndexEntry } from '../../cache/index/config.ts'
+import { IndexEntry, type Evicted, type SetDirOptions } from '../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { PathSpec } from '../../types.ts'
-import type { DiscordMethod, DiscordResponse, DiscordTransport } from './client.ts'
-import { dateRangeDescending, readdir, snowflakeToDate } from './readdir.ts'
+import {
+  DiscordApiError,
+  type DiscordMethod,
+  type DiscordResponse,
+  type DiscordTransport,
+} from './client.ts'
+import { dateRangeDescending, listFiles, readdir, snowflakeToDate } from './readdir.ts'
 import { historyJsonlBytes, memberJsonBytes } from './render.ts'
 
 interface RecordedCall {
@@ -51,8 +56,22 @@ class FakeDiscordTransport implements DiscordTransport {
   }
 }
 
+class WindowSpy extends RAMIndexCacheStore {
+  readonly windows = new Map<string, boolean>()
+
+  override setDir(
+    vfsPath: string,
+    entries: readonly [string, IndexEntry][],
+    expiredAt?: Date | null,
+    options: SetDirOptions = {},
+  ): Promise<Evicted[]> {
+    this.windows.set(vfsPath, options.window === true)
+    return super.setDir(vfsPath, entries, expiredAt, options)
+  }
+}
+
 function spec(virtual: string, prefix = ''): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath: mountKey(virtual, prefix) })
+  return new PathSpec({ virtual, directory: virtual, vfsPath: mountKey(virtual, prefix) })
 }
 
 describe('snowflakeToDate', () => {
@@ -84,6 +103,23 @@ describe('dateRangeDescending', () => {
 
   it('returns [] for malformed input', () => {
     expect(dateRangeDescending('', 30)).toEqual([])
+  })
+
+  it('reaches days outside the window for a glob span', () => {
+    const out = dateRangeDescending('2024-01-15', 30, ['2023-11-01', '2023-12-01'])
+    expect(out).toHaveLength(30)
+    expect(out[0]).toBe('2023-11-30')
+    expect(out[29]).toBe('2023-11-01')
+  })
+
+  it('clips a glob span at the newest message', () => {
+    const out = dateRangeDescending('2024-01-15', 30, ['2024-01-01', '2024-02-01'])
+    expect(out).toHaveLength(15)
+    expect(out[0]).toBe('2024-01-15')
+  })
+
+  it('lists nothing for a glob span after the newest message', () => {
+    expect(dateRangeDescending('2024-01-15', 30, ['2025-01-01', '2025-02-01'])).toEqual([])
   })
 })
 
@@ -161,14 +197,24 @@ describe('readdir /<guild>', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
-  it('returns the channels/members pair without index (no auto-bootstrap)', async () => {
-    const t = new FakeDiscordTransport(() => null)
+  it('returns the channels/members pair once the guild is proven', async () => {
+    const t = new FakeDiscordTransport((_m, endpoint) =>
+      endpoint === '/users/@me/guilds' ? [{ id: 'G1', name: 'Whatever' }] : null,
+    )
     const out = await readdir(
       new DiscordAccessor(t),
       spec('/mnt/discord/Whatever__G1', '/mnt/discord'),
     )
     expect(out).toEqual(['/mnt/discord/Whatever__G1/channels', '/mnt/discord/Whatever__G1/members'])
-    expect(t.calls).toHaveLength(0)
+  })
+
+  it('throws ENOENT for a bogus guild', async () => {
+    const t = new FakeDiscordTransport((_m, endpoint) =>
+      endpoint === '/users/@me/guilds' ? [{ id: 'G1', name: 'Whatever' }] : null,
+    )
+    await expect(
+      readdir(new DiscordAccessor(t), spec('/mnt/discord/Nope__G9', '/mnt/discord')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 
@@ -323,8 +369,8 @@ describe('readdir /<guild>/channels/<ch>/<date>', () => {
       ],
     ])
     const messages = [
-      { id: '1', content: 'hello', attachments: [] },
-      { id: '2', content: 'world', attachments: [] },
+      { id: '175758114816000001', content: 'hello', attachments: [] },
+      { id: '175758114816000002', content: 'world', attachments: [] },
     ]
     const t = new FakeDiscordTransport((_m, endpoint) =>
       endpoint === '/channels/C1/messages' ? messages : null,
@@ -359,7 +405,7 @@ describe('readdir /<guild>/channels/<ch>/<date>', () => {
     ])
     const messages = [
       {
-        id: '1',
+        id: '175758114816000001',
         content: 'files',
         attachments: [
           { id: 'A1', filename: 'kept.txt', url: 'https://cdn.example/kept.txt', size: 5 },
@@ -409,8 +455,8 @@ describe('readdir /<guild>/channels/<ch>', () => {
     expect(out[1]).toBe('/mnt/discord/My Server__G1/channels/general__C1/2016-04-29')
     expect(out[29]).toBe('/mnt/discord/My Server__G1/channels/general__C1/2016-04-01')
     const lookup = await idx.get('/mnt/discord/My Server__G1/channels/general__C1/2016-04-30')
-    expect(lookup.entry?.id).toBe('general__C1:2016-04-30')
-    expect(lookup.entry?.resourceType).toBe('discord/date_dir')
+    expect(lookup.entry?.id).toBe('C1:2016-04-30')
+    expect(lookup.entry?.resourceType).toBe('discord/history')
     expect(t.calls).toHaveLength(0)
   })
 
@@ -527,5 +573,67 @@ describe('readdir unrecognized paths', () => {
         idx,
       ),
     ).rejects.toMatchObject({ code: 'ENOTDIR' })
+  })
+})
+
+describe('readdir channel and sealed-day windows', () => {
+  it('writes a channel and a sealed day as windows', async () => {
+    // The channel lists the last 30 days, and a 403/404/429 seals an empty
+    // day: neither is the backend saying anything outside it is gone.
+    const idx = new WindowSpy()
+    await idx.setDir('/mnt/discord/My Server__G1/channels', [
+      [
+        'general__C1',
+        new IndexEntry({
+          id: 'C1',
+          name: 'general',
+          resourceType: 'discord/channel',
+          vfsName: 'general__C1',
+          remoteTime: '175928847299117056',
+        }),
+      ],
+    ])
+    const sealed: DiscordTransport = {
+      call: (_method, endpoint) =>
+        endpoint === '/channels/C1/messages'
+          ? Promise.reject(new DiscordApiError(endpoint, 403, 'Missing Access'))
+          : Promise.resolve(null),
+    }
+    const accessor = new DiscordAccessor(sealed)
+    const channel = '/mnt/discord/My Server__G1/channels/general__C1'
+    await readdir(accessor, spec(channel, '/mnt/discord'), idx)
+    expect(await readdir(accessor, spec(`${channel}/2016-04-30`, '/mnt/discord'), idx)).toEqual([])
+    expect(idx.windows.get(channel)).toBe(true)
+    expect(idx.windows.get(`${channel}/2016-04-30`)).toBe(true)
+  })
+})
+
+describe('listFiles of a sealed day', () => {
+  // Reached when the files listing was evicted but the day survived; a soft
+  // error there must not evict the attachments it listed before.
+  it('writes the files listing as a window too', async () => {
+    const sealed: DiscordTransport = {
+      call: (_method, endpoint) =>
+        endpoint === '/channels/C1/messages'
+          ? Promise.reject(new DiscordApiError(endpoint, 403, 'Missing Access'))
+          : Promise.resolve(null),
+    }
+    const own = new IndexEntry({
+      id: 'C1:2016-04-30',
+      name: 'files',
+      resourceType: 'discord/files',
+      vfsName: 'files',
+      extra: { channel_id: 'C1' },
+    })
+    const listing = await listFiles(
+      new DiscordAccessor(sealed),
+      {
+        kind: 'files',
+        vfsPath: 'g/channels/c/2016-04-30/files',
+        slots: { day: '2016-04-30' },
+      } as never,
+      own,
+    )
+    expect((listing as { window?: boolean }).window).toBe(true)
   })
 })

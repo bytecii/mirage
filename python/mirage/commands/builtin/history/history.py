@@ -13,21 +13,20 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.history import HistoryAccessor
-from mirage.commands.config import CommandOpts, cwd_str
-from mirage.commands.registry import command
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.history.render import render_history_listing
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
 def _out_of_range(value: str) -> IOResult:
-    err = f"history: {value}: history position out of range\n".encode()
+    err = f"bash: history: {value}: history position out of range\n".encode()
     return IOResult(exit_code=1, stderr=err)
 
 
-@command("history", resource="history", spec=SPECS["history"])
+@command("history", vfs="history", spec=SPECS["history"])
 async def history_cmd(
     accessor: HistoryAccessor,
     paths: list[PathSpec],
@@ -67,24 +66,33 @@ async def history_cmd(
             return None, _out_of_range(d)
         await observer.log_delete(session=session, offset=offset)
     if s and texts:
-        await observer.log_command_text(" ".join(texts),
-                                        session=session,
-                                        cwd=cwd_str(opts.cwd))
+        await observer.log_command_text(
+            " ".join(texts), session=session, cwd=opts.cwd.virtual
+        )
     if p and not s:
         out = "\n".join(texts) + "\n" if texts else ""
         return out.encode(), IOResult()
-    if (c or d is not None or s or fl.as_bool("a") or fl.as_bool("r")
-            or fl.as_bool("w") or fl.as_bool("n")):
+    if (
+        c
+        or d is not None
+        or s
+        or fl.as_bool("a")
+        or fl.as_bool("r")
+        or fl.as_bool("w")
+        or fl.as_bool("n")
+    ):
         return None, IOResult()
     if len(texts) > 1:
-        err = b"history: too many arguments\n"
+        err = b"bash: history: too many arguments\n"
         return None, IOResult(exit_code=1, stderr=err)
     count = None
     if texts:
         try:
             count = int(texts[0])
         except ValueError:
-            err = f"history: {texts[0]}: numeric argument required\n".encode()
+            err = (
+                f"bash: history: {texts[0]}: numeric argument required\n"
+            ).encode()
             return None, IOResult(exit_code=1, stderr=err)
     events = await observer.session_command_events(session)
     output = render_history_listing(events, n=count)

@@ -12,85 +12,37 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { LanceDBConfigResolved } from '../../resource/lancedb/config.ts'
-import { PathSpec } from '../../types.ts'
-import { stripSlash } from '../../utils/slash.ts'
+import type { LanceDBAccessor } from '../../accessor/lancedb.ts'
+import type { LanceDBConfigResolved } from '../../vfs/lancedb/config.ts'
+import { ContentType } from '../../types.ts'
+import { perAccessor } from '../hierarchy/bind.ts'
+import { Codec, PATH_SAFE } from '../hierarchy/codec.ts'
+import { makeDetectScope, type DetectFn, type Scope } from '../hierarchy/scope.ts'
+import { blobLeaf, rowScopes } from '../vector/scope.ts'
+import type { Leaf } from '../vector/types.ts'
 
-export const ScopeLevel = Object.freeze({
-  ROOT: 'root',
-  GROUP_DIR: 'group_dir',
-  ROW: 'row',
-  UNKNOWN: 'unknown',
-} as const)
+const CARD = new Codec({ suffix: '.md' })
 
-export type ScopeLevel = (typeof ScopeLevel)[keyof typeof ScopeLevel]
-
-export interface LanceDBScope {
-  level: ScopeLevel
-  table: string | null
-  filters: Record<string, string>
-  rowId: string | null
-  blob: boolean
-  resourcePath: string
+/**
+ * The mount's scope table, shaped by its config.
+ *
+ * A pinned `table` removes the leading table segment, and `blobColumn` adds a
+ * second leaf suffix beside the `.md` card. A group slot decodes through
+ * `PATH_SAFE`, so a value holding `/` keeps its own directory and the WHERE
+ * clause holds the exact value.
+ */
+export function scopesFor(config: LanceDBConfigResolved): Scope[] {
+  const leaves: Leaf[] = [['row_card', CARD, ContentType.TEXT]]
+  if (config.blobColumn !== null) leaves.push(blobLeaf(config.blobExt))
+  return rowScopes(
+    config.table !== null,
+    config.groupBy.map(() => PATH_SAFE),
+    leaves,
+  )
 }
 
-function parseRowFile(name: string, config: LanceDBConfigResolved): [string, boolean] | null {
-  if (name.endsWith('.md')) return [name.slice(0, -'.md'.length), false]
-  if (config.blobColumn !== null) {
-    const suffix = `.${config.blobExt}`
-    if (name.endsWith(suffix)) return [name.slice(0, -suffix.length), true]
-  }
-  return null
+function buildDetect(accessor: LanceDBAccessor): DetectFn {
+  return makeDetectScope(scopesFor(accessor.config))
 }
 
-function make(
-  level: ScopeLevel,
-  resourcePath: string,
-  over: Partial<LanceDBScope> = {},
-): LanceDBScope {
-  return {
-    level,
-    table: over.table ?? null,
-    filters: over.filters ?? {},
-    rowId: over.rowId ?? null,
-    blob: over.blob ?? false,
-    resourcePath,
-  }
-}
-
-export function detectScope(path: PathSpec | string, config: LanceDBConfigResolved): LanceDBScope {
-  const raw = path instanceof PathSpec ? path.mountPath : path
-  const key = stripSlash(raw)
-  const segs = key === '' ? [] : key.split('/')
-
-  let table: string
-  let rest: string[]
-  if (config.table !== null) {
-    table = config.table
-    rest = segs
-  } else {
-    if (segs.length === 0) return make(ScopeLevel.ROOT, raw)
-    table = segs[0] ?? ''
-    rest = segs.slice(1)
-  }
-
-  const gb = config.groupBy
-  const n = gb.length
-
-  if (rest.length <= n) {
-    const filters: Record<string, string> = {}
-    for (let i = 0; i < rest.length; i++) filters[gb[i] ?? ''] = rest[i] ?? ''
-    return make(ScopeLevel.GROUP_DIR, raw, { table, filters })
-  }
-
-  if (rest.length === n + 1) {
-    const filters: Record<string, string> = {}
-    for (let i = 0; i < n; i++) filters[gb[i] ?? ''] = rest[i] ?? ''
-    const parsed = parseRowFile(rest[n] ?? '', config)
-    if (parsed !== null) {
-      return make(ScopeLevel.ROW, raw, { table, filters, rowId: parsed[0], blob: parsed[1] })
-    }
-  }
-
-  return make(ScopeLevel.UNKNOWN, raw)
-}
+export const detectFor = perAccessor(buildDetect)

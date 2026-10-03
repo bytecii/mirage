@@ -12,31 +12,23 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from pathlib import Path
-
 import aiofiles.os
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.context import invalidate_after_write, invalidate_ancestors
 from mirage.core.disk.dest import mkdir_component_error
 from mirage.core.disk.errors import disk_error, disk_errors
+from mirage.core.disk.utils import resolve_inside
 from mirage.types import PathSpec
 from mirage.utils.path import norm
 
 
-def _resolve(root: Path, path: str) -> Path:
-    relative = path.lstrip("/")
-    resolved = (root / relative).resolve()
-    resolved.relative_to(root)
-    return resolved
-
-
-async def mkdir(accessor: DiskAccessor,
-                path_spec: PathSpec,
-                parents: bool = False) -> None:
+async def mkdir(
+    accessor: DiskAccessor, path_spec: PathSpec, parents: bool = False
+) -> None:
     path = path_spec.mount_path
     root = accessor.root
-    p = _resolve(root, path)
+    p = await resolve_inside(root, path_spec, path)
     if parents:
         # Not `disk_errors`: that restamps every OSError against the
         # operand, which would undo the component naming below.

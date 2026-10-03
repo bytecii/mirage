@@ -16,14 +16,14 @@ import { headerAggregate } from '../../aggregators.ts'
 import { headGeneric } from '../../generic/head.ts'
 import { type Builder, dirAwareStat, resolveGlobOf } from '../adapter.ts'
 
-export const HEAD_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'head',
   read: true,
   aggregate: headerAggregate,
   fn: async (ops, accessor, paths, texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return headGeneric(resolved, texts, opts, dirAwareStat(ops, accessor, idx), (p) =>
+    return headGeneric(resolved, texts, opts, dirAwareStat(ops, accessor, opts), (p) =>
       ops.readStream(accessor, p, idx),
     )
   },

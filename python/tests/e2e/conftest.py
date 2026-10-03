@@ -13,42 +13,31 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import hashlib
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from unittest.mock import patch
 
 from mirage.core.ram.mkdir import mkdir as mem_mkdir
 from mirage.core.ram.write import write_bytes as mem_write
-from mirage.resource.disk import DiskResource
-from mirage.resource.ram import RAMResource
-from mirage.resource.s3 import S3Config, S3Resource
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.disk import DiskVFS
+from mirage.vfs.ram import RAMVFS
+from mirage.vfs.s3 import S3VFS, S3Config
 from mirage.workspace import Workspace
 
 LAST_MODIFIED = datetime(2026, 3, 31, tzinfo=timezone.utc)
 
+# Every kit-derived op reaches the store through the driver's single
+# connect seam; only read and stream keep a native session of their own.
 _CORE_MODULES = [
+    "mirage.core.s3.driver",
     "mirage.core.s3.read",
-    "mirage.core.s3.write",
-    "mirage.core.s3.stat",
-    "mirage.core.s3.readdir",
-    "mirage.core.s3.find",
-    "mirage.core.s3.du.size",
-    "mirage.core.s3.du.entries",
     "mirage.core.s3.stream",
-    "mirage.core.s3.copy",
-    "mirage.core.s3.rename",
-    "mirage.core.s3.unlink",
-    "mirage.core.s3.rmdir",
-    "mirage.core.s3.rm",
-    "mirage.core.s3.mkdir",
-    "mirage.core.s3.create",
-    "mirage.core.s3.truncate",
 ]
 
 
 class AsyncMockBody:
-
     def __init__(self, data: bytes) -> None:
         self._data = data
 
@@ -57,18 +46,16 @@ class AsyncMockBody:
 
     async def iter_chunks(self, chunk_size: int = 8192):
         for i in range(0, len(self._data), chunk_size):
-            yield self._data[i:i + chunk_size]
+            yield self._data[i : i + chunk_size]
 
 
 class AsyncMockPaginator:
-
     def __init__(self, objects: dict[str, bytes]) -> None:
         self.objects = objects
 
-    async def paginate(self,
-                       Bucket: str,
-                       Prefix: str = "",
-                       Delimiter: str | None = None):
+    async def paginate(
+        self, Bucket: str, Prefix: str = "", Delimiter: str | None = None
+    ):
         del Bucket
         if Delimiter == "/":
             yield _paginate_directory(self.objects, Prefix)
@@ -77,14 +64,12 @@ class AsyncMockPaginator:
 
 
 class AsyncMockS3Client:
-
     def __init__(self, objects: dict[str, bytes]) -> None:
         self.objects = objects
 
-    async def get_object(self,
-                         Bucket: str,
-                         Key: str,
-                         Range: str | None = None) -> dict:
+    async def get_object(
+        self, Bucket: str, Key: str, Range: str | None = None
+    ) -> dict:
         del Bucket
         if Key not in self.objects:
             raise _mock_s3_error("NoSuchKey")
@@ -107,11 +92,13 @@ class AsyncMockS3Client:
         assert name == "list_objects_v2"
         return AsyncMockPaginator(self.objects)
 
-    async def list_objects_v2(self,
-                              Bucket: str,
-                              Prefix: str = "",
-                              Delimiter: str | None = None,
-                              MaxKeys: int | None = None) -> dict:
+    async def list_objects_v2(
+        self,
+        Bucket: str,
+        Prefix: str = "",
+        Delimiter: str | None = None,
+        MaxKeys: int | None = None,
+    ) -> dict:
         """One listing page, the call `stat` probes a prefix with.
 
         S3 has no directory objects, so a directory is a prefix that has
@@ -120,8 +107,11 @@ class AsyncMockS3Client:
         reached the real client and failed on the missing attribute.
         """
         del Bucket
-        page = (_paginate_directory(self.objects, Prefix)
-                if Delimiter == "/" else _paginate_flat(self.objects, Prefix))
+        page = (
+            _paginate_directory(self.objects, Prefix)
+            if Delimiter == "/"
+            else _paginate_flat(self.objects, Prefix)
+        )
         if MaxKeys is None:
             return page
         return {
@@ -129,14 +119,16 @@ class AsyncMockS3Client:
             "CommonPrefixes": page.get("CommonPrefixes", [])[:MaxKeys],
         }
 
-    async def put_object(self, Bucket: str, Key: str, Body: bytes) -> None:
+    async def put_object(self, Bucket: str, Key: str, Body: bytes) -> dict:
         self.objects[Key] = Body
+        return {"ETag": f'"{hashlib.md5(Body).hexdigest()}"'}
 
     async def delete_object(self, Bucket: str, Key: str) -> None:
         self.objects.pop(Key, None)
 
-    async def copy_object(self, Bucket: str, CopySource: dict,
-                          Key: str) -> None:
+    async def copy_object(
+        self, Bucket: str, CopySource: dict, Key: str
+    ) -> None:
         src_key = CopySource["Key"]
         if src_key in self.objects:
             self.objects[Key] = self.objects[src_key]
@@ -153,7 +145,6 @@ class AsyncMockS3Client:
 
 
 class MockAsyncSession:
-
     def __init__(self, objects: dict[str, bytes]) -> None:
         self._client = AsyncMockS3Client(objects)
 
@@ -173,7 +164,7 @@ def _paginate_directory(objects, prefix):
     for key, data in sorted(objects.items()):
         if not key.startswith(prefix):
             continue
-        relative = key[len(prefix):]
+        relative = key[len(prefix) :]
         if not relative:
             continue
         if "/" in relative:
@@ -182,19 +173,18 @@ def _paginate_directory(objects, prefix):
             continue
         contents.append({"Key": key, "Size": len(data)})
     return {
-        "CommonPrefixes": [{
-            "Prefix": v
-        } for v in sorted(common_prefixes)],
+        "CommonPrefixes": [{"Prefix": v} for v in sorted(common_prefixes)],
         "Contents": contents,
     }
 
 
 def _paginate_flat(objects, prefix):
     return {
-        "Contents": [{
-            "Key": k,
-            "Size": len(v)
-        } for k, v in sorted(objects.items()) if k.startswith(prefix)]
+        "Contents": [
+            {"Key": k, "Size": len(v)}
+            for k, v in sorted(objects.items())
+            if k.startswith(prefix)
+        ]
     }
 
 
@@ -204,7 +194,7 @@ def _slice_range(data: bytes, range_spec: str) -> bytes:
     bounds = range_spec.removeprefix("bytes=").split("-", 1)
     start = int(bounds[0]) if bounds[0] else 0
     end = int(bounds[1]) if bounds[1] else len(data) - 1
-    return data[start:end + 1]
+    return data[start : end + 1]
 
 
 def patch_async_session(objects):
@@ -212,7 +202,8 @@ def patch_async_session(objects):
     stack = ExitStack()
     for mod in _CORE_MODULES:
         stack.enter_context(
-            patch(f"{mod}.async_session", return_value=mock_session))
+            patch(f"{mod}.async_session", return_value=mock_session)
+        )
     return stack
 
 
@@ -223,35 +214,35 @@ def make_s3_ws(objects: dict[str, bytes]) -> Workspace:
         aws_access_key_id="fake",
         aws_secret_access_key="fake",
     )
-    resource = S3Resource(config)
+    vfs = S3VFS(config)
     return Workspace(
-        {"/data": (resource, MountMode.WRITE)},
+        {"/data": (vfs, MountMode.WRITE)},
         mode=MountMode.WRITE,
     )
 
 
-def make_memory_ws() -> tuple[Workspace, RAMResource]:
-    resource = RAMResource()
+def make_memory_ws() -> tuple[Workspace, RAMVFS]:
+    vfs = RAMVFS()
     ws = Workspace(
-        {"/data": (resource, MountMode.WRITE)},
+        {"/data": (vfs, MountMode.WRITE)},
         mode=MountMode.WRITE,
     )
-    return ws, resource
+    return ws, vfs
 
 
 def make_disk_ws(tmp_path) -> tuple[Workspace, object]:
     disk_root = tmp_path / "disk_root"
     disk_root.mkdir()
-    resource = DiskResource(root=str(disk_root))
+    vfs = DiskVFS(root=str(disk_root))
     ws = Workspace(
-        {"/data": (resource, MountMode.WRITE)},
+        {"/data": (vfs, MountMode.WRITE)},
         mode=MountMode.WRITE,
     )
     return ws, disk_root
 
 
-def memory_create_file(resource: RAMResource, path: str, content: bytes):
-    accessor = resource.accessor
+def memory_create_file(vfs: RAMVFS, path: str, content: bytes):
+    accessor = vfs.accessor
     parts = path.strip("/").split("/")
     for i in range(1, len(parts)):
         d = "/" + "/".join(parts[:i])
@@ -266,18 +257,18 @@ def memory_create_file(resource: RAMResource, path: str, content: bytes):
 def run(ws: Workspace, cmd: str) -> str:
 
     async def _run():
-        io = await ws.execute(cmd)
+        io = await ws.shell(cmd)
         return await io.stdout_str()
 
     return asyncio.run(_run())
 
 
 def run_exit(ws: Workspace, cmd: str) -> int:
-    io = asyncio.run(ws.execute(cmd))
+    io = asyncio.run(ws.shell(cmd))
     return io.exit_code
 
 
-def make_resource_ws(request, tmp_path, files: dict[str, bytes]):
+def make_vfs_ws(request, tmp_path, files: dict[str, bytes]):
     if request.param == "s3":
         objects: dict[str, bytes] = {}
         for path, content in files.items():
@@ -286,9 +277,9 @@ def make_resource_ws(request, tmp_path, files: dict[str, bytes]):
         with patch_async_session(objects):
             yield ws
     elif request.param == "ram":
-        ws, resource = make_memory_ws()
+        ws, vfs = make_memory_ws()
         for path, content in files.items():
-            memory_create_file(resource, "/" + path, content)
+            memory_create_file(vfs, "/" + path, content)
         yield ws
     else:
         ws, disk_root = make_disk_ws(tmp_path)

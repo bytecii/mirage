@@ -54,16 +54,15 @@ const CONDITION_ERRNO: Record<FsCondition, number> = {
   EIO,
   EBUSY: osConstants.errno.EBUSY,
   EROFS,
-  NO_XATTR: osConstants.errno.ENODATA,
+  // "Attribute not set": ENOATTR on macOS, which node:os does not name,
+  // and ENODATA on linux. Mirrors python's errors/posix.py.
+  NO_XATTR: process.platform === 'darwin' ? 93 : osConstants.errno.ENODATA,
 }
 
 const MESSAGE_ERRNO: [string[], number][] = [
   [['not empty', 'enotempty'], ENOTEMPTY],
   [['not a directory', 'enotdir'], ENOTDIR],
   [['is a directory', 'eisdir'], EISDIR],
-  // A session capability rejection (MountNotAllowedError) is a permission
-  // failure, mirroring Python's PermissionError -> EACCES.
-  [['not allowed to access mount'], EACCES],
   [['permission', 'eacces', 'read-only'], EACCES],
   [['file exists', 'eexist'], EEXIST],
   [['not found', 'no such', 'enoent', 'no mount'], ENOENT],

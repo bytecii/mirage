@@ -15,10 +15,34 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { Workspace } from '@struktoai/mirage-node'
 import { buildApp } from '../app.ts'
+import { z } from '@struktoai/mirage-core/vfs/secrets'
+import { registerSecrets } from '@struktoai/mirage-core/secrets/registry'
+import { SecretsError } from '@struktoai/mirage-core/secrets/errors'
+
+const LoadAccountConfig = z.strictObject({ account: z.string().default('default') })
+type LoadAccountConfig = z.infer<typeof LoadAccountConfig>
 
 const UUID7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+function slackPayload(source: string, workspaceId: string): Record<string, unknown> {
+  return {
+    config: {
+      workspace_id: workspaceId,
+      secrets: { prod: { source } },
+      mounts: {
+        '/': { vfs: 'ram', mode: 'write' },
+        '/slack': {
+          vfs: 'slack',
+          mode: 'read',
+          config: { token: { from: 'prod', ref: 'bot', key: 'credential' } },
+        },
+      },
+    },
+  }
+}
 
 describe('workspaces router', () => {
   it('GET /v1/health returns ok', async () => {
@@ -36,12 +60,127 @@ describe('workspaces router', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/v1/workspaces',
-      payload: { config: { mounts: { '/': { resource: 'ram', mode: 'write' } } } },
+      payload: { config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
     })
     expect(res.statusCode).toBe(201)
     const body = res.json<{ id: string }>()
     expect(body.id).toMatch(UUID7_RE)
     await app.close()
+  })
+
+  it('POST /v1/workspaces answers a held config id without building', async () => {
+    registerSecrets('held-src', LoadAccountConfig, (_config: LoadAccountConfig, ref: string) =>
+      Promise.resolve({ fields: { credential: `xoxb-${ref}` } }),
+    )
+    const app = buildApp()
+    const payload = slackPayload('held-src', 'named')
+    const other = {
+      config: { workspace_id: 'named', mounts: { '/': { vfs: 'ram', mode: 'read' } } },
+    }
+    const first = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    registerSecrets('held-src', LoadAccountConfig, () =>
+      Promise.reject(new SecretsError('source unreachable')),
+    )
+    const close = vi.spyOn(Workspace.prototype, 'close')
+    const again = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    const refused = await app.inject({ method: 'POST', url: '/v1/workspaces', payload: other })
+    const closed = close.mock.calls.length
+    close.mockRestore()
+    expect(first.statusCode).toBe(201)
+    expect(again.statusCode).toBe(200)
+    expect(again.json<{ id: string }>().id).toBe('named')
+    expect(refused.statusCode).toBe(409)
+    expect(closed).toBe(0)
+    await app.close()
+  })
+
+  it('POST /v1/workspaces builds one config once when two creates race', async () => {
+    registerSecrets(
+      'slow-src',
+      LoadAccountConfig,
+      async (_config: LoadAccountConfig, ref: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        return { fields: { credential: `xoxb-${ref}` } }
+      },
+    )
+    const app = buildApp()
+    const payload = slackPayload('slow-src', 'racing')
+    const close = vi.spyOn(Workspace.prototype, 'close')
+    try {
+      const answers = await Promise.all([
+        app.inject({ method: 'POST', url: '/v1/workspaces', payload }),
+        app.inject({ method: 'POST', url: '/v1/workspaces', payload }),
+      ])
+      expect(answers.map((r) => r.statusCode).sort()).toEqual([200, 201])
+      expect(close).not.toHaveBeenCalled()
+    } finally {
+      close.mockRestore()
+      await app.close()
+    }
+  })
+
+  it('POST /v1/workspaces does not hold another config behind a stuck create', async () => {
+    let entered = (): void => undefined
+    const reached = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let release = (): void => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    registerSecrets(
+      'gated-src',
+      LoadAccountConfig,
+      async (_config: LoadAccountConfig, ref: string) => {
+        entered()
+        await gate
+        return { fields: { credential: `xoxb-${ref}` } }
+      },
+    )
+    const app = buildApp()
+    const other = {
+      config: { workspace_id: 'stuck', mounts: { '/': { vfs: 'ram', mode: 'read' } } },
+    }
+    try {
+      const first = app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: slackPayload('gated-src', 'stuck'),
+      })
+      await reached
+      const refused = await app.inject({ method: 'POST', url: '/v1/workspaces', payload: other })
+      release()
+      const built = await first
+      expect(refused.statusCode).toBe(409)
+      expect(built.statusCode).toBe(201)
+    } finally {
+      release()
+      await app.close()
+    }
+  })
+
+  it('POST /v1/workspaces refuses an id whose deletion is in flight', async () => {
+    const app = buildApp()
+    const payload = {
+      config: { workspace_id: 'going', mounts: { '/': { vfs: 'ram', mode: 'write' } } },
+    }
+    let release = (): void => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    try {
+      const first = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      const removal = app.registry.remove('going', () => gate)
+      const during = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      release()
+      await removal
+      const after = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      expect(first.statusCode).toBe(201)
+      expect(during.statusCode).toBe(409)
+      expect(after.statusCode).toBe(201)
+    } finally {
+      await app.close()
+    }
   })
 
   it('POST /v1/workspaces installs the config clis section', async () => {
@@ -59,8 +198,8 @@ describe('workspaces router', () => {
         payload: {
           id: 'cli-ws',
           config: {
-            mounts: { '/': { resource: 'ram', mode: 'write' } },
-            runtimes: ['monty', 'vfs'],
+            mounts: { '/': { vfs: 'ram', mode: 'write' } },
+            runtimes: ['monty', 'workspace'],
             clis: { pager: { script } },
           },
         },
@@ -68,7 +207,7 @@ describe('workspaces router', () => {
       expect(create.statusCode).toBe(201)
       const res = await app.inject({
         method: 'POST',
-        url: '/v1/workspaces/cli-ws/execute',
+        url: '/v1/workspaces/cli-ws/shell',
         payload: { command: 'pager' },
       })
       expect(res.statusCode).toBe(200)
@@ -80,6 +219,59 @@ describe('workspaces router', () => {
     }
   }, 60_000)
 
+  describe.each(['initModule', 'init_module'])('request runtime %s', (key) => {
+    it.each(['local', 'token'] as const)('rejects host initializers with %s auth', async (mode) => {
+      const app = buildApp({ authConfig: { mode, bearerToken: 'test-token' } })
+      const headers = mode === 'token' ? { authorization: 'Bearer test-token' } : {}
+      try {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/v1/workspaces',
+          headers,
+          payload: {
+            config: {
+              mounts: { '/': { vfs: 'ram', mode: 'write' } },
+              runtimes: [
+                'workspace',
+                {
+                  name: 'pyodide',
+                  config: { [key]: 'data:text/javascript,export default () => {}' },
+                },
+              ],
+            },
+          },
+        })
+        expect(res.statusCode).toBe(400)
+        expect(res.json()).toEqual({
+          detail: 'runtime initModule is only allowed in operator-owned configuration',
+        })
+        const list = await app.inject({ method: 'GET', url: '/v1/workspaces', headers })
+        expect(list.json()).toEqual([])
+      } finally {
+        await app.close()
+      }
+    })
+  })
+
+  it('POST /v1/workspaces accepts Pyodide config without a host initializer', async () => {
+    const app = buildApp()
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: {
+          config: {
+            mounts: { '/': { vfs: 'ram', mode: 'write' } },
+            runtimes: [{ name: 'pyodide', config: { auto_load_from_imports: false } }, 'workspace'],
+          },
+        },
+      })
+      expect(res.statusCode).toBe(201)
+    } finally {
+      await app.close()
+    }
+  })
+
   it('GET /v1/workspaces lists active workspaces', async () => {
     const app = buildApp()
     await app.inject({
@@ -87,7 +279,7 @@ describe('workspaces router', () => {
       url: '/v1/workspaces',
       payload: {
         id: 'fixed-id',
-        config: { mounts: { '/': { resource: 'ram', mode: 'write' } } },
+        config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } },
       },
     })
     const res = await app.inject({ method: 'GET', url: '/v1/workspaces' })
@@ -108,14 +300,33 @@ describe('workspaces router', () => {
     await app.close()
   })
 
-  it('POST /v1/workspaces returns 502 when resource build fails', async () => {
+  it('POST /v1/workspaces returns 502 when VFS build fails', async () => {
     const app = buildApp()
     const res = await app.inject({
       method: 'POST',
       url: '/v1/workspaces',
-      payload: { config: { mounts: { '/': { resource: 'not-a-real-resource' } } } },
+      payload: { config: { mounts: { '/': { vfs: 'not-a-real-VFS' } } } },
     })
     expect(res.statusCode).toBe(502)
+    await app.close()
+  })
+
+  it('POST /v1/workspaces 400s for a bad secrets block', async () => {
+    // Resolution moved into configToWorkspaceArgs, whose catch answers
+    // 502. An unresolvable source is the caller's config, and python's
+    // create route refuses the same body with 400.
+    const app = buildApp()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces',
+      payload: {
+        config: {
+          mounts: { '/': { vfs: 'ram', mode: 'write' } },
+          secrets: { prod: { source: 'nope' } },
+        },
+      },
+    })
+    expect(res.statusCode).toBe(400)
     await app.close()
   })
 
@@ -126,7 +337,7 @@ describe('workspaces router', () => {
       url: '/v1/workspaces',
       payload: {
         id: 'to-delete',
-        config: { mounts: { '/': { resource: 'ram', mode: 'write' } } },
+        config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } },
       },
     })
     const res = await app.inject({ method: 'DELETE', url: '/v1/workspaces/to-delete' })
@@ -136,12 +347,105 @@ describe('workspaces router', () => {
     await app.close()
   })
 
+  it('DELETE drops the workspace state, so a recreated id starts empty', async () => {
+    // Deleting a workspace deletes everything it kept: one created again
+    // under the same id finds no link, no history, no version and no
+    // state on disk.
+    const root = mkdtempSync(join(tmpdir(), 'mirage-delete-state-'))
+    const stateRoot = join(root, 'state')
+    const versionRoot = join(root, 'versions')
+    const app = buildApp({ stateRoot, versionRoot })
+    const create = (): Promise<unknown> =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: { id: 'again', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
+      })
+    const run = async (command: string): Promise<string> => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces/again/shell',
+        payload: { command },
+      })
+      return res.json<{ stdout: string }>().stdout
+    }
+    try {
+      await create()
+      await run('ln -s /data /alias && echo secret-token')
+      const commit = await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces/again/commit',
+        payload: { message: 'first' },
+      })
+      expect(commit.statusCode).toBe(200)
+      expect(existsSync(join(stateRoot, 'workspaces', 'again'))).toBe(true)
+      expect(existsSync(join(versionRoot, 'again'))).toBe(true)
+      await app.inject({ method: 'DELETE', url: '/v1/workspaces/again' })
+      expect(existsSync(join(stateRoot, 'workspaces', 'again'))).toBe(false)
+      expect(existsSync(join(versionRoot, 'again'))).toBe(false)
+      // Reading the versions of a deleted workspace finds none, and does
+      // not recreate the repo its delete removed.
+      const versions = await app.inject({ method: 'GET', url: '/v1/workspaces/again/versions' })
+      expect(versions.json()).toEqual([])
+      expect(existsSync(join(versionRoot, 'again'))).toBe(false)
+      await create()
+      const out = await run('readlink /alias || echo no-link; cat /.bash_history')
+      expect(out).toContain('no-link')
+      expect(out).not.toContain('secret-token')
+    } finally {
+      await app.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a dot id before it can name the state root', async () => {
+    // Deleting a workspace removes its state directory whole, and the dot
+    // names would make that the root or the workspaces directory.
+    const app = buildApp()
+    for (const id of ['..', '.']) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: { id, config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
+      })
+      expect(res.statusCode).toBe(400)
+      const load = await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces/load',
+        payload: { id, path: 'missing.tar' },
+      })
+      expect(load.json<{ detail: string }>().detail).toContain('invalid workspace id')
+    }
+    await app.close()
+  })
+
+  it('answers 500 for a failed delete and releases the id', async () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), 'mirage-delete-fail-'))
+    const app = buildApp({ stateRoot })
+    try {
+      await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: { id: 'doomed', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
+      })
+      const ws = app.registry.get('doomed').runner.ws
+      vi.spyOn(ws.stateStore, 'drop').mockRejectedValue(new Error('store on fire'))
+      const res = await app.inject({ method: 'DELETE', url: '/v1/workspaces/doomed' })
+      expect(res.statusCode).toBe(500)
+      expect(res.json<{ detail: string }>().detail).toContain('store on fire')
+      expect(app.registry.has('doomed')).toBe(false)
+    } finally {
+      await app.close()
+      rmSync(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   it('POST /v1/workspaces/:id/clone produces a new id', async () => {
     const app = buildApp()
     await app.inject({
       method: 'POST',
       url: '/v1/workspaces',
-      payload: { id: 'src-w', config: { mounts: { '/': { resource: 'ram', mode: 'write' } } } },
+      payload: { id: 'src-w', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
     })
     const res = await app.inject({
       method: 'POST',
@@ -153,6 +457,90 @@ describe('workspaces router', () => {
     expect(body.id).toMatch(UUID7_RE)
     expect(body.id).not.toBe('src-w')
     await app.close()
+  })
+
+  it('POST /v1/workspaces/:id/clone 400s for a bad secrets override', async () => {
+    // The clone route was the last one answering 500 where create,
+    // load and the historical clone all answer 400.
+    const app = buildApp()
+    await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces',
+      payload: { id: 'src-s', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
+    })
+    for (const bad of [{ prod: { source: 'nope' } }, { prod: { nosource: 1 } }, []]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces/src-s/clone',
+        payload: { override: { secrets: bad } },
+      })
+      expect(res.statusCode).toBe(400)
+    }
+    await app.close()
+  })
+
+  it('POST /v1/workspaces/:id/clone 400s for a bad mount override', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mirage-clone-disk-'))
+    const app = buildApp()
+    try {
+      await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: { id: 'src-m', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
+      })
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces/src-m/clone',
+        payload: {
+          override: {
+            mounts: { '/': { vfs: 'disk', config: { root, folder_versions: 'no' } } },
+          },
+        },
+      })
+      expect(res.statusCode).toBe(400)
+      expect(res.json<{ detail: string }>().detail).toBe('disk: folder_versions: must be a boolean')
+    } finally {
+      await app.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('POST /v1/workspaces/:id/clone 400s for an unknown mount config key', async () => {
+    const app = buildApp()
+    await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces',
+      payload: { id: 'src-k', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces/src-k/clone',
+      payload: { override: { mounts: { '/': { vfs: 'ram', config: { bogus: 1 } } } } },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json<{ detail: string }>().detail).toContain('bogus')
+    await app.close()
+  })
+
+  it('POST /v1/workspaces 400s for a bad mount config', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mirage-create-disk-'))
+    const app = buildApp()
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: {
+          config: {
+            mounts: { '/': { vfs: 'disk', config: { root, folder_versions: 'no' } } },
+          },
+        },
+      })
+      expect(res.statusCode).toBe(400)
+      expect(res.json<{ detail: string }>().detail).toBe('disk: folder_versions: must be a boolean')
+    } finally {
+      await app.close()
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('POST /v1/workspaces/:id/clone 404s for unknown source', async () => {
@@ -174,7 +562,7 @@ describe('workspaces router', () => {
       await app1.inject({
         method: 'POST',
         url: '/v1/workspaces',
-        payload: { id: 'seed', config: { mounts: { '/': { resource: 'ram', mode: 'write' } } } },
+        payload: { id: 'seed', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
       })
       const snap = await app1.inject({
         method: 'POST',
@@ -212,7 +600,7 @@ describe('workspaces router', () => {
       await app.inject({
         method: 'POST',
         url: '/v1/workspaces',
-        payload: { id: 'esc', config: { mounts: { '/': { resource: 'ram', mode: 'write' } } } },
+        payload: { id: 'esc', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
       })
       const res = await app.inject({
         method: 'POST',
@@ -241,6 +629,64 @@ describe('workspaces router', () => {
     }
   })
 
+  it('POST /v1/workspaces/load reads a pointer in an override mount config', async () => {
+    // The load route built override mounts without the resolved
+    // declarations, so an alias reached `sourceFor` as a provider name.
+    registerSecrets('acct-load', LoadAccountConfig, (config: LoadAccountConfig, ref: string) =>
+      Promise.resolve({ fields: { credential: `${config.account}:${ref}` } }),
+    )
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-ws-'))
+    const tar = join(dir, 'ptr.tar')
+    const app1 = buildApp({ snapshotRoot: dir })
+    try {
+      await app1.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: {
+          id: 'ptr-src',
+          config: {
+            mounts: {
+              '/': { vfs: 'ram', mode: 'write' },
+              '/slack': { vfs: 'slack', mode: 'read', config: { token: 'xoxb-src' } },
+            },
+          },
+        },
+      })
+      const snap = await app1.inject({
+        method: 'POST',
+        url: '/v1/workspaces/ptr-src/snapshot',
+        payload: { path: tar },
+      })
+      expect(snap.statusCode).toBe(200)
+      const app2 = buildApp({ snapshotRoot: dir })
+      try {
+        const res = await app2.inject({
+          method: 'POST',
+          url: '/v1/workspaces/load',
+          payload: {
+            path: tar,
+            id: 'ptr-loaded',
+            override: {
+              secrets: { prod: { source: 'acct-load', config: { account: 'live' } } },
+              mounts: {
+                '/slack': {
+                  vfs: 'slack',
+                  config: { token: { from: 'prod', ref: 'bot', key: 'credential' } },
+                },
+              },
+            },
+          },
+        })
+        expect(res.statusCode).toBe(201)
+      } finally {
+        await app2.close().catch(() => undefined)
+      }
+    } finally {
+      await app1.close().catch(() => undefined)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('POST /v1/workspaces/load returns 400 when the snapshot path does not exist', async () => {
     const app = buildApp()
     try {
@@ -263,7 +709,7 @@ describe('workspaces router', () => {
       await app.inject({
         method: 'POST',
         url: '/v1/workspaces',
-        payload: { id: 'taken', config: { mounts: { '/': { resource: 'ram', mode: 'write' } } } },
+        payload: { id: 'taken', config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } } },
       })
       await app.inject({
         method: 'POST',
@@ -292,8 +738,8 @@ describe('workspaces router', () => {
           id: 'src-modes',
           config: {
             mounts: {
-              '/': { resource: 'ram', mode: 'write' },
-              '/ro': { resource: 'ram', mode: 'read' },
+              '/': { vfs: 'ram', mode: 'write' },
+              '/ro': { vfs: 'ram', mode: 'read' },
             },
           },
         },
@@ -325,13 +771,13 @@ describe('daemon disk-store default', () => {
       url: '/v1/workspaces',
       payload: {
         id: 'diskws',
-        config: { mounts: { '/': { resource: 'ram', mode: 'write' } } },
+        config: { mounts: { '/': { vfs: 'ram', mode: 'write' } } },
       },
     })
     expect(res.statusCode).toBe(201)
     const exec = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/diskws/execute',
+      url: '/v1/workspaces/diskws/shell',
       payload: { command: 'echo hi' },
     })
     expect(exec.statusCode).toBe(200)

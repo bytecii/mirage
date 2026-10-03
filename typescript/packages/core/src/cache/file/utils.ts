@@ -12,7 +12,20 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { md5Hex } from '../../utils/hash.ts'
+/**
+ * A cache token with every falsy spelling folded to "absent".
+ *
+ * `undefined` (none supplied), `null` (explicitly none) and `''` all mean
+ * the bytes carry no backend token. Folding them in one place is what lets
+ * the redis store spell "no token" as `''` on the wire without `''` ever
+ * meaning something different from `null` in the RAM store. Python writes
+ * this inline as `fingerprint or None`; `??` cannot express it, because it
+ * would keep `''`.
+ */
+export function tokenOrNull(fingerprint?: string | null): string | null {
+  if (fingerprint === undefined || fingerprint === null || fingerprint === '') return null
+  return fingerprint
+}
 
 export function parseLimit(limit: string | number): number {
   if (typeof limit === 'number') return limit
@@ -26,10 +39,6 @@ export function parseLimit(limit: string | number): number {
     if (s.endsWith(suffix)) return parseInt(s.slice(0, -suffix.length), 10) * mult
   }
   return parseInt(s, 10)
-}
-
-export function defaultFingerprint(data: Uint8Array): string {
-  return md5Hex(data)
 }
 
 /**

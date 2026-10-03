@@ -16,7 +16,7 @@ import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import dotenv from 'dotenv'
 import { NTN } from '@struktoai/mirage-core'
-import { MountMode, NotionResource, Workspace, type FileStat, type NotionConfig } from '@struktoai/mirage-node'
+import { MountMode, NotionVFS, Workspace, type FileStat, type NotionConfig } from '@struktoai/mirage-node'
 
 const __HERE = fileURLToPath(new URL('.', import.meta.url))
 dotenv.config({ path: resolve(__HERE, '../../../.env.development') })
@@ -31,7 +31,7 @@ function buildConfig(): NotionConfig {
 
 async function run(ws: Workspace, cmd: string, limit = 1500): Promise<string> {
   console.log(`=== ${cmd} ===`)
-  const r = await ws.execute(cmd)
+  const r = await ws.shell(cmd)
   const out = r.stdoutText.replace(/\s+$/, '')
   console.log(out !== '' ? out.slice(0, limit) : '(empty)')
   if (r.stderrText.trim() !== '') console.log(`  [stderr] ${r.stderrText.trim().slice(0, 300)}`)
@@ -40,13 +40,13 @@ async function run(ws: Workspace, cmd: string, limit = 1500): Promise<string> {
 }
 
 async function firstEntry(ws: Workspace, path: string): Promise<string> {
-  const out = (await ws.execute(`ls ${path}`)).stdoutText.trim()
+  const out = (await ws.shell(`ls ${path}`)).stdoutText.trim()
   if (out === '') return ''
   return basename(out.split('\n')[0]!.replace(/\/$/, ''))
 }
 
 async function pickChild(ws: Workspace, path: string, skip: string): Promise<string> {
-  const listing = (await ws.execute(`ls "${path}/"`)).stdoutText.trim().split('\n')
+  const listing = (await ws.shell(`ls "${path}/"`)).stdoutText.trim().split('\n')
   for (const line of listing) {
     const name = basename(line.replace(/\/$/, ''))
     if (name !== skip && name !== '') return name
@@ -75,7 +75,7 @@ async function explorePages(ws: Workspace): Promise<void> {
   // workspace namespace (durable, snapshot-captured) and merge into
   // dispatch-level stat.
   console.log(`=== metadata overlay on ${base}/page.json ===`)
-  const metaRes = await ws.execute(
+  const metaRes = await ws.shell(
     `chmod 640 "${base}/page.json" && chown 500:dev "${base}/page.json" && touch -t 202601021530 "${base}/page.json"`,
   )
   console.log(`  chmod/chown/touch exit=${String(metaRes.exitCode)}`)
@@ -133,21 +133,24 @@ async function exploreDatabases(ws: Workspace): Promise<void> {
   await run(ws, `cat "${sourceBase}/data_source.json"`)
   await run(ws, `jq ".properties | keys" "${sourceBase}/data_source.json"`)
 
-  const row = await pickChild(ws, sourceBase, 'data_source.json')
+  await run(ws, `head -n 2 "${sourceBase}/rows.jsonl"`, 1200)
+  await run(ws, `wc -l "${sourceBase}/rows.jsonl"`)
+  await run(ws, `jq -r ".title" "${sourceBase}/rows.jsonl"`)
+  // A row's cells ride on its line, as Notion's own property objects,
+  // answering to the schema in the data_source.json above.
+  await run(ws, `head -n 1 "${sourceBase}/rows.jsonl" | jq ".properties | keys"`)
+
+  const row = (await run(ws, `head -n 1 "${sourceBase}/rows.jsonl" | jq -r ".path"`)).trim()
   if (row === '') {
-    console.log('Data source has no row pages\n')
+    console.log('Data source has no rows\n')
     return
   }
-  const rowBase = `${sourceBase}/${row}`
+  const rowJson = `${sourceBase}/${row}`
   console.log(`--- row page: ${row} ---\n`)
-  await run(ws, `ls "${rowBase}/"`)
-  await run(ws, `stat "${rowBase}/page.json"`)
-  await run(ws, `cat "${rowBase}/page.json"`, 1200)
-  await run(ws, `jq ".parent_type" "${rowBase}/page.json"`)
-  await run(ws, `jq ".parent_id" "${rowBase}/page.json"`)
-  // A row's cells ride in the file, as Notion's own property objects,
-  // answering to the schema in the data_source.json above.
-  await run(ws, `jq ".properties | keys" "${rowBase}/page.json"`)
+  await run(ws, `stat "${rowJson}"`)
+  await run(ws, `cat "${rowJson}"`, 1200)
+  await run(ws, `jq ".parent_type" "${rowJson}"`)
+  await run(ws, `jq ".markdown" "${rowJson}"`)
 }
 
 async function exploreCrossCutting(ws: Workspace): Promise<void> {
@@ -163,7 +166,7 @@ async function exploreCrossCutting(ws: Workspace): Promise<void> {
 
 async function main(): Promise<void> {
   const ws = new Workspace(
-    { '/notion': new NotionResource(buildConfig()) },
+    { '/notion': new NotionVFS(buildConfig()) },
     { mode: MountMode.READ },
   )
   ws.registerCli('ntn', NTN, buildConfig() as unknown as Record<string, unknown>)

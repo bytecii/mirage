@@ -1,18 +1,16 @@
 {
   "_meta": {
-    "by_resource": {
+    "by_vfs": {
       "": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": true,
         "has_write": false
       }
     },
     "filetypes": [],
     "has_aggregate": false,
-    "has_provision": true,
     "has_write": false,
-    "resources": []
+    "vfs_names": []
   },
   "description": "Evaluate expressions.",
   "rest": {

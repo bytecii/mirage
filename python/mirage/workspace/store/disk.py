@@ -12,7 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import os
+import shutil
 from urllib.parse import quote
 
 from mirage.observe.disk_store import DiskObserverStore
@@ -25,6 +27,11 @@ from mirage.workspace.session.store import SessionStore
 from mirage.workspace.store.base import WorkspaceFields, WorkspaceStateStore
 
 DEFAULT_STATE_ROOT = "~/.mirage/state"
+
+
+# The workspace ids that would name the state root or its `workspaces`
+# directory rather than one workspace's own.
+DOT_IDS = frozenset({"", ".", ".."})
 
 
 class DiskWorkspaceStateStore(WorkspaceStateStore):
@@ -46,15 +53,17 @@ class DiskWorkspaceStateStore(WorkspaceStateStore):
     filesystems only; anything cross-machine belongs on redis or s3.
     """
 
-    def __init__(self,
-                 root: str = DEFAULT_STATE_ROOT,
-                 *,
-                 namespace: WorkspaceStateStore | None = None,
-                 observer: WorkspaceStateStore | None = None,
-                 workspace: WorkspaceStateStore | None = None) -> None:
-        super().__init__(namespace=namespace,
-                         observer=observer,
-                         workspace=workspace)
+    def __init__(
+        self,
+        root: str = DEFAULT_STATE_ROOT,
+        *,
+        namespace: WorkspaceStateStore | None = None,
+        observer: WorkspaceStateStore | None = None,
+        workspace: WorkspaceStateStore | None = None,
+    ) -> None:
+        super().__init__(
+            namespace=namespace, observer=observer, workspace=workspace
+        )
         self._root = os.path.expanduser(root)
         self._meta: dict[str, DiskRecordClient] = {}
         self._namespaces: dict[str, DiskNamespaceStore] = {}
@@ -62,45 +71,75 @@ class DiskWorkspaceStateStore(WorkspaceStateStore):
         self._sessions: dict[str, DiskSessionStore] = {}
 
     def _ws_root(self, workspace_id: str) -> str:
-        return os.path.join(self._root, "workspaces",
-                            quote(workspace_id, safe=""))
+        # The id is one path segment, quoted so a separator cannot leave
+        # it; the dot names are the escapes quoting keeps, and deleting a
+        # workspace removes this directory whole, so they are refused.
+        if workspace_id in DOT_IDS:
+            raise ValueError(f"invalid workspace id: {workspace_id!r}")
+        return os.path.join(
+            self._root, "workspaces", quote(workspace_id, safe="")
+        )
 
     def _meta_client(self, workspace_id: str) -> DiskRecordClient:
         if workspace_id not in self._meta:
             self._meta[workspace_id] = DiskRecordClient(
-                self._ws_root(workspace_id), "")
+                self._ws_root(workspace_id), ""
+            )
         return self._meta[workspace_id]
 
     def _make_namespace(self, workspace_id: str) -> NamespaceStore:
         if workspace_id not in self._namespaces:
             self._namespaces[workspace_id] = DiskNamespaceStore(
-                self._ws_root(workspace_id))
+                self._ws_root(workspace_id)
+            )
         return self._namespaces[workspace_id]
 
     def _make_observer(self, workspace_id: str) -> ObserverStore:
         if workspace_id not in self._observers:
             self._observers[workspace_id] = DiskObserverStore(
-                os.path.join(self._ws_root(workspace_id), "history"))
+                os.path.join(self._ws_root(workspace_id), "history")
+            )
         return self._observers[workspace_id]
 
     def _make_sessions(self, workspace_id: str) -> SessionStore:
         if workspace_id not in self._sessions:
             self._sessions[workspace_id] = DiskSessionStore(
-                self._ws_root(workspace_id))
+                self._ws_root(workspace_id)
+            )
         return self._sessions[workspace_id]
 
     async def _load_meta(self, workspace_id: str) -> WorkspaceFields | None:
         fields, _ = await self._meta_client(workspace_id).get("workspace")
         return fields
 
-    async def _set_meta(self, workspace_id: str,
-                        fields: WorkspaceFields) -> None:
+    async def _set_meta(
+        self, workspace_id: str, fields: WorkspaceFields
+    ) -> None:
         await self._meta_client(workspace_id).put("workspace", fields)
 
-    async def _cas_set_meta(self, workspace_id: str, fields: WorkspaceFields,
-                            expected_generation: int) -> bool:
+    async def _cas_set_meta(
+        self,
+        workspace_id: str,
+        fields: WorkspaceFields,
+        expected_generation: int,
+    ) -> bool:
         return await self._meta_client(workspace_id).cas_put(
-            "workspace", fields, expected_generation)
+            "workspace", fields, expected_generation
+        )
+
+    async def _forget(self, workspace_id: str) -> None:
+        for handles in (
+            self._namespaces,
+            self._observers,
+            self._sessions,
+            self._meta,
+        ):
+            handle = handles.pop(workspace_id, None)
+            if handle is not None:
+                await handle.close()
+        root = self._ws_root(workspace_id)
+        if os.path.isdir(root):
+            await asyncio.to_thread(shutil.rmtree, root)
 
     async def _close(self) -> None:
         for ns in self._namespaces.values():

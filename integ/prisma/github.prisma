@@ -1,0 +1,533 @@
+// Schema for the github fake (integ/server/github/). It is the largest of the
+// kit services and the only one whose fixture is a DIRECTORY rather than a JSON
+// document: a repository's contents are 120 files of sample source, which read
+// and diff as source and would be unreviewable inlined into JSON. So
+// fixtures/github/v1.json is a MANIFEST naming directories under
+// integ/fixtures/, and afterSeed walks them into rows.
+//
+// A manifest row carries what the python fake's `--repo owner/name=<dir>` flag
+// carried, but it is NOT that flag: the command line takes only --port and
+// --fixture, and the kit refuses anything else rather than seeding the default
+// and announcing a healthy server. A caller that used --repo, --metadata,
+// --commits or --no-create-repos names a fixture instead, and fixtures/github/
+// already holds three (v1, cli, empty).
+//
+// Files are per BRANCH; the submodules a fixture seeds and the blobs are per
+// REPOSITORY. A gitlink is a path in a tree with no blob behind its sha, so a
+// staged tree keeps its own, and a branch reads its head commit's. A blob is
+// content-addressed, so two branches holding the same bytes name one blob.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/github"
+}
+
+datasource db {
+  provider     = "sqlite"
+  url          = env("INTEG_DB_URL")
+  relationMode = "prisma"
+}
+
+model GithubRepo {
+  tenant        String
+  // "owner/name". The vendor's own key, and what every route resolves by.
+  fullName      String
+  owner         String
+  name          String
+  defaultBranch String
+  // What the repo and search endpoints report on top of the fresh-repository
+  // defaults: description, stargazers_count, language, topics. Free-form
+  // because a fixture states only the fields its task reads, and the renderer
+  // fills the rest.
+  metaJson      String  @default("{}")
+  // Answer /contents listings with GitHub's truncation marker, which is a
+  // property of the repository as the fixture declares it, not of a request.
+  truncated     Boolean @default(false)
+  // Directory under integ/fixtures/ whose files are this repository's contents,
+  // or "" for a metadata-only repository. A fixture cannot state 120 files of
+  // sample source as JSON and stay reviewable, so it names the directory and
+  // afterSeed walks it into GithubFile rows. This is also the column the
+  // python fake's `--repo owner/name=<dir>` flag set.
+  sourceDir     String  @default("")
+  // The branch that directory loads into, for a fixture whose repository has a
+  // second branch: the python fake spelled this `:into=<branch>`.
+  sourceBranch  String  @default("")
+  // The Pages site as JSON, "" for none. On the row so a rename carries it and
+  // a fork, a new row, starts without one, as on GitHub.
+  pagesJson     String  @default("")
+  seq           Int
+
+  branches    GithubBranch[]
+  files       GithubFile[]
+  submodules  GithubSubmodule[]
+  commits     GithubCommit[]
+  issues      GithubIssue[]
+  pulls       GithubPull[]
+  reviews     GithubReview[]
+  reviewComments GithubReviewComment[]
+  tags        GithubTag[]
+  tagRefs     GithubTagRef[]
+  releases    GithubRelease[]
+  comments    GithubComment[]
+  workflows   GithubWorkflow[]
+  runs        GithubRun[]
+  checks      GithubCheck[]
+  statuses    GithubStatus[]
+  stagedTrees GithubStagedTree[]
+  blobs       GithubBlob[]
+
+  @@id([tenant, fullName])
+}
+
+// Branch existence, stored rather than derived from the files on a branch. A
+// branch with no files is a real branch: creating a ref on a repository that
+// has no content, or deleting the last file from one, leaves the branch behind
+// and every ref route still has to answer for it. Deriving the set from
+// GithubFile made those branches vanish.
+model GithubBranch {
+  pk     Int    @id @default(autoincrement())
+  tenant String
+  repo   String
+  name   String
+  // Where the ref points, as a commit sha, empty for a branch that carries
+  // only its synthesized root. A ref IS this pointer: which commits a branch
+  // has is the chain reachable from here, never a column on the commits.
+  headSha String @default("")
+  seq    Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@unique([tenant, repo, name])
+  @@index([tenant, repo])
+}
+
+model GithubFile {
+  pk     Int    @id @default(autoincrement())
+  tenant String
+  repo   String
+  branch String
+  path   String
+  data   Bytes
+  seq    Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo, branch])
+}
+
+// A gitlink: tree entry of type "commit", mode 160000, no size, and no blob
+// behind its sha. Repository-wide rather than per branch, which is how the
+// fixture's SUBMODULES manifest states it.
+model GithubSubmodule {
+  pk     Int    @id @default(autoincrement())
+  tenant String
+  repo   String
+  path   String
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+// A commit is immutable and belongs to no branch: it is reached by walking
+// parents back from a ref's head, which is why one commit can sit on many
+// branches at once and why abandoning one costs nothing but the pointer.
+model GithubCommit {
+  pk            Int    @id @default(autoincrement())
+  tenant        String
+  repo          String
+  // Derived from the content rather than stored by the fixture, so a mirror of
+  // a fixture answers the same sha twice. Content-addressed in the git sense:
+  // the tree, the people, the message and the PARENT decide it, never a
+  // position, so a sha can never be reproduced by a later commit taking a
+  // freed slot.
+  sha           String
+  // The first parent, empty at the start of a chain (the synthesized root).
+  parentSha     String @default("")
+  message       String
+  authorLogin   String
+  date          String
+  // The staged tree this commit points at, for the git plumbing write path.
+  // Empty on a seeded commit, which has no staged tree behind it.
+  treeSha       String @default("")
+  // The git author and committer as `POST /git/commits` supplied them, each a
+  // JSON {name, email, date}, empty when the caller named none. They are stored
+  // rather than derived because a git person is not the `authorLogin` above: an
+  // email is whatever the commit says, not a handle turned into a noreply
+  // address, and a date is the caller's to pin.
+  authorJson    String @default("")
+  committerJson String @default("")
+  seq           Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+  @@index([tenant, repo, sha])
+}
+
+model GithubIssue {
+  pk            Int    @id @default(autoincrement())
+  tenant        String
+  repo          String
+  number        Int
+  title         String
+  body          String @default("")
+  state         String @default("open")
+  user          String
+  // JSON arrays, because the vendor takes and reports them as lists of names
+  // and a link table would restate an order the caller already fixed.
+  labelsJson    String @default("[]")
+  assigneesJson String @default("[]")
+  // Both empty until the issue first closes.
+  stateReason   String @default("")
+  closedAt      String @default("")
+  createdAt     String
+  updatedAt     String
+  seq           Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+model GithubComment {
+  metaJson    String @default("{}")
+  pk          Int    @id @default(autoincrement())
+  tenant      String
+  repo        String
+  issueNumber Int
+  id          Int
+  body        String
+  user        String
+  createdAt   String
+  seq         Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo, issueNumber])
+}
+
+model GithubPull {
+  pk        Int     @id @default(autoincrement())
+  tenant    String
+  repo      String
+  number    Int
+  title     String
+  body      String  @default("")
+  state     String  @default("open")
+  user      String
+  head      String
+  base      String
+  draft     Boolean @default(false)
+  merged    Boolean @default(false)
+  // The sha `gh pr checks` resolves its check runs and statuses against.
+  headSha   String  @default("")
+  // The seq of the repository the head branch lives in, which a rename keeps;
+  // -1 when it is this one or the head's own `owner:` names it.
+  headRepoSeq Int   @default(-1)
+  // Requested reviewers' logins, in request order.
+  reviewersJson String @default("[]")
+  createdAt String
+  updatedAt String
+  seq       Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+// A submitted pull request review. `state` is the vendor's past-tense
+// spelling (APPROVED, CHANGES_REQUESTED, COMMENTED), which the event the
+// caller posted (APPROVE, REQUEST_CHANGES, COMMENT) decides.
+model GithubReview {
+  pk          Int    @id @default(autoincrement())
+  tenant      String
+  repo        String
+  pullNumber  Int
+  id          Int
+  user        String
+  body        String @default("")
+  state       String
+  commitId    String
+  submittedAt String
+  seq         Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo, pullNumber])
+}
+
+// A comment on one line of a pull request's diff, or on one file of it. A
+// review's comments carry that review's id; a reply carries the comment it
+// answers and inherits its place.
+model GithubReviewComment {
+  pk          Int    @id @default(autoincrement())
+  tenant      String
+  repo        String
+  pullNumber  Int
+  id          Int
+  reviewId    Int    @default(0)
+  inReplyTo   Int    @default(0)
+  user        String
+  body        String
+  path        String
+  line        Int    @default(0)
+  side        String @default("RIGHT")
+  startLine   Int    @default(0)
+  startSide   String @default("")
+  subjectType String @default("line")
+  commitId    String
+  diffHunk    String @default("")
+  createdAt   String
+  seq         Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo, pullNumber])
+}
+
+model GithubRelease {
+  pk              Int     @id @default(autoincrement())
+  tenant          String
+  repo            String
+  id              Int
+  tagName         String
+  name            String  @default("")
+  // The commitish a release points at. Stored rather than derived, because a
+  // caller may name one and the default branch is only the fallback.
+  targetCommitish String
+  body            String  @default("")
+  draft           Boolean @default(false)
+  prerelease      Boolean @default(false)
+  createdAt       String
+  seq             Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+// A registered workflow file's id and state; its name is read from the file.
+model GithubWorkflow {
+  pk     Int    @id @default(autoincrement())
+  tenant String
+  repo   String
+  id     Int
+  path   String
+  state  String @default("active")
+  seq    Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+model GithubRun {
+  pk           Int     @id @default(autoincrement())
+  tenant       String
+  repo         String
+  id           Int
+  name         String
+  displayTitle String  @default("")
+  workflowId   Int
+  runNumber    Int
+  runAttempt   Int     @default(1)
+  event        String  @default("push")
+  headBranch   String
+  headSha      String
+  status       String  @default("completed")
+  // Both are null while a run is queued, which is what a dispatched run is
+  // until something completes it, so neither can be a plain String.
+  conclusion   String?
+  createdAt    String
+  updatedAt    String
+  runStartedAt String?
+  // Jobs in the vendor's field names; each step's `log` is its archive text.
+  jobsJson     String  @default("[]")
+  seq          Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+model GithubCheck {
+  pk          Int    @id @default(autoincrement())
+  tenant      String
+  repo        String
+  id          Int
+  name        String
+  status      String @default("completed")
+  conclusion  String @default("success")
+  startedAt   String
+  completedAt String
+  detailsUrl  String @default("")
+  summary     String @default("")
+  appName     String @default("GitHub Actions")
+  sha         String @default("")
+  seq         Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+// A Commit Status context, which a non-Actions CI provider publishes instead of
+// a Check Run. `gh pr checks` merges both, so the fake has to serve both.
+model GithubStatus {
+  pk          Int    @id @default(autoincrement())
+  tenant      String
+  repo        String
+  context     String
+  state       String
+  targetUrl   String @default("")
+  description String @default("")
+  createdAt   String
+  updatedAt   String
+  sha         String @default("")
+  seq         Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+// A tree built by POST /git/trees and not yet pointed at by a branch. The write
+// path is build-a-tree, commit-it, move-the-ref, and only that last step may
+// change what a read returns, so a staged tree is its own table. Its sha is
+// its content's alone, so one tree is one row per fork network and two
+// unrelated repositories holding the same tree each have their own.
+model GithubStagedTree {
+  pk     Int    @id @default(autoincrement())
+  tenant String
+  repo   String
+  sha    String
+  seq    Int
+
+  entries    GithubStagedEntry[]
+  dirs       GithubStagedDir[]
+  repository GithubRepo          @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@unique([tenant, repo, sha])
+  @@index([tenant, sha])
+}
+
+// A blob entry holds bytes; a gitlink holds its target commit sha and no bytes.
+model GithubStagedEntry {
+  pk      Int    @id @default(autoincrement())
+  tenant  String
+  repo    String
+  treeSha String
+  path    String
+  data    Bytes
+  sha     String @default("")
+  mode    String @default("100644")
+  seq     Int
+
+  tree GithubStagedTree @relation(fields: [tenant, repo, treeSha], references: [tenant, repo, sha])
+
+  @@index([tenant, repo, treeSha])
+  @@index([tenant, sha])
+}
+
+// One directory of a staged tree under its own tree id, so an id an older
+// listing reported finds its snapshot in one lookup instead of by hashing
+// every snapshot the repository kept.
+model GithubStagedDir {
+  pk      Int    @id @default(autoincrement())
+  tenant  String
+  repo    String
+  treeSha String
+  path    String
+  sha     String
+
+  tree GithubStagedTree @relation(fields: [tenant, repo, treeSha], references: [tenant, repo, sha])
+
+  @@index([tenant, repo, treeSha])
+  @@index([tenant, sha])
+}
+
+// A blob `POST git/blobs` wrote. No tree holds it until a tree entry names
+// it, so it is kept apart from every tree, and a blob some tree already holds
+// is never written here.
+model GithubBlob {
+  pk     Int    @id @default(autoincrement())
+  tenant String
+  repo   String
+  sha    String
+  data   Bytes
+  seq    Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+  @@index([tenant, sha])
+}
+
+// Server-wide state that belongs to no repository. One row per tenant, so the
+// `cli` fixture can refuse repository creation the way a fine-grained token
+// without Administration:write does while the default fixture allows it.
+model GithubSetting {
+  tenant      String  @id
+  // POST /user/repos answers 403 when false; fork and rename stay available.
+  createRepos Boolean @default(true)
+}
+
+// An annotated tag object, which exists by its sha before any ref names it,
+// as it does in git.
+model GithubTag {
+  pk         Int    @id @default(autoincrement())
+  tenant     String
+  repo       String
+  sha        String
+  tag        String
+  message    String
+  objectSha  String
+  objectType String
+  taggerJson String @default("")
+  seq        Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@index([tenant, repo])
+}
+
+// A ref under refs/tags/, pointing at a commit or at an annotated tag object.
+model GithubTagRef {
+  pk     Int    @id @default(autoincrement())
+  tenant String
+  repo   String
+  name   String
+  sha    String
+  seq    Int
+
+  repository GithubRepo @relation(fields: [tenant, repo], references: [tenant, fullName])
+
+  @@unique([tenant, repo, name])
+  @@index([tenant, repo])
+}
+
+// An account a fixture states: the profile `/users/{login}` answers and user
+// search reads. An empty text field answers null.
+model GithubAccount {
+  pk              Int     @id @default(autoincrement())
+  tenant          String
+  login           String
+  type            String  @default("User")
+  name            String  @default("")
+  email           String  @default("")
+  bio             String  @default("")
+  company         String  @default("")
+  blog            String  @default("")
+  location        String  @default("")
+  twitterUsername String  @default("")
+  hireable        Boolean @default(false)
+  followers       Int     @default(0)
+  following       Int     @default(0)
+  publicGists     Int     @default(0)
+  createdAt       String  @default("2026-01-01T00:00:00Z")
+  updatedAt       String  @default("")
+  seq             Int
+
+  @@unique([tenant, login])
+}

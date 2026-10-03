@@ -13,38 +13,36 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import functools
-from typing import Any
 
-from mirage.commands.builtin.utils.limit import CommandTimeoutError
-from mirage.commands.errors import UsageError
-from mirage.commands.spec.types import FlagValue
+from mirage.commands.config import ExecContext
+from mirage.commands.errors import CommandTimeoutError, UsageError
+from mirage.commands.spec.types import CommandSpec, FlagValue
+from mirage.commands.spec.usage import read_fail_exit
 from mirage.io import IOResult
 from mirage.io.stream import materialize, wrap_cachable_streams
 from mirage.io.types import ByteSource
-from mirage.ops.config import NamespaceLinks
-from mirage.ops.namespace_view import namespace_names
-from mirage.ops.types import LinkView, MountView, NamespaceView
 from mirage.runtime.base import Runtime
-from mirage.runtime.policy import PolicyDecision
-from mirage.runtime.table import VFSRuntime
+from mirage.runtime.routing import RouteDecision
+from mirage.runtime.table import WorkspaceRuntime
 from mirage.runtime.types import DispatchFn
-from mirage.types import FileStat, PathSpec, ResourceName
+from mirage.types import PathSpec
 from mirage.utils.errors import format_fs_error
-from mirage.workspace.executor.builtins.links import (link_target_stat,
-                                                      path_exists,
-                                                      path_readdir, path_stat)
-from mirage.workspace.executor.find_action_dispatch import _apply_find_actions
-from mirage.workspace.mount import (MountCommandUnsupported, MountEntry,
-                                    MountRegistry)
+from mirage.workspace.executor.command.flags import parse_flags
+from mirage.workspace.mount import (
+    MountCommandUnsupported,
+    MountEntry,
+    MountRegistry,
+)
 from mirage.workspace.mount.namespace import Namespace
-from mirage.workspace.mount.namespace.overlay import merge_overlay_stat
-from mirage.workspace.session import (Session, assert_mount_allowed,
-                                      env_snapshot, session_view)
-from mirage.workspace.types import ExecutionNode
+from mirage.workspace.mount.namespace.probe import path_readdir, path_stat
+from mirage.workspace.mount.namespace.view import namespace_view_of
+from mirage.workspace.session import SessionState, env_snapshot, session_view
+from mirage.workspace.types import ExecuteLine, ExecutionNode
 
 
-async def exec_node(cmd_str: str, io: IOResult,
-                    paths: list[PathSpec]) -> ExecutionNode:
+async def exec_node(
+    cmd_str: str, io: IOResult, paths: list[PathSpec]
+) -> ExecutionNode:
     """Build the recorded execution node, materializing any streamed stderr.
 
     Args:
@@ -56,10 +54,12 @@ async def exec_node(cmd_str: str, io: IOResult,
     # The node is a recorded artifact (compared by value, serialized via a
     # sync to_dict, sometimes read twice), so the live lazy io.stderr is
     # materialized to concrete bytes here. On the cross-mount path it is bytes.
-    return ExecutionNode(command=cmd_str,
-                         stderr=await materialize(io.stderr),
-                         exit_code=io.exit_code,
-                         paths=paths)
+    return ExecutionNode(
+        command=cmd_str,
+        stderr=await materialize(io.stderr),
+        exit_code=io.exit_code,
+        paths=paths,
+    )
 
 
 def admission_denial(cmd_name: str) -> IOResult:
@@ -73,28 +73,30 @@ def admission_denial(cmd_name: str) -> IOResult:
 
 
 def line_runtime_for(
-        cmd_name: str, registry: MountRegistry, routing: PolicyDecision | None
+    cmd_name: str, registry: MountRegistry, routing: RouteDecision | None
 ) -> tuple[Runtime | None, IOResult | None]:
     """Resolve a command against the line's routing decision.
 
     With no decision, the workspace's static bindings apply. With one,
     the command's runtime is looked up in the decision: its binding,
     or the decision's fallback when no entry captures it. A resolved
-    VFSRuntime means the executor serves the command itself (the vfs
-    runtime has no interpreter door); None means no runtime accepted
-    it: exit 126, like a shell refusing to exec.
+    WorkspaceRuntime means the executor serves the command itself (the
+    workspace runtime has no interpreter door); None means no runtime
+    accepted it: exit 126, like a shell refusing to exec.
 
     Args:
         cmd_name (str): the command being dispatched.
         registry (MountRegistry): registry holding static bindings and
-            the world's vfs runtime.
-        routing (PolicyDecision | None): the typed line's decision.
+            the world's workspace runtime.
+        routing (RouteDecision | None): the typed line's decision.
     """
     if routing is None:
-        vfs = registry.vfs_runtime
-        restricted = isinstance(vfs, VFSRuntime) and vfs.restricted
+        fallback = registry.workspace_runtime
+        restricted = (
+            isinstance(fallback, WorkspaceRuntime) and fallback.restricted
+        )
         runtime = registry.runtime_bindings.get(cmd_name)
-        if runtime is vfs and vfs is not None:
+        if runtime is fallback and fallback is not None:
             return None, None
         if runtime is None and restricted:
             return None, admission_denial(cmd_name)
@@ -102,13 +104,39 @@ def line_runtime_for(
     runtime = routing.bindings.get(cmd_name, routing.fallback)
     if runtime is None:
         return None, admission_denial(cmd_name)
-    if isinstance(runtime, VFSRuntime):
+    if isinstance(runtime, WorkspaceRuntime):
         return None, None
     return runtime, None
 
 
+def find_start_points(
+    argv: list[str | PathSpec],
+    expr_tokens: list[str],
+    spec: CommandSpec | None,
+    cwd: str,
+) -> list[PathSpec]:
+    """find's start points: the path operands typed before its expression.
+
+    The expression tail is the parser's, so a word inside it (an
+    ``-exec`` command word, a ``-newer`` reference) is never a start
+    point even when the rest slot's PATH kind would have read it as one.
+    Only the head is parsed against the spec, so what it yields as path
+    operands is exactly the start points.
+
+    Args:
+        argv (list[str | PathSpec]): the classified words after `find`.
+        expr_tokens (list[str]): the expression tail, as `find_expr_tail`
+            cut it off the same words.
+        spec (CommandSpec | None): find's spec on the mount.
+        cwd (str): the session's working directory.
+    """
+    head = argv[: len(argv) - len(expr_tokens)]
+    return parse_flags(head, spec, "find", cwd).paths
+
+
 def scalar_find_flags(
-        flag_kwargs: dict[str, FlagValue]) -> dict[str, FlagValue]:
+    flag_kwargs: dict[str, FlagValue],
+) -> dict[str, FlagValue]:
     # `multiple=True` on find value-flags makes parse_to_kwargs emit
     # lists; bespoke backend wrappers read these as scalars. Migrated
     # backends read the expression from `texts` and ignore flag_kwargs.
@@ -118,192 +146,61 @@ def scalar_find_flags(
     }
 
 
-def registry_child_mounts(registry: MountRegistry,
-                          links: NamespaceLinks | None,
-                          parent: str) -> list[str]:
-    """Child names the namespace owes ``parent``: mounts and links.
-
-    The ``child_mounts`` fact offered to listing commands: the same
-    names the door merges into its own readdir, derived from the same
-    tables (mount names session-filtered), so the shell and the ops
-    surface cannot disagree about what a directory holds.
-
-    Args:
-        registry (MountRegistry): registry holding the mount table.
-        links (NamespaceLinks | None): the namespace symlink table.
-        parent (str): directory whose child segments to enumerate.
-    """
-    return namespace_names([m.prefix for m in registry.mounts()], links,
-                           parent)
-
-
-def link_view(namespace: Namespace | None,
-              dispatch: DispatchFn | None) -> LinkView | None:
-    """The symlink facts on offer, or None when there are no links.
-
-    Which commands actually receive this is decided at dispatch, by
-    whether the handler names a ``links`` parameter, so there is no list
-    of symlink-aware commands to keep in step here or anywhere else.
-
-    Args:
-        namespace (Namespace | None): addressing authority holding the
-            link table, None outside a workspace.
-        dispatch (DispatchFn | None): op dispatcher, which answers
-            existence across mounts rather than within one backend.
-    """
-    if namespace is None or dispatch is None or not namespace.has_links():
-        return None
-    return LinkView(stat_at=namespace.link_stat_at,
-                    children=namespace.link_stats_under,
-                    subtree=namespace.link_stats_below,
-                    resolve=namespace.follow,
-                    exists=functools.partial(path_exists, dispatch),
-                    target_stat=functools.partial(link_target_stat, namespace,
-                                                  dispatch))
-
-
-def mount_roots_below(registry: MountRegistry, virtual: str) -> list[str]:
-    """Mount roots strictly under a path, without the trailing slash.
-
-    Args:
-        registry (MountRegistry): registry holding the mount table.
-        virtual (str): absolute virtual path to scan beneath.
-    """
-    return [
-        m.prefix.rstrip("/") or "/"
-        for m in registry.descendant_mounts(virtual)
-    ]
-
-
-def mount_root_of(registry: MountRegistry, virtual: str) -> str:
-    """The mount prefix serving a virtual path, "/" when none does.
-
-    A mount boundary is a filesystem boundary, which is what a caller
-    walking up a tree needs in order to stop: `git` looks for a `.git`
-    no further than the mount root, the way real git stops discovery at
-    a filesystem boundary. A path under no mount answers "/" so the walk
-    still terminates.
-
-    Args:
-        registry (MountRegistry): registry holding the mount table.
-        virtual (str): absolute virtual path.
-    """
-    mount = registry.try_mount_for(virtual)
-    return mount.prefix if mount is not None else "/"
-
-
-def mount_view(registry: MountRegistry) -> MountView:
-    """The mount-boundary facts on offer to every command.
-
-    Which commands receive it is decided at dispatch by whether the
-    handler names a ``mounts`` parameter, the same opt-in ``links``
-    uses, so there is no list of boundary-aware commands to keep in
-    step.
-
-    Args:
-        registry (MountRegistry): registry holding the mount table.
-    """
-    return MountView(descendants=functools.partial(mount_roots_below,
-                                                   registry),
-                     is_root=registry.is_mount_root,
-                     root_of=functools.partial(mount_root_of, registry))
-
-
-def namespace_view_of(registry: MountRegistry, namespace: Namespace | None,
-                      dispatch: DispatchFn | None) -> NamespaceView:
-    """The name plane's facts on offer, bundled as one view.
-
-    Which commands receive it is decided at dispatch by whether the
-    handler names an ``ns`` parameter, the opt-in ``links`` used before
-    the fold; a command that grows a new name-plane need reads another
-    field instead of threading a new keyword through ``execute_cmd``.
-
-    Args:
-        registry (MountRegistry): registry holding the mount table.
-        namespace (Namespace | None): addressing authority holding the
-            link table and attr overlay, None outside a workspace.
-        dispatch (DispatchFn | None): op dispatcher, which answers
-            existence across mounts rather than within one backend.
-    """
-    return NamespaceView(
-        links=link_view(namespace, dispatch),
-        mounts=mount_view(registry),
-        stat_overlay=(functools.partial(namespace_stat_overlay, namespace)
-                      if namespace is not None else None),
-        child_mounts=functools.partial(registry_child_mounts, registry,
-                                       namespace))
-
-
-async def drop_service_caches(registry: MountRegistry,
-                              serves: tuple[ResourceName, ...]) -> None:
-    """Drop cached listings and bodies for the mounts a CLI's service backs.
+async def drop_mount_caches(registry: MountRegistry) -> None:
+    """Drop every mount's cached listings and bodies after an account
+    CLI write.
 
     An account CLI mutates its service by id, so no vfs path can be
     derived from the call and per-path invalidation has nothing to aim
     at: after `gws sheets spreadsheets create` the new file has no cache
-    entry to expire, which is exactly the case that matters. What is
-    known is the service, so the mounts it backs drop their caches and
-    the next read refetches.
+    entry to expire, which is exactly the case that matters. Which
+    mounts that service backs is not the CLI's business either (a CLI
+    and a VFS are separate tiers, and a user's own CLI knows
+    nothing about a user's own VFS), so the executor says the one
+    thing it knows: a write happened, and every mount may be stale. A
+    write verb is rare next to reads, and the cost is one cold listing
+    on a mount's next read, never a wrong answer.
 
     Both caches go, because the two hide different writes. A stale
     listing hides a create or a delete; a stale body hides an edit, and
-    these resources cache reads, so a `cat` after `gws docs documents
+    these mounts cache reads, so a `cat` after `gws docs documents
     batchUpdate` would otherwise keep serving the pre-edit content
     without ever reaching Google.
 
-    Scoped by the spec's declared ``serves`` rather than a blanket
-    reset, so a Slack or S3 mount alongside keeps its cache.
-
     Args:
         registry (MountRegistry): registry holding the mount table.
-        serves (tuple[ResourceName, ...]): resources the CLI's service
-            backs; empty drops nothing.
     """
-    if not serves:
-        return
-    wanted = set(serves)
     for mount in registry.mounts():
-        if mount.resource.name not in wanted:
-            continue
         # Invalidate rather than clear: a cleared index reads exactly like
         # one that was never filled, so a backend whose index *is* its
         # listing (github seeds the whole tree once) cannot tell the drop
         # from an empty repository and reports the mount as gone. Expiring
         # keeps that distinction and the next read refetches.
-        await mount.resource.index.invalidate()
+        await mount.index.invalidate()
         if mount.cache_manager is not None:
             await mount.cache_manager.drop_prefix()
 
 
-def namespace_stat_overlay(namespace: Namespace, virtual: str,
-                           stat: FileStat) -> FileStat:
-    """Merge namespace attr overlays into one stat row (ls/stat rendering).
-
-    A path never chown'd defaults its owner to the workspace user (the
-    launch agent, what ``whoami`` reports), so ``ls -l`` and ``stat -c``
-    agree on ownership. An unclaimed workspace leaves uid/gid None and the
-    formatters fall back to the neutral ``user`` placeholder.
+async def run_nested_line(
+    execute_fn: ExecuteLine,
+    session_id: str,
+    line: str,
+    stdin: ByteSource | None,
+) -> IOResult:
+    """Run a line a command handler asked for, in the handler's session.
 
     Args:
-        namespace (Namespace): addressing authority holding the overlay.
-        virtual (str): absolute virtual path of the statted entry.
-        stat (FileStat): backend stat result.
+        execute_fn (ExecuteLine): runs a line in a session.
+        session_id (str): the session the calling command runs under.
+        line (str): the line.
+        stdin (ByteSource | None): its input, None for the ambient one.
     """
-    merged = merge_overlay_stat(namespace.meta_for(virtual), stat)
-    user = namespace.user
-    if user is None:
-        return merged
-    update: dict[str, Any] = {}
-    if merged.uid is None:
-        update["uid"] = user
-    if merged.gid is None:
-        update["gid"] = user
-    return merged.model_copy(update=update) if update else merged
+    return await execute_fn(line, session_id=session_id, stdin=stdin)
 
 
 async def run_on_mount(
     registry: MountRegistry,
-    session: Session,
+    session: SessionState,
     dispatch: DispatchFn,
     namespace: Namespace | None,
     cmd_name: str,
@@ -313,7 +210,9 @@ async def run_on_mount(
     stdin: ByteSource | None = None,
     resolve_hint: PathSpec | None = None,
     mount: MountEntry | None = None,
-    routing_decision: PolicyDecision | None = None,
+    routing_decision: RouteDecision | None = None,
+    argv: tuple[str, ...] = (),
+    execute_fn: ExecuteLine | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Run one already-parsed command on the mount that owns its paths.
 
@@ -326,7 +225,7 @@ async def run_on_mount(
 
     Args:
         registry (MountRegistry): Mount registry.
-        session (Session): Session providing cwd/env/session_id.
+        session (SessionState): Session providing cwd/env/session_id.
         dispatch (Callable): Workspace operation dispatcher.
         namespace (Namespace | None): Addressing authority for ls symlinks.
         cmd_name (str): Command name.
@@ -335,31 +234,29 @@ async def run_on_mount(
         texts (list[str]): Positional text operands.
         flag_kwargs (dict): Parsed flags forwarded to the mount command.
         stdin (ByteSource | None): Standard input for the command.
-        resolve_hint (PathSpec | None): Mount-resolution path when ``paths``
-            is empty (a stream command running in stdin mode).
+        resolve_hint (PathSpec | None): The path whose mount runs the
+            command, ahead of the first of ``paths``: a stream command in
+            stdin mode has none, and awk over operands on several mounts
+            runs where its first file lives.
         mount: Pre-resolved mount; skips resolution and session mode
             checks, which the caller already performed.
+        argv (tuple[str, ...]): The words after the command name, as the
+            line spelled them; empty for a run split out of a line.
+        execute_fn (ExecuteLine | None): Runs a nested line, which the
+            handler reaches as ``opts.shell``; None outside a workspace.
     """
     if mount is None:
-        resolve_paths = paths or ([resolve_hint] if resolve_hint else [])
+        resolve_paths = [resolve_hint] if resolve_hint else paths
         try:
-            mount = await registry.resolve_mount(cmd_name, resolve_paths,
-                                                 session.cwd)
+            mount = await registry.resolve_mount(
+                cmd_name, resolve_paths, session.cwd
+            )
         except MountCommandUnsupported as exc:
             return None, IOResult(exit_code=1, stderr=f"{exc}\n".encode())
         if mount is None:
             return None, IOResult(
-                exit_code=127,
-                stderr=f"{cmd_name}: command not found".encode())
-        try:
-            assert_mount_allowed(mount.prefix)
-            for ps in paths:
-                target = registry.try_mount_for(ps.virtual)
-                if target is not None:
-                    assert_mount_allowed(target.prefix)
-        except PermissionError as exc:
-            return None, IOResult(exit_code=1, stderr=f"{exc}\n".encode())
-
+                exit_code=127, stderr=f"{cmd_name}: command not found".encode()
+            )
     if cmd_name == "find":
         flag_kwargs = scalar_find_flags(flag_kwargs)
 
@@ -375,13 +272,20 @@ async def run_on_mount(
     # so a start point under another mount answers (`find -L` follows a
     # link across mounts before the command ever runs).
     ns = namespace_view_of(registry, namespace, dispatch)
-    stat_path = (functools.partial(path_stat, dispatch)
-                 if dispatch is not None else None)
-    readdir_path = (functools.partial(path_readdir, dispatch)
-                    if dispatch is not None else None)
+    stat_path = (
+        functools.partial(path_stat, dispatch)
+        if dispatch is not None
+        else None
+    )
+    readdir_path = (
+        functools.partial(path_readdir, dispatch)
+        if dispatch is not None
+        else None
+    )
 
-    line_runtime, denial = line_runtime_for(cmd_name, registry,
-                                            routing_decision)
+    line_runtime, denial = line_runtime_for(
+        cmd_name, registry, routing_decision
+    )
     if denial is not None:
         return None, denial
 
@@ -391,25 +295,45 @@ async def run_on_mount(
             paths,
             texts,
             flag_kwargs,
-            stdin=stdin,
-            cwd=session.cwd,
-            dispatch=dispatch,
-            session_id=session.session_id,
-            env=env_snapshot(session),
-            session_view=session_view(session, registry.policies),
-            exec_allowed=registry.is_exec_allowed(),
-            runtime=line_runtime,
-            runtime_unavailable=registry.runtime_unavailable.get(cmd_name),
-            ns=ns,
-            stat_path=stat_path,
-            readdir_path=readdir_path,
+            ExecContext(
+                limit_override=(
+                    session.command_limits.get(cmd_name)
+                    or mount.command_limits.get(cmd_name)
+                    or registry.command_limits.get(cmd_name)
+                ),
+                stdin=stdin,
+                cwd=session.cwd,
+                dispatch=dispatch,
+                session_id=session.session_id,
+                env=env_snapshot(session),
+                session_view=session_view(session, registry.policies),
+                processes=registry.process_view(session)
+                if registry.process_view is not None
+                else None,
+                exec_allowed=registry.is_exec_allowed(),
+                exec_path_allowed=registry.exec_allowed_at,
+                runtime=line_runtime,
+                runtime_unavailable=registry.runtime_unavailable.get(cmd_name),
+                ns=ns,
+                stat_path=stat_path,
+                readdir_path=readdir_path,
+                shell=(
+                    functools.partial(
+                        run_nested_line, execute_fn, session.session_id
+                    )
+                    if execute_fn is not None
+                    else None
+                ),
+                argv=argv,
+            ),
         )
     except UsageError as exc:
         # Command-owned usage errors (extra operands, missing patterns)
         # become this command's IOResult so the rest of the line keeps
         # running, like a real shell (#452).
-        return None, IOResult(exit_code=exc.exit_code,
-                              stderr=f"{exc}\n".encode())
+        return None, IOResult(
+            exit_code=exc.exit_code, stderr=f"{exc}\n".encode()
+        )
     except CommandTimeoutError:
         # A limit timeout is answered by the workspace-level handler
         # (exit 124), not here.
@@ -419,22 +343,10 @@ async def run_on_mount(
         # ValueError, or a filesystem OSError) becomes this command's
         # IOResult, prefixed with the command name like GNU (prog: message)
         # and the TypeScript executor.
-        return None, IOResult(exit_code=1,
-                              stderr=format_fs_error(cmd_name, exc, paths))
-
-    if cmd_name == "find":
-        stdout, action_err = await _apply_find_actions(
-            stdout,
-            flag_kwargs,
-            registry,
-            session.cwd,
-            child_mounts=ns.child_mounts,
-            stat_path=stat_path)
-        if action_err:
-            existing = await materialize(io.stderr) if io.stderr else b""
-            io.stderr = existing + action_err
-            if io.exit_code == 0:
-                io.exit_code = 1
+        return None, IOResult(
+            exit_code=read_fail_exit(cmd_name, exc),
+            stderr=format_fs_error(cmd_name, exc, paths),
+        )
 
     prefix = mount.prefix.rstrip("/")
     if prefix:

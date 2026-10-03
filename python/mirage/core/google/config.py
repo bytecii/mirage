@@ -18,7 +18,9 @@ from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 
 class GoogleConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True, frozen=True, extra="forbid"
+    )
 
     # Two ways to authenticate, the same two MsGraphConfig offers.
     #
@@ -64,4 +66,5 @@ class GoogleConfig(BaseModel):
             return self
         raise ValueError(
             "GoogleConfig needs either access_token (a token or a provider "
-            "callable) or both client_id and refresh_token")
+            "callable) or both client_id and refresh_token"
+        )

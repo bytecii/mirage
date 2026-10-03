@@ -12,35 +12,111 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type {
-  ExecutionCase,
-  ExecWorkspace,
-  ScenarioStep,
-  HarnessStat,
-  StatCheck,
-  ProvisionInfo,
-  ProvisionExec,
-} from './types.ts'
-const ENC = new TextEncoder()
-const DEC = new TextDecoder()
+import { Outcome, Scope } from '@struktoai/mirage-core/policy/index'
+import type { SessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 
-export async function runScenario(
-  ws: ExecWorkspace,
-  mutate: (path: string, content: Uint8Array) => Promise<void>,
-  steps: ScenarioStep[],
-): Promise<{ exitCode: number; out: string }> {
-  const outputs: string[] = []
-  let exitCode = 0
-  for (const step of steps) {
-    if ('mutate' in step) {
-      await mutate(step.mutate.path, ENC.encode(step.mutate.content))
-      continue
+const ENC = new TextEncoder()
+const DEC = new TextDecoder('utf-8', { ignoreBOM: true })
+
+export interface Expect {
+  exit: number
+  stdout: string
+  stderr: string
+  // The stat line the case's `check` must produce, asserted alongside stdout
+  // rather than in place of it.
+  check?: string
+  elapsed?: { min: number; max: number }
+}
+
+export interface StatCheck {
+  read_paths?: boolean
+  stat?: string
+  fields?: string[]
+  read?: string
+  offset?: number
+  size?: number | null
+}
+
+export interface Case {
+  id: string
+  seq?: number
+  targets: string[]
+  command: string
+  flags?: string[]
+  check?: StatCheck
+  clear_cache?: boolean
+  // A scenario selector, not a config value: a case names the read policy
+  // its two workspaces run under. `ttl` rides beside it because `bounded`
+  // takes a bound.
+  read?: 'fresh' | 'bounded'
+  ttl?: number
+  mount_read?: Record<string, 'fresh' | 'bounded'>
+  session?: string
+  // The host's answer to every approval waiting on the workspace, given
+  // before the command runs: `allow_once`, `allow_session` or `deny`.
+  // How a case exercises the ask arm, since the battery has no host of
+  // its own.
+  answer?: 'allow_once' | 'allow_session' | 'deny'
+  // Why this case's verdict is out of reach of `ws.explain`, which reads
+  // the command plane and the line as typed: a runtime-expanded glob, a
+  // refusal from the op door below the gate, a function the same line
+  // defines. Named rather than silently omitted.
+  explain_blind?: string
+  scenario?: ScenarioStep[]
+  expect: Expect
+  _source?: string
+}
+
+export type ScenarioStep =
+  | {
+      mutate:
+        | { path: string; content: string; delete?: false }
+        | { path: string; delete: true }
+        | { command: string }
     }
-    const result = await ws.execute(step.command)
-    outputs.push(DEC.decode(result.stdout))
-    exitCode = result.exitCode
+  | { command: string }
+
+export interface ExplainRow {
+  exitCode: number
+  stderr: string
+}
+
+export interface ExecResult {
+  stdout: Uint8Array
+  stderr: Uint8Array
+  exitCode: number
+}
+
+export interface HarnessStat {
+  mode: number | null
+  uid: number | string | null
+  gid: number | string | null
+  modified: string | null
+}
+
+export interface ExecWorkspace {
+  vfs: { records: readonly { op: string; path: string }[] }
+  shell(cmd: string, opts?: { stdin?: Uint8Array; sessionId?: string }): Promise<ExecResult>
+  dispatch(
+    opName: string,
+    path: string,
+    args?: readonly unknown[],
+    kwargs?: Record<string, unknown>,
+  ): Promise<unknown>
+  cache: { clear(): Promise<void> }
+  mounts(): readonly { vfs: { index?: { clear(): Promise<void> } } }[]
+  createSession(
+    sessionId: string,
+    options: { profile?: string | SessionProfile; permissions?: SessionProfile },
+  ): unknown
+  env: Record<string, string>
+  decisions: {
+    pending(): readonly { id: string }[]
+    answer(id: string, outcome: Outcome, scope?: Scope): Promise<void>
   }
-  return { exitCode, out: outputs.join('') }
+  explain(line: string, sessionId?: string): Promise<readonly ExplainRow[]>
+  close(): Promise<void>
 }
 
 function checkField(st: HarnessStat, name: string): string {
@@ -86,14 +162,6 @@ export async function statCheck(ws: ExecWorkspace, check: StatCheck): Promise<st
   return (check.fields ?? []).map((name) => checkField(st, name)).join(' ') + '\n'
 }
 
-function provisionLine(r: ProvisionInfo): string {
-  return (
-    `net=${r.networkRead} write=${r.networkWrite} ` +
-    `cache=${r.cacheRead} ops=${String(r.readOps)} ` +
-    `hits=${String(r.cacheHits)} precision=${r.precision}`
-  )
-}
-
 /**
  * Substitute {mount} in a case with a target's primary mount path.
  *
@@ -104,9 +172,11 @@ function provisionLine(r: ProvisionInfo): string {
 // {mount} lets one case assert a behavior every backend shares while each
 // target keeps its own mount path. {http} carries the fixture HTTP server's
 // base URL, which is only known once the server has bound a port.
-export function bindMount<T extends ExecutionCase>(c: T, mountPath: string, http = ''): T {
+export function bindMount(c: Case, mountPath: string): Case {
+  // A browser page has no `process`; only a node run serves {http}.
+  const http = typeof process === 'undefined' ? '' : (process.env.HTTP_ENDPOINT ?? '')
   const tokens: ReadonlyArray<readonly [string, string]> = [
-    ['{mount}', mountPath.replace(/\/+$/, '')],
+    ['{mount}', rstripSlash(mountPath)],
     ['{http}', http],
   ]
   const subst = (text: string): string =>
@@ -120,8 +190,7 @@ export function bindMount<T extends ExecutionCase>(c: T, mountPath: string, http
       c.check?.read?.includes(token) === true ||
       c.expect.check?.includes(token) === true,
   )
-  if (!present && c.setup === undefined && c.concurrent === undefined && c.cwd === undefined)
-    return c
+  if (!present) return c
   const check =
     c.check === undefined
       ? undefined
@@ -132,13 +201,6 @@ export function bindMount<T extends ExecutionCase>(c: T, mountPath: string, http
         }
   return {
     ...c,
-    ...(c.setup !== undefined ? { setup: subst(c.setup) } : {}),
-    ...(c.cwd !== undefined ? { cwd: subst(c.cwd) } : {}),
-    ...(c.concurrent !== undefined
-      ? {
-          concurrent: c.concurrent.map((step) => bindMount(step, mountPath, http)),
-        }
-      : {}),
     ...(c.command !== undefined ? { command: subst(c.command) } : {}),
     ...(check !== undefined ? { check } : {}),
     expect: {
@@ -157,112 +219,219 @@ export function bindMount<T extends ExecutionCase>(c: T, mountPath: string, http
  * rather than in place of it, so a case can pin both what the command printed
  * and what it left behind.
  */
+/**
+ * What each of the battery's words answers with. DENY is ONCE because a
+ * refusal answers the one retry it was given for; a session-wide deny
+ * would be a rule, which is the document's job and not a host's.
+ */
+const ANSWERS = new Map<string, readonly [Outcome, Scope]>([
+  ['allow_once', [Outcome.ALLOW, Scope.ONCE]],
+  ['allow_session', [Outcome.ALLOW, Scope.SESSION]],
+  ['deny', [Outcome.DENY, Scope.ONCE]],
+])
+
+/**
+ * The host's side of the ask arm: answer every approval waiting on the
+ * workspace the way the case says, so the command that follows finds
+ * the answer (or the refusal) the way an agent's retry would.
+ *
+ * The word is looked up before anything is answered, so a case that
+ * misspells one fails loudly here. The literal union on `Case` is a
+ * compile-time promise about a value that arrives from JSON, so it does
+ * not reach this far on its own; without the lookup every word that was
+ * not `allow_once` fell through to a session-wide allow, and a typo
+ * passed the case while testing the most permissive answer there is.
+ */
+async function answerDecisions(ws: ExecWorkspace, answer: string): Promise<void> {
+  const pair = ANSWERS.get(answer)
+  if (pair === undefined) {
+    throw new Error(`case answer must be one of ${[...ANSWERS.keys()].join(', ')}, got ${answer}`)
+  }
+  const [outcome, scope] = pair
+  for (const record of ws.decisions.pending()) {
+    await ws.decisions.answer(record.id, outcome, scope)
+  }
+}
+
+/**
+ * Every reason a document's rules can speak with.
+ *
+ * These are what a refusal the policy layer wrote looks like on the wire,
+ * and they are distinctive enough ("sealed until review") to tell one
+ * apart from an ordinary command failure, which is what `explainNotes`
+ * needs to check the direction a prediction cannot check on its own.
+ */
+export function ruleReasons(doc: unknown): string[] {
+  const found = new Set<string>()
+  const stack: unknown[] = [doc]
+  while (stack.length > 0) {
+    const node = stack.pop()
+    if (Array.isArray(node)) {
+      stack.push(...node)
+    } else if (node !== null && typeof node === 'object') {
+      const rec = node as Record<string, unknown>
+      if (typeof rec['reason'] === 'string') found.add(rec['reason'])
+      stack.push(...Object.values(rec))
+    }
+  }
+  return [...found].sort()
+}
+
+/**
+ * What `explain` says would refuse this line, null when it says the line
+ * runs. A rule's refusal is the line's: the first one holds the whole
+ * line before any of it runs. Any other refusal fails only its own
+ * command and the line goes on (`tar` refused on a mount root, then
+ * `echo after`), so it is the line's only when that command is the line.
+ */
+async function predictedRefusal(ws: ExecWorkspace, c: Case): Promise<[number, string] | null> {
+  const said = await ws.explain(c.command, c.session ?? '')
+  const refused = said.filter((expl) => expl.exitCode !== 0)
+  const held =
+    refused.find((expl) => expl.rule !== null) ?? (said.length === 1 ? refused[0] : undefined)
+  return held === undefined ? null : [held.exitCode, held.stderr]
+}
+
+/**
+ * Where the dry run and the run disagreed, empty when they agree.
+ *
+ * Three properties, checked against every policy case rather than only
+ * the unit tests, because each is a promise the whole surface makes and
+ * none of them is visible in a golden.
+ *
+ * A dry run must record no question, or a host fields requests for lines
+ * nobody typed. A refusal it predicts must be the refusal that arrives.
+ * And the harder direction: a refusal that arrives must have been
+ * predicted, which is checked by looking for one of the document's own
+ * rule reasons in what the run printed. That last one is the direction a
+ * prediction cannot check on its own, and it is where the bugs were:
+ * reading a line without its redirect target answered ALLOW for a line
+ * the run refused.
+ *
+ * The message is looked for on either stream because the line's own
+ * redirections still apply to the run and not to the prediction:
+ * `rm /denied 2>&1` is refused on stdout.
+ */
+export function explainNotes(
+  predicted: [number, string] | null,
+  recorded: number,
+  exitCode: number,
+  out: string,
+  err: string,
+  reasons: readonly string[],
+): string[] {
+  const notes: string[] = []
+  if (recorded !== 0) {
+    notes.push(`explain: recorded ${recorded} question(s), must record none`)
+  }
+  const spoke = reasons.find((r) => r !== '' && (err.includes(r) || out.includes(r)))
+  if (predicted === null) {
+    if (spoke !== undefined) {
+      notes.push(`explain: said the line runs, but a rule refused it with ${JSON.stringify(spoke)}`)
+    }
+    return notes
+  }
+  const [code, text] = predicted
+  if (code !== exitCode) notes.push(`explain: predicted exit ${code}, run exited ${exitCode}`)
+  if (text !== '' && !err.includes(text) && !out.includes(text)) {
+    notes.push(
+      `explain: predicted stderr ${JSON.stringify(text)}, run wrote ${JSON.stringify(err)}`,
+    )
+  }
+  return notes
+}
+
+/**
+ * Name each stream whose bytes are not UTF-8. The battery compares a
+ * replacing decode, which reads a raw byte as U+FFFD, so a host that printed
+ * the byte and one that printed U+FFFD would pass alike. A case whose output
+ * is not text pins its bytes through `od -An -tx1` instead.
+ */
+export function undecodable(streams: Record<string, Uint8Array>): string[] {
+  return Object.entries(streams)
+    .filter(([, raw]) => {
+      const back = ENC.encode(DEC.decode(raw))
+      return back.length !== raw.length || back.some((b, i) => b !== raw[i])
+    })
+    .map(([name]) => `${name}: not UTF-8; pin the bytes with od -An -tx1`)
+}
+
 export async function runCase(
   ws: ExecWorkspace,
-  c: ExecutionCase,
-  signal?: AbortSignal,
+  c: Case,
+  reasons: readonly string[] = [],
 ): Promise<{
   exitCode: number
   out: string
   err: string
   elapsed: number
   checkOut: string | null
+  notes: string[]
 }> {
   if (c.clear_cache === true) {
     // A full clear means the file cache AND every mount's index cache:
-    // remote listings live in the per-resource index, and a listing
-    // populated by an earlier case must not leak into this one. Resources
-    // without an index cache (e.g. opfs) have nothing to clear.
+    // remote listings live in the mount's index, and a listing
+    // populated by an earlier case must not leak into this one. Every
+    // mount carries a store, built when its driver was placed, so there
+    // is nothing to probe for.
     await ws.cache.clear()
-    for (const m of ws.mounts()) await m.resource.index?.clear()
+    for (const m of ws.mounts()) await m.indexStore.clear()
   }
   const start = performance.now()
-  if (c.provision === true) {
-    const plan = await (ws as unknown as ProvisionExec).execute(c.command, {
-      provision: true,
-    })
-    return {
-      exitCode: 0,
-      out: provisionLine(plan) + '\n',
-      err: '',
-      elapsed: (performance.now() - start) / 1000,
-      checkOut: null,
-    }
+  if (c.answer !== undefined) await answerDecisions(ws, c.answer)
+  const checks = reasons.length > 0 && c.explain_blind === undefined
+  let predicted: [number, string] | null = null
+  let recorded = 0
+  if (checks) {
+    const before = ws.decisions.pending().length
+    predicted = await predictedRefusal(ws, c)
+    // Counted here, not after the run: the run records its own question,
+    // and charging that to the dry run would fail every ask case.
+    recorded = ws.decisions.pending().length - before
   }
-  if (c.setup !== undefined) {
-    const setup = await ws.execute(c.setup, { signal })
-    if (setup.exitCode !== 0)
-      return {
-        exitCode: setup.exitCode,
-        out: DEC.decode(setup.stdout),
-        err: DEC.decode(setup.stderr),
-        elapsed: 0,
-        checkOut: null,
-      }
-  }
-  if (c.concurrent !== undefined) {
-    validateConcurrent(c)
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), (c.timeout_seconds ?? 10) * 1000)
-    const groupSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
-    const tasks = c.concurrent.map((step) => runCase(ws, step, groupSignal))
-    try {
-      const results = await Promise.all(tasks)
-      const errors = results.flatMap((result, index) =>
-        compare(
-          c.concurrent![index]!,
-          result.exitCode,
-          result.out,
-          result.err,
-          result.elapsed,
-          result.checkOut,
-        ).map((diff) => `concurrent[${index}]: ${diff}`),
-      )
-      if (errors.length)
-        return {
-          exitCode: 1,
-          out: '',
-          err: errors.join('\n'),
-          elapsed: (performance.now() - start) / 1000,
-          checkOut: null,
-        }
-    } finally {
-      clearTimeout(timer)
-      controller.abort()
-      await Promise.allSettled(tasks)
-    }
-  }
-  const result = await ws.execute(c.command, {
-    sessionId: c.session,
-    env: c.env,
-    cwd: c.cwd,
-    signal,
-  })
+  const recordStart = c.check?.read_paths === true ? ws.vfs.records.length : 0
+  const result = await ws.shell(c.command, c.session === undefined ? {} : { sessionId: c.session })
   const elapsed = (performance.now() - start) / 1000
   const out = DEC.decode(result.stdout)
-  const checkOut = c.check !== undefined ? await statCheck(ws, c.check) : null
+  const err = DEC.decode(result.stderr)
+  const checkOut =
+    c.check?.read_paths === true
+      ? JSON.stringify(
+          ws.vfs.records
+            .slice(recordStart)
+            .filter((r) => r.op === 'read')
+            .map((r) => r.path),
+        ) + '\n'
+      : c.check !== undefined
+        ? await statCheck(ws, c.check)
+        : null
   return {
     exitCode: result.exitCode,
     out,
-    err: DEC.decode(result.stderr),
+    err,
     elapsed,
     checkOut,
+    notes: [
+      ...undecodable({ stdout: result.stdout, stderr: result.stderr }),
+      ...(checks ? explainNotes(predicted, recorded, result.exitCode, out, err, reasons) : []),
+    ],
   }
 }
 
 export function compare(
-  c: ExecutionCase,
+  c: Case,
   exitCode: number,
   out: string,
   err: string,
   elapsed: number,
   checkOut: string | null = null,
+  notes: readonly string[] = [],
 ): string[] {
-  const diffs: string[] = []
+  const diffs: string[] = [...notes]
   if (exitCode !== c.expect.exit) diffs.push(`exit: expected ${c.expect.exit}, got ${exitCode}`)
   if (out !== c.expect.stdout)
     diffs.push(`stdout: expected ${JSON.stringify(c.expect.stdout)}, got ${JSON.stringify(out)}`)
-  if (err.replace(/\n+$/, '') !== c.expect.stderr.replace(/\n+$/, ''))
+  if (err !== c.expect.stderr)
     diffs.push(`stderr: expected ${JSON.stringify(c.expect.stderr)}, got ${JSON.stringify(err)}`)
   if (c.check !== undefined && checkOut !== c.expect.check)
     diffs.push(`check: expected ${JSON.stringify(c.expect.check)}, got ${JSON.stringify(checkOut)}`)
@@ -272,26 +441,4 @@ export function compare(
       `elapsed: expected [${String(bounds.min)}, ${String(bounds.max)}], got ${elapsed.toFixed(3)}`,
     )
   return diffs
-}
-
-export function validateConcurrent(c: ExecutionCase): void {
-  if (c.concurrent === undefined) return
-  if (!Array.isArray(c.concurrent) || c.concurrent.length < 2)
-    throw new Error('concurrent requires at least two workers')
-  const timeout = c.timeout_seconds ?? 10
-  if (typeof timeout !== 'number' || !(timeout > 0 && timeout <= 60))
-    throw new Error('concurrent timeout_seconds must be in (0, 60]')
-  for (const worker of c.concurrent) {
-    if (!worker || typeof worker.command !== 'string')
-      throw new Error('concurrent worker requires a command')
-    if (
-      !worker.expect ||
-      !Number.isInteger(worker.expect.exit) ||
-      typeof worker.expect.stdout !== 'string' ||
-      typeof worker.expect.stderr !== 'string'
-    )
-      throw new Error('concurrent worker requires exit/stdout/stderr expectations')
-    if (['concurrent', 'lifecycle', 'scenario', 'provision'].some((key) => key in worker))
-      throw new Error('concurrent worker must be an ordinary shell command')
-  }
 }

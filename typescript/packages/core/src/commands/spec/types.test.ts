@@ -13,7 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { CommandSpec, Operand, Option, ParsedArgs } from './types.ts'
+import { compileSpec } from './compile.ts'
+import { CommandSpec, Operand, Option } from './types.ts'
 
 describe('ValueType', () => {
   it('covers the five members through Option', () => {
@@ -37,11 +38,33 @@ describe('Option', () => {
     const o = new Option()
     expect(Object.isFrozen(o)).toBe(true)
   })
+
+  it('copies and freezes choices', () => {
+    const choices = ['a']
+    const o = new Option({ long: '--mode', type: 'str', choices })
+    choices.push('b')
+
+    expect(o.choices).toEqual(['a'])
+    expect(Object.isFrozen(o.choices)).toBe(true)
+  })
 })
 
 describe('Operand', () => {
   it('defaults type to path', () => {
     expect(new Operand().type).toBe('path')
+  })
+
+  it('copies and freezes conditional flag lists', () => {
+    const providedBy = ['--pattern']
+    const textWhen = ['--args']
+    const operand = new Operand({ providedBy, textWhen })
+    providedBy.push('--file')
+    textWhen.push('--raw-input')
+
+    expect(operand.providedBy).toEqual(['--pattern'])
+    expect(operand.textWhen).toEqual(['--args'])
+    expect(Object.isFrozen(operand.providedBy)).toBe(true)
+    expect(Object.isFrozen(operand.textWhen)).toBe(true)
   })
 })
 
@@ -51,6 +74,49 @@ describe('CommandSpec', () => {
     expect(s.options).toEqual([])
     expect(s.positional).toEqual([])
     expect(s.rest).toBeNull()
+  })
+
+  it('owns immutable copies of nested collections', () => {
+    const choices = ['one']
+    const providedBy = ['--expr']
+    const options = [new Option({ long: '--mode', choices })]
+    const positional = [new Operand({ providedBy })]
+    const ignoreTokens = ['!']
+    const spec = new CommandSpec({ options, positional, ignoreTokens })
+
+    choices.push('two')
+    providedBy.push('--file')
+    options.push(new Option({ long: '--later' }))
+    positional.push(new Operand())
+    ignoreTokens.push('?')
+
+    expect(spec.options).toHaveLength(1)
+    expect(spec.options[0]?.choices).toEqual(['one'])
+    expect(spec.positional).toHaveLength(1)
+    expect(spec.positional[0]?.providedBy).toEqual(['--expr'])
+    expect([...spec.ignoreTokens]).toEqual(['!'])
+    expect(() => (spec.options as Option[]).push(new Option())).toThrow()
+    expect(() => (spec.options[0]?.choices as string[]).push('three')).toThrow()
+    expect(() => (spec.positional as Operand[]).push(new Operand())).toThrow()
+    expect(() => (spec.positional[0]?.providedBy as string[]).push('--pattern')).toThrow()
+    expect(() => (spec.ignoreTokens as Set<string>).add('?')).toThrow()
+  })
+
+  it('copies and freezes grammar arrays before compilation caches them', () => {
+    const option = new Option({ long: '--mode', type: 'str' })
+    const operand = new Operand({ type: 'str' })
+    const options = [option]
+    const positional = [operand]
+    const spec = new CommandSpec({ options, positional })
+    const compiled = compileSpec(spec)
+    options.push(new Option({ long: '--later' }))
+    positional.push(new Operand({ type: 'path' }))
+
+    expect(spec.options).toEqual([option])
+    expect(spec.positional).toEqual([operand])
+    expect(Object.isFrozen(spec.options)).toBe(true)
+    expect(Object.isFrozen(spec.positional)).toBe(true)
+    expect(compileSpec(spec)).toBe(compiled)
   })
 })
 
@@ -75,34 +141,5 @@ describe('Option.description', () => {
   it('round-trips an explicit value', () => {
     const opt = new Option({ short: 'n', description: 'number lines' })
     expect(opt.description).toBe('number lines')
-  })
-})
-
-describe('ParsedArgs helpers', () => {
-  const parsed = new ParsedArgs({
-    flags: { '-l': true, '--name': 'README' },
-    args: [
-      ['/ram/x', 'path'],
-      ['literal', 'str'],
-      ['/ram/y', 'path'],
-    ],
-    pathFlagValues: ['/ram/z'],
-  })
-
-  it('paths() returns PATH args only', () => {
-    expect(parsed.paths()).toEqual(['/ram/x', '/ram/y'])
-  })
-
-  it('texts() returns TEXT args only', () => {
-    expect(parsed.texts()).toEqual(['literal'])
-  })
-
-  it('routingPaths() combines paths() and pathFlagValues', () => {
-    expect(parsed.routingPaths()).toEqual(['/ram/x', '/ram/y', '/ram/z'])
-  })
-
-  it('flag() reads with fallback', () => {
-    expect(parsed.flag('-l')).toBe(true)
-    expect(parsed.flag('--missing', 'def')).toBe('def')
   })
 })

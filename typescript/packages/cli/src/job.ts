@@ -41,9 +41,11 @@ export function registerJobCommands(program: Command): void {
     .action(async (id: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const response = await handleResponse(await c.request('GET', `/v1/jobs/${id}`))
+      const response = await handleResponse(
+        await c.request('GET', `/v1/jobs/${encodeURIComponent(id)}`),
+      )
       emit(response)
-      process.exit(exitCodeFromResponse(response))
+      process.exitCode = exitCodeFromResponse(response)
     })
 
   job
@@ -56,10 +58,12 @@ export function registerJobCommands(program: Command): void {
       const body: Record<string, unknown> = {}
       if (opts.timeout !== undefined) body.timeoutS = Number(opts.timeout)
       const response = await handleResponse(
-        await c.request('POST', `/v1/jobs/${id}/wait`, { body: JSON.stringify(body) }),
+        await c.request('POST', `/v1/jobs/${encodeURIComponent(id)}/wait`, {
+          body: JSON.stringify(body),
+        }),
       )
       emit(response)
-      process.exit(exitCodeFromResponse(response))
+      process.exitCode = exitCodeFromResponse(response)
     })
 
   job
@@ -68,6 +72,6 @@ export function registerJobCommands(program: Command): void {
     .action(async (id: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      emit(await handleResponse(await c.request('DELETE', `/v1/jobs/${id}`)))
+      emit(await handleResponse(await c.request('DELETE', `/v1/jobs/${encodeURIComponent(id)}`)))
     })
 }

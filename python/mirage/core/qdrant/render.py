@@ -12,35 +12,24 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import base64
 from typing import Any
 
-from mirage.core.render.json import compact_json_text
-from mirage.resource.qdrant.config import QdrantConfig
-from mirage.types import JsonValue
+from mirage.core.qdrant.payload import field_value, without_field
+from mirage.core.render.json import compact_json_text, value_text
+from mirage.vfs.qdrant.config import QdrantConfig
 
 _SKIP_KEYS = {"_distance", "_rowid", "_score"}
 
 
-def blob_bytes(value: JsonValue) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, str):
-        return base64.b64decode(value)
-    raise ValueError("blob column is not bytes or base64 str")
-
-
 def render_json(row: dict[str, Any], config: QdrantConfig) -> bytes:
-    data = {
-        key: value
-        for key, value in row.items() if key not in _SKIP_KEYS
-        and key != config.vector_field and key != config.blob_field
-    }
+    data = {key: value for key, value in row.items() if key not in _SKIP_KEYS}
+    data = without_field(data, config.vector_field)
+    data = without_field(data, config.blob_field)
     return (compact_json_text(data) + "\n").encode()
 
 
 def render_text(row: dict[str, Any], config: QdrantConfig) -> bytes:
-    value = row.get(config.text_field) if config.text_field else None
+    value = field_value(row, config.text_field)
     if value is None:
         return b""
-    return (str(value) + "\n").encode()
+    return (value_text(value) + "\n").encode()

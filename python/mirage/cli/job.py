@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from typing import Any
+from urllib.parse import quote
 
 import typer
 
@@ -45,7 +46,7 @@ def list_cmd(
 def get_cmd(job_id: str = typer.Argument(...)) -> None:
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
-        r = client.request("GET", f"/v1/jobs/{job_id}")
+        r = client.request("GET", f"/v1/jobs/{quote(job_id, safe='')}")
     response = handle_response(r)
     emit(response)
     raise typer.Exit(code=exit_code_from_response(response))
@@ -65,7 +66,9 @@ def wait_cmd(
         body["timeout_s"] = timeout
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
-        r = client.request("POST", f"/v1/jobs/{job_id}/wait", json=body)
+        r = client.request(
+            "POST", f"/v1/jobs/{quote(job_id, safe='')}/wait", json=body
+        )
     response = handle_response(r)
     emit(response)
     raise typer.Exit(code=exit_code_from_response(response))
@@ -75,5 +78,5 @@ def wait_cmd(
 def cancel_cmd(job_id: str = typer.Argument(...)) -> None:
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
-        r = client.request("DELETE", f"/v1/jobs/{job_id}")
+        r = client.request("DELETE", f"/v1/jobs/{quote(job_id, safe='')}")
     emit(handle_response(r))

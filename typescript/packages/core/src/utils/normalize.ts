@@ -23,8 +23,23 @@ export interface FieldNormalizer {
   drop?: readonly string[]
 }
 
+/**
+ * Python states a timeout in seconds where TypeScript uses milliseconds, so
+ * the S3 family and the Hub configs rename `timeout` to `timeoutMs` and
+ * convert through this. A non-number passes untouched for the schema to
+ * refuse, rather than being multiplied into a different wrong number.
+ */
+export function secondsToMs(value: unknown): unknown {
+  return typeof value === 'number' ? value * 1000 : value
+}
+
 export function snakeToCamel(snake: string): string {
   return snake.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase())
+}
+
+/** The key `normalizeFields` writes an input key's value under. */
+export function normalizedKey(key: string, spec: FieldNormalizer = {}): string {
+  return spec.rename?.[key] ?? snakeToCamel(key)
 }
 
 /**
@@ -45,9 +60,8 @@ export function normalizeFields(
   const out: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(input)) {
     if (drop.has(key)) continue
-    const renamed = spec.rename?.[key] ?? snakeToCamel(key)
     const transformer = spec.transform?.[key]
-    out[renamed] = transformer !== undefined ? transformer(value) : value
+    out[normalizedKey(key, spec)] = transformer !== undefined ? transformer(value) : value
   }
   return out
 }

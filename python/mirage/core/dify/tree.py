@@ -1,86 +1,39 @@
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from mirage.accessor.dify import DifyAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.cache.index import IndexEntry
 from mirage.core.dify.client import list_all_documents
+from mirage.core.slug_tree.rows import (
+    dir_rows,
+    drop_collisions,
+    normalize_slug,
+)
+from mirage.core.slug_tree.tree import SlugTree
+from mirage.core.slug_tree.types import DirRows
 from mirage.types import JsonValue
-from mirage.utils.path import gnu_basename, parent
+from mirage.utils.dates import epoch_to_iso
+from mirage.utils.path import gnu_basename
 
 logger = logging.getLogger(__name__)
 
+SLUG_NOUN = "Dify document slug"
 
-async def ensure_tree(accessor: DifyAccessor,
-                      index: IndexCacheStore = NULL_INDEX,
-                      prefix: str = "") -> None:
-    root_key = mount_root(prefix)
-    listing = await index.list_dir(root_key)
-    if listing.entries is not None:
-        return
 
+async def load_tree(accessor: DifyAccessor, prefix: str) -> DirRows:
     # list_all_documents already filters to visible documents.
-    documents = await list_all_documents(accessor)
-    dir_entries = build_dir_entries(
-        documents,
+    return build_dir_entries(
+        await list_all_documents(accessor),
         prefix,
         accessor.config.slug_metadata_name,
     )
-    for directory in sorted(dir_entries):
-        await index.set_dir(
-            directory, sorted(dir_entries[directory],
-                              key=lambda item: item[0]))
 
 
 def build_dir_entries(
     documents: list[dict[str, Any]],
     prefix: str,
     slug_metadata_name: str = "slug",
-) -> dict[str, list[tuple[str, IndexEntry]]]:
-    files, raw_slugs, has_slugs = collect_files(documents, slug_metadata_name)
-    files = skip_path_collisions(files)
-    directories = collect_directories(set(files))
-    dir_entries: dict[str, list[tuple[str, IndexEntry]]] = {
-        virtual_path(directory, prefix): []
-        for directory in directories
-    }
-    for directory in sorted(directories):
-        if directory == "/":
-            continue
-        entry = IndexEntry(
-            id=directory.strip("/"),
-            name=gnu_basename(directory),
-            resource_type="folder",
-        )
-        dir_entries[virtual_path(parent(directory), prefix)].append(
-            (entry.name, entry))
-
-    for path, document in sorted(files.items()):
-        entry = IndexEntry(
-            id=str(document["id"]),
-            name=gnu_basename(path),
-            resource_type="file",
-            size=extract_document_size(document),
-            remote_time=timestamp_to_iso(document.get("created_at")),
-            extra={
-                "slug": path.strip("/"),
-                "slug_metadata_name": slug_metadata_name,
-                "raw_slug": raw_slugs[path],
-                "has_slug": has_slugs[path],
-                "tokens": document.get("tokens"),
-                "indexing_status": document.get("indexing_status"),
-                "data_source_type": document.get("data_source_type"),
-            },
-        )
-        dir_entries[virtual_path(parent(path), prefix)].append(
-            (entry.name, entry))
-    return dir_entries
-
-
-def collect_files(
-    documents: list[dict[str, Any]],
-    slug_metadata_name: str,
-) -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, bool]]:
+) -> DirRows:
     files: dict[str, dict[str, Any]] = {}
     raw_slugs: dict[str, str] = {}
     has_slugs: dict[str, bool] = {}
@@ -90,10 +43,13 @@ def collect_files(
             if document_id is None or not str(document_id).strip():
                 raise ValueError("missing document id")
             slug, has_slug = extract_slug(document, slug_metadata_name)
-            path = normalize_slug(slug)
-        except (KeyError, ValueError) as exc:
-            logger.warning("Skipping invalid Dify document %r: %s",
-                           document.get("id"), exc)
+            path = normalize_slug(slug, SLUG_NOUN)
+        except ValueError as exc:
+            logger.warning(
+                "Skipping invalid Dify document %r: %s",
+                document.get("id"),
+                exc,
+            )
             continue
         if path in files:
             logger.warning(
@@ -105,67 +61,64 @@ def collect_files(
             )
             continue
         files[path] = document
-        raw_slugs[path] = str(slug)
+        raw_slugs[path] = slug
         has_slugs[path] = has_slug
-    return files, raw_slugs, has_slugs
+
+    def skip_collision(ancestor: str, path: str) -> None:
+        logger.warning(
+            "Skipping Dify document path collision: document %r uses "
+            "file path %r but document %r requires it as a directory "
+            "prefix.",
+            files[ancestor].get("id"),
+            ancestor.strip("/"),
+            files[path].get("id"),
+        )
+
+    def file_entry(path: str, document: dict[str, Any]) -> IndexEntry:
+        # No size: the API's is the uploaded source file (a PDF, say), not
+        # the segment text this mount serves, so it rides in extra.
+        return IndexEntry(
+            id=str(document["id"]),
+            name=gnu_basename(path),
+            resource_type="file",
+            remote_time=epoch_text(document.get("created_at")) or "",
+            extra={
+                "slug": path.strip("/"),
+                "source_size": extract_document_size(document),
+                "slug_metadata_name": slug_metadata_name,
+                "raw_slug": raw_slugs[path],
+                "has_slug": has_slugs[path],
+                "tokens": document.get("tokens"),
+                "indexing_status": document.get("indexing_status"),
+                "data_source_type": document.get("data_source_type"),
+            },
+        )
+
+    return dir_rows(drop_collisions(files, skip_collision), prefix, file_entry)
 
 
-def extract_slug(document: dict[str, Any],
-                 slug_metadata_name: str = "slug") -> tuple[str, bool]:
+def extract_slug(
+    document: dict[str, Any], slug_metadata_name: str = "slug"
+) -> tuple[str, bool]:
     metadata = document.get("doc_metadata")
     if isinstance(metadata, list):
         for item in metadata:
-            if (isinstance(item, dict)
-                    and item.get("name") == slug_metadata_name):
+            if (
+                isinstance(item, dict)
+                and item.get("name") == slug_metadata_name
+            ):
                 value = item.get("value")
                 if value is not None:
                     return str(value), True
-    if (isinstance(metadata, dict)
-            and metadata.get(slug_metadata_name) is not None):
+    if (
+        isinstance(metadata, dict)
+        and metadata.get(slug_metadata_name) is not None
+    ):
         return str(metadata[slug_metadata_name]), True
-    return str(document["name"]), False
-
-
-def normalize_slug(value: str) -> str:
-    parts = [part for part in value.strip("/").split("/") if part]
-    if not parts:
-        raise ValueError("Invalid empty Dify document slug.")
-    invalid = {".", ".."}
-    for part in parts:
-        if part in invalid:
-            raise ValueError(f"Invalid Dify document slug segment: {part!r}")
-    return "/" + "/".join(parts)
-
-
-def skip_path_collisions(
-        files: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    safe = dict(files)
-    paths = set(files)
-    for path in sorted(paths):
-        parts = path.strip("/").split("/")
-        for index in range(1, len(parts)):
-            ancestor = "/" + "/".join(parts[:index])
-            if ancestor in paths:
-                logger.warning(
-                    "Skipping Dify document path collision: document %r uses "
-                    "file path %r but document %r requires it as a directory "
-                    "prefix.",
-                    files[ancestor].get("id"),
-                    ancestor.strip("/"),
-                    files[path].get("id"),
-                )
-                safe.pop(path, None)
-                break
-    return safe
-
-
-def collect_directories(paths: set[str]) -> set[str]:
-    directories = {"/"}
-    for path in paths:
-        parts = path.strip("/").split("/")
-        for index in range(1, len(parts)):
-            directories.add("/" + "/".join(parts[:index]))
-    return directories
+    name = document.get("name")
+    if name is None:
+        raise ValueError("missing document name")
+    return str(name), False
 
 
 def extract_document_size(document: dict[str, Any]) -> int | None:
@@ -183,22 +136,18 @@ def extract_document_size(document: dict[str, Any]) -> int | None:
     return None
 
 
-def timestamp_to_iso(value: JsonValue) -> str:
+def epoch_text(value: JsonValue) -> str | None:
+    """A Dify timestamp as ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    Args:
+        value (JsonValue): The API field, epoch seconds; a string passes
+            through.
+    """
     if value is None:
-        return ""
+        return None
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, timezone.utc).isoformat()
+        return epoch_to_iso(value)
     return str(value)
 
 
-def mount_root(prefix: str) -> str:
-    return prefix.rstrip("/") or "/"
-
-
-def virtual_path(path: str, prefix: str) -> str:
-    root = mount_root(prefix)
-    if path == "/":
-        return root
-    if root == "/":
-        return path
-    return root + path
+DIFY_TREE = SlugTree(load_tree)

@@ -12,23 +12,36 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from functools import partial
+
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic.join import join_generic
-from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          bound_op)
+from mirage.commands.builtin.generic_bind.adapter import (
+    Builder,
+    CommandIO,
+    bound_op,
+)
 from mirage.commands.config import CommandOpts
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def join(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
-               texts: list[str],
-               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    if not ops.is_mounted(accessor) or len(paths) < 2:
-        raise ValueError("join: requires two paths")
-    resolved = await ops.resolve_glob(accessor, paths, opts.index)
-    return await join_generic(resolved, list(texts), opts,
-                              bound_op(ops.read_bytes, accessor, opts.index))
+async def join(
+    ops: CommandIO,
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
+    if not ops.is_mounted(accessor):
+        raise ValueError("join: no VFS")
+    return await join_generic(
+        paths,
+        list(texts),
+        opts,
+        partial(ops.resolve_glob, accessor, index=opts.index),
+        bound_op(ops.read_bytes, accessor, opts.index),
+    )
 
 
-BUILDER = Builder('join', join, None, False, None, read=True)
+BUILDER = Builder("join", join, read=True)

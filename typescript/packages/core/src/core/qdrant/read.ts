@@ -13,50 +13,78 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { QdrantAccessor } from '../../accessor/qdrant.ts'
-import type { IndexCacheStore } from '../../cache/index/store.ts'
-import type { QdrantRow } from './client.ts'
-import { PathSpec } from '../../types.ts'
+import type { PathSpec } from '../../types.ts'
 import { enoent } from '../../utils/errors.ts'
-import { blobBytes, renderJson, renderText } from './render.ts'
-import { type QdrantScope, ScopeLevel, detectScope } from './scope.ts'
+import type { Reader } from '../hierarchy/read.ts'
+import type { ScopeMatch } from '../hierarchy/scope.ts'
+import { blobBytes } from '../vector/read.ts'
+import { tableOf } from '../vector/scope.ts'
+import { pointIdFromStem, rowStem } from './naming.ts'
+import { fieldValue } from './payload.ts'
+import { rowRecord, type QdrantRow } from './query.ts'
+import { renderJson, renderText } from './render.ts'
 
-async function resolveRow(
+async function rowOf(
   accessor: QdrantAccessor,
-  scope: QdrantScope,
-  notFoundPath: string,
+  match: ScopeMatch,
+  virtual: string,
 ): Promise<QdrantRow> {
+  // The label is stripped before the retrieve, so every spelling that ends
+  // in __<id> reaches the point; only the stem readdir publishes names it,
+  // so an alias reads as absent rather than as the file.
   const config = accessor.config
-  if (scope.table === null || scope.rowId === null) throw enoent(notFoundPath)
-  const row = await accessor.rowRecord(scope.table, config.idField, scope.rowId)
-  if (row === null) throw enoent(notFoundPath)
+  const stem = match.slots.row_id ?? ''
+  const row = await rowRecord(
+    accessor,
+    tableOf(config.collection, match),
+    config.idField,
+    pointIdFromStem(stem, config),
+  )
+  if (row === null || rowStem(row, config) !== stem) throw enoent(virtual)
   return row
 }
 
-export async function read(
+async function readJson(
   accessor: QdrantAccessor,
-  path: PathSpec | string,
-  _index?: IndexCacheStore,
+  match: ScopeMatch,
+  path: PathSpec,
 ): Promise<Uint8Array> {
-  const spec = typeof path === 'string' ? PathSpec.fromStrPath(path) : path
+  const row = await rowOf(accessor, match, path.virtual)
+  return renderJson(row, accessor.config)
+}
+
+async function readText(
+  accessor: QdrantAccessor,
+  match: ScopeMatch,
+  path: PathSpec,
+): Promise<Uint8Array> {
   const config = accessor.config
-  const scope = detectScope(spec, config)
-  if (scope.level !== ScopeLevel.ROW) throw enoent(spec.virtual)
-  const row = await resolveRow(accessor, scope, spec.virtual)
-  if (scope.kind === 'blob') {
-    if (config.blobField === null) throw enoent(spec.virtual)
-    const blobValue = row[config.blobField]
-    if (blobValue === null || blobValue === undefined) throw enoent(spec.virtual)
-    return blobBytes(blobValue)
+  const row = await rowOf(accessor, match, path.virtual)
+  if (
+    config.textField === null ||
+    fieldValue(row, config.textField) === null ||
+    fieldValue(row, config.textField) === undefined
+  ) {
+    throw enoent(path.virtual)
   }
-  if (scope.kind === 'txt') {
-    if (
-      config.textField === null ||
-      row[config.textField] === null ||
-      row[config.textField] === undefined
-    ) {
-      throw enoent(spec.virtual)
-    }
-    return renderText(row, config)
-  }
-  return renderJson(row, config)
+  return renderText(row, config)
+}
+
+async function readBlob(
+  accessor: QdrantAccessor,
+  match: ScopeMatch,
+  path: PathSpec,
+): Promise<Uint8Array> {
+  const config = accessor.config
+  if (config.blobField === null) throw enoent(path.virtual)
+  const row = await rowOf(accessor, match, path.virtual)
+  const value = fieldValue(row, config.blobField)
+  if (value === null || value === undefined) throw enoent(path.virtual)
+  return blobBytes(value)
+}
+
+export const READERS: Record<string, Reader<QdrantAccessor>> = {
+  row_json: readJson,
+  row_text: readText,
+  row_blob: readBlob,
 }

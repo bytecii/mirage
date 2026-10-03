@@ -1,19 +1,21 @@
 from opendal.exceptions import NotFound
 
 from mirage.accessor.nextcloud import NextcloudAccessor
-from mirage.cache.context import invalidate_after_unlink
+from mirage.cache.context import invalidate_subtree
+from mirage.core.nextcloud.util import nextcloud_key
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
 
-async def rename(accessor: NextcloudAccessor, src: PathSpec,
-                 dst: PathSpec) -> None:
-    src_key = src.mount_path.lstrip("/")
-    dst_key = dst.mount_path.lstrip("/")
+async def rename(
+    accessor: NextcloudAccessor, src: PathSpec, dst: PathSpec
+) -> None:
+    src_key = nextcloud_key(src)
+    dst_key = nextcloud_key(dst)
     op = accessor.operator()
     try:
         await op.rename(src_key, dst_key)
     except NotFound as exc:
         raise enoent(src) from exc
-    await invalidate_after_unlink(dst)
-    await invalidate_after_unlink(src)
+    await invalidate_subtree(dst)
+    await invalidate_subtree(src)

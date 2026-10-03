@@ -40,10 +40,10 @@ mode: WRITE
 
 mounts:
   /:
-    resource: ram
+    vfs: ram
     mode: WRITE
   /s3:
-    resource: s3
+    vfs: s3
     mode: READ
     config:
       bucket: ${AWS_S3_BUCKET}
@@ -89,77 +89,39 @@ mirage workspace get demo
 
 ### 3. Run commands against your mounts
 
-`execute` runs a shell command inside the workspace. Paths resolve
+`shell` runs a shell line inside the workspace. Paths resolve
 through the mount registry (`/s3/...` hits S3, `/` hits the RAM
 backing, etc.).
 
 ```bash
-mirage execute --workspace_id demo --command "ls /s3/"
-mirage execute --workspace_id demo --command "head -n 1 /s3/data/example.jsonl"
+mirage shell --workspace_id demo --command "ls /s3/"
+mirage shell --workspace_id demo --command "head -n 1 /s3/data/example.jsonl"
+```
+
+The tools an agent gets over MCP are verbs too, one each, answered by the
+same tool table: `read`, `write`, `edit`, `ls`, `grep` and `glob`. They
+print the tool's answer as `{"text", "is_error"}` JSON (the text alone on a
+terminal) and exit 1 when the tool failed. `grep` takes GNU grep's flags,
+and `write` reads its content from stdin unless `--content` is given.
+
+```bash
+mirage read -w demo /data/report.csv --limit 20
+mirage grep -w demo -i --include '*.py' todo /src
+mirage glob -w demo '**/*.py' /src
+echo hello | mirage write -w demo /scratch/new.txt
+mirage edit -w demo /scratch/new.txt hello goodbye
 ```
 
 ### 4. Pipe stdin
 
-When stdout isn't a TTY, the CLI forwards stdin to the command
-automatically.
+For foreground commands, piped stdin is uploaded as a binary multipart file.
+Empty input and arbitrary bytes are preserved; input is buffered before execution.
 
 ```bash
-echo -e "a\nb\nc" | mirage execute --workspace_id demo --command "wc -l"
+echo -e "a\nb\nc" | mirage shell --workspace_id demo --command "wc -l"
 ```
 
-### 5. Dry-run with `provision`
-
-`provision` returns a `ProvisionResult` (network bytes, cache hits,
-estimated cost) without running the command -- handy for predicting
-spend before kicking off an expensive read.
-
-```bash
-mirage provision --workspace_id demo \
-  --command "cat /s3/data/example.jsonl | wc -l"
-```
-
-Every factory-built backend estimates commands out of the box, by
-family: whole-file readers (`cat`, `sort`, `md5`, ...) charge the byte
-total from `stat`, `head`/`tail`/`file` charge a bounded range,
-`grep`/`rg` charge a worst-case full read, and metadata commands (`ls`,
-`find`, `stat`, `du`, ...) charge op counts only. Transforms (`gzip`,
-`tar`, `split`, ...) keep the read total as a floor with
-`precision=unknown` output; `cp` brackets both read and write between 0
-(server-side copy) and the source total; metadata writes (`rm`,
-`mkdir`, `touch`, ...) are zero-byte op counts, with recursive `rm`
-degrading to a floor; pure commands (`seq`, `date`, `bc`, `expr`) and
-shell builtins (`echo`, `cd`, ...) are zero-cost. Anything the planner
-cannot estimate honestly -- `mv` (free rename or full cross-mount
-copy), `tee` (stdin size), arbitrary programs -- reports
-`precision=unknown` with all totals as floors, never an error. Virtual
-files whose size cannot be resolved (for example a rendered
-`chat.jsonl`) degrade the estimate to `precision=unknown` while keeping
-the known byte total as a floor.
-
-Provision is optional when you register your own commands: leave it out
-and the planner reports `precision=unknown`. To opt in with one line,
-reuse the estimator helpers (`make_file_read_provision`,
-`make_search_provision`, `metadata_provision`, ... in Python;
-`makeFileReadProvision` and friends in TypeScript), or pass
-`provision_overrides={"grep": my_estimator}` to the command factory. An
-explicit `None`/`null` override disables a default.
-
-Pipelines combine field-wise: `|`, `;` and `&&` sum the estimates, `||`
-brackets the branches (cheapest low, priciest high), and `for` loops
-multiply by the iteration count. A stage downstream of an unknown stage
-is also unknown, and totals under `precision=unknown` are floors.
-
-### 6. Cache: network → hit after a real read
-
-After a real `cat`, `provision` flips that path from a network read
-to a cache hit (`cache_hits=1`).
-
-```bash
-mirage execute  --workspace_id demo --command "cat /s3/data/example.jsonl > /dev/null"
-mirage provision --workspace_id demo --command "cat /s3/data/example.jsonl"
-```
-
-### 7. Command history
+### 5. Command history
 
 Every executed command is recorded by a hidden recorder (the
 [Observer](/home/observer)). The `history` builtin shows the calling
@@ -168,30 +130,30 @@ session's view), and `/.bash_history` renders the GNU histfile across all
 sessions, readable with the ordinary file commands.
 
 ```bash
-mirage execute --workspace_id demo --command "history 5"
-mirage execute --workspace_id demo --command "tail -n 6 /.bash_history"
-mirage execute --workspace_id demo --command "grep cat /.bash_history"
+mirage shell --workspace_id demo --command "history 5"
+mirage shell --workspace_id demo --command "tail -n 6 /.bash_history"
+mirage shell --workspace_id demo --command "grep cat /.bash_history"
 ```
 
-### 8. Background jobs
+### 6. Background jobs
 
 Long-running commands take `--background` and return a `job_id`
 immediately. `mirage job wait` blocks until it's done.
 
 ```bash
-JOB=$(mirage execute --workspace_id demo --background \
+JOB=$(mirage shell --workspace_id demo --background \
   --command "wc -l /s3/data/example.jsonl" \
   | jq -r .job_id)
 mirage job wait $JOB
 ```
 
-### 9. Snapshot to disk
+### 7. Snapshot to disk
 
 ```bash
 mirage workspace snapshot demo /tmp/demo.tar
 ```
 
-### 10. Restore from snapshot
+### 8. Restore from snapshot
 
 Snapshots redact cloud creds at save time, so loading needs fresh
 creds via a config file. The same workspace YAML used for create works.
@@ -201,7 +163,7 @@ mirage workspace load /tmp/demo.tar workspace.yaml \
   --id demo_loaded
 
 mirage workspace get demo_loaded --verbose
-mirage execute --workspace_id demo_loaded \
+mirage shell --workspace_id demo_loaded \
   --command "head -n 1 /s3/data/example.jsonl"
 ```
 
@@ -210,11 +172,11 @@ mirage execute --workspace_id demo_loaded \
   redacted secrets (S3 with inline keys, GDrive, Slack, Discord, Redis,
   ...). The snapshot stores `"<REDACTED>"` in place of those secrets at
   save time. Loading without the config 400s with the list of prefixes
-  that need fresh creds. Local resources (RAM, Disk) restore as-is with
+  that need fresh creds. Local mounts (RAM, Disk) restore as-is with
   no extra config needed.
 </Note>
 
-### 11. Clean up
+### 9. Clean up
 
 The daemon exits ~30s after the last workspace is deleted.
 
@@ -233,10 +195,10 @@ diff, branch, and restore in place. The verbs follow git.
 ### Commit and log
 
 ```bash
-mirage execute --workspace_id demo --command "echo v1 > /notes.txt"
+mirage shell --workspace_id demo --command "echo v1 > /notes.txt"
 mirage workspace commit demo -m "first"
 
-mirage execute --workspace_id demo --command "echo v2 > /notes.txt"
+mirage shell --workspace_id demo --command "echo v2 > /notes.txt"
 mirage workspace commit demo -m "second"
 
 mirage workspace log demo          # newest first: "second", then "first"
@@ -288,10 +250,10 @@ mirage workspace clone demo --at <version> --id demo_at_v1
 
 | Verb | What it does |
 | --- | --- |
-| `mirage workspace create FILE [--id NAME]` | Build resources from YAML, register a workspace, return its id. |
+| `mirage workspace create FILE [--id NAME]` | Build mounts from YAML, register a workspace, return its id. Creating an id that is live again with the same config returns that workspace; another config is refused. |
 | `mirage workspace list` | Brief one-line summary per active workspace. |
 | `mirage workspace get ID [--verbose]` | Full detail (mounts, sessions, optionally cache / dirty / history internals). |
-| `mirage workspace delete ID` | Stop the workspace; daemon may exit on the idle timer. |
+| `mirage workspace delete ID` | Stop the workspace and delete its state (links, history, sessions, versions), so a workspace created later under the same id starts empty; daemon may exit on the idle timer. |
 | `mirage workspace clone SRC_ID [--id NAME] [--at REF]` | New workspace from the source; `--at REF` clones a past version, otherwise the live state. |
 | `mirage workspace commit ID [-m MSG] [-b BRANCH]` | Commit the live state as a version; returns the version id. |
 | `mirage workspace log ID [-b BRANCH]` | List versions on a branch, newest first. |
@@ -300,46 +262,68 @@ mirage workspace clone demo --at <version> --id demo_at_v1
 | `mirage workspace checkout ID REF` | Restore the live state in place to a version id or branch. |
 | `mirage workspace snapshot ID PATH.tar` | Snapshot to a tar file. |
 | `mirage workspace load PATH.tar [CONFIG] [--id NAME]` | Restore from tar; optional config re-supplies redacted creds. |
-| `mirage session create WS [--id NAME] [-m /prefix[:mode]]...` | Add a named session (own cwd + env), optionally restricted to mounts with a mode ceiling (`read`/`write`/`exec` or `r`/`rw`/`rwx`). |
+| `mirage workspace list-asks WS [--session S] [--all]` | Pending [asks](/home/permissions#asks) raised by `ask` rules; `--all` includes settled decisions. |
+| `mirage workspace allow WS ASK_ID [--scope session] [--note ...]` | Allow a pending ask; default scope `once` answers exactly that line. |
+| `mirage workspace deny WS ASK_ID [--note ...]` | Deny a pending ask; the retry is refused, once. |
+| `mirage session create WS [--id NAME] [--profile NAME] [-m /prefix[:mode]]...` | Add a named session (own cwd + env), optionally under a [permission profile](/home/permissions) or restricted to mounts with a mode ceiling (`read`/`write`/`exec` or `r`/`rw`/`rwx`). |
 | `mirage session list WS` | List sessions for a workspace. |
 | `mirage session delete WS SESSION` | Close a session. |
-| `mirage execute --workspace_id WS [--session_id S] [--background] --command "..."` | Run a command. Pipes stdin automatically when stdout is not a TTY. |
-| `mirage provision --workspace_id WS [--session_id S] --command "..."` | Dry-run / cost estimate -- returns a `ProvisionResult` shape (network bytes, cache hits, estimated cost) without running the command. |
+| `mirage shell --workspace_id WS [--session_id S] [--background] --command "..."` | Run a shell line. Uploads piped stdin for foreground execution. |
+| `mirage read -w WS PATH [--offset N] [--limit N]` | Read a file with line numbers, as the `read` tool does. |
+| `mirage write -w WS PATH [--content TEXT]` | Write a file (stdin when no `--content`); an existing one must be read in full first. |
+| `mirage edit -w WS PATH OLD NEW [--replace-all]` | Replace a string in a file read first. |
+| `mirage ls -w WS PATH` | List a directory. |
+| `mirage grep -w WS [-i] [-F] [-l] [-c] [-m N] [-C N] [--include GLOB] PATTERN PATH` | Search recursively, as `grep -rn` does. |
+| `mirage glob -w WS PATTERN [PATH]` | Files whose path matches a pattern such as `**/*.py`. |
 | `mirage job list [--workspace_id WS]` | List jobs the daemon has run, plus their status. |
 | `mirage job get JOB` | Detail for one job. |
 | `mirage job wait JOB [--timeout SECS]` | Block until the job is done; returns the result. |
 | `mirage job cancel JOB` | Cancel a running job. |
 
-## Per-mount command limits
+## Command limits
 
-Cap what a command may stream back per mount with `command_limits`, so a
-runaway `cat`/`grep`/`rg` can't flood the agent or hang. Each entry sets
-`max_lines` / `max_bytes` (output cap) and/or `timeout_seconds` (deadline),
-with `on_exceed: truncate` (stop, exit 0, add a stderr notice) or
-`on_exceed: error` (stop, exit 1):
+`cat`, `grep`, `rg`, `head`, and `tail` cap their output at 2000 lines, and
+every command stops after 600 seconds. Change that with `command_limits` in
+three places: at the top level for every session, on a mount for commands
+that run on it, and on a profile for sessions created with it:
 
 ```yaml
+command_limits:
+  head:
+    max_lines: 500
+    timeout_seconds: 30
 mounts:
   /data:
-    resource: ram
+    vfs: ram
     mode: WRITE
     command_limits:
-      head:                  # cap output, keep going
-        max_lines: 100
-        on_exceed: truncate
-      grep:                  # cap output, fail hard
+      grep:
         max_lines: 50
         on_exceed: error
-      rg:                    # deadline in seconds
-        timeout_seconds: 30
+profiles:
+  researcher:
+    command_limits:
+      head:
+        max_lines: 5000
 ```
 
-Caps fire on the **terminal** command of a pipeline only, so
-`cat big.txt | head -n 30` still shows 30 lines. Truncation exits `0`, `error`
-exits `1`, and a timeout exits `124` -- each with a stderr notice. Without a
-`command_limits` block, `cat`/`grep`/`rg`/`head`/`tail` still cap at 2000
-lines by default. See [Output Limits](/python/quickstart#output-limits)
-for the SDK form and the same fields.
+A command's limit comes from the first place that names it: the session's
+profile, the mount the command runs on, the workspace, then the built-in
+default. A command that spans several mounts takes the tightest of their
+limits. An entry replaces that command's whole limit, so restate
+`timeout_seconds` if you still want a deadline; commands it does not name keep
+their defaults.
+
+- `max_lines` / `max_bytes` cap the output; `null` means no cap.
+- `timeout_seconds` is a deadline; a command that runs past it exits `124`.
+- `on_exceed: truncate` (default) keeps the capped output, adds a stderr
+  notice, and leaves the exit code alone. `on_exceed: error` drops the output
+  and exits `1`, so `&&` and `||` see the failure.
+
+Caps apply to what each command prints, one command at a time:
+`cat big.txt; echo end` still prints `end`. Data going into a pipe, a
+redirect, or `$(...)` is never cut, so `cat big.txt | wc -l` counts every
+line. See [Output Limits](/python/quickstart#output-limits) for the SDK form.
 
 ## Daemon control
 

@@ -14,41 +14,18 @@
 
 import re
 
-_ENV_HELP_HINT = "Try 'env --help' for more information.\n"
+IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# bash's `legal_number`: strtoimax's leading whitespace and sign, then
+# the trailing blanks bash skips itself.
+COUNT_WORD_RE = re.compile(r"[ \t\n\v\f\r]*[+-]?[0-9]+[ \t]*")
 
-_EXPORT_USAGE = "export: usage: export [-fn] [name[=value] ...] or export -p\n"
+# An assignment target with an optional subscript (`name` or `name[sub]`).
+# A subscript must be non-empty: bash rejects `a[]` as an invalid
+# identifier, while `a[ ]` is a valid arithmetic 0.
+TARGET_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\[(.+)\])?\Z")
 
-_READONLY_USAGE = (
-    "readonly: usage: readonly [-aAf] [name[=value] ...] or readonly -p\n")
-
-_EXPORT_FLAGS = frozenset("fnp")
-
-_READONLY_FLAGS = frozenset("aAfp")
-
-_ANSI_C_ESCAPES = {
-    "\\": "\\\\",
-    "'": "\\'",
-    "\a": "\\a",
-    "\b": "\\b",
-    "\t": "\\t",
-    "\n": "\\n",
-    "\v": "\\v",
-    "\f": "\\f",
-    "\r": "\\r",
-    "\x1b": "\\E",
-}
-
-_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_%+,./:=@~-]+\Z")
-
-# `read` options that take a value, so a scan of the raw words can step
-# over the value rather than read its letters as options.
-_READ_VALUE_LETTERS = frozenset("adnNtpiu")
-
-_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-# `arr[0]` and friends: a target that parses as an assignment but is
-# not a plain name, which the declaration builtins quote on its own.
-_SUBSCRIPT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[.*\]")
-
-_TRAP_USAGE = "trap: usage: trap [-p] [action signal_spec ...]\n"
-_TRAP_EXIT_NAMES = frozenset({"EXIT", "0"})
+# What makes bash's bare `set` single-quote a value: IFS whitespace,
+# quoting and control characters, reserved-word and glob characters, and
+# the expansion introducers (`sh_contains_shell_metas`). A `~` counts at
+# the start or after `=` or `:`, and a `#` only at the start.
+SET_QUOTED_CHARS = frozenset(" \t\n'\"\\|&;()<>!{}*[?]^$`")

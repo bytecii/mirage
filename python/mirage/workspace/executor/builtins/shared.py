@@ -13,13 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.io import IOResult
-from mirage.io.types import ByteSource
+from mirage.ops.types import SessionView
+from mirage.policy import PolicyDenied
+from mirage.shell.errors import ArithError
 from mirage.types import PathSpec, word_text
 from mirage.utils.path import resolve_path
+from mirage.workspace.executor.builtins.constants import (
+    COUNT_WORD_RE,
+    IDENTIFIER_RE,
+)
+from mirage.workspace.executor.builtins.types import Result
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.types import ExecutionNode
-
-Result = tuple[ByteSource | None, IOResult, ExecutionNode]
 
 
 def result(
@@ -116,8 +121,13 @@ def split_flags(
         if parsing and s == "--":
             parsing = False
             continue
-        if (parsing and s != "-" and len(s) >= 2 and s.startswith("-")
-                and all(c in known for c in s[1:])):
+        if (
+            parsing
+            and s != "-"
+            and len(s) >= 2
+            and s.startswith("-")
+            and all(c in known for c in s[1:])
+        ):
             flags.update(s[1:])
             continue
         parsing = False
@@ -153,8 +163,13 @@ def split_value_flags(
             parsing = False
             i += 1
             continue
-        if parsing and s != "-" and len(s) >= 2 and s.startswith(
-                "-") and not s.startswith("--"):
+        if (
+            parsing
+            and s != "-"
+            and len(s) >= 2
+            and s.startswith("-")
+            and not s.startswith("--")
+        ):
             body = s[1:]
             for j, c in enumerate(body):
                 if c in boolean:
@@ -164,7 +179,7 @@ def split_value_flags(
                     return flags, values, operands, c
                 # A valued flag consumes the rest of the token (-tSTAMP)
                 # or the next argument (-t STAMP).
-                rest = body[j + 1:]
+                rest = body[j + 1 :]
                 if rest:
                     values[c] = rest
                 elif i + 1 < len(args):
@@ -191,13 +206,144 @@ async def expand_operands(
     """
     out: list[PathSpec] = []
     for item in operands:
-        spec = item if isinstance(item, PathSpec) else PathSpec.from_str_path(
-            str(item))
+        spec = (
+            item
+            if isinstance(item, PathSpec)
+            else PathSpec.from_str_path(str(item))
+        )
         if spec.pattern:
             mount = namespace.mount_for(spec.virtual)
-            expanded = await mount.resource.resolve_glob(
-                [spec], mount.prefix.rstrip("/"))
+            expanded = await mount.expand_glob(
+                [spec], mount.prefix.rstrip("/")
+            )
             out.extend(p for p in expanded if isinstance(p, PathSpec))
             continue
         out.append(spec)
     return out
+
+
+def require_view(state: SessionView | None) -> SessionView:
+    """The gated session view this builtin writes through.
+
+    Every session write goes through the workspace's gated view, which
+    is what makes ``pre_session`` rules enforceable; this used to fall
+    back to an ungated view over the same session, so a caller that
+    forgot to thread one silently wrote past every policy. A write
+    reached without a view is a wiring bug, not a mode, so it raises.
+
+    Args:
+        state (SessionView | None): the caller's view, if threaded.
+
+    Raises:
+        RuntimeError: no view was threaded.
+    """
+    if state is None:
+        raise RuntimeError(
+            "builtin reached a session write without the workspace's gated "
+            "session view; thread state= from the executor arm"
+        )
+    return state
+
+
+def refusal(cmd: str, exc: PolicyDenied) -> Result:
+    """Render a policy denial in the builtin's own voice.
+
+    Args:
+        cmd (str): builtin name for the node.
+        exc (PolicyDenied): the gate's refusal.
+    """
+    err = f"{exc.strerror}\n".encode()
+    return (
+        None,
+        IOResult(exit_code=1, stderr=err),
+        ExecutionNode(command=cmd, exit_code=1, stderr=err),
+    )
+
+
+def readonly_refusal(cmd: str, name: str) -> Result:
+    """Render the shell's own readonly refusal, checked before the door.
+
+    Args:
+        cmd (str): builtin name for the node.
+        name (str): the frozen variable.
+    """
+    err = f"bash: {name}: readonly variable\n".encode()
+    return (
+        None,
+        IOResult(exit_code=1, stderr=err),
+        ExecutionNode(command=cmd, exit_code=1, stderr=err),
+    )
+
+
+def arith_refusal(cmd: str, exc: ArithError) -> Result:
+    """Render the ``-i`` coercion's arithmetic error as bash does.
+
+    GNU voices it as the evaluator's own line, prefixed by the builtin
+    and the offending text (``bash: read: 1+: syntax error: operand
+    expected``), and fails the builtin with 1 while the variable keeps
+    its old value, which is what the door's copy-then-store already
+    guarantees. A plain assignment (``n=1+``) is fatal instead and is
+    voiced by the executor without a builtin name.
+
+    Args:
+        cmd (str): builtin name for the node.
+        exc (ArithError): the evaluator's refusal, text already led.
+    """
+    err = f"bash: {cmd}: {exc}\n".encode()
+    return (
+        None,
+        IOResult(exit_code=1, stderr=err),
+        ExecutionNode(command=cmd, exit_code=1, stderr=err),
+    )
+
+
+def is_valid_name(name: str) -> bool:
+    """Whether the word is a shell identifier.
+
+    Args:
+        name (str): the word to test.
+    """
+    return IDENTIFIER_RE.fullmatch(name) is not None
+
+
+def is_count_word(word: str) -> bool:
+    """Whether the word is a number as bash's ``legal_number`` reads it,
+    which is what ``shift``, ``return``, ``exit``, ``break`` and
+    ``continue`` accept: blanks around an optionally signed run of
+    digits that fits in 64 bits.
+
+    Args:
+        word (str): the word to test.
+    """
+    return COUNT_WORD_RE.fullmatch(word) is not None and (
+        -(2**63) <= int(word) < 2**63
+    )
+
+
+def status_of(word: str) -> int:
+    """A count word's value modulo 256, the status bash keeps of it.
+
+    Args:
+        word (str): a word ``is_count_word`` accepted.
+    """
+    return int(word) % 256
+
+
+def builtin_error(name: str, message: str) -> bytes:
+    """A shell builtin's diagnostic in bash's voice.
+
+    Args:
+        name (str): the builtin.
+        message (str): what went wrong, without the newline.
+    """
+    return f"bash: {name}: {message}\n".encode()
+
+
+def numeric_operands(args: list[str]) -> list[str]:
+    """The words a numeric builtin reads: a leading ``--`` ends its
+    options, as bash's ``get_numeric_arg`` skips it.
+
+    Args:
+        args (list[str]): words after the builtin name.
+    """
+    return args[1:] if args[:1] == ["--"] else args

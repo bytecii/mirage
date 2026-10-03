@@ -21,32 +21,27 @@ from mirage.commands.builtin.gmail.grep import grep
 from mirage.commands.builtin.gmail.rg import rg
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
+from mirage.io.types import IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
 
-ROWS = [{
-    "path": "INBOX/2026-01-01/msg.gmail.json",
-    "subject": "hello there",
-    "snippet": "hello there",
-    "sender": "a@b.c",
-}]
+ROWS = [
+    {
+        "path": "INBOX/2026-01-01/msg.gmail.json",
+        "subject": "hello there",
+        "snippet": "hello there",
+        "sender": "a@b.c",
+    }
+]
 
 
 def _label_scope() -> PathSpec:
     original = "/gmail/INBOX"
-    return PathSpec(resource_path=mount_key(original, "/gmail"),
-                    virtual=original,
-                    directory=original)
-
-
-@pytest.mark.asyncio
-async def test_grep_word_uses_native_search():
-    accessor = AsyncMock()
-    with patch("mirage.commands.builtin.gmail.grep.search_messages",
-               new=AsyncMock(return_value=ROWS)) as spy:
-        await grep(accessor, [_label_scope()], ['hello'],
-                   CommandOpts(index=RAMIndexCacheStore(), flags={'w': True}))
-    spy.assert_awaited_once()
+    return PathSpec(
+        vfs_path=mount_key(original, "/gmail"),
+        virtual=original,
+        directory=original,
+    )
 
 
 @pytest.mark.asyncio
@@ -56,26 +51,26 @@ async def test_grep_without_word_flag_skips_native_search():
     # bare literal would under-report. Only -w may take it.
     accessor = AsyncMock()
     # Falling through to the per-message scan is the point. The stubbed
-    # glob resolves to no files, which the generic command reports as a
-    # usage error; what matters is that the native path was not taken.
-    with patch("mirage.commands.builtin.gmail.grep.search_messages",
-               new=AsyncMock(return_value=ROWS)) as spy, \
-            patch("mirage.commands.builtin.gmail.grep.resolve_glob",
-                  new=AsyncMock(return_value=[])):
-        with pytest.raises(UsageError):
-            await grep(accessor, [_label_scope()], ['hello'],
-                       CommandOpts(index=RAMIndexCacheStore()))
+    # glob resolves to no files, which leaves the generic command an empty
+    # stdin and no match; what matters is that the native path was not taken.
+    with (
+        patch(
+            "mirage.commands.builtin.gmail.grep.search_messages",
+            new=AsyncMock(return_value=ROWS),
+        ) as spy,
+        patch(
+            "mirage.commands.builtin.gmail.grep.resolve_glob",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        _, io = await grep(
+            accessor,
+            [_label_scope()],
+            ["hello"],
+            CommandOpts(index=RAMIndexCacheStore()),
+        )
+    assert io.exit_code == 1
     spy.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_rg_word_uses_native_search():
-    accessor = AsyncMock()
-    with patch("mirage.commands.builtin.gmail.rg.search_messages",
-               new=AsyncMock(return_value=ROWS)) as spy:
-        await rg(accessor, [_label_scope()], ['hello'],
-                 CommandOpts(index=RAMIndexCacheStore(), flags={'w': True}))
-    spy.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -84,11 +79,47 @@ async def test_rg_without_word_flag_skips_native_search():
     # Falling through to the per-message scan is the point. The stubbed
     # glob resolves to no files, which the generic command reports as a
     # usage error; what matters is that the native path was not taken.
-    with patch("mirage.commands.builtin.gmail.rg.search_messages",
-               new=AsyncMock(return_value=ROWS)) as spy, \
-            patch("mirage.commands.builtin.gmail.rg.resolve_glob",
-                  new=AsyncMock(return_value=[])):
+    with (
+        patch(
+            "mirage.commands.builtin.gmail.rg.search_messages",
+            new=AsyncMock(return_value=ROWS),
+        ) as spy,
+        patch(
+            "mirage.commands.builtin.gmail.rg.resolve_glob",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
         with pytest.raises(UsageError):
-            await rg(accessor, [_label_scope()], ['hello'],
-                     CommandOpts(index=RAMIndexCacheStore()))
+            await rg(
+                accessor,
+                [_label_scope()],
+                ["hello"],
+                CommandOpts(index=RAMIndexCacheStore()),
+            )
     spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_binary_search_snippet_uses_rendered_file_scan():
+    rows = [{**ROWS[0], "snippet": "hello\0tail", "subject": ""}]
+    with (
+        patch(
+            "mirage.commands.builtin.gmail.grep.search_messages",
+            new=AsyncMock(return_value=rows),
+        ),
+        patch(
+            "mirage.commands.builtin.gmail.grep.resolve_glob",
+            new=AsyncMock(return_value=[_label_scope()]),
+        ),
+        patch(
+            "mirage.commands.builtin.gmail.grep.generic_grep",
+            new=AsyncMock(return_value=(b"", IOResult())),
+        ) as generic,
+    ):
+        await grep(
+            AsyncMock(),
+            [_label_scope()],
+            ["hello"],
+            CommandOpts(index=RAMIndexCacheStore(), flags={"w": True}),
+        )
+    generic.assert_awaited_once()

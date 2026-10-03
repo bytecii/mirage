@@ -13,25 +13,104 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Accessor } from '../../../accessor/base.ts'
-import { IOResult, materialize } from '../../../io/types.ts'
-import type { PathSpec } from '../../../types.ts'
-import { handlePython } from '../../../workspace/executor/python/handle.ts'
+import { type ByteSource, IOResult, materialize } from '../../../io/types.ts'
+import { PathSpec } from '../../../types.ts'
+import type { ExecutionNode } from '../../../workspace/types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { LanguageRuntime } from '../../../runtime/language.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { resolveScript } from '../utils/operands.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import {
+  makeInterpreterHandler,
   moduleSource,
+  runtimeVersion,
+  skipFirstLine,
   PAYLOAD_ARGV0,
   STDIN_ARGV0,
   STDIN_OPERAND,
   type SourceMode,
 } from './interpreter.ts'
+import { PythonRuntime } from '../../../runtime/python/base.ts'
 import type { InitFlags } from '../../../runtime/python/flags.ts'
+import { MontyUnavailableError } from '../../../runtime/python/monty/index.ts'
+import { PyodideUnavailableError } from '../../../runtime/python/pyodide/errors.ts'
+import type { DispatchFn } from '../../../runtime/types.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
+
+type Result = [ByteSource | null, IOResult, ExecutionNode]
+
+export interface HandlePythonDeps {
+  runtime: LanguageRuntime
+}
+
+const runPython = makeInterpreterHandler({
+  label: 'python3',
+  payloadFlag: '-c',
+  isUnavailable: (err: unknown) =>
+    err instanceof PyodideUnavailableError || err instanceof MontyUnavailableError,
+})
+
+// `-m` against a runtime that cannot run modules. Exit 1 is CPython's code
+// for a `-m` that could not run, but not its "No module named" wording:
+// nothing was searched for, so naming the runtime is the honest report.
+function moduleRefusal(
+  mode: SourceMode | undefined,
+  runtime: LanguageRuntime,
+  label: string,
+): string | null {
+  if (mode !== 'module') return null
+  if (!(runtime instanceof PythonRuntime) || runtime.runsModules) return null
+  return `${label}: -m is not supported by the '${runtime.name}' runtime\n`
+}
+
+export async function handlePython(
+  dispatch: DispatchFn,
+  pathScope: PathSpec | null,
+  args: string[],
+  opts: {
+    command?: string
+    stdin: ByteSource | null
+    env: Record<string, string>
+    cwd?: PathSpec
+    code: string | null
+    // argv[0], derived from which door the source came through; '' is
+    // CPython's own answer for a program piped in with no operand, so a
+    // runtime must not treat it as absent.
+    prog?: string
+    mode?: SourceMode
+    // CPython's -x. File mode only, which is CPython's own scope: -c,
+    // -m and stdin are unaffected.
+    skipFirstLine?: boolean
+    initFlags?: InitFlags
+    signal?: AbortSignal
+    timeoutSeconds?: number
+  },
+  deps: HandlePythonDeps,
+): Promise<Result> {
+  return runPython(
+    dispatch,
+    pathScope,
+    args,
+    {
+      command: opts.command ?? 'python3',
+      stdin: opts.stdin,
+      env: opts.env,
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      code: opts.code,
+      refuse: (runtime: LanguageRuntime) =>
+        moduleRefusal(opts.mode, runtime, opts.command ?? 'python3'),
+      ...(opts.prog !== undefined ? { prog: opts.prog } : {}),
+      ...(opts.initFlags !== undefined ? { flags: opts.initFlags as Record<string, unknown> } : {}),
+      ...(opts.skipFirstLine === true ? { transformSource: skipFirstLine } : {}),
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+      ...(opts.timeoutSeconds !== undefined ? { timeoutSeconds: opts.timeoutSeconds } : {}),
+    },
+    deps,
+  )
+}
 
 // Keyed by CPython's own letter, which is how runtime/python/flags reads
 // them; the one long switch is keyed by its canonical spelling, having
@@ -63,24 +142,20 @@ async function pythonCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  if (opts.execAllowed === false) {
-    return [
-      null,
-      new IOResult({
-        exitCode: 126,
-        stderr: ENC.encode("python3: root mount '/' is not in EXEC mode\n"),
-      }),
-    ]
-  }
-
+  const label = opts.command ?? 'python3'
   if (!(opts.runtime instanceof LanguageRuntime)) {
     return [
       null,
       new IOResult({
         exitCode: 127,
-        stderr: ENC.encode('python3: command not found\n'),
+        stderr: ENC.encode(`${label}: command not found\n`),
       }),
     ]
+  }
+
+  const fl = new FlagView(opts.flags, specOf('python3'))
+  if (fl.asBool('version')) {
+    return runtimeVersion(label, opts.runtime, opts.env ?? {}, opts.signal, opts.timeoutSeconds)
   }
 
   if (opts.dispatch === undefined) {
@@ -88,12 +163,11 @@ async function pythonCommand(
       null,
       new IOResult({
         exitCode: 1,
-        stderr: ENC.encode('python3: no dispatch available\n'),
+        stderr: ENC.encode(`${label}: no dispatch available\n`),
       }),
     ]
   }
 
-  const fl = new FlagView(opts.flags, specOf('python3'))
   const code = fl.asStr('c') ?? null
   const moduleName = fl.asStr('m') ?? null
   const hasCode = code !== null
@@ -137,7 +211,35 @@ async function pythonCommand(
     argv0 = ''
   }
 
-  let resolvedCode: string | null = moduleName !== null ? moduleSource(moduleName, 'python3') : code
+  // The x check follows the source's door: a file operand asks the
+  // per-path door about the script's own path, so a session whose only
+  // x grant is one show subtree runs scripts there and nowhere else;
+  // inline code, -m and stdin keep the whole-session rule, since no
+  // path holds them. Outside a workspace no door is wired and
+  // execAllowed answers for files too.
+  if (mode === 'file' && scriptPath !== null) {
+    const allowed = opts.execPathAllowed?.(scriptPath.virtual) ?? opts.execAllowed !== false
+    if (!allowed) {
+      const display = scriptPath.rawPath !== '' ? scriptPath.rawPath : scriptPath.virtual
+      return [
+        null,
+        new IOResult({
+          exitCode: 126,
+          stderr: ENC.encode(`${label}: ${display}: not in EXEC mode\n`),
+        }),
+      ]
+    }
+  } else if (opts.execAllowed === false) {
+    return [
+      null,
+      new IOResult({
+        exitCode: 126,
+        stderr: ENC.encode(`${label}: root mount '/' is not in EXEC mode\n`),
+      }),
+    ]
+  }
+
+  let resolvedCode: string | null = moduleName !== null ? moduleSource(moduleName, label) : code
   let stdinForRuntime = opts.stdin
   if (resolvedCode === null && scriptPath === null && opts.stdin !== null) {
     const bytes = await materialize(opts.stdin)
@@ -152,8 +254,10 @@ async function pythonCommand(
     scriptPath,
     argStrs,
     {
+      command: label,
       stdin: stdinForRuntime,
       env: opts.env ?? {},
+      cwd: PathSpec.fromStrPath(opts.cwd),
       code: resolvedCode,
       prog: argv0,
       mode,
@@ -169,14 +273,14 @@ async function pythonCommand(
 
 export const GENERAL_PYTHON3 = command({
   name: 'python3',
-  resource: null,
+  vfs: null,
   spec: specOf('python3'),
   fn: pythonCommand,
 })
 
 export const GENERAL_PYTHON = command({
   name: 'python',
-  resource: null,
+  vfs: null,
   spec: specOf('python'),
   fn: pythonCommand,
 })

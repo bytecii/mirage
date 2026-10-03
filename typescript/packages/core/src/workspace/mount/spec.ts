@@ -12,28 +12,25 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Resource } from '../../resource/base.ts'
-import type { Limit, MountBackend, MountMode } from '../../types.ts'
+import type { IndexConfig } from '../../cache/index/config.ts'
+import type { BaseVFS } from '../../vfs/base.ts'
+import type { Limit, MountBackend, MountMode, ReadSpec } from '../../types.ts'
 
+/** Placement settings; index and read fall back to the workspace defaults. */
 export interface MountSpecOptions {
-  /** Per-mount mode override; falls back to the workspace default when unset. */
   mode?: MountMode
-  /**
-   * How the mount is exposed. `vfs` (the default) keeps it inside mirage's
-   * own filesystem; `fuse` and `fskit` also register a real mountpoint.
-   */
   backend?: MountBackend
-  /**
-   * Where to mount, for the kernel backends. Omitted picks a temporary
-   * directory appropriate for the backend. Ignored when backend is `vfs`.
-   */
   mountpoint?: string
   commandLimits?: Record<string, Limit>
+  /** Registry name or code loader used to rebuild the driver from a snapshot. */
+  vfsRef?: string | null
+  index?: IndexConfig
+  read?: ReadSpec
 }
 
 export class Mount {
   constructor(
-    readonly resource: Resource,
+    readonly vfs: BaseVFS,
     readonly options: MountSpecOptions = {},
   ) {}
 }

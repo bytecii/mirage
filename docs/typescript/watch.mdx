@@ -1,7 +1,7 @@
 ---
-title: Watch
+title: Overview
 description: Subscribe to external file changes on any TypeScript mount. Mirage invalidates its caches before every event is delivered.
-icon: bell
+icon: circle-info
 ---
 
 ## What It Does
@@ -11,14 +11,14 @@ teammate uploads to Nextcloud, a pipeline rewrites an S3 object, or a cron job
 deletes a report. `watch` turns those changes into an async event stream.
 
 ```ts
-import { NextcloudResource, Workspace } from "@struktoai/mirage-node";
+import { NextcloudVFS, Workspace } from "@struktoai/mirage-node";
 
-const resource = new NextcloudResource({ url: process.env.NEXTCLOUD_URL! });
-const ws = new Workspace({ "/nc": resource });
+const vfs = new NextcloudVFS({ url: process.env.NEXTCLOUD_URL! });
+const ws = new Workspace({ "/nc": vfs });
 
 for await (const event of ws.watch("/nc/Documents")) {
   console.log(event.kind, event.path.virtual);
-  const result = await ws.execute(`cat ${event.path.virtual}`); // guaranteed fresh
+  const result = await ws.shell(`cat ${event.path.virtual}`); // guaranteed fresh
   console.log(result.stdoutText);
 }
 ```
@@ -93,12 +93,12 @@ this subtree.” Precision degrades, but dirtiness is not lost.
 
 Your application hosts the endpoint; mirage opens no socket and runs no
 watcher. What arrives is the provider's own payload, and turning that into a
-path is the only real work. Three backends ship a mapper for it:
+path is the only real work. Four backends ship a mapper for it:
 
 ```ts
 import { SlackEventHook } from "@struktoai/mirage-core/core/slack/watch/index";
 
-const hook = new SlackEventHook(resource.accessor);
+const hook = new SlackEventHook(vfs.accessor);
 
 // your Express/Hono/Fastify route:
 const { event } = await request.json();
@@ -117,6 +117,7 @@ buy nothing.
 | Slack | `SlackEventHook` (`mirage-core/core/slack/watch/index`) | Events API delivery (inner `event` object) |
 | Disk | `DiskEventHook` (`mirage-node`, `core/disk/watch/hook`) | watchdog-shaped fields (`src_path`, `dest_path`) |
 | Redis | `RedisEventHook` (`mirage-node`, `core/redis/watch/hook`) | keyspace notification (`__keyevent@N__:<verb>`, the key) |
+| Box | `BoxEventHook` (`mirage-core/core/box/watch`) | one `/events` entry, read after the long poll (`realtimeServer`) answers `new_change` |
 
 A mapper answers with zero or more `FileEvent`s and never invents a path it
 was not told about. When a notification names only a scope, it returns
@@ -152,7 +153,7 @@ HTTP framework, authentication, retries, and deployment model.
 ## Pull Mode
 
 Backends that implement `deltaHook()` answer one question: what changed under
-this root since the last checkpoint? Eleven resource families ship one today,
+this root since the last checkpoint? Eleven VFS families ship one today,
 listed in the [Watch Matrix](/typescript/watch-matrix) with the fingerprint
 each one compares on. A baseline pull (`checkpoint === null`) establishes
 state and emits no changes.
@@ -161,11 +162,11 @@ state and emits no changes.
 import { PathSpec } from "@struktoai/mirage-node";
 
 const mount = ws.registry.mountFor("/nc");
-if (mount === null || mount.resource.deltaHook === undefined) {
+if (mount === null || mount.vfs.deltaHook === undefined) {
   throw new Error("mount does not support pull detection");
 }
 
-const hook = mount.resource.deltaHook();
+const hook = mount.vfs.deltaHook();
 const root = PathSpec.fromStrPath("/nc", "");
 let checkpoint: string | null = null;
 
@@ -225,7 +226,7 @@ watch loops cleanly without closing the workspace. The next `watch()` or
   the scope.
 - One watch may span mounts, including nested mounts. Each event is invalidated
   on the longest-prefix mount that owns its path.
-- Delivery works on every backend. Pull detection ships for eleven resource
+- Delivery works on every backend. Pull detection ships for eleven VFS
   families; see the [Watch Matrix](/typescript/watch-matrix).
 - Events are in-memory and at-most-once per subscriber unless you provide a
   durable queue implementation.

@@ -13,23 +13,27 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { CLISpec } from '@struktoai/mirage-core/commands/cli/types'
-import { ScriptSource } from '@struktoai/mirage-core/runtime/policy/index'
+import { Runtime } from '@struktoai/mirage-core/runtime/base'
+import { ScriptSource } from '@struktoai/mirage-core/runtime/routing/index'
+import { MountMode } from '@struktoai/mirage-core/types'
 import { RAMNamespaceStore } from '@struktoai/mirage-core/workspace/mount/namespace/ram'
 import { RAMWorkspaceStateStore } from '@struktoai/mirage-core/workspace/store/ram'
 import { buildFileCache } from '@struktoai/mirage-core/workspace/workspace/cache'
-import { DiskNamespaceStore } from './workspace/namespace/disk.ts'
-import { RedisNamespaceStore } from './workspace/namespace/redis.ts'
+import { SandlockRuntime } from './runtime/sandbox/sandlock/runtime.ts'
+import { DiskNamespaceStore } from './workspace/mount/namespace/disk.ts'
+import { RedisNamespaceStore } from './workspace/mount/namespace/redis.ts'
 import { DiskWorkspaceStateStore } from './workspace/store/disk.ts'
 import { RedisWorkspaceStateStore } from './workspace/store/redis.ts'
 import { RedisConsoleStore } from './shell/console/redis/index.ts'
 import { RedisFileCacheStore } from './cache/file/redis.ts'
 import { Workspace } from './workspace.ts'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  absolutizeScripts,
   checkWorkspaceConfigFile,
   interpolateEnv,
   loadWorkspaceConfig,
@@ -52,12 +56,54 @@ describe('interpolateEnv', () => {
   })
 })
 
+describe('absolutizeScripts', () => {
+  // The CLI applies this to a `load`/`clone` override on its own, since an
+  // override is read without validation; a relative code ref there has to
+  // mean "next to the file" exactly as it does at create time.
+  it('rebases relative VFS and cli refs onto the config dir, not dotpaths', () => {
+    const raw: Record<string, unknown> = {
+      mounts: {
+        '/wiki': { vfs: './backends/wiki.mjs:WikiVFS' },
+        '/pkg': { vfs: 'my-pkg/backends:WikiVFS' },
+        '/ram': { vfs: 'ram' },
+      },
+      clis: { tally: { cli: '../tools/tally.mjs:TALLY' } },
+    }
+    absolutizeScripts(raw, '/srv/deploy')
+    const mounts = raw.mounts as Record<string, { vfs: string }>
+    const clis = raw.clis as Record<string, { cli: string }>
+    expect(mounts['/wiki']?.vfs).toBe('/srv/deploy/backends/wiki.mjs:WikiVFS')
+    expect(mounts['/pkg']?.vfs).toBe('my-pkg/backends:WikiVFS')
+    expect(mounts['/ram']?.vfs).toBe('ram')
+    expect(clis.tally?.cli).toBe('/srv/tools/tally.mjs:TALLY')
+  })
+
+  it('rebases a runtime entry name that is a code ref, not a registered name', () => {
+    const raw: Record<string, unknown> = {
+      runtimes: [
+        { name: './box.mjs:EchoBox', captures: ['nvidia-smi'] },
+        { name: 'monty' },
+        '../box.mjs:EchoBox',
+        'my-runtimes:EchoBox',
+        'workspace',
+      ],
+    }
+    absolutizeScripts(raw, '/srv/deploy')
+    const runtimes = raw.runtimes as ({ name: string } | string)[]
+    expect(runtimes[0]).toEqual({ name: '/srv/deploy/box.mjs:EchoBox', captures: ['nvidia-smi'] })
+    expect(runtimes[1]).toEqual({ name: 'monty' })
+    expect(runtimes[2]).toBe('/srv/box.mjs:EchoBox')
+    expect(runtimes[3]).toBe('my-runtimes:EchoBox')
+    expect(runtimes[4]).toBe('workspace')
+  })
+})
+
 describe('loadWorkspaceConfig', () => {
   it('parses YAML and validates required fields', () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram', mode: 'write' } },
+      mounts: { '/': { vfs: 'ram', mode: 'write' } },
     })
-    expect(cfg.mounts['/']?.resource).toBe('ram')
+    expect(cfg.mounts['/']?.vfs).toBe('ram')
   })
 
   it('rejects configs missing mounts', () => {
@@ -66,37 +112,60 @@ describe('loadWorkspaceConfig', () => {
 })
 
 describe('configToWorkspaceArgs', () => {
-  it('builds resources + mode for Workspace constructor', async () => {
+  it('builds mounts + mode for Workspace constructor', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram', mode: 'write' } },
+      mounts: { '/': { vfs: 'ram', mode: 'write' } },
       mode: 'write',
     })
     const args = await configToWorkspaceArgs(cfg)
-    expect(args.resources['/']).toBeDefined()
+    expect(args.mounts['/']).toBeDefined()
     expect(args.options.mode).toBe('write')
   })
 
   it('lower-cases mount mode and rejects invalid values', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram', mode: 'WRITE' } },
+      mounts: { '/': { vfs: 'ram', mode: 'WRITE' } },
     })
     const args = await configToWorkspaceArgs(cfg)
     expect(args.options.mode).toBe('write')
 
     const bad = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       mode: 'writ',
     })
     await expect(configToWorkspaceArgs(bad)).rejects.toThrow(/invalid mount mode/)
   })
 
+  it.each([undefined, ['@external']])(
+    'loads the external capture default from YAML: %j',
+    async (captures) => {
+      const dir = mkdtempSync(join(tmpdir(), 'mirage-captures-'))
+      try {
+        const filename = join(dir, 'workspace.yaml')
+        writeFileSync(
+          filename,
+          'mounts:\n  /:\n    vfs: ram\nruntimes:\n  - name: sandlock\n' +
+            (captures === undefined ? '' : '    captures: ["@external"]\n'),
+        )
+        const cfg = loadWorkspaceConfigFile(filename)
+        const args = await configToWorkspaceArgs(cfg)
+        expect(args.options.runtimes?.[0]).toBeInstanceOf(SandlockRuntime)
+        expect((args.options.runtimes?.[0] as { captures: readonly string[] }).captures).toEqual([
+          '@external',
+        ])
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
+
   it('builds runtime entries from the ordered list', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       runtimes: [
         { name: 'pyodide', config: { home: 'https://assets.example.com/pyodide/' } },
         'quickjs',
-        'vfs',
+        'workspace',
       ],
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -105,7 +174,7 @@ describe('configToWorkspaceArgs', () => {
     expect(entries).toHaveLength(3)
     expect((entries?.[0] as { name: string }).name).toBe('pyodide')
     expect((entries?.[1] as { name: string }).name).toBe('quickjs')
-    expect((entries?.[2] as { name: string }).name).toBe('vfs')
+    expect((entries?.[2] as { name: string }).name).toBe('workspace')
   })
 
   it('camelizes the snake_case keys of a runtime entry config block', async () => {
@@ -113,10 +182,10 @@ describe('configToWorkspaceArgs', () => {
     // are camelCase, so the loader must translate the block's keys
     // (values, like an env map, pass through untouched).
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       runtimes: [
         { name: 'pyodide', config: { auto_load_from_imports: false, home: '/assets' } },
-        'vfs',
+        'workspace',
       ],
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -125,7 +194,7 @@ describe('configToWorkspaceArgs', () => {
 
   it('rejects a flat option on a runtime entry (knobs live in config)', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       runtimes: [{ name: 'pyodide', home: '/assets' }],
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(
@@ -135,7 +204,7 @@ describe('configToWorkspaceArgs', () => {
 
   it('rejects an unknown runtime entry name', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       runtimes: ['nosuchruntime'],
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/unknown runtime/)
@@ -143,46 +212,54 @@ describe('configToWorkspaceArgs', () => {
 
   it("hints that 'wasi' is Python-only", async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       runtimes: ['wasi'],
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/Python-only/)
   })
 
-  it('rejects non-script options on the vfs entry', async () => {
+  it('rejects non-script options on the workspace entry', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
-      runtimes: [{ name: 'vfs', home: '/x' }],
+      mounts: { '/': { vfs: 'ram' } },
+      runtimes: [{ name: 'workspace', home: '/x' }],
     })
-    await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/unknown vfs runtime option 'home'/)
+    await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(
+      /unknown workspace runtime option 'home'/,
+    )
   })
 
   it('resolves script paths against the config file dir', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mirage-cfg-'))
     writeFileSync(join(dir, 'policy.py'), "'quickjs'")
-    writeFileSync(join(dir, 'ws.yaml'), 'mounts:\n  /data:\n    resource: ram\npolicy: policy.py\n')
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    vfs: ram\nroute_policy: policy.py\n',
+    )
     const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
     const args = await configToWorkspaceArgs(cfg)
-    expect(args.options.policy).toEqual(new ScriptSource("'quickjs'"))
+    expect(args.options.routePolicy).toEqual(new ScriptSource("'quickjs'"))
     rmSync(dir, { recursive: true, force: true })
   })
 
   it('a .js policy path stamps the script language', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mirage-cfg-'))
     writeFileSync(join(dir, 'policy.js'), 'null')
-    writeFileSync(join(dir, 'ws.yaml'), 'mounts:\n  /data:\n    resource: ram\npolicy: policy.js\n')
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    vfs: ram\nroute_policy: policy.js\n',
+    )
     const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
     const args = await configToWorkspaceArgs(cfg)
     // toEqual compares fields, so a python-tagged source would fail.
-    expect(args.options.policy).toEqual(new ScriptSource('null', 'js'))
-    expect(args.options.policy).not.toEqual(new ScriptSource('null'))
+    expect(args.options.routePolicy).toEqual(new ScriptSource('null', 'js'))
+    expect(args.options.routePolicy).not.toEqual(new ScriptSource('null'))
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('carries vfs captures through', async () => {
+  it('carries workspace captures through', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
-      runtimes: [{ name: 'vfs', captures: ['grep', 'cat'] }],
+      mounts: { '/': { vfs: 'ram' } },
+      runtimes: [{ name: 'workspace', captures: ['grep', 'cat'] }],
     })
     const args = await configToWorkspaceArgs(cfg)
     const entry = args.options.runtimes?.[0] as { captures: readonly string[] }
@@ -192,31 +269,31 @@ describe('configToWorkspaceArgs', () => {
   it('carries entry scripts and the global policy through', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mirage-cfg-'))
     writeFileSync(join(dir, 'entry.py'), "ctx['command'] == 'node'")
-    writeFileSync(join(dir, 'vfs.py'), 'True')
+    writeFileSync(join(dir, 'workspace.py'), 'True')
     writeFileSync(join(dir, 'policy.py'), "'quickjs'")
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       runtimes: [
         { name: 'quickjs', script: join(dir, 'entry.py') },
-        { name: 'vfs', script: join(dir, 'vfs.py') },
+        { name: 'workspace', script: join(dir, 'workspace.py') },
       ],
-      policy: join(dir, 'policy.py'),
+      route_policy: join(dir, 'policy.py'),
     })
     const args = await configToWorkspaceArgs(cfg)
     const entries = args.options.runtimes
     expect((entries?.[0] as { script?: ScriptSource }).script).toEqual(
       new ScriptSource("ctx['command'] == 'node'"),
     )
-    expect((entries?.[1] as { name: string }).name).toBe('vfs')
+    expect((entries?.[1] as { name: string }).name).toBe('workspace')
     expect((entries?.[1] as { script?: ScriptSource }).script).toEqual(new ScriptSource('True'))
-    expect(args.options.policy).toEqual(new ScriptSource("'quickjs'"))
+    expect(args.options.routePolicy).toEqual(new ScriptSource("'quickjs'"))
     rmSync(dir, { recursive: true, force: true })
   })
 
   it('rejects inline monty source in config', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
-      policy: "'quickjs'",
+      mounts: { '/': { vfs: 'ram' } },
+      route_policy: "'quickjs'",
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/reference a \.py\/\.js file/)
   })
@@ -230,7 +307,7 @@ describe('configToWorkspaceArgs', () => {
       { cache: { type: 'redis', keyPrefix: 'c:' } },
       { cache: { type: 'ram', maxDrainBytes: 8 } },
     ]) {
-      expect(() => loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } }, ...block })).toThrow(
+      expect(() => loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram' } }, ...block })).toThrow(
         /unknown (cache|index)/,
       )
     }
@@ -238,7 +315,7 @@ describe('configToWorkspaceArgs', () => {
 
   it('builds a redis state store from a store block (snake_case key_prefix)', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       store: { type: 'redis', url: 'redis://localhost:6379/4', key_prefix: 'test_store:' },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -254,7 +331,7 @@ describe('configToWorkspaceArgs', () => {
     // treats it as borrowed leaks it — for redis or s3 that is a client
     // that is never quit, once per workspace the daemon creates.
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       store: { type: 'ram' },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -272,7 +349,7 @@ describe('configToWorkspaceArgs', () => {
 
   it('builds a ram state store from a store block', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       store: { type: 'ram' },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -285,7 +362,7 @@ describe('configToWorkspaceArgs', () => {
     // built a disk one, so state a user believed was persisted was not.
     const dir = mkdtempSync(join(tmpdir(), 'mirage-store-'))
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       store: { type: 'disk', root: dir },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -300,7 +377,7 @@ describe('configToWorkspaceArgs', () => {
     // `awsAccessKeyId`), so a plain camelize would silently drop the
     // credentials and endpoint and authenticate against the wrong thing.
     const raw = {
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       store: {
         type: 'ram',
         workspace: {
@@ -339,7 +416,7 @@ describe('configToWorkspaceArgs', () => {
 
   it('routes a per-group override to its own backend', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       store: {
         type: 'ram',
         observer: { type: 'redis', url: 'redis://localhost:6379/4', key_prefix: 'obs:' },
@@ -353,18 +430,18 @@ describe('configToWorkspaceArgs', () => {
 
   it('passes workspace_id through (snake_case YAML)', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       workspace_id: 'agent-ws-7',
     })
     const args = await configToWorkspaceArgs(cfg)
     expect(args.options.workspaceId).toBe('agent-ws-7')
   })
 
-  it('parses per-mount command_limits (snake_case YAML) into the resource tuple', async () => {
+  it('parses per-mount command_limits (snake_case YAML) into the VFS tuple', async () => {
     const cfg = loadWorkspaceConfig({
       mounts: {
         '/': {
-          resource: 'ram',
+          vfs: 'ram',
           command_limits: {
             cat: { max_lines: 10, timeout_seconds: 5, on_exceed: 'error' },
           },
@@ -372,28 +449,29 @@ describe('configToWorkspaceArgs', () => {
       },
     })
     const args = await configToWorkspaceArgs(cfg)
-    const limits = args.resources['/']?.[2]
+    const limits = args.mounts['/']?.options.commandLimits
     expect(limits?.cat?.maxLines).toBe(10)
     expect(limits?.cat?.timeoutSeconds).toBe(5)
     expect(limits?.cat?.onExceed).toBe('error')
   })
 
   it('defaults to no command_limits when omitted', async () => {
-    const cfg = loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } } })
+    const cfg = loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram' } } })
     const args = await configToWorkspaceArgs(cfg)
-    expect(args.resources['/']?.[2]).toEqual({})
+    expect(args.mounts['/']?.options.commandLimits).toEqual({})
   })
 
-  it('rejects an invalid on_exceed value', async () => {
-    const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram', command_limits: { cat: { on_exceed: 'boom' } } } },
-    })
-    await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/invalid onExceed/)
+  it('rejects an invalid on_exceed value at config load', () => {
+    expect(() =>
+      loadWorkspaceConfig({
+        mounts: { '/': { vfs: 'ram', command_limits: { cat: { on_exceed: 'boom' } } } },
+      }),
+    ).toThrow(/on_exceed must be truncate or error/)
   })
 
   it('reads snake_case default_session_id / default_agent_id (Python YAML)', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       default_session_id: 'sess-1',
       default_agent_id: 'agent-1',
     })
@@ -404,7 +482,7 @@ describe('configToWorkspaceArgs', () => {
 
   it('reads snake_case index key_prefix into the index config', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       index: { type: 'redis', url: 'redis://localhost:6379/0', key_prefix: 'idx:' },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -419,7 +497,7 @@ describe('configToWorkspaceArgs', () => {
     // The workspace builds it, so the workspace closes it; building it
     // here would leave the redis client with no owner at shutdown.
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       cache: { type: 'redis', key_prefix: 'c:', max_drain_bytes: 1024 },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -431,29 +509,144 @@ describe('configToWorkspaceArgs', () => {
     expect(buildFileCache(args.options.cache)).toBeInstanceOf(RedisFileCacheStore)
   })
 
-  it('coerces consistency (default lazy, accepts always, rejects junk)', async () => {
+  it('coerces the read policy and carries it onto the mount', async () => {
     const dflt = await configToWorkspaceArgs(
-      loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } } }),
+      loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram' } } }),
     )
-    expect(dflt.options.consistency).toBe('lazy')
-    const always = await configToWorkspaceArgs(
-      loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } }, consistency: 'ALWAYS' }),
+    expect(dflt.options.read).toEqual({ policy: 'bounded', ttl: 600 })
+    // The spec reaches the mount, not just the workspace default: the
+    // carrier used to be a [vfs, mode] tuple, which dropped it.
+    expect(dflt.mounts['/']?.options.read).toEqual({ policy: 'bounded', ttl: 600 })
+    const perMount = await configToWorkspaceArgs(
+      loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', read: 'bounded', ttl: 30 } } }),
     )
-    expect(always.options.consistency).toBe('always')
-    await expect(
-      configToWorkspaceArgs(
-        loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } }, consistency: 'soon' }),
-      ),
-    ).rejects.toThrow(/invalid consistency/)
+    expect(perMount.mounts['/']?.options.read).toEqual({ policy: 'bounded', ttl: 30 })
+    expect(() => loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', read: 'soon' } } })).toThrow(
+      /unknown read policy/,
+    )
+  })
+
+  it('accepts a read policy in any case, at either level', async () => {
+    const perMount = await configToWorkspaceArgs(
+      loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', read: 'BOUNDED', ttl: 30 } } }),
+    )
+    expect(perMount.mounts['/']?.options.read).toEqual({ policy: 'bounded', ttl: 30 })
+    const workspace = await configToWorkspaceArgs(
+      loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram' } }, read: 'BOUNDED' }),
+    )
+    expect(workspace.options.read).toEqual({ policy: 'bounded', ttl: 600 })
+  })
+
+  // The bound rule must be applied to the COERCED policy. Comparing the
+  // raw one let `read: BOUNDED` -- a spelling both languages accept --
+  // skip a rule Python enforces, so the same document loaded on one host
+  // and was refused on the other.
+  it('applies the bound rule to an uppercase policy too', () => {
+    expect(() => loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', read: 'BOUNDED' } } })).toThrow(
+      /needs a bound/,
+    )
+  })
+
+  // At the SYNC door. `loadWorkspaceConfig` is what the CLI runs before
+  // it POSTs the document to the daemon; validating only in the async
+  // builder means junk survives that hop.
+  it('refuses a junk top-level read policy at the sync door', () => {
+    expect(() => loadWorkspaceConfig({ read: 'banana', mounts: { '/': { vfs: 'ram' } } })).toThrow(
+      /fresh, bounded, pinned/,
+    )
+  })
+
+  it('a mount that declares no policy takes the workspace default', async () => {
+    const args = await configToWorkspaceArgs(
+      loadWorkspaceConfig({
+        read: 'bounded',
+        mounts: { '/a': { vfs: 'ram' }, '/b': { vfs: 'ram', read: 'bounded', ttl: 30 } },
+      }),
+    )
+    expect(args.mounts['/a']?.options.read).toEqual({ policy: 'bounded', ttl: 600 })
+    expect(args.mounts['/b']?.options.read).toEqual({ policy: 'bounded', ttl: 30 })
+  })
+
+  // Both ride the one options object the carrier now holds, so a build
+  // that filled it for one key and overwrote it for the other would
+  // silently drop a mount's limits the moment it declared a policy.
+  it('carries a read policy and command_limits on the same mount', async () => {
+    const args = await configToWorkspaceArgs(
+      loadWorkspaceConfig({
+        mounts: {
+          '/': {
+            vfs: 'ram',
+            read: 'bounded',
+            ttl: 30,
+            command_limits: { cat: { max_lines: 10 } },
+          },
+        },
+      }),
+    )
+    expect(args.mounts['/']?.options.read).toEqual({ policy: 'bounded', ttl: 30 })
+    expect(args.mounts['/']?.options.commandLimits?.cat?.maxLines).toBe(10)
+  })
+
+  it('refuses a mount declaring fresh on a backend that cannot revalidate', async () => {
+    // The config door parses; the mount door judges. Keeping the verdict
+    // at mount time is what makes one rule cover YAML, addMount and a
+    // snapshot restore alike.
+    const args = await configToWorkspaceArgs(
+      loadWorkspaceConfig({ mounts: { '/a': { vfs: 'ram', read: 'fresh' } } }),
+    )
+    expect(() => new Workspace(args.mounts, args.options)).toThrow(
+      /needs a resource that caches reads/,
+    )
+  })
+
+  it('refuses a mount block whose bound and policy disagree', () => {
+    // Both rules live at the config door: once a ReadSpec exists its ttl
+    // has defaulted, so `bounded` without a bound is indistinguishable
+    // from `read:` left out entirely.
+    expect(() => loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', ttl: 30 } } })).toThrow(
+      /ttl pins the read bound/,
+    )
+    expect(() => loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', read: 'bounded' } } })).toThrow(
+      /needs a bound/,
+    )
+  })
+
+  it.each([['30'], [true], [1.5]])('refuses a bound of %o as not whole seconds', (junk) => {
+    // pydantic coerces where this key cannot afford it: `ttl: "30"`
+    // arrived as 30 there and `ttl: true` as 1 -- a mount silently
+    // bounded at one second -- while this loader refused both. Same
+    // bytes, two answers, which `integ/fixtures/config/rejected.json`
+    // now pins.
+    expect(() =>
+      loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', read: 'bounded', ttl: junk } } }),
+    ).toThrow(/whole seconds/)
+  })
+
+  it.each([[0], [-1]])('refuses a bound of %s that can never expire', (bad) => {
+    expect(() =>
+      loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', read: 'bounded', ttl: bad } } }),
+    ).toThrow(/at least 1 second/)
+  })
+
+  it('judges the bound whatever `read:` says, and names the missing policy first', () => {
+    // The type is wrong on its own terms, so it is judged before the
+    // dependent-key rules -- where Python's field validator judges it,
+    // ahead of the model validator carrying those rules.
+    expect(() => loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', ttl: '30' } } })).toThrow(
+      /whole seconds/,
+    )
+    expect(() => loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram', ttl: 0 } } })).toThrow(
+      /ttl pins the read bound/,
+    )
   })
 
   it('threads per-mount backend into top-level kernelMounts and yields {} otherwise', async () => {
     const withFuse = await configToWorkspaceArgs(
       loadWorkspaceConfig({
         mounts: {
-          '/data': { resource: 'ram', backend: 'fuse', mountpoint: '/tmp/mt' },
-          '/s3': { resource: 'ram', backend: 'fuse' },
-          '/logs': { resource: 'ram' },
+          '/data': { vfs: 'ram', backend: 'fuse', mountpoint: '/tmp/mt' },
+          '/s3': { vfs: 'ram', backend: 'fuse' },
+          '/logs': { vfs: 'ram' },
         },
       }),
     )
@@ -463,17 +656,17 @@ describe('configToWorkspaceArgs', () => {
     })
     expect('kernelMounts' in withFuse.options).toBe(false)
     const withoutFuse = await configToWorkspaceArgs(
-      loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } } }),
+      loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram' } } }),
     )
     expect(withoutFuse.kernelMounts).toEqual({})
     expect('kernelMounts' in withoutFuse.options).toBe(false)
   })
 
-  it('leaves mount config snake_case keys untouched (resource credentials)', () => {
+  it('leaves mount config snake_case keys untouched (VFS credentials)', () => {
     const cfg = loadWorkspaceConfig({
       mounts: {
         '/s3': {
-          resource: 'ram',
+          vfs: 'ram',
           config: { aws_access_key_id: 'AKIA', endpoint_url: 'http://localhost:9000' },
         },
       },
@@ -484,52 +677,114 @@ describe('configToWorkspaceArgs', () => {
     })
   })
 
-  it('guards block compiles to guard specs', async () => {
+  it('the permissions document maps to workspace args', async () => {
+    // `mounts:` is infrastructure and `profiles:` is every permission
+    // the deployment states, including the per-mount ones; there is no
+    // workspace `permissions:` block and no `permissions:` on a mount.
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
-      guards: [
-        {
-          reason: 'production data is protected',
-          commands: ['rm', 'mv'],
-          paths: ['/data/prod/*'],
+      mounts: {
+        '/repo': { vfs: 'ram' },
+        '/scratch': { vfs: 'ram', mode: 'rwx' },
+      },
+      profile: 'reviewer',
+      profiles: {
+        default: {
+          cwd: '/scratch',
+          env: { PAGER: 'cat' },
+          mounts: { '/repo': 'r', '/scratch': 'rwx' },
+          commands: {
+            deny: [
+              {
+                reason: 'production data is protected',
+                commands: { rm: ['/repo/prod/*'], mv: ['/repo/prod/*'] },
+              },
+              'python3',
+            ],
+          },
+          paths: { hide: ['/scratch/finance'] },
         },
-        { reason: 'interpreters are off', commands: ['python3'] },
-      ],
+        reviewer: {
+          mounts: { '/repo': { mode: 'r', paths: { hide: ['/repo/*.pem', '/repo/.env'] } } },
+          paths: { hide: ['/repo/docs/internal'] },
+          vars: { hide: ['AWS_*', 'SLACK_TOKEN'] },
+        },
+      },
     })
     const args = await configToWorkspaceArgs(cfg)
-    expect(args.options.guards).toEqual([
-      {
-        reason: 'production data is protected',
-        commands: ['rm', 'mv'],
-        paths: ['/data/prod/*'],
+    expect(args.options.profile).toBe('reviewer')
+    expect(args.options.profiles?.default).toEqual({
+      cwd: '/scratch',
+      env: { PAGER: 'cat' },
+      mounts: new Map([
+        ['/repo', { mode: MountMode.READ }],
+        ['/scratch', { mode: MountMode.EXEC }],
+      ]),
+      commands: {
+        allow: null,
+        ask: [],
+        deny: [
+          { reason: 'production data is protected', commands: ['rm'], paths: ['/repo/prod/*'] },
+          { reason: 'production data is protected', commands: ['mv'], paths: ['/repo/prod/*'] },
+          { reason: 'denied by policy', commands: ['python3'] },
+        ],
       },
-      { reason: 'interpreters are off', commands: ['python3'] },
-    ])
-  })
-
-  it('a guard without a reason fails loud', async () => {
-    const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
-      guards: [{ commands: ['rm'] }],
+      paths: { hide: ['/scratch/finance'] },
     })
-    await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/reason/)
+    expect(args.options.profiles?.reviewer).toEqual({
+      mounts: new Map([
+        ['/repo', { mode: MountMode.READ, paths: { hide: ['/repo/*.pem', '/repo/.env'] } }],
+      ]),
+      paths: { hide: ['/repo/docs/internal'] },
+      vars: { hide: ['AWS_*', 'SLACK_TOKEN'] },
+    })
+    expect(args.mounts['/scratch']?.options.mode).toBe(MountMode.EXEC)
   })
 
-  it('a guard with an unknown key fails loud', () => {
-    // A typo like `path:` would otherwise widen the guard into an
+  it('a deny rule with an unknown key fails at load', () => {
+    // A typo like `path:` would otherwise widen the rule into an
     // unconditional denial (mirrors Python's extra="forbid"), and like
     // Python it must fail at load, not when the args are built.
     expect(() =>
       loadWorkspaceConfig({
-        mounts: { '/data': { resource: 'ram' } },
-        guards: [{ reason: 'x', path: ['/data/prod/*'] }],
+        mounts: { '/data': { vfs: 'ram' } },
+        profiles: {
+          default: { commands: { deny: [{ reason: 'x', path: ['/data/prod/*'] }] } },
+        },
       }),
-    ).toThrow(/unknown guard key/)
+    ).toThrow(/deny\[0\]: unknown field `path`/)
+  })
+
+  it('unshipped and misspelled fields fail at load', () => {
+    expect(() =>
+      loadWorkspaceConfig({
+        mounts: { '/data': { vfs: 'ram' } },
+        profiles: { a: { hidden_paths: { paths: ['/x'] } } },
+      }),
+    ).toThrow(/unknown field `hidden_paths`/)
+    // A mount section has no allow list, and a mount block has no
+    // permissions of its own any more.
+    expect(() =>
+      loadWorkspaceConfig({
+        mounts: { '/data': { vfs: 'ram' } },
+        profiles: { a: { mounts: { '/data': { commands: { allow: ['ls'] } } } } },
+      }),
+    ).toThrow(/unknown field `allow`/)
+    expect(() =>
+      loadWorkspaceConfig({
+        mounts: { '/data': { vfs: 'ram', permissions: { paths: { hide: ['x'] } } } },
+      }),
+    ).toThrow(/unknown mount `\/data` key `permissions`/)
+    expect(() =>
+      loadWorkspaceConfig({
+        mounts: { '/data': { vfs: 'ram' } },
+        profiles: { orphan: { extends: 'gone' } },
+      }),
+    ).toThrow(/unknown field `extends`/)
   })
 
   it('console redis block builds a factory that mints fresh keys', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       console: { type: 'redis', url: 'redis://localhost:6379/5', key_prefix: 'test_console:' },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -553,7 +808,7 @@ describe('configToWorkspaceArgs', () => {
 
   it('console ram block leaves consoles in memory', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/': { resource: 'ram' } },
+      mounts: { '/': { vfs: 'ram' } },
       console: { type: 'ram' },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -565,7 +820,7 @@ describe('clis section', () => {
   // Mirrors python/tests/config/test_loader.py's clis tests.
   it('parses and maps to the Workspace clis option', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: {
         sl: { cli: 'slack', config: { token: 'x' } },
         bare: { cli: 'gws' },
@@ -581,7 +836,7 @@ describe('clis section', () => {
   it('refuses unknown keys in a clis entry', () => {
     expect(() =>
       loadWorkspaceConfig({
-        mounts: { '/data': { resource: 'ram' } },
+        mounts: { '/data': { vfs: 'ram' } },
         clis: { sl: { cli: 'slack', mode: 'write' } },
       }),
     ).toThrow(/unknown cli `sl` key `mode`/)
@@ -592,7 +847,7 @@ describe('clis section', () => {
     writeFileSync(join(dir, 'pager.py'), "print('page')")
     writeFileSync(
       join(dir, 'ws.yaml'),
-      'mounts:\n  /data:\n    resource: ram\n' +
+      'mounts:\n  /data:\n    vfs: ram\n' +
         'clis:\n  pager:\n    script: pager.py\n    runtime: monty\n' +
         '    config:\n      page_size: 20\n',
     )
@@ -612,7 +867,7 @@ describe('clis section', () => {
     writeFileSync(join(dir, 'pager.mjs'), "console.log('page')")
     writeFileSync(
       join(dir, 'ws.yaml'),
-      'mounts:\n  /data:\n    resource: ram\nclis:\n  pager:\n    script: pager.mjs\n',
+      'mounts:\n  /data:\n    vfs: ram\nclis:\n  pager:\n    script: pager.mjs\n',
     )
     const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
     const args = await configToWorkspaceArgs(cfg)
@@ -629,7 +884,7 @@ describe('clis section', () => {
     writeFileSync(join(dir, 'pager.js'), "console.log('page')")
     writeFileSync(
       join(dir, 'ws.yaml'),
-      'mounts:\n  /data:\n    resource: ram\nclis:\n  pager:\n    script: pager.js\n',
+      'mounts:\n  /data:\n    vfs: ram\nclis:\n  pager:\n    script: pager.js\n',
     )
     const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
     const args = await configToWorkspaceArgs(cfg)
@@ -641,12 +896,12 @@ describe('clis section', () => {
 
   it('a clis entry takes exactly one of cli or script', async () => {
     const both = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { sl: { cli: 'slack', script: 'pager.py' } },
     })
     await expect(configToWorkspaceArgs(both)).rejects.toThrow(/exactly one of cli or script/)
     const neither = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { sl: { config: { token: 'x' } } },
     })
     await expect(configToWorkspaceArgs(neither)).rejects.toThrow(/exactly one of cli or script/)
@@ -654,10 +909,157 @@ describe('clis section', () => {
 
   it('runtime takes script', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { sl: { cli: 'slack', runtime: 'monty' } },
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/it takes script/)
+  })
+
+  it('a script entry refuses a secrets pointer', () => {
+    // A script's config is opaque: nothing declares which key is a
+    // credential, so the snapshot captures it verbatim, and a pointer
+    // resolved into it would be written out as the value it fetched. A
+    // script reads a credential from a managed env var instead.
+    expect(() =>
+      loadWorkspaceConfig({
+        mounts: { '/data': { vfs: 'ram' } },
+        clis: {
+          pager: { script: 'pager.py', config: { token: { from: 'env', key: 'PAGER_TOKEN' } } },
+        },
+      }),
+    ).toThrow(/clis entry 'pager'.*opaque/)
+    // A literal in a script's config is the script's own business.
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/data': { vfs: 'ram' } },
+      clis: { pager: { script: 'pager.py', config: { verbose: true } } },
+    })
+    expect(cfg.clis?.pager?.config).toEqual({ verbose: true })
+  })
+})
+
+// Mirrors python/tests/config/test_loader.py's runtimes `name:` cases. A
+// runtime entry name carrying a colon names a Runtime subclass the way
+// `vfs:` names a backend, so a deployment ships a runtime as a file
+// with no host program calling registerRuntime.
+describe('runtimes name: reference', () => {
+  const CORE = pathToFileURL(
+    resolve(fileURLToPath(import.meta.url), '../../../core/dist/index.js'),
+  ).href
+  const BOX =
+    `import {LINE_EXECUTOR, Runtime} from ${JSON.stringify(CORE)}\n` +
+    'export class EchoBox extends Runtime {\n' +
+    '  [LINE_EXECUTOR] = true\n' +
+    "  name = 'echobox'\n" +
+    "  constructor(options = {}) { super(options, ['nvidia-smi'], []) }\n" +
+    '  runLine(line) { return Promise.resolve({ stdout: new TextEncoder().encode(`box:${line}\\n`), stderr: null, exitCode: 0 }) }\n' +
+    '}\n' +
+    "export const NOT_A_RUNTIME = { name: 'nope' }\n"
+
+  it('builds a runtime out of a file next to the config, with the entry options', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-rt-'))
+    writeFileSync(join(dir, 'box.mjs'), BOX)
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    vfs: ram\n' +
+        'runtimes:\n  - name: ./box.mjs:EchoBox\n    captures: [nvidia-smi, rocm-smi]\n  - workspace\n',
+    )
+    const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
+    expect(cfg.runtimes?.[0]).toEqual({
+      name: `${join(dir, 'box.mjs')}:EchoBox`,
+      captures: ['nvidia-smi', 'rocm-smi'],
+    })
+    const args = await configToWorkspaceArgs(cfg)
+    const [box, fallback] = args.options.runtimes ?? []
+    expect(box).toBeInstanceOf(Runtime)
+    expect((box as Runtime).name).toBe('echobox')
+    expect((box as Runtime).captures).toEqual(['nvidia-smi', 'rocm-smi'])
+    expect((fallback as Runtime).name).toBe('workspace')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('checks the entry keys of a referenced runtime the way a named one is checked', async () => {
+    // The base constructor ignores a key it does not read, so without
+    // the check `captuers:` would leave EchoBox on its class captures;
+    // Python refuses the same entry through `**options`.
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-rt-'))
+    writeFileSync(join(dir, 'box.mjs'), BOX)
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    vfs: ram\n' +
+        'runtimes:\n  - name: ./box.mjs:EchoBox\n    captuers: [nvidia-smi, rocm-smi]\n  - workspace\n',
+    )
+    await expect(
+      configToWorkspaceArgs(loadWorkspaceConfigFile(join(dir, 'ws.yaml'))),
+    ).rejects.toThrow(/unknown .*box\.mjs:EchoBox runtime option 'captuers'/)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('refuses a ref that is not a Runtime subclass, and one that does not load', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-rt-'))
+    writeFileSync(join(dir, 'box.mjs'), BOX)
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    vfs: ram\nruntimes:\n  - ./box.mjs:NOT_A_RUNTIME\n',
+    )
+    await expect(
+      configToWorkspaceArgs(loadWorkspaceConfigFile(join(dir, 'ws.yaml'))),
+    ).rejects.toThrow('is not a Runtime subclass')
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    vfs: ram\nruntimes:\n  - name: ./missing.mjs:EchoBox\n',
+    )
+    await expect(
+      configToWorkspaceArgs(loadWorkspaceConfigFile(join(dir, 'ws.yaml'))),
+    ).rejects.toThrow('cannot load script')
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+// Mirrors python/tests/config/test_loader.py's mounts `vfs:` cases.
+// A `vfs` value carrying a colon names a class the same way `cli:`
+// names a spec, which is what lets a deployment mount its own backend
+// from YAML without registering a factory in a host program.
+describe('mounts vfs: reference', () => {
+  const CORE_RES = pathToFileURL(
+    resolve(fileURLToPath(import.meta.url), '../../../core/dist/index.js'),
+  ).href
+  const BACKEND =
+    `import {RAMVFS} from ${JSON.stringify(CORE_RES)}\n` +
+    'export class WikiVFS extends RAMVFS {}\n'
+
+  it('builds a VFS out of a file next to the config', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-res-'))
+    writeFileSync(join(dir, 'wiki.mjs'), BACKEND)
+    writeFileSync(join(dir, 'ws.yaml'), 'mounts:\n  /wiki:\n    vfs: ./wiki.mjs:WikiVFS\n')
+    const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
+    const args = await configToWorkspaceArgs(cfg)
+    expect(args.mounts['/wiki']?.vfs.constructor.name).toBe('WikiVFS')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('rebases a relative ref onto the config file directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-res-'))
+    writeFileSync(join(dir, 'wiki.mjs'), BACKEND)
+    writeFileSync(join(dir, 'ws.yaml'), 'mounts:\n  /wiki:\n    vfs: ./wiki.mjs:WikiVFS\n')
+    const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
+    expect(cfg.mounts['/wiki']?.vfs).toBe(`${join(dir, 'wiki.mjs')}:WikiVFS`)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('leaves a package specifier alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-res-'))
+    writeFileSync(join(dir, 'ws.yaml'), 'mounts:\n  /wiki:\n    vfs: my-backends:WikiVFS\n')
+    const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
+    expect(cfg.mounts['/wiki']?.vfs).toBe('my-backends:WikiVFS')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('leaves a registry name alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-res-'))
+    writeFileSync(join(dir, 'ws.yaml'), 'mounts:\n  /data:\n    vfs: ram\n')
+    const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
+    expect(cfg.mounts['/data']?.vfs).toBe('ram')
+    rmSync(dir, { recursive: true, force: true })
   })
 })
 
@@ -683,7 +1085,7 @@ describe('clis cli: reference', () => {
     writeFileSync(join(dir, 'tally.mjs'), SPEC)
     writeFileSync(
       join(dir, 'ws.yaml'),
-      'mounts:\n  /data:\n    resource: ram\n' +
+      'mounts:\n  /data:\n    vfs: ram\n' +
         'clis:\n  tally:\n    cli: ./tally.mjs:TALLY\n    config:\n      unit: kg\n',
     )
     const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
@@ -703,7 +1105,7 @@ describe('clis cli: reference', () => {
     writeFileSync(join(dir, 'tally.mjs'), SPEC)
     writeFileSync(
       join(dir, 'ws.yaml'),
-      'mounts:\n  /data:\n    resource: ram\nclis:\n  tally:\n    cli: ./tally.mjs:TALLY\n',
+      'mounts:\n  /data:\n    vfs: ram\nclis:\n  tally:\n    cli: ./tally.mjs:TALLY\n',
     )
     const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
     expect(cfg.clis?.tally?.cli).toBe(`${join(dir, 'tally.mjs')}:TALLY`)
@@ -716,7 +1118,7 @@ describe('clis cli: reference', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mirage-ref-'))
     writeFileSync(
       join(dir, 'ws.yaml'),
-      'mounts:\n  /data:\n    resource: ram\nclis:\n  jira:\n    cli: my-clis:JIRA\n',
+      'mounts:\n  /data:\n    vfs: ram\nclis:\n  jira:\n    cli: my-clis:JIRA\n',
     )
     const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
     expect(cfg.clis?.jira?.cli).toBe('my-clis:JIRA')
@@ -725,7 +1127,7 @@ describe('clis cli: reference', () => {
 
   it('a bare name still travels as a name', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { sl: { cli: 'slack' } },
     })
     const args = await configToWorkspaceArgs(cfg)
@@ -736,7 +1138,7 @@ describe('clis cli: reference', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mirage-ref-'))
     writeFileSync(join(dir, 'nope.mjs'), 'export const TALLY = {name: "tally"}\n')
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { tally: { cli: `${join(dir, 'nope.mjs')}:TALLY` } },
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/is not a CLISpec/)
@@ -754,7 +1156,7 @@ describe('clis cli: reference', () => {
         'export const TALLY = new CLISpec()\n',
     )
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { tally: { cli: `${join(dir, 'impostor.mjs')}:TALLY` } },
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/is not a CLISpec/)
@@ -769,7 +1171,7 @@ describe('clis cli: reference', () => {
         '  subcommands: [{name: "sum", aliases: [], options: []}]}\n',
     )
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { tally: { cli: `${join(dir, 'deep.mjs')}:TALLY` } },
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/is not a CLISpec/)
@@ -783,7 +1185,7 @@ describe('clis cli: reference', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mirage-ref-'))
     writeFileSync(
       join(dir, 'ws.yaml'),
-      'mounts:\n  /data:\n    resource: ram\nclis:\n' +
+      'mounts:\n  /data:\n    vfs: ram\nclis:\n' +
         '  a:\n    cli: "@scope/my-clis:JIRA"\n' +
         '  b:\n    cli: my-clis/specs:JIRA\n',
     )
@@ -795,7 +1197,7 @@ describe('clis cli: reference', () => {
 
   it('reports a ref whose file is missing', async () => {
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { tally: { cli: '/nonexistent/tally.mjs:TALLY' } },
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/cannot load script/)
@@ -805,7 +1207,7 @@ describe('clis cli: reference', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mirage-ref-'))
     writeFileSync(join(dir, 'other.mjs'), 'export const OTHER = 1\n')
     const cfg = loadWorkspaceConfig({
-      mounts: { '/data': { resource: 'ram' } },
+      mounts: { '/data': { vfs: 'ram' } },
       clis: { tally: { cli: `${join(dir, 'other.mjs')}:TALLY` } },
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/"TALLY" not found in/)
@@ -827,7 +1229,7 @@ describe('CLI to daemon round trip', () => {
       [
         'mounts:',
         '  /:',
-        '    resource: ram',
+        '    vfs: ram',
         'default_session_id: mysess',
         'cache:',
         '  type: ram',
@@ -842,12 +1244,86 @@ describe('CLI to daemon round trip', () => {
     expect(cfg.defaultSessionId).toBe('mysess')
     rmSync(dir, { recursive: true, force: true })
   })
+
+  it('rebases a profile policy path onto the config dir before loading it', async () => {
+    // The check door validates the profile without reading its policy:
+    // reading at validation resolved `roles/x.js` against the process
+    // cwd (this test's cwd is the package, not the config dir), so
+    // checking a file config from anywhere else failed with ENOENT.
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-profile-policy-'))
+    mkdirSync(join(dir, 'roles'))
+    writeFileSync(join(dir, 'roles', 'x.js'), 'function preCommand() { return null }\n')
+    const file = join(dir, 'w.yaml')
+    writeFileSync(
+      file,
+      [
+        'mounts:',
+        '  /data:',
+        '    vfs: ram',
+        'profiles:',
+        '  release: {policy: {script: roles/x.js, runtime: quickjs}}',
+        '',
+      ].join('\n'),
+    )
+    const wire = checkWorkspaceConfigFile(file)
+    const profiles = wire.profiles as Record<string, { policy: Record<string, unknown> }>
+    expect(profiles.release?.policy.script).toBe(join(dir, 'roles', 'x.js'))
+    const args = await configToWorkspaceArgs(loadWorkspaceConfigFile(file))
+    const release = args.options.profiles?.release
+    expect(release?.policy?.script).toBeInstanceOf(ScriptSource)
+    expect((release?.policy?.script as ScriptSource).source).toBe(
+      'function preCommand() { return null }\n',
+    )
+    expect(release?.policy?.runtime).toBe('quickjs')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('refuses a profile policy that states no runtime', () => {
+    // There is no default engine: a policy the config does not pin to
+    // an engine is refused at load, not guessed at the gate.
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-profile-policy-'))
+    const file = join(dir, 'w.yaml')
+    writeFileSync(
+      file,
+      [
+        'mounts:',
+        '  /data:',
+        '    vfs: ram',
+        'profiles:',
+        '  release: {policy: {script: roles/x.js}}',
+        '',
+      ].join('\n'),
+    )
+    expect(() => checkWorkspaceConfigFile(file)).toThrow(/runtime names the engine the policy/)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('tells a profile written with script and runtime where the keys went', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-profile-policy-'))
+    const file = join(dir, 'w.yaml')
+    writeFileSync(
+      file,
+      [
+        'mounts:',
+        '  /data:',
+        '    vfs: ram',
+        'profiles:',
+        '  release: {script: roles/x.js, runtime: quickjs}',
+        '',
+      ].join('\n'),
+    )
+    expect(() => checkWorkspaceConfigFile(file)).toThrow(/now one policy block/)
+    rmSync(dir, { recursive: true, force: true })
+  })
 })
 
-// integ/fixtures/config/{rejected,accepted}.json are the contract: the
-// python suite (tests/config/test_loader.py) reads the same two files, so
-// a config that loads in one language and not the other fails a test
-// until both loaders agree.
+// integ/fixtures/config/*.json are the contract: the python suite
+// (tests/config/test_loader.py) reads the same files, so a config that
+// loads in one language and not the other fails a test until both
+// loaders agree. The accepted half is one file per subject: every config
+// block that is not a permission verb, then a verb each.
+const ACCEPTED_FIXTURES = ['blocks', 'allow', 'ask', 'deny'] as const
+
 function fixtureCases(name: string): { name: string; config: Record<string, unknown> }[] {
   const path = fileURLToPath(
     new URL(`../../../../integ/fixtures/config/${name}.json`, import.meta.url),
@@ -871,12 +1347,12 @@ describe('shared rejection fixture', () => {
   })
 })
 
-describe('shared acceptance fixture', () => {
+describe.each(ACCEPTED_FIXTURES)('shared acceptance fixture: %s', (fixture) => {
   // The key tables are copied by hand from Python's models, so the drift
   // this catches is a field added there and never mirrored here: every
-  // key of every block appears in the fixture, and an unmirrored one
+  // key of every block appears in the accepted set, and an unmirrored one
   // comes back as `unknown ... key`.
-  const cases = fixtureCases('accepted')
+  const cases = fixtureCases(fixture)
 
   it('has cases', () => {
     expect(cases.length).toBeGreaterThan(0)
@@ -885,4 +1361,248 @@ describe('shared acceptance fixture', () => {
   it.each(cases)('accepts $name', ({ config }) => {
     expect(() => loadWorkspaceConfig(config)).not.toThrow()
   })
+})
+
+describe('env block', () => {
+  it('parses literal and managed entries, ${VAR} interpolated', () => {
+    const cfg = loadWorkspaceConfig(
+      {
+        mounts: { '/data': { vfs: 'ram' } },
+        env: {
+          GREETING: 'hello ${WHO}',
+          EDITOR: { value: 'vim', readonly: true, export: false },
+          TOKEN: { from: 'aws-sm', ref: 'prod/tokens', key: 'api', fetch: 'eager' },
+          HOME_DIR: { from: 'env' },
+        },
+      },
+      { WHO: 'world' },
+    )
+    expect(cfg.env).toEqual({
+      GREETING: 'hello world',
+      EDITOR: { value: 'vim', readonly: true, export: false },
+      TOKEN: { from: 'aws-sm', ref: 'prod/tokens', key: 'api', fetch: 'eager' },
+      HOME_DIR: { from: 'env' },
+    })
+  })
+
+  it('is absent by default and absent from the workspace args', async () => {
+    const cfg = loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram' } } })
+    expect(cfg.env).toBeUndefined()
+    const args = await configToWorkspaceArgs(cfg)
+    expect('env' in args.options).toBe(false)
+  })
+
+  it('passes the block through to the workspace options', async () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/': { vfs: 'ram' } },
+      env: { APP: 'integ', T: { from: 'env' } },
+    })
+    const args = await configToWorkspaceArgs(cfg)
+    expect(args.options.env).toEqual({ APP: 'integ', T: { from: 'env' } })
+  })
+
+  it('surfaces entry refusals as config errors naming the variable', () => {
+    const base = { mounts: { '/': { vfs: 'ram' } } }
+    expect(() => loadWorkspaceConfig({ ...base, env: { X: { value: 'v', from: 'env' } } })).toThrow(
+      /env\.X.*not both/,
+    )
+    expect(() =>
+      loadWorkspaceConfig({ ...base, env: { X: { from: 'env', export: false } } }),
+    ).toThrow(/always exported/)
+    expect(() => loadWorkspaceConfig({ ...base, env: { X: { value: 'v', key: 'k' } } })).toThrow(
+      /managed entries/,
+    )
+    expect(() => loadWorkspaceConfig({ ...base, env: { X: 5 } })).toThrow(
+      /env\.X.*string or a mapping/,
+    )
+    expect(() => loadWorkspaceConfig({ ...base, env: 'nope' })).toThrow(/must be a mapping/)
+  })
+})
+
+describe('the secrets block', () => {
+  it('declares instances and keeps their config keys verbatim', () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/': { vfs: 'ram' } },
+      secrets: {
+        sm: {
+          source: 'aws-sm',
+          config: { region: 'us-east-2', aws_access_key_id: { from: 'env', key: 'KEY_ID' } },
+        },
+      },
+    })
+    expect(cfg.secrets).toEqual({
+      sm: {
+        source: 'aws-sm',
+        config: { region: 'us-east-2', aws_access_key_id: { from: 'env', key: 'KEY_ID' } },
+      },
+    })
+  })
+
+  it('is absent by default', async () => {
+    const cfg = loadWorkspaceConfig({ mounts: { '/': { vfs: 'ram' } } })
+    expect(cfg.secrets).toBeUndefined()
+    const args = await configToWorkspaceArgs(cfg)
+    expect('secrets' in args.options).toBe(false)
+  })
+
+  it('passes the block through to the workspace options', async () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/': { vfs: 'ram' } },
+      secrets: { sm: { source: 'aws-sm', config: { region: 'us-east-2' } } },
+    })
+    const args = await configToWorkspaceArgs(cfg)
+    expect(args.options.secrets).toEqual({
+      sm: { source: 'aws-sm', config: { region: 'us-east-2' } },
+    })
+  })
+
+  it('builds no source when no mount or CLI config names one', async () => {
+    // Building a source reads its own bootstrap pointers, and a dotenv
+    // file is I/O. With nothing to serve, a source whose file is
+    // missing must not stop the workspace from being created: the
+    // managed variables that do read it resolve at command time.
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/': { vfs: 'ram' } },
+      secrets: {
+        sm: {
+          source: 'aws-sm',
+          config: { region: { from: 'dotenv', ref: '/no/such/file', key: 'R' } },
+        },
+      },
+    })
+    await expect(configToWorkspaceArgs(cfg)).resolves.toBeDefined()
+  })
+
+  it('builds the source when a mount config does name one', async () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: {
+        '/': { vfs: 'ram', config: { root: { from: 'sm', ref: 'r', key: 'K' } } },
+      },
+      secrets: {
+        sm: {
+          source: 'aws-sm',
+          config: { region: { from: 'dotenv', ref: '/no/such/file', key: 'R' } },
+        },
+      },
+    })
+    await expect(configToWorkspaceArgs(cfg)).rejects.toThrow()
+  })
+
+  it('surfaces refusals as config errors naming the instance', () => {
+    const base = { mounts: { '/': { vfs: 'ram' } } }
+    expect(() =>
+      loadWorkspaceConfig({
+        ...base,
+        secrets: { sm: { source: 'aws-sm', config: { region: { from: 'aws-sm', key: 'r' } } } },
+      }),
+    ).toThrow(/secrets\.sm.*needs no config of its own/s)
+    expect(() => loadWorkspaceConfig({ ...base, secrets: { sm: { kind: 'aws-sm' } } })).toThrow(
+      /secrets\.sm/,
+    )
+    expect(() => loadWorkspaceConfig({ ...base, secrets: { sm: 5 } })).toThrow(
+      /secrets\.sm.*must be a mapping/,
+    )
+    expect(() => loadWorkspaceConfig({ ...base, secrets: 'nope' })).toThrow(/must be a mapping/)
+  })
+})
+
+describe('a mount or CLI credential from the secrets plane', () => {
+  it('resolves a mount pointer against a declared instance', async () => {
+    process.env.CONFIG_DOOR_PROBE = 'xoxb-from-env'
+    const args = await configToWorkspaceArgs(
+      loadWorkspaceConfig({
+        mounts: {
+          '/slack': {
+            vfs: 'slack',
+            config: { token: { from: 'ambient', key: 'CONFIG_DOOR_PROBE' } },
+          },
+        },
+        secrets: { ambient: { source: 'env' } },
+      }),
+    )
+    const entry = args.mounts['/slack']
+    expect(entry).toBeDefined()
+    expect(JSON.stringify(entry?.vfs)).not.toContain('CONFIG_DOOR_PROBE')
+  })
+
+  it('resolves a CLI pointer against the same instances', async () => {
+    // The sources reached mount construction and not `buildCliEntries`,
+    // so the CLI's config model was handed the pointer itself.
+    process.env.CONFIG_DOOR_CLI_PROBE = 'xoxb-for-the-cli'
+    const args = await configToWorkspaceArgs(
+      loadWorkspaceConfig({
+        mounts: { '/data': { vfs: 'ram' } },
+        clis: {
+          sl: {
+            cli: 'slack',
+            config: { token: { from: 'ambient', key: 'CONFIG_DOOR_CLI_PROBE' } },
+          },
+        },
+        secrets: { ambient: { source: 'env' } },
+      }),
+    )
+    expect(args.options.clis?.sl).toEqual(['slack', { token: 'xoxb-for-the-cli' }])
+  })
+
+  it('resolves a pointer with no secrets block at all', async () => {
+    process.env.CONFIG_DOOR_BARE_PROBE = 'xoxb-ambient'
+    const args = await configToWorkspaceArgs(
+      loadWorkspaceConfig({
+        mounts: { '/data': { vfs: 'ram' } },
+        clis: {
+          sl: { cli: 'slack', config: { token: { from: 'env', key: 'CONFIG_DOOR_BARE_PROBE' } } },
+        },
+      }),
+    )
+    expect(args.options.clis?.sl).toEqual(['slack', { token: 'xoxb-ambient' }])
+  })
+})
+
+describe('config interpolation', () => {
+  it('keeps a __proto__ key through the walk', () => {
+    // The copy walks the whole config, so keyed assignment would drop
+    // a `__proto__` source instance or config field before anything
+    // downstream saw it.
+    const cfg = Object.fromEntries([
+      ['__proto__', 'kept'],
+      ['plain', 'v'],
+    ])
+    const out = interpolateEnv(cfg, {})
+    expect(Object.hasOwn(out, '__proto__')).toBe(true)
+    expect((out as Record<string, unknown>).__proto__).toBe('kept')
+  })
+})
+
+it('loads global and profile command limits from config', async () => {
+  const cfg = loadWorkspaceConfig({
+    mounts: { '/data': { vfs: 'ram', mode: 'WRITE' } },
+    command_limits: { head: { max_lines: 2 } },
+    profiles: { research: { command_limits: { head: { max_lines: 4 } } } },
+  })
+  const args = await configToWorkspaceArgs(cfg)
+  const ws = new Workspace(args.mounts, args.options)
+  try {
+    ws.createSession('research', { profile: 'research' })
+    for (const [sessionId, expected] of [
+      [undefined, '1\n2\n'],
+      ['research', '1\n2\n3\n'],
+    ] as const) {
+      const result = await ws.shell(
+        'seq 1 5 | head -n 3',
+        sessionId === undefined ? {} : { sessionId },
+      )
+      expect(result.stdoutText).toBe(expected)
+    }
+  } finally {
+    await ws.close()
+  }
+})
+
+it.each([
+  { command_limits: { head: { max_line: 2 } } },
+  { command_limits: { sleep: { timeout_seconds: -1 } } },
+  { command_limits: { sleep: { timeout_seconds: Infinity } } },
+  { profiles: { research: { command_limits: { head: { max_line: 2 } } } } },
+])('rejects bad command limit fields', (block) => {
+  expect(() => loadWorkspaceConfig({ mounts: { '/data': { vfs: 'ram' } }, ...block })).toThrow()
 })

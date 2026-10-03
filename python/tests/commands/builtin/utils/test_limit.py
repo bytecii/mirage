@@ -17,10 +17,12 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from mirage.commands.builtin.utils.limit import (CommandTimeoutError,
-                                                 apply_limit,
-                                                 maybe_with_timeout,
-                                                 run_with_timeout)
+from mirage.commands.builtin.utils.limit import (
+    apply_limit,
+    maybe_with_timeout,
+    run_with_timeout,
+)
+from mirage.commands.errors import CommandTimeoutError
 from mirage.io.types import materialize
 from mirage.types import Limit, OnExceed
 
@@ -29,7 +31,7 @@ _TEN = b"".join(f"line{i}\n".encode() for i in range(10))
 
 async def _stream(data: bytes) -> AsyncIterator[bytes]:
     for i in range(0, len(data), 7):
-        yield data[i:i + 7]
+        yield data[i : i + 7]
 
 
 async def _slow_stream() -> AsyncIterator[bytes]:
@@ -108,14 +110,16 @@ def test_maybe_with_timeout_passthrough_when_no_timeout():
 
 def test_maybe_with_timeout_passthrough_when_nonpositive():
     stream = _stream(_TEN)
-    assert maybe_with_timeout(stream, Limit(timeout_seconds=0),
-                              "cat") is stream
+    assert (
+        maybe_with_timeout(stream, Limit(timeout_seconds=0), "cat") is stream
+    )
 
 
 @pytest.mark.asyncio
 async def test_maybe_with_timeout_wraps_and_fires():
-    wrapped = maybe_with_timeout(_slow_stream(), Limit(timeout_seconds=0.1),
-                                 "cat")
+    wrapped = maybe_with_timeout(
+        _slow_stream(), Limit(timeout_seconds=0.1), "cat"
+    )
     with pytest.raises(CommandTimeoutError):
         await materialize(wrapped)
 
@@ -134,3 +138,46 @@ async def test_run_with_timeout_no_timeout_when_seconds_falsy():
 async def test_run_with_timeout_raises_on_overrun():
     with pytest.raises(CommandTimeoutError):
         await run_with_timeout(_sleep_forever(), 0.1, "sleep")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunk_size", [1, 2, 20])
+@pytest.mark.parametrize(
+    "data,limit,expected,truncated",
+    [
+        (b"a\nb\n", Limit(max_lines=2), b"a\nb\n", False),
+        (b"a\nb\nc\nd\n", Limit(max_lines=2, max_bytes=7), b"a\nb\n", True),
+        (b"abc", Limit(max_lines=0), b"", True),
+        (b"abc", Limit(max_bytes=0), b"", True),
+        (b"abc", Limit(max_bytes=3), b"abc", False),
+        (b"a\nb", Limit(max_lines=1), b"a\n", True),
+    ],
+)
+async def test_bounds_are_independent_of_chunks(
+    chunk_size, data, limit, expected, truncated
+):
+
+    async def source():
+        for at in range(0, len(data), chunk_size):
+            yield data[at : at + chunk_size]
+
+    result, io = await apply_limit(source(), limit)
+    assert await materialize(result) == expected
+    assert ("truncated" in await io.stderr_str()) is truncated
+
+
+@pytest.mark.asyncio
+async def test_limit_closes_its_source_when_output_is_cut():
+    closed = False
+
+    async def source():
+        nonlocal closed
+        try:
+            yield b"a\nb\nc\n"
+            pytest.fail("a capped reader must not request another chunk")
+        finally:
+            closed = True
+
+    result, io = await apply_limit(source(), Limit(max_lines=1))
+    assert await materialize(result) == b"a\n"
+    assert closed

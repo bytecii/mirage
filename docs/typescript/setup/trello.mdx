@@ -4,7 +4,7 @@ icon: trello
 description: Mount Trello boards, lists, and cards as a Mirage filesystem.
 ---
 
-`TrelloResource` exposes a Trello workspace as a tree of boards, lists, and cards.
+`TrelloVFS` exposes a Trello workspace as a tree of boards, lists, and cards.
 
 Setup steps for the API key/token live at [Trello Credentials](/home/setup/trello).
 
@@ -15,15 +15,15 @@ pnpm add @struktoai/mirage-node
 ```
 
 ```ts
-import { MountMode, TrelloResource, Workspace } from '@struktoai/mirage-node'
+import { MountMode, TrelloVFS, Workspace } from '@struktoai/mirage-node'
 
-const trello = new TrelloResource({
+const trello = new TrelloVFS({
   apiKey: process.env.TRELLO_API_KEY!,
   apiToken: process.env.TRELLO_API_TOKEN!,
 })
 
 const ws = new Workspace({ '/trello': trello }, { mode: MountMode.READ })
-await ws.execute('ls /trello/')
+await ws.shell('ls /trello/')
 ```
 
 ## Browser
@@ -33,9 +33,9 @@ pnpm add @struktoai/mirage-browser
 ```
 
 ```ts
-import { MountMode, TrelloResource, Workspace } from '@struktoai/mirage-browser'
+import { MountMode, TrelloVFS, Workspace } from '@struktoai/mirage-browser'
 
-const trello = new TrelloResource({
+const trello = new TrelloVFS({
   apiKey: TRELLO_API_KEY,
   apiToken: TRELLO_API_TOKEN,
 })
@@ -47,12 +47,12 @@ const trello = new TrelloResource({
 | --- | --- | --- |
 | `apiKey` | required | Trello API key. Redacted in snapshots. |
 | `apiToken` | required | Trello API token. Redacted in snapshots. |
-| `workspaceId` | none | Restrict to a single workspace. |
-| `boardIds` | none | Optional allowlist of board IDs. |
+| `workspaceId` | none | Restrict to a single workspace. The `trello` commands refuse an id outside it. |
+| `boardIds` | none | Optional allowlist of board IDs. The `trello` commands refuse an id outside it. |
 | `baseUrl` | `https://api.trello.com/1` | Override for Enterprise instances. |
 
 ## Mount mode
 
 `read`.
 
-For board/list/card layout see the [Python Trello docs](/python/resource/trello).
+For board/list/card layout see the [Python Trello docs](/python/vfs/trello).

@@ -1,14 +1,22 @@
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 
-from mirage.commands.builtin.utils.lines import split_lines
-from mirage.commands.builtin.utils.operands import (materialized_read,
-                                                    merge_split_errors,
-                                                    split_readable)
-from mirage.commands.builtin.utils.stream import _read_stdin_async
+from mirage.commands.builtin.utils.lines import map_lines
+from mirage.commands.builtin.utils.operands import (
+    materialized_read,
+    merge_split_errors,
+    split_readable,
+)
+from mirage.commands.builtin.utils.stream import (
+    read_stdin_async,
+    stdin_stat,
+    stdin_stream,
+)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
 
@@ -37,8 +45,8 @@ def _fold_line(line: str, width: int, break_spaces: bool) -> str:
         if break_spaces:
             idx = line.rfind(" ", 0, width)
             if idx > 0:
-                parts.append(line[:idx + 1])
-                line = line[idx + 1:]
+                parts.append(line[: idx + 1])
+                line = line[idx + 1 :]
             else:
                 parts.append(line[:width])
                 line = line[width:]
@@ -57,7 +65,7 @@ def _fold_bytes(data: bytes, width: int) -> bytes:
         ending = b"\n" if line.endswith(b"\n") else b""
         body = line[:-1] if ending else line
         for offset in range(0, len(body), width):
-            output.extend(body[offset:offset + width])
+            output.extend(body[offset : offset + width])
             if offset + width < len(body) or ending:
                 output.extend(b"\n")
     return bytes(output)
@@ -72,29 +80,28 @@ async def fold(
     break_spaces: bool = False,
     count_bytes: bool = False,
 ) -> tuple[ByteSource | None, IOResult]:
+    fold_line = partial(_fold_line, width=width, break_spaces=break_spaces)
     if paths:
-        all_lines: list[str] = []
+        # GNU folds each file on its own, a column fresh at its start, and
+        # writes a newline only where the file had one: `ab` then `cd` fold
+        # to `abcd`, not to two lines.
+        parts: list[bytes] = []
         for p in paths:
             raw = await read_bytes(p)
             if count_bytes:
-                all_lines.append(
-                    _fold_bytes(raw,
-                                width).decode(errors="replace").rstrip("\n"))
+                parts.append(_fold_bytes(raw, width))
                 continue
-            data = raw.decode(errors="replace")
-            for line in split_lines(data):
-                all_lines.append(_fold_line(line, width, break_spaces))
-        return (("\n".join(all_lines) +
-                 "\n").encode() if all_lines else b""), IOResult()
+            parts.append(
+                map_lines(raw.decode(errors="replace"), fold_line).encode()
+            )
+        return b"".join(parts), IOResult()
 
-    stdin_raw = await _read_stdin_async(stdin)
-    if stdin_raw is None:
-        raise ValueError("fold: missing operand")
+    stdin_raw = await read_stdin_async(stdin) or b""
     if count_bytes:
         return _fold_bytes(stdin_raw, width), IOResult()
-    lines = split_lines(stdin_raw.decode(errors="replace"))
-    result = [_fold_line(ln, width, break_spaces) for ln in lines]
-    return (("\n".join(result) + "\n").encode() if result else b""), IOResult()
+    return map_lines(
+        stdin_raw.decode(errors="replace"), fold_line
+    ).encode(), IOResult()
 
 
 async def fold_generic(
@@ -114,17 +121,23 @@ async def fold_generic(
         stream (PolymorphicReadFn): Bound reader called as
             ``stream(path)``.
     """
+    stat = stdin_stat(stat)
+    stream = stdin_stream(stream, opts.stdin)
     parsed = parse_flags(opts.flags)
     readable, err = await split_readable(paths, stat, "fold")
     if err and not readable:
         return None, IOResult(exit_code=1, stderr=err)
     return await merge_split_errors(
-        await fold(readable,
-                   read_bytes=materialized_read(stream),
-                   stdin=opts.stdin,
-                   width=parsed.width,
-                   break_spaces=parsed.break_spaces,
-                   count_bytes=parsed.count_bytes), err)
+        await fold(
+            readable,
+            read_bytes=materialized_read(stream),
+            stdin=opts.stdin,
+            width=parsed.width,
+            break_spaces=parsed.break_spaces,
+            count_bytes=parsed.count_bytes,
+        ),
+        err,
+    )
 
 
 __all__ = ["fold", "fold_generic"]

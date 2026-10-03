@@ -1,31 +1,27 @@
 from mirage.commands.builtin.generic.archive.types import Entry, MemberKind
-from mirage.commands.builtin.generic.archive.walk import (OTHER_FILESYSTEM,
-                                                          DirProbe, StatFn,
-                                                          WalkFn, scan_operand)
+from mirage.commands.builtin.generic.archive.walk import (
+    OTHER_FILESYSTEM,
+    DirProbe,
+    StatFn,
+    WalkFn,
+    scan_operand,
+)
+from mirage.commands.builtin.generic.tar import constants
 from mirage.commands.builtin.generic.tar.types import CreateResult, Member
 from mirage.ops.types import LinkView, MountView
 from mirage.types import PathSpec
+from mirage.utils.errors import FS_ERRORS, fs_strerror, walk_refusal
 from mirage.utils.fnmatch import fnmatch
 from mirage.utils.path import respell_one
 
-# Every diagnostic below is GNU tar 1.35's own wording, pinned on
-# debian:stable-slim; only the hint line is mirage's, for the reason
-# usage.old_option_error gives (mirage's tar serves no --usage).
-USAGE_HINT = "Try 'tar --help' for more information."
-EMPTY_ARCHIVE = "tar: Cowardly refusing to create an empty archive"
-FATAL_TRAILER = "tar: Error is not recoverable: exiting now"
-ERROR_TRAILER = "tar: Exiting with failure status due to previous errors"
-SELF_DUMP = "archive cannot contain itself; not dumped"
-# The exit GNU gives an operand it could not read, and a -C it could not
-# enter. Both are fatal for the whole run, not per-operand.
-CREATE_ERROR_EXIT = 2
-
 
 def _refusal(notices: list[str]) -> CreateResult:
-    return CreateResult(members=(),
-                        notices=tuple(notices),
-                        exit_code=CREATE_ERROR_EXIT,
-                        write=False)
+    return CreateResult(
+        members=(),
+        notices=tuple(notices),
+        exit_code=constants.CREATE_ERROR_EXIT,
+        write=False,
+    )
 
 
 def excluded(name: str, pattern: str) -> bool:
@@ -49,7 +45,7 @@ def excluded(name: str, pattern: str) -> bool:
         return True
     cut = bare.find("/")
     while cut != -1:
-        if fnmatch(bare[cut + 1:], pattern):
+        if fnmatch(bare[cut + 1 :], pattern):
             return True
         cut = bare.find("/", cut + 1)
     return False
@@ -107,8 +103,8 @@ def strip_prefix(spelled: str) -> tuple[str, str]:
         if segment == "..":
             last = i
     if last >= 0:
-        rest = "/".join(segments[last + 1:])
-        prefix = "/".join(segments[:last + 1])
+        rest = "/".join(segments[last + 1 :])
+        prefix = "/".join(segments[: last + 1])
         return rest, prefix + "/" if rest else prefix
     if spelled.startswith("/"):
         return spelled.lstrip("/"), "/"
@@ -124,8 +120,9 @@ def removing_leading(prefix: str) -> str:
     return f"tar: Removing leading `{prefix}' from member names"
 
 
-def _announce_prefix(prefix: str, dropped: list[str],
-                     notices: list[str]) -> None:
+def _announce_prefix(
+    prefix: str, dropped: list[str], notices: list[str]
+) -> None:
     """Announce a removed prefix the first time this run drops it.
 
     Emitted in place rather than collected and prepended, because GNU
@@ -163,6 +160,33 @@ def member_name(spelled: str, kind: MemberKind) -> str:
     return name
 
 
+async def check_directories(
+    directories: list[PathSpec], is_dir: DirProbe, stat: StatFn
+) -> list[str]:
+    """Check each chdir before writing or extracting members.
+
+    Args:
+        directories (list[PathSpec]): cumulative -C operands in line order.
+        is_dir (DirProbe): directory probe, including implicit directories.
+        stat (StatFn): distinguishes a regular file from a missing directory.
+    """
+    for directory in directories:
+        try:
+            if directory.walk_error is not None:
+                raise walk_refusal(directory)
+            if await is_dir(directory):
+                continue
+            await stat(directory)
+            reason = "Not a directory"
+        except FS_ERRORS as exc:
+            reason = fs_strerror(exc) or str(exc)
+        return [
+            f"tar: {directory.raw_path}: Cannot open: {reason}",
+            constants.FATAL_TRAILER,
+        ]
+    return []
+
+
 async def plan_create(
     paths: list[PathSpec],
     *,
@@ -175,6 +199,7 @@ async def plan_create(
     directories: list[PathSpec] | None = None,
     links: LinkView | None = None,
     mounts: MountView | None = None,
+    one_file_system: bool = False,
 ) -> CreateResult:
     """Decide every member of a new archive, before writing any of it.
 
@@ -200,37 +225,52 @@ async def plan_create(
             each one before reading anything.
         links (LinkView | None): the namespace's symlink facts.
         mounts (MountView | None): where the mount boundaries are.
+        one_file_system (bool): --one-file-system, asked for, so a mount
+            left out goes unreported, as in GNU.
     """
     if not paths:
-        return _refusal([EMPTY_ARCHIVE, USAGE_HINT])
-    for directory in directories or []:
-        # GNU chdirs at each -C in turn, before reading a single
-        # operand, so the FIRST one it cannot enter is fatal for the
-        # whole run and no members are written. Checking only the last
-        # would archive the operands that followed a bad earlier one.
-        if not await is_dir(directory):
-            return _refusal([
-                f"tar: {directory.raw_path}: Cannot open: "
-                "No such file or directory", FATAL_TRAILER
-            ])
+        return _refusal([constants.EMPTY_ARCHIVE, constants.USAGE_HINT])
+    directory_errors = await check_directories(directories or [], is_dir, stat)
+    if directory_errors:
+        return _refusal(directory_errors)
     members: list[Member] = []
     notices: list[str] = []
     dropped: list[str] = []
     exit_code = 0
     for path in paths:
+        if path.walk_error is not None:
+            # The walk refused the operand before tar ran (the empty
+            # name, a link loop), so nothing is there to scan; the prefix
+            # it would strip is still announced first, as for any operand
+            # it cannot stat.
+            if path.raw_path == "":
+                notices.append(constants.EMPTY_MEMBER)
+            _announce_prefix(
+                strip_prefix(path.raw_path.rstrip("/") or path.raw_path)[1],
+                dropped,
+                notices,
+            )
+            notices.append(
+                f"tar: {path.raw_path}: Cannot stat: "
+                f"{fs_strerror(walk_refusal(path))}"
+            )
+            exit_code = constants.CREATE_ERROR_EXIT
+            continue
         # GNU strips a trailing slash off the operand before naming the
         # member, and re-adds one only for a member that really is a
         # directory: `tar -cf a.tar dlink/` stores `dlink`, the symlink,
         # exactly as `tar -cf a.tar dlink` does.
         raw = path.raw_path.rstrip("/") or path.raw_path
         base = path.virtual.rstrip("/") or "/"
-        scan = await scan_operand(path,
-                                  stat=stat,
-                                  walk=walk,
-                                  links=links,
-                                  mounts=mounts,
-                                  dereference=dereference,
-                                  recurse=True)
+        scan = await scan_operand(
+            path,
+            stat=stat,
+            walk=walk,
+            links=links,
+            mounts=mounts,
+            dereference=dereference,
+            recurse=True,
+        )
         # GNU announces the prefix it refuses to store before it reports
         # what it could not read, and keeps both in operand order -- a
         # later operand's notice must not jump ahead of an earlier
@@ -241,40 +281,58 @@ async def plan_create(
         # Each name is then stripped on its own, so one operand can owe
         # two notices: `tar -cf a.tar ..` drops `..` from the directory
         # and `../` from everything under it.
-        named: list[tuple[str, Entry]] = []
+        named: list[tuple[str, str, Entry]] = []
         for entry in scan.entries:
             spelled = respell_one(entry.name_path, base, raw)
             _announce_prefix(strip_prefix(spelled)[1], dropped, notices)
-            named.append((member_name(spelled, entry.kind), entry))
+            named.append((member_name(spelled, entry.kind), spelled, entry))
         for problem in scan.problems:
             shown = respell_one(problem.path, base, raw)
+            # A link followed onto another mount is a crossing too, which
+            # --one-file-system leaves unreported, as in GNU.
+            if one_file_system and problem.reason == OTHER_FILESYSTEM:
+                continue
+            if problem.unreadable:
+                # A directory the walk could not open: GNU names it,
+                # keeps its entry, and fails the run.
+                notices.append(f"tar: {shown}: Cannot open: {problem.reason}")
+                exit_code = constants.CREATE_ERROR_EXIT
+                continue
             if not problem.fatal:
                 notices.append(f"tar: {shown}: {problem.reason}")
                 continue
             notices.append(f"tar: {shown}: Cannot stat: {problem.reason}")
-            exit_code = CREATE_ERROR_EXIT
+            exit_code = constants.CREATE_ERROR_EXIT
         if scan.missing:
             continue
-        for crossing in scan.crossings:
+        for crossing in [] if one_file_system else scan.crossings:
             shown = member_name(respell_one(crossing, base, raw), "dir")
             notices.append(f"tar: {shown}: {OTHER_FILESYSTEM}")
-        keep = set(pruned([name for name, _ in named], exclude))
-        for name, entry in named:
+        keep = set(pruned([name for name, _, _ in named], exclude))
+        for name, spelled, entry in named:
             if name not in keep:
                 continue
             read = entry.read
-            if read is not None and read.virtual == archive.virtual:
-                notices.append(f"tar: {name}: {SELF_DUMP}")
+            if (
+                archive.raw_path != "-"
+                and read is not None
+                and read.virtual == archive.virtual
+            ):
+                notices.append(f"tar: {name}: {constants.SELF_DUMP}")
                 continue
             members.append(
-                Member(name=name,
-                       kind=entry.kind,
-                       path=entry.read,
-                       target=entry.target))
+                Member(
+                    name=name,
+                    kind=entry.kind,
+                    path=entry.read,
+                    target=entry.target,
+                    spelled=spelled,
+                )
+            )
     if exit_code:
         # GNU closes a run that failed an operand with one trailer, after
         # everything it did manage to name.
-        notices.append(ERROR_TRAILER)
-    return CreateResult(members=tuple(members),
-                        notices=tuple(notices),
-                        exit_code=exit_code)
+        notices.append(constants.ERROR_TRAILER)
+    return CreateResult(
+        members=tuple(members), notices=tuple(notices), exit_code=exit_code
+    )

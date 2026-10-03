@@ -57,6 +57,11 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-r' }),
       new Option({ short: '-R', long: '--recursive' }),
       new Option({ short: '-a', long: '--archive' }),
+      // The link policy: the last of these and -a wins.
+      new Option({ short: '-L', long: '--dereference' }),
+      new Option({ short: '-P', long: '--no-dereference' }),
+      new Option({ short: '-H' }),
+      new Option({ short: '-d' }),
       // Non-interactive control plane (rm precedent): -f/-i are accepted
       // no-ops — there is no prompt, and an overwrite proceeds unless
       // -n/--update say otherwise.
@@ -80,12 +85,13 @@ export const SPECS: Record<string, CommandSpec> = {
         valueOptional: true,
         shortValue: false,
       }),
-      new Option({ short: '-S', long: '--suffix', type: 'str' }),
-      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
-      new Option({ short: '-T', long: '--no-target-directory' }),
       // PathSpec normalizes trailing slashes everywhere, so the GNU
       // spelling is an accepted no-op.
       new Option({ long: '--strip-trailing-slashes' }),
+      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
+      new Option({ short: '-T', long: '--no-target-directory' }),
+      new Option({ short: '-S', long: '--suffix', type: 'str' }),
+      new Option({ short: '-x', long: '--one-file-system' }),
     ],
     rest: new Operand({ type: 'path' }),
   }),
@@ -93,12 +99,81 @@ export const SPECS: Record<string, CommandSpec> = {
     options: [new Option({ short: '-z', long: '--zero' })],
     rest: new Operand({ type: 'str' }),
   }),
+  // getfattr and setfattr run in the executor over the op door's attribute
+  // ops, like readlink and ln, so these specs are their grammar and no
+  // builder binds them. Pinned against Debian's attr 2.5.2;
+  // --one-file-system, --restore and --raw are not offered.
+  getfattr: new CommandSpec({
+    options: [
+      new Option({
+        short: '-n',
+        long: '--name',
+        type: 'str',
+        description: 'get the named extended attribute value',
+      }),
+      new Option({ short: '-d', long: '--dump', description: 'get all extended attribute values' }),
+      new Option({
+        short: '-e',
+        long: '--encoding',
+        type: 'str',
+        description: "encode values (as 'text', 'hex' or 'base64')",
+      }),
+      new Option({
+        short: '-m',
+        long: '--match',
+        type: 'str',
+        description: 'only get attributes with names matching pattern',
+      }),
+      new Option({ long: '--only-values', description: 'print the bare values only' }),
+      new Option({
+        short: '-h',
+        long: '--no-dereference',
+        description: 'do not dereference symbolic links',
+      }),
+      new Option({
+        long: '--absolute-names',
+        description: "don't strip leading '/' in pathnames",
+      }),
+      new Option({ short: '-R', long: '--recursive', description: 'recurse into subdirectories' }),
+      new Option({
+        short: '-L',
+        long: '--logical',
+        description: 'logical walk, follow symbolic links',
+      }),
+      new Option({
+        short: '-P',
+        long: '--physical',
+        description: 'physical walk, do not follow symbolic links',
+      }),
+    ],
+    rest: new Operand({ type: 'path' }),
+  }),
+  // ln runs in the executor for both link kinds (a symlink is namespace
+  // state, a "hard link" is a byte copy through the op door), so this spec
+  // is its grammar authority and no builder binds it.
   ln: new CommandSpec({
     options: [
-      new Option({ short: '-s' }),
-      new Option({ short: '-f' }),
-      new Option({ short: '-n' }),
-      new Option({ short: '-v' }),
+      new Option({ short: '-S', long: '--suffix', type: 'str' }),
+      new Option({ short: '-f', long: '--force' }),
+      new Option({ short: '-n', long: '--no-dereference' }),
+      new Option({ short: '-v', long: '--verbose' }),
+      new Option({ short: '-r', long: '--relative' }),
+      new Option({ short: '-L', long: '--logical' }),
+      new Option({ short: '-P', long: '--physical' }),
+      new Option({ short: '-d', long: '--directory' }),
+      new Option({ short: '-F' }),
+      // GNU: -b never takes an argument; only --backup= carries a value,
+      // so the short stays clusterable (-sbv).
+      new Option({
+        short: '-b',
+        long: '--backup',
+        type: 'str',
+        valueOptional: true,
+        shortValue: false,
+      }),
+      new Option({ short: '-s', long: '--symbolic' }),
+      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
+      new Option({ short: '-T', long: '--no-target-directory' }),
     ],
     rest: new Operand({ type: 'path' }),
   }),
@@ -107,11 +182,14 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-p', long: '--parents' }),
       new Option({ short: '-v', long: '--verbose' }),
       new Option({ short: '-m', long: '--mode', type: 'str' }),
+      // GNU: -Z never takes an argument; only --context= carries one, so
+      // the short stays clusterable (-vZ) and `-Zfoo` is refused.
       new Option({
         short: '-Z',
         long: '--context',
         type: 'str',
         valueOptional: true,
+        shortValue: false,
       }),
     ],
     rest: new Operand({ type: 'path' }),
@@ -141,16 +219,16 @@ export const SPECS: Record<string, CommandSpec> = {
         valueOptional: true,
         shortValue: false,
       }),
-      new Option({ short: '-S', long: '--suffix', type: 'str' }),
-      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
-      new Option({ short: '-T', long: '--no-target-directory' }),
-      new Option({ long: '--exchange' }),
-      // Cross-mount moves are copy+remove; --no-copy turns them into
-      // GNU's cross-device refusal instead.
-      new Option({ long: '--no-copy' }),
       // PathSpec normalizes trailing slashes everywhere, so the GNU
       // spelling is an accepted no-op.
       new Option({ long: '--strip-trailing-slashes' }),
+      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
+      // Cross-mount moves are copy+remove; --no-copy turns them into
+      // GNU's cross-device refusal instead.
+      new Option({ long: '--no-copy' }),
+      new Option({ long: '--exchange' }),
+      new Option({ short: '-T', long: '--no-target-directory' }),
+      new Option({ short: '-S', long: '--suffix', type: 'str' }),
     ],
     rest: new Operand({ type: 'path' }),
   }),
@@ -164,7 +242,18 @@ export const SPECS: Record<string, CommandSpec> = {
     rest: new Operand({ type: 'path' }),
   }),
   realpath: new CommandSpec({
-    options: [new Option({ short: '-e' }), new Option({ short: '-m' })],
+    options: [
+      new Option({ short: '-e', long: '--canonicalize-existing' }),
+      new Option({ short: '-m', long: '--canonicalize-missing' }),
+      new Option({ short: '-L', long: '--logical' }),
+      new Option({ short: '-P', long: '--physical' }),
+      new Option({ short: '-q', long: '--quiet' }),
+      new Option({ long: '--relative-to', type: 'str' }),
+      new Option({ long: '--relative-base', type: 'str' }),
+      new Option({ short: '-s', long: '--strip' }),
+      new Option({ long: '--no-symlinks' }),
+      new Option({ short: '-z', long: '--zero' }),
+    ],
     rest: new Operand({ type: 'path' }),
   }),
   rm: new CommandSpec({
@@ -192,6 +281,34 @@ export const SPECS: Record<string, CommandSpec> = {
     options: [new Option({ short: '-v' })],
     rest: new Operand({ type: 'path' }),
   }),
+  setfattr: new CommandSpec({
+    options: [
+      new Option({
+        short: '-n',
+        long: '--name',
+        type: 'str',
+        description: 'set the value of the named extended attribute',
+      }),
+      new Option({
+        short: '-x',
+        long: '--remove',
+        type: 'str',
+        description: 'remove the named extended attribute',
+      }),
+      new Option({
+        short: '-v',
+        long: '--value',
+        type: 'str',
+        description: 'use value as the attribute value',
+      }),
+      new Option({
+        short: '-h',
+        long: '--no-dereference',
+        description: 'do not dereference symbolic links',
+      }),
+    ],
+    rest: new Operand({ type: 'path' }),
+  }),
   touch: new CommandSpec({
     options: [
       new Option({ short: '-c' }),
@@ -201,7 +318,10 @@ export const SPECS: Record<string, CommandSpec> = {
     rest: new Operand({ type: 'path' }),
   }),
   truncate: new CommandSpec({
-    options: [new Option({ short: '-s', long: '--size', type: 'str' })],
+    options: [
+      new Option({ short: '-c', long: '--no-create' }),
+      new Option({ short: '-s', long: '--size', type: 'str' }),
+    ],
     rest: new Operand({ type: 'path' }),
   }),
   unlink: new CommandSpec({ rest: new Operand({ type: 'path' }) }),

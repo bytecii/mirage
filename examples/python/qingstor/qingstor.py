@@ -18,8 +18,8 @@ import os
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.qingstor import QingStorConfig, QingStorResource
 from mirage.types import PathSpec
+from mirage.vfs.qingstor import QingStorConfig, QingStorVFS
 
 load_dotenv(".env.development")
 
@@ -33,28 +33,23 @@ config = QingStorConfig(
     access_key_id=os.environ["QINGSTOR_ACCESS_KEY_ID"],
     secret_access_key=os.environ["QINGSTOR_SECRET_ACCESS_KEY"],
 )
-resource = QingStorResource(config)
-ws = Workspace({"/qs/": resource}, mode=MountMode.READ)
+vfs = QingStorVFS(config)
+ws = Workspace({"/qs/": vfs}, mode=MountMode.READ)
 
 
 def ops_summary() -> str:
-    records = ws.ops.records
+    records = ws.vfs.records
     return f"{len(records)} ops, {sum(r.bytes for r in records)} bytes"
 
 
 async def main():
     print(f"=== QingStor at {config.resolved_endpoint_url()} ===")
 
-    r = await ws.execute("ls /qs/")
+    r = await ws.shell("ls /qs/")
     print("ls /qs/:\n" + await r.stdout_str())
 
-    r = await ws.execute("find /qs/ -name '*.json' | head -n 5")
+    r = await ws.shell("find /qs/ -name '*.json' | head -n 5")
     print("find *.json:\n" + await r.stdout_str())
-
-    r = await ws.execute("grep -m 1 mirage /qs/data/example.jsonl",
-                         provision=True)
-    print(f"plan grep -m 1: network_read={r.network_read} "
-          f"precision={r.precision}")
 
     print(f"\nStats: {ops_summary()}")
 
@@ -62,15 +57,19 @@ async def main():
     # workspace namespace (durable, snapshot-captured) and merge into
     # dispatch-level stat.
     print("=== metadata overlay on /qs/data/example.jsonl ===")
-    meta_res = await ws.execute(
+    meta_res = await ws.shell(
         'chmod 640 "/qs/data/example.jsonl"'
         ' && chown 500:dev "/qs/data/example.jsonl"'
-        ' && touch -t 202601021530 "/qs/data/example.jsonl"')
+        ' && touch -t 202601021530 "/qs/data/example.jsonl"'
+    )
     print(f"  chmod/chown/touch exit={meta_res.exit_code}")
     meta_st, _ = await ws.dispatch(
-        "stat", PathSpec.from_str_path("/qs/data/example.jsonl"))
-    print(f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
-          f"gid={meta_st.gid} mtime={meta_st.modified}")
+        "stat", PathSpec.from_str_path("/qs/data/example.jsonl")
+    )
+    print(
+        f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
+        f"gid={meta_st.gid} mtime={meta_st.modified}"
+    )
 
 
 if __name__ == "__main__":

@@ -18,11 +18,16 @@ import pytest
 from dulwich.objects import Blob
 from dulwich.repo import Repo
 
-from mirage.commands.cli.builtin.git.add import (EXECUTABLE, REGULAR, SYMLINK,
-                                                 entry_mode, keep_addable,
-                                                 staged_entry)
+from mirage.commands.cli.builtin.git.add import (
+    EXECUTABLE,
+    REGULAR,
+    SYMLINK,
+    entry_mode,
+    keep_addable,
+    staged_entry,
+)
 from mirage.commands.cli.builtin.git.ignore import IgnoreStack
-from mirage.types import LINK_TARGET_KEY, FileStat, FileType
+from mirage.types import LINK_TARGET_KEY, ContentType, FileStat, FileType
 
 
 def stat(mode: int | None) -> FileStat:
@@ -31,7 +36,14 @@ def stat(mode: int | None) -> FileStat:
     Args:
         mode (int | None): permission bits, None when it has none.
     """
-    return FileStat(name="x", path="x", type=FileType.TEXT, size=4, mode=mode)
+    return FileStat(
+        name="x",
+        path="x",
+        type=FileType.FILE,
+        content=ContentType.TEXT,
+        size=4,
+        mode=mode,
+    )
 
 
 async def run(git_rw, line: str) -> tuple[int, bytes, bytes]:
@@ -41,7 +53,7 @@ async def run(git_rw, line: str) -> tuple[int, bytes, bytes]:
         git_rw (Workspace): workspace with the repository and CLI.
         line (str): the command line, without the leading directory.
     """
-    result = await git_rw.execute(f"git -C /repo {line}")
+    result = await git_rw.shell(f"git -C /repo {line}")
     return result.exit_code, result.stdout or b"", result.stderr or b""
 
 
@@ -100,7 +112,8 @@ def test_a_tracked_path_survives_its_own_ignore_rule():
 
 @pytest.mark.asyncio
 async def test_staging_writes_a_blob_the_real_git_can_read(
-        git_rw, repo_path: Path):
+    git_rw, repo_path: Path
+):
     (repo_path / "a.txt").write_text("staged content\n", encoding="utf-8")
     assert await run(git_rw, "add a.txt") == (0, b"", b"")
     expected = Blob.from_string(b"staged content\n").id
@@ -108,8 +121,9 @@ async def test_staging_writes_a_blob_the_real_git_can_read(
 
 
 @pytest.mark.asyncio
-async def test_staging_a_new_file_adds_it_to_the_index(git_rw,
-                                                       repo_path: Path):
+async def test_staging_a_new_file_adds_it_to_the_index(
+    git_rw, repo_path: Path
+):
     (repo_path / "fresh.txt").write_text("x\n", encoding="utf-8")
     await run(git_rw, "add fresh.txt")
     assert b"fresh.txt" in staged(repo_path)
@@ -117,7 +131,8 @@ async def test_staging_a_new_file_adds_it_to_the_index(git_rw,
 
 @pytest.mark.asyncio
 async def test_staging_a_removed_file_records_the_removal(
-        git_rw, repo_path: Path):
+    git_rw, repo_path: Path
+):
     (repo_path / "b.txt").unlink()
     await run(git_rw, "add b.txt")
     assert b"b.txt" not in staged(repo_path)
@@ -142,7 +157,8 @@ async def test_update_leaves_a_new_file_alone(git_rw, repo_path: Path):
 
 @pytest.mark.asyncio
 async def test_update_stages_only_what_the_pathspec_covers(
-        git_rw, repo_path: Path):
+    git_rw, repo_path: Path
+):
     # Without the pathspec this restages every tracked file, which is
     # how an unrelated edit ends up in the next commit.
     (repo_path / "a.txt").write_text("edited a\n", encoding="utf-8")
@@ -155,7 +171,8 @@ async def test_update_stages_only_what_the_pathspec_covers(
 
 @pytest.mark.asyncio
 async def test_update_stages_a_removal_only_under_the_pathspec(
-        git_rw, repo_path: Path):
+    git_rw, repo_path: Path
+):
     (repo_path / "a.txt").unlink()
     (repo_path / "b.txt").unlink()
     await run(git_rw, "add -u b.txt")
@@ -173,20 +190,23 @@ async def test_update_with_a_pathspec_that_names_nothing(git_rw):
 
 @pytest.mark.asyncio
 async def test_update_naming_an_untracked_file_is_refused(
-        git_rw, repo_path: Path):
+    git_rw, repo_path: Path
+):
     # It is there, so the pathspec is not the problem: -u restages what
     # the index holds, and the index has never heard of this one.
     (repo_path / "fresh.txt").write_text("x\n", encoding="utf-8")
     code, _out, err = await run(git_rw, "add -u fresh.txt")
     assert code == 128
-    assert err == (b"error: pathspec 'fresh.txt' did not match any file(s) "
-                   b"known to git\n")
+    assert err == (
+        b"error: pathspec 'fresh.txt' did not match any file(s) known to git\n"
+    )
     assert b"fresh.txt" not in staged(repo_path)
 
 
 @pytest.mark.asyncio
 async def test_a_directory_operand_stages_what_is_under_it(
-        git_rw, repo_path: Path):
+    git_rw, repo_path: Path
+):
     (repo_path / "sub").mkdir()
     (repo_path / "sub" / "one.txt").write_text("x\n", encoding="utf-8")
     await run(git_rw, "add sub")
@@ -197,8 +217,9 @@ async def test_a_directory_operand_stages_what_is_under_it(
 async def test_a_pathspec_matching_nothing_is_gits_fatal(git_rw):
     code, _out, err = await run(git_rw, "add nosuchfile.txt")
     assert code == 128
-    assert err == (b"fatal: pathspec 'nosuchfile.txt' did not match any "
-                   b"files\n")
+    assert err == (
+        b"fatal: pathspec 'nosuchfile.txt' did not match any files\n"
+    )
 
 
 @pytest.mark.asyncio
@@ -221,7 +242,8 @@ async def test_force_stages_it_anyway(git_rw, repo_path: Path):
 
 @pytest.mark.asyncio
 async def test_a_directory_operand_skips_the_ignored_ones_quietly(
-        git_rw, repo_path: Path):
+    git_rw, repo_path: Path
+):
     # Asking for a directory is not asking for the things in it that
     # were excluded, so this is not the refusal above.
     (repo_path / ".gitignore").write_text("*.log\n", encoding="utf-8")
@@ -262,11 +284,13 @@ def link_stat(target: str) -> FileStat:
     Args:
         target (str): the link's target, verbatim as it was typed.
     """
-    return FileStat(name="link",
-                    path="link",
-                    type=FileType.SYMLINK,
-                    size=len(target),
-                    extra={LINK_TARGET_KEY: target})
+    return FileStat(
+        name="link",
+        path="link",
+        type=FileType.SYMLINK,
+        size=len(target),
+        extra={LINK_TARGET_KEY: target},
+    )
 
 
 def test_a_symlink_stages_as_120000():
@@ -275,11 +299,12 @@ def test_a_symlink_stages_as_120000():
 
 @pytest.mark.asyncio
 async def test_a_symlink_stages_its_target_not_the_target_content(
-        git_rw, repo_path: Path):
+    git_rw, repo_path: Path
+):
     # Pinned against git 2.50: the blob is the target string and the
     # mode is 120000. Reading through the link would store `one\n` under
     # mode 100644, which is a second copy of a.txt, not a link.
-    await git_rw.execute("ln -s a.txt /repo/link")
+    await git_rw.shell("ln -s a.txt /repo/link")
     assert (await run(git_rw, "add link"))[0] == 0
     with Repo(str(repo_path)) as repo:
         entry = repo.open_index()[b"link"]
@@ -291,7 +316,7 @@ async def test_a_symlink_stages_its_target_not_the_target_content(
 async def test_a_broken_symlink_stages_its_target(git_rw, repo_path: Path):
     # git stores the target string whether or not anything is there, so
     # a link to nothing stages exactly like a live one.
-    await git_rw.execute("ln -s nowhere /repo/broken")
+    await git_rw.shell("ln -s nowhere /repo/broken")
     assert (await run(git_rw, "add broken"))[0] == 0
     with Repo(str(repo_path)) as repo:
         entry = repo.open_index()[b"broken"]
@@ -303,7 +328,32 @@ async def test_a_broken_symlink_stages_its_target(git_rw, repo_path: Path):
 async def test_a_staged_symlink_is_not_reported_modified(git_rw):
     # The staged blob is the target string; comparing it against the
     # bytes behind the link would call every symlink modified.
-    await git_rw.execute("ln -s a.txt /repo/link")
+    await git_rw.shell("ln -s a.txt /repo/link")
     assert (await run(git_rw, "add link"))[0] == 0
     _code, out, _err = await run(git_rw, "status --porcelain")
     assert out == b"A  link\n"
+
+
+@pytest.mark.asyncio
+async def test_verbose_names_each_change_in_gits_order(
+    git_rw, repo_path: Path
+):
+    # Paths the index already held come first, in index order and a
+    # removal among them, then new ones; pinned against git 2.50.
+    (repo_path / "a.txt").write_text("edited\n", encoding="utf-8")
+    (repo_path / "b.txt").unlink()
+    (repo_path / "aa.txt").write_text("new\n", encoding="utf-8")
+    assert await run(git_rw, "add -v -A") == (
+        0,
+        b"add 'a.txt'\nremove 'b.txt'\nadd 'aa.txt'\n",
+        b"",
+    )
+
+
+@pytest.mark.asyncio
+async def test_verbose_names_nothing_restaged_unchanged(
+    git_rw, repo_path: Path
+):
+    (repo_path / "a.txt").write_text("edited\n", encoding="utf-8")
+    await run(git_rw, "add a.txt")
+    assert await run(git_rw, "add --verbose a.txt") == (0, b"", b"")

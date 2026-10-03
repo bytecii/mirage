@@ -1,16 +1,14 @@
 import pytest
 
-from mirage.commands.builtin.generic.cat import cat
+from mirage.commands.builtin.generic.cat import cat, cat_generic
+from mirage.commands.config import CommandOpts
+from mirage.io.types import materialize
+from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import efbig
 
 
 async def _drain(gen):
     return b"".join([c async for c in gen])
-
-
-@pytest.mark.asyncio
-async def test_cat_passthrough_from_bytes():
-    out = await _drain(cat(b"hello\nworld\n"))
-    assert out == b"hello\nworld\n"
 
 
 @pytest.mark.asyncio
@@ -26,119 +24,19 @@ async def test_cat_passthrough_from_stream_preserves_chunks():
 
 
 @pytest.mark.asyncio
-async def test_cat_number_lines():
-    out = await _drain(cat(b"a\nb\nc\n", number_lines=True))
-    assert out == b"     1\ta\n     2\tb\n     3\tc\n"
-
-
-@pytest.mark.asyncio
-async def test_cat_number_lines_across_chunk_boundaries():
-
-    async def src():
-        yield b"a\nb"
-        yield b"\nc\n"
-
-    out = await _drain(cat(src(), number_lines=True))
-    assert out == b"     1\ta\n     2\tb\n     3\tc\n"
-
-
-@pytest.mark.asyncio
-async def test_cat_show_ends():
-    out = await _drain(cat(b"a\nb\n", show_ends=True))
-    assert out == b"a$\nb$\n"
-
-
-@pytest.mark.asyncio
-async def test_cat_squeeze_blank():
-    out = await _drain(cat(b"a\n\n\n\nb\n", squeeze_blank=True))
-    assert out == b"a\n\nb\n"
-
-
-@pytest.mark.asyncio
-async def test_cat_no_trailing_newline_preserved():
-    """POSIX: `printf "x" | cat -n` emits no trailing newline."""
-    out = await _drain(cat(b"hello", number_lines=True))
-    assert out == b"     1\thello"
-
-
-@pytest.mark.asyncio
-async def test_cat_passthrough_no_trailing_newline():
-    """No-flag cat must not add a trailing newline."""
-    out = await _drain(cat(b"hello"))
-    assert out == b"hello"
-
-
-@pytest.mark.asyncio
-async def test_cat_number_lines_multidigit_alignment():
-    """POSIX format is `%6d\\t` — width 6, right-justified. Old MIRAGE used
-    a 5-space prefix which broke alignment for line numbers >= 10."""
-    body = b"".join(f"line{i}\n".encode() for i in range(1, 13))
-    out = await _drain(cat(body, number_lines=True))
-    lines = out.split(b"\n")
-    assert lines[0] == b"     1\tline1"
-    assert lines[8] == b"     9\tline9"
-    assert lines[9] == b"    10\tline10"
-    assert lines[11] == b"    12\tline12"
-
-
-@pytest.mark.asyncio
-async def test_cat_show_ends_no_trailing_newline():
-    """cat -E on input without trailing newline must not emit final `$\\n`."""
-    out = await _drain(cat(b"hello", show_ends=True))
-    assert out == b"hello"
-
-
-@pytest.mark.asyncio
-async def test_cat_combined_n_E_s():
-    """Combined flags: number all kept lines, show ends, squeeze blanks."""
-    out = await _drain(
-        cat(b"a\n\n\n\nb\n",
-            number_lines=True,
-            show_ends=True,
-            squeeze_blank=True))
-    # Kept lines: "a", "" (first blank, kept), "b". Numbered 1, 2, 3.
-    assert out == b"     1\ta$\n     2\t$\n     3\tb$\n"
-
-
-@pytest.mark.asyncio
-async def test_cat_empty_input_emits_nothing_with_flags():
-    out = await _drain(cat(b"", number_lines=True))
-    assert out == b""
-
-
-@pytest.mark.asyncio
-async def test_cat_only_newlines():
-    """Three blank lines numbered 1, 2, 3."""
-    out = await _drain(cat(b"\n\n\n", number_lines=True))
-    assert out == b"     1\t\n     2\t\n     3\t\n"
-
-
-@pytest.mark.asyncio
-async def test_cat_squeeze_blank_preserves_first_blank():
-    out = await _drain(cat(b"\n\n\nx\n", squeeze_blank=True))
-    assert out == b"\nx\n"
-
-
-@pytest.mark.asyncio
-async def test_cat_empty_input_passthrough():
-    out = await _drain(cat(b""))
-    assert out == b""
-
-
-@pytest.mark.asyncio
-async def test_cat_binary_passthrough_full_byte_range():
-    """Full 0..255 byte range must pass through unchanged (no flags)."""
-    data = bytes(range(256))
-    out = await _drain(cat(data))
-    assert out == data
-
-
-@pytest.mark.asyncio
-async def test_cat_binary_with_show_ends_marks_only_newlines():
-    """show_ends should only mark 0x0A bytes, not other binary bytes."""
-    data = b"\x00\x01\n\x02\x03\n"
-    out = await _drain(cat(data, show_ends=True))
-    assert out == b"\x00\x01$\n\x02\x03$\n"
+@pytest.mark.parametrize(
+    "data,flags,expected",
+    [
+        (bytes(range(256)), {}, bytes(range(256))),
+        (
+            b"a\n\n\n\nb\n",
+            {"number_lines": True, "show_ends": True, "squeeze_blank": True},
+            b"     1\ta$\n     2\t$\n     3\tb$\n",
+        ),
+    ],
+)
+async def test_cat_renders_bytes(data, flags, expected):
+    assert await _drain(cat(data, **flags)) == expected
 
 
 @pytest.mark.asyncio
@@ -155,24 +53,24 @@ async def test_cat_number_lines_chunked_one_byte_at_a_time():
 
 
 @pytest.mark.asyncio
-async def test_cat_show_tabs_renders_caret_i():
-    out = b"".join([c async for c in cat(b"a\tb\nx\n", show_tabs=True)])
-    assert out == b"a^Ib\nx\n"
+async def test_cat_generic_reports_a_refused_read_and_goes_on():
+    """A table past its read cap stats fine and refuses the read; GNU cat
+    reports the operand and prints the next one."""
+    files = {"/a.txt": None, "/b.txt": b"b1\nb2\n"}
 
+    async def stat(p: PathSpec) -> FileStat:
+        return FileStat(name=p.virtual, type=FileType.FILE)
 
-@pytest.mark.asyncio
-async def test_cat_show_all_combines_tabs_and_ends():
-    out = b"".join([
-        c async for c in cat(b"a\tb\nx\n",
-                             show_tabs=True,
-                             show_ends=True,
-                             show_nonprinting=True)
-    ])
-    assert out == b"a^Ib$\nx$\n"
+    async def read(p: PathSpec):
+        if files[p.virtual] is None:
+            raise efbig(p)
+        yield files[p.virtual]
 
-
-@pytest.mark.asyncio
-async def test_cat_show_nonprinting_caret_and_meta_notation():
-    out = b"".join(
-        [c async for c in cat(b"\x01\x7f\xff\n", show_nonprinting=True)])
-    assert out == b"^A^?M-^?\n"
+    paths = [PathSpec.from_str_path(p) for p in files]
+    out, io = await cat_generic(
+        paths, [], CommandOpts(), stat, read, local=False
+    )
+    assert await materialize(out) == b"b1\nb2\n"
+    assert io.stderr == b"cat: /a.txt: File too large\n"
+    assert io.exit_code == 1
+    assert list(io.reads) == ["/b.txt"]

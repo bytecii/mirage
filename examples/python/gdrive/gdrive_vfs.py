@@ -14,12 +14,11 @@
 
 import asyncio
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
+from mirage.vfs.gdrive import GoogleDriveConfig, GoogleDriveVFS
 
 load_dotenv(".env.development")
 
@@ -28,16 +27,15 @@ config = GoogleDriveConfig(
     client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
     refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
 )
-resource = GoogleDriveResource(config=config)
+vfs = GoogleDriveVFS(config=config)
 
 
 async def main():
-    with Workspace({"/gdrive/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
+    with Workspace({"/gdrive/": vfs}, mode=MountMode.READ) as ws:
         print("=== VFS MODE ===\n")
 
         print("--- os.listdir() root ---")
-        entries = vos.listdir("/gdrive")
+        entries = os.listdir("/gdrive")
         for e in entries[:10]:
             print(f"  {e}")
 
@@ -45,9 +43,9 @@ async def main():
             first = entries[0]
             path = f"/gdrive/{first}"
             print(f"\n--- os.path.isdir({first}) ---")
-            print(f"  {vos.path.isdir(path)}")
+            print(f"  {os.path.isdir(path)}")
 
-            if vos.path.isfile(path):
+            if os.path.isfile(path):
                 print(f"\n--- open() + read {first} ---")
                 with open(path) as f:
                     content = f.read()
@@ -60,7 +58,7 @@ async def main():
                     break
                 print(f"  {line.rstrip()[:120]}")
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(r.bytes for r in records)
         print(f"\nStats: {len(records)} ops, {total} bytes transferred")
 

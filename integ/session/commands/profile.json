@@ -1,0 +1,254 @@
+{
+  "cases": [
+    {
+      "id": "cmd_profile_keeps_what_both_tiers_list",
+      "seq": 923009,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "cat /scratch/locked/y",
+      "expect": {
+        "exit": 0,
+        "stdout": "y\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "cmd_profile_hides_what_it_does_not_list",
+      "seq": 923010,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "python3 -c 1",
+      "expect": {
+        "exit": 127,
+        "stdout": "",
+        "stderr": "python3: command not found\n"
+      }
+    },
+    {
+      "id": "cmd_profile_verb_pattern_keeps_the_head_visible",
+      "seq": 923011,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "type -t git",
+      "expect": {
+        "exit": 0,
+        "stdout": "file\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "cmd_profile_uncovered_line_names_the_program",
+      "seq": 923012,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "git -C /repo add letters.txt",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "git: Permission denied\n"
+      }
+    },
+    {
+      "id": "cmd_profile_verb_walk_reads_past_options",
+      "seq": 923013,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "git -C /repo status",
+      "expect": {
+        "exit": 0,
+        "stdout": "On branch main\nnothing to commit, working tree clean\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "cmd_profile_xargs_reenters_the_chokepoint",
+      "seq": 923014,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "echo /scratch/z | xargs rm",
+      "expect": {
+        "exit": 127,
+        "stdout": "",
+        "stderr": "xargs: rm: No such file or directory\n"
+      }
+    },
+    {
+      "id": "cmd_profile_eval_reenters_the_chokepoint",
+      "seq": 923015,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "eval 'rm /scratch/z'",
+      "expect": {
+        "exit": 127,
+        "stdout": "",
+        "stderr": "rm: command not found\n"
+      }
+    },
+    {
+      "id": "cmd_profile_function_body_reenters_the_chokepoint",
+      "seq": 923016,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "f() { rm /scratch/z; }; f",
+      "expect": {
+        "exit": 127,
+        "stdout": "",
+        "stderr": "rm: command not found\n"
+      }
+    },
+    {
+      "id": "cmd_a_profile_is_the_whole_document",
+      "seq": 923020,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "cd /repo && git commit -m x",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "git: Permission denied\n"
+      }
+    },
+    {
+      "id": "cmd_mount_section_matches_by_cwd",
+      "seq": 923021,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "cd /repo && git commit -m x",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "git: Permission denied\n"
+      }
+    },
+    {
+      "id": "cmd_mount_section_does_not_reach_outside_the_mount",
+      "seq": 923022,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "cd /scratch && git commit -m x",
+      "expect": {
+        "exit": 128,
+        "stdout": "",
+        "stderr": "fatal: not a git repository (or any of the parent directories): .git\n"
+      }
+    },
+    {
+      "id": "cmd_inline_permissions_add_to_the_profile",
+      "seq": 923024,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "frozen",
+      "command": "rm /repo/letters.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: /repo/letters.txt: no deletes in the repo\n"
+      }
+    },
+    {
+      "id": "cmd_inline_permissions_also_state_their_own",
+      "seq": 923025,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "frozen",
+      "command": "cat /scratch/locked/x",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cat: /scratch/locked/x: frozen\n"
+      }
+    },
+    {
+      "id": "cmd_an_unnamed_mount_stays_reachable",
+      "seq": 923240,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "frozen",
+      "command": "cat /vault/d/sub/top.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "public\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "cmd_profile_virtual_program_needs_no_command_helper",
+      "seq": 923190,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "/usr/bin/cat /scratch/locked/y",
+      "expect": {
+        "exit": 0,
+        "stdout": "y\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "cmd_profile_virtual_program_keeps_target_policy",
+      "seq": 923191,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "/usr/bin/git -C /repo add letters.txt",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "git: Permission denied\n"
+      }
+    },
+    {
+      "id": "cmd_input_substitution_cannot_bypass_allow_list",
+      "seq": 1346035,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "speaker",
+      "command": "value=$(< /scratch/locked/y)",
+      "expect": {
+        "exit": 127,
+        "stdout": "",
+        "stderr": "cat: command not found\n"
+      }
+    },
+    {
+      "id": "cmd_input_substitution_function_cannot_bypass_allow_list",
+      "seq": 1346036,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "speaker",
+      "command": "(cat() { echo bypass; }; value=$(< /scratch/locked/y))",
+      "expect": {
+        "exit": 127,
+        "stdout": "",
+        "stderr": "cat: command not found\n"
+      }
+    }
+  ]
+}

@@ -14,13 +14,15 @@
 
 import asyncio
 
-from mirage.resource.ram import RAMResource
+import pytest
+
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 
 def _build_ws() -> Workspace:
-    r = RAMResource()
+    r = RAMVFS()
     r._store.dirs.add("/")
     r._store.dirs.add("/src")
     r._store.files["/src/a.js"] = b'legacyFetch("/api");\n'
@@ -30,7 +32,7 @@ def _build_ws() -> Workspace:
 async def _run(cmd: str):
     ws = _build_ws()
     try:
-        io = await ws.execute(cmd)
+        io = await ws.shell(cmd)
         stdout = await io.stdout_str()
         return io.exit_code, stdout
     finally:
@@ -62,7 +64,8 @@ def test_grep_r_root_no_match_returns_exit_1():
 
 def test_grep_r_root_in_if_then():
     code, out = asyncio.run(
-        _run('if grep -rEn "legacyFetch" /; then echo FOUND; fi'))
+        _run('if grep -rEn "legacyFetch" /; then echo FOUND; fi')
+    )
     assert "FOUND" in out
 
 
@@ -73,5 +76,32 @@ def test_grep_r_root_with_and():
 
 def test_grep_r_root_with_or_does_not_run_right_arm():
     _, out = asyncio.run(
-        _run('grep -rEn "legacyFetch" / || echo SHOULD_NOT_PRINT'))
+        _run('grep -rEn "legacyFetch" / || echo SHOULD_NOT_PRINT')
+    )
     assert "SHOULD_NOT_PRINT" not in out
+
+
+@pytest.mark.asyncio
+async def test_binary_only_match_survives_nested_mount_fanout():
+    outer = RAMVFS()
+    inner = RAMVFS()
+    outer._store.dirs.add("/")
+    outer._store.dirs.add("/work")
+    inner._store.files["/paper.pdf"] = b"needle\0tail\n"
+    ws = Workspace(
+        {
+            "/": (outer, MountMode.WRITE),
+            "/work/remote": (inner, MountMode.WRITE),
+        }
+    )
+    try:
+        io = await ws.shell("grep -r needle /work")
+        assert await io.materialize_stdout() == b""
+        assert io.exit_code == 0
+        stderr = await io.materialize_stderr()
+        assert b"/work/remote/paper.pdf: binary file matches" in stderr
+        io = await ws.shell("grep -Ir needle /work")
+        assert await io.materialize_stdout() == b""
+        assert io.exit_code == 1
+    finally:
+        await ws.close()

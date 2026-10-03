@@ -21,7 +21,7 @@ from mirage.workspace.session import SessionManager
 class KernelMounts:
     """The workspace's real mountpoints, one FuseManager per subtree.
 
-    A ``vfs`` mount lives only inside mirage; a ``fuse`` or ``fskit``
+    A ``workspace`` mount lives only inside mirage; a ``fuse`` or ``fskit``
     mount also registers a mountpoint with the kernel. This owns the
     set of those: which prefix is exposed where, and the manager
     serving it. Keys are ``prefix`` or ``prefix@session_id``, so the
@@ -34,11 +34,13 @@ class KernelMounts:
         self._mountpoints: dict[str, str] = {}
         self._managers: dict[str, FuseManager] = {}
 
-    def add(self,
-            prefix: str,
-            mountpoint: str | None = None,
-            session_id: str | None = None,
-            backend: str | MountBackend = MountBackend.FUSE) -> str:
+    def add(
+        self,
+        prefix: str,
+        mountpoint: str | None = None,
+        session_id: str | None = None,
+        backend: str | MountBackend = MountBackend.FUSE,
+    ) -> str:
         """Expose ``prefix`` at a real mountpoint and return its path.
 
         A session-bound mount runs every op under that session's mount
@@ -56,19 +58,18 @@ class KernelMounts:
         """
         # Register a pinned path BEFORE mounting so a collision is
         # rejected without leaving a partial mount.
-        session = (self._sessions.get(session_id)
-                   if session_id is not None else None)
+        session = (
+            self._sessions.get(session_id) if session_id is not None else None
+        )
         key = prefix if session_id is None else f"{prefix}@{session_id}"
         if mountpoint is not None:
             self._register(key, mountpoint)
         manager = FuseManager()
         self._managers[key] = manager
         try:
-            resolved = manager.setup(self._ops,
-                                     prefix,
-                                     mountpoint,
-                                     session=session,
-                                     backend=backend)
+            resolved = manager.setup(
+                self._ops, prefix, mountpoint, session=session, backend=backend
+            )
         except Exception:
             # The mount never came up; drop the manager and any
             # registered path so mountpoints does not misreport it.
@@ -87,9 +88,12 @@ class KernelMounts:
             session_id (str | None): session the mount was bound to.
         """
         key = prefix if session_id is None else f"{prefix}@{session_id}"
-        manager = self._managers.pop(key, None)
+        manager = self._managers.get(key)
         if manager is not None:
             manager.unmount()
+            if self._managers.get(key) is not manager:
+                return
+        self._managers.pop(key, None)
         self._mountpoints.pop(key, None)
 
     def close(self) -> None:
@@ -111,7 +115,8 @@ class KernelMounts:
         if len(self._mountpoints) > 1:
             raise RuntimeError(
                 "multiple FUSE mounts active; use fuse_mountpoints to "
-                "select one by prefix")
+                "select one by prefix"
+            )
         return next(iter(self._mountpoints.values()))
 
     @property
@@ -123,5 +128,6 @@ class KernelMounts:
             if other_mountpoint == mountpoint and other_key != key:
                 raise ValueError(
                     f"FUSE mountpoint {mountpoint!r} already used by "
-                    f"prefix {other_key!r}; mounts need distinct paths")
+                    f"prefix {other_key!r}; mounts need distinct paths"
+                )
         self._mountpoints[key] = mountpoint

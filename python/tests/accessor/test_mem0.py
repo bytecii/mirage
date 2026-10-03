@@ -1,14 +1,13 @@
 from pydantic import SecretStr
 
 from mirage.accessor.mem0 import Mem0Accessor
-from mirage.resource.mem0.config import Mem0Config
+from mirage.vfs.mem0.config import Mem0Config
 
 
 def test_client_is_lazy(monkeypatch):
     built = {"n": 0}
 
     class FakeClient:
-
         def __init__(self, **kwargs):
             built["n"] += 1
             self.kwargs = kwargs

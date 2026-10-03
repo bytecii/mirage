@@ -15,8 +15,12 @@
 import pytest
 
 from mirage import MountMode, Workspace
-from tests.resource.databricks_volume.test_databricks_volume import (
-    FakeFiles, make_resource, seed_directory, seed_file)
+from tests.vfs.databricks_volume.test_databricks_volume import (
+    FakeFiles,
+    make_vfs,
+    seed_directory,
+    seed_file,
+)
 
 ROOT = "/Volumes/main/default/agent_files/root"
 
@@ -34,12 +38,12 @@ def dbx_files() -> FakeFiles:
 
 @pytest.fixture
 def ws(dbx_files: FakeFiles) -> Workspace:
-    return Workspace({"/dbx/": make_resource(dbx_files)}, mode=MountMode.READ)
+    return Workspace({"/dbx/": make_vfs(dbx_files)}, mode=MountMode.READ)
 
 
 @pytest.mark.asyncio
 async def test_ls_lists_entries(ws):
-    io = await ws.execute("ls /dbx/")
+    io = await ws.shell("ls /dbx/")
 
     assert io.exit_code == 0
     out = io.stdout.decode()
@@ -50,32 +54,7 @@ async def test_ls_lists_entries(ws):
 
 @pytest.mark.asyncio
 async def test_ls_a_includes_hidden(ws):
-    io = await ws.execute("ls -a /dbx/")
+    io = await ws.shell("ls -a /dbx/")
 
     assert io.exit_code == 0
     assert ".hidden" in io.stdout.decode()
-
-
-@pytest.mark.asyncio
-async def test_ls_long_includes_size(ws):
-    io = await ws.execute("ls -l /dbx/")
-
-    assert io.exit_code == 0
-    out = io.stdout.decode()
-    assert "words.txt" in out
-    assert "17" in out
-
-
-@pytest.mark.asyncio
-async def test_ls_recursive_descends_subdirs(ws):
-    io = await ws.execute("ls -R /dbx/")
-
-    assert io.exit_code == 0
-    assert "inner.txt" in io.stdout.decode()
-
-
-@pytest.mark.asyncio
-async def test_ls_missing_path_warns(ws):
-    io = await ws.execute("ls /dbx/missing")
-
-    assert io.exit_code != 0

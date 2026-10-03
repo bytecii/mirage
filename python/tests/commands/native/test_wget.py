@@ -21,39 +21,41 @@ import asyncio
 import pytest
 
 from mirage.accessor.base import NOOPAccessor
+from mirage.commands.builtin.errors import HttpConnectError
 from mirage.commands.builtin.general.wget import wget
-from mirage.commands.builtin.utils.http import HttpConnectError, HttpResponse
+from mirage.commands.builtin.utils.http import HttpResponse
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
+from mirage.types import PathSpec
 
 
-def _ok(body: bytes = b"file-body",
-        status: int = 200,
-        reason: str = "OK") -> HttpResponse:
-    return HttpResponse(status=status,
-                        reason=reason,
-                        body=body,
-                        url="http://x.test/f")
+def _ok(
+    body: bytes = b"file-body", status: int = 200, reason: str = "OK"
+) -> HttpResponse:
+    return HttpResponse(
+        status=status, reason=reason, body=body, url="http://x.test/f"
+    )
 
 
 def _stub(monkeypatch, resp=None, exc=None) -> list[str]:
     calls: list[str] = []
 
-    def fake(url, headers=None, timeout=30, follow_redirects=True):
+    async def fake(url, headers=None, timeout=30, follow_redirects=True):
         calls.append(url)
         if exc is not None:
             raise exc
         return resp if resp is not None else _ok()
 
-    monkeypatch.setitem(wget.__wrapped__.__globals__, "_http_get", fake)
+    monkeypatch.setitem(wget.__wrapped__.__globals__, "http_get", fake)
     return calls
 
 
-def _run(*texts: str,
-         dispatch=None,
-         cwd=None,
-         **flags) -> tuple[bytes, object]:
-    opts = CommandOpts(dispatch=dispatch, cwd=cwd or "/", flags=flags)
+def _run(
+    *texts: str, dispatch=None, cwd=None, **flags
+) -> tuple[bytes, object]:
+    base = cwd or "/"
+    spec = PathSpec(virtual=base, directory=base, vfs_path="", resolved=False)
+    opts = CommandOpts(dispatch=dispatch, cwd=spec, flags=flags)
     body, io = asyncio.run(wget(NOOPAccessor(), [], list(texts), opts))
     if body is None:
         return b"", io
@@ -139,9 +141,9 @@ def test_write_failure_is_exit_1_naming_the_path(monkeypatch):
     async def boom(op, scope, **kwargs):
         raise FileNotFoundError("/tmp/nope/w.txt")
 
-    _body, io = _run("http://x.test/f",
-                     args_O="/tmp/nope/w.txt",
-                     dispatch=boom)
+    _body, io = _run(
+        "http://x.test/f", args_O="/tmp/nope/w.txt", dispatch=boom
+    )
     assert io.exit_code == 1
     assert b"/tmp/nope/w.txt" in io.stderr
 
@@ -152,10 +154,9 @@ def test_write_failure_silenced_by_q(monkeypatch):
     async def boom(op, scope, **kwargs):
         raise FileNotFoundError("/tmp/nope/w.txt")
 
-    _body, io = _run("http://x.test/f",
-                     args_O="/tmp/nope/w.txt",
-                     dispatch=boom,
-                     q=True)
+    _body, io = _run(
+        "http://x.test/f", args_O="/tmp/nope/w.txt", dispatch=boom, q=True
+    )
     assert io.exit_code == 1
     assert io.stderr == b""
 
@@ -165,5 +166,31 @@ def test_exit_code_constants_match_wget():
     # submodule of the same name, so the module namespace is reached through
     # the unwrapped function (see CLAUDE.md).
     g = wget.__wrapped__.__globals__
-    assert (g["EXIT_GENERIC"], g["EXIT_NETWORK"],
-            g["EXIT_SERVER_ERROR"]) == (1, 4, 8)
+    assert (g["EXIT_GENERIC"], g["EXIT_NETWORK"], g["EXIT_SERVER_ERROR"]) == (
+        1,
+        4,
+        8,
+    )
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_output_dash_is_stdout_without_a_write(monkeypatch, quiet):
+    _stub(monkeypatch, _ok(b"page"))
+    writes = []
+
+    async def dispatch(*args, **kwargs):
+        writes.append(args)
+
+    body, io = _run("http://x.test/", args_O="-", q=quiet, dispatch=dispatch)
+    assert body == b"page"
+    assert io.exit_code == 0
+    assert io.writes == {}
+    assert writes == []
+
+
+def test_http_error_without_output_option_does_not_create_file(monkeypatch):
+    _stub(monkeypatch, _ok(b"missing", 404, "Not Found"))
+    body, io = _run("http://x.test/index.html", q=True)
+    assert io.exit_code == 8
+    assert body == b""
+    assert io.writes == {}

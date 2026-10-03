@@ -12,92 +12,93 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GmailAccessor } from '../../accessor/gmail.ts'
+import type { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { readdir as coreReaddir } from './readdir.ts'
-import { listLabels } from './labels.ts'
+import { ContentType, FileStat, FileType, PathSpec } from '../../types.ts'
 import { enoent } from '../../utils/errors.ts'
-import { guessType } from '../../utils/filetype.ts'
+import { contentTypeForPath } from '../../utils/filetype.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { resolveEntry } from '../hierarchy/probe.ts'
+import type { ScopeMatch } from '../hierarchy/scope.ts'
+import { makeStat } from '../hierarchy/stat.ts'
+import { readdir } from './readdir.ts'
+import { detectScope } from './scope.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
-export async function stat(
+function labelStat(_match: ScopeMatch, _path: PathSpec, entry: IndexEntry): FileStat {
+  return new FileStat({
+    name: entry.vfsName,
+    type: FileType.DIRECTORY,
+    extra: { label_id: entry.id },
+  })
+}
+
+/**
+ * Stat a day directory, which resolves beyond the listed window.
+ *
+ * The label listing groups a bounded number of recent messages into day dirs,
+ * but the date query answers for any well-formed day, so a day under a label
+ * that exists is a directory whether or not the recent window lists it. A
+ * bogus label is ENOENT.
+ */
+async function statDay(
   accessor: GmailAccessor,
+  match: ScopeMatch,
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const key = path.resourcePath
-  if (key === '') return new FileStat({ name: '/', type: FileType.DIRECTORY })
+  const entry = await resolveEntry(readdir, accessor, path, index)
+  if (entry !== null) {
+    return new FileStat({ name: entry.vfsName, type: FileType.DIRECTORY })
+  }
+  const virtual = rstripSlash(path.virtual).split('/').slice(0, -1).join('/')
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
+  const labelSpec = new PathSpec({
+    virtual,
+    directory: virtual,
+    vfsPath: mountKey(virtual, prefix),
+  })
+  if ((await resolveEntry(readdir, accessor, labelSpec, index)) === null) {
+    throw enoent(path)
+  }
+  return new FileStat({ name: match.slots.day ?? '', type: FileType.DIRECTORY })
+}
 
-  if (index === undefined) throw enoent(path.virtual)
-  const virtualKey = prefix !== '' ? `${prefix}/${key}` : `/${key}`
-  let result = await index.get(virtualKey)
-  if (result.entry === undefined || result.entry === null) {
-    if (!key.includes('/')) {
-      const labels = await listLabels(accessor.tokenManager)
-      const names = new Set(labels.map((lb) => (lb.type === 'system' ? lb.id : (lb.name ?? lb.id))))
-      if (names.has(key)) return new FileStat({ name: key, type: FileType.DIRECTORY })
-      throw enoent(path.virtual)
-    }
-    const parentVirtual = virtualKey.slice(0, virtualKey.lastIndexOf('/')) || '/'
-    try {
-      await coreReaddir(
-        accessor,
-        new PathSpec({
-          virtual: parentVirtual,
-          directory: parentVirtual,
-          resolved: false,
-          resourcePath: mountKey(parentVirtual, prefix),
-        }),
-        index,
-      )
-    } catch {
-      // parent listing failed — fall through
-    }
-    result = await index.get(virtualKey)
-    if (result.entry === undefined || result.entry === null) {
-      throw enoent(path.virtual)
-    }
-  }
-  const rt = result.entry.resourceType
-  const vfsName = result.entry.vfsName !== '' ? result.entry.vfsName : result.entry.name
-  if (rt === 'gmail/label') {
-    return new FileStat({
-      name: vfsName,
-      type: FileType.DIRECTORY,
-      extra: { label_id: result.entry.id },
-    })
-  }
-  if (rt === 'gmail/date') {
-    return new FileStat({ name: vfsName, type: FileType.DIRECTORY })
-  }
-  if (rt === 'gmail/message') {
-    return new FileStat({
-      name: vfsName,
-      type: FileType.JSON,
-      size: result.entry.size,
-      extra: { message_id: result.entry.id, ...result.entry.extra },
-    })
-  }
-  if (rt === 'gmail/attachment_dir') {
-    return new FileStat({
-      name: vfsName,
-      type: FileType.DIRECTORY,
-      extra: { message_id: result.entry.id },
-    })
-  }
-  if (rt === 'gmail/attachment') {
-    return new FileStat({
-      name: vfsName,
-      type: guessType(vfsName),
-      size: result.entry.size,
-      extra: { attachment_id: result.entry.id },
-    })
-  }
+function messageStat(_match: ScopeMatch, _path: PathSpec, entry: IndexEntry): FileStat {
   return new FileStat({
-    name: vfsName,
-    type: FileType.JSON,
-    extra: { message_id: result.entry.id },
+    name: entry.vfsName,
+    type: FileType.FILE,
+    content: ContentType.JSON,
+    size: entry.size,
+    extra: { message_id: entry.id, ...entry.extra },
   })
 }
+
+function attachmentDirStat(_match: ScopeMatch, _path: PathSpec, entry: IndexEntry): FileStat {
+  return new FileStat({
+    name: entry.vfsName,
+    type: FileType.DIRECTORY,
+    extra: { message_id: entry.id },
+  })
+}
+
+function attachmentStat(_match: ScopeMatch, _path: PathSpec, entry: IndexEntry): FileStat {
+  return new FileStat({
+    name: entry.vfsName,
+    type: FileType.FILE,
+    content: contentTypeForPath(entry.vfsName),
+    size: entry.size,
+    extra: { attachment_id: entry.id },
+  })
+}
+
+export const stat = makeStat<GmailAccessor>(detectScope, readdir, {
+  entryStats: {
+    label: labelStat,
+    message: messageStat,
+    attachment_dir: attachmentDirStat,
+    attachment: attachmentStat,
+  },
+  overrides: { day: statDay },
+})

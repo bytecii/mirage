@@ -12,21 +12,46 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import asyncio
 import json
 import os
 import subprocess
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
+from mirage.policy import Scope
+from mirage.policy.match import Outcome
 from mirage.types import FileStat, PathSpec
 
 # integ/runtime holds the runtime suite (its own schema and runners,
 # integ/runtime/run.{py,ts} + cli.sh), not battery cases; keep it out.
-CASE_DIRS = ("unix", "shell", "crossmount", "resources", "cli", "session",
-             "console")
+CASE_DIRS = (
+    "unix",
+    "bash",
+    "crossmount",
+    "vfs",
+    "cli",
+    "session",
+    "console",
+    "secrets",
+)
+
+# A service entry names the env vars each host needs, and may declare
+# ``shared``: the fake behind it holds ONE world rather than a namespace per
+# run, so two targets on it can never be in flight together. Everything else
+# mints a fresh run id per ``open_target`` and is free to overlap.
+SERVICE_KEYS = frozenset({"python", "typescript", "shared"})
+
+# What runs one target. The pool takes it as an argument so a gate can pass
+# a recorder and watch what actually overlaps, which no end-to-end run can
+# show: every service-free target finishes in one event-loop tick.
+TargetRunner = Callable[
+    [dict, list[dict], Path, "Report | None", "list[dict] | None"],
+    Awaitable[None],
+]
 
 
 def integ_root() -> Path:
@@ -35,16 +60,48 @@ def integ_root() -> Path:
 
 def load_targets(root: Path) -> dict:
     data = json.loads((root / "targets.json").read_text())
+    validate_targets(data)
     return {t["id"]: t for t in data["targets"]}
+
+
+def validate_targets(data: dict) -> list[dict]:
+    """Reject a target whose ``exclusive`` is not a boolean.
+
+    The twin of the ``shared`` check in :func:`validate_services`, and for
+    the same reason: one file is read by two hosts, and a hand-edited
+    ``"exclusive": 1`` would run the target alone on one of them and pool
+    it on the other. That is the failure this key exists to prevent --
+    a secrets target's fetch function replaced under a sibling asserting
+    call counts against it, or opfs swapping ``globalThis.navigator``
+    while another target reads it -- arriving as a typescript-only flake
+    rather than as a manifest error.
+
+    Args:
+        data (dict): the parsed targets.json.
+
+    Returns:
+        list[dict]: the validated target list.
+    """
+    for target in data["targets"]:
+        flag = target.get("exclusive")
+        if flag is not None and not isinstance(flag, bool):
+            raise KeyError(
+                f"targets.json: target {target['id']!r} declares "
+                f"'exclusive' as {type(flag).__name__}, must be a "
+                f"boolean"
+            )
+    return data["targets"]
 
 
 def load_services(root: Path) -> dict:
     """The service -> per-host required env vars table.
 
     An empty list means the host needs nothing because its adapter starts
-    an in-process fake; the two hosts differ here (python self-hosts s3,
-    ssh, hf, box, databricks, discord, linear and dify, typescript does
-    not), so the asymmetry is spelled out per host rather than inferred.
+    an in-process fake (or the backend needs no service). The two hosts
+    differ per service (python starts s3 and ssh itself where typescript
+    reads an endpoint; typescript needs nothing for quickjs where python
+    reads MIRAGE_QUICKJS_HOME), so each host's list is spelled out in
+    targets.json rather than inferred.
 
     Args:
         root (Path): the integ directory.
@@ -68,16 +125,38 @@ def validate_services(data: dict) -> dict:
     named = {t["service"] for t in data["targets"] if t.get("service")}
     undeclared = sorted(named - set(services))
     if undeclared:
-        raise KeyError(f"targets.json: services missing an entry: "
-                       f"{', '.join(undeclared)}")
+        raise KeyError(
+            f"targets.json: services missing an entry: {', '.join(undeclared)}"
+        )
     unused = sorted(set(services) - named)
     if unused:
-        raise KeyError(f"targets.json: services entry names no target: "
-                       f"{', '.join(unused)}")
+        raise KeyError(
+            f"targets.json: services entry names no target: "
+            f"{', '.join(unused)}"
+        )
     for name, hosts in services.items():
-        if set(hosts) != {"python", "typescript"}:
-            raise KeyError(f"targets.json: service {name!r} must declare "
-                           f"both 'python' and 'typescript'")
+        if not {"python", "typescript"} <= set(hosts):
+            raise KeyError(
+                f"targets.json: service {name!r} must declare "
+                f"both 'python' and 'typescript'"
+            )
+        unknown = sorted(set(hosts) - SERVICE_KEYS)
+        if unknown:
+            raise KeyError(
+                f"targets.json: service {name!r} declares unknown "
+                f"key(s): {', '.join(unknown)}"
+            )
+        # The value, not only the key. One file is read by two hosts, and
+        # python reads `shared` for truth where typescript reads it for
+        # `=== true`, so a hand-edited `"shared": 1` would serialize the
+        # lane here and pool it there -- two targets on a one-world fake
+        # in flight together, as a typescript-only flake.
+        if "shared" in hosts and not isinstance(hosts["shared"], bool):
+            raise KeyError(
+                f"targets.json: service {name!r} declares "
+                f"'shared' as {type(hosts['shared']).__name__}, "
+                f"must be a boolean"
+            )
     return services
 
 
@@ -97,8 +176,9 @@ def parse_allow_skip(services: dict, value: str) -> set[str]:
     names = {n.strip() for n in value.split(",") if n.strip()}
     unknown = sorted(names - set(services))
     if unknown:
-        raise KeyError(f"--allow-skip names unknown service(s): "
-                       f"{', '.join(unknown)}")
+        raise KeyError(
+            f"--allow-skip names unknown service(s): {', '.join(unknown)}"
+        )
     return names
 
 
@@ -126,45 +206,28 @@ def discover_case_files(root: Path) -> list[Path]:
     return files
 
 
-def case_family(root: Path, path: Path, data: dict) -> str:
-    family = data.get("family", str(path.relative_to(root).parent))
-    if not isinstance(family, str) or not family:
-        raise ValueError(f"{path}: family must be a nonempty string")
-    return family
-
-
-def load_cases(root: Path, suites: list[str] | None = None) -> list[dict]:
-    selected = set(suites or CASE_DIRS)
-    unknown = selected - set(CASE_DIRS)
-    if unknown:
-        raise ValueError(f"unknown suites: {', '.join(sorted(unknown))}")
-    tables: list[tuple[Path, dict]] = []
-    for path in discover_case_files(root):
-        if path.relative_to(root).parts[0] not in selected:
-            continue
-        data = json.loads(path.read_text())
-        tables.append((path, data))
-    tables.sort(key=lambda row: (CASE_DIRS.index(row[0].relative_to(
-        root).parts[0]), case_family(root, *row), str(row[0])))
+def load_cases(root: Path) -> list[dict]:
     cases: list[dict] = []
-    for path, data in tables:
+    for path in discover_case_files(root):
+        data = json.loads(path.read_text())
         for case in data["cases"]:
+            case = {"targets": data.get("targets", []), **case}
             case["_source"] = str(path.relative_to(root))
             cases.append(case)
     cases.sort(key=lambda c: c.get("seq", 1 << 30))
     validate_cases(root, cases)
-    if not cases:
-        raise ValueError("selected suites contain no cases")
     return cases
 
 
 def validate_cases(root: Path, cases: list[dict]) -> None:
-    """Fail loudly on the two ways a case silently stops being tested.
+    """Fail loudly on the ways a case silently stops being tested.
 
     A duplicate id collides in the parity runner, which keys rows by
     (target, id), so one of the pair is dropped from the py/ts diff
     without a word. A target id that matches no manifest entry means the
-    case never runs anywhere, which reads as "passing" everywhere.
+    case never runs anywhere, which reads as "passing" everywhere. A
+    `mount_read` without a `read` is routed as an ordinary case, where
+    the override is never applied.
 
     Args:
         root (Path): the integ directory.
@@ -175,7 +238,20 @@ def validate_cases(root: Path, cases: list[dict]) -> None:
     duplicates: list[str] = []
     unknown: list[str] = []
     for case in cases:
-        validate_concurrent(case)
+        targets = case.get("targets")
+        if (
+            not isinstance(targets, list)
+            or not targets
+            or any(not isinstance(target, str) for target in targets)
+        ):
+            raise ValueError(
+                f"case {case['id']}: targets must be a nonempty string list"
+            )
+        if "mount_read" in case and "read" not in case:
+            raise ValueError(
+                f"case {case['id']}: mount_read needs read, "
+                "the policy every other mount inherits"
+            )
         first = seen.get(case["id"])
         if first is not None:
             duplicates.append(f"{case['id']} ({first} and {case['_source']})")
@@ -183,44 +259,18 @@ def validate_cases(root: Path, cases: list[dict]) -> None:
             seen[case["id"]] = case["_source"]
         for target in case["targets"]:
             if target not in known:
-                unknown.append(f"{case['id']} -> {target}"
-                               f" ({case['_source']})")
+                unknown.append(f"{case['id']} -> {target} ({case['_source']})")
     if duplicates:
         raise ValueError("duplicate case ids: " + "; ".join(duplicates))
     if unknown:
-        raise ValueError("cases naming an unknown target: " +
-                         "; ".join(unknown))
-
-
-def validate_concurrent(case: dict) -> None:
-    if "concurrent" not in case:
-        return
-    workers = case["concurrent"]
-    if not isinstance(workers, list) or len(workers) < 2:
-        raise ValueError("concurrent requires at least two workers")
-    timeout = case.get("timeout_seconds", 10)
-    if not isinstance(timeout, (int, float)) or not 0 < timeout <= 60:
-        raise ValueError("concurrent timeout_seconds must be in (0, 60]")
-    for worker in workers:
-        if not isinstance(worker, dict) or not isinstance(
-                worker.get("command"), str):
-            raise ValueError("concurrent worker requires a command")
-        expected = worker.get("expect", {})
-        if not isinstance(expected, dict) or not isinstance(
-                expected.get("exit"), int) or not all(
-                    isinstance(expected.get(key), str)
-                    for key in ("stdout", "stderr")):
-            raise ValueError(
-                "concurrent worker requires exit/stdout/stderr expectations")
-        if any(key in worker for key in ("concurrent", "lifecycle", "scenario",
-                                         "provision")):
-            raise ValueError(
-                "concurrent worker must be an ordinary shell command")
+        raise ValueError(
+            "cases naming an unknown target: " + "; ".join(unknown)
+        )
 
 
 def build_fixture(
-        base: Path) -> tuple[Path, tempfile.TemporaryDirectory
-                             | None]:
+    base: Path,
+) -> tuple[Path, tempfile.TemporaryDirectory | None]:
     """Where a fixture's files are, building them first if it says to.
 
     A fixture holding a ``build.sh`` generates its own contents into a
@@ -243,8 +293,9 @@ def build_fixture(
     return built, holder
 
 
-async def seed_fixture(ws, fixture: str | None, mount_path: str,
-                       root: Path) -> None:
+async def seed_fixture(
+    ws, fixture: str | None, mount_path: str, root: Path
+) -> None:
     if not fixture:
         return
     base, holder = build_fixture(root / "fixtures" / fixture)
@@ -255,8 +306,8 @@ async def seed_fixture(ws, fixture: str | None, mount_path: str,
             rel = src.relative_to(base).as_posix()
             dest = f"{mount_path.rstrip('/')}/{rel}"
             parent = dest.rsplit("/", 1)[0]
-            await ws.execute(f"mkdir -p {parent}")
-            await ws.execute(f"tee {dest} > /dev/null", stdin=src.read_bytes())
+            await ws.shell(f"mkdir -p {parent}")
+            await ws.shell(f"tee {dest} > /dev/null", stdin=src.read_bytes())
     finally:
         if holder is not None:
             holder.cleanup()
@@ -278,8 +329,8 @@ async def seed_mount_root(ws, mount_path: str) -> None:
         mount_path (str): the mount to materialise.
     """
     marker = f"{mount_path.rstrip('/')}/.seed"
-    await ws.execute(f"tee {marker} > /dev/null", stdin=b"seed\n")
-    await ws.execute(f"rm {marker}")
+    await ws.shell(f"tee {marker} > /dev/null", stdin=b"seed\n")
+    await ws.shell(f"rm {marker}")
 
 
 def _check_field(st: FileStat, name: str) -> str:
@@ -310,24 +361,21 @@ async def stat_check(ws, check: dict) -> str:
         check (dict): the case's ``check`` block.
     """
     if "read" in check:
-        data, _ = await ws.dispatch("read",
-                                    PathSpec.from_str_path(check["read"]),
-                                    offset=check.get("offset", 0),
-                                    size=check.get("size"))
+        data, _ = await ws.dispatch(
+            "read",
+            PathSpec.from_str_path(check["read"]),
+            offset=check.get("offset", 0),
+            size=check.get("size"),
+        )
         return data.decode("utf-8", "replace")
     try:
-        st, _ = await ws.dispatch("stat",
-                                  PathSpec.from_str_path(check["stat"]))
+        st, _ = await ws.dispatch(
+            "stat", PathSpec.from_str_path(check["stat"])
+        )
     except FileNotFoundError:
         return "absent\n"
     line = " ".join(_check_field(st, name) for name in check["fields"])
     return line + "\n"
-
-
-def provision_line(result) -> str:
-    return (f"net={result.network_read} write={result.network_write} "
-            f"cache={result.cache_read} ops={result.read_ops} "
-            f"hits={result.cache_hits} precision={result.precision.value}")
 
 
 def bind_mount(case: dict, mount_path: str) -> dict:
@@ -365,27 +413,193 @@ def bind_mount(case: dict, mount_path: str) -> dict:
             if isinstance(check.get(name), str):
                 for token, value in tokens.items():
                     bound["check"][name] = bound["check"][name].replace(
-                        token, value)
+                        token, value
+                    )
     expect = dict(bound["expect"])
     for name in ("stdout", "stderr", "check"):
         if isinstance(expect.get(name), str):
             for token, value in tokens.items():
                 expect[name] = expect[name].replace(token, value)
     bound["expect"] = expect
-    if "setup" in bound:
-        for token, value in tokens.items():
-            bound["setup"] = bound["setup"].replace(token, value)
-    if "concurrent" in bound:
-        bound["concurrent"] = [
-            bind_mount(step, mount_path) for step in bound["concurrent"]
-        ]
-    if "cwd" in bound:
-        for token, value in tokens.items():
-            bound["cwd"] = bound["cwd"].replace(token, value)
     return bound
 
 
-async def run_case(ws, case: dict) -> tuple[int, str, str, float, str | None]:
+class Answer(StrEnum):
+    """The battery's word for a host answer.
+
+    Deliberately not the library's vocabulary: a case says one word
+    where the workspace takes an outcome and a scope, so the pairing
+    lives in ANSWERS rather than in every case file.
+    """
+
+    ALLOW_ONCE = "allow_once"
+    ALLOW_SESSION = "allow_session"
+    DENY = "deny"
+
+
+# What each word answers with. DENY is ONCE because a refusal answers
+# the one retry it was given for; a session-wide deny would be a rule,
+# which is the document's job and not a host's.
+ANSWERS: dict[Answer, tuple[Outcome, Scope]] = {
+    Answer.ALLOW_ONCE: (Outcome.ALLOW, Scope.ONCE),
+    Answer.ALLOW_SESSION: (Outcome.ALLOW, Scope.SESSION),
+    Answer.DENY: (Outcome.DENY, Scope.ONCE),
+}
+
+
+async def answer_decisions(ws, answer: str) -> None:
+    """The host's side of the ask arm: answer every question waiting on
+    the workspace the way the case says, so the command that follows
+    finds the answer (or the refusal) the way an agent's retry would.
+    How a case exercises the ask arm, since the battery has no host of
+    its own.
+
+    The word is resolved through the enum before anything is answered,
+    so a case that misspells one fails loudly here. Reading it as an
+    open string cost the opposite: every word that was not
+    ``allow_once`` fell through to a session-wide allow, so a typo
+    passed the case while testing the most permissive answer there is.
+
+    Args:
+        ws: the workspace the case runs against.
+        answer (str): the case's word for every waiting record.
+
+    Raises:
+        ValueError: the case names a word outside the vocabulary.
+    """
+    outcome, scope = ANSWERS[Answer(answer)]
+    for record in ws.decisions.pending():
+        await ws.decisions.answer(record.id, outcome, scope)
+
+
+async def predicted_refusal(ws, case: dict) -> tuple[int, str] | None:
+    """What ``explain`` says would refuse this line, None when it says
+    the line runs.
+
+    A rule's refusal is the line's: the first one holds the whole line
+    before any of it runs. Any other refusal fails only its own command
+    and the line goes on (``tar`` refused on a mount root, then ``echo
+    after``), so it is the line's only when that command is the line.
+
+    Args:
+        ws: the workspace the case runs against.
+        case (dict): the case as loaded from disk.
+    """
+    said = await ws.explain(case["command"], case.get("session") or "")
+    refused = [expl for expl in said if expl.exit_code != 0]
+    held = next((expl for expl in refused if expl.rule is not None), None)
+    if held is None and len(said) == 1:
+        held = next(iter(refused), None)
+    return None if held is None else (held.exit_code, held.stderr)
+
+
+def rule_reasons(doc: dict) -> tuple[str, ...]:
+    """Every reason a document's rules can speak with.
+
+    These are what a refusal the policy layer wrote looks like on the
+    wire, and they are distinctive enough ("sealed until review") to
+    tell one apart from an ordinary command failure, which is what
+    ``explain_notes`` needs to check the direction a prediction cannot
+    check on its own.
+
+    Args:
+        doc (dict): the target's permissions document.
+    """
+    found: list[str] = []
+    stack: list[object] = [doc]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            reason = node.get("reason")
+            if isinstance(reason, str):
+                found.append(reason)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return tuple(sorted(set(found)))
+
+
+def explain_notes(
+    predicted: tuple[int, str] | None,
+    recorded: int,
+    exit_code: int,
+    out: str,
+    err: str,
+    reasons: tuple[str, ...],
+) -> list[str]:
+    """Where the dry run and the run disagreed, empty when they agree.
+
+    Three properties, checked against every policy case rather than only
+    the unit tests, because each is a promise the whole surface makes and
+    none of them is visible in a golden.
+
+    A dry run must record no question, or a host fields requests for
+    lines nobody typed. A refusal it predicts must be the refusal that
+    arrives. And the harder direction: a refusal that arrives must have
+    been predicted, which is checked by looking for one of the
+    document's own rule reasons in what the run printed. That last one
+    is the direction a prediction cannot check on its own, and it is
+    where the bugs were: reading a line without its redirect target
+    answered ALLOW for a line the run refused.
+
+    The message is looked for on either stream because the line's own
+    redirections still apply to the run and not to the prediction:
+    ``rm /denied 2>&1`` is refused on stdout.
+
+    Args:
+        predicted (tuple[int, str] | None): what explain foresaw.
+        recorded (int): questions the ledger gained during explain.
+        exit_code (int): what the run exited with.
+        out (str): the run's stdout.
+        err (str): the run's stderr.
+        reasons (tuple[str, ...]): every reason the document can speak
+            with.
+    """
+    notes: list[str] = []
+    if recorded:
+        notes.append(
+            f"explain: recorded {recorded} question(s), must record none"
+        )
+    spoke = next((r for r in reasons if r and (r in err or r in out)), None)
+    if predicted is None:
+        if spoke is not None:
+            notes.append(
+                f"explain: said the line runs, but a rule refused it "
+                f"with {spoke!r}"
+            )
+        return notes
+    code, text = predicted
+    if code != exit_code:
+        notes.append(f"explain: predicted exit {code}, run exited {exit_code}")
+    if text and text not in err and text not in out:
+        notes.append(f"explain: predicted stderr {text!r}, run wrote {err!r}")
+    return notes
+
+
+def undecodable(streams: dict[str, bytes]) -> list[str]:
+    """Name each stream whose bytes are not UTF-8.
+
+    The battery compares a replacing decode, which reads a raw byte as
+    U+FFFD, so a host that printed the byte and one that printed U+FFFD
+    would pass alike. A case whose output is not text pins its bytes
+    through ``od -An -tx1`` instead.
+
+    Args:
+        streams (dict[str, bytes]): each stream's name and bytes.
+
+    Returns:
+        list[str]: one note per stream that is not UTF-8.
+    """
+    return [
+        f"{name}: not UTF-8; pin the bytes with od -An -tx1"
+        for name, raw in streams.items()
+        if raw.decode(errors="replace").encode() != raw
+    ]
+
+
+async def run_case(
+    ws, case: dict, reasons: tuple[str, ...] = ()
+) -> tuple[int, str, str, float, str | None, list[str]]:
     """Run one case and return what it produced.
 
     The post-condition a case declares under ``check`` is returned beside
@@ -395,99 +609,142 @@ async def run_case(ws, case: dict) -> tuple[int, str, str, float, str | None]:
     Args:
         ws: the workspace the case runs against.
         case (dict): the case as loaded from disk.
+        reasons (tuple[str, ...]): every reason the target's document
+            can speak with; non-empty turns on the ``ws.explain``
+            cross-check, which is worth its extra dry run only where a
+            verdict exists to predict. A case whose verdict the command
+            plane cannot reach says so in ``explain_blind`` and is left
+            out, never silently.
 
     Returns:
-        tuple: exit code, stdout, stderr, elapsed seconds, and the stat
-        line for the case's ``check`` (None when it declares none).
+        tuple: exit code, stdout, stderr, elapsed seconds, the stat line
+        for the case's ``check`` (None when it declares none), and any
+        notes on where the dry run disagreed with the run.
     """
     if case.get("clear_cache"):
-        # A full clear means the file cache AND every mount's index cache:
-        # remote listings live in the per-resource index, and a listing
-        # populated by an earlier case must not leak into this one.
-        # Resources without an index cache have nothing to clear.
+        # A full clear means the file cache AND every mount's index
+        # cache: remote listings live in the mount's index, and a
+        # listing populated by an earlier case must not leak into this
+        # one. Every mount carries a store, built when its driver was
+        # placed, so there is nothing to probe for.
         await ws.cache.clear()
         for mount in ws.mounts():
-            store = getattr(mount.resource, "index", None)
-            if store is not None:
-                await store.clear()
+            await mount.index_store.clear()
     start = time.monotonic()
-    if case.get("provision"):
-        plan = await ws.execute(case["command"], provision=True)
-        return 0, provision_line(
-            plan) + "\n", "", time.monotonic() - start, None
-    if "setup" in case:
-        setup = await ws.execute(case["setup"])
-        if setup.exit_code:
-            return setup.exit_code, await setup.stdout_str(
-            ), await setup.stderr_str(), 0.0, None
-    if "concurrent" in case:
-        validate_concurrent(case)
-        tasks = [
-            asyncio.create_task(run_case(ws, step))
-            for step in case["concurrent"]
-        ]
-        try:
-            results = await asyncio.wait_for(asyncio.gather(*tasks),
-                                             case.get("timeout_seconds", 10))
-        finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-        errors = [
-            f"concurrent[{i}]: {diff}"
-            for i, (step,
-                    result) in enumerate(zip(case["concurrent"], results))
-            for diff in compare(step, *result)
-        ]
-        if errors:
-            return 1, "", "\n".join(errors), time.monotonic() - start, None
-    result = await ws.execute(case["command"],
-                              session_id=case.get("session"),
-                              env=case.get("env"),
-                              cwd=case.get("cwd"))
+    if case.get("answer") is not None:
+        await answer_decisions(ws, case["answer"])
+    predicted = None
+    recorded = 0
+    if reasons and not case.get("explain_blind"):
+        before = len(ws.decisions.pending())
+        predicted = await predicted_refusal(ws, case)
+        # Counted here, not after the run: the run records its own
+        # question, and charging that to the dry run would fail every
+        # ask case.
+        recorded = len(ws.decisions.pending()) - before
+    read_paths = case.get("check", {}).get("read_paths") is True
+    record_start = len(ws.vfs.records) if read_paths else 0
+    result = await ws.shell(case["command"], session_id=case.get("session"))
     elapsed = time.monotonic() - start
-    out = await result.stdout_str()
-    err = await result.stderr_str()
+    raw_out = await result.materialize_stdout()
+    raw_err = await result.materialize_stderr()
+    out = raw_out.decode(errors="replace")
+    err = raw_err.decode(errors="replace")
+    notes = undecodable({"stdout": raw_out, "stderr": raw_err})
+    if reasons and not case.get("explain_blind"):
+        notes += explain_notes(
+            predicted, recorded, result.exit_code, out, err, reasons
+        )
     check_out = None
-    if case.get("check") is not None:
+    if read_paths:
+        paths = [
+            r.path for r in ws.vfs.records[record_start:] if r.op == "read"
+        ]
+        check_out = json.dumps(paths, separators=(",", ":")) + "\n"
+    elif case.get("check") is not None:
         check_out = await stat_check(ws, case["check"])
-    return result.exit_code, out, err, elapsed, check_out
+    return result.exit_code, out, err, elapsed, check_out, notes
 
 
-async def run_scenario(read_ws, mutate, steps: list[dict]) -> tuple[int, str]:
+def malformed_mutate(spec: dict) -> str | None:
+    """Why a path mutate step cannot run, or None when it can.
+
+    Only ``"delete": true`` removes; anything else writes ``content``, so a
+    step with neither a string content nor a true delete has nothing to
+    write. A delete that is not a boolean says neither.
+
+    Args:
+        spec (dict): the step's ``mutate`` object, with no ``command``.
+    """
+    shown = json.dumps(spec, separators=(",", ":"))
+    if "delete" in spec and not isinstance(spec["delete"], bool):
+        return f'malformed mutate step {shown}: "delete" must be true or false'
+    if spec.get("delete") is not True and not isinstance(
+        spec.get("content"), str
+    ):
+        return (
+            f'malformed mutate step {shown}: "content" must be a string '
+            'unless "delete" is true'
+        )
+    return None
+
+
+async def run_scenario(
+    read_ws, mutate, remove, mutate_line, steps: list[dict]
+) -> tuple[int, str, str, list[str]]:
     outs: list[str] = []
+    errs: list[str] = []
+    notes: list[str] = []
     exit_code = 0
     for step in steps:
         if "mutate" in step:
             spec = step["mutate"]
-            await mutate(spec["path"], spec["content"].encode())
+            if "command" in spec:
+                await mutate_line(spec["command"])
+                continue
+            refusal = malformed_mutate(spec)
+            if refusal is not None:
+                raise ValueError(refusal)
+            if spec.get("delete") is True:
+                await remove(spec["path"])
+            else:
+                await mutate(spec["path"], spec["content"].encode())
             continue
-        result = await read_ws.execute(step["command"])
-        outs.append(await result.stdout_str())
+        result = await read_ws.shell(step["command"])
+        raw_out = await result.materialize_stdout()
+        raw_err = await result.materialize_stderr()
+        outs.append(raw_out.decode(errors="replace"))
+        errs.append(raw_err.decode(errors="replace"))
+        notes += undecodable({"stdout": raw_out, "stderr": raw_err})
         exit_code = result.exit_code
-    return exit_code, "".join(outs)
+    return exit_code, "".join(outs), "".join(errs), notes
 
 
-def compare(case: dict,
-            exit_code: int,
-            out: str,
-            err: str,
-            elapsed: float,
-            check_out: str | None = None) -> list[str]:
+def compare(
+    case: dict,
+    exit_code: int,
+    out: str,
+    err: str,
+    elapsed: float,
+    check_out: str | None = None,
+    notes: list[str] | None = None,
+) -> list[str]:
     expect = case["expect"]
-    diffs: list[str] = []
+    diffs: list[str] = list(notes or [])
     if exit_code != expect["exit"]:
         diffs.append(f"exit: expected {expect['exit']}, got {exit_code}")
     if out != expect["stdout"]:
         diffs.append(f"stdout: expected {expect['stdout']!r}, got {out!r}")
-    if err.rstrip("\n") != expect["stderr"].rstrip("\n"):
+    if err != expect["stderr"]:
         diffs.append(f"stderr: expected {expect['stderr']!r}, got {err!r}")
     if case.get("check") is not None and check_out != expect["check"]:
         diffs.append(f"check: expected {expect['check']!r}, got {check_out!r}")
     bounds = expect.get("elapsed")
     if bounds is not None and not bounds["min"] <= elapsed <= bounds["max"]:
-        diffs.append(f"elapsed: expected [{bounds['min']}, {bounds['max']}]"
-                     f", got {elapsed:.3f}")
+        diffs.append(
+            f"elapsed: expected [{bounds['min']}, {bounds['max']}]"
+            f", got {elapsed:.3f}"
+        )
     return diffs
 
 
@@ -496,16 +753,102 @@ class Report:
     passed: int = 0
     failed: int = 0
     failures: list[str] = field(default_factory=list)
+    # A concurrent run gives every target its own report and absorbs them in
+    # the order the targets were selected, so the printed lines are the serial
+    # run's lines whatever order the targets actually finished in. Streaming is
+    # the default because a serial run should still report as it goes.
+    stream: bool = True
+    lines: list[str] = field(default_factory=list)
 
     def record(self, target: str, case_id: str, diffs: list[str]) -> None:
         if diffs:
             self.failed += 1
             joined = "; ".join(diffs)
             self.failures.append(f"[{target}] {case_id}: {joined}")
-            print(f"FAIL [{target}] {case_id}: {joined}")
+            line = f"FAIL [{target}] {case_id}: {joined}"
         else:
             self.passed += 1
-            print(f"ok   [{target}] {case_id}")
+            line = f"ok   [{target}] {case_id}"
+        if self.stream:
+            print(line)
+        else:
+            self.lines.append(line)
+
+    def absorb(self, other: "Report") -> None:
+        """Fold one target's buffered report into the run's, printing it.
+
+        Args:
+            other (Report): the per-target report to merge and flush.
+        """
+        self.passed += other.passed
+        self.failed += other.failed
+        self.failures.extend(other.failures)
+        for line in other.lines:
+            print(line)
 
     def summary(self) -> str:
         return f"{self.passed} passed, {self.failed} failed"
+
+
+def target_lane(target: dict, services: dict) -> str:
+    """The lane a target holds for its whole run.
+
+    Two targets in one lane are never in flight together. A lane is the
+    SERVICE only when that service is declared ``shared``, because those
+    fakes hold one world: github serves every mount the same repository
+    under one token, and trello, discord and linear re-seed themselves
+    from the fixture on connect. Every other service mints a namespace
+    per ``open_target`` -- gws a ``/_run/<id>`` path, s3 a key prefix,
+    gridfs a database, dropbox an account -- so its targets cannot see
+    each other and get a lane of their own. That distinction is the
+    whole speed of this: gws carries five core targets and s3 three, and
+    they are the slow ones.
+
+    Args:
+        target (dict): the target manifest entry.
+        services (dict): the table from load_services.
+
+    Returns:
+        str: the lane name.
+    """
+    service = target.get("service")
+    if service is not None and services[service].get("shared"):
+        return service
+    return f"solo:{target['id']}"
+
+
+def plan_run(
+    targets: list[dict], services: dict
+) -> tuple[list[int], list[tuple[int, str]]]:
+    """Split eligible targets into the ones that run alone and the pool.
+
+    A lane bounds a target against its own service's other targets; an
+    ``exclusive`` target is bounded against EVERY other target, because
+    what it touches is process-global rather than server-side. Two
+    kinds carry it today. opfs replaces ``globalThis.navigator`` for the
+    length of the run and restores the previous descriptor afterwards,
+    which no second target may be reading across. The four ``secrets-*``
+    targets publish a fetch function into the process-global source
+    registry under a fixed name, and the healthy one's closes over a
+    per-open counter the cases assert call counts against, so a second
+    target on the same kind would silently replace it. Those run first,
+    one at a time, before the pool opens; all five are small.
+
+    Positions rather than entries, because the caller holds one output
+    slot per position: two ``--target ram`` on one line are two runs, and
+    anything keyed by the entry would merge one slot twice.
+
+    Args:
+        targets (list[dict]): eligible targets, in selection order.
+        services (dict): the table from load_services.
+
+    Returns:
+        tuple: positions that run alone, and (position, lane) for the pool.
+    """
+    alone = [i for i, t in enumerate(targets) if t.get("exclusive") is True]
+    pool = [
+        (i, target_lane(t, services))
+        for i, t in enumerate(targets)
+        if t.get("exclusive") is not True
+    ]
+    return alone, pool

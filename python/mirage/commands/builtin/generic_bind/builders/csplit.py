@@ -15,41 +15,63 @@
 from functools import partial
 
 from mirage.accessor.base import Accessor
+from mirage.commands.builtin.generic.crossmount.utils import (
+    relay,
+    transfer_primitives,
+)
 from mirage.commands.builtin.generic.csplit import csplit as generic_csplit
-from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          Operation, bound_op)
-from mirage.commands.builtin.generic_bind.builders.common import \
-    resolve_or_empty
+from mirage.commands.builtin.generic_bind.adapter import (
+    Builder,
+    CommandIO,
+    Operation,
+    bound_op,
+    resolve_or_empty,
+)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def csplit(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
-                 texts: list[str],
-                 opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def csplit(
+    ops: CommandIO,
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["csplit"])
     paths = await resolve_or_empty(ops, accessor, paths, opts.index)
     prefix_flag = fl.raw("prefix")
     prefix = prefix_flag if isinstance(prefix_flag, (str, PathSpec)) else "xx"
+    # The pieces go to the prefix, or `xx` in the working directory, which
+    # need not be this mount, so a dispatcher routes each write, and the
+    # removal of a failed run's pieces, to the mount that owns it.
+    if opts.dispatch is not None:
+        write_bytes = transfer_primitives(opts.dispatch)["write"]
+        unlink = partial(relay, opts.dispatch, "unlink")
+    else:
+        write_bytes = partial(ops.require(Operation.WRITE), accessor)
+        unlink = partial(ops.require(Operation.UNLINK), accessor)
     return await generic_csplit(
         paths,
         texts,
         read_bytes=bound_op(ops.read_bytes, accessor, opts.index),
-        write_bytes=partial(ops.require(Operation.WRITE), accessor),
+        write_bytes=write_bytes,
+        unlink=unlink,
         stdin=opts.stdin,
         prefix=prefix,
+        mount_prefix=opts.mount_prefix,
+        cwd=opts.cwd.virtual,
+        relay=opts.dispatch is not None,
         digits=int(fl.as_str("digits") or "2"),
         suffix_format=fl.as_str("suffix_format"),
         keep_on_error=fl.as_bool("keep_files"),
         silent=fl.as_bool("quiet") or fl.as_bool("silent"),
         suppress_matched=fl.as_bool("suppress_matched"),
-        elide_empty=fl.as_bool("elide_empty_files"))
+        elide_empty=fl.as_bool("elide_empty_files"),
+    )
 
 
-BUILDER = Builder('csplit',
-                  csplit,
-                  write=True,
-                  requirements=frozenset({Operation.WRITE}))
+BUILDER = Builder("csplit", csplit, write=True)

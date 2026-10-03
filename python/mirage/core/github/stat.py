@@ -14,15 +14,40 @@
 
 import logging
 
+import aiohttp
+
 from mirage.accessor.github import GitHubAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.github.readdir import readdir as _readdir
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.cache.index.ram import ListingCheckStore
+from mirage.core.github.lookup import locate, lookup_retrying, point_lookup
+from mirage.core.github.repo import ensure_ref
+from mirage.core.github.tree import fetch_head
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent
-from mirage.utils.filetype import guess_type
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
+from mirage.utils.filetype import content_type_for_path
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
+
+
+def stat_of(entry: IndexEntry) -> FileStat:
+    """Render one tree row as a FileStat, the same from either route.
+
+    Args:
+        entry (IndexEntry): the row for the path.
+
+    Returns:
+        FileStat: the rendered stat.
+    """
+    if entry.resource_type == "folder":
+        return FileStat(name=entry.name, type=FileType.DIRECTORY)
+    return FileStat(
+        name=entry.name,
+        size=entry.size,
+        type=FileType.FILE,
+        content=content_type_for_path(entry.name),
+        fingerprint=entry.id,
+        extra={"sha": entry.id},
+    )
 
 
 async def stat(
@@ -30,37 +55,73 @@ async def stat(
     path_spec: PathSpec,
     index: IndexCacheStore = NULL_INDEX,
 ) -> FileStat:
-    virtual = path_spec.virtual
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
-    rel = path_spec.mount_path.strip("/")
+    """Stat one path in the repository.
+
+    Args:
+        accessor (GitHubAccessor): backend handle.
+        path_spec (PathSpec): the path to stat.
+        index (IndexCacheStore): the mount's index.
+
+    Returns:
+        FileStat: the rendered stat.
+
+    Raises:
+        FileNotFoundError: nothing exists at the path.
+    """
+    prefix, rel, key = locate(path_spec)
     if not rel:
-        return FileStat(name="/", type=FileType.DIRECTORY)
-    key = prefix + "/" + rel if prefix else "/" + rel
-    result = await index.get(key)
-    if result.entry is None:
-        parent_path = key.rsplit("/", 1)[0] or "/"
-        try:
-            await _readdir(
-                accessor,
-                PathSpec(virtual=parent_path,
-                         directory=parent_path,
-                         resource_path=mount_key(parent_path, prefix)),
-                index=index,
-            )
-        except FileNotFoundError as exc:
-            logger.debug("stat populate failed for %s: %s", key, exc)
-        result = await index.get(key)
-    if result.entry is not None:
-        if result.entry.resource_type == "folder":
-            return FileStat(
-                name=result.entry.name,
-                type=FileType.DIRECTORY,
-            )
         return FileStat(
-            name=result.entry.name,
-            size=result.entry.size,
-            type=guess_type(result.entry.name),
-            fingerprint=result.entry.id,
-            extra={"sha": result.entry.id},
+            name="/",
+            type=FileType.DIRECTORY,
+            fingerprint=await _root_version(accessor, index),
         )
-    raise enoent(virtual)
+    # A probe through a throwaway index asks for this one path; everything
+    # else answers from the mount's listing, filling it if need be.
+    found = await point_lookup(accessor, index, prefix, rel)
+    if found is None:
+        found = await lookup_retrying(accessor, index, prefix, key)
+    if found.entry is None:
+        raise enoent(path_spec.virtual)
+    return stat_of(found.entry)
+
+
+async def _root_version(
+    accessor: GitHubAccessor,
+    index: IndexCacheStore,
+) -> str | None:
+    """The version of the whole mount: the head commit its ref is at.
+
+    Only the gate's ``ListingCheckStore`` asks for it, with one shallow
+    request. Every other index (the mount's own, the null index) names no
+    version and reads nothing, neither the index nor the backend, so a
+    getattr of the root never pays a check or a store round trip: nothing
+    reads a root fingerprint off a mount-view stat. Nothing here refills
+    the index: a refused head names no version rather than falling into a
+    lookup.
+
+    Args:
+        accessor (GitHubAccessor): the mount's accessor.
+        index (IndexCacheStore): the index the stat was asked through.
+
+    Returns:
+        str | None: the head commit sha, or None when it is not asked for
+        or not known.
+    """
+    if not isinstance(index, ListingCheckStore):
+        return None
+    try:
+        return await fetch_head(
+            accessor.config,
+            accessor.owner,
+            accessor.repo,
+            await ensure_ref(accessor),
+            accessor.pool,
+        )
+    except aiohttp.ClientResponseError as exc:
+        log.debug(
+            "head of %s/%s not answered: %s",
+            accessor.owner,
+            accessor.repo,
+            exc,
+        )
+        return None

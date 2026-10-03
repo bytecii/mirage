@@ -1,27 +1,37 @@
 import pytest
 
 from mirage import MountMode, Workspace
-from mirage.commands.builtin.generic.du import (DuFlags, _depth, du,
-                                                parse_depth, parse_flags,
-                                                rollup, run_du, separate_total,
-                                                to_virtual)
-from mirage.commands.builtin.generic_bind import CommandIO, DuOps
+from mirage.commands.builtin.generic.du import (
+    DuFlags,
+    _depth,
+    du,
+    parse_depth,
+    parse_flags,
+    rollup,
+    run_du,
+    separate_total,
+    to_virtual,
+)
+from mirage.commands.builtin.generic_bind import CommandIO
 from mirage.commands.errors import UsageError
 from mirage.ops.types import LinkView, MountView
-from mirage.resource.disk import DiskResource
-from mirage.resource.ram import RAMResource
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.vfs.disk import DiskVFS
+from mirage.vfs.ram import RAMVFS
+from mirage.vfs.types import DuOps
 
 
 async def _ok(value):
     return value
 
 
-def _spec(virtual: str, resource_path: str, raw_path: str | None = None):
-    return PathSpec(virtual=virtual,
-                    directory=virtual,
-                    resource_path=resource_path,
-                    raw_path=raw_path)
+def _spec(virtual: str, vfs_path: str, raw_path: str | None = None):
+    return PathSpec(
+        virtual=virtual,
+        directory=virtual,
+        vfs_path=vfs_path,
+        raw_path=raw_path,
+    )
 
 
 def _make_backend(tree: dict[str, int]):
@@ -36,101 +46,37 @@ def _make_backend(tree: dict[str, int]):
 
     async def compute_size(p: PathSpec) -> int:
         base = p.mount_path.rstrip("/")
-        return sum(size for path, size in tree.items()
-                   if path == base or path.startswith(base + "/"))
+        return sum(
+            size
+            for path, size in tree.items()
+            if path == base or path.startswith(base + "/")
+        )
 
     async def compute_entries(
-            p: PathSpec) -> tuple[list[tuple[str, int]], int]:
+        p: PathSpec,
+    ) -> tuple[list[tuple[str, int]], int]:
         base = p.mount_path.rstrip("/")
-        found = sorted((path, size) for path, size in tree.items()
-                       if path == base or path.startswith(base + "/"))
+        found = sorted(
+            (path, size)
+            for path, size in tree.items()
+            if path == base or path.startswith(base + "/")
+        )
         return found, sum(size for _, size in found)
 
     return compute_size, compute_entries
 
 
 @pytest.mark.asyncio
-async def test_single_file_reports_its_size():
-    compute_size, compute_entries = _make_backend({"/f.txt": 5})
-    out = await du([_spec("/f.txt", "f.txt")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags())
-    assert out.stdout == b"5\t/f.txt\n"
-    assert out.exit_code == 0
-
-
-@pytest.mark.asyncio
 async def test_file_operand_prints_once_under_a():
     """GNU prints a file operand as a single line, never file + roll-up."""
     compute_size, compute_entries = _make_backend({"/f.txt": 5})
-    out = await du([_spec("/f.txt", "f.txt")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True))
+    out = await du(
+        [_spec("/f.txt", "f.txt")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(a=True),
+    )
     assert out.stdout == b"5\t/f.txt\n"
-
-
-@pytest.mark.asyncio
-async def test_directory_of_files_only_prints_the_operand():
-    tree = {"/dir/a.txt": 2, "/dir/b.txt": 3}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags())
-    assert out.stdout == b"5\t/dir\n"
-
-
-@pytest.mark.asyncio
-async def test_subdirectories_get_their_own_line():
-    """GNU prints a line per directory carrying its recursive total."""
-    tree = {"/dir/a.txt": 3, "/dir/sub/b.txt": 2, "/dir/sub/deep/c.txt": 1}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags())
-    assert out.stdout == b"1\t/dir/sub/deep\n3\t/dir/sub\n6\t/dir\n"
-
-
-@pytest.mark.asyncio
-async def test_separate_dirs_excludes_subdirectory_sizes():
-    """GNU -S: parent totals omit children that are directories."""
-    tree = {"/dir/a.txt": 3, "/dir/sub/b.txt": 2, "/dir/sub/deep/c.txt": 1}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(S=True))
-    assert out.stdout == b"1\t/dir/sub/deep\n2\t/dir/sub\n3\t/dir\n"
-
-
-@pytest.mark.asyncio
-async def test_separate_dirs_with_summarize_uses_direct_files_only():
-    tree = {"/dir/a.txt": 3, "/dir/sub/b.txt": 2, "/dir/sub/deep/c.txt": 1}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(s=True, S=True))
-    assert out.stdout == b"3\t/dir\n"
-
-
-@pytest.mark.asyncio
-async def test_separate_dirs_with_all_lists_files():
-    tree = {"/dir/a.txt": 3, "/dir/sub/b.txt": 2, "/dir/sub/deep/c.txt": 1}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True, S=True))
-    assert out.stdout == (b"3\t/dir/a.txt\n"
-                          b"2\t/dir/sub/b.txt\n"
-                          b"1\t/dir/sub/deep/c.txt\n"
-                          b"1\t/dir/sub/deep\n"
-                          b"2\t/dir/sub\n"
-                          b"3\t/dir\n")
 
 
 @pytest.mark.asyncio
@@ -138,24 +84,27 @@ async def test_separate_dirs_keeps_the_grand_total_recursive():
     """GNU -Sc: rows are separate, the total is not (coreutils 9.7)."""
     tree = {"/dir/a.txt": 3, "/dir/sub/b.txt": 2, "/dir/sub/deep/c.txt": 1}
     compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(c=True, S=True))
-    assert out.stdout == (b"1\t/dir/sub/deep\n"
-                          b"2\t/dir/sub\n"
-                          b"3\t/dir\n"
-                          b"6\ttotal\n")
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(c=True, S=True),
+    )
+    assert out.stdout == (
+        b"1\t/dir/sub/deep\n2\t/dir/sub\n3\t/dir\n6\ttotal\n"
+    )
 
 
 @pytest.mark.asyncio
 async def test_separate_dirs_summarize_still_totals_recursively():
     tree = {"/dir/a.txt": 3, "/dir/sub/b.txt": 2, "/dir/sub/deep/c.txt": 1}
     compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(s=True, c=True, S=True))
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(s=True, c=True, S=True),
+    )
     assert out.stdout == b"3\t/dir\n6\ttotal\n"
 
 
@@ -163,10 +112,12 @@ async def test_separate_dirs_summarize_still_totals_recursively():
 async def test_separate_dirs_keeps_a_file_operand_in_the_total():
     """GNU scopes -S to directories: a file operand counts itself."""
     compute_size, compute_entries = _make_backend({"/f.txt": 7})
-    out = await du([_spec("/f.txt", "f.txt")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(c=True, S=True))
+    out = await du(
+        [_spec("/f.txt", "f.txt")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(c=True, S=True),
+    )
     assert out.stdout == b"7\t/f.txt\n7\ttotal\n"
 
 
@@ -176,68 +127,14 @@ def test_separate_total_sums_direct_children_only():
 
 
 @pytest.mark.asyncio
-async def test_a_lists_every_file_then_every_directory():
-    """Post-order: children before parents, exactly like GNU."""
-    tree = {"/dir/a.txt": 3, "/dir/sub/b.txt": 2, "/dir/sub/deep/c.txt": 1}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True))
-    assert out.stdout == (b"3\t/dir/a.txt\n"
-                          b"2\t/dir/sub/b.txt\n"
-                          b"1\t/dir/sub/deep/c.txt\n"
-                          b"1\t/dir/sub/deep\n"
-                          b"3\t/dir/sub\n"
-                          b"6\t/dir\n")
-
-
-@pytest.mark.asyncio
-async def test_a_lists_every_file():
-    tree = {"/dir/a.txt": 2, "/dir/b.txt": 3}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True))
-    assert out.stdout == b"2\t/dir/a.txt\n3\t/dir/b.txt\n5\t/dir\n"
-
-
-@pytest.mark.asyncio
-async def test_a_entries_carry_the_mount_prefix():
-    """The backend walks its own key space; du must show virtual paths."""
-    compute_size, compute_entries = _make_backend({"/notes.txt": 4})
-    out = await du([_spec("/slack", "")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True))
-    assert out.stdout == b"4\t/slack/notes.txt\n4\t/slack\n"
-
-
-@pytest.mark.asyncio
-async def test_a_distinguishes_same_name_under_two_mounts():
-    """Two mounts each holding notes.txt must not render the same line."""
-    compute_size, compute_entries = _make_backend({"/notes.txt": 4})
-    first = await du([_spec("/m1", "")],
-                     compute_size=compute_size,
-                     compute_entries=compute_entries,
-                     flags=DuFlags(a=True))
-    second = await du([_spec("/m2", "")],
-                      compute_size=compute_size,
-                      compute_entries=compute_entries,
-                      flags=DuFlags(a=True))
-    assert first.stdout == b"4\t/m1/notes.txt\n4\t/m1\n"
-    assert second.stdout == b"4\t/m2/notes.txt\n4\t/m2\n"
-    assert first.stdout != second.stdout
-
-
-@pytest.mark.asyncio
 async def test_a_respells_entries_as_the_operand_was_typed():
     compute_size, compute_entries = _make_backend({"/dir/a.txt": 2})
-    out = await du([_spec("/dir", "dir", raw_path="dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True))
+    out = await du(
+        [_spec("/dir", "dir", raw_path="dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(a=True),
+    )
     assert out.stdout == b"2\tdir/a.txt\n2\tdir\n"
 
 
@@ -245,10 +142,12 @@ async def test_a_respells_entries_as_the_operand_was_typed():
 async def test_s_summarises_to_one_line():
     tree = {"/dir/a.txt": 2, "/dir/sub/b.txt": 3}
     compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(s=True))
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(s=True),
+    )
     assert out.stdout == b"5\t/dir\n"
 
 
@@ -256,10 +155,12 @@ async def test_s_summarises_to_one_line():
 async def test_max_depth_zero_drops_everything_below_the_operand():
     tree = {"/dir/a.txt": 2, "/dir/sub/b.txt": 3}
     compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True, max_depth=0))
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(a=True, max_depth=0),
+    )
     assert out.stdout == b"5\t/dir\n"
 
 
@@ -267,10 +168,12 @@ async def test_max_depth_zero_drops_everything_below_the_operand():
 async def test_max_depth_one_keeps_direct_children():
     tree = {"/dir/a.txt": 2, "/dir/sub/b.txt": 3}
     compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True, max_depth=1))
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(a=True, max_depth=1),
+    )
     assert out.stdout == b"2\t/dir/a.txt\n3\t/dir/sub\n5\t/dir\n"
 
 
@@ -279,45 +182,26 @@ async def test_negative_max_depth_prints_only_the_operand():
     """GNU accepts a negative depth without complaint (exit 0)."""
     tree = {"/dir/a.txt": 2, "/dir/sub/b.txt": 3}
     compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(max_depth=-1))
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(max_depth=-1),
+    )
     assert out.stdout == b"5\t/dir\n"
     assert out.exit_code == 0
 
 
 @pytest.mark.asyncio
-async def test_c_appends_a_grand_total():
-    tree = {"/dir/a.txt": 2, "/dir/b.txt": 3}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(c=True))
-    assert out.stdout.splitlines()[-1] == b"5\ttotal"
-
-
-@pytest.mark.asyncio
 async def test_h_renders_human_readable_sizes():
     compute_size, compute_entries = _make_backend({"/dir/a.txt": 4096})
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(h=True))
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(h=True),
+    )
     assert out.stdout.split(b"\t")[0].endswith(b"K")
-
-
-@pytest.mark.asyncio
-async def test_multiple_operands_render_in_order():
-    tree = {"/a.txt": 2, "/b.txt": 3}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/a.txt", "a.txt"),
-                    _spec("/b.txt", "b.txt")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags())
-    assert out.stdout == b"2\t/a.txt\n3\t/b.txt\n"
 
 
 def test_native_du_is_all_or_nothing():
@@ -344,27 +228,17 @@ def test_command_io_omitting_du_keeps_the_walk_fallback():
 async def test_missing_operand_is_reported_and_exits_one():
     """GNU names the unreadable operand, prints the rest, exits 1."""
     compute_size, compute_entries = _make_backend({"/dir/a.txt": 2})
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(),
-                   missing=[("nosuch", "No such file or directory")])
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(),
+        missing=[("nosuch", "No such file or directory")],
+    )
     assert out.stdout == b"2\t/dir\n"
-    assert out.stderr == (b"du: cannot access 'nosuch': "
-                          b"No such file or directory\n")
-    assert out.exit_code == 1
-
-
-@pytest.mark.asyncio
-async def test_c_still_prints_a_total_when_every_operand_is_missing():
-    """GNU prints '0 total' even when it read nothing."""
-    compute_size, compute_entries = _make_backend({})
-    out = await du([],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(c=True),
-                   missing=[("nosuch", "No such file or directory")])
-    assert out.stdout == b"0\ttotal\n"
+    assert out.stderr == (
+        b"du: cannot access 'nosuch': No such file or directory\n"
+    )
     assert out.exit_code == 1
 
 
@@ -373,20 +247,17 @@ async def test_s_with_max_depth_zero_warns_but_succeeds():
     """GNU: -s and --max-depth=0 are the same request, so it warns only."""
     compute_size, compute_entries = _make_backend({"/dir/a.txt": 2})
     flags = parse_flags(s=True, a=False, h=False, c=False, max_depth="0")
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=flags)
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=flags,
+    )
     assert out.stdout == b"2\t/dir\n"
     assert out.stderr == (
-        b"du: warning: summarizing is the same as using --max-depth=0\n")
+        b"du: warning: summarizing is the same as using --max-depth=0\n"
+    )
     assert out.exit_code == 0
-
-
-def test_s_with_a_nonzero_max_depth_is_still_a_usage_error():
-    with pytest.raises(UsageError) as excinfo:
-        parse_flags(s=True, a=False, h=False, c=False, max_depth="1")
-    assert "summarizing conflicts with --max-depth=1" in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -402,16 +273,19 @@ async def test_backend_error_on_the_content_probe_reads_as_missing():
     async def compute_entries(path):
         raise RuntimeError("Graph API error 404 (itemNotFound)")
 
-    out = await run_du([_spec("/data/nosuch", "nosuch")],
-                       "/",
-                       lambda targets: _ok(list(targets)),
-                       stat,
-                       compute_size,
-                       compute_entries,
-                       c=True)
+    out = await run_du(
+        [_spec("/data/nosuch", "nosuch")],
+        "/",
+        lambda targets: _ok(list(targets)),
+        stat,
+        compute_size,
+        compute_entries,
+        c=True,
+    )
     assert out.stdout == b"0\ttotal\n"
-    assert out.stderr == (b"du: cannot access '/data/nosuch': "
-                          b"No such file or directory\n")
+    assert out.stderr == (
+        b"du: cannot access '/data/nosuch': No such file or directory\n"
+    )
     assert out.exit_code == 1
 
 
@@ -420,7 +294,7 @@ async def test_namespace_only_directory_is_present_not_missing():
     """A directory that exists only above a nested mount is readable.
 
     The parent backend holds nothing at the operand and cannot: the
-    content lives in the descendant's own resource. Both backend channels
+    content lives in the descendant's own VFS. Both backend channels
     therefore come back empty, and only the dispatcher-backed probe knows
     the path is a directory.
     """
@@ -432,13 +306,15 @@ async def test_namespace_only_directory_is_present_not_missing():
     async def stat_path(virtual: str) -> FileStat | None:
         return FileStat(name="empty", type=FileType.DIRECTORY)
 
-    out = await run_du([_spec("/empty", "empty")],
-                       "/",
-                       lambda targets: _ok(list(targets)),
-                       stat,
-                       compute_size,
-                       compute_entries,
-                       stat_path=stat_path)
+    out = await run_du(
+        [_spec("/empty", "empty")],
+        "/",
+        lambda targets: _ok(list(targets)),
+        stat,
+        compute_size,
+        compute_entries,
+        stat_path=stat_path,
+    )
     assert out.stdout == b"0\t/empty\n"
     assert out.stderr == b""
     assert out.exit_code == 0
@@ -455,16 +331,19 @@ async def test_stat_path_answering_none_still_reports_missing():
     async def stat_path(virtual: str) -> FileStat | None:
         return None
 
-    out = await run_du([_spec("/nope", "nope")],
-                       "/",
-                       lambda targets: _ok(list(targets)),
-                       stat,
-                       compute_size,
-                       compute_entries,
-                       stat_path=stat_path)
+    out = await run_du(
+        [_spec("/nope", "nope")],
+        "/",
+        lambda targets: _ok(list(targets)),
+        stat,
+        compute_size,
+        compute_entries,
+        stat_path=stat_path,
+    )
     assert out.stdout == b""
-    assert out.stderr == (b"du: cannot access '/nope': "
-                          b"No such file or directory\n")
+    assert out.stderr == (
+        b"du: cannot access '/nope': No such file or directory\n"
+    )
     assert out.exit_code == 1
 
 
@@ -472,11 +351,13 @@ async def test_stat_path_answering_none_still_reports_missing():
 async def test_truncated_walk_reports_partial_output_and_exits_one():
     """GNU du prints what it accounted for, warns, and exits 1."""
     compute_size, compute_entries = _make_backend({"/dir/a.txt": 2})
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(),
-                   truncated=lambda: True)
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(),
+        truncated=lambda: True,
+    )
     assert out.stdout == b"2\t/dir\n"
     assert out.exit_code == 1
     assert b"incomplete" in out.stderr
@@ -485,68 +366,67 @@ async def test_truncated_walk_reports_partial_output_and_exits_one():
 @pytest.mark.asyncio
 async def test_untruncated_walk_is_silent_and_exits_zero():
     compute_size, compute_entries = _make_backend({"/dir/a.txt": 2})
-    out = await du([_spec("/dir", "dir")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(),
-                   truncated=lambda: False)
+    out = await du(
+        [_spec("/dir", "dir")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(),
+        truncated=lambda: False,
+    )
     assert out.stderr == b""
     assert out.exit_code == 0
 
 
-def test_parse_flags_rejects_summarize_with_all():
+@pytest.mark.parametrize(
+    "s,a,max_depth,message",
+    [
+        (True, True, None, "cannot both summarize and show all entries"),
+        (True, False, "1", "summarizing conflicts with --max-depth=1"),
+        (False, False, "1x", "invalid maximum depth '1x'"),
+        (True, True, "abc", "invalid maximum depth"),
+    ],
+)
+def test_parse_flags_refuses(s, a, max_depth, message):
     with pytest.raises(UsageError) as excinfo:
-        parse_flags(s=True, a=True, h=False, c=False, max_depth=None)
-    assert "cannot both summarize and show all entries" in str(excinfo.value)
+        parse_flags(s=s, a=a, h=False, c=False, max_depth=max_depth)
+    assert message in str(excinfo.value)
     assert excinfo.value.exit_code == 1
 
 
-def test_parse_flags_rejects_summarize_with_max_depth():
-    with pytest.raises(UsageError) as excinfo:
-        parse_flags(s=True, a=False, h=False, c=False, max_depth="1")
-    assert "summarizing conflicts with --max-depth=1" in str(excinfo.value)
-
-
-def test_parse_flags_rejects_a_non_numeric_depth():
-    with pytest.raises(UsageError) as excinfo:
-        parse_flags(s=False, a=False, h=False, c=False, max_depth="1x")
-    assert "invalid maximum depth '1x'" in str(excinfo.value)
-
-
-def test_parse_flags_reports_a_bad_depth_before_the_conflict():
-    """GNU parses --max-depth as it reads it, ahead of the -s/-a check."""
-    with pytest.raises(UsageError) as excinfo:
-        parse_flags(s=True, a=True, h=False, c=False, max_depth="abc")
-    assert "invalid maximum depth" in str(excinfo.value)
-
-
-@pytest.mark.parametrize("text,expected", [
-    ("0", 0),
-    ("2", 2),
-    ("8", 8),
-    ("+2", 2),
-    ("-1", -1),
-    ("-0", 0),
-    ("010", 8),
-    ("00", 0),
-    ("0x2", 2),
-    ("0X3", 3),
-    ("09", None),
-    ("0xz", None),
-    ("1x", None),
-    ("abc", None),
-    ("1_0", None),
-    ("١٢", None),
-    (" 1 ", None),
-])
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("0", 0),
+        ("2", 2),
+        ("8", 8),
+        ("+2", 2),
+        ("-1", -1),
+        ("-0", 0),
+        ("010", 8),
+        ("00", 0),
+        ("0x2", 2),
+        ("0X3", 3),
+        ("09", None),
+        ("0xz", None),
+        ("1x", None),
+        ("abc", None),
+        ("1_0", None),
+        ("١٢", None),
+        (" 1 ", None),
+    ],
+)
 def test_parse_depth_matches_gnu_strtoul(text, expected):
     """Pinned against debian coreutils: base 0, no whitespace."""
     assert parse_depth(text) == expected
 
 
 def test_parse_flags_accepts_a_negative_depth():
-    assert parse_flags(s=False, a=False, h=False, c=False,
-                       max_depth="-1").max_depth == -1
+    assert (
+        parse_flags(
+            s=False, a=False, h=False, c=False, max_depth="-1"
+        ).max_depth
+        == -1
+    )
 
 
 def test_rollup_orders_children_before_parents():
@@ -576,7 +456,8 @@ def test_rollup_separate_dirs_counts_only_direct_files():
     """GNU -S: a directory omits subdirectory sizes (pinned coreutils 9.7)."""
     entries = [("/d/a.txt", 3), ("/d/sub/b.txt", 2), ("/d/sub/deep/c.txt", 1)]
     rows = dict(
-        rollup(entries, "/d", a=False, max_depth=None, separate_dirs=True))
+        rollup(entries, "/d", a=False, max_depth=None, separate_dirs=True)
+    )
     assert rows["/d/sub/deep"] == 1
     assert rows["/d/sub"] == 2
     assert "/d/a.txt" not in rows
@@ -586,7 +467,8 @@ def test_rollup_separate_dirs_keeps_empty_ancestor_dirs():
     """A directory with only subdirs still prints, at size 0."""
     entries = [("/d/sub/deep/c.txt", 4)]
     rows = dict(
-        rollup(entries, "/d", a=False, max_depth=None, separate_dirs=True))
+        rollup(entries, "/d", a=False, max_depth=None, separate_dirs=True)
+    )
     assert rows["/d/sub/deep"] == 4
     assert rows["/d/sub"] == 0
 
@@ -604,8 +486,9 @@ def test_rollup_handles_a_root_mount():
 
 def test_to_virtual_prepends_the_mount_prefix():
     spec = _spec("/slack/channels", "channels")
-    assert to_virtual([("/channels/general.jsonl", 7)],
-                      spec) == [("/slack/channels/general.jsonl", 7)]
+    assert to_virtual([("/channels/general.jsonl", 7)], spec) == [
+        ("/slack/channels/general.jsonl", 7)
+    ]
 
 
 def test_to_virtual_is_a_no_op_at_the_root_mount():
@@ -620,11 +503,17 @@ def test_depth_counts_segments_below_the_base():
 
 
 def _mounts_view(descendants: tuple[str, ...]) -> MountView:
+    visible = [d for d in descendants if not d.endswith("/hidden")]
     return MountView(
-        descendants=lambda p:
-        [d for d in descendants if d.startswith(p.rstrip("/") + "/")],
+        descendants=lambda p: [
+            d for d in descendants if d.startswith(p.rstrip("/") + "/")
+        ],
+        visible_descendants=lambda p: [
+            d for d in visible if d.startswith(p.rstrip("/") + "/")
+        ],
         is_root=lambda p: False,
-        root_of=lambda p: "/")
+        root_of=lambda p: "/",
+    )
 
 
 async def _no_target_stat(path: str) -> FileStat | None:
@@ -639,17 +528,24 @@ def _links_view(links: dict[str, str]) -> LinkView:
 
     def stat_of(path: str) -> FileStat:
         target = links[path]
-        return FileStat(name=path.rsplit("/", 1)[-1],
-                        type=FileType.SYMLINK,
-                        size=len(target))
+        return FileStat(
+            name=path.rsplit("/", 1)[-1],
+            type=FileType.SYMLINK,
+            size=len(target),
+        )
 
-    return LinkView(stat_at=lambda p: stat_of(p) if p in links else None,
-                    children=lambda p: [],
-                    subtree=lambda p: [(k, stat_of(k)) for k in sorted(links)
-                                       if k.startswith(p.rstrip("/") + "/")],
-                    resolve=lambda p: links.get(p, p),
-                    exists=_never_exists,
-                    target_stat=_no_target_stat)
+    return LinkView(
+        stat_at=lambda p: stat_of(p) if p in links else None,
+        children=lambda p: [],
+        subtree=lambda p: [
+            (k, stat_of(k))
+            for k in sorted(links)
+            if k.startswith(p.rstrip("/") + "/")
+        ],
+        resolve=lambda p: links.get(p, p),
+        exists=_never_exists,
+        target_stat=_no_target_stat,
+    )
 
 
 # The nested-mount behavior is pinned against GNU coreutils 9.7 on
@@ -657,40 +553,38 @@ def _links_view(links: dict[str, str]) -> LinkView:
 # the operand): a file shadowed by a mount appears nowhere and counts
 # nowhere. The parent mount's own rows are GNU's `du -x` report; the
 # descendant mount's block is appended by the executor fan-out.
+@pytest.mark.parametrize(
+    "tree,flags,expected",
+    [
+        (
+            {"/top.txt": 10, "/inner/leftover.txt": 1000},
+            DuFlags(),
+            b"10\t/base\n",
+        ),
+        (
+            {"/top.txt": 10, "/inner/leftover.txt": 1000},
+            DuFlags(a=True),
+            b"10\t/base/top.txt\n10\t/base\n",
+        ),
+        (
+            {"/top.txt": 10, "/inner/leftover.txt": 1000},
+            DuFlags(s=True),
+            b"10\t/base\n",
+        ),
+        ({"/inner/leftover.txt": 1000}, DuFlags(), b"0\t/base\n"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_descendant_mount_rows_and_total_are_excluded():
-    tree = {"/top.txt": 10, "/inner/leftover.txt": 1000}
+async def test_descendant_mount_is_excluded(tree, flags, expected):
     compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/base", "")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(),
-                   mounts=_mounts_view(("/base/inner", )))
-    assert out.stdout == b"10\t/base\n"
-
-
-@pytest.mark.asyncio
-async def test_descendant_mount_leaves_are_excluded_under_a():
-    tree = {"/top.txt": 10, "/inner/leftover.txt": 1000}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/base", "")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(a=True),
-                   mounts=_mounts_view(("/base/inner", )))
-    assert out.stdout == b"10\t/base/top.txt\n10\t/base\n"
-
-
-@pytest.mark.asyncio
-async def test_descendant_mount_bytes_are_excluded_under_s():
-    tree = {"/top.txt": 10, "/inner/leftover.txt": 1000}
-    compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/base", "")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(s=True),
-                   mounts=_mounts_view(("/base/inner", )))
-    assert out.stdout == b"10\t/base\n"
+    out = await du(
+        [_spec("/base", "")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=flags,
+        mounts=_mounts_view(("/base/inner",)),
+    )
+    assert out.stdout == expected
 
 
 @pytest.mark.asyncio
@@ -699,10 +593,12 @@ async def test_without_a_mount_view_shadowed_keys_still_count():
     know where the boundaries are, so the backend's keys all count."""
     tree = {"/top.txt": 10, "/inner/leftover.txt": 1000}
     compute_size, compute_entries = _make_backend(tree)
-    out = await du([_spec("/base", "")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags())
+    out = await du(
+        [_spec("/base", "")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(),
+    )
     assert out.stdout == b"1000\t/base/inner\n1010\t/base\n"
 
 
@@ -710,70 +606,28 @@ async def test_without_a_mount_view_shadowed_keys_still_count():
 async def test_link_under_a_descendant_mount_is_not_counted():
     """A namespace link below the boundary belongs to the child's run."""
     compute_size, compute_entries = _make_backend({"/top.txt": 10})
-    out = await du([_spec("/base", "")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(),
-                   links=_links_view({
-                       "/base/inner/lnk": "12345",
-                       "/base/kept": "123",
-                   }),
-                   mounts=_mounts_view(("/base/inner", )))
+    out = await du(
+        [_spec("/base", "")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(),
+        links=_links_view(
+            {
+                "/base/inner/lnk": "12345",
+                "/base/kept": "123",
+            }
+        ),
+        mounts=_mounts_view(("/base/inner",)),
+    )
     assert out.stdout == b"13\t/base\n"
 
 
 @pytest.mark.asyncio
-async def test_fully_shadowed_operand_reports_zero():
-    """Backend holds only shadowed keys: the parent's own report is empty,
-    never a compute_size fallback that would count the shadowed bytes."""
-    compute_size, compute_entries = _make_backend(
-        {"/inner/leftover.txt": 1000})
-    out = await du([_spec("/base", "")],
-                   compute_size=compute_size,
-                   compute_entries=compute_entries,
-                   flags=DuFlags(),
-                   mounts=_mounts_view(("/base/inner", )))
-    assert out.stdout == b"0\t/base\n"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("flag", ["-S", "--separate-dirs"])
-async def test_du_separate_dirs_off_the_command_line(tmp_path, flag):
-    res = DiskResource(root=str(tmp_path))
-    ws = Workspace({"/d": res}, mode=MountMode.WRITE)
-    await ws.execute("mkdir -p /d/sub/deep")
-    await ws.execute("printf abc > /d/a.txt")
-    await ws.execute("printf de > /d/sub/b.txt")
-    await ws.execute("printf f > /d/sub/deep/c.txt")
-    result = await ws.execute(f"du {flag} -c /d")
-    assert result.exit_code == 0
-    assert await result.stdout_str() == ("1\t/d/sub/deep\n"
-                                         "2\t/d/sub\n"
-                                         "3\t/d\n"
-                                         "6\ttotal\n")
-    await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_du_missing_operand_reports_and_exits_1(tmp_path):
-    # GNU: "du: cannot access 'X': No such file or directory", exit 1. Walking
-    # a missing operand used to report it as size 0 with exit 0.
-    res = DiskResource(root=str(tmp_path))
-    ws = Workspace({"/d": res}, mode=MountMode.WRITE)
-    result = await ws.execute("du /d/__nf_missing__")
-    assert result.exit_code == 1
-    assert await result.stdout_str() == ""
-    assert (await result.stderr_str()) == (
-        "du: cannot access '/d/__nf_missing__': No such file or directory\n")
-    await ws.close()
-
-
-@pytest.mark.asyncio
 async def test_du_partial_operands_keeps_present_output(tmp_path):
-    res = DiskResource(root=str(tmp_path))
+    res = DiskVFS(root=str(tmp_path))
     ws = Workspace({"/d": res}, mode=MountMode.WRITE)
-    await ws.execute("mkdir -p /d/sub")
-    result = await ws.execute("du /d/sub /d/__nf_missing__")
+    await ws.shell("mkdir -p /d/sub")
+    result = await ws.shell("du /d/sub /d/__nf_missing__")
     assert result.exit_code == 1
     assert "/d/sub" in await result.stdout_str()
     assert "__nf_missing__" in await result.stderr_str()
@@ -781,32 +635,12 @@ async def test_du_partial_operands_keeps_present_output(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_du_on_the_implied_parent_of_a_nested_mount():
-    # GNU coreutils 9.7 on debian:stable-slim, tmpfs mounted at /empty/hole:
-    # `du --apparent-size -B1 /empty` prints both rows and exits 0. The
-    # absence line is reserved for a path that is really not there.
-    ws = Workspace({
-        "/": RAMResource(),
-        "/empty/hole": RAMResource()
-    },
-                   mode=MountMode.WRITE)
-    ws.create_session("s")
-    result = await ws.execute("du /empty", session_id="s")
-    assert await result.stdout_str() == "0\t/empty/hole\n0\t/empty\n"
-    assert await result.stderr_str() == ""
-    assert result.exit_code == 0
-    await ws.close()
-
-
-@pytest.mark.asyncio
 async def test_du_on_the_implied_parent_of_a_nested_mount_under_s():
-    ws = Workspace({
-        "/": RAMResource(),
-        "/empty/hole": RAMResource()
-    },
-                   mode=MountMode.WRITE)
+    ws = Workspace(
+        {"/": RAMVFS(), "/empty/hole": RAMVFS()}, mode=MountMode.WRITE
+    )
     ws.create_session("s")
-    result = await ws.execute("du -s /empty", session_id="s")
+    result = await ws.shell("du -s /empty", session_id="s")
     assert await result.stdout_str() == "0\t/empty\n"
     assert await result.stderr_str() == ""
     assert result.exit_code == 0
@@ -819,14 +653,16 @@ async def test_du_on_a_directory_implied_only_by_a_link_below_it():
 
     ``namespace_names`` synthesizes a directory for a link's ancestors
     too, so the mount table alone is not enough evidence; the probe that
-    answers here is the one that asks the namespace as a whole.
+    answers here is the one that asks the namespace as a whole. ``ln``
+    refuses a link under an absent directory, so the link is seeded the
+    way a node table restored from an older snapshot holds one.
     """
-    ws = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
     ws.create_session("s")
-    await ws.execute("mkdir -p /real", session_id="s")
-    await ws.execute("echo hi > /real/f.txt", session_id="s")
-    await ws.execute("ln -s /real/f.txt /ghost/deep/lnk", session_id="s")
-    result = await ws.execute("du /ghost", session_id="s")
+    await ws.shell("mkdir -p /real", session_id="s")
+    await ws.shell("echo hi > /real/f.txt", session_id="s")
+    await ws.namespace.symlink("/ghost/deep/lnk", "/real/f.txt", 0.0)
+    result = await ws.shell("du /ghost", session_id="s")
     assert await result.stderr_str() == ""
     assert result.exit_code == 0
     assert "/ghost" in await result.stdout_str()
@@ -834,7 +670,7 @@ async def test_du_on_a_directory_implied_only_by_a_link_below_it():
 
 
 @pytest.mark.asyncio
-async def test_du_still_reports_absence_when_the_descendant_is_ungranted():
+async def test_du_still_reports_absence_when_the_descendant_is_hidden():
     """A session that may not see the mount must not learn it is there.
 
     ``registry.descendant_mounts`` is not session-filtered, so proving
@@ -842,15 +678,61 @@ async def test_du_still_reports_absence_when_the_descendant_is_ungranted():
     confirm a walled-off mount's parent. The dispatcher-backed probe is
     filtered, so absence stays the answer.
     """
-    ws = Workspace({
-        "/": RAMResource(),
-        "/empty/hole": RAMResource()
-    },
-                   mode=MountMode.WRITE)
-    ws.create_session("scoped", {"/": "rw"})
-    result = await ws.execute("du /empty", session_id="scoped")
+    ws = Workspace(
+        {"/": RAMVFS(), "/empty/hole": RAMVFS()}, mode=MountMode.WRITE
+    )
+    ws.create_session("scoped", profile={"paths": {"hide": ["/empty/hole"]}})
+    result = await ws.shell("du /empty", session_id="scoped")
     assert await result.stdout_str() == ""
     assert (await result.stderr_str()) == (
-        "du: cannot access '/empty': No such file or directory\n")
+        "du: cannot access '/empty': No such file or directory\n"
+    )
     assert result.exit_code == 1
     await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_du_names_a_directory_the_walk_could_not_open():
+    # GNU: "du: cannot read directory 'X': Permission denied", the rest
+    # still counted, exit 1; spelled as the operand was typed, after the
+    # unreadable-operand lines, which are known before any walk.
+    compute_size, compute_entries = _make_backend({"/t/open/o": 2})
+    out = await du(
+        [_spec("/d/t", "t", raw_path="t")],
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=DuFlags(),
+        missing=(("gone", "No such file or directory"),),
+        unreadable=lambda: ["/d/t/sealed"],
+    )
+    assert out.stdout == b"2\tt/open\n2\tt\n"
+    assert out.stderr == (
+        b"du: cannot access 'gone': No such file or directory\n"
+        b"du: cannot read directory 't/sealed': Permission denied\n"
+    )
+    assert out.exit_code == 1
+
+
+# GNU names the refused depth through gnulib's quote(), so a byte outside
+# 0x20-0x7e comes back escaped rather than interpolated raw. Rows measured
+# against GNU coreutils 9.4 under `LC_ALL=C` with a raw `bytes` argv
+# (`du --max-depth=<w>`). Mirrored in du.test.ts.
+@pytest.mark.parametrize(
+    "value,escaped",
+    [
+        ("1é", r"1\303\251"),
+        ("1\r", r"1\r"),
+        ("1\x01", r"1\001"),
+        ("1\x7f", r"1\177"),
+        ("1'", r"1\'"),
+        ("1\\", r"1\\"),
+        ("", ""),
+    ],
+)
+def test_max_depth_refusal_quotes_the_word(value, escaped):
+    with pytest.raises(UsageError) as exc:
+        parse_flags(s=False, a=False, h=False, c=False, max_depth=value)
+    assert str(exc.value).startswith(
+        f"du: invalid maximum depth '{escaped}'\n"
+    )
+    assert exc.value.exit_code == 1

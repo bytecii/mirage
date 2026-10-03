@@ -13,217 +13,174 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import aiohttp
 
 from mirage.accessor.discord import DiscordAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.cache.index import IndexEntry
 from mirage.core.discord.channels import list_channels
-from mirage.core.discord.entry import (DiscordResourceType, channel_entry,
-                                       guild_entry, history_entry,
-                                       member_entry, snowflake_to_date)
+from mirage.core.discord.entry import (
+    channel_entry,
+    guild_entry,
+    history_entry,
+    member_entry,
+    snowflake_to_date,
+)
 from mirage.core.discord.files import file_blob_name
 from mirage.core.discord.guilds import list_guilds
 from mirage.core.discord.history import list_messages_for_day
 from mirage.core.discord.members import list_members
 from mirage.core.discord.render import history_jsonl_bytes
-from mirage.types import PathSpec
-from mirage.utils.errors import enoent, enotdir
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
+from mirage.core.discord.scope import detect_scope
+from mirage.core.hierarchy.readdir import DirListing, Listed, make_readdir
+from mirage.core.hierarchy.scope import ScopeMatch
+from mirage.core.time_range import guard_day
+from mirage.utils.glob_walk import glob_span, has_glob_span
 
 logger = logging.getLogger(__name__)
 
 SOFT_HTTP_STATUSES = frozenset((403, 404, 429))
 
+CONTAINER_TYPE = "discord/container"
+
 
 def _is_soft_error(exc: Exception) -> bool:
-    return (isinstance(exc, aiohttp.ClientResponseError)
-            and exc.status in SOFT_HTTP_STATUSES)
+    return (
+        isinstance(exc, aiohttp.ClientResponseError)
+        and exc.status in SOFT_HTTP_STATUSES
+    )
 
 
-def _date_range(end_date: str, days: int = 30) -> list[str]:
+def _date_range(
+    end_date: str, days: int = 30, span: tuple[date, date] | None = None
+) -> list[str]:
+    """The channel's day directories, oldest first.
+
+    A day dir is real for any well-formed date under the channel, so the
+    bare listing is a window: the last ``days`` up to the newest
+    message. A glob names its own window instead, clipped at the newest
+    message because nothing was posted after it.
+
+    Args:
+        end_date (str): the newest message's date, ``YYYY-MM-DD``.
+        days (int): how many days the bare window covers.
+        span (tuple[date, date] | None): the glob's half-open range.
+    """
     end = datetime.strptime(end_date, "%Y-%m-%d").date()
-    return [(end - timedelta(days=i)).isoformat()
-            for i in range(days - 1, -1, -1)]
+    if span is None:
+        return [
+            (end - timedelta(days=i)).isoformat()
+            for i in range(days - 1, -1, -1)
+        ]
+    start = span[0]
+    last = min(end, span[1] - timedelta(days=1))
+    out = []
+    d = start
+    while d <= last:
+        out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
 
 
-def _normalize_path(path: PathSpec) -> tuple[str, str, str]:
-    """Reduce input to (prefix, key, virtual_key)."""
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    raw = path.directory if path.pattern else path.virtual
-    if prefix and raw.startswith(prefix):
-        raw = raw[len(prefix):] or "/"
-    key = raw.strip("/")
-    virtual_key = prefix + "/" + key if key else prefix or "/"
-    return prefix, key, virtual_key
+def _container_entry(name: str, guild_id: str) -> IndexEntry:
+    return IndexEntry(
+        id=guild_id,
+        name=name,
+        resource_type=CONTAINER_TYPE,
+        vfs_name=name,
+    )
 
 
-async def _readdir_root(
-    accessor: DiscordAccessor,
-    prefix: str,
-    virtual_key: str,
-    index: IndexCacheStore = NULL_INDEX,
-) -> list[str]:
-    listing = await index.list_dir(virtual_key)
-    if listing.entries is not None:
-        return listing.entries
-    guilds = await list_guilds(accessor.config)
-    entries = []
-    names = []
-    for g in guilds:
-        entry = guild_entry(g)
-        entries.append((entry.vfs_name, entry))
-        names.append(f"{prefix}/{entry.vfs_name}")
-    await index.set_dir(virtual_key, entries)
-    return names
+async def _list_root(accessor: DiscordAccessor, match: ScopeMatch) -> Listed:
+    guilds = await list_guilds(accessor.config, session=accessor.pool)
+    entries = [guild_entry(g) for g in guilds]
+    return [(entry.vfs_name, entry) for entry in entries]
 
 
-async def _ensure_guild_id(
-    accessor: DiscordAccessor,
-    prefix: str,
-    guild_part: str,
-    index: IndexCacheStore,
-    raw_path: str,
-) -> str:
-    guild_virtual_key = prefix + "/" + guild_part
-    lookup = await index.get(guild_virtual_key)
-    if lookup.entry is None:
-        await _readdir_root(accessor, prefix, prefix or "/", index)
-        lookup = await index.get(guild_virtual_key)
-    if lookup.entry is None:
-        raise enoent(raw_path)
-    return lookup.entry.id
+async def _list_guild(
+    accessor: DiscordAccessor, match: ScopeMatch, own: IndexEntry
+) -> Listed:
+    return [
+        ("channels", _container_entry("channels", own.id)),
+        ("members", _container_entry("members", own.id)),
+    ]
 
 
-async def _readdir_guild_top(
-    prefix: str,
-    key: str,
-) -> list[str]:
-    return [f"{prefix}/{key}/channels", f"{prefix}/{key}/members"]
+async def _list_channels_dir(
+    accessor: DiscordAccessor, match: ScopeMatch, own: IndexEntry
+) -> Listed:
+    channels = await list_channels(
+        accessor.config, own.id, session=accessor.pool
+    )
+    entries = [channel_entry(c) for c in channels]
+    return [(entry.vfs_name, entry) for entry in entries]
 
 
-async def _readdir_channels(
-    accessor: DiscordAccessor,
-    prefix: str,
-    key: str,
-    virtual_key: str,
-    parts: list[str],
-    index: IndexCacheStore,
-    raw_path: str,
-) -> list[str]:
-    listing = await index.list_dir(virtual_key)
-    if listing.entries is not None:
-        return listing.entries
-    guild_id = await _ensure_guild_id(accessor, prefix, parts[0], index,
-                                      raw_path)
-    channels = await list_channels(accessor.config, guild_id)
-    entries = []
-    names = []
-    for c in channels:
-        entry = channel_entry(c)
-        entries.append((entry.vfs_name, entry))
-        names.append(f"{prefix}/{key}/{entry.vfs_name}")
-    await index.set_dir(virtual_key, entries)
-    return names
+async def _list_members_dir(
+    accessor: DiscordAccessor, match: ScopeMatch, own: IndexEntry
+) -> Listed:
+    members = await list_members(
+        accessor.config, own.id, session=accessor.pool
+    )
+    entries = [member_entry(m) for m in members]
+    return [(entry.vfs_name, entry) for entry in entries]
 
 
-async def _readdir_members(
-    accessor: DiscordAccessor,
-    prefix: str,
-    key: str,
-    virtual_key: str,
-    parts: list[str],
-    index: IndexCacheStore,
-    raw_path: str,
-) -> list[str]:
-    listing = await index.list_dir(virtual_key)
-    if listing.entries is not None:
-        return listing.entries
-    guild_id = await _ensure_guild_id(accessor, prefix, parts[0], index,
-                                      raw_path)
-    members = await list_members(accessor.config, guild_id)
-    entries = []
-    names = []
-    for m in members:
-        entry = member_entry(m)
-        entries.append((entry.vfs_name, entry))
-        names.append(f"{prefix}/{key}/{entry.vfs_name}")
-    await index.set_dir(virtual_key, entries)
-    return names
-
-
-async def _ensure_channel_lookup(
-    accessor: DiscordAccessor,
-    prefix: str,
-    parts: list[str],
-    index: IndexCacheStore,
-    raw_path: str,
-):
-    channel_vk = f"{prefix}/{'/'.join(parts[:3])}"
-    lookup = await index.get(channel_vk)
-    if lookup.entry is None:
-        await _readdir_channels(accessor, prefix, "/".join(parts[:2]),
-                                f"{prefix}/{'/'.join(parts[:2])}", parts[:2],
-                                index, raw_path)
-        lookup = await index.get(channel_vk)
-    if lookup.entry is None:
-        raise enoent(raw_path)
-    return lookup
-
-
-async def _readdir_channel_dates(
-    accessor: DiscordAccessor,
-    prefix: str,
-    key: str,
-    virtual_key: str,
-    parts: list[str],
-    index: IndexCacheStore,
-    raw_path: str,
-) -> list[str]:
-    listing = await index.list_dir(virtual_key)
-    if listing.entries is not None:
-        return listing.entries
-    lookup = await _ensure_channel_lookup(accessor, prefix, parts, index,
-                                          raw_path)
-    last_msg_id = lookup.entry.remote_time
+async def _list_channel_days(
+    accessor: DiscordAccessor, match: ScopeMatch, own: IndexEntry
+) -> Listed:
+    last_msg_id = own.remote_time
     if last_msg_id:
         end_date = snowflake_to_date(last_msg_id)
     else:
         end_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-    dates = _date_range(end_date)
-    entries = []
-    names = []
-    for d in dates:
-        entry = history_entry(key, d)
-        entry.resource_type = DiscordResourceType.HISTORY
-        entry.vfs_name = d
-        entries.append((d, entry))
-        names.append(f"{prefix}/{key}/{d}")
-    await index.set_dir(virtual_key, entries)
-    return names
+    span = glob_span(match.pattern)
+    dates = (
+        accessor.time_range.listing_days(
+            date.fromisoformat(snowflake_to_date(own.id)),
+            date.fromisoformat(end_date),
+            span,
+        )
+        if accessor.time_range.bounded
+        else _date_range(end_date, span=span)
+    )
+    entries = [(d, history_entry(own.id, d)) for d in dates]
+    return DirListing(entries=entries, partial=span is not None, window=True)
 
 
-async def _fetch_day(
-    accessor: DiscordAccessor,
-    channel_id: str,
-    date_str: str,
-    date_vkey: str,
-    index: IndexCacheStore = NULL_INDEX,
-) -> None:
-    """Walk the day's history once, populate date dir and files dir
-    entries in the index. Tolerates soft HTTP errors (403/404/429) by
-    sealing an empty date dir.
+async def _day_listing(
+    accessor: DiscordAccessor, channel_id: str, date_str: str
+) -> DirListing:
+    """One history fetch, answering the day dir and its files subdir.
+
+    A soft HTTP error (403/404/429) seals an empty day: the dir lists
+    nothing, and stat serves chat.jsonl with the size left unknown.
+
+    Args:
+        accessor (DiscordAccessor): discord accessor.
+        channel_id (str): the channel snowflake.
+        date_str (str): the day, ``YYYY-MM-DD``.
     """
     try:
-        messages = await list_messages_for_day(accessor.config, channel_id,
-                                               date_str)
+        messages = await list_messages_for_day(
+            accessor.config,
+            channel_id,
+            date_str,
+            accessor.time_range,
+            session=accessor.pool,
+        )
     except aiohttp.ClientResponseError as e:
         if _is_soft_error(e):
-            logger.debug("discord: history denied for %s/%s (%d); empty day",
-                         channel_id, date_str, e.status)
-            await index.set_dir(date_vkey, [])
-            return
+            logger.debug(
+                "discord: history denied for %s/%s (%d); empty day",
+                channel_id,
+                date_str,
+                e.status,
+            )
+            # A soft error is not the channel saying the day's messages
+            # are gone, so the empty day must not evict what it held.
+            return DirListing(entries=[], window=True)
         raise
     # The day's messages are already in hand, so chat.jsonl's exact rendered
     # size is free here; read() renders the same messages the same way.
@@ -239,11 +196,8 @@ async def _fetch_day(
         name="files",
         resource_type="discord/files_dir",
         vfs_name="files",
+        extra={"channel_id": channel_id, "date": date_str},
     )
-    await index.set_dir(date_vkey, [
-        ("chat.jsonl", chat_entry),
-        ("files", files_entry),
-    ])
     file_entries: list[tuple[str, IndexEntry]] = []
     for msg in messages:
         for att in msg.get("attachments") or []:
@@ -251,149 +205,76 @@ async def _fetch_day(
             # carry an id but no download URL and no byte size; read()
             # ENOENTs on them, so listing them would surface phantom files
             # with unknown sizes. Mirrors the slack guard.
-            if (not att.get("id") or not att.get("url")
-                    or att.get("size") is None):
+            if (
+                not att.get("id")
+                or not att.get("url")
+                or att.get("size") is None
+            ):
                 continue
             blob_name = file_blob_name(att)
-            file_entries.append((blob_name,
-                                 IndexEntry(
-                                     id=str(att["id"]),
-                                     name=att.get("filename") or "",
-                                     resource_type="discord/file",
-                                     vfs_name=blob_name,
-                                     size=att.get("size"),
-                                     extra={
-                                         "url":
-                                         att.get("url", ""),
-                                         "proxy_url":
-                                         att.get("proxy_url", ""),
-                                         "content_type":
-                                         att.get("content_type", ""),
-                                         "message_id":
-                                         msg.get("id", ""),
-                                         "author":
-                                         msg.get("author",
-                                                 {}).get("username", ""),
-                                         "channel_id":
-                                         channel_id,
-                                         "date":
-                                         date_str,
-                                     },
-                                 )))
-    await index.set_dir(f"{date_vkey}/files", file_entries)
+            file_entries.append(
+                (
+                    blob_name,
+                    IndexEntry(
+                        id=str(att["id"]),
+                        name=att.get("filename") or "",
+                        resource_type="discord/file",
+                        vfs_name=blob_name,
+                        size=att.get("size"),
+                        extra={
+                            "url": att.get("url", ""),
+                            "proxy_url": att.get("proxy_url", ""),
+                            "content_type": att.get("content_type", ""),
+                            "message_id": msg.get("id", ""),
+                            "author": msg.get("author", {}).get(
+                                "username", ""
+                            ),
+                            "channel_id": channel_id,
+                            "date": date_str,
+                        },
+                    ),
+                )
+            )
+    return DirListing(
+        entries=[("chat.jsonl", chat_entry), ("files", files_entry)],
+        seeds={"files": file_entries},
+    )
 
 
-async def _readdir_date_contents(
-    accessor: DiscordAccessor,
-    prefix: str,
-    key: str,
-    virtual_key: str,
-    parts: list[str],
-    index: IndexCacheStore,
-    raw_path: str,
-) -> list[str]:
-    cached = await index.list_dir(virtual_key)
-    if cached.entries is not None:
-        return cached.entries
-    lookup = await _ensure_channel_lookup(accessor, prefix, parts, index,
-                                          raw_path)
-    await _fetch_day(accessor, lookup.entry.id, parts[3], virtual_key, index)
-    cached = await index.list_dir(virtual_key)
-    if cached.entries is None:
-        raise enoent(raw_path)
-    return cached.entries
+async def _list_day(
+    accessor: DiscordAccessor, match: ScopeMatch, channel: IndexEntry
+) -> Listed:
+    # The proof is the channel entry, not the day's own: any well-formed
+    # date under a real channel fetches, including dates outside the
+    # bounded window the channel listing mints.
+    return await _day_listing(accessor, channel.id, match.slots["day"])
 
 
-async def _readdir_files_dir(
-    accessor: DiscordAccessor,
-    prefix: str,
-    key: str,
-    virtual_key: str,
-    parts: list[str],
-    index: IndexCacheStore,
-    raw_path: str,
-) -> list[str]:
-    cached = await index.list_dir(virtual_key)
-    if cached.entries is not None:
-        return cached.entries
-    # Date dir lookup triggers _fetch_day which populates the files dir
-    date_key = "/".join(parts[:4])
-    date_vk = f"{prefix}/{date_key}"
-    date_spec = PathSpec(virtual=date_vk,
-                         directory=date_vk,
-                         resource_path=mount_key(date_vk, prefix))
-    await readdir(accessor, date_spec, index)
-    cached = await index.list_dir(virtual_key)
-    if cached.entries is None:
-        raise enoent(raw_path)
-    return cached.entries
+async def _list_files(
+    accessor: DiscordAccessor, match: ScopeMatch, own: IndexEntry
+) -> Listed:
+    # Normally served from the day lister's seed; reached only when the
+    # index evicted the files listing while the day's entries survived.
+    channel_id = own.extra.get("channel_id") or own.id.split(":", 1)[0]
+    listing = await _day_listing(accessor, channel_id, match.slots["day"])
+    # A soft-error day proves nothing about its attachments either.
+    return DirListing(
+        entries=list(listing.seeds.get("files", [])), window=listing.window
+    )
 
 
-def _is_leaf(parts: list[str]) -> bool:
-    """Report whether the path names a file rather than a directory.
-
-    Args:
-        parts (list[str]): mount-relative path segments.
-    """
-    if len(parts) == 3 and parts[1] == "members":
-        return parts[2].endswith(".json")
-    if len(parts) == 5 and parts[1] == "channels":
-        return parts[4] == "chat.jsonl"
-    if len(parts) == 6 and parts[1] == "channels" and parts[4] == "files":
-        return True
-    return False
-
-
-async def readdir(
-    accessor: DiscordAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = NULL_INDEX,
-) -> list[str]:
-    """List directory contents.
-
-    Args:
-        accessor (DiscordAccessor): discord accessor.
-        path (PathSpec): resource-relative path.
-        index (IndexCacheStore): index cache.
-    """
-    prefix, key, virtual_key = _normalize_path(path)
-    raw_path = path.virtual
-
-    if not key:
-        return await _readdir_root(accessor, prefix, virtual_key, index)
-
-    parts = key.split("/")
-
-    if len(parts) == 1:
-        # Bootstrap from the root listing when the index is cold, the way
-        # every other branch does: listing a guild directly must not depend
-        # on having listed the mount root first.
-        await _ensure_guild_id(accessor, prefix, parts[0], index, raw_path)
-        return await _readdir_guild_top(prefix, key)
-
-    if len(parts) == 2 and parts[1] == "channels":
-        return await _readdir_channels(accessor, prefix, key, virtual_key,
-                                       parts, index, raw_path)
-
-    if len(parts) == 2 and parts[1] == "members":
-        return await _readdir_members(accessor, prefix, key, virtual_key,
-                                      parts, index, raw_path)
-
-    if len(parts) == 3 and parts[1] == "channels":
-        return await _readdir_channel_dates(accessor, prefix, key, virtual_key,
-                                            parts, index, raw_path)
-
-    if len(parts) == 4 and parts[1] == "channels":
-        return await _readdir_date_contents(accessor, prefix, key, virtual_key,
-                                            parts, index, raw_path)
-
-    if (len(parts) == 5 and parts[1] == "channels" and parts[4] == "files"):
-        return await _readdir_files_dir(accessor, prefix, key, virtual_key,
-                                        parts, index, raw_path)
-
-    # A leaf that exists is ENOTDIR, not ENOENT: callers tell "this is a
-    # file, read it" from "there is nothing here" by the errno. Anything
-    # else is a shape discord does not serve.
-    if _is_leaf(parts):
-        raise enotdir(raw_path)
-    raise enoent(raw_path)
+readdir = make_readdir(
+    detect_scope,
+    listers={"root": _list_root},
+    entry_listers={
+        "guild": _list_guild,
+        "channels_dir": _list_channels_dir,
+        "members_dir": _list_members_dir,
+        "channel": _list_channel_days,
+        "files": _list_files,
+    },
+    parent_entry_listers={"day": _list_day},
+    guards={"day": guard_day, "files": guard_day},
+    pattern_kinds={"channel": has_glob_span},
+    leaf_error="enotdir",
+)

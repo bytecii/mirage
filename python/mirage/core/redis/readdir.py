@@ -13,7 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.redis import RedisAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.cache.index import (
+    NULL_INDEX,
+    IndexCacheStore,
+    IndexEntry,
+    ResourceType,
+)
 from mirage.types import PathSpec
 from mirage.utils.errors import readdir_error
 from mirage.utils.key_prefix import mount_prefix_of
@@ -26,10 +31,10 @@ async def readdir(
     index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
     virtual = path_spec.virtual
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.vfs_path)
     path = path_spec.directory if path_spec.pattern else path_spec.virtual
     if prefix and path.startswith(prefix):
-        rest = path[len(prefix):]
+        rest = path[len(prefix) :]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
             path = rest or "/"
     store = accessor.store
@@ -51,19 +56,26 @@ async def readdir(
         if key == p:
             continue
         if key.startswith(dir_prefix):
-            remainder = key[len(dir_prefix):]
+            remainder = key[len(dir_prefix) :]
             child = remainder.split("/")[0]
             if child:
                 seen.add(dir_prefix + child)
     entries = sorted(seen)
     virtual_entries = sorted((prefix + e if prefix else e) for e in entries)
-    index_entries = [(
-        e.rsplit("/", 1)[-1],
-        IndexEntry(
-            id=e,
-            name=e.rsplit("/", 1)[-1],
-            resource_type="file",
-        ),
-    ) for e in entries]
+    file_set = set(all_files)
+    index_entries = [
+        (
+            e.rsplit("/", 1)[-1],
+            IndexEntry(
+                id=e,
+                name=e.rsplit("/", 1)[-1],
+                vfs_name=e.rsplit("/", 1)[-1],
+                resource_type=(
+                    ResourceType.FILE if e in file_set else ResourceType.FOLDER
+                ),
+            ),
+        )
+        for e in entries
+    ]
     await index.set_dir(virtual_key, index_entries)
     return virtual_entries

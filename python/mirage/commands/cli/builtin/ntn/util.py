@@ -16,7 +16,7 @@ import json
 
 from mirage.commands.cli.types import CLIInvocation
 from mirage.commands.errors import UsageError
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.notion.config import NotionConfig
 from mirage.io.types import ByteSource, materialize
 from mirage.types import JsonValue
@@ -24,8 +24,9 @@ from mirage.types import JsonValue
 CHECKED = "✓"
 
 
-async def content_or_stdin(inline: str | None,
-                           stdin: ByteSource | None) -> str:
+async def content_or_stdin(
+    inline: str | None, stdin: ByteSource | None
+) -> str:
     """Resolve Markdown from `--content` or the pipe.
 
     The upstream CLI's third source is ``$EDITOR``, which a virtualized
@@ -72,10 +73,9 @@ def compact_json(value: JsonValue) -> bytes:
     Returns:
         bytes: the rendered JSON with its trailing newline.
     """
-    text = json.dumps(value,
-                      separators=(",", ":"),
-                      sort_keys=True,
-                      ensure_ascii=False)
+    text = json.dumps(
+        value, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+    )
     return f"{text}\n".encode()
 
 
@@ -187,7 +187,8 @@ def property_cell(prop: JsonValue) -> str:
         if not isinstance(value, list):
             return ""
         return ", ".join(
-            str(one.get("name", "")) for one in value if isinstance(one, dict))
+            str(one.get("name", "")) for one in value if isinstance(one, dict)
+        )
     if isinstance(value, str):
         return value
     if isinstance(value, bool) or value is None:
@@ -216,24 +217,6 @@ def parse_json_text(text: str, flag: str) -> dict[str, JsonValue]:
     if not isinstance(parsed, dict):
         raise UsageError(f"{flag} must be a JSON object")
     return parsed
-
-
-def parse_json_flag(value: FlagValue | None,
-                    flag: str) -> dict[str, JsonValue]:
-    """Parse a JSON-object flag, sharing the gws wording.
-
-    Args:
-        value (FlagValue | None): the raw flag value from the bag.
-        flag (str): the flag's spelling for error messages.
-
-    Returns:
-        dict: the parsed object, empty when the flag is absent.
-    """
-    if value is None or value == "":
-        return {}
-    if not isinstance(value, str):
-        raise UsageError(f"{flag} must be a JSON string")
-    return parse_json_text(value, flag)
 
 
 def notion_config(inv: CLIInvocation[NotionConfig]) -> NotionConfig:

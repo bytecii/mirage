@@ -14,24 +14,30 @@
 
 import asyncio
 
-from mirage.accessor.base import Accessor
+from mirage.accessor.base import SessionAccessor
+from mirage.core.github.config import GitHubConfig
 from mirage.core.github.tree_entry import TreeEntry
 
 
-class GitHubAccessor(Accessor):
-
-    def __init__(self,
-                 config,
-                 owner,
-                 repo,
-                 ref,
-                 default_branch: str | None = None,
-                 tree: dict[str, TreeEntry] | None = None,
-                 truncated=False):
+class GitHubAccessor(SessionAccessor):
+    def __init__(
+        self,
+        config: GitHubConfig,
+        owner: str,
+        repo: str,
+        ref: str | None = None,
+        default_branch: str | None = None,
+        tree: dict[str, TreeEntry] | None = None,
+        truncated: bool = False,
+    ) -> None:
+        super().__init__()
         self.config = config
         self.owner = owner
         self.repo = repo
-        self.ref = ref
+        # None until resolved: an unpinned mount follows the repository's
+        # default branch, which costs a request to learn, so the ref is
+        # settled on the first read that needs one (`ensure_ref`).
+        self.ref: str | None = ref
         # None until hydrated: the mount is constructed without touching
         # the network, so the repo's default branch is fetched on the
         # first read that needs it (`ensure_default_branch`).
@@ -57,3 +63,9 @@ class GitHubAccessor(Accessor):
         # once an index was wired.
         self.tree_loaded: bool = tree is not None
         self.truncated = truncated
+        # The head commit that tree was fetched at, as the response named
+        # it, or None when it is not known (a tree handed in, a truncated
+        # or sha-less response). A tree walker compares it with the
+        # version its index listing was served at and refills on a
+        # difference, since another mount can refill a shared index.
+        self.tree_version: str | None = None

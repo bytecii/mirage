@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import shlex
+
 from mirage.shell.bytes import byte_char
 
 # The ANSI-C escape table $'...' shares with bash's strtrans.c. \e/\E
@@ -64,20 +66,57 @@ def _u32_utf8(value: int) -> bytes:
     if value < 0x800:
         return bytes((0xC0 | value >> 6, 0x80 | value & 0x3F))
     if value < 0x10000:
-        return bytes((0xE0 | value >> 12, 0x80 | value >> 6 & 0x3F,
-                      0x80 | value & 0x3F))
+        return bytes(
+            (0xE0 | value >> 12, 0x80 | value >> 6 & 0x3F, 0x80 | value & 0x3F)
+        )
     if value < 0x200000:
-        return bytes((0xF0 | value >> 18, 0x80 | value >> 12 & 0x3F,
-                      0x80 | value >> 6 & 0x3F, 0x80 | value & 0x3F))
+        return bytes(
+            (
+                0xF0 | value >> 18,
+                0x80 | value >> 12 & 0x3F,
+                0x80 | value >> 6 & 0x3F,
+                0x80 | value & 0x3F,
+            )
+        )
     if value < 0x4000000:
-        return bytes((0xF8 | value >> 24, 0x80 | value >> 18 & 0x3F,
-                      0x80 | value >> 12 & 0x3F, 0x80 | value >> 6 & 0x3F,
-                      0x80 | value & 0x3F))
+        return bytes(
+            (
+                0xF8 | value >> 24,
+                0x80 | value >> 18 & 0x3F,
+                0x80 | value >> 12 & 0x3F,
+                0x80 | value >> 6 & 0x3F,
+                0x80 | value & 0x3F,
+            )
+        )
     if value < 0x80000000:
-        return bytes((0xFC | value >> 30, 0x80 | value >> 24 & 0x3F,
-                      0x80 | value >> 18 & 0x3F, 0x80 | value >> 12 & 0x3F,
-                      0x80 | value >> 6 & 0x3F, 0x80 | value & 0x3F))
+        return bytes(
+            (
+                0xFC | value >> 30,
+                0x80 | value >> 24 & 0x3F,
+                0x80 | value >> 18 & 0x3F,
+                0x80 | value >> 12 & 0x3F,
+                0x80 | value >> 6 & 0x3F,
+                0x80 | value & 0x3F,
+            )
+        )
     return b""
+
+
+def code_point_text(value: int) -> str:
+    """The text a ``\\u`` or ``\\U`` escape writes for its value.
+
+    bash writes every value through u32toutf8 under a UTF-8 locale: a
+    valid scalar is its character, while surrogate halves and values
+    past Unicode become raw UTF-8-shaped bytes, and 0x80000000 and past
+    produce nothing. Pinned: ``\\uD800`` is ed a0 80, ``\\U00110000`` is
+    f4 90 80 80, ``\\UFFFFFFFF`` is empty.
+
+    Args:
+        value (int): the value the escape's hex digits name.
+    """
+    if value <= 0x7F or (value <= 0x10FFFF and not 0xD800 <= value <= 0xDFFF):
+        return chr(value)
+    return "".join(byte_char(b) for b in _u32_utf8(value))
 
 
 def decode_ansi_c(content: str) -> str:
@@ -111,10 +150,11 @@ def decode_ansi_c(content: str) -> str:
             continue
         if marker in _OCTAL:
             end = i + 1
-            while end < len(content) and end - i <= 3 \
-                    and content[end] in _OCTAL:
+            while (
+                end < len(content) and end - i <= 3 and content[end] in _OCTAL
+            ):
                 end += 1
-            value = int(content[i + 1:end], 8)
+            value = int(content[i + 1 : end], 8)
             # \400 is 256: the mask lands on NUL, which truncates too.
             if value & 0xFF == 0:
                 return "".join(out)
@@ -142,17 +182,7 @@ def decode_ansi_c(content: str) -> str:
             value = int(digits, 16)
             if value == 0:
                 return "".join(out)
-            # bash writes every value through u32toutf8: a valid scalar
-            # is its character, while surrogate halves and values past
-            # Unicode become raw UTF-8-shaped bytes, and 0x80000000 and
-            # past produce nothing (without truncating). Pinned:
-            # $'\uD800' is ed a0 80, $'\U00110000' is f4 90 80 80,
-            # $'\UFFFFFFFF' is empty.
-            if value <= 0x7F or (value <= 0x10FFFF
-                                 and not 0xD800 <= value <= 0xDFFF):
-                out.append(chr(value))
-            else:
-                out.append("".join(byte_char(b) for b in _u32_utf8(value)))
+            out.append(code_point_text(value))
             i = end
             continue
         if marker == "c":
@@ -174,3 +204,35 @@ def decode_ansi_c(content: str) -> str:
         out.append(char + marker)
         i += 2
     return "".join(out)
+
+
+def unescape_unquoted(text: str) -> str:
+    """The text an unquoted word's backslash escapes name.
+
+    Args:
+        text (str): the word as typed.
+    """
+    if "\\" not in text:
+        return text
+    try:
+        parts = shlex.split(text, posix=True)
+    except ValueError:
+        return text
+    return parts[0] if parts else text
+
+
+def unescape_dquoted(text: str) -> str:
+    """The text a double-quoted segment's escapes name.
+
+    Bash recognizes ``\\$``, ``\\```, ``\\"``, ``\\\\`` and
+    ``\\<newline>`` inside double quotes; every other backslash stays.
+
+    Args:
+        text (str): the segment between the quotes, as typed.
+    """
+    text = text.replace("\\\\", "\x00")
+    text = text.replace('\\"', '"')
+    text = text.replace("\\$", "$")
+    text = text.replace("\\`", "`")
+    text = text.replace("\\\n", "")
+    return text.replace("\x00", "\\")

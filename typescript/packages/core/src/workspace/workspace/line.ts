@@ -12,21 +12,36 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  CommandTimeoutError,
-  guardOutput,
-  runWithTimeout,
-} from '../../commands/builtin/utils/limit.ts'
+import { Limit } from '../../types.ts'
+import { guardOutput, runWithTimeout } from '../../commands/builtin/utils/limit.ts'
+import { CommandTimeoutError } from '../../commands/errors.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { materialize } from '../../io/types.ts'
 import type { Runtime } from '../../runtime/base.ts'
 import type { LineExecutor } from '../../runtime/mixin.ts'
 import type { RunResult } from '../../runtime/types.ts'
-import { type Policies, postExecuteGate, resolveLimit } from '../../policy/index.ts'
+import {
+  type Policies,
+  postExecuteGate,
+  refusalOf,
+  renderDeny,
+  resolveLimit,
+} from '../../policy/index.ts'
 import type { MountEntry } from '../mount/mount.ts'
-import type { Session } from '../session/session.ts'
+import type { SessionState } from '../session/session.ts'
 import { envSnapshot } from '../session/state.ts'
 import { commandName } from './utils.ts'
+import { makeAbortError, mergeSignals } from '../abort.ts'
+import { isControlFlowError } from './failure.ts'
+import { PathSpec, type Refusal } from '../../types.ts'
+
+/**
+ * What a whole line answers: the runtime's own result plus the
+ * refusal record when the boundary's post_execute gate refused it.
+ */
+export interface LineResult extends RunResult {
+  refusal: Refusal | null
+}
 
 /**
  * Hand the raw line to one runtime instead of walking its tree.
@@ -42,23 +57,38 @@ export async function runWholeLine(
   runtime: Runtime & LineExecutor,
   command: string,
   stdin: ByteSource | null,
-  session: Session,
+  session: SessionState,
   mounts: readonly MountEntry[],
   policies: Policies,
   invalidate: () => Promise<void>,
-): Promise<RunResult> {
+  signal?: AbortSignal,
+  commandLimits: Readonly<Record<string, Limit>> = {},
+): Promise<LineResult> {
   const data = stdin !== null ? await materialize(stdin) : null
   const name = commandName(command)
-  const guard = resolveLimit(name, mounts)
+  const guard = resolveLimit(name, mounts, null, null, commandLimits, session.commandLimits)
+  const timeout = guard?.timeoutSeconds ?? null
+  const deadline = timeout !== null && timeout > 0 ? new AbortController() : null
+  const runSignal = mergeSignals(signal, deadline?.signal)
   let result: RunResult
   try {
     result = await runWithTimeout(
-      runtime.runLine(command, data, envSnapshot(session), session.cwd),
-      guard?.timeoutSeconds ?? null,
+      runtime.execute({
+        kind: 'shell',
+        line: command,
+        stdin: data,
+        env: envSnapshot(session),
+        cwd: PathSpec.fromStrPath(session.cwd),
+        ...(runSignal === undefined ? {} : { signal: runSignal }),
+      }),
+      timeout,
       name,
     )
   } catch (err) {
+    if (signal?.aborted) throw makeAbortError()
+    if (isControlFlowError(err)) throw err
     if (err instanceof CommandTimeoutError) {
+      deadline?.abort()
       result = {
         stdout: new Uint8Array(),
         stderr: new TextEncoder().encode(`${err.message}\n`),
@@ -79,22 +109,23 @@ export async function runWholeLine(
     exitCode: result.exitCode,
   })
   if (deny !== null) {
-    const denyBytes = new TextEncoder().encode(deny.message)
+    const [denyBytes, exitCode] = renderDeny(name, deny)
     const priorErr = result.stderr !== null ? await materialize(result.stderr) : new Uint8Array()
     const mergedErr = new Uint8Array(priorErr.byteLength + denyBytes.byteLength)
     mergedErr.set(priorErr, 0)
     mergedErr.set(denyBytes, priorErr.byteLength)
-    return { stdout: new Uint8Array(), stderr: mergedErr, exitCode: deny.exitCode ?? 1 }
+    return { stdout: new Uint8Array(), stderr: mergedErr, exitCode, refusal: refusalOf(deny) }
   }
   const [capped, cappedErr, cappedCode] = await guardOutput(
     result.stdout,
     result.stderr,
     result.exitCode,
-    bound,
+    Limit.aggr([session.terminalOutput ? guard : null, bound]),
   )
   return {
     stdout: capped !== null ? await materialize(capped) : new Uint8Array(),
     stderr: cappedErr !== null ? await materialize(cappedErr) : null,
     exitCode: cappedCode,
+    refusal: null,
   }
 }

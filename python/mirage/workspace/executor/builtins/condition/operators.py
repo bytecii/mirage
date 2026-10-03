@@ -12,15 +12,37 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from functools import partial
+
+from mirage.commands.builtin.utils.paths import (
+    dispatch_stat,
+    dot_refusal,
+    typed_spec,
+)
 from mirage.io.types import materialize
+from mirage.shell.errors import ArithError, ExitSignal
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.path import resolve_path, resolve_symlinks
+from mirage.utils.dates import iso_timestamp
+from mirage.utils.errors import FileTooLargeError
+from mirage.utils.path import (
+    CycleError,
+    dotted_spelling,
+    resolve_path,
+    resolve_symlinks,
+)
 from mirage.workspace.executor.builtins.condition.constants import (
-    FILE_PAIR_BINARY, FILE_UNARY, INT_COMPARATORS, UNSUPPORTED_UNARY)
-from mirage.workspace.executor.builtins.condition.types import (CondContext,
-                                                                CondError)
-from mirage.workspace.executor.builtins.links import resolve_path_stat
+    FILE_PAIR_BINARY,
+    FILE_UNARY,
+    INT_COMPARATORS,
+    UNSUPPORTED_UNARY,
+)
+from mirage.workspace.executor.builtins.condition.types import (
+    CondContext,
+    CondError,
+)
+from mirage.workspace.executor.builtins.links import operand_abs
 from mirage.workspace.executor.builtins.scope import _scope_path, _to_scope
+from mirage.workspace.mount.namespace.probe import resolve_path_stat
 from mirage.workspace.session.elements import element_is_set
 
 
@@ -33,13 +55,17 @@ def operand_scope(ctx: CondContext, val: str | PathSpec) -> PathSpec:
     """
     if isinstance(val, PathSpec):
         return val
-    resolved = resolve_path(val, ctx.session.cwd)
-    resolved = resolve_symlinks(resolved, ctx.namespace.symlink_targets())
+    resolved = resolve_symlinks(
+        dotted_spelling(val, ctx.session.cwd)
+        or resolve_path(val, ctx.session.cwd),
+        ctx.namespace.symlink_targets(),
+    )
     return _to_scope(resolved)
 
 
-async def path_kind(ctx: CondContext,
-                    val: str | PathSpec) -> tuple[str | None, FileStat | None]:
+async def path_kind(
+    ctx: CondContext, val: str | PathSpec
+) -> tuple[str | None, FileStat | None]:
     """Resolve an operand to 'dir' / 'file' / None plus its stat.
 
     Symlinks are followed first (test -e/-f/-d act on the target), then
@@ -51,11 +77,30 @@ async def path_kind(ctx: CondContext,
         ctx (CondContext): evaluation context.
         val (str | PathSpec): operand as typed or classified.
     """
-    stat = await resolve_path_stat(ctx.dispatch, operand_scope(ctx, val))
+    walk = typed_spec(val, ctx.session.cwd)
+    if (
+        await dot_refusal(
+            partial(dispatch_stat, ctx.dispatch), walk, ctx.namespace.follow
+        )
+        is not None
+    ):
+        # A path whose `.` and `..` do not resolve names nothing, which
+        # is what every file test reads as false.
+        return None, None
+    try:
+        scope = operand_scope(ctx, val)
+    except CycleError:
+        # A link loop names nothing: stat fails with ELOOP and bash reads
+        # that as absent (`[ loop -ef loop ]` and `[ -e loop ]` are
+        # false), so a file test answers false rather than erroring.
+        return None, None
+    stat = await resolve_path_stat(ctx.dispatch, scope)
     if stat is None:
         return None, None
     if stat.type == FileType.DIRECTORY:
         return "dir", stat
+    if stat.type == FileType.CHAR_DEVICE:
+        return "char", stat
     return "file", stat
 
 
@@ -73,10 +118,19 @@ async def apply_unary(ctx: CondContext, op: str, val: str | PathSpec) -> bool:
     if op == "-z":
         return text == ""
     if op == "-v":
-        return element_is_set(ctx.session, text)
+        try:
+            return await element_is_set(ctx.session, text, ctx.view)
+        except ArithError as exc:
+            # bash aborts the line on `[[ -v a[1/0] ]]` with `1/0:
+            # division by 0`, a test's grammar error being the only
+            # other thing that ends it.
+            raise ExitSignal(
+                1, stderr=f"bash: {exc}\n".encode(), contained_code=1
+            ) from exc
     if op in ("-L", "-h"):
-        resolved = resolve_path(text, ctx.session.cwd)
-        return ctx.namespace.is_link(resolved)
+        return ctx.namespace.is_link(
+            operand_abs(ctx.namespace, val, ctx.session.cwd)
+        )
     if op in FILE_UNARY:
         if not isinstance(val, PathSpec) and not text:
             return False
@@ -87,6 +141,8 @@ async def apply_unary(ctx: CondContext, op: str, val: str | PathSpec) -> bool:
             return kind == "file"
         if op == "-d":
             return kind == "dir"
+        if op == "-c":
+            return kind == "char"
         if op == "-s":
             if kind == "dir":
                 return True
@@ -97,7 +153,12 @@ async def apply_unary(ctx: CondContext, op: str, val: str | PathSpec) -> bool:
             # API backends (dropbox, gdrive, box) stat freshly written
             # empty files as size-unknown; only a read can answer, and
             # the prefetch TTL cache keeps repeat tests cheap.
-            data, _ = await ctx.dispatch("read", operand_scope(ctx, val))
+            try:
+                data, _ = await ctx.dispatch("read", operand_scope(ctx, val))
+            except FileTooLargeError:
+                # a file its mount refuses to render whole (an airtable
+                # table past max_read_records) is certainly not empty
+                return True
             return len(await materialize(data)) > 0
         if op in ("-r", "-w"):
             # Mirage has no per-user access model: whatever exists in a
@@ -127,8 +188,9 @@ def to_int(ctx: CondContext, text: str) -> int:
         raise CondError(f"{ctx.name}: {text}: integer expression expected")
 
 
-async def apply_binary(ctx: CondContext, left: str | PathSpec, op: str,
-                       right: str | PathSpec) -> bool:
+async def apply_binary(
+    ctx: CondContext, left: str | PathSpec, op: str, right: str | PathSpec
+) -> bool:
     """Evaluate a test/[ binary operator (literal string semantics).
 
     Args:
@@ -147,5 +209,58 @@ async def apply_binary(ctx: CondContext, left: str | PathSpec, op: str,
     if compare is not None:
         return compare(to_int(ctx, lt), to_int(ctx, rt))
     if op in FILE_PAIR_BINARY:
-        raise CondError(f"{ctx.name}: {op}: unsupported operator")
+        return await apply_file_pair(ctx, op, left, right)
     raise CondError(f"{ctx.name}: {op}: binary operator expected")
+
+
+async def _pair_stat(ctx: CondContext, val: str | PathSpec) -> FileStat | None:
+    """Stat one file-pair operand, None when it names nothing.
+
+    An empty word names nothing, as it does for the unary file tests.
+
+    Args:
+        ctx (CondContext): evaluation context.
+        val (str | PathSpec): operand as typed or classified.
+    """
+    if not isinstance(val, PathSpec) and not _scope_path(val):
+        return None
+    _, stat = await path_kind(ctx, val)
+    return stat
+
+
+async def apply_file_pair(
+    ctx: CondContext, op: str, left: str | PathSpec, right: str | PathSpec
+) -> bool:
+    """Evaluate ``-nt``, ``-ot`` and ``-ef``, with bash's absence rules.
+
+    ``-nt`` is true when the left file exists and either the right does
+    not or the left's mtime is strictly later; ``-ot`` is the mirror.
+    Equal mtimes, or one the backend does not report, make both false.
+    ``-ef`` is true when both exist and resolve, symlinks followed, to
+    the same virtual path: mirage has no device and inode pair, and a
+    path names exactly one entry across the mount table, so the resolved
+    spelling is the identity. Pinned against GNU bash 5.2.
+
+    Args:
+        ctx (CondContext): evaluation context.
+        op (str): ``-nt``, ``-ot`` or ``-ef``.
+        left (str | PathSpec): left operand.
+        right (str | PathSpec): right operand.
+    """
+    lstat = await _pair_stat(ctx, left)
+    rstat = await _pair_stat(ctx, right)
+    if op == "-ef":
+        if lstat is None or rstat is None:
+            return False
+        return operand_scope(ctx, left).virtual.rstrip("/") == operand_scope(
+            ctx, right
+        ).virtual.rstrip("/")
+    if op == "-ot":
+        lstat, rstat = rstat, lstat
+    if lstat is None:
+        return False
+    if rstat is None:
+        return True
+    lt = iso_timestamp(lstat.modified)
+    rt = iso_timestamp(rstat.modified)
+    return lt is not None and rt is not None and lt > rt

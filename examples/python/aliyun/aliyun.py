@@ -18,8 +18,8 @@ import os
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.aliyun import AliyunConfig, AliyunResource
 from mirage.types import PathSpec
+from mirage.vfs.aliyun import AliyunConfig, AliyunVFS
 
 load_dotenv(".env.development")
 
@@ -29,28 +29,23 @@ config = AliyunConfig(
     access_key_id=os.environ["OSS_ACCESS_KEY_ID"],
     secret_access_key=os.environ["OSS_ACCESS_KEY_SECRET"],
 )
-resource = AliyunResource(config)
-ws = Workspace({"/oss/": resource}, mode=MountMode.READ)
+vfs = AliyunVFS(config)
+ws = Workspace({"/oss/": vfs}, mode=MountMode.READ)
 
 
 def ops_summary() -> str:
-    records = ws.ops.records
+    records = ws.vfs.records
     return f"{len(records)} ops, {sum(r.bytes for r in records)} bytes"
 
 
 async def main():
     print(f"=== Alibaba OSS at {config.resolved_endpoint_url()} ===")
 
-    r = await ws.execute("ls /oss/")
+    r = await ws.shell("ls /oss/")
     print("ls /oss/:\n" + await r.stdout_str())
 
-    r = await ws.execute("find /oss/ -name '*.json' | head -n 5")
+    r = await ws.shell("find /oss/ -name '*.json' | head -n 5")
     print("find *.json:\n" + await r.stdout_str())
-
-    r = await ws.execute("grep -m 1 mirage /oss/data/example.jsonl",
-                         provision=True)
-    print(f"plan grep -m 1: network_read={r.network_read} "
-          f"precision={r.precision}")
 
     print(f"\nStats: {ops_summary()}")
 
@@ -58,15 +53,19 @@ async def main():
     # workspace namespace (durable, snapshot-captured) and merge into
     # dispatch-level stat.
     print("=== metadata overlay on /oss/data/example.jsonl ===")
-    meta_res = await ws.execute(
+    meta_res = await ws.shell(
         'chmod 640 "/oss/data/example.jsonl"'
         ' && chown 500:dev "/oss/data/example.jsonl"'
-        ' && touch -t 202601021530 "/oss/data/example.jsonl"')
+        ' && touch -t 202601021530 "/oss/data/example.jsonl"'
+    )
     print(f"  chmod/chown/touch exit={meta_res.exit_code}")
     meta_st, _ = await ws.dispatch(
-        "stat", PathSpec.from_str_path("/oss/data/example.jsonl"))
-    print(f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
-          f"gid={meta_st.gid} mtime={meta_st.modified}")
+        "stat", PathSpec.from_str_path("/oss/data/example.jsonl")
+    )
+    print(
+        f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
+        f"gid={meta_st.gid} mtime={meta_st.modified}"
+    )
 
 
 if __name__ == "__main__":

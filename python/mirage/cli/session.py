@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from typing import Any
+from urllib.parse import quote
 
 import typer
 
@@ -49,17 +50,31 @@ def _parse_mount_modes(mounts: list[str]) -> dict[str, str]:
 @app.command("create")
 def create_cmd(
     workspace_id: str = typer.Argument(...),
-    session_id: str | None = typer.Option(None,
-                                          "--id",
-                                          help="Explicit session id."),
+    session_id: str | None = typer.Option(
+        None, "--id", help="Explicit session id."
+    ),
     mount: list[str] = typer.Option(
         [],
         "--mount",
         "-m",
-        help=("Restrict this session to a mount, optionally capping its "
-              "mode: '/data:read' (alias '/data:r'), '/scratch:rw', "
-              "'/bin:rwx', or a bare '/data' to keep the mount's own "
-              "mode. Repeat for multiple mounts; omit for unrestricted."),
+        help=(
+            "Narrow a mount's mode for this session: '/data:read' "
+            "(alias '/data:r'), '/scratch:rw', '/bin:rwx', or a bare "
+            "'/data' to keep the mount's own mode. Repeat per mount. "
+            "This narrows only; a mount you do not name keeps its own "
+            "mode, and keeping a session away from one is a hide in "
+            "its profile."
+        ),
+    ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        "-p",
+        help=(
+            "The profile this session runs under, by name from the "
+            "workspace's profiles. A profile is the whole permission "
+            "document; omit it to take the workspace default."
+        ),
     ),
 ) -> None:
     body: dict[str, Any] = {}
@@ -67,11 +82,15 @@ def create_cmd(
         body["session_id"] = session_id
     if mount:
         body["mounts"] = _parse_mount_modes(mount)
+    if profile:
+        body["profile"] = profile
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
-        r = client.request("POST",
-                           f"/v1/workspaces/{workspace_id}/sessions",
-                           json=body)
+        r = client.request(
+            "POST",
+            f"/v1/workspaces/{quote(workspace_id, safe='')}/sessions",
+            json=body,
+        )
     emit(handle_response(r))
 
 
@@ -79,17 +98,20 @@ def create_cmd(
 def list_cmd(workspace_id: str = typer.Argument(...)) -> None:
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
-        r = client.request("GET", f"/v1/workspaces/{workspace_id}/sessions")
+        r = client.request(
+            "GET", f"/v1/workspaces/{quote(workspace_id, safe='')}/sessions"
+        )
     emit(handle_response(r))
 
 
 @app.command("delete")
 def delete_cmd(
-        workspace_id: str = typer.Argument(...),
-        session_id: str = typer.Argument(...),
+    workspace_id: str = typer.Argument(...),
+    session_id: str = typer.Argument(...),
 ) -> None:
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
-        r = client.request(
-            "DELETE", f"/v1/workspaces/{workspace_id}/sessions/{session_id}")
+        wid = quote(workspace_id, safe="")
+        sid = quote(session_id, safe="")
+        r = client.request("DELETE", f"/v1/workspaces/{wid}/sessions/{sid}")
     emit(handle_response(r))

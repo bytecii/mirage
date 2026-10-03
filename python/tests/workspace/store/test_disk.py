@@ -31,19 +31,30 @@ async def test_meta_roundtrip_and_layout(tmp_path):
 @pytest.mark.asyncio
 async def test_meta_cas_contract(tmp_path):
     store = DiskWorkspaceStateStore(str(tmp_path))
-    assert await store.cas_set_meta("ws1", {
-        "workspace_id": "ws1",
-        "generation": 1
-    }, 0) is True
-    assert await store.cas_set_meta("ws1", {
-        "workspace_id": "ws1",
-        "generation": 1
-    }, 0) is False
-    assert await store.cas_set_meta("ws1", {
-        "workspace_id": "ws1",
-        "default_session_id": "d",
-        "generation": 2
-    }, 1) is True
+    assert (
+        await store.cas_set_meta(
+            "ws1", {"workspace_id": "ws1", "generation": 1}, 0
+        )
+        is True
+    )
+    assert (
+        await store.cas_set_meta(
+            "ws1", {"workspace_id": "ws1", "generation": 1}, 0
+        )
+        is False
+    )
+    assert (
+        await store.cas_set_meta(
+            "ws1",
+            {
+                "workspace_id": "ws1",
+                "default_session_id": "d",
+                "generation": 2,
+            },
+            1,
+        )
+        is True
+    )
     meta = await store.load_meta("ws1")
     assert meta is not None and meta["default_session_id"] == "d"
     await store.close()
@@ -53,10 +64,9 @@ async def test_meta_cas_contract(tmp_path):
 async def test_replace_meta_preserves_created_at(tmp_path):
     store = DiskWorkspaceStateStore(str(tmp_path))
     first = await store.replace_meta("ws1", {"workspace_id": "ws1"})
-    second = await store.replace_meta("ws1", {
-        "workspace_id": "ws1",
-        "default_session_id": "d"
-    })
+    second = await store.replace_meta(
+        "ws1", {"workspace_id": "ws1", "default_session_id": "d"}
+    )
     assert second["created_at"] == first["created_at"]
     assert second["generation"] == first["generation"] + 1
     await store.close()
@@ -84,8 +94,14 @@ async def test_namespace_and_observer_planes_on_disk(tmp_path):
     ob = store.observer("ws1")
     await ob.append("/2026-07-18/agent.jsonl", b'{"type": "COMMAND"}\n')
     files = await ob.read_all()
-    assert (tmp_path / "workspaces" / "ws1" / "history" / "2026-07-18" /
-            "agent.jsonl").is_file()
+    assert (
+        tmp_path
+        / "workspaces"
+        / "ws1"
+        / "history"
+        / "2026-07-18"
+        / "agent.jsonl"
+    ).is_file()
     assert files["/2026-07-18/agent.jsonl"] == b'{"type": "COMMAND"}\n'
     await store.close()
 
@@ -102,3 +118,19 @@ async def test_two_stores_share_state_via_the_directory(tmp_path):
     assert meta is not None and meta["generation"] == 1
     assert (await reader.sessions("ws1").load())["s"]["cwd"] == "/x"
     await reader.close()
+
+
+@pytest.mark.asyncio
+async def test_drop_removes_the_workspace_directory(tmp_path):
+    store = DiskWorkspaceStateStore(str(tmp_path))
+    await store.namespace("ws1").set("/a", {"mode": 0o600})
+    await store.observer("ws1").append("d/s1.jsonl", b"{}\n")
+    await store.sessions("ws1").set("s1", {"session_id": "s1"})
+    await store.set_meta("ws1", {"workspace_id": "ws1"})
+    await store.set_meta("ws2", {"workspace_id": "ws2"})
+    await store.drop("ws1")
+    assert not (tmp_path / "workspaces" / "ws1").exists()
+    assert await store.load_meta("ws1") is None
+    assert await store.namespace("ws1").load() == {}
+    assert await store.load_meta("ws2") is not None
+    await store.close()

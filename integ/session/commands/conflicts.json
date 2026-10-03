@@ -1,0 +1,346 @@
+{
+  "cases": [
+    {
+      "id": "conflict_prep",
+      "seq": 923066,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "mkdir -p /scratch/both/locked && touch /scratch/both/a /scratch/both/b /scratch/both/locked/y /scratch/plain2",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_allow_and_deny_on_one_path_the_deny_speaks",
+      "seq": 923067,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "rm /repo/letters.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: /repo/letters.txt: no deletes in the repo\n"
+      }
+    },
+    {
+      "id": "conflict_the_allowed_head_still_works_elsewhere",
+      "seq": 923068,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "rm /scratch/plain2 && echo gone",
+      "expect": {
+        "exit": 0,
+        "stdout": "gone\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_deny_over_ask_on_one_subject_first_rule_of_the_tier",
+      "seq": 923069,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "granted",
+      "command": "rm /scratch/both/locked/y",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: /scratch/both/locked/y: both: locked\n"
+      }
+    },
+    {
+      "id": "conflict_the_ask_still_fires_beside_the_deny",
+      "seq": 923070,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "granted",
+      "command": "rm /scratch/both/a",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "rm: Permission denied\n"
+      }
+    },
+    {
+      "id": "conflict_a_session_grant_answers_the_ask",
+      "seq": 923071,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "granted",
+      "answer": "allow_session",
+      "command": "rm /scratch/both/a && ls /scratch/both",
+      "expect": {
+        "exit": 0,
+        "stdout": "b\nlocked\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_the_session_grant_never_beats_the_deny",
+      "seq": 923072,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "granted",
+      "command": "rm /scratch/both/locked/y",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: /scratch/both/locked/y: both: locked\n"
+      }
+    },
+    {
+      "id": "conflict_the_deny_kept_the_file",
+      "seq": 923073,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "test -e /scratch/both/locked/y && echo kept",
+      "expect": {
+        "exit": 0,
+        "stdout": "kept\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_two_ask_tiers_the_first_tier_speaks",
+      "seq": 923074,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "nodder",
+      "command": "rm /scratch/both/b",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "rm: Permission denied\n"
+      }
+    },
+    {
+      "id": "conflict_one_grant_answers_the_line_whatever_tier_also_asks",
+      "seq": 923075,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "nodder",
+      "answer": "allow_session",
+      "command": "rm /scratch/both/b && ls /scratch/both",
+      "expect": {
+        "exit": 0,
+        "stdout": "locked\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_two_deny_tiers_the_mount_speaks_first",
+      "seq": 923076,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "rm /repo/sealed/x",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: /repo/sealed/x: owner: sealed\n"
+      }
+    },
+    {
+      "id": "conflict_a_later_tiers_deny_outranks_an_earlier_tiers_ask",
+      "seq": 923077,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "granted",
+      "command": "cd /repo && git branch",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "git: Permission denied\n"
+      }
+    },
+    {
+      "id": "conflict_depth_prep",
+      "seq": 923241,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "mkdir -p /scratch/span/sealed /scratch/deep/a/b/c /scratch/carve/open /scratch/carve/other && echo s > /scratch/span/sealed/s && echo d > /scratch/deep/a/b/c/x && echo o > /scratch/carve/open/o && echo t > /scratch/carve/other/t",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_an_unrelated_entry_does_not_lend_a_rule_its_depth",
+      "seq": 923242,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "spanner",
+      "command": "cat /scratch/span/sealed/s",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cat: /scratch/span/sealed/s: span sealed\n"
+      }
+    },
+    {
+      "id": "conflict_the_unrelated_entry_still_speaks_where_it_anchors",
+      "seq": 923243,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "spanner",
+      "command": "cat /scratch/deep/a/b/c/x",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "cat: Permission denied\n"
+      }
+    },
+    {
+      "id": "conflict_the_deeper_ask_admits_the_line_over_the_broad_deny",
+      "seq": 923244,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "carver",
+      "command": "rm -r /scratch/carve",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "rm: Permission denied\n"
+      }
+    },
+    {
+      "id": "conflict_multi_operand_prep",
+      "seq": 923245,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "mkdir -p /scratch/vaultc /scratch/outbox/deep /scratch/openc && echo s > /scratch/vaultc/secret && echo o > /scratch/openc/o",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_the_sources_deny_outranks_the_destinations_deeper_ask",
+      "seq": 923246,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "courier",
+      "command": "cp /scratch/vaultc/secret /scratch/outbox/deep/out",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cp: /scratch/vaultc/secret: courier sealed\n"
+      }
+    },
+    {
+      "id": "conflict_mv_reads_both_operands_the_same_way",
+      "seq": 923247,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "courier",
+      "command": "mv /scratch/vaultc/secret /scratch/outbox/deep/moved",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "mv: /scratch/vaultc/secret: courier sealed\n"
+      }
+    },
+    {
+      "id": "conflict_the_destination_still_asks_on_a_source_no_rule_holds",
+      "seq": 923248,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "courier",
+      "command": "cp /scratch/openc/o /scratch/outbox/deep/out",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "cp: Permission denied\n"
+      }
+    },
+    {
+      "id": "conflict_the_sealed_file_never_left",
+      "seq": 923249,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "test -e /scratch/vaultc/secret && test ! -e /scratch/outbox/deep/out && echo kept",
+      "expect": {
+        "exit": 0,
+        "stdout": "kept\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_a_hidden_path_outranks_the_ask_and_the_deny",
+      "seq": 923078,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "veiled",
+      "command": "rm /scratch/shared/h /repo/sealed/x",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rm: cannot remove '/scratch/shared/h': No such file or directory\nrm: cannot remove '/repo/sealed/x': No such file or directory\n"
+      }
+    },
+    {
+      "id": "conflict_two_asks_prep",
+      "seq": 923255,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "mkdir -p /scratch/stage && echo s > /scratch/stage/a",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "conflict_each_operands_ask_is_put_on_its_own",
+      "seq": 923256,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "courier",
+      "command": "cp /scratch/stage/a /scratch/outbox/deep/out2",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "cp: Permission denied\n"
+      }
+    },
+    {
+      "id": "conflict_neither_ask_let_the_copy_through",
+      "seq": 923257,
+      "targets": [
+        "ram-commands"
+      ],
+      "command": "test ! -e /scratch/outbox/deep/out2 && echo kept",
+      "expect": {
+        "exit": 0,
+        "stdout": "kept\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

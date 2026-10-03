@@ -12,19 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { RouteDecision } from '../../runtime/routing/types.ts'
 import type { SessionView } from '../../ops/types.ts'
+import { scopesPaths } from '../../policy/match/reads.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import { PathSpec, wordText } from '../../types.ts'
-import { literalWord, markGlobs, unmarkGlobs } from '../../utils/glob_walk.ts'
+import { hasGlob, literalWord, markGlobs, unmarkGlobs } from '../../utils/glob_walk.ts'
 import type { MountRegistry } from '../mount/registry.ts'
-import { WordPolicy, endOptionsAfterProgram, route, wordPolicy } from '../route/index.ts'
-import type { Session } from '../session/session.ts'
+import { INTERPRETER_NAMES } from '../lookup/constants.ts'
+import {
+  Consumer,
+  WordPolicy,
+  endOptionsAfterProgram,
+  lookup,
+  runtimeRefused,
+  wordPolicy,
+} from '../lookup/index.ts'
+import type { SessionState } from '../session/session.ts'
 import { classifyParts } from './classify/index.ts'
 import type { NamespaceLinks } from '../../ops/config.ts'
 import { globNeedsShell, globOptions, resolveGlobs } from './globs.ts'
 import { type ExecuteFn } from './node.ts'
 import { expandWords } from './parts.ts'
-import { type ValueType } from '../../commands/spec/types.ts'
+import { type CommandSpec, type ValueType } from '../../commands/spec/types.ts'
 import { specForCommand, specWordBases, specWordKinds } from './spec_hints.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 
@@ -48,12 +58,26 @@ export class Argv {
   readonly args: readonly string[]
   /** Classified view (what mount dispatch, test, and ln consume). */
   readonly operands: readonly (string | PathSpec)[]
+  /** Original words forming the matched name. */
+  readonly prefix: readonly string[]
 
-  constructor(name: string, args: readonly string[], operands: readonly (string | PathSpec)[]) {
+  constructor(
+    name: string,
+    args: readonly string[],
+    operands: readonly (string | PathSpec)[],
+    prefix: readonly string[] = [name],
+  ) {
     this.name = name
     this.args = args
     this.operands = operands
+    this.prefix = prefix
     Object.freeze(this)
+  }
+
+  /** Native argv, preserving word boundaries within a matched name. */
+  get tokens(): [string, ...string[]] {
+    const [head = this.name, ...tail] = this.prefix
+    return [head, ...tail, ...this.args]
   }
 
   /** Full classified word list, name included. */
@@ -64,7 +88,7 @@ export class Argv {
 
   /** Copy with the classified view replaced (e.g. after symlink rewriting). */
   withOperands(operands: readonly (string | PathSpec)[]): Argv {
-    return new Argv(this.name, this.args, [...operands])
+    return new Argv(this.name, this.args, [...operands], this.prefix)
   }
 }
 
@@ -73,16 +97,20 @@ export class Argv {
  *
  * Uses the cwd mount's CommandSpec (when it has one for the command) to
  * decide which words are TEXT (skip classification) and which are PATH
- * (classify even bare filenames).
+ * (classify even bare filenames). A program's line (a native capture,
+ * or an interpreter run in-process) is globbed whatever the slots, as
+ * bash globs it, and its words are then classified for the slots the
+ * expanded words fill.
  */
 export async function expandArgv(
   parts: TSNodeLike[],
-  session: Session,
+  session: SessionState,
   executeFn: ExecuteFn,
   callStack: CallStack | null,
   registry: MountRegistry,
   namespace: NamespaceLinks | null = null,
   view?: SessionView,
+  routing?: RouteDecision,
 ): Promise<Argv> {
   let expanded = await expandWords(parts, session, executeFn, callStack, view)
   if (expanded.length === 0) return new Argv('', [], [])
@@ -102,24 +130,57 @@ export async function expandArgv(
   // function for its inner run, which is exactly when the rewrite
   // applies again. A CLI cannot reach here at all, since registerCli
   // refuses a shell builtin's name.
-  const shadowed = Object.hasOwn(session.functions, name)
+  const consumer = lookup(name, session, registry, routing)
+  const refused = runtimeRefused(name, session, registry, routing)
+  const shadowed = Object.hasOwn(session.functions, name) || consumer === Consumer.EXTERNAL
   const line = expanded.slice(consumed)
   const tail = shadowed ? line : endOptionsAfterProgram(name, line)
   const lineWords = [...expanded.slice(0, consumed), ...tail]
 
-  const policy = wordPolicy(route(name, session, registry))
+  const policy = wordPolicy(consumer)
+  // A native program gets its words the way bash hands them over, with
+  // every unquoted glob already expanded, whatever slot the word fills.
+  const native = consumer === Consumer.EXTERNAL && !refused
+  // So does an interpreter run in-process. The words after its program
+  // are that program's argv, handed over as typed, and only its script is
+  // a file it opens: the spec's script slot makes that one word a path, so
+  // a rule protecting `secret.py` reads `python3 secret.py` however the
+  // script is spelled, while `python3 s.py data/in.csv` hands the script
+  // `data/in.csv` and a `/tmp/q.txt` beside a script on /workspace names
+  // no second mount.
+  const inProcess = consumer === Consumer.SESSION && INTERPRETER_NAMES.has(name)
+  const program = native || inProcess
+  let spec: CommandSpec | null = null
   let wordKinds: (ValueType | null)[] | null = null
   let wordBases: (string | null)[] | null = null
-  if (policy === WordPolicy.MOUNT) {
-    const spec = specForCommand(name, registry, session.cwd)
+  // Native captures and interpreters still need the spec's path roles
+  // for admission.
+  if (policy === WordPolicy.MOUNT || consumer === Consumer.EXTERNAL || inProcess) {
+    spec = specForCommand(name, registry, session.cwd)
     if (spec !== null) {
       const extra: (ValueType | null)[] = new Array<ValueType | null>(consumed - 1).fill('str')
-      wordKinds = [...extra, ...specWordKinds(spec, lineWords.slice(consumed))]
+      wordKinds = [...extra, ...specWordKinds(spec, lineWords.slice(consumed), name)]
       const bases = specWordBases(spec, lineWords.slice(consumed), session.cwd)
       if (bases !== null) {
         wordBases = [...new Array<string | null>(consumed - 1).fill(null), ...bases]
       }
     }
+  }
+  if (program) {
+    // bash globs every unquoted word before the program reads any of
+    // them, whatever slot it fills and whatever it looks like:
+    // `python3 s.py *.txt` gets the matches, `.*.txt` the dotfiles and
+    // `x=*` a file named `x=1`, and a glob that matches nothing stays the
+    // word as typed. So a word carrying a live glob character is a
+    // pattern here, spec or no spec, rather than a shell word the shape
+    // rules read. A quoted one carries marks rather than glob characters,
+    // so it stays text.
+    const tail = lineWords.slice(consumed)
+    const own = wordKinds !== null ? wordKinds.slice(consumed - 1) : tail.map(() => null)
+    wordKinds = [
+      ...new Array<ValueType | null>(consumed - 1).fill('str'),
+      ...tail.map((word, i): ValueType | null => (hasGlob(word) ? 'path' : (own[i] ?? null))),
+    ]
   }
 
   const classified = classifyParts(lineWords, registry, session.cwd, wordKinds, wordBases)
@@ -127,9 +188,18 @@ export async function expandArgv(
   // WordPolicy.SHELL words get matches here; mount commands keep
   // patterns for backend pushdown; unknown names fail without
   // touching backends.
+  // So does a command a path-scoped rule names: the admission gate reads
+  // the words before the backend would resolve them, and a pattern that
+  // only later matches under the rule's path would pass a gate its
+  // matches fail. And so does a pattern that walks a `.` or `..`, which no
+  // backend key holds.
   const globOpts = globOptions(session)
-  const words =
-    policy === WordPolicy.SHELL || globNeedsShell(globOpts)
+  let words =
+    !refused &&
+    (policy === WordPolicy.SHELL ||
+      globNeedsShell(globOpts) ||
+      scopesPaths(session.commands, name) ||
+      classified.some((w) => w instanceof PathSpec && w.pattern !== null && w.dotted !== null))
       ? await resolveGlobs(classified, registry, false, namespace, globOpts)
       : // A pattern still owes its backend a resolution, so it travels
         // marked and the marks come off there; every other word is done
@@ -137,10 +207,68 @@ export async function expandArgv(
         classified.map((item) =>
           item instanceof PathSpec && item.pattern !== null ? item : literalWord(item),
         )
+  if (program && spec !== null) {
+    words = programWords(words, spec, name, consumed, registry, session.cwd)
+  }
   // The text view renders words as typed (rawPath): bash hands
   // programs their words unchanged, so `echo sub/file.txt` prints the
   // relative form, not the resolved absolute path. Quote removal is part
   // of "as typed": a word never reaches a command marked.
   const textView = words.map((w) => unmarkGlobs(wordText(w)))
-  return new Argv(name, textView.slice(consumed), words.slice(consumed))
+  return new Argv(
+    name,
+    textView.slice(consumed),
+    words.slice(consumed),
+    expanded.slice(0, consumed).map(unmarkGlobs),
+  )
+}
+
+/**
+ * Classify a program's words for the argv it receives.
+ *
+ * bash expands every glob before the program parses its argv, so a
+ * match can fill a slot of another kind than the word it came from:
+ * `grep *.txt` hands grep its pattern and its files out of one word, and
+ * a glob's extra matches push every later word into a later slot. The
+ * spec therefore reads the expanded words, which are literal from here
+ * on, and each word is classified for the slot it now fills. Admission
+ * then judges the paths the program opens, and a match in a text slot is
+ * text, exactly like the same word typed by hand. A glob that matched
+ * nothing keeps the pattern spec the resolver left in a path slot, and is
+ * its typed text in a text slot.
+ */
+function programWords(
+  words: readonly (string | PathSpec)[],
+  spec: CommandSpec,
+  name: string,
+  consumed: number,
+  registry: MountRegistry,
+  cwd: string,
+): (string | PathSpec)[] {
+  const literal = words.map((w) => markGlobs(wordText(w)))
+  const kinds: (ValueType | null)[] = [
+    ...new Array<ValueType | null>(consumed - 1).fill('str'),
+    ...specWordKinds(spec, literal.slice(consumed), name),
+  ]
+  const bases = specWordBases(spec, literal.slice(consumed), cwd)
+  const reread = classifyParts(
+    literal,
+    registry,
+    cwd,
+    kinds,
+    bases === null ? null : [...new Array<string | null>(consumed - 1).fill(null), ...bases],
+  )
+  const out: (string | PathSpec)[] = [words[0] ?? '']
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i] ?? ''
+    const kind = kinds[i - 1] ?? null
+    if (!(word instanceof PathSpec && word.pattern !== null)) {
+      out.push(literalWord(reread[i] ?? ''))
+    } else if (kind === null || kind === 'path') {
+      out.push(word)
+    } else {
+      out.push(literalWord(wordText(word)))
+    }
+  }
+  return out
 }

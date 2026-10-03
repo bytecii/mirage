@@ -15,21 +15,24 @@
 import { RAM_COMMANDS } from './index.ts'
 import { describe, expect, it } from 'vitest'
 import { materialize } from '../../../io/types.ts'
-import { RAMResource } from '../../../resource/ram/ram.ts'
-import { PathSpec } from '../../../types.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
+import type { PathSpec } from '../../../types.ts'
+import { MountMode } from '../../../types.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
 const RAM_JOIN = RAM_COMMANDS.filter((c) => c.name === 'join' && c.filetype == null)
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
 
 async function runJoin(
-  resource: RAMResource,
+  vfs: RAMVFS,
   paths: PathSpec[],
   flags: Record<string, string | boolean | number | string[]> = {},
 ): Promise<{ out: string; exitCode: number }> {
   const cmd = RAM_JOIN[0]
   if (cmd === undefined) throw new Error('join not registered')
-  const result = await cmd.fn((resource as { accessor?: unknown }).accessor as never, paths, [], {
+  const result = await cmd.fn((vfs as { accessor?: unknown }).accessor as never, paths, [], {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -47,22 +50,48 @@ async function runJoin(
 }
 
 describe('join', () => {
-  it('joins two files on first field', async () => {
-    const resource = new RAMResource()
-    resource.store.files.set('/a.txt', ENC.encode('1 Alice\n2 Bob\n'))
-    resource.store.files.set('/b.txt', ENC.encode('1 NY\n2 LA\n'))
-    const r = await runJoin(resource, [
-      PathSpec.fromStrPath('/a.txt'),
-      PathSpec.fromStrPath('/b.txt'),
-    ])
-    expect(r.exitCode).toBe(0)
-    expect(r.out).toContain('1 Alice NY')
-    expect(r.out).toContain('2 Bob LA')
+  it("refuses fewer than 2 paths with GNU's usage error, exit 1", async () => {
+    const vfs = new RAMVFS()
+    const call = runJoin(vfs, [])
+    await expect(call).rejects.toThrow(
+      "join: missing operand\nTry 'join --help' for more information.",
+    )
+    await expect(call).rejects.toMatchObject({ exitCode: 1 })
+  })
+})
+
+async function shell(
+  line: string,
+  stdin: Uint8Array | null = null,
+  seed: Record<string, string> = {},
+): Promise<[string, string, number]> {
+  const ws = new Workspace(
+    { '/data/': new RAMVFS() },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  try {
+    for (const [path, body] of Object.entries(seed)) {
+      await ws.shell(`tee ${path} > /dev/null`, { stdin: new TextEncoder().encode(body) })
+    }
+    const io = await ws.shell(line, { stdin })
+    const dec = new TextDecoder()
+    return [dec.decode(io.stdout), dec.decode(io.stderr), io.exitCode]
+  } finally {
+    await ws.close()
+  }
+}
+
+describe('join with stdin', () => {
+  it('reads a dash operand across mounts', async () => {
+    // From / the dash sits on the root mount, so the line relays.
+    const r = await shell('join - /data/f.txt', ENC.encode('alice 1\nbob 2\n'), {
+      '/data/f.txt': 'alice 30\nbob 25\n',
+    })
+    expect(r).toEqual(['alice 1 30\nbob 2 25\n', '', 0])
   })
 
-  it('returns exit 1 when fewer than 2 paths', async () => {
-    const resource = new RAMResource()
-    const r = await runJoin(resource, [])
-    expect(r.exitCode).toBe(1)
+  it('refuses two dash operands', async () => {
+    const r = await shell('join - -', ENC.encode('a\n'))
+    expect(r).toEqual(['', 'join: both files cannot be standard input\n', 1])
   })
 })

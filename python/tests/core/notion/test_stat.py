@@ -22,29 +22,24 @@ from mirage.core.notion.stat import stat
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
 
-_ACCESSOR = SimpleNamespace(config=None)
+_ACCESSOR = SimpleNamespace(config=None, pool=None)
 
 TOP_ID = "aaaa1111-2222-3333-4444-555566667777"
 
 _TOP_PAGE = {
     "id": TOP_ID,
-    "parent": {
-        "type": "workspace"
-    },
+    "parent": {"type": "workspace"},
     "last_edited_time": "2026-01-02T00:00:00.000Z",
     "properties": {
         "title": {
             "type": "title",
-            "title": [{
-                "type": "text",
-                "plain_text": "Top1"
-            }],
+            "title": [{"type": "text", "plain_text": "Top1"}],
         }
     },
 }
 
 
-async def _fake_search_pages(config):
+async def _fake_search_pages(config, session=None):
     return [_TOP_PAGE]
 
 
@@ -54,16 +49,30 @@ def _patch(monkeypatch):
 
 
 def _spec(original: str, prefix: str = "") -> PathSpec:
-    return PathSpec(resource_path=mount_key(original, prefix),
-                    virtual=original,
-                    directory=original)
+    return PathSpec(
+        vfs_path=mount_key(original, prefix),
+        virtual=original,
+        directory=original,
+    )
 
 
 @pytest.mark.asyncio
 async def test_stat_page_returns_modified_from_index():
     index = RAMIndexCacheStore()
-    await readdir_mod.readdir(_ACCESSOR, _spec("/notion/pages", "/notion"),
-                              index)
+    await readdir_mod.readdir(
+        _ACCESSOR, _spec("/notion/pages", "/notion"), index
+    )
     spec = _spec(f"/notion/pages/Top1__{TOP_ID}", "/notion")
     s = await stat(_ACCESSOR, spec, index)
     assert s.modified == "2026-01-02T00:00:00.000Z"
+
+
+@pytest.mark.asyncio
+async def test_stat_without_an_index_still_resolves_the_page():
+    # A caller with no cache gets a call-local one, so the entry
+    # resolution can read the parent listing it just warmed instead of
+    # reporting every existing page as absent.
+    spec = _spec(f"/notion/pages/Top1__{TOP_ID}", "/notion")
+    s = await stat(_ACCESSOR, spec)
+    assert s.modified == "2026-01-02T00:00:00.000Z"
+    assert s.extra["page_id"] == TOP_ID

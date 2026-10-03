@@ -14,53 +14,50 @@
 
 import errno
 import logging
+import os
+import sys
 from typing import Any, Callable
-
-try:
-    import mfusepy as fuse
-except ImportError:
-    fuse = None
 
 from mirage.fuse.core import MountCore
 from mirage.fuse.darwin import rename_flags_check
 from mirage.fuse.errors import classify_error
 from mirage.ops import Ops
 from mirage.types import JsonValue
-from mirage.workspace.session.session import Session
+from mirage.workspace.session.session import SessionState
 
 logger = logging.getLogger(__name__)
 
-# Base class only when mfusepy is installed; otherwise the module still imports
-# (FUSE is the optional [fuse] extra) but instantiating MirageFS raises.
-_FUSE_OPERATIONS: Any = fuse.Operations if fuse is not None else object
+# setxattr(2)'s flags as the kernel hands them over: linux numbers
+# XATTR_CREATE 1 and XATTR_REPLACE 2, macOS 2 and 4 (its 1 is
+# XATTR_NOFOLLOW, which the kernel has already applied).
+XATTR_CREATE, XATTR_REPLACE = (
+    (0x2, 0x4) if sys.platform == "darwin" else (0x1, 0x2)
+)
 
 
-class MirageFS(_FUSE_OPERATIONS):
+class MirageFS:
     """libfuse adapter over MountCore.
 
-    Owns exactly the FUSE-specific concerns: the mfusepy ``Operations``
-    method signatures and the translation of mirage-native exceptions into
-    ``FuseOSError``. All filesystem semantics live in MountCore, so an
-    FSKit or File Provider adapter can reuse them unchanged.
+    Owns exactly the FUSE-specific concerns: the mfusepy callback method
+    signatures and the translation of mirage-native exceptions into
+    ``OSError``. All filesystem semantics live in MountCore, so an FSKit or
+    File Provider adapter can reuse them unchanged.
 
     Args:
         ops (Ops): the workspace op facade every callback routes to.
         root_prefix (str): mount root; non-empty scopes the tree to one mount.
-        session (Session | None): bind every op to this session's mount grants.
+        session (SessionState | None): bind every op to this
+            session's mount grants.
     """
 
     use_ns = True
 
-    def __init__(self,
-                 ops: Ops,
-                 root_prefix: str = "",
-                 session: Session | None = None) -> None:
-        if fuse is None:
-            raise RuntimeError(
-                "FUSE support requires the 'fuse' extra: install "
-                '"mirage-ai[fuse]" plus the OS driver (macFUSE, fuse3, or '
-                "WinFsp). Setup and support matrix: "
-                "https://mirage.dev/home/setup/fuse")
+    def __init__(
+        self,
+        ops: Ops,
+        root_prefix: str = "",
+        session: SessionState | None = None,
+    ) -> None:
         self.core = MountCore(ops, root_prefix=root_prefix, session=session)
 
     def _call(self, fn: Callable[..., Any], *args: Any) -> Any:
@@ -83,11 +80,13 @@ class MirageFS(_FUSE_OPERATIONS):
             return fn(*args)
         except Exception as err:
             code = classify_error(err)
-            if code == errno.EIO and not isinstance(err,
-                                                    (OSError, ValueError)):
-                logger.warning("unclassified mount error in %s: %r",
-                               fn.__name__, err)
-            raise fuse.FuseOSError(code) from err
+            if code == errno.EIO and not isinstance(
+                err, (OSError, ValueError)
+            ):
+                logger.warning(
+                    "unclassified mount error in %s: %r", fn.__name__, err
+                )
+            raise OSError(code, os.strerror(code)) from err
 
     def drain_ops(self) -> list[dict[str, Any]]:
         return self.core.drain_ops()
@@ -134,7 +133,7 @@ class MirageFS(_FUSE_OPERATIONS):
             new_exists = False
         code = rename_flags_check(new_exists, flags)
         if code is not None:
-            raise fuse.FuseOSError(code)
+            raise OSError(code, os.strerror(code))
         self._call(self.core.rename, old, new)
         return 0
 
@@ -154,10 +153,9 @@ class MirageFS(_FUSE_OPERATIONS):
             self._call(self.core.getattr, path)
         return 0
 
-    def fsetattr_x(self,
-                   path: str,
-                   changes: dict[str, JsonValue],
-                   fh: int | None = None) -> int:
+    def fsetattr_x(
+        self, path: str, changes: dict[str, JsonValue], fh: int | None = None
+    ) -> int:
         return self.setattr_x(path, changes)
 
     def rmdir(self, path: str) -> None:
@@ -178,13 +176,22 @@ class MirageFS(_FUSE_OPERATIONS):
     def access(self, path: str, amode: int) -> None:
         self._call(self.core.getattr, path)
 
-    def setxattr(self,
-                 path: str,
-                 name: str,
-                 value: bytes,
-                 options: int,
-                 position: int = 0) -> int:
-        self._call(self.core.setxattr, path, name, value)
+    def setxattr(
+        self,
+        path: str,
+        name: str,
+        value: bytes,
+        options: int,
+        position: int = 0,
+    ) -> int:
+        self._call(
+            self.core.setxattr,
+            path,
+            name,
+            value,
+            bool(options & XATTR_CREATE),
+            bool(options & XATTR_REPLACE),
+        )
         return 0
 
     def getxattr(self, path: str, name: str, position: int = 0) -> bytes:
@@ -204,7 +211,7 @@ class MirageFS(_FUSE_OPERATIONS):
         self.flush(path, fh)
 
     def open(self, path: str, flags: int) -> int:
-        return self._call(self.core.open, path)
+        return self._call(self.core.open, path, flags)
 
     def release(self, path: str, fh: int) -> int:
         self._call(self.core.release, fh)

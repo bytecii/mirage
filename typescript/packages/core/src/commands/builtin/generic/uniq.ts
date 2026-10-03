@@ -12,12 +12,19 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { isStdin } from '../utils/stream.ts'
+import { stdinStat, stdinStream } from '../utils/stream.ts'
+import { splitReadable } from '../utils/operands.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
-import type { PathSpec } from '../../../types.ts'
+import type { FileStat, PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { extraOperandError } from '../../spec/usage.ts'
-import { CommandName, type FlagValue } from '../../spec/types.ts'
+import { argmatchError, extraOperandError } from '../../spec/usage.ts'
+import { argmatch } from '../../spec/argmatch.ts'
+import { CommandName, type FlagValue, type ParsedFlagValue } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { specOf } from '../../spec/builtins.ts'
 import { resolveSource } from '../utils/stream.ts'
+import { concat } from '../../../io/cachable_iterator.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
@@ -35,52 +42,63 @@ interface UniqFlags {
   zeroTerminated: boolean
 }
 
-function parseCount(value: string | boolean | number | string[] | undefined): number | null {
+// GNU's size_opt reads a count with xstrtoimax: leading C whitespace, a sign
+// and decimal digits, nothing after them.
+const COUNT_WORD = /^[ \t\n\v\f\r]*[+-]?[0-9]+$/
+const SKIP_FIELDS = 'fields to skip'
+const SKIP_CHARS = 'bytes to skip'
+const CHECK_CHARS = 'bytes to compare'
+
+// GNU's size_opt: a decimal count, never negative, any size (a huge one is
+// clamped, as GNU clamps it to SIZE_MAX).
+function parseCount(value: ParsedFlagValue | undefined, what: string): number | null {
   if (value === undefined || value === false) return null
-  if (typeof value !== 'string') throw new Error(`uniq: invalid count: '${String(value)}'`)
-  const normalized = value.trim()
-  if (!/^[+-]?\d+$/.test(normalized)) throw new Error(`uniq: invalid count: '${value}'`)
-  const count = Number(normalized)
-  if (!Number.isSafeInteger(count) || count < 0) throw new Error(`uniq: invalid count: '${value}'`)
-  return count
+  const text = String(value)
+  const count = COUNT_WORD.test(text) ? Number(text.trim()) : Number.NaN
+  if (!(count >= 0)) throw new Error(`uniq: ${text}: invalid number of ${what}`)
+  return Math.min(count, Number.MAX_SAFE_INTEGER)
 }
 
-function stringAlias(
-  flags: Record<string, FlagValue>,
-  short: string,
-  long: string,
-): string | boolean | number | string[] | undefined {
-  return flags[short] ?? flags[long]
-}
+// GNU's `delimit_method_string` and `grouping_method_string`, in
+// declaration order, which is what each option lists back. No aliases in
+// either, so one candidate per line.
+const ALL_REPEATED_ARGS = ['none', 'prepend', 'separate'] as const
+const GROUP_ARGS = ['prepend', 'append', 'separate', 'both'] as const
 
 function optionalMethod(
-  value: string | boolean | number | string[] | undefined,
+  value: ParsedFlagValue | undefined,
   defaultValue: string,
-  allowed: string[],
+  allowed: readonly string[],
   option: string,
 ): string | null {
   if (value === undefined || value === false) return null
   const normalized = value === true ? defaultValue : value
-  if (typeof normalized !== 'string' || !allowed.includes(normalized)) {
-    throw new Error(`uniq: invalid argument '${String(normalized)}' for '--${option}'`)
+  const word = String(normalized)
+  // A non-string bag value (a number, a list) is not a candidate word at
+  // all, so it never reaches the matcher and reads as invalid.
+  const match = typeof normalized === 'string' ? argmatch(word, allowed) : null
+  if (match?.matched !== true) {
+    const kind = match === null ? 'invalid' : match.kind
+    throw argmatchError('uniq', `--${option}`, word, allowed, undefined, kind)
   }
-  return normalized
+  return match.word
 }
 
-function parseFlags(flags: Record<string, FlagValue>): UniqFlags {
-  const count = flags.count === true
-  const duplicatesOnly = flags.repeated === true
-  const uniqueOnly = flags.unique === true
+function parseFlags(bag: Record<string, FlagValue>): UniqFlags {
+  const fl = new FlagView(bag, specOf('uniq'))
+  const count = fl.asBool('count')
+  const duplicatesOnly = fl.asBool('repeated')
+  const uniqueOnly = fl.asBool('unique')
   const allRepeated = optionalMethod(
-    flags.D === true ? true : flags.all_repeated,
+    fl.asBool('D') ? true : (fl.raw('all_repeated') as ParsedFlagValue | undefined),
     'none',
-    ['none', 'prepend', 'separate'],
+    ALL_REPEATED_ARGS,
     'all-repeated',
   ) as UniqFlags['allRepeated']
   const group = optionalMethod(
-    flags.group,
+    fl.raw('group') as ParsedFlagValue | undefined,
     'separate',
-    ['separate', 'prepend', 'append', 'both'],
+    GROUP_ARGS,
     'group',
   ) as UniqFlags['group']
   if (group !== null && (count || duplicatesOnly || uniqueOnly || allRepeated !== null)) {
@@ -93,13 +111,13 @@ function parseFlags(flags: Record<string, FlagValue>): UniqFlags {
     count,
     duplicatesOnly,
     uniqueOnly,
-    skipFields: parseCount(stringAlias(flags, 'f', 'skip_fields')) ?? 0,
-    skipChars: parseCount(stringAlias(flags, 's', 'skip_chars')) ?? 0,
-    checkChars: parseCount(stringAlias(flags, 'w', 'check_chars')),
-    ignoreCase: flags.ignore_case === true,
+    skipFields: parseCount(fl.asStr('skip_fields'), SKIP_FIELDS) ?? 0,
+    skipChars: parseCount(fl.asStr('skip_chars'), SKIP_CHARS) ?? 0,
+    checkChars: parseCount(fl.asStr('check_chars'), CHECK_CHARS),
+    ignoreCase: fl.asBool('ignore_case'),
     allRepeated,
     group,
-    zeroTerminated: flags.zero_terminated === true,
+    zeroTerminated: fl.asBool('zero_terminated'),
   }
 }
 
@@ -109,7 +127,7 @@ function isBlank(char: string | undefined): boolean {
 
 function skipFields(text: string, count: number): string {
   let index = 0
-  for (let field = 0; field < count; field += 1) {
+  for (let field = 0; field < count && index < text.length; field += 1) {
     while (index < text.length && isBlank(text[index])) index += 1
     while (index < text.length && !isBlank(text[index])) index += 1
   }
@@ -124,20 +142,13 @@ function comparisonKey(line: Uint8Array, flags: UniqFlags): string {
   return flags.ignoreCase ? text.toLowerCase() : text
 }
 
-function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
-  const output = new Uint8Array(left.byteLength + right.byteLength)
-  output.set(left)
-  output.set(right, left.byteLength)
-  return output
-}
-
 async function* records(
   source: AsyncIterable<Uint8Array>,
   separator: number,
 ): AsyncIterable<Uint8Array> {
   let buffer: Uint8Array = new Uint8Array()
   for await (const chunk of source) {
-    buffer = concatBytes(buffer, chunk)
+    buffer = concat([buffer, chunk])
     let start = 0
     for (let index = 0; index < buffer.byteLength; index += 1) {
       if (buffer[index] !== separator) continue
@@ -236,7 +247,9 @@ export async function uniqGeneric(
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
   write?: (p: PathSpec, data: Uint8Array) => Promise<void>,
+  stat?: (p: PathSpec) => Promise<FileStat>,
 ): Promise<CommandFnResult> {
+  stream = stdinStream(stream, opts.stdin)
   if (paths.length > 2) throw extraOperandError(CommandName.UNIQ, paths[2]?.rawPath ?? '')
   let parsed: UniqFlags
   try {
@@ -245,13 +258,20 @@ export async function uniqGeneric(
     const message = err instanceof Error ? err.message : String(err)
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${message}\n`) })]
   }
+  if (paths.length > 0 && stat !== undefined) {
+    // The input is stat'ed before the lazy stream starts, so a missing or
+    // unreadable one is reported in uniq's own words rather than
+    // surfacing mid-drain.
+    const [, err] = await splitReadable(paths.slice(0, 1), stdinStat(stat), 'uniq')
+    if (err !== '') return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(err) })]
+  }
   let source: AsyncIterable<Uint8Array>
   const cache: string[] = []
   if (paths.length > 0) {
     const input = paths[0]
     if (input === undefined) return [null, new IOResult()]
     source = stream(input)
-    cache.push(input.mountPath)
+    if (!isStdin(input)) cache.push(input.mountPath)
   } else {
     try {
       source = resolveSource(opts.stdin)
@@ -262,7 +282,7 @@ export async function uniqGeneric(
   }
   const output = uniqStream(source, parsed)
   const outputPath = paths[1]
-  if (outputPath !== undefined) {
+  if (outputPath !== undefined && outputPath.rawPath !== '-') {
     if (write === undefined) {
       return [
         null,

@@ -18,7 +18,7 @@ import { Accessor } from '@struktoai/mirage-core/accessor/index'
 import { homedir } from 'node:os'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import type { SSHConfig } from '../resource/ssh/config.ts'
+import type { SSHConfig } from '../vfs/ssh/config.ts'
 
 function expandHome(p: string): string {
   if (p === '~') return homedir()
@@ -52,7 +52,7 @@ export class SSHAccessor extends Accessor {
       ssh2Mod = await import('ssh2')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      throw new Error(`ssh2 is required for the SSH resource — install it as a peer dep: ${msg}`)
+      throw new Error(`ssh2 is required for the SSH VFS — install it as a peer dep: ${msg}`)
     }
     const { Client: ClientCtor } = ssh2Mod
     const c = new ClientCtor()
@@ -69,6 +69,14 @@ export class SSHAccessor extends Accessor {
     }
     return new Promise<SFTPWrapper>((resolveFn, rejectFn) => {
       c.on('ready', () => {
+        // SFTP is a request/response protocol over small packets, and node
+        // leaves Nagle ON. Paired with Linux's 40ms delayed ACK that stalls
+        // roughly every exchange, which is why the same battery costs 41.8ms
+        // per case on a Linux runner and ~3ms on a BSD-derived stack. ssh2
+        // offers setNoDelay but never calls it; asyncssh sets TCP_NODELAY on
+        // every connection (connection.py), which is the whole reason the
+        // python host was 44x faster against the same server.
+        c.setNoDelay(true)
         c.sftp((err: Error | undefined, sftp: SFTPWrapper) => {
           if (err !== undefined) {
             rejectFn(err)

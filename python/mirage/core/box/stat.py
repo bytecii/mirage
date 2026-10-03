@@ -17,14 +17,13 @@ from typing import Any
 
 from mirage.accessor.box import BoxAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.box.api import get_folder_info
-from mirage.core.box.readdir import ROOT_FOLDER_ID
+from mirage.core.box.api import absent_on_404, get_folder_info
+from mirage.core.box.readdir import ROOT_FOLDER_ID, resource_type_for
 from mirage.core.box.readdir import readdir as _readdir
-from mirage.core.box.readdir import resource_type_for
 from mirage.core.box.resolve import path_parts, resolve_item
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent
-from mirage.utils.filetype import guess_type
+from mirage.utils.filetype import content_type_for_path
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 
 logger = logging.getLogger(__name__)
@@ -49,15 +48,14 @@ def _stat_from_item(item: dict[str, Any]) -> FileStat:
     return FileStat(
         name=vfs_name,
         size=item.get("size"),
-        type=guess_type(vfs_name),
+        type=FileType.FILE,
+        content=content_type_for_path(vfs_name),
         modified=remote_time,
         fingerprint=sha1 or remote_time or None,
         extra={
             "box_id": item["id"],
             "resource_type": rt,
-            **({
-                "sha1": sha1
-            } if sha1 else {}),
+            **({"sha1": sha1} if sha1 else {}),
         },
     )
 
@@ -68,14 +66,16 @@ async def stat(
     index: IndexCacheStore = NULL_INDEX,
 ) -> FileStat:
     virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    key = path.resource_path
+    prefix = mount_prefix_of(path.virtual, path.vfs_path)
+    key = path.vfs_path
     if not key:
         # The mount root has no parent listing to inherit an mtime from;
         # fetch the folder's own metadata so find -mtime and ls -ld see a
         # real timestamp (mirrors the onedrive Graph-root stat).
         root_id = accessor.config.root_folder_id or ROOT_FOLDER_ID
-        info = await get_folder_info(accessor.token_manager, root_id)
+        info = await absent_on_404(
+            virtual, lambda: get_folder_info(accessor.token_manager, root_id)
+        )
         return FileStat(
             name="/",
             type=FileType.DIRECTORY,
@@ -89,9 +89,11 @@ async def stat(
         try:
             await _readdir(
                 accessor,
-                PathSpec(virtual=parent_virtual,
-                         directory=parent_virtual,
-                         resource_path=mount_key(parent_virtual, prefix)),
+                PathSpec(
+                    virtual=parent_virtual,
+                    directory=parent_virtual,
+                    vfs_path=mount_key(parent_virtual, prefix),
+                ),
                 index=index,
             )
         except FileNotFoundError as exc:
@@ -101,7 +103,9 @@ async def stat(
             # The write-family builders (rm/mv/cp) call stat without a
             # threaded index, so the readdir above populates a NULL store
             # that can't be read back. Resolve the id directly instead.
-            item = await resolve_item(accessor, path_parts(path))
+            item = await absent_on_404(
+                virtual, lambda: resolve_item(accessor, path_parts(path))
+            )
             if item is None or resource_type_for(item) == "box/weblink":
                 # Weblinks are hidden from listings; a direct lookup must
                 # not resurface a sizeless, unreadable entry.
@@ -118,14 +122,13 @@ async def stat(
     return FileStat(
         name=result.entry.vfs_name or result.entry.name,
         size=result.entry.size,
-        type=guess_type(result.entry.vfs_name),
+        type=FileType.FILE,
+        content=content_type_for_path(result.entry.vfs_name),
         modified=result.entry.remote_time,
         fingerprint=sha1 or result.entry.remote_time or None,
         extra={
             "box_id": result.entry.id,
             "resource_type": result.entry.resource_type,
-            **({
-                "sha1": sha1
-            } if sha1 else {}),
+            **({"sha1": sha1} if sha1 else {}),
         },
     )

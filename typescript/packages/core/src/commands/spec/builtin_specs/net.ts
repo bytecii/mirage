@@ -20,44 +20,105 @@ export const SPECS: Record<string, CommandSpec> = {
     options: [
       new Option({
         short: '-H',
+        long: '--header',
         type: 'str',
         description: 'Add a custom header to the request.',
       }),
       new Option({
         short: '-A',
+        long: '--user-agent',
         type: 'str',
         description: 'Set the User-Agent header.',
       }),
       new Option({
         short: '-X',
+        long: '--request',
         type: 'str',
         description: 'Specify the HTTP request method.',
       }),
       new Option({
         short: '-d',
+        long: '--data',
         type: 'str',
         description: 'Send the given data as the request body.',
       }),
       new Option({
         short: '-F',
+        long: '--form',
         type: 'str',
         description: 'Submit a multipart/form-data field.',
       }),
       new Option({
         short: '-o',
+        long: '--output',
         type: 'path',
         description: 'Write response body to the given file.',
       }),
-      new Option({ short: '-L', description: 'Follow HTTP redirects.' }),
+      new Option({
+        short: '-D',
+        long: '--dump-header',
+        type: 'path',
+        description: 'Write the received headers to the given file, - for stdout.',
+      }),
+      new Option({ short: '-L', long: '--location', description: 'Follow HTTP redirects.' }),
       new Option({
         short: '-f',
         long: '--fail',
         description: 'Fail with exit 22 on an HTTP error status.',
       }),
-      new Option({ short: '-s', description: 'Run silently with no progress or messages.' }),
-      new Option({ short: '-S', description: 'Show errors even when silent.' }),
+      new Option({
+        short: '-s',
+        long: '--silent',
+        description: 'Run silently with no progress or messages.',
+      }),
+      new Option({
+        short: '-S',
+        long: '--show-error',
+        description: 'Show errors even when silent.',
+      }),
+      new Option({
+        short: '-v',
+        long: '--verbose',
+        description: 'Dump the request and response headers on stderr.',
+      }),
+      new Option({
+        short: '-i',
+        long: '--include',
+        description: 'Include the response headers in the output.',
+      }),
+      new Option({ short: '-I', long: '--head', description: 'Fetch the headers only.' }),
+      new Option({
+        short: '-4',
+        long: '--ipv4',
+        description: 'Accept IPv4 preference (transport selects the address family).',
+      }),
+      new Option({
+        short: '-6',
+        long: '--ipv6',
+        description: 'Accept IPv6 preference (transport selects the address family).',
+      }),
+      new Option({
+        short: '-w',
+        long: '--write-out',
+        type: 'str',
+        description: 'Print transfer information after completion.',
+      }),
+      new Option({
+        short: '-m',
+        long: '--max-time',
+        type: 'float',
+        description: 'Give up after this many seconds.',
+      }),
+      new Option({
+        short: '-k',
+        long: '--insecure',
+        description: 'Skip verification of the server certificate.',
+      }),
     ],
-    rest: new Operand({ type: 'str' }),
+    // A URL slot, not a free-text rest: a textual rest makes the parser keep
+    // unknown dash words as operands (the echo/git-log shape), and
+    // `curl -sv URL` then fetched "-sv" (#1065).
+    positional: [new Operand({ type: 'str' })],
   }),
   wget: new CommandSpec({
     description: 'Retrieve files from the web.',
@@ -68,6 +129,12 @@ export const SPECS: Record<string, CommandSpec> = {
         description: 'Write the downloaded content to the given file.',
       }),
       new Option({ short: '-q', description: 'Run quietly with no output.' }),
+      new Option({
+        short: '-T',
+        long: '--timeout',
+        type: 'float',
+        description: 'Set the network timeout in seconds (zero disables it).',
+      }),
       new Option({
         long: '--spider',
         description: 'Check that the URL exists without downloading it.',

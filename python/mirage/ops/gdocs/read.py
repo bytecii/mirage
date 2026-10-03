@@ -19,14 +19,16 @@ from mirage.types import PathSpec
 from mirage.utils.ranges import slice_window
 
 
-@op("read", resource=["gdocs", "gdrive"], filetype=".gdoc.json")
-async def read(accessor: GDocsAccessor,
-               path: PathSpec,
-               *,
-               index,
-               offset: int = 0,
-               size: int | None = None,
-               **kwargs) -> bytes:
+@op("read", vfs=["gdocs", "gdrive"], filetype=".gdoc.json")
+async def read(
+    accessor: GDocsAccessor,
+    path: PathSpec,
+    *,
+    index,
+    offset: int = 0,
+    size: int | None = None,
+    **kwargs,
+) -> bytes:
     """Read the rendered document, optionally only a byte range of it.
 
     A backend that registers its own read op does not go through the

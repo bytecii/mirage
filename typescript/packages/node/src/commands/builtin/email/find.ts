@@ -18,15 +18,14 @@ import { command } from '@struktoai/mirage-core/commands/config'
 import type { CommandFnResult, CommandOpts } from '@struktoai/mirage-core/commands/config'
 import { specOf } from '@struktoai/mirage-core/commands/spec/index'
 import { walkFind } from '@struktoai/mirage-core/core/generic/find'
-import { ResourceName } from '@struktoai/mirage-core/types'
+import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { EmailAccessor } from '../../../accessor/email.ts'
 import { readdir as emailReaddir } from '../../../core/email/readdir.ts'
 import { stat as emailStat } from '../../../core/email/stat.ts'
-import { EMAIL_IO } from './io.ts'
-import { metadataProvision } from './_provision.ts'
+import { IO } from './io.ts'
 
-const resolveGlob = resolveGlobOf(EMAIL_IO)
+const resolveGlob = resolveGlobOf(IO)
 
 // Routed through the shared generic walk instead of a bespoke tree walk:
 // the generic owns every flag (-type, -size, -mtime, -empty, -path) and
@@ -69,8 +68,7 @@ async function findCommand(
 
 export const EMAIL_FIND = command({
   name: 'find',
-  resource: ResourceName.EMAIL,
+  vfs: VFSName.EMAIL,
   spec: specOf('find'),
   fn: findCommand,
-  provision: metadataProvision,
 })

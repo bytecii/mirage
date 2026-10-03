@@ -12,18 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import time
-
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.cache.context import invalidate_after_write, invalidate_ancestors
 from mirage.core.dropbox.client import dropbox_upload
 from mirage.core.dropbox.paths import dropbox_path_of
-from mirage.observe.context import record
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
 
 
-async def write_bytes(accessor: DropboxAccessor, path: PathSpec,
-                      data: bytes) -> None:
+async def write_bytes(
+    accessor: DropboxAccessor, path: PathSpec, data: bytes
+) -> None:
     """Upload in a single call; Dropbox caps it at ~150 MB (larger files
     need upload sessions, not supported here).
 
@@ -32,9 +31,10 @@ async def write_bytes(accessor: DropboxAccessor, path: PathSpec,
         path (PathSpec): target path.
         data (bytes): file content.
     """
-    start_ms = int(time.monotonic() * 1000)
-    await dropbox_upload(accessor.token_manager,
-                         dropbox_path_of(accessor, path), data)
-    record("write", path.virtual, "dropbox", len(data), start_ms)
+    timer = start_op()
+    await dropbox_upload(
+        accessor.token_manager, dropbox_path_of(accessor, path), data
+    )
+    record("write", path.virtual, "dropbox", len(data), timer)
     await invalidate_after_write(path)
     await invalidate_ancestors(path)

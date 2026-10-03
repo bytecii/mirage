@@ -12,10 +12,14 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.commands.builtin.utils.limit import CommandTimeoutError
-from mirage.commands.errors import FindParseError, UsageError
+from mirage.commands.errors import (
+    CommandTimeoutError,
+    FindParseError,
+    UsageError,
+)
 from mirage.io import IOResult
-from mirage.runtime.policy import PolicyDeny
+from mirage.policy import Deny, refusal_of, render_deny
+from mirage.runtime.routing import RouteDeny
 from mirage.utils.errors import format_fs_error
 from mirage.workspace.workspace.utils import command_name
 
@@ -35,15 +39,15 @@ def failure_result(exc: BaseException, command: str) -> IOResult:
     """
     if isinstance(exc, CommandTimeoutError):
         return IOResult(exit_code=124, stderr=(str(exc) + "\n").encode())
-    if isinstance(exc, PolicyDeny):
+    if isinstance(exc, RouteDeny):
         # A deny is a policy outcome, not a mistake: it folds into the
         # line's result the way a timeout does, never a raise. The
         # denied party is the command, so the message carries its name
         # like every per-command error.
         name = command_name(command) or command
-        return IOResult(
-            exit_code=126,
-            stderr=f"{name}: policy denied: {exc.reason}\n".encode())
+        deny = Deny(exc.reason)
+        err, code = render_deny(name, deny)
+        return IOResult(exit_code=code, stderr=err, refusal=refusal_of(deny))
     if isinstance(exc, FindParseError):
         return IOResult(exit_code=1, stderr=f"{exc}\n".encode())
     if isinstance(exc, UsageError):

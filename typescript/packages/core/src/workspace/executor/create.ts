@@ -1,3 +1,6 @@
+import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
+import { materialize, type ByteSource } from '../../io/types.ts'
+import type { FileDescription } from '../../shell/descriptors.ts'
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,10 +19,11 @@ import { DEFAULT_UMASK } from '../../context/session_context.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import type { PathSpec } from '../../types.ts'
 import { isFsError } from '../../utils/errors.ts'
-import type { Session } from '../session/session.ts'
+import { spliceWindow } from '../../utils/ranges.ts'
+import type { SessionState } from '../session/session.ts'
 
 /**
- * Write a file, giving it the umask's mode if the write created it.
+ * Write or append, giving a newly created file the umask's mode.
  *
  * Every shell path that opens a file for writing goes through here, so
  * `echo x > f` and `exec > f` agree about the mode a fresh file gets:
@@ -35,9 +39,10 @@ import type { Session } from '../session/session.ts'
  */
 export async function createFile(
   dispatch: DispatchFn,
-  session: Session,
+  session: SessionState,
   scope: PathSpec,
   data: Uint8Array,
+  append = false,
 ): Promise<void> {
   let created = false
   if (session.umask !== DEFAULT_UMASK) {
@@ -48,11 +53,62 @@ export async function createFile(
       created = true
     }
   }
-  await dispatch('write', scope, [data])
+  await dispatch(append ? 'append' : 'write', scope, [data])
   if (!created) return
   try {
     await dispatch('setattr', scope, [], { mode: 0o666 & ~session.umask })
   } catch (modeErr) {
     if (!isFsError(modeErr)) throw modeErr
   }
+}
+
+/**
+ * Write through a shared open description and advance its offset.
+ *
+ * A write-only description lands at its offset with one `pwrite`, so it
+ * needs no read of the file, as a write to a write-only descriptor needs none
+ * (`exec 3>f; echo a >&3`). A read-write one (`<>`) still reads it: that
+ * description was opened to read, and its own reader resumes over what the
+ * write left.
+ */
+export async function writeDescription(
+  dispatch: DispatchFn,
+  session: SessionState,
+  file: FileDescription,
+  data: Uint8Array,
+): Promise<void> {
+  if (file.emit !== null) {
+    if (data.byteLength > 0) await file.emit(data)
+    return
+  }
+  if (!file.opened) {
+    await createFile(
+      dispatch,
+      session,
+      file.scope,
+      file.source === null ? data : new Uint8Array(),
+      file.append,
+    )
+    file.opened = true
+    if (file.source === null) {
+      file.offset += data.byteLength
+      return
+    }
+  }
+  if (data.byteLength === 0) return
+  if (file.source === null) {
+    if (file.append) {
+      await createFile(dispatch, session, file.scope, data, true)
+    } else {
+      await dispatch('pwrite', file.scope, [data, file.offset])
+      file.offset += data.byteLength
+    }
+    return
+  }
+  const content = await materialize((await dispatch('read', file.scope))[0] as ByteSource)
+  const offset = file.offset + file.source.lines.position
+  const updated = spliceWindow(content, offset, data)
+  await createFile(dispatch, session, file.scope, updated)
+  file.offset = offset + data.byteLength
+  file.source.lines = new AsyncLineIterator(updated.subarray(file.offset))
 }

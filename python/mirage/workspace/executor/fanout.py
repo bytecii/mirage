@@ -13,27 +13,66 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import dataclasses
+import functools
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from mirage.commands.builtin.find_eval import FindEntry, keep
+from mirage.commands.builtin.find_eval import (
+    FindEntry,
+    PredNode,
+    bind_tree,
+    drop_pruned,
+    keep,
+    settle_prunes,
+)
 from mirage.commands.builtin.find_parse import parse_find_expression
-from mirage.commands.builtin.generic.crossmount.fanout.du import \
-    merge_du_blocks
+from mirage.commands.builtin.generic.crossmount.fanout.du import (
+    merge_du_blocks,
+)
+from mirage.commands.builtin.generic.crossmount.fanout.exit import (
+    combined_exit,
+)
+from mirage.commands.builtin.generic.crossmount.fanout.fanout import run_fanout
+from mirage.commands.builtin.generic.crossmount.relay.relay import (
+    DISPATCH_BUILDERS,
+)
 from mirage.commands.builtin.generic.crossmount.types import RunSingle
-from mirage.commands.errors import FindParseError
+from mirage.commands.builtin.generic.crossmount.utils import run_separator
+from mirage.commands.builtin.generic.grep import filename_mode
+from mirage.commands.builtin.generic.rg import (
+    label_flags,
+    walks_descendant_mounts,
+)
+from mirage.commands.builtin.generic_bind.dispatch import run_dispatch
+from mirage.commands.config import ExecContext
+from mirage.commands.errors import (
+    CommandTimeoutError,
+    FindParseError,
+    UsageError,
+)
+from mirage.commands.spec import SPECS
+from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
-from mirage.context import mount_allowed, path_allowed
+from mirage.commands.spec.usage import read_fail_exit
+from mirage.context import path_allowed
 from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
 from mirage.ops.types import NamespaceView, StatPath
+from mirage.runtime.types import DispatchFn
 from mirage.types import FileType, PathSpec, Producer
-from mirage.utils.path import respell_one
-from mirage.workspace.executor.find_action_dispatch import _apply_find_actions
-from mirage.workspace.mount import (MountCommandUnsupported, MountEntry,
-                                    MountRegistry)
+from mirage.utils.dates import in_mtime_window, iso_timestamp
+from mirage.utils.errors import FS_ERRORS, format_fs_error, fs_strerror
+from mirage.utils.path import parent, respell_one
+from mirage.workspace.mount import (
+    MountCommandUnsupported,
+    MountEntry,
+    MountRegistry,
+)
 from mirage.workspace.types import ExecutionNode
+
+logger = logging.getLogger(__name__)
 
 # `tree` is deliberately absent: its output is one document (root line,
 # drawing, summary), so a second per-mount block would print a second of
@@ -55,8 +94,9 @@ def _path_segments(path: str) -> list[str]:
     return [s for s in path.strip("/").split("/") if s]
 
 
-async def _mount_dirs(descendants: Sequence[MountEntry],
-                      stat_path: StatPath | None) -> list[str]:
+async def _mount_dirs(
+    descendants: Sequence[MountEntry], stat_path: StatPath | None
+) -> list[str]:
     """The descendant mount roots that are directories.
 
     A mount root is not always one: `/.bash_history` is a whole mount
@@ -64,7 +104,9 @@ async def _mount_dirs(descendants: Sequence[MountEntry],
     directory with no content still earns GNU's ``0`` row while a file
     only shows under ``-a``, and rendered du output cannot say which it
     was looking at. Without a dispatcher the question cannot be asked,
-    and the merge falls back to inferring from the row shape.
+    and the merge falls back to inferring from the row shape. A root
+    that refuses the stat is left to that inference too: the mount's
+    own run already reported it.
 
     Args:
         descendants (Sequence[MountEntry]): the mounts under the operand.
@@ -75,14 +117,91 @@ async def _mount_dirs(descendants: Sequence[MountEntry],
     out: list[str] = []
     for m in descendants:
         root = m.prefix.rstrip("/") or "/"
-        stat = await stat_path(root)
+        try:
+            stat = await stat_path(root)
+        except FS_ERRORS:
+            logger.debug("du mount root %s refused stat", root, exc_info=True)
+            continue
         if stat is not None and stat.type is FileType.DIRECTORY:
             out.append(root)
     return out
 
 
-def _allowed_descendants(registry: MountRegistry,
-                         path: str) -> list[MountEntry]:
+async def _empty_dirs(
+    blocks: Sequence[bytes], stat_path: StatPath | None
+) -> tuple[list[str], list[tuple[str, OSError]]]:
+    """The ``0`` rows of per-mount du blocks that are empty directories.
+
+    Rendered du output prints an empty directory and an empty file the
+    same way, and only the directory keeps its row without ``-a``, so
+    the merge asks the dispatcher which each lone zero row is. The
+    caller asks only when the answer changes what prints. A row that
+    refuses the stat comes back with its error rather than aborting the
+    merge, and gets no row, the way the walk treats a refused stat.
+
+    Args:
+        blocks (Sequence[bytes]): rendered du output, one per mount.
+        stat_path (StatPath | None): dispatcher-backed stat.
+    """
+    if stat_path is None:
+        return [], []
+    rows: list[str] = []
+    for data in blocks:
+        for line in data.decode(errors="replace").splitlines():
+            size, _, label = line.partition("\t")
+            if size == "0" and label:
+                rows.append(label)
+    out: list[str] = []
+    refused: list[tuple[str, OSError]] = []
+    for row in rows:
+        if any(other.startswith(row.rstrip("/") + "/") for other in rows):
+            continue
+        try:
+            stat = await stat_path(row)
+        except FS_ERRORS as exc:
+            logger.debug("du row %s refused stat", row, exc_info=True)
+            refused.append((row, exc))
+            continue
+        if stat is not None and stat.type is FileType.DIRECTORY:
+            out.append(row)
+    return out, refused
+
+
+async def _ls_block_mounts(
+    descendants: Sequence[MountEntry], stat_path: StatPath | None
+) -> list[MountEntry]:
+    """The descendants `ls -R` should render a block for.
+
+    A mount root is not always a directory (`/.bash_history` is a whole
+    mount serving one file), and GNU lists a file that happens to be a
+    mountpoint as an ordinary row of its parent with no block of its own
+    -- pinned on coreutils 9.7 over a `mount --bind` of one file onto
+    another. The parent's listing already carries that row, because ls
+    stats every child mount through this same dispatcher, so a sub-run
+    would print the name a second time.
+
+    Only a *confirmed* non-directory is dropped: a root the dispatcher
+    cannot stat keeps its block rather than vanishing on a failed probe,
+    and without a dispatcher at all the question cannot be asked and
+    every descendant stands.
+
+    Args:
+        descendants (Sequence[MountEntry]): the mounts under the operand.
+        stat_path (StatPath | None): dispatcher-backed stat.
+    """
+    if stat_path is None:
+        return list(descendants)
+    kept: list[MountEntry] = []
+    for m in descendants:
+        stat = await stat_path(m.prefix.rstrip("/") or "/")
+        if stat is None or stat.type is FileType.DIRECTORY:
+            kept.append(m)
+    return kept
+
+
+def _allowed_descendants(
+    registry: MountRegistry, path: str
+) -> list[MountEntry]:
     """Descendant mounts the current session may see.
 
     A fan-out rooted above a session boundary must not walk into an
@@ -96,8 +215,9 @@ def _allowed_descendants(registry: MountRegistry,
         path (str): parent path to scan beneath.
     """
     return [
-        m for m in registry.descendant_mounts(path)
-        if mount_allowed(m.prefix) and path_allowed("/" + m.prefix.strip("/"))
+        m
+        for m in registry.descendant_mounts(path)
+        if path_allowed("/" + m.prefix.strip("/"))
     ]
 
 
@@ -123,28 +243,33 @@ def _should_fan_out(
     True when the command is in the traversal whitelist (find/du)
     and the path has at least one descendant mount; or for grep with
     -r/-R; or for ls -R. Returns False when there's no descendant
-    mount under the path (single-mount dispatch is correct).
+    mount under the path (single-mount dispatch is correct), and for a
+    walk told to keep to its operand's filesystem (``du -x``, ``rg
+    --one-file-system``), since a mount is one.
     """
-    if not paths:
+    # Use the raw mount table: hidden descendants still shadow backend keys.
+    # Refused operands name nothing. Every other operand can own nested
+    # mounts, regardless of where it appears in the command line.
+    if not any(
+        p.walk_error is None and registry.descendant_mounts(p.virtual)
+        for p in paths
+    ):
         return False
-    target = paths[0].virtual
-    # Gated on the raw registry, not the session view: with every
-    # descendant ungranted, single-mount dispatch would serve the parent
-    # backend's keys shadowed under a hidden mount's prefix, and only
-    # the fan-out's shadow filter drops those. Execution still runs the
-    # allowed descendants only.
-    if not registry.descendant_mounts(target):
-        return False
+    if cmd_name == "du":
+        return flag_kwargs.get("one_file_system") is not True
     if cmd_name in _TRAVERSAL_CMDS:
         return True
     if cmd_name == "grep":
-        return (flag_kwargs.get("r") is True or flag_kwargs.get("R") is True
-                or flag_kwargs.get("recursive") is True)
+        return (
+            flag_kwargs.get("r") is True
+            or flag_kwargs.get("R") is True
+            or flag_kwargs.get("recursive") is True
+        )
     if cmd_name == "rg":
-        # ripgrep recurses directories by default; no flag to check.
-        return True
+        # ripgrep recurses directories by default.
+        return walks_descendant_mounts(flag_kwargs)
     if cmd_name == "ls":
-        return flag_kwargs.get("R") is True
+        return flag_kwargs.get("recursive") is True
     return False
 
 
@@ -161,7 +286,7 @@ def _adjust_depth_flags(
     parent_depth = len(_path_segments(parent_path))
     mount_depth = len(_path_segments(mount_prefix))
     delta = mount_depth - parent_depth
-    new = dict(flag_kwargs)
+    new = FlagBag(flag_kwargs)
     if "maxdepth" in new:
         raw_md = _depth_flag_value(new["maxdepth"])
         md = raw_md - delta if raw_md is not None else None
@@ -195,7 +320,8 @@ def _adjust_depth_texts(
         mount_prefix (str): the child mount prefix being descended into.
     """
     delta = len(_path_segments(mount_prefix)) - len(
-        _path_segments(parent_path))
+        _path_segments(parent_path)
+    )
     if delta == 0:
         return list(texts)
     out = list(texts)
@@ -218,13 +344,39 @@ def _adjust_depth_texts(
     return out
 
 
-def _synthesize_find_mount_entries(
+def _dir_entry(path: str, depth: int, mtime: float | None = None) -> FindEntry:
+    return FindEntry(
+        key=path,
+        name=path.rsplit("/", 1)[-1] or path,
+        kind="d",
+        depth=depth,
+        mtime=mtime,
+    )
+
+
+def _pruned_away(path: str, tree: PredNode | None) -> bool:
+    """Whether the fan-out's own evaluation pruned a directory above ``path``.
+
+    A descendant mount is walked by its own find, which never learns
+    what the walk above it skipped, so the fan-out asks the ledger
+    before walking it.
+
+    Args:
+        path (str): a descendant mount root.
+        tree (PredNode | None): the tree ``_synthesize_find_mount_entries``
+            evaluated; None when there was no expression to evaluate.
+    """
+    return tree is not None and not drop_pruned([path], tree)
+
+
+async def _synthesize_find_mount_entries(
     target_path: str,
     descendants: list[MountEntry],
     texts: list[str],
     raw: str,
-) -> str:
-    """Return synthetic find lines for descendant mount roots.
+    stat_path: StatPath | None = None,
+) -> tuple[list[PathSpec], PredNode | None]:
+    """Return synthetic find paths for descendant mount roots, and the tree.
 
     `find /` and friends should list mount prefixes as directory
     entries even though no per-mount find emits its own root. The
@@ -234,26 +386,54 @@ def _synthesize_find_mount_entries(
     structure merge, so find must agree. The find expression is parsed
     into a predicate tree and evaluated per entry (kind "d"),
     mirroring the per-backend cores, so -not / -o / -path / -type and
-    the -maxdepth / -mindepth window all apply. Entries print in the
-    operand's typed spelling like every other line of the walk.
+    the -maxdepth / -mindepth window all apply. A time window
+    (``-newermt``, ``-newer``) lives beside the tree, so a candidate is
+    statted through the dispatcher and held to it the way the generic
+    holds every real row, a future cutoff excluding the mount points
+    too. Entries print in the operand's typed spelling like every other
+    line of the walk.
+
+    The start point is evaluated first, for its ledger alone: a
+    ``-prune`` reaching it or a namespace-only ancestor is recorded on
+    the tree, which skips the candidates beneath before they are
+    statted and comes back with the entries so the caller can hold the
+    descendant mounts to it, since each of those is walked on its own
+    and never learns what the walk above it skipped (``find /data -type
+    d -prune`` is one row).
 
     Args:
         target_path (str): the find start path the fan-out runs from.
         descendants (list): descendant mounts to inject as entries.
         texts (list[str]): the find expression tokens.
         raw (str): the operand's typed spelling (``PathSpec.raw_path``).
+        stat_path (StatPath | None): dispatcher stat, for the time
+            window; None (no window can be checked) keeps the rows.
     """
     try:
         expr = parse_find_expression(list(texts))
     except FindParseError:
-        return ""
-    tree = expr.tree
+        return [], None
+    tree = bind_tree(expr.tree, "", target_path, raw)
     max_depth = expr.maxdepth
     min_depth = expr.mindepth if expr.mindepth is not None else 0
     parent_depth = len(_path_segments(target_path))
     parent_base = target_path.rstrip("/")
+    windowed = expr.mtime_min is not None or expr.mtime_max is not None
+    learned: dict[str, float | None] = {}
+
+    async def mtime_of(path: str) -> float | None:
+        # Fetched ahead of the tree, so a time test answers on the entry
+        # itself and a -prune after it fires only where GNU's would.
+        if not windowed or stat_path is None:
+            return None
+        st = await stat_path(path)
+        learned[path] = iso_timestamp(st.modified) if st is not None else None
+        return learned[path]
+
+    start = parent_base or "/"
+    keep(_dir_entry(start, 0, await mtime_of(start)), tree, min_depth)
     seen: set[str] = set()
-    out: list[str] = []
+    kept: list[str] = []
     for m in descendants:
         prefix_no_slash = m.prefix.rstrip("/")
         ancestors: list[str] = []
@@ -268,16 +448,37 @@ def _synthesize_find_mount_entries(
             depth = len(_path_segments(candidate)) - parent_depth
             if max_depth is not None and depth > max_depth:
                 continue
-            base = candidate.rsplit("/", 1)[-1] or candidate
-            entry = FindEntry(key=candidate, name=base, kind="d", depth=depth)
-            if not keep(entry, tree, min_depth):
+            if _pruned_away(candidate, tree):
+                # GNU never visits it, so it is neither statted nor
+                # judged: a backend that refuses the probe must not fail
+                # the line.
                 continue
-            out.append(respell_one(candidate, target_path, raw))
-    return "\n".join(out)
+            mtime = await mtime_of(candidate)
+            if not keep(_dir_entry(candidate, depth, mtime), tree, min_depth):
+                continue
+            if (
+                windowed
+                and stat_path is not None
+                and not in_mtime_window(mtime, expr.mtime_min, expr.mtime_max)
+            ):
+                continue
+            kept.append(candidate)
+    settle_prunes(tree, learned)
+    return [
+        PathSpec(
+            virtual=candidate,
+            directory=candidate,
+            vfs_path="",
+            resolved=True,
+            raw_path=respell_one(candidate, target_path, raw),
+        )
+        for candidate in drop_pruned(kept, tree)
+    ], tree
 
 
-def _drop_shadowed_ls_groups(text: str,
-                             descendant_prefixes: list[str]) -> list[str]:
+def _drop_shadowed_ls_groups(
+    text: str, descendant_prefixes: list[str]
+) -> list[str]:
     """Drop whole ``ls -R`` groups whose header names a nested mount.
 
     ``ls -R`` renders ``PATH:``, then that directory's bare names, with a
@@ -296,8 +497,10 @@ def _drop_shadowed_ls_groups(text: str,
     for line in text.split("\n"):
         header = line[:-1] if line.endswith(":") else None
         if header is not None and header.startswith("/"):
-            skipping = any(header == pre or header.startswith(pre + "/")
-                           for pre in descendant_prefixes)
+            skipping = any(
+                header == pre or header.startswith(pre + "/")
+                for pre in descendant_prefixes
+            )
             if skipping:
                 # The blank line ahead of a dropped group would otherwise
                 # be left dangling at the end of the block.
@@ -355,27 +558,6 @@ async def _filter_under_prefixes(
     return ("\n".join(out_lines) + "\n").encode("utf-8") if out_lines else b""
 
 
-async def _drop_mount_root_line(stdout: ByteSource, mount_root: str) -> bytes:
-    """Drop a descendant find's own mount-root line.
-
-    A per-mount find now emits its start directory, so a descendant
-    mount's find yields its mount-root path. The mount-point entry is
-    instead synthesized centrally (with the mount's display name and the
-    full predicate tree applied), so the raw root line is dropped here to
-    avoid a duplicate that skips the name filter.
-
-    Args:
-        stdout (ByteSource): descendant find output.
-        mount_root (str): the descendant mount root path.
-    """
-    data = await materialize(stdout)
-    text = data.decode("utf-8", errors="replace")
-    out_lines = [
-        line for line in text.split("\n") if line != "" and line != mount_root
-    ]
-    return ("\n".join(out_lines) + "\n").encode("utf-8") if out_lines else b""
-
-
 async def _fan_out_traversal(
     cmd_name: str,
     paths: list[PathSpec],
@@ -388,6 +570,7 @@ async def _fan_out_traversal(
     stdin: ByteSource | None,
     ns: NamespaceView | None = None,
     stat_path: StatPath | None = None,
+    dispatch: DispatchFn | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Run a traversal command across the parent mount + descendant mounts.
 
@@ -396,11 +579,16 @@ async def _fan_out_traversal(
     mount-prefix-sorted order, except single-operand find, whose merged
     lines are path-sorted (see below). The parent mount's output is
     filtered to drop lines that fall under any descendant mount (avoids
-    duplicates when the parent's resource has shadowed keys).
+    duplicates when the parent's VFS has shadowed keys).
+
+    rg with depth or sorting options uses one dispatcher-backed walk,
+    so mount boundaries do not reset depth or split the sorted output;
+    it crosses them itself, so it is offered no boundary to stop at.
 
     For `find`, mount-prefix paths themselves are injected as synthetic
     directory entries (subject to depth and -type filters) because
-    mirage's per-mount find doesn't emit the path argument itself.
+    mirage's per-mount find doesn't emit the path argument itself. A
+    descendant under a directory the expression pruned is not walked.
 
     ``ns`` is offered to every sub-run whole. The boundary facts,
     because a rollup total cannot be repaired by line filtering: du must
@@ -410,8 +598,110 @@ async def _fan_out_traversal(
     never receives them reports a tree with every link missing, and a
     nested mount is not a reason for ``find`` to stop seeing one.
     """
+    if cmd_name in DISPATCH_BUILDERS and dispatch is not None:
+        try:
+            stdout, io = await run_dispatch(
+                DISPATCH_BUILDERS[cmd_name],
+                paths,
+                texts,
+                flag_kwargs,
+                dispatch,
+                cwd,
+                ns,
+                stdin,
+            )
+        except UsageError as exc:
+            stdout = None
+            io = IOResult(exit_code=exc.exit_code, stderr=f"{exc}\n".encode())
+        io.producer = Producer(
+            command=cmd_name,
+            prefixes=tuple(
+                dict.fromkeys(
+                    [
+                        primary_mount.prefix,
+                        *(
+                            m.prefix
+                            for path in paths
+                            if path.walk_error is None
+                            for m in _allowed_descendants(
+                                registry, path.virtual
+                            )
+                        ),
+                    ]
+                )
+            ),
+        )
+        return (
+            stdout,
+            io,
+            ExecutionNode(
+                command=cmd_str,
+                exit_code=io.exit_code,
+                stderr=await materialize(io.stderr),
+            ),
+        )
+    if len(paths) > 1:
+
+        async def run_single(
+            name: str,
+            operands: list[PathSpec],
+            words: list[str],
+            flags: dict[str, FlagValue],
+            *,
+            stdin: ByteSource | None = None,
+            resolve_hint: PathSpec | None = None,
+        ) -> tuple[ByteSource | None, IOResult]:
+            return await primary_mount.execute_cmd(
+                name,
+                operands,
+                words,
+                flags,
+                ExecContext(
+                    stdin=stdin,
+                    cwd=cwd,
+                    ns=ns,
+                    stat_path=stat_path,
+                    dispatch=dispatch,
+                ),
+            )
+
+        run_operand = functools.partial(
+            run_with_fanout,
+            run_single,
+            registry,
+            cwd,
+            ns,
+            stat_path,
+            dispatch=dispatch,
+        )
+        stdout, io = await run_fanout(
+            cmd_name, paths, texts, flag_kwargs, run_operand, stdin
+        )
+        prefixes = dict.fromkeys(
+            [
+                primary_mount.prefix,
+                *(
+                    m.prefix
+                    for path in paths
+                    if path.walk_error is None
+                    for m in _allowed_descendants(registry, path.virtual)
+                ),
+            ]
+        )
+        io.producer = Producer(command=cmd_name, prefixes=tuple(prefixes))
+        return (
+            stdout,
+            io,
+            ExecutionNode(
+                command=cmd_str,
+                exit_code=io.exit_code,
+                stderr=await materialize(io.stderr),
+            ),
+        )
     target_path = paths[0].virtual
     descendants = _allowed_descendants(registry, target_path)
+    if cmd_name == "ls":
+        descendants = await _ls_block_mounts(descendants, stat_path)
     # The shadow filter keeps the raw list on purpose: a mount the
     # session cannot see still shadows the primary backend's keys under
     # its prefix, the walk just never descends into it.
@@ -427,50 +717,84 @@ async def _fan_out_traversal(
     # prune them, and humanized sizes cannot be re-summed. Every one of
     # those is then applied once, centrally.
     du_merge = cmd_name == "du"
-    du_flags = _DuFanFlags(a=flag_kwargs.get("a") is True,
-                           s=flag_kwargs.get("s") is True,
-                           c=flag_kwargs.get("c") is True,
-                           human=flag_kwargs.get("h") is True,
-                           max_depth=_depth_flag_value(
-                               flag_kwargs.get("max_depth")),
-                           separate_dirs=flag_kwargs.get("separate_dirs")
-                           is True)
+    du_flags = _DuFanFlags(
+        a=flag_kwargs.get("a") is True,
+        s=flag_kwargs.get("s") is True,
+        c=flag_kwargs.get("c") is True,
+        human=flag_kwargs.get("h") is True,
+        max_depth=_depth_flag_value(flag_kwargs.get("max_depth")),
+        separate_dirs=flag_kwargs.get("separate_dirs") is True,
+    )
     if du_merge:
         flag_kwargs = {
-            **flag_kwargs, "a": True,
+            **flag_kwargs,
+            "a": True,
             "s": False,
             "c": False,
             "h": False,
-            "separate_dirs": False
+            "separate_dirs": False,
         }
         flag_kwargs.pop("max_depth", None)
 
+    # -xdev keeps the walk on its start point's filesystem: the mount
+    # points right below it are entries, nothing under them is.
+    xdev = cmd_name == "find" and (
+        flag_kwargs.get("xdev") is True or flag_kwargs.get("mount") is True
+    )
+    if xdev:
+        descendants = [
+            m
+            for m in descendants
+            if registry.try_mount_for(parent(m.prefix.rstrip("/")))
+            is primary_mount
+        ]
+    synthetic: list[PathSpec] = []
+    tree: PredNode | None = None
+    if cmd_name == "find":
+        synthetic, tree = await _synthesize_find_mount_entries(
+            target_path, descendants, texts, paths[0].raw_path, stat_path
+        )
+
     all_stdout: list[bytes] = []
+    find_matches: list[list[PathSpec]] = []
+    find_matches_complete = True
     merged_io = IOResult()
-    final_exit = 0
-    success_seen = False
-    for mount in [primary_mount] + list(descendants):
+    exit_codes: list[int] = []
+    errored: list[bool] = []
+    for mount in [primary_mount] + ([] if xdev else list(descendants)):
         if mount is primary_mount:
             # The du merge re-spells centrally, so the runs answer in
             # absolute virtual paths: a relative operand would otherwise
             # come back already spelled and could not be rebased onto the
             # tree the rollup builds.
-            sub_paths = [
-                dataclasses.replace(paths[0], raw_path=target_path), *paths[1:]
-            ] if du_merge else list(paths)
-            sub_flags = dict(flag_kwargs)
+            sub_paths = (
+                [
+                    dataclasses.replace(paths[0], raw_path=target_path),
+                    *paths[1:],
+                ]
+                if du_merge
+                else list(paths)
+            )
+            sub_flags: dict[str, FlagValue] = FlagBag(flag_kwargs)
             sub_texts = list(texts)
         else:
             mount_root = mount.prefix.rstrip("/") or "/"
-            adjusted = _adjust_depth_flags(flag_kwargs, target_path,
-                                           mount.prefix)
-            if adjusted is None:
+            adjusted = _adjust_depth_flags(
+                flag_kwargs, target_path, mount.prefix
+            )
+            if adjusted is None or _pruned_away(mount_root, tree):
                 continue
             sub_flags = adjusted
+            # A tree search labels every hit; a descendant mount whose
+            # root is a single file would otherwise drop the filename
+            # without the inherited -H.
             if cmd_name == "rg":
-                # A tree search labels every hit; a descendant mount
-                # whose root is a single file would otherwise drop the
-                # filename (rg labels only multi-file or -H runs).
+                sub_flags = label_flags(sub_flags)
+            elif (
+                cmd_name == "grep"
+                and filename_mode(FlagView(sub_flags, spec=SPECS["grep"]))
+                is None
+            ):
                 sub_flags["H"] = True
             sub_texts = _adjust_depth_texts(texts, target_path, mount.prefix)
             # The descendant operand keeps the traversal root's typed
@@ -478,121 +802,206 @@ async def _fan_out_traversal(
             # no-operand form -> ram/...); an absolute root leaves it
             # absolute, the pre-existing output shape.
             sub_paths = [
-                PathSpec(virtual=mount_root,
-                         directory=mount_root,
-                         resource_path="",
-                         resolved=True,
-                         raw_path=mount_root if du_merge else respell_one(
-                             mount_root, target_path, paths[0].raw_path))
+                PathSpec(
+                    virtual=mount_root,
+                    directory=mount_root,
+                    vfs_path="",
+                    resolved=True,
+                    raw_path=mount_root
+                    if du_merge
+                    else respell_one(
+                        mount_root, target_path, paths[0].raw_path
+                    ),
+                )
             ]
-        stdout, io = await mount.execute_cmd(cmd_name,
-                                             sub_paths,
-                                             sub_texts,
-                                             sub_flags,
-                                             stdin=stdin,
-                                             cwd=cwd,
-                                             ns=ns,
-                                             stat_path=stat_path)
+        try:
+            stdout, io = await mount.execute_cmd(
+                cmd_name,
+                sub_paths,
+                sub_texts,
+                sub_flags,
+                ExecContext(
+                    stdin=stdin,
+                    cwd=cwd,
+                    ns=ns,
+                    stat_path=stat_path,
+                    dispatch=dispatch,
+                ),
+            )
+        except UsageError as exc:
+            # A usage error belongs to the line, not to one mount: the
+            # single-mount path reports it once as the command's result
+            # (#452), and so does the walk, rather than aborting the line.
+            usage = f"{exc}\n".encode()
+            return (
+                None,
+                IOResult(exit_code=exc.exit_code, stderr=usage),
+                ExecutionNode(
+                    command=cmd_str, exit_code=exc.exit_code, stderr=usage
+                ),
+            )
+        except CommandTimeoutError:
+            raise
+        except Exception as exc:
+            # Any other failure is this mount's slice of the walk, in the
+            # command's voice, as the single-mount chokepoint reports it;
+            # the remaining mounts still run and the status carries it.
+            logger.debug("%s traversal failed", cmd_name, exc_info=True)
+            stdout = None
+            io = IOResult(
+                exit_code=read_fail_exit(cmd_name, exc),
+                stderr=format_fs_error(cmd_name, exc, sub_paths),
+            )
 
         if mount is not primary_mount and io.exit_code == 127:
             # A descendant that does not serve this command contributes
             # nothing to the aggregate walk instead of failing it (du
             # across a tree holding a view mount without a du op).
             continue
-        if mount is primary_mount and descendant_prefixes and stdout:
-            stdout = await _filter_under_prefixes(stdout, descendant_prefixes,
-                                                  cmd_name)
-        elif mount is not primary_mount and cmd_name == "find" and stdout:
-            # The child's own root line arrives respelled with the
-            # operand's typed base, so drop that spelling, not the
-            # absolute prefix.
-            stdout = await _drop_mount_root_line(stdout, sub_paths[0].raw_path)
+        if cmd_name == "find" and io.matched_runs is not None:
+            await materialize(stdout)
+            if mount is primary_mount:
+                # One run per operand, minus the rows a descendant
+                # mount answers for.
+                find_matches.extend(
+                    [
+                        p
+                        for p in run
+                        if not any(
+                            p.virtual == pre or p.virtual.startswith(pre + "/")
+                            for pre in descendant_prefixes
+                        )
+                    ]
+                    for run in io.matched_runs
+                )
+            else:
+                # A descendant walks under the first operand, so its
+                # rows join that operand's run.
+                rows = [
+                    p
+                    for run in io.matched_runs
+                    for p in run
+                    if p.virtual != mount.prefix.rstrip("/")
+                ]
+                if find_matches:
+                    find_matches[0].extend(rows)
+                else:
+                    find_matches.append(rows)
+            stdout = None
+        elif (
+            mount is primary_mount
+            and descendant_prefixes
+            and stdout
+            and cmd_name not in ("grep", "rg")
+        ):
+            # grep and rg never walk into a mount below their own
+            # (mount_parent_readdir), so there is nothing of theirs to drop.
+            stdout = await _filter_under_prefixes(
+                stdout, descendant_prefixes, cmd_name
+            )
 
         if stdout is not None:
             data = await materialize(stdout)
             if data:
+                if cmd_name == "find":
+                    find_matches_complete = False
                 all_stdout.append(data)
-        if io.exit_code == 0:
-            success_seen = True
-        elif final_exit == 0:
-            final_exit = io.exit_code
+        exit_codes.append(io.exit_code)
+        errored.append(io.exit_code != 0 and io.stderr is not None)
         merged_io = await merged_io.merge(io)
 
+    all_rows: list[PathSpec] = []
     if cmd_name == "find":
-        synthetic = _synthesize_find_mount_entries(target_path, descendants,
-                                                   texts, paths[0].raw_path)
+        # The mount points a walk cannot see belong to the first
+        # operand's run, the one that holds them.
         if synthetic:
-            all_stdout.append(synthetic.encode("utf-8"))
+            if find_matches:
+                find_matches[0].extend(synthetic)
+            else:
+                find_matches.append(synthetic)
+        all_rows = [p for run in find_matches for p in run]
+        if not find_matches_complete and all_rows:
+            all_stdout.append(
+                (
+                    "\n".join(p.raw_path or p.virtual for p in all_rows) + "\n"
+                ).encode()
+            )
 
     combined: ByteSource | None
     if du_merge and all_stdout:
-        combined = merge_du_blocks(all_stdout,
-                                   target_path,
-                                   paths[0].raw_path,
-                                   a=du_flags.a,
-                                   s=du_flags.s,
-                                   c=du_flags.c,
-                                   human=du_flags.human,
-                                   max_depth=du_flags.max_depth,
-                                   separate_dirs=du_flags.separate_dirs,
-                                   mount_roots=await
-                                   _mount_dirs(descendants, stat_path))
-    elif all_stdout and cmd_name == "find" and len(paths) == 1:
-        # GNU lists a directory before its contents, and the per-mount
-        # blocks land here as separate chunks, so plain concatenation
-        # printed a mount root after its own descendants. Every find
-        # line is a bare path at this stage (actions render later), and
-        # a path always sorts before its extensions, so one path sort
-        # restores GNU's invariant and matches the per-mount emit order.
-        # A single-operand walk never visits a path twice, so the set
-        # collapses a synthesized ancestor row against a primary backend
-        # that happens to hold a real directory at the same path.
-        # Multiple operands keep the concatenation: GNU walks operands
-        # in command-line order, which a global sort would not honor.
-        lines = sorted({
-            line
-            for chunk in all_stdout
-            for line in chunk.decode("utf-8", errors="replace").split("\n")
-            if line
-        })
-        combined = ("\n".join(lines) + "\n").encode("utf-8")
+        dirs = await _mount_dirs(descendants, stat_path)
+        if not du_flags.a and not du_flags.s:
+            empty, refused = await _empty_dirs(all_stdout, stat_path)
+            dirs += empty
+            if refused:
+                notes = "".join(
+                    f"du: cannot access "
+                    f"'{respell_one(row, target_path, paths[0].raw_path)}': "
+                    f"{fs_strerror(exc)}\n"
+                    for row, exc in refused
+                )
+                merged_io = await merged_io.merge(
+                    IOResult(exit_code=1, stderr=notes.encode())
+                )
+                exit_codes.append(1)
+                errored.append(True)
+        combined = merge_du_blocks(
+            all_stdout,
+            target_path,
+            paths[0].raw_path,
+            a=du_flags.a,
+            s=du_flags.s,
+            c=du_flags.c,
+            human=du_flags.human,
+            max_depth=du_flags.max_depth,
+            separate_dirs=du_flags.separate_dirs,
+            dirs=dirs,
+        )
+    elif cmd_name == "find" and all_rows and find_matches_complete:
+        if len(paths) == 1:
+            unique = {p.virtual: p for p in all_rows}
+            find_matches = [sorted(unique.values(), key=lambda p: p.raw_path)]
+            all_rows = find_matches[0]
+        combined = (
+            "\n".join(p.raw_path or p.virtual for p in all_rows) + "\n"
+        ).encode("utf-8")
     elif all_stdout:
         # `ls -R` separates directory groups with a blank line, and a
-        # per-mount block is one more group; every other format is a
+        # per-mount block is one more group; grep and rg put `--` between
+        # one file's context and the next file's; every other format is a
         # plain line stream.
-        sep = b"\n\n" if cmd_name == "ls" else b"\n"
-        combined = sep.join(b.rstrip(b"\n") for b in all_stdout) + b"\n"
+        sep = (
+            b"\n" if cmd_name == "ls" else run_separator(cmd_name, flag_kwargs)
+        )
+        combined = sep.join(all_stdout)
     else:
         combined = None
-    # grep exits 0 when ANY mount matched (GNU: "any line was selected");
-    # traversal commands (find/du/tree) keep the first per-mount failure.
-    if cmd_name in ("grep", "rg") and success_seen:
-        final_io_exit = 0
-    else:
-        final_io_exit = final_exit
+    quiet = (
+        cmd_name == "grep"
+        and FlagView(flag_kwargs, spec=SPECS["grep"]).as_bool("q")
+    ) or (
+        cmd_name == "rg"
+        and FlagView(flag_kwargs, spec=SPECS["rg"]).as_bool("quiet")
+    )
+    final_io_exit = combined_exit(cmd_name, exit_codes, errored, quiet)
 
     if cmd_name == "find":
-        combined, action_err = await _apply_find_actions(
-            combined,
-            flag_kwargs,
-            registry,
-            cwd,
-            child_mounts=ns.child_mounts if ns is not None else None,
-            stat_path=stat_path)
-        if action_err:
-            existing = (await materialize(merged_io.stderr)
-                        if merged_io.stderr else b"")
-            merged_io.stderr = existing + action_err
-            if final_io_exit == 0:
-                final_io_exit = 1
+        # The structured rows ride out for the command boundary, which
+        # applies find's actions once over every operand's matches.
+        merged_io.matched_runs = (
+            find_matches if find_matches_complete else None
+        )
 
     merged_io.exit_code = final_io_exit
     merged_io.producer = Producer(
         command=cmd_name,
-        prefixes=tuple(m.prefix for m in [primary_mount, *descendants]))
-    exec_node = ExecutionNode(command=cmd_str,
-                              exit_code=final_io_exit,
-                              stderr=await materialize(merged_io.stderr))
+        prefixes=tuple(m.prefix for m in [primary_mount, *descendants]),
+    )
+    exec_node = ExecutionNode(
+        command=cmd_str,
+        exit_code=final_io_exit,
+        stderr=await materialize(merged_io.stderr),
+    )
     return combined, merged_io, exec_node
 
 
@@ -609,6 +1018,7 @@ async def run_with_fanout(
     *,
     stdin: ByteSource | None = None,
     resolve_hint: PathSpec | None = None,
+    dispatch: DispatchFn | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """One operand's native run, fanned out over the mounts nested in it.
 
@@ -628,6 +1038,7 @@ async def run_with_fanout(
         ns (NamespaceView | None): the name plane's facts, offered
             whole to the sub-runs.
         stat_path (StatPath | None): dispatcher-backed stat of one path.
+        dispatch (DispatchFn | None): Operations for a unified rg walk.
         cmd_name (str): command name.
         paths (list[PathSpec]): this operand, as a one-element list.
         texts (list[str]): positional text operands.
@@ -638,12 +1049,14 @@ async def run_with_fanout(
             native run over the merged bytes).
     """
     if not _should_fan_out(cmd_name, paths, flag_kwargs, registry):
-        return await run_single(cmd_name,
-                                paths,
-                                texts,
-                                flag_kwargs,
-                                stdin=stdin,
-                                resolve_hint=resolve_hint)
+        return await run_single(
+            cmd_name,
+            paths,
+            texts,
+            flag_kwargs,
+            stdin=stdin,
+            resolve_hint=resolve_hint,
+        )
     try:
         mount = await registry.resolve_mount(cmd_name, paths, cwd)
     except MountCommandUnsupported:
@@ -651,21 +1064,26 @@ async def run_with_fanout(
         # mount does not serve, so let it report rather than re-raising.
         mount = None
     if mount is None:
-        return await run_single(cmd_name,
-                                paths,
-                                texts,
-                                flag_kwargs,
-                                stdin=stdin,
-                                resolve_hint=resolve_hint)
-    stdout, io, _ = await _fan_out_traversal(cmd_name,
-                                             paths,
-                                             texts,
-                                             flag_kwargs,
-                                             registry,
-                                             mount,
-                                             cwd,
-                                             cmd_name,
-                                             stdin,
-                                             ns=ns,
-                                             stat_path=stat_path)
+        return await run_single(
+            cmd_name,
+            paths,
+            texts,
+            flag_kwargs,
+            stdin=stdin,
+            resolve_hint=resolve_hint,
+        )
+    stdout, io, _ = await _fan_out_traversal(
+        cmd_name,
+        paths,
+        texts,
+        flag_kwargs,
+        registry,
+        mount,
+        cwd,
+        cmd_name,
+        stdin,
+        ns=ns,
+        stat_path=stat_path,
+        dispatch=dispatch,
+    )
     return stdout, io

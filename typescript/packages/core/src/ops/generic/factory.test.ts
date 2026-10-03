@@ -15,11 +15,18 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { Accessor } from '../../accessor/base.ts'
-import { PathSpec } from '../../types.ts'
-import { makeGenericOps, type OpsTable } from './factory.ts'
+import { FileStat, FileType, PathSpec } from '../../types.ts'
+import { makeGenericOps } from './factory.ts'
+import type { OpsTable } from './types.ts'
 
 const PATH = PathSpec.fromStrPath('/x/a.txt', 'a.txt')
 const ACCESSOR = new Accessor()
+
+function appendOp(table: OpsTable): ReturnType<typeof makeGenericOps>[number] {
+  const op = makeGenericOps('x', table).find((o) => o.name === 'append')
+  if (op === undefined) throw new Error('no append op emitted')
+  return op
+}
 
 const makeTable = (extra: Partial<OpsTable> = {}): OpsTable => ({
   readdir: vi.fn(() => Promise.resolve(['/x/a.txt'])),
@@ -34,18 +41,14 @@ const rows = (
   ops
     .map(
       (o) =>
-        [o.name, o.resource, o.filetype, o.write] as [
-          string,
-          string | null,
-          string | null,
-          boolean,
-        ],
+        [o.name, o.vfs, o.filetype, o.write] as [string, string | null, string | null, boolean],
     )
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
 
 describe('makeGenericOps', () => {
   it('emits the read-only trio for a bare table', () => {
     expect(rows(makeGenericOps('x', makeTable()))).toEqual([
+      ['glob', 'x', null, false],
       ['read', 'x', null, false],
       ['readdir', 'x', null, false],
       ['stat', 'x', null, false],
@@ -69,6 +72,7 @@ describe('makeGenericOps', () => {
     )
     expect(new Set(ops.map((o) => o.name))).toEqual(
       new Set([
+        'glob',
         'read',
         'readdir',
         'stat',
@@ -77,6 +81,7 @@ describe('makeGenericOps', () => {
         'rename',
         'truncate',
         'append',
+        'pwrite',
         'setattr',
         'create',
         'unlink',
@@ -86,17 +91,17 @@ describe('makeGenericOps', () => {
     expect(ops.filter((o) => o.write).every((o) => o.name !== 'read')).toBe(true)
   })
 
-  it('fans out over multiple resources', () => {
+  it('fans out over multiple mounts', () => {
     const ops = makeGenericOps(['a', 'b'], makeTable())
-    expect(ops).toHaveLength(6)
-    expect(new Set(ops.map((o) => o.resource))).toEqual(new Set(['a', 'b']))
+    expect(ops).toHaveLength(8)
+    expect(new Set(ops.map((o) => o.vfs))).toEqual(new Set(['a', 'b']))
   })
 
   it('skips names in overrides', () => {
     const ops = makeGenericOps('x', makeTable(), {
       overrides: new Set(['readdir']),
     })
-    expect(new Set(ops.map((o) => o.name))).toEqual(new Set(['read', 'stat']))
+    expect(new Set(ops.map((o) => o.name))).toEqual(new Set(['glob', 'read', 'stat']))
   })
 
   it('emits no filetype-scoped ops', () => {
@@ -143,6 +148,19 @@ describe('makeGenericOps', () => {
     expect(mkdir).toHaveBeenCalledWith(ACCESSOR, PATH, true)
   })
 
+  it('a per-call parents kwarg forwards too, like the python registry', async () => {
+    // pathlib's mkdir(parents=True) arrives from a runtime bridge as a
+    // dispatch kwarg; python's registry hands kwargs to the op, so the
+    // adapter must read it rather than drop it.
+    const mkdir = vi.fn()
+    const ops = makeGenericOps('x', makeTable({ mkdir }))
+    const fn = ops.find((o) => o.name === 'mkdir')?.fn
+    await fn?.(ACCESSOR, PATH, [], { parents: true })
+    expect(mkdir).toHaveBeenCalledWith(ACCESSOR, PATH, true)
+    await fn?.(ACCESSOR, PATH, [], {})
+    expect(mkdir).toHaveBeenLastCalledWith(ACCESSOR, PATH)
+  })
+
   it('emulated truncate pads and cuts through readBytes + write', async () => {
     const write = vi.fn()
     const ops = makeGenericOps('x', makeTable({ write }), {
@@ -153,6 +171,147 @@ describe('makeGenericOps', () => {
     expect(write).toHaveBeenCalledWith(ACCESSOR, PATH, new Uint8Array([1, 2, 3, 4, 0, 0]))
     await truncate?.fn(ACCESSOR, PATH, [2], {})
     expect(write).toHaveBeenLastCalledWith(ACCESSOR, PATH, new Uint8Array([1, 2]))
+  })
+
+  it('emulated pwrite splices, pads and creates missing files', async () => {
+    const write = vi.fn()
+    const readBytes = vi
+      .fn()
+      .mockResolvedValueOnce(new Uint8Array([1, 2, 3, 4, 5]))
+      .mockResolvedValueOnce(new Uint8Array([1, 2]))
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'ENOENT' }))
+    const op = makeGenericOps('x', makeTable({ write, readBytes })).find((o) => o.name === 'pwrite')
+    await op?.fn(ACCESSOR, PATH, [new Uint8Array([8, 9]), 1], {})
+    await op?.fn(ACCESSOR, PATH, [new Uint8Array([7]), 4], {})
+    await op?.fn(ACCESSOR, PATH, [new Uint8Array([6]), 2], {})
+    expect(write).toHaveBeenNthCalledWith(1, ACCESSOR, PATH, new Uint8Array([1, 8, 9, 4, 5]))
+    expect(write).toHaveBeenNthCalledWith(2, ACCESSOR, PATH, new Uint8Array([1, 2, 0, 0, 7]))
+    expect(write).toHaveBeenNthCalledWith(3, ACCESSOR, PATH, new Uint8Array([0, 0, 6]))
+  })
+
+  it('does not overwrite after a pwrite pre-read fails, and forwards the index', async () => {
+    const write = vi.fn()
+    const error = Object.assign(new Error('denied'), { code: 'EACCES' })
+    const readBytes = vi.fn().mockRejectedValue(error)
+    const op = makeGenericOps('x', makeTable({ write, readBytes })).find((o) => o.name === 'pwrite')
+    const index = {} as never
+    await expect(op?.fn(ACCESSOR, PATH, [new Uint8Array([1]), 0], { index })).rejects.toBe(error)
+    expect(readBytes).toHaveBeenCalledWith(ACCESSOR, PATH, index)
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('answers an empty emulated pwrite with a stat instead of a rewrite', async () => {
+    const write = vi.fn()
+    const stat = vi
+      .fn()
+      .mockResolvedValueOnce(new FileStat({ name: 'a.txt', type: FileType.FILE }))
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'ENOENT' }))
+      .mockResolvedValueOnce(new FileStat({ name: 'a.txt', type: FileType.DIRECTORY }))
+    const table = makeTable({ write, stat })
+    const op = makeGenericOps('x', table).find((o) => o.name === 'pwrite')
+    const index = {} as never
+    await op?.fn(ACCESSOR, PATH, [new Uint8Array(), 0], { index })
+    expect(stat).toHaveBeenCalledWith(ACCESSOR, PATH, index)
+    expect(write).not.toHaveBeenCalled()
+    await op?.fn(ACCESSOR, PATH, [new Uint8Array(), 0], {})
+    expect(write).toHaveBeenCalledWith(ACCESSOR, PATH, new Uint8Array())
+    await expect(op?.fn(ACCESSOR, PATH, [new Uint8Array(), 0], {})).rejects.toMatchObject({
+      code: 'EISDIR',
+    })
+    expect(table.readBytes).not.toHaveBeenCalled()
+    expect(write).toHaveBeenCalledTimes(1)
+  })
+
+  it('a native pwrite skips the emulation', async () => {
+    const write = vi.fn()
+    const pwrite = vi.fn()
+    const table = makeTable({ write, pwrite })
+    const op = makeGenericOps('x', table).find((o) => o.name === 'pwrite')
+    await op?.fn(ACCESSOR, PATH, [new Uint8Array([1]), 3], {})
+    expect(pwrite).toHaveBeenCalledWith(ACCESSOR, PATH, new Uint8Array([1]), 3)
+    expect(table.readBytes).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])('refuses a negative offset before any I/O (native %s)', async (native) => {
+    const write = vi.fn()
+    const pwrite = vi.fn()
+    const table = makeTable(native ? { write, pwrite } : { write })
+    const op = makeGenericOps('x', table).find((o) => o.name === 'pwrite')
+    await expect(
+      Promise.resolve().then(() => op?.fn(ACCESSOR, PATH, [new Uint8Array([1]), -1], {})),
+    ).rejects.toMatchObject({ code: 'EINVAL' })
+    expect(pwrite).not.toHaveBeenCalled()
+    expect(table.readBytes).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('emulated append reads current bytes and creates missing files', async () => {
+    const write = vi.fn()
+    const readBytes = vi
+      .fn()
+      .mockResolvedValueOnce(new Uint8Array([1]))
+      .mockResolvedValueOnce(new Uint8Array([1, 2]))
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'ENOENT' }))
+    const op = appendOp(makeTable({ write, readBytes }))
+    for (const value of [2, 3, 4]) await op.fn(ACCESSOR, PATH, [new Uint8Array([value])], {})
+    expect(write).toHaveBeenNthCalledWith(1, ACCESSOR, PATH, new Uint8Array([1, 2]))
+    expect(write).toHaveBeenNthCalledWith(2, ACCESSOR, PATH, new Uint8Array([1, 2, 3]))
+    expect(write).toHaveBeenNthCalledWith(3, ACCESSOR, PATH, new Uint8Array([4]))
+  })
+
+  it('forwards the index into the emulated append pre-read', async () => {
+    const table = makeTable({ write: vi.fn() })
+    const op = appendOp(table)
+    const index = {} as never
+    await op.fn(ACCESSOR, PATH, [new Uint8Array([1])], { index })
+    expect(table.readBytes).toHaveBeenCalledWith(ACCESSOR, PATH, index)
+  })
+
+  it('does not overwrite after an append pre-read fails', async () => {
+    const write = vi.fn()
+    const error = Object.assign(new Error('denied'), { code: 'EACCES' })
+    const readBytes = vi.fn().mockRejectedValue(error)
+    const op = appendOp(makeTable({ write, readBytes }))
+    await expect(op.fn(ACCESSOR, PATH, [new Uint8Array([1])], {})).rejects.toBe(error)
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('answers an empty emulated append with a stat instead of a rewrite', async () => {
+    const write = vi.fn()
+    const stat = vi
+      .fn()
+      .mockResolvedValueOnce(new FileStat({ name: 'a.txt', type: FileType.FILE }))
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'ENOENT' }))
+      .mockResolvedValueOnce(new FileStat({ name: 'a.txt', type: FileType.DIRECTORY }))
+    const table = makeTable({ write, stat })
+    const op = appendOp(table)
+    const index = {} as never
+    await op.fn(ACCESSOR, PATH, [new Uint8Array()], { index })
+    expect(stat).toHaveBeenCalledWith(ACCESSOR, PATH, index)
+    expect(write).not.toHaveBeenCalled()
+    await op.fn(ACCESSOR, PATH, [new Uint8Array()], {})
+    expect(write).toHaveBeenCalledWith(ACCESSOR, PATH, new Uint8Array())
+    await expect(op.fn(ACCESSOR, PATH, [new Uint8Array()], {})).rejects.toMatchObject({
+      code: 'EISDIR',
+    })
+    expect(table.readBytes).not.toHaveBeenCalled()
+    expect(write).toHaveBeenCalledTimes(1)
+  })
+
+  it('prefers native append and honors overrides over emulation', async () => {
+    const table = makeTable({ write: vi.fn(), append: vi.fn() })
+    const op = appendOp(table)
+    const data = new Uint8Array([1])
+    await op.fn(ACCESSOR, PATH, [data], {})
+    expect(table.append).toHaveBeenCalledWith(ACCESSOR, PATH, data)
+    expect(table.readBytes).not.toHaveBeenCalled()
+    expect(table.write).not.toHaveBeenCalled()
+    expect(
+      makeGenericOps('x', makeTable({ write: vi.fn() }), { overrides: new Set(['append']) }).some(
+        (o) => o.name === 'append',
+      ),
+    ).toBe(false)
   })
 
   it('native truncate wins over emulation', () => {
@@ -271,4 +430,16 @@ describe('the read op and byte ranges', () => {
     expect(native).not.toHaveBeenCalled()
     expect(table.readBytes).not.toHaveBeenCalled()
   })
+})
+
+it('emulated truncate refuses no-create before reading or writing', async () => {
+  const readBytes = vi.fn()
+  const write = vi.fn()
+  const ops = makeGenericOps('x', makeTable({ readBytes, write }), { emulateTruncate: true })
+  const truncate = ops.find((op) => op.name === 'truncate')
+  await expect(truncate?.fn(ACCESSOR, PATH, [2], { no_create: true })).rejects.toMatchObject({
+    code: 'ENOTSUP',
+  })
+  expect(readBytes).not.toHaveBeenCalled()
+  expect(write).not.toHaveBeenCalled()
 })

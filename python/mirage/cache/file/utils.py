@@ -12,8 +12,6 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import hashlib
-
 
 def parse_limit(limit: str | int) -> int:
     if isinstance(limit, int):
@@ -21,12 +19,8 @@ def parse_limit(limit: str | int) -> int:
     s = limit.strip().upper()
     for suffix, mult in [("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)]:
         if s.endswith(suffix):
-            return int(s[:-len(suffix)]) * mult
+            return int(s[: -len(suffix)]) * mult
     return int(s)
-
-
-def default_fingerprint(data: bytes) -> str:
-    return hashlib.md5(data).hexdigest()
 
 
 def glob_escape(literal: str) -> str:

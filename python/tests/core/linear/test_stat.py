@@ -19,19 +19,24 @@ import pytest
 from mirage.accessor.linear import LinearAccessor
 from mirage.cache.index import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
+from mirage.core.hierarchy.scope import Slot
 from mirage.core.linear import read as linear_read
 from mirage.core.linear import readdir as linear_readdir
 from mirage.core.linear.config import LinearConfig
-from mirage.core.linear.read import read_bytes
+from mirage.core.linear.normalize import normalize_team, to_json_bytes
+from mirage.core.linear.read import read
 from mirage.core.linear.readdir import readdir
+from mirage.core.linear.scope import detect_scope
 from mirage.core.linear.stat import stat
-from mirage.types import FileType, PathSpec
+from mirage.types import ContentType, FileType, PathSpec
 
-_COMMENTS_PATH = ("/teams/ENG__Engineering__TEAM1/issues"
-                  "/ENG-123__ISSUE1/comments.jsonl")
+_COMMENTS_PATH = (
+    "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/comments.jsonl"
+)
 
-_ISSUE_PATH = ("/teams/ENG__Engineering__TEAM1/issues"
-               "/ENG-123__ISSUE1/issue.json")
+_ISSUE_PATH = (
+    "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1/issue.json"
+)
 
 
 @pytest.fixture
@@ -58,19 +63,26 @@ async def test_stat_teams(accessor, index):
 
 @pytest.mark.asyncio
 async def test_stat_team_entry(accessor, index):
-    await index.put(
-        "/teams/ENG__Engineering__TEAM1",
-        IndexEntry(
-            id="TEAM1",
-            name="Engineering",
-            resource_type="linear/team",
-            remote_time="2026-04-05T00:00:00Z",
-            vfs_name="ENG__Engineering__TEAM1",
-        ),
+    await index.set_dir(
+        "/teams",
+        [
+            (
+                "ENG__Engineering__TEAM1",
+                IndexEntry(
+                    id="TEAM1",
+                    name="Engineering",
+                    resource_type="linear/team",
+                    remote_time="2026-04-05T00:00:00Z",
+                    vfs_name="ENG__Engineering__TEAM1",
+                ),
+            )
+        ],
     )
     result = await stat(
-        accessor, PathSpec.from_str_path("/teams/ENG__Engineering__TEAM1"),
-        index)
+        accessor,
+        PathSpec.from_str_path("/teams/ENG__Engineering__TEAM1"),
+        index,
+    )
     assert result.type == FileType.DIRECTORY
     assert result.extra["team_id"] == "TEAM1"
     assert result.modified == "2026-04-05T00:00:00Z"
@@ -78,20 +90,26 @@ async def test_stat_team_entry(accessor, index):
 
 @pytest.mark.asyncio
 async def test_stat_issue_directory(accessor, index):
-    await index.put(
-        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1",
-        IndexEntry(
-            id="ISSUE1",
-            name="ENG-123",
-            resource_type="linear/issue",
-            remote_time="2026-04-05T00:00:00Z",
-            vfs_name="ENG-123__ISSUE1",
-        ),
+    await index.set_dir(
+        "/teams/ENG__Engineering__TEAM1/issues",
+        [
+            (
+                "ENG-123__ISSUE1",
+                IndexEntry(
+                    id="ISSUE1",
+                    name="ENG-123",
+                    resource_type="linear/issue",
+                    remote_time="2026-04-05T00:00:00Z",
+                    vfs_name="ENG-123__ISSUE1",
+                ),
+            )
+        ],
     )
     result = await stat(
         accessor,
         PathSpec.from_str_path(
-            "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1"),
+            "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1"
+        ),
         index,
     )
     assert result.type == FileType.DIRECTORY
@@ -101,19 +119,24 @@ async def test_stat_issue_directory(accessor, index):
 
 @pytest.mark.asyncio
 async def test_stat_issue_json(accessor, index):
-    await index.put(
-        _ISSUE_PATH,
-        IndexEntry(
-            id="ISSUE1",
-            name="issue.json",
-            resource_type="linear/issue_json",
-            remote_time="2026-04-05T00:00:00Z",
-            vfs_name="issue.json",
-            size=321,
-        ),
+    await index.set_dir(
+        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1",
+        [
+            (
+                "issue.json",
+                IndexEntry(
+                    id="ISSUE1",
+                    name="issue.json",
+                    resource_type="linear/issue_json",
+                    remote_time="2026-04-05T00:00:00Z",
+                    vfs_name="issue.json",
+                    size=321,
+                ),
+            )
+        ],
     )
     result = await stat(accessor, PathSpec.from_str_path(_ISSUE_PATH), index)
-    assert result.type == FileType.JSON
+    assert result.content == ContentType.JSON
     assert result.size == 321
     assert result.modified == "2026-04-05T00:00:00Z"
     assert result.extra["issue_id"] == "ISSUE1"
@@ -121,47 +144,46 @@ async def test_stat_issue_json(accessor, index):
 
 @pytest.mark.asyncio
 async def test_stat_comments_jsonl(accessor, index):
-    await index.put(
-        _COMMENTS_PATH,
-        IndexEntry(
-            id="ISSUE1",
-            name="comments.jsonl",
-            resource_type="linear/comments",
-            remote_time="2026-04-06T00:00:00Z",
-            vfs_name="comments.jsonl",
-            size=57,
-        ),
+    await index.set_dir(
+        "/teams/ENG__Engineering__TEAM1/issues/ENG-123__ISSUE1",
+        [
+            (
+                "comments.jsonl",
+                IndexEntry(
+                    id="ISSUE1",
+                    name="comments.jsonl",
+                    resource_type="linear/comments",
+                    remote_time="2026-04-06T00:00:00Z",
+                    vfs_name="comments.jsonl",
+                    size=57,
+                ),
+            )
+        ],
     )
-    result = await stat(accessor, PathSpec.from_str_path(_COMMENTS_PATH),
-                        index)
-    assert result.type == FileType.TEXT
+    result = await stat(
+        accessor, PathSpec.from_str_path(_COMMENTS_PATH), index
+    )
+    assert result.content == ContentType.TEXT
     assert result.size == 57
     assert result.modified == "2026-04-06T00:00:00Z"
 
 
 @pytest.mark.asyncio
-async def test_stat_team_json_reports_rendered_size(accessor, index):
-    await index.put(
-        "/teams/ENG__Engineering__TEAM1",
-        IndexEntry(
-            id="TEAM1",
-            name="Engineering",
-            resource_type="linear/team",
-            remote_time="2026-04-05T00:00:00Z",
-            vfs_name="ENG__Engineering__TEAM1",
-            extra={
-                "team_key": "ENG",
-                "team_name": "Engineering",
-                "team_json_size": 123,
-            },
-        ),
+async def test_stat_team_json_reports_rendered_size(
+    accessor, index, monkeypatch
+):
+    # The team-dir listing computes team.json's size from the team object
+    # the find already fetched, so stat answers the rendered byte length.
+    monkeypatch.setattr(
+        linear_readdir, "list_teams", AsyncMock(return_value=[_TEAM])
     )
     result = await stat(
         accessor,
         PathSpec.from_str_path("/teams/ENG__Engineering__TEAM1/team.json"),
-        index)
-    assert result.type == FileType.JSON
-    assert result.size == 123
+        index,
+    )
+    assert result.content == ContentType.JSON
+    assert result.size == len(to_json_bytes(normalize_team(_TEAM)))
     assert result.modified == "2026-04-05T00:00:00Z"
     assert result.extra["team_id"] == "TEAM1"
 
@@ -169,8 +191,9 @@ async def test_stat_team_json_reports_rendered_size(accessor, index):
 @pytest.mark.asyncio
 async def test_stat_missing_path(accessor, index):
     with pytest.raises(FileNotFoundError):
-        await stat(accessor, PathSpec.from_str_path("/nonexistent/path"),
-                   index)
+        await stat(
+            accessor, PathSpec.from_str_path("/nonexistent/path"), index
+        )
 
 
 _TEAM = {
@@ -180,25 +203,21 @@ _TEAM = {
     "description": "Builds the thing",
     "timezone": "UTC",
     "updatedAt": "2026-04-05T00:00:00Z",
-    "states": {
-        "nodes": [{
-            "id": "ST1",
-            "name": "Todo",
-            "type": "unstarted"
-        }]
-    },
+    "states": {"nodes": [{"id": "ST1", "name": "Todo", "type": "unstarted"}]},
 }
 
-_USERS = [{
-    "id": "USER1",
-    "name": "Alice",
-    "displayName": "Alice",
-    "email": "alice@example.com",
-    "active": True,
-    "admin": False,
-    "url": "https://linear.app/u/alice",
-    "updatedAt": "2026-04-01T00:00:00Z",
-}]
+_USERS = [
+    {
+        "id": "USER1",
+        "name": "Alice",
+        "displayName": "Alice",
+        "email": "alice@example.com",
+        "active": True,
+        "admin": False,
+        "url": "https://linear.app/u/alice",
+        "updatedAt": "2026-04-01T00:00:00Z",
+    }
+]
 
 _ISSUES = [
     {
@@ -210,36 +229,17 @@ _ISSUES = [
         "url": "https://linear.app/i/ENG-1",
         "createdAt": "2026-04-02T00:00:00Z",
         "updatedAt": "2026-04-03T00:00:00Z",
-        "team": {
-            "id": "TEAM1",
-            "key": "ENG",
-            "name": "Engineering"
-        },
-        "state": {
-            "id": "ST1",
-            "name": "Todo"
-        },
-        "project": {
-            "id": "PROJ1",
-            "name": "Mount"
-        },
-        "cycle": {
-            "id": "CYC1",
-            "name": "Cycle 1",
-            "number": 1
-        },
+        "team": {"id": "TEAM1", "key": "ENG", "name": "Engineering"},
+        "state": {"id": "ST1", "name": "Todo"},
+        "project": {"id": "PROJ1", "name": "Mount"},
+        "cycle": {"id": "CYC1", "name": "Cycle 1", "number": 1},
         "assignee": {
             "id": "USER1",
             "name": "Alice",
-            "email": "alice@example.com"
+            "email": "alice@example.com",
         },
         "creator": None,
-        "labels": {
-            "nodes": [{
-                "id": "L1",
-                "name": "bug"
-            }]
-        },
+        "labels": {"nodes": [{"id": "L1", "name": "bug"}]},
     },
     {
         "id": "ISSUE2",
@@ -250,116 +250,114 @@ _ISSUES = [
         "url": "https://linear.app/i/ENG-2",
         "createdAt": "2026-04-02T00:00:00Z",
         "updatedAt": "2026-04-04T00:00:00Z",
-        "team": {
-            "id": "TEAM1",
-            "key": "ENG",
-            "name": "Engineering"
-        },
-        "state": {
-            "id": "ST1",
-            "name": "Todo"
-        },
+        "team": {"id": "TEAM1", "key": "ENG", "name": "Engineering"},
+        "state": {"id": "ST1", "name": "Todo"},
         "project": None,
         "cycle": None,
         "assignee": None,
         "creator": None,
-        "labels": {
-            "nodes": []
-        },
+        "labels": {"nodes": []},
     },
 ]
 
 _COMMENTS = {
-    "ISSUE1": [{
-        "id": "CMT1",
-        "body": "résumé attached",
-        "url": "https://linear.app/c/1",
-        "createdAt": "2026-04-03T00:00:00Z",
-        "updatedAt": "2026-04-03T12:00:00Z",
-        "user": {
-            "id": "USER1",
-            "name": "Alice",
-            "displayName": "Alice",
-            "email": "alice@example.com",
-        },
-    }],
+    "ISSUE1": [
+        {
+            "id": "CMT1",
+            "body": "résumé attached",
+            "url": "https://linear.app/c/1",
+            "createdAt": "2026-04-03T00:00:00Z",
+            "updatedAt": "2026-04-03T12:00:00Z",
+            "user": {
+                "id": "USER1",
+                "name": "Alice",
+                "displayName": "Alice",
+                "email": "alice@example.com",
+            },
+        }
+    ],
 }
 
-_PROJECTS = [{
-    "id": "PROJ1",
-    "name": "Mount",
-    "description": "Mount everything",
-    "status": {
-        "type": "started"
-    },
-    "url": "https://linear.app/p/mount",
-    "updatedAt": "2026-04-04T00:00:00Z",
-    "lead": {
-        "id": "USER1"
-    },
-}]
-
-_CYCLES = [{
-    "id": "CYC1",
-    "name": "Cycle 1",
-    "number": 1,
-    "startsAt": "2026-04-01T00:00:00Z",
-    "endsAt": "2026-04-14T00:00:00Z",
-    "updatedAt": "2026-04-04T00:00:00Z",
-}]
-
-_DOCUMENTS = [{
-    "id": "DOC1",
-    "title": "Spec",
-    "content": "unicode body ✓",
-    "url": "https://linear.app/d/spec",
-    "createdAt": "2026-04-01T00:00:00Z",
-    "updatedAt": "2026-04-02T00:00:00Z",
-    "project": {
+_PROJECTS = [
+    {
         "id": "PROJ1",
-        "name": "Mount"
-    },
-    "creator": {
-        "id": "USER1",
-        "name": "Alice",
-        "email": "alice@example.com"
-    },
-}]
+        "name": "Mount",
+        "description": "Mount everything",
+        "status": {"type": "started"},
+        "url": "https://linear.app/p/mount",
+        "updatedAt": "2026-04-04T00:00:00Z",
+        "lead": {"id": "USER1"},
+    }
+]
+
+_CYCLES = [
+    {
+        "id": "CYC1",
+        "name": "Cycle 1",
+        "number": 1,
+        "startsAt": "2026-04-01T00:00:00Z",
+        "endsAt": "2026-04-14T00:00:00Z",
+        "updatedAt": "2026-04-04T00:00:00Z",
+    }
+]
+
+_DOCUMENTS = [
+    {
+        "id": "DOC1",
+        "title": "Spec",
+        "content": "unicode body ✓",
+        "url": "https://linear.app/d/spec",
+        "createdAt": "2026-04-01T00:00:00Z",
+        "updatedAt": "2026-04-02T00:00:00Z",
+        "project": {"id": "PROJ1", "name": "Mount"},
+        "creator": {
+            "id": "USER1",
+            "name": "Alice",
+            "email": "alice@example.com",
+        },
+    }
+]
 
 
-async def _issue_by_id(config, issue_id):
+async def _issue_by_id(config, issue_id, session=None):
     return next(issue for issue in _ISSUES if issue["id"] == issue_id)
 
 
-async def _comments_for(config, issue_id):
+async def _comments_for(config, issue_id, session=None):
     return list(_COMMENTS.get(issue_id, []))
 
 
-async def _walk_files(accessor, index):
+async def _walk_nodes(accessor, index):
     stack = ["/"]
-    files = []
+    nodes = []
     while stack:
         current = stack.pop()
         listing = await readdir(
             accessor,
-            PathSpec(resource_path=current.strip("/"),
-                     virtual=current,
-                     directory=current), index)
+            PathSpec(
+                vfs_path=current.strip("/"), virtual=current, directory=current
+            ),
+            index,
+        )
         for path in listing:
-            entry_stat = await stat(accessor, PathSpec.from_str_path(path),
-                                    index)
+            entry_stat = await stat(
+                accessor, PathSpec.from_str_path(path), index
+            )
             if entry_stat.type == FileType.DIRECTORY:
                 stack.append(path)
-            else:
-                files.append((path, entry_stat))
-    return files
+            nodes.append((path, entry_stat))
+    return nodes
 
 
-@pytest.mark.asyncio
-async def test_stat_size_matches_read_for_every_file(accessor, index,
-                                                     monkeypatch):
-    # The fskit invariant: whatever size stat reports at lookup must equal
-    # the byte length a read delivers, for every file in the tree.
+async def _walk_files(accessor, index):
+    return [
+        (path, entry_stat)
+        for path, entry_stat in await _walk_nodes(accessor, index)
+        if entry_stat.type != FileType.DIRECTORY
+    ]
+
+
+def _fake_tree(monkeypatch) -> dict[str, AsyncMock]:
     fakes = {
         "list_teams": AsyncMock(return_value=[_TEAM]),
         "list_team_members": AsyncMock(return_value=_USERS),
@@ -372,12 +370,57 @@ async def test_stat_size_matches_read_for_every_file(accessor, index,
     }
     for module in (linear_readdir, linear_read):
         for name, fake in fakes.items():
-            monkeypatch.setattr(module, name, fake)
+            if hasattr(module, name):
+                monkeypatch.setattr(module, name, fake)
+    return fakes
+
+
+@pytest.mark.asyncio
+async def test_stat_size_matches_read_for_every_file(
+    accessor, index, monkeypatch
+):
+    # The fskit invariant: whatever size stat reports at lookup must equal
+    # the byte length a read delivers, for every file in the tree.
+    fakes = _fake_tree(monkeypatch)
     files = await _walk_files(accessor, index)
     assert len(files) == 9
     # Sizing never refetches an issue: the issues listing already carries the
     # payloads, so walking the whole tree costs no per-file issue fetch.
     fakes["get_issue"].assert_not_awaited()
     for path, entry_stat in files:
-        body = await read_bytes(accessor.config, path, path)
+        body = await read(accessor, PathSpec.from_str_path(path), index)
         assert entry_stat.size == len(body), path
+
+
+def _deepest_id_key(path: str) -> str:
+    match = detect_scope(PathSpec.from_str_path(path))
+    assert match.scope is not None, path
+    keys: list[str] = [
+        segment.id_key
+        for segment in match.scope.segments
+        if isinstance(segment, Slot) and segment.id_key is not None
+    ]
+    return keys[-1]
+
+
+@pytest.mark.asyncio
+async def test_stat_extra_names_the_id_the_path_carries(
+    accessor, index, monkeypatch
+):
+    """Every id-addressed node's stat carries its id under the key its
+    path slot names (team_id, member_id, issue_id, ...), the value the
+    path encodes. The member kind wrote ``user_id`` while its slot and
+    trello's member say ``member_id``."""
+    _fake_tree(monkeypatch)
+    nodes = await _walk_nodes(accessor, index)
+    assert any("/members/" in path for path, _ in nodes)
+    for path, entry_stat in nodes:
+        match = detect_scope(PathSpec.from_str_path(path))
+        assert match.scope is not None, path
+        if (
+            isinstance(match.scope.segments[-1], str)
+            and entry_stat.type == FileType.DIRECTORY
+        ):
+            continue
+        id_key = _deepest_id_key(path)
+        assert entry_stat.extra == {id_key: match.slots[id_key]}, path

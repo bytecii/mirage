@@ -18,16 +18,17 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.mount.namespace.redis import RedisNamespaceStore
 from mirage.workspace.mount.namespace.store import NamespaceStore
 
 REDIS_URL = os.environ.get("REDIS_URL")
 
-pytestmark = pytest.mark.skipif(REDIS_URL is None,
-                                reason="REDIS_URL not configured")
+pytestmark = pytest.mark.skipif(
+    REDIS_URL is None, reason="REDIS_URL not configured"
+)
 
 
 @pytest.fixture
@@ -84,37 +85,39 @@ def test_redis_store_subclasses_namespace_store():
     assert issubclass(RedisNamespaceStore, NamespaceStore)
 
 
-class _OverlayRAMResource(RAMResource):
-    """RAM resource with the native setattr op stripped, standing in for
+class _OverlayRAMVFS(RAMVFS):
+    """RAM VFS with the native setattr op stripped, standing in for
     an API backend that has no attribute slot."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._ops_list = [ro for ro in self._ops_list if ro.name != "setattr"]
+    def ops(self):
+        return [ro for ro in super().ops() if ro.name != "setattr"]
 
 
 @pytest.mark.asyncio
 async def test_namespace_survives_workspace_restart(prefix):
-    ws = Workspace({"/data": _OverlayRAMResource()},
-                   mode=MountMode.WRITE,
-                   namespace_store=RedisNamespaceStore(url=REDIS_URL,
-                                                       key_prefix=prefix))
-    await ws.execute("echo alpha > /data/f.txt")
-    await ws.execute("chmod 601 /data/f.txt && chown 500:dev /data/f.txt")
-    await ws.execute("ln -s /data/f.txt /data/link")
+    ws = Workspace(
+        {"/data": _OverlayRAMVFS()},
+        mode=MountMode.WRITE,
+        namespace_store=RedisNamespaceStore(url=REDIS_URL, key_prefix=prefix),
+    )
+    await ws.shell("echo alpha > /data/f.txt")
+    await ws.shell("chmod 601 /data/f.txt && chown 500:dev /data/f.txt")
+    await ws.shell("ln -s /data/f.txt /data/link")
     await ws.close()
 
-    reborn = Workspace({"/data": _OverlayRAMResource()},
-                       mode=MountMode.WRITE,
-                       namespace_store=RedisNamespaceStore(url=REDIS_URL,
-                                                           key_prefix=prefix))
-    await reborn.execute("echo alpha > /data/f.txt")
-    st, _ = await reborn.dispatch("stat",
-                                  PathSpec.from_str_path("/data/f.txt"))
+    reborn = Workspace(
+        {"/data": _OverlayRAMVFS()},
+        mode=MountMode.WRITE,
+        namespace_store=RedisNamespaceStore(url=REDIS_URL, key_prefix=prefix),
+    )
+    await reborn.shell("echo alpha > /data/f.txt")
+    st, _ = await reborn.dispatch(
+        "stat", PathSpec.from_str_path("/data/f.txt")
+    )
     assert st.mode == 0o601
     assert st.uid == 500
     assert st.gid == "dev"
-    result = await reborn.execute("readlink /data/link")
+    result = await reborn.shell("readlink /data/link")
     assert (await result.stdout_str()) == "/data/f.txt\n"
     store = RedisNamespaceStore(url=REDIS_URL, key_prefix=prefix)
     await store.clear()
@@ -124,20 +127,22 @@ async def test_namespace_survives_workspace_restart(prefix):
 
 @pytest.mark.asyncio
 async def test_whoami_shared_across_workspaces(prefix):
-    ws = Workspace({"/data": RAMResource()},
-                   agent_id="alice",
-                   namespace_store=RedisNamespaceStore(url=REDIS_URL,
-                                                       key_prefix=prefix))
-    result = await ws.execute("whoami")
+    ws = Workspace(
+        {"/data": RAMVFS()},
+        agent_id="alice",
+        namespace_store=RedisNamespaceStore(url=REDIS_URL, key_prefix=prefix),
+    )
+    result = await ws.shell("whoami")
     assert (await result.stdout_str()) == "alice\n"
     await ws.close()
 
     # A fresh runtime attached to the same store, launched without an
     # agent_id, adopts the workspace's identity.
-    reborn = Workspace({"/data": RAMResource()},
-                       namespace_store=RedisNamespaceStore(url=REDIS_URL,
-                                                           key_prefix=prefix))
-    result = await reborn.execute("whoami")
+    reborn = Workspace(
+        {"/data": RAMVFS()},
+        namespace_store=RedisNamespaceStore(url=REDIS_URL, key_prefix=prefix),
+    )
+    result = await reborn.shell("whoami")
     assert (await result.stdout_str()) == "alice\n"
     store = RedisNamespaceStore(url=REDIS_URL, key_prefix=prefix)
     await store.clear()

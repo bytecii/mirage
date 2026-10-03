@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -44,6 +45,30 @@ class IndexEntry(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class IndexSnapshot:
+    """Entry rows and directory children from one refill.
+
+    ``version`` is the backend's version the rows were read at, or None.
+    """
+
+    entries: dict[str, IndexEntry]
+    children: dict[str, list[str]]
+    version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Evicted:
+    """A child a complete re-list no longer names.
+
+    ``folder`` says whether it held a listing or was typed a folder, so
+    cleanup knows to take everything cached beneath it.
+    """
+
+    path: str
+    folder: bool
+
+
 class LookupResult(BaseModel):
     entry: IndexEntry | None = None
     status: LookupStatus | None = None
@@ -51,7 +76,17 @@ class LookupResult(BaseModel):
 
 class ListResult(BaseModel):
     entries: list[str] | None = None
+    partial_entries: list[str] | None = None
     status: LookupStatus | None = None
+    version: str | None = None
+
+
+class IndexDirectory(BaseModel):
+    entries: list[str]
+    expires_at: float
+    generation: str
+    partial: bool = False
+    version: str | None = None
 
 
 class IndexConfig(BaseModel):

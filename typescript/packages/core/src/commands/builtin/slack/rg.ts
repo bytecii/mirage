@@ -16,7 +16,7 @@ import { mountPrefixOf } from '../../../utils/key_prefix.ts'
 import type { SlackAccessor } from '../../../accessor/slack.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
-import { SLACK_IO } from './io.ts'
+import { IO } from './io.ts'
 import { read as slackRead } from '../../../core/slack/read.ts'
 import { readdir as slackReaddir } from '../../../core/slack/readdir.ts'
 import { stat as slackStat } from '../../../core/slack/stat.ts'
@@ -25,17 +25,19 @@ import {
   formatFileGrepResults,
   formatGrepResults,
 } from '../../../core/slack/formatters.ts'
-import { detectScope } from '../../../core/slack/scope.ts'
+import { detectScope, NATIVE_KINDS, searchTarget } from '../../../core/slack/scope.ts'
 import { searchFiles, searchMessages } from '../../../core/slack/search.ts'
 import { IOResult } from '../../../io/types.ts'
-import { type FileStat, type PathSpec, ResourceName } from '../../../types.ts'
+import { type FileStat, type PathSpec, VFSName } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { patternArg } from '../grep_helper.ts'
-import { rgGeneric } from '../generic/rg.ts'
-import { FlagView } from '../../spec/types.ts'
+import { patternArg } from '../grep_pattern.ts'
+import { pushdownOperand } from '../grep_pushdown.ts'
+import { parseFlags, refuseMissingPattern, rgGeneric } from '../generic/rg.ts'
+import { RG_SEARCH_HONORED, SEARCH_MAX_RESULTS } from './grep.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 
-const resolveSlackGlob = resolveGlobOf(SLACK_IO)
+const resolveSlackGlob = resolveGlobOf(IO)
 
 const ENC = new TextEncoder()
 
@@ -53,53 +55,47 @@ async function rgCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  const pattern = patternArg(texts, opts.flags)
-  if (pattern === null) {
-    return [
-      null,
-      new IOResult({ exitCode: 2, stderr: ENC.encode('rg: usage: rg [flags] pattern [path]\n') }),
-    ]
-  }
+  const pattern = patternArg(texts, opts.flags, 'regexp')
   const fl = new FlagView(opts.flags, specOf('rg'))
-  const maxCount = fl.asInt('m') ?? null
+  const refused = refuseMissingPattern(pattern, fl, parseFlags(fl))
+  if (refused !== null) return refused
 
   const pushdownWarnings: string[] = []
-  if (paths.length > 0 && !pattern.includes('\n')) {
-    const firstPath = paths[0]
-    if (firstPath !== undefined) {
-      const scope = detectScope(firstPath)
-      // Slack search matches whole words while grep matches substrings, and
-      // the native path returns search results verbatim as the output, so a
-      // bare literal would under-report. Only -w makes the two agree.
-      if (scope.useNative && fl.asBool('w')) {
-        const filePrefix = mountPrefixOf(firstPath.virtual, firstPath.resourcePath)
-        const query = buildQuery(pattern, scope)
-        const count = maxCount ?? 100
-        const target = scope.target
-        const doMessages = target === undefined || target === 'date' || target === 'messages'
-        const doFiles = target === undefined || target === 'date' || target === 'files'
-        try {
-          const nativeLines: string[] = []
-          if (doMessages) {
-            const raw = await searchMessages(accessor, query, count)
-            nativeLines.push(...formatGrepResults(raw, scope, filePrefix))
-          }
-          if (doFiles) {
-            const rawF = await searchFiles(accessor, query, count)
-            nativeLines.push(...formatFileGrepResults(rawF, scope, filePrefix))
-          }
-          if (nativeLines.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-          return [ENC.encode(nativeLines.join('\n') + '\n'), new IOResult()]
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
+  // Same gate as slack grep, from the same table: only a lone concrete
+  // operand with no reshaping flag may be answered by the search API.
+  const operand = pushdownOperand(paths, opts.flags, pattern, RG_SEARCH_HONORED)
+  if (operand !== null && pattern !== null && fl.asBool('word_regexp')) {
+    const match = detectScope(operand)
+    if (
+      !accessor.timeRange.bounded &&
+      NATIVE_KINDS.has(match.kind) &&
+      (accessor.transport.searchAvailable?.() ?? true)
+    ) {
+      const target = searchTarget(match)
+      const filePrefix = mountPrefixOf(operand.virtual, operand.vfsPath)
+      const query = buildQuery(pattern, target)
+      const count = SEARCH_MAX_RESULTS
+      // Every kind that reaches here searches messages, and each of them
+      // (the root, the containers, a channel, a date dir) carries files
+      // too, so both halves run.
+      try {
+        const raw = await searchMessages(accessor, query, count)
+        const nativeLines: string[] = [...formatGrepResults(raw, target, filePrefix)]
+        {
+          const rawF = await searchFiles(accessor, query, count)
+          nativeLines.push(...formatFileGrepResults(rawF, target, filePrefix))
+        }
+        if (nativeLines.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
+        return [ENC.encode(nativeLines.join('\n') + '\n'), new IOResult()]
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        pushdownWarnings.push(
+          `slack: native search push-down failed (${msg}); falling back to per-file scan`,
+        )
+        if (msg.includes('not_allowed_token_type') || msg.includes('missing_scope')) {
           pushdownWarnings.push(
-            `slack: native search push-down failed (${msg}); falling back to per-file scan`,
+            'slack: hint - set SLACK_USER_TOKEN (xoxp-) with search:read scope to enable workspace search',
           )
-          if (msg.includes('not_allowed_token_type') || msg.includes('missing_scope')) {
-            pushdownWarnings.push(
-              'slack: hint - set SLACK_USER_TOKEN (xoxp-) with search:read scope to enable workspace search',
-            )
-          }
         }
       }
     }
@@ -121,7 +117,7 @@ async function rgCommand(
 
 export const SLACK_RG = command({
   name: 'rg',
-  resource: ResourceName.SLACK,
+  vfs: VFSName.SLACK,
   spec: specOf('rg'),
   fn: rgCommand,
 })

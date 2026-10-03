@@ -16,13 +16,13 @@ import asyncio
 
 from mirage.shell.variable import VarAttr, with_attr
 from mirage.types import HiddenVars
-from mirage.workspace.session import Session
+from mirage.workspace.session import SessionState
 from mirage.workspace.session.elements import assign_element, element_is_set
 from mirage.workspace.session.state import seed_var
 
 
-def _session() -> Session:
-    session = Session(session_id="s", cwd="/")
+def _session() -> SessionState:
+    session = SessionState(session_id="s", cwd="/")
     seed_var(session, "m", {"a": "1", "k5": "9", "0": "z"})
     seed_var(session, "arr", ["10", "20", "30"])
     seed_var(session, "s5", "5")
@@ -32,21 +32,28 @@ def _session() -> Session:
 
 def test_element_is_set():
     session = _session()
-    assert element_is_set(session, "m[a]")
-    assert not element_is_set(session, "m[zz]")
-    # The subscript is the key verbatim, never arithmetic.
-    assert not element_is_set(session, "m[1+1]")
-    assert element_is_set(session, "m[@]")
-    assert element_is_set(session, "arr[2]")
-    assert not element_is_set(session, "arr[9]")
-    assert element_is_set(session, "arr[@]")
-    # A bare name over an array checks element 0 (the literal key "0"
-    # for an associative one).
-    assert element_is_set(session, "m")
-    assert element_is_set(session, "arr")
-    assert element_is_set(session, "s5")
-    assert not element_is_set(session, "missing")
-    assert not element_is_set(session, "not a ref")
+
+    async def run():
+        assert await element_is_set(session, "m[a]")
+        assert not await element_is_set(session, "m[zz]")
+        # The subscript is the key verbatim, never arithmetic.
+        assert not await element_is_set(session, "m[1+1]")
+        assert await element_is_set(session, "m[@]")
+        assert await element_is_set(session, "arr[2]")
+        assert not await element_is_set(session, "arr[9]")
+        assert await element_is_set(session, "arr[@]")
+        # An indexed subscript is arithmetic, and what it assigns lands.
+        assert await element_is_set(session, "arr[j=2]")
+        assert session.vars["j"].value == "2"
+        # A bare name over an array checks element 0 (the literal key
+        # "0" for an associative one).
+        assert await element_is_set(session, "m")
+        assert await element_is_set(session, "arr")
+        assert await element_is_set(session, "s5")
+        assert not await element_is_set(session, "missing")
+        assert not await element_is_set(session, "not a ref")
+
+    asyncio.run(run())
 
 
 def test_assign_element_assoc_and_append():
@@ -54,8 +61,10 @@ def test_assign_element_assoc_and_append():
 
     async def run():
         assert await assign_element(session, None, "m", "b", "2") == "ok"
-        assert await assign_element(session, None, "m", "b", "x",
-                                    append=True) == "ok"
+        assert (
+            await assign_element(session, None, "m", "b", "x", append=True)
+            == "ok"
+        )
         # A bare target over an associative array is the key "0".
         assert await assign_element(session, None, "m", None, "top") == "ok"
         assert await assign_element(session, None, "m", "", "v") == "subscript"
@@ -68,18 +77,21 @@ def test_assign_element_assoc_and_append():
 def test_assign_element_indexed_scalar_and_statuses():
     session = _session()
     session.vars["ro"] = with_attr(session.vars.pop("s5"), VarAttr.READONLY)
-    session.hidden_vars = HiddenVars(names=("h", ), patterns=())
+    session.hidden_vars = HiddenVars(names=("h",), patterns=())
 
     async def run():
         assert await assign_element(session, None, "arr", "1", "X") == "ok"
         assert await assign_element(session, None, "arr", "-1", "Y") == "ok"
-        assert await assign_element(session, None, "arr", "-9",
-                                    "n") == "subscript"
+        assert (
+            await assign_element(session, None, "arr", "-9", "n")
+            == "subscript"
+        )
         # An existing scalar migrates to element 0 under a subscript.
         seed_var(session, "sc", "base")
         assert await assign_element(session, None, "sc", "1", "one") == "ok"
-        assert await assign_element(session, None, "ro", "0",
-                                    "x") == "readonly"
+        assert (
+            await assign_element(session, None, "ro", "0", "x") == "readonly"
+        )
         assert await assign_element(session, None, "h", "0", "x") == "denied"
 
     asyncio.run(run())

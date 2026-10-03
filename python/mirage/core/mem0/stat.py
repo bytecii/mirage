@@ -15,19 +15,21 @@
 from typing import Any
 
 from mirage.accessor.mem0 import Mem0Accessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.mem0.client import get_memory
-from mirage.core.mem0.scope import ScopeLevel, detect_scope
+from mirage.cache.index import IndexCacheStore
+from mirage.core.hierarchy.scope import ScopeMatch
+from mirage.core.hierarchy.stat import make_stat
+from mirage.core.mem0.readdir import listed_memory, readdir
+from mirage.core.mem0.scope import detect_scope
 from mirage.core.render.json import json_bytes
-from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.errors import enoent
+from mirage.types import ContentType, FileStat, FileType, PathSpec
 
 
 def _file_stat(memory: dict[str, Any]) -> FileStat:
     body = json_bytes(memory)
     return FileStat(
         name=f"{memory['id']}.json",
-        type=FileType.JSON,
+        type=FileType.FILE,
+        content=ContentType.JSON,
         size=len(body),
         modified=memory.get("updated_at") or memory.get("created_at"),
         extra={
@@ -37,27 +39,17 @@ def _file_stat(memory: dict[str, Any]) -> FileStat:
     )
 
 
-async def stat(
+async def _memory_stat(
     accessor: Mem0Accessor,
+    match: ScopeMatch,
     path: PathSpec,
-    index: IndexCacheStore = NULL_INDEX,
+    index: IndexCacheStore,
 ) -> FileStat:
-    """Stat a mem0 path.
+    return _file_stat(await listed_memory(accessor, path, index))
 
-    Args:
-        accessor (Mem0Accessor): mem0 accessor.
-        path (PathSpec): the path to stat.
-        index (IndexCacheStore): index cache.
-    """
-    scope = detect_scope(path)
-    if scope.level == ScopeLevel.ROOT:
-        return FileStat(name="/", type=FileType.DIRECTORY)
-    if scope.level != ScopeLevel.MEMORY or scope.memory_id is None:
-        raise enoent(path)
-    lookup = await index.get(path.virtual)
-    cached = (lookup.entry.extra.get("memory")
-              if lookup.entry is not None else None)
-    if isinstance(cached, dict):
-        return _file_stat(cached)
-    memory = await get_memory(accessor.client, scope.memory_id, path)
-    return _file_stat(memory)
+
+stat = make_stat(
+    detect_scope,
+    readdir,
+    overrides={"memory": _memory_stat},
+)

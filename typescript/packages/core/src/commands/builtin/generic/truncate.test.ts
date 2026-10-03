@@ -13,7 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 import { describe, expect, it } from 'vitest'
 
-import { FileStat, FileType, PathSpec } from '../../../types.ts'
+import { ContentType, FileStat, FileType, PathSpec } from '../../../types.ts'
+import { enoent } from '../../../utils/errors.ts'
 import { UsageError } from '../../errors.ts'
 import { truncateGeneric } from './truncate.ts'
 
@@ -21,7 +22,7 @@ function fPath(): PathSpec {
   return new PathSpec({
     virtual: '/f',
     directory: '/',
-    resourcePath: 'f',
+    vfsPath: 'f',
     resolved: true,
   })
 }
@@ -30,8 +31,11 @@ async function runTruncate(size: string, current = 10): Promise<number[]> {
   const lengths: number[] = []
   await truncateGeneric(
     [fPath()],
-    size,
-    () => Promise.resolve(new FileStat({ name: 'f', type: FileType.TEXT, size: current })),
+    { size, noCreate: false },
+    () =>
+      Promise.resolve(
+        new FileStat({ name: 'f', type: FileType.FILE, content: ContentType.TEXT, size: current }),
+      ),
     (_p, length) => {
       lengths.push(length)
       return Promise.resolve()
@@ -129,8 +133,11 @@ describe('truncate sizes', () => {
     await expect(
       truncateGeneric(
         [fPath()],
-        value,
-        () => Promise.resolve(new FileStat({ name: 'f', type: FileType.TEXT, size: 10 })),
+        { size: value, noCreate: false },
+        () =>
+          Promise.resolve(
+            new FileStat({ name: 'f', type: FileType.FILE, content: ContentType.TEXT, size: 10 }),
+          ),
         (_p, length) => {
           truncateCalls.push(length)
           return Promise.resolve()
@@ -165,4 +172,62 @@ describe('truncate sizes', () => {
   it('rejects division by zero', async () => {
     await expect(runTruncate('/0')).rejects.toThrow(new UsageError('truncate: division by zero', 1))
   })
+})
+
+describe('truncate operands', () => {
+  function operand(rawPath: string, virtual = '/missing'): PathSpec {
+    return new PathSpec({ virtual, directory: '/', vfsPath: virtual.slice(1), rawPath })
+  }
+
+  it("answers a slashed operand with the open's EISDIR", async () => {
+    // GNU opens with O_CREAT before it stats, so `missing/` and `reg/` are
+    // the open's EISDIR, not the stat's miss, and an absent bare name is
+    // made where its directory exists. The EISDIR is settled before the
+    // op, so a backend with no truncate op says it too. The chain answers
+    // first: under an absent directory the name is ENOENT and the op never
+    // runs, every operand is still tried, and -c leaves an absent name
+    // alone.
+    const lengths: [string, number][] = []
+    const stat = (path: PathSpec): Promise<FileStat> => Promise.reject(enoent(path))
+    const truncate = (path: PathSpec, length: number): Promise<void> => {
+      lengths.push([path.rawPath, length])
+      return Promise.resolve()
+    }
+    const [, io] = await truncateGeneric(
+      [operand('/missing/'), operand('/nodir/x', '/nodir/x'), operand('/missing')],
+      { size: '4', noCreate: false },
+      stat,
+      truncate,
+    )
+    expect(lengths).toEqual([['/missing', 4]])
+    expect(io.exitCode).toBe(1)
+    expect(new TextDecoder().decode(io.stderr as Uint8Array)).toBe(
+      "truncate: cannot open '/missing/' for writing: Is a directory\n" +
+        "truncate: cannot open '/nodir/x' for writing: No such file or directory\n",
+    )
+    const [, kept] = await truncateGeneric(
+      [operand('/missing')],
+      { size: '4', noCreate: true },
+      stat,
+      truncate,
+    )
+    expect(kept.exitCode).toBe(0)
+    expect(lengths).toHaveLength(1)
+  })
+})
+
+it('passes no-create to the mutation after a successful stat', async () => {
+  const calls: boolean[] = []
+  const path = PathSpec.fromStrPath('/file')
+  const [, result] = await truncateGeneric(
+    [path],
+    { size: '2', noCreate: true },
+    () => Promise.resolve(new FileStat({ name: 'file', type: FileType.FILE, size: 4 })),
+    (_path, _length, noCreate) => {
+      calls.push(noCreate)
+      return Promise.resolve()
+    },
+  )
+  expect(result.exitCode).toBe(0)
+  expect(calls).toEqual([true])
 })

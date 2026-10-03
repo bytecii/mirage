@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.gdrive import GDriveAccessor
-from mirage.cache.context import invalidate_after_unlink
+from mirage.cache.context import invalidate_subtree
 from mirage.core.gdrive.resolve import eacces_on_denied, resolve_key
 from mirage.core.google.drive import delete_file
 from mirage.types import PathSpec
@@ -24,11 +24,11 @@ from mirage.utils.errors import enoent
 async def rm_r(accessor: GDriveAccessor, path: PathSpec) -> None:
     # A Drive folder delete removes its subtree in one call.
     virtual = path.virtual
-    key = path.resource_path
+    key = path.vfs_path
     if not key:
         return
     node = await resolve_key(accessor, key)
     if node is None:
         raise enoent(virtual)
     await delete_file(accessor.token_manager, node.id)
-    await invalidate_after_unlink(path)
+    await invalidate_subtree(path)

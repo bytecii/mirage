@@ -1,34 +1,237 @@
 {
   "services": {
-    "box": { "python": [], "typescript": ["BOX_ENDPOINT"] },
-    "chroma": { "python": ["CHROMA_HOST"], "typescript": ["CHROMA_HOST"] },
-    "databricks": { "python": [], "typescript": ["DATABRICKS_ENDPOINT"] },
-    "dify": { "python": [], "typescript": ["DIFY_ENDPOINT"] },
-    "discord": { "python": [], "typescript": ["DISCORD_ENDPOINT"] },
-    "dropbox": { "python": [], "typescript": [] },
-    "email": { "python": ["EMAIL_HOST"], "typescript": ["EMAIL_HOST"] },
-    "github": { "python": ["GITHUB_URL"], "typescript": ["GITHUB_URL"] },
-    "gridfs": { "python": [], "typescript": [] },
-    "gws": { "python": ["GWS_URL"], "typescript": ["GWS_URL"] },
-    "hf": { "python": [], "typescript": ["HF_ENDPOINT"] },
-    "http": { "python": [], "typescript": [] },
-    "jaeger": { "python": ["JAEGER_URL"], "typescript": ["JAEGER_URL"] },
-    "lancedb": { "python": ["LANCEDB_ENABLED"], "typescript": ["LANCEDB_ENABLED"] },
-    "langfuse": { "python": ["LANGFUSE_URL"], "typescript": ["LANGFUSE_URL"] },
-    "linear": { "python": [], "typescript": ["LINEAR_ENDPOINT"] },
-    "mem0": { "python": [], "typescript": [] },
-    "mongodb": { "python": ["MONGODB_URI"], "typescript": ["MONGODB_URI"] },
-    "nextcloud": { "python": ["NEXTCLOUD_URL"], "typescript": ["NEXTCLOUD_URL"] },
-    "notion": { "python": ["NOTION_ENABLED"], "typescript": ["NOTION_ENABLED"] },
-    "onedrive": { "python": [], "typescript": [] },
-    "postgres": { "python": ["POSTGRES_DSN"], "typescript": ["POSTGRES_DSN"] },
-    "qdrant": { "python": ["QDRANT_HOST"], "typescript": ["QDRANT_HOST"] },
-    "redis": { "python": [], "typescript": [] },
-    "s3": { "python": [], "typescript": ["S3_ENDPOINT"] },
-    "sharepoint": { "python": [], "typescript": [] },
-    "slack": { "python": ["SLACK_URL"], "typescript": ["SLACK_URL"] },
-    "ssh": { "python": [], "typescript": ["SSH_HOST"] },
-    "trello": { "python": ["TRELLO_ENDPOINT"], "typescript": ["TRELLO_ENDPOINT"] }
+    "airtable": {
+      "python": [
+        "AIRTABLE_URL"
+      ],
+      "typescript": [
+        "AIRTABLE_URL"
+      ]
+    },
+    "box": {
+      "python": [
+        "BOX_URL"
+      ],
+      "typescript": [
+        "BOX_URL"
+      ]
+    },
+    "chroma": {
+      "python": [
+        "CHROMA_HOST"
+      ],
+      "typescript": [
+        "CHROMA_HOST"
+      ]
+    },
+    "databricks": {
+      "python": [],
+      "typescript": []
+    },
+    "dify": {
+      "python": [],
+      "typescript": []
+    },
+    "discord": {
+      "python": [
+        "DISCORD_URL"
+      ],
+      "typescript": [
+        "DISCORD_URL"
+      ],
+      "shared": true
+    },
+    "dropbox": {
+      "python": [
+        "DROPBOX_URL"
+      ],
+      "typescript": [
+        "DROPBOX_URL"
+      ]
+    },
+    "email": {
+      "python": [
+        "EMAIL_HOST",
+        "MAIL_URL"
+      ],
+      "typescript": [
+        "EMAIL_HOST",
+        "MAIL_URL"
+      ]
+    },
+    "github": {
+      "python": [
+        "GITHUB_URL"
+      ],
+      "typescript": [
+        "GITHUB_URL"
+      ]
+    },
+    "gridfs": {
+      "python": [],
+      "typescript": []
+    },
+    "gws": {
+      "python": [
+        "GWS_URL"
+      ],
+      "typescript": [
+        "GWS_URL"
+      ]
+    },
+    "hf": {
+      "python": [
+        "HF_URL"
+      ],
+      "typescript": [
+        "HF_URL"
+      ]
+    },
+    "hf-hub": {
+      "python": [
+        "HF_HUB_URL"
+      ],
+      "typescript": [
+        "HF_HUB_URL"
+      ]
+    },
+    "http": {
+      "python": [],
+      "typescript": [],
+      "shared": true
+    },
+    "jaeger": {
+      "python": [
+        "JAEGER_URL"
+      ],
+      "typescript": [
+        "JAEGER_URL"
+      ]
+    },
+    "lancedb": {
+      "python": [
+        "LANCEDB_ENABLED"
+      ],
+      "typescript": [
+        "LANCEDB_ENABLED"
+      ]
+    },
+    "langfuse": {
+      "python": [
+        "LANGFUSE_URL"
+      ],
+      "typescript": [
+        "LANGFUSE_URL"
+      ]
+    },
+    "linear": {
+      "python": [
+        "LINEAR_URL"
+      ],
+      "typescript": [
+        "LINEAR_URL"
+      ],
+      "shared": true
+    },
+    "mem0": {
+      "python": [],
+      "typescript": []
+    },
+    "mongodb": {
+      "python": [
+        "MONGODB_URI"
+      ],
+      "typescript": [
+        "MONGODB_URI"
+      ]
+    },
+    "nextcloud": {
+      "python": [
+        "NEXTCLOUD_URL"
+      ],
+      "typescript": [
+        "NEXTCLOUD_URL"
+      ]
+    },
+    "notion": {
+      "python": [
+        "NOTION_ENABLED"
+      ],
+      "typescript": [
+        "NOTION_ENABLED"
+      ]
+    },
+    "onedrive": {
+      "python": [
+        "ONEDRIVE_URL"
+      ],
+      "typescript": [
+        "ONEDRIVE_URL"
+      ]
+    },
+    "postgres": {
+      "python": [
+        "POSTGRES_DSN"
+      ],
+      "typescript": [
+        "POSTGRES_DSN"
+      ]
+    },
+    "qdrant": {
+      "python": [
+        "QDRANT_HOST"
+      ],
+      "typescript": [
+        "QDRANT_HOST"
+      ]
+    },
+    "quickjs": {
+      "python": [
+        "MIRAGE_QUICKJS_HOME"
+      ],
+      "typescript": []
+    },
+    "redis": {
+      "python": [],
+      "typescript": []
+    },
+    "s3": {
+      "python": [],
+      "typescript": [
+        "S3_ENDPOINT"
+      ]
+    },
+    "sharepoint": {
+      "python": [
+        "ONEDRIVE_URL"
+      ],
+      "typescript": [
+        "ONEDRIVE_URL"
+      ]
+    },
+    "slack": {
+      "python": [
+        "SLACK_URL"
+      ],
+      "typescript": [
+        "SLACK_URL"
+      ]
+    },
+    "ssh": {
+      "python": [],
+      "typescript": [
+        "SSH_HOST"
+      ]
+    },
+    "trello": {
+      "python": [
+        "TRELLO_URL"
+      ],
+      "typescript": [
+        "TRELLO_URL"
+      ],
+      "shared": true
+    }
   },
   "targets": [
     {
@@ -40,40 +243,53 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         },
         {
           "path": "/res",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory",
           "fixture": "columnar/v1"
         },
         {
           "path": "/ro",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory",
           "mode": "read"
         }
       ],
       "sessions": {
         "reader": {
-          "/data": "read"
+          "mounts": {
+            "/data": "read"
+          },
+          "paths": {
+            "hide": [
+              "/data2"
+            ]
+          }
         },
         "writer": {
-          "/data": "write"
+          "mounts": {
+            "/data": "write"
+          }
         },
-        "lister": [
-          "/data"
-        ],
+        "unnamed": {
+          "mounts": {
+            "/data2": "read"
+          }
+        },
         "capped": {
-          "/ro": "write"
+          "mounts": {
+            "/ro": "write"
+          }
         },
         "narrowed": {
           "mounts": {
@@ -82,12 +298,16 @@
             "/res": "read",
             "/ro": "read"
           },
-          "hidden_paths": {
-            "paths": ["/data/sessvis/vault"],
-            "patterns": ["*.key"]
+          "paths": {
+            "hide": [
+              "/data/sessvis/vault",
+              "*.key"
+            ]
           },
-          "hidden_vars": {
-            "names": ["SLACK_TOKEN"]
+          "vars": {
+            "hide": [
+              "SLACK_TOKEN"
+            ]
           },
           "env": {
             "SLACK_TOKEN": "xoxb-integ",
@@ -105,22 +325,31 @@
       "mounts": [
         {
           "path": "/",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         },
         {
           "path": "/data",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         }
       ],
       "sessions": {
         "no_root": {
-          "/data": "write"
+          "mounts": {
+            "/data": "write"
+          },
+          "paths": {
+            "hide": [
+              "/root.txt"
+            ]
+          }
         },
         "root_ro": {
-          "/data": "write",
-          "/": "read"
+          "mounts": {
+            "/data": "write",
+            "/": "read"
+          }
         }
       }
     },
@@ -133,12 +362,12 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         },
         {
           "path": "/alias",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory",
           "alias_of": "/data"
         }
@@ -153,20 +382,29 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         },
         {
           "path": "/data/inner",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         },
         {
           "path": "/ghost/deep",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         }
-      ]
+      ],
+      "sessions": {
+        "blind": {
+          "paths": {
+            "hide": [
+              "/ghost/deep"
+            ]
+          }
+        }
+      }
     },
     {
       "id": "ram-history",
@@ -177,7 +415,7 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         }
       ],
@@ -196,12 +434,12 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "http_fixture",
+          "vfs": "http_fixture",
           "backend": "memory"
         },
         {
           "path": "/ro",
-          "resource": "http_fixture",
+          "vfs": "http_fixture",
           "backend": "memory",
           "mode": "read"
         }
@@ -216,40 +454,53 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "disk",
+          "vfs": "disk",
           "backend": "tmpdir",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "disk",
+          "vfs": "disk",
           "backend": "tmpdir"
         },
         {
           "path": "/res",
-          "resource": "disk",
+          "vfs": "disk",
           "backend": "tmpdir",
           "fixture": "columnar/v1"
         },
         {
           "path": "/ro",
-          "resource": "disk",
+          "vfs": "disk",
           "backend": "tmpdir",
           "mode": "read"
         }
       ],
       "sessions": {
         "reader": {
-          "/data": "read"
+          "mounts": {
+            "/data": "read"
+          },
+          "paths": {
+            "hide": [
+              "/data2"
+            ]
+          }
         },
         "writer": {
-          "/data": "write"
+          "mounts": {
+            "/data": "write"
+          }
         },
-        "lister": [
-          "/data"
-        ],
+        "unnamed": {
+          "mounts": {
+            "/data2": "read"
+          }
+        },
         "capped": {
-          "/ro": "write"
+          "mounts": {
+            "/ro": "write"
+          }
         },
         "narrowed": {
           "mounts": {
@@ -258,12 +509,16 @@
             "/res": "read",
             "/ro": "read"
           },
-          "hidden_paths": {
-            "paths": ["/data/sessvis/vault"],
-            "patterns": ["*.key"]
+          "paths": {
+            "hide": [
+              "/data/sessvis/vault",
+              "*.key"
+            ]
           },
-          "hidden_vars": {
-            "names": ["SLACK_TOKEN"]
+          "vars": {
+            "hide": [
+              "SLACK_TOKEN"
+            ]
           },
           "env": {
             "SLACK_TOKEN": "xoxb-integ",
@@ -282,18 +537,18 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "redis",
+          "vfs": "redis",
           "backend": "redis",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "redis",
+          "vfs": "redis",
           "backend": "redis"
         },
         {
           "path": "/res",
-          "resource": "redis",
+          "vfs": "redis",
           "backend": "redis",
           "fixture": "columnar/v1"
         }
@@ -305,12 +560,16 @@
             "/data2": "write",
             "/res": "read"
           },
-          "hidden_paths": {
-            "paths": ["/data/sessvis/vault"],
-            "patterns": ["*.key"]
+          "paths": {
+            "hide": [
+              "/data/sessvis/vault",
+              "*.key"
+            ]
           },
-          "hidden_vars": {
-            "names": ["SLACK_TOKEN"]
+          "vars": {
+            "hide": [
+              "SLACK_TOKEN"
+            ]
           },
           "env": {
             "SLACK_TOKEN": "xoxb-integ",
@@ -332,40 +591,97 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         },
         {
           "path": "/data2",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         }
       ]
     },
     {
       "id": "opfs",
+      "exclusive": true,
       "hosts": [
         "typescript-browser"
       ],
       "mounts": [
         {
           "path": "/data",
-          "resource": "opfs",
+          "vfs": "opfs",
           "backend": "memory",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "opfs",
+          "vfs": "opfs",
           "backend": "memory"
         },
         {
           "path": "/res",
-          "resource": "opfs",
+          "vfs": "opfs",
           "backend": "memory",
           "fixture": "columnar/v1"
+        },
+        {
+          "path": "/ro",
+          "vfs": "opfs",
+          "backend": "memory",
+          "mode": "read"
         }
-      ]
+      ],
+      "sessions": {
+        "reader": {
+          "mounts": {
+            "/data": "read"
+          },
+          "paths": {
+            "hide": [
+              "/data2"
+            ]
+          }
+        },
+        "writer": {
+          "mounts": {
+            "/data": "write"
+          }
+        },
+        "unnamed": {
+          "mounts": {
+            "/data2": "read"
+          }
+        },
+        "capped": {
+          "mounts": {
+            "/ro": "write"
+          }
+        },
+        "narrowed": {
+          "mounts": {
+            "/data": "write",
+            "/data2": "write",
+            "/res": "read",
+            "/ro": "read"
+          },
+          "paths": {
+            "hide": [
+              "/data/sessvis/vault",
+              "*.key"
+            ]
+          },
+          "vars": {
+            "hide": [
+              "SLACK_TOKEN"
+            ]
+          },
+          "env": {
+            "SLACK_TOKEN": "xoxb-integ",
+            "ROLE": "analyst"
+          }
+        }
+      }
     },
     {
       "id": "s3",
@@ -377,20 +693,20 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "s3",
+          "vfs": "s3",
           "backend": "s3",
           "bucket": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "s3",
+          "vfs": "s3",
           "backend": "s3",
           "bucket": "data2"
         },
         {
           "path": "/res",
-          "resource": "s3",
+          "vfs": "s3",
           "backend": "s3",
           "bucket": "res",
           "fixture": "columnar/v1"
@@ -403,16 +719,61 @@
             "/data2": "write",
             "/res": "read"
           },
-          "hidden_paths": {
-            "paths": ["/data/sessvis/vault"],
-            "patterns": ["*.key"]
+          "paths": {
+            "hide": [
+              "/data/sessvis/vault",
+              "*.key"
+            ]
           },
-          "hidden_vars": {
-            "names": ["SLACK_TOKEN"]
+          "vars": {
+            "hide": [
+              "SLACK_TOKEN"
+            ]
           },
           "env": {
             "SLACK_TOKEN": "xoxb-integ",
             "ROLE": "analyst"
+          }
+        }
+      }
+    },
+    {
+      "id": "s3-walled",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "s3",
+      "mounts": [
+        {
+          "path": "/data",
+          "vfs": "s3",
+          "backend": "s3",
+          "bucket": "data"
+        }
+      ],
+      "sessions": {
+        "walled": {
+          "commands": {
+            "deny": [
+              {
+                "reason": "held for review",
+                "commands": {
+                  "grep": [
+                    "/data/warmwalk/locked.txt"
+                  ],
+                  "tar": [
+                    "/data/warmwalk/locked.txt"
+                  ]
+                }
+              },
+              {
+                "reason": "kept off limits",
+                "paths": [
+                  "/data/warmwalk/sealed.txt"
+                ]
+              }
+            ]
           }
         }
       }
@@ -427,7 +788,7 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "s3",
+          "vfs": "s3",
           "backend": "s3",
           "bucket": "shared",
           "prefix": "team/reports/data",
@@ -435,14 +796,14 @@
         },
         {
           "path": "/data2",
-          "resource": "s3",
+          "vfs": "s3",
           "backend": "s3",
           "bucket": "shared",
           "prefix": "team/reports/data2"
         },
         {
           "path": "/res",
-          "resource": "s3",
+          "vfs": "s3",
           "backend": "s3",
           "bucket": "shared",
           "prefix": "team/reports/res",
@@ -456,12 +817,16 @@
             "/data2": "write",
             "/res": "read"
           },
-          "hidden_paths": {
-            "paths": ["/data/sessvis/vault"],
-            "patterns": ["*.key"]
+          "paths": {
+            "hide": [
+              "/data/sessvis/vault",
+              "*.key"
+            ]
           },
-          "hidden_vars": {
-            "names": ["SLACK_TOKEN"]
+          "vars": {
+            "hide": [
+              "SLACK_TOKEN"
+            ]
           },
           "env": {
             "SLACK_TOKEN": "xoxb-integ",
@@ -480,111 +845,111 @@
       "mounts": [
         {
           "path": "/raw",
-          "resource": "s3",
+          "vfs": "s3",
           "backend": "s3",
           "bucket": "object-storage"
         },
         {
           "path": "/s3",
-          "resource": "s3",
+          "vfs": "s3",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/s3"
         },
         {
           "path": "/aliyun",
-          "resource": "aliyun",
+          "vfs": "aliyun",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/aliyun"
         },
         {
           "path": "/backblaze",
-          "resource": "backblaze",
+          "vfs": "backblaze",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/backblaze"
         },
         {
           "path": "/ceph",
-          "resource": "ceph",
+          "vfs": "ceph",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/ceph"
         },
         {
           "path": "/digitalocean",
-          "resource": "digitalocean",
+          "vfs": "digitalocean",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/digitalocean"
         },
         {
           "path": "/gcs",
-          "resource": "gcs",
+          "vfs": "gcs",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/gcs"
         },
         {
           "path": "/minio",
-          "resource": "minio",
+          "vfs": "minio",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/minio"
         },
         {
           "path": "/oci",
-          "resource": "oci",
+          "vfs": "oci",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/oci"
         },
         {
           "path": "/qingstor",
-          "resource": "qingstor",
+          "vfs": "qingstor",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/qingstor"
         },
         {
           "path": "/r2",
-          "resource": "r2",
+          "vfs": "r2",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/r2"
         },
         {
           "path": "/scaleway",
-          "resource": "scaleway",
+          "vfs": "scaleway",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/scaleway"
         },
         {
           "path": "/seaweedfs",
-          "resource": "seaweedfs",
+          "vfs": "seaweedfs",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/seaweedfs"
         },
         {
           "path": "/supabase",
-          "resource": "supabase",
+          "vfs": "supabase",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/supabase"
         },
         {
           "path": "/tencent",
-          "resource": "tencent",
+          "vfs": "tencent",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/tencent"
         },
         {
           "path": "/wasabi",
-          "resource": "wasabi",
+          "vfs": "wasabi",
           "backend": "s3",
           "bucket": "object-storage",
           "prefix": "aliases/wasabi"
@@ -601,20 +966,20 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "gridfs",
+          "vfs": "gridfs",
           "backend": "gridfs",
           "bucket": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "gridfs",
+          "vfs": "gridfs",
           "backend": "gridfs",
           "bucket": "data2"
         },
         {
           "path": "/res",
-          "resource": "gridfs",
+          "vfs": "gridfs",
           "backend": "gridfs",
           "bucket": "res",
           "fixture": "columnar/v1"
@@ -627,12 +992,16 @@
             "/data2": "write",
             "/res": "read"
           },
-          "hidden_paths": {
-            "paths": ["/data/sessvis/vault"],
-            "patterns": ["*.key"]
+          "paths": {
+            "hide": [
+              "/data/sessvis/vault",
+              "*.key"
+            ]
           },
-          "hidden_vars": {
-            "names": ["SLACK_TOKEN"]
+          "vars": {
+            "hide": [
+              "SLACK_TOKEN"
+            ]
           },
           "env": {
             "SLACK_TOKEN": "xoxb-integ",
@@ -651,7 +1020,7 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "gridfs",
+          "vfs": "gridfs",
           "backend": "gridfs",
           "bucket": "shared",
           "prefix": "team/reports/data",
@@ -659,14 +1028,14 @@
         },
         {
           "path": "/data2",
-          "resource": "gridfs",
+          "vfs": "gridfs",
           "backend": "gridfs",
           "bucket": "shared",
           "prefix": "team/reports/data2"
         },
         {
           "path": "/res",
-          "resource": "gridfs",
+          "vfs": "gridfs",
           "backend": "gridfs",
           "bucket": "shared",
           "prefix": "team/reports/res",
@@ -684,20 +1053,20 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "databricks_volume",
+          "vfs": "databricks_volume",
           "backend": "databricks_volume",
           "volume": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "databricks_volume",
+          "vfs": "databricks_volume",
           "backend": "databricks_volume",
           "volume": "data2"
         },
         {
           "path": "/res",
-          "resource": "databricks_volume",
+          "vfs": "databricks_volume",
           "backend": "databricks_volume",
           "volume": "res",
           "fixture": "columnar/v1"
@@ -714,7 +1083,7 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "databricks_volume",
+          "vfs": "databricks_volume",
           "backend": "databricks_volume",
           "volume": "shared",
           "prefix": "team/reports/data",
@@ -722,14 +1091,14 @@
         },
         {
           "path": "/data2",
-          "resource": "databricks_volume",
+          "vfs": "databricks_volume",
           "backend": "databricks_volume",
           "volume": "shared",
           "prefix": "team/reports/data2"
         },
         {
           "path": "/res",
-          "resource": "databricks_volume",
+          "vfs": "databricks_volume",
           "backend": "databricks_volume",
           "volume": "shared",
           "prefix": "team/reports/res",
@@ -747,27 +1116,27 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "dropbox",
+          "vfs": "dropbox",
           "backend": "dropbox",
           "bucket": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "dropbox",
+          "vfs": "dropbox",
           "backend": "dropbox",
           "bucket": "data2"
         },
         {
           "path": "/res",
-          "resource": "dropbox",
+          "vfs": "dropbox",
           "backend": "dropbox",
           "bucket": "res",
           "fixture": "columnar/v1"
         },
         {
           "path": "/search",
-          "resource": "dropbox",
+          "vfs": "dropbox",
           "backend": "dropbox",
           "bucket": "search",
           "fixture": "search/v1"
@@ -784,7 +1153,7 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "dropbox",
+          "vfs": "dropbox",
           "backend": "dropbox",
           "bucket": "shared",
           "root": "team/reports/data",
@@ -792,7 +1161,7 @@
         },
         {
           "path": "/data2",
-          "resource": "dropbox",
+          "vfs": "dropbox",
           "backend": "dropbox",
           "bucket": "shared",
           "root": "team/reports/data2",
@@ -800,7 +1169,7 @@
         },
         {
           "path": "/res",
-          "resource": "dropbox",
+          "vfs": "dropbox",
           "backend": "dropbox",
           "bucket": "shared",
           "root": "team/reports/res",
@@ -818,21 +1187,21 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "onedrive",
+          "vfs": "onedrive",
           "backend": "onedrive",
           "fixture": "files/v1",
           "prefix": "data"
         },
         {
           "path": "/data2",
-          "resource": "onedrive",
+          "vfs": "onedrive",
           "backend": "onedrive",
           "prefix": "xm2",
           "seed_root": true
         },
         {
           "path": "/res",
-          "resource": "onedrive",
+          "vfs": "onedrive",
           "backend": "onedrive",
           "prefix": "res",
           "fixture": "columnar/v1"
@@ -849,31 +1218,40 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "ssh",
+          "vfs": "ssh",
           "backend": "ssh",
           "root": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "ssh",
+          "vfs": "ssh",
           "backend": "ssh",
           "root": "xm2"
         },
         {
           "path": "/res",
-          "resource": "ssh",
+          "vfs": "ssh",
           "backend": "ssh",
           "root": "res",
           "fixture": "columnar/v1"
         },
         {
           "path": "/links",
-          "resource": "ssh",
+          "vfs": "ssh",
           "backend": "ssh",
           "root": "links"
         }
-      ]
+      ],
+      "sessions": {
+        "veiled": {
+          "paths": {
+            "hide": [
+              "/data/qsubh/sec"
+            ]
+          }
+        }
+      }
     },
     {
       "id": "nextcloud",
@@ -885,20 +1263,20 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "nextcloud",
+          "vfs": "nextcloud",
           "backend": "webdav",
           "root": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "nextcloud",
+          "vfs": "nextcloud",
           "backend": "webdav",
           "root": "xm2"
         },
         {
           "path": "/res",
-          "resource": "nextcloud",
+          "vfs": "nextcloud",
           "backend": "webdav",
           "root": "res",
           "fixture": "columnar/v1"
@@ -915,20 +1293,20 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "sharepoint",
+          "vfs": "sharepoint",
           "backend": "sharepoint",
           "drive": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "sharepoint",
+          "vfs": "sharepoint",
           "backend": "sharepoint",
           "drive": "xm2"
         },
         {
           "path": "/res",
-          "resource": "sharepoint",
+          "vfs": "sharepoint",
           "backend": "sharepoint",
           "drive": "res",
           "fixture": "columnar/v1"
@@ -945,7 +1323,7 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "sharepoint",
+          "vfs": "sharepoint",
           "backend": "sharepoint",
           "drive": "shared",
           "prefix": "team/reports/data",
@@ -953,7 +1331,7 @@
         },
         {
           "path": "/data2",
-          "resource": "sharepoint",
+          "vfs": "sharepoint",
           "backend": "sharepoint",
           "drive": "shared",
           "prefix": "team/reports/data2",
@@ -961,7 +1339,7 @@
         },
         {
           "path": "/res",
-          "resource": "sharepoint",
+          "vfs": "sharepoint",
           "backend": "sharepoint",
           "drive": "shared",
           "prefix": "team/reports/res",
@@ -980,7 +1358,7 @@
       "mounts": [
         {
           "path": "/memories",
-          "resource": "mem0",
+          "vfs": "mem0",
           "backend": "mem0",
           "mode": "read"
         }
@@ -996,9 +1374,49 @@
       "mounts": [
         {
           "path": "/pg",
-          "resource": "postgres",
+          "vfs": "postgres",
           "backend": "postgres",
-          "mode": "read"
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "public"
+            ]
+          }
+        },
+        {
+          "path": "/pg-limited",
+          "vfs": "postgres",
+          "backend": "postgres",
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "public"
+            ],
+            "max_read_rows": 3
+          }
+        },
+        {
+          "path": "/pg-contract",
+          "vfs": "postgres",
+          "backend": "postgres",
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "contract"
+            ]
+          }
+        },
+        {
+          "path": "/pg-bytes",
+          "vfs": "postgres",
+          "backend": "postgres",
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "byte_budget"
+            ],
+            "max_read_bytes": 64
+          }
         }
       ]
     },
@@ -1012,9 +1430,29 @@
       "mounts": [
         {
           "path": "/mongodb",
-          "resource": "mongodb",
+          "vfs": "mongodb",
           "backend": "mongodb",
           "mode": "read"
+        },
+        {
+          "path": "/mongo-limited",
+          "vfs": "mongodb",
+          "backend": "mongodb",
+          "mode": "read",
+          "config": {
+            "max_doc_limit": 3
+          }
+        },
+        {
+          "path": "/mongo-denied",
+          "vfs": "mongodb",
+          "backend": "mongodb",
+          "mode": "read",
+          "config": {
+            "databases": [
+              "excluded"
+            ]
+          }
         }
       ]
     },
@@ -1028,7 +1466,7 @@
       "mounts": [
         {
           "path": "/knowledge",
-          "resource": "chroma",
+          "vfs": "chroma",
           "backend": "chroma",
           "mode": "read"
         }
@@ -1044,7 +1482,7 @@
       "mounts": [
         {
           "path": "/db",
-          "resource": "qdrant",
+          "vfs": "qdrant",
           "backend": "qdrant",
           "mode": "read"
         }
@@ -1060,7 +1498,41 @@
       "mounts": [
         {
           "path": "/db",
-          "resource": "lancedb",
+          "vfs": "lancedb",
+          "backend": "lancedb",
+          "mode": "read"
+        }
+      ]
+    },
+    {
+      "id": "qdrant-window",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "qdrant",
+      "facet": "window",
+      "mounts": [
+        {
+          "path": "/db",
+          "vfs": "qdrant",
+          "backend": "qdrant",
+          "mode": "read"
+        }
+      ]
+    },
+    {
+      "id": "lancedb-window",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "lancedb",
+      "facet": "window",
+      "mounts": [
+        {
+          "path": "/db",
+          "vfs": "lancedb",
           "backend": "lancedb",
           "mode": "read"
         }
@@ -1076,7 +1548,7 @@
       "mounts": [
         {
           "path": "/notion",
-          "resource": "notion",
+          "vfs": "notion",
           "backend": "notion",
           "mode": "read"
         }
@@ -1092,23 +1564,76 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "hf",
+          "vfs": "hf",
           "backend": "hf",
           "bucket": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "hf",
+          "vfs": "hf",
           "backend": "hf",
           "bucket": "data2"
         },
         {
           "path": "/res",
-          "resource": "hf",
+          "vfs": "hf",
           "backend": "hf",
           "bucket": "res",
           "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "hf-hub",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "hf-hub",
+      "mounts": [
+        {
+          "path": "/repo",
+          "vfs": "hf_models",
+          "backend": "hf_hub",
+          "repo": "integ/repo-v1"
+        },
+        {
+          "path": "/data",
+          "vfs": "hf_datasets",
+          "backend": "hf_hub",
+          "repo": "integ/data-v1"
+        },
+        {
+          "path": "/space",
+          "vfs": "hf_spaces",
+          "backend": "hf_hub",
+          "repo": "integ/space-v1"
+        }
+      ]
+    },
+    {
+      "id": "cli-hf",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "hf-hub",
+      "facet": "cli",
+      "clis": [
+        "hf"
+      ],
+      "mounts": [
+        {
+          "path": "/repo",
+          "vfs": "hf_models",
+          "backend": "hf_hub",
+          "repo": "integ/repo-cli"
+        },
+        {
+          "path": "/scratch",
+          "vfs": "ram",
+          "backend": "memory"
         }
       ]
     },
@@ -1122,27 +1647,27 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "box",
+          "vfs": "box",
           "backend": "box",
           "folder": "data",
           "seed": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "box",
+          "vfs": "box",
           "backend": "box",
           "folder": "data2"
         },
         {
           "path": "/res",
-          "resource": "box",
+          "vfs": "box",
           "backend": "box",
           "folder": "res",
           "seed": "columnar/v1"
         },
         {
           "path": "/search",
-          "resource": "box",
+          "vfs": "box",
           "backend": "box",
           "folder": "search",
           "seed": "search/v1"
@@ -1159,19 +1684,40 @@
       "mounts": [
         {
           "path": "/repo",
-          "resource": "github",
+          "vfs": "github",
           "backend": "github",
           "repo": "integ/repo-v1",
           "mode": "read"
         },
         {
           "path": "/trunc",
-          "resource": "github",
+          "vfs": "github",
           "backend": "github",
           "repo": "integ/repo-trunc",
           "mode": "read"
+        },
+        {
+          "path": "/data",
+          "vfs": "github",
+          "backend": "github",
+          "repo": "integ/data-v1",
+          "mode": "read"
         }
-      ]
+      ],
+      "sessions": {
+        "sealed": {
+          "commands": {
+            "deny": [
+              {
+                "reason": "unreadable cache subtree",
+                "paths": [
+                  "/trunc/src/cache"
+                ]
+              }
+            ]
+          }
+        }
+      }
     },
     {
       "id": "cli-gh",
@@ -1187,14 +1733,14 @@
       "mounts": [
         {
           "path": "/repo",
-          "resource": "github",
+          "vfs": "github",
           "backend": "github",
           "repo": "integ/repo-cli",
           "mode": "read"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         }
       ]
@@ -1209,7 +1755,7 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "hf",
+          "vfs": "hf",
           "backend": "hf",
           "bucket": "shared",
           "prefix": "team/reports/data",
@@ -1217,14 +1763,14 @@
         },
         {
           "path": "/data2",
-          "resource": "hf",
+          "vfs": "hf",
           "backend": "hf",
           "bucket": "shared",
           "prefix": "team/reports/data2"
         },
         {
           "path": "/res",
-          "resource": "hf",
+          "vfs": "hf",
           "backend": "hf",
           "bucket": "shared",
           "prefix": "team/reports/res",
@@ -1242,20 +1788,20 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "root": "data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "root": "xm2"
         },
         {
           "path": "/res",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "root": "res",
           "fixture": "columnar/v1"
@@ -1275,20 +1821,20 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "root": "team/reports/data",
           "fixture": "files/v1"
         },
         {
           "path": "/data2",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "root": "team/reports/data2"
         },
         {
           "path": "/res",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "root": "team/reports/res",
           "fixture": "columnar/v1"
@@ -1305,14 +1851,14 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "drive": "eng",
           "root": "team/data"
         },
         {
           "path": "/data2",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "drive": "eng",
           "root": "team/data2"
@@ -1334,23 +1880,73 @@
       "mounts": [
         {
           "path": "/docs",
-          "resource": "gdocs",
+          "vfs": "gdocs",
           "backend": "gdocs"
         },
         {
           "path": "/sheets",
-          "resource": "gsheets",
+          "vfs": "gsheets",
           "backend": "gsheets"
         },
         {
           "path": "/slides",
-          "resource": "gslides",
+          "vfs": "gslides",
           "backend": "gslides"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
+        }
+      ],
+      "clis": [
+        "gws"
+      ]
+    },
+    {
+      "id": "gapps-tabs",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "epoch": "2026-01-01T00:00:00Z",
+      "docs": "gdocs-tabs/v1",
+      "mounts": [
+        {
+          "path": "/docs",
+          "vfs": "gdocs",
+          "backend": "gdocs"
+        }
+      ],
+      "clis": [
+        "gws"
+      ]
+    },
+    {
+      "id": "gapps-fresh",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "epoch": "2026-01-01T00:00:00Z",
+      "apps": "google-apps/v1",
+      "mounts": [
+        {
+          "path": "/docs",
+          "vfs": "gdocs",
+          "backend": "gdocs"
+        },
+        {
+          "path": "/sheets",
+          "vfs": "gsheets",
+          "backend": "gsheets"
+        },
+        {
+          "path": "/slides",
+          "vfs": "gslides",
+          "backend": "gslides"
         }
       ],
       "clis": [
@@ -1370,12 +1966,28 @@
       "mounts": [
         {
           "path": "/cal",
-          "resource": "gcal",
+          "vfs": "gcal",
           "backend": "gcal"
         },
         {
+          "path": "/week",
+          "vfs": "gcal",
+          "backend": "gcal",
+          "config": {
+            "bucket_days": 7
+          }
+        },
+        {
+          "path": "/month",
+          "vfs": "gcal",
+          "backend": "gcal",
+          "config": {
+            "bucket_days": 30
+          }
+        },
+        {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "ram"
         }
       ],
@@ -1396,12 +2008,12 @@
       "mounts": [
         {
           "path": "/mail",
-          "resource": "gmail",
+          "vfs": "gmail",
           "backend": "gmail"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "ram"
         }
       ],
@@ -1424,12 +2036,12 @@
       "mounts": [
         {
           "path": "/mail",
-          "resource": "email",
+          "vfs": "email",
           "backend": "email"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "ram"
         }
       ]
@@ -1444,17 +2056,57 @@
       "facet": "cli",
       "mail": "email/v1",
       "clis": [
-        "himalaya"
+        "himalaya",
+        "h1",
+        "h2"
       ],
+      "profiles": {
+        "crew": {
+          "commands": {
+            "allow": [
+              "h1",
+              "h2"
+            ],
+            "ask": [
+              {
+                "reason": "outbound mail needs a nod",
+                "commands": [
+                  "h1 message send"
+                ]
+              }
+            ],
+            "deny": [
+              {
+                "reason": "beta is read-only",
+                "commands": [
+                  "h2 message send"
+                ]
+              }
+            ]
+          }
+        },
+        "solo": {
+          "commands": {
+            "allow": [
+              "h1",
+              "type"
+            ]
+          }
+        }
+      },
+      "sessions": {
+        "crew": "crew",
+        "solo": "solo"
+      },
       "mounts": [
         {
           "path": "/mail",
-          "resource": "email",
+          "vfs": "email",
           "backend": "email"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "ram"
         }
       ]
@@ -1478,12 +2130,12 @@
       "mounts": [
         {
           "path": "/mail",
-          "resource": "gmail",
+          "vfs": "gmail",
           "backend": "gmail"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "ram"
         }
       ]
@@ -1503,7 +2155,7 @@
       "mounts": [
         {
           "path": "/data",
-          "resource": "gdrive",
+          "vfs": "gdrive",
           "backend": "gdrive",
           "root": "team/scope"
         }
@@ -1523,11 +2175,11 @@
       "mounts": [
         {
           "path": "/slack",
-          "resource": "slack"
+          "vfs": "slack"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         }
       ]
@@ -1546,11 +2198,11 @@
       "mounts": [
         {
           "path": "/discord",
-          "resource": "discord"
+          "vfs": "discord"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         }
       ]
@@ -1569,11 +2221,11 @@
       "mounts": [
         {
           "path": "/notion",
-          "resource": "notion"
+          "vfs": "notion"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory"
         }
       ],
@@ -1595,11 +2247,35 @@
       "mounts": [
         {
           "path": "/issues",
-          "resource": "linear"
+          "vfs": "linear"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
+      "id": "cli-airtable",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "airtable",
+      "facet": "cli",
+      "clis": [
+        "airtable"
+      ],
+      "mounts": [
+        {
+          "path": "/airtable",
+          "vfs": "airtable",
+          "mode": "read"
+        },
+        {
+          "path": "/scratch",
+          "vfs": "ram",
           "backend": "memory"
         }
       ]
@@ -1615,7 +2291,7 @@
       "mounts": [
         {
           "path": "/slack",
-          "resource": "slack",
+          "vfs": "slack",
           "backend": "slack"
         }
       ]
@@ -1631,13 +2307,39 @@
       "mounts": [
         {
           "path": "/discord",
-          "resource": "discord",
+          "vfs": "discord",
           "backend": "discord"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "ram"
+        }
+      ]
+    },
+    {
+      "id": "airtable",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "airtable",
+      "facet": "project",
+      "mounts": [
+        {
+          "path": "/airtable",
+          "vfs": "airtable",
+          "backend": "airtable",
+          "mode": "read"
+        },
+        {
+          "path": "/roadmap",
+          "vfs": "airtable",
+          "backend": "airtable",
+          "mode": "read",
+          "base_ids": [
+            "appRoadmapBase001"
+          ]
         }
       ]
     },
@@ -1652,13 +2354,35 @@
       "mounts": [
         {
           "path": "/board",
-          "resource": "trello",
+          "vfs": "trello",
           "backend": "trello"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "ram"
+        }
+      ]
+    },
+    {
+      "id": "trello-scoped",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "trello",
+      "facet": "project",
+      "mounts": [
+        {
+          "path": "/scoped",
+          "vfs": "trello",
+          "backend": "trello",
+          "config": {
+            "workspace_id": "org_strukto",
+            "board_ids": [
+              "brd_ops"
+            ]
+          }
         }
       ]
     },
@@ -1673,12 +2397,12 @@
       "mounts": [
         {
           "path": "/issues",
-          "resource": "linear",
+          "vfs": "linear",
           "backend": "linear"
         },
         {
           "path": "/scratch",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "ram"
         }
       ]
@@ -1695,7 +2419,7 @@
       "mounts": [
         {
           "path": "/knowledge",
-          "resource": "dify",
+          "vfs": "dify",
           "backend": "dify"
         }
       ]
@@ -1711,7 +2435,7 @@
       "mounts": [
         {
           "path": "/j",
-          "resource": "jaeger",
+          "vfs": "jaeger",
           "backend": "jaeger"
         }
       ]
@@ -1727,7 +2451,7 @@
       "mounts": [
         {
           "path": "/lf",
-          "resource": "langfuse",
+          "vfs": "langfuse",
           "backend": "langfuse"
         }
       ]
@@ -1742,11 +2466,19 @@
       "mounts": [
         {
           "path": "/vfs",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory",
           "fixture": "statvfs/v1"
         }
-      ]
+      ],
+      "profile": "ops",
+      "profiles": {
+        "ops": {},
+        "auditor": {}
+      },
+      "sessions": {
+        "auditor": "auditor"
+      }
     },
     {
       "id": "argerr-databricks",
@@ -1758,7 +2490,7 @@
       "mounts": [
         {
           "path": "/databricks",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "databricks",
           "mode": "read"
         }
@@ -1774,7 +2506,7 @@
       "mounts": [
         {
           "path": "/discord",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "discord",
           "mode": "read"
         }
@@ -1790,7 +2522,7 @@
       "mounts": [
         {
           "path": "/email",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "email",
           "mode": "read"
         }
@@ -1806,7 +2538,7 @@
       "mounts": [
         {
           "path": "/gdocs",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "gdocs",
           "mode": "read"
         }
@@ -1822,7 +2554,7 @@
       "mounts": [
         {
           "path": "/gdrive",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "gdrive",
           "mode": "read"
         }
@@ -1838,7 +2570,7 @@
       "mounts": [
         {
           "path": "/gmail",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "gmail",
           "mode": "read"
         }
@@ -1854,7 +2586,7 @@
       "mounts": [
         {
           "path": "/gsheets",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "gsheets",
           "mode": "read"
         }
@@ -1870,7 +2602,7 @@
       "mounts": [
         {
           "path": "/gslides",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "gslides",
           "mode": "read"
         }
@@ -1886,8 +2618,24 @@
       "mounts": [
         {
           "path": "/langfuse",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "langfuse",
+          "mode": "read"
+        }
+      ]
+    },
+    {
+      "id": "argerr-airtable",
+      "facet": "argerr",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "mounts": [
+        {
+          "path": "/airtable",
+          "vfs": "arg_error",
+          "backend": "airtable",
           "mode": "read"
         }
       ]
@@ -1902,7 +2650,7 @@
       "mounts": [
         {
           "path": "/linear",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "linear",
           "mode": "read"
         }
@@ -1918,7 +2666,7 @@
       "mounts": [
         {
           "path": "/mem0",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "mem0",
           "mode": "read"
         }
@@ -1934,7 +2682,7 @@
       "mounts": [
         {
           "path": "/onedrive",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "onedrive",
           "mode": "read"
         }
@@ -1950,7 +2698,7 @@
       "mounts": [
         {
           "path": "/sharepoint",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "sharepoint",
           "mode": "read"
         }
@@ -1966,7 +2714,7 @@
       "mounts": [
         {
           "path": "/slack",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "slack",
           "mode": "read"
         }
@@ -1982,7 +2730,7 @@
       "mounts": [
         {
           "path": "/trello",
-          "resource": "arg_error",
+          "vfs": "arg_error",
           "backend": "trello",
           "mode": "read"
         }
@@ -2000,7 +2748,7 @@
       "mounts": [
         {
           "path": "/repo",
-          "resource": "disk",
+          "vfs": "disk",
           "backend": "tmpdir",
           "fixture": "git"
         }
@@ -2018,9 +2766,823 @@
       "mounts": [
         {
           "path": "/repo",
-          "resource": "ram",
+          "vfs": "ram",
           "backend": "memory",
           "fixture": "git"
+        }
+      ]
+    },
+    {
+      "id": "ram-commands",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "clis": [
+        "git"
+      ],
+      "mounts": [
+        {
+          "path": "/repo",
+          "vfs": "ram",
+          "backend": "memory",
+          "fixture": "git"
+        },
+        {
+          "path": "/scratch",
+          "vfs": "ram",
+          "backend": "memory"
+        },
+        {
+          "path": "/vault",
+          "vfs": "ram",
+          "backend": "memory"
+        },
+        {
+          "path": "/vault/d/inner",
+          "vfs": "ram",
+          "backend": "memory"
+        }
+      ],
+      "sessions": {
+        "reviewer": "reviewer",
+        "asker": {},
+        "asker2": {},
+        "granted": {},
+        "nodder": {
+          "commands": {
+            "ask": [
+              {
+                "reason": "profile nod",
+                "commands": {
+                  "rm": [
+                    "/scratch/both/*"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "frozen": {
+          "commands": {
+            "deny": [
+              {
+                "reason": "frozen",
+                "paths": [
+                  "/scratch/locked/*"
+                ]
+              },
+              {
+                "reason": "walled",
+                "paths": [
+                  "/scratch/wk/sealed"
+                ]
+              }
+            ]
+          }
+        },
+        "veiled": {
+          "paths": {
+            "hide": [
+              "/scratch/private",
+              "/scratch/shared",
+              "/repo/sealed"
+            ]
+          }
+        },
+        "boxed": {
+          "paths": {
+            "hide": [
+              "/scratch/box/sec",
+              "/scratch/only/h",
+              "/scratch/gone/sec"
+            ]
+          }
+        },
+        "tagged": {
+          "paths": {
+            "hide": [
+              "*.tkn"
+            ]
+          }
+        },
+        "screened": {
+          "paths": {
+            "hide": [
+              "/scratch/pen/*/sec"
+            ]
+          }
+        },
+        "guarded": "guarded",
+        "sealed": {
+          "paths": {
+            "hide": [
+              "/vault/d/inner"
+            ]
+          }
+        },
+        "shrouded": {
+          "paths": {
+            "hide": [
+              "/vault/d/sec"
+            ]
+          }
+        },
+        "spanner": {
+          "commands": {
+            "ask": [
+              {
+                "reason": "span review",
+                "commands": {
+                  "cat": [
+                    "/scratch/span/*",
+                    "/scratch/deep/a/b/c/*"
+                  ]
+                }
+              }
+            ],
+            "deny": [
+              {
+                "reason": "span sealed",
+                "commands": {
+                  "cat": [
+                    "/scratch/span/sealed/*"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "carver": {
+          "commands": {
+            "ask": [
+              {
+                "reason": "carve nod",
+                "commands": {
+                  "rm": [
+                    "/scratch/carve/open/*"
+                  ]
+                }
+              }
+            ],
+            "deny": [
+              {
+                "reason": "carve locked",
+                "commands": {
+                  "rm": [
+                    "/scratch/carve/*"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "courier": {
+          "commands": {
+            "ask": [
+              {
+                "reason": "outbox nod",
+                "commands": {
+                  "cp": [
+                    "/scratch/outbox/deep/*"
+                  ],
+                  "mv": [
+                    "/scratch/outbox/deep/*"
+                  ]
+                }
+              },
+              {
+                "reason": "staging nod",
+                "commands": {
+                  "cp": [
+                    "/scratch/stage/*"
+                  ],
+                  "mv": [
+                    "/scratch/stage/*"
+                  ]
+                }
+              }
+            ],
+            "deny": [
+              {
+                "reason": "courier sealed",
+                "commands": {
+                  "cp": [
+                    "/scratch/vaultc/*"
+                  ],
+                  "mv": [
+                    "/scratch/vaultc/*"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "anchored": {
+          "mounts": {
+            "/scratch": {
+              "paths": {
+                "hide": [
+                  "*.key"
+                ]
+              },
+              "commands": {
+                "deny": [
+                  {
+                    "reason": "anchored pem",
+                    "paths": [
+                      "*.pem"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "scripted": "scripted",
+        "scriptedask": "scriptedask",
+        "scriptedops": "scriptedops",
+        "keeper": "keeper",
+        "opener": "opener",
+        "pruner": "pruner",
+        "speaker": "speaker",
+        "linkwalled": "linkwalled"
+      },
+      "profile": "default",
+      "profiles": {
+        "keeper": {
+          "paths": {
+            "hide": [
+              "/scratch/grove"
+            ],
+            "show": {
+              "/scratch/grove/open": "r"
+            }
+          }
+        },
+        "opener": {
+          "mounts": {
+            "/scratch": "r"
+          },
+          "paths": {
+            "show": {
+              "/scratch/grove/build": "rw"
+            }
+          }
+        },
+        "pruner": {
+          "paths": {
+            "show": {
+              "/scratch/pine/keep": "r"
+            }
+          }
+        },
+        "guarded": {
+          "paths": {
+            "hide": [
+              "/scratch/keep/h"
+            ],
+            "show": {
+              "/scratch/keep/h": "r"
+            }
+          }
+        },
+        "default": {
+          "commands": {
+            "allow": [
+              "mkdir",
+              "tee",
+              "touch",
+              "ls",
+              "cat",
+              "head",
+              "rm",
+              "find",
+              "grep",
+              "git",
+              "man",
+              "xargs",
+              "python3",
+              "ln",
+              "mv",
+              "rmdir",
+              "du",
+              "cp",
+              "tar",
+              "tree",
+              "stat",
+              "file",
+              "wc",
+              "zip",
+              "echo",
+              "cd",
+              "test",
+              "[",
+              "type",
+              "command",
+              "which"
+            ],
+            "ask": [
+              {
+                "reason": "sign-off",
+                "commands": {
+                  "rm": [
+                    "/scratch/shared/*"
+                  ]
+                }
+              },
+              "head",
+              {
+                "reason": "both: needs a nod",
+                "commands": {
+                  "rm": [
+                    "/scratch/both/*"
+                  ]
+                }
+              }
+            ],
+            "deny": [
+              {
+                "reason": "no deletes in the repo",
+                "commands": {
+                  "rm": [
+                    "/repo/*"
+                  ]
+                }
+              },
+              {
+                "reason": "sealed until review",
+                "paths": [
+                  "/repo/sealed/*"
+                ]
+              },
+              {
+                "reason": "private",
+                "commands": {
+                  "cat": [
+                    "/scratch/private"
+                  ],
+                  "ls": [
+                    "/scratch/private"
+                  ],
+                  "grep": [
+                    "/scratch/private"
+                  ]
+                }
+              },
+              {
+                "reason": "both: locked",
+                "commands": {
+                  "rm": [
+                    "/scratch/both/locked/*"
+                  ]
+                }
+              },
+              {
+                "reason": "both: locked, second voice",
+                "commands": {
+                  "rm": [
+                    "/scratch/both/locked/*"
+                  ]
+                }
+              },
+              {
+                "reason": "no branches",
+                "commands": [
+                  "git branch"
+                ]
+              }
+            ]
+          },
+          "mounts": {
+            "/repo": {
+              "commands": {
+                "ask": [
+                  {
+                    "reason": "log needs a nod",
+                    "commands": [
+                      "git log"
+                    ]
+                  },
+                  {
+                    "reason": "branches need a nod",
+                    "commands": [
+                      "git branch"
+                    ]
+                  }
+                ],
+                "deny": [
+                  {
+                    "reason": "history is read-only here",
+                    "commands": [
+                      "git commit",
+                      "git reset --hard"
+                    ]
+                  },
+                  {
+                    "reason": "owner: sealed",
+                    "commands": {
+                      "rm": [
+                        "/repo/sealed/*"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "reviewer": {
+          "commands": {
+            "allow": [
+              "ls",
+              "cat",
+              "git log",
+              "git status",
+              "xargs",
+              "type",
+              "eval",
+              "cd",
+              "echo"
+            ]
+          }
+        },
+        "scripted": {
+          "policy": {
+            "script": {
+              "language": "python",
+              "source": "def pre_command(ctx):\n    c = ctx['command']\n    for p in c['paths']:\n        if c['name'] == 'cat' and p.startswith('/repo/sealed/'):\n            return {'deny': 'written by ' + ctx['profile']}\n    return None\n"
+            },
+            "runtime": "monty"
+          }
+        },
+        "scriptedask": {
+          "policy": {
+            "script": {
+              "language": "python",
+              "source": "def pre_command(ctx):\n    c = ctx['command']\n    for p in c['paths']:\n        if c['name'] == 'rm' and p.startswith('/scratch/askme/'):\n            return {'ask': 'scripted sign-off'}\n    return None\n"
+            },
+            "runtime": "monty"
+          }
+        },
+        "scriptedops": {
+          "policy": {
+            "script": {
+              "language": "python",
+              "source": "def pre_command(ctx):\n    for p in ctx['command']['paths']:\n        if 'marker' in contents(p):\n            return {'deny': 'marked by ' + ctx['profile']}\n    return None\n\ndef pre_ops(ctx):\n    op = ctx['op']\n    if op['write'] and op['path'].startswith('/scratch/cold/'):\n        return {'deny': 'cold by ' + ctx['profile']}\n    if op['name'] in READS and op['path'].startswith('/scratch/drop/'):\n        return {'deny': 'drop box by ' + ctx['profile']}\n    return None\n\nREADS = ('read', 'read_bytes', 'read_stream', 'read_range')\n\ndef pre_session(ctx):\n    if ctx['write']['key'].startswith('AWS_'):\n        return {'deny': 'credentials are set by the operator'}\n    return None\n\ndef contents(path):\n    try:\n        return open(path).read()\n    except OSError:\n        return ''\n"
+            },
+            "runtime": "monty"
+          }
+        },
+        "speaker": {
+          "commands": {
+            "allow": [
+              "echo"
+            ]
+          }
+        },
+        "linkwalled": {
+          "paths": {
+            "hide": [
+              "/scratch/lw/real"
+            ]
+          },
+          "commands": {
+            "allow": [
+              "sed",
+              "awk"
+            ],
+            "deny": [
+              {
+                "reason": "kept behind the link",
+                "commands": {
+                  "sed": [
+                    "/scratch/lw/flink"
+                  ],
+                  "awk": [
+                    "/scratch/lw/secret"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "ram-scripted",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "quickjs",
+      "mounts": [
+        {
+          "path": "/repo",
+          "vfs": "ram",
+          "backend": "memory"
+        },
+        {
+          "path": "/scratch",
+          "vfs": "ram",
+          "backend": "memory"
+        }
+      ],
+      "sessions": {
+        "scriptedjs": "scriptedjs",
+        "scriptedopsjs": "scriptedopsjs"
+      },
+      "profile": "default",
+      "profiles": {
+        "default": {
+          "commands": {
+            "allow": [
+              "ls",
+              "cat",
+              "echo",
+              "head",
+              "mkdir",
+              "touch",
+              "rm"
+            ]
+          }
+        },
+        "scriptedjs": {
+          "policy": {
+            "script": {
+              "language": "js",
+              "source": "function preCommand(ctx) {\n  const c = ctx.command\n  const hit = c.name === 'cat' && c.paths.some((p) => p.startsWith('/repo/sealed/'))\n  return hit ? {deny: 'sealed by ' + ctx.profile} : null\n}\n"
+            },
+            "runtime": "quickjs"
+          }
+        },
+        "scriptedopsjs": {
+          "policy": {
+            "script": {
+              "language": "js",
+              "source": "function preOps(ctx) {\n  const op = ctx.op\n  if (op.write && op.path.startsWith('/scratch/cold/')) return {deny: 'cold by ' + ctx.profile}\n  const reads = ['read', 'read_bytes', 'read_stream', 'read_range']\n  return reads.includes(op.name) && op.path.startsWith('/scratch/drop/') ? {deny: 'drop box by ' + ctx.profile} : null\n}\nfunction preSession(ctx) {\n  return ctx.write.key.startsWith('AWS_') ? {deny: 'credentials are set by the operator'} : null\n}\n"
+            },
+            "runtime": "quickjs"
+          }
+        }
+      }
+    },
+    {
+      "id": "secrets-env",
+      "exclusive": true,
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "secrets": "healthy",
+      "mounts": [
+        {
+          "path": "/data",
+          "vfs": "ram",
+          "backend": "memory",
+          "mode": "exec"
+        }
+      ]
+    },
+    {
+      "id": "secrets-dead",
+      "exclusive": true,
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "secrets": "dead",
+      "mounts": [
+        {
+          "path": "/data",
+          "vfs": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
+      "id": "secrets-gated",
+      "exclusive": true,
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "secrets": "gated",
+      "profile": "gated",
+      "profiles": {
+        "gated": {
+          "commands": {
+            "deny": [
+              {
+                "reason": "reading GATED is off here",
+                "commands": [
+                  "printenv GATED"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "mounts": [
+        {
+          "path": "/data",
+          "vfs": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
+      "id": "secrets-implicit",
+      "exclusive": true,
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "secrets": "implicit",
+      "mounts": [
+        {
+          "path": "/data",
+          "vfs": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
+      "id": "disk-host-links",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "mounts": [
+        {
+          "path": "/data",
+          "vfs": "disk",
+          "backend": "tmpdir",
+          "host_fixture": "disk/host-links"
+        }
+      ]
+    },
+    {
+      "id": "slack-time-scope",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "slack",
+      "facet": "chat",
+      "mounts": [
+        {
+          "path": "/slack",
+          "vfs": "slack",
+          "backend": "slack",
+          "config": {
+            "start_time": "2026-06-01T10:00:00Z",
+            "end_time": "2026-06-02T00:00:00Z"
+          }
+        },
+        {
+          "path": "/full",
+          "vfs": "slack",
+          "backend": "slack",
+          "config": {}
+        },
+        {
+          "path": "/since",
+          "vfs": "slack",
+          "backend": "slack",
+          "config": {
+            "start_time": "2026-06-01T10:00:00Z"
+          }
+        },
+        {
+          "path": "/until",
+          "vfs": "slack",
+          "backend": "slack",
+          "config": {
+            "end_time": "2026-06-02T00:00:00Z"
+          }
+        },
+        {
+          "path": "/millis",
+          "vfs": "slack",
+          "backend": "slack",
+          "config": {
+            "start_time": "2026-06-01T23:59:59.999Z",
+            "end_time": "2026-06-02T00:00:00Z"
+          }
+        }
+      ],
+      "dataset": "time_scope"
+    },
+    {
+      "id": "discord-time-scope",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "discord",
+      "facet": "chat",
+      "mounts": [
+        {
+          "path": "/discord",
+          "vfs": "discord",
+          "backend": "discord",
+          "config": {
+            "start_time": "2026-06-01T10:00:00Z",
+            "end_time": "2026-06-02T00:00:00Z"
+          }
+        },
+        {
+          "path": "/full",
+          "vfs": "discord",
+          "backend": "discord",
+          "config": {}
+        },
+        {
+          "path": "/since",
+          "vfs": "discord",
+          "backend": "discord",
+          "config": {
+            "start_time": "2026-06-01T10:00:00Z"
+          }
+        },
+        {
+          "path": "/until",
+          "vfs": "discord",
+          "backend": "discord",
+          "config": {
+            "end_time": "2026-06-02T00:00:00Z"
+          }
+        }
+      ],
+      "dataset": "time_scope"
+    },
+    {
+      "id": "gcal-time-scope",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "facet": "cli",
+      "epoch": "2026-02-01T00:00:00Z",
+      "calendar": "calendar/time_scope",
+      "mounts": [
+        {
+          "path": "/cal",
+          "vfs": "gcal",
+          "backend": "gcal",
+          "config": {
+            "start_time": "2026-06-01T10:00:00Z",
+            "end_time": "2026-06-02T00:00:00Z",
+            "time_zone": "UTC"
+          }
+        },
+        {
+          "path": "/full",
+          "vfs": "gcal",
+          "backend": "gcal",
+          "config": {
+            "time_zone": "UTC"
+          }
+        },
+        {
+          "path": "/since",
+          "vfs": "gcal",
+          "backend": "gcal",
+          "config": {
+            "start_time": "2026-06-01T10:00:00Z",
+            "time_zone": "UTC"
+          }
+        },
+        {
+          "path": "/until",
+          "vfs": "gcal",
+          "backend": "gcal",
+          "config": {
+            "end_time": "2026-06-02T00:00:00Z",
+            "time_zone": "UTC"
+          }
+        },
+        {
+          "path": "/weekly",
+          "vfs": "gcal",
+          "backend": "gcal",
+          "config": {
+            "start_time": "2026-06-01T10:00:00Z",
+            "end_time": "2026-06-02T00:00:00Z",
+            "time_zone": "UTC",
+            "bucket_days": 7
+          }
+        },
+        {
+          "path": "/fullweek",
+          "vfs": "gcal",
+          "backend": "gcal",
+          "config": {
+            "time_zone": "UTC",
+            "bucket_days": 7
+          }
         }
       ]
     }

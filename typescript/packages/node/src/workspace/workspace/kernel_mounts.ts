@@ -19,7 +19,7 @@ import { FuseManager } from '../fuse.ts'
 /**
  * The workspace's real mountpoints, one {@link FuseManager} per subtree.
  *
- * A `vfs` mount lives only inside mirage; a `fuse` or `fskit` mount also
+ * A `workspace` mount lives only inside mirage; a `fuse` or `fskit` mount also
  * registers a mountpoint with the kernel. This owns the set of those:
  * which prefix is exposed where, and the manager serving it. Keys are
  * `prefix` or `prefix@sessionId`, so the same subtree can be exposed
@@ -90,8 +90,11 @@ export class KernelMounts {
   async remove(prefix: string, sessionId?: string): Promise<void> {
     const key = sessionId === undefined ? prefix : `${prefix}@${sessionId}`
     const manager = this.managers.get(key)
+    if (manager !== undefined) {
+      await manager.unmount()
+      if (this.managers.get(key) !== manager) return
+    }
     this.managers.delete(key)
-    if (manager !== undefined) await manager.unmount()
     this.mountpointsMap.delete(key)
   }
 

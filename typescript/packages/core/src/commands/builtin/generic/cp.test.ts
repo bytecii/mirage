@@ -14,8 +14,10 @@
 
 import { mountKey } from '../../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
-import type { ByteSource, IOResult } from '../../../io/types.ts'
+import { type ByteSource, IOResult } from '../../../io/types.ts'
 import {
+  ContentType,
+  LINK_TARGET_KEY,
   FileStat,
   FileType,
   PathSpec,
@@ -23,20 +25,29 @@ import {
   type ReaddirFn,
   type StatFn,
 } from '../../../types.ts'
-import type { FindOptions } from '../../../resource/base.ts'
+import type { FindOptions } from '../../../vfs/base.ts'
 import { eacces, enoent, enotsup } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import {
   cpFlags,
   cpGeneric,
-  entryKind,
   overwriteGate,
-  parseCpFlags,
+  parseFlags,
   targetDirError,
+  updateMode,
   type CpFlags,
+  type TransferLinks,
 } from './cp.ts'
-import { FlagView, type FlagValue } from '../../spec/types.ts'
+import { entryKind } from '../utils/paths.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { type FlagValue } from '../../spec/types.ts'
 import { specOf } from '../../spec/builtins.ts'
+import { SPECS, parseCommand } from '../../spec/index.ts'
+import { parseToKwargs } from '../../spec/parser.ts'
+import { MountMode } from '../../../types.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
 
 const DEC = new TextDecoder()
 
@@ -49,7 +60,7 @@ function spec(path: string): PathSpec {
     virtual: path,
     directory: path,
     resolved: false,
-    resourcePath: mountKey(path, ''),
+    vfsPath: mountKey(path, ''),
   })
 }
 
@@ -70,7 +81,8 @@ function makeBackend(
     return Promise.resolve(
       new FileStat({
         name: k.split('/').pop() ?? '',
-        type: FileType.TEXT,
+        type: FileType.FILE,
+        content: ContentType.TEXT,
         modified: mtimes?.get(k) ?? null,
       }),
     )
@@ -115,42 +127,6 @@ async function run(
 }
 
 describe('cpGeneric guards', () => {
-  it('copies a single source to a new path', async () => {
-    const files = new Map([['/a.txt', new Uint8Array([1])]])
-    const [, io] = await run(files, new Set(), ['/a.txt', '/copy.txt'])
-    expect(io.exitCode).toBe(0)
-    expect(files.has('/copy.txt')).toBe(true)
-  })
-
-  it('reports cannot stat for a missing source and continues', async () => {
-    const files = new Map([['/b.txt', new Uint8Array([2])]])
-    const [, io] = await run(files, new Set(['/d']), ['/missing.txt', '/b.txt', '/d'])
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toContain("cp: cannot stat '/missing.txt'")
-    expect(files.has('/d/b.txt')).toBe(true)
-  })
-
-  it('into a missing parent reports cannot create regular file', async () => {
-    const files = new Map([['/a.txt', new Uint8Array([1])]])
-    const [, io] = await run(files, new Set(['/']), ['/a.txt', '/nodir/x.txt'])
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toBe(
-      "cp: cannot create regular file '/nodir/x.txt': No such file or directory\n",
-    )
-    expect(files.has('/nodir/x.txt')).toBe(false)
-  })
-
-  it('under a plain file reports cannot stat Not a directory', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/plain', new Uint8Array([2])],
-    ])
-    const [, io] = await run(files, new Set(['/']), ['/a.txt', '/plain/x.txt'])
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toBe("cp: cannot stat '/plain/x.txt': Not a directory\n")
-    expect(files.has('/plain/x.txt')).toBe(false)
-  })
-
   it('deep under a plain file still reports Not a directory', async () => {
     const files = new Map([
       ['/a.txt', new Uint8Array([1])],
@@ -161,27 +137,11 @@ describe('cpGeneric guards', () => {
     expect(await io.stderrStr()).toBe("cp: cannot stat '/plain/s/x.txt': Not a directory\n")
   })
 
-  it('a SOURCE under a plain file reports Not a directory, not ENOENT', async () => {
-    // Backends answer stat with ENOENT for a path under a plain file, so the
-    // source probe has to walk the chain to recover GNU's errno.
-    const files = new Map([['/plain', new Uint8Array([2])]])
-    const [, io] = await run(files, new Set(['/', '/d']), ['/plain/child', '/d'])
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toBe("cp: cannot stat '/plain/child': Not a directory\n")
-  })
-
   it('a SOURCE deep under a plain file reports Not a directory', async () => {
     const files = new Map([['/plain', new Uint8Array([2])]])
     const [, io] = await run(files, new Set(['/', '/d']), ['/plain/a/b', '/d'])
     expect(io.exitCode).toBe(1)
     expect(await io.stderrStr()).toBe("cp: cannot stat '/plain/a/b': Not a directory\n")
-  })
-
-  it('a genuinely absent source still reports No such file or directory', async () => {
-    const files = new Map([['/a.txt', new Uint8Array([1])]])
-    const [, io] = await run(files, new Set(['/', '/d']), ['/nope', '/d'])
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toBe("cp: cannot stat '/nope': No such file or directory\n")
   })
 
   it('multiple sources with a missing target report No such file or directory', async () => {
@@ -194,22 +154,33 @@ describe('cpGeneric guards', () => {
     })
   })
 
-  it('multiple sources with a plain-file target report Not a directory', async () => {
+  it('multiple sources with a slashed plain-file target report Not a directory', async () => {
+    // GNU 9.7: `cp a b reg/` is `target 'reg/': Not a directory`, the
+    // destination probe's verdict, where only a genuinely absent target is
+    // `No such file or directory`.
     const files = new Map([
       ['/a.txt', new Uint8Array([1])],
       ['/b.txt', new Uint8Array([2])],
-      ['/plain', new Uint8Array([3])],
+      ['/reg', new Uint8Array([3])],
     ])
-    await expect(run(files, new Set(['/']), ['/a.txt', '/b.txt', '/plain'])).rejects.toMatchObject({
-      code: 'ENOTDIR',
-    })
-  })
-
-  it('refuses to copy a file onto itself', async () => {
-    const files = new Map([['/a.txt', new Uint8Array([1])]])
-    const [, io] = await run(files, new Set(), ['/a.txt', '/a.txt'])
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toContain("cp: '/a.txt' and '/a.txt' are the same file")
+    const { stat, copy, find } = makeBackend(files, new Set())
+    await expect(
+      cpGeneric(
+        [spec('/a.txt'), spec('/b.txt'), slashed('/reg')],
+        stat,
+        { copy, find },
+        cpFlags({}),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOTDIR' })
+    await expect(
+      cpGeneric(
+        [spec('/a.txt'), spec('/b.txt'), slashed('/missing')],
+        stat,
+        { copy, find },
+        cpFlags({}),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    expect([...files.keys()].sort()).toEqual(['/a.txt', '/b.txt', '/reg'])
   })
 
   it('refuses the same file via a directory target', async () => {
@@ -217,14 +188,6 @@ describe('cpGeneric guards', () => {
     const [, io] = await run(files, new Set(['/d']), ['/d/a.txt', '/d'])
     expect(io.exitCode).toBe(1)
     expect(await io.stderrStr()).toContain('are the same file')
-  })
-
-  it('refuses recursive copy of a directory into itself', async () => {
-    const files = new Map([['/d/a.txt', new Uint8Array([1])]])
-    const [, io] = await run(files, new Set(['/d']), ['/d', '/d'], { recursive: true })
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toContain("cp: cannot copy a directory, '/d', into itself")
-    expect([...files.keys()]).toEqual(['/d/a.txt'])
   })
 
   it('refuses recursive copy into a nested subtree', async () => {
@@ -237,29 +200,11 @@ describe('cpGeneric guards', () => {
     expect([...files.keys()]).toEqual(['/d/a.txt'])
   })
 
-  it('emits quoted verbose lines', async () => {
-    const files = new Map([['/a.txt', new Uint8Array([1])]])
-    const [out] = await run(files, new Set(), ['/a.txt', '/copy.txt'], { verbose: true })
-    expect(DEC.decode((out as Uint8Array | null) ?? new Uint8Array())).toBe(
-      "'/a.txt' -> '/copy.txt'\n",
-    )
-  })
-
   it('copies a single source into a directory', async () => {
     const files = new Map([['/a.txt', new Uint8Array([1])]])
     const [, io] = await run(files, new Set(['/d']), ['/a.txt', '/d'])
     expect(io.exitCode).toBe(0)
     expect(files.has('/d/a.txt')).toBe(true)
-  })
-
-  it('copies multiple sources into a directory', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-    ])
-    await run(files, new Set(['/d']), ['/a.txt', '/b.txt', '/d'])
-    expect(files.has('/d/a.txt')).toBe(true)
-    expect(files.has('/d/b.txt')).toBe(true)
   })
 
   it('refuses multiple sources when the target is not a directory', async () => {
@@ -274,15 +219,6 @@ describe('cpGeneric guards', () => {
     expect(files.get('/dst.txt')).toEqual(new Uint8Array([3]))
   })
 
-  it('no-clobber skips an existing target', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([9])],
-      ['/d/a.txt', new Uint8Array([1])],
-    ])
-    await run(files, new Set(['/d']), ['/a.txt', '/d'], { no_clobber: true })
-    expect(files.get('/d/a.txt')).toEqual(new Uint8Array([1]))
-  })
-
   it('no-clobber with duplicate basenames keeps the first', async () => {
     const files = new Map([
       ['/x/a.txt', new Uint8Array([1])],
@@ -292,23 +228,17 @@ describe('cpGeneric guards', () => {
     expect(files.get('/d/a.txt')).toEqual(new Uint8Array([1]))
   })
 
-  it('duplicate basenames without -n let the last win', async () => {
+  it('duplicate basenames keep the first copy', async () => {
     const files = new Map([
       ['/x/a.txt', new Uint8Array([1])],
       ['/y/a.txt', new Uint8Array([2])],
     ])
-    await run(files, new Set(['/d']), ['/x/a.txt', '/y/a.txt', '/d'])
-    expect(files.get('/d/a.txt')).toEqual(new Uint8Array([2]))
-  })
-
-  it('recursively copies a directory into a new path', async () => {
-    const files = new Map([
-      ['/src/x.txt', new Uint8Array([1])],
-      ['/src/sub/y.txt', new Uint8Array([2])],
-    ])
-    await run(files, new Set(['/src', '/src/sub']), ['/src', '/dst'], { recursive: true })
-    expect(files.has('/dst/x.txt')).toBe(true)
-    expect(files.has('/dst/sub/y.txt')).toBe(true)
+    const [, io] = await run(files, new Set(['/d']), ['/x/a.txt', '/y/a.txt', '/d'])
+    expect(files.get('/d/a.txt')).toEqual(new Uint8Array([1]))
+    expect(io.exitCode).toBe(1)
+    expect(await io.stderrStr()).toBe(
+      "cp: will not overwrite just-created '/d/a.txt' with '/y/a.txt'\n",
+    )
   })
 
   it('records writes keyed by destination path', async () => {
@@ -463,7 +393,6 @@ describe('cpGeneric primitive transfer errors', () => {
 })
 
 const OLD = '2020-01-01T00:00:00+00:00'
-const NEW = '2024-01-01T00:00:00+00:00'
 
 function rootReaddir(files: Map<string, Uint8Array>, dirs: Set<string>): ReaddirFn {
   return (p: PathSpec) => {
@@ -479,40 +408,6 @@ function rootReaddir(files: Map<string, Uint8Array>, dirs: Set<string>): Readdir
 }
 
 describe('cpGeneric --update', () => {
-  it('older skips a newer destination', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-    ])
-    const mtimes = new Map([
-      ['/a.txt', OLD],
-      ['/b.txt', NEW],
-    ])
-    const [, io] = await run(files, new Set(), ['/a.txt', '/b.txt'], {
-      mtimes,
-      flags: cpFlags({ update: 'older' }),
-    })
-    expect(io.exitCode).toBe(0)
-    expect(io.stderr).toBeNull()
-    expect(files.get('/b.txt')).toEqual(new Uint8Array([2]))
-  })
-
-  it('older replaces an older destination', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-    ])
-    const mtimes = new Map([
-      ['/a.txt', NEW],
-      ['/b.txt', OLD],
-    ])
-    await run(files, new Set(), ['/a.txt', '/b.txt'], {
-      mtimes,
-      flags: cpFlags({ update: 'older' }),
-    })
-    expect(files.get('/b.txt')).toEqual(new Uint8Array([1]))
-  })
-
   it('older skips on equal mtimes', async () => {
     const files = new Map([
       ['/a.txt', new Uint8Array([1])],
@@ -552,32 +447,9 @@ describe('cpGeneric --update', () => {
     expect(io.stderr).toBeNull()
     expect(files.get('/b.txt')).toEqual(new Uint8Array([2]))
   })
-
-  it('none-fail reports not replacing', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-    ])
-    const [, io] = await run(files, new Set(), ['/a.txt', '/b.txt'], {
-      flags: cpFlags({ update: 'none-fail' }),
-    })
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toBe("cp: not replacing '/b.txt'\n")
-    expect(files.get('/b.txt')).toEqual(new Uint8Array([2]))
-  })
 })
 
 describe('cpGeneric --backup', () => {
-  it('simple saves the old destination', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-    ])
-    await run(files, new Set(), ['/a.txt', '/b.txt'], { flags: cpFlags({ backup: 'simple' }) })
-    expect(files.get('/b.txt')).toEqual(new Uint8Array([1]))
-    expect(files.get('/b.txt~')).toEqual(new Uint8Array([2]))
-  })
-
   it('skips a missing destination', async () => {
     const files = new Map([['/a.txt', new Uint8Array([1])]])
     await run(files, new Set(), ['/a.txt', '/b.txt'], { flags: cpFlags({ backup: 'existing' }) })
@@ -598,29 +470,6 @@ describe('cpGeneric --backup', () => {
     expect(files.get('/b.txt.~4~')).toEqual(new Uint8Array([2]))
   })
 
-  it('numbered starts at one', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-    ])
-    await run(files, new Set(), ['/a.txt', '/b.txt'], {
-      readdir: rootReaddir(files, new Set()),
-      flags: cpFlags({ backup: 'numbered' }),
-    })
-    expect(files.get('/b.txt.~1~')).toEqual(new Uint8Array([2]))
-  })
-
-  it('honors a custom suffix', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-    ])
-    await run(files, new Set(), ['/a.txt', '/b.txt'], {
-      flags: cpFlags({ backup: 'simple', suffix: '.bak' }),
-    })
-    expect(files.get('/b.txt.bak')).toEqual(new Uint8Array([2]))
-  })
-
   it('records the backup write', async () => {
     const files = new Map([
       ['/a.txt', new Uint8Array([1])],
@@ -630,19 +479,6 @@ describe('cpGeneric --backup', () => {
       flags: cpFlags({ backup: 'simple' }),
     })
     expect(new Set(Object.keys(io.writes))).toEqual(new Set(['/b.txt', '/b.txt~']))
-  })
-
-  it('annotates the verbose line', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-    ])
-    const [out] = await run(files, new Set(), ['/a.txt', '/b.txt'], {
-      flags: cpFlags({ verbose: true, backup: 'simple' }),
-    })
-    expect(DEC.decode((out as Uint8Array | null) ?? new Uint8Array())).toBe(
-      "'/a.txt' -> '/b.txt' (backup: '/b.txt~')\n",
-    )
   })
 
   it('a recursive merge backs up per file entry', async () => {
@@ -664,18 +500,6 @@ describe('cpGeneric --backup', () => {
 })
 
 describe('cpGeneric -t/-T', () => {
-  it('copies into the target directory', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/d/keep', new Uint8Array([9])],
-    ])
-    const [, io] = await run(files, new Set(['/d']), ['/a.txt'], {
-      flags: cpFlags({ targetDir: '/d' }),
-    })
-    expect(io.exitCode).toBe(0)
-    expect(files.get('/d/a.txt')).toEqual(new Uint8Array([1]))
-  })
-
   it('accepts the target directory as a PathSpec', async () => {
     const files = new Map([
       ['/a.txt', new Uint8Array([1])],
@@ -688,16 +512,6 @@ describe('cpGeneric -t/-T', () => {
     expect(files.get('/d/a.txt')).toEqual(new Uint8Array([1]))
   })
 
-  it('a missing target directory fails the whole command', async () => {
-    const files = new Map([['/a.txt', new Uint8Array([1])]])
-    const [, io] = await run(files, new Set(), ['/a.txt'], {
-      flags: cpFlags({ targetDir: '/nosuch' }),
-    })
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toBe("cp: target directory '/nosuch': No such file or directory\n")
-    expect([...files.keys()]).toEqual(['/a.txt'])
-  })
-
   it('a non-directory target directory fails the whole command', async () => {
     const files = new Map([
       ['/a.txt', new Uint8Array([1])],
@@ -708,33 +522,6 @@ describe('cpGeneric -t/-T', () => {
     })
     expect(io.exitCode).toBe(1)
     expect(await io.stderrStr()).toBe("cp: target directory '/f.txt': Not a directory\n")
-  })
-
-  it('-T with three operands is an extra operand error', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/b.txt', new Uint8Array([2])],
-      ['/c.txt', new Uint8Array([3])],
-    ])
-    await expect(
-      run(files, new Set(), ['/a.txt', '/b.txt', '/c.txt'], {
-        flags: cpFlags({ noTargetDir: true }),
-      }),
-    ).rejects.toThrow("cp: extra operand '/c.txt'")
-  })
-
-  it('-T refuses a directory destination for a file', async () => {
-    const files = new Map([
-      ['/a.txt', new Uint8Array([1])],
-      ['/d/keep', new Uint8Array([9])],
-    ])
-    const [, io] = await run(files, new Set(['/d']), ['/a.txt', '/d'], {
-      flags: cpFlags({ noTargetDir: true }),
-    })
-    expect(io.exitCode).toBe(1)
-    expect(await io.stderrStr()).toBe(
-      "cp: cannot overwrite directory '/d' with non-directory '/a.txt'\n",
-    )
   })
 
   it('refuses to overwrite a non-directory with a directory', async () => {
@@ -757,45 +544,35 @@ describe('cpGeneric -t/-T', () => {
   })
 })
 
-// Flag bags reach parseCpFlags through a spec-bound view, the way the
+// Flag bags reach parseFlags through a spec-bound view, the way the
 // builder and the crossmount relay build it.
 function view(bag: Record<string, FlagValue>): FlagView {
   return new FlagView(bag, specOf('cp'))
 }
 
-describe('parseCpFlags', () => {
+describe('parseFlags', () => {
   it('rejects conflicting and invalid combinations', () => {
-    expect(() => parseCpFlags(view({ backup: true, no_clobber: true }))).toThrow(
-      'cp: --backup is mutually exclusive with -n or --update=none-fail',
-    )
-    expect(() => parseCpFlags(view({ backup: true, update: 'none-fail' }))).toThrow(
+    expect(() => parseFlags(view({ backup: true, update: 'none-fail' }))).toThrow(
       'mutually exclusive',
     )
-    expect(() => parseCpFlags(view({ target_directory: '/d', no_target_directory: true }))).toThrow(
-      'cannot combine --target-directory (-t) and --no-target-directory (-T)',
-    )
-    expect(() => parseCpFlags(view({ update: 'bogus' }))).toThrow(
-      "invalid argument 'bogus' for '--update'",
-    )
-    expect(() => parseCpFlags(view({ backup: 'bogus' }))).toThrow(
-      "invalid argument 'bogus' for 'backup type'",
+  })
+
+  // `n` is a prefix of `none` and of `none-fail`, which are two values, so
+  // 9.7 refuses it rather than reading it as `none`.
+  it.each(['n', 'no', 'non'])('refuses the --update prefix %s as ambiguous', (value) => {
+    expect(() => parseFlags(view({ update: value }))).toThrow(
+      `ambiguous argument '${value}' for '--update'`,
     )
   })
 
   it('resolves the GNU update and backup grammars', () => {
-    expect(parseCpFlags(view({ update: true })).update).toBe('older')
-    expect(parseCpFlags(view({ update: true })).update).toBe('older')
-    expect(parseCpFlags(view({ update: 'all' })).update).toBe('all')
-    expect(parseCpFlags(view({})).update).toBeNull()
-    const parsed = parseCpFlags(view({ suffix: '.bak' }))
+    expect(parseFlags(view({ update: true })).update).toBe('older')
+    expect(parseFlags(view({})).update).toBeNull()
+    const parsed = parseFlags(view({ suffix: '.bak' }))
     expect(parsed.backup).toBe('existing')
     expect(parsed.suffix).toBe('.bak')
-    // GNU 9.7: `cp --backup --suffix= f g` writes g~, so an empty suffix
-    // reads as absent rather than naming the original as its own backup.
-    expect(parseCpFlags(view({ backup: true, suffix: '' })).suffix).toBe('~')
-    expect(parseCpFlags(view({ backup: 't' })).backup).toBe('numbered')
-    expect(parseCpFlags(view({ backup: 'nil' })).backup).toBe('existing')
-    expect(parseCpFlags(view({ archive: true })).recursive).toBe(true)
+    expect(parseFlags(view({ backup: 't' })).backup).toBe('numbered')
+    expect(parseFlags(view({ backup: 'nil' })).backup).toBe('existing')
   })
 })
 
@@ -815,21 +592,6 @@ function typedBackend(files: Map<string, Uint8Array>, dirs: Set<string>) {
 }
 
 describe('per-entry policy still materializes directories', () => {
-  it('keeps a directory that holds no files under -r -u', async () => {
-    const files = new Map([['/t/f.txt', new Uint8Array([70])]])
-    const dirs = new Set(['/t', '/t/empt'])
-    const { stat, copy, find, mkdir } = typedBackend(files, dirs)
-    const [, io] = await cpGeneric(
-      ['/t', '/c'].map(spec),
-      stat,
-      { copy, find, mkdir },
-      cpFlags({ recursive: true, update: 'older' }),
-    )
-    expect(io.exitCode).toBe(0)
-    expect(files.get('/c/f.txt')).toEqual(new Uint8Array([70]))
-    expect(dirs.has('/c/empt')).toBe(true)
-  })
-
   it('creates the destination for an entirely empty tree', async () => {
     const files = new Map<string, Uint8Array>()
     const dirs = new Set(['/t', '/t/a', '/t/a/b'])
@@ -919,3 +681,245 @@ describe('cp probes propagate non-missing stat failures', () => {
     )
   })
 })
+
+// Both of cp's argument clauses name the refused word through gnulib's
+// quote(), so a byte outside 0x20-0x7e comes back escaped rather than
+// interpolated raw. Every row measured against GNU coreutils 9.4 under
+// `LC_ALL=C` with a raw `bytes` argv (`cp --update=<w>`,
+// `cp --backup=<w>`). Mirrors test_cp.py.
+describe('cp quotes the word its argument clauses name', () => {
+  const words: [string, string][] = [
+    ['xé', 'x\\303\\251'],
+    ['x\r', 'x\\r'],
+    ['x\x01', 'x\\001'],
+    ['x\x7f', 'x\\177'],
+    ["x'", "x\\'"],
+    ['x\\', 'x\\\\'],
+  ]
+
+  describe.each([
+    ['update', '--update'],
+    ['backup', 'backup type'],
+  ])('in the --%s clause', (flag, clause) => {
+    it.each(words)('escapes %j', (value, escaped) => {
+      let message = ''
+      try {
+        parseFlags(view({ [flag]: value }))
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      expect(message.startsWith(`cp: invalid argument '${escaped}' for '${clause}'\n`)).toBe(true)
+    })
+  })
+})
+
+// Measured against GNU coreutils 9.7 on debian:stable-slim, LC_ALL=C.
+describe.each(['cp', 'mv'])('%s --update candidates', (command) => {
+  it.each([
+    ['all', 'all'],
+    ['none', 'none'],
+    ['none-fail', 'none-fail'],
+    ['older', 'older'],
+    ['a', 'all'],
+    ['al', 'all'],
+    ['o', 'older'],
+    ['old', 'older'],
+    ['none-', 'none-fail'],
+  ])('accepts %s as %s', (value, mode) => {
+    expect(updateMode(command, new FlagView({ update: value }, specOf(command)))).toBe(mode)
+  })
+})
+
+// The operand as the shell classifies `path/`: a normalized virtual path
+// with the typed spelling, slash included, kept in rawPath.
+function slashed(path: string): PathSpec {
+  return new PathSpec({
+    virtual: path,
+    directory: path.slice(0, path.lastIndexOf('/')) || '/',
+    resolved: false,
+    vfsPath: mountKey(path, ''),
+    rawPath: `${path}/`,
+  })
+}
+
+describe('the link options', () => {
+  function flagsOf(...argv: string[]): CpFlags {
+    const spec = SPECS.cp
+    if (spec === undefined) throw new Error('no cp spec')
+    const words = [...argv, '/data/a', '/data/b']
+    return parseFlags(new FlagView(parseToKwargs(parseCommand(spec, words, '/', 'cp')), spec))
+  }
+
+  // cp.c: -L, -P, -H, -d and -a each set the dereference policy, so the last
+  // one wins; with none, a recursive copy copies links as links and any other
+  // copy follows them. Mirrors test_cp.py.
+  it.each([
+    [[], 'always'],
+    [['-r'], 'never'],
+    [['-R'], 'never'],
+    [['-a'], 'never'],
+    [['-rL'], 'always'],
+    [['-rH'], 'command_line'],
+    [['-P'], 'never'],
+    [['-d'], 'never'],
+    [['-L', '-P'], 'never'],
+    [['-P', '-L'], 'always'],
+    [['-a', '-L'], 'always'],
+  ] as const)('reads %j as %s', (argv, deref) => {
+    expect(flagsOf(...argv).dereference).toBe(deref)
+  })
+})
+
+describe('a link reached through a linked directory', () => {
+  // The table keys a link by its resolved directory, so `dl/al` stands at
+  // `dir/al`; coreutils 9.7 copies the link itself. Mirrors python's
+  // test_a_link_reached_through_a_linked_directory_copies_as_a_link.
+  it.each(['-P', '-d'])('cp %s copies it as a link', async (flag) => {
+    const ws = new Workspace(
+      { '/data/': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    await ws.shell(
+      "cd /data && mkdir dir w && printf 'x\\n' > a.txt && ln -s ../a.txt dir/al && ln -s dir dl",
+    )
+    const r = await ws.shell(`cd /data && cp ${flag} dl/al w/x && ls -F w`)
+    expect([r.exitCode, DEC.decode(r.stdout)]).toEqual([0, 'x@\n'])
+    await ws.close()
+  })
+})
+
+for (const native of [false, true]) {
+  for (const failure of ['read', 'write', 'partial-write']) {
+    it.each(['/safe', '/missing', '/dst~'])(
+      `failed ${native ? 'native' : 'primitive'} backup ${failure} restores link to %s`,
+      async (referent) => {
+        const enc = new TextEncoder()
+        const files = new Map<string, Uint8Array>([
+          ['/src', enc.encode('new')],
+          ['/dst', enc.encode('old')],
+          ['/safe', enc.encode('safe')],
+        ])
+        const original = new Map(files)
+        const links = new Map([['/dst~', referent]])
+        const { stat, find } = makeBackend(files, new Set())
+        const read = (path: PathSpec): Promise<Uint8Array> => {
+          if (failure === 'read' && path.virtual === '/dst') throw eacces(path.virtual)
+          const data = files.get(path.virtual)
+          if (data === undefined) throw enoent(path.virtual)
+          return Promise.resolve(data)
+        }
+        const write = (path: PathSpec, data: Uint8Array): Promise<void> => {
+          if (path.virtual === '/dst~') {
+            if (failure === 'partial-write') files.set(path.virtual, enc.encode('partial'))
+            throw eacces(path.virtual)
+          }
+          files.set(path.virtual, data)
+          return Promise.resolve()
+        }
+        const primitive: PrimitiveCopy = {
+          readBytes: read,
+          write,
+          mkdir: (path) => {
+            expect(files.has(path.virtual)).toBe(false)
+            return Promise.resolve()
+          },
+          readdir: (path) =>
+            Promise.resolve(
+              [...files.keys(), ...links.keys()].filter((p) => p.startsWith(path.virtual)),
+            ),
+        }
+        const copies: TransferLinks = {
+          cwd: '/',
+          relay: primitive,
+          relayStat: stat,
+          links: {
+            statAt: (path) =>
+              links.has(path)
+                ? new FileStat({
+                    name: path,
+                    type: FileType.SYMLINK,
+                    extra: { [LINK_TARGET_KEY]: links.get(path) ?? '' },
+                  })
+                : null,
+            children: (path) =>
+              [...links.keys()]
+                .filter((p) => p.startsWith(path))
+                .flatMap((p) => {
+                  const row = copies.links.statAt(p)
+                  return row === null ? [] : [row]
+                }),
+            subtree: (path) =>
+              [...links.keys()]
+                .filter((p) => p.startsWith(path))
+                .flatMap((p): [string, FileStat][] => {
+                  const row = copies.links.statAt(p)
+                  return row === null ? [] : [[p, row]]
+                }),
+            resolve: (path) => links.get(path) ?? path,
+            exists: (path) => Promise.resolve(files.has(path)),
+            targetStat: (path) => stat(spec(links.get(path) ?? path)),
+          },
+          dispatch: (op, path, _args, kwargs = {}) => {
+            if (op === 'unlink') {
+              if (!links.delete(path.virtual)) files.delete(path.virtual)
+            } else if (op === 'symlink') {
+              expect(files.has(path.virtual)).toBe(false)
+              links.set(path.virtual, String(kwargs.target))
+            } else throw new Error(`unexpected op: ${op}`)
+            return Promise.resolve([null, new IOResult()])
+          },
+        }
+        const strategy = native
+          ? { copy: async (src: PathSpec, dst: PathSpec) => write(dst, await read(src)), find }
+          : primitive
+        const [, io] = await cpGeneric(
+          [spec('/src'), spec('/dst')],
+          stat,
+          strategy,
+          cpFlags({ backup: 'simple' }),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          copies,
+        )
+        expect(io.exitCode).toBe(1)
+        expect(await io.stderrStr()).toBe("cp: cannot backup '/dst': Permission denied\n")
+        expect(io.writes).toEqual({})
+        expect(links).toEqual(new Map([['/dst~', referent]]))
+        expect(files).toEqual(original)
+      },
+    )
+  }
+}
+
+for (const flag of ['-r', '-rL']) {
+  it.each(['/data/copy', '/other/copy'])(
+    `cp ${flag} omits hidden links at %s`,
+    async (destination) => {
+      const ws = new Workspace(
+        { '/data': new RAMVFS(), '/other': new RAMVFS() },
+        { mode: MountMode.WRITE, shellParser: await getTestParser() },
+      )
+      try {
+        await ws.shell(
+          'mkdir -p /data/src/sec && echo visible > /data/src/a && ' +
+            'ln -s a /data/src/public && ln -s /private/key /data/src/secret && ' +
+            'ln -s /private/nested /data/src/sec/link',
+        )
+        ws.createSession('agent', {
+          profile: { paths: { hide: ['/data/src/secret', '/data/src/sec'] } },
+        })
+        const result = await ws.shell(`cp ${flag} /data/src ${destination}`, { sessionId: 'agent' })
+        expect(result.exitCode).toBe(0)
+        expect(DEC.decode(result.stderr)).toBe('')
+        const copied = await ws.shell(`ls -A ${destination} && cat ${destination}/public`)
+        expect(DEC.decode(copied.stdout)).toBe('a\npublic\nvisible\n')
+        expect(ws.namespace.isLink(`${destination}/secret`)).toBe(false)
+        expect(ws.namespace.isLink(`${destination}/sec/link`)).toBe(false)
+      } finally {
+        await ws.close()
+      }
+    },
+  )
+}

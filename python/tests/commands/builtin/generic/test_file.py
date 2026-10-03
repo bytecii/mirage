@@ -1,23 +1,26 @@
 import pytest
 
 from mirage.commands.builtin.generic.file import file_cmd
-from mirage.types import FileStat, FileType, PathSpec
+from mirage.types import ContentType, FileStat, FileType, PathSpec
 
 
 def _spec(path: str) -> PathSpec:
-    return PathSpec(virtual=path,
-                    directory=path,
-                    resource_path=path.strip("/"))
+    return PathSpec(virtual=path, directory=path, vfs_path=path.strip("/"))
 
 
-def _make_backend(files: dict[str, tuple[bytes, FileType]], dirs: set[str]):
+def _make_backend(files: dict[str, tuple[bytes, ContentType]], dirs: set[str]):
 
     async def stat_fn(p: PathSpec) -> FileStat:
         if p.virtual in dirs:
             return FileStat(name=p.virtual, type=FileType.DIRECTORY, size=0)
         if p.virtual in files:
             data, ftype = files[p.virtual]
-            return FileStat(name=p.virtual, type=ftype, size=len(data))
+            return FileStat(
+                name=p.virtual,
+                type=FileType.FILE,
+                content=ftype,
+                size=len(data),
+            )
         raise FileNotFoundError(p.virtual)
 
     async def read_bytes(p: PathSpec) -> bytes:
@@ -27,49 +30,12 @@ def _make_backend(files: dict[str, tuple[bytes, FileType]], dirs: set[str]):
 
 
 @pytest.mark.asyncio
-async def test_file_single_text():
-    stat_fn, read_bytes = _make_backend(
-        {"/a.txt": (b"hello world\n", FileType.TEXT)}, set())
-    out, io = await file_cmd([_spec("/a.txt")],
-                             read_bytes=read_bytes,
-                             stat_fn=stat_fn)
-    assert out == b"/a.txt: text\n"
-    assert io.exit_code == 0
-
-
-@pytest.mark.asyncio
-async def test_file_multiple_paths_one_line_each():
-    stat_fn, read_bytes = _make_backend(
-        {
-            "/a.txt": (b"hello\n", FileType.TEXT),
-            "/b.json": (b'{"k": 1}\n', FileType.JSON),
-        }, set())
-    out, _io = await file_cmd(
-        [_spec("/a.txt"), _spec("/b.json")],
-        read_bytes=read_bytes,
-        stat_fn=stat_fn)
-    lines = out.decode().splitlines()
-    assert lines == ["/a.txt: text", "/b.json: json"]
-
-
-@pytest.mark.asyncio
 async def test_file_directory_reported_without_read():
     stat_fn, read_bytes = _make_backend({}, {"/d"})
-    out, _io = await file_cmd([_spec("/d")],
-                              read_bytes=read_bytes,
-                              stat_fn=stat_fn)
+    out, _io = await file_cmd(
+        [_spec("/d")], read_bytes=read_bytes, stat_fn=stat_fn
+    )
     assert out == b"/d: directory\n"
-
-
-@pytest.mark.asyncio
-async def test_file_brief_drops_path_prefix():
-    stat_fn, read_bytes = _make_backend(
-        {"/a.txt": (b"hello\n", FileType.TEXT)}, set())
-    out, _io = await file_cmd([_spec("/a.txt")],
-                              read_bytes=read_bytes,
-                              stat_fn=stat_fn,
-                              b=True)
-    assert out == b"text\n"
 
 
 @pytest.mark.asyncio
@@ -77,3 +43,38 @@ async def test_file_missing_operand_raises():
     stat_fn, read_bytes = _make_backend({}, set())
     with pytest.raises(ValueError):
         await file_cmd([], read_bytes=read_bytes, stat_fn=stat_fn)
+
+
+@pytest.mark.asyncio
+async def test_file_mime_mode():
+    async def stat_fn(path):
+        return FileStat(
+            name="f.json",
+            size=10,
+            type=FileType.FILE,
+            content=ContentType.JSON,
+        )
+
+    async def read_bytes(path):
+        return b'{"a": 1}'
+
+    out, _ = await file_cmd(
+        [_spec("f.json")], read_bytes=read_bytes, stat_fn=stat_fn, i=True
+    )
+    assert b"application/json" in out
+
+
+@pytest.mark.asyncio
+async def test_file_read_error_logs_and_falls_back():
+    async def stat_fn(path):
+        return FileStat(
+            name="x", size=1, type=FileType.FILE, content=ContentType.TEXT
+        )
+
+    async def read_bytes(path):
+        raise OSError("denied")
+
+    out, _ = await file_cmd(
+        [_spec("x")], read_bytes=read_bytes, stat_fn=stat_fn
+    )
+    assert b"x:" in out

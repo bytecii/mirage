@@ -2,12 +2,33 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from mirage.commands.builtin.utils.stream import _resolve_source
+from mirage.commands.builtin.utils.operands import split_readable
+from mirage.commands.builtin.utils.stream import (
+    is_stdin,
+    resolve_source,
+    stdin_stat,
+    stdin_stream,
+)
+from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import CommandName, FlagValue, FlagView
-from mirage.commands.spec.usage import extra_operand_error
+from mirage.commands.spec.argmatch import ArgmatchMatch, argmatch
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import CommandName, FlagValue
+from mirage.commands.spec.usage import argmatch_error, extra_operand_error
 from mirage.io.types import ByteSource, IOResult, materialize
-from mirage.types import PathSpec
+from mirage.types import PathSpec, StatFn
+
+# GNU's `delimit_method_string` and `grouping_method_string`, in
+# declaration order, which is what each option lists back. No aliases in
+# either, so one candidate per line.
+ALL_REPEATED_ARGS = ("none", "prepend", "separate")
+# GNU's size_opt reads a count with xstrtoimax: leading C whitespace, a
+# sign and decimal digits, nothing after them.
+COUNT_WORD = re.compile(r"[ \t\n\v\f\r]*[+-]?[0-9]+")
+SKIP_FIELDS = "fields to skip"
+SKIP_CHARS = "bytes to skip"
+CHECK_CHARS = "bytes to compare"
+GROUP_ARGS = ("prepend", "append", "separate", "both")
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,16 +45,34 @@ class UniqFlags:
     zero_terminated: bool = False
 
 
-def _parse_count(value: str | None) -> int | None:
+def _parse_count(value: str | None, what: str) -> int | None:
+    """GNU's ``size_opt``: a decimal count, never negative, any size.
+
+    Args:
+        value (str | None): the option's value as typed.
+        what (str): what the count counts, for GNU's refusal
+            (``fields to skip``).
+    """
     if value is None:
         return None
-    normalized = value.strip()
-    if re.fullmatch(r"[+-]?[0-9]+", normalized) is None:
-        raise ValueError(f"uniq: invalid count: '{value}'")
-    count = int(normalized)
-    if count < 0:
-        raise ValueError(f"uniq: invalid count: '{value}'")
-    return count
+    if COUNT_WORD.fullmatch(value) is None or int(value) < 0:
+        raise ValueError(f"uniq: {value}: invalid number of {what}")
+    return int(value)
+
+
+def _method_word(option: str, value: str, allowed: tuple[str, ...]) -> str:
+    """One ``--group``/``--all-repeated`` word, ARGMATCH-resolved.
+
+    Args:
+        option (str): the option's long spelling, for the refusal.
+        value (str): the method word as typed.
+        allowed (tuple[str, ...]): GNU's candidates in declaration
+            order, one value each (neither option has aliases).
+    """
+    match = argmatch(value, allowed)
+    if not isinstance(match, ArgmatchMatch):
+        raise argmatch_error("uniq", option, value, allowed, None, match.kind)
+    return match.word
 
 
 def parse_flags(flags: Mapping[str, FlagValue]) -> UniqFlags:
@@ -44,31 +83,36 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> UniqFlags:
         all_repeated = "none"
     elif isinstance(raw_all, str):
         all_repeated = raw_all
-    if all_repeated not in (None, "none", "prepend", "separate"):
-        raise ValueError(
-            f"uniq: invalid argument '{all_repeated}' for '--all-repeated'")
+    if all_repeated is not None:
+        all_repeated = _method_word(
+            "--all-repeated", all_repeated, ALL_REPEATED_ARGS
+        )
     raw_group = fl.raw("group")
     group = "separate" if raw_group is True else raw_group
-    if group not in (None, "separate", "prepend", "append", "both"):
-        raise ValueError(f"uniq: invalid argument '{group}' for '--group'")
+    if group is not None:
+        group = _method_word("--group", str(group), GROUP_ARGS)
     count = fl.as_bool("count")
     duplicates_only = fl.as_bool("repeated")
     unique_only = fl.as_bool("unique")
-    if group is not None and (count or duplicates_only or unique_only
-                              or all_repeated is not None):
+    if group is not None and (
+        count or duplicates_only or unique_only or all_repeated is not None
+    ):
         raise ValueError(
-            "uniq: --group is mutually exclusive with -c/-d/-D/-u")
+            "uniq: --group is mutually exclusive with -c/-d/-D/-u"
+        )
     if count and all_repeated is not None:
-        raise ValueError("uniq: printing all duplicated lines and repeat "
-                         "counts is meaningless")
+        raise ValueError(
+            "uniq: printing all duplicated lines and repeat "
+            "counts is meaningless"
+        )
     return UniqFlags(
         count=count,
         duplicates_only=duplicates_only,
         unique_only=unique_only,
-        skip_fields=_parse_count(fl.as_str("skip_fields")) or 0,
-        skip_chars=_parse_count(fl.as_str("skip_chars")) or 0,
+        skip_fields=_parse_count(fl.as_str("skip_fields"), SKIP_FIELDS) or 0,
+        skip_chars=_parse_count(fl.as_str("skip_chars"), SKIP_CHARS) or 0,
         ignore_case=fl.as_bool("ignore_case"),
-        check_chars=_parse_count(fl.as_str("check_chars")),
+        check_chars=_parse_count(fl.as_str("check_chars"), CHECK_CHARS),
         all_repeated=all_repeated,
         group=group,
         zero_terminated=fl.as_bool("zero_terminated"),
@@ -78,6 +122,8 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> UniqFlags:
 def _skip_fields(text: str, count: int) -> str:
     index = 0
     for _ in range(count):
+        if index >= len(text):
+            break
         while index < len(text) and text[index] in " \t":
             index += 1
         while index < len(text) and text[index] not in " \t":
@@ -88,16 +134,17 @@ def _skip_fields(text: str, count: int) -> str:
 def _comparison_key(line: bytes, flags: UniqFlags) -> str:
     text = _skip_fields(line.decode(errors="replace"), flags.skip_fields)
     if flags.skip_chars > 0:
-        text = text[flags.skip_chars:]
+        text = text[flags.skip_chars :]
     if flags.check_chars is not None:
-        text = text[:flags.check_chars]
+        text = text[: flags.check_chars]
     if flags.ignore_case:
         text = text.lower()
     return text
 
 
-async def _records(source: AsyncIterator[bytes],
-                   separator: bytes) -> AsyncIterator[bytes]:
+async def _records(
+    source: AsyncIterator[bytes], separator: bytes
+) -> AsyncIterator[bytes]:
     buffer = b""
     async for chunk in source:
         buffer += chunk
@@ -108,8 +155,9 @@ async def _records(source: AsyncIterator[bytes],
         yield buffer
 
 
-def _format_record(line: bytes, count: int, flags: UniqFlags,
-                   separator: bytes) -> bytes:
+def _format_record(
+    line: bytes, count: int, flags: UniqFlags, separator: bytes
+) -> bytes:
     if flags.count:
         return f"{count:>7} ".encode() + line + separator
     return line + separator
@@ -121,8 +169,9 @@ def _group_separator_before(index: int, method: str) -> bool:
     return method in ("separate", "append") and index > 0
 
 
-async def _uniq_stream(source: AsyncIterator[bytes],
-                       flags: UniqFlags) -> AsyncIterator[bytes]:
+async def _uniq_stream(
+    source: AsyncIterator[bytes], flags: UniqFlags
+) -> AsyncIterator[bytes]:
     separator = b"\x00" if flags.zero_terminated else b"\n"
     groups: list[list[bytes]] = []
     current: list[bytes] = []
@@ -153,7 +202,8 @@ async def _uniq_stream(source: AsyncIterator[bytes],
             if len(group) == 1:
                 continue
             if flags.all_repeated == "prepend" or (
-                    flags.all_repeated == "separate" and emitted > 0):
+                flags.all_repeated == "separate" and emitted > 0
+            ):
                 yield separator
             for line in group:
                 yield line + separator
@@ -183,37 +233,58 @@ async def uniq(
     skip_chars: str | None = None,
     ignore_case: bool = False,
     check_chars: str | None = None,
+    stat: StatFn | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     if len(paths) > 2:
-        raise extra_operand_error(CommandName.UNIQ, paths[2].raw_path
-                                  or paths[2].virtual)
+        raise extra_operand_error(
+            CommandName.UNIQ, paths[2].raw_path or paths[2].virtual
+        )
     try:
-        parsed = parse_flags(flags) if flags is not None else UniqFlags(
-            count=count,
-            duplicates_only=duplicates_only,
-            unique_only=unique_only,
-            skip_fields=_parse_count(skip_fields) or 0,
-            skip_chars=_parse_count(skip_chars) or 0,
-            ignore_case=ignore_case,
-            check_chars=_parse_count(check_chars),
+        parsed = (
+            parse_flags(flags)
+            if flags is not None
+            else UniqFlags(
+                count=count,
+                duplicates_only=duplicates_only,
+                unique_only=unique_only,
+                skip_fields=_parse_count(skip_fields, SKIP_FIELDS) or 0,
+                skip_chars=_parse_count(skip_chars, SKIP_CHARS) or 0,
+                ignore_case=ignore_case,
+                check_chars=_parse_count(check_chars, CHECK_CHARS),
+            )
+        )
+    except UsageError as exc:
+        return None, IOResult(
+            exit_code=exc.exit_code, stderr=(str(exc) + "\n").encode()
         )
     except ValueError as exc:
         return None, IOResult(exit_code=1, stderr=(str(exc) + "\n").encode())
+    read_stream = stdin_stream(read_stream, stdin)
+    if paths and stat is not None:
+        # The input is stat'ed before the lazy stream starts, so a missing
+        # or unreadable one is reported in uniq's own words rather than
+        # surfacing mid-drain.
+        _, err = await split_readable(paths[:1], stdin_stat(stat), "uniq")
+        if err:
+            return None, IOResult(exit_code=1, stderr=err)
     cache: list[str] = []
     if paths:
         source = read_stream(paths[0])
-        cache = [paths[0].mount_path]
+        cache = [] if is_stdin(paths[0]) else [paths[0].mount_path]
     else:
-        source = _resolve_source(stdin)
+        source = resolve_source(stdin)
     output: ByteSource = _uniq_stream(source, parsed)
-    if len(paths) == 2:
+    if len(paths) == 2 and paths[1].raw_path != "-":
         if write_bytes is None:
-            return None, IOResult(exit_code=1,
-                                  stderr=b"uniq: output is not writable\n")
+            return None, IOResult(
+                exit_code=1, stderr=b"uniq: output is not writable\n"
+            )
         data = await materialize(output)
         await write_bytes(paths[1], data)
-        return b"", IOResult(writes={paths[1].mount_path: data},
-                             cache=cache + [paths[1].mount_path])
+        return b"", IOResult(
+            writes={paths[1].mount_path: data},
+            cache=cache + [paths[1].mount_path],
+        )
     return output, IOResult(cache=cache)
 
 

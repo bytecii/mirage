@@ -13,15 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mountKey } from '../../utils/key_prefix.ts'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MongoDBAccessor } from '../../accessor/mongodb.ts'
-import { resolveMongoDBConfig } from '../../resource/mongodb/config.ts'
-import { FileType, PathSpec } from '../../types.ts'
+import { resolveMongoDBConfig } from '../../vfs/mongodb/config.ts'
+import { ContentType, FileType, PathSpec } from '../../types.ts'
 import { stat } from './stat.ts'
 import { stubMongoDriver } from './_test_util.ts'
 
 function ps(p: string): PathSpec {
-  return new PathSpec({ virtual: p, directory: p, resourcePath: mountKey(p, '/mongo') })
+  return new PathSpec({ virtual: p, directory: p, vfsPath: mountKey(p, '/mongo') })
 }
 
 function accessor(overrides: Partial<Parameters<typeof stubMongoDriver>[0]> = {}) {
@@ -55,9 +55,13 @@ describe('stat', () => {
     expect(r.extra).toMatchObject({ database: 'app', kind: 'collection' })
   })
 
-  it('marks entity (collection dir) as DIRECTORY with document_count', async () => {
+  it('marks entity (collection dir) as DIRECTORY without document scans', async () => {
     const r = await stat(
-      accessor({ countDocuments: () => Promise.resolve(42) }),
+      accessor({
+        countDocuments: vi.fn(() => {
+          throw new Error('must not count')
+        }),
+      }),
       ps('/mongo/app/collections/users'),
     )
     expect(r.type).toBe(FileType.DIRECTORY)
@@ -66,23 +70,24 @@ describe('stat', () => {
       database: 'app',
       kind: 'collection',
       name: 'users',
-      document_count: 42,
     })
   })
 
   it('marks documents.jsonl as TEXT with indexes for a collection', async () => {
     const r = await stat(
       accessor({
-        countDocuments: () => Promise.resolve(42),
+        countDocuments: vi.fn(() => {
+          throw new Error('must not count')
+        }),
         listCollectionsDetailed: () => Promise.resolve([{ name: 'users', type: 'collection' }]),
         listIndexes: () => Promise.resolve([{ name: '_id_', key: { _id: 1 } }]),
       }),
       ps('/mongo/app/collections/users/documents.jsonl'),
     )
-    expect(r.type).toBe(FileType.TEXT)
+    expect(r.content).toBe(ContentType.TEXT)
     expect(r.size).toBeNull()
-    expect(r.extra.document_count).toBe(42)
-    expect(r.extra.indexes).toEqual([{ name: '_id_', keys: { _id: 1 } }])
+    expect(r.extra.document_count).toBeUndefined()
+    expect(r.extra.indexes).toBeUndefined()
   })
 
   it('marks documents.jsonl as TEXT but with no indexes for a view', async () => {
@@ -93,20 +98,20 @@ describe('stat', () => {
       }),
       ps('/mongo/app/views/recent/documents.jsonl'),
     )
-    expect(r.type).toBe(FileType.TEXT)
-    expect(r.extra.indexes).toEqual([])
+    expect(r.content).toBe(ContentType.TEXT)
+    expect(r.extra.indexes).toBeUndefined()
     expect(r.extra.kind).toBe('view')
   })
 
   it('marks schema.json as TEXT', async () => {
     const r = await stat(accessor(), ps('/mongo/app/collections/users/schema.json'))
-    expect(r.type).toBe(FileType.TEXT)
+    expect(r.content).toBe(ContentType.TEXT)
     expect(r.name).toBe('schema.json')
   })
 
   it('marks database.json as TEXT', async () => {
     const r = await stat(accessor(), ps('/mongo/app/database.json'))
-    expect(r.type).toBe(FileType.TEXT)
+    expect(r.content).toBe(ContentType.TEXT)
     expect(r.name).toBe('database.json')
   })
 

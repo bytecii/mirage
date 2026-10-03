@@ -14,11 +14,10 @@
 
 import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.ts'
 import { recordStream } from '../../observe/context.ts'
-import { ResourceName, type PathSpec } from '../../types.ts'
+import { VFSName, type PathSpec } from '../../types.ts'
 import { dbxFetch } from './client.ts'
 import { isNotFound, notFoundError } from './errors.ts'
 import { backendPath } from './path.ts'
-import { readBytes } from './read.ts'
 
 const DEFAULT_CHUNK_SIZE = 8192
 
@@ -35,7 +34,7 @@ export async function* readStream(
 ): AsyncIterable<Uint8Array> {
   const virtual = path.virtual
   const remotePath = backendPath(accessor.config, path)
-  const rec = recordStream('read', virtual, ResourceName.DATABRICKS_VOLUME)
+  const rec = recordStream('read', virtual, VFSName.DATABRICKS_VOLUME)
   let r: Response
   try {
     r = await dbxFetch(accessor, 'GET', 'files', remotePath, {
@@ -76,13 +75,4 @@ export async function* readStream(
       reader.releaseLock()
     }
   }
-}
-
-export async function rangeRead(
-  accessor: DatabricksVolumeAccessor,
-  path: PathSpec,
-  start: number,
-  end: number,
-): Promise<Uint8Array> {
-  return readBytes(accessor, path, undefined, { offset: start, size: end - start })
 }

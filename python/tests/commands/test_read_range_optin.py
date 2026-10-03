@@ -13,16 +13,35 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import importlib
+import inspect
 import pkgutil
+from collections.abc import Callable
+from typing import Any
 
 import mirage.commands.builtin as builtin
-import mirage.resource as resources
 from mirage.commands.builtin.generic_bind import CommandIO
-from mirage.resource.base import BaseResource
-from mirage.utils.params import accepts_kwarg
 
 WINDOW = ("offset", "size")
-RESOURCE_RANGE = "range_read"
+
+
+def _takes_window(fn: Callable[..., Any]) -> bool:
+    """Whether ``fn`` declares both window parameters as its own.
+
+    The lookup is by parameter name, so a reader's ``**kwargs`` never
+    answers for one: backends use that as an opaque bag of command-line
+    flags and forward it wholesale, and treating it as consent would
+    call every reader ranged.
+
+    Args:
+        fn (Callable): the reader to inspect.
+    """
+    parameters = inspect.signature(fn).parameters
+    bag = inspect.Parameter.VAR_KEYWORD
+    for name in WINDOW:
+        parameter = parameters.get(name)
+        if parameter is None or parameter.kind is bag:
+            return False
+    return True
 
 
 def _backend(module_name: str) -> str:
@@ -44,8 +63,9 @@ def _tables() -> tuple[dict[str, CommandIO], list[str]]:
     """
     found: dict[str, CommandIO] = {}
     failed: list[str] = []
-    for info in pkgutil.walk_packages(builtin.__path__,
-                                      builtin.__name__ + "."):
+    for info in pkgutil.walk_packages(
+        builtin.__path__, builtin.__name__ + "."
+    ):
         if not info.name.endswith(".io"):
             continue
         try:
@@ -57,28 +77,6 @@ def _tables() -> tuple[dict[str, CommandIO], list[str]]:
         if isinstance(table, CommandIO):
             found[_backend(info.name)] = table
     return found, failed
-
-
-def _resource_ranges() -> set[str]:
-    """Backend names whose resource exposes the ``range_read`` method.
-
-    The resource-level window is a second spelling of the same
-    capability, reached as ``resource.range_read(path, start, end)``
-    rather than through the op dispatcher. It is derived from the
-    ``_ops`` table each resource class declares.
-    """
-    found: set[str] = set()
-    for info in pkgutil.walk_packages(resources.__path__,
-                                      resources.__name__ + "."):
-        try:
-            module = importlib.import_module(info.name)
-        except ImportError:
-            continue
-        for value in vars(module).values():
-            if (isinstance(value, type) and issubclass(value, BaseResource)
-                    and RESOURCE_RANGE in getattr(value, "_ops", {})):
-                found.add(value._ops[RESOURCE_RANGE].__module__.split(".")[2])
-    return found
 
 
 def test_a_reader_that_takes_a_window_is_wired_as_the_native_range():
@@ -95,11 +93,14 @@ def test_a_reader_that_takes_a_window_is_wired_as_the_native_range():
     tables, failed = _tables()
     assert not failed, f"backend io modules would not import: {failed}"
     assert tables, "no backend tables found: the derivation broke"
-    missing = sorted(name for name, io in tables.items()
-                     if io.read_range is None and all(
-                         accepts_kwarg(io.read_bytes, p) for p in WINDOW))
+    missing = sorted(
+        name
+        for name, io in tables.items()
+        if io.read_range is None and _takes_window(io.read_bytes)
+    )
     assert not missing, (
-        f"reader takes offset/size but read_range is unwired: {missing}")
+        f"reader takes offset/size but read_range is unwired: {missing}"
+    )
 
 
 def test_a_wired_range_reader_actually_takes_a_window():
@@ -111,27 +112,9 @@ def test_a_wired_range_reader_actually_takes_a_window():
     """
     tables, failed = _tables()
     assert not failed, f"backend io modules would not import: {failed}"
-    wrong = sorted(name for name, io in tables.items()
-                   if io.read_range is not None and not all(
-                       accepts_kwarg(io.read_range, p) for p in WINDOW))
+    wrong = sorted(
+        name
+        for name, io in tables.items()
+        if io.read_range is not None and not _takes_window(io.read_range)
+    )
     assert not wrong, f"read_range does not take offset/size: {wrong}"
-
-
-def test_a_backend_that_ranges_for_its_resource_ranges_for_the_ops_path_too():
-    """The two range surfaces have to agree on what a backend can do.
-
-    A ranged read is reachable two ways: ``resource.range_read(path,
-    start, end)`` on the resource object, and the ops dispatcher's
-    ``read(path, offset, size)`` through ``CommandIO.read_range``. A
-    backend wired for one and not the other is the same class of bug
-    that left eight readers taking a window nobody handed them: the
-    capability exists, one caller gets it, and the other quietly
-    downloads the whole object and slices.
-    """
-    tables, failed = _tables()
-    assert not failed, f"backend io modules would not import: {failed}"
-    ranged = _resource_ranges()
-    assert ranged, "no resource-level range_read found: the derivation broke"
-    gaps = sorted(name for name in ranged
-                  if name in tables and tables[name].read_range is None)
-    assert not gaps, (f"resource ranges but the ops path does not: {gaps}")

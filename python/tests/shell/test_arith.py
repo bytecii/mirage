@@ -1,7 +1,7 @@
 import pytest
 
 from mirage.shell.arith import evaluate_arith
-from mirage.shell.errors import ArithError
+from mirage.shell.errors import ArithError, UnboundVariable
 from mirage.shell.types import ArithResult, ElementOps
 
 
@@ -21,7 +21,7 @@ def test_trunc_division_and_mod_match_c():
 def test_literals():
     assert evaluate_arith("0x10", {}).value == 16
     assert evaluate_arith("010", {}).value == 8
-    with pytest.raises(ArithError):
+    with pytest.raises(ArithError, match="value too great for base"):
         evaluate_arith("08", {})
 
 
@@ -132,7 +132,7 @@ def _fake_elements():
     def read(name, key):
         return store.get((name, key))
 
-    ops = ElementOps(resolve=resolve, read=read)
+    ops = ElementOps(resolve=resolve, read=read, is_assoc=lambda n: n == "m")
     cell.append(ops)
     return ops
 
@@ -177,3 +177,101 @@ def test_element_nested_brackets_tokenize():
     ops = _fake_elements()
     result = evaluate_arith("arr[arr[1] - 19]", {}, elements=ops)
     assert result.value == 20
+
+
+def test_dynamic_reader_is_asked_first_and_told_of_every_write():
+    # A dynamic name's reader answers before the pending assignments and
+    # the environment, and hears each scalar assignment as it is made,
+    # nested evaluations included, so it can act on it at once.
+    events: list[tuple[str, str]] = []
+
+    def read(name: str) -> str | None:
+        return "7" if name == "D" else None
+
+    def wrote(name: str, value: str) -> None:
+        events.append((name, value))
+
+    result = evaluate_arith(
+        "D=42, x=D, y", {"y": "D+1"}, read_var=read, wrote_var=wrote
+    )
+    assert result.value == 8
+    assert events == [("D", "42"), ("x", "7")]
+    assert [(w.name, w.value) for w in result.writes] == [
+        ("D", "42"),
+        ("x", "7"),
+    ]
+
+
+def test_compound_assignment_reads_the_target_before_the_right_side():
+    # bash 5.2: `RANDOM=42, RANDOM-=RANDOM` is the first draw minus the
+    # second, so a dynamic name is read for the target first.
+    draws = iter(["17772", "26794"])
+    result = evaluate_arith("D-=D", {}, read_var=lambda n: next(draws))
+    assert result.value == -9022
+
+
+def test_a_variable_evaluated_as_an_expression_shares_the_record():
+    # bash: `x='y=5'; $((x))` leaves y at 5, and the nested read sees the
+    # pending updates of the expression around it.
+    result = evaluate_arith("x, y + 1", {"x": "y=5"})
+    assert result.value == 6
+    assert [(w.name, w.value) for w in result.writes] == [("y", "5")]
+    result = evaluate_arith("y=1, x, y", {"x": "y+=1"})
+    assert result.value == 2
+    assert [(w.name, w.value) for w in result.writes] == [("y", "2")]
+
+
+def test_an_indexed_subscript_evaluates_in_the_expression_record():
+    # bash: `a[5]=7; $((a[x=5] + x))` is 12 and leaves x at 5; the
+    # subscript's assignment is seen by the rest of the expression and
+    # recorded with it.
+    result = evaluate_arith("arr[x=1] + x", {}, elements=_fake_elements())
+    assert result.value == 21
+    assert [(w.name, w.key, w.value) for w in result.writes] == [
+        ("x", None, "1")
+    ]
+    # An associative subscript stays a key, never an expression.
+    result = evaluate_arith("m[a] + 1", {}, elements=_fake_elements())
+    assert result.value == 8 and result.writes == ()
+
+
+# `set -u` for the names an expression reads, pinned on bash 5.2.37: an
+# unset name is fatal, an empty one is 0, an assignment target and a
+# short-circuited operand are never read, and an array name is set
+# whatever its element 0 holds.
+@pytest.mark.parametrize(
+    "expr,env",
+    [
+        ("v + 1", {}),
+        ("v++", {}),
+        ("v += 1", {}),
+        ("w", {"w": "v"}),
+    ],
+)
+def test_nounset_refuses_a_name_no_variable_holds(expr, env):
+    with pytest.raises(UnboundVariable) as info:
+        evaluate_arith(expr, env, nounset=True)
+    assert info.value.stderr == b"bash: v: unbound variable\n"
+    assert (info.value.exit_code, info.value.contained_code) == (127, 1)
+
+
+def test_nounset_reads_what_is_set_and_skips_what_is_never_read():
+    assert evaluate_arith("v", {"v": ""}, nounset=True).value == 0
+    assert evaluate_arith("v = 1, v + 1", {}, nounset=True).value == 2
+    assert evaluate_arith("1 || v", {}, nounset=True).value == 1
+    assert evaluate_arith("0 && v", {}, nounset=True).value == 0
+    assert evaluate_arith("1 ? 2 : v", {}, nounset=True).value == 2
+    base = _fake_elements()
+    ops = ElementOps(
+        resolve=base.resolve,
+        read=base.read,
+        is_assoc=base.is_assoc,
+        holds_array=lambda name: name == "holes",
+    )
+    assert (
+        evaluate_arith("holes + 1", {}, elements=ops, nounset=True).value == 1
+    )
+
+
+def test_without_nounset_an_unset_name_reads_0():
+    assert evaluate_arith("v + 1", {}).value == 1

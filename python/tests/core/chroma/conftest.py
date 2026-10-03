@@ -10,13 +10,11 @@ from mirage.utils.key_prefix import mount_key
 
 
 class FakeCollection:
-
     def __init__(self) -> None:
         self.documents: dict[str, str] = {}
         self.chunks: dict[str, list[dict]] = {}
         self.get_calls: list[dict] = []
         self.queries: list[dict] = []
-        self.contains_queries: list[dict] = []
 
     async def get(self, **kwargs):
         self.get_calls.append(kwargs)
@@ -25,7 +23,6 @@ class FakeCollection:
             return {"documents": [self.documents["__path_tree__"]]}
 
         where = kwargs.get("where") or {}
-        where_document = kwargs.get("where_document") or {}
         selector = where.get("page_slug")
         slugs: list[str] | None = None
         if isinstance(selector, dict):
@@ -35,14 +32,14 @@ class FakeCollection:
                 slugs = [selector["$eq"]]
         elif selector is not None:
             slugs = [selector]
-        if slugs is not None and not where_document:
+        if slugs is not None:
             chunks = [
                 item for slug in slugs for item in self.chunks.get(slug, [])
             ]
             offset = kwargs.get("offset") or 0
             limit = kwargs.get("limit")
             if limit is not None:
-                chunks = chunks[offset:offset + limit]
+                chunks = chunks[offset : offset + limit]
             elif offset:
                 chunks = chunks[offset:]
             return {
@@ -50,52 +47,40 @@ class FakeCollection:
                 "metadatas": [item["metadata"] for item in chunks],
             }
 
-        if "$contains" in where_document or "$regex" in where_document:
-            self.contains_queries.append(kwargs)
-            candidates = where.get("page_slug", {}).get("$in", [])
-            pattern = where_document.get("$contains") or where_document.get(
-                "$regex")
-            docs: list[str] = []
-            metadatas: list[dict] = []
-            for slug_item in candidates:
-                for chunk in self.chunks.get(slug_item, []):
-                    if pattern in chunk["document"]:
-                        docs.append(chunk["document"])
-                        metadatas.append(chunk["metadata"])
-            return {"documents": docs, "metadatas": metadatas}
-
         return {"documents": [], "metadatas": []}
 
     async def query(self, **kwargs):
         self.queries.append(kwargs)
         return {
             "documents": [["quickstart chunk", "api chunk"]],
-            "metadatas": [[{
-                "page_slug": "guides/quickstart"
-            }, {
-                "page_slug": "api/reference"
-            }]],
+            "metadatas": [
+                [
+                    {"page_slug": "guides/quickstart"},
+                    {"page_slug": "api/reference"},
+                ]
+            ],
             "distances": [[0.1, 0.25]],
         }
 
 
 def path_tree_document() -> str:
-    return json.dumps({
-        "guides/quickstart": {
-            "size": 12,
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-02-01T00:00:00Z",
-        },
-        "api/reference": {
-            "size": None,
-            "created_at": None,
-            "updated_at": None,
-        },
-    })
+    return json.dumps(
+        {
+            "guides/quickstart": {
+                "size": 12,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-02-01T00:00:00Z",
+            },
+            "api/reference": {
+                "size": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        }
+    )
 
 
-@pytest.fixture
-def chroma_collection() -> FakeCollection:
+def seeded_collection() -> FakeCollection:
     collection = FakeCollection()
     collection.documents["__path_tree__"] = path_tree_document()
     collection.chunks["guides/quickstart"] = [
@@ -114,13 +99,15 @@ def chroma_collection() -> FakeCollection:
             },
         },
     ]
-    collection.chunks["api/reference"] = [{
-        "document": "api",
-        "metadata": {
-            "page_slug": "api/reference",
-            "chunk_index": 0,
-        },
-    }]
+    collection.chunks["api/reference"] = [
+        {
+            "document": "api",
+            "metadata": {
+                "page_slug": "api/reference",
+                "chunk_index": 0,
+            },
+        }
+    ]
     return collection
 
 
@@ -128,13 +115,24 @@ async def _get_collection(collection):
     return collection
 
 
+def accessor_for(collection: FakeCollection) -> SimpleNamespace:
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            slug_field="page_slug", chunk_index_field="chunk_index"
+        ),
+        collection=collection,
+        get_collection=partial(_get_collection, collection),
+    )
+
+
+@pytest.fixture
+def chroma_collection() -> FakeCollection:
+    return seeded_collection()
+
+
 @pytest.fixture
 def chroma_accessor(chroma_collection) -> SimpleNamespace:
-    return SimpleNamespace(
-        config=SimpleNamespace(slug_field="page_slug",
-                               chunk_index_field="chunk_index"),
-        collection=chroma_collection,
-        get_collection=partial(_get_collection, chroma_collection))
+    return accessor_for(chroma_collection)
 
 
 @pytest.fixture
@@ -144,13 +142,16 @@ def chroma_index() -> RAMIndexCacheStore:
 
 @pytest.fixture
 def knowledge_root() -> PathSpec:
-    return PathSpec(resource_path=mount_key("/knowledge", "/knowledge"),
-                    virtual="/knowledge",
-                    directory="/knowledge")
+    return PathSpec(
+        vfs_path=mount_key("/knowledge", "/knowledge"),
+        virtual="/knowledge",
+        directory="/knowledge",
+    )
 
 
 @pytest.fixture
 def quickstart_path() -> PathSpec:
     return PathSpec.from_str_path(
         "/knowledge/guides/quickstart",
-        mount_key("/knowledge/guides/quickstart", "/knowledge"))
+        mount_key("/knowledge/guides/quickstart", "/knowledge"),
+    )

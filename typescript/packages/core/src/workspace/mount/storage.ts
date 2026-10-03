@@ -12,29 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Resource } from '../../resource/base.ts'
+import type { BaseVFS } from '../../vfs/base.ts'
 import type { PathSpec } from '../../types.ts'
 import { stripMount } from '../../utils/key_prefix.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 import type { MountRegistry } from './registry.ts'
 
-// Serial numbers for resources that declare no storageId, keyed on the
-// object so one instance mounted at two prefixes gets one identity.
-// Browser resources implement Resource directly instead of extending
-// BaseResource, so they have no storageId; keying on the mount prefix
-// would hand one object two identities and let a self-move through.
-const OBJECT_IDS = new WeakMap<Resource, number>()
-let objectIdCounter = 0
+// A driver that knows where its bytes live (a disk root, a bucket and key
+// prefix) says so through `storageLocation`; one that does not is its own
+// location, keyed by identity, so one object mounted at two prefixes keys
+// as one store rather than two. Mirrors Python's `vfs_storage_location`.
+const OWN_LOCATION = new WeakMap<BaseVFS, string>()
+let ownLocations = 0
 
-export function resourceStorageId(resource: Resource): string {
-  const declared = resource.storageId?.()
-  if (declared !== undefined) return declared
-  let serial = OBJECT_IDS.get(resource)
-  if (serial === undefined) {
-    serial = ++objectIdCounter
-    OBJECT_IDS.set(resource, serial)
+export function vfsStorageLocation(vfs: BaseVFS): string {
+  const location = vfs.storageLocation()
+  if (location !== null) return location
+  let own = OWN_LOCATION.get(vfs)
+  if (own === undefined) {
+    ownLocations += 1
+    own = `${vfs.name}:${String(ownLocations)}`
+    OWN_LOCATION.set(vfs, own)
   }
-  return `resource:${String(serial)}`
+  return own
 }
 
 /**
@@ -45,7 +45,7 @@ export function resourceStorageId(resource: Resource): string {
  * mounts it does not: two prefixes can address one store, and there a move
  * would copy an object over itself and then unlink the source.
  *
- * The resource's storage id and the mount-relative path are joined into
+ * The VFS's storage id and the mount-relative path are joined into
  * one path-like string rather than kept as separate components, so nested
  * backings collapse onto the same key. Two disk mounts rooted at
  * `/srv/data` and `/srv/data/sub` make `/a/sub/x` and `/b/x` the same
@@ -66,6 +66,6 @@ export function makeStorageKey(registry: MountRegistry): (path: PathSpec) => str
       return rstripSlash(path.virtual)
     }
     const rel = rstripSlash(stripMount(path.virtual, rstripSlash(entry.prefix)))
-    return resourceStorageId(entry.resource) + rel
+    return vfsStorageLocation(entry.vfs) + rel
   }
 }

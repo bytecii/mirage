@@ -18,17 +18,19 @@ import re
 from mirage.types import PathSpec
 from mirage.utils.glob_walk import has_glob, unmark_globs
 from mirage.utils.key_prefix import mount_key
+from mirage.utils.path import dotted_spelling
 from mirage.workspace.expand.classify.relative import relative_spec
 from mirage.workspace.mount import MountRegistry
 
-_FILENAME_CHAR = re.compile(r"[a-zA-Z0-9_./]")
 _NON_PATH_CHAR = re.compile(r"[(){}=;|&<> ]")
 _RELATIVE_PATH = re.compile(
-    r"(?:\.?[a-zA-Z0-9_\-]*/)*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+")
+    r"(?:\.?[a-zA-Z0-9_\-]*/)*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+"
+)
 
 
-def classify_word(word: str, registry: MountRegistry,
-                  cwd: str) -> str | PathSpec:
+def classify_word(
+    word: str, registry: MountRegistry, cwd: str
+) -> str | PathSpec:
     """Classify an expanded word as text or PathSpec.
 
     Every caller hands this an already-expanded word, so quote removal
@@ -58,41 +60,49 @@ def classify_word(word: str, registry: MountRegistry,
         path = posixpath.normpath(word)
         if not is_dir and path + "/" == mount.prefix:
             is_dir = True
-        resource_path = mount_key(path, mount.prefix.rstrip("/"))
+        vfs_path = mount_key(path, mount.prefix.rstrip("/"))
         # `raw_path` keeps the spelling as typed, the way `relative_spec`
         # does: `virtual` has already lost any `..`, and `cd -P` has to
-        # resolve the link a `..` follows before applying it.
+        # resolve the link a `..` follows before applying it. `dotted`
+        # keeps it for the walk that proves each `..` a directory, and a
+        # pattern's for the head its listing walks.
         if word_has_glob:
             last_slash = path.rfind("/")
             return PathSpec(
                 virtual=path,
-                directory=path[:last_slash + 1],
-                resource_path=resource_path,
-                pattern=path[last_slash + 1:],
+                directory=path[: last_slash + 1],
+                vfs_path=vfs_path,
+                pattern=path[last_slash + 1 :],
                 raw_path=word,
                 resolved=False,
+                dotted=dotted_spelling(word),
             )
         if is_dir:
-            return PathSpec(virtual=path,
-                            directory=path + "/",
-                            resource_path=resource_path,
-                            raw_path=word,
-                            resolved=False)
+            return PathSpec(
+                virtual=path,
+                directory=path + "/",
+                vfs_path=vfs_path,
+                raw_path=word,
+                resolved=False,
+                dotted=dotted_spelling(word),
+            )
         last_slash = path.rfind("/")
         return PathSpec(
             virtual=path,
-            directory=path[:last_slash + 1],
-            resource_path=resource_path,
+            directory=path[: last_slash + 1],
+            vfs_path=vfs_path,
             raw_path=word,
             resolved=True,
+            dotted=dotted_spelling(word),
         )
 
-    # Relative glob: only classify if the word looks like a
-    # filename pattern (has alphanumeric, dot, or slash alongside
-    # glob chars). Bare globs like *, ?, [a-z] are command
-    # arguments (e.g. expr 4 * 3), not path patterns.
+    # Relative glob: a pattern under cwd, a bare `*`, `?` or `[a-z]`
+    # included, because bash expands every unquoted glob word (`echo *`
+    # lists the directory, and `expr 4 * 3` is the classic mistake). A
+    # quoted glob arrives with no marks and stays text. A word carrying
+    # shell syntax beside the glob (`x=*`) is an argument, not a path.
     if word_has_glob and ("/" in word or not shape.startswith(".")):
-        if not _FILENAME_CHAR.search(shape) or _NON_PATH_CHAR.search(shape):
+        if _NON_PATH_CHAR.search(shape):
             return word
         return relative_spec(word, registry, cwd)
 

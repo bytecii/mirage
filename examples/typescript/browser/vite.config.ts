@@ -23,8 +23,14 @@ const here = fileURLToPath(new URL('.', import.meta.url))
 dotenv.config({ path: resolve(here, '../../../.env.development') })
 
 export default defineConfig({
+  worker: { format: 'es' },
   optimizeDeps: {
-    exclude: ['@struktoai/mirage-browser', '@struktoai/mirage-core'],
+    // The dev server's pre-bundler follows core's dynamic import of the
+    // optional monty runtime and fails on the undeclared
+    // @bjorn3/browser_wasi_shim import inside it, which takes every page
+    // down with 504s. Left un-bundled it is only fetched when a python3
+    // run selects monty, the same deal the production build makes below.
+    exclude: ['@struktoai/mirage-browser', '@struktoai/mirage-core', '@pydantic/monty'],
   },
   define: {
     __TRELLO_API_KEY__: JSON.stringify(process.env.TRELLO_API_KEY ?? ''),
@@ -42,6 +48,7 @@ export default defineConfig({
     __SEMANTIC_SCHOLAR_API_KEY__: JSON.stringify(process.env.SEMANTIC_SCHOLAR_API_KEY ?? ''),
     __DROPBOX_CLIENT_ID__: JSON.stringify(process.env.DROPBOX_CLIENT_ID ?? ''),
     __BOX_CLIENT_ID__: JSON.stringify(process.env.BOX_CLIENT_ID ?? ''),
+    __UPSTASH_REDIS_URL__: JSON.stringify(process.env.UPSTASH_REDIS_URL ?? ''),
   },
   server: {
     port: 5173,
@@ -60,6 +67,7 @@ export default defineConfig({
       input: {
         main: resolve(here, 'index.html'),
         mongodb: resolve(here, 'mongodb.html'),
+        redis: resolve(here, 'redis.html'),
         gdocs_pkce: resolve(here, 'gdocs_pkce.html'),
         gdrive_pkce: resolve(here, 'gdrive_pkce.html'),
         dropbox_pkce: resolve(here, 'dropbox_pkce.html'),

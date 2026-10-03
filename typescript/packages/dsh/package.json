@@ -1,7 +1,7 @@
 {
   "name": "@struktoai/mirage-dsh",
-  "version": "0.0.1",
-  "description": "DeepSeek Harness (dsh) providers backed by a mirage workspace: ctx.fs and ctx.shell over mounted resources",
+  "version": "0.0.7-alpha.2",
+  "description": "DeepSeek Harness (dsh) providers backed by a mirage workspace: ctx.fs and ctx.shell over mounts",
   "homepage": "https://github.com/strukto-ai/mirage#readme",
   "bugs": {
     "url": "https://github.com/strukto-ai/mirage/issues"
@@ -38,6 +38,14 @@
     "./shell": {
       "types": "./dist/plugin/shell.d.ts",
       "import": "./dist/plugin/shell.js"
+    },
+    "./spill-store": {
+      "types": "./dist/plugin/spill-store.d.ts",
+      "import": "./dist/plugin/spill-store.js"
+    },
+    "./subprocess": {
+      "types": "./dist/plugin/subprocess.d.ts",
+      "import": "./dist/plugin/subprocess.js"
     }
   },
   "dsh": {
@@ -59,16 +67,20 @@
     "@struktoai/mirage-node": "workspace:*"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-fs": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-shell": "0.1.0-rc.6"
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-fs": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-shell": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-spill": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-fs": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-shell": "0.1.0-rc.6",
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-fs": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-shell": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-spill": "0.2.0-rc.2",
     "tsup": "^8.5.0",
     "typescript": "^6.0.0",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.11",
+    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2"
   }
 }

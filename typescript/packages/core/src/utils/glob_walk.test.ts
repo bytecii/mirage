@@ -15,13 +15,17 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { runWithSession } from '../context/session_context.ts'
-import { PathSpec } from '../types.ts'
-import { Session } from '../workspace/session/session.ts'
+import { FileStat, FileType, PathSpec } from '../types.ts'
+import { SessionState } from '../workspace/session/session.ts'
 import { enoent } from './errors.ts'
 import {
   expandPattern,
   globPattern,
+  globPrefix,
+  globSpan,
+  globStemPrefix,
   hasGlob,
+  hasGlobPrefix,
   isWordShaped,
   literalWord,
   markEscapedGlobs,
@@ -30,7 +34,7 @@ import {
   spellMatch,
   unmarkGlobs,
 } from './glob_walk.ts'
-import { unescapeUnquoted } from '../workspace/expand/node.ts'
+import { unescapeUnquoted } from '../shell/escapes.ts'
 import { rstripSlash, stripSlash } from './slash.ts'
 
 const TREE: Record<string, string[]> = {
@@ -43,6 +47,7 @@ const TREE: Record<string, string[]> = {
   '/notion/pages/Roadmap__uuid2': ['/notion/pages/Roadmap__uuid2/page.json'],
   '/': ['/alpha', '/beta.txt'],
   '/alpha': ['/alpha/b.txt'],
+  '/box': ['/box/sub/', '/box/f.txt'],
 }
 
 let calls: string[] = []
@@ -60,7 +65,7 @@ function globSpec(virtual: string, prefix: string): PathSpec {
   return new PathSpec({
     virtual,
     directory: virtual.slice(0, lastSlash + 1),
-    resourcePath: stripSlash(virtual.slice(prefix.length)),
+    vfsPath: stripSlash(virtual.slice(prefix.length)),
     pattern: virtual.slice(lastSlash + 1),
     resolved: false,
   })
@@ -129,7 +134,7 @@ describe('literalWord', () => {
     const spec = new PathSpec({
       virtual: '/data/' + markGlobs('*') + '?.txt',
       directory: '/data/',
-      resourcePath: markGlobs('*') + '?.txt',
+      vfsPath: markGlobs('*') + '?.txt',
       pattern: markGlobs('*') + '?.txt',
       resolved: false,
     })
@@ -145,7 +150,7 @@ describe('literalWord', () => {
     const spec = new PathSpec({
       virtual: '/data/*.txt',
       directory: '/data/',
-      resourcePath: '*.txt',
+      vfsPath: '*.txt',
       pattern: '*.txt',
       resolved: false,
     })
@@ -159,7 +164,7 @@ describe('expandPattern', () => {
     const spec = globSpec('/notion/pages/Demo_page__*/page.md', '/notion')
     const matched = await expandPattern(fakeReaddir, null, spec)
     expect(matched.map((m) => m.virtual)).toEqual(['/notion/pages/Demo_page__uuid1/page.md'])
-    expect(matched[0]?.resourcePath).toBe('pages/Demo_page__uuid1/page.md')
+    expect(matched[0]?.vfsPath).toBe('pages/Demo_page__uuid1/page.md')
     expect(calls.every((c) => !c.includes('*'))).toBe(true)
   })
 
@@ -190,11 +195,20 @@ describe('expandPattern', () => {
     expect(matched.map((m) => m.virtual)).toEqual(['/alpha/b.txt'])
   })
 
+  // box, gdrive and dropbox mark a folder with a trailing slash on a cold
+  // listing; the marker is not part of the name a match spells.
+  it("drops a cold listing's directory marker from a match", async () => {
+    const spec = globSpec('/box/*', '/box')
+    const matched = await expandPattern(fakeReaddir, null, spec)
+    expect(matched.map((m) => m.virtual)).toEqual(['/box/f.txt', '/box/sub'])
+    expect(matched.map((m) => m.vfsPath)).toEqual(['f.txt', 'sub'])
+  })
+
   it('expands a glob at a root mount', async () => {
     const spec = globSpec('/a*', '')
     const matched = await expandPattern(fakeReaddir, null, spec)
     expect(matched.map((m) => m.virtual)).toEqual(['/alpha'])
-    expect(matched[0]?.resourcePath).toBe('alpha')
+    expect(matched[0]?.vfsPath).toBe('alpha')
   })
 })
 
@@ -228,7 +242,7 @@ describe('resolveGlobWith', () => {
     const typed = new PathSpec({
       virtual: spec.virtual,
       directory: spec.directory,
-      resourcePath: spec.resourcePath,
+      vfsPath: spec.vfsPath,
       pattern: spec.pattern,
       resolved: false,
       rawPath: 'pages/Demo_page__*/page.md',
@@ -251,11 +265,25 @@ describe('resolveGlobWith', () => {
     const out = await resolveGlobWith(fakeReaddir, null, [spec], undefined)
     expect(out).toEqual([])
   })
+
+  it.each([
+    ['a resolved path', true],
+    ['an unresolved path with no pattern', false],
+  ])('passes %s through without listing', async (_name, resolved) => {
+    const spec = new PathSpec({
+      virtual: '/notion/pages',
+      directory: '/notion/',
+      vfsPath: 'pages',
+      resolved,
+    })
+    expect(await resolveGlobWith(fakeReaddir, null, [spec], undefined)).toEqual([spec])
+    expect(calls).toEqual([])
+  })
 })
 
 describe('resolveGlobWith under hidden paths', () => {
   it('drops hidden matches', async () => {
-    const sess = new Session({ sessionId: 'narrowed' })
+    const sess = new SessionState({ sessionId: 'narrowed' })
     sess.hiddenPaths = { patterns: ['*.json'] }
     const result = await runWithSession(sess, () =>
       resolveGlobWith(
@@ -269,7 +297,7 @@ describe('resolveGlobWith under hidden paths', () => {
   })
 
   it('an all-hidden match set falls back to the literal', async () => {
-    const sess = new Session({ sessionId: 'narrowed' })
+    const sess = new SessionState({ sessionId: 'narrowed' })
     sess.hiddenPaths = { patterns: ['*.json'] }
     const result = await runWithSession(sess, () =>
       resolveGlobWith(
@@ -283,5 +311,194 @@ describe('resolveGlobWith under hidden paths', () => {
     expect(result[0]?.resolved).toBe(true)
     expect(result[0]?.pattern).toBeNull()
     expect(result[0]?.virtual).toBe('/notion/pages/Roadmap__uuid2/page.*')
+  })
+})
+
+describe('globSpan', () => {
+  it.each([
+    ['2026-*', ['2026-01-01', '2027-01-01']],
+    ['2026-01-*', ['2026-01-01', '2026-02-01']],
+    ['2026-12-*', ['2026-12-01', '2027-01-01']],
+    ['2026-01-05*', ['2026-01-05', '2026-01-06']],
+    ['2026-01-05_*', ['2026-01-05', '2026-01-06']],
+    ['2026-01-?', ['2026-01-01', '2026-02-01']],
+  ])('reads the literal date prefix of %s', (pattern, expected) => {
+    expect(globSpan(pattern)).toEqual(expected)
+  })
+
+  it.each([
+    // No metacharacter at all is a literal name, not a span.
+    ['2026-01-05'],
+    ['chat*'],
+    ['2026-13-*'],
+    ['2026-02-30*'],
+    [''],
+    [null],
+    [undefined],
+  ])('has no span for %s', (pattern) => {
+    expect(globSpan(pattern)).toBeNull()
+  })
+})
+
+describe('globPrefix', () => {
+  it.each([
+    ['doc-1*', 'doc-1'],
+    ['doc-1?.md', 'doc-1'],
+    ['doc-1[0-9]', 'doc-1'],
+    // A metacharacter first leaves nothing to narrow on, and a word with none
+    // at all is a literal name rather than a glob.
+    ['*.md', ''],
+    ['?abc*', ''],
+    ['doc-10.md', ''],
+    ['', ''],
+  ])('reads the literal head of %s', (pattern, expected) => {
+    expect(globPrefix(pattern)).toBe(expected)
+    expect(hasGlobPrefix(pattern)).toBe(expected !== '')
+  })
+
+  it('has no prefix for a missing pattern', () => {
+    expect(globPrefix(null)).toBe('')
+    expect(globPrefix(undefined)).toBe('')
+  })
+
+  it('restores a quoted metacharacter', () => {
+    // A quoted star travels under a private mark and stands for a literal
+    // star, so it belongs in the prefix as the character it names.
+    expect(globPrefix(markGlobs('*') + 'ab*')).toBe('*ab')
+  })
+})
+
+describe('globStemPrefix', () => {
+  it.each([
+    // The literal has run into the suffix, so the part that ran in says
+    // nothing about the stem and comes off.
+    ['12*.md', '12'],
+    ['doc-1.m*', 'doc-1'],
+    ['doc-1.*', 'doc-1'],
+    ['doc-1.p*', 'doc-1'],
+    // A dot inside the stem is not the suffix, so it stays.
+    ['acct.2026*', 'acct.2026'],
+    ['acct.mark*', 'acct.mark'],
+    ['doc-1*', 'doc-1'],
+    ['*.md', ''],
+  ])('drops only a reached suffix from %s', (pattern, expected) => {
+    expect(globStemPrefix(pattern, ['.md', '.png'])).toBe(expected)
+  })
+
+  it('has no prefix for a missing pattern', () => {
+    expect(globStemPrefix(null, ['.md'])).toBe('')
+  })
+})
+
+function fakeStat(_accessor: null, path: PathSpec): Promise<FileStat> {
+  const key = rstripSlash(path.virtual) || '/'
+  const name = key.slice(key.lastIndexOf('/') + 1)
+  if (key in TREE) return Promise.resolve(new FileStat({ name, type: FileType.DIRECTORY }))
+  const parent = key.slice(0, key.lastIndexOf('/')) || '/'
+  if ((TREE[parent] ?? []).includes(key)) {
+    return Promise.resolve(new FileStat({ name, type: FileType.FILE }))
+  }
+  return Promise.reject(enoent(path))
+}
+
+function typedSpec(virtual: string, raw: string): PathSpec {
+  const base = globSpec(virtual, '')
+  return new PathSpec({
+    virtual: base.virtual,
+    directory: base.directory,
+    vfsPath: base.vfsPath,
+    pattern: base.pattern,
+    resolved: base.resolved,
+    rawPath: raw,
+  })
+}
+
+// The command tier's own resolver honours a trailing slash the way the
+// shell tier does (#1065): directories only, and one slash kept.
+describe('resolveGlobWith trailing slash', () => {
+  it('keeps directories only and the slash', async () => {
+    const out = await resolveGlobWith(
+      fakeReaddir,
+      null,
+      [typedSpec('/*', '*/')],
+      undefined,
+      undefined,
+      undefined,
+      fakeStat,
+    )
+    expect(out.map((m) => [m.virtual, m.rawPath])).toEqual([['/alpha', 'alpha/']])
+  })
+
+  it('spells an absolute word', async () => {
+    const out = await resolveGlobWith(
+      fakeReaddir,
+      null,
+      [typedSpec('/notion/p*', '/notion/p*/')],
+      undefined,
+      undefined,
+      undefined,
+      fakeStat,
+    )
+    expect(out.map((m) => m.rawPath)).toEqual(['/notion/pages/'])
+  })
+
+  // The namespace's own answer for the names it owes: a link to a
+  // directory, a nested mount root, a link to a file, a link to nothing.
+  function fakeTargetStat(virtual: string): Promise<FileStat | null> {
+    const name = virtual.slice(virtual.lastIndexOf('/') + 1)
+    if (virtual === '/lnk' || virtual === '/inner') {
+      return Promise.resolve(new FileStat({ name, type: FileType.DIRECTORY }))
+    }
+    if (virtual === '/flink') return Promise.resolve(new FileStat({ name, type: FileType.FILE }))
+    return Promise.resolve(null)
+  }
+  const owed = (parent: string): string[] =>
+    parent === '/' ? ['broken', 'flink', 'inner', 'lnk'] : []
+
+  it('asks the namespace about an owed name', async () => {
+    // bash follows a link for `*/` and keeps it only when the target is
+    // a directory; a dangling one is dropped like any file.
+    const out = await resolveGlobWith(
+      fakeReaddir,
+      null,
+      [typedSpec('/*', '*/')],
+      undefined,
+      undefined,
+      owed,
+      fakeStat,
+      fakeTargetStat,
+    )
+    expect(out.map((m) => m.rawPath)).toEqual(['alpha/', 'inner/', 'lnk/'])
+  })
+
+  it('keeps an owed name it cannot ask about', async () => {
+    const out = await resolveGlobWith(
+      fakeReaddir,
+      null,
+      [typedSpec('/*', '*/')],
+      undefined,
+      undefined,
+      owed,
+      fakeStat,
+    )
+    expect(out.map((m) => m.rawPath)).toEqual(['alpha/', 'broken/', 'flink/', 'inner/', 'lnk/'])
+  })
+
+  it('keeps every match without a stat door', async () => {
+    const out = await resolveGlobWith(fakeReaddir, null, [typedSpec('/*', '*/')], undefined)
+    expect(out.map((m) => m.rawPath)).toEqual(['alpha/', 'beta.txt/'])
+  })
+
+  it('keeps the typed word on zero matches', async () => {
+    const out = await resolveGlobWith(
+      fakeReaddir,
+      null,
+      [typedSpec('/zz*', 'zz*/')],
+      undefined,
+      undefined,
+      undefined,
+      fakeStat,
+    )
+    expect(out.map((m) => [m.rawPath, m.pattern])).toEqual([['zz*/', null]])
   })
 })

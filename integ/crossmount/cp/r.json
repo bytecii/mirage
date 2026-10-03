@@ -24,10 +24,41 @@
         "gdrive",
         "gdrive-folder"
       ],
-      "command": "mkdir -p /data/xm2ctree/sub && echo ca | tee /data/xm2ctree/ca.txt > /dev/null && echo cb | tee /data/xm2ctree/sub/cb.txt > /dev/null && cp -r /data/xm2ctree /data2/xm2ccopy && cat /data2/xm2ccopy/ca.txt /data2/xm2ccopy/sub/cb.txt && cat /data/xm2ctree/ca.txt",
+      "command": "mkdir -p /data/xm2ctree/sub && echo ca | tee /data/xm2ctree/ca.txt > /dev/null && echo cb | tee /data/xm2ctree/sub/cb.txt > /dev/null && ln -s missing /data/xm2ctree/link && cp -r /data/xm2ctree /data2/xm2ccopy && cat /data2/xm2ccopy/ca.txt /data2/xm2ccopy/sub/cb.txt && cat /data/xm2ctree/ca.txt && readlink /data2/xm2ccopy/link && echo keep > /data2/xm2ccopy/extra && ln -s second /data/xm2ctree/extra && cp -rnT /data/xm2ctree /data2/xm2ccopy && cat /data2/xm2ccopy/extra && echo safe > /data2/xm2safe && ln -s /data2/xm2safe /data2/xm2ccopy/extra~ && ln -s /data2/xm2safe /data2/xm2ccopy/ca.txt~ && cp -rbT /data/xm2ctree /data2/xm2ccopy && readlink /data2/xm2ccopy/extra && cat /data2/xm2ccopy/extra~ && cat /data2/xm2ccopy/ca.txt~ /data2/xm2safe && test ! -L /data2/xm2ccopy/extra~ && test ! -L /data2/xm2ccopy/ca.txt~ && cp -bP /data/xm2ctree/extra /data2/xm2ccopy/extra && readlink /data2/xm2ccopy/extra~ && echo local > /data/xm2ctree/local && cp -bP /data/xm2ctree/extra /data/xm2ctree/local && readlink /data/xm2ctree/local && cat /data/xm2ctree/local~ && cp -bP /data/xm2ctree/extra /data/xm2ctree/local && readlink /data/xm2ctree/local~",
       "expect": {
         "exit": 0,
-        "stdout": "ca\ncb\nca\n",
+        "stdout": "ca\ncb\nca\nmissing\nkeep\nsecond\nkeep\nca\nsafe\nsecond\nsecond\nlocal\nsecond\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "xm_cp_rv_names_entries_as_typed",
+      "seq": 756,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "(cd /data && mkdir -p r10xq/s/t && touch r10xq/s/t/f && cp -rv r10xq /data2/r10xq; echo rc=$?); rm -r /data/r10xq /data2/r10xq",
+      "expect": {
+        "exit": 0,
+        "stdout": "'r10xq' -> '/data2/r10xq'\n'r10xq/s' -> '/data2/r10xq/s'\n'r10xq/s/t' -> '/data2/r10xq/s/t'\n'r10xq/s/t/f' -> '/data2/r10xq/s/t/f'\nrc=0\n",
         "stderr": ""
       }
     }

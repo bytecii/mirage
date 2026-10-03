@@ -21,7 +21,7 @@ vi.mock('./client.ts', async () => {
 })
 
 import { S3Accessor } from '../../accessor/s3.ts'
-import type { S3Config } from '../../resource/s3/config.ts'
+import type { S3Config } from '../../vfs/s3/config.ts'
 import { FileChangeKind, PathSpec, type WalkEntry } from '../../types.ts'
 import * as clientMod from './client.ts'
 import { buildDeltaHook, S3Walk } from './watch.ts'
@@ -34,6 +34,7 @@ interface StoredObject {
   key: string
   size: number
   etag: string
+  modified?: Date | string
 }
 
 function mockListing(objects: StoredObject[]): void {
@@ -47,7 +48,7 @@ function mockListing(objects: StoredObject[]): void {
           Contents: objects.map((obj) => ({
             Key: obj.key,
             Size: obj.size,
-            LastModified: new Date('2026-03-31T00:00:00.000Z'),
+            LastModified: obj.modified ?? new Date('2026-03-31T00:00:00.000Z'),
             ETag: `"${obj.etag}"`,
           })),
           IsTruncated: false,
@@ -65,8 +66,8 @@ function accessor(keyPrefix?: string): S3Accessor {
   } as S3Config)
 }
 
-function root(virtual: string, resourcePath: string): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath })
+function root(virtual: string, vfsPath: string): PathSpec {
+  return new PathSpec({ virtual, directory: virtual, vfsPath })
 }
 
 async function collect(walk: S3Walk, spec: PathSpec): Promise<WalkEntry[]> {
@@ -80,7 +81,7 @@ describe('S3Walk', () => {
     vi.clearAllMocks()
   })
 
-  it('yields files fingerprinted on the ETag', async () => {
+  it('leads each file fingerprint with the ETag', async () => {
     mockListing([
       { key: 'data/a.txt', size: 5, etag: 'etag-a' },
       { key: 'data/b.txt', size: 4, etag: 'etag-b' },
@@ -88,9 +89,11 @@ describe('S3Walk', () => {
     const entries = await collect(new S3Walk(accessor()), root('/s3/data', 'data'))
     const files = entries.filter((e) => !e.isDir)
     expect(files.map((e) => e.virtual).sort()).toEqual(['/s3/data/a.txt', '/s3/data/b.txt'])
-    // The ETag, not the mtime|size composite: LastModified is constant
-    // here, so a composite would collide across files of equal size.
-    expect(files[0]?.fingerprint).toBe('etag-a')
+    // The ETag leads the composite, which is what keeps two files of equal
+    // size apart: LastModified is constant here, so the size alone would
+    // collide across them.
+    expect(files[0]?.fingerprint).toBe('etag-a|5')
+    expect(files[1]?.fingerprint).toBe('etag-b|4')
     expect(files[0]?.size).toBe(5)
   })
 
@@ -121,6 +124,24 @@ describe('s3 delta hook', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
+
+  it.each(['2026-03-31T00:00:00.000Z', '2026-03-31T00:00:00.123Z'])(
+    'preserves persisted fallback fingerprints for %s',
+    async (stamp) => {
+      mockListing([{ key: 'a.txt', size: 5, etag: '', modified: new Date(stamp) }])
+      const checkpoint = JSON.stringify({ '/s3/a.txt': `${stamp}|5` })
+      const hook = buildDeltaHook(accessor())
+      const spec = root('/s3', '')
+      const unchanged = await hook.pull(spec, checkpoint)
+      expect(unchanged.changes).toEqual([])
+      expect(unchanged.checkpoint).toBe(checkpoint)
+      mockListing([
+        { key: 'a.txt', size: 5, etag: '', modified: new Date(Date.parse(stamp) + 1000) },
+      ])
+      const changed = await hook.pull(spec, checkpoint)
+      expect(changed.changes.map((c) => c.kind)).toEqual([FileChangeKind.UPDATE])
+    },
+  )
 
   it('reports nothing on the baseline pull, then create and update', async () => {
     mockListing([{ key: 'data/a.txt', size: 5, etag: 'etag-a' }])
@@ -173,6 +194,6 @@ describe('s3 delta hook', () => {
     mockListing([{ key: 'data/a.txt', size: 5, etag: 'etag-a2' }])
     const second = await hook.pull(spec, first.checkpoint)
     expect(second.changes[0]?.path.virtual).toBe('/s3/data/a.txt')
-    expect(second.changes[0]?.path.resourcePath).toBe('data/a.txt')
+    expect(second.changes[0]?.path.vfsPath).toBe('data/a.txt')
   })
 })

@@ -15,11 +15,11 @@
 import { varsFromEnv } from '../../workspace/session/session.ts'
 import { describe, expect, it } from 'vitest'
 import { IOResult } from '../../io/types.ts'
-import { getParts } from '../../shell/syntax/helpers.ts'
+import { getParts } from '../../shell/helpers.ts'
 import { globPattern, unmarkGlobs } from '../../utils/glob_walk.ts'
 import { getTestParser } from '../fixtures/workspace_fixture.ts'
-import { Session } from '../session/session.ts'
-import { expandParts, expandWords } from './parts.ts'
+import { SessionState } from '../session/session.ts'
+import { expandWords } from './parts.ts'
 import type { ExecuteFn } from './node.ts'
 
 const ENC = new TextEncoder()
@@ -28,7 +28,7 @@ async function words(cmd: string, env: Record<string, string> = {}, stdout = '')
   const parser = await getTestParser()
   const root = parser.parse(cmd)
   const parts = getParts(root.namedChildren[0] as never)
-  const session = new Session({ sessionId: 't', cwd: '/', vars: varsFromEnv(env) })
+  const session = new SessionState({ sessionId: 't', cwd: '/', vars: varsFromEnv(env) })
   const executeFn: ExecuteFn = () => Promise.resolve(new IOResult({ stdout: ENC.encode(stdout) }))
   return { parts, session, executeFn, out: await expandWords(parts, session, executeFn) }
 }
@@ -115,13 +115,13 @@ describe('expandWords quoting', () => {
   })
 })
 
-describe('expandParts', () => {
-  it('is the unmarked view of expandWords', async () => {
-    const cmd = "c '/data/*.txt' \"/data/\"*.txt {a,b}* '/data/*'?.txt"
-    const { parts, session, executeFn, out } = await words(cmd)
-    const texts = await expandParts(parts, session, executeFn)
-    expect(texts).toEqual(out.map((w) => unmarkGlobs(w)))
-    // No mark ever reaches a caller of expandParts.
-    expect(texts.every((t) => t === unmarkGlobs(t))).toBe(true)
+describe('expandWords at scale', () => {
+  // More words than a call takes as spread arguments, which is how a
+  // `push(...words)` overflowed the stack on `printf %s $(seq 1 300000)`.
+  it('splits a substitution into 300000 words', async () => {
+    const lines = Array.from({ length: 300_000 }, (_, i) => String(i + 1)).join('\n')
+    const { out } = await words('c $(seq 1 300000)', {}, `${lines}\n`)
+    expect(out.length).toBe(300_001)
+    expect(out.at(-1)).toBe('300000')
   })
 })

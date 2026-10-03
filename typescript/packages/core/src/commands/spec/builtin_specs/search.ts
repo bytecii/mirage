@@ -32,14 +32,22 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-I' }),
       new Option({ short: '-v' }),
       new Option({ short: '-n' }),
+      new Option({ long: '--binary-files', type: 'str' }),
       new Option({ short: '-c' }),
       new Option({ short: '-l' }),
+      new Option({ short: '-L', long: '--files-without-match' }),
       new Option({ short: '-w' }),
       new Option({ short: '-F' }),
       new Option({ short: '-E' }),
-      // -G asks for the basic expressions grep already reads by default, so it
-      // is accepted and changes nothing.
+      // -G asks for the basic expressions grep already reads by default; with
+      // -E, -F and -P it is one of the four matchers, two different ones
+      // being refused.
       new Option({ short: '-G' }),
+      new Option({ short: '-P', long: '--perl-regexp' }),
+      // -E's and -G's long spellings, one option to GNU; mirage keeps the
+      // short dests the matcher check reads next to these.
+      new Option({ long: '--extended-regexp' }),
+      new Option({ long: '--basic-regexp' }),
       new Option({ short: '-o' }),
       new Option({ short: '-q' }),
       new Option({ short: '-H' }),
@@ -49,11 +57,9 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-B', type: 'str' }),
       new Option({ short: '-C', type: 'str' }),
       new Option({ short: '-e', type: 'str', multiple: true }),
-      new Option({ short: '-f', type: 'path', multiple: true }),
-      // -a searches the extensions the -r walk skips as binary;
-      // explicit operands are always read as text, which is the
-      // documented divergence (no "binary file matches" rows).
+      new Option({ short: '-f', long: '--file', type: 'path', multiple: true }),
       new Option({ short: '-a', long: '--text' }),
+      new Option({ short: '-b', long: '--byte-offset' }),
       new Option({ long: '--include', type: 'str', multiple: true }),
       new Option({ long: '--exclude', type: 'str', multiple: true }),
       new Option({ long: '--exclude-dir', type: 'str', multiple: true }),
@@ -110,7 +116,8 @@ export const SPECS: Record<string, CommandSpec> = {
         description: 'Set the exit status from the last output',
       }),
       new Option({ long: '--tab', description: 'Indent with tabs' }),
-      new Option({ long: '--indent', type: 'int', description: 'Indent with n spaces (max 7)' }),
+      // jq words its own refusal of a width it cannot read.
+      new Option({ long: '--indent', type: 'str', description: 'Indent with n spaces (max 7)' }),
       new Option({
         short: '-M',
         long: '--monochrome-output',
@@ -167,40 +174,171 @@ export const SPECS: Record<string, CommandSpec> = {
         description: 'Read the remaining operands as positional JSON values',
       }),
       new Option({ short: '-h', long: '--help', description: 'Show this help and exit' }),
+      // jq answers -h and -V inside its option loop, where they are typed
+      // (OWN_OPTION_LOOP), so it declares both.
+      new Option({
+        short: '-V',
+        long: '--version',
+        description: 'Show version information and exit',
+      }),
     ],
     // Without providedBy, `jq -f prog.jq data.json` would take data.json
     // as the filter and never read it as a file.
     positional: [new Operand({ type: 'str', providedBy: ['-f'] })],
-    // --args and --jsonargs turn the operands after the program into
-    // $ARGS.positional, so they stop being input files.
+    // --args and --jsonargs turn the operands typed after them into
+    // $ARGS.positional, so those stop being input files (IN_ORDER_OPERANDS).
     rest: new Operand({ type: 'path', textWhen: ['--args', '--jsonargs'] }),
+    // jq's main.c compares each long option with strcmp, so `--nul` is no
+    // --null-input (jq 1.8.2: `jq: Unknown option --nul`).
+    allowAbbrev: false,
   }),
   rg: new CommandSpec({
     options: [
-      new Option({ short: '-i' }),
-      new Option({ short: '-v' }),
-      new Option({ short: '-n' }),
-      new Option({ short: '-c' }),
-      new Option({ short: '-l' }),
-      new Option({ short: '-w' }),
-      new Option({ short: '-F' }),
-      new Option({ short: '-o' }),
-      new Option({ short: '-H' }),
-      new Option({ short: '-I' }),
-      new Option({ short: '-e', type: 'str', multiple: true }),
-      new Option({ short: '-f', type: 'path', multiple: true }),
-      new Option({ short: '-m', type: 'str' }),
-      new Option({ short: '-A', type: 'str' }),
-      new Option({ short: '-B', type: 'str' }),
-      new Option({ short: '-C', type: 'str' }),
-      new Option({ long: '--hidden' }),
-      new Option({ long: '--type', type: 'str' }),
-      new Option({ long: '--glob', type: 'str' }),
-      // Accepted no-op like grep --color (#471).
-      new Option({ long: '--color', type: 'str', valueOptional: true }),
+      new Option({ short: '-e', long: '--regexp', type: 'str', multiple: true }),
+      new Option({ short: '-f', long: '--file', type: 'path', multiple: true }),
+      new Option({ short: '-i', long: '--ignore-case' }),
+      new Option({ short: '-s', long: '--case-sensitive' }),
+      new Option({ short: '-S', long: '--smart-case' }),
+      new Option({ short: '-v', long: '--invert-match' }),
+      new Option({ long: '--no-invert-match' }),
+      new Option({ short: '-w', long: '--word-regexp' }),
+      new Option({ short: '-x', long: '--line-regexp' }),
+      new Option({ short: '-F', long: '--fixed-strings' }),
+      new Option({ long: '--no-fixed-strings' }),
+      new Option({ short: '-m', long: '--max-count', type: 'str' }),
+      new Option({ long: '--stop-on-nonmatch' }),
+      new Option({ short: '-n', long: '--line-number' }),
+      new Option({ short: '-N', long: '--no-line-number' }),
+      new Option({ short: '-b', long: '--byte-offset' }),
+      new Option({ long: '--no-byte-offset' }),
+      new Option({ long: '--column' }),
+      new Option({ long: '--no-column' }),
+      new Option({ long: '--vimgrep' }),
+      new Option({ short: '-o', long: '--only-matching' }),
+      new Option({ short: '-r', long: '--replace', type: 'str' }),
+      new Option({ long: '--trim' }),
+      new Option({ long: '--no-trim' }),
+      new Option({ short: '-M', long: '--max-columns', type: 'str' }),
+      new Option({ long: '--max-columns-preview' }),
+      new Option({ long: '--no-max-columns-preview' }),
+      new Option({ short: '-0', long: '--null' }),
+      new Option({ long: '--null-data' }),
+      new Option({ long: '--path-separator', type: 'str' }),
+      new Option({ short: '-q', long: '--quiet' }),
+      new Option({ short: '-c', long: '--count' }),
+      new Option({ long: '--count-matches' }),
+      new Option({ long: '--include-zero' }),
+      new Option({ long: '--no-include-zero' }),
+      new Option({ short: '-l', long: '--files-with-matches' }),
+      // ripgrep spells this long only: its -L is --follow.
+      new Option({ long: '--files-without-match' }),
+      new Option({ long: '--files' }),
+      new Option({ long: '--type-list' }),
+      new Option({ short: '-H', long: '--with-filename' }),
+      new Option({ short: '-I', long: '--no-filename' }),
+      new Option({ long: '--heading' }),
+      new Option({ long: '--no-heading' }),
+      new Option({ short: '-A', long: '--after-context', type: 'str' }),
+      new Option({ short: '-B', long: '--before-context', type: 'str' }),
+      new Option({ short: '-C', long: '--context', type: 'str' }),
+      new Option({ long: '--passthru' }),
+      // ripgrep's second name for --passthru (LONG_SYNONYMS).
+      new Option({ long: '--passthrough' }),
+      new Option({ long: '--context-separator', type: 'str' }),
+      new Option({ long: '--no-context-separator' }),
+      new Option({ long: '--field-match-separator', type: 'str' }),
+      new Option({ long: '--field-context-separator', type: 'str' }),
+      new Option({ short: '-g', long: '--glob', type: 'str', multiple: true }),
+      new Option({ long: '--iglob', type: 'str', multiple: true }),
+      new Option({ long: '--glob-case-insensitive' }),
+      new Option({ long: '--no-glob-case-insensitive' }),
+      new Option({ short: '-t', long: '--type', type: 'str', multiple: true }),
+      new Option({ short: '-T', long: '--type-not', type: 'str', multiple: true }),
+      new Option({ long: '--type-add', type: 'str', multiple: true }),
+      new Option({ long: '--type-clear', type: 'str', multiple: true }),
+      new Option({ short: '-.', long: '--hidden' }),
+      new Option({ long: '--no-hidden' }),
+      new Option({ short: '-u', long: '--unrestricted', count: true }),
+      new Option({ short: '-d', long: '--max-depth', type: 'str' }),
+      new Option({ long: '--max-filesize', type: 'str' }),
+      // -L follows a link the walk meets; one named on the line is
+      // followed either way (ripgrep 14.1.1).
+      new Option({ short: '-L', long: '--follow' }),
+      // A mount is mirage's filesystem boundary: this keeps the walk
+      // out of every mount below the one it starts in.
+      new Option({ long: '--one-file-system' }),
+      new Option({ long: '--no-one-file-system' }),
+      // mirage searches a binary file's bytes as text either way;
+      // these lift the walk's binary-extension skip.
+      new Option({ short: '-a', long: '--text' }),
+      new Option({ long: '--no-text' }),
+      new Option({ long: '--binary' }),
+      new Option({ long: '--no-binary' }),
+      new Option({ long: '--sort', type: 'str' }),
+      new Option({ long: '--sortr', type: 'str' }),
+      new Option({ long: '--sort-files' }),
+      new Option({ long: '--no-sort-files' }),
+      new Option({ long: '--no-messages' }),
+      new Option({ long: '--messages' }),
+      // Accepted no-ops: mirage reads no ignore files and no config
+      // file, runs one search at a time, and never writes to a tty,
+      // so its output is already what these ask for; the negations
+      // restore defaults of features it does not have.
+      new Option({ long: '--no-ignore' }),
+      new Option({ long: '--ignore' }),
+      new Option({ long: '--no-ignore-dot' }),
+      new Option({ long: '--ignore-dot' }),
+      new Option({ long: '--no-ignore-exclude' }),
+      new Option({ long: '--ignore-exclude' }),
+      new Option({ long: '--no-ignore-files' }),
+      new Option({ long: '--ignore-files' }),
+      new Option({ long: '--no-ignore-global' }),
+      new Option({ long: '--ignore-global' }),
+      new Option({ long: '--no-ignore-messages' }),
+      new Option({ long: '--ignore-messages' }),
+      new Option({ long: '--no-ignore-parent' }),
+      new Option({ long: '--ignore-parent' }),
+      new Option({ long: '--no-ignore-vcs' }),
+      new Option({ long: '--ignore-vcs' }),
+      new Option({ long: '--no-require-git' }),
+      new Option({ long: '--require-git' }),
+      new Option({ long: '--ignore-file-case-insensitive' }),
+      new Option({ long: '--no-ignore-file-case-insensitive' }),
+      new Option({ long: '--no-config' }),
+      new Option({ short: '-j', long: '--threads', type: 'str' }),
+      new Option({ long: '--line-buffered' }),
+      new Option({ long: '--no-line-buffered' }),
+      new Option({ long: '--block-buffered' }),
+      new Option({ long: '--no-block-buffered' }),
+      new Option({ long: '--mmap' }),
+      new Option({ long: '--no-mmap' }),
+      // -L's negation, the last of the two winning.
+      new Option({ long: '--no-follow' }),
+      new Option({ long: '--no-stats' }),
+      new Option({ long: '--no-crlf' }),
+      new Option({ long: '--no-multiline' }),
+      new Option({ long: '--no-multiline-dotall' }),
+      new Option({ short: '-P', long: '--pcre2' }),
+      new Option({ long: '--no-pcre2' }),
+      new Option({ long: '--engine', type: 'str' }),
+      new Option({ long: '--no-json' }),
+      new Option({ long: '--no-search-zip' }),
+      new Option({ long: '--no-encoding' }),
+      new Option({ long: '--no-pre' }),
+      new Option({ long: '--unicode' }),
+      new Option({ long: '--pcre2-unicode' }),
+      new Option({ long: '--no-pcre2-unicode' }),
+      new Option({ long: '--no-auto-hybrid-regex' }),
+      // Accepted no-op like grep --color (#471), with ripgrep's
+      // required value.
+      new Option({ long: '--color', type: 'str' }),
     ],
-    positional: [new Operand({ type: 'str', providedBy: ['-e', '-f'] })],
+    // --files and --type-list search nothing, so the first operand is a path
+    // rather than the pattern.
+    positional: [new Operand({ type: 'str', providedBy: ['-e', '-f', '--files', '--type-list'] })],
     rest: new Operand({ type: 'path' }),
+    // ripgrep's parser (lexopt) takes a long flag only as spelled.
+    allowAbbrev: false,
   }),
   search: new CommandSpec({
     options: [
@@ -214,7 +352,7 @@ export const SPECS: Record<string, CommandSpec> = {
   sed: new CommandSpec({
     options: [
       new Option({ short: '-i' }),
-      // -e takes a script and may repeat; multiple -e are joined with newlines.
+      // -e takes a script and may repeat; the pieces compile in order.
       new Option({ short: '-e', type: 'str', multiple: true }),
       // -f reads the script from a file and may repeat (like grep -f); its value
       // is a PATH so it routes and is read from the mount.
@@ -222,6 +360,9 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-n' }),
       new Option({ short: '-E' }),
       new Option({ short: '-r' }),
+      // -l N sets the `l` command's line length (GNU atoi: 0 never folds).
+      new Option({ short: '-l', long: '--line-length', type: 'str' }),
+      new Option({ short: '-s', long: '--separate' }),
     ],
     // providedBy lists the flags that can supply this positional slot's value;
     // when any is present the parser skips the slot so the next word is not
@@ -238,8 +379,10 @@ export const SPECS: Record<string, CommandSpec> = {
   zgrep: new CommandSpec({
     options: [
       new Option({ short: '-i' }),
+      new Option({ short: '-b', long: '--byte-offset' }),
       new Option({ short: '-c' }),
       new Option({ short: '-l' }),
+      new Option({ short: '-L', long: '--files-without-match' }),
       new Option({ short: '-n' }),
       new Option({ short: '-v' }),
       new Option({ short: '-e', type: 'str', multiple: true }),
@@ -247,11 +390,16 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-E' }),
       new Option({ short: '-G' }),
       new Option({ short: '-F' }),
+      new Option({ short: '-P' }),
       new Option({ short: '-H' }),
       new Option({ short: '-h' }),
       new Option({ short: '-m', type: 'str' }),
       new Option({ short: '-o' }),
       new Option({ short: '-q' }),
+      // An accepted no-op: zgrep hands -s to grep, which reads a pipe and
+      // has no file to complain about, and gzip's own lines are gzip's
+      // (gzip 1.13).
+      new Option({ short: '-s' }),
       new Option({ short: '-w' }),
     ],
     positional: [new Operand({ type: 'str', providedBy: ['-e', '-f'] })],

@@ -24,7 +24,7 @@ import { runWithCacheManager } from '../../cache/context.ts'
 import { RAMFileCacheStore } from '../../cache/file/ram.ts'
 import { CacheManager } from '../../cache/manager.ts'
 import { materialize } from '../../io/types.ts'
-import { FileStat, FileType, PathSpec } from '../../types.ts'
+import { ContentType, FileStat, FileType, PathSpec } from '../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../config.ts'
 import { grepGeneric } from './generic/grep.ts'
 import { headGeneric } from './generic/head.ts'
@@ -50,7 +50,7 @@ function spec(): PathSpec {
   return new PathSpec({
     virtual: '/s3/a.txt',
     directory: '/s3/',
-    resourcePath: mountKey('/s3/a.txt', '/s3/'),
+    vfsPath: mountKey('/s3/a.txt', '/s3/'),
   })
 }
 
@@ -61,7 +61,14 @@ async function warmManager(): Promise<CacheManager> {
 }
 
 function statOf(_p: PathSpec): Promise<FileStat> {
-  return Promise.resolve(new FileStat({ name: 'a.txt', size: PAYLOAD.length, type: FileType.TEXT }))
+  return Promise.resolve(
+    new FileStat({
+      name: 'a.txt',
+      size: PAYLOAD.length,
+      type: FileType.FILE,
+      content: ContentType.TEXT,
+    }),
+  )
 }
 
 function readdirOf(_p: PathSpec): Promise<string[]> {
@@ -90,7 +97,7 @@ describe('warm reads serve cache uniformly across shared consumers', () => {
     const manager = await warmManager()
     // Build in scope, drain outside: also pins eager capture in the multi path.
     const result = await runWithCacheManager(manager, () =>
-      headGeneric([spec()], [], opts({ n: '1' }), statOf, reader.stream),
+      headGeneric([spec()], [], opts({ lines: '1' }), statOf, reader.stream),
     )
     expect(await out(result)).toBe('alpha\n')
     expect(reader.calls).toBe(0)
@@ -100,7 +107,7 @@ describe('warm reads serve cache uniformly across shared consumers', () => {
     const reader = new CountingStream()
     const manager = await warmManager()
     const result = await runWithCacheManager(manager, () =>
-      tailGeneric([spec()], [], opts({ n: '1' }), reader.stream),
+      tailGeneric([spec()], [], opts({ n: '1' }), reader.stream, statOf),
     )
     expect(await out(result)).toBe('beta\n')
     expect(reader.calls).toBe(0)

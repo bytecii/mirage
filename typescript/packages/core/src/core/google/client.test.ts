@@ -125,7 +125,7 @@ describe('TokenManager.refreshFn delegation', () => {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ access_token: 'direct-tok', expires_in: 3600 }),
-      text: () => Promise.resolve(''),
+      text: () => Promise.resolve(JSON.stringify({ access_token: 'direct-tok', expires_in: 3600 })),
     } as unknown as Response) as unknown as typeof fetch
     globalThis.fetch = fakeFetch
     const tm = new TokenManager({ clientId: 'id', clientSecret: 's', refreshToken: 'rt' })
@@ -170,5 +170,43 @@ describe('api base helpers', () => {
     expect(calendarBase(tm)).toBe('http://127.0.0.1:19999/calendar/v3')
     expect(formsBase(tm)).toBe('http://127.0.0.1:19999/v1')
     expect(tokenUrl(tm.config)).toBe('http://127.0.0.1:19999/token')
+  })
+})
+
+describe('TokenManager.accessToken short-circuit', () => {
+  let originalFetch: typeof fetch
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('a supplied token skips the refresh grant entirely', async () => {
+    const networkSpy = vi.fn()
+    globalThis.fetch = networkSpy as unknown as typeof fetch
+    const tm = new TokenManager({ accessToken: 'sa-token' })
+    expect(await tm.getToken()).toBe('sa-token')
+    expect(networkSpy).not.toHaveBeenCalled()
+  })
+
+  // The provider owns the refresh, so caching its answer here would outlive
+  // the rotation it just performed.
+  it('a provider is called every request, never cached', async () => {
+    const tokens = ['tok-1', 'tok-2', 'tok-3']
+    const tm = new TokenManager({ accessToken: () => tokens.shift() ?? '' })
+    expect([await tm.getToken(), await tm.getToken(), await tm.getToken()]).toEqual([
+      'tok-1',
+      'tok-2',
+      'tok-3',
+    ])
+  })
+
+  it('the refresh grant names what it is missing', async () => {
+    await expect(refreshAccessToken({ accessToken: 'tok' })).rejects.toThrow(
+      /needs clientId and refreshToken/,
+    )
   })
 })

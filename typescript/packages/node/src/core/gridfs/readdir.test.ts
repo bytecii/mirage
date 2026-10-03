@@ -17,15 +17,16 @@ import type * as ClientModule from './client.ts'
 
 vi.mock('./client.ts', async () => {
   const actual = await vi.importActual<typeof ClientModule>('./client.ts')
-  return { ...actual, iterLatest: vi.fn(), filesColl: vi.fn() }
+  return { ...actual, iterLatest: vi.fn(), filesColl: vi.fn(), latestFile: vi.fn() }
 })
 
 import { PathSpec } from '@struktoai/mirage-core/types'
 import { GridFSAccessor } from '../../accessor/gridfs.ts'
-import type { GridFSConfig } from '../../resource/gridfs/config.ts'
+import type { GridFSConfig } from '../../vfs/gridfs/config.ts'
 import type { GridFSFileDoc } from './client.ts'
 import * as clientMod from './client.ts'
 import { readdir } from './readdir.ts'
+import { stripSlash } from '@struktoai/mirage-core/utils/slash'
 
 const TREE = ['a.txt', 'dir/f.txt', 'dir/sub/g.txt', 'empty/']
 
@@ -53,11 +54,16 @@ function mockBucket(names: string[]): void {
     findOne: (query: Record<string, unknown>) =>
       Promise.resolve(names.some((n) => selects(query, n)) ? { _id: 'x' } : null),
   } as never)
+  // The driver's head probe resolves through latestFile, the same seam the
+  // python tests patch on mirage.core.gridfs.driver.
+  vi.mocked(clientMod.latestFile).mockImplementation((_accessor, key) =>
+    Promise.resolve(names.includes(key) ? doc(key) : null),
+  )
 }
 
 function spec(virtual: string): PathSpec {
   return new PathSpec({
-    resourcePath: virtual.replace(/^\/+|\/+$/g, ''),
+    vfsPath: stripSlash(virtual),
     virtual,
     directory: virtual,
   })
@@ -82,6 +88,7 @@ describe('gridfs core readdir', () => {
   beforeEach(() => {
     vi.mocked(clientMod.iterLatest).mockReset()
     vi.mocked(clientMod.filesColl).mockReset()
+    vi.mocked(clientMod.latestFile).mockReset()
   })
 
   it('lists a prefix', async () => {

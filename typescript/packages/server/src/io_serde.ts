@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { JsonValue, Refusal } from '@struktoai/mirage-core/types'
 import { ExecuteResult } from '@struktoai/mirage-core/workspace/workspace/workspace'
 
 interface IoResultDict {
@@ -19,11 +20,9 @@ interface IoResultDict {
   exitCode: number
   stdout: string
   stderr: string
-}
-
-interface ProvisionResultDict {
-  kind: 'provision'
-  [k: string]: unknown
+  // Why the line did not run, null on every ordinary run; the reason a
+  // bash-voiced stderr leaves out.
+  refusal: Refusal | null
 }
 
 interface RawResultDict {
@@ -31,19 +30,17 @@ interface RawResultDict {
   value: string
 }
 
-export type ResultDict = IoResultDict | ProvisionResultDict | RawResultDict
+export type ResultDict = IoResultDict | RawResultDict
 
-export function ioResultToDict(result: unknown): ResultDict {
+export function ioResultToDict(result: unknown): ResultDict & JsonValue {
   if (result instanceof ExecuteResult) {
     return {
       kind: 'io',
       exitCode: result.exitCode,
       stdout: result.stdoutText,
       stderr: result.stderrText,
+      refusal: result.refusal === null ? null : { ...result.refusal },
     }
-  }
-  if (typeof result === 'object' && result !== null) {
-    return { kind: 'provision', ...(result as Record<string, unknown>) }
   }
   return { kind: 'raw', value: String(result) }
 }

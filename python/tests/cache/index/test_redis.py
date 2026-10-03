@@ -27,8 +27,8 @@ pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
 
 
 @pytest_asyncio.fixture()
-async def store():
-    s = RedisIndexCacheStore(ttl=60, url=REDIS_URL, key_prefix="test:")
+async def store(redis_prefix):
+    s = RedisIndexCacheStore(ttl=60, url=REDIS_URL, key_prefix=redis_prefix)
     await s.clear()
     yield s
     await s.clear()
@@ -65,10 +65,12 @@ async def test_put_sets_index_time(store, entry):
 
 @pytest.mark.asyncio
 async def test_put_preserves_existing_index_time(store):
-    entry = IndexEntry(id="b",
-                       name="b.txt",
-                       resource_type="file",
-                       index_time="2026-01-01T00:00:00")
+    entry = IndexEntry(
+        id="b",
+        name="b.txt",
+        resource_type="file",
+        index_time="2026-01-01T00:00:00",
+    )
     await store.put("/data/b.txt", entry)
     result = await store.get("/data/b.txt")
     assert result.entry.index_time == "2026-01-01T00:00:00"
@@ -90,16 +92,18 @@ async def test_list_dir_not_found(store):
 @pytest.mark.asyncio
 async def test_set_dir_and_list(store):
     entries = [
-        ("a.txt",
-         IndexEntry(id="a",
-                    name="A",
-                    resource_type="text/plain",
-                    vfs_name="a.txt")),
-        ("b.txt",
-         IndexEntry(id="b",
-                    name="B",
-                    resource_type="text/plain",
-                    vfs_name="b.txt")),
+        (
+            "a.txt",
+            IndexEntry(
+                id="a", name="A", resource_type="text/plain", vfs_name="a.txt"
+            ),
+        ),
+        (
+            "b.txt",
+            IndexEntry(
+                id="b", name="B", resource_type="text/plain", vfs_name="b.txt"
+            ),
+        ),
     ]
     await store.set_dir("/mydir", entries)
     result = await store.list_dir("/mydir")
@@ -110,11 +114,15 @@ async def test_set_dir_and_list(store):
 @pytest.mark.asyncio
 async def test_set_dir_root(store):
     entries = [
-        ("top.txt",
-         IndexEntry(id="t",
-                    name="T",
-                    resource_type="text/plain",
-                    vfs_name="top.txt")),
+        (
+            "top.txt",
+            IndexEntry(
+                id="t",
+                name="T",
+                resource_type="text/plain",
+                vfs_name="top.txt",
+            ),
+        ),
     ]
     await store.set_dir("/", entries)
     result = await store.list_dir("/")
@@ -124,9 +132,9 @@ async def test_set_dir_root(store):
 
 @pytest.mark.asyncio
 async def test_set_dir_entries_are_retrievable(store):
-    entries = [("x.csv", IndexEntry(id="x1",
-                                    name="x.csv",
-                                    resource_type="file"))]
+    entries = [
+        ("x.csv", IndexEntry(id="x1", name="x.csv", resource_type="file"))
+    ]
     await store.set_dir("/root", entries)
     result = await store.get("/root/x.csv")
     assert result.entry is not None
@@ -136,27 +144,35 @@ async def test_set_dir_entries_are_retrievable(store):
 @pytest.mark.asyncio
 async def test_list_dir_expired(store):
     entries = [
-        ("file.txt",
-         IndexEntry(id="f",
-                    name="F",
-                    resource_type="text/plain",
-                    vfs_name="file.txt")),
+        (
+            "file.txt",
+            IndexEntry(
+                id="f",
+                name="F",
+                resource_type="text/plain",
+                vfs_name="file.txt",
+            ),
+        ),
     ]
     past = datetime.now(timezone.utc) + timedelta(seconds=1)
     await store.set_dir("/dir", entries, expired_at=past)
     time.sleep(1.5)
     result = await store.list_dir("/dir")
-    assert result.status in (LookupStatus.NOT_FOUND, LookupStatus.EXPIRED)
+    assert result.status == LookupStatus.EXPIRED
 
 
 @pytest.mark.asyncio
 async def test_list_dir_fresh(store):
     entries = [
-        ("file.txt",
-         IndexEntry(id="f",
-                    name="F",
-                    resource_type="text/plain",
-                    vfs_name="file.txt")),
+        (
+            "file.txt",
+            IndexEntry(
+                id="f",
+                name="F",
+                resource_type="text/plain",
+                vfs_name="file.txt",
+            ),
+        ),
     ]
     future = datetime.now(timezone.utc) + timedelta(seconds=3600)
     await store.set_dir("/dir", entries, expired_at=future)
@@ -167,12 +183,24 @@ async def test_list_dir_fresh(store):
 
 @pytest.mark.asyncio
 async def test_set_dir_overwrites_previous(store):
-    await store.set_dir("/d", [
-        ("old.txt", IndexEntry(id="o", name="old.txt", resource_type="file"))
-    ])
-    await store.set_dir("/d", [
-        ("new.txt", IndexEntry(id="n", name="new.txt", resource_type="file"))
-    ])
+    await store.set_dir(
+        "/d",
+        [
+            (
+                "old.txt",
+                IndexEntry(id="o", name="old.txt", resource_type="file"),
+            )
+        ],
+    )
+    await store.set_dir(
+        "/d",
+        [
+            (
+                "new.txt",
+                IndexEntry(id="n", name="new.txt", resource_type="file"),
+            )
+        ],
+    )
     result = await store.list_dir("/d")
     assert result.entries is not None
     assert len(result.entries) == 1
@@ -184,8 +212,9 @@ async def test_invalidate_dir_evicts_child_entries(store, entry):
     await store.set_dir("/folder", [("test.txt", entry)])
     assert (await store.get("/folder/test.txt")).entry is not None
     await store.invalidate_dir("/folder")
-    assert (await
-            store.get("/folder/test.txt")).status == LookupStatus.NOT_FOUND
+    assert (
+        await store.get("/folder/test.txt")
+    ).status == LookupStatus.NOT_FOUND
     assert (await store.list_dir("/folder")).status == LookupStatus.NOT_FOUND
 
 
@@ -201,9 +230,13 @@ async def test_clear(store, entry):
 
 
 @pytest.mark.asyncio
-async def test_key_prefix_isolation():
-    s1 = RedisIndexCacheStore(ttl=60, url=REDIS_URL, key_prefix="ns1:")
-    s2 = RedisIndexCacheStore(ttl=60, url=REDIS_URL, key_prefix="ns2:")
+async def test_key_prefix_isolation(redis_prefix):
+    s1 = RedisIndexCacheStore(
+        ttl=60, url=REDIS_URL, key_prefix=f"{redis_prefix}ns1:"
+    )
+    s2 = RedisIndexCacheStore(
+        ttl=60, url=REDIS_URL, key_prefix=f"{redis_prefix}ns2:"
+    )
     await s1.clear()
     await s2.clear()
     await s1.put("/shared", IndexEntry(id="a", name="a", resource_type="file"))
@@ -241,3 +274,30 @@ async def test_invalidate_prefix_handles_glob_metacharacters(store, entry):
     await store.invalidate_prefix("/chan/a[1]")
     assert (await store.list_dir("/chan/a[1]")).entries is None
     assert (await store.list_dir("/chan/ab")).entries is not None
+
+
+# The one wire format: what pydantic writes for IndexEntry, snake_case and
+# every field. `redis.test.ts` pins the same literal, so an entry either
+# language writes is one the other reads (#1020).
+ENTRY_WIRE = (
+    '{"id":"/a.txt","name":"a.txt","resource_type":"file",'
+    '"remote_time":"2026-01-01T00:00:00Z",'
+    '"index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":6,'
+    '"extra":{}}'
+)
+
+
+@pytest.mark.asyncio
+async def test_entry_wire_format_is_the_shared_json(store):
+    await store.put(
+        "/a.txt",
+        IndexEntry(
+            id="/a.txt",
+            name="a.txt",
+            resource_type="file",
+            remote_time="2026-01-01T00:00:00Z",
+            index_time="2026-01-01T00:00:00Z",
+            size=6,
+        ),
+    )
+    assert await store._client.get(store._entry_key("/a.txt")) == ENTRY_WIRE

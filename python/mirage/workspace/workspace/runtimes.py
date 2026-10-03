@@ -12,18 +12,21 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 from collections.abc import Mapping
-from typing import Any
 
 from mirage.runtime.base import Runtime
-from mirage.runtime.language import LanguageRuntime
+from mirage.runtime.binding import WorkspaceBinding
 from mirage.runtime.mixin import LineExecutorMixin
-from mirage.runtime.policy import PolicyDecision, parsed_commands
-from mirage.runtime.resolver import MountResolver
-from mirage.runtime.table import (DEFAULT_ENTRIES, NAMED, VFSRuntime,
-                                  bind_commands, build_runtime,
-                                  whole_line_runtime)
-from mirage.runtime.types import DispatchFn
+from mirage.runtime.routing import RouteDecision
+from mirage.runtime.table import (
+    DEFAULT_ENTRIES,
+    NAMED,
+    WorkspaceRuntime,
+    bind_commands,
+    build_runtime,
+    whole_line_runtime,
+)
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.workspace.guard import reject_config_script
 
@@ -31,26 +34,25 @@ from mirage.workspace.workspace.guard import reject_config_script
 class Runtimes:
     """The workspace's ordered runtime entries.
 
-    Owns the entry list and everything that reads it: building it from
-    config, appending to it, and answering which entry takes a whole
-    line. Adding a runtime kind touches this module rather than the
-    workspace.
+    Owns the entry list and everything that reads or changes it:
+    building it from config, adding and removing entries, closing them,
+    and answering which entry takes a whole line. Adding a runtime kind
+    touches this module rather than the workspace.
 
     Args:
         registry (MountRegistry): carries the resolved bindings and the
             unavailable-runtime hints the dispatcher reports.
-        dispatch (DispatchFn): the workspace op dispatch each language
-            entry is attached to.
-        resolver (MountResolver): pull-model mount routing table read
-            per run, so mounts added after construction are picked up.
+        binding (WorkspaceBinding): the live workspace connection shared
+            by every runtime entry.
     """
 
-    def __init__(self, registry: MountRegistry, dispatch: DispatchFn,
-                 resolver: MountResolver) -> None:
+    def __init__(
+        self, registry: MountRegistry, binding: WorkspaceBinding
+    ) -> None:
         self._registry = registry
-        self._dispatch = dispatch
-        self._resolver = resolver
+        self._binding = binding
         self._entries: list[Runtime] = []
+        self._retiring: dict[int, asyncio.Task[None]] = {}
 
     @property
     def entries(self) -> list[Runtime]:
@@ -60,7 +62,7 @@ class Runtimes:
         """Build and wire the ordered entries.
 
         Name strings become no-option instances and every instance gets
-        the workspace dispatch attached. The vfs runtime is required:
+        the workspace dispatch attached. The workspace runtime is required:
         when the list omits it, an unconditional one is appended, so
         there is always an executor for unclaimed commands. An explicit
         list fails loud per entry. The default set (DEFAULT_ENTRIES,
@@ -84,20 +86,24 @@ class Runtimes:
                     # with the install hint instead of a blank refusal.
                     for cmd in NAMED[name].captures:
                         self._registry.runtime_unavailable.setdefault(
-                            cmd, str(exc))
+                            cmd, str(exc)
+                        )
                     continue
         else:
             for entry in runtimes:
                 entries.append(
-                    build_runtime(entry) if isinstance(entry, str) else entry)
-        if not any(entry.name == VFSRuntime.name for entry in entries):
-            entries.append(VFSRuntime())
+                    build_runtime(entry) if isinstance(entry, str) else entry
+                )
+        if not any(entry.name == WorkspaceRuntime.name for entry in entries):
+            entries.append(WorkspaceRuntime())
         for entry in entries:
-            reject_config_script(f"runtime {entry.name!r} script",
-                                 entry.script)
-            if isinstance(entry, LanguageRuntime):
-                entry.attach(self._dispatch, self._resolver)
-        self._entries = entries
+            reject_config_script(
+                f"runtime {entry.name!r} script", entry.script
+            )
+        bindings = bind_commands(entries)
+        for entry in entries:
+            entry.bind(self._binding)
+        self._install(entries, bindings)
         return entries
 
     def add(self, runtime: Runtime | str) -> Runtime:
@@ -115,39 +121,98 @@ class Runtimes:
         Raises:
             ValueError: unknown name or duplicate entry.
         """
-        entry = (build_runtime(runtime)
-                 if isinstance(runtime, str) else runtime)
+        entry = build_runtime(runtime) if isinstance(runtime, str) else runtime
         reject_config_script(f"runtime {entry.name!r} script", entry.script)
         candidate = [*self._entries, entry]
         bindings = bind_commands(candidate)
-        if isinstance(entry, LanguageRuntime):
-            entry.attach(self._dispatch, self._resolver)
-        self._entries = candidate
-        self._registry.runtime_bindings = bindings
-        self._registry.runtime_entries = candidate
+        entry.bind(self._binding)
+        self._install(candidate, bindings)
         return entry
 
+    async def remove(self, name: str) -> None:
+        """Unbind an entry's commands now and close it once it is idle.
+
+        Args:
+            name (str): the entry's name.
+
+        Raises:
+            ValueError: the name is the workspace runtime or no entry.
+        """
+        if name == WorkspaceRuntime.name:
+            raise ValueError(
+                "cannot remove the workspace runtime: it serves every "
+                "command no other runtime captures"
+            )
+        entry = next((e for e in self._entries if e.name == name), None)
+        if entry is None:
+            raise ValueError(f"no runtime entry: {name!r}")
+        remaining = [e for e in self._entries if e is not entry]
+        self._install(remaining, bind_commands(remaining))
+        identity = id(entry)
+        closing = asyncio.create_task(_retire(entry))
+        self._retiring[identity] = closing
+        try:
+            await asyncio.shield(closing)
+        finally:
+            if closing.done():
+                self._retiring.pop(identity, None)
+
+    async def close(self) -> None:
+        """Close every entry, including the ones still being removed."""
+        results = await asyncio.gather(
+            *(entry.close() for entry in self._entries),
+            *(asyncio.shield(task) for task in self._retiring.values()),
+            return_exceptions=True,
+        )
+        failures = [r for r in results if isinstance(r, BaseException)]
+        if failures:
+            raise (
+                failures[0]
+                if len(failures) == 1
+                else BaseExceptionGroup("runtime close failed", failures)
+            )
+
+    def _install(
+        self, entries: list[Runtime], bindings: dict[str, Runtime]
+    ) -> None:
+        self._entries = entries
+        self._registry.runtime_entries = entries
+        self._registry.runtime_bindings = bindings
+        self._registry.workspace_runtime = next(
+            (
+                entry
+                for entry in entries
+                if isinstance(entry, WorkspaceRuntime)
+            ),
+            None,
+        )
+
     def whole_line(
-            self, ast: Any,
-            decision: PolicyDecision | None) -> LineExecutorMixin | None:
+        self, decision: RouteDecision | None
+    ) -> LineExecutorMixin | None:
         """The entry taking this whole line, None for the executor.
 
         An entry inheriting LineExecutorMixin takes the raw line when
-        the line's resolved bindings place one of its commands (or
-        "*") on it; everything else walks the executor's tree. The
+        the line's resolved bindings explicitly place "*" on it; everything
+        else walks the executor's tree. The
         common set has no such entry, so this is a cheap scan.
 
         Args:
-            ast: the parsed tree-sitter root node.
-            decision (PolicyDecision | None): the line's decision,
+            decision (RouteDecision | None): the line's decision,
                 None when only static bindings apply.
         """
         if not any(
-                isinstance(entry, LineExecutorMixin)
-                for entry in self._entries):
+            isinstance(entry, LineExecutorMixin) for entry in self._entries
+        ):
             return None
-        bindings: Mapping[str, Runtime
-                          | None] = (decision.bindings if decision is not None
-                                     else self._registry.runtime_bindings)
-        commands = parsed_commands(ast, self._registry.clis.names())
-        return whole_line_runtime(bindings, [c.command for c in commands])
+        bindings: Mapping[str, Runtime | None] = (
+            decision.bindings
+            if decision is not None
+            else self._registry.runtime_bindings
+        )
+        return whole_line_runtime(bindings)
+
+
+async def _retire(entry: Runtime) -> None:
+    await entry.retire()
+    await entry.close()

@@ -4,8 +4,15 @@ description: "Discord REST API client speaking the OpenClaw Discord action vocab
 icon: discord
 ---
 
-Discord REST API client speaking the OpenClaw Discord action vocabulary. Install it on the workspace and the whole tree is
-discoverable with `discord --help`.
+Mirage's built-in Discord REST API client follows the Discord action
+vocabulary from the upstream
+[OpenClaw](https://github.com/openclaw/openclaw) project. The Mirage command
+tree is discoverable with `discord --help`.
+
+**Licenses:** OpenClaw uses the
+[MIT License](https://github.com/openclaw/openclaw/blob/main/LICENSE); Mirage's
+independent Discord implementation uses
+[Apache-2.0](https://github.com/strukto-ai/mirage/blob/main/LICENSE).
 
 ## Install
 
@@ -13,10 +20,10 @@ discoverable with `discord --help`.
 from mirage import Workspace
 from mirage.commands.cli.builtin.discord import DISCORD
 from mirage.core.discord.config import DiscordConfig
-from mirage.resource.discord import DiscordResource
+from mirage.vfs.discord import DiscordVFS
 
 config = DiscordConfig(token="bot-token")
-ws = Workspace({"/discord": DiscordResource(config)})
+ws = Workspace({"/discord": DiscordVFS(config)})
 ws.register_cli("discord", DISCORD, config.model_dump())
 ```
 
@@ -25,7 +32,7 @@ install rides the `clis:` section; see the [CLI overview](/python/cli/index).
 
 ## Verbs
 
-The verbs follow the OpenClaw Discord action vocabulary (bare verbs:
+The verbs follow that OpenClaw Discord action vocabulary (bare verbs:
 `send`, `read`, `edit`, `delete`, `react`, `search`, `thread-create`,
 `poll`); `members` and `server-info` are mirage extensions. IDs are
 Discord snowflakes, discoverable from the mounted tree

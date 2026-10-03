@@ -31,7 +31,7 @@ export interface FileCache {
   // path (an account CLI writing to its service by id) cannot say which
   // entries went stale, only which mount's keyspace did. Stores that own
   // their keyspace remotely push the filter down rather than enumerating.
-  evictPrefix(prefix: string): Promise<void>
+  evictPrefix(prefix: string, excluded?: readonly string[]): Promise<void>
   /**
    * Drop the given keys, synchronously.
    *
@@ -46,8 +46,20 @@ export interface FileCache {
   evictPaths(paths: Iterable<string>): void
   exists(key: string | PathSpec): Promise<boolean>
   isFresh(key: string, remoteFingerprint: string): Promise<boolean>
+  /**
+   * Whether an entry exists for `key` and carries no staleness bound.
+   *
+   * A `bounded` mount cannot serve one: nothing stamped a ttl before the
+   * read policy existed, and a warm read short-circuits rather than
+   * re-setting, so such an entry would never acquire a bound and never
+   * expire. Dropping it makes the cold read that follows stamp one.
+   *
+   * Asked as one question rather than `exists` plus a ttl lookup so a warm
+   * bounded read costs one store round trip, and so a missing entry
+   * answers false rather than reading as unbounded.
+   */
+  isUnbounded(key: string): Promise<boolean>
   clear(): Promise<void>
-  allCached(keys: readonly string[]): Promise<boolean>
   multiGet(keys: readonly string[]): Promise<(Uint8Array | null)[]>
   // Cached bytes / entry count; null (or absent) for stores that don't
   // track them client-side (e.g. redis owns its own keyspace).

@@ -18,8 +18,11 @@ import pytest
 from dulwich.repo import Repo
 
 from mirage.commands.cli.builtin.git import GIT
-from tests.commands.cli.builtin.git.conftest import (make_branch, mounted,
-                                                     pack_refs)
+from tests.commands.cli.builtin.git.conftest import (
+    make_branch,
+    mounted,
+    pack_refs,
+)
 
 REMOTE_DIR = ("refs", "remotes", "origin")
 
@@ -52,7 +55,7 @@ def head_sha(repo_path: Path) -> str:
 
 @pytest.mark.asyncio
 async def test_the_checked_out_branch_is_marked(git_ws):
-    result = await git_ws.execute("git -C /repo branch")
+    result = await git_ws.shell("git -C /repo branch")
     assert result.exit_code == 0
     assert result.stdout == b"* main\n"
 
@@ -63,7 +66,7 @@ async def test_other_branches_are_listed_and_sorted(repo_path):
     make_branch(repo_path, "feat/git-cli")
     with mounted(repo_path) as ws:
         ws.register_cli("git", GIT)
-        result = await ws.execute("git -C /repo branch")
+        result = await ws.shell("git -C /repo branch")
     assert result.stdout == b"  feat/git-cli\n* main\n  zeta\n"
 
 
@@ -75,7 +78,7 @@ async def test_local_branches_are_found_in_packed_refs(repo_path):
     pack_refs(repo_path)
     with mounted(repo_path) as ws:
         ws.register_cli("git", GIT)
-        result = await ws.execute("git -C /repo branch")
+        result = await ws.shell("git -C /repo branch")
     assert result.stdout == b"* main\n  packed-one\n"
 
 
@@ -84,7 +87,7 @@ async def test_remotes_are_hidden_by_default(repo_path):
     add_remote(repo_path, "main", head_sha(repo_path))
     with mounted(repo_path) as ws:
         ws.register_cli("git", GIT)
-        result = await ws.execute("git -C /repo branch")
+        result = await ws.shell("git -C /repo branch")
     assert result.stdout == b"* main\n"
 
 
@@ -93,7 +96,7 @@ async def test_all_lists_locals_then_remotes(repo_path):
     add_remote(repo_path, "main", head_sha(repo_path))
     with mounted(repo_path) as ws:
         ws.register_cli("git", GIT)
-        result = await ws.execute("git -C /repo branch -a")
+        result = await ws.shell("git -C /repo branch -a")
     assert result.stdout == b"* main\n  remotes/origin/main\n"
 
 
@@ -102,8 +105,10 @@ async def test_remotes_only_drops_the_local_branches(repo_path):
     add_remote(repo_path, "main", head_sha(repo_path))
     with mounted(repo_path) as ws:
         ws.register_cli("git", GIT)
-        result = await ws.execute("git -C /repo branch -r")
-    assert result.stdout == b"  remotes/origin/main\n"
+        result = await ws.shell("git -C /repo branch -r")
+    # Without the locals beside them git drops the remotes/ label
+    # (pinned against git 2.54).
+    assert result.stdout == b"  origin/main\n"
 
 
 @pytest.mark.asyncio
@@ -114,9 +119,16 @@ async def test_a_symbolic_remote_ref_renders_its_target(repo_path):
     add_remote(repo_path, "HEAD", "ref: refs/remotes/origin/main")
     with mounted(repo_path) as ws:
         ws.register_cli("git", GIT)
-        result = await ws.execute("git -C /repo branch -r")
-    assert result.stdout == (b"  remotes/origin/HEAD -> origin/main\n"
-                             b"  remotes/origin/main\n")
+        result = await ws.shell("git -C /repo branch -r")
+    assert result.stdout == (b"  origin/HEAD -> origin/main\n  origin/main\n")
+    with mounted(repo_path) as ws:
+        ws.register_cli("git", GIT)
+        result = await ws.shell("git -C /repo branch -a")
+    assert result.stdout == (
+        b"* main\n"
+        b"  remotes/origin/HEAD -> origin/main\n"
+        b"  remotes/origin/main\n"
+    )
 
 
 async def _run(ws, line: str) -> tuple[int, bytes, bytes]:
@@ -126,7 +138,7 @@ async def _run(ws, line: str) -> tuple[int, bytes, bytes]:
         ws (Workspace): workspace with the repository and CLI.
         line (str): the command line, without the leading directory.
     """
-    result = await ws.execute(f"git -C /repo {line}")
+    result = await ws.shell(f"git -C /repo {line}")
     return result.exit_code, result.stdout or b"", result.stderr or b""
 
 
@@ -165,23 +177,25 @@ async def test_deleting_an_unmerged_branch_is_refused(git_rw):
     # The branch name is the only thing pointing at that commit, so -d
     # would be the command that loses it.
     await _run(git_rw, "checkout -b topic")
-    await git_rw.execute("echo sideways > /repo/a.txt")
+    await git_rw.shell("echo sideways > /repo/a.txt")
     await _run(git_rw, "add -A")
     await _run(git_rw, "commit -m sideways")
     await _run(git_rw, "checkout main")
     code, out, err = await _run(git_rw, "branch -d topic")
     assert code == 1
     assert out == b""
-    assert err == (b"error: the branch 'topic' is not fully merged\n"
-                   b"hint: If you are sure you want to delete it, run "
-                   b"'git branch -D topic'\n")
+    assert err == (
+        b"error: the branch 'topic' is not fully merged\n"
+        b"hint: If you are sure you want to delete it, run "
+        b"'git branch -D topic'\n"
+    )
     assert (await _run(git_rw, "branch"))[1] == b"* main\n  topic\n"
 
 
 @pytest.mark.asyncio
 async def test_force_deleting_an_unmerged_branch_removes_it(git_rw):
     await _run(git_rw, "checkout -b topic")
-    await git_rw.execute("echo sideways > /repo/a.txt")
+    await git_rw.shell("echo sideways > /repo/a.txt")
     await _run(git_rw, "add -A")
     await _run(git_rw, "commit -m sideways")
     await _run(git_rw, "checkout main")
@@ -222,3 +236,43 @@ async def test_an_unknown_switch_is_not_read_as_a_branch_name(git_rw):
     code, _out, err = await _run(git_rw, "branch -Z")
     assert code == 129
     assert err == b"error: unknown switch `Z'\n"
+
+
+@pytest.mark.asyncio
+async def test_branch_refuses_a_name_that_escapes_the_ref_tree(
+    git_rw, repo_path: Path
+):
+    before = (repo_path / ".git" / "config").read_bytes()
+    result = await git_rw.shell("git -C /repo branch ../../config")
+    err = result.stderr or b""
+    assert result.exit_code == 128
+    assert err.startswith(b"fatal: '../../config' is not a valid branch name")
+    assert (repo_path / ".git" / "config").read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_a_bad_branch_name_is_named_before_its_start_point(git_rw):
+    result = await git_rw.shell("git -C /repo branch ../../config nosuchstart")
+    err = result.stderr or b""
+    assert err.startswith(b"fatal: '../../config' is not a valid branch name")
+
+
+@pytest.mark.asyncio
+async def test_a_branch_cannot_be_made_below_one_that_exists(git_rw):
+    assert (await git_rw.shell("git -C /repo branch bb")).exit_code == 0
+    result = await git_rw.shell("git -C /repo branch bb/cc")
+    assert result.exit_code == 128
+    assert result.stderr == (
+        b"fatal: cannot lock ref 'refs/heads/bb/cc': "
+        b"'refs/heads/bb' exists; cannot create "
+        b"'refs/heads/bb/cc'\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_bad_start_point_outranks_the_collision(git_rw):
+    assert (await git_rw.shell("git -C /repo branch bb")).exit_code == 0
+    # The lock is taken last, so a start point that resolves to nothing
+    # is reported first.
+    result = await git_rw.shell("git -C /repo branch bb/cc nosuchrev")
+    assert b"cannot lock ref" not in (result.stderr or b"")

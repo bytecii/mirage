@@ -20,13 +20,15 @@ from typing import Any
 
 from mirage.cache.file.entry import CacheEntry
 from mirage.cache.file.mixin import FileCacheMixin, validate_max_drain_bytes
-from mirage.cache.file.utils import default_fingerprint, parse_limit
+from mirage.cache.file.utils import parse_limit
+from mirage.cache.invalidation import Invalidation
 from mirage.cache.lock import KeyLockMixin
-from mirage.resource.ram import RAMResource
+from mirage.utils.key_prefix import under_path
+from mirage.vfs.ram import RAMVFS
 
 
-class RAMFileCacheStore(RAMResource, FileCacheMixin, KeyLockMixin):
-    """RAMResource with LRU cache tracking.
+class RAMFileCacheStore(RAMVFS, FileCacheMixin, KeyLockMixin):
+    """RAMVFS with LRU cache tracking.
 
     Data lives in inherited _store.files (RAMStore).
     _entries tracks LRU metadata only.
@@ -43,6 +45,7 @@ class RAMFileCacheStore(RAMResource, FileCacheMixin, KeyLockMixin):
         super().__init__()
         self._cache_limit: int = parsed_limit
         self._cache_size: int = 0
+        self._invalidation = Invalidation()
         self._entries: OrderedDict[str, CacheEntry] = OrderedDict()
         self._drain_tasks: dict[str, asyncio.Task[Any]] = {}
         self._clear_lock: asyncio.Lock = asyncio.Lock()
@@ -61,56 +64,76 @@ class RAMFileCacheStore(RAMResource, FileCacheMixin, KeyLockMixin):
             self._entries.move_to_end(key)
             return self._store.files.get(key)
 
-    async def set(self,
-                  key: str,
-                  data: bytes,
-                  fingerprint: str | None = None,
-                  ttl: int | None = None) -> None:
-        async with self._lock_for(key):
-            if key in self._entries:
-                self._cache_size -= self._entries[key].size
-                del self._entries[key]
-            if fingerprint is None:
-                fingerprint = default_fingerprint(data)
-            entry = CacheEntry(
-                size=len(data),
-                cached_at=int(time.time()),
-                fingerprint=fingerprint,
-                ttl=ttl,
-            )
-            self._entries[key] = entry
-            self._store.files[key] = data
-            self._cache_size += entry.size
+    async def set(
+        self,
+        key: str,
+        data: bytes,
+        fingerprint: str | None = None,
+        ttl: int | None = None,
+    ) -> None:
+        # Stamped before waiting on the lock: bytes read before an
+        # invalidation are stale even when the lock was granted after it.
+        stamp = self._invalidation.enter(key)
+        try:
+            async with self._lock_for(key):
+                if self._invalidation.stale(key, stamp):
+                    return
+                if key in self._entries:
+                    self._cache_size -= self._entries[key].size
+                    del self._entries[key]
+                entry = CacheEntry(
+                    size=len(data),
+                    cached_at=int(time.time()),
+                    fingerprint=fingerprint or None,
+                    ttl=ttl,
+                )
+                self._entries[key] = entry
+                self._store.files[key] = data
+                self._cache_size += entry.size
+        finally:
+            self._invalidation.leave(key)
         await self._evict()
 
-    async def add(self,
-                  key: str,
-                  data: bytes,
-                  fingerprint: str | None = None,
-                  ttl: int | None = None) -> bool:
-        async with self._lock_for(key):
-            existing = self._entries.get(key)
-            if existing is not None and not existing.expired:
-                return False
-            if key in self._entries:
-                self._cache_size -= self._entries[key].size
-                del self._entries[key]
-            if fingerprint is None:
-                fingerprint = default_fingerprint(data)
-            entry = CacheEntry(
-                size=len(data),
-                cached_at=int(time.time()),
-                fingerprint=fingerprint,
-                ttl=ttl,
-            )
-            self._entries[key] = entry
-            self._store.files[key] = data
-            self._cache_size += entry.size
+    async def add(
+        self,
+        key: str,
+        data: bytes,
+        fingerprint: str | None = None,
+        ttl: int | None = None,
+    ) -> bool:
+        stamp = self._invalidation.enter(key)
+        try:
+            async with self._lock_for(key):
+                existing = self._entries.get(key)
+                if existing is not None and not existing.expired:
+                    return False
+                if self._invalidation.stale(key, stamp):
+                    return False
+                if key in self._entries:
+                    self._cache_size -= self._entries[key].size
+                    del self._entries[key]
+                entry = CacheEntry(
+                    size=len(data),
+                    cached_at=int(time.time()),
+                    fingerprint=fingerprint or None,
+                    ttl=ttl,
+                )
+                self._entries[key] = entry
+                self._store.files[key] = data
+                self._cache_size += entry.size
+        finally:
+            self._invalidation.leave(key)
         await self._evict()
         return True
 
     async def remove(self, key: str) -> None:
         async with self._lock_for(key):
+            # Advanced here, when the removal takes effect, not when it
+            # was called: a writer queued behind it took its stamp before
+            # this ran, and only a later invalidation tells it its bytes
+            # predate the removal. Per key: a fill of another key still
+            # hashing is not this removal's business.
+            self._invalidation.invalidate(key)
             task = self._drain_tasks.pop(key, None)
             if task:
                 task.cancel()
@@ -128,9 +151,23 @@ class RAMFileCacheStore(RAMResource, FileCacheMixin, KeyLockMixin):
         entry = self._entries.get(key)
         if entry is None:
             return False
-        return entry.fingerprint == remote_fingerprint
+        # An entry that carries no token verifies against nothing, and
+        # says so here rather than relying on the caller to ask only when
+        # it holds one. Without the first clause a caller arriving with
+        # no remote token compares None to None and is told the copy is
+        # fresh; the redis store, whose meta key is simply absent, would
+        # answer False for the same pair.
+        return (
+            entry.fingerprint is not None
+            and entry.fingerprint == remote_fingerprint
+        )
+
+    async def is_unbounded(self, key: str) -> bool:
+        entry = self._entries.get(key)
+        return entry is not None and entry.ttl is None
 
     async def clear(self) -> None:
+        self._invalidation.invalidate_all()
         async with self._clear_lock:
             for task in self._drain_tasks.values():
                 task.cancel()
@@ -140,13 +177,25 @@ class RAMFileCacheStore(RAMResource, FileCacheMixin, KeyLockMixin):
             self._cache_size = 0
             self._clear_locks()
 
-    async def evict_prefix(self, prefix: str) -> None:
-        # Snapshot first: remove() mutates _entries as it goes.
-        for key in [k for k in self._entries if k.startswith(prefix)]:
+    async def evict_prefix(
+        self, prefix: str, *, excluded: tuple[str, ...] = ()
+    ) -> None:
+        # Store-wide: a fill in flight under the prefix has no entry yet,
+        # so its key cannot be enumerated below.
+        self._invalidation.invalidate_all()
+        # A pending fill may not have installed an entry yet.
+        keys = self._entries.keys() | self._drain_tasks.keys()
+        for key in [
+            k
+            for k in keys
+            if k.startswith(prefix)
+            and not any(under_path(k, p) for p in excluded)
+        ]:
             await self.remove(key)
 
     def evict_paths(self, paths: Iterable[str]) -> None:
         for key in paths:
+            self._invalidation.invalidate(key)
             entry = self._entries.pop(key, None)
             if entry is not None:
                 self._cache_size -= entry.size

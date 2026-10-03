@@ -12,41 +12,18 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-export const EXPORT_USAGE = 'export: usage: export [-fn] [name[=value] ...] or export -p\n'
-
-export const READONLY_USAGE = 'readonly: usage: readonly [-aAf] [name[=value] ...] or readonly -p\n'
-
-export const EXPORT_FLAGS = new Set('fnp')
-
-export const READONLY_FLAGS = new Set('aAfp')
-
-export const ANSI_C_ESCAPES: Record<string, string> = {
-  '\\': '\\\\',
-  "'": "\\'",
-  '\x07': '\\a',
-  '\b': '\\b',
-  '\t': '\\t',
-  '\n': '\\n',
-  '\v': '\\v',
-  '\f': '\\f',
-  '\r': '\\r',
-  '\x1b': '\\E',
-}
-
-// eslint-disable-next-line no-control-regex
-export const CONTROL_RE = /[\x00-\x1f\x7f]/
-
-export const BARE_KEY_RE = /^[A-Za-z0-9_%+,./:=@~-]+$/
-
-export const ENV_HELP_HINT = "Try 'env --help' for more information.\n"
-
 export const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+// bash's `legal_number`: strtoimax's leading whitespace and sign, then the
+// trailing blanks bash skips itself.
+export const COUNT_WORD_RE = /^[ \t\n\v\f\r]*[+-]?[0-9]+[ \t]*$/
 
-// `arr[0]` and friends: a target that parses as an assignment but is
-// not a plain name, which the declaration builtins quote on its own.
-export const SUBSCRIPT_RE = /^[A-Za-z_][A-Za-z0-9_]*\[.*\]$/
+// An assignment target with an optional subscript (`name` or `name[sub]`).
+// A subscript must be non-empty: bash rejects `a[]` as an invalid
+// identifier, while `a[ ]` is a valid arithmetic 0.
+export const TARGET_RE = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[(.+)\])?$/
 
-export const READ_VALUE_LETTERS = new Set(['a', 'd', 'n', 'N', 't', 'p', 'i', 'u'])
-
-export const TRAP_USAGE = 'trap: usage: trap [-p] [action signal_spec ...]\n'
-export const TRAP_EXIT_NAMES: ReadonlySet<string> = new Set(['EXIT', '0'])
+// What makes bash's bare `set` single-quote a value: IFS whitespace,
+// quoting and control characters, reserved-word and glob characters, and
+// the expansion introducers (`sh_contains_shell_metas`). A `~` counts at
+// the start or after `=` or `:`, and a `#` only at the start.
+export const SET_QUOTED_CHARS: ReadonlySet<string> = new Set(' \t\n\'"\\|&;()<>!{}*[?]^$`')

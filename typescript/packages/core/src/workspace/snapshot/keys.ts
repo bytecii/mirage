@@ -17,6 +17,7 @@ export const StateKey = Object.freeze({
   MIRAGE_VERSION: 'mirage_version',
   MOUNTS: 'mounts',
   SESSIONS: 'sessions',
+  ENV: 'env',
   DEFAULT_SESSION_ID: 'default_session_id',
   DEFAULT_AGENT_ID: 'default_agent_id',
   CURRENT_AGENT_ID: 'current_agent_id',
@@ -33,9 +34,12 @@ export const MountKey = Object.freeze({
   INDEX: 'index',
   PREFIX: 'prefix',
   MODE: 'mode',
-  CONSISTENCY: 'consistency',
-  RESOURCE_CLASS: 'resource_class',
-  RESOURCE_STATE: 'resource_state',
+  READ: 'read',
+  TTL: 'ttl',
+  VFS_CLASS: 'vfs_class',
+  VFS_REF: 'vfs_ref',
+  INDEX_CONFIG: 'index_config',
+  VFS_STATE: 'vfs_state',
 } as const)
 
 export const CacheKey = Object.freeze({
@@ -63,9 +67,10 @@ export const JobKey = Object.freeze({
   SESSION_ID: 'session_id',
 } as const)
 
-export const ResourceStateKey = Object.freeze({
+export const VFSStateKey = Object.freeze({
   TYPE: 'type',
   CONFIG: 'config',
+  NEEDS_OVERRIDE: 'needs_override',
   FILES: 'files',
   DIRS: 'dirs',
   MODIFIED: 'modified',

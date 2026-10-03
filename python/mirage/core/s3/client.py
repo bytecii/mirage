@@ -12,14 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import aioboto3
 from botocore.config import Config
 
-from mirage.accessor.s3 import S3Config
-from mirage.resource.secrets import reveal_secret
 from mirage.utils import key_prefix as kp
+from mirage.vfs.s3.config import S3Config
+from mirage.vfs.secrets import reveal_secret
 
 
 def is_not_found(exc: Exception) -> bool:
@@ -36,10 +38,6 @@ def is_not_found(exc: Exception) -> bool:
 
 def _key(path: str, config: S3Config) -> str:
     return kp.apply(config.key_prefix or "", path)
-
-
-def _prefix(path: str, config: S3Config) -> str:
-    return kp.apply_dir(config.key_prefix or "", path)
 
 
 def _strip_prefix(key: str, config: S3Config) -> str:
@@ -75,3 +73,30 @@ def _client_kwargs(config: S3Config) -> dict[str, Any]:
 
 def async_session(config: S3Config) -> aioboto3.Session:
     return aioboto3.Session(profile_name=config.aws_profile or None)
+
+
+@asynccontextmanager
+async def closing_body(body: Any) -> AsyncIterator[Any]:
+    """Yield a streaming body and release it however that body can be released.
+
+    The client outlives a single operation now that it is cached on the
+    accessor, so a read that raises or is cancelled before EOF no longer has
+    its connection reclaimed by the client closing. Each caller has to hand
+    the pool slot back itself, or a few transport failures exhaust the pool
+    and every later operation blocks waiting for a connection.
+
+    Args:
+        body (Any): the response body, which may be an async context manager
+            or may only offer a plain ``close``.
+
+    Yields:
+        Any: the same body, released on exit.
+    """
+    async with AsyncExitStack() as stack:
+        if hasattr(body, "__aenter__") and hasattr(body, "__aexit__"):
+            await stack.enter_async_context(body)
+        else:
+            close = getattr(body, "close", None)
+            if close is not None:
+                stack.callback(close)
+        yield body

@@ -12,26 +12,37 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import errno
+
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          Operation)
+from mirage.commands.builtin.generic_bind.adapter import (
+    Builder,
+    CommandIO,
+    Operation,
+)
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import FS_ERRORS, fs_strerror
 
 
-async def rmdir(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
-                texts: list[str],
-                opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def rmdir(
+    ops: CommandIO,
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     v = FlagView(opts.flags, spec=SPECS["rmdir"]).as_bool("v")
     if not ops.is_mounted(accessor) or not paths:
         raise UsageError(
-            "rmdir: missing operand\n"
-            "Try 'rmdir --help' for more information.", 1)
+            "rmdir: missing operand\nTry 'rmdir --help' for more information.",
+            1,
+        )
     rmdir_fn = ops.require(Operation.RMDIR)
     paths = await ops.resolve_glob(accessor, paths, opts.index)
     links = opts.ns.links if opts.ns is not None else None
@@ -46,36 +57,56 @@ async def rmdir(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
         # since the slash asked for a directory the call refuses to
         # resolve. No backend can see a link, so the name plane answers.
         if links is not None and links.stat_at(p.virtual) is not None:
-            detail = ("Symbolic link not followed"
-                      if p.raw_path.endswith("/") else "Not a directory")
+            detail = (
+                "Symbolic link not followed"
+                if p.raw_path.endswith("/")
+                else "Not a directory"
+            )
             errors.append(f"rmdir: failed to remove '{p.raw_path}': {detail}")
             continue
         try:
-            s = await ops.stat(accessor, p)
-        except FileNotFoundError:
-            errors.append(f"rmdir: failed to remove '{p.raw_path}': "
-                          "No such file or directory")
+            s = await ops.stat(accessor, p, index=opts.index)
+        except FS_ERRORS as exc:
+            errors.append(
+                f"rmdir: failed to remove '{p.raw_path}': {fs_strerror(exc)}"
+            )
             continue
         if s.type != FileType.DIRECTORY:
             errors.append(
-                f"rmdir: failed to remove '{p.raw_path}': Not a directory")
+                f"rmdir: failed to remove '{p.raw_path}': Not a directory"
+            )
             continue
         if await ops.readdir(accessor, p, index=opts.index):
-            errors.append(f"rmdir: failed to remove '{p.raw_path}': "
-                          "Directory not empty")
+            errors.append(
+                f"rmdir: failed to remove '{p.raw_path}': Directory not empty"
+            )
             continue
-        await rmdir_fn(accessor, p)
+        try:
+            await rmdir_fn(accessor, p, index=opts.index)
+        except OSError as exc:
+            # The listing above showed the session an empty directory,
+            # but the slot may still refuse not-empty: the hidden-
+            # remnant guard re-raises the backend's refusal when its
+            # cascade cannot finish (a mode-protected remnant, a
+            # visible entry appearing mid-walk). A read-only region
+            # refuses here too. GNU's voice, not the raw errno repr.
+            reason = (
+                "Directory not empty"
+                if exc.errno in (errno.ENOTEMPTY, errno.EEXIST)
+                else fs_strerror(exc)
+            )
+            if reason is None:
+                raise
+            errors.append(f"rmdir: failed to remove '{p.raw_path}': {reason}")
+            continue
         removed[p.mount_path] = b""
         if v:
             verbose_parts.append(f"rmdir: removing directory, '{p.raw_path}'")
     output = format_optional_records(verbose_parts) if v else None
     stderr = ("\n".join(errors) + "\n").encode() if errors else None
-    return output, IOResult(writes=removed,
-                            stderr=stderr,
-                            exit_code=1 if errors else 0)
+    return output, IOResult(
+        writes=removed, stderr=stderr, exit_code=1 if errors else 0
+    )
 
 
-BUILDER = Builder('rmdir',
-                  rmdir,
-                  write=True,
-                  requirements=frozenset({Operation.RMDIR}))
+BUILDER = Builder("rmdir", rmdir, write=True)

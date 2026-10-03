@@ -15,10 +15,13 @@
 import asyncio
 import re
 
-from mirage.accessor.gridfs import GridFSAccessor, GridFSConfig
+from mirage.accessor.gridfs import GridFSAccessor
+from mirage.core.gridfs import driver as gridfs_driver
 from mirage.core.gridfs.client import prefix_query
-from mirage.core.gridfs.find import build_query, find, glob_regex
+from mirage.core.gridfs.driver import build_query, glob_regex
+from mirage.core.gridfs.find import find
 from mirage.types import PathSpec
+from mirage.vfs.gridfs.config import GridFSConfig
 
 
 def _matches(query_regex: dict, value: str) -> bool:
@@ -51,49 +54,53 @@ def test_glob_regex_bails_on_char_class():
     assert glob_regex("[ab].txt") is None
 
 
-def test_build_query_prefix_only():
-    query = build_query("data/", None, None, None, None, None, True)
-    assert query == {"filename": {"$regex": "^" + re.escape("data/")}}
+FILES_ONLY = {"filename": {"$not": {"$regex": "/$"}}}
 
 
-def test_build_query_name_matches_files_and_markers():
-    query = build_query("data/", "*.csv", None, None, None, None, True)
+def test_build_query_pushdown_selects_files_only():
+    query = build_query("data/", None, None, None, None, True)
+    assert query == {
+        "$and": [
+            {"filename": {"$regex": "^" + re.escape("data/")}},
+            FILES_ONLY,
+        ]
+    }
+
+
+def test_build_query_name_matches_files_at_any_depth():
+    query = build_query("data/", "*.csv", None, None, None, True)
     name_cond = query["$and"][1]["filename"]
     assert _matches(name_cond, "data/b.csv")
     assert _matches(name_cond, "data/sub/deep.csv")
-    assert _matches(name_cond, "data/sub.csv/")
+    assert not _matches(name_cond, "data/sub.csv/")
     assert not _matches(name_cond, "data/b.txt")
 
 
 def test_build_query_iname_case_insensitive():
-    query = build_query("", None, "*.CSV", None, None, None, True)
-    name_cond = query["filename"]
+    query = build_query("", None, "*.CSV", None, None, True)
+    name_cond = query["$and"][0]["filename"]
     assert name_cond["$options"] == "i"
     assert _matches(name_cond, "b.csv")
 
 
-def test_build_query_type_conditions():
-    files_only = build_query("", None, None, "f", None, None, True)
-    assert files_only == {"filename": {"$not": {"$regex": "/$"}}}
-    dirs_only = build_query("", None, None, "d", None, None, True)
-    assert dirs_only == {"filename": {"$regex": "/$"}}
-
-
-def test_build_query_size_lets_markers_through():
-    query = build_query("", None, None, None, 1, 100, True)
-    branches = query["$or"]
-    assert {"length": {"$gte": 1, "$lte": 100}} in branches
-    assert {"filename": {"$regex": "/$"}} in branches
+def test_build_query_size_bounds_the_length():
+    query = build_query("", None, None, 1, 100, True)
+    assert query == {
+        "$and": [FILES_ONLY, {"length": {"$gte": 1, "$lte": 100}}]
+    }
 
 
 def test_build_query_no_pushdown_keeps_prefix_only():
-    query = build_query("data/", "*.csv", None, "f", 1, 100, False)
+    query = build_query("data/", "*.csv", None, 1, 100, False)
     assert query == {"filename": {"$regex": "^" + re.escape("data/")}}
 
 
 def test_build_query_unpushable_glob_falls_back_to_prefix():
-    query = build_query("data/", "[ab].csv", None, None, None, None, True)
-    assert query == {"filename": {"$regex": "^" + re.escape("data/")}}
+    query = build_query("data/", "[ab].csv", None, None, None, True)
+    assert query["$and"][:1] == [
+        {"filename": {"$regex": "^" + re.escape("data/")}}
+    ]
+    assert query["$and"][1:] == [FILES_ONLY]
 
 
 async def _docs_gen(docs):
@@ -102,7 +109,6 @@ async def _docs_gen(docs):
 
 
 class _FakeIterLatest:
-
     def __init__(self, docs):
         self.docs = docs
         self.queries = []
@@ -113,16 +119,14 @@ class _FakeIterLatest:
 
 
 def _run_find(monkeypatch, docs, **kwargs):
-    fake = _FakeIterLatest([{
-        "filename": filename,
-        "length": length
-    } for filename, length in docs])
-    monkeypatch.setitem(find.__globals__, "iter_latest", fake)
+    fake = _FakeIterLatest(
+        [{"filename": filename, "length": length} for filename, length in docs]
+    )
+    monkeypatch.setattr(gridfs_driver, "iter_latest", fake)
     accessor = GridFSAccessor(
-        GridFSConfig(uri="mongodb://localhost:27017", database="db"))
-    spec = PathSpec(virtual="/mnt/data",
-                    directory="/mnt/",
-                    resource_path="data")
+        GridFSConfig(uri="mongodb://localhost:27017", database="db")
+    )
+    spec = PathSpec(virtual="/mnt/data", directory="/mnt/", vfs_path="data")
     out = asyncio.run(find(accessor, spec, **kwargs))
     return out, fake.queries
 
@@ -134,33 +138,40 @@ def test_find_synthesizes_implicit_dirs_without_narrowing(monkeypatch):
 
 
 def test_find_name_without_type_scans_prefix_only(monkeypatch):
-    out, queries = _run_find(monkeypatch, [("data/logs/x.txt", 1)],
-                             name="logs")
+    out, queries = _run_find(
+        monkeypatch, [("data/logs/x.txt", 1)], name="logs"
+    )
     assert out == ["/data/logs"]
     assert queries == [prefix_query("data/")]
 
 
 def test_find_type_f_keeps_pushdown(monkeypatch):
-    out, queries = _run_find(monkeypatch, [("data/a/b.txt", 3)],
-                             type="f",
-                             name="*.txt")
+    out, queries = _run_find(
+        monkeypatch, [("data/a/b.txt", 3)], type="f", name="*.txt"
+    )
     assert out == ["/data/a/b.txt"]
     assert "$and" in queries[0]
 
 
 def test_find_unordered_marker_and_file_no_duplicates(monkeypatch):
-    out, _ = _run_find(monkeypatch, [("data/a/x.txt", 1), ("data/a/", 0)],
-                       type="d")
+    out, _ = _run_find(
+        monkeypatch, [("data/a/x.txt", 1), ("data/a/", 0)], type="d"
+    )
     assert out == ["/data", "/data/a"]
 
 
 def test_find_file_shadowed_by_implicit_dir_emits_once(monkeypatch):
     docs = [("data/a", 1), ("data/a/b.txt", 2)]
-    assert _run_find(monkeypatch,
-                     docs)[0] == ["/data", "/data/a", "/data/a/b.txt"]
+    assert _run_find(monkeypatch, docs)[0] == [
+        "/data",
+        "/data/a",
+        "/data/a/b.txt",
+    ]
     assert _run_find(monkeypatch, docs, type="d")[0] == ["/data", "/data/a"]
-    assert _run_find(monkeypatch, docs,
-                     type="f")[0] == ["/data/a", "/data/a/b.txt"]
+    assert _run_find(monkeypatch, docs, type="f")[0] == [
+        "/data/a",
+        "/data/a/b.txt",
+    ]
 
 
 def test_find_empty_matches_marker_only_start(monkeypatch):

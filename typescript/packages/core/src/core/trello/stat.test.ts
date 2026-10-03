@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { TrelloAccessor } from '../../accessor/trello.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
-import { FileType, PathSpec } from '../../types.ts'
+import { ContentType, FileType, PathSpec } from '../../types.ts'
 import type { TrelloTransport } from './client.ts'
 import { stat } from './stat.ts'
 
@@ -28,7 +28,7 @@ class NoopTransport implements TrelloTransport {
 }
 
 function spec(virtual: string, prefix = ''): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath: mountKey(virtual, prefix) })
+  return new PathSpec({ virtual, directory: virtual, vfsPath: mountKey(virtual, prefix) })
 }
 
 describe('trello stat virtual roots', () => {
@@ -95,27 +95,64 @@ describe('trello stat workspace nodes', () => {
       spec('/mnt/trello/workspaces/Acme__w1/workspace.json', '/mnt/trello'),
       idx,
     )
-    expect(s.type).toBe(FileType.JSON)
+    expect(s.content).toBe(ContentType.JSON)
     expect(s.name).toBe('workspace.json')
     expect(s.size).toBe(42)
     expect(s.extra.workspace_id).toBe('w1')
   })
 
-  it('returns directory for boards (level 3)', async () => {
+  it('returns directory for boards (level 3) off the warm parent listing', async () => {
+    const idx = new RAMIndexCacheStore()
+    await idx.setDir('/mnt/trello/workspaces/Acme__w1', [
+      [
+        'workspace.json',
+        new IndexEntry({
+          id: 'w1',
+          name: 'workspace.json',
+          resourceType: 'trello/workspace_json',
+          vfsName: 'workspace.json',
+        }),
+      ],
+      [
+        'boards',
+        new IndexEntry({
+          id: 'w1',
+          name: 'boards',
+          resourceType: 'trello/boards_dir',
+          vfsName: 'boards',
+        }),
+      ],
+    ])
     const s = await stat(
       new TrelloAccessor(new NoopTransport()),
       spec('/mnt/trello/workspaces/Acme__w1/boards', '/mnt/trello'),
+      idx,
     )
     expect(s.type).toBe(FileType.DIRECTORY)
     expect(s.name).toBe('boards')
   })
 
   it('returns directory for labels/lists/members (level 5)', async () => {
+    const idx = new RAMIndexCacheStore()
+    const boardDir = '/mnt/trello/workspaces/Acme__w1/boards/Roadmap__b1'
+    await idx.setDir(
+      boardDir,
+      ['board.json', 'members', 'labels', 'lists'].map((name) => [
+        name,
+        new IndexEntry({
+          id: 'b1',
+          name,
+          resourceType: name === 'board.json' ? 'trello/board_json' : `trello/${name}_dir`,
+          vfsName: name,
+        }),
+      ]),
+    )
     const out = await Promise.all(
       ['members', 'labels', 'lists'].map((leaf) =>
         stat(
           new TrelloAccessor(new NoopTransport()),
-          spec(`/mnt/trello/workspaces/Acme__w1/boards/Roadmap__b1/${leaf}`, '/mnt/trello'),
+          spec(`${boardDir}/${leaf}`, '/mnt/trello'),
+          idx,
         ),
       ),
     )
@@ -154,7 +191,7 @@ describe('trello stat card leaves', () => {
       spec(`${cardDir}/card.json`, '/mnt/trello'),
       idx,
     )
-    expect(cardJson.type).toBe(FileType.JSON)
+    expect(cardJson.content).toBe(ContentType.JSON)
     expect(cardJson.name).toBe('card.json')
     expect(cardJson.size).toBe(99)
 
@@ -163,7 +200,7 @@ describe('trello stat card leaves', () => {
       spec(`${cardDir}/comments.jsonl`, '/mnt/trello'),
       idx,
     )
-    expect(comments.type).toBe(FileType.TEXT)
+    expect(comments.content).toBe(ContentType.TEXT)
     expect(comments.name).toBe('comments.jsonl')
     expect(comments.size).toBeNull()
   })
@@ -173,6 +210,17 @@ describe('trello stat unknown path', () => {
   it('throws ENOENT', async () => {
     await expect(
       stat(new TrelloAccessor(new NoopTransport()), spec('/mnt/trello/nope', '/mnt/trello')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('throws ENOENT for an id-less dirname without touching the API', async () => {
+    // Every dynamic level is `label__id`; a segment with no id cannot
+    // name anything, so the classifier refuses it before any call.
+    await expect(
+      stat(
+        new TrelloAccessor(new NoopTransport()),
+        spec('/mnt/trello/workspaces/w1/boards', '/mnt/trello'),
+      ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
@@ -190,7 +238,7 @@ describe('trello stat parent-listing failures', () => {
     await expect(
       stat(
         new TrelloAccessor(new FailingTransport(boom)),
-        spec('/mnt/trello/workspaces/w1/workspace.json', '/mnt/trello'),
+        spec('/mnt/trello/workspaces/Acme__w1/workspace.json', '/mnt/trello'),
         new RAMIndexCacheStore(),
       ),
     ).rejects.toThrow('401 invalid key')
@@ -201,7 +249,7 @@ describe('trello stat parent-listing failures', () => {
     await expect(
       stat(
         new TrelloAccessor(new FailingTransport(gone)),
-        spec('/mnt/trello/workspaces/w1/workspace.json', '/mnt/trello'),
+        spec('/mnt/trello/workspaces/Acme__w1/workspace.json', '/mnt/trello'),
         new RAMIndexCacheStore(),
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })

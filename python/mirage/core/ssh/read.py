@@ -12,36 +12,36 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import time
-
 import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.ssh.client import _abs
-from mirage.observe.context import record
+from mirage.core.ssh.utils import join_root
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
 
-async def read_bytes(accessor: SSHAccessor,
-                     path_spec: PathSpec,
-                     index: IndexCacheStore = NULL_INDEX,
-                     offset: int = 0,
-                     size: int | None = None) -> bytes:
+async def read_bytes(
+    accessor: SSHAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+    offset: int = 0,
+    size: int | None = None,
+) -> bytes:
     virtual = path_spec.virtual
     path = path_spec.mount_path
     config = accessor.config
     sftp = await accessor.sftp()
-    start_ms = int(time.monotonic() * 1000)
+    timer = start_op()
     try:
-        remote_path = _abs(config, path)
+        remote_path = join_root(config.root, path)
         async with sftp.open(remote_path, "rb") as f:
             if offset:
                 await f.seek(offset)
             raw = await f.read(size if size is not None else -1)
         data = raw if isinstance(raw, bytes) else raw.encode()
-        record("read", path, "ssh", len(data), start_ms)
+        record("read", virtual, "ssh", len(data), timer)
         return data
     except asyncssh.SFTPNoSuchFile:
         raise enoent(virtual)

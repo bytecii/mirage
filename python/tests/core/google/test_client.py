@@ -12,29 +12,52 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-# yapf: disable
-from mirage.core.google.client import (TokenManager, calendar_base, docs_base,
-                                       drive_base, drive_upload_base,
-                                       forms_base, gmail_base,
-                                       google_error_message, sheets_base,
-                                       slides_base, token_url)
-# yapf: enable
-from mirage.core.google.config import GoogleConfig
-from mirage.core.google.constants import (CALENDAR_API_BASE, DOCS_API_BASE,
-                                          DRIVE_API_BASE, DRIVE_UPLOAD_BASE,
-                                          FORMS_API_BASE, GMAIL_API_BASE,
-                                          SHEETS_API_BASE, SLIDES_API_BASE,
-                                          TOKEN_URL)
+import time
+from unittest.mock import AsyncMock, patch
 
-API_ERROR = ('{"error": {"code": 400, "message": "Unsupported request: '
-             'insertDimension", "status": "INVALID_ARGUMENT"}}')
-TOKEN_ERROR = ('{"error": "invalid_grant", "error_description": '
-               '"Token has been expired or revoked."}')
+import pytest
+
+from mirage.core.google.client import (
+    TokenManager,
+    calendar_base,
+    docs_base,
+    drive_base,
+    drive_upload_base,
+    forms_base,
+    gmail_base,
+    google_error_message,
+    google_headers,
+    sheets_base,
+    slides_base,
+    token_url,
+)
+from mirage.core.google.config import GoogleConfig
+from mirage.core.google.constants import (
+    CALENDAR_API_BASE,
+    DOCS_API_BASE,
+    DRIVE_API_BASE,
+    DRIVE_UPLOAD_BASE,
+    FORMS_API_BASE,
+    GMAIL_API_BASE,
+    SHEETS_API_BASE,
+    SLIDES_API_BASE,
+    TOKEN_URL,
+)
+
+API_ERROR = (
+    '{"error": {"code": 400, "message": "Unsupported request: '
+    'insertDimension", "status": "INVALID_ARGUMENT"}}'
+)
+TOKEN_ERROR = (
+    '{"error": "invalid_grant", "error_description": '
+    '"Token has been expired or revoked."}'
+)
 
 
 def _manager(api_base: str | None = None) -> TokenManager:
     return TokenManager(
-        GoogleConfig(client_id="cid", refresh_token="rt", api_base=api_base))
+        GoogleConfig(client_id="cid", refresh_token="rt", api_base=api_base)
+    )
 
 
 def test_bases_default_to_real_google_hosts():
@@ -64,22 +87,59 @@ def test_api_base_override_rewrites_every_service():
 
 
 def test_api_error_message_comes_from_the_body():
-    assert google_error_message(
-        API_ERROR, 400,
-        "Bad Request") == "Unsupported request: insertDimension"
+    assert (
+        google_error_message(API_ERROR, 400, "Bad Request")
+        == "Unsupported request: insertDimension"
+    )
 
 
 def test_token_endpoint_error_shape_is_flat():
-    assert google_error_message(
-        TOKEN_ERROR, 400,
-        "Bad Request") == "invalid_grant: Token has been expired or revoked."
+    assert (
+        google_error_message(TOKEN_ERROR, 400, "Bad Request")
+        == "invalid_grant: Token has been expired or revoked."
+    )
 
 
 def test_non_json_body_is_reported_verbatim():
-    assert google_error_message("<html>gateway</html>", 502,
-                                "Bad Gateway") == "<html>gateway</html>"
+    assert (
+        google_error_message("<html>gateway</html>", 502, "Bad Gateway")
+        == "<html>gateway</html>"
+    )
 
 
 def test_empty_body_falls_back_to_the_reason_then_the_status():
     assert google_error_message("", 404, "Not Found") == "Not Found"
     assert google_error_message("   ", 404, None) == "HTTP 404"
+
+
+def _refresh_returning(*tokens: str):
+    return patch(
+        "mirage.core.google.client.refresh_access_token",
+        new_callable=AsyncMock,
+        side_effect=[(t, 3600) for t in tokens],
+    )
+
+
+@pytest.mark.asyncio
+async def test_token_manager_refreshes_once_then_caches():
+    mgr = _manager()
+    with _refresh_returning("cached-token") as refresh:
+        assert await mgr.get_token() == "cached-token"
+        assert await mgr.get_token() == "cached-token"
+    refresh.assert_called_once_with(mgr.config)
+
+
+@pytest.mark.asyncio
+async def test_token_manager_refreshes_when_expired():
+    mgr = _manager()
+    with _refresh_returning("token-1", "token-2"):
+        await mgr.get_token()
+        mgr._expires_at = time.time() - 1
+        assert await mgr.get_token() == "token-2"
+
+
+@pytest.mark.asyncio
+async def test_google_headers_carry_the_bearer_token():
+    with _refresh_returning("my-token"):
+        headers = await google_headers(_manager())
+    assert headers["Authorization"] == "Bearer my-token"

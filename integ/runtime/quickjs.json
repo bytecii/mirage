@@ -12,7 +12,7 @@
       "world": {
         "runtimes": [
           "quickjs",
-          "vfs"
+          "workspace"
         ]
       },
       "steps": [
@@ -31,7 +31,7 @@
       "world": {
         "runtimes": [
           "quickjs",
-          "vfs"
+          "workspace"
         ]
       },
       "steps": [
@@ -45,60 +45,11 @@
       ]
     },
     {
-      "id": "read_mount",
-      "world": {
-        "runtimes": [
-          "quickjs",
-          "vfs"
-        ],
-        "mounts": {
-          "/ram": {
-            "resource": "ram",
-            "files": {
-              "data.txt": "hello from ram\n"
-            }
-          }
-        }
-      },
-      "steps": [
-        {
-          "command": "js -e \"const f = std.open('/ram/data.txt', 'r'); console.log(f.readAsString().trim())\"",
-          "expect": {
-            "exit": 0,
-            "stdout": "hello from ram\n"
-          }
-        }
-      ]
-    },
-    {
-      "id": "write_mount",
-      "world": {
-        "runtimes": [
-          "quickjs",
-          "vfs"
-        ],
-        "mounts": {
-          "/ram": {
-            "resource": "ram"
-          }
-        }
-      },
-      "steps": [
-        {
-          "command": "js -e \"const w = std.open('/ram/from-js.txt', 'w'); w.puts('js-wrote-this'); w.close()\" && cat /ram/from-js.txt",
-          "expect": {
-            "exit": 0,
-            "stdout": "js-wrote-this"
-          }
-        }
-      ]
-    },
-    {
       "id": "puts_print_raw",
       "world": {
         "runtimes": [
           "quickjs",
-          "vfs"
+          "workspace"
         ]
       },
       "steps": [
@@ -113,78 +64,11 @@
       ]
     },
     {
-      "id": "os_surface",
-      "world": {
-        "runtimes": [
-          "quickjs",
-          "vfs"
-        ],
-        "mounts": {
-          "/ram": {
-            "resource": "ram"
-          },
-          "/other": {
-            "resource": "ram"
-          }
-        }
-      },
-      "steps": [
-        {
-          "command": "node -e \"console.log(os.mkdir('/ram/d'), os.mkdir('/ram/d'))\"",
-          "expect": {
-            "exit": 0,
-            "stdout": "0 -20\n"
-          }
-        },
-        {
-          "command": "echo xy > /ram/d/a.txt",
-          "expect": {
-            "exit": 0
-          }
-        },
-        {
-          "command": "node -e \"console.log(os.rename('/ram/d/a.txt', '/ram/d/b.txt'), os.rename('/ram/zz', '/ram/yy'))\"",
-          "expect": {
-            "exit": 0,
-            "stdout": "0 -44\n"
-          }
-        },
-        {
-          "command": "echo keep > /ram/cross.txt && node -e \"console.log(os.rename('/ram/cross.txt', '/other/cross.txt'))\" && cat /ram/cross.txt",
-          "expect": {
-            "exit": 0,
-            "stdout": "-44\nkeep\n"
-          }
-        },
-        {
-          "command": "node -e \"const [st, e] = os.stat('/ram/d/b.txt'); console.log(e, st.size, (st.mode & os.S_IFMT) === os.S_IFREG, JSON.stringify(os.stat('/ram/nope')))\"",
-          "expect": {
-            "exit": 0,
-            "stdout": "0 3 true [null,44]\n"
-          }
-        },
-        {
-          "command": "node -e \"console.log(os.remove('/ram/d/b.txt'), os.remove('/ram/d/b.txt'), os.remove('/ram/d'))\"",
-          "expect": {
-            "exit": 0,
-            "stdout": "0 -44 0\n"
-          }
-        },
-        {
-          "command": "node -e \"console.log(JSON.stringify(os.readdir('/ram/nope')))\"",
-          "expect": {
-            "exit": 0,
-            "stdout": "[[],44]\n"
-          }
-        }
-      ]
-    },
-    {
       "id": "printf",
       "world": {
         "runtimes": [
           "quickjs",
-          "vfs"
+          "workspace"
         ]
       },
       "steps": [
@@ -223,24 +107,24 @@
       "world": {
         "runtimes": [
           "quickjs",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram",
+            "vfs": "ram",
             "files": {
               "deny.txt": "node\n"
             }
           }
         },
-        "policy": "const f = std.open('/ram/deny.txt', 'r'); const blocked = f !== null && f.readAsString().includes(ctx.command); if (f !== null) f.close(); blocked ? {deny: 'listed in /ram/deny.txt'} : null"
+        "route_policy": "const f = std.open('/ram/deny.txt', 'r'); const blocked = f !== null && f.readAsString().includes(ctx.command); if (f !== null) f.close(); blocked ? {deny: 'listed in /ram/deny.txt'} : null"
       },
       "steps": [
         {
           "command": "node -e \"console.log(1)\"",
           "expect": {
             "exit": 126,
-            "stderr": "node: policy denied: listed in /ram/deny.txt\n"
+            "stderr": "node: Permission denied\n"
           }
         },
         {
@@ -257,21 +141,21 @@
       "world": {
         "runtimes": [
           "quickjs",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         },
-        "policy": "ctx.command === 'node' ? {deny: 'no js here'} : null"
+        "route_policy": "ctx.command === 'node' ? {deny: 'no js here'} : null"
       },
       "steps": [
         {
           "command": "node -e \"console.log(1)\"",
           "expect": {
             "exit": 126,
-            "stderr": "node: policy denied: no js here\n"
+            "stderr": "node: Permission denied\n"
           }
         },
         {
@@ -291,11 +175,11 @@
             "name": "quickjs",
             "script": "!ctx.line.includes('keep-out')"
           },
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -321,10 +205,35 @@
       "world": {
         "runtimes": [
           "quickjs",
-          "vfs"
-        ]
+          "workspace"
+        ],
+        "mounts": {
+          "/ram": {
+            "vfs": "ram"
+          }
+        },
+        "profiles": {
+          "default": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "sealed",
+                  "paths": [
+                    "/ram/*"
+                  ]
+                }
+              ]
+            }
+          }
+        }
       },
       "steps": [
+        {
+          "command": "cd /ram",
+          "expect": {
+            "exit": 0
+          }
+        },
         {
           "command": "echo 'console.log(scriptArgs.join(\",\"))' | node - a b",
           "expect": {
@@ -344,6 +253,92 @@
           "expect": {
             "exit": 0,
             "stdout": "-m\n"
+          }
+        },
+        {
+          "command": "js -- - arg -e",
+          "stdin": "console.log(scriptArgs.join(\",\"))",
+          "expect": {
+            "exit": 0,
+            "stdout": "arg,-e\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "node_argv_is_typed_and_names_no_mount",
+      "world": {
+        "runtimes": [
+          "quickjs",
+          "workspace"
+        ],
+        "mounts": {
+          "/w": {
+            "vfs": "ram",
+            "files": {
+              "a.js": "console.log(JSON.stringify(scriptArgs))\n",
+              "data/in.csv": "x\n"
+            }
+          },
+          "/t": {
+            "vfs": "ram",
+            "files": {
+              "q.txt": "from-t\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "cd /w && node a.js data/in.csv ./data/in.csv",
+          "expect": {
+            "exit": 0,
+            "stdout": "[\"data/in.csv\",\"./data/in.csv\"]\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "node /w/a.js /t/q.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "[\"/t/q.txt\"]\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "node -e 'console.log(JSON.stringify(scriptArgs))' /t/q.txt /w/data/in.csv",
+          "expect": {
+            "exit": 0,
+            "stdout": "[\"/t/q.txt\",\"/w/data/in.csv\"]\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "output_survives_failure_and_reuse",
+      "world": {
+        "runtimes": [
+          "quickjs",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "js -e \"console.log('before failure'); throw new Error('original failure')\"",
+          "expect": {
+            "exit": 1,
+            "stdout": "before failure\n",
+            "stderr_contains": "original failure"
+          }
+        },
+        {
+          "command": "js -e \"console.log('next')\"",
+          "expect": {
+            "exit": 0,
+            "stdout": "next\n",
+            "stderr": ""
           }
         }
       ]

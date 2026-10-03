@@ -1,0 +1,3391 @@
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import asyncio
+import base64
+import dataclasses
+import functools
+import gzip
+import importlib.util
+import inspect
+import json
+import logging
+import os
+import shutil
+import tempfile
+import uuid
+from collections.abc import Awaitable, Callable
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+from types import ModuleType
+from urllib.parse import quote
+
+import aiohttp
+import asyncpg
+import boto3
+import chromadb
+import lancedb
+from databricks_client import HttpFilesClient
+from moto.server import ThreadedMotoServer
+from pymongo import AsyncMongoClient
+from qdrant_client import AsyncQdrantClient, models
+
+from mirage import MountMode, Workspace
+from mirage.accessor.github import GitHubAccessor
+from mirage.accessor.hf_hub import HfHubAccessor
+from mirage.accessor.onedrive import OneDriveConfig
+from mirage.accessor.sharepoint import SharePointConfig
+from mirage.commands.cli.specs import cli_spec_for
+from mirage.commands.cli.types import CLISpec
+from mirage.core.databricks_volume.path import configured_root
+from mirage.core.email.config import EmailConfig
+from mirage.core.github.client import GitHubApiError, github_request
+from mirage.core.hf_hub.commit import Addition, commit
+from mirage.runtime.types import ScriptSource
+from mirage.shell.console import JobConsole
+from mirage.shell.console.redis import RedisConsoleStore
+from mirage.shell.job_table import ConsoleFactory
+from mirage.types import ReadSpec
+from mirage.vfs.airtable import AirtableConfig, AirtableVFS
+from mirage.vfs.aliyun import AliyunConfig, AliyunVFS
+from mirage.vfs.backblaze import BackblazeConfig, BackblazeVFS
+from mirage.vfs.box import BoxConfig, BoxVFS
+from mirage.vfs.ceph import CephConfig, CephVFS
+from mirage.vfs.chroma import ChromaConfig, ChromaVFS
+from mirage.vfs.databricks_volume import (
+    DatabricksVolumeConfig,
+    DatabricksVolumeVFS,
+)
+from mirage.vfs.dify import DifyConfig, DifyVFS
+from mirage.vfs.digitalocean import DigitalOceanConfig, DigitalOceanVFS
+from mirage.vfs.discord.config import DiscordConfig
+from mirage.vfs.discord.discord import DiscordVFS
+from mirage.vfs.disk import DiskVFS
+from mirage.vfs.dropbox import DropboxConfig, DropboxVFS
+from mirage.vfs.email.email import EmailVFS
+from mirage.vfs.gcal.config import GCalConfig
+from mirage.vfs.gcal.gcal import GCalVFS
+from mirage.vfs.gcs import GCSVFS, GCSConfig
+from mirage.vfs.gdocs.config import GDocsConfig
+from mirage.vfs.gdocs.gdocs import GDocsVFS
+from mirage.vfs.gdrive.config import GoogleDriveConfig
+from mirage.vfs.gdrive.gdrive import GoogleDriveVFS
+from mirage.vfs.github import GitHubConfig, GitHubVFS
+from mirage.vfs.gmail.config import GmailConfig
+from mirage.vfs.gmail.gmail import GmailVFS
+from mirage.vfs.gridfs import GridFSConfig, GridFSVFS
+from mirage.vfs.gsheets.config import GSheetsConfig
+from mirage.vfs.gsheets.gsheets import GSheetsVFS
+from mirage.vfs.gslides.config import GSlidesConfig
+from mirage.vfs.gslides.gslides import GSlidesVFS
+from mirage.vfs.hf_buckets import HfBucketsConfig, HfBucketsVFS
+from mirage.vfs.hf_datasets import HfDatasetsConfig, HfDatasetsVFS
+from mirage.vfs.hf_models import HfModelsConfig, HfModelsVFS
+from mirage.vfs.hf_spaces import HfSpacesConfig, HfSpacesVFS
+from mirage.vfs.jaeger import JaegerConfig, JaegerVFS
+from mirage.vfs.lancedb import LanceDBConfig, LanceDBVFS
+from mirage.vfs.langfuse import LangfuseConfig, LangfuseVFS
+from mirage.vfs.linear import LinearConfig, LinearVFS
+from mirage.vfs.mem0 import Mem0Config, Mem0VFS
+from mirage.vfs.minio import MinIOConfig, MinIOVFS
+from mirage.vfs.mongodb import MongoDBConfig, MongoDBVFS
+from mirage.vfs.nextcloud import NextcloudConfig, NextcloudVFS
+from mirage.vfs.notion import NotionConfig, NotionVFS
+from mirage.vfs.oci import OCIVFS, OCIConfig
+from mirage.vfs.onedrive.onedrive import OneDriveVFS
+from mirage.vfs.postgres import PostgresConfig, PostgresVFS
+from mirage.vfs.qdrant import QdrantConfig, QdrantVFS
+from mirage.vfs.qingstor import QingStorConfig, QingStorVFS
+from mirage.vfs.r2 import R2VFS, R2Config
+from mirage.vfs.ram import RAMVFS
+from mirage.vfs.redis import RedisVFS
+from mirage.vfs.s3 import S3VFS, S3Config
+from mirage.vfs.scaleway import ScalewayConfig, ScalewayVFS
+from mirage.vfs.seaweedfs import SeaweedFSConfig, SeaweedFSVFS
+from mirage.vfs.sharepoint.sharepoint import SharePointVFS
+from mirage.vfs.slack import SlackConfig, SlackVFS
+from mirage.vfs.ssh import SSHVFS, SSHConfig
+from mirage.vfs.supabase import SupabaseConfig, SupabaseVFS
+from mirage.vfs.tencent import TencentConfig, TencentVFS
+from mirage.vfs.trello import TrelloConfig, TrelloVFS
+from mirage.vfs.wasabi import WasabiConfig, WasabiVFS
+from mirage.workspace.mount.spec import Mount
+from mirage.workspace.workspace.types import VFSMount
+
+from .secrets import build_secrets_env
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+EMAIL_IMAP_PORT = int(os.environ.get("EMAIL_IMAP_PORT", "3143"))
+EMAIL_SMTP_PORT = int(os.environ.get("EMAIL_SMTP_PORT", "3025"))
+EMAIL_USERNAME = "integ@example.com"
+# The repository the `gh` install defaults to, standing in for the current
+# git remote real gh reads. Seeded by the fake alongside the mounted one.
+GH_CLI_REPO = "integ/repo-cli"
+# Two more accounts. The mount keeps the primary; the renamed CLI installs h1
+# and h2 hold these two, so the mount and the CLIs never share an account and a
+# line's behavior proves which config it ran under.
+EMAIL_USERNAME_ALPHA = "alpha@example.com"
+EMAIL_USERNAME_BETA = "beta@example.com"
+# The tenants the fake seeds, which are the local parts of the three addresses
+# above. One served domain, so the local part is the whole identity.
+EMAIL_ACCOUNTS = ("integ", "alpha", "beta")
+# The directory the shared mail manifest lives in, and the one the fake expands
+# from. A target names `email/v1`; the fake takes fixture NAMES, never paths,
+# so the prefix is checked off here rather than passed through.
+EMAIL_MANIFEST_DIR = "email"
+# Doubles as the workspace id on the fake notion server.
+NOTION_TOKEN = "integ-test"
+
+# The fixture's full-access token (integ/fixtures/airtable/v1.json). Airtable
+# tokens are data in that world rather than tenants, so it is the same value
+# on both hosts; the run in the base URL is what keeps them apart.
+AIRTABLE_TOKEN = "patIntegFullAccess.fake"
+# The bases the airtable CLI install is scoped to: the fixture's Roadmap and
+# Ops bases, leaving its read-only Archive outside.
+AIRTABLE_CLI_BASES = ("appRoadmapBase001", "appOpsFinance0002")
+MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
+S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
+S3_REGION = os.environ.get("S3_REGION", "us-east-1")
+S3_ACCESS = os.environ.get("AWS_ACCESS_KEY_ID", "testing")
+S3_SECRET = os.environ.get("AWS_SECRET_ACCESS_KEY", "testing")
+
+
+def object_storage_vfs(
+    name: str, bucket: str, endpoint: str, key_prefix: str | None
+) -> S3VFS:
+    common = {
+        "bucket": bucket,
+        "region": S3_REGION,
+        "endpoint_url": endpoint,
+        "access_key_id": S3_ACCESS,
+        "secret_access_key": S3_SECRET,
+        "key_prefix": key_prefix,
+    }
+    if name == "s3":
+        return S3VFS(
+            S3Config(
+                bucket=bucket,
+                region=S3_REGION,
+                endpoint_url=endpoint,
+                aws_access_key_id=S3_ACCESS,
+                aws_secret_access_key=S3_SECRET,
+                path_style=True,
+                key_prefix=key_prefix,
+            )
+        )
+    if name == "aliyun":
+        return AliyunVFS(AliyunConfig(**common, path_style=True))
+    if name == "backblaze":
+        return BackblazeVFS(BackblazeConfig(**common, path_style=True))
+    if name == "ceph":
+        return CephVFS(CephConfig(**common))
+    if name == "digitalocean":
+        return DigitalOceanVFS(DigitalOceanConfig(**common, path_style=True))
+    if name == "gcs":
+        return GCSVFS(GCSConfig(**common, path_style=True))
+    if name == "minio":
+        return MinIOVFS(MinIOConfig(**common))
+    if name == "oci":
+        return OCIVFS(OCIConfig(**common, namespace="integ"))
+    if name == "qingstor":
+        return QingStorVFS(QingStorConfig(**common, path_style=True))
+    if name == "r2":
+        return R2VFS(R2Config(**common, path_style=True))
+    if name == "scaleway":
+        return ScalewayVFS(ScalewayConfig(**common, path_style=True))
+    if name == "seaweedfs":
+        return SeaweedFSVFS(SeaweedFSConfig(**common))
+    if name == "supabase":
+        return SupabaseVFS(SupabaseConfig(**common))
+    if name == "tencent":
+        return TencentVFS(TencentConfig(**common, path_style=True))
+    if name == "wasabi":
+        return WasabiVFS(WasabiConfig(**common, path_style=True))
+    raise ValueError(f"unknown object storage VFS: {name}")
+
+
+async def _noop() -> None:
+    return None
+
+
+def manifest_mime(entry: dict) -> MIMEText | MIMEMultipart:
+    """Build the constrained RFC822 shape shared mail manifests describe.
+
+    Args:
+        entry (dict): manifest row with from/to/cc/subject/date/body and
+            optional attachments.
+
+    Returns:
+        MIMEText | MIMEMultipart: single text part, or multipart/mixed with
+        text attachments.
+    """
+    if entry.get("attachments"):
+        mime: MIMEText | MIMEMultipart = MIMEMultipart("mixed")
+        mime.attach(MIMEText(entry["body"], "plain", "utf-8"))
+        for att in entry["attachments"]:
+            part = MIMEText(att["content"], "plain", "utf-8")
+            part.add_header(
+                "Content-Disposition", "attachment", filename=att["filename"]
+            )
+            mime.attach(part)
+    else:
+        mime = MIMEText(entry["body"], "plain", "utf-8")
+    mime["From"] = entry["from"]
+    mime["To"] = entry["to"]
+    if entry.get("cc"):
+        mime["Cc"] = ", ".join(entry["cc"])
+    mime["Subject"] = entry["subject"]
+    mime["Date"] = entry["date"]
+    return mime
+
+
+class S3Service:
+    def __init__(self, run_id: str) -> None:
+        self.stop: Callable[[], None] = lambda: None
+        if S3_ENDPOINT:
+            self.endpoint = S3_ENDPOINT
+        else:
+            logging.getLogger("werkzeug").setLevel(logging.ERROR)
+            server = ThreadedMotoServer(
+                ip_address="127.0.0.1", port=0, verbose=False
+            )
+            server.start()
+            host, port = server.get_host_and_port()
+            self.endpoint = f"http://{host}:{port}"
+            self.stop = server.stop
+        self.client = boto3.client(
+            "s3",
+            endpoint_url=self.endpoint,
+            aws_access_key_id=S3_ACCESS,
+            aws_secret_access_key=S3_SECRET,
+            region_name=S3_REGION,
+        )
+        self.prefix = f"mirage-integ-{run_id}"
+        self.buckets: set[str] = set()
+
+    def bucket_for(self, mount: dict) -> str:
+        name = f"{self.prefix}-{mount['bucket']}"
+        if name not in self.buckets:
+            self.client.create_bucket(Bucket=name)
+            self.buckets.add(name)
+        return name
+
+    def vfs(self, mount: dict) -> S3VFS:
+        return object_storage_vfs(
+            mount["vfs"],
+            self.bucket_for(mount),
+            self.endpoint,
+            mount.get("prefix"),
+        )
+
+    async def teardown(self) -> None:
+        for bucket in self.buckets:
+            paginator = self.client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket):
+                for obj in page.get("Contents", []):
+                    self.client.delete_object(Bucket=bucket, Key=obj["Key"])
+            self.client.delete_bucket(Bucket=bucket)
+        self.stop()
+
+
+class GridFSService:
+    def __init__(self, run_id: str) -> None:
+        self.uri = MONGODB_URI
+        self.database = f"mirage_integ_{run_id}"
+
+    def vfs(self, mount: dict) -> GridFSVFS:
+        return GridFSVFS(
+            GridFSConfig(
+                uri=self.uri,
+                database=self.database,
+                bucket=mount["bucket"],
+                key_prefix=mount.get("prefix"),
+            )
+        )
+
+    async def teardown(self) -> None:
+        client: AsyncMongoClient = AsyncMongoClient(self.uri)
+        try:
+            await client.drop_database(self.database)
+        finally:
+            await client.close()
+
+
+class DatabricksVolumeService:
+    """Points databricks mounts at the kit fake for volume files.
+
+    The fake is a TypeScript kit service now, so the adapter spawns it the way
+    the mem0 one does instead of importing an aiohttp app. The volume root is
+    created over HTTP rather than by reaching into the server's own store,
+    which is the same PUT the TypeScript host already sends and the only way
+    to say it once the fake is another process.
+
+    Each run takes its own bearer token, which the fake reads as its tenant,
+    so two runs sharing one server cannot see each other's writes.
+
+    Args:
+        run_id (str): this run's id, which scopes the token and the volumes.
+        base (str): the fake's origin.
+        process (asyncio.subprocess.Process): the running fake.
+    """
+
+    def __init__(
+        self, run_id: str, base: str, process: asyncio.subprocess.Process
+    ) -> None:
+        self.run_id = run_id
+        self.base = base
+        self.process = process
+        self.token = f"integ-{run_id}"
+
+    @classmethod
+    async def create(cls, run_id: str) -> "DatabricksVolumeService":
+        base, process = await start_kit_fake("databricks")
+        return cls(run_id, base, process)
+
+    def vfs(self, mount: dict) -> DatabricksVolumeVFS:
+        volume = f"mirage-integ-{self.run_id}-{mount['volume']}"
+        config = DatabricksVolumeConfig(
+            catalog="main",
+            schema="default",
+            volume=volume,
+            root_path=mount.get("prefix") or "/",
+        )
+        client = HttpFilesClient(self.base, self.token)
+        client.files.create_directory(configured_root(config))
+        return DatabricksVolumeVFS(config, client=client)
+
+    async def teardown(self) -> None:
+        await stop_kit_fake(self.process)
+
+
+async def start_kit_fake(
+    service: str,
+) -> tuple[str, asyncio.subprocess.Process]:
+    """Start integ/server/<service>/main.ts and read the endpoint it announces.
+
+    The adapter owns the process rather than reading a URL from the
+    environment, which is what keeps a single-target run free of CI setup.
+    Every kit fake announces ``<SERVICE>_URL=<origin>`` on its first stdout
+    line, so one reader serves all of them instead of one per service.
+
+    Args:
+        service (str): directory under integ/server/ holding main.ts.
+
+    Returns:
+        tuple[str, asyncio.subprocess.Process]: the endpoint and the process.
+    """
+    integ = Path(__file__).resolve().parents[3]
+    process = await asyncio.create_subprocess_exec(
+        str(integ / "node_modules" / ".bin" / "tsx"),
+        str(integ / "server" / service / "main.ts"),
+        "--port",
+        "0",
+        cwd=str(integ),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    token = f"{service.upper().replace('-', '_')}_URL"
+    line = (await process.stdout.readline()).decode().strip()
+    endpoint = line.partition("=")[2] if line.startswith(f"{token}=") else ""
+    if not endpoint:
+        assert process.stderr is not None
+        detail = (await process.stderr.read()).decode().strip()
+        raise RuntimeError(f"{service} fake failed to start: {line}{detail}")
+    return endpoint, process
+
+
+async def stop_kit_fake(process: asyncio.subprocess.Process) -> None:
+    """Terminate a fake started by :func:`start_kit_fake`.
+
+    Args:
+        process (asyncio.subprocess.Process): the running fake.
+    """
+    if process.returncode is None:
+        process.terminate()
+        await process.wait()
+
+
+def _load_module(path: Path) -> ModuleType:
+    # Modules at the integ root never go on sys.path (integ/redis.py would
+    # shadow the redis package); load them by file.
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_ssh_server() -> ModuleType:
+    return _load_module(
+        Path(__file__).resolve().parents[3] / "server" / "ssh_server.py"
+    )
+
+
+async def _admin_exec(ws: Workspace, command: str) -> None:
+    result = await ws.shell(command)
+    if result.exit_code:
+        raise RuntimeError(
+            f"admin command failed: {command}: {await result.stderr_str()}"
+        )
+
+
+class SSHService:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        server,
+        root_dir: str | None,
+        admin: SSHVFS,
+        admin_ws: Workspace,
+        base: str,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.server = server
+        self.root_dir = root_dir
+        self.admin = admin
+        self.admin_ws = admin_ws
+        self.base = base
+        self.mounts: list[SSHVFS] = []
+
+    @classmethod
+    async def create(cls, run_id: str, target: dict) -> "SSHService":
+        host = os.environ.get("SSH_HOST")
+        server = None
+        root_dir = None
+        if host:
+            port = int(os.environ.get("SSH_PORT", "22"))
+        else:
+            module = _load_ssh_server()
+            root_dir = tempfile.mkdtemp(prefix="mirage-integ-ssh-")
+            server = await module.start_server(root_dir)
+            host = "127.0.0.1"
+            port = server.get_port()
+        base = f"mirage-integ-{run_id}"
+        admin = SSHVFS(SSHConfig(host=host, port=port, username="integ"))
+        admin_ws = Workspace({"/admin": admin}, mode=MountMode.WRITE)
+        paths = " ".join(
+            f"/admin/{base}/{m['root']}" for m in target["mounts"]
+        )
+        await _admin_exec(admin_ws, f"mkdir -p {paths}")
+        # A server-side symlink in the /links mount: mirage's shell ln -s
+        # only makes namespace links, so the battery needs one created over
+        # SFTP to pin that ssh stat follows links (target size, not
+        # link-text length). Dangling until the fixture seeds poem.txt.
+        sftp = await admin.accessor.sftp()
+        for m in target["mounts"]:
+            if m["root"] == "links":
+                await sftp.symlink(
+                    "../data/poem.txt", f"/{base}/{m['root']}/poem_link.txt"
+                )
+        return cls(host, port, server, root_dir, admin, admin_ws, base)
+
+    def vfs(self, mount: dict) -> SSHVFS:
+        res = SSHVFS(
+            SSHConfig(
+                host=self.host,
+                port=self.port,
+                username="integ",
+                root=f"/{self.base}/{mount['root']}",
+            )
+        )
+        self.mounts.append(res)
+        return res
+
+    async def teardown(self) -> None:
+        await _admin_exec(self.admin_ws, f"rm -rf /admin/{self.base}")
+        # Workspace.close() does not close VFS accessors; an in-process
+        # server's wait_closed() blocks until every client connection is gone.
+        for res in self.mounts:
+            await res.accessor.close()
+        await self.admin_ws.close()
+        await self.admin.accessor.close()
+        if self.server is not None:
+            self.server.close()
+            await self.server.wait_closed()
+        if self.root_dir is not None:
+            shutil.rmtree(self.root_dir, ignore_errors=True)
+
+
+class NextcloudService:
+    def __init__(
+        self,
+        url: str,
+        username: str | None,
+        password: str | None,
+        admin_ws: Workspace,
+        base: str,
+    ) -> None:
+        self.url = url
+        self.username = username
+        self.password = password
+        self.admin_ws = admin_ws
+        self.base = base
+
+    @classmethod
+    async def create(cls, run_id: str, target: dict) -> "NextcloudService":
+        url = os.environ["NEXTCLOUD_URL"]
+        username = os.environ.get("NEXTCLOUD_USERNAME", "admin")
+        password = os.environ.get("NEXTCLOUD_PASSWORD", "admin123")
+        base = f"mirage-integ-{run_id}"
+        admin = NextcloudVFS(
+            NextcloudConfig(url=url, username=username, password=password)
+        )
+        admin_ws = Workspace({"/admin": admin}, mode=MountMode.WRITE)
+        paths = " ".join(
+            f"/admin/{base}/{m['root']}" for m in target["mounts"]
+        )
+        await _admin_exec(admin_ws, f"mkdir -p {paths}")
+        return cls(url, username, password, admin_ws, base)
+
+    def vfs(self, mount: dict) -> NextcloudVFS:
+        url = f"{self.url.rstrip('/')}/{self.base}/{mount['root']}/"
+        return NextcloudVFS(
+            NextcloudConfig(
+                url=url, username=self.username, password=self.password
+            )
+        )
+
+    async def teardown(self) -> None:
+        await _admin_exec(self.admin_ws, f"rm -rf /admin/{self.base}")
+        await self.admin_ws.close()
+
+
+FOLDER_MIME = "application/vnd.google-apps.folder"
+# The gws fake's credential: a bearer as it is, and the one refresh token its
+# /token exchanges.
+GWS_TOKEN = "gws-integ-token"
+
+
+class GwsService:
+    """Points gdrive mounts at the fake Google Workspace server.
+
+    The server is external (integ/server/gws/) and shared across runs;
+    /reset gives each run a clean, deterministic state. Each mount is scoped
+    to a per-mount folder via GoogleConfig.folder_id, the s3 key_prefix
+    analog, so the three mounts never see each other.
+    """
+
+    def __init__(
+        self, url: str, folder_ids: dict[str, str], cli_scope: str | None
+    ) -> None:
+        self.url = url
+        self.folder_ids = folder_ids
+        # A target may scope the gws install to one mount's folder, the
+        # configuration where the CLI and the mount are the same folder.
+        self.cli_scope = cli_scope
+
+    @classmethod
+    async def create(cls, run_id: str, target: dict) -> "GwsService":
+        # Every call below goes to this run's own world. gws keeps per-run
+        # state already; what it lacked was a way for a mount to ask for one,
+        # since a mount hands its base URL to a client and never sees the
+        # request. Scoping the base once covers the reset, the drives and
+        # folders, the seeds and every mount.
+        url = f"{os.environ['GWS_URL'].rstrip('/')}/_run/{run_id}"
+        folder_ids: dict[str, str] = {}
+        drive_ids: dict[str, str] = {}
+        # Native mounts (gdocs/gsheets/gslides) render the modified date
+        # into filenames, so those targets pin the server clock.
+        epoch = target.get("epoch")
+        reset_body: dict = {"epoch": epoch} if epoch else {}
+        # Secondary calendars and seeded form responses are declared to
+        # /reset rather than inserted: a calendar's accessRole and a form
+        # response are both states no API call can produce. They ride
+        # `extras`, which is the kit's channel for exactly this and is what
+        # the gws fake reads now that it seeds through the kit; the base
+        # world (system labels, the primary calendar) is fixture rows.
+        extras: dict = {}
+        calendar = cls._manifest(target.get("calendar"))
+        if calendar and calendar.get("calendars"):
+            extras["calendars"] = calendar["calendars"]
+        forms = cls._manifest(target.get("forms"))
+        if forms:
+            extras["forms"] = forms
+        # A multi-tab document is the third such state: the Docs API has
+        # no request that creates a tab, so one cannot be seeded through
+        # the editor APIs the way the single-tab `apps` docs are.
+        docs = cls._manifest(target.get("docs"))
+        if docs:
+            extras["docs"] = docs
+        if extras:
+            reset_body["extras"] = extras
+        headers = {"Authorization": f"Bearer {GWS_TOKEN}"}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(f"{url}/reset", json=reset_body) as resp:
+                resp.raise_for_status()
+            for mount in target["mounts"]:
+                if "root" not in mount:
+                    continue
+                # A mount may live inside a Shared Drive: the drive is
+                # created once per name and its id is the walk's start.
+                drive = mount.get("drive")
+                if drive and drive not in drive_ids:
+                    async with session.post(
+                        f"{url}/drive/v3/drives", json={"name": drive}
+                    ) as resp:
+                        resp.raise_for_status()
+                        drive_ids[drive] = (await resp.json())["id"]
+                parent = drive_ids[drive] if drive else "root"
+                for segment in str(mount["root"]).split("/"):
+                    parent = await cls._folder(session, url, segment, parent)
+                folder_ids[mount["path"]] = parent
+            apps = cls._manifest(target.get("apps"))
+            if apps:
+                await cls._seed_apps(session, url, apps)
+            mail = cls._manifest(target.get("mail"))
+            if mail:
+                await cls._seed_mail(session, url, mail)
+            if calendar:
+                await cls._seed_calendar(session, url, calendar["events"])
+        return cls(url, folder_ids, target.get("cli_scope"))
+
+    @staticmethod
+    def _manifest(name: str | None) -> list | dict | None:
+        """Read a fixture manifest by its targets.json name.
+
+        Args:
+            name (str | None): the fixture path, e.g. ``calendar/v1``.
+
+        Returns:
+            list | dict | None: the parsed manifest, or None when unnamed.
+        """
+        if not name:
+            return None
+        path = (
+            Path(__file__).resolve().parents[3] / "fixtures" / f"{name}.json"
+        )
+        return json.loads(path.read_text())
+
+    @staticmethod
+    async def _seed_apps(
+        session: aiohttp.ClientSession, url: str, entries: list[dict]
+    ) -> None:
+        # Native files are API objects, not byte blobs, so they seed through
+        # the same editor APIs the backends speak instead of fixture uploads.
+        for entry in entries:
+            kind = entry["kind"]
+            if kind == "doc":
+                async with session.post(
+                    f"{url}/v1/documents", json={"title": entry["name"]}
+                ) as resp:
+                    resp.raise_for_status()
+                    doc_id = (await resp.json())["documentId"]
+                requests = [
+                    {
+                        "insertText": {
+                            "location": {"index": 1},
+                            "text": entry["text"],
+                        }
+                    }
+                ]
+                async with session.post(
+                    f"{url}/v1/documents/{doc_id}:batchUpdate",
+                    json={"requests": requests},
+                ) as resp:
+                    resp.raise_for_status()
+            elif kind == "sheet":
+                async with session.post(
+                    f"{url}/v4/spreadsheets",
+                    json={"properties": {"title": entry["name"]}},
+                ) as resp:
+                    resp.raise_for_status()
+                    sheet_id = (await resp.json())["spreadsheetId"]
+                async with session.post(
+                    f"{url}/v4/spreadsheets/{sheet_id}/values/Sheet1:append",
+                    json={"values": entry["rows"]},
+                ) as resp:
+                    resp.raise_for_status()
+            elif kind == "slide":
+                async with session.post(
+                    f"{url}/v1/presentations", json={"title": entry["name"]}
+                ) as resp:
+                    resp.raise_for_status()
+            else:
+                raise ValueError(f"unknown google-apps kind: {kind}")
+
+    @staticmethod
+    async def _seed_calendar(
+        session: aiohttp.ClientSession, url: str, entries: list[dict]
+    ) -> None:
+        # Events are API objects, so they seed through events.insert and
+        # take the ids the server mints; the manifest pins the times, which
+        # is what the day directories are derived from.
+        for entry in entries:
+            async with session.post(
+                f"{url}/calendar/v3/calendars/primary/events", json=entry
+            ) as resp:
+                resp.raise_for_status()
+
+    @staticmethod
+    async def _seed_mail(
+        session: aiohttp.ClientSession, url: str, entries: list[dict]
+    ) -> None:
+        # Messages are API objects: each manifest entry becomes an RFC822
+        # payload inserted through messages.insert with
+        # internalDateSource=dateHeader, so date dirs come from the
+        # manifest, not the server clock.
+        for entry in entries:
+            raw = base64.urlsafe_b64encode(
+                manifest_mime(entry).as_bytes()
+            ).decode()
+            async with session.post(
+                f"{url}/gmail/v1/users/me/messages",
+                params={"internalDateSource": "dateHeader"},
+                json={
+                    "raw": raw,
+                    "labelIds": entry.get("labels", []),
+                },
+            ) as resp:
+                resp.raise_for_status()
+
+    @staticmethod
+    async def _folder(
+        session: aiohttp.ClientSession, url: str, name: str, parent: str
+    ) -> str:
+        query = f"name='{name}' and '{parent}' in parents and trashed=false"
+        async with session.get(
+            f"{url}/drive/v3/files", params={"q": query}
+        ) as resp:
+            resp.raise_for_status()
+            files = (await resp.json())["files"]
+        if files:
+            return files[0]["id"]
+        async with session.post(
+            f"{url}/drive/v3/files",
+            json={
+                "name": name,
+                "mimeType": FOLDER_MIME,
+                "parents": [parent],
+            },
+        ) as resp:
+            resp.raise_for_status()
+            return (await resp.json())["id"]
+
+    def vfs(self, mount: dict) -> GoogleDriveVFS:
+        return GoogleDriveVFS(
+            GoogleDriveConfig(
+                client_id="integ",
+                refresh_token=GWS_TOKEN,
+                api_base=self.url,
+                folder_id=self.folder_ids[mount["path"]],
+            )
+        )
+
+    def gdocs_vfs(self) -> GDocsVFS:
+        return GDocsVFS(
+            GDocsConfig(
+                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+            )
+        )
+
+    def gsheets_vfs(self) -> GSheetsVFS:
+        return GSheetsVFS(
+            GSheetsConfig(
+                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+            )
+        )
+
+    def gslides_vfs(self) -> GSlidesVFS:
+        return GSlidesVFS(
+            GSlidesConfig(
+                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+            )
+        )
+
+    def gcal_vfs(self, config: dict) -> GCalVFS:
+        # today is pinned so the rolling window is the same on both hosts
+        # and lands on the seeded events.
+        return GCalVFS(
+            GCalConfig(
+                client_id="integ",
+                refresh_token=GWS_TOKEN,
+                api_base=self.url,
+                today="2026-02-11",
+                **config,
+            )
+        )
+
+    def gmail_vfs(self) -> GmailVFS:
+        return GmailVFS(
+            GmailConfig(
+                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+            )
+        )
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        config: dict[str, object] = {
+            "client_id": "integ",
+            "refresh_token": GWS_TOKEN,
+            "api_base": self.url,
+        }
+        if self.cli_scope is not None:
+            config["folder_id"] = self.folder_ids[self.cli_scope]
+        return {"gws": (cli_spec_for("gws"), config)}
+
+    async def teardown(self) -> None:
+        return None
+
+
+class EmailService:
+    """Points the email mount and the himalaya installs at the mail fake.
+
+    The server is external (integ/server/mail/) and shared across runs. It is
+    not GreenMail: the IMAP PASSWORD is the run, so two runs log in at the same
+    address with the same username and see different mail. GreenMail cannot do
+    that at all, since one account is one mailbox for every caller of the
+    process, which is why a run had to purge the whole server between targets
+    and why two hosts could never share one.
+
+    Seeding is server-side. The fake reads the same shared manifest this
+    adapter used to walk, so there is no IMAP APPEND loop here and no account
+    provisioning: one POST states the accounts and the scenario.
+    """
+
+    def __init__(self, host: str, password: str) -> None:
+        self.host = host
+        # The run id, which every account authenticates with. Harness-side on
+        # both arms and in no task file, exactly as the mount password was.
+        self.password = password
+
+    @classmethod
+    def _manifest_name(cls, mail: str) -> str:
+        """The fixture name inside the fake's manifest directory.
+
+        Args:
+            mail (str): the target's `mail` key, e.g. ``email/v1``.
+
+        Raises:
+            ValueError: the key names a directory the fake does not read.
+        """
+        prefix = f"{EMAIL_MANIFEST_DIR}/"
+        if not mail.startswith(prefix):
+            raise ValueError(
+                f"email target mail={mail!r} must live under {prefix}"
+            )
+        return mail[len(prefix) :]
+
+    @classmethod
+    async def create(cls, run_id: str, target: dict) -> "EmailService":
+        url = f"{os.environ['MAIL_URL'].rstrip('/')}/_run/{run_id}"
+        body: dict = {"tenants": list(EMAIL_ACCOUNTS)}
+        mail = target.get("mail")
+        if mail:
+            body["extras"] = {"manifest": cls._manifest_name(str(mail))}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{url}/reset", json=body) as resp:
+                resp.raise_for_status()
+        return cls(os.environ["EMAIL_HOST"], run_id)
+
+    def vfs(self, mount: dict) -> EmailVFS:
+        return EmailVFS(
+            EmailConfig(
+                imap_host=self.host,
+                imap_port=EMAIL_IMAP_PORT,
+                smtp_host=self.host,
+                smtp_port=EMAIL_SMTP_PORT,
+                username=EMAIL_USERNAME,
+                password=self.password,
+                use_ssl=False,
+            )
+        )
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        # h1 and h2 are the same spec installed twice: two head words,
+        # two accounts, and neither shares the mount's account, so a
+        # line's behavior proves which config it ran under.
+        integ = {
+            "imap_host": self.host,
+            "imap_port": EMAIL_IMAP_PORT,
+            "smtp_host": self.host,
+            "smtp_port": EMAIL_SMTP_PORT,
+            "username": EMAIL_USERNAME,
+            "password": self.password,
+            "use_ssl": False,
+        }
+        alpha = dict(integ, username=EMAIL_USERNAME_ALPHA)
+        beta = dict(integ, username=EMAIL_USERNAME_BETA)
+        return {
+            "himalaya": (cli_spec_for("himalaya"), integ),
+            "h1": (cli_spec_for("himalaya"), alpha),
+            "h2": (cli_spec_for("himalaya"), beta),
+        }
+
+    async def teardown(self) -> None:
+        return None
+
+
+class OneDriveService:
+    """Points onedrive mounts at the shared fake Microsoft Graph server.
+
+    The server (integ/server/onedrive/) is external, Prisma-backed and shared
+    across both hosts, replacing the per-run aiohttp server this adapter used
+    to start in-process (and the TypeScript runner used to start as a PYTHON
+    SUBPROCESS). Each target takes its own Graph ACCOUNT: the access token is
+    what the fake reads the account off, which is the ordinary
+    `Authorization: Bearer` header the Graph client already sends on every
+    call, so no mirage-only header reaches the product code.
+
+    Args:
+        token (str): this target's account, sent as the bearer token.
+        url (str): ONEDRIVE_URL origin, used as the Graph service root.
+    """
+
+    def __init__(self, token: str, url: str) -> None:
+        self.token = token
+        self.url = url
+
+    @classmethod
+    async def create(cls, run_id: str, target: dict) -> "OneDriveService":
+        url = os.environ["ONEDRIVE_URL"].rstrip("/")
+        return cls(f"{run_id}-{target['id']}", url)
+
+    def vfs(self, mount: dict) -> OneDriveVFS:
+        return OneDriveVFS(
+            OneDriveConfig(
+                access_token=self.token,
+                graph_base_url=self.url,
+                key_prefix=mount.get("prefix"),
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+class Mem0Service:
+    def __init__(
+        self, endpoint: str, process: asyncio.subprocess.Process
+    ) -> None:
+        self.endpoint = endpoint
+        self.process = process
+
+    @classmethod
+    async def create(cls) -> "Mem0Service":
+        """Start the kit fake and read the port it announces.
+
+        The adapter owns the process rather than reading a URL from the
+        environment, which is what keeps ``--facet mem0`` free of CI setup.
+
+        Returns:
+            Mem0Service: the running fake.
+        """
+        endpoint, process = await start_kit_fake("mem0")
+        return cls(endpoint, process)
+
+    def vfs(self, mount: dict) -> Mem0VFS:
+        return Mem0VFS(
+            Mem0Config(
+                api_key="integ-key",
+                host=self.endpoint,
+                user_id="integ-user",
+                default_page_size=2,
+            )
+        )
+
+    async def teardown(self) -> None:
+        await stop_kit_fake(self.process)
+
+
+class HttpService:
+    """The fixture web server curl and wget fetch from.
+
+    Exported through ``HTTP_ENDPOINT`` rather than a mount, because the cases
+    name it as a URL in the command text (the ``{http}`` token) instead of a
+    path. Owning the process here means ``--facet http`` needs no CI setup.
+    The fake is a TypeScript kit service, so the interpreter is tsx.
+    """
+
+    def __init__(
+        self, endpoint: str, process: asyncio.subprocess.Process
+    ) -> None:
+        self.endpoint = endpoint
+        self.process = process
+
+    @classmethod
+    async def create(cls) -> "HttpService":
+        endpoint, process = await start_kit_fake("http")
+        os.environ["HTTP_ENDPOINT"] = endpoint
+        return cls(endpoint, process)
+
+    async def teardown(self) -> None:
+        os.environ.pop("HTTP_ENDPOINT", None)
+        await stop_kit_fake(self.process)
+
+
+class DropboxService:
+    """Points dropbox mounts at the shared fake Dropbox server.
+
+    The server (integ/server/dropbox/) is external, Prisma-backed and shared
+    across both hosts. Mounts sharing a ``bucket`` share one fake ACCOUNT (the
+    -root target mounts three root_path subfolders of a single account,
+    mirroring s3-prefix's shared bucket); distinct buckets get isolated
+    accounts. An account is a tenant on the one server rather than a server of
+    its own: the fake echoes the refresh token back from /oauth2/token as the
+    access token, so the account rides the ordinary Authorization header the
+    Dropbox RPC layer already sends. The run id is part of the token so two
+    runs against the same shared server cannot see each other's writes.
+
+    Fixtures seed through the workspace like every writable backend.
+
+    Args:
+        run_id (str): this run's id, which scopes every account name.
+        url (str): DROPBOX_URL origin.
+    """
+
+    def __init__(self, run_id: str, url: str) -> None:
+        self.run_id = run_id
+        self.url = url
+
+    @classmethod
+    async def create(cls, run_id: str) -> "DropboxService":
+        url = os.environ["DROPBOX_URL"].rstrip("/")
+        return cls(run_id, url)
+
+    def account(self, mount: dict) -> str:
+        bucket = mount.get("bucket") or mount["path"].strip("/")
+        return f"{self.run_id}-{bucket}"
+
+    def vfs(self, mount: dict) -> DropboxVFS:
+        return DropboxVFS(
+            # The fake supports full-text search_v2, so exercise grep/rg
+            # narrowing in the battery.
+            DropboxConfig(
+                client_id="integ-client",
+                client_secret="integ-secret",
+                refresh_token=self.account(mount),
+                endpoint=self.url,
+                content_search=True,
+                root_path=mount.get("root") or "/",
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+class HfService:
+    """Points hf mounts at the shared fake Hugging Face hub.
+
+    The server (integ/server/hf/) is external, Prisma-backed and shared across
+    both hosts. Each run takes its own ACCOUNT: the client sends the user's
+    token verbatim on every Hub call, so the token IS the account and the fake
+    reads it off `Authorization`. That replaces naming the bucket
+    `integ/<runid>-<mount>` inside one shared process, which isolated runs only
+    as far as a name collision.
+
+    Args:
+        run_id (str): this run's id, which names its account.
+        endpoint (str): HF_URL origin.
+    """
+
+    def __init__(self, run_id: str, endpoint: str) -> None:
+        self.run_id = run_id
+        self.endpoint = endpoint
+        self.token = f"integ-hf-{run_id}"
+
+    @classmethod
+    async def create(cls, run_id: str) -> "HfService":
+        return cls(run_id, os.environ["HF_URL"].rstrip("/"))
+
+    def vfs(self, mount: dict) -> HfBucketsVFS:
+        # Buckets auto-create on first touch, exactly as a real one does for a
+        # namespace the token owns.
+        return HfBucketsVFS(
+            HfBucketsConfig(
+                bucket=f"integ/{mount['bucket']}",
+                token=self.token,
+                endpoint=self.endpoint,
+                key_prefix=mount.get("prefix"),
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+class HfHubService:
+    """Points hf_models / hf_datasets / hf_spaces mounts at the fake Hub.
+
+    The server (integ/server/hf_hub/) is external, Prisma-backed and shared
+    across both hosts, and the token IS the tenant: the client sends it
+    verbatim on every Hub call and the fake reads it off `Authorization`, so
+    a per-run token isolates two runs against one server.
+
+    Unlike every object-store fake here, the fixture is not optional. A Hub
+    mount NAMES a repository, and mounting one never creates it, so the
+    repositories a target mounts must exist before the mount is built;
+    `/reset` seeds them from integ/fixtures/hf-hub/v1.json. The file CONTENT
+    then arrives the ordinary way, through each mount's own `fixture:` seed,
+    which writes over the VFS's commit path rather than behind it.
+
+    Args:
+        run_id (str): this run's id, which names its account.
+        endpoint (str): HF_HUB_URL origin.
+    """
+
+    KINDS = {
+        "hf_models": HfModelsVFS,
+        "hf_datasets": HfDatasetsVFS,
+        "hf_spaces": HfSpacesVFS,
+    }
+    CONFIGS = {
+        "hf_models": HfModelsConfig,
+        "hf_datasets": HfDatasetsConfig,
+        "hf_spaces": HfSpacesConfig,
+    }
+
+    def __init__(self, run_id: str, endpoint: str) -> None:
+        self.run_id = run_id
+        self.endpoint = endpoint
+        self.token = f"integ-hfhub-{run_id}"
+
+    @classmethod
+    async def create(cls, run_id: str) -> "HfHubService":
+        endpoint = os.environ["HF_HUB_URL"].rstrip("/")
+        token = f"integ-hfhub-{run_id}"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{endpoint}/reset", json={"tenants": [token], "fixture": "v1"}
+            ) as resp:
+                resp.raise_for_status()
+        return cls(run_id, endpoint)
+
+    def vfs(self, mount: dict) -> object:
+        kind = mount["vfs"]
+        config = self.CONFIGS[kind](
+            repo_id=mount["repo"],
+            token=self.token,
+            endpoint=self.endpoint,
+            key_prefix=mount.get("prefix"),
+        )
+        return self.KINDS[kind](config)
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "hf": (
+                cli_spec_for("hf"),
+                {
+                    "token": self.token,
+                    "endpoint": self.endpoint,
+                },
+            ),
+        }
+
+    async def teardown(self) -> None:
+        return None
+
+
+class BoxService:
+    """Points box mounts at the shared fake Box API server.
+
+    The server (integ/server/box/) is external, Prisma-backed and shared
+    across both hosts. Each run takes its own ACCOUNT: the vendor's
+    developer-token flow sends a pre-fetched access token verbatim, so the
+    token IS the account and the fake reads it off `Authorization`. That
+    replaces naming the mount folder `integ-<runid>-<mount>` inside one shared
+    account, which isolated runs only as far as a name collision.
+
+    The fixture is uploaded over the Box API rather than tee-seeded through
+    the workspace, exactly as the TypeScript host does it: the folder id
+    becomes the mount root, mirroring how a real Box app scopes to a folder.
+
+    Args:
+        run_id (str): this run's id, which names its account.
+        url (str): BOX_URL origin.
+    """
+
+    def __init__(self, run_id: str, url: str) -> None:
+        self.run_id = run_id
+        self.url = url
+        self.token = f"integ-box-{run_id}"
+        # Mount path -> the id of the folder that mount is rooted at. Filled
+        # in by `create`, because seeding is async and `build_box` is not.
+        self.folders: dict[str, str] = {}
+
+    @classmethod
+    async def create(cls, run_id: str, target: dict) -> "BoxService":
+        service = cls(run_id, os.environ["BOX_URL"].rstrip("/"))
+        for mount in target["mounts"]:
+            service.folders[mount["path"]] = await service.seed(mount)
+        return service
+
+    def _auth(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}"}
+
+    async def _folder(
+        self, session: aiohttp.ClientSession, parent_id: str, name: str
+    ) -> str:
+        """Create a folder, or find the existing one of that name.
+
+        Args:
+            session (aiohttp.ClientSession): open session against the fake.
+            parent_id (str): id of the folder to create under.
+            name (str): the folder's name.
+        """
+        async with session.post(
+            f"{self.url}/2.0/folders",
+            headers=self._auth(),
+            json={"name": name, "parent": {"id": parent_id}},
+        ) as resp:
+            if resp.status == 201:
+                return (await resp.json())["id"]
+            if resp.status != 409:
+                raise RuntimeError(
+                    f"box folder create {name} -> {resp.status}"
+                )
+        async with session.get(
+            f"{self.url}/2.0/folders/{parent_id}/items?limit=1000",
+            headers=self._auth(),
+        ) as resp:
+            entries = (await resp.json())["entries"]
+        for entry in entries:
+            if entry["type"] == "folder" and entry["name"] == name:
+                return entry["id"]
+        raise RuntimeError(f"box folder {name} neither created nor found")
+
+    async def _upload(
+        self,
+        session: aiohttp.ClientSession,
+        folder_id: str,
+        name: str,
+        content: bytes,
+    ) -> None:
+        """Upload one file with the vendor's multipart shape.
+
+        Args:
+            session (aiohttp.ClientSession): open session against the fake.
+            folder_id (str): id of the folder to upload into.
+            name (str): the file's name.
+            content (bytes): the file's bytes.
+        """
+        form = aiohttp.FormData()
+        form.add_field(
+            "attributes",
+            json.dumps({"name": name, "parent": {"id": folder_id}}),
+        )
+        form.add_field(
+            "file",
+            content,
+            filename=name,
+            content_type="application/octet-stream",
+        )
+        async with session.post(
+            f"{self.url}/2.0/files/content", headers=self._auth(), data=form
+        ) as resp:
+            if resp.status != 201:
+                raise RuntimeError(f"box upload {name} -> {resp.status}")
+
+    async def seed(self, mount: dict) -> str:
+        """Create this mount's root folder and upload its fixture into it.
+
+        Args:
+            mount (dict): the mount entry from targets.json.
+        """
+        async with aiohttp.ClientSession() as session:
+            folder_id = await self._folder(session, "0", mount["folder"])
+            seed = mount.get("seed")
+            if seed:
+                base = Path(__file__).resolve().parents[3] / "fixtures" / seed
+                for src in sorted(base.rglob("*")):
+                    if not src.is_file():
+                        continue
+                    rel = src.relative_to(base).as_posix()
+                    parts = rel.split("/")
+                    parent_id = folder_id
+                    for name in parts[:-1]:
+                        parent_id = await self._folder(
+                            session, parent_id, name
+                        )
+                    await self._upload(
+                        session, parent_id, parts[-1], src.read_bytes()
+                    )
+            if seed == "files/v1":
+                # A weblink beside the fixture: sizeless and content-free, so
+                # listings must hide it and a direct stat must ENOENT.
+                async with session.post(
+                    f"{self.url}/2.0/web_links",
+                    headers=self._auth(),
+                    json={
+                        "name": "homepage",
+                        "url": "https://example.com/",
+                        "parent": {"id": folder_id},
+                    },
+                ) as resp:
+                    if resp.status != 201:
+                        raise RuntimeError(
+                            f"box web_link seed failed: {resp.status}"
+                        )
+        return folder_id
+
+    def vfs(self, mount: dict) -> BoxVFS:
+        return BoxVFS(
+            BoxConfig(
+                access_token=self.token,
+                endpoint=self.url,
+                root_folder_id=self.folders[mount["path"]],
+                # The fake supports name+content search, so exercise grep/rg
+                # push-down narrowing in the battery.
+                content_search=True,
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+class SlackService:
+    """Points slack mounts at the shared fake Slack Web API server.
+
+    The server (integ/server/slack/) is external, Prisma-backed, and shared
+    across both hosts; /reset re-seeds it to the fixture. The mount uses a
+    user token (xoxp-) so the grep/rg search push-down runs against the fake's
+    search.messages / search.files endpoints.
+
+    Args:
+        url (str): SLACK_URL origin (methods live under /api).
+    """
+
+    def __init__(self, url: str, workspace: str) -> None:
+        self.url = url
+        self.workspace = workspace
+
+    @classmethod
+    async def create(cls, run_id: str, fixture: str = "v1") -> "SlackService":
+        url = os.environ["SLACK_URL"].rstrip("/")
+        service = cls(url, f"integ-{run_id}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{url}/reset",
+                json={"tenants": [service.workspace], "fixture": fixture},
+            ) as resp:
+                resp.raise_for_status()
+        return service
+
+    def _tokens(self) -> tuple[str, str]:
+        """The two tokens one workspace is reached with.
+
+        Both carry the same workspace; only the actor type differs, and the
+        fake strips that prefix to land them on one tenant. They stay distinct
+        because search.* refuses anything but a user token, exactly as real
+        Slack does, and collapsing them would make that refusal untestable.
+
+        Returns:
+            tuple[str, str]: the bot token and the user (search) token.
+        """
+        return f"xoxb-{self.workspace}", f"xoxp-{self.workspace}"
+
+    def vfs(self, mount: dict) -> SlackVFS:
+        bot, search = self._tokens()
+        return SlackVFS(
+            SlackConfig(
+                token=bot,
+                search_token=search,
+                base_url=f"{self.url}/api",
+                **mount.get("config", {}),
+            )
+        )
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "slack": (
+                cli_spec_for("slack"),
+                {
+                    "token": self._tokens()[0],
+                    "search_token": self._tokens()[1],
+                    "base_url": f"{self.url}/api",
+                },
+            ),
+        }
+
+    async def teardown(self) -> None:
+        return None
+
+
+class GitHubService:
+    """Points github mounts at the fake api.github.com server.
+
+    Mounts, CLI requests and consistency mutations share one run's URL.
+    Each target seeds its own fixture without resetting another host.
+
+    Args:
+        url (str): GITHUB_URL with the run's path prefix.
+    """
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+    @classmethod
+    async def create(cls, run_id: str, fixture: str) -> "GitHubService":
+        """Seed the target's isolated world.
+
+        Args:
+            run_id (str): The runner's isolation ID.
+            fixture (str): The fixture required by this target's corpus.
+        """
+        base = os.environ["GITHUB_URL"].rstrip("/")
+        made = cls(f"{base}/_run/{run_id}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{made.url}/reset", json={"fixture": fixture}
+            ) as resp:
+                resp.raise_for_status()
+        return made
+
+    async def vfs(self, mount: dict) -> GitHubVFS:
+        owner, _, repo = mount["repo"].partition("/")
+        return GitHubVFS(
+            GitHubConfig(
+                token="ghp-integ", owner=owner, repo=repo, base_url=self.url
+            )
+        )
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "gh": (
+                cli_spec_for("gh"),
+                {
+                    "token": "ghp-integ",
+                    "base_url": self.url,
+                    "repo": GH_CLI_REPO,
+                    "branch": "main",
+                },
+            ),
+        }
+
+    async def teardown(self) -> None:
+        return None
+
+
+class DifyService:
+    """Points dify mounts at the kit fake for the knowledge base.
+
+    The adapter owns the process for the reason the mem0 one does: the fake is
+    a TypeScript kit service now, and spawning it here keeps ``--facet dify``
+    free of CI setup.
+
+    Args:
+        base (str): the fake's origin.
+        dataset (str): the dataset id the mounts read.
+        process (asyncio.subprocess.Process): the running fake.
+    """
+
+    def __init__(
+        self, base: str, dataset: str, process: asyncio.subprocess.Process
+    ) -> None:
+        self.base = base
+        self.dataset = dataset
+        self.process = process
+
+    @classmethod
+    async def create(cls, target: dict) -> "DifyService":
+        base, process = await start_kit_fake("dify")
+        return cls(base, target.get("dataset", "kb-7f3a"), process)
+
+    def vfs(self, mount: dict) -> DifyVFS:
+        return DifyVFS(
+            DifyConfig(
+                api_key="integ-key",
+                base_url=self.base,
+                dataset_id=self.dataset,
+            )
+        )
+
+    async def teardown(self) -> None:
+        await stop_kit_fake(self.process)
+
+
+class TrelloService:
+    """Points trello mounts at the shared fake Trello REST API server.
+
+    The server (integ/server/trello/) is external, Prisma-backed, and
+    shared across both hosts; /reset re-seeds it to the fixture, so the
+    write cases see the same state on every run and on either host.
+
+    Args:
+        base (str): TRELLO_URL origin.
+    """
+
+    def __init__(self, base: str) -> None:
+        self.base = base
+
+    @classmethod
+    async def create(cls) -> "TrelloService":
+        base = os.environ["TRELLO_URL"].rstrip("/")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{base}/reset") as resp:
+                resp.raise_for_status()
+        return cls(base)
+
+    def vfs(self, mount: dict) -> TrelloVFS:
+        return TrelloVFS(
+            TrelloConfig.model_validate(
+                {
+                    "api_key": "integ-key",
+                    "api_token": "integ-token",
+                    "base_url": self.base,
+                    **mount.get("config", {}),
+                }
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+class DiscordService:
+    """Points discord mounts at the shared fake discord.com/api server.
+
+    The server (integ/server/discord/) is external and shared across both
+    hosts, so /reset re-seeds it to the fixture before this run's cases.
+    It mirrors the documented shapes: newest-first message pages,
+    after/limit pagination, and a CDN route that serves attachment bytes
+    without the bot token.
+
+    Args:
+        base (str): DISCORD_URL origin.
+    """
+
+    def __init__(self, base: str) -> None:
+        self.base = base
+
+    @classmethod
+    async def create(cls, fixture: str = "v1") -> "DiscordService":
+        base = os.environ["DISCORD_URL"].rstrip("/")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{base}/reset", json={"fixture": fixture}
+            ) as resp:
+                resp.raise_for_status()
+        return cls(base)
+
+    def vfs(self, mount: dict) -> DiscordVFS:
+        return DiscordVFS(
+            DiscordConfig(
+                token="integ-bot-token",
+                base_url=f"{self.base}/api/v10",
+                **mount.get("config", {}),
+            )
+        )
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "discord": (
+                cli_spec_for("discord"),
+                {
+                    "token": "integ-bot-token",
+                    "base_url": f"{self.base}/api/v10",
+                },
+            ),
+        }
+
+    async def teardown(self) -> None:
+        return None
+
+
+class LinearService:
+    """Points linear mounts at the shared fake Linear GraphQL server.
+
+    LINEAR_URL is an origin like every other service's variable, so the
+    graphql path is appended here rather than carried in the env var; only
+    /reset is reached on the bare origin.
+
+    Args:
+        base (str): LINEAR_URL origin.
+    """
+
+    def __init__(self, base: str) -> None:
+        self.base = base
+        self.graphql = f"{base}/graphql"
+
+    @classmethod
+    async def create(cls) -> "LinearService":
+        base = os.environ["LINEAR_URL"].rstrip("/")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{base}/reset") as resp:
+                resp.raise_for_status()
+        return cls(base)
+
+    def vfs(self, mount: dict) -> LinearVFS:
+        return LinearVFS(
+            LinearConfig(api_key="integ-key", base_url=self.graphql)
+        )
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "linear": (
+                cli_spec_for("linear"),
+                {
+                    "api_key": "integ-key",
+                    "base_url": self.graphql,
+                },
+            ),
+        }
+
+    async def teardown(self) -> None:
+        return None
+
+
+class JaegerService:
+    """Points jaeger mounts at a real jaeger all-in-one container.
+
+    The container is external and seeded over OTLP by
+    integ/server/jaeger_seed.py, so trace ids and timestamps are fixed.
+    """
+
+    def __init__(self, host: str) -> None:
+        self.host = host
+
+    @classmethod
+    async def create(cls) -> "JaegerService":
+        return cls(os.environ["JAEGER_URL"])
+
+    def vfs(self, mount: dict) -> JaegerVFS:
+        return JaegerVFS(JaegerConfig(host=self.host))
+
+    async def teardown(self) -> None:
+        return None
+
+
+class LangfuseService:
+    """Points langfuse mounts at a real self-hosted Langfuse instance.
+
+    The stack (web + worker + postgres + clickhouse + redis + blob store) is
+    external, brought up from integ/server/langfuse_compose.yml and seeded by
+    integ/server/langfuse_seed.py, so the project keys are fixed constants.
+    """
+
+    def __init__(self, host: str, public_key: str, secret_key: str) -> None:
+        self.host = host
+        self.public_key = public_key
+        self.secret_key = secret_key
+
+    @classmethod
+    async def create(cls) -> "LangfuseService":
+        return cls(
+            os.environ["LANGFUSE_URL"],
+            os.environ.get("LANGFUSE_PUBLIC_KEY", "pk-lf-mirage-integ"),
+            os.environ.get("LANGFUSE_SECRET_KEY", "sk-lf-mirage-integ"),
+        )
+
+    def vfs(self, mount: dict) -> LangfuseVFS:
+        return LangfuseVFS(
+            LangfuseConfig(
+                public_key=self.public_key,
+                secret_key=self.secret_key,
+                host=self.host,
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+class SharePointService:
+    """Points sharepoint mounts at the shared fake Microsoft Graph server.
+
+    Same server and same per-target account as :class:`OneDriveService`; what
+    differs is that a SharePoint mount names a DRIVE, and which drives a site
+    has is deployment state. That used to be an in-process `add_drive` call on
+    a server this adapter owned; with the server shared it crosses a socket, as
+    `PUT /drives/{key}`. The prefix folders are created the same way they
+    always were, just over Graph's own mkdir endpoint instead of by reaching
+    into the server's dict.
+
+    Args:
+        token (str): this target's account, sent as the bearer token.
+        url (str): ONEDRIVE_URL origin, used as the Graph service root.
+    """
+
+    def __init__(self, token: str, url: str) -> None:
+        self.token = token
+        self.url = url
+
+    @classmethod
+    async def create(cls, run_id: str, target: dict) -> "SharePointService":
+        service = cls(
+            f"{run_id}-{target['id']}", os.environ["ONEDRIVE_URL"].rstrip("/")
+        )
+        for mount in target["mounts"]:
+            await service.provision(mount)
+        return service
+
+    def _auth(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}"}
+
+    async def provision(self, mount: dict) -> None:
+        """Declare this mount's drive and create its prefix folders.
+
+        Args:
+            mount (dict): the mount entry from targets.json.
+        """
+        drive = mount["drive"]
+        async with aiohttp.ClientSession() as session:
+            async with session.put(
+                f"{self.url}/drives/{drive}", headers=self._auth()
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(
+                        f"sharepoint drive {drive} -> {resp.status}"
+                    )
+            parent = ""
+            for name in (mount.get("prefix") or "").strip("/").split("/"):
+                if not name:
+                    continue
+                # One level at a time: Graph's mkdir 404s when the parent is
+                # missing, and `replace` on a folder returns the existing one
+                # with its children intact, which is what makes this idempotent
+                # across the two mounts of sharepoint-prefix that share a
+                # `team/reports` ancestor.
+                stem = f"{self.url}/drives/{drive}/root"
+                url = (
+                    f"{stem}:/{parent}:/children"
+                    if parent
+                    else f"{stem}/children"
+                )
+                body = {
+                    "name": name,
+                    "folder": {},
+                    "@microsoft.graph.conflictBehavior": "replace",
+                }
+                async with session.post(
+                    url, headers=self._auth(), json=body
+                ) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(
+                            f"sharepoint mkdir {name} -> {resp.status}"
+                        )
+                parent = f"{parent}/{name}" if parent else name
+
+    def vfs(self, mount: dict) -> SharePointVFS:
+        return SharePointVFS(
+            SharePointConfig(
+                access_token=self.token,
+                graph_base_url=self.url,
+                site="Main",
+                drive=mount["drive"],
+                key_prefix=mount.get("prefix"),
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+class AirtableService:
+    """Points airtable mounts at the shared fake Airtable Web API.
+
+    The server (integ/server/airtable/) is external, Prisma-backed and shared
+    across both hosts. Each run takes its own world through a leading
+    `/_run/<id>` segment on the base URL, so the hosts reset and read
+    concurrently without a shared lane; the token is the fixture's, the same
+    on both, because Airtable tokens are data there rather than tenants.
+
+    Args:
+        url (str): AIRTABLE_URL origin (the REST surface lives under /v0).
+        run_id (str): this run's id, which names its own server-side file.
+    """
+
+    def __init__(self, url: str, run_id: str) -> None:
+        self.url = url
+        self.run_id = run_id
+
+    @property
+    def base(self) -> str:
+        """Return the run-scoped origin every mount is pointed at.
+
+        Returns:
+            str: the origin with this run's `/_run/<id>` prefix.
+        """
+        return f"{self.url}/_run/{self.run_id}"
+
+    @classmethod
+    async def create(cls, run_id: str) -> "AirtableService":
+        made = cls(os.environ["AIRTABLE_URL"].rstrip("/"), run_id)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{made.base}/reset", json={}) as resp:
+                resp.raise_for_status()
+        return made
+
+    def vfs(self, mount: dict) -> AirtableVFS:
+        # max_read_records is set below the fixture's 25-record Backlog so a
+        # full read of it is refused while head still answers; the fake meters
+        # nothing, so pacing is relaxed to keep the battery quick.
+        return AirtableVFS(
+            config=AirtableConfig(
+                token=AIRTABLE_TOKEN,
+                base_url=f"{self.base}/v0",
+                base_ids=mount.get("base_ids"),
+                max_read_records=20,
+                requests_per_second=50.0,
+            )
+        )
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        # The same bounds as the mount, scoped to two of the fixture's three
+        # bases so the battery can show a refused one (the Archive).
+        return {
+            "airtable": (
+                cli_spec_for("airtable"),
+                {
+                    "token": AIRTABLE_TOKEN,
+                    "base_url": f"{self.base}/v0",
+                    "base_ids": list(AIRTABLE_CLI_BASES),
+                    "max_read_records": 20,
+                    "requests_per_second": 50.0,
+                },
+            ),
+        }
+
+    async def teardown(self) -> None:
+        return None
+
+
+class NotionService:
+    """Points notion mounts at the shared fake Notion REST API.
+
+    The server (integ/server/notion/) is external, Prisma-backed and shared
+    across both hosts. The token doubles as the workspace id, the way a real
+    Notion integration token scopes you to one workspace.
+
+    The token is NOT minted per run, and notion is the only kit fake whose
+    token cannot be: it is observable. `ntn auth token` prints the CLI's
+    configured value without contacting the server, integ/cli/ntn.json pins
+    that literal, and integ/ntn_conformance.ts asserts the same line against
+    the real ntn binary, which it configures with this same fixed token. A
+    per-run token would make those two runs print different things with one
+    golden between them.
+
+    So the RUN is the axis that separates the hosts, and it rides the base URL
+    as a leading `/_run/<id>` segment. A header or a query parameter cannot do
+    this job: the mount hands its base URL to the VFS and never sees the
+    request again. With the run in the URL the two hosts keep the one shared
+    token, get a SQLite file each, and can reset concurrently.
+
+    Args:
+        url (str): NOTION_URL origin (the REST surface lives under /v1).
+        token (str): the shared workspace token.
+        run_id (str): this run's id, which names its own server-side file.
+    """
+
+    def __init__(self, url: str, token: str, run_id: str) -> None:
+        self.url = url
+        self.token = token
+        self.run_id = run_id
+
+    @property
+    def base(self) -> str:
+        """Return the run-scoped origin every mount and CLI is pointed at.
+
+        Returns:
+            str: the origin with this run's `/_run/<id>` prefix.
+        """
+        return f"{self.url}/_run/{self.run_id}"
+
+    @classmethod
+    async def create(cls, run_id: str) -> "NotionService":
+        url = os.environ["NOTION_URL"].rstrip("/")
+        token = NOTION_TOKEN
+        made = cls(url, token, run_id)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{made.base}/reset", json={"tenants": [token]}
+            ) as resp:
+                resp.raise_for_status()
+        return made
+
+    def vfs(self, mount: dict) -> NotionVFS:
+        return NotionVFS(
+            config=NotionConfig(api_key=self.token, base_url=f"{self.base}/v1")
+        )
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "ntn": (
+                cli_spec_for("ntn"),
+                {
+                    "api_key": self.token,
+                    "base_url": f"{self.base}/v1",
+                },
+            ),
+        }
+
+    async def teardown(self) -> None:
+        return None
+
+
+LANCEDB_ROWS = [
+    {"id": 1, "label": "cat", "kind": "big", "name": "a big orange cat"},
+    {"id": 2, "label": "cat", "kind": "small", "name": "a small grey cat"},
+    {"id": 3, "label": "dog", "kind": "big", "name": "a big brown dog"},
+    {"id": 4, "label": "dog", "kind": "small", "name": "a small white dog"},
+]
+
+# One group holding far more rows than the window facet's row cap, so a
+# glob for a row past the cap can only be answered by narrowing the query.
+LANCEDB_WIDE_CAP = 5
+LANCEDB_WIDE_ROWS = [
+    {
+        "id": f"doc-{i:03d}",
+        "label": "all",
+        "name": f"row {i}",
+        "score": i / 2,
+        "even": i % 2 == 0,
+    }
+    for i in range(40)
+]
+
+
+class LanceDBService:
+    def __init__(self, uri: str, window: bool) -> None:
+        self.uri = uri
+        self.window = window
+
+    @classmethod
+    async def create(cls, target: dict) -> "LanceDBService":
+        window = target.get("facet") == "window"
+        uri = tempfile.mkdtemp(prefix="mirage-integ-lancedb-")
+        db = lancedb.connect(uri)
+        if window:
+            db.create_table("wide", data=LANCEDB_WIDE_ROWS)
+        else:
+            db.create_table("animals", data=LANCEDB_ROWS)
+        return cls(uri, window)
+
+    def vfs(self, mount: dict) -> LanceDBVFS:
+        if self.window:
+            return LanceDBVFS(
+                LanceDBConfig(
+                    uri=self.uri,
+                    table="wide",
+                    group_by=["label"],
+                    id_column="id",
+                    title_column="name",
+                    max_rows=LANCEDB_WIDE_CAP,
+                )
+            )
+        return LanceDBVFS(
+            LanceDBConfig(
+                uri=self.uri,
+                group_by=["label", "kind"],
+                id_column="id",
+                title_column="name",
+            )
+        )
+
+    async def teardown(self) -> None:
+        shutil.rmtree(self.uri, ignore_errors=True)
+
+
+QDRANT_EMBED_DIM = 8
+
+QDRANT_ROWS = [
+    (1, "cat", "big", "a big orange cat"),
+    (2, "cat", "small", "a small grey cat"),
+    (3, "dog", "big", "a big brown dog"),
+    (4, "dog", "small", "a small white dog"),
+]
+
+# Far more points than the window facet's row cap, all in one group, and
+# ids whose text straddles a scroll page so a narrowed listing has to page.
+QDRANT_WIDE_CAP = 5
+QDRANT_WIDE_POINTS = 600
+
+
+class QdrantService:
+    def __init__(
+        self, host: str, port: int, collection: str, window: bool
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.collection = collection
+        self.window = window
+
+    @classmethod
+    async def create(cls, target: dict) -> "QdrantService":
+        window = target.get("facet") == "window"
+        host = os.environ.get("QDRANT_HOST", "localhost")
+        port = int(os.environ.get("QDRANT_PORT", "6333"))
+        collection = f"mirage-integ-{uuid.uuid4().hex[:8]}"
+        client = AsyncQdrantClient(host=host, port=port)
+        try:
+            await client.create_collection(
+                collection,
+                vectors_config=models.VectorParams(
+                    size=QDRANT_EMBED_DIM, distance=models.Distance.COSINE
+                ),
+            )
+            if window:
+                await client.upsert(
+                    collection,
+                    points=[
+                        models.PointStruct(
+                            id=i,
+                            vector=[0.1] * QDRANT_EMBED_DIM,
+                            payload={"label": "all", "name": f"row {i}"},
+                        )
+                        for i in range(1, QDRANT_WIDE_POINTS + 1)
+                    ],
+                )
+            else:
+                await client.upsert(
+                    collection,
+                    points=[
+                        models.PointStruct(
+                            id=i,
+                            vector=[0.1] * QDRANT_EMBED_DIM,
+                            payload={
+                                "label": label,
+                                "kind": kind,
+                                "name": name,
+                                "image_bytes": base64.b64encode(
+                                    f"PNG-{i}".encode()
+                                ).decode(),
+                            },
+                        )
+                        for i, label, kind, name in QDRANT_ROWS
+                    ],
+                )
+            for field in ("label",) if window else ("label", "kind"):
+                await client.create_payload_index(
+                    collection,
+                    field_name=field,
+                    field_schema=models.PayloadSchemaType.KEYWORD,
+                )
+            await asyncio.sleep(2)
+        finally:
+            await client.close()
+        return cls(host, port, collection, window)
+
+    def vfs(self, mount: dict) -> QdrantVFS:
+        if self.window:
+            return QdrantVFS(
+                QdrantConfig(
+                    host=self.host,
+                    port=self.port,
+                    collection=self.collection,
+                    group_by=["label"],
+                    id_field="id",
+                    text_field="name",
+                    max_rows=QDRANT_WIDE_CAP,
+                )
+            )
+        return QdrantVFS(
+            QdrantConfig(
+                host=self.host,
+                port=self.port,
+                collection=self.collection,
+                group_by=["label", "kind"],
+                id_field="id",
+                text_field="name",
+                blob_field="image_bytes",
+                blob_ext="png",
+            )
+        )
+
+    async def teardown(self) -> None:
+        client = AsyncQdrantClient(host=self.host, port=self.port)
+        try:
+            await client.delete_collection(self.collection)
+        finally:
+            await client.close()
+
+
+CHROMA_EMBED_DIM = 8
+
+
+def _chroma_embedding(position: int) -> list[float]:
+    vector = [0.0] * CHROMA_EMBED_DIM
+    vector[position % CHROMA_EMBED_DIM] = 1.0
+    return vector
+
+
+class ChromaService:
+    def __init__(self, host: str, port: int, collection_name: str) -> None:
+        self.host = host
+        self.port = port
+        self.collection_name = collection_name
+
+    @classmethod
+    async def create(cls) -> "ChromaService":
+        host = os.environ.get("CHROMA_HOST", "localhost")
+        port = int(os.environ.get("CHROMA_PORT", "8000"))
+        collection_name = f"mirage-integ-{uuid.uuid4().hex[:8]}"
+        seed_path = (
+            Path(__file__).resolve().parents[3] / "server" / "chroma_seed.json"
+        )
+        seed = json.loads(seed_path.read_text())
+        encoded = base64.b64encode(
+            gzip.compress(json.dumps(seed["path_tree"]).encode())
+        ).decode()
+        ids = ["__path_tree__"]
+        documents = [encoded]
+        metadatas: list[dict] = [{"kind": "path_tree"}]
+        embeddings = [_chroma_embedding(0)]
+        position = 1
+        for chunks in seed["chunks"].values():
+            for chunk in chunks:
+                slug = chunk["metadata"]["page_slug"]
+                index = chunk["metadata"]["chunk_index"]
+                ids.append(f"{slug}#{index}")
+                documents.append(chunk["document"])
+                metadatas.append(chunk["metadata"])
+                embeddings.append(_chroma_embedding(position))
+                position += 1
+        client = await chromadb.AsyncHttpClient(host=host, port=port)
+        collection = await client.create_collection(collection_name)
+        await collection.add(
+            ids=ids,
+            documents=documents,
+            metadatas=metadatas,
+            embeddings=embeddings,
+        )
+        return cls(host, port, collection_name)
+
+    def vfs(self, mount: dict) -> ChromaVFS:
+        return ChromaVFS(
+            config=ChromaConfig(
+                host=self.host,
+                port=self.port,
+                collection_name=self.collection_name,
+            )
+        )
+
+    async def teardown(self) -> None:
+        client = await chromadb.AsyncHttpClient(host=self.host, port=self.port)
+        await client.delete_collection(self.collection_name)
+
+
+MONGODB_DB = "mirage_integ"
+
+MONGODB_BOOKS = [
+    {
+        "_id": 1,
+        "title": "alpha",
+        "author": "ada",
+        "year": 2020,
+        "tags": ["fiction", "classic"],
+        "rating": 4.5,
+    },
+    {
+        "_id": 2,
+        "title": "beta",
+        "author": "ben",
+        "year": 2021,
+        "tags": ["fiction"],
+        "rating": 3.2,
+    },
+    {
+        "_id": 3,
+        "title": "gamma",
+        "author": "cara",
+        "year": 2022,
+        "rating": 5.0,
+    },
+    {
+        "_id": 4,
+        "title": "delta",
+        "author": "ada",
+        "year": 2023,
+        "tags": ["history"],
+        "rating": 4.0,
+    },
+    {
+        "_id": 5,
+        "title": "epsilon",
+        "author": "ben",
+        "year": 2024,
+        "rating": 2.5,
+    },
+]
+
+MONGODB_AUTHORS = [
+    {"_id": 1, "name": "ada", "books": 2},
+    {"_id": 2, "name": "ben", "books": 2},
+    {"_id": 3, "name": "cara", "books": 1},
+]
+
+
+class MongoDBService:
+    def __init__(self, uri: str) -> None:
+        self.uri = uri
+
+    @classmethod
+    async def create(cls) -> "MongoDBService":
+        uri = os.environ["MONGODB_URI"]
+        client: AsyncMongoClient = AsyncMongoClient(uri)
+        try:
+            await client.drop_database(MONGODB_DB)
+            db = client[MONGODB_DB]
+            await db["books"].insert_many([dict(d) for d in MONGODB_BOOKS])
+            await db["authors"].insert_many([dict(d) for d in MONGODB_AUTHORS])
+            await db.create_collection(
+                "recent_books",
+                viewOn="books",
+                pipeline=[{"$match": {"year": {"$gte": 2022}}}],
+            )
+        finally:
+            await client.close()
+        return cls(uri)
+
+    def vfs(self, mount: dict) -> MongoDBVFS:
+        return MongoDBVFS(
+            config=MongoDBConfig.model_validate(
+                {
+                    "uri": self.uri,
+                    "databases": [MONGODB_DB],
+                    **mount.get("config", {}),
+                }
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+POSTGRES_BOOKS = [
+    (1, "alpha", "ada", 2020, 4.5),
+    (2, "beta", "ben", 2021, 3.2),
+    (3, "gamma", "cara", 2022, 5.0),
+    (4, "delta", "ada", 2023, 4.0),
+    (5, "epsilon", "ben", 2024, 2.5),
+]
+
+POSTGRES_AUTHORS = [
+    (1, "ada", 2),
+    (2, "ben", 2),
+    (3, "cara", 1),
+]
+
+POSTGRES_PROBES = [
+    (1, "Ada\ttab", True),
+    (2, "left\u2028right", False),
+    (3, "left\u2029right", True),
+    (4, "left\u0085right", False),
+    (5, None, True),
+]
+
+
+class PostgresService:
+    def __init__(self, dsn: str) -> None:
+        self.dsn = dsn
+
+    @classmethod
+    async def create(cls) -> "PostgresService":
+        dsn = os.environ["POSTGRES_DSN"]
+        conn = await asyncpg.connect(dsn)
+        try:
+            await conn.execute("DROP VIEW IF EXISTS recent_books")
+            await conn.execute("DROP TABLE IF EXISTS books")
+            await conn.execute("DROP TABLE IF EXISTS authors")
+            await conn.execute(
+                "CREATE TABLE books (id int PRIMARY KEY, title text, "
+                "author text, year int, rating double precision)"
+            )
+            await conn.execute(
+                "CREATE TABLE authors (id int PRIMARY KEY, "
+                "name text, books int)"
+            )
+            await conn.executemany(
+                "INSERT INTO books (id, title, author, year, rating) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                POSTGRES_BOOKS,
+            )
+            await conn.executemany(
+                "INSERT INTO authors (id, name, books) VALUES ($1, $2, $3)",
+                POSTGRES_AUTHORS,
+            )
+            await conn.execute(
+                "CREATE VIEW recent_books AS SELECT * FROM "
+                "books WHERE year >= 2022"
+            )
+            await conn.execute("ANALYZE books")
+            await conn.execute("ANALYZE authors")
+            # A quoted dot-prefixed schema is legal; the kit must keep it
+            # out of listings, not advertise a path stat reports absent.
+            await conn.execute('DROP SCHEMA IF EXISTS ".hidden" CASCADE')
+            await conn.execute('CREATE SCHEMA ".hidden"')
+            await conn.execute(
+                'CREATE TABLE ".hidden".ghost (id int PRIMARY KEY)'
+            )
+            await conn.execute("DROP SCHEMA IF EXISTS contract CASCADE")
+            await conn.execute("CREATE SCHEMA contract")
+            await conn.execute(
+                "CREATE TABLE contract.probes "
+                "(id int PRIMARY KEY, body text, active boolean)"
+            )
+            await conn.executemany(
+                "INSERT INTO contract.probes VALUES ($1, $2, $3)",
+                POSTGRES_PROBES,
+            )
+            await conn.execute("ANALYZE contract.probes")
+            await conn.execute("DROP SCHEMA IF EXISTS byte_budget CASCADE")
+            await conn.execute("CREATE SCHEMA byte_budget")
+            await conn.execute(
+                "CREATE TABLE byte_budget.wide (body text) "
+                "WITH (autovacuum_enabled = false)"
+            )
+            await conn.execute("INSERT INTO byte_budget.wide VALUES ('x')")
+            await conn.execute("ANALYZE byte_budget.wide")
+            await conn.execute(
+                "UPDATE byte_budget.wide SET body = repeat('é', 1000000)"
+            )
+            await conn.execute("CREATE TABLE byte_budget.empty (body text)")
+            await conn.execute(
+                "CREATE TABLE byte_budget.exact (__mirage_bytes text)"
+            )
+            await conn.execute("INSERT INTO byte_budget.exact VALUES (NULL)")
+            await conn.execute("ANALYZE byte_budget.empty")
+            await conn.execute("ANALYZE byte_budget.exact")
+        finally:
+            await conn.close()
+        return cls(dsn)
+
+    def vfs(self, mount: dict) -> PostgresVFS:
+        return PostgresVFS(
+            PostgresConfig.model_validate(
+                {
+                    "dsn": self.dsn,
+                    "max_read_rows": 200,
+                    **mount.get("config", {}),
+                }
+            )
+        )
+
+    async def teardown(self) -> None:
+        return None
+
+
+Service = (
+    AirtableService
+    | S3Service
+    | OneDriveService
+    | SharePointService
+    | Mem0Service
+    | SSHService
+    | PostgresService
+    | MongoDBService
+    | ChromaService
+    | QdrantService
+    | LanceDBService
+    | NotionService
+    | NextcloudService
+    | GwsService
+    | HfService
+    | HfHubService
+    | BoxService
+    | DropboxService
+    | GridFSService
+    | SlackService
+    | TrelloService
+    | LinearService
+    | DifyService
+    | DatabricksVolumeService
+    | LangfuseService
+    | JaegerService
+)
+
+
+def build_ram(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    return RAMVFS(), _noop
+
+
+def build_disk(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    # Named by the run and the mount, not minted, so the second build of
+    # one run (a consistency case's shadow) lands on the folder the first
+    # one made, the way another process sees the same disk; each case opens
+    # with its own run id, so nothing carries over between cases.
+    safe_path = mount["path"].strip("/").replace("/", "-") or "root"
+    name = f"mirage-integ-disk-py-{run_id}-{safe_path}"
+    root = Path(tempfile.gettempdir()) / name
+
+    async def cleanup() -> None:
+        shutil.rmtree(root, ignore_errors=True)
+
+    fixture_name = mount.get("host_fixture")
+    try:
+        root.mkdir()
+    except FileExistsError:
+        # The shadow's build: the first one already seeded the folder.
+        logging.getLogger(__name__).debug("disk root %s is shared", root)
+    else:
+        if fixture_name:
+            seed_host_fixture(root, fixture_name)
+    mount_root = root / "root" if fixture_name else root
+    return DiskVFS(root=str(mount_root)), cleanup
+
+
+def seed_host_fixture(root: Path, fixture_name: str) -> None:
+    """Lay a host fixture's files, folders and symlinks out under root.
+
+    Args:
+        root (Path): the folder to seed.
+        fixture_name (str): the fixture under integ/fixtures/, sans .json.
+    """
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[3]
+            / "fixtures"
+            / (fixture_name + ".json")
+        ).read_text()
+    )
+    for relative, text in fixture["files"].items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+    for relative in fixture["directories"]:
+        (root / relative).mkdir(parents=True, exist_ok=True)
+    for relative, link in fixture["symlinks"].items():
+        (root / relative).symlink_to(link)
+
+
+def build_redis(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    safe_path = mount["path"].strip("/").replace("/", "-") or "root"
+    prefix = f"mirage-integ-{run_id}-{safe_path}/"
+    return RedisVFS(url=REDIS_URL, key_prefix=prefix), _noop
+
+
+def build_s3(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, S3Service)
+    return service.vfs(mount), _noop
+
+
+def build_gridfs(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GridFSService)
+    return service.vfs(mount), _noop
+
+
+def build_databricks_volume(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, DatabricksVolumeService)
+    return service.vfs(mount), _noop
+
+
+def build_onedrive(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, OneDriveService)
+    return service.vfs(mount), _noop
+
+
+def build_sharepoint(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, SharePointService)
+    return service.vfs(mount), _noop
+
+
+def build_mem0(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, Mem0Service)
+    return service.vfs(mount), _noop
+
+
+def build_postgres(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, PostgresService)
+    vfs = service.vfs(mount)
+    return vfs, vfs.accessor.close
+
+
+def build_mongodb(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, MongoDBService)
+    vfs = service.vfs(mount)
+    return vfs, vfs.accessor.close
+
+
+def build_chroma(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, ChromaService)
+    return service.vfs(mount), _noop
+
+
+def build_qdrant(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, QdrantService)
+    vfs = service.vfs(mount)
+    return vfs, vfs.accessor.close
+
+
+def build_lancedb(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, LanceDBService)
+    vfs = service.vfs(mount)
+    return vfs, vfs.accessor.close
+
+
+def build_airtable(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, AirtableService)
+    vfs = service.vfs(mount)
+    return vfs, vfs.accessor.close
+
+
+def build_notion(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, NotionService)
+    return service.vfs(mount), _noop
+
+
+def build_hf(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, HfService)
+    return service.vfs(mount), _noop
+
+
+def build_hf_hub(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, HfHubService)
+    return service.vfs(mount), _noop
+
+
+def build_box(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, BoxService)
+    return service.vfs(mount), _noop
+
+
+def build_dropbox(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, DropboxService)
+    return service.vfs(mount), _noop
+
+
+def build_dify(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, DifyService)
+    return service.vfs(mount), _noop
+
+
+def build_trello(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, TrelloService)
+    return service.vfs(mount), _noop
+
+
+def build_discord(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, DiscordService)
+    return service.vfs(mount), _noop
+
+
+def build_linear(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, LinearService)
+    return service.vfs(mount), _noop
+
+
+def build_jaeger(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, JaegerService)
+    return service.vfs(mount), _noop
+
+
+def build_langfuse(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, LangfuseService)
+    return service.vfs(mount), _noop
+
+
+def build_ssh(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, SSHService)
+    return service.vfs(mount), _noop
+
+
+def build_gdrive(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GwsService)
+    return service.vfs(mount), _noop
+
+
+def build_gdocs(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GwsService)
+    return service.gdocs_vfs(), _noop
+
+
+def build_gsheets(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GwsService)
+    return service.gsheets_vfs(), _noop
+
+
+def build_gslides(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GwsService)
+    return service.gslides_vfs(), _noop
+
+
+def build_email(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, EmailService)
+    return service.vfs(mount), _noop
+
+
+def build_gcal(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GwsService)
+    return service.gcal_vfs(mount.get("config", {})), _noop
+
+
+def build_gmail(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GwsService)
+    return service.gmail_vfs(), _noop
+
+
+def build_nextcloud(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, NextcloudService)
+    return service.vfs(mount), _noop
+
+
+async def build_github(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GitHubService)
+    return await service.vfs(mount), _noop
+
+
+def build_slack(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, SlackService)
+    return service.vfs(mount), _noop
+
+
+# Backends reachable with dummy credentials and no server, for the arg-error
+# battery: an invalid -maxdepth/-mindepth/-size/-mtime must be rejected while
+# flags are parsed, before any network call, so construction is all these
+# targets ever need. github, notion and hf_buckets are absent on purpose:
+# github needs a live repo at construct, notion an OAuth provider, and
+# hf_buckets validates the bucket id.
+ARG_ERROR_VFS: dict[str, tuple[type, type, dict[str, object]]] = {
+    "airtable": (AirtableVFS, AirtableConfig, {"token": "t"}),
+    "databricks": (
+        DatabricksVolumeVFS,
+        DatabricksVolumeConfig,
+        {
+            "host": "h",
+            "token": "t",
+            "catalog": "c",
+            "schema": "s",
+            "volume": "v",
+        },
+    ),
+    "discord": (DiscordVFS, DiscordConfig, {"token": "x"}),
+    "email": (
+        EmailVFS,
+        EmailConfig,
+        {
+            "imap_host": "h",
+            "smtp_host": "h",
+            "username": "u",
+            "password": "p",
+        },
+    ),
+    "gdocs": (GDocsVFS, GDocsConfig, {"client_id": "c", "refresh_token": "r"}),
+    "gdrive": (
+        GoogleDriveVFS,
+        GoogleDriveConfig,
+        {"client_id": "c", "refresh_token": "r"},
+    ),
+    "gmail": (GmailVFS, GmailConfig, {"client_id": "c", "refresh_token": "r"}),
+    "gsheets": (
+        GSheetsVFS,
+        GSheetsConfig,
+        {"client_id": "c", "refresh_token": "r"},
+    ),
+    "gslides": (
+        GSlidesVFS,
+        GSlidesConfig,
+        {"client_id": "c", "refresh_token": "r"},
+    ),
+    "langfuse": (
+        LangfuseVFS,
+        LangfuseConfig,
+        {"public_key": "p", "secret_key": "s"},
+    ),
+    "linear": (LinearVFS, LinearConfig, {"api_key": "k"}),
+    "mem0": (Mem0VFS, Mem0Config, {"api_key": "k", "user_id": "u"}),
+    "onedrive": (OneDriveVFS, OneDriveConfig, {"access_token": "t"}),
+    "sharepoint": (SharePointVFS, SharePointConfig, {"access_token": "t"}),
+    "slack": (SlackVFS, SlackConfig, {"token": "x"}),
+    "trello": (TrelloVFS, TrelloConfig, {"api_key": "k", "api_token": "t"}),
+}
+
+
+def build_arg_error(
+    mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    vfs_cls, config_cls, kwargs = ARG_ERROR_VFS[mount["backend"]]
+    return vfs_cls(config_cls(**kwargs)), _noop
+
+
+BUILDERS = {
+    "ram": build_ram,
+    "disk": build_disk,
+    "redis": build_redis,
+    "s3": build_s3,
+    "aliyun": build_s3,
+    "backblaze": build_s3,
+    "ceph": build_s3,
+    "digitalocean": build_s3,
+    "gcs": build_s3,
+    "minio": build_s3,
+    "oci": build_s3,
+    "qingstor": build_s3,
+    "r2": build_s3,
+    "scaleway": build_s3,
+    "seaweedfs": build_s3,
+    "supabase": build_s3,
+    "tencent": build_s3,
+    "wasabi": build_s3,
+    "gridfs": build_gridfs,
+    "databricks_volume": build_databricks_volume,
+    "onedrive": build_onedrive,
+    "sharepoint": build_sharepoint,
+    "mem0": build_mem0,
+    "postgres": build_postgres,
+    "mongodb": build_mongodb,
+    "chroma": build_chroma,
+    "qdrant": build_qdrant,
+    "lancedb": build_lancedb,
+    "airtable": build_airtable,
+    "notion": build_notion,
+    "ssh": build_ssh,
+    "nextcloud": build_nextcloud,
+    "gdrive": build_gdrive,
+    "gdocs": build_gdocs,
+    "gsheets": build_gsheets,
+    "gslides": build_gslides,
+    "gcal": build_gcal,
+    "gmail": build_gmail,
+    "email": build_email,
+    "hf": build_hf,
+    "hf_models": build_hf_hub,
+    "hf_datasets": build_hf_hub,
+    "hf_spaces": build_hf_hub,
+    "box": build_box,
+    "dropbox": build_dropbox,
+    "github": build_github,
+    "slack": build_slack,
+    "trello": build_trello,
+    "discord": build_discord,
+    "linear": build_linear,
+    "langfuse": build_langfuse,
+    "jaeger": build_jaeger,
+    "dify": build_dify,
+    "arg_error": build_arg_error,
+    # The mounts are plain RAM; HttpService is what makes this target special.
+    "http_fixture": build_ram,
+}
+
+
+async def make_service(target: dict, run_id: str) -> "Service | None":
+    if target.get("service") == "s3":
+        return S3Service(run_id)
+    if target.get("service") == "gridfs":
+        return GridFSService(run_id)
+    if target.get("service") == "databricks":
+        return await DatabricksVolumeService.create(run_id)
+    if target.get("service") == "onedrive":
+        return await OneDriveService.create(run_id, target)
+    if target.get("service") == "sharepoint":
+        return await SharePointService.create(run_id, target)
+    if target.get("service") == "mem0":
+        return await Mem0Service.create()
+    if target.get("service") == "postgres":
+        return await PostgresService.create()
+    if target.get("service") == "mongodb":
+        return await MongoDBService.create()
+    if target.get("service") == "chroma":
+        return await ChromaService.create()
+    if target.get("service") == "qdrant":
+        return await QdrantService.create(target)
+    if target.get("service") == "lancedb":
+        return await LanceDBService.create(target)
+    if target.get("service") == "airtable":
+        return await AirtableService.create(run_id)
+    if target.get("service") == "notion":
+        return await NotionService.create(run_id)
+    if target.get("service") == "ssh":
+        return await SSHService.create(run_id, target)
+    if target.get("service") == "nextcloud":
+        return await NextcloudService.create(run_id, target)
+    if target.get("service") == "gws":
+        return await GwsService.create(run_id, target)
+    if target.get("service") == "email":
+        return await EmailService.create(run_id, target)
+    if target.get("service") == "hf":
+        return await HfService.create(run_id)
+    if target.get("service") == "hf-hub":
+        return await HfHubService.create(run_id)
+    if target.get("service") == "box":
+        return await BoxService.create(run_id, target)
+    if target.get("service") == "dropbox":
+        return await DropboxService.create(run_id)
+    if target.get("service") == "github":
+        fixture = "cli" if "gh" in (target.get("clis") or []) else "v1"
+        return await GitHubService.create(run_id, fixture)
+    if target.get("service") == "slack":
+        return await SlackService.create(run_id, target.get("dataset", "v1"))
+    if target.get("service") == "trello":
+        return await TrelloService.create()
+    if target.get("service") == "discord":
+        return await DiscordService.create(target.get("dataset", "v1"))
+    if target.get("service") == "linear":
+        return await LinearService.create()
+    if target.get("service") == "dify":
+        return await DifyService.create(target)
+    if target.get("service") == "langfuse":
+        return await LangfuseService.create()
+    if target.get("service") == "jaeger":
+        return await JaegerService.create()
+    if target.get("service") == "http":
+        return await HttpService.create()
+    return None
+
+
+async def build_mounts(
+    target: dict, run_id: str, service: "Service | None"
+) -> tuple[dict[str, VFSMount], list[Callable[[], Awaitable[None]]]]:
+    mounts: dict[str, VFSMount] = {}
+    cleanups: list[Callable[[], Awaitable[None]]] = []
+    built: dict[str, object] = {}
+    for mount in target["mounts"]:
+        alias_of = mount.get("alias_of")
+        if alias_of is not None:
+            # Two prefixes over one store: the shape that made cross-mount
+            # mv copy an object onto itself and then unlink the source.
+            # Reusing the built VFS is the only way to express it,
+            # since every builder otherwise allocates fresh storage.
+            vfs = built[alias_of]
+            cleanup = _noop
+        else:
+            builder = BUILDERS[mount["vfs"]]
+            # A builder is async only when its VFS needs I/O to come
+            # up — github fetches the repo tree. Awaiting whatever the
+            # table returns keeps the other forty builders plain.
+            pair = builder(mount, run_id, service)
+            if inspect.isawaitable(pair):
+                pair = await pair
+            vfs, cleanup = pair
+        built[mount["path"]] = vfs
+        mode = (
+            MountMode.READ
+            if mount.get("mode") == "read"
+            else MountMode.EXEC
+            if mount.get("mode") == "exec"
+            else None
+        )
+        # A mount states infrastructure only: what it is, where it is,
+        # how it is served. Its permissions live in the profile, under
+        # `profiles.<name>.mounts.<prefix>`.
+        if mode is not None:
+            mounts[mount["path"]] = (vfs, mode)
+        else:
+            mounts[mount["path"]] = vfs
+        cleanups.append(cleanup)
+    return mounts, cleanups
+
+
+def cli_install(
+    service: "Service | None", cli_name: str
+) -> tuple[CLISpec, dict[str, object] | None]:
+    """The spec and config to install one CLI under its head word.
+
+    Every CLI here so far talks to an API, so its mock service hands
+    over both the tree and the credentials pointing at itself. `git` is
+    the first with neither: it reads a repository out of a mount, which
+    is what makes it installable from a bare name, so it resolves
+    through the registry the YAML ``clis:`` section uses and installs
+    with no config at all.
+
+    Args:
+        service (Service | None): the target's mock service, None for a
+            target that needs none.
+        cli_name (str): the head word the target declared.
+    """
+    if service is None:
+        return cli_spec_for(cli_name), None
+    # Widen the assert when another service grows a CLI.
+    assert isinstance(
+        service,
+        (
+            AirtableService,
+            DiscordService,
+            EmailService,
+            GitHubService,
+            GwsService,
+            HfHubService,
+            LinearService,
+            NotionService,
+            SlackService,
+        ),
+    )
+    return service.cli_installs()[cli_name]
+
+
+async def mutate_write(
+    shadow_ws: Workspace, path: str, content: bytes
+) -> None:
+    await shadow_ws.vfs.write(path, content)
+
+
+async def mutate_line(shadow_ws: Workspace, command: str) -> None:
+    """Change the backend by running one line on the shadow workspace.
+
+    A file an account CLI edits by id (a Google Doc through ``gws``) has
+    no bytes to write, and the same line on the read workspace would drop
+    that workspace's own caches, so the other client runs it.
+
+    Args:
+        shadow_ws (Workspace): the workspace the case does not read from.
+        command (str): the line to run.
+    """
+    result = await shadow_ws.shell(command)
+    if result.exit_code != 0:
+        raise RuntimeError(f"{command}: {await result.stderr_str()}")
+
+
+async def mutate_commit(
+    shadow_ws: Workspace, path: str, content: bytes
+) -> None:
+    """Change a Hub file the way the Hub changes: one commit.
+
+    A Hub repo mount is read-only (a write is a commit, which is the `hf`
+    CLI's verb, not a POSIX one), so the out-of-band change a consistency
+    case needs goes through the backend's own commit call on the shadow
+    mount's accessor, against the same fake the read side is looking at.
+
+    Args:
+        shadow_ws (Workspace): the workspace the case does not read from.
+        path (str): the virtual path to change.
+        content (bytes): the new content.
+    """
+    mount = shadow_ws.mount(path)
+    accessor = getattr(mount.vfs, "accessor", None)
+    if not isinstance(accessor, HfHubAccessor):
+        raise ValueError(f"hf-hub cannot commit {path}")
+    rel = path[len(mount.prefix.rstrip("/")) :]
+    await commit(
+        accessor, additions=[Addition(accessor.repo_path(rel), content)]
+    )
+
+
+async def mutate_github(
+    shadow_ws: Workspace, path: str, content: bytes
+) -> None:
+    """Change a repository file the way GitHub changes one: a contents PUT.
+
+    A github mount is read-only, so the out-of-band change a consistency
+    case needs goes through the contents API on the shadow mount's config,
+    against the same fake the read side is looking at. It creates the file
+    when absent and replaces it otherwise, so a scenario runs the same on a
+    fresh fake and on one an earlier run left behind.
+
+    Args:
+        shadow_ws (Workspace): the workspace the case does not read from.
+        path (str): the virtual path to change.
+        content (bytes): the new content.
+    """
+    mount = shadow_ws.mount(path)
+    accessor = getattr(mount.vfs, "accessor", None)
+    if not isinstance(accessor, GitHubAccessor):
+        raise ValueError(f"github cannot change {path}")
+    rel = path[len(mount.prefix.rstrip("/")) :].lstrip("/")
+    endpoint = f"/repos/{accessor.owner}/{accessor.repo}/contents/{quote(rel)}"
+    body: dict[str, str] = {
+        "message": f"integ: change {rel}",
+        "content": base64.b64encode(content).decode(),
+    }
+    config = accessor.config
+    try:
+        current = await github_request(
+            config.token, "GET", endpoint, base_url=config.base_url
+        )
+    except GitHubApiError as exc:
+        # Absent: create it. GitHub refuses a sha for a new file.
+        if exc.status != 404:
+            raise
+        logging.getLogger(__name__).debug("creating %s: %s", rel, exc)
+    else:
+        body["sha"] = str(current["sha"])
+    await github_request(
+        config.token, "PUT", endpoint, body, base_url=config.base_url
+    )
+
+
+async def delete_commit(shadow_ws: Workspace, path: str) -> None:
+    """Delete a Hub file the way the Hub deletes one: a commit removing it.
+
+    Args:
+        shadow_ws (Workspace): the workspace the case does not read from.
+        path (str): the virtual path to delete.
+    """
+    mount = shadow_ws.mount(path)
+    accessor = getattr(mount.vfs, "accessor", None)
+    if not isinstance(accessor, HfHubAccessor):
+        raise ValueError(f"hf-hub cannot delete {path}")
+    rel = path[len(mount.prefix.rstrip("/")) :]
+    await commit(accessor, deletions=[accessor.repo_path(rel)])
+
+
+async def delete_github(shadow_ws: Workspace, path: str) -> None:
+    """Delete a repository file the way GitHub deletes one: a contents DELETE.
+
+    GitHub wants the current blob sha, as it does for a replace, so the
+    file is read first; an absent file fails the case rather than passing
+    for a delete that never happened.
+
+    Args:
+        shadow_ws (Workspace): the workspace the case does not read from.
+        path (str): the virtual path to delete.
+    """
+    mount = shadow_ws.mount(path)
+    accessor = getattr(mount.vfs, "accessor", None)
+    if not isinstance(accessor, GitHubAccessor):
+        raise ValueError(f"github cannot delete {path}")
+    rel = path[len(mount.prefix.rstrip("/")) :].lstrip("/")
+    endpoint = f"/repos/{accessor.owner}/{accessor.repo}/contents/{quote(rel)}"
+    config = accessor.config
+    current = await github_request(
+        config.token, "GET", endpoint, base_url=config.base_url
+    )
+    await github_request(
+        config.token,
+        "DELETE",
+        endpoint,
+        {
+            "message": f"integ: delete {rel}",
+            "sha": str(current["sha"]),
+        },
+        base_url=config.base_url,
+    )
+
+
+MUTATORS: dict[str, Callable[[Workspace, str, bytes], Awaitable[None]]] = {
+    "hf-hub": mutate_commit,
+    "github": mutate_github,
+}
+
+# No fallback, unlike MUTATORS: a write is a fair stand-in for a write, but
+# nothing stands in for a delete, so a target missing here fails its case.
+DELETERS: dict[str, Callable[[Workspace, str], Awaitable[None]]] = {
+    "hf-hub": delete_commit,
+    "github": delete_github,
+}
+
+
+def refuse_delete(target_id: str) -> Callable[[str], Awaitable[None]]:
+    """The delete step of a target that has no delete mutator: a failure.
+
+    Args:
+        target_id (str): the target, named in the message.
+    """
+
+    async def refuse(path: str) -> None:
+        raise RuntimeError(f"{target_id}: no delete mutator for {path}")
+
+    return refuse
+
+
+async def teardown_target(
+    workspaces: list[Workspace],
+    cleanups: list[Callable[[], Awaitable[None]]],
+    service: "Service | None",
+) -> None:
+    for ws in workspaces:
+        await ws.close()
+    for cleanup in cleanups:
+        await cleanup()
+    if service is not None:
+        await service.teardown()
+
+
+def _redis_console(url: str, prefix: str, job_id: int) -> JobConsole:
+    """One job's console on its own Redis stream.
+
+    The nonce beside the id matters because battery cases reap jobs and
+    ids restart at 1; a reused stream would replay the previous case's
+    chunks, ending chunk included.
+
+    Args:
+        url (str): Redis connection URL.
+        prefix (str): this run's key namespace.
+        job_id (int): the job the console is being built for.
+    """
+    key_prefix = f"{prefix}{uuid.uuid4().hex[:8]}-{job_id}:"
+    # Battery keys must not accumulate in the shared redis db.
+    return JobConsole(
+        store=RedisConsoleStore(
+            url=url, key_prefix=key_prefix, ttl_seconds=3600
+        )
+    )
+
+
+def console_factory(target: dict, run_id: str) -> ConsoleFactory | None:
+    """Build the target's console factory, or None for in-memory.
+
+    A target opts in with ``"console": {"type": "redis"}``; the stream
+    keys ride REDIS_URL under a per-run namespace.
+
+    Args:
+        target (dict): the target manifest entry.
+        run_id (str): this open's unique id.
+    """
+    block = target.get("console")
+    if block is None:
+        return None
+    url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    return functools.partial(
+        _redis_console, url, f"mirage-integ-console-{run_id}:"
+    )
+
+
+async def open_target(
+    target: dict, read: ReadSpec | None = None
+) -> tuple[Workspace, Callable[[], Awaitable[None]]]:
+    run_id = uuid.uuid4().hex[:8]
+    service = await make_service(target, run_id)
+    mounts, cleanups = await build_mounts(target, run_id, service)
+    env_block = None
+    if target.get("secrets") is not None:
+        env_block, secrets_cleanup = build_secrets_env(target["secrets"])
+        cleanups.append(secrets_cleanup)
+    agent_id = target.get("agentId")
+    factory = console_factory(target, run_id)
+    # The target's profiles, and which one shapes a session that names
+    # none. A profile is the whole permission document, so this is every
+    # permission the target states; the models are the ones the YAML
+    # door validates with.
+    profiles = scripted_profiles(target.get("profiles") or None)
+    default_profile = target.get("profile")
+    if read is not None:
+        ws = Workspace(
+            mounts,
+            mode=MountMode.WRITE,
+            read=read,
+            agent_id=agent_id,
+            console_factory=factory,
+            profiles=profiles,
+            profile=default_profile,
+            env=env_block,
+        )
+    else:
+        ws = Workspace(
+            mounts,
+            mode=MountMode.WRITE,
+            agent_id=agent_id,
+            console_factory=factory,
+            profiles=profiles,
+            profile=default_profile,
+            env=env_block,
+        )
+    for cli_name in target.get("clis", []):
+        spec, config = cli_install(service, cli_name)
+        ws.register_cli(cli_name, spec, config)
+    # A target's declared environment. A CLI whose spec reads a variable
+    # (ntn's --notion-version off NOTION_API_VERSION) behaves differently
+    # with and without it, so the conformance runner passes the same map
+    # to the real binary and the comparison stays like for like.
+    # Through the setter, not into the mapping: `ws.env` is a read-only
+    # projection of the variable records, and a target's declared
+    # environment is exported by definition -- a CLI reads it as a
+    # process environment, which carries exported names only. Only when
+    # declared: the setter rebuilds the var table from the projection,
+    # which would drop a secrets target's managed pointers and preset
+    # attributes.
+    if target.get("env"):
+        ws.env = {**ws.env, **target["env"]}
+    return ws, functools.partial(teardown_target, [ws], cleanups, service)
+
+
+def apply_mount_read(
+    mounts: dict[str, VFSMount], mount_read: dict[str, ReadSpec]
+) -> dict[str, VFSMount]:
+    """The mount table with each named prefix under its own read policy.
+
+    A mount keeps everything its builder gave it but the policy: a bare
+    VFS still takes the workspace's mode, a ``(vfs, mode)`` pair keeps its
+    mode and limits. A prefix the override does not name is left exactly
+    as built, so it inherits the workspace's policy.
+
+    Raises:
+        ValueError: an override names no mount in ``mounts``.
+
+    Args:
+        mounts (dict[str, VFSMount]): ``build_mounts`` output.
+        mount_read (dict[str, ReadSpec]): the case's per-mount policies.
+    """
+    out = dict(mounts)
+    for prefix, spec in mount_read.items():
+        entry = out.get(prefix)
+        if entry is None:
+            raise ValueError(f"mount_read names no mount: {prefix}")
+        if isinstance(entry, Mount):
+            out[prefix] = dataclasses.replace(entry, read=spec)
+        elif isinstance(entry, tuple):
+            out[prefix] = Mount(
+                vfs=entry[0],
+                mode=entry[1],
+                command_limits=(entry[2] if len(entry) == 3 else {}),
+                read=spec,
+            )
+        else:
+            out[prefix] = Mount(vfs=entry, read=spec)
+    return out
+
+
+async def open_consistency(
+    target: dict, read: ReadSpec, mount_read: dict[str, ReadSpec]
+) -> tuple[
+    Workspace,
+    Callable[[str, bytes], Awaitable[None]],
+    Callable[[str], Awaitable[None]],
+    Callable[[str], Awaitable[None]],
+    Callable[[], Awaitable[None]],
+]:
+    # Refused before anything opens, so there is nothing to clean up.
+    unknown = sorted(set(mount_read) - {m["path"] for m in target["mounts"]})
+    if unknown:
+        raise ValueError(
+            f"{target['id']}: mount_read names no mount: {', '.join(unknown)}"
+        )
+    run_id = uuid.uuid4().hex[:8]
+    service = await make_service(target, run_id)
+    read_mounts, read_cleanups = await build_mounts(target, run_id, service)
+    shadow_mounts, shadow_cleanups = await build_mounts(
+        target, run_id, service
+    )
+    # A refused policy fails here, after the mounts and service exist.
+    try:
+        read_ws = Workspace(
+            apply_mount_read(read_mounts, mount_read),
+            mode=MountMode.WRITE,
+            read=read,
+        )
+    except Exception:
+        await teardown_target([], [*read_cleanups, *shadow_cleanups], service)
+        raise
+    shadow_ws = Workspace(shadow_mounts, mode=MountMode.WRITE)
+    # Same rule as open_target: a target's declared environment reaches
+    # every workspace a case can run against, or a consistency scenario
+    # would silently run under a different one.
+    read_ws.env = {**read_ws.env, **target.get("env", {})}
+    shadow_ws.env = {**shadow_ws.env, **target.get("env", {})}
+    # And its CLIs, as open_target installs them, so a scenario can change
+    # a file through the shadow's CLI the way another client would.
+    for cli_name in target.get("clis", []):
+        spec, config = cli_install(service, cli_name)
+        read_ws.register_cli(cli_name, spec, config)
+        shadow_ws.register_cli(cli_name, spec, config)
+    service_name = target.get("service") or ""
+    mutate = MUTATORS.get(service_name, mutate_write)
+    delete = DELETERS.get(service_name)
+    remove = (
+        refuse_delete(target["id"])
+        if delete is None
+        else functools.partial(delete, shadow_ws)
+    )
+    return (
+        read_ws,
+        functools.partial(mutate, shadow_ws),
+        remove,
+        functools.partial(mutate_line, shadow_ws),
+        functools.partial(
+            teardown_target,
+            [read_ws, shadow_ws],
+            [*read_cleanups, *shadow_cleanups],
+            service,
+        ),
+    )
+
+
+def scripted_profiles(profiles: dict | None) -> dict | None:
+    """Wrap a profile's inline policy source the way the config door does.
+
+    A target is JSON, so it carries a profile's policy as source rather
+    than as the path a YAML config would name. Loading is the config
+    layer's job everywhere else, so the battery does that one step here
+    and hands the workspace what code would pass.
+
+    Args:
+        profiles (dict | None): the target's profiles as written.
+    """
+    if not profiles:
+        return profiles
+    out: dict = {}
+    for name, doc in profiles.items():
+        policy = doc.get("policy") if isinstance(doc, dict) else None
+        script = policy.get("script") if isinstance(policy, dict) else None
+        if isinstance(policy, dict) and isinstance(script, dict):
+            # Only the program is loaded; the block around it (its
+            # runtime) is the document's and stays as written.
+            doc = {
+                **doc,
+                "policy": {
+                    **policy,
+                    "script": ScriptSource(
+                        script["source"],
+                        language=script.get("language", "python"),
+                    ),
+                },
+            }
+        out[name] = doc
+    return out

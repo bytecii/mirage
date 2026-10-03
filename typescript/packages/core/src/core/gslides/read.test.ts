@@ -19,7 +19,7 @@ import type * as ClientModule from '../google/client.ts'
 
 vi.mock('../google/drive.ts', async () => {
   const actual = await vi.importActual<typeof DriveModule>('../google/drive.ts')
-  return { ...actual, listAllFiles: vi.fn() }
+  return { ...actual, listAllFiles: vi.fn(), getFile: vi.fn() }
 })
 
 vi.mock('../google/client.ts', async () => {
@@ -28,12 +28,15 @@ vi.mock('../google/client.ts', async () => {
 })
 
 import { GSlidesAccessor } from '../../accessor/gslides.ts'
+import { IndexEntry } from '../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import { runWithRecording } from '../../observe/context.ts'
 import { PathSpec } from '../../types.ts'
 import type { TokenManager } from '../google/client.ts'
 import * as drive from '../google/drive.ts'
 import * as client from '../google/client.ts'
 import { read } from './read.ts'
+import { stat } from './stat.ts'
 
 const STUB_TOKEN_MANAGER = {
   config: { clientId: 'cid', refreshToken: 'rt' },
@@ -44,17 +47,13 @@ function makeAccessor(): GSlidesAccessor {
 }
 
 describe('gslides read auto-bootstrap', () => {
-  it('refetches owned listing when entry is evicted from index', async () => {
-    vi.mocked(drive.listAllFiles).mockResolvedValue({
-      files: [
-        {
-          id: 'slide1',
-          name: 'Deck',
-          modifiedTime: '2026-04-01T00:00:00.000Z',
-          owners: [{ me: true }],
-        },
-      ],
-      complete: true,
+  it('fetches metadata by ID when entry is evicted from index', async () => {
+    vi.mocked(drive.getFile).mockResolvedValue({
+      mimeType: 'application/vnd.google-apps.presentation',
+      id: 'slide1',
+      name: 'Deck',
+      modifiedTime: '2026-04-01T00:00:00.000Z',
+      owners: [{ me: true }],
     })
     vi.mocked(client.googleGet).mockResolvedValue({ presentationId: 'slide1' })
 
@@ -63,14 +62,16 @@ describe('gslides read auto-bootstrap', () => {
     const path = new PathSpec({
       virtual: '/gslides/owned/2026-04-01_Deck__slide1.gslide.json',
       directory: '/gslides/owned/2026-04-01_Deck__slide1.gslide.json',
-      resourcePath: mountKey('/gslides/owned/2026-04-01_Deck__slide1.gslide.json', '/gslides'),
+      vfsPath: mountKey('/gslides/owned/2026-04-01_Deck__slide1.gslide.json', '/gslides'),
     })
     const out = await read(accessor, path, index)
     expect(new TextDecoder().decode(out)).toContain('slide1')
   })
 
-  it('throws ENOENT when file missing even after recursion', async () => {
-    vi.mocked(drive.listAllFiles).mockResolvedValue({ files: [], complete: true })
+  it('throws ENOENT when file missing by ID', async () => {
+    vi.mocked(drive.getFile).mockRejectedValue(
+      Object.assign(new Error('missing'), { code: 'ENOENT' }),
+    )
     vi.mocked(client.googleGet).mockRejectedValue(new Error('should not call googleGet'))
 
     const accessor = makeAccessor()
@@ -78,8 +79,49 @@ describe('gslides read auto-bootstrap', () => {
     const path = new PathSpec({
       virtual: '/gslides/owned/Missing__xyz.gslide.json',
       directory: '/gslides/owned/Missing__xyz.gslide.json',
-      resourcePath: mountKey('/gslides/owned/Missing__xyz.gslide.json', '/gslides'),
+      vfsPath: mountKey('/gslides/owned/Missing__xyz.gslide.json', '/gslides'),
     })
     await expect(read(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
   })
+})
+
+describe('gslides read token', () => {
+  // read: fresh compares this record with stat's fingerprint, so both take
+  // the entry's modified stamp, and an entry without one stamps nothing.
+  const cases: [string, string | null][] = [
+    ['2026-04-01T00:00:00.000Z', '2026-04-01T00:00:00.000Z'],
+    ['', null],
+  ]
+  for (const [stamp, token] of cases) {
+    it(`records the token stat reports (stamp ${JSON.stringify(stamp)})`, async () => {
+      const name = '2026-04-01_My_Deck__d1.gslide.json'
+      const target = `/gslides/owned/${name}`
+      const index = new RAMIndexCacheStore()
+      await index.setDir('/gslides/owned', [
+        [
+          name,
+          new IndexEntry({
+            id: 'd1',
+            name: 'My Deck',
+            resourceType: 'gslides/file',
+            remoteTime: stamp,
+            vfsName: name,
+          }),
+        ],
+      ])
+      vi.mocked(client.googleGet).mockResolvedValue({ presentationId: 'd1' })
+      const path = new PathSpec({
+        virtual: target,
+        directory: target,
+        vfsPath: mountKey(target, '/gslides'),
+      })
+      const accessor = makeAccessor()
+      const [data, records] = await runWithRecording(() => read(accessor, path, index))
+      const info = await stat(accessor, path, index)
+      expect(records.map((r) => [r.op, r.path, r.source, r.bytes, r.fingerprint])).toEqual([
+        ['read', target, 'gslides', data.byteLength, token],
+      ])
+      expect(info.fingerprint).toBe(token)
+    })
+  }
 })

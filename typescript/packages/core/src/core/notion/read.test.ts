@@ -1,3 +1,5 @@
+import { IndexEntry } from '../../cache/index/config.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,11 +14,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import { PathSpec } from '../../types.ts'
 import type { NotionTransport } from './client.ts'
-import { read, type NotionReadAccessor } from './read.ts'
+import type { NotionAccessor } from '../../accessor/notion.ts'
+import { read as rawOperation } from './read.ts'
 
 class FakeTransport implements NotionTransport {
   public readonly invocations: { name: string; args: Record<string, unknown> }[] = []
@@ -41,12 +45,12 @@ class FakeTransport implements NotionTransport {
   }
 }
 
-function makeAccessor(transport: NotionTransport): NotionReadAccessor {
+function makeAccessor(transport: NotionTransport): NotionAccessor {
   return { transport }
 }
 
 function spec(virtual: string, prefix = ''): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath: mountKey(virtual, prefix) })
+  return new PathSpec({ virtual, directory: virtual, vfsPath: mountKey(virtual, prefix) })
 }
 
 const PAGE_ID_DASHED = 'aaaa1111-2222-3333-4444-555566667777'
@@ -120,6 +124,86 @@ describe('notion read', () => {
     expect(decoded.properties).toEqual({ Name: { type: 'title' } })
   })
 
+  it('renders rows.jsonl as one line per row: the page.json fields but the body, and its path', async () => {
+    const transport = new FakeTransport()
+    const dbId = 'bbbb1111222233334444555566667777'
+    const dsId = 'cccc1111222233334444555566667777'
+    const row = {
+      ...pageBody(PAGE_ID_DASHED, 'Row A'),
+      parent: { type: 'data_source_id', data_source_id: 'cccc1111-2222-3333-4444-555566667777' },
+      properties: {
+        Name: { type: 'title', title: [{ plain_text: 'Row A' }] },
+        Priority: { type: 'number', number: 2 },
+      },
+    }
+    transport.enqueue('API-post-data-source-query', {
+      results: [row, { id: 'x', object: 'database' }],
+      has_more: false,
+      next_cursor: null,
+    })
+    const path = `/databases/Tasks__${dbId}/Tasks__${dsId}/rows.jsonl`
+    const bytes = await read(makeAccessor(transport), spec(path), undefined)
+    const lines = new TextDecoder().decode(bytes).split('\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[1]).toBe('')
+    const decoded = JSON.parse(lines[0] ?? '') as Record<string, unknown>
+    expect(Object.keys(decoded)).toEqual([
+      'page_id',
+      'title',
+      'path',
+      'url',
+      'created_time',
+      'last_edited_time',
+      'parent_type',
+      'parent_id',
+      'archived',
+      'created_by',
+      'last_edited_by',
+      'properties',
+    ])
+    expect(decoded.path).toBe(`Row_A__${PAGE_ID_DASHED}/page.json`)
+    expect(decoded.parent_id).toBe('cccc1111-2222-3333-4444-555566667777')
+    expect(decoded.properties).toEqual(row.properties)
+    expect(transport.invocations).toEqual([
+      { name: 'API-post-data-source-query', args: { data_source_id: dsId, page_size: 100 } },
+    ])
+  })
+
+  it('renders a data source with no rows as an empty rows.jsonl', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-post-data-source-query', {
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const path = `/databases/Tasks__bbbb1111222233334444555566667777/Tasks__cccc1111222233334444555566667777/rows.jsonl`
+    const bytes = await read(makeAccessor(transport), spec(path), undefined)
+    expect(bytes.byteLength).toBe(0)
+  })
+
+  it('reads a row page.json as any page', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-a-page', {
+      ...pageBody(PAGE_ID_DASHED, 'Row A'),
+      parent: { data_source_id: 'cccc1111222233334444555566667777' },
+    })
+    transport.enqueue('API-retrieve-a-page', {
+      ...pageBody(PAGE_ID_DASHED, 'Row A'),
+      parent: { data_source_id: 'cccc1111222233334444555566667777' },
+    })
+    transport.enqueue('API-retrieve-block-children', {
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const path = `/databases/Tasks__bbbb1111222233334444555566667777/Tasks__cccc1111222233334444555566667777/Row_A__${PAGE_ID_DASHED}/page.json`
+    const decoded = decodeJson(
+      await read(makeAccessor(transport), spec(path), undefined),
+    ) as Record<string, unknown>
+    expect(decoded.page_id).toBe(PAGE_ID_DASHED)
+    expect(decoded.markdown).toBe('')
+  })
+
   it('returns JSON bytes containing the normalized page and its blocks', async () => {
     const transport = new FakeTransport()
     transport.enqueue('API-retrieve-a-page', pageBody(PAGE_ID_DASHED, 'My Page'))
@@ -170,7 +254,7 @@ describe('notion read', () => {
     const virtual = `/notion/pages/Prefixed__${PAGE_ID_DASHED}/page.json`
     const bytes = await read(
       makeAccessor(transport),
-      new PathSpec({ virtual, directory: virtual, resourcePath: mountKey(virtual, '/notion') }),
+      new PathSpec({ virtual, directory: virtual, vfsPath: mountKey(virtual, '/notion') }),
       undefined,
     )
     const decoded = decodeJson(bytes) as Record<string, unknown>
@@ -181,10 +265,16 @@ describe('notion read', () => {
 
   it('throws ENOENT when the path does not end in page.json', async () => {
     const transport = new FakeTransport()
+    // A probed directory shape is no proof the node exists, so a page
+    // dir read reports absence; only the roots, which exist by
+    // construction, answer EISDIR.
+    await expect(read(makeAccessor(transport), spec('/pages'), undefined)).rejects.toMatchObject({
+      code: 'EISDIR',
+    })
     const cases = [
       `/pages/My_Page__${PAGE_ID_DASHED}/`,
-      `/pages/My_Page__${PAGE_ID_DASHED}/foo.txt`,
       `/pages/My_Page__${PAGE_ID_DASHED}/SubPage__${CHILD_ID_DASHED}/`,
+      `/pages/My_Page__${PAGE_ID_DASHED}/foo.txt`,
     ]
     for (const original of cases) {
       let captured: unknown = null
@@ -225,3 +315,56 @@ describe('notion read', () => {
     expect(transport.invocations).toHaveLength(0)
   })
 })
+
+it.each([
+  [100000000000000000000, '100000000000000000000'],
+  [1e-5, '0.00001'],
+  [1e-7, '1e-7'],
+  [1.0, '1'],
+  [-0.0, '0'],
+] as const)('spells numeric cells as %s -> %s', async (number, spelling) => {
+  const transport = new FakeTransport()
+  transport.enqueue('API-post-data-source-query', {
+    results: [
+      {
+        ...pageBody(PAGE_ID_DASHED, 'Row A'),
+        properties: { Amount: { type: 'number', number } },
+      },
+    ],
+    has_more: false,
+    next_cursor: null,
+  })
+  const data = await read(
+    makeAccessor(transport),
+    spec('/databases/DB__db/DS__ds/rows.jsonl'),
+    undefined,
+  )
+  const row = JSON.parse(new TextDecoder().decode(data)) as {
+    properties: { Amount: { number: number } }
+  }
+  expect(row.properties.Amount.number === number).toBe(true)
+  expect(new TextDecoder().decode(data)).toContain(`"number":${spelling}}`)
+})
+
+async function read(accessor: NotionAccessor, path: PathSpec, index?: IndexCacheStore) {
+  const cache = index ?? new RAMIndexCacheStore()
+  const pieces = path.virtual.replace(/\/$/, '').split('/')
+  const count = pieces.length - 1
+  for (let i = 1; i < count; i++) {
+    const key = pieces.slice(0, i + 1).join('/')
+    const name = pieces[i] ?? ''
+    if (name.includes('__') && (await cache.get(key)).entry == null)
+      await cache.setPartialDir(key.slice(0, key.lastIndexOf('/')) || '/', [
+        [
+          name,
+          new IndexEntry({
+            id: name.split('__').at(-1) ?? '',
+            name,
+            vfsName: name,
+            resourceType: 'notion/container',
+          }),
+        ],
+      ])
+  }
+  return rawOperation(accessor, path, cache)
+}

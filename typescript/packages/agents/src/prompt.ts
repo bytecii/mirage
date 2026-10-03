@@ -21,10 +21,11 @@ Capabilities beyond standard filesystem:
 - grep works on structured text such as CSV and JSON, not just plain text
 - Pipes work: cat data.csv | grep error | sort | uniq | wc -l
 - head, tail, cut, wc, sort, uniq, tee, xargs are all available
+- Start a recursive grep or rg inside the mount you mean, not at /: a mount searches with its own index only when the search starts inside it
 
 You can write Python code and execute it. The workspace is pre-configured with your data sources mounted at their respective paths.
 
-Use the execute tool for complex operations. Use read/write/edit for simple file operations.
+Use the shell tool for complex operations. Use read/write/edit for simple file operations.
 `
 
 export interface BuildSystemPromptOptions {

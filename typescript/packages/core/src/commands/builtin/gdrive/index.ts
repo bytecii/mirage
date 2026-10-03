@@ -13,14 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { GDriveAccessor } from '../../../accessor/gdrive.ts'
-import { ResourceName } from '../../../types.ts'
+import { VFSName } from '../../../types.ts'
 import type { RegisteredCommand } from '../../config.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
-import { GDRIVE_IO } from './io.ts'
+import { IO } from './io.ts'
 
 // Drive/docs/sheets/slides verbs and API passthroughs live in the gws
 // CLI (commands/cli/builtin/gws), installed by name; the mount only
 // serves the filesystem surface.
 export const GDRIVE_COMMANDS: readonly RegisteredCommand[] = [
-  ...makeGenericCommands<GDriveAccessor>(ResourceName.GDRIVE, GDRIVE_IO, {}),
+  ...makeGenericCommands<GDriveAccessor>(VFSName.GDRIVE, IO, {}),
 ]

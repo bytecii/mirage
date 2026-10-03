@@ -14,22 +14,30 @@
 
 from mirage.accessor.ram import RAMAccessor
 from mirage.cache.context import invalidate_after_unlink
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.ram.dest import lookup_error
 from mirage.types import PathSpec
+from mirage.utils.errors import enotempty
 from mirage.utils.path import norm
 
 
-async def rmdir(accessor: RAMAccessor, path_spec: PathSpec) -> None:
+async def rmdir(
+    accessor: RAMAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+) -> None:
     path = path_spec.mount_path
     store = accessor.store
     p = norm(path)
     if p not in store.dirs:
-        raise FileNotFoundError(p)
+        raise lookup_error(store, path_spec, p)
     prefix = p.rstrip("/") + "/"
     children = [
-        k for k in list(store.files) + list(store.dirs)
+        k
+        for k in list(store.files) + list(store.dirs)
         if k.startswith(prefix) and k != p
     ]
     if children:
-        raise OSError(f"directory not empty: {p}")
+        raise enotempty(path_spec)
     store.dirs.discard(p)
     await invalidate_after_unlink(path_spec)

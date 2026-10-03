@@ -16,7 +16,7 @@ import importlib.metadata
 import logging
 
 from mirage.commands.cli.types import CLISpec
-from mirage.resource.loader import load_attr
+from mirage.vfs.loader import load_attr
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +25,16 @@ logger = logging.getLogger(__name__)
 # register_cli_spec before the workspace loads.
 CLI_SPECS: dict[str, CLISpec] = {}
 
-# Bundled program trees, resolved lazily like the resource registry:
+# Bundled program trees, resolved lazily like the VFS registry:
 # the modules pull optional extras (himalaya needs the email stack), so
 # they must not import until the name is actually requested.
 BUILTIN_CLI_SPECS: dict[str, str] = {
+    "airtable": "mirage.commands.cli.builtin.airtable:AIRTABLE",
     "discord": "mirage.commands.cli.builtin.discord:DISCORD",
     "gh": "mirage.commands.cli.builtin.gh:GH",
     "git": "mirage.commands.cli.builtin.git:GIT",
     "gws": "mirage.commands.cli.builtin.gws:GWS",
+    "hf": "mirage.commands.cli.builtin.hf:HF",
     "himalaya": "mirage.commands.cli.builtin.himalaya:HIMALAYA",
     "linear": "mirage.commands.cli.builtin.linear:LINEAR",
     "ntn": "mirage.commands.cli.builtin.ntn:NTN",
@@ -46,7 +48,7 @@ BUILTIN_CLI_SPECS: dict[str, str] = {
 #
 # The entry point must resolve to a CLISpec tree. Builtin and
 # explicitly registered names win over entry points, mirroring the
-# ``mirage.resources`` group.
+# ``mirage.vfs`` group.
 ENTRY_POINT_GROUP = "mirage.clis"
 _ENTRY_POINT_SPECS: dict[str, str] = {}
 _entry_points_loaded = False
@@ -96,7 +98,7 @@ def unregister_cli_spec(name: str) -> None:
 def cli_spec_for(name: str) -> CLISpec:
     """Resolve a YAML ``cli:`` value to its program tree, fail loud.
 
-    Resolution order mirrors ``build_resource``: registered names, then
+    Resolution order mirrors ``build_vfs``: registered names, then
     builtins, then a direct loader reference, then ``mirage.clis``
     entry points from installed packages. A value containing ``:`` is
     the reference form, pointing straight at a CLISpec attribute as
@@ -117,6 +119,8 @@ def cli_spec_for(name: str) -> CLISpec:
     if name in _ENTRY_POINT_SPECS:
         return _load_ref(_ENTRY_POINT_SPECS[name])
     known = ", ".join(
-        sorted({*CLI_SPECS, *BUILTIN_CLI_SPECS, *_ENTRY_POINT_SPECS}))
+        sorted({*CLI_SPECS, *BUILTIN_CLI_SPECS, *_ENTRY_POINT_SPECS})
+    )
     raise ValueError(
-        f"unknown cli {name!r} (known: {known or 'none registered'})")
+        f"unknown cli {name!r} (known: {known or 'none registered'})"
+    )

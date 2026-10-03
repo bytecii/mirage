@@ -1,9 +1,10 @@
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
 import { resolveSource } from '../utils/stream.ts'
+import { quoteText } from '../../quote.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
@@ -40,24 +41,42 @@ interface Parsed {
 // first character quotes only the whole field; a usable unit followed by
 // junk quotes the field and then the junk (pinned against coreutils 9.7).
 function suffixError(value: string, junk: string): UsageError {
-  if (junk === '') return new UsageError(`numfmt: invalid suffix in input: '${value}'`, 2)
-  return new UsageError(`numfmt: invalid suffix in input '${value}': '${junk}'`, 2)
+  if (junk === '') {
+    return new UsageError(`numfmt: invalid suffix in input: '${quoteText(value)}'`, 2)
+  }
+  return new UsageError(
+    `numfmt: invalid suffix in input '${quoteText(value)}': '${quoteText(junk)}'`,
+    2,
+  )
+}
+
+// GNU's --from=iec-i complaint that the `i` is absent, exit 2. The `i` test
+// sits OUTSIDE the suffix branch in GNU's simple_strtod_human, so it
+// answers for every field whose unit letter is not followed by an `i` -- a
+// field with no unit at all included. Measured on coreutils 9.4: `1`,
+// `1.5`, `1K`, `1Kx`, `1KB` and `1KII` all get this clause, while `1Kii`
+// and `1KiB` consume the `i` and report their leftover as an invalid suffix
+// instead, and `1i` never reaches it because `i` is not a unit letter.
+function missingISuffixError(value: string): UsageError {
+  return new UsageError(
+    `numfmt: missing 'i' suffix in input: '${quoteText(value)}' (e.g Ki/Mi/Gi)`,
+    2,
+  )
 }
 
 // Each --from mode spells the same units differently: si and iec take the
 // bare letter, iec-i requires the trailing 'i', and auto takes either and
 // lets the 'i' pick base 1024. Nothing may follow (pinned against coreutils
 // 9.7), which is why `1KiB` is refused everywhere -- it used to be read as
-// a kilobyte in both languages.
+// a kilobyte in both languages. Under iec-i a tail that does not START with
+// the 'i' is the missing-'i' clause rather than an invalid suffix: `1Ké` and
+// `1Kx` both name the whole field (coreutils 9.4).
 function scaleOf(value: string, suffix: string, fromMode: string): [number, number] {
   const exponent = UNIT_EXPONENTS[suffix[0] ?? '']
   if (exponent === undefined) throw suffixError(value, '')
   const tail = suffix.slice(1)
   if (fromMode === 'iec-i') {
-    if (tail === '') {
-      throw new UsageError(`numfmt: missing 'i' suffix in input: '${value}' (e.g Ki/Mi/Gi)`, 2)
-    }
-    if (!tail.startsWith('i')) throw suffixError(value, tail)
+    if (!tail.startsWith('i')) throw missingISuffixError(value)
     if (tail.length > 1) throw suffixError(value, tail.slice(1))
     return [1024, exponent]
   }
@@ -85,15 +104,21 @@ function parseNumber(value: string, fromMode: string): Parsed {
   const head = match?.[1] ?? ''
   const rest = match?.[2] ?? ''
   if (match === null || (rest.startsWith('.') && !head.includes('.'))) {
-    throw new UsageError(`numfmt: invalid number: '${value}'`, 2)
+    throw new UsageError(`numfmt: invalid number: '${quoteText(value)}'`, 2)
   }
   const dot = head.indexOf('.')
   const fraction = dot < 0 ? '' : head.slice(dot + 1)
   const digits = BigInt(dot < 0 ? head : head.slice(0, dot) + fraction)
-  if (rest === '') return { digits, scale: fraction.length, decimals: fraction.length }
+  if (rest === '') {
+    if (fromMode === 'iec-i') throw missingISuffixError(value)
+    return { digits, scale: fraction.length, decimals: fraction.length }
+  }
   if (UNIT_EXPONENTS[rest[0] ?? ''] === undefined) throw suffixError(value, '')
   if (fromMode === 'none') {
-    throw new UsageError(`numfmt: rejecting suffix in input: '${value}' (consider using --from)`, 2)
+    throw new UsageError(
+      `numfmt: rejecting suffix in input: '${quoteText(value)}' (consider using --from)`,
+      2,
+    )
   }
   const [base, exponent] = scaleOf(value, rest, fromMode)
   return {
@@ -222,15 +247,22 @@ export async function numfmtGeneric(
   const fromMode = fl.asStr('from') ?? 'none'
   const suffix = fl.asStr('suffix') ?? ''
   const grouping = fl.asBool('grouping')
-  let output: string[]
-  if (texts.length > 0) {
-    output = texts.map((value) => convertField(value, toMode, fromMode, suffix, grouping))
-  } else {
-    const data = DEC.decode(await materialize(resolveSource(opts.stdin)))
-    output = splitLinesNoEnds(data).map((line) =>
-      convertLine(line, toMode, fromMode, suffix, grouping),
-    )
+  const [fields, convert] =
+    texts.length > 0
+      ? [texts, convertField]
+      : [splitLinesNoEnds(DEC.decode(await materialize(resolveSource(opts.stdin)))), convertLine]
+  let printed = ''
+  for (const value of fields) {
+    try {
+      printed += convert(value, toMode, fromMode, suffix, grouping)
+    } catch (err) {
+      if (!(err instanceof UsageError)) throw err
+      // GNU aborts at the first invalid number, after printing the ones
+      // before it.
+      const out = printed === '' ? null : ENC.encode(printed)
+      return [out, new IOResult({ exitCode: err.exitCode, stderr: ENC.encode(`${err.message}\n`) })]
+    }
+    printed += '\n'
   }
-  if (output.length === 0) return [new Uint8Array(0), new IOResult()]
-  return [ENC.encode(output.join('\n') + '\n'), new IOResult()]
+  return [ENC.encode(printed), new IOResult()]
 }

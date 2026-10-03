@@ -17,10 +17,11 @@ import { IOResult } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { HttpConnectError, httpGet, isHttpError } from '../utils/http.ts'
+import { HttpConnectError, HttpTimeoutError } from '../errors.ts'
+import { httpGet, isHttpError } from '../utils/http.ts'
 import { UsageError } from '../../errors.ts'
 import { resolveTarget } from './curl.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 
 const ENC = new TextEncoder()
 
@@ -50,14 +51,20 @@ async function wgetCommand(
   const argsO = fl.asStr('args_O') ?? null
   const q = fl.asBool('q')
   const spider = fl.asBool('spider')
+  const timeout = fl.asFloat('timeout')
+  if (timeout !== undefined && timeout < 0)
+    throw new UsageError(`wget: --timeout: Negative time period '${String(timeout)}'`, 2)
 
   // wget follows redirects unconditionally; it has no -L equivalent.
   let resp
   try {
-    resp = await httpGet(url)
+    resp = await httpGet(url, {
+      timeoutMs: timeout === undefined ? 30_000 : timeout === 0 ? null : timeout * 1000,
+    })
   } catch (err) {
-    if (!(err instanceof HttpConnectError)) throw err
-    const line = `Connecting to ${err.host}:${String(err.port)}... failed: Connection refused.\n`
+    if (!(err instanceof HttpConnectError) && !(err instanceof HttpTimeoutError)) throw err
+    const reason = err instanceof HttpTimeoutError ? 'Connection timed out' : 'Connection refused'
+    const line = `Connecting to ${err.host}:${String(err.port)}... failed: ${reason}.\n`
     return [
       null,
       new IOResult({
@@ -85,7 +92,19 @@ async function wgetCommand(
       new IOResult({ stderr: q ? new Uint8Array() : ENC.encode('Remote file exists.\n') }),
     ]
   }
-  const dest = argsO ?? paths[0]?.virtual ?? url.slice(url.lastIndexOf('/') + 1)
+  if (argsO === '-' || (isHttpError(resp) && argsO === null)) {
+    return [
+      isHttpError(resp) ? null : resp.body,
+      new IOResult({
+        exitCode: isHttpError(resp) ? EXIT_SERVER_ERROR : 0,
+        stderr:
+          !q && isHttpError(resp)
+            ? ENC.encode(`ERROR ${String(resp.status)}: ${resp.reason}.\n`)
+            : new Uint8Array(),
+      }),
+    ]
+  }
+  const dest = argsO ?? paths[0]?.virtual ?? (url.slice(url.lastIndexOf('/') + 1) || 'index.html')
   // An error status still creates the destination, empty, the way GNU wget
   // truncates the -O target before it learns the response code.
   const data = isHttpError(resp) ? new Uint8Array() : resp.body
@@ -128,7 +147,7 @@ async function wgetCommand(
 
 export const GENERAL_WGET = command({
   name: 'wget',
-  resource: null,
+  vfs: null,
   spec: specOf('wget'),
   fn: wgetCommand,
 })

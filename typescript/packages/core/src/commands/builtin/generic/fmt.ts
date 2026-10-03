@@ -13,11 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { readStdinAsync } from '../utils/stream.ts'
+import { readStdinAsync, stdinStream } from '../utils/stream.ts'
 import { operandsIo, readOperands } from '../utils/operands.ts'
 
 const ENC = new TextEncoder()
@@ -109,6 +109,7 @@ function fmtText(
   tagged: boolean,
   crown: boolean,
 ): string {
+  if (text === '') return ''
   const targetWidth = goal === null ? width : Math.min(width, goal)
   const paragraphs = text.split('\n\n')
   const formatted: string[] = []
@@ -125,6 +126,7 @@ export async function fmtGeneric(
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
+  stream = stdinStream(stream, opts.stdin)
   const fl = new FlagView(opts.flags, specOf('fmt'))
   const widthValue = fl.asStr('width')
   const goalValue = fl.asStr('goal')
@@ -141,19 +143,17 @@ export async function fmtGeneric(
     const [ok, err] = await readOperands(paths, stream, 'fmt')
     const io = operandsIo(err)
     if (ok.length === 0 && err !== '') return [null, io]
-    const parts: string[] = []
-    for (const o of ok) {
-      parts.push(DEC.decode(o.data))
-    }
+    // GNU formats each file on its own: a paragraph never runs from one file
+    // into the next, and a file's unfinished last line is ended before the
+    // next file starts. Mirrors Python's fmt.
     const result: ByteSource = ENC.encode(
-      fmtText(parts.join(''), width, goal, prefix, splitOnly, tagged, crown),
+      ok
+        .map((o) => fmtText(DEC.decode(o.data), width, goal, prefix, splitOnly, tagged, crown))
+        .join(''),
     )
     return [result, io]
   }
-  const stdinData = await readStdinAsync(opts.stdin)
-  if (stdinData === null) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('fmt: missing operand\n') })]
-  }
+  const stdinData = (await readStdinAsync(opts.stdin)) ?? new Uint8Array(0)
   const text = DEC.decode(stdinData)
   const result: ByteSource = ENC.encode(
     fmtText(text, width, goal, prefix, splitOnly, tagged, crown),

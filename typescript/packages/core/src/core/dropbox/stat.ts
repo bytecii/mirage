@@ -20,8 +20,8 @@ import { DropboxApiError } from './client.ts'
 import { getMetadata, type DropboxEntry } from './api.ts'
 import { dropboxPathOf } from './paths.ts'
 import { readdir as coreReaddir } from './readdir.ts'
-import { enoent } from '../../utils/errors.ts'
-import { guessType } from '../../utils/filetype.ts'
+import { enoent, isEnoent } from '../../utils/errors.ts'
+import { contentTypeForPath } from '../../utils/filetype.ts'
 
 function statFromEntry(entry: DropboxEntry): FileStat {
   const modified = entry.server_modified ?? entry.client_modified ?? ''
@@ -36,7 +36,8 @@ function statFromEntry(entry: DropboxEntry): FileStat {
   return new FileStat({
     name: entry.name,
     size: typeof entry.size === 'number' ? entry.size : null,
-    type: guessType(entry.name),
+    type: FileType.FILE,
+    content: contentTypeForPath(entry.name),
     modified,
     fingerprint: modified !== '' ? modified : null,
     extra: {
@@ -66,8 +67,8 @@ export async function stat(
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const key = path.resourcePath
+  const prefix = mountPrefixOf(path.virtual, path.vfsPath)
+  const key = path.vfsPath
   if (key === '') return new FileStat({ name: '/', type: FileType.DIRECTORY })
 
   if (index === undefined) return statFromApi(accessor, path)
@@ -84,12 +85,16 @@ export async function stat(
           virtual: parentVirtual,
           directory: parentVirtual,
           resolved: false,
-          resourcePath: mountKey(parentVirtual, prefix),
+          vfsPath: mountKey(parentVirtual, prefix),
         }),
         index,
       )
-    } catch {
-      // parent listing failed — fall through
+    } catch (err) {
+      // readdir already maps a genuinely missing path to ENOENT; a listing
+      // that fails any other way — ENOTDIR under a file, or a 5xx/429 from
+      // the API — is not absence and must surface, never read back as a
+      // (destructively actionable) false ENOENT.
+      if (!isEnoent(err)) throw err
     }
     result = await index.get(virtualKey)
     if (result.entry === undefined || result.entry === null) {
@@ -107,7 +112,8 @@ export async function stat(
   return new FileStat({
     name: result.entry.vfsName !== '' ? result.entry.vfsName : result.entry.name,
     size: result.entry.size,
-    type: guessType(result.entry.vfsName),
+    type: FileType.FILE,
+    content: contentTypeForPath(result.entry.vfsName),
     modified: result.entry.remoteTime,
     fingerprint: result.entry.remoteTime !== '' ? result.entry.remoteTime : null,
     extra: {

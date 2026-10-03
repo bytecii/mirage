@@ -16,13 +16,13 @@ import { wcAggregate } from '../../aggregators.ts'
 import { wcGeneric } from '../../generic/wc.ts'
 import { type Builder, dirAwareStream, resolveGlobOf } from '../adapter.ts'
 
-export const WC_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'wc',
   read: true,
   aggregate: wcAggregate,
   fn: async (ops, accessor, paths, texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return wcGeneric(resolved, texts, opts, dirAwareStream(ops, accessor, idx))
+    return wcGeneric(resolved, texts, opts, dirAwareStream(ops, accessor, opts))
   },
 }

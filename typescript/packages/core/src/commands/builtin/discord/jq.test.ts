@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { RAMIndexCacheStore } from '../../../cache/index/ram.ts'
 import { materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
-import { FakeDiscordTransport, makeFakeResource, seedChannel, seedGuild } from './_test_util.ts'
+import { FakeDiscordTransport, makeFakeVfs, seedChannel, seedGuild } from './_test_util.ts'
 import { DISCORD_COMMANDS } from './index.ts'
 
 const DISCORD_JQ = DISCORD_COMMANDS.filter((c) => c.name === 'jq' && c.filetype == null)
@@ -33,8 +33,8 @@ async function runJq(
   const cmd = DISCORD_JQ[0]
   if (cmd === undefined) throw new Error('jq not registered')
   const transport = options.transport ?? new FakeDiscordTransport()
-  const resource = makeFakeResource(transport)
-  const result = await cmd.fn(resource.accessor, paths, texts, {
+  const vfs = makeFakeVfs(transport)
+  const result = await cmd.fn(vfs.accessor, paths, texts, {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -53,7 +53,7 @@ async function runJq(
 }
 
 describe('discord jq', () => {
-  it('extracts .content from jsonl messages with .[].content', async () => {
+  it('extracts .content from each jsonl message', async () => {
     const idx = new RAMIndexCacheStore()
     await seedGuild(idx, '/mnt/discord', 'My Server__G1', 'G1')
     await seedChannel(idx, '/mnt/discord', 'My Server__G1', 'general__C1', 'C1', {
@@ -74,13 +74,13 @@ describe('discord jq', () => {
           virtual: '/mnt/discord/My Server__G1/channels/general__C1/2016-04-30/chat.jsonl',
           directory: '/mnt/discord/My Server__G1/channels/general__C1/',
           resolved: false,
-          resourcePath: mountKey(
+          vfsPath: mountKey(
             '/mnt/discord/My Server__G1/channels/general__C1/2016-04-30/chat.jsonl',
             '/mnt/discord',
           ),
         }),
       ],
-      ['.[].content'],
+      ['.content'],
       { raw_output: true },
       { index: idx, transport },
     )

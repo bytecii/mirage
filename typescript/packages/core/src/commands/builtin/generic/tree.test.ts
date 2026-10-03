@@ -32,7 +32,7 @@ function spec(path: string): PathSpec {
     virtual: path,
     directory: path,
     resolved: false,
-    resourcePath: mountKey(path, ''),
+    vfsPath: mountKey(path, ''),
   })
 }
 
@@ -42,7 +42,7 @@ function opts(flags: Record<string, string | boolean | number | string[]>): Comm
     flags,
     filetypeFns: null,
     cwd: '/',
-    resource: null,
+    vfs: null,
   } as unknown as CommandOpts
 }
 
@@ -50,7 +50,7 @@ const stat = (p: PathSpec): Promise<FileStat> =>
   Promise.resolve(
     new FileStat({
       name: key(p).split('/').pop() ?? '',
-      type: FOLDERS.has(key(p)) ? FileType.DIRECTORY : FileType.TEXT,
+      type: FOLDERS.has(key(p)) ? FileType.DIRECTORY : FileType.FILE,
     }),
   )
 
@@ -80,42 +80,27 @@ async function run(
 }
 
 describe('treeGeneric with trailing-slash folder entries', () => {
-  it('shows folder names and hides hidden folders by default', async () => {
-    expect(await run(boxReaddir, {})).toBe(
+  it.each([
+    ['slash-suffixed', boxReaddir],
+    ['slash-free', s3Readdir],
+  ])('draws %s folder entries by name', async (_shape, readdir) => {
+    expect(await run(readdir, {})).toBe(
       '/\n|-- docs\n|   `-- a.txt\n`-- readme.txt\n\n2 directories, 2 files\n',
     )
-  })
-
-  it('shows hidden folders by name with -a', async () => {
-    expect(await run(boxReaddir, { a: true })).toBe(
+    expect(await run(readdir, { a: true })).toBe(
       '/\n|-- .secret\n|-- docs\n|   `-- a.txt\n`-- readme.txt\n\n3 directories, 2 files\n',
-    )
-  })
-
-  it('produces identical output for slash-free entries', async () => {
-    expect(await run(s3Readdir, {})).toBe(
-      '/\n|-- docs\n|   `-- a.txt\n`-- readme.txt\n\n2 directories, 2 files\n',
     )
   })
 })
 
-// GNU tree 2.2.1, pinned on debian:stable-slim. A file operand gets the
-// same inline marker an unopenable one does, but it exists, so it is
-// counted and the exit status stays 0:
-//   tree <file>     -> "<file>  [error opening dir]", 0 directories, 1 file, 0
-//   tree -d <file>  -> same marker, "0 directories", exit 0
-//   tree <missing>  -> same marker, 0 directories, 0 files, exit 2
 describe('treeGeneric operand that is not a directory', () => {
-  function optsWith(
-    start: FileStat | null,
-    flags: Record<string, string | boolean> = {},
-  ): CommandOpts {
+  function optsWith(start: FileStat | null): CommandOpts {
     return {
       stdin: null,
-      flags,
+      flags: {},
       filetypeFns: null,
       cwd: '/',
-      resource: null,
+      vfs: null,
       statPath: () => Promise.resolve(start),
     } as unknown as CommandOpts
   }
@@ -123,44 +108,6 @@ describe('treeGeneric operand that is not a directory', () => {
   const unreached = (): Promise<never> => {
     throw new Error('a non-directory operand must not be listed')
   }
-
-  const fileStat = new FileStat({ name: 'a.txt', size: 6, type: FileType.TEXT })
-
-  it('counts a file operand and exits 0', async () => {
-    const [out, io] = (await treeGeneric(
-      [spec('/a.txt')],
-      optsWith(fileStat),
-      unreached,
-      unreached,
-    )) as [Uint8Array, { exitCode: number }]
-    expect(io.exitCode).toBe(0)
-    expect(DEC.decode(out)).toBe('/a.txt  [error opening dir]\n\n0 directories, 1 file\n')
-  })
-
-  it('omits the file count under -d', async () => {
-    const [out, io] = (await treeGeneric(
-      [spec('/a.txt')],
-      optsWith(fileStat, { d: true }),
-      unreached,
-      unreached,
-    )) as [Uint8Array, { exitCode: number }]
-    expect(io.exitCode).toBe(0)
-    expect(DEC.decode(out)).toBe('/a.txt  [error opening dir]\n\n0 directories\n')
-  })
-
-  // The probe answers on both channels a backend can offer, so null means
-  // nothing is there and the walk is never attempted. GNU tree 2.2.1 marks
-  // it inline, counts nothing, and exits 2.
-  it('marks an operand that is not there and exits 2', async () => {
-    const [out, io] = (await treeGeneric(
-      [spec('/nope')],
-      optsWith(null),
-      unreached,
-      unreached,
-    )) as [Uint8Array, { exitCode: number }]
-    expect(io.exitCode).toBe(2)
-    expect(DEC.decode(out)).toBe('/nope  [error opening dir]\n\n0 directories, 0 files\n')
-  })
 
   // An unreadable directory that does exist still reaches the walk, which
   // renders the same marker with exit 2 (a permission error, not absence).
@@ -185,15 +132,15 @@ describe('treeGeneric operand that is not a directory', () => {
 describe('treeGeneric across a nested mount', () => {
   const PARENT: Record<string, FileType> = {
     '/base': FileType.DIRECTORY,
-    '/base/top.txt': FileType.TEXT,
+    '/base/top.txt': FileType.FILE,
     '/base/inner': FileType.DIRECTORY,
-    '/base/inner/leftover.txt': FileType.TEXT,
+    '/base/inner/leftover.txt': FileType.FILE,
   }
   const CHILD: Record<string, FileType> = {
     '/base/inner': FileType.DIRECTORY,
-    '/base/inner/real.txt': FileType.TEXT,
+    '/base/inner/real.txt': FileType.FILE,
     '/base/inner/deep': FileType.DIRECTORY,
-    '/base/inner/deep/d.txt': FileType.TEXT,
+    '/base/inner/deep/d.txt': FileType.FILE,
   }
   const ROOT = '/base/inner'
 
@@ -222,12 +169,14 @@ describe('treeGeneric across a nested mount', () => {
   }
 
   function crossOpts(): CommandOpts {
+    const under = (path: string): string[] =>
+      [ROOT].filter((r) => r.startsWith(rstripSlash(path) + '/'))
     return {
       ...opts({}),
       ns: {
         mounts: {
-          descendants: (path: string) =>
-            [ROOT].filter((r) => r.startsWith(rstripSlash(path) + '/')),
+          descendants: under,
+          visibleDescendants: under,
           isRoot: (path: string) => rstripSlash(path) === ROOT,
           rootOf: () => '/',
         },

@@ -1,19 +1,45 @@
-import re
-from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
-                             Sequence)
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
+from contextlib import aclosing
+from functools import partial
+from typing import Any
 
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.commands.builtin.generic.awk_types import (  # yapf: disable
-    CMP_OP_PATTERN, FIELD_PREFIX, PRINT_STMT, USAGE, AwkBlock, AwkBoolOp,
-    AwkBuiltin, AwkCmpOp, AwkFlags)
-from mirage.commands.builtin.utils.formatting import format_number, to_number
-from mirage.commands.builtin.utils.stream import _resolve_source
+from mirage.commands.builtin.generic.awk_types import USAGE, AwkFlags
+from mirage.commands.builtin.utils.paths import dispatch_stat, typed_spec
+from mirage.commands.builtin.utils.stream import is_stdin, resolve_source
+from mirage.commands.constants import ROOT_CWD
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
-from mirage.io.async_line_iterator import AsyncLineIterator
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
+from mirage.core.awk import (
+    AwkIOError,
+    AwkRuntimeError,
+    AwkSyntaxError,
+    CommandRun,
+    ExitProgram,
+    Interpreter,
+    parse,
+)
+from mirage.core.awk.builtins import split_assignment, unescape
+from mirage.core.awk.value import text as text_value
+from mirage.io.cooperative import chunks
+from mirage.io.stream import materialize
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import PathSpec
+from mirage.ops.types import NamespaceView
+from mirage.runtime.types import DispatchFn, ShellFn
+from mirage.shell.join import shell_join
+from mirage.types import FileType, PathSpec
+from mirage.utils.errors import FS_ERRORS, WALK_ERRORS, eisdir, fs_strerror
+
+STDIN_NAMES = frozenset({"-", "/dev/stdin"})
 
 
 def parse_flags(fl: FlagView) -> AwkFlags:
@@ -24,7 +50,7 @@ def parse_flags(fl: FlagView) -> AwkFlags:
     """
     raw_f = fl.raw("f")
     if isinstance(raw_f, PathSpec):
-        program_files: tuple[PathSpec, ...] = (raw_f, )
+        program_files: tuple[PathSpec, ...] = (raw_f,)
     elif isinstance(raw_f, list):
         program_files = tuple(p for p in raw_f if isinstance(p, PathSpec))
     else:
@@ -36,403 +62,236 @@ def parse_flags(fl: FlagView) -> AwkFlags:
     )
 
 
-def _parse_program(program: str) -> tuple[str, str]:
-    program = program.strip()
-    if program.startswith("{"):
-        return "", program[1:].rstrip().removesuffix("}").strip()
-    if "{" in program:
-        idx = program.index("{")
-        condition = program[:idx].strip()
-        action = program[idx + 1:].rstrip().removesuffix("}").strip()
-        return condition, action
-    return program, ""
-
-
-_IDENT_RE = re.compile(r"[A-Za-z_]\w*\Z")
-_NUMBER_RE = re.compile(r"-?(?:\d+\.?\d*|\.\d+)\Z")
-
-
-def _is_simple_operand(tok: str) -> bool:
-    """Whether the scraper can evaluate this token as a value.
-
-    The supported grammar is deliberately small: a double-quoted string
-    with no embedded quote, a numeric literal, a plain identifier, or a
-    ``$`` field naming a number or an identifier. Anything else (function
-    calls, arithmetic, concatenation) has no evaluator here and must be
-    refused rather than echoed as its own source text.
+def split_assignments(raw: Sequence[str]) -> dict[str, str]:
+    """Turn -v NAME=VALUE arguments into a mapping, last one winning.
 
     Args:
-        tok (str): the token as written in the program.
+        raw (Sequence[str]): the raw -v arguments.
     """
-    if not tok:
-        return False
-    if len(tok) >= 2 and tok.startswith('"') and tok.endswith('"'):
-        return '"' not in tok[1:-1]
-    if tok.startswith(FIELD_PREFIX):
-        inner = tok[1:]
-        return inner.isdigit() or bool(_IDENT_RE.match(inner))
-    return bool(_IDENT_RE.match(tok) or _NUMBER_RE.match(tok))
+    out: dict[str, str] = {}
+    for item in raw:
+        if "=" in item:
+            key, value = item.split("=", 1)
+            out[key] = unescape(value)
+    return out
 
 
-def _reject(construct: str) -> None:
-    raise UsageError(f"awk: unsupported construct: '{construct}'")
+def served_here(
+    ns: NamespaceView | None, mount_prefix: str, path: PathSpec
+) -> bool:
+    """Whether the mount awk runs on serves an operand.
 
-
-def _split_statements(action: str) -> list[str]:
-    """Split an action into its leaf statements.
-
-    Splits on ``;`` at brace depth zero and outside double quotes. A
-    compound statement (``{ stmts }``, legal wherever a statement is)
-    contributes its inner statements in place, so ``{{print $1}}`` runs
-    ``print $1`` the way gawk does rather than reading as one unknown
-    statement. Validator and evaluator both iterate this list, so they
-    cannot disagree about where a statement ends.
+    A line whose operands span mounts runs awk once, on its first file's
+    mount; an operand another mount serves is read through the dispatcher.
 
     Args:
-        action (str): the action block's source text, braces stripped.
+        ns (NamespaceView | None): the name plane's facts, None outside a
+            workspace, where every operand is the mount's own.
+        mount_prefix (str): the prefix of the mount awk runs on.
+        path (PathSpec): the operand.
     """
-    pieces: list[str] = []
-    depth = 0
-    quoted = False
-    start = 0
-    for i, ch in enumerate(action):
-        if ch == '"':
-            quoted = not quoted
-        elif quoted:
-            continue
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth = max(depth - 1, 0)
-        elif ch == ";" and depth == 0:
-            pieces.append(action[start:i])
-            start = i + 1
-    pieces.append(action[start:])
-    stmts: list[str] = []
-    for piece in pieces:
-        stmt = piece.strip()
-        if not stmt:
-            continue
-        if stmt.startswith("{") and stmt.endswith("}"):
-            stmts.extend(_split_statements(stmt[1:-1]))
-        else:
-            stmts.append(stmt)
-    return stmts
+    if ns is None or ns.mounts is None:
+        return True
+    home = mount_prefix.rstrip("/")
+    return ns.mounts.root_of(path.virtual).rstrip("/") == home
 
 
-def _validate_print_args(args: str, stmt: str) -> None:
-    for tok in re.split(r",\s*", args):
-        if not _is_simple_operand(tok.strip()):
-            _reject(stmt)
-
-
-def _validate_action(action: str) -> None:
-    """Refuse any statement the streamer would silently drop or mangle.
-
-    ``_eval_statements`` executes ``print``, ``var = value`` and
-    ``var += value``; every other statement used to vanish (and
-    ``printf`` ran as a mangled ``print``), so an agent's script exited 0
-    having done nothing. Shares the statement split with the evaluator.
+async def _guarded(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Relay a stream, a filesystem failure becoming awk's ``AwkIOError``.
 
     Args:
-        action (str): the action block's source text.
+        source (AsyncIterator[bytes]): the stream.
     """
-    for stmt in _split_statements(action):
-        m = re.match(r"\w+\s*\+=\s*(.+)\Z", stmt)
-        if m:
-            if not _is_simple_operand(m.group(1).strip()):
-                _reject(stmt)
-            continue
-        if not re.match(rf"{PRINT_STMT}\b", stmt):
-            m_set = _ASSIGN_RE.match(stmt)
-            if m_set:
-                if not _is_simple_operand(m_set.group(2).strip()):
-                    _reject(stmt)
-                continue
-        if stmt == PRINT_STMT:
-            continue
-        if re.match(rf"{PRINT_STMT}\b", stmt):
-            args = stmt[len(PRINT_STMT):].strip()
-            if args:
-                _validate_print_args(args, stmt)
-            continue
-        _reject(stmt)
-
-
-def _validate_simple(expr: str) -> None:
-    expr = expr.strip()
-    m = re.match(rf"(.+?)\s*({CMP_OP_PATTERN})\s*(.+)", expr)
-    if not m:
-        if len(expr) >= 2 and expr.startswith("/") and expr.endswith("/"):
-            return
-        if not _is_simple_operand(expr):
-            _reject(expr)
-        return
-    lhs = m.group(1).strip()
-    rhs = m.group(3).strip()
-    if not _is_simple_operand(lhs):
-        _reject(expr)
-    if rhs.startswith('"') or rhs.startswith(FIELD_PREFIX):
-        if not _is_simple_operand(rhs):
-            _reject(expr)
-        return
-    # A bare right-hand side compares as a literal in this dialect, so any
-    # word is fine; structural characters mean an expression nothing here
-    # evaluates (`length(x)`, `a[1]`).
-    if any(ch in rhs for ch in "(){}["):
-        _reject(expr)
-
-
-def _validate_condition(condition: str) -> None:
-    """Refuse any pattern ``_eval_condition`` cannot actually decide.
-
-    Mirrors its decomposition exactly (``||`` first, then ``&&``, then one
-    simple comparison / regex / truthiness probe), so everything the
-    evaluator runs is accepted and everything it would misread (`~`,
-    arithmetic, parenthesized groups) is refused up front.
-
-    Args:
-        condition (str): the pattern's source text.
-    """
-    condition = condition.strip()
-    if not condition or condition in (AwkBlock.BEGIN, AwkBlock.END):
-        return
-    if AwkBoolOp.OR in condition:
-        for part in condition.split(AwkBoolOp.OR):
-            _validate_condition(part)
-        return
-    if AwkBoolOp.AND in condition:
-        for part in condition.split(AwkBoolOp.AND):
-            _validate_condition(part)
-        return
-    _validate_simple(condition)
-
-
-def _validate_program(program: str) -> None:
-    begin, main, end = _parse_blocks(program)
-    condition, action = _parse_program(main) if main else ("", "")
-    if begin:
-        _validate_action(begin)
-    if end:
-        _validate_action(end)
-    _validate_condition(condition)
-    if action:
-        _validate_action(action)
-
-
-def _resolve_token(tok: str, field_map: Mapping[str, str]) -> str:
-    if tok.startswith(FIELD_PREFIX):
-        inner = tok[1:]
-        if inner in field_map:
-            ref = field_map[inner]
-            return field_map.get(f"{FIELD_PREFIX}{ref}", "")
-        # An out-of-range field is empty in awk, never its own spelling.
-        return field_map.get(tok, "")
-    if tok in field_map:
-        return field_map[tok]
-    # An unset variable reads as the empty string, not its own name; a
-    # numeric literal is its own value.
-    return "" if _IDENT_RE.match(tok) else tok
-
-
-def _eval_simple(expr: str, field_map: Mapping[str, str]) -> bool:
-    expr = expr.strip()
-    m = re.match(rf"(.+?)\s*({CMP_OP_PATTERN})\s*(.+)", expr)
-    if not m:
-        if expr.startswith("/") and expr.endswith("/"):
-            regex = expr[1:-1]
-            return bool(re.search(regex, field_map.get(AwkBuiltin.REC, "")))
-        val = _resolve_token(expr, field_map)
-        try:
-            return float(val) != 0
-        except ValueError:
-            return bool(val)
-    lhs_raw, op, rhs_raw = m.group(1).strip(), m.group(2), m.group(3).strip()
-    rhs_raw = rhs_raw.strip('"')
-    lhs = _resolve_token(lhs_raw, field_map)
-    rhs = _resolve_token(rhs_raw, field_map) if rhs_raw.startswith(
-        FIELD_PREFIX) or rhs_raw in field_map else rhs_raw
     try:
-        lhs_n, rhs_n = float(lhs), float(rhs)
-        return {
-            AwkCmpOp.EQ: lhs_n == rhs_n,
-            AwkCmpOp.NE: lhs_n != rhs_n,
-            AwkCmpOp.GT: lhs_n > rhs_n,
-            AwkCmpOp.LT: lhs_n < rhs_n,
-            AwkCmpOp.GE: lhs_n >= rhs_n,
-            AwkCmpOp.LE: lhs_n <= rhs_n,
-        }[AwkCmpOp(op)]
-    except ValueError:
-        if op == AwkCmpOp.EQ:
-            return lhs == rhs
-        if op == AwkCmpOp.NE:
-            return lhs != rhs
-        return False
+        async with aclosing(chunks(source)) as pulled:
+            async for chunk in pulled:
+                yield chunk
+    except FS_ERRORS as exc:
+        raise AwkIOError(
+            fs_strerror(exc) or "No such file or directory"
+        ) from exc
 
 
-def _eval_condition(condition: str, field_map: Mapping[str, str]) -> bool:
-    condition = condition.strip()
-    if condition == AwkBlock.BEGIN or condition == AwkBlock.END:
-        return False
-    if AwkBoolOp.OR in condition:
-        return any(
-            _eval_condition(p, field_map)
-            for p in condition.split(AwkBoolOp.OR))
-    if AwkBoolOp.AND in condition:
-        return all(
-            _eval_condition(p, field_map)
-            for p in condition.split(AwkBoolOp.AND))
-    return _eval_simple(condition, field_map)
+class AwkStreams:
+    """The files and commands one awk run reaches, through the workspace.
 
-
-_ASSIGN_RE = re.compile(r"([A-Za-z_]\w*)\s*=(?!=)\s*(.+)\Z")
-
-
-def _eval_statements(action: str, field_map: dict[str, str],
-                     accum: dict[str, float],
-                     variables: dict[str, str]) -> str | None:
-    """Run an action's statements in written order.
-
-    Three statement forms exist in this dialect: `var += value`
-    accumulates, `var = value` assigns (persisting across records via
-    ``variables``, which is how ``BEGIN {OFS=":"}`` reaches every print),
-    and `print` emits its arguments joined with OFS. One sequential pass,
-    so `x = 1; print x` sees the assignment.
+    Operands still holding their command-line value read through the
+    mount's own reader, the way they were resolved, unless another mount
+    serves them (a line spanning mounts); every other name
+    (``getline < file``, an ARGV slot the program filled) reads through
+    the dispatcher, as output redirection writes through it. Every
+    stdin reader, a ``-`` operand, ``getline < "-"`` and a command's
+    inherited input alike, shares one cursor, so none replays what
+    another read.
 
     Args:
-        action (str): the action block's source text.
-        field_map (dict[str, str]): the record's fields and variables.
-        accum (dict[str, float]): running `+=` totals.
-        variables (dict[str, str]): the program's global variables.
+        operands (Sequence[PathSpec]): the operands as classified.
+        read_stream (Callable[..., AsyncIterator[bytes]]): the mount's
+            reader for an operand.
+        stdin (ByteSource | None): awk's standard input.
+        dispatch (DispatchFn | None): the workspace op door.
+        cwd (PathSpec): the directory relative names resolve against.
+        shell (ShellFn | None): runs a nested line in the session.
+        local (Callable[[PathSpec], bool]): whether this mount serves an
+            operand.
     """
-    parts: list[str] = []
-    printed = False
-    for stmt in _split_statements(action):
-        m_add = re.match(r"(\w+)\s*\+=\s*(.+)", stmt)
-        if m_add:
-            var, expr = m_add.group(1), m_add.group(2).strip()
-            val = field_map.get(expr, expr)
-            accum[var] = accum.get(var, 0.0) + to_number(val)
-            continue
-        if not stmt.startswith(PRINT_STMT):
-            m_set = _ASSIGN_RE.match(stmt)
-            if m_set:
-                var, raw = m_set.group(1), m_set.group(2).strip()
-                if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
-                    val = raw[1:-1]
-                else:
-                    val = _resolve_token(raw, field_map)
-                variables[var] = val
-                field_map[var] = val
-                continue
-        if not stmt.startswith(PRINT_STMT):
-            continue
-        printed = True
-        args = stmt[len(PRINT_STMT):].strip()
-        ofs = field_map.get("OFS", " ")
-        if not args:
-            parts.append(field_map.get(AwkBuiltin.REC, ""))
-            continue
-        tokens = re.split(r",\s*", args)
-        vals: list[str] = []
-        for tok in tokens:
-            tok = tok.strip()
-            if tok.startswith('"') and tok.endswith('"'):
-                vals.append(tok[1:-1])
-            else:
-                vals.append(_resolve_token(tok, field_map))
-        parts.append(ofs.join(vals))
-    return "\n".join(parts) if printed else None
+
+    def __init__(
+        self,
+        operands: Sequence[PathSpec],
+        read_stream: Callable[..., AsyncIterator[bytes]],
+        stdin: ByteSource | None,
+        dispatch: DispatchFn | None,
+        cwd: PathSpec,
+        shell: ShellFn | None,
+        local: Callable[[PathSpec], bool],
+    ) -> None:
+        self.local = local
+        self.operands = operands
+        self.read_stream = read_stream
+        self.stdin = resolve_source(stdin)
+        self.dispatch = dispatch
+        self.cwd = cwd
+        self.shell = shell
+
+    async def stdin_view(self) -> AsyncIterator[bytes]:
+        async for chunk in self.stdin:
+            yield chunk
+
+    async def read_path(self, name: str | PathSpec) -> AsyncIterator[bytes]:
+        if self.dispatch is None:
+            raise AwkIOError("No such file or directory")
+        path = typed_spec(name, self.cwd.virtual)
+        # A keyed store reads a directory as nothing at all, and other
+        # backends fail it in their own words, so the stat goes first to
+        # fail it the way a POSIX read does.
+        if (
+            await dispatch_stat(self.dispatch, path)
+        ).type == FileType.DIRECTORY:
+            raise eisdir(path)
+        data, _ = await self.dispatch("read", path)
+        yield data
+
+    def open_input(self, name: str, index: int | None) -> AsyncIterator[bytes]:
+        """Open an input stream by name (see ``AwkHost.open_input``).
+
+        Args:
+            name (str): the file name, ``-`` or ``/dev/stdin`` for stdin.
+            index (int | None): the ARGV slot the name was read from.
+        """
+        if index is not None and 0 < index <= len(self.operands):
+            operand = self.operands[index - 1]
+            if operand.raw_path == name:
+                if is_stdin(operand):
+                    return _guarded(self.stdin_view())
+                if self.local(operand):
+                    return _guarded(self.read_stream(operand))
+                return _guarded(self.read_path(operand))
+        if name in STDIN_NAMES:
+            return _guarded(self.stdin_view())
+        return _guarded(self.read_path(name))
+
+    async def write_file(self, name: str, body: str, append: bool) -> None:
+        """Write output text through the dispatcher.
+
+        Args:
+            name (str): the file name as the program spelled it.
+            body (str): the text to write.
+            append (bool): append rather than replace the file.
+        """
+        if self.dispatch is None:
+            raise AwkRuntimeError("awk: file output requires a workspace")
+        path = typed_spec(name, self.cwd.virtual)
+        try:
+            await self.dispatch(
+                "append" if append else "write", path, data=body.encode()
+            )
+        except WALK_ERRORS as exc:
+            raise AwkIOError(
+                fs_strerror(exc) or "Cannot write output file"
+            ) from exc
+
+    async def run(self, command: str, stdin: bytes | None) -> CommandRun:
+        """Run a command line in a subshell of the session, as sh -c would.
+
+        ``eval`` takes the line whole, so an empty one, a comment or a
+        line ending in a backslash runs as ``sh -c`` would run it.
+
+        Args:
+            command (str): the command line.
+            stdin (bytes | None): its input, None for awk's own.
+        """
+        if self.shell is None:
+            raise AwkRuntimeError(
+                "awk: running a command requires a workspace"
+            )
+        source: ByteSource = self.stdin_view() if stdin is None else stdin
+        io = await self.shell(f"( {shell_join(['eval', command])} )", source)
+        out = await materialize(io.stdout) if io.stdout is not None else b""
+        err = await materialize(io.stderr) if io.stderr is not None else b""
+        return CommandRun(out, err, io.exit_code)
 
 
-def _split_fields(line: str, fs: str | None) -> list[str]:
-    if fs is None or fs == " ":
-        return line.split()
-    if fs == "":
-        return list(line)
-    return re.split(re.escape(fs) if len(fs) == 1 else fs, line)
+async def _stage(step: Coroutine[Any, Any, None], io: IOResult) -> bool:
+    """Run one phase of the program; True when it ran ``exit``.
+
+    Args:
+        step (Coroutine[Any, Any, None]): the phase.
+        io (IOResult): receives the exit status.
+    """
+    try:
+        await step
+    except ExitProgram as stop:
+        io.exit_code = stop.code & 0xFF
+        return True
+    return False
 
 
-def _build_field_map(line: str, fs: str | None, nr: int,
-                     variables: Mapping[str, str]) -> dict[str, str]:
-    fields = _split_fields(line, fs)
-    field_map: dict[str, str] = {
-        AwkBuiltin.REC: line,
-        AwkBuiltin.NR: str(nr),
-        AwkBuiltin.NF: str(len(fields)),
-    }
-    for i, f in enumerate(fields, 1):
-        field_map[f"{FIELD_PREFIX}{i}"] = f
-    for k, v in variables.items():
-        field_map[k] = v
-    return field_map
+def _add_stderr(io: IOResult, err: bytes) -> None:
+    if err:
+        held = io.stderr if isinstance(io.stderr, bytes) else b""
+        io.stderr = held + err
 
 
-def _parse_blocks(program: str) -> tuple[str, str, str]:
-    begin = ""
-    end = ""
-    main = program
-
-    begin_match = re.match(rf"{AwkBlock.BEGIN}\s*\{{([^}}]*)\}}\s*(.*)",
-                           program, re.DOTALL)
-    if begin_match:
-        begin = begin_match.group(1).strip()
-        main = begin_match.group(2).strip()
-
-    end_match = re.search(rf"{AwkBlock.END}\s*\{{([^}}]*)\}}\s*$", main)
-    if end_match:
-        end = end_match.group(1).strip()
-        main = main[:end_match.start()].strip()
-
-    return begin, main, end
+async def _drained(interp: Interpreter, io: IOResult) -> bytes:
+    out, err = await interp.drain()
+    _add_stderr(io, err)
+    return out
 
 
 async def _awk_stream(
-    sources: Sequence[AsyncIterator[bytes]],
-    program: str,
-    fs: str | None,
-    variables: dict[str, str],
+    interp: Interpreter, io: IOResult
 ) -> AsyncIterator[bytes]:
-    begin, main, end = _parse_blocks(program)
-    condition, action = _parse_program(main) if main else ("", "")
-    accum: dict[str, float] = {}
-    nr = 0
+    """Run the program, yielding standard output as each record settles.
 
-    if begin:
-        begin_map = {
-            AwkBuiltin.REC: "",
-            AwkBuiltin.NR: "0",
-            AwkBuiltin.NF: "0",
-        } | variables
-        result = _eval_statements(begin, begin_map, accum, variables)
-        if result is not None:
-            yield (result + "\n").encode()
+    ``exit`` in BEGIN skips the input and in the main rules stops it,
+    and END runs after either; every awk treats a runtime error as fatal
+    at exit 2 and keeps what it had already written.
 
-    for source in sources:
-        async for line_bytes in AsyncLineIterator(source):
-            nr += 1
-            if not main:
-                continue
-            line = line_bytes.decode(errors="replace")
-            field_map = _build_field_map(line, fs, nr, variables)
-            if condition and not _eval_condition(condition, field_map):
-                continue
-            result = (_eval_statements(action, field_map, accum, variables)
-                      if action else line)
-            if result is not None:
-                yield (result + "\n").encode()
-
-    if end:
-        end_map = {
-            AwkBuiltin.REC: "",
-            AwkBuiltin.NR: str(nr),
-            AwkBuiltin.NF: "0",
-        } | variables
-        for k, v in accum.items():
-            end_map[k] = format_number(v)
-        result = _eval_statements(end, end_map, accum, variables)
-        if result is not None:
-            yield (result + "\n").encode()
+    Args:
+        interp (Interpreter): the interpreter.
+        io (IOResult): receives the exit status and stderr.
+    """
+    try:
+        exited = await _stage(interp.run_begin(), io)
+        yield await _drained(interp, io)
+        if not exited and interp.has_main_rules():
+            while (record := await interp.next_record()) is not None:
+                if await _stage(interp.run_record(record), io):
+                    break
+                chunk = await _drained(interp, io)
+                if chunk:
+                    yield chunk
+        await _stage(interp.run_end(), io)
+        await interp.finish()
+        yield await _drained(interp, io)
+    except (AwkRuntimeError, AwkSyntaxError) as exc:
+        out, err = await interp.salvage(exc)
+        io.exit_code = 2
+        _add_stderr(io, err)
+        yield out
+    finally:
+        await interp.close_inputs()
 
 
 async def awk(
@@ -444,8 +303,13 @@ async def awk(
     read_stream: Callable[..., AsyncIterator[bytes]],
     stdin: ByteSource | None = None,
     index: IndexCacheStore = NULL_INDEX,
+    dispatch: DispatchFn | None = None,
+    cwd: PathSpec = ROOT_CWD,
+    shell: ShellFn | None = None,
+    ns: NamespaceView | None = None,
+    mount_prefix: str = "",
 ) -> tuple[ByteSource | None, IOResult]:
-    """Run the mini-awk program over backend paths or stdin.
+    """Run an awk program over backend paths or stdin.
 
     Interprets the raw flag kwargs itself (TS awkGeneric parity), so backend
     wrappers only wire paths, texts, flags, and backend I/O.
@@ -461,6 +325,17 @@ async def awk(
             for the -f program file.
         read_stream (Callable[..., AsyncIterator[bytes]]): Streaming reader
             for data files.
+        stdin (ByteSource | None): Standard input.
+        index (IndexCacheStore): The mount's index cache store.
+        dispatch (DispatchFn | None): The workspace op door that
+            ``getline < file`` reads and output redirection writes
+            through.
+        cwd (PathSpec): What relative file names resolve against.
+        shell (ShellFn | None): Runs the command of a pipe or
+            ``system()``.
+        ns (NamespaceView | None): The name plane's facts, which say
+            which operands another mount serves.
+        mount_prefix (str): The prefix of the mount awk runs on.
 
     Returns:
         tuple[ByteSource | None, IOResult]: Output stream and exit metadata.
@@ -473,34 +348,53 @@ async def awk(
         for prog in f.program_files:
             try:
                 raw = await read_bytes(prog)
-            except FileNotFoundError as exc:
+            except (FileNotFoundError, NotADirectoryError) as exc:
                 # GNU awk exits 2 when a -f program file cannot be opened.
-                raise UsageError(f"awk: {prog.raw_path}: "
-                                 "No such file or directory") from exc
-            pieces.append(raw.decode(errors="replace").strip())
-        program = "\n".join(pieces)
+                raise UsageError(
+                    f"awk: {prog.raw_path}: {fs_strerror(exc)}"
+                ) from exc
+            pieces.append(raw.decode(errors="replace"))
+        source = "\n".join(pieces)
     elif texts:
-        program = texts[0]
+        source = texts[0]
     else:
         raise UsageError(USAGE)
 
-    _validate_program(program)
+    try:
+        program = parse(source)
+    except AwkSyntaxError as exc:
+        raise UsageError(str(exc)) from exc
 
-    variables: dict[str, str] = {}
-    for assignment in f.assignments:
-        if "=" in assignment:
-            key, val = assignment.split("=", 1)
-            variables[key] = val
+    # An empty operand names no file and mawk skips it, as it does an
+    # operand ARGV no longer holds; a `var=value` operand is assigned
+    # when the input reaches it. FILENAME reports the operand as typed.
+    streams = AwkStreams(
+        paths,
+        read_stream,
+        stdin,
+        dispatch,
+        cwd,
+        shell,
+        partial(served_here, ns, mount_prefix),
+    )
+    interp = Interpreter(
+        program,
+        streams,
+        [p.raw_path for p in paths],
+        split_assignments(f.assignments),
+    )
+    if f.field_separator is not None:
+        interp.set_var("FS", text_value(unescape(f.field_separator)))
 
-    if paths:
-        sources = [read_stream(p) for p in paths]
-        cache = [p.mount_path for p in paths]
-    else:
-        sources = [_resolve_source(stdin)]
-        cache = []
+    cache = [
+        p.mount_path
+        for p in paths
+        if p.raw_path != ""
+        and not is_stdin(p)
+        and split_assignment(p.raw_path) is None
+    ]
+    io = IOResult(cache=cache)
+    return _awk_stream(interp, io), io
 
-    return _awk_stream(sources, program, f.field_separator,
-                       variables), IOResult(cache=cache)
 
-
-__all__ = ["awk", "parse_flags", "AwkFlags"]
+__all__ = ["awk"]

@@ -6,10 +6,37 @@ permissions:
 "on":
   push:
     branches: [main]
+    # Kept in step with the pull_request filter below: this list had drifted to
+    # cover only one of the eleven batteries, so a push touching solely one of
+    # the other ten landed without this workflow running at all.
     paths:
       - python/**
       - typescript/**
+      - integ/cross.sh
+      - integ/cross.yaml
+      - integ/cross_cache.yaml
+      - integ/state_store.*
+      - integ/index_store.*
+      - integ/snapshot_smoke.*
+      - integ/parity.sh
+      - integ/shell_stdin.py
+      - integ/doors.py
+      - integ/tools/**
+      - integ/fuse/cli_fuse.sh
+      - integ/cli_config.sh
+      - integ/cli_env.sh
+      - integ/cli_ref.sh
+      - integ/vfs_ref.sh
+      - integ/runtime_ref.sh
+      - integ/fixtures/cli/**
+      - integ/fixtures/vfs/**
+      - integ/fixtures/runtime/**
+      - integ/package.json
+      - integ/tsconfig.json
       - .github/workflows/test_cli.yml
+      - .github/actions/cli-battery-setup/action.yml
+      - .github/actions/setup-node-pnpm/action.yml
+      - .github/actions/setup-uv/action.yml
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -17,6 +44,15 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# uv times a request out after 30s by default, which a hosted runner has
+# hit on one stalled wheel download (numpy, pulled in by the lancedb
+# extra) before any test ran.
+env:
+  UV_HTTP_TIMEOUT: 120
+  # mem0 turns its telemetry on by default: importing it starts a PostHog
+  # client, and every Python process then waits ~5 s at exit to flush it.
+  MEM0_TELEMETRY: "False"
 
 jobs:
   changes:
@@ -36,12 +72,61 @@ jobs:
               - 'typescript/**'
               - 'integ/cross.sh'
               - 'integ/cross.yaml'
+              - 'integ/cross_cache.yaml'
+              - 'integ/state_store.*'
+              - 'integ/index_store.*'
+              - 'integ/snapshot_smoke.*'
               - 'integ/parity.sh'
+              - 'integ/shell_stdin.py'
+              - 'integ/doors.py'
+              - 'integ/tools/**'
               - 'integ/fuse/cli_fuse.sh'
               - 'integ/cli_config.sh'
+              - 'integ/cli_env.sh'
               - 'integ/cli_ref.sh'
+              - 'integ/vfs_ref.sh'
+              - 'integ/runtime_ref.sh'
               - 'integ/fixtures/cli/**'
+              - 'integ/fixtures/vfs/**'
+              - 'integ/fixtures/runtime/**'
+              - 'integ/package.json'
+              - 'integ/tsconfig.json'
               - '.github/workflows/test_cli.yml'
+              - '.github/actions/cli-battery-setup/action.yml'
+              - '.github/actions/setup-node-pnpm/action.yml'
+              - '.github/actions/setup-uv/action.yml'
+
+  typescript-build:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
+    name: TypeScript build bootstrap
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: "24"
+
+      - name: Install node-gyp
+        run: npm install -g node-gyp
+
+      - name: Install TypeScript dependencies
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+
+      - name: Build TypeScript packages
+        working-directory: typescript
+        run: pnpm -r build
+
+      - name: Upload TypeScript build outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-typescript-dist
+          path: typescript/packages/*/dist
+          if-no-files-found: error
+          retention-days: 1
 
   python:
     needs: changes
@@ -57,17 +142,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
+        uses: ./.github/actions/setup-uv
 
       - name: Install Python dependencies
         working-directory: python
-        run: uv sync --all-extras --no-extra camel
-
-      - name: Install mirage package
-        working-directory: python
-        run: uv pip install .
+        run: uv sync --all-extras
 
       - name: Smoke test exit code propagation
         working-directory: python
@@ -78,7 +157,7 @@ jobs:
           cat > /tmp/ws.yaml <<'YAML'
           mounts:
             /:
-              resource: ram
+              vfs: ram
               mode: WRITE
           YAML
 
@@ -118,16 +197,16 @@ jobs:
             echo "PASS"
           }
 
-          check "echo ok succeeds" 0 0 $MIRAGE execute -w smoke -c 'echo ok'
-          check "false exits 1" 1 1 $MIRAGE execute -w smoke -c 'false'
+          check "echo ok succeeds" 0 0 $MIRAGE shell -w smoke -c 'echo ok'
+          check "false exits 1" 1 1 $MIRAGE shell -w smoke -c 'false'
           check "false | echo: pipefail off => last cmd wins" 0 0 \
-            $MIRAGE execute -w smoke -c 'false | echo done'
+            $MIRAGE shell -w smoke -c 'false | echo done'
           check "pipefail on => rightmost failure wins" 1 1 \
-            $MIRAGE execute -w smoke -c 'set -o pipefail; false | echo done'
+            $MIRAGE shell -w smoke -c 'set -o pipefail; false | echo done'
 
           echo
           echo "--- background + job wait"
-          submit=$($MIRAGE execute -w smoke --bg -c 'false')
+          submit=$($MIRAGE shell -w smoke --bg -c 'false')
           echo "submit response:"
           echo "$submit" | sed 's/^/  /'
           JID=$(echo "$submit" | jq -r .job_id)
@@ -136,13 +215,13 @@ jobs:
 
           echo
           echo "--- shell composition (&& and ||)"
-          if $MIRAGE execute -w smoke -c 'false' > /dev/null && echo "should not print"; then
+          if $MIRAGE shell -w smoke -c 'false' > /dev/null && echo "should not print"; then
             echo "FAIL: && short-circuit did not work"
             fail=1
           else
             echo "PASS: && correctly short-circuited on inner failure"
           fi
-          if $MIRAGE execute -w smoke -c 'echo ok' > /dev/null && echo "should print"; then
+          if $MIRAGE shell -w smoke -c 'echo ok' > /dev/null && echo "should print"; then
             echo "PASS: && correctly proceeded on inner success"
           else
             echo "FAIL: && incorrectly short-circuited on success"
@@ -154,7 +233,7 @@ jobs:
           cat > /tmp/sg.yaml <<'YAML'
           mounts:
             /:
-              resource: ram
+              vfs: ram
               mode: WRITE
               command_limits:
                 cat:
@@ -164,7 +243,7 @@ jobs:
           cat > /tmp/sgerr.yaml <<'YAML'
           mounts:
             /:
-              resource: ram
+              vfs: ram
               mode: WRITE
               command_limits:
                 cat:
@@ -175,13 +254,13 @@ jobs:
           $MIRAGE workspace delete sgerr > /dev/null 2>&1 || true
           $MIRAGE workspace create /tmp/sg.yaml --id sg
           $MIRAGE workspace create /tmp/sgerr.yaml --id sgerr
-          $MIRAGE execute -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
-          $MIRAGE execute -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
 
           check "cat over max_lines, on_exceed=truncate => exit 0" 0 0 \
-            $MIRAGE execute -w sg -c 'cat /f.txt'
+            $MIRAGE shell -w sg -c 'cat /f.txt'
           echo "+ verify truncated to 2 lines"
-          lines=$($MIRAGE execute -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
+          lines=$($MIRAGE shell -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
           echo "  truncated stdout lines: $lines (expected 2)"
           if [ "$lines" != "2" ]; then
             echo "FAIL: truncate did not cap to 2 lines"
@@ -190,7 +269,7 @@ jobs:
             echo "PASS"
           fi
           check "cat over max_lines, on_exceed=error => exit 1" 1 1 \
-            $MIRAGE execute -w sgerr -c 'cat /f.txt'
+            $MIRAGE shell -w sgerr -c 'cat /f.txt'
           $MIRAGE workspace delete sg
           $MIRAGE workspace delete sgerr
 
@@ -199,7 +278,7 @@ jobs:
           cat > /tmp/cfgkeys.yaml <<'YAML'
           mounts:
             /:
-              resource: ram
+              vfs: ram
               mode: WRITE
           default_session_id: mysess
           default_agent_id: myagent
@@ -220,9 +299,9 @@ jobs:
           else
             echo "PASS"
           fi
-          $MIRAGE execute -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
           check "ops work with snake_case cache/index configured => exit 0" 0 0 \
-            $MIRAGE execute -w cfgkeys -c 'cat /f.txt'
+            $MIRAGE shell -w cfgkeys -c 'cat /f.txt'
           $MIRAGE workspace delete cfgkeys
 
           curl_check() {
@@ -236,6 +315,34 @@ jobs:
               echo "  FAIL"
               fail=1
             fi
+          }
+          # A fixed sleep raced the daemon on a slow runner: curl then
+          # exited 7 on a port nobody was listening on yet. Wait for the
+          # health route to answer, and for the previous daemon to let
+          # go of the port before the next one claims it.
+          wait_ready() {
+            local log="$1"
+            for _ in $(seq 1 60); do
+              if curl -s -o /dev/null http://127.0.0.1:8765/v1/health; then
+                return 0
+              fi
+              sleep 0.5
+            done
+            echo "FAIL: no daemon answered on 8765 within 30s"
+            cat "$log" 2>/dev/null || true
+            fail=1
+            return 1
+          }
+          wait_down() {
+            for _ in $(seq 1 60); do
+              if ! curl -s -o /dev/null http://127.0.0.1:8765/v1/health; then
+                return 0
+              fi
+              sleep 0.5
+            done
+            echo "FAIL: a daemon still answers on 8765 after 30s"
+            fail=1
+            return 1
           }
 
           echo
@@ -258,7 +365,7 @@ jobs:
 
           $MIRAGE workspace delete smoke
           $MIRAGE daemon stop || true
-          sleep 2
+          wait_down
 
           echo
           echo "===== auth: mode=token (operator PAT) ====="
@@ -266,7 +373,7 @@ jobs:
             .venv/bin/python -m uvicorn mirage.server.daemon:app \
             --host 127.0.0.1 --port 8765 --log-level warning >/tmp/auth-token.log 2>&1 &
           TOKEN_PID=$!
-          sleep 2
+          wait_ready /tmp/auth-token.log
           curl_check "correct PAT => 200" 200 \
             -H "Authorization: Bearer operator-pat-xyz" http://127.0.0.1:8765/v1/workspaces
           curl_check "wrong PAT => 401" 401 \
@@ -274,7 +381,7 @@ jobs:
           curl_check "no header => 401" 401 http://127.0.0.1:8765/v1/workspaces
           curl_check "/v1/health bypass => 200" 200 http://127.0.0.1:8765/v1/health
           kill $TOKEN_PID 2>/dev/null || true
-          sleep 2
+          wait_down
 
           echo
           echo "===== auth: mode=jwt (RS256, external issuer) ====="
@@ -306,7 +413,7 @@ jobs:
             .venv/bin/python -m uvicorn mirage.server.daemon:app \
             --host 127.0.0.1 --port 8765 --log-level warning >/tmp/auth-jwt.log 2>&1 &
           JWT_PID=$!
-          sleep 2
+          wait_ready /tmp/auth-jwt.log
           GOOD=$(cat /tmp/jwt-test/good.jwt)
           EXPIRED=$(cat /tmp/jwt-test/expired.jwt)
           curl_check "valid signed JWT => 200" 200 \
@@ -326,24 +433,17 @@ jobs:
           fi
 
   typescript:
-    needs: changes
+    needs: [changes, typescript-build]
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
     name: TypeScript CLI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6.0.10
+      - name: Set up Node and pnpm
+        uses: ./.github/actions/setup-node-pnpm
         with:
-          version: 10.32.1
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
+          node-version: "24"
 
       - name: Install node-gyp
         run: npm install -g node-gyp
@@ -352,9 +452,11 @@ jobs:
         working-directory: typescript
         run: pnpm install --frozen-lockfile
 
-      - name: Build TypeScript packages
-        working-directory: typescript
-        run: pnpm -r build
+      - name: Download TypeScript build outputs
+        uses: actions/download-artifact@v8
+        with:
+          name: cli-typescript-dist
+          path: typescript/packages
 
       - name: Smoke test exit code propagation
         working-directory: typescript
@@ -365,7 +467,7 @@ jobs:
           cat > /tmp/ws.yaml <<'YAML'
           mounts:
             /:
-              resource: ram
+              vfs: ram
               mode: WRITE
           YAML
 
@@ -405,16 +507,16 @@ jobs:
             echo "PASS"
           }
 
-          check "echo ok succeeds" 0 0 $MIRAGE execute -w smoke -c 'echo ok'
-          check "false exits 1" 1 1 $MIRAGE execute -w smoke -c 'false'
+          check "echo ok succeeds" 0 0 $MIRAGE shell -w smoke -c 'echo ok'
+          check "false exits 1" 1 1 $MIRAGE shell -w smoke -c 'false'
           check "false | echo: pipefail off => last cmd wins" 0 0 \
-            $MIRAGE execute -w smoke -c 'false | echo done'
+            $MIRAGE shell -w smoke -c 'false | echo done'
           check "pipefail on => rightmost failure wins" 1 1 \
-            $MIRAGE execute -w smoke -c 'set -o pipefail; false | echo done'
+            $MIRAGE shell -w smoke -c 'set -o pipefail; false | echo done'
 
           echo
           echo "--- background + job wait"
-          submit=$($MIRAGE execute -w smoke --bg -c 'false')
+          submit=$($MIRAGE shell -w smoke --bg -c 'false')
           echo "submit response:"
           echo "$submit" | sed 's/^/  /'
           JID=$(echo "$submit" | jq -r .jobId)
@@ -423,13 +525,13 @@ jobs:
 
           echo
           echo "--- shell composition (&& and ||)"
-          if $MIRAGE execute -w smoke -c 'false' > /dev/null && echo "should not print"; then
+          if $MIRAGE shell -w smoke -c 'false' > /dev/null && echo "should not print"; then
             echo "FAIL: && short-circuit did not work"
             fail=1
           else
             echo "PASS: && correctly short-circuited on inner failure"
           fi
-          if $MIRAGE execute -w smoke -c 'echo ok' > /dev/null && echo "should print"; then
+          if $MIRAGE shell -w smoke -c 'echo ok' > /dev/null && echo "should print"; then
             echo "PASS: && correctly proceeded on inner success"
           else
             echo "FAIL: && incorrectly short-circuited on success"
@@ -441,7 +543,7 @@ jobs:
           cat > /tmp/sg.yaml <<'YAML'
           mounts:
             /:
-              resource: ram
+              vfs: ram
               mode: WRITE
               command_limits:
                 cat:
@@ -451,7 +553,7 @@ jobs:
           cat > /tmp/sgerr.yaml <<'YAML'
           mounts:
             /:
-              resource: ram
+              vfs: ram
               mode: WRITE
               command_limits:
                 cat:
@@ -462,13 +564,13 @@ jobs:
           $MIRAGE workspace delete sgerr > /dev/null 2>&1 || true
           $MIRAGE workspace create /tmp/sg.yaml --id sg
           $MIRAGE workspace create /tmp/sgerr.yaml --id sgerr
-          $MIRAGE execute -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
-          $MIRAGE execute -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
 
           check "cat over max_lines, on_exceed=truncate => exit 0" 0 0 \
-            $MIRAGE execute -w sg -c 'cat /f.txt'
+            $MIRAGE shell -w sg -c 'cat /f.txt'
           echo "+ verify truncated to 2 lines"
-          lines=$($MIRAGE execute -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
+          lines=$($MIRAGE shell -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
           echo "  truncated stdout lines: $lines (expected 2)"
           if [ "$lines" != "2" ]; then
             echo "FAIL: truncate did not cap to 2 lines"
@@ -477,7 +579,7 @@ jobs:
             echo "PASS"
           fi
           check "cat over max_lines, on_exceed=error => exit 1" 1 1 \
-            $MIRAGE execute -w sgerr -c 'cat /f.txt'
+            $MIRAGE shell -w sgerr -c 'cat /f.txt'
           $MIRAGE workspace delete sg
           $MIRAGE workspace delete sgerr
 
@@ -486,7 +588,7 @@ jobs:
           cat > /tmp/cfgkeys.yaml <<'YAML'
           mounts:
             /:
-              resource: ram
+              vfs: ram
               mode: WRITE
           default_session_id: mysess
           default_agent_id: myagent
@@ -507,9 +609,9 @@ jobs:
           else
             echo "PASS"
           fi
-          $MIRAGE execute -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
           check "ops work with snake_case cache/index configured => exit 0" 0 0 \
-            $MIRAGE execute -w cfgkeys -c 'cat /f.txt'
+            $MIRAGE shell -w cfgkeys -c 'cat /f.txt'
           $MIRAGE workspace delete cfgkeys
 
           curl_check() {
@@ -523,6 +625,34 @@ jobs:
               echo "  FAIL"
               fail=1
             fi
+          }
+          # A fixed sleep raced the daemon on a slow runner: curl then
+          # exited 7 on a port nobody was listening on yet. Wait for the
+          # health route to answer, and for the previous daemon to let
+          # go of the port before the next one claims it.
+          wait_ready() {
+            local log="$1"
+            for _ in $(seq 1 60); do
+              if curl -s -o /dev/null http://127.0.0.1:8765/v1/health; then
+                return 0
+              fi
+              sleep 0.5
+            done
+            echo "FAIL: no daemon answered on 8765 within 30s"
+            cat "$log" 2>/dev/null || true
+            fail=1
+            return 1
+          }
+          wait_down() {
+            for _ in $(seq 1 60); do
+              if ! curl -s -o /dev/null http://127.0.0.1:8765/v1/health; then
+                return 0
+              fi
+              sleep 0.5
+            done
+            echo "FAIL: a daemon still answers on 8765 after 30s"
+            fail=1
+            return 1
           }
 
           echo
@@ -545,14 +675,14 @@ jobs:
 
           $MIRAGE workspace delete smoke
           $MIRAGE daemon stop || true
-          sleep 2
+          wait_down
 
           echo
           echo "===== auth: mode=token (TS daemon, operator PAT) ====="
           MIRAGE_AUTH_MODE=token MIRAGE_AUTH_TOKEN=operator-pat-xyz \
             node packages/server/dist/bin/daemon.js >/tmp/auth-token-ts.log 2>&1 &
           TOKEN_PID=$!
-          sleep 2
+          wait_ready /tmp/auth-token-ts.log
           curl_check "correct PAT => 200" 200 \
             -H "Authorization: Bearer operator-pat-xyz" http://127.0.0.1:8765/v1/workspaces
           curl_check "wrong PAT => 401" 401 \
@@ -560,7 +690,7 @@ jobs:
           curl_check "no header => 401" 401 http://127.0.0.1:8765/v1/workspaces
           curl_check "/v1/health bypass => 200" 200 http://127.0.0.1:8765/v1/health
           kill $TOKEN_PID 2>/dev/null || true
-          sleep 2
+          wait_down
 
           echo
           echo "===== auth: mode=jwt (TS daemon, RS256, external issuer) ====="
@@ -586,7 +716,7 @@ jobs:
             MIRAGE_JWT_ALG=RS256 \
             node packages/server/dist/bin/daemon.js >/tmp/auth-jwt-ts.log 2>&1 &
           JWT_PID=$!
-          sleep 2
+          wait_ready /tmp/auth-jwt-ts.log
           GOOD=$(cat /tmp/jwt-test-ts/good.jwt)
           EXPIRED=$(cat /tmp/jwt-test-ts/expired.jwt)
           curl_check "valid signed JWT => 200" 200 \
@@ -605,10 +735,49 @@ jobs:
             exit 1
           fi
 
-  cross:
-    needs: changes
+  # The eleven CLI batteries split four ways. Each runs as its own process and
+  # nearly every one sets its own MIRAGE_HOME, so the only thing the split
+  # changes is which runner they land on. cli_fuse.sh is the exception among the
+  # daemon-driving batteries, which is what the guard on cross-ref-fuse is for.
+  # Grouped by what the runner has to provide, and balanced so parity, which
+  # drives the most CLI invocations of any battery, sits alone on its own leg.
+  cross-parity:
+    needs: [changes, typescript-build]
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
-    name: Cross-language snapshot interop
+    name: CLI feature parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # libfuse: parity.sh's FUSE_YAML carries `backend: fuse`, and creating
+      # that workspace is a real kernel mount on both hosts, not a config-parse
+      # check. The script header's "no fuse kernel deps" predates that case.
+      - name: CLI battery toolchain
+        uses: ./.github/actions/cli-battery-setup
+        with:
+          libfuse: "true"
+
+      - name: Fast RAM snapshot interop (no services or daemon)
+        run: ./python/.venv/bin/python integ/snapshot_smoke.py
+
+      - name: Run CLI feature parity (subshell, sessions, session modes, versioning, fuse)
+        run: |
+          bash integ/parity.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
+      # Each door's tools and commands have unit tests; this proves the
+      # wiring on both hosts. One workspace is written through each door
+      # (HTTP, MCP over HTTP, `mirage mcp`, `mirage shell`, ssh, the ssh
+      # mcp subsystem, sftp) and read back through the next.
+      - name: Run door wiring and the tool corpus (CLI, HTTP, MCP, SSH) on both hosts
+        run: ./python/.venv/bin/python integ/doors.py
+
+  cross-snapshot:
+    needs: [changes, typescript-build]
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
+    name: Cross-language snapshot and store interop
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -633,69 +802,42 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install libfuse (mfusepy + @zkochan/fuse-native, for the CLI FUSE e2e)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fuse3 libfuse3-dev libfuse2t64 || \
-            sudo apt-get install -y fuse3 libfuse3-dev libfuse2
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Install Python dependencies
-        working-directory: python
-        run: uv sync --all-extras --no-extra camel
-
-      - name: Install mirage package
-        working-directory: python
-        run: uv pip install .
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6.0.10
-        with:
-          version: 10.32.1
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-
-      - name: Install TypeScript dependencies
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile=false
-
-      - name: Build TypeScript packages
-        working-directory: typescript
-        run: pnpm -r build
+      - name: CLI battery toolchain
+        uses: ./.github/actions/cli-battery-setup
 
       - name: Start MinIO
         run: |
           for i in $(seq 1 5); do
-            docker pull minio/minio:latest && break
+            docker pull cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1 && break
             echo "docker pull failed (attempt $i), retrying"; sleep 10
           done
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minio -e MINIO_ROOT_PASSWORD=minio123 \
-            minio/minio:latest server /data
+            cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1 server /data
           for i in $(seq 1 30); do
             curl -sf http://localhost:9000/minio/health/live && break
             sleep 1
           done
 
-      - name: Create MinIO bucket
+      # BOTH buckets, always. mirage-cross is cross.yaml's /minio mount and
+      # mirage-state is the state_store S3 round. cross.sh compares writer
+      # output against READER output rather than a literal and never checks an
+      # exit code, and S3VFS does no network I/O at construction, so a
+      # missing mirage-cross reads as '' on both sides and the battery passes
+      # having tested nothing.
+      - name: Create MinIO buckets
         run: |
-          curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc
-          chmod +x /tmp/mc
-          /tmp/mc alias set local http://localhost:9000 minio minio123
-          /tmp/mc mb local/mirage-cross || true
-          /tmp/mc mb local/mirage-state || true
+          for i in $(seq 1 5); do
+            docker pull cgr.dev/chainguard/minio-client@sha256:b8b144ab34694ecea25aa352c4be9de4c26ee2a02701521dce02ee5593c57338 && break
+            echo "docker pull failed (attempt $i), retrying"; sleep 10
+          done
+          docker run --rm --network container:minio \
+            -e MC_HOST_local="http://minio:minio123@localhost:9000" \
+            cgr.dev/chainguard/minio-client@sha256:b8b144ab34694ecea25aa352c4be9de4c26ee2a02701521dce02ee5593c57338 \
+            mb --ignore-existing local/mirage-cross local/mirage-state
+
+      - name: Run daemon large-stdin and grep round trips (both languages)
+        run: ./python/.venv/bin/python integ/shell_stdin.py
 
       - name: Run cross-language snapshot interop (both directions)
         run: |
@@ -703,6 +845,9 @@ jobs:
             "python/.venv/bin/mirage" \
             "node typescript/packages/cli/dist/bin/mirage.js"
 
+      # STORE_S3 gates the whole second round inside the script
+      # (`if [ "${STORE_S3:-0}" == "1" ]`), and without it the battery still
+      # prints OK and exits 0. It has to stay on this step.
       - name: Run cross-language state store interop (both directions)
         run: bash integ/state_store.sh
         env:
@@ -710,11 +855,20 @@ jobs:
           STORE_S3_ENDPOINT: http://localhost:9000
           STORE_S3_BUCKET: mirage-state
 
-      - name: Run CLI feature parity (subshell, sessions, session modes, versioning, fuse)
-        run: |
-          bash integ/parity.sh \
-            "python/.venv/bin/mirage" \
-            "node typescript/packages/cli/dist/bin/mirage.js"
+      - name: Run cross-language index store interop (both directions)
+        run: bash integ/index_store.sh
+
+  cross-config:
+    needs: [changes, typescript-build]
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
+    name: CLI config, ref and env batteries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: CLI battery toolchain
+        uses: ./.github/actions/cli-battery-setup
 
       - name: Run CLI config battery (relocation, validation, resolved view)
         run: |
@@ -728,8 +882,51 @@ jobs:
             "python/.venv/bin/mirage" \
             "node typescript/packages/cli/dist/bin/mirage.js"
 
+      - name: Run CLI env battery (env block presets and managed sources)
+        run: |
+          bash integ/cli_env.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
+  cross-ref-fuse:
+    needs: [changes, typescript-build]
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
+    name: VFS/runtime ref and CLI FUSE batteries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: CLI battery toolchain
+        uses: ./.github/actions/cli-battery-setup
+        with:
+          libfuse: "true"
+
+      - name: Run vfs ref battery (a backend mounted from a file, snapshotted and reloaded)
+        run: |
+          bash integ/vfs_ref.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
+      - name: Run runtime ref battery (a runtime loaded from a file, both tiers)
+        run: |
+          bash integ/runtime_ref.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
+      # Closes a latent hazard the split makes likelier rather than one it
+      # invents. cli_fuse.sh is the only daemon-driving battery with no
+      # MIRAGE_HOME of its own, and the only one on 8765 with no freeport
+      # helper. If runtime_ref.sh's final `daemon stop` does not take, its
+      # daemon stays on 8765: /v1/health skips auth, so the CLI adopts the
+      # survivor rather than spawning, and every real request then 401s on a
+      # token minted under a different home -- the battery dies on errors that
+      # look nothing like FUSE. cli_env.sh used to run between the two, on
+      # 9430/9440, so it never cleared 8765 either; what it did do was give a
+      # leftover daemon a chance to reach its 30s idle-grace self-exit.
       - name: Run CLI end-to-end FUSE (two per-mount subtrees, real libfuse)
         run: |
+          lsof -ti:8765 | xargs -r kill -9 || true
           bash integ/fuse/cli_fuse.sh \
             "python/.venv/bin/mirage" \
             "node typescript/packages/cli/dist/bin/mirage.js"
@@ -737,7 +934,7 @@ jobs:
   gate:
     name: cli-gate
     runs-on: ubuntu-latest
-    needs: [changes, python, typescript, cross]
+    needs: [changes, typescript-build, python, typescript, cross-parity, cross-snapshot, cross-config, cross-ref-fuse]
     if: always()
     steps:
       - name: Check required jobs

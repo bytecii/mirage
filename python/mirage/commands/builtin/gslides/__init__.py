@@ -23,6 +23,7 @@ COMMANDS = [
     *make_generic_commands(
         "gslides",
         _IO,
+        overrides={"rm"},
     ),
     rm,
 ]

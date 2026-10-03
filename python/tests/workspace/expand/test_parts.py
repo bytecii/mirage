@@ -19,16 +19,18 @@ import pytest
 
 from mirage.io import IOResult
 from mirage.shell import parse
-from mirage.shell.syntax.helpers import get_parts
+from mirage.shell.helpers import get_parts
 from mirage.utils.glob_walk import glob_pattern, unmark_globs
-from mirage.workspace.expand.parts import expand_parts, expand_words
-from mirage.workspace.session import Session
+from mirage.workspace.expand.parts import expand_words
+from mirage.workspace.session import SessionState
 from mirage.workspace.session.session import vars_from_env
 
 
 def _words(cmd: str, env=None, stdout: bytes = b""):
     parts = get_parts(parse(cmd).named_children[0])
-    session = Session(session_id="t", cwd="/", vars=vars_from_env(env or {}))
+    session = SessionState(
+        session_id="t", cwd="/", vars=vars_from_env(env or {})
+    )
     execute_fn = AsyncMock(return_value=IOResult(stdout=stdout))
     return asyncio.run(expand_words(parts, session, execute_fn))
 
@@ -41,43 +43,53 @@ def _read(cmd: str, **kw) -> tuple[str, str]:
 
 # `pattern` is what fnmatch is handed: a live metacharacter stays bare,
 # one that quoting made literal arrives as its own character class.
-@pytest.mark.parametrize("cmd,literal,pattern", [
-    ("c /data/*.txt", "/data/*.txt", "/data/*.txt"),
-    ("c '/data/*.txt'", "/data/*.txt", "/data/[*].txt"),
-    ('c "/data/*.txt"', "/data/*.txt", "/data/[*].txt"),
-    ("c /data/\\*.txt", "/data/*.txt", "/data/[*].txt"),
-    ("c '/data/?.txt'", "/data/?.txt", "/data/[?].txt"),
-    ("c '/data/[a].txt'", "/data/[a].txt", "/data/[[]a].txt"),
-    ("c $'/data/*.txt'", "/data/*.txt", "/data/[*].txt"),
-    ("c /data/a.txt", "/data/a.txt", "/data/a.txt"),
-])
+@pytest.mark.parametrize(
+    "cmd,literal,pattern",
+    [
+        ("c /data/*.txt", "/data/*.txt", "/data/*.txt"),
+        ("c '/data/*.txt'", "/data/*.txt", "/data/[*].txt"),
+        ('c "/data/*.txt"', "/data/*.txt", "/data/[*].txt"),
+        ("c /data/\\*.txt", "/data/*.txt", "/data/[*].txt"),
+        ("c '/data/?.txt'", "/data/?.txt", "/data/[?].txt"),
+        ("c '/data/[a].txt'", "/data/[a].txt", "/data/[[]a].txt"),
+        ("c $'/data/*.txt'", "/data/*.txt", "/data/[*].txt"),
+        ("c /data/a.txt", "/data/a.txt", "/data/a.txt"),
+    ],
+)
 def test_quoting_decides_each_metacharacter(cmd, literal, pattern):
     assert _read(cmd) == (literal, pattern)
 
 
 # The heart of it: quoting is per character, so one word can carry both
 # a live metacharacter and a quoted one (GNU bash 5.2.37, pinned).
-@pytest.mark.parametrize("cmd,literal,pattern", [
-    ('c "/data/"*.txt', "/data/*.txt", "/data/*.txt"),
-    ("c '/data/*'.txt", "/data/*.txt", "/data/[*].txt"),
-    ("c '/data/'x\\*.txt", "/data/x*.txt", "/data/x[*].txt"),
-    ('c "/data/*"?.txt', "/data/*?.txt", "/data/[*]?.txt"),
-    ("c '/data/*'?.txt", "/data/*?.txt", "/data/[*]?.txt"),
-    ("c '/data/*'*.txt", "/data/**.txt", "/data/[*]*.txt"),
-    ("c /data/*'?'.txt", "/data/*?.txt", "/data/*[?].txt"),
-])
+@pytest.mark.parametrize(
+    "cmd,literal,pattern",
+    [
+        ('c "/data/"*.txt', "/data/*.txt", "/data/*.txt"),
+        ("c '/data/*'.txt", "/data/*.txt", "/data/[*].txt"),
+        ("c '/data/'x\\*.txt", "/data/x*.txt", "/data/x[*].txt"),
+        ('c "/data/*"?.txt', "/data/*?.txt", "/data/[*]?.txt"),
+        ("c '/data/*'?.txt", "/data/*?.txt", "/data/[*]?.txt"),
+        ("c '/data/*'*.txt", "/data/**.txt", "/data/[*]*.txt"),
+        ("c /data/*'?'.txt", "/data/*?.txt", "/data/*[?].txt"),
+    ],
+)
 def test_a_word_mixes_live_and_quoted_metacharacters(cmd, literal, pattern):
     assert _read(cmd) == (literal, pattern)
 
 
 def test_unquoted_expansion_value_is_live():
-    assert _read("c $p", env={"p":
-                              "/data/*.txt"}) == ("/data/*.txt", "/data/*.txt")
+    assert _read("c $p", env={"p": "/data/*.txt"}) == (
+        "/data/*.txt",
+        "/data/*.txt",
+    )
 
 
 def test_quoted_expansion_value_is_literal():
-    assert _read('c "$p"',
-                 env={"p": "/data/*.txt"}) == ("/data/*.txt", "/data/[*].txt")
+    assert _read('c "$p"', env={"p": "/data/*.txt"}) == (
+        "/data/*.txt",
+        "/data/[*].txt",
+    )
 
 
 def test_quoted_expansion_beside_a_live_metacharacter():
@@ -92,8 +104,10 @@ def test_command_substitution_words_are_live():
 
 def test_brace_quoted_alternative_stays_literal():
     words = _words("c {'*',x}")
-    assert [(unmark_globs(w), glob_pattern(w))
-            for w in words[1:]] == [("*", "[*]"), ("x", "x")]
+    assert [(unmark_globs(w), glob_pattern(w)) for w in words[1:]] == [
+        ("*", "[*]"),
+        ("x", "x"),
+    ]
 
 
 def test_brace_literal_template_glob_is_live():
@@ -103,8 +117,10 @@ def test_brace_literal_template_glob_is_live():
 
 def test_brace_escaped_template_glob_is_literal():
     words = _words("c {a,b}.\\*")
-    assert [(unmark_globs(w), glob_pattern(w))
-            for w in words[1:]] == [("a.*", "a.[*]"), ("b.*", "b.[*]")]
+    assert [(unmark_globs(w), glob_pattern(w)) for w in words[1:]] == [
+        ("a.*", "a.[*]"),
+        ("b.*", "b.[*]"),
+    ]
 
 
 def test_brace_unquoted_expansion_atom_is_live():
@@ -112,13 +128,8 @@ def test_brace_unquoted_expansion_atom_is_live():
     assert [glob_pattern(w) for w in words[1:]] == ["*.txt", "x"]
 
 
-def test_expand_parts_is_the_unmarked_view():
-    cmd = "c '/data/*.txt' \"/data/\"*.txt {a,b}* '/data/*'?.txt"
-    parts = get_parts(parse(cmd).named_children[0])
-    session = Session(session_id="t", cwd="/", vars=vars_from_env({}))
-    execute_fn = AsyncMock(return_value=IOResult())
-    words = asyncio.run(expand_words(parts, session, execute_fn))
-    texts = asyncio.run(expand_parts(parts, session, execute_fn))
-    assert texts == [unmark_globs(w) for w in words]
-    # No mark ever reaches a caller of expand_parts.
-    assert all(w == unmark_globs(w) for w in texts)
+def test_a_substitution_splits_into_300000_words():
+    lines = "\n".join(str(i) for i in range(1, 300_001)) + "\n"
+    out = _words("c $(seq 1 300000)", stdout=lines.encode())
+    assert len(out) == 300_001
+    assert out[-1] == "300000"

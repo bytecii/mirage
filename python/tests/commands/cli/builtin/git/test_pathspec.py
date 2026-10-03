@@ -14,16 +14,27 @@
 
 import pytest
 
-from mirage.commands.cli.builtin.git.errors import OutsideRepositoryError
-from mirage.commands.cli.builtin.git.pathspec import (absolute_operand,
-                                                      matched, repo_relative,
-                                                      under)
+from mirage.commands.cli.builtin.git.errors import (
+    EmptyPathspecError,
+    OutsideRepositoryError,
+    UnsupportedPathspecError,
+)
+from mirage.commands.cli.builtin.git.pathspec import (
+    absolute_operand,
+    matched,
+    pathspec_patterns,
+    pathspec_selects,
+    repo_relative,
+    under,
+)
 from mirage.commands.cli.builtin.git.types import RepoLocation
 
-LOCATION = RepoLocation(gitdir="/repo/.git",
-                        commondir="/repo/.git",
-                        worktree="/repo",
-                        mount_root="/repo/")
+LOCATION = RepoLocation(
+    gitdir="/repo/.git",
+    commondir="/repo/.git",
+    worktree="/repo",
+    mount_root="/repo/",
+)
 
 
 def test_a_relative_operand_resolves_against_the_run_directory():
@@ -41,8 +52,7 @@ def test_dot_segments_are_flattened():
 
 
 def test_a_path_inside_the_tree_becomes_relative():
-    assert repo_relative(LOCATION, "/repo", "docs/notes.md") == \
-        "docs/notes.md"
+    assert repo_relative(LOCATION, "/repo", "docs/notes.md") == "docs/notes.md"
 
 
 def test_the_tree_root_itself_is_the_empty_path():
@@ -56,8 +66,7 @@ def test_a_path_outside_the_tree_is_refused():
 
 
 def test_a_run_directory_below_the_root_still_resolves():
-    assert repo_relative(LOCATION, "/repo/docs", "notes.md") == \
-        "docs/notes.md"
+    assert repo_relative(LOCATION, "/repo/docs", "notes.md") == "docs/notes.md"
 
 
 def test_everything_is_under_the_root():
@@ -84,3 +93,40 @@ def test_a_directory_selects_its_whole_subtree():
 def test_the_root_selects_everything():
     paths = {"a.txt", "docs/b.md"}
     assert matched(paths, "") == paths
+
+
+def test_a_name_that_is_both_a_file_and_a_directory_selects_both():
+    paths = {"slot", "slot/child", "other"}
+    assert matched(paths, "slot") == {"slot", "slot/child"}
+
+
+@pytest.mark.parametrize(
+    "path,patterns,expected",
+    [
+        ("docs/a.md", [""], True),
+        ("docs/a.md", ["docs"], True),
+        ("docs/a.md", ["doc"], False),
+        ("docs/a.md", ["docs/a.md"], True),
+        ("docs/sub/a.md", ["*.md"], True),
+        ("docs/a.md", ["docs/*.txt", "*.md"], True),
+        ("a.txt", ["docs"], False),
+    ],
+)
+def test_a_pathspec_names_a_path_a_directory_or_a_glob(
+    path, patterns, expected
+):
+    assert pathspec_selects(path, patterns) is expected
+
+
+@pytest.mark.parametrize(
+    "operand,error",
+    [
+        ("", EmptyPathspecError),
+        (":(top)a.txt", UnsupportedPathspecError),
+        (":!a.txt", UnsupportedPathspecError),
+        ("/elsewhere/a.txt", OutsideRepositoryError),
+    ],
+)
+def test_a_pathspec_git_refuses_or_this_build_lacks_is_refused(operand, error):
+    with pytest.raises(error):
+        pathspec_patterns(LOCATION, "/repo", [operand])

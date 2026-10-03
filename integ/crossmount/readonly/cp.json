@@ -5,13 +5,14 @@
       "seq": 772,
       "targets": [
         "ram",
+        "opfs",
         "disk"
       ],
       "command": "echo src | tee /data/xro_s1.txt > /dev/null && cp /data/xro_s1.txt /ro/xro.txt",
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "cp: cannot create regular file '/ro/xro.txt': Permission denied\n"
+        "stderr": "cp: cannot create regular file '/ro/xro.txt': Read-only file system\n"
       }
     }
   ]

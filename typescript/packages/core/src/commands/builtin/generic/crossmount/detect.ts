@@ -15,15 +15,12 @@
 import type { MountRegistry } from '../../../../workspace/mount/registry.ts'
 import type { PathSpec } from '../../../../types.ts'
 import { CROSS_MOUNT_COMMANDS, RELAY_COMMANDS, STREAM_COMMANDS } from './constants.ts'
-import { Cmd, Strategy } from './types.ts'
-import type { FlagValue } from '../../../spec/types.ts'
+import type { Cmd } from './types.ts'
+import { Strategy } from './types.ts'
 
-// Pick the combine strategy for one cross-mount command invocation. Flags can
-// flip the strategy: `sed -i` edits each operand in place (per-operand
-// independent), so it fans out instead of streaming.
-export function strategyFor(cmdName: Cmd, flagKwargs: Record<string, FlagValue>): Strategy {
+// Pick the combine strategy for one cross-mount command invocation.
+export function strategyFor(cmdName: Cmd): Strategy {
   if (RELAY_COMMANDS.has(cmdName)) return Strategy.RELAY
-  if (cmdName === Cmd.SED && flagKwargs.i === true) return Strategy.FANOUT
   if (STREAM_COMMANDS.has(cmdName)) return Strategy.STREAM
   return Strategy.FANOUT
 }
@@ -32,6 +29,7 @@ export function isCrossMount(
   cmdName: string,
   scopes: PathSpec[],
   registry: MountRegistry,
+  flagScopes: readonly PathSpec[] = [],
 ): boolean {
   if (!CROSS_MOUNT_COMMANDS.has(cmdName) || scopes.length < 2) return false
   const mounts = new Set<string>()
@@ -40,5 +38,18 @@ export function isCrossMount(
     const m = registry.tryMountFor(s.virtual)
     if (m !== null) mounts.add(m.prefix)
   }
-  return mounts.size > 1
+  // A copy of a tree that holds a mount reads both filesystems, the way GNU
+  // cp -r copies across one, even from a single mount's operands. Only a
+  // source counts: the destination (-t's directory, else the last operand)
+  // lands beside a mount and crosses nothing.
+  const landing = new Set(
+    (flagScopes.length > 0 ? flagScopes : scopes.slice(-1)).map((s) => s.virtual),
+  )
+  return (
+    mounts.size > 1 ||
+    (cmdName === 'cp' &&
+      scopes.some(
+        (s) => !landing.has(s.virtual) && registry.descendantMounts(s.virtual).length > 0,
+      ))
+  )
 }

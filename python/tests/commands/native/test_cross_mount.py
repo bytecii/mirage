@@ -20,56 +20,58 @@ import pytest
 
 from mirage.core.ram.mkdir import mkdir
 from mirage.core.ram.write import write_bytes as mem_write
-from mirage.provision import Precision
-from mirage.resource.disk import DiskResource
-from mirage.resource.ram import RAMResource
-from mirage.resource.s3 import S3Config, S3Resource
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.disk import DiskVFS
+from mirage.vfs.ram import RAMVFS
+from mirage.vfs.s3 import S3VFS, S3Config
 from mirage.workspace import Workspace
-from tests.commands.native.conftest import (_CORE_MODULES, BUCKET, REGION,
-                                            MockAsyncSession)
+from tests.commands.native.conftest import (
+    _CORE_MODULES,
+    BUCKET,
+    REGION,
+    MockAsyncSession,
+)
 
 
 def _run(ws, cmd):
 
     async def _inner():
-        io = await ws.execute(cmd)
+        io = await ws.shell(cmd)
         return await io.stdout_str()
 
     return asyncio.run(_inner())
 
 
 def _exit(ws, cmd):
-    io = asyncio.run(ws.execute(cmd))
+    io = asyncio.run(ws.shell(cmd))
     return io.exit_code
 
 
-def _make_s3_resource(shared_objects):
-    config = S3Config(bucket=BUCKET,
-                      region=REGION,
-                      aws_access_key_id="testing",
-                      aws_secret_access_key="testing")
-    return S3Resource(config)
+def _make_s3_vfs(shared_objects):
+    config = S3Config(
+        bucket=BUCKET,
+        region=REGION,
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+    )
+    return S3VFS(config)
 
 
-def _make_resource(ptype, tmp_path, idx, shared_s3_objects):
+def _make_vfs(ptype, tmp_path, idx, shared_s3_objects):
     if ptype == "ram":
-        return RAMResource(), None
+        return RAMVFS(), None
     elif ptype == "disk":
         root = tmp_path / f"disk{idx}"
         root.mkdir()
-        return DiskResource(root=str(root)), root
+        return DiskVFS(root=str(root)), root
     elif ptype == "s3":
-        return _make_s3_resource(shared_s3_objects), None
-    raise ValueError(f"Unknown resource type: {ptype}")
+        return _make_s3_vfs(shared_s3_objects), None
+    raise ValueError(f"Unknown VFS type: {ptype}")
 
 
-def _write_file(ptype,
-                name,
-                content,
-                disk_root=None,
-                s3_objects=None,
-                mem_accessor=None):
+def _write_file(
+    ptype, name, content, disk_root=None, s3_objects=None, mem_accessor=None
+):
     path = "/" + name
     if ptype == "ram":
         parts = path.strip("/").split("/")
@@ -81,7 +83,8 @@ def _write_file(ptype,
                 except (FileExistsError, ValueError):
                     pass
         asyncio.run(
-            mem_write(mem_accessor, PathSpec.from_str_path(path), content))
+            mem_write(mem_accessor, PathSpec.from_str_path(path), content)
+        )
     elif ptype == "disk":
         file_path = disk_root / name
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,9 +103,17 @@ _PAIRS = [
 
 
 class CrossMountEnv:
-
-    def __init__(self, ws, p1_type, p2_type, p1_root, p2_root,
-                 shared_s3_objects, p1_accessor, p2_accessor):
+    def __init__(
+        self,
+        ws,
+        p1_type,
+        p2_type,
+        p1_root,
+        p2_root,
+        shared_s3_objects,
+        p1_accessor,
+        p2_accessor,
+    ):
         self.ws = ws
         self._types = (p1_type, p2_type)
         self._roots = (p1_root, p2_root)
@@ -112,12 +123,14 @@ class CrossMountEnv:
     def create_file(self, mount_idx, name, content):
         idx = mount_idx - 1
         ptype = self._types[idx]
-        _write_file(ptype,
-                    name,
-                    content,
-                    disk_root=self._roots[idx],
-                    s3_objects=self._s3_objects,
-                    mem_accessor=self._accessors[idx])
+        _write_file(
+            ptype,
+            name,
+            content,
+            disk_root=self._roots[idx],
+            s3_objects=self._s3_objects,
+            mem_accessor=self._accessors[idx],
+        )
 
     def run(self, cmd):
         return _run(self.ws, cmd)
@@ -132,28 +145,36 @@ def cross(request, tmp_path):
 
     shared_s3_objects = {}
 
-    p1, p1_root = _make_resource(p1_type, tmp_path, 1, shared_s3_objects)
-    p2, p2_root = _make_resource(p2_type, tmp_path, 2, shared_s3_objects)
+    p1, p1_root = _make_vfs(p1_type, tmp_path, 1, shared_s3_objects)
+    p2, p2_root = _make_vfs(p2_type, tmp_path, 2, shared_s3_objects)
 
-    ws = Workspace({
-        "/m1": (p1, MountMode.WRITE),
-        "/m2": (p2, MountMode.WRITE)
-    },
-                   mode=MountMode.WRITE)
+    ws = Workspace(
+        {"/m1": (p1, MountMode.WRITE), "/m2": (p2, MountMode.WRITE)},
+        mode=MountMode.WRITE,
+    )
     ws.get_session(ws.default_session_id).cwd = "/m1"
 
     p1_acc = p1.accessor if hasattr(p1, "accessor") else None
     p2_acc = p2.accessor if hasattr(p2, "accessor") else None
 
-    env = CrossMountEnv(ws, p1_type, p2_type, p1_root, p2_root,
-                        shared_s3_objects, p1_acc, p2_acc)
+    env = CrossMountEnv(
+        ws,
+        p1_type,
+        p2_type,
+        p1_root,
+        p2_root,
+        shared_s3_objects,
+        p1_acc,
+        p2_acc,
+    )
 
     if p1_type == "s3" or p2_type == "s3":
         mock_session = MockAsyncSession(shared_s3_objects)
         stack = ExitStack()
         for mod in _CORE_MODULES:
             stack.enter_context(
-                patch(f"{mod}.async_session", return_value=mock_session))
+                patch(f"{mod}.async_session", return_value=mock_session)
+            )
         with stack:
             yield env
     else:
@@ -227,14 +248,14 @@ def test_pipe_cross(cross):
     assert "hello" in result
 
 
-def test_cross_resource_md5_fans_out(cross):
+def test_cross_vfs_md5_fans_out(cross):
     cross.create_file(1, "a.txt", b"hello\n")
     cross.create_file(2, "b.txt", b"world\n")
     single = cross.run("md5 /m1/a.txt") + cross.run("md5 /m2/b.txt")
     assert cross.run("md5 /m1/a.txt /m2/b.txt") == single
 
 
-def test_cross_resource_du_fans_out(cross):
+def test_cross_vfs_du_fans_out(cross):
     cross.create_file(1, "a.txt", b"hello\n")
     cross.create_file(2, "b.txt", b"world!!\n")
     out = cross.run("du -c /m1/a.txt /m2/b.txt")
@@ -243,18 +264,9 @@ def test_cross_resource_du_fans_out(cross):
     assert "14\ttotal" in out
 
 
-def test_cross_resource_file_fans_out(cross):
+def test_cross_vfs_file_fans_out(cross):
     cross.create_file(1, "a.txt", b"hello\n")
     cross.create_file(2, "b.txt", b"world\n")
     out = cross.run("file /m1/a.txt /m2/b.txt")
     assert "/m1/a.txt:" in out
     assert "/m2/b.txt:" in out
-
-
-def test_plan_cross_resource_aggregate_sums(cross):
-    cross.create_file(1, "a.txt", b"hello\n")
-    cross.create_file(2, "b.txt", b"world\n")
-    result = asyncio.run(
-        cross.ws.execute("md5 /m1/a.txt /m2/b.txt", provision=True))
-    assert result.precision == Precision.EXACT
-    assert result.network_read == "12"

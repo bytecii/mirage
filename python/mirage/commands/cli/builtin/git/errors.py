@@ -25,10 +25,18 @@ OPTION_EXIT = 129
 # git closes each of these with a line naming the config knob that
 # turns it off. Kept verbatim so the advice reads the same whether an
 # agent hit real git or this one.
-ADVICE_IGNORED = ('hint: Disable this message with "git config set '
-                  'advice.addIgnoredFile false"')
-ADVICE_EMPTY_PATHSPEC = ('hint: Disable this message with "git config '
-                         'set advice.addEmptyPathspec false"')
+ADVICE_IGNORED = (
+    'hint: Disable this message with "git config set '
+    'advice.addIgnoredFile false"'
+)
+ADVICE_EMPTY_PATHSPEC = (
+    'hint: Disable this message with "git config '
+    'set advice.addEmptyPathspec false"'
+)
+ADVICE_REF_FORMAT = "hint: See `man git check-ref-format`"
+ADVICE_REF_SYNTAX = (
+    'hint: Disable this message with "git config set advice.refSyntax false"'
+)
 
 
 class GitError(Exception):
@@ -41,11 +49,17 @@ class GitError(Exception):
     refusal is a report rather than an error ("nothing to commit"), and
     such a report goes to stdout because that is where the report it
     replaces would have gone.
+
+    ``report`` is the other half of a refusal git splits across both
+    streams: the sentence saying it refused goes to stderr, and the
+    per-path diagnosis naming what is in the way goes to stdout, which
+    is where the same lines would have gone had the command run.
     """
 
     prefix: str | None = "fatal"
     code = FATAL_EXIT
     stream = "stderr"
+    report = ""
 
 
 class NotARepositoryError(GitError):
@@ -62,8 +76,9 @@ class NotARepositoryError(GitError):
 
     def __init__(self, gitdir: str | None = None, quoted: bool = True) -> None:
         if gitdir is None:
-            super().__init__("not a git repository (or any of the parent "
-                             "directories): .git")
+            super().__init__(
+                "not a git repository (or any of the parent directories): .git"
+            )
         elif quoted:
             super().__init__(f"not a git repository: '{gitdir}'")
         else:
@@ -98,7 +113,47 @@ class AmbiguousArgumentError(GitError):
             f"ambiguous argument '{revision}': unknown revision or path "
             f"not in the working tree.\n"
             f"Use '--' to separate paths from revisions, like this:\n"
-            f"'git <command> [<revision>...] -- [<file>...]'")
+            f"'git <command> [<revision>...] -- [<file>...]'"
+        )
+
+
+class BadRevisionError(GitError):
+    """A negated revision (``^<rev>``) that resolves to nothing.
+
+    git words this one differently from a plain unknown revision, and
+    refuses a negated range (``^A..B``) the same way (pinned against
+    git 2.50).
+
+    Args:
+        revision (str): the revision as the user spelled it, caret
+            included.
+    """
+
+    def __init__(self, revision: str) -> None:
+        super().__init__(f"bad revision '{revision}'")
+
+
+class NoMergeBaseError(GitError):
+    """``diff A...B`` between two histories that share no commit.
+
+    Args:
+        revision (str): the range as the user spelled it.
+    """
+
+    def __init__(self, revision: str) -> None:
+        super().__init__(f"{revision}: no merge base")
+
+
+class BadConfigValueError(GitError):
+    """A boolean config variable whose value git cannot read as one.
+
+    Args:
+        value (str): the value as the config file spells it.
+        key (str): the variable, section and name lowercased.
+    """
+
+    def __init__(self, value: str, key: str) -> None:
+        super().__init__(f"bad boolean config value '{value}' for '{key}'")
 
 
 class BadDateError(GitError):
@@ -114,8 +169,10 @@ class BadDateError(GitError):
     """
 
     def __init__(self, flag: str, value: str) -> None:
-        super().__init__(f"invalid date format for {flag}: {value} "
-                         f"(expected ISO-8601 or an epoch second)")
+        super().__init__(
+            f"invalid date format for {flag}: {value} "
+            f"(expected ISO-8601 or an epoch second)"
+        )
 
 
 class NoWorkspaceError(GitError):
@@ -127,6 +184,42 @@ class NoWorkspaceError(GitError):
 
     def __init__(self) -> None:
         super().__init__("this operation must be run in a work tree")
+
+
+class NotAWorkTreeError(GitError):
+    """A verb that reads or writes files, run with no work tree to enter.
+
+    git's ``setup_work_tree`` refuses a bare repository and a work tree
+    that is not a directory in the same words (pinned against git 2.54),
+    so a mistyped ``--work-tree`` is never taken for an empty tree.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("this operation must be run in a work tree")
+
+
+class BareResetError(GitError):
+    """``git reset`` in a bare repository, refused in its own words."""
+
+    def __init__(self) -> None:
+        super().__init__("mixed reset is not allowed in a bare repository")
+
+
+class WorkTreeChdirError(GitError):
+    """A relative ``core.worktree`` that git cannot enter.
+
+    git resolves one by entering it before any verb runs, so every verb
+    fails, the read-only ones included (pinned against git 2.54).
+
+    Args:
+        path (str): the value as the config spells it.
+        reason (str): the strerror git names, absence by default.
+    """
+
+    def __init__(
+        self, path: str, reason: str = "No such file or directory"
+    ) -> None:
+        super().__init__(f"cannot chdir to '{path}': {reason}")
 
 
 class NoWorkingDirectoryError(GitError):
@@ -143,9 +236,9 @@ class NoWorkingDirectoryError(GitError):
         reason (str): the strerror git names, absence by default.
     """
 
-    def __init__(self,
-                 path: str,
-                 reason: str = "No such file or directory") -> None:
+    def __init__(
+        self, path: str, reason: str = "No such file or directory"
+    ) -> None:
         super().__init__(f"cannot change to '{path}': {reason}")
 
 
@@ -162,8 +255,10 @@ class BadStartPointError(GitError):
     """
 
     def __init__(self, start: str, name: str) -> None:
-        super().__init__(f"'{start}' is not a commit and a branch '{name}' "
-                         f"cannot be created from it")
+        super().__init__(
+            f"'{start}' is not a commit and a branch '{name}' "
+            f"cannot be created from it"
+        )
 
 
 class RevisionResetError(GitError):
@@ -181,8 +276,43 @@ class RevisionResetError(GitError):
     """
 
     def __init__(self, revision: str) -> None:
-        super().__init__(f"cannot reset to '{revision}': this build resets "
-                         f"the index from HEAD only")
+        super().__init__(
+            f"cannot reset to '{revision}': this build resets "
+            f"the index from HEAD only"
+        )
+
+
+class AllWithPathsError(GitError):
+    """``commit -a`` given paths as well.
+
+    git refuses the pair before reading anything, naming the first path
+    (pinned against git 2.50).
+
+    Args:
+        path (str): the first path operand as the user spelled it.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"paths '{path} ...' with -a does not make sense")
+
+
+class PartialCommitError(GitError):
+    """``commit`` given paths, which this build does not take.
+
+    Real git commits only those paths, from the working tree, and leaves
+    the rest of the index staged. mirage commits the whole index, and
+    doing that while the caller named a subset would record changes
+    they never asked to commit, so the operand is refused instead.
+
+    Args:
+        path (str): the first path operand as the user spelled it.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            f"cannot commit '{path}' alone: this build commits "
+            f"the whole index; stage it and commit without paths"
+        )
 
 
 class BadPrettyError(GitError):
@@ -201,7 +331,7 @@ class BadPrettyError(GitError):
 class UnsupportedPrettyError(GitError):
     """A --pretty/--format preset git has but this build does not.
 
-    ``raw``, ``email``, ``mboxrd`` and ``reference`` are real git
+    ``email``, ``mboxrd`` and ``reference`` are real git
     formats; answering "invalid" for them would gaslight an agent that
     spelled a valid one, so the refusal says unsupported and names what
     exists instead.
@@ -213,8 +343,9 @@ class UnsupportedPrettyError(GitError):
     def __init__(self, value: str) -> None:
         super().__init__(
             f"unsupported --pretty format: {value} (this build implements "
-            f"oneline, short, medium, full, fuller and format:/tformat: "
-            f"strings)")
+            f"oneline, short, medium, full, fuller, raw and format:/tformat: "
+            f"strings)"
+        )
 
 
 class UnrecognizedArgumentError(GitError):
@@ -246,8 +377,9 @@ class OutsideRepositoryError(GitError):
     """
 
     def __init__(self, operand: str, root: str) -> None:
-        super().__init__(f"{operand}: '{operand}' is outside repository at "
-                         f"'{root}'")
+        super().__init__(
+            f"{operand}: '{operand}' is outside repository at '{root}'"
+        )
 
 
 class PathspecError(GitError):
@@ -259,6 +391,36 @@ class PathspecError(GitError):
 
     def __init__(self, pathspec: str) -> None:
         super().__init__(f"pathspec '{pathspec}' did not match any files")
+
+
+class EmptyPathspecError(GitError):
+    """An empty pathspec operand, which git refuses rather than reading
+    as everything (pinned against git 2.54)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "empty string is not a valid pathspec. please use . instead if "
+            "you meant to match all paths"
+        )
+
+
+class UnsupportedPathspecError(GitError):
+    """Pathspec magic git has but this build does not read.
+
+    ``:(top)``, ``:!``, ``:(icase)`` and their kin are real git; matching
+    the operand as a plain path would select nothing, or the wrong
+    paths, and look like an answer, so the refusal says unsupported and
+    names what exists instead.
+
+    Args:
+        pathspec (str): the operand as the user spelled it.
+    """
+
+    def __init__(self, pathspec: str) -> None:
+        super().__init__(
+            f"unsupported pathspec magic: {pathspec} (this build implements "
+            f"paths, leading directories and wildcard patterns)"
+        )
 
 
 class IgnoredPathsError(GitError):
@@ -279,9 +441,11 @@ class IgnoredPathsError(GitError):
 
     def __init__(self, paths: list[str]) -> None:
         listed = "\n".join(sorted(paths))
-        super().__init__(f"The following paths are ignored by one of your "
-                         f".gitignore files:\n{listed}\nhint: Use -f if you "
-                         f"really want to add them.\n{ADVICE_IGNORED}")
+        super().__init__(
+            f"The following paths are ignored by one of your "
+            f".gitignore files:\n{listed}\nhint: Use -f if you "
+            f"really want to add them.\n{ADVICE_IGNORED}"
+        )
 
 
 class NothingSpecifiedError(GitError):
@@ -295,9 +459,11 @@ class NothingSpecifiedError(GitError):
     code = 0
 
     def __init__(self) -> None:
-        super().__init__("Nothing specified, nothing added.\nhint: Maybe "
-                         "you wanted to say 'git add .'?\n"
-                         f"{ADVICE_EMPTY_PATHSPEC}")
+        super().__init__(
+            "Nothing specified, nothing added.\nhint: Maybe "
+            "you wanted to say 'git add .'?\n"
+            f"{ADVICE_EMPTY_PATHSPEC}"
+        )
 
 
 class NothingToCommitError(GitError):
@@ -328,8 +494,10 @@ class MissingMessageError(GitError):
     """
 
     def __init__(self) -> None:
-        super().__init__("no commit message supplied (mirage has no editor "
-                         "to open; pass -m)")
+        super().__init__(
+            "no commit message supplied (mirage has no editor "
+            "to open; pass -m)"
+        )
 
 
 class UnmergedIndexError(GitError):
@@ -354,15 +522,34 @@ class BranchExistsError(GitError):
         super().__init__(f"a branch named '{name}' already exists")
 
 
+class InvalidBranchNameError(GitError):
+    """A branch name git's ref rules refuse.
+
+    Refused before the name reaches a ref file, because a ref is
+    written as a path below ``.git``: ``../../config`` would land on
+    the repository's own configuration rather than on a branch. git
+    closes the refusal with the two hint lines kept here, and words it
+    without the full stop its tag twin carries. Pinned against git
+    2.50.1.
+
+    Args:
+        name (str): the name as the user spelled it.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"'{name}' is not a valid branch name\n"
+            f"{ADVICE_REF_FORMAT}\n{ADVICE_REF_SYNTAX}"
+        )
+
+
 class BranchNameRequiredError(GitError):
-    """``branch -d`` with nothing to delete.
+    """``branch -d`` with nothing to delete: git dies, 128 (pinned against
+    git 2.50.1).
 
     Args:
         None.
     """
-
-    prefix = "error"
-    code = OPTION_EXIT
 
     def __init__(self) -> None:
         super().__init__("branch name required")
@@ -380,8 +567,9 @@ class CheckedOutBranchError(GitError):
     code = 1
 
     def __init__(self, name: str, worktree: str) -> None:
-        super().__init__(f"cannot delete branch '{name}' used by worktree at "
-                         f"'{worktree}'")
+        super().__init__(
+            f"cannot delete branch '{name}' used by worktree at '{worktree}'"
+        )
 
 
 class UnmergedBranchError(GitError):
@@ -405,9 +593,11 @@ class UnmergedBranchError(GitError):
     code = 1
 
     def __init__(self, name: str) -> None:
-        super().__init__(f"the branch '{name}' is not fully merged\n"
-                         f"hint: If you are sure you want to delete it, run "
-                         f"'git branch -D {name}'")
+        super().__init__(
+            f"the branch '{name}' is not fully merged\n"
+            f"hint: If you are sure you want to delete it, run "
+            f"'git branch -D {name}'"
+        )
 
 
 class NoBranchError(GitError):
@@ -441,17 +631,23 @@ class UnknownPathspecError(GitError):
 
     def __init__(self, target: str, fatal: bool = False) -> None:
         self.code = FATAL_EXIT if fatal else 1
-        super().__init__(f"pathspec '{target}' did not match any file(s) "
-                         f"known to git")
+        super().__init__(
+            f"pathspec '{target}' did not match any file(s) known to git"
+        )
 
 
-def _conflict_block(header: str, paths: list[str], advice: str) -> str:
+def _conflict_block(header: str, paths: list[str], advice: str = "") -> str:
     """One named-files paragraph of a checkout refusal.
+
+    The advice line is optional because one of git's three paragraphs
+    has none: the directory one ends at its list, which renders as the
+    blank line before the next paragraph.
 
     Args:
         header (str): the line that introduces the list.
         paths (list[str]): the files to name, one per tab-indented line.
-        advice (str): the line telling the caller what to do about them.
+        advice (str): the line telling the caller what to do about them,
+            empty for a paragraph git words without one.
     """
     listed = "\n".join(f"\t{path}" for path in sorted(paths))
     return f"{header}\n{listed}\n{advice}"
@@ -464,39 +660,119 @@ class CheckoutConflictError(GitError):
     the one safety check that makes checkout usable at all: without it a
     branch switch silently destroys whatever was edited and not staged.
 
-    Two kinds of work are at risk and git words them differently: a
-    tracked file carrying uncommitted changes, and an untracked file the
-    target branch would write over. Both are carried here rather than
-    raised separately because when both apply git prints both
-    paragraphs and aborts once, pinned against git 2.50.
+    Three kinds of work are at risk and git words them differently: a
+    tracked file carrying uncommitted changes, an untracked *directory*
+    the target replaces with a file of the same name, and an untracked
+    file the target branch would write over. All three are carried here
+    rather than raised separately because when several apply git prints
+    every paragraph and aborts once, in this order, pinned against git
+    2.50.1.
 
     Args:
         local (list[str]): tracked files with uncommitted changes.
+        directories (list[str]): directories holding untracked files
+            that the target records a file at.
         untracked (list[str]): untracked files the target branch holds.
     """
 
     prefix = "error"
     code = 1
 
-    def __init__(self, local: list[str], untracked: list[str]) -> None:
+    def __init__(
+        self,
+        local: list[str],
+        untracked: list[str],
+        directories: list[str] | None = None,
+    ) -> None:
         blocks: list[str] = []
         if local:
             blocks.append(
                 _conflict_block(
                     "Your local changes to the following files would be "
-                    "overwritten by checkout:", local,
+                    "overwritten by checkout:",
+                    local,
                     "Please commit your changes or stash them before you "
-                    "switch branches."))
+                    "switch branches.",
+                )
+            )
+        if directories:
+            blocks.append(
+                _conflict_block(
+                    "Updating the following directories would lose "
+                    "untracked files in them:",
+                    directories,
+                )
+            )
         if untracked:
             blocks.append(
                 _conflict_block(
                     "The following untracked working tree files would be "
-                    "overwritten by checkout:", untracked,
-                    "Please move or remove them before you switch branches."))
+                    "overwritten by checkout:",
+                    untracked,
+                    "Please move or remove them before you switch branches.",
+                )
+            )
         # git emits each paragraph as its own error, so the second one
         # carries the prefix inline: the renderer only writes the first.
         joined = "error: ".join(f"{block}\n" for block in blocks)
         super().__init__(f"{joined}Aborting")
+
+
+class ResolveIndexError(GitError):
+    """A branch move while the index still records conflict stages.
+
+    Every collision check a checkout makes reads stage 0, so a path
+    held only as stages 1-3 is invisible to all of them: the move would
+    clear the stages and delete the working-tree copy, throwing away a
+    conflict resolution in progress with no reflog to recover it from.
+    git refuses first, before it reads either tree.
+
+    Both streams carry part of it, pinned against git 2.50.1: the
+    per-path diagnosis is stdout's, written by the index refresh that
+    found the stages, and the sentence saying the command stopped is
+    stderr's. Exit 1, not the 128 a fatal takes.
+
+    Args:
+        paths (list[str]): every path the index still holds stages for.
+    """
+
+    prefix = "error"
+    code = 1
+
+    def __init__(self, paths: list[str]) -> None:
+        self.report = "".join(
+            f"{path}: needs merge\n" for path in sorted(paths)
+        )
+        super().__init__("you need to resolve your current index first")
+
+
+class UnmergedPathError(GitError):
+    """``restore`` naming a path the source cannot put back.
+
+    A path with conflict stages has no stage-0 content, so restoring
+    the working tree from the index has nothing to write and restoring
+    the index from a tree that does not hold the path has nothing to
+    stage. git names each such path and does none of the work; a path
+    the source *does* hold restores normally and the stages go with it.
+
+    One line per path, so several are refused in one answer rather than
+    one per run. Pinned against git 2.50.1.
+
+    Args:
+        paths (list[str]): the selected paths still in conflict.
+    """
+
+    prefix = "error"
+    code = 1
+
+    def __init__(self, paths: list[str]) -> None:
+        # git emits each path as its own error, so every line after the
+        # first carries the prefix inline: the renderer writes one.
+        super().__init__(
+            "\nerror: ".join(
+                f"path '{path}' is unmerged" for path in sorted(paths)
+            )
+        )
 
 
 class UnknownSwitchError(GitError):
@@ -537,3 +813,728 @@ class InvalidOptionError(GitError):
 
     def __init__(self, argument: str) -> None:
         super().__init__(f"invalid option: {argument}")
+
+
+class NoPathspecRemoveError(GitError):
+    """``rm`` with no pathspec at all.
+
+    Args:
+        None.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("No pathspec was given. Which files should I remove?")
+
+
+class NotRecursiveError(GitError):
+    """``rm`` naming a directory without ``-r``.
+
+    Args:
+        operand (str): the operand as the user spelled it.
+    """
+
+    def __init__(self, operand: str) -> None:
+        super().__init__(f"not removing '{operand}' recursively without -r")
+
+
+# The three refusals ``rm`` groups its paths under, in the order git
+# prints them: a path whose staged content matches neither the file
+# nor HEAD, a path with a staged change, a path with an unstaged edit.
+# Each header comes in a singular and a plural form.
+STAGED_BOTH = (
+    "the following file has staged content different from "
+    "both the\nfile and the HEAD:",
+    "the following files have staged content different from "
+    "both the\nfile and the HEAD:",
+    "(use -f to force removal)",
+)
+STAGED_INDEX = (
+    "the following file has changes staged in the index:",
+    "the following files have changes staged in the index:",
+    "(use --cached to keep the file, or -f to force removal)",
+)
+LOCAL_CHANGES = (
+    "the following file has local modifications:",
+    "the following files have local modifications:",
+    "(use --cached to keep the file, or -f to force removal)",
+)
+
+
+def _removal_block(wording: tuple[str, str, str], paths: list[str]) -> str:
+    """One paragraph of an ``rm`` refusal.
+
+    Args:
+        wording (tuple[str, str, str]): singular header, plural header,
+            and the hint line that closes the paragraph.
+        paths (list[str]): the paths to name, repository-relative.
+    """
+    header = wording[0] if len(paths) == 1 else wording[1]
+    listed = "\n".join(f"    {path}" for path in sorted(paths))
+    return f"{header}\n{listed}\n{wording[2]}"
+
+
+class RemovalRefusedError(GitError):
+    """``rm`` naming a path whose removal would lose uncommitted work.
+
+    git refuses rather than deleting, and names every path under the
+    reason it refused it. Three reasons, printed as three paragraphs in
+    a fixed order when more than one applies, pinned against git 2.50.1.
+
+    Args:
+        both (list[str]): paths staged with content that matches neither
+            the working tree nor HEAD.
+        staged (list[str]): paths with a change staged in the index.
+        local (list[str]): paths with an unstaged edit.
+    """
+
+    prefix = "error"
+    code = 1
+
+    def __init__(
+        self, both: list[str], staged: list[str], local: list[str]
+    ) -> None:
+        blocks = [
+            _removal_block(wording, paths)
+            for wording, paths in (
+                (STAGED_BOTH, both),
+                (STAGED_INDEX, staged),
+                (LOCAL_CHANGES, local),
+            )
+            if paths
+        ]
+        # git emits each paragraph as its own error, so the second one
+        # carries the prefix inline: the renderer only writes the first.
+        super().__init__("\nerror: ".join(blocks))
+
+
+class RemovePathError(GitError):
+    """``rm`` whose working-tree deletion the mount refused.
+
+    git names the path and the strerror. The one reason a mount gives
+    is a directory standing where a tracked file was: ``unlink`` refuses
+    that, and git reports it rather than removing the tree.
+
+    The ``rm`` lines ride along on stdout because git prints them for
+    every selected path before it deletes anything, so the ones printed
+    before the failure are printed whether the line goes through or not.
+
+    Args:
+        path (str): the path, repository-relative.
+        report (str): the ``rm`` lines already printed, empty under
+            ``-q``.
+        reason (str): the strerror to name.
+    """
+
+    def __init__(
+        self, path: str, report: str = "", reason: str = "Is a directory"
+    ) -> None:
+        super().__init__(f"git rm: '{path}': {reason}")
+        self.report = report
+
+
+class MountInWayError(GitError):
+    """A working-tree removal that would take a nested mount with it.
+
+    A mount nested inside the repository is served by another VFS
+    entirely, so removing the directory it stands in empties that
+    backend rather than the repository: the store behind it is gone,
+    and no branch ever recorded a line of it. mirage refuses instead,
+    which is the rule ``MountRootPolicy`` already enforces for ``rm``
+    and ``mv`` at the command tier; a git verb reaches the dispatcher
+    directly, so it has to ask for itself.
+
+    The mount is named only when the session may be told about it. A
+    hidden one blocks the removal just the same, because avoiding a
+    boundary and naming it are two different questions, and naming a
+    hidden mount is the one thing the hide exists to prevent.
+
+    Args:
+        path (str): absolute virtual path being removed.
+        mount (str | None): the mount root in the way, None when the
+            session may not be told which one it is.
+    """
+
+    def __init__(self, path: str, mount: str | None = None) -> None:
+        if mount is None:
+            held = "it holds a mount root"
+        elif mount == path:
+            held = "it is a mount root"
+        else:
+            held = f"'{mount}' is a mount root"
+        super().__init__(f"cannot remove '{path}': {held}")
+
+
+class MoveUsageError(GitError):
+    """``mv`` with fewer than two operands.
+
+    git prints its usage and exits 129. Only the two synopsis lines are
+    kept: the option list below them describes flags this build does
+    not all have.
+
+    Args:
+        None.
+    """
+
+    prefix = None
+    code = OPTION_EXIT
+
+    def __init__(self) -> None:
+        super().__init__(
+            "usage: git mv [-v] [-f] [-n] [-k] <source> "
+            "<destination>\n   or: git mv [-v] [-f] [-n] [-k] "
+            "<source>... <destination-directory>"
+        )
+
+
+class MoveRefusedError(GitError):
+    """``mv`` refusing one source, in git's ``reason, source, destination``
+    shape.
+
+    Args:
+        reason (str): git's own wording for what is wrong.
+        source (str): the source, repository-relative.
+        destination (str): the destination, repository-relative.
+    """
+
+    def __init__(self, reason: str, source: str, destination: str) -> None:
+        super().__init__(
+            f"{reason}, source={source}, destination={destination}"
+        )
+
+
+class MoveOverlapError(GitError):
+    """``mv`` given both a directory and something inside it.
+
+    git refuses the whole line rather than one source, and ``-k`` does
+    not skip it: the two moves would race for the same bytes, and the
+    one that lost would be reported as a rename that failed after the
+    other had already changed the working tree. The child is named
+    first however the operands were ordered. Pinned against git 2.50.1.
+
+    Args:
+        child (str): the source below the other, repository-relative.
+        parent (str): the directory source above it.
+    """
+
+    def __init__(self, child: str, parent: str) -> None:
+        super().__init__(
+            f"cannot move both '{child}' and its parent directory '{parent}'"
+        )
+
+
+class NotADirectoryDestinationError(GitError):
+    """``mv`` with several sources and a destination that is not a directory.
+
+    Args:
+        destination (str): the destination, repository-relative.
+    """
+
+    def __init__(self, destination: str) -> None:
+        super().__init__(f"destination '{destination}' is not a directory")
+
+
+class RenameFailedError(GitError):
+    """``mv`` whose rename the mount refused.
+
+    git names the source and the strerror. The one reason a mount gives
+    is a destination whose directory does not exist: git does not create
+    it, and neither does this.
+
+    Args:
+        source (str): the source, repository-relative.
+        reason (str): the strerror to name.
+    """
+
+    def __init__(
+        self, source: str, reason: str = "No such file or directory"
+    ) -> None:
+        super().__init__(f"renaming '{source}' failed: {reason}")
+
+
+class NoRestorePathsError(GitError):
+    """``restore`` with no pathspec at all.
+
+    Args:
+        None.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("you must specify path(s) to restore")
+
+
+class UnreadableTreeError(GitError):
+    """``restore --source`` naming an object that is no tree.
+
+    A revision that resolves is reported by the id it resolved to
+    rather than by the spelling, which is git's own wording: the
+    complaint is about the object found, not about the name.
+
+    Args:
+        oid (str): hex id of the object the source resolved to.
+    """
+
+    def __init__(self, oid: str) -> None:
+        super().__init__(f"unable to read tree ({oid})")
+
+
+class UnresolvableSourceError(GitError):
+    """``restore --source`` naming a tree this repository cannot resolve.
+
+    Args:
+        source (str): the source as the user spelled it.
+    """
+
+    def __init__(self, source: str) -> None:
+        super().__init__(f"could not resolve {source}")
+
+
+class InvalidReferenceError(GitError):
+    """``switch`` naming something that is neither a branch nor a commit.
+
+    ``switch`` words the miss differently from ``checkout``, which calls
+    the same operand a pathspec: switch never takes a path, so nothing
+    it was given could have been one.
+
+    Args:
+        name (str): the operand as the user spelled it.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"invalid reference: {name}")
+
+
+class BranchExpectedError(GitError):
+    """``switch`` given a commit, tag or remote branch without ``--detach``.
+
+    git refuses rather than detaching, because a detached HEAD is the
+    state an agent loses commits in, and ``switch`` exists to be the
+    verb that never gets there by accident.
+
+    Args:
+        kind (str): what the operand named: ``commit``, ``tag`` or
+            ``remote branch``.
+        name (str): the operand as the user spelled it.
+    """
+
+    def __init__(self, kind: str, name: str) -> None:
+        super().__init__(
+            f"a branch is expected, got {kind} '{name}'\n"
+            f"hint: If you want to detach HEAD at the commit, "
+            f"try again with the --detach option."
+        )
+
+
+class MissingBranchArgumentError(GitError):
+    """``switch`` with nothing to switch to.
+
+    Args:
+        None.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("missing branch or commit argument")
+
+
+class OneReferenceError(GitError):
+    """``switch`` given more than one operand.
+
+    Args:
+        None.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("only one reference expected")
+
+
+class DetachWithCreateError(GitError):
+    """``switch -c`` together with ``--detach``.
+
+    Args:
+        None.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("'--detach' cannot be used with '-b/-B/--orphan'")
+
+
+class TagExistsError(GitError):
+    """``tag <name>`` naming a tag that is already there.
+
+    Args:
+        name (str): the tag name.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"tag '{name}' already exists")
+
+
+class TagNotFoundError(GitError):
+    """``tag -d`` naming a tag that is not there.
+
+    Reported and moved past: git deletes the other names on the line and
+    exits 1 at the end, so this is rendered per name rather than raised.
+
+    Args:
+        name (str): the tag name as the user spelled it.
+    """
+
+    prefix = "error"
+    code = 1
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"tag '{name}' not found.")
+
+
+class ListModeOnlyError(GitError):
+    """A listing option on a ``tag`` line that deletes rather than lists.
+
+    ``-n`` asks for message lines beside each name and ``--contains``
+    and its kin narrow which names are listed, all of which only a
+    listing does, and git makes each *imply* a listing rather than
+    refuse it: ``git tag -n1 nosuch`` is a listing whose pattern matches
+    nothing and exits 0. The implication is what cannot happen once
+    ``-d`` has already said what mode the line is in, so git dies there
+    instead, with the tags untouched, naming the first of ``-n``,
+    ``--contains``, ``--no-contains``, ``--points-at``, ``--merged``,
+    ``--no-merged`` the line holds. Refusing it matters more here than
+    the wording does: read as a listing flag and dropped, the line went
+    on to delete the refs its operands named. Pinned against git 2.50.1.
+
+    Args:
+        option (str): the listing option the line holds.
+    """
+
+    def __init__(self, option: str = "-n") -> None:
+        super().__init__(f"the '{option}' option is only allowed in list mode")
+
+
+class RefUpdateConflictError(GitError):
+    """``tag -d`` naming one tag twice.
+
+    git stages every deletion on the line as one ref transaction, and a
+    transaction holding two updates for the same ref is refused before
+    any of them applies, so the whole line is a no-op: the repeated tag
+    survives, and so does every other tag the line named. The ref it
+    blames is the first in ref order rather than the first typed, since
+    the transaction sorts before it looks for the repeat. Reported the
+    way git reports it, as an ``error`` exiting 1 rather than a fatal.
+
+    Args:
+        ref (str): the full ref name given twice (``refs/tags/v``).
+    """
+
+    prefix = "error"
+    code = 1
+
+    def __init__(self, ref: str) -> None:
+        super().__init__(
+            "could not delete references: multiple updates "
+            f"for ref '{ref}' not allowed"
+        )
+
+
+class RefLockError(GitError):
+    """A ref that cannot be written because another one holds its path.
+
+    git reports this as a failure to take the lock rather than as a
+    name that is already taken, and names the ref standing in the way.
+    ``-f`` does not help: the obstacle is the path, not the value.
+    Pinned against git 2.50.1.
+
+    Args:
+        ref (str): the full ref name that cannot be written.
+        held (str): the full ref name already there.
+    """
+
+    def __init__(self, ref: str, held: str) -> None:
+        super().__init__(
+            f"cannot lock ref '{ref}': '{held}' exists; cannot create '{ref}'"
+        )
+
+
+class InvalidTagNameError(GitError):
+    """A tag name git's ref rules refuse.
+
+    Args:
+        name (str): the name as the user spelled it.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"'{name}' is not a valid tag name.")
+
+
+class UnresolvedRefError(GitError):
+    """``tag`` given an object it cannot resolve.
+
+    Args:
+        revision (str): the operand as the user spelled it.
+    """
+
+    def __init__(self, revision: str) -> None:
+        super().__init__(f"Failed to resolve '{revision}' as a valid ref.")
+
+
+class TagUsageError(GitError):
+    """``tag`` given a creation option with no tag name to create.
+
+    ``-a``, ``-m`` and ``-f`` are creation options, so git refuses them
+    on a line that lists or deletes instead: no operand at all lists,
+    and ``-l`` or ``-d`` says so outright. It prints its usage and
+    exits 129, where an operand-free ``git tag`` or ``git tag -d``
+    lists and exits 0. The synopsis is trimmed to the options this
+    build has, the way ``mv``'s is: git's own lines advertise ``-s``,
+    ``-u``, ``-F``, ``-e`` and ``-v``, which would be a promise
+    nothing here keeps. Pinned against git 2.50.1.
+
+    Args:
+        None.
+    """
+
+    prefix = None
+    code = OPTION_EXIT
+
+    def __init__(self) -> None:
+        super().__init__(
+            "usage: git tag [-a] [-f] [-m <msg>] <tagname> "
+            "[<commit> | <object>]\n"
+            "   or: git tag -d <tagname>...\n"
+            "   or: git tag [-n[<num>]] -l [<pattern>...]"
+        )
+
+
+class TooManyArgumentsError(GitError):
+    """``tag`` given more operands than a name and an object.
+
+    Args:
+        None.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("too many arguments")
+
+
+class MissingTagMessageError(GitError):
+    """``tag -a`` with no ``-m``.
+
+    git would open an editor here, exactly as ``commit`` would, and the
+    same answer applies: a mount has no editor, and inventing a message
+    would put an unreviewed one into the repository.
+
+    Args:
+        None.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "no tag message supplied (mirage has no editor to open; pass -m)"
+        )
+
+
+class IncompatibleOptionsError(GitError):
+    """Two options git refuses to take together.
+
+    Args:
+        first (str): the first option as spelled on the command line.
+        second (str): the second.
+    """
+
+    prefix = "error"
+    code = OPTION_EXIT
+
+    def __init__(self, first: str, second: str) -> None:
+        super().__init__(
+            f"options '{first}' and '{second}' cannot be used together"
+        )
+
+
+class IncompatibleLogOptionsError(GitError):
+    """Two revision-walk options git refuses to take together.
+
+    The same sentence as IncompatibleOptionsError, from the revision
+    parser rather than parse-options, so git dies with 128 instead of
+    refusing with 129: ``log --graph --reverse`` (pinned against git
+    2.50.1).
+
+    Args:
+        first (str): the first option as git names it.
+        second (str): the second.
+    """
+
+    def __init__(self, first: str, second: str) -> None:
+        super().__init__(
+            f"options '{first}' and '{second}' cannot be used together"
+        )
+
+
+class MalformedObjectError(GitError):
+    """``--contains`` or ``--points-at`` given a name that resolves to
+    no object.
+
+    Both refuse while the options are parsed, so the line exits 129 and
+    nothing is listed; ``--points-at`` quotes the name and
+    ``--contains`` does not, which is git's own inconsistency (pinned
+    against git 2.50.1).
+
+    Args:
+        name (str): the name as typed.
+        quoted (bool): whether git quotes it.
+    """
+
+    prefix = "error"
+    code = OPTION_EXIT
+
+    def __init__(self, name: str, quoted: bool = False) -> None:
+        shown = f"'{name}'" if quoted else name
+        super().__init__(f"malformed object name {shown}")
+
+
+class MalformedMergeFilterError(GitError):
+    """``--merged`` or ``--no-merged`` given a name that resolves to no
+    object.
+
+    The same mistake ``MalformedObjectError`` reports, and git dies on
+    this one instead of refusing the option: exit 128 (pinned against
+    git 2.50.1).
+
+    Args:
+        name (str): the name as typed.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"malformed object name {name}")
+
+
+class NotACommitError(GitError):
+    """A commit filter given an object that is no commit, such as a blob.
+
+    git names the object and its type, then says which option could not
+    use it: ``--contains`` as ``no such commit <name>`` and ``--merged``
+    as the option itself (pinned against git 2.50.1).
+
+    Args:
+        sha (str): the object's id.
+        kind (str): its type.
+        reason (str): git's second line, after its ``error:``.
+    """
+
+    prefix = "error"
+    code = OPTION_EXIT
+
+    def __init__(self, sha: str, kind: str, reason: str) -> None:
+        super().__init__(
+            f"object {sha} is a {kind}, not a commit\nerror: {reason}"
+        )
+
+
+class BranchUsageError(GitError):
+    """``branch`` asked to list and to delete on one line.
+
+    ``--contains`` and its kin imply a listing, and a listing is one
+    mode among the others, so a line that also deletes names two: git
+    prints its usage and exits 129 (pinned against git 2.50.1). The
+    lines are git's own, less the forms this build does not implement.
+
+    Args:
+        None.
+    """
+
+    prefix = None
+    code = OPTION_EXIT
+
+    def __init__(self) -> None:
+        super().__init__(
+            "usage: git branch [<options>] [-r | -a] [--merged] "
+            "[--no-merged]\n"
+            "   or: git branch [<options>] <branch-name> [<start-point>]\n"
+            "   or: git branch [<options>] [-l] [<pattern>...]\n"
+            "   or: git branch [<options>] [-r] (-d | -D) <branch-name>...\n"
+            "   or: git branch [<options>] [-r | -a] [--points-at]"
+        )
+
+
+class MissingRepositoryError(GitError):
+    """A local path that holds no repository, in clone's words.
+
+    Args:
+        url (str): the path as typed.
+    """
+
+    def __init__(self, url: str) -> None:
+        super().__init__(f"repository '{url}' does not exist")
+
+
+class UnknownDateFormatError(GitError):
+    """A ``--date`` value, or a date atom's argument, git has no style
+    for.
+
+    Named as git's ``parse_date_format`` names it: the whole value, a
+    ``-local`` suffix and all (pinned against git 2.50.1).
+
+    Args:
+        value (str): the value as typed.
+    """
+
+    def __init__(self, value: str) -> None:
+        super().__init__(f"unknown date format {value}")
+
+
+class DateFormatColonError(GitError):
+    """``format`` with no ``:`` before its strftime template.
+
+    Args:
+        value (str): the value as typed.
+    """
+
+    def __init__(self, value: str) -> None:
+        super().__init__(f"date format missing colon separator: {value}")
+
+
+class UnsupportedFieldError(GitError):
+    """A ref field git has but this build does not render.
+
+    ``%(describe)``, ``%(trailers)``, ``%(signature)`` and their kin are
+    real git fields; calling one unknown would gaslight an agent that
+    spelled it right, so the refusal says unsupported instead.
+
+    Args:
+        name (str): the field as typed, e.g. ``contents:trailers``.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"unsupported field name: {name} (this build does not render it)"
+        )
+
+
+class FormatUsageError(GitError):
+    """A ref format or option set a verb refuses with its usage.
+
+    git prints the line, then the verb's usage, and exits 129; the usage
+    is omitted here as it is for every other verb.
+
+    Args:
+        message (str): the line after ``error:``.
+    """
+
+    prefix = "error"
+    code = OPTION_EXIT
+
+
+class UnparsableFormatError(GitError):
+    """``branch`` and ``tag`` given a format with a ``%(`` left open.
+
+    ``for-each-ref`` answers the same format with its usage; these two
+    say it twice instead, once as git's ``error:`` and once as the fatal
+    that follows it (pinned against git 2.50.1).
+
+    Args:
+        rest (str): the format from the unclosed ``%(`` on.
+    """
+
+    prefix = "error"
+
+    def __init__(self, rest: str) -> None:
+        super().__init__(
+            f"malformed format string {rest}\n"
+            "fatal: unable to parse format string"
+        )

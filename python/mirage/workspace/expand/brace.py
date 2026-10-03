@@ -12,8 +12,13 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.workspace.expand.constants import (CHAR_SEQ, INERT_CLOSE,
-                                               INERT_OPEN, NUM_SEQ)
+from mirage.workspace.expand.constants import (
+    CHAR_SEQ,
+    INERT_CLOSE,
+    INERT_OPEN,
+    NUM_SEQ,
+)
+from mirage.workspace.expand.types import Chunk, Piece
 
 
 def make_inert(index: int) -> str:
@@ -31,27 +36,29 @@ def make_inert(index: int) -> str:
     return f"{INERT_OPEN}{index}{INERT_CLOSE}"
 
 
-def substitute(word: str, values: list[str]) -> str:
-    """Replace inert atoms in an expanded template word with values.
+def substitute(word: str, values: list[list[Chunk]]) -> list[Chunk]:
+    """Replace inert atoms in an expanded template word with their pieces.
+
+    The template's own text is literal and never splits; an atom keeps
+    the pieces its expansion produced. An empty word has no pieces, so
+    it is no word at all: ``{,x}`` is ``x``.
 
     Args:
         word (str): one word produced by expand_template.
-        values (list[str]): expanded chunk values, indexed by atom.
+        values (list[list[Chunk]]): expanded atom pieces, indexed by atom.
     """
-    if INERT_OPEN not in word:
-        return word
-    out: list[str] = []
+    out: list[Chunk] = []
     i = 0
     while True:
         j = word.find(INERT_OPEN, i)
+        literal = word[i:] if j < 0 else word[i:j]
+        if literal:
+            out.append(Piece(literal))
         if j < 0:
-            out.append(word[i:])
-            break
-        out.append(word[i:j])
+            return out
         k = word.index(INERT_CLOSE, j)
-        out.append(values[int(word[j + 1:k])])
+        out.extend(values[int(word[j + 1 : k])])
         i = k + 1
-    return "".join(out)
 
 
 def _is_padded(text: str) -> bool:
@@ -90,16 +97,18 @@ def _gen_sequence(amble: str) -> list[str] | None:
     m = NUM_SEQ.match(amble)
     if m:
         lo_text, hi_text, step_text = m.group(1), m.group(2), m.group(3)
-        values = _seq_values(int(lo_text), int(hi_text),
-                             _parse_step(step_text))
+        values = _seq_values(
+            int(lo_text), int(hi_text), _parse_step(step_text)
+        )
         if _is_padded(lo_text) or _is_padded(hi_text):
             width = max(len(lo_text), len(hi_text))
             return [f"{v:0{width}d}" for v in values]
         return [str(v) for v in values]
     m = CHAR_SEQ.match(amble)
     if m:
-        values = _seq_values(ord(m.group(1)), ord(m.group(2)),
-                             _parse_step(m.group(3)))
+        values = _seq_values(
+            ord(m.group(1)), ord(m.group(2)), _parse_step(m.group(3))
+        )
         return [chr(v) for v in values]
     return None
 
@@ -172,7 +181,7 @@ def _expand(template: str) -> list[str]:
         if close < 0:
             i += 1
             continue
-        amble = template[i + 1:close]
+        amble = template[i + 1 : close]
         alternatives = _gen_sequence(amble)
         if alternatives is None:
             alts = _split_alternatives(amble)
@@ -183,9 +192,10 @@ def _expand(template: str) -> list[str]:
                 continue
             alternatives = [w for alt in alts for w in _expand(alt)]
         prefix = template[:i]
-        suffixes = _expand(template[close + 1:])
+        suffixes = _expand(template[close + 1 :])
         return [
-            prefix + alt + suffix for alt in alternatives
+            prefix + alt + suffix
+            for alt in alternatives
             for suffix in suffixes
         ]
     return [template]

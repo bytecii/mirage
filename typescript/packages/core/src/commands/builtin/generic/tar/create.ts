@@ -14,6 +14,7 @@
 
 import type { LinkView, MountView } from '../../../../ops/types.ts'
 import type { PathSpec } from '../../../../types.ts'
+import { fsStrerror, isFsError, walkRefusal } from '../../../../utils/errors.ts'
 import { fnmatch } from '../../../../utils/fnmatch.ts'
 import { respellOne } from '../../../../utils/path.ts'
 import { lstripSlash, rstripSlash } from '../../../../utils/slash.ts'
@@ -25,19 +26,16 @@ import {
   type StatFn,
   type WalkFn,
 } from '../archive/walk.ts'
+import {
+  CREATE_ERROR_EXIT,
+  EMPTY_ARCHIVE,
+  EMPTY_MEMBER,
+  ERROR_TRAILER,
+  FATAL_TRAILER,
+  SELF_DUMP,
+  USAGE_HINT,
+} from './constants.ts'
 import type { CreateResult, Member } from './types.ts'
-
-// Every diagnostic below is GNU tar 1.35's own wording, pinned on
-// debian:stable-slim; only the hint line is mirage's, for the reason
-// usage.oldOptionError gives (mirage's tar serves no --usage).
-const USAGE_HINT = "Try 'tar --help' for more information."
-const EMPTY_ARCHIVE = 'tar: Cowardly refusing to create an empty archive'
-const FATAL_TRAILER = 'tar: Error is not recoverable: exiting now'
-const ERROR_TRAILER = 'tar: Exiting with failure status due to previous errors'
-const SELF_DUMP = 'archive cannot contain itself; not dumped'
-// The exit GNU gives an operand it could not read, and a -C it could not
-// enter. Both are fatal for the whole run, not per-operand.
-const CREATE_ERROR_EXIT = 2
 
 export type { DirProbe, StatFn, WalkFn }
 
@@ -53,6 +51,7 @@ export interface CreateDeps {
   directories?: readonly PathSpec[]
   links?: LinkView | null
   mounts?: MountView | null
+  oneFileSystem?: boolean
 }
 
 function refusal(notices: string[]): CreateResult {
@@ -150,6 +149,27 @@ function memberName(spelled: string, kind: MemberKind): string {
   return name
 }
 
+export async function checkDirectories(
+  directories: readonly PathSpec[],
+  isDir: DirProbe,
+  stat: StatFn,
+): Promise<string[]> {
+  for (const directory of directories) {
+    let reason: string
+    try {
+      if (directory.walkError !== null) throw walkRefusal(directory)
+      if (await isDir(directory)) continue
+      await stat(directory)
+      reason = 'Not a directory'
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      reason = fsStrerror(err) ?? String(err)
+    }
+    return [`tar: ${directory.rawPath}: Cannot open: ${reason}`, FATAL_TRAILER]
+  }
+  return []
+}
+
 /**
  * Decide every member of a new archive, before writing any of it.
  *
@@ -164,23 +184,24 @@ export async function planCreate(
   deps: CreateDeps,
 ): Promise<CreateResult> {
   if (paths.length === 0) return refusal([EMPTY_ARCHIVE, USAGE_HINT])
-  for (const directory of deps.directories ?? []) {
-    // GNU chdirs at each -C in turn, before reading a single operand,
-    // so the FIRST one it cannot enter is fatal for the whole run and
-    // no members are written. Checking only the last would archive the
-    // operands that followed a bad earlier one.
-    if (!(await deps.isDir(directory))) {
-      return refusal([
-        `tar: ${directory.rawPath}: Cannot open: No such file or directory`,
-        FATAL_TRAILER,
-      ])
-    }
-  }
+  const directoryErrors = await checkDirectories(deps.directories ?? [], deps.isDir, deps.stat)
+  if (directoryErrors.length > 0) return refusal(directoryErrors)
   const members: Member[] = []
   const notices: string[] = []
   const dropped: string[] = []
   let exitCode = 0
   for (const path of paths) {
+    if (path.walkError !== null) {
+      // The walk refused the operand before tar ran (the empty name, a
+      // link loop), so nothing is there to scan; the prefix it would strip
+      // is still announced first, as for any operand it cannot stat.
+      if (path.rawPath === '') notices.push(EMPTY_MEMBER)
+      const trimmed = rstripSlash(path.rawPath)
+      announcePrefix(stripPrefix(trimmed === '' ? path.rawPath : trimmed)[1], dropped, notices)
+      notices.push(`tar: ${path.rawPath}: Cannot stat: ${String(fsStrerror(walkRefusal(path)))}`)
+      exitCode = CREATE_ERROR_EXIT
+      continue
+    }
     // GNU strips a trailing slash off the operand before naming the
     // member, and re-adds one only for a member that really is a
     // directory: `tar -cf a.tar dlink/` stores `dlink`, the symlink,
@@ -209,10 +230,20 @@ export async function planCreate(
     const named = scan.entries.map((entry) => {
       const spelled = respellOne(entry.namePath, base, raw)
       announcePrefix(stripPrefix(spelled)[1], dropped, notices)
-      return [memberName(spelled, entry.kind), entry] as const
+      return [memberName(spelled, entry.kind), spelled, entry] as const
     })
     for (const problem of scan.problems) {
       const shown = respellOne(problem.path, base, raw)
+      // A link followed onto another mount is a crossing too, which
+      // --one-file-system leaves unreported, as in GNU.
+      if (deps.oneFileSystem === true && problem.reason === OTHER_FILESYSTEM) continue
+      if (problem.unreadable === true) {
+        // A directory the walk could not open: GNU names it, keeps its
+        // entry, and fails the run.
+        notices.push(`tar: ${shown}: Cannot open: ${problem.reason ?? ''}`)
+        exitCode = CREATE_ERROR_EXIT
+        continue
+      }
       if (problem.fatal !== true) {
         notices.push(`tar: ${shown}: ${problem.reason ?? ''}`)
         continue
@@ -221,7 +252,7 @@ export async function planCreate(
       exitCode = CREATE_ERROR_EXIT
     }
     if (scan.missing) continue
-    for (const crossing of scan.crossings) {
+    for (const crossing of deps.oneFileSystem === true ? [] : scan.crossings) {
       const shown = memberName(respellOne(crossing, base, raw), 'dir')
       notices.push(`tar: ${shown}: ${OTHER_FILESYSTEM}`)
     }
@@ -231,14 +262,14 @@ export async function planCreate(
         deps.exclude,
       ),
     )
-    for (const [name, entry] of named) {
+    for (const [name, spelled, entry] of named) {
       if (!keep.has(name)) continue
       const read = entry.read ?? null
-      if (read !== null && read.virtual === deps.archive.virtual) {
+      if (deps.archive.rawPath !== '-' && read !== null && read.virtual === deps.archive.virtual) {
         notices.push(`tar: ${name}: ${SELF_DUMP}`)
         continue
       }
-      members.push({ name, kind: entry.kind, path: read, target: entry.target ?? '' })
+      members.push({ name, kind: entry.kind, path: read, target: entry.target ?? '', spelled })
     }
   }
   // GNU closes a run that failed an operand with one trailer, after

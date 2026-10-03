@@ -12,13 +12,21 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { execSync } from 'node:child_process'
+import { execFile, execFileSync, execSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import {
+  accessSync,
+  constants as fsConstants,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { MountBackend } from '@struktoai/mirage-core/types'
-import type { Session } from '@struktoai/mirage-core/workspace/session/session'
+import type { SessionState } from '@struktoai/mirage-core/workspace/session/session'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { loadOptionalPeer } from '../optional_peer.ts'
 import { checkMountpoint, FSKIT_MOUNT_ROOT, prepareBackend } from './backend.ts'
@@ -37,7 +45,7 @@ export interface MountOptions {
   /** Scope the mount to a single workspace mount prefix (subtree exposure). */
   rootPrefix?: string
   /** Run every op under this session's mount grants (session-bound mountpoint). */
-  session?: Session
+  session?: SessionState
   /**
    * When true, `@zkochan/fuse-native`'s `autoUnmount` flag is set so the
    * kernel releases the mount if the process exits abnormally. Defaults to
@@ -56,7 +64,7 @@ export interface MountOptions {
    * Which kernel interface serves the mount: 'fuse' (default) or 'fskit'.
    * 'fskit' routes through macFUSE 5.x's FSKit backend (no kernel
    * extension); macOS-only, mounts under /Volumes, and every mounted
-   * resource must report exact sizes. See backend.ts for the guards.
+   * VFS must report exact sizes. See backend.ts for the guards.
    */
   backend?: MountBackend
 }
@@ -67,11 +75,13 @@ interface FuseInstance {
   _fuseOptions?: () => string
 }
 
-type FuseConstructor = new (
+type FuseConstructor = (new (
   mountpoint: string,
   ops: Record<string, unknown>,
   options?: Record<string, unknown>,
-) => FuseInstance
+) => FuseInstance) & {
+  unmount: (mountpoint: string, cb: (err: Error | null) => void) => void
+}
 
 /**
  * Append raw libfuse options to the mount option string.
@@ -109,6 +119,23 @@ export function appendDirectIO(fuse: FuseInstance): void {
   appendMountOptions(fuse, ['direct_io'])
 }
 
+/**
+ * What to install when the binding will not load, for the platform it did
+ * not load on. Only macOS and Linux have an answer: fuse-native's legacy
+ * Windows path builds against the unmaintained Dokany-based
+ * `fuse-shared-library-win32` rather than WinFsp, so naming a Windows
+ * driver would send the reader after something that cannot fix it. Python
+ * is the one that mounts FUSE on Windows.
+ */
+export function driverHint(platform: string = process.platform): string {
+  if (platform === 'darwin') return 'FUSE also needs the macFUSE driver, installed separately.'
+  if (platform === 'linux') return 'FUSE also needs libfuse3, from the fuse3 package.'
+  return (
+    'TypeScript FUSE mounts run on macOS and Linux only: @zkochan/fuse-native ' +
+    'does not support WinFsp. Python mounts FUSE on Windows experimentally.'
+  )
+}
+
 async function loadFuse(): Promise<FuseConstructor> {
   const mod = await loadOptionalPeer(
     () => import('@zkochan/fuse-native') as unknown as Promise<{ default?: FuseConstructor }>,
@@ -116,13 +143,104 @@ async function loadFuse(): Promise<FuseConstructor> {
       feature: 'FUSE support',
       packageName: '@zkochan/fuse-native',
       docsUrl: 'https://mirage.dev/typescript/setup/fuse',
+      // fuse-native dlopens its binding against libfuse as it loads, so a
+      // machine with the package and no driver fails here, not at
+      // resolution (ERR_DLOPEN_FAILED, or no prebuild for the platform).
+      systemHint: driverHint(),
     },
   )
   const Fuse = (mod.default ?? mod) as unknown as FuseConstructor
   if (typeof Fuse !== 'function') {
     throw new Error('@zkochan/fuse-native did not export a constructor')
   }
+  if (process.platform === 'linux') Fuse.unmount = unmountWithFusermount
   return Fuse
+}
+
+/**
+ * Locate the platform FUSE unmount helper (mirrors Python's resolve_fusermount_binary).
+ * The fuse3 package ships only `fusermount3` on Fedora, RHEL, Amazon Linux 2023,
+ * openSUSE and Alpine. Debian and Ubuntu add a `fusermount` symlink, so CI on
+ * Ubuntu never exercises the fallback.
+ */
+export function resolveFusermountBinary(): string | null {
+  const pathEnv = process.env.PATH ?? ''
+  for (const name of ['fusermount', 'fusermount3']) {
+    for (const dir of pathEnv.split(delimiter)) {
+      const candidate = join(dir, name)
+      try {
+        if (statSync(candidate).isFile()) {
+          accessSync(candidate, fsConstants.X_OK)
+          return candidate
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === undefined) throw err
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * The path the kernel's mount table records for `mountpoint` (mirrors
+ * Python's canonical_mountpoint). Resolve it at mount time: a parent or
+ * symlink removed later no longer resolves to where the mount sits.
+ */
+export function canonicalMountpoint(mountpoint: string): string {
+  const path = resolve(mountpoint)
+  return join(realpathSync(dirname(path)), basename(path))
+}
+
+/**
+ * Whether the kernel's mount table lists `mountpoint` (mirrors Python's
+ * is_mounted). Reads /proc/self/mounts rather than stat'ing the path, which
+ * would call into the very FUSE server being released. The path is compared
+ * as given: pass the one canonicalMountpoint returned at mount time.
+ */
+export function isMounted(mountpoint: string): boolean {
+  return readFileSync('/proc/self/mounts', 'utf8')
+    .split('\n')
+    .some(
+      (line) =>
+        (line.split(' ')[1] ?? '').replace(/\\([0-7]{3})/g, (_match, octal: string) =>
+          String.fromCharCode(parseInt(octal, 8)),
+        ) === mountpoint,
+    )
+}
+
+/**
+ * Release a Linux FUSE mount with fusermount or fusermount3 (mirrors Python's
+ * unmount_with_fusermount). Installed as fuse-native's static unmount, which
+ * shells out to a hardcoded `fusermount -uz` and, on any error, skips the
+ * native cleanup that lets node exit. A mount already released from outside
+ * counts as unmounted, and `cb` runs exactly once whatever fails.
+ */
+export function unmountWithFusermount(mountpoint: string, cb: (err: Error | null) => void): void {
+  const settle = (err: Error | null): void => {
+    let failure = err
+    if (err !== null) {
+      try {
+        if (!isMounted(mountpoint)) failure = null
+      } catch (checkErr) {
+        failure = checkErr as Error
+      }
+    }
+    cb(failure)
+  }
+  const binary = resolveFusermountBinary()
+  if (binary === null) {
+    settle(
+      new Error(`cannot unmount ${mountpoint}: neither 'fusermount' nor 'fusermount3' is on PATH`),
+    )
+    return
+  }
+  execFile(binary, ['-uz', mountpoint], (err, _stdout, stderr) => {
+    settle(
+      err === null
+        ? null
+        : new Error(`cannot unmount ${mountpoint}: ${stderr.trim()}`, { cause: err }),
+    )
+  })
 }
 
 /** Fallback unmount via platform tools — mirrors Python's SIGINT handler. */
@@ -131,7 +249,10 @@ export function forceUnmount(mountpoint: string): void {
     if (process.platform === 'darwin') {
       execSync(`diskutil unmount force ${JSON.stringify(mountpoint)}`, { stdio: 'ignore' })
     } else {
-      execSync(`fusermount -u ${JSON.stringify(mountpoint)}`, { stdio: 'ignore' })
+      const binary = resolveFusermountBinary()
+      if (binary !== null) {
+        execFileSync(binary, ['-u', mountpoint], { stdio: 'ignore' })
+      }
     }
   } catch {
     // best-effort; caller already tried the clean path
@@ -165,7 +286,7 @@ export async function mount(ws: Workspace, options: MountOptions = {}): Promise<
     mountpoint = mkdtempSync(join(tmpdir(), 'mirage-fuse-'))
     ownsMountpoint = true
   }
-  const mfs = new MirageFS(ws.fs, {
+  const mfs = new MirageFS(ws.vfs, {
     ...(options.rootPrefix !== undefined ? { rootPrefix: options.rootPrefix } : {}),
     ...(options.session !== undefined ? { session: options.session } : {}),
   })
@@ -183,7 +304,14 @@ export async function mount(ws: Workspace, options: MountOptions = {}): Promise<
     ...(autoUnmount ? { autoUnmount: true } : {}),
     ...(options.fuseOptions ?? {}),
   }
-  const fuse = new Fuse(mountpoint, mfs.ops(), fuseOpts)
+  // fuse-native hands this path to unmountWithFusermount, which looks it up
+  // in the mount table, so Linux mounts at the path resolved now, while
+  // every parent still exists.
+  const fuse = new Fuse(
+    process.platform === 'linux' ? canonicalMountpoint(mountpoint) : mountpoint,
+    mfs.ops(),
+    fuseOpts,
+  )
   if (isFskit) {
     // Issue #82's verified recipe: backend=fskit + volname, direct_io
     // omitted (FSKit has no direct_io; reads are driven by reported size,

@@ -14,30 +14,31 @@
 
 import type { ChromaAccessor } from '../../accessor/chroma.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { resolvePath } from './path.ts'
-import { ensureDirSizes } from './sizes.ts'
-import { enoent } from '../../utils/errors.ts'
+import { ContentType, FileStat, FileType, type PathSpec } from '../../types.ts'
 import { parent } from '../../utils/path.ts'
-import { rstripSlash } from '../../utils/slash.ts'
+import { directoryStat } from '../slug_tree/stat.ts'
+import { ensureDirSizes } from './sizes.ts'
+import { CHROMA_TREE } from './tree.ts'
+
+/** The index-only stat `ls` and a `find` without a size test use: no size scan. */
+export function statLight(
+  accessor: ChromaAccessor,
+  path: PathSpec,
+  index?: IndexCacheStore,
+): Promise<FileStat> {
+  return stat(accessor, path, index, false)
+}
 
 export async function stat(
   accessor: ChromaAccessor,
-  path: PathSpec | string,
+  path: PathSpec,
   index?: IndexCacheStore,
+  sizes = true,
 ): Promise<FileStat> {
-  const spec = typeof path === 'string' ? PathSpec.fromStrPath(path) : path
-  const resolved = await resolvePath(accessor, spec, index)
-  if (resolved.isDir) {
-    return new FileStat({
-      name: statName(resolved.virtualKey, resolved.mountPrefix),
-      type: FileType.DIRECTORY,
-      extra: { children_count: 0 },
-    })
-  }
-  if (resolved.entry === null) throw enoent(spec.virtual)
+  const resolved = await CHROMA_TREE.resolve(accessor, path, index)
+  if (resolved.isDir) return directoryStat(resolved)
   let entry = resolved.entry
-  if (entry.size === null) {
+  if (sizes && entry.size === null) {
     // One scan for the whole directory, paid the first time anything in it
     // is stat'd; later stats of its siblings are already sized.
     await ensureDirSizes(accessor, parent(resolved.virtualKey), index)
@@ -48,16 +49,10 @@ export async function stat(
   const updatedAt = entry.extra.updated_at
   return new FileStat({
     name: entry.name,
-    type: FileType.TEXT,
+    type: FileType.FILE,
+    content: ContentType.TEXT,
     size: entry.size,
     modified: typeof updatedAt === 'string' ? updatedAt : null,
     extra: { ...entry.extra },
   })
-}
-
-function statName(virtualKey: string, mountPrefix: string): string {
-  const root = rstripSlash(mountPrefix) !== '' ? rstripSlash(mountPrefix) : '/'
-  if (virtualKey === root) return '/'
-  const stripped = rstripSlash(virtualKey)
-  return stripped.split('/').pop() ?? '/'
 }

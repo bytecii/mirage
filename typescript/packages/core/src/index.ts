@@ -14,7 +14,7 @@
 
 // The package's front door, and only that: the names a program reaches
 // for first. Everything else in core is reached by module path, the way
-// `mirage.resource.s3` is in Python -- the `./*` subpath map means no
+// `mirage.vfs.s3` is in Python -- the `./*` subpath map means no
 // symbol needs a line here to be importable.
 //
 // So do not add a name because something inside the repo wants it; that
@@ -25,10 +25,13 @@
 // did. It is a repo-root script rather than knip because knip's project
 // root is typescript/, which leaves the consumers out of view.
 
-export { defaultFingerprint } from './cache/file/utils.ts'
+export { Accessor } from './accessor/base.ts'
 export { IndexEntry } from './cache/index/config.ts'
 export type { RedisIndexConfig } from './cache/index/config.ts'
 export { RedisIndexCacheStore } from './cache/index/redis.ts'
+export type { CommandIO } from './commands/builtin/generic_bind/index.ts'
+export { streamFromBytes } from './commands/builtin/utils/wrap.ts'
+export { AIRTABLE } from './commands/cli/builtin/airtable/index.ts'
 export { DISCORD } from './commands/cli/builtin/discord/index.ts'
 export { GH } from './commands/cli/builtin/gh/index.ts'
 export { GIT } from './commands/cli/builtin/git/index.ts'
@@ -36,12 +39,13 @@ export { GWS } from './commands/cli/builtin/gws/index.ts'
 export { LINEAR } from './commands/cli/builtin/linear/index.ts'
 export { NTN } from './commands/cli/builtin/ntn/index.ts'
 export { SLACK } from './commands/cli/builtin/slack/index.ts'
+export { registerCliSpec } from './commands/cli/specs.ts'
 export { CLISpec } from './commands/cli/types.ts'
 export type { CLIInvocation } from './commands/cli/types.ts'
 export { command } from './commands/config.ts'
-export type { CommandFnResult, CommandOpts } from './commands/config.ts'
-export { Operand, SPECS, specOf } from './commands/spec/index.ts'
-export { MemoryOAuthClientProvider } from './core/notion/_oauth.ts'
+export type { CommandFnResult } from './commands/config.ts'
+export { CommandSpec, Operand, Option, SPECS, specOf } from './commands/spec/index.ts'
+export { MemoryOAuthClientProvider } from './core/notion/client.ts'
 export { IOResult } from './io/types.ts'
 export { OpsRegistry } from './ops/registry.ts'
 export type {
@@ -52,43 +56,70 @@ export type {
   OpsResultContext,
   Policy,
 } from './policy/index.ts'
-export { ProvisionResult } from './provision/types.ts'
-export type { Resource } from './resource/base.ts'
-export { ChromaResource } from './resource/chroma/chroma.ts'
-export { normalizeDatabricksVolumeConfig } from './resource/databricks_volume/config.ts'
-export { DevResource } from './resource/dev/dev.ts'
-export { DifyResource } from './resource/dify/dify.ts'
-export { Mem0Resource } from './resource/mem0/mem0.ts'
-export { OneDriveResource } from './resource/onedrive/onedrive.ts'
-export { QdrantResource } from './resource/qdrant/qdrant.ts'
-export { RAMResource } from './resource/ram/ram.ts'
-export { z } from './resource/secrets.ts'
-export { SharePointResource } from './resource/sharepoint/sharepoint.ts'
+export { Outcome, Scope } from './policy/index.ts'
+export { BaseVFS } from './vfs/base.ts'
+export { ChromaVFS } from './vfs/chroma/chroma.ts'
+export { normalizeDatabricksVolumeConfig } from './vfs/databricks_volume/config.ts'
+export { DevVFS } from './vfs/dev/dev.ts'
+export { DifyVFS } from './vfs/dify/dify.ts'
+export { AirtableVFS } from './vfs/airtable/airtable.ts'
+export {
+  checkDriverContract,
+  checkReadContract,
+  DriverOps,
+  type ReadFixture,
+} from './vfs/testing.ts'
+export { VFSAdapter } from './vfs/adapter.ts'
+export type {
+  NativeReadOps,
+  ReadOps,
+  WriteOps,
+  SearchOps,
+  SearchQuery,
+  DuOps,
+} from './vfs/types.ts'
+export { Mem0VFS } from './vfs/mem0/mem0.ts'
+export { OneDriveVFS } from './vfs/onedrive/onedrive.ts'
+export { QdrantVFS } from './vfs/qdrant/qdrant.ts'
+export { RAMVFS } from './vfs/ram/ram.ts'
+export { secretStr, z } from './vfs/secrets.ts'
+export { SharePointVFS } from './vfs/sharepoint/sharepoint.ts'
+export { EXTERNAL_COMMANDS } from './runtime/constants.ts'
 export { Runtime } from './runtime/base.ts'
 export type { RuntimeEntry } from './runtime/base.ts'
 export { EvalError } from './runtime/errors.ts'
-export { EVALUATOR, LINE_EXECUTOR } from './runtime/mixin.ts'
-export type { Evaluator, LineExecutor } from './runtime/mixin.ts'
-export { ScriptSource } from './runtime/policy/index.ts'
+export { EVALUATOR, LINE_EXECUTOR, PROCESS_EXECUTOR } from './runtime/mixin.ts'
+export type { Evaluator, LineExecutor, ProcessExecutor } from './runtime/mixin.ts'
+export { ScriptSource } from './runtime/routing/index.ts'
 export { buildRuntime } from './runtime/table.ts'
-export type { EvalResult, EvalValue, RunResult } from './runtime/types.ts'
+export type {
+  EvalResult,
+  EvalValue,
+  RunResult,
+  FilesystemOperation,
+  ProcessExecution,
+} from './runtime/types.ts'
 export { JobConsole } from './shell/console/index.ts'
 export type { ConsoleFactory } from './shell/job_table/index.ts'
 export {
-  ConsistencyPolicy,
+  ContentType,
+  DEFAULT_READ_TTL,
   DriftPolicy,
   FileChangeKind,
   FileEvent,
   FileStat,
   FileType,
   Limit,
+  ListingVersion,
   MountBackend,
   MountMode,
   OnExceed,
   PathSpec,
-  ResourceName,
+  ReadPolicy,
+  VFSName,
 } from './types.ts'
-export type { WalkEntry } from './types.ts'
+export type { ReadSpec, WalkEntry } from './types.ts'
+export { eisdir, enoent, enotdir } from './utils/errors.ts'
 export { snakeToCamel } from './utils/normalize.ts'
 export { ListingDeltaHook, RAMWatchQueue, Watcher } from './watch/index.ts'
 export { SessionStore } from './workspace/session/store.ts'
@@ -96,4 +127,5 @@ export { ContentDriftError } from './workspace/snapshot/drift.ts'
 export { toStateDict } from './workspace/snapshot/state.ts'
 export { S3WorkspaceStateStore } from './workspace/store/s3.ts'
 export { Workspace } from './workspace/workspace/workspace.ts'
+export { Session, type SessionExecuteOptions } from './workspace/workspace/handle.ts'
 export type { MountSpec } from './workspace/workspace/workspace.ts'

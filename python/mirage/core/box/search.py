@@ -13,12 +13,16 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-from typing import Any
 
 from mirage.accessor.box import BoxAccessor
 from mirage.core.box.api import search_content
 from mirage.core.box.client import BoxApiError
-from mirage.core.box.resolve import path_parts, resolve_item, root_id
+from mirage.core.box.resolve import (
+    mount_relative_key,
+    path_parts,
+    resolve_item,
+    root_id,
+)
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.path import respell_raw
@@ -28,26 +32,6 @@ logger = logging.getLogger(__name__)
 
 def _path_components(virtual: str) -> list[str]:
     return virtual.split("/")
-
-
-def _mount_relative_key(item: dict[str, Any],
-                        root_folder_id: str) -> str | None:
-    # Reconstruct the mount-relative key from the item's ancestor chain by
-    # trimming everything up to and including the mount root folder. Box's
-    # path_collection lists ancestors from the account root down to the
-    # immediate parent (excluding the item itself).
-    entries = (item.get("path_collection") or {}).get("entries") or []
-    names: list[str] = []
-    collecting = False
-    for anc in entries:
-        if collecting:
-            names.append(anc.get("name", ""))
-        if anc.get("id") == root_folder_id:
-            collecting = True
-    if not collecting:
-        return None
-    names.append(item.get("name", ""))
-    return "/".join(n for n in names if n)
 
 
 async def narrow_paths(
@@ -79,7 +63,7 @@ async def narrow_paths(
     """
     if not paths:
         return []
-    mount_prefix = mount_prefix_of(paths[0].virtual, paths[0].resource_path)
+    mount_prefix = mount_prefix_of(paths[0].virtual, paths[0].vfs_path)
     root = root_id(accessor)
     narrowed: list[PathSpec] = []
     for p in paths:
@@ -92,29 +76,35 @@ async def narrow_paths(
         else:
             folder_id = root
         try:
-            results, truncated = await search_content(accessor.token_manager,
-                                                      query, folder_id)
+            results, truncated = await search_content(
+                accessor.token_manager, query, folder_id
+            )
         except BoxApiError as exc:
             logger.warning(
                 "box search push-down failed (%s); "
-                "falling back to per-file scan", exc)
+                "falling back to per-file scan",
+                exc,
+            )
             return None
         if truncated:
             return None
         scoped: list[str] = []
         for item in results:
-            key = _mount_relative_key(item, root)
+            key = mount_relative_key(item, root)
             if key is None:
                 continue
             scoped.append(
-                f"{mount_prefix}/{key}" if key else mount_prefix or "/")
+                f"{mount_prefix}/{key}" if key else mount_prefix or "/"
+            )
         scoped.sort(key=_path_components)
         for virtual in scoped:
             narrowed.append(
-                PathSpec(virtual=virtual,
-                         directory="",
-                         resource_path=mount_key(virtual, mount_prefix),
-                         resolved=True,
-                         raw_path=respell_raw([virtual], p.virtual,
-                                              p.raw_path)[0]))
+                PathSpec(
+                    virtual=virtual,
+                    directory="",
+                    vfs_path=mount_key(virtual, mount_prefix),
+                    resolved=True,
+                    raw_path=respell_raw([virtual], p.virtual, p.raw_path)[0],
+                )
+            )
     return narrowed

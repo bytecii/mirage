@@ -14,6 +14,7 @@
 
 import base64
 import importlib.util
+import logging
 import os
 import tempfile
 import uuid
@@ -29,25 +30,30 @@ from mirage.core.github.client import github_request
 from mirage.core.github.read import read_bytes
 from mirage.core.github.tree import fetch_tree
 from mirage.core.github.tree_entry import TreeEntry
-from mirage.resource.box import BoxConfig, BoxResource
-from mirage.resource.disk import DiskResource
-from mirage.resource.dropbox import DropboxConfig, DropboxResource
-from mirage.resource.gdrive import GoogleDriveResource
-from mirage.resource.gdrive.config import GoogleDriveConfig
-from mirage.resource.github import GitHubConfig, GitHubResource
-from mirage.resource.gridfs import GridFSConfig, GridFSResource
-from mirage.resource.hf_buckets import HfBucketsConfig, HfBucketsResource
-from mirage.resource.onedrive import OneDriveConfig, OneDriveResource
-from mirage.resource.s3 import S3Config, S3Resource
-from mirage.resource.ssh import SSHConfig, SSHResource
+from mirage.vfs.box import BoxConfig, BoxVFS
+from mirage.vfs.disk import DiskVFS
+from mirage.vfs.dropbox import DropboxConfig, DropboxVFS
+from mirage.vfs.gdrive import GoogleDriveVFS
+from mirage.vfs.gdrive.config import GoogleDriveConfig
+from mirage.vfs.github import GitHubConfig, GitHubVFS
+from mirage.vfs.gridfs import GridFSConfig, GridFSVFS
+from mirage.vfs.hf_buckets import HfBucketsConfig, HfBucketsVFS
+from mirage.vfs.onedrive import OneDriveConfig, OneDriveVFS
+from mirage.vfs.s3 import S3VFS, S3Config
+from mirage.vfs.ssh import SSHVFS, SSHConfig
+
+logger = logging.getLogger(__name__)
 
 SERVER_DIR = Path(__file__).resolve().parents[1] / "server"
 GITHUB_OWNER = "integ"
 GITHUB_REPO = "watch"
 GITHUB_REF = "main"
+# The gws fake's credential: a bearer as it is, and the one refresh token its
+# /token exchanges.
+GWS_TOKEN = "gws-integ-token"
 
 Pair = tuple[Workspace, "WorkspaceWriter | GitHubWriter"]
-ResourceFactory = Callable[[], Any]
+VFSFactory = Callable[[], Any]
 
 
 class WorkspaceWriter:
@@ -66,9 +72,9 @@ class WorkspaceWriter:
 
     def __init__(self, ws: Workspace, mount: str) -> None:
         """Args:
-            ws (Workspace): Writer workspace, distinct from the watched
-                one.
-            mount (str): Mount prefix both workspaces share.
+        ws (Workspace): Writer workspace, distinct from the watched
+            one.
+        mount (str): Mount prefix both workspaces share.
         """
         self._ws = ws
         self._mount = mount.rstrip("/")
@@ -78,41 +84,41 @@ class WorkspaceWriter:
 
     async def create_dir(self, path: str) -> None:
         """Args:
-            path (str): Mount-relative directory, trailing slash
-                optional.
+        path (str): Mount-relative directory, trailing slash
+            optional.
         """
-        await self._ws.execute(f"mkdir -p {self._virtual(path)}")
+        await self._ws.shell(f"mkdir -p {self._virtual(path)}")
 
     async def write(self, path: str, data: bytes) -> None:
         """Args:
-            path (str): Mount-relative file path.
-            data (bytes): Content to store.
+        path (str): Mount-relative file path.
+        data (bytes): Content to store.
         """
         key = path.strip("/")
         parent = key.rsplit("/", 1)[0]
         if parent != key:
             await self.create_dir(parent)
-        await self._ws.ops.write(self._virtual(key), data)
+        await self._ws.vfs.write(self._virtual(key), data)
 
     async def delete(self, path: str) -> None:
         """Args:
-            path (str): Mount-relative path; a directory goes with its
-                subtree, matching opendal's delete.
+        path (str): Mount-relative path; a directory goes with its
+            subtree, matching opendal's delete.
         """
-        await self._ws.execute(f"rm -rf {self._virtual(path)}")
+        await self._ws.shell(f"rm -rf {self._virtual(path)}")
 
     async def remove_all(self, path: str) -> None:
         """Args:
-            path (str): Mount-relative subtree to empty.
+        path (str): Mount-relative subtree to empty.
         """
         await self.delete(path)
 
     async def rename(self, path: str, to: str) -> None:
         """Args:
-            path (str): Mount-relative source.
-            to (str): Mount-relative destination.
+        path (str): Mount-relative source.
+        to (str): Mount-relative destination.
         """
-        await self._ws.ops.rename(self._virtual(path), self._virtual(to))
+        await self._ws.vfs.rename(self._virtual(path), self._virtual(to))
 
     async def close(self) -> None:
         await self._ws.close()
@@ -122,7 +128,7 @@ class GitHubWriter:
     """External writer over GitHub's own contents API.
 
     Every other backend here is written through a second workspace,
-    which needs the resource to have write ops. GitHub's has none, and
+    which needs the VFS to have write ops. GitHub's has none, and
     should not: a mount is a read view of one ref, and a ref changes by
     being committed to. So this speaks what a committer speaks, ``PUT``
     and ``DELETE`` on ``/contents/{path}``, each carrying the blob sha
@@ -135,13 +141,14 @@ class GitHubWriter:
     one marker, and why ``rename`` is a write plus a delete.
     """
 
-    def __init__(self, config: GitHubConfig, owner: str, repo: str,
-                 ref: str) -> None:
+    def __init__(
+        self, config: GitHubConfig, owner: str, repo: str, ref: str
+    ) -> None:
         """Args:
-            config (GitHubConfig): Token and API base of the fake.
-            owner (str): Repository owner.
-            repo (str): Repository name.
-            ref (str): Branch the mount is pinned to.
+        config (GitHubConfig): Token and API base of the fake.
+        owner (str): Repository owner.
+        repo (str): Repository name.
+        ref (str): Branch the mount is pinned to.
         """
         self._config = config
         self._owner = owner
@@ -149,13 +156,28 @@ class GitHubWriter:
         self._ref = ref
 
     async def _tree(self) -> dict[str, TreeEntry]:
-        """The ref's recursive tree, which names every blob's sha."""
-        tree, _truncated = await fetch_tree(self._config, self._owner,
-                                            self._repo, self._ref)
+        """The ref's recursive tree, which names every blob's sha.
+
+        A repository nothing was committed to has no tree, and GitHub
+        answers 409 "Git Repository is empty." for it: to a committer that
+        is an empty listing, and the first PUT creates the tree.
+        """
+        try:
+            tree, _truncated, _sha = await fetch_tree(
+                self._config, self._owner, self._repo, self._ref
+            )
+        except aiohttp.ClientResponseError as exc:
+            if exc.status != 409:
+                raise
+            logger.debug(
+                "%s/%s has no tree yet: %s", self._owner, self._repo, exc
+            )
+            return {}
         return tree
 
-    async def _commit(self, method: str, path: str, body: dict[str,
-                                                               str]) -> None:
+    async def _commit(
+        self, method: str, path: str, body: dict[str, str]
+    ) -> None:
         """Send one contents-API call against the pinned branch.
 
         Args:
@@ -166,12 +188,14 @@ class GitHubWriter:
         await github_request(
             self._config.token,
             method,
-            f"/repos/{self._owner}/{self._repo}/contents/{path}", {
+            f"/repos/{self._owner}/{self._repo}/contents/{path}",
+            {
                 "branch": self._ref,
                 "message": f"integ watch {path}",
                 **body,
             },
-            base_url=self._config.base_url)
+            base_url=self._config.base_url,
+        )
 
     async def create_dir(self, path: str) -> None:
         """No-op: git has no directory object to create.
@@ -182,8 +206,8 @@ class GitHubWriter:
 
     async def write(self, path: str, data: bytes) -> None:
         """Args:
-            path (str): Mount-relative file path.
-            data (bytes): Content to commit.
+        path (str): Mount-relative file path.
+        data (bytes): Content to commit.
         """
         key = path.strip("/")
         entry = (await self._tree()).get(key)
@@ -194,7 +218,7 @@ class GitHubWriter:
 
     async def delete(self, path: str) -> None:
         """Args:
-            path (str): Mount-relative file path.
+        path (str): Mount-relative file path.
         """
         entry = (await self._tree()).get(path.strip("/"))
         if entry is not None:
@@ -202,7 +226,7 @@ class GitHubWriter:
 
     async def remove_all(self, path: str) -> None:
         """Args:
-            path (str): Mount-relative subtree to empty.
+        path (str): Mount-relative subtree to empty.
         """
         stem = path.strip("/")
         base = f"{stem}/" if stem else ""
@@ -213,12 +237,13 @@ class GitHubWriter:
 
     async def rename(self, path: str, to: str) -> None:
         """Args:
-            path (str): Mount-relative source.
-            to (str): Mount-relative destination.
+        path (str): Mount-relative source.
+        to (str): Mount-relative destination.
         """
         entry = (await self._tree())[path.strip("/")]
-        data = await read_bytes(self._config, self._owner, self._repo,
-                                entry.sha)
+        data = await read_bytes(
+            self._config, self._owner, self._repo, entry.sha
+        )
         await self.write(to, data)
         await self._commit("DELETE", entry.path, {"sha": entry.sha})
 
@@ -236,15 +261,15 @@ def _load(path: Path, name: str) -> ModuleType:
     return module
 
 
-def _pair(spec: dict, make: ResourceFactory) -> Pair:
+def _pair(spec: dict, make: VFSFactory) -> Pair:
     """Build the watched workspace and its external writer.
 
-    Each side gets its own resource instance over the same backend, so
+    Each side gets its own VFS instance over the same backend, so
     nothing is shared but the bytes.
 
     Args:
         spec (dict): Parsed case file.
-        make (ResourceFactory): Builds one fresh resource.
+        make (VFSFactory): Builds one fresh VFS.
     """
     mount = spec["mount"]
     watched = Workspace({mount: make()}, mode=MountMode.WRITE)
@@ -259,7 +284,7 @@ async def build_disk(spec: dict) -> Pair | None:
         spec (dict): Parsed case file.
     """
     root = tempfile.mkdtemp(prefix="mirage-watch-disk-")
-    return _pair(spec, lambda: DiskResource(root))
+    return _pair(spec, lambda: DiskVFS(root))
 
 
 async def build_ssh(spec: dict) -> Pair | None:
@@ -276,32 +301,54 @@ async def build_ssh(spec: dict) -> Pair | None:
     server = await module.start_server(root)
     port = server.get_port()
     return _pair(
-        spec, lambda: SSHResource(
-            SSHConfig(host="127.0.0.1",
-                      port=port,
-                      username="integ",
-                      known_hosts=None,
-                      root="/")))
+        spec,
+        lambda: SSHVFS(
+            SSHConfig(
+                host="127.0.0.1",
+                port=port,
+                username="integ",
+                known_hosts=None,
+                root="/",
+            )
+        ),
+    )
 
 
 async def build_dropbox(spec: dict) -> Pair | None:
-    """Dropbox battery against the in-process fake.
+    """Dropbox battery against the external dropbox fake.
 
     Exercises the recursive ``list_folder`` and its cursor pagination,
     and fingerprints on the fake's ``content_hash``.
 
+    The server is TypeScript and shared across runs, so this needs
+    ``DROPBOX_URL``. Each run takes its own ACCOUNT rather than resetting
+    the server: the fake echoes the refresh token back as the access token,
+    so a per-run token is a per-run tenant, and a reset would drop a
+    concurrent run's data.
+
     Args:
         spec (dict): Parsed case file.
     """
-    module = _load(SERVER_DIR / "dropbox_server.py", "integ_watch_dropbox")
-    fake, _runner = await module.start_fake_dropbox()
+    url = os.environ.get("DROPBOX_URL")
+    if not url:
+        return None
+    url = url.rstrip("/")
+    # Minted OUTSIDE the lambda: _pair calls it once per workspace, and a
+    # token minted per call would put the writer and the watcher in two
+    # different accounts, so every poll would see an empty tree.
+    account = f"watch-{uuid.uuid4().hex[:8]}"
     return _pair(
-        spec, lambda: DropboxResource(
-            DropboxConfig(client_id="integ-client",
-                          client_secret="integ-secret",
-                          refresh_token="integ-refresh",
-                          endpoint=fake.endpoint,
-                          root_path="/")))
+        spec,
+        lambda: DropboxVFS(
+            DropboxConfig(
+                client_id="integ-client",
+                client_secret="integ-secret",
+                refresh_token=account,
+                endpoint=url,
+                root_path="/",
+            )
+        ),
+    )
 
 
 async def build_s3(spec: dict) -> Pair | None:
@@ -319,15 +366,19 @@ async def build_s3(spec: dict) -> Pair | None:
         return None
     prefix = f"watch-{uuid.uuid4().hex[:8]}/"
     return _pair(
-        spec, lambda: S3Resource(
-            S3Config(bucket=bucket,
-                     region=os.environ.get("S3_REGION", "us-east-1"),
-                     endpoint_url=endpoint,
-                     aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
-                     aws_secret_access_key=os.environ.get(
-                         "AWS_SECRET_ACCESS_KEY"),
-                     path_style=True,
-                     key_prefix=prefix)))
+        spec,
+        lambda: S3VFS(
+            S3Config(
+                bucket=bucket,
+                region=os.environ.get("S3_REGION", "us-east-1"),
+                endpoint_url=endpoint,
+                aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+                aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                path_style=True,
+                key_prefix=prefix,
+            )
+        ),
+    )
 
 
 async def build_gridfs(spec: dict) -> Pair | None:
@@ -343,12 +394,15 @@ async def build_gridfs(spec: dict) -> Pair | None:
         return None
     database = f"watch_{uuid.uuid4().hex[:8]}"
     return _pair(
-        spec, lambda: GridFSResource(
-            GridFSConfig(uri=uri, database=database, bucket="fs")))
+        spec,
+        lambda: GridFSVFS(
+            GridFSConfig(uri=uri, database=database, bucket="fs")
+        ),
+    )
 
 
 async def build_onedrive(spec: dict) -> Pair | None:
-    """OneDrive battery against the in-process Graph fake.
+    """OneDrive battery against the external Graph fake.
 
     This is the ReaddirWalk path: Graph keys its tree by item id and has
     no whole-subtree listing, so the walk descends one
@@ -357,52 +411,87 @@ async def build_onedrive(spec: dict) -> Pair | None:
     Args:
         spec (dict): Parsed case file.
     """
-    module = _load(SERVER_DIR / "onedrive_server.py", "integ_watch_onedrive")
-    state, _server, _runner = await module.start_fake_graph()
+    url = os.environ.get("ONEDRIVE_URL")
+    if not url:
+        return None
+    url = url.rstrip("/")
+    # Each run takes its own ACCOUNT (the access token is the account on this
+    # fake). Minted OUTSIDE the lambda: _pair calls it once per workspace, and
+    # minting per call would put the writer and the watcher in different
+    # accounts, so every poll would see an empty tree.
+    token = f"watch-{uuid.uuid4().hex[:8]}"
     return _pair(
-        spec, lambda: OneDriveResource(
-            OneDriveConfig(access_token="integ-token",
-                           graph_base_url=state.base)))
+        spec,
+        lambda: OneDriveVFS(
+            OneDriveConfig(access_token=token, graph_base_url=url)
+        ),
+    )
 
 
 async def build_box(spec: dict) -> Pair | None:
-    """Box battery against the in-process fake.
+    """Box battery against the external box fake.
 
-    The second ReaddirWalk target, and the one that proves the walk is
-    not Graph-shaped: Box addresses folders by its own ids and answers a
-    different listing endpoint.
+    Box pulls through the fake's ``/events`` stream, with the per-folder
+    walk (Box addresses folders by its own ids) as the baseline and the
+    reset, so a case passes only if the event it caused is placed on the
+    right path.
 
     Args:
         spec (dict): Parsed case file.
     """
-    module = _load(SERVER_DIR / "box_server.py", "integ_watch_box")
-    state, _server, _runner = await module.start_fake_box()
-    folder = state.add_folder("0", "watch")
+    url = os.environ.get("BOX_URL")
+    if not url:
+        return None
+    url = url.rstrip("/")
+    # Each run takes its own ACCOUNT (the access token is the account on this
+    # fake) and one folder inside it. Minted OUTSIDE the lambda: _pair calls
+    # it once per workspace, and minting per call would put the writer and the
+    # watcher in different accounts.
+    token = f"watch-{uuid.uuid4().hex[:8]}"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{url}/2.0/folders",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "watch", "parent": {"id": "0"}},
+        ) as resp:
+            resp.raise_for_status()
+            folder_id = (await resp.json())["id"]
     return _pair(
-        spec, lambda: BoxResource(
-            BoxConfig(access_token="integ-box-token",
-                      endpoint=state.base,
-                      root_folder_id=folder["id"])))
+        spec,
+        lambda: BoxVFS(
+            BoxConfig(
+                access_token=token, endpoint=url, root_folder_id=folder_id
+            )
+        ),
+    )
 
 
 async def build_hf(spec: dict) -> Pair | None:
-    """Hugging Face battery against the in-process Hub fake.
+    """Hugging Face battery against the external hub fake.
 
     Covers the shared opendal walk on a lister that omits per-entry
     metadata, which is the stat-backfill branch Nextcloud never reaches.
-    The fake freezes ``modified``, so only the ETag can move: a case that
-    passes here passes on the ETag alone.
+    opendal reports no last_modified for a Hub object at all, so only the
+    ETag can move: a case that passes here passes on the ETag alone.
+
+    The fake is TypeScript and shared across runs, so this needs ``HF_URL``
+    and each run takes its own account -- the token is the account here.
 
     Args:
         spec (dict): Parsed case file.
     """
-    module = _load(SERVER_DIR / "hf_server.py", "integ_watch_hf")
-    _hub, server, _runner = await module.start_fake_hub()
-    bucket = f"integ/watch-{uuid.uuid4().hex[:8]}"
+    url = os.environ.get("HF_URL")
+    if not url:
+        return None
+    token = f"watch-hf-{uuid.uuid4().hex[:8]}"
     return _pair(
-        spec, lambda: HfBucketsResource(
+        spec,
+        lambda: HfBucketsVFS(
             HfBucketsConfig(
-                bucket=bucket, token="integ-token", endpoint=server.endpoint)))
+                bucket="integ/watch", token=token, endpoint=url.rstrip("/")
+            )
+        ),
+    )
 
 
 async def build_gdrive(spec: dict) -> Pair | None:
@@ -418,49 +507,71 @@ async def build_gdrive(spec: dict) -> Pair | None:
     if not url:
         return None
     url = url.rstrip("/")
-    async with aiohttp.ClientSession() as session:
+    headers = {"Authorization": f"Bearer {GWS_TOKEN}"}
+    async with aiohttp.ClientSession(headers=headers) as session:
         async with session.post(f"{url}/reset", json={}) as resp:
             resp.raise_for_status()
         folder = f"watch-{uuid.uuid4().hex[:8]}"
-        async with session.post(f"{url}/drive/v3/files",
-                                json={
-                                    "name":
-                                    folder,
-                                    "mimeType":
-                                    "application/vnd.google-apps.folder",
-                                }) as resp:
+        async with session.post(
+            f"{url}/drive/v3/files",
+            json={
+                "name": folder,
+                "mimeType": "application/vnd.google-apps.folder",
+            },
+        ) as resp:
             resp.raise_for_status()
             folder_id = (await resp.json())["id"]
     return _pair(
-        spec, lambda: GoogleDriveResource(
-            GoogleDriveConfig(client_id="integ-client",
-                              client_secret="integ-secret",
-                              refresh_token="integ-refresh",
-                              api_base=url,
-                              folder_id=folder_id)))
+        spec,
+        lambda: GoogleDriveVFS(
+            GoogleDriveConfig(
+                client_id="integ-client",
+                client_secret="integ-secret",
+                refresh_token=GWS_TOKEN,
+                api_base=url,
+                folder_id=folder_id,
+            )
+        ),
+    )
 
 
 async def build_github(spec: dict) -> Pair | None:
-    """GitHub battery against the in-process fake.
+    """GitHub battery against the external github fake.
 
     The one target whose writer is not a workspace, because a git ref
     has no write ops to lend one. It is also the only backend whose
     fingerprint is a git blob sha, so a rewrite of identical bytes is
     correctly reported as nothing at all.
 
+    The server is TypeScript now, so this needs ``GITHUB_URL``. It is
+    seeded empty and the repository is created here, which is what the
+    in-process fake did by reaching into its store directly.
+
     Args:
         spec (dict): Parsed case file.
     """
-    module = _load(SERVER_DIR / "github_server.py", "integ_watch_github")
-    state, _server, _runner = await module.start_fake_github()
-    state.repo(GITHUB_OWNER, GITHUB_REPO)
-    config = GitHubConfig(token=SecretStr("integ-github-token"),
-                          owner=GITHUB_OWNER,
-                          repo=GITHUB_REPO,
-                          ref=GITHUB_REF,
-                          base_url=state.base)
-    resource = GitHubResource(config)
-    ws = Workspace({spec["mount"]: resource}, mode=MountMode.WRITE)
+    url = os.environ.get("GITHUB_URL")
+    if not url:
+        return None
+    url = url.rstrip("/")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{url}/orgs/{GITHUB_OWNER}/repos",
+            headers={"Authorization": "Bearer integ-github-token"},
+            json={"name": GITHUB_REPO},
+        ) as resp:
+            # 422 is "it is already there", which a re-run makes ordinary.
+            if resp.status not in (201, 422):
+                resp.raise_for_status()
+    config = GitHubConfig(
+        token=SecretStr("integ-github-token"),
+        owner=GITHUB_OWNER,
+        repo=GITHUB_REPO,
+        ref=GITHUB_REF,
+        base_url=url,
+    )
+    vfs = GitHubVFS(config)
+    ws = Workspace({spec["mount"]: vfs}, mode=MountMode.WRITE)
     return ws, GitHubWriter(config, GITHUB_OWNER, GITHUB_REPO, GITHUB_REF)
 
 

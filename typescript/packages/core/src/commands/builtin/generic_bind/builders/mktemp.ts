@@ -12,23 +12,40 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { PathSpec } from '../../../../types.ts'
+import { mountKey } from '../../../../utils/key_prefix.ts'
 import { mktempGeneric } from '../../generic/mktemp.ts'
-import type { Builder } from '../adapter.ts'
+import { pathExists } from '../../utils/copy.ts'
+import { requireOp, type Builder } from '../adapter.ts'
 
-export const MKTEMP_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'mktemp',
   write: true,
-  requirements: ['mkdir', 'write'],
   fn: (ops, accessor, _paths, texts, opts) => {
-    const { mkdir, write } = ops
-    if (mkdir === undefined || write === undefined) {
-      throw new Error('mktemp: backend provides no write op')
-    }
+    // The name a pathless mktemp creates is under $TMPDIR or /tmp, which the
+    // working directory's mount rarely owns, so the create goes through the
+    // dispatcher to whichever mount does. Only a generic run outside a
+    // workspace, with no dispatcher and no other mount, writes through this
+    // mount's own ops. Mirrors Python's builder.
+    const mkdir = requireOp(ops.mkdir, 'mkdir')
+    const write = requireOp(ops.write, 'write')
+    const local = (p: PathSpec): PathSpec =>
+      PathSpec.fromStrPath(p.virtual, mountKey(p.virtual, opts.mountPrefix ?? ''))
     return mktempGeneric(
       texts,
       opts,
-      (p, parents) => mkdir(accessor, p, parents),
-      (p, d) => write(accessor, p, d),
+      async (p) => {
+        if (opts.dispatch !== undefined) await opts.dispatch('mkdir', p, [], { parents: false })
+        else await mkdir(accessor, local(p))
+      },
+      async (p, d) => {
+        if (opts.dispatch !== undefined) await opts.dispatch('write', p, [d])
+        else await write(accessor, local(p), d)
+      },
+      async (p) => {
+        if (opts.statPath !== undefined) return (await opts.statPath(p.virtual)) !== null
+        return pathExists((at) => ops.stat(accessor, at), local(p))
+      },
     )
   },
 }

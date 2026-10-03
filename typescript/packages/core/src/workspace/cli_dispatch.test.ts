@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { Outcome } from '../policy/index.ts'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -22,11 +23,10 @@ import { IOResult } from '../io/types.ts'
 import type { Policy } from '../policy/base.ts'
 import type { Action, SessionContext } from '../policy/types.ts'
 import { OpsRegistry } from '../ops/registry.ts'
-import { RAMResource } from '../resource/ram/ram.ts'
-import { createShellParser } from '../shell/syntax/parse.ts'
-import type { ShellParser } from '../shell/types.ts'
+import { RAMVFS } from '../vfs/ram/ram.ts'
+import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { MountMode } from '../types.ts'
-import { ScriptSource } from '../runtime/policy/types.ts'
+import { ScriptSource } from '../runtime/routing/types.ts'
 import type { RuntimeLanguage } from '../runtime/types.ts'
 import { Workspace } from './workspace/workspace.ts'
 
@@ -51,7 +51,7 @@ function tokenConfig(input: Record<string, unknown>): { token: string } {
 
 function send(inv: CLIInvocation): [Uint8Array, IOResult] {
   const token = (inv.config as { token: string }).token
-  const to = inv.flags.to
+  const to = inv.flags.to as string | undefined
   const body = inv.texts.join(' ')
   return [new TextEncoder().encode(`sent[${token}] to=${String(to)}: ${body}\n`), new IOResult()]
 }
@@ -78,9 +78,9 @@ function makeTree(): CLISpec {
 }
 
 function buildWorkspace(): Workspace {
-  const ram = new RAMResource()
+  const ram = new RAMVFS()
   const registry = new OpsRegistry()
-  registry.registerResource(ram)
+  registry.registerVfs(ram)
   return new Workspace(
     { '/data': ram },
     { mode: MountMode.WRITE, ops: registry, shellParser: parser },
@@ -93,27 +93,81 @@ describe('CLI dispatch e2e', () => {
     const tree = makeTree()
     ws.registerCli('slackish', tree, { token: 'eng' })
     ws.registerCli('slackish-sup', tree, { token: 'sup' })
-    const eng = await ws.execute("slackish message send -t '#e' hi")
+    const eng = await ws.shell("slackish message send -t '#e' hi")
     expect([eng.exitCode, dec.decode(eng.stdout)]).toEqual([0, 'sent[eng] to=#e: hi\n'])
-    const sup = await ws.execute("slackish-sup message send -t '#s' yo")
+    const sup = await ws.shell("slackish-sup message send -t '#s' yo")
     expect([sup.exitCode, dec.decode(sup.stdout)]).toEqual([0, 'sent[sup] to=#s: yo\n'])
   })
 
   it('a renamed install attributes to its own head', async () => {
     const ws = buildWorkspace()
     ws.registerCli('sl', makeTree(), { token: 't' })
-    const bogus = await ws.execute('sl bogus')
+    const bogus = await ws.shell('sl bogus')
     expect(bogus.exitCode).toBe(1)
     expect(dec.decode(bogus.stderr)).toBe("sl: 'bogus' is not a sl command. See 'sl --help'.\n")
-    const help = await ws.execute('sl message send --help')
+    const help = await ws.shell('sl message send --help')
     expect(help.exitCode).toBe(0)
     expect(dec.decode(help.stdout).startsWith('sl message send\n')).toBe(true)
+  })
+
+  it('command tiers key on the installed name', async () => {
+    // Two installs of one spec are two subjects: allow installs one
+    // head word and not the other, deny and ask rules name one install
+    // and leave its twin alone, and a grant runs the line under the
+    // granted install's own config.
+    const ram = new RAMVFS()
+    const registry = new OpsRegistry()
+    registry.registerVfs(ram)
+    const ws = new Workspace(
+      { '/data': ram },
+      {
+        mode: MountMode.WRITE,
+        ops: registry,
+        shellParser: parser,
+        profiles: {
+          crew: {
+            commands: {
+              allow: ['h1', 'h2', 'type'],
+              ask: [{ reason: 'outbound needs a nod', commands: ['h1 message send'] }],
+              deny: [{ reason: 'beta is read-only', commands: ['h2 message send'] }],
+            },
+          },
+          solo: { commands: { allow: ['h1', 'type'] } },
+        },
+      },
+    )
+    const tree = makeTree()
+    ws.registerCli('h1', tree, { token: 'one' })
+    ws.registerCli('h2', tree, { token: 'two' })
+    ws.createSession('c', { profile: 'crew' })
+    ws.createSession('s', { profile: 'solo' })
+    const denied = await ws.shell('h2 message send -t x hi', { sessionId: 'c' })
+    expect([denied.exitCode, dec.decode(denied.stderr)]).toEqual([126, 'h2: Permission denied\n'])
+    expect(denied.refusal?.reason).toBe('beta is read-only')
+    const asked = await ws.shell('h1 message send -t x hi', { sessionId: 'c' })
+    expect(asked.exitCode).toBe(126)
+    expect(dec.decode(asked.stderr)).toBe('h1: Permission denied\n')
+    expect(asked.refusal?.kind).toBe('pending')
+    expect(asked.refusal?.reason.startsWith('outbound needs a nod')).toBe(true)
+    const request = ws.decisions.pending()[0]
+    if (request === undefined) throw new Error('no pending approval')
+    expect(request.command).toBe('h1')
+    await ws.decisions.answer(request.id, Outcome.ALLOW)
+    const granted = await ws.shell('h1 message send -t x hi', { sessionId: 'c' })
+    expect([granted.exitCode, dec.decode(granted.stdout)]).toEqual([0, 'sent[one] to=x: hi\n'])
+    const missing = await ws.shell('h2 message send -t x hi', { sessionId: 's' })
+    expect(missing.exitCode).toBe(127)
+    expect(dec.decode(missing.stderr)).toContain('h2: command not found')
+    const typed = await ws.shell('type -t h1; type -t h2', { sessionId: 's' })
+    expect([typed.exitCode, dec.decode(typed.stdout)]).toEqual([1, 'file\n'])
+    const listed = await ws.shell('h1 message send -t x hi', { sessionId: 's' })
+    expect([listed.exitCode, dec.decode(listed.stdout)]).toEqual([0, 'sent[one] to=x: hi\n'])
   })
 
   it('leaf usage errors exit 2', async () => {
     const ws = buildWorkspace()
     ws.registerCli('sl', makeTree(), { token: 't' })
-    const res = await ws.execute('sl message send hi')
+    const res = await ws.shell('sl message send hi')
     expect(res.exitCode).toBe(2)
     expect(dec.decode(res.stderr)).toMatch(/^sl message send: option '--to' is required/)
   })
@@ -122,7 +176,7 @@ describe('CLI dispatch e2e', () => {
     const ws = buildWorkspace()
     ws.registerCli('sl', makeTree(), { token: 't' })
     ws.unregisterCli('sl')
-    const res = await ws.execute('sl message send -t x hi')
+    const res = await ws.shell('sl message send -t x hi')
     expect(res.exitCode).toBe(127)
     expect(dec.decode(res.stderr)).toContain('sl: command not found')
   })
@@ -130,15 +184,15 @@ describe('CLI dispatch e2e', () => {
   it('a CLI head never resolves a mount', async () => {
     const ws = buildWorkspace()
     ws.registerCli('sl', makeTree(), { token: 't' })
-    const res = await ws.execute('sl message send -t x /data/a.txt')
+    const res = await ws.shell('sl message send -t x /data/a.txt')
     expect(res.exitCode).toBe(0)
     expect(dec.decode(res.stdout)).toBe('sent[t] to=x: /data/a.txt\n')
   })
 
   it('the clis constructor option installs through the same path', async () => {
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const registry = new OpsRegistry()
-    registry.registerResource(ram)
+    registry.registerVfs(ram)
     const ws = new Workspace(
       { '/data': ram },
       {
@@ -148,22 +202,22 @@ describe('CLI dispatch e2e', () => {
         clis: { sl: [makeTree(), { token: 'opt' }] },
       },
     )
-    const res = await ws.execute('sl message send -t x hi')
+    const res = await ws.shell('sl message send -t x hi')
     expect([res.exitCode, dec.decode(res.stdout)]).toEqual([0, 'sent[opt] to=x: hi\n'])
   })
 })
 
 function buildScriptWorkspace(): Workspace {
-  const ram = new RAMResource()
+  const ram = new RAMVFS()
   const registry = new OpsRegistry()
-  registry.registerResource(ram)
+  registry.registerVfs(ram)
   return new Workspace(
     { '/data': ram },
     {
       mode: MountMode.WRITE,
       ops: registry,
       shellParser: parser,
-      runtimes: ['monty', 'quickjs', 'vfs'],
+      runtimes: ['monty', 'quickjs', 'workspace'],
     },
   )
 }
@@ -177,7 +231,7 @@ describe('script CLI e2e', () => {
     const ws = buildScriptWorkspace()
     try {
       ws.registerCli('pager', pagerSpec("print('paged', argv[1])"))
-      const res = await ws.execute('pager report.txt')
+      const res = await ws.shell('pager report.txt')
       expect([res.exitCode, dec.decode(res.stdout)]).toEqual([0, 'paged report.txt\n'])
     } finally {
       await ws.close()
@@ -190,7 +244,7 @@ describe('script CLI e2e', () => {
       ws.registerCli('pager', pagerSpec("import os\nprint(os.getenv('MIRAGE_CLI_CONFIG'))"), {
         width: 80,
       })
-      const res = await ws.execute('pager')
+      const res = await ws.shell('pager')
       expect([res.exitCode, dec.decode(res.stdout)]).toEqual([0, '{"width":80}\n'])
     } finally {
       await ws.close()
@@ -203,7 +257,7 @@ describe('script CLI e2e', () => {
     const ws = buildScriptWorkspace()
     try {
       ws.registerCli('pager', pagerSpec("print('paged', argv[1:])"))
-      const res = await ws.execute('pager --width 80 -n report.txt')
+      const res = await ws.shell('pager --width 80 -n report.txt')
       expect([res.exitCode, dec.decode(res.stdout)]).toEqual([
         0,
         "paged ['--width', '80', '-n', 'report.txt']\n",
@@ -217,7 +271,7 @@ describe('script CLI e2e', () => {
     const ws = buildScriptWorkspace()
     try {
       ws.registerCli('pager', pagerSpec("print('program usage', argv[1:])"))
-      const res = await ws.execute('pager --help')
+      const res = await ws.shell('pager --help')
       expect([res.exitCode, dec.decode(res.stdout)]).toEqual([0, "program usage ['--help']\n"])
     } finally {
       await ws.close()
@@ -228,7 +282,7 @@ describe('script CLI e2e', () => {
     const ws = buildScriptWorkspace()
     try {
       ws.registerCli('pager', pagerSpec("print('hi')"))
-      const res = await ws.execute('man pager')
+      const res = await ws.shell('man pager')
       const out = dec.decode(res.stdout)
       expect(res.exitCode).toBe(0)
       expect(out.startsWith('pager\n')).toBe(true)
@@ -242,7 +296,7 @@ describe('script CLI e2e', () => {
     const ws = buildScriptWorkspace()
     try {
       ws.registerCli('pager', pagerSpec('print(stdin.decode())'))
-      const res = await ws.execute('echo body | pager')
+      const res = await ws.shell('echo body | pager')
       expect([res.exitCode, dec.decode(res.stdout)]).toEqual([0, 'body\n\n'])
     } finally {
       await ws.close()
@@ -253,10 +307,10 @@ describe('script CLI e2e', () => {
     const ws = buildScriptWorkspace()
     try {
       ws.registerCli('pager', pagerSpec("raise ValueError('nope')"))
-      const res = await ws.execute('pager')
+      const res = await ws.shell('pager')
       expect(res.exitCode).toBe(1)
       expect(dec.decode(res.stderr)).toContain('ValueError')
-      const status = await ws.execute('pager; echo status=$?')
+      const status = await ws.shell('pager; echo status=$?')
       expect(dec.decode(status.stdout)).toContain('status=1')
     } finally {
       await ws.close()
@@ -271,7 +325,7 @@ describe('script CLI e2e', () => {
         'pager',
         pagerSpec("console.log('paged-js', scriptArgs[0], scriptArgs[1])", 'js'),
       )
-      const res = await ws.execute('pager report.txt')
+      const res = await ws.shell('pager report.txt')
       expect([res.exitCode, dec.decode(res.stdout)]).toEqual([0, 'paged-js pager report.txt\n'])
     } finally {
       await ws.close()
@@ -284,11 +338,11 @@ describe('script CLI e2e', () => {
     const ws = buildScriptWorkspace()
     try {
       ws.registerCli('pager', pagerSpec("print('from-script')"))
-      await ws.execute('pager() { echo from-function; }')
-      const shadowed = await ws.execute('pager')
+      await ws.shell('pager() { echo from-function; }')
+      const shadowed = await ws.shell('pager')
       expect([shadowed.exitCode, dec.decode(shadowed.stdout)]).toEqual([0, 'from-function\n'])
-      await ws.execute('unset -f pager')
-      const unshadowed = await ws.execute('pager')
+      await ws.shell('unset -f pager')
+      const unshadowed = await ws.shell('pager')
       expect([unshadowed.exitCode, dec.decode(unshadowed.stdout)]).toEqual([0, 'from-script\n'])
     } finally {
       await ws.close()
@@ -299,8 +353,8 @@ describe('script CLI e2e', () => {
     const ws = buildScriptWorkspace()
     try {
       ws.registerCli('pager', pagerSpec("print('hi')"))
-      await ws.execute('pager report.txt')
-      const res = await ws.execute('history 2')
+      await ws.shell('pager report.txt')
+      const res = await ws.shell('history 2')
       expect(res.exitCode).toBe(0)
       expect(dec.decode(res.stdout)).toContain('pager report.txt')
     } finally {
@@ -312,16 +366,16 @@ describe('script CLI e2e', () => {
 describe('policy cli fact', () => {
   it('the policy sees the installed head on ctx.commands', async () => {
     const seen: (string | null)[] = []
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const ops = new OpsRegistry()
-    ops.registerResource(ram)
+    ops.registerVfs(ram)
     const ws = new Workspace(
       { '/data': ram },
       {
         mode: MountMode.WRITE,
         ops,
         shellParser: parser,
-        policy: (ctx) => {
+        routePolicy: (ctx) => {
           seen.push(ctx.commands[0]?.cli ?? null)
           if (ctx.commands[0]?.cli === 'slack-eng') return { deny: 'cli lines are frozen' }
           return null
@@ -329,11 +383,12 @@ describe('policy cli fact', () => {
       },
     )
     ws.registerCli('slack-eng', makeTree(), { token: 'tok' })
-    const r = await ws.execute('slack-eng message send -t x hi')
+    const r = await ws.shell('slack-eng message send -t x hi')
     expect(r.exitCode).toBe(126)
-    expect(r.stderrText).toContain('policy denied')
+    expect(r.stderrText).toBe('slack-eng: Permission denied\n')
+    expect(r.refusal?.kind).toBe('deny')
     expect(seen.at(-1)).toBe('slack-eng')
-    const ok = await ws.execute('echo unaffected')
+    const ok = await ws.shell('echo unaffected')
     expect(ok.exitCode).toBe(0)
     expect(seen.at(-1)).toBeNull()
     await ws.close()
@@ -343,7 +398,7 @@ describe('policy cli fact', () => {
 class DenyAwsWrites implements Policy {
   preSession(ctx: SessionContext): Action | null {
     if (!ctx.key.startsWith('AWS_')) return null
-    return { kind: 'deny', message: 'not yours to set\n' }
+    return { kind: 'deny', reason: 'not yours to set' }
   }
 }
 
@@ -366,9 +421,9 @@ describe('the session plane reaches a CLI leaf', () => {
     // reaching into the session: the write lands, and the shell sees it.
     const ws = buildWorkspace()
     ws.registerCli('stash', STASH)
-    const result = await ws.execute('stash TOKEN abc')
+    const result = await ws.shell('stash TOKEN abc')
     expect([result.exitCode, dec.decode(result.stdout)]).toEqual([0, 'TOKEN=abc\n'])
-    const echoed = await ws.execute('echo $TOKEN')
+    const echoed = await ws.shell('echo $TOKEN')
     expect(dec.decode(echoed.stdout)).toBe('abc\n')
   })
 
@@ -376,9 +431,9 @@ describe('the session plane reaches a CLI leaf', () => {
     // A door that skipped the gate would make an installed CLI the way around
     // every preSession rule, which is the whole reason writes go through one
     // door rather than to the session.
-    const ram = new RAMResource()
+    const ram = new RAMVFS()
     const registry = new OpsRegistry()
-    registry.registerResource(ram)
+    registry.registerVfs(ram)
     const ws = new Workspace(
       { '/data': ram },
       {
@@ -389,10 +444,31 @@ describe('the session plane reaches a CLI leaf', () => {
       },
     )
     ws.registerCli('stash', STASH)
-    const denied = await ws.execute('stash AWS_PROFILE prod')
+    const denied = await ws.shell('stash AWS_PROFILE prod')
     expect(denied.exitCode).not.toBe(0)
     expect(dec.decode(denied.stderr)).toContain('not yours to set')
-    expect(dec.decode((await ws.execute('echo $AWS_PROFILE')).stdout)).toBe('\n')
-    expect((await ws.execute('stash OTHER fine')).exitCode).toBe(0)
+    expect(dec.decode((await ws.shell('echo $AWS_PROFILE')).stdout)).toBe('\n')
+    expect((await ws.shell('stash OTHER fine')).exitCode).toBe(0)
+  })
+})
+
+describe('CLI dispatch under an aborted invocation', () => {
+  it('releases the caller while the leaf still waits on its service', async () => {
+    const ws = buildWorkspace()
+    const stuck = new CLISpec({
+      name: 'stuck',
+      configModel: tokenConfig,
+      subcommands: [new CLISpec({ name: 'hang', fn: () => new Promise<never>(() => undefined) })],
+    })
+    ws.registerCli('stuck', stuck, { token: 't' })
+    const controller = new AbortController()
+    setTimeout(() => {
+      controller.abort()
+    }, 50)
+    const t0 = Date.now()
+    await expect(ws.shell('stuck hang', { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(Date.now() - t0).toBeLessThan(1000)
   })
 })

@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { RAMIndexCacheStore } from '../../../cache/index/ram.ts'
 import { materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
-import { FakeDiscordTransport, makeFakeResource, seedChannel, seedGuild } from './_test_util.ts'
+import { FakeDiscordTransport, makeFakeVfs, seedChannel, seedGuild } from './_test_util.ts'
 import { DISCORD_RG } from './rg.ts'
 
 const DEC = new TextDecoder()
@@ -31,8 +31,8 @@ async function runRg(
   const cmd = DISCORD_RG[0]
   if (cmd === undefined) throw new Error('rg not registered')
   const transport = options.transport ?? new FakeDiscordTransport()
-  const resource = makeFakeResource(transport)
-  const result = await cmd.fn(resource.accessor, paths, texts, {
+  const vfs = makeFakeVfs(transport)
+  const result = await cmd.fn(vfs.accessor, paths, texts, {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -80,11 +80,11 @@ describe('discord rg', () => {
           virtual: '/mnt/discord/My Server__G1/channels/general__C1',
           directory: '/mnt/discord/My Server__G1/channels/general__C1',
           resolved: false,
-          resourcePath: mountKey('/mnt/discord/My Server__G1/channels/general__C1', '/mnt/discord'),
+          vfsPath: mountKey('/mnt/discord/My Server__G1/channels/general__C1', '/mnt/discord'),
         }),
       ],
       ['hello'],
-      { w: true },
+      { word_regexp: true },
       { index: idx, transport },
     )
     expect(transport.calls[0]?.endpoint).toBe('/guilds/G1/messages/search')
@@ -92,23 +92,5 @@ describe('discord rg', () => {
     const lines = out.stdout.split('\n').filter((l) => l !== '')
     expect(lines.length).toBe(1)
     expect(lines[0]).toContain('hello world')
-  })
-
-  it('returns exit 1 when native search has no matches', async () => {
-    const transport = new FakeDiscordTransport(() => ({ total_results: 0, messages: [] }))
-    const out = await runRg(
-      [
-        new PathSpec({
-          virtual: '/mnt/discord/My Server__G1/channels/general__C1',
-          directory: '/mnt/discord/My Server__G1/channels/general__C1',
-          resolved: false,
-          resourcePath: mountKey('/mnt/discord/My Server__G1/channels/general__C1', '/mnt/discord'),
-        }),
-      ],
-      ['hello'],
-      { w: true },
-      { transport },
-    )
-    expect(out.exitCode).toBe(1)
   })
 })

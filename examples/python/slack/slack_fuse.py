@@ -19,7 +19,7 @@ import subprocess
 from dotenv import load_dotenv
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.resource.slack import SlackConfig, SlackResource
+from mirage.vfs.slack import SlackConfig, SlackVFS
 
 load_dotenv(".env.development")
 
@@ -27,12 +27,11 @@ config = SlackConfig(
     token=os.environ["SLACK_BOT_TOKEN"],
     search_token=os.environ.get("SLACK_USER_TOKEN"),
 )
-resource = SlackResource(config=config)
+vfs = SlackVFS(config=config)
 
-with Workspace({
-        "/slack/":
-        Mount(resource, mode=MountMode.READ, backend=MountBackend.FUSE)
-}) as ws:
+with Workspace(
+    {"/slack/": Mount(vfs, mode=MountMode.READ, backend=MountBackend.FUSE)}
+) as ws:
     mp = ws.fuse_mountpoint
 
     print(f"=== FUSE MODE: mounted at {mp} ===\n")
@@ -69,14 +68,17 @@ with Workspace({
                 if text:
                     lines = [ln for ln in text.splitlines() if ln.strip()]
                     print(
-                        f"\n--- size-unknown semantics on {d}/chat.jsonl ---")
+                        f"\n--- size-unknown semantics on {d}/chat.jsonl ---"
+                    )
                     print(f"  stat before open: {pre_size} bytes")
-                    wc = subprocess.run(["wc", "-lc", path],
-                                        capture_output=True,
-                                        text=True)
+                    wc = subprocess.run(
+                        ["wc", "-lc", path], capture_output=True, text=True
+                    )
                     n_lines, n_bytes = wc.stdout.split()[:2]
-                    print(f"  wc -lc          : {n_lines} messages, "
-                          f"{n_bytes} bytes")
+                    print(
+                        f"  wc -lc          : {n_lines} messages, "
+                        f"{n_bytes} bytes"
+                    )
                     print(f"  stat after read : {os.stat(path).st_size} bytes")
                     print(f"\n--- open() + read {d}/chat.jsonl ---")
                     print(f"  messages: {len(lines)}")
@@ -120,6 +122,6 @@ with Workspace({
     print(">>> Press Enter to unmount and exit...")
     input()
 
-    records = ws.ops.records
+    records = ws.vfs.records
     total = sum(r.bytes for r in records)
     print(f"\nStats: {len(records)} ops, {total} bytes transferred")

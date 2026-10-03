@@ -15,14 +15,14 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { MountMode } from '@struktoai/mirage-core/types'
-import { DiskResource } from '../resource/disk/disk.ts'
+import { MountMode, PathSpec } from '@struktoai/mirage-core/types'
+import { DiskVFS } from '../vfs/disk/disk.ts'
 import { tmpRoot } from '../test-utils.ts'
 import { Workspace } from '../workspace.ts'
 
 // Disk carries a 60s index TTL, so a cached directory listing outlives a
 // mutation unless something evicts it. Both surfaces reach the same ops
-// through the same door: ws.dispatch and ws.fs (the path patchNodeFs and
+// through the same door: ws.dispatch and ws.vfs (the path patchNodeFs and
 // FUSE use) both run the Dispatcher, which calls invalidateAfterWriteByPath
 // after every write op, mirroring Python's Dispatcher.invalidate_after_write.
 // That is the whole guarantee, and it is why the ops factory forwards the
@@ -32,7 +32,7 @@ function diskWorkspace(): { ws: Workspace; cleanup: () => void } {
   const { root, cleanup } = tmpRoot('mirage-index-invalidation-')
   mkdirSync(join(root, 'seed'))
   const ws = new Workspace(
-    { '/d': [new DiskResource({ root }), MountMode.WRITE] },
+    { '/d': [new DiskVFS({ root }), MountMode.WRITE] },
     { mode: MountMode.WRITE },
   )
   return { ws, cleanup }
@@ -85,42 +85,62 @@ describe('dispatcher evicts the index after a write op', () => {
   })
 })
 
-describe('the fs facade evicts the index like the shell does', () => {
+describe('dispatcher evicts both subtrees after a rename', () => {
+  it('the old name of a moved directory stops answering from its cached children', async () => {
+    // The old name kept answering from its cached children after the move,
+    // so a later rename onto that name saw a directory that was no longer
+    // there and landed the source inside it.
+    const { ws, cleanup } = diskWorkspace()
+    try {
+      await ws.dispatch('write', '/d/seed/readme.md', [new TextEncoder().encode('notes\n')])
+      expect(names(await ws.dispatch('readdir', '/d/seed'))).toEqual(['readme.md'])
+      await ws.dispatch('rename', '/d/seed', [PathSpec.fromStrPath('/d/moved')])
+      await expect(ws.dispatch('stat', '/d/seed')).rejects.toThrow()
+      await expect(ws.dispatch('readdir', '/d/seed')).rejects.toThrow()
+      expect(names(await ws.dispatch('readdir', '/d/moved'))).toEqual(['readme.md'])
+    } finally {
+      await ws.close()
+      cleanup()
+    }
+  })
+})
+
+describe('the op facade evicts the index like the shell does', () => {
   it('caches the listing in the first place, so the evictions below mean something', async () => {
     // Non-vacuity guard. These backends used to be handed no index at
     // all, which made every test in this file pass for the wrong
     // reason: nothing was ever cached, so nothing needed evicting.
     const { ws, cleanup } = diskWorkspace()
     try {
-      const index = ws.registry.mountFor('/d').resource.index
+      const index = ws.registry.mountFor('/d').indexStore
       expect(index).toBeDefined()
-      await ws.fs.readdir('/d')
-      expect((await index?.listDir('/d'))?.entries).toEqual(['/d/seed'])
+      await ws.vfs.readdir('/d')
+      expect((await index.listDir('/d')).entries).toEqual(['/d/seed'])
     } finally {
       await ws.close()
       cleanup()
     }
   })
 
-  it('readdir reflects a mkdir issued through ws.fs', async () => {
+  it('readdir reflects a mkdir issued through ws.vfs', async () => {
     const { ws, cleanup } = diskWorkspace()
     try {
-      expect(names(await ws.fs.readdir('/d'))).toEqual(['seed'])
-      await ws.fs.mkdir('/d/sub')
-      expect(names(await ws.fs.readdir('/d'))).toEqual(['seed', 'sub'])
+      expect(names(await ws.vfs.readdir('/d'))).toEqual(['seed'])
+      await ws.vfs.mkdir('/d/sub')
+      expect(names(await ws.vfs.readdir('/d'))).toEqual(['seed', 'sub'])
     } finally {
       await ws.close()
       cleanup()
     }
   })
 
-  it('readdir reflects a writeFile then unlink issued through ws.fs', async () => {
+  it('readdir reflects a writeFile then unlink issued through ws.vfs', async () => {
     const { ws, cleanup } = diskWorkspace()
     try {
-      await ws.fs.writeFile('/d/a.txt', 'a')
-      expect(names(await ws.fs.readdir('/d'))).toEqual(['a.txt', 'seed'])
-      await ws.fs.unlink('/d/a.txt')
-      expect(names(await ws.fs.readdir('/d'))).toEqual(['seed'])
+      await ws.vfs.write('/d/a.txt', 'a')
+      expect(names(await ws.vfs.readdir('/d'))).toEqual(['a.txt', 'seed'])
+      await ws.vfs.unlink('/d/a.txt')
+      expect(names(await ws.vfs.readdir('/d'))).toEqual(['seed'])
     } finally {
       await ws.close()
       cleanup()

@@ -13,14 +13,24 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage import Workspace
-from mirage.resource.history import HISTORY_PREFIX
 from mirage.server.registry import WorkspaceEntry
-from mirage.server.schemas import (MountSummary, SessionSummary,
-                                   WorkspaceBrief, WorkspaceDetail,
-                                   WorkspaceInternals)
+from mirage.server.schemas import (
+    MountSummary,
+    SessionSummary,
+    WorkspaceBrief,
+    WorkspaceDetail,
+    WorkspaceInternals,
+)
+from mirage.shell.constants import BIN_PREFIX
+from mirage.vfs.base import BaseVFS
+from mirage.vfs.history import HISTORY_PREFIX
 from mirage.workspace.snapshot.utils import norm_mount_prefix
 
-_AUTO_PREFIXES = {"/dev/", norm_mount_prefix(HISTORY_PREFIX)}
+_AUTO_PREFIXES = {
+    "/dev/",
+    norm_mount_prefix(HISTORY_PREFIX),
+    norm_mount_prefix(BIN_PREFIX),
+}
 _DESCRIPTION_MAX = 120
 
 
@@ -28,11 +38,11 @@ def _is_auto_prefix(prefix: str) -> bool:
     return prefix in _AUTO_PREFIXES
 
 
-def _mount_description(resource) -> str:
-    raw = getattr(resource, "PROMPT", "") or ""
+def _mount_description(vfs: BaseVFS) -> str:
+    raw = vfs.prompt
     if len(raw) <= _DESCRIPTION_MAX:
         return raw
-    return raw[:_DESCRIPTION_MAX - 1].rstrip() + "\u2026"
+    return raw[: _DESCRIPTION_MAX - 1].rstrip() + "\u2026"
 
 
 def _user_mounts(ws: Workspace):
@@ -46,14 +56,14 @@ async def _build_internals(ws: Workspace) -> WorkspaceInternals:
         cache_bytes=cache.cache_size,
         cache_entries=cache.cache_entries,
         history_length=history_len,
-        in_flight_jobs=len(ws.job_table.list_jobs()),
+        in_flight_jobs=len(ws.job_table.all_jobs()),
     )
 
 
 def make_brief(entry: WorkspaceEntry) -> WorkspaceBrief:
     ws = entry.runner.ws
     user_mounts = _user_mounts(ws)
-    workspace_mode = (user_mounts[0].mode.value if user_mounts else "read")
+    workspace_mode = user_mounts[0].mode.value if user_mounts else "read"
     return WorkspaceBrief(
         id=entry.id,
         mode=workspace_mode,
@@ -63,18 +73,20 @@ def make_brief(entry: WorkspaceEntry) -> WorkspaceBrief:
     )
 
 
-async def make_detail(entry: WorkspaceEntry,
-                      verbose: bool = False) -> WorkspaceDetail:
+async def make_detail(
+    entry: WorkspaceEntry, verbose: bool = False
+) -> WorkspaceDetail:
     ws = entry.runner.ws
     user_mounts = _user_mounts(ws)
-    workspace_mode = (user_mounts[0].mode.value if user_mounts else "read")
+    workspace_mode = user_mounts[0].mode.value if user_mounts else "read"
     mounts = [
         MountSummary(
             prefix=m.prefix,
-            resource=m.resource.name,
+            vfs=m.vfs.name,
             mode=m.mode.value,
-            description=_mount_description(m.resource),
-        ) for m in user_mounts
+            description=_mount_description(m.vfs),
+        )
+        for m in user_mounts
     ]
     sessions = [
         SessionSummary(session_id=s.session_id, cwd=s.cwd)

@@ -19,5 +19,16 @@ MODE_CHARS = frozenset("rwaxbt+")
 
 # The legal base-letter sets: CPython's four plus C fopen's wx
 # (exclusive create), which CPython spells as a bare x.
-MODE_BASES = (frozenset("r"), frozenset("w"), frozenset("a"), frozenset("x"),
-              frozenset("wx"))
+MODE_BASES = (
+    frozenset("r"),
+    frozenset("w"),
+    frozenset("a"),
+    frozenset("x"),
+    frozenset("wx"),
+)
+
+# The least a read-only handle fetches per trip to the mount. A guest
+# reads in small pieces (a line, a 4 KiB buffer), so one chunk per
+# request keeps a sequential read at one round trip per MiB rather than
+# one per call.
+READ_CHUNK = 1 << 20

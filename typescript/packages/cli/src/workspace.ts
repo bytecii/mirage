@@ -13,10 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import type { JsonValue } from '@struktoai/mirage-core/types'
 import type { Command } from 'commander'
-import { checkWorkspaceConfigFile, interpolateEnv } from '@struktoai/mirage-server'
-import { parse as yamlParse } from 'yaml'
 import { makeClient } from './client.ts'
 import { emit, fail, formatAge, formatTable, handleResponse } from './output.ts'
 import { loadDaemonSettings } from './settings.ts'
@@ -33,14 +32,35 @@ function envRecord(): Record<string, string> {
   return out
 }
 
-function loadConfigArgument(path: string): unknown {
+// A config handed to `load` or `clone`: env-interpolated, and with its
+// relative script paths and code refs rebased onto the file's directory
+// exactly as `create` rebases them, so `vfs: ./wiki.mjs:WikiVFS`
+// in an override means "next to this file", never "wherever the daemon
+// runs". Not validated, because an override may name only a subset of
+// mounts. Mirrors `_resolve_config_arg` in the Python CLI, which is sync:
+// this half is async only because it defers `mirage-node/config` and
+// `yaml` so a `mirage` spawn that never loads a config pays neither. The
+// behaviour is the same; the divergence is the `await`, and it is the
+// reason `override` is a JsonValue rather than `unknown` -- dropping that
+// `await` would otherwise typecheck and put `{}` on the wire.
+async function loadConfigArgument(path: string): Promise<JsonValue> {
   if (!existsSync(path)) fail(`config file not found: ${path}`, 2)
+  const { absolutizeScripts, interpolateEnv } = await import('@struktoai/mirage-node/config')
+  const { parse: yamlParse } = await import('yaml')
   const text = readFileSync(path, 'utf-8')
+  let config: JsonValue
   try {
-    return interpolateEnv(yamlParse(text), envRecord())
+    // `yamlParse` is typed `any`; naming the shape here is what lets
+    // `override` be a JsonValue, which is what makes a dropped `await`
+    // on this function a type error rather than an empty body on the wire.
+    config = interpolateEnv(yamlParse(text) as JsonValue, envRecord())
   } catch (err: unknown) {
     fail(`invalid config YAML/JSON at ${path}: ${String(err)}`, 2)
   }
+  if (typeof config === 'object' && config !== null && !Array.isArray(config)) {
+    absolutizeScripts(config as Record<string, unknown>, dirname(resolve(path)))
+  }
+  return config
 }
 
 interface WorkspaceBrief {
@@ -53,7 +73,7 @@ interface WorkspaceBrief {
 
 interface MountSummary {
   prefix: string
-  resource: string
+  vfs: string
   mode: string
 }
 
@@ -97,9 +117,9 @@ function formatWorkspaceDetail(d: WorkspaceDetail): string {
     `Created:   ${formatAge(d.createdAt)} ago`,
   ]
   if (d.mounts !== undefined && d.mounts.length > 0) {
-    const rows = d.mounts.map((m) => [m.prefix, m.resource, m.mode])
+    const rows = d.mounts.map((m) => [m.prefix, m.vfs, m.mode])
     lines.push('', 'Mounts:')
-    for (const ln of formatTable(['PREFIX', 'RESOURCE', 'MODE'], rows).split('\n')) {
+    for (const ln of formatTable(['PREFIX', 'VFS', 'MODE'], rows).split('\n')) {
       lines.push('  ' + ln)
     }
   }
@@ -118,6 +138,34 @@ function formatWorkspaceDetail(d: WorkspaceDetail): string {
     }
   }
   return lines.join('\n')
+}
+
+interface AskRecord {
+  id: string
+  sessionId: string
+  agentId: string
+  command: string
+  argv: string[]
+  cwd: string
+  paths: string[]
+  reason: string
+  outcome: string | null
+  scope: string
+  note: string
+}
+
+function formatAsks(items: AskRecord[]): string {
+  if (items.length === 0) return 'No asks.'
+  return formatTable(
+    ['ID', 'SESSION', 'COMMAND', 'STATUS', 'REASON'],
+    items.map((a) => [
+      a.id,
+      a.sessionId,
+      [a.command, ...a.argv].join(' '),
+      a.outcome ?? 'pending',
+      a.reason,
+    ]),
+  )
 }
 
 interface VersionLogItem {
@@ -159,6 +207,7 @@ export function registerWorkspaceCommands(program: Command): void {
       // source of truth, and a missing var must fail before the round
       // trip), but sent in the file's own spelling: the daemon runs the
       // same check, and it speaks snake_case like the Python one.
+      const { checkWorkspaceConfigFile } = await import('@struktoai/mirage-node/config')
       const cfg = checkWorkspaceConfigFile(configPath)
       const body: { config: unknown; id?: string } = { config: cfg }
       if (opts.id !== undefined) body.id = opts.id
@@ -186,7 +235,8 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, opts: { verbose?: boolean }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const path = `/v1/workspaces/${id}` + (opts.verbose === true ? '?verbose=true' : '')
+      const path =
+        `/v1/workspaces/${encodeURIComponent(id)}` + (opts.verbose === true ? '?verbose=true' : '')
       emit(
         (await handleResponse(await c.request('GET', path))) as WorkspaceDetail,
         formatWorkspaceDetail,
@@ -200,7 +250,9 @@ export function registerWorkspaceCommands(program: Command): void {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
       emit(
-        (await handleResponse(await c.request('DELETE', `/v1/workspaces/${id}`))) as {
+        (await handleResponse(
+          await c.request('DELETE', `/v1/workspaces/${encodeURIComponent(id)}`),
+        )) as {
           id: string
         },
         (d) => `Deleted workspace ${d.id}.`,
@@ -230,7 +282,7 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, opts: { message: string; branch: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/commit`, {
+      const r = await c.request('POST', `/v1/workspaces/${encodeURIComponent(id)}/commit`, {
         body: JSON.stringify({ message: opts.message, branch: opts.branch }),
       })
       emit(
@@ -247,7 +299,7 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, name: string, opts: { from: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/branch`, {
+      const r = await c.request('POST', `/v1/workspaces/${encodeURIComponent(id)}/branch`, {
         body: JSON.stringify({ name, fromBranch: opts.from }),
       })
       emit(
@@ -263,7 +315,10 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, opts: { branch: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('GET', `/v1/workspaces/${id}/versions?branch=${opts.branch}`)
+      const r = await c.request(
+        'GET',
+        `/v1/workspaces/${encodeURIComponent(id)}/versions?branch=${encodeURIComponent(opts.branch)}`,
+      )
       emit((await handleResponse(r)) as VersionLogItem[], formatVersionLog)
     })
 
@@ -285,10 +340,73 @@ export function registerWorkspaceCommands(program: Command): void {
         if (b !== undefined) params.set('b', b)
         const c = buildClient()
         await c.ensureRunning({ allowSpawn: false })
-        const r = await c.request('GET', `/v1/workspaces/${id}/diff?${params.toString()}`)
+        const r = await c.request(
+          'GET',
+          `/v1/workspaces/${encodeURIComponent(id)}/diff?${params.toString()}`,
+        )
         emit((await handleResponse(r)) as DiffResult, formatDiff)
       },
     )
+
+  ws.command('list-asks')
+    .description('List pending asks (every decision with --all).')
+    .argument('<id>')
+    .option('--session <sessionId>', "Only this session's asks")
+    .option('--all', 'Include settled decisions, not just pending asks')
+    .action(async (id: string, opts: { session?: string; all?: boolean }) => {
+      const params = new URLSearchParams()
+      if (opts.session !== undefined) params.set('sessionId', opts.session)
+      if (opts.all === true) params.set('all', 'true')
+      const c = buildClient()
+      await c.ensureRunning({ allowSpawn: false })
+      const qs = params.toString()
+      const r = await c.request(
+        'GET',
+        `/v1/workspaces/${encodeURIComponent(id)}/asks${qs === '' ? '' : `?${qs}`}`,
+      )
+      emit((await handleResponse(r)) as AskRecord[], formatAsks)
+    })
+
+  ws.command('allow')
+    .description('Allow a pending ask; the retry of the asked line passes.')
+    .argument('<id>')
+    .argument('<askId>', 'Ask id, as quoted in the refusal')
+    .option(
+      '--scope <scope>',
+      'once answers the exact line; session answers every line the rule covers',
+      'once',
+    )
+    .option('--note <note>', 'What to record alongside the answer', '')
+    .action(async (id: string, askId: string, opts: { scope: string; note: string }) => {
+      const c = buildClient()
+      await c.ensureRunning({ allowSpawn: false })
+      const r = await c.request(
+        'POST',
+        `/v1/workspaces/${encodeURIComponent(id)}/asks/${encodeURIComponent(askId)}`,
+        {
+          body: JSON.stringify({ answer: 'allow', scope: opts.scope, note: opts.note }),
+        },
+      )
+      emit((await handleResponse(r)) as AskRecord, (d) => `Allowed ${d.id} (${d.scope}).`)
+    })
+
+  ws.command('deny')
+    .description('Deny a pending ask; the retry is refused in the deny voice, once.')
+    .argument('<id>')
+    .argument('<askId>', 'Ask id, as quoted in the refusal')
+    .option('--note <note>', 'What to record alongside the answer', '')
+    .action(async (id: string, askId: string, opts: { note: string }) => {
+      const c = buildClient()
+      await c.ensureRunning({ allowSpawn: false })
+      const r = await c.request(
+        'POST',
+        `/v1/workspaces/${encodeURIComponent(id)}/asks/${encodeURIComponent(askId)}`,
+        {
+          body: JSON.stringify({ answer: 'deny', note: opts.note }),
+        },
+      )
+      emit((await handleResponse(r)) as AskRecord, (d) => `Denied ${d.id}.`)
+    })
 
   ws.command('checkout')
     .description('Restore a workspace in place to one of its versions.')
@@ -297,7 +415,7 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, ref: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/checkout`, {
+      const r = await c.request('POST', `/v1/workspaces/${encodeURIComponent(id)}/checkout`, {
         body: JSON.stringify({ ref }),
       })
       emit((await handleResponse(r)) as WorkspaceDetail, formatWorkspaceDetail)
@@ -312,7 +430,7 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, output: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/snapshot`, {
+      const r = await c.request('POST', `/v1/workspaces/${encodeURIComponent(id)}/snapshot`, {
         body: JSON.stringify({ path: resolve(output) }),
       })
       const d = (await handleResponse(r)) as { id: string; path: string; size: number }
@@ -326,9 +444,9 @@ export function registerWorkspaceCommands(program: Command): void {
     .option('--id <id>', 'Explicit workspace id')
     .action(async (tarPath: string, configPath: string | undefined, opts: { id?: string }) => {
       if (!existsSync(tarPath)) fail(`tar file not found: ${tarPath}`, 2)
-      const body: { path: string; id?: string; override?: unknown } = { path: resolve(tarPath) }
+      const body: { path: string; id?: string; override?: JsonValue } = { path: resolve(tarPath) }
       if (opts.id !== undefined) body.id = opts.id
-      if (configPath !== undefined) body.override = loadConfigArgument(configPath)
+      if (configPath !== undefined) body.override = await loadConfigArgument(configPath)
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: true })
       const r = await c.request('POST', '/v1/workspaces/load', { body: JSON.stringify(body) })

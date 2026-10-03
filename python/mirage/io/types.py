@@ -16,9 +16,21 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from mirage.io.cachable_iterator import CachableAsyncIterator
-from mirage.types import Producer
+from mirage.io.cooperative import chunks
+from mirage.types import PathSpec, Producer, Refusal
 
 ByteSource = bytes | AsyncIterator[bytes]
+
+
+class DeviceInput(bytes):
+    """Standard input redirected from a character device (``< /dev/null``).
+
+    It reads as the bytes it holds, like any other stdin, and tells a
+    command that asks whether a file, FIFO or socket is attached that none
+    is: ripgrep asks before it searches stdin rather than the working
+    directory (grep_cli::is_readable_stdin).
+    """
+
 
 # The shape every command returns: a live stdout stream (None when
 # buffered into the result) and the command's outcome.
@@ -33,7 +45,7 @@ async def materialize(stream: ByteSource | None) -> bytes:
         return stream
     if isinstance(stream, CachableAsyncIterator):
         return await stream.drain()
-    return b"".join([chunk async for chunk in stream])
+    return b"".join([chunk async for chunk in chunks(stream)])
 
 
 @dataclass
@@ -66,9 +78,9 @@ class OpReport:
     source: str | None = None
     bytes: int | None = None
 
-    def served(self,
-               source: str | None = None,
-               moved: int | None = None) -> None:
+    def served(
+        self, source: str | None = None, moved: int | None = None
+    ) -> None:
         """Stamp the report at the moment an op completes.
 
         Args:
@@ -101,6 +113,12 @@ class IOResult:
     before treating the status as final.
 
     Args:
+        matched_runs (list[list[PathSpec]] | None): Structured selection
+            before display rendering, for commands whose matches feed
+            later actions: one list of rows per start point, in operand
+            order, so a nested or repeated start point stays its own
+            traversal (GNU walks each to completion before the next).
+            None means the command supplied no structured selection.
         stdout (ByteSource | None): Standard output stream.
         stderr (ByteSource | None): Standard error stream.
         exit_code (int): Process exit code.
@@ -108,40 +126,51 @@ class IOResult:
             or streams.
         writes (dict[str, ByteSource] | None): Paths written with
             content or streams.
+        renames (list[tuple[str, str]] | None): Completed backend moves in
+            execution order, as virtual source/destination paths. Namespace
+            metadata follows these facts, even when another operand fails.
         cache (list[str] | None): Paths worth caching (from reads or
             writes).
         producer (Producer | None): provenance of this result (which
             command, spanning which mounts); merge keeps the rightmost
-            producer, mirroring whose stream the shell shows. The
+            producer, for attribution, not ownership of aggregate output. The
             workspace boundary hands it to the policy layer as
-            context. Facts ride the envelope, policy decisions never
-            do.
-        mutated (bool | None): whether this run changed service state,
-            when only the handler can tell. A CLI leaf declares
-            ``write`` statically because for almost every verb it is
-            static, but ``gh api`` carries its method on the line, so a
-            plain ``gh api /user`` is a read through a leaf that is
-            declared writable. None leaves the spec's answer standing.
+            context. Facts ride the envelope as policy input; the
+            decision a chain hands down rides beside them as
+            ``refusal``, written after the last hook has spoken.
+        refusal (Refusal | None): why the line did not run, when a
+            policy or an unanswered ask refused it; None on every
+            ordinary run. stderr stays in bash's voice, this carries
+            the reason. merge keeps the rightmost record, as it does
+            the producer.
     """
 
-    def __init__(self,
-                 stdout: ByteSource | None = None,
-                 stderr: ByteSource | None = None,
-                 exit_code: int = 0,
-                 reads: dict[str, ByteSource] | None = None,
-                 writes: dict[str, ByteSource] | None = None,
-                 cache: list[str] | None = None,
-                 producer: Producer | None = None,
-                 mutated: bool | None = None) -> None:
+    def __init__(
+        self,
+        stdout: ByteSource | None = None,
+        stderr: ByteSource | None = None,
+        exit_code: int = 0,
+        reads: dict[str, ByteSource] | None = None,
+        writes: dict[str, ByteSource] | None = None,
+        cache: list[str] | None = None,
+        producer: Producer | None = None,
+        refusal: Refusal | None = None,
+        matched_runs: list[list[PathSpec]] | None = None,
+        renames: list[tuple[str, str]] | None = None,
+    ) -> None:
+        self.renames = renames if renames is not None else []
         self.stdout = stdout
+        self.matched_runs = matched_runs
         self.stderr = stderr
         self._exit_code = exit_code
         self.reads: dict[str, ByteSource] = reads if reads is not None else {}
-        self.writes: dict[str,
-                          ByteSource] = writes if writes is not None else {}
+        self.writes: dict[str, ByteSource] = (
+            writes if writes is not None else {}
+        )
         self.cache: list[str] = cache if cache is not None else []
+        self.output_finalized = False
         self.producer = producer
-        self.mutated = mutated
+        self.refusal = refusal
         self._stream_source: IOResult | None = None
 
     @property
@@ -181,17 +210,17 @@ class IOResult:
         # (exit_on_empty firing at drain time) is still visible.
         result = IOResult(
             stdout=other.stdout,
+            matched_runs=other.matched_runs,
             stderr=merged_stderr,
-            reads={
-                **self.reads,
-                **other.reads
-            },
-            writes={
-                **self.writes,
-                **other.writes
-            },
+            reads={**self.reads, **other.reads},
+            writes={**self.writes, **other.writes},
             cache=self.cache + other.cache,
+            renames=self.renames + other.renames,
             producer=other.producer,
+            refusal=(
+                other.refusal if other.refusal is not None else self.refusal
+            ),
         )
+        result.output_finalized = other.output_finalized
         result._stream_source = other
         return result

@@ -13,9 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { specOf } from './builtins.ts'
-import { parseCommand, parseToKwargs } from './parser.ts'
-import { CommandSpec, Operand, Option, ParsedArgs } from './types.ts'
+import { helpSpec, registeredSpec, specOf } from './builtins.ts'
+import { flagOccurrences } from './flag_view.ts'
+import { ParsedArgs, parseCommand, parseToKwargs } from './parser.ts'
+import { CommandSpec, Operand, Option } from './types.ts'
+
+/** The spec the registry parses for a builtin, --help/--version and all. */
+function registered(name: string): CommandSpec {
+  return registeredSpec(name, specOf(name))
+}
 
 describe('parseCommand — bool short flags', () => {
   const spec = new CommandSpec({
@@ -139,24 +145,22 @@ describe('parseCommand — positional classification', () => {
   })
 })
 
-describe('parseCommand — --cache extraction', () => {
-  const spec = new CommandSpec({ rest: new Operand({ type: 'path' }) })
-
-  it('greedily consumes non-flag args into cachePaths, matching Python', () => {
-    const p = parseCommand(spec, ['--cache', '/ram/cached', '/ram/x'], '/')
-    expect(p.cachePaths).toEqual(['/ram/cached', '/ram/x'])
-    expect(p.paths()).toEqual([])
+describe('parseCommand — --cache is an ordinary word', () => {
+  it('refuses --cache as an unrecognized option', () => {
+    const p = parseCommand(specOf('grep'), ['--cache', '/c', 'bar', 'f.txt'], '/data', 'grep')
+    expect(p.invalidOptions).toEqual(['--cache'])
+    expect(p.args).toEqual([
+      ['/c', 'str'],
+      ['/data/bar', 'path'],
+      ['/data/f.txt', 'path'],
+    ])
+    expect(p.wordKinds).toEqual(['str', 'str', 'path', 'path'])
   })
 
-  it('stops --cache loop at the next flag token', () => {
-    const spec2 = new CommandSpec({
-      options: [new Option({ short: '-l' })],
-      rest: new Operand({ type: 'path' }),
-    })
-    const p = parseCommand(spec2, ['--cache', '/ram/cached', '-l', '/ram/x'], '/')
-    expect(p.cachePaths).toEqual(['/ram/cached'])
-    expect(p.flags['-l']).toBe(true)
-    expect(p.paths()).toEqual(['/ram/x'])
+  it('reads --cache after end of options as an operand', () => {
+    const p = parseCommand(specOf('cat'), ['--', '--cache'], '/data', 'cat')
+    expect(p.invalidOptions).toEqual([])
+    expect(p.args).toEqual([['/data/--cache', 'path']])
   })
 })
 
@@ -286,7 +290,7 @@ describe('parseCommand — multiple value flags accumulate newline-joined', () =
 
   it('accumulates repeated -e for rg and frees the positional slot', () => {
     const p = parseCommand(specOf('rg'), ['-e', 'foo', '-e', 'bar', '/x'], '/')
-    expect(p.flags['-e']).toEqual(['foo', 'bar'])
+    expect(p.flags['--regexp']).toEqual(['foo', 'bar'])
     expect(p.texts()).toEqual([])
     expect(p.paths()).toEqual(['/x'])
   })
@@ -295,7 +299,7 @@ describe('parseCommand — multiple value flags accumulate newline-joined', () =
 describe('parseCommand — grep -f pattern file', () => {
   it('frees the positional slot and routes the pattern file', () => {
     const p = parseCommand(specOf('grep'), ['-f', 'pats.txt', 'a.txt'], '/data')
-    expect(p.flags['-f']).toEqual(['/data/pats.txt'])
+    expect(p.flags['--file']).toEqual(['/data/pats.txt'])
     expect(p.texts()).toEqual([])
     expect(p.paths()).toEqual(['/data/a.txt'])
     expect(p.routingPaths()).toContain('/data/pats.txt')
@@ -304,16 +308,23 @@ describe('parseCommand — grep -f pattern file', () => {
   it('keeps -e and -f together', () => {
     const p = parseCommand(specOf('grep'), ['-e', 'foo', '-f', '/p.txt', '/a.txt'], '/')
     expect(p.flags['-e']).toEqual(['foo'])
-    expect(p.flags['-f']).toEqual(['/p.txt'])
+    expect(p.flags['--file']).toEqual(['/p.txt'])
     expect(p.paths()).toEqual(['/a.txt'])
   })
 
   it('repeated -f accumulates and routes each file', () => {
     const p = parseCommand(specOf('grep'), ['-f', 'p1.txt', '-f', 'p2.txt', 'a.txt'], '/data')
-    expect(p.flags['-f']).toEqual(['/data/p1.txt', '/data/p2.txt'])
+    expect(p.flags['--file']).toEqual(['/data/p1.txt', '/data/p2.txt'])
     expect(p.paths()).toEqual(['/data/a.txt'])
     expect(p.routingPaths()).toContain('/data/p1.txt')
     expect(p.routingPaths()).toContain('/data/p2.txt')
+  })
+
+  it('keeps rg -f - as stdin, as grep does', () => {
+    // Resolved against the cwd, `-` became a pattern file named `/-`.
+    const p = parseCommand(specOf('rg'), ['-f', '-', '/a.txt'], '/data', 'rg')
+    expect(p.flags['--file']).toEqual(['-'])
+    expect(p.paths()).toEqual(['/a.txt'])
   })
 })
 
@@ -326,7 +337,7 @@ describe('parseCommand — GNU long flag =value syntax', () => {
 
   it('parses rg --type=md', () => {
     const p = parseCommand(specOf('rg'), ['--type=md', 'pat', '/x'], '/')
-    expect(p.flags['--type']).toBe('md')
+    expect(p.flags['--type']).toEqual(['md'])
     expect(p.texts()).toEqual(['pat'])
     expect(p.paths()).toEqual(['/x'])
   })
@@ -364,13 +375,41 @@ describe('parseCommand — optional-value long options', () => {
 })
 
 describe('parseCommand — optional-value short options', () => {
+  // date's -I[FMT] is getopt's `I::`: the value only rides attached, and a
+  // detached word stays an operand (coreutils 9.7).
   it('uses only an attached value and leaves the next option intact', () => {
-    const bare = parseCommand(specOf('split'), ['-d', '-l', '2', '/input', '/prefix'], '/')
-    const attached = parseCommand(specOf('split'), ['-d10', '/input'], '/')
-    expect(bare.flags['--numeric-suffixes']).toBe(true)
-    expect(bare.flags['--lines']).toBe('2')
-    expect(bare.paths()).toEqual(['/input', '/prefix'])
-    expect(attached.flags['--numeric-suffixes']).toBe('10')
+    const bare = parseCommand(specOf('date'), ['-I', '-d', 'now', '+%F'], '/')
+    const attached = parseCommand(specOf('date'), ['-Is', '+%F'], '/')
+    expect(bare.flags['--iso-8601']).toBe(true)
+    expect(bare.flags['--date']).toBe('now')
+    expect(bare.texts()).toEqual(['+%F'])
+    expect(attached.flags['--iso-8601']).toBe('seconds')
+  })
+})
+
+describe('parseCommand: optional-value shorts inside a cluster', () => {
+  // getopt's `I::` inside a cluster: whatever follows the letter is its
+  // value, and nothing after it leaves it bare (coreutils 9.7: `date -uIs` is
+  // `date -u -Is`, `date -uI` is `date -u -I`).
+  it('takes the rest of the cluster as the value', () => {
+    const valued = parseCommand(specOf('date'), ['-uIs'], '/')
+    expect(valued.flags['--utc']).toBe(true)
+    expect(valued.flags['--iso-8601']).toBe('seconds')
+    expect(valued.invalidOptions).toEqual([])
+    const bare = parseCommand(specOf('date'), ['-uI'], '/')
+    expect(bare.flags['--iso-8601']).toBe(true)
+  })
+
+  // GNU mkdir's -Z takes no argument, only --context= does, so -vZ is a
+  // cluster and -Zfoo refuses the `f` (coreutils 9.7).
+  it('keeps a plain short of an optional long from taking a value', () => {
+    const clustered = parseCommand(specOf('mkdir'), ['-vZ', '/d'], '/')
+    expect(clustered.flags['--verbose']).toBe(true)
+    expect(clustered.flags['--context']).toBe(true)
+    const attached = parseCommand(specOf('mkdir'), ['-Zfoo', '/d'], '/')
+    expect(attached.invalidOptions).toEqual(['f'])
+    const valued = parseCommand(specOf('mkdir'), ['--context=ctx', '/d'], '/')
+    expect(valued.flags['--context']).toBe('ctx')
   })
 })
 
@@ -390,10 +429,64 @@ describe('parseCommand — unknown dash tokens warn and drop', () => {
     expect(parseCommand(specOf('grep'), ['-ne'], '/').needsValueOptions).toEqual(['e'])
   })
 
-  it('keeps dash tokens for TEXT-rest commands', () => {
-    const p = parseCommand(specOf('expr'), ['-x', 'hello'], '/')
+  it('keeps dash tokens for an operand-class command', () => {
+    const p = parseCommand(specOf('expr'), ['-x', 'hello'], '/', 'expr')
     expect(p.texts()).toEqual(['-x', 'hello'])
     expect(p.warnings).toEqual([])
+  })
+
+  // The rest operand's kind used to decide this and cannot: basename,
+  // dirname, csplit, numfmt and sleep all declare a TEXT rest and all five
+  // report an option they do not know (measured on coreutils 9.4).
+  it('reports an unknown option for a TEXT-rest command', () => {
+    const long = parseCommand(specOf('basename'), ['--zzz'], '/', 'basename')
+    expect(long.invalidOptions).toEqual(['--zzz'])
+    expect(long.optionErrorKinds).toEqual(['invalid'])
+    expect(long.texts()).toEqual([])
+    const short = parseCommand(specOf('basename'), ['-Q'], '/', 'basename')
+    expect(short.invalidOptions).toEqual(['Q'])
+    expect(short.texts()).toEqual([])
+  })
+
+  // An unnamed parse gets the rule, not the exception: the sets are keyed by
+  // command name and '' is in neither.
+  it('is a strict getopt_long parse when the command is unnamed', () => {
+    expect(parseCommand(specOf('basename'), ['--zzz'], '/').invalidOptions).toEqual(['--zzz'])
+  })
+
+  // unknownIsOperand is what an installed CLI's node is parsed under: the
+  // program owns whatever mirage does not declare, so an undeclared dash word
+  // lands in the node's textual rest slot and no abbreviation is expanded on
+  // the program's behalf. With no slot to forward into, the same parse refuses
+  // it: the program cannot be handed a word the node has nowhere to put.
+  it('forwards dash words into the rest slot under unknownIsOperand', () => {
+    const spec = new CommandSpec({
+      options: [new Option({ long: '--width', type: 'int' })],
+      rest: new Operand({ type: 'str' }),
+    })
+    const parsed = parseCommand(spec, ['--widt', '80', '-n', 'x'], '/', 'pager', undefined, true)
+    expect(parsed.flags).toEqual({})
+    expect(parsed.invalidOptions).toEqual([])
+    expect(parsed.texts()).toEqual(['--widt', '80', '-n', 'x'])
+    const slotless = new CommandSpec({
+      options: [new Option({ long: '--width', type: 'int' })],
+    })
+    expect(
+      parseCommand(slotless, ['--frobnicate'], '/', 'pager', undefined, true).invalidOptions,
+    ).toEqual(['--frobnicate'])
+  })
+
+  // The very same spec parsed without the flag is the other answer, which is
+  // what makes the call the deciding fact: nothing about the grammar, and
+  // nothing carried on the spec, tells the two apart.
+  it('refuses the same dash word when parsed strictly', () => {
+    const spec = new CommandSpec({
+      options: [new Option({ long: '--width', type: 'int' })],
+      rest: new Operand({ type: 'str' }),
+    })
+    const parsed = parseCommand(spec, ['--widt', '80', '-n', 'x'], '/', 'pager')
+    expect(parsed.flags).toEqual({ '--width': '80' })
+    expect(parsed.invalidOptions).toEqual(['n'])
   })
 
   it('keeps numeric dash tokens as operands', () => {
@@ -473,6 +566,33 @@ describe('parseToKwargs', () => {
   it('maps -1 to args_1 (numeric flag, not a valid JS identifier)', () => {
     const parsed = new ParsedArgs({ flags: { '-1': true }, args: [] })
     expect(parseToKwargs(parsed)).toEqual({ args_1: true })
+  })
+})
+
+// There is no per-occurrence record beside the bag. GNU validates every
+// value as getopt hands it over, so a scalar dest checks the value it is
+// about to drop before the next one replaces it (the int and choices tests
+// under 'choices violations'), and a command that must see every value
+// declares the option `multiple` (argparse's append).
+describe('parseCommand — repeated values', () => {
+  it('keeps every value of an accumulating option for the command', () => {
+    const parsed = parseCommand(specOf('nl'), ['-w', 'abc', '-v', 'xyz', '-w', '3'], '/')
+    expect(parseToKwargs(parsed)).toEqual({
+      number_width: ['abc', '3'],
+      starting_line_number: ['xyz'],
+    })
+  })
+
+  it("carries only the line's options in the kwargs bag", () => {
+    const parsed = parseCommand(
+      specOf('grep'),
+      ['-e', 'a', '-e', 'b', '-m', '1', '-m', '2', 'x'],
+      '/',
+    )
+    const kwargs = parseToKwargs(parsed)
+    expect(kwargs.e).toEqual(['a', 'b'])
+    expect(kwargs.m).toBe('2')
+    expect(Object.keys(kwargs).sort()).toEqual(['e', 'm'])
   })
 })
 
@@ -556,25 +676,45 @@ describe('spellings share one dest and honor command-line order', () => {
 })
 
 describe('attached short values land on the canonical dest', () => {
-  it('unifies -d10 onto --numeric-suffixes and honors order both ways', () => {
+  it('unifies -Ih onto --iso-8601 and honors order both ways', () => {
     // Last-wins holds for `--long=` and the short form alike.
-    const attached = parseCommand(specOf('split'), ['-d10', '/in', '/pre'], '/')
-    expect(attached.flags['--numeric-suffixes']).toBe('10')
-    expect('-d' in attached.flags).toBe(false)
+    const attached = parseCommand(specOf('date'), ['-Ih'], '/')
+    expect(attached.flags['--iso-8601']).toBe('hours')
+    expect('-I' in attached.flags).toBe(false)
+    const shortLast = parseCommand(specOf('date'), ['--iso-8601=ns', '-Ih'], '/')
+    expect(shortLast.flags['--iso-8601']).toBe('hours')
+    const longLast = parseCommand(specOf('date'), ['-Ih', '--iso-8601=ns'], '/')
+    expect(longLast.flags['--iso-8601']).toBe('ns')
+  })
+})
 
-    const shortLast = parseCommand(
-      specOf('split'),
-      ['--numeric-suffixes=3', '-d10', '/in', '/p'],
-      '/',
-    )
-    expect(shortLast.flags['--numeric-suffixes']).toBe('10')
+describe("digit options build split's line count", () => {
+  // split's getopt string lists the digits: those of one word build the count
+  // wherever they sit, a later word replaces it, and -d stays a plain flag
+  // (coreutils 9.7: `split -d10` is -d and ten lines).
+  it.each([[['-d10']], [['-10d']], [['-1d0']], [['-d', '-10']]])('%j', (argv) => {
+    const parsed = parseCommand(specOf('split'), [...argv, '/in'], '/', 'split')
+    expect(parsed.flags['--numeric-suffixes']).toBe(true)
+    expect(parsed.flags['--lines']).toBe('10')
+    expect(parsed.invalidOptions).toEqual([])
+  })
 
-    const longLast = parseCommand(
-      specOf('split'),
-      ['-d10', '--numeric-suffixes=3', '/in', '/p'],
-      '/',
-    )
-    expect(longLast.flags['--numeric-suffixes']).toBe('3')
+  it('lets a later word replace the count and keeps the long value', () => {
+    const later = parseCommand(specOf('split'), ['-12', '-5', '/in'], '/', 'split')
+    expect(later.flags['--lines']).toBe('5')
+    const valued = parseCommand(specOf('split'), ['--numeric-suffixes=3', '/in'], '/', 'split')
+    expect(valued.flags['--numeric-suffixes']).toBe('3')
+  })
+
+  it("is the builtin program's own rule", () => {
+    // A mount's own command borrowing the name gets getopt's plain rule.
+    const spec = new CommandSpec({
+      options: [
+        new Option({ short: '-d' }),
+        new Option({ short: '-l', type: 'str', numericShorthand: true }),
+      ],
+    })
+    expect(parseCommand(spec, ['-d10'], '/', 'split').invalidOptions).toEqual(['1'])
   })
 })
 
@@ -593,17 +733,179 @@ describe('count flags accumulate occurrences', () => {
 
 describe('choices violations are reported, never thrown', () => {
   it('reports the canonical spelling, value, and allowed set', () => {
-    const parsed = parseCommand(specOf('tee'), ['--output-error=bogus', '/f'], '/')
+    const parsed = parseCommand(specOf('tee'), ['--output-error=bogus', '/f'], '/', 'tee')
     expect(parsed.invalidValueOptions).toEqual([
       ['--output-error', 'bogus', ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']],
     ])
     expect(
-      parseCommand(specOf('tee'), ['--output-error=warn', '/f'], '/').invalidValueOptions,
+      parseCommand(specOf('tee'), ['--output-error=warn', '/f'], '/', 'tee').invalidValueOptions,
     ).toEqual([])
   })
 
+  // Prefix matching is opt-in per (command, option), so a choices set that
+  // is NOT in the table compares the whole word, which is argparse's own
+  // rule for `choices`. CPython is the measured case: on 3.11.15
+  // `--check-hash-based-pycs a` and `al` are both refused where gnulib would
+  // have resolved them to `always`.
+  it('takes no prefix for a choices set outside the table', () => {
+    const parsed = parseCommand(
+      specOf('python3'),
+      ['--check-hash-based-pycs=a', '-c', 'x'],
+      '/',
+      'python3',
+    )
+    expect(parsed.flags['--check-hash-based-pycs']).toBe('a')
+    expect(parsed.invalidValueOptions).toEqual([
+      ['--check-hash-based-pycs', 'a', ['always', 'default', 'never']],
+    ])
+    const exact = parseCommand(
+      specOf('python3'),
+      ['--check-hash-based-pycs=always', '-c', 'x'],
+      '/',
+      'python3',
+    )
+    expect(exact.flags['--check-hash-based-pycs']).toBe('always')
+    expect(exact.invalidValueOptions).toEqual([])
+  })
+
+  // The empty word has no ambiguity wording to reach outside the table:
+  // nothing is an exact match, so it is invalid like any other non-candidate.
+  it('reports the empty word invalid for a choices set outside the table', () => {
+    const parsed = parseCommand(
+      specOf('python3'),
+      ['--check-hash-based-pycs=', '-c', 'x'],
+      '/',
+      'python3',
+    )
+    expect(parsed.invalidValueOptions).toEqual([
+      ['--check-hash-based-pycs', '', ['always', 'default', 'never']],
+    ])
+    expect(parsed.ambiguousValueOptions).toEqual([])
+  })
+
+  // A mount author's own command is not a GNU program, so its choices are
+  // argparse's: `--mode=rem` is refused rather than resolved to `remove`.
+  // Nothing the author can write opts a custom spec into the table, which
+  // names three builtin Option OBJECTS and is tested by identity. Mirrors
+  // test_parser.py.
+  it('never lets a custom spec inherit argmatch', () => {
+    const spec = new CommandSpec({
+      options: [new Option({ long: '--mode', type: 'str', choices: ['read', 'remove'] })],
+    })
+    const parsed = parseCommand(spec, ['--mode=rem'], '/', 'mycmd')
+    expect(parsed.flags['--mode']).toBe('rem')
+    expect(parsed.invalidValueOptions).toEqual([['--mode', 'rem', ['read', 'remove']]])
+    // Even naming it after a real ARGMATCH option changes nothing.
+    const named = new CommandSpec({
+      options: [new Option({ long: '--to', type: 'str', choices: ['none', 'si'] })],
+    })
+    expect(parseCommand(named, ['--to=s'], '/', 'mycmd').invalidValueOptions).toEqual([
+      ['--to', 's', ['none', 'si']],
+    ])
+  })
+
+  // A mount may register a command under a builtin's own name, so the name is
+  // not the identity. A custom `tee` that reproduces GNU tee's
+  // `--output-error` field for field still compares the whole word: the
+  // option it declares is its own object, not the one the builtin spec holds.
+  // Mirrors test_parser.py.
+  it('does not let a command that borrows a builtin name borrow argmatch', () => {
+    const lookalike = new Option({
+      long: '--output-error',
+      type: 'str',
+      valueOptional: true,
+      choices: ['warn', 'warn-nopipe', 'exit', 'exit-nopipe'],
+    })
+    const builtin = specOf('tee').options.find((o) => o.long === '--output-error')
+    expect(lookalike).toEqual(builtin)
+    expect(lookalike).not.toBe(builtin)
+    const parsed = parseCommand(
+      new CommandSpec({ options: [lookalike] }),
+      ['--output-error=exit-n'],
+      '/',
+      'tee',
+    )
+    expect(parsed.flags['--output-error']).toBe('exit-n')
+    expect(parsed.invalidValueOptions).toEqual([
+      ['--output-error', 'exit-n', ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']],
+    ])
+  })
+
+  // The registry never hands the parser the spec the builtin declared: it
+  // appends --help/--version and parses the COPY (commands/config.ts), so
+  // `spec === BUILTIN_SPECS[name]` is false for every builtin by the time a
+  // line is read. Identity of the Option survives that copy, which is the
+  // whole reason the table names options rather than specs -- keying on the
+  // spec would disable ARGMATCH everywhere while every unit test that passes
+  // specOf(name) straight in kept passing. Mirrors test_parser.py.
+  it('keeps argmatch through the copy the registry parses', () => {
+    const tee = specOf('tee')
+    const registered = helpSpec(tee)
+    expect(registered).not.toBe(tee)
+    const parsed = parseCommand(registered, ['--output-error=exit-n'], '/', 'tee')
+    expect(parsed.flags['--output-error']).toBe('exit-nopipe')
+    expect(parsed.invalidValueOptions).toEqual([])
+  })
+
+  // python's compileSpec twin caches on a frozen dataclass, so ITS key is
+  // structural and a spec built to look exactly like tee's shares the
+  // builtin's compiled tables. The ARGMATCH decision is therefore read off
+  // the spec in both languages and never stored on the compiled tables,
+  // which is the only way the two answer alike here. Mirrors test_parser.py.
+  it('gives a structural twin of a builtin spec no argmatch', () => {
+    const tee = specOf('tee')
+    // Declared the long way round, exactly as builtin_specs/text_proc.ts
+    // declares it, so the twin is equal field for field and shares not one
+    // Option object with the builtin.
+    const twin = new CommandSpec({
+      options: [
+        new Option({ short: '-a', long: '--append' }),
+        new Option({ short: '-i', long: '--ignore-interrupts' }),
+        new Option({ short: '-p' }),
+        new Option({
+          long: '--output-error',
+          type: 'str',
+          valueOptional: true,
+          choices: ['warn', 'warn-nopipe', 'exit', 'exit-nopipe'],
+        }),
+      ],
+      rest: new Operand({ type: 'path' }),
+    })
+    expect(twin).toEqual(tee)
+    expect(twin).not.toBe(tee)
+    expect(parseCommand(twin, ['--output-error=exit-n'], '/', 'tee').invalidValueOptions).toEqual([
+      ['--output-error', 'exit-n', ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']],
+    ])
+    expect(parseCommand(tee, ['--output-error=exit-n'], '/', 'tee').flags['--output-error']).toBe(
+      'exit-nopipe',
+    )
+  })
+
+  // An installed CLI's node is outside the table for the same reason, so `gh
+  // issue list --state=o` is refused where GNU would resolve it. The CLI's
+  // group level already enforces its choices exactly (walk's finishNode), so
+  // a leaf that prefix-matched would make one Option.choices mean two things
+  // inside one tree. unknownIsOperand says nothing about this: it governs the
+  // dash word, not the value. Mirrors test_parser.py.
+  it('compares the whole choice word for a CLI node', () => {
+    const options = [
+      new Option({ long: '--state', type: 'str', choices: ['open', 'closed', 'all'] }),
+    ]
+    const spec = new CommandSpec({ options })
+    const parsed = parseCommand(spec, ['--state=o'], '/', 'gh', undefined, true)
+    expect(parsed.flags['--state']).toBe('o')
+    expect(parsed.invalidValueOptions).toEqual([['--state', 'o', ['open', 'closed', 'all']]])
+    const exact = parseCommand(spec, ['--state=open'], '/', 'gh', undefined, true)
+    expect(exact.flags['--state']).toBe('open')
+    expect(exact.invalidValueOptions).toEqual([])
+    // The same spec parsed without the flag answers identically, which is the
+    // point: the choice rule is the table's, not the call's.
+    const strict = parseCommand(spec, ['--state=o'], '/', 'gh')
+    expect(strict.invalidValueOptions).toEqual([['--state', 'o', ['open', 'closed', 'all']]])
+  })
+
   it('exempts the bare optional-value form', () => {
-    const parsed = parseCommand(specOf('tee'), ['--output-error', '/f'], '/')
+    const parsed = parseCommand(specOf('tee'), ['--output-error', '/f'], '/', 'tee')
     expect(parsed.flags['--output-error']).toBe(true)
     expect(parsed.invalidValueOptions).toEqual([])
   })
@@ -621,6 +923,111 @@ describe('choices violations are reported, never thrown', () => {
     })
     const parsed = parseCommand(spec, ['-m', 'x', '-m', 'z'], '/')
     expect(parsed.invalidValueOptions).toEqual([['-m', 'z', ['x', 'y']]])
+  })
+
+  // `tee --output-error` is one of the spec-declared choices sets that
+  // really are gnulib ARGMATCH tables, so the parser resolves a prefix and
+  // rewrites the bag to the canonical word. Measured on coreutils 9.7:
+  // `tee --output-error=exit-n` exits 0 (exit-nopipe) and `=w` is
+  // `ambiguous argument 'w'`.
+  it('resolves an unambiguous prefix to the canonical word', () => {
+    const parsed = parseCommand(specOf('tee'), ['--output-error=warn-', '/f'], '/', 'tee')
+    expect(parsed.flags['--output-error']).toBe('warn-nopipe')
+    expect(parsed.invalidValueOptions).toEqual([])
+    expect(parsed.ambiguousValueOptions).toEqual([])
+  })
+
+  it('leaves an exact word alone rather than reading it as a prefix', () => {
+    const parsed = parseCommand(specOf('tee'), ['--output-error=warn', '/f'], '/', 'tee')
+    expect(parsed.flags['--output-error']).toBe('warn')
+    expect(parsed.invalidValueOptions).toEqual([])
+  })
+
+  // The second table, so the rule is the option's and not one command's:
+  // measured on 9.7, `numfmt --to=s` is `si` and `--to=ie` is ambiguous
+  // between `iec` and `iec-i`.
+  it('resolves the other argmatch table own prefixes', () => {
+    const parsed = parseCommand(specOf('numfmt'), ['--to=s', '1'], '/', 'numfmt')
+    expect(parsed.flags['--to']).toBe('si')
+    expect(parsed.ambiguousValueOptions).toEqual([])
+    const ambiguous = parseCommand(specOf('numfmt'), ['--to=ie', '1'], '/', 'numfmt')
+    expect(ambiguous.optionErrorKinds).toEqual(['ambiguous_value'])
+    expect(ambiguous.ambiguousValueOptions).toEqual([
+      ['--to', 'ie', ['none', 'si', 'iec', 'iec-i']],
+    ])
+  })
+
+  it('puts an ambiguous prefix in its own list and on the tape', () => {
+    const parsed = parseCommand(specOf('tee'), ['--output-error=w', '/f'], '/', 'tee')
+    expect(parsed.optionErrorKinds).toEqual(['ambiguous_value'])
+    expect(parsed.ambiguousValueOptions).toEqual([
+      ['--output-error', 'w', ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']],
+    ])
+    expect(parsed.invalidValueOptions).toEqual([])
+    // The value the line typed stays in the bag: nothing resolved it, and
+    // the renderer names the word as typed.
+    expect(parsed.flags['--output-error']).toBe('w')
+  })
+
+  it('reports the empty value as ambiguous, not invalid', () => {
+    const parsed = parseCommand(specOf('tee'), ['--output-error=', '/f'], '/', 'tee')
+    expect(parsed.ambiguousValueOptions).toEqual([
+      ['--output-error', '', ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']],
+    ])
+  })
+
+  it('matches prefixes case-sensitively', () => {
+    const parsed = parseCommand(specOf('tee'), ['--output-error=W', '/f'], '/', 'tee')
+    expect(parsed.invalidValueOptions).toEqual([
+      ['--output-error', 'W', ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']],
+    ])
+  })
+
+  it('resolves every occurrence of an argmatch flag as it is read', () => {
+    // Each occurrence goes through the table as it is scanned, so the one the
+    // bag drops is still refused and the one it keeps is still rewritten to
+    // its candidate.
+    const parsed = parseCommand(specOf('numfmt'), ['--to=ie', '--to=s', '1'], '/', 'numfmt')
+    expect(parsed.flags['--to']).toBe('si')
+    expect(parsed.ambiguousValueOptions).toEqual([['--to', 'ie', ['none', 'si', 'iec', 'iec-i']]])
+  })
+
+  it('checks every occurrence of a scalar flag', () => {
+    // GNU refuses the argument as it is scanned (`numfmt --to=bogus
+    // --to=si` is refused for bogus), so the value the bag dropped is
+    // checked too, in line order.
+    const parsed = parseCommand(specOf('numfmt'), ['--to=bogus', '--to=si', '1'], '/')
+    expect(parsed.flags['--to']).toBe('si')
+    expect(parsed.invalidValueOptions).toEqual([['--to', 'bogus', ['none', 'si', 'iec', 'iec-i']]])
+    expect(
+      parseCommand(specOf('numfmt'), ['--to=si', '--to=si', '1'], '/').invalidValueOptions,
+    ).toEqual([])
+  })
+
+  it('reports the first refused value on the line first', () => {
+    // GNU stops at the first bad argument it reads, whatever its option
+    // and whatever check refuses it, so the kinds tape carries each
+    // refusal's tag in scan order for the reporter to follow.
+    const spec = new CommandSpec({
+      options: [
+        new Option({ short: '-n', type: 'int' }),
+        new Option({ long: '--mode', type: 'str', choices: ['a', 'b'] }),
+      ],
+    })
+    const parsed = parseCommand(spec, ['--mode', 'bad', '-n', 'abc'], '/')
+    expect(parsed.optionErrorKinds).toEqual(['value', 'int'])
+    expect(parsed.invalidValueOptions).toEqual([['--mode', 'bad', ['a', 'b']]])
+    expect(parsed.invalidIntOptions).toEqual([['-n', 'abc']])
+    const both = parseCommand(specOf('numfmt'), ['--from=bad1', '--to=bad2', '1'], '/')
+    expect(both.optionErrorKinds).toEqual(['value', 'value'])
+    expect(both.invalidValueOptions.map(([dest]) => dest)).toEqual(['--from', '--to'])
+  })
+
+  it('int checks cover every occurrence of a scalar flag', () => {
+    const spec = new CommandSpec({ options: [new Option({ short: '-n', type: 'int' })] })
+    const parsed = parseCommand(spec, ['-n', 'abc', '-n', '3'], '/')
+    expect(parsed.flags['-n']).toBe('3')
+    expect(parsed.invalidIntOptions).toEqual([['-n', 'abc']])
   })
 })
 
@@ -682,6 +1089,19 @@ describe('multiple + default', () => {
 })
 
 describe('long-option abbreviation', () => {
+  it('takes a long only as spelled when the spec allows no abbreviation', () => {
+    // ripgrep's lexopt: `rg --pcr` is `unrecognized flag --pcr`, never a
+    // prefix of --pcre2-unicode.
+    const spec = new CommandSpec({
+      options: [new Option({ long: '--pcre2-unicode' })],
+      allowAbbrev: false,
+    })
+    const parsed = parseCommand(spec, ['--pcre2', 'x'], '/')
+    expect(parsed.flags['--pcre2-unicode']).toBeUndefined()
+    expect(parsed.invalidOptions).toEqual(['--pcre2'])
+    expect(parseCommand(specOf('rg'), ['--pcr', 'a'], '/').invalidOptions).toEqual(['--pcr'])
+  })
+
   it('expands a unique prefix like getopt_long', () => {
     const spec = new CommandSpec({
       options: [new Option({ long: '--recursive' }), new Option({ long: '--count' })],
@@ -728,14 +1148,68 @@ describe('long-option abbreviation', () => {
     expect(parseCommand(spec, ['--excl', 'tmp'], '/').flags['--exclude']).toBe('tmp')
   })
 
-  it('keeps exact-only matching for free-text commands', () => {
+  // A program with no long-option parser at all (bash's echo builtin,
+  // Info-ZIP unzip) never expands an abbreviation, because there is no table
+  // to expand against -- and the same line expands it for a getopt command.
+  it('matches exactly for a program with no long-option parser', () => {
+    const parsed = parseCommand(registered('echo'), ['--hel', 'hi'], '/', 'echo')
+    expect(parsed.flags).toEqual({})
+    expect(parsed.texts()).toEqual(['--hel', 'hi'])
+    const strict = parseCommand(registered('basename'), ['--hel', 'hi'], '/', 'basename')
+    expect(strict.flags['--help']).toBe(true)
+    expect(strict.texts()).toEqual(['hi'])
+  })
+
+  // Both tables describe one real program, so a spec that is not that
+  // program's own grammar does not get the rule however the line names it. A
+  // mount may register a command under a builtin's name: nothing refuses
+  // that, and here the rule would swallow the flag the author declared.
+  // Mirrors test_parser.py.
+  it('never lets a custom spec inherit a per-program parsing rule', () => {
     const spec = new CommandSpec({
+      options: [new Option({ long: '--mode', type: 'str' })],
+      rest: new Operand({ type: 'str' }),
+    })
+    const parsed = parseCommand(spec, ['--mode=x', 'value'], '/', 'expr')
+    expect(parsed.flags).toEqual({ '--mode': 'x' })
+    expect(parsed.texts()).toEqual(['value'])
+    // ... and the same spec keeps its long options where echo has none.
+    const lenient = new CommandSpec({
       options: [new Option({ long: '--verbose' })],
       rest: new Operand({ type: 'str' }),
     })
-    const parsed = parseCommand(spec, ['--verb', 'hi'], '/')
-    expect(parsed.flags['--verbose']).toBeUndefined()
-    expect(parsed.texts()).toEqual(['--verb', 'hi'])
+    expect(parseCommand(lenient, ['--verb', 'hi'], '/', 'echo').flags['--verbose']).toBe(true)
+  })
+
+  // expr's long options are the two the registry injects into every spec, so
+  // the spec has to be the registered one: the declaration carries neither,
+  // and a hand-built lookalike is no longer expr's grammar.
+  //
+  // gnulib's parse_long_options guards on `argc == 2`, so expr reads a long
+  // option only when it is the whole line. Measured on coreutils 9.4:
+  // `expr --help` helps, `expr --help x` is a syntax error on `x`, and
+  // `expr -- --help` prints `--help`.
+  it('reads a sole-argument long option, prefix and all', () => {
+    const spec = registered('expr')
+    const exact = parseCommand(spec, ['--help'], '/', 'expr')
+    expect(exact.flags['--help']).toBe(true)
+    expect(exact.texts()).toEqual([])
+    expect(parseCommand(spec, ['--h'], '/', 'expr').flags['--help']).toBe(true)
+    const unknown = parseCommand(spec, ['--hex'], '/', 'expr')
+    expect(unknown.flags).toEqual({})
+    expect(unknown.invalidOptions).toEqual([])
+    expect(unknown.texts()).toEqual(['--hex'])
+  })
+
+  it('makes a long option outside the window an operand', () => {
+    const spec = registered('expr')
+    const outside = parseCommand(spec, ['--help', 'x'], '/', 'expr')
+    expect(outside.flags).toEqual({})
+    expect(outside.invalidOptions).toEqual([])
+    expect(outside.texts()).toEqual(['--help', 'x'])
+    const dashed = parseCommand(spec, ['--', '--help'], '/', 'expr')
+    expect(dashed.flags).toEqual({})
+    expect(dashed.texts()).toEqual(['--help'])
   })
 })
 
@@ -763,11 +1237,25 @@ describe('int-typed values', () => {
 describe('synonym long spellings', () => {
   it('resolves a shared prefix like glibc', () => {
     const grep = specOf('grep')
-    const parsed = parseCommand(grep, ['--colo', 'pat', '/a.txt'], '/')
+    const parsed = parseCommand(grep, ['--colo', 'pat', '/a.txt'], '/', 'grep')
     expect(parsed.ambiguousOptions).toEqual([])
     expect(parsed.flags['--color']).toBe(true)
-    const attached = parseCommand(grep, ['--colo=never', 'pat', '/a.txt'], '/')
+    const attached = parseCommand(grep, ['--colo=never', 'pat', '/a.txt'], '/', 'grep')
     expect(attached.flags['--color']).toBe('never')
+    expect(parseCommand(specOf('date'), ['--u'], '/', 'date').flags['--utc']).toBe(true)
+  })
+
+  // Two declared options are two options, whatever their shape, so a prefix
+  // of both is ambiguous, listed in GNU's table order (coreutils 9.7).
+  it.each([
+    ['ls', ['--re', '/'], ['--reverse', '--recursive']],
+    ['uname', ['--k'], ['--kernel-name', '--kernel-release', '--kernel-version']],
+    ['mv', ['--no-c', '/a', '/b'], ['--no-clobber', '--no-copy']],
+    ['md5sum', ['--st', '/f'], ['--status', '--strict']],
+    ['sort', ['--m', '/f'], ['--merge', '--month-sort']],
+  ])('%s %j is ambiguous', (name, argv, possible) => {
+    const parsed = parseCommand(specOf(name), argv, '/', name)
+    expect(parsed.ambiguousOptions).toEqual([[argv[0], possible]])
   })
 
   it('lists synonyms in an ambiguity like GNU', () => {
@@ -875,22 +1363,183 @@ describe('flag-driven operand kinds', () => {
     expect(p.texts()).toEqual(['.'])
     expect(p.paths()).toEqual(['/d/a.json'])
   })
+
+  // jq 1.8.2's option loop files each operand as it reads it: only the
+  // operands after the first --args or --jsonargs are positional values.
+  it('keeps the jq operands typed before --args as input files', () => {
+    const p = parseCommand(specOf('jq'), ['.', '/d/a.json', '--args', 'x', '/d/b.json'], '/', 'jq')
+    expect(p.texts()).toEqual(['.', 'x', '/d/b.json'])
+    expect(p.paths()).toEqual(['/d/a.json'])
+    expect(p.wordKinds).toEqual(['str', 'path', 'str', 'str', 'str'])
+  })
+
+  it('keeps a jq program typed after --jsonargs the program', () => {
+    const p = parseCommand(specOf('jq'), ['--jsonargs', '.', '1', '--args', 'a'], '/', 'jq')
+    expect(p.texts()).toEqual(['.', '1', 'a'])
+    expect(p.paths()).toEqual([])
+  })
+
+  it('keeps the jq mode for the operands after --', () => {
+    const p = parseCommand(specOf('jq'), ['.', '--args', '--', '-x', '--jsonargs'], '/', 'jq')
+    expect(p.texts()).toEqual(['.', '-x', '--jsonargs'])
+  })
+
+  it('reads a jq --args after -- as an input file', () => {
+    const p = parseCommand(specOf('jq'), ['.', '--', '--args', 'a'], '/', 'jq')
+    expect(p.texts()).toEqual(['.'])
+    expect(p.paths()).toEqual(['/--args', '/a'])
+  })
+
+  it('keeps a jq operand before --args an input file when -f gave the program', () => {
+    const p = parseCommand(specOf('jq'), ['-f', 'p.jq', 'in.json', '--args', 'b'], '/d', 'jq')
+    expect(p.paths()).toEqual(['/d/in.json'])
+    expect(p.texts()).toEqual(['b'])
+  })
+
+  // GNU tar 1.35 reads the whole line first: `tar -f a.tar d/m -t` lists d/m,
+  // as `tar -f a.tar -t d/m` does.
+  it('makes the names typed before a tar mode members', () => {
+    const p = parseCommand(specOf('tar'), ['-f', '/d/a.tar', 'd/m', '-t'], '/', 'tar')
+    expect(p.texts()).toEqual(['d/m'])
+    expect(p.paths()).toEqual([])
+  })
+
+  it('does not allocate operand tape entries for other commands', () => {
+    const words = Array.from({ length: 1000 }, (_, i) => `file-${String(i)}`)
+    const parsed = parseCommand(specOf('cat'), ['-n', ...words], '/', 'cat')
+    expect(parsed.paths()).toHaveLength(1000)
+    expect(flagOccurrences(parsed.flags)).toHaveLength(1)
+    const custom = new CommandSpec({ rest: new Operand({ type: 'path' }) })
+    expect(flagOccurrences(parseCommand(custom, words, '/', 'jq').flags)).toEqual([])
+  })
+
+  it('records each operand on the tape among the options', () => {
+    const p = parseCommand(specOf('jq'), ['-n', '.', '--args', 'a', '--', '-b'], '/', 'jq')
+    expect(flagOccurrences(p.flags)).toEqual([
+      ['--null-input', true],
+      ['', '.'],
+      ['--args', true],
+      ['', 'a'],
+      ['', '-b'],
+    ])
+    expect(flagOccurrences(parseToKwargs(p))).toEqual([
+      ['null_input', true],
+      ['', '.'],
+      ['args', true],
+      ['', 'a'],
+      ['', '-b'],
+    ])
+  })
+
+  // jq 1.8.2's isoptish(): a dash word is an option only when a letter or a
+  // second dash follows the dash, so `-1` is a program, a file or a value.
+  it('reads the jq dash words without a letter as operands', () => {
+    const p = parseCommand(
+      specOf('jq'),
+      ['-1', '-.', '--jsonargs', '-1.5', '- x', '-é'],
+      '/d',
+      'jq',
+    )
+    expect(p.invalidOptions).toEqual([])
+    expect(p.texts()).toEqual(['-1', '-1.5', '- x', '-é'])
+    expect(p.paths()).toEqual(['/d/-.'])
+  })
+
+  it('keeps the jq dash letter words options', () => {
+    const p = parseCommand(specOf('jq'), ['.', '--jsonargs', '-nan', '-x'], '/', 'jq')
+    expect(p.flags['--null-input']).toBe(true)
+    expect(p.flags['--ascii-output']).toBe(true)
+    expect(p.texts()).toEqual(['.'])
+    expect(flagOccurrences(p.flags).at(-1)).toEqual(['?', '-x'])
+  })
+
+  // jq's option loop reports what it refuses where it stands, so the parser
+  // leaves each refusal on the tape rather than refusing the line.
+  it('leaves each jq refusal on the tape where it was typed', () => {
+    const p = parseCommand(specOf('jq'), ['-n', '.', '--jsonargs', '{', '--bogus', '-Z'], '/', 'jq')
+    expect(p.optionErrorKinds).toEqual([])
+    expect(p.invalidOptions).toEqual([])
+    expect(flagOccurrences(p.flags)).toEqual([
+      ['--null-input', true],
+      ['', '.'],
+      ['--jsonargs', true],
+      ['', '{'],
+      ['?', '--bogus'],
+      ['?', '-Z'],
+    ])
+  })
+
+  it('reads jq long options as whole words', () => {
+    // jq compares the whole word with strcmp: no abbreviation, no `=`.
+    const p = parseCommand(specOf('jq'), ['--nul', '--indent=3', '--slurp=1'], '/', 'jq')
+    expect('--null-input' in p.flags).toBe(false)
+    expect('--indent' in p.flags).toBe(false)
+    expect(
+      flagOccurrences(p.flags)
+        .filter(([name]) => name === '?')
+        .map(([, value]) => value),
+    ).toEqual(['--nul', '--indent=3', '--slurp=1'])
+  })
+
+  it.each([
+    [['-n', '--arg', 'x'], '--arg'],
+    [['-n', '.', '--indent'], '--indent'],
+    [['-n', '-f'], '-f'],
+  ])('leaves a jq option short of its values on the tape: %j', (words, word) => {
+    const p = parseCommand(specOf('jq'), words, '/', 'jq')
+    expect(p.needsValueOptions).toEqual([])
+    expect(
+      flagOccurrences(p.flags)
+        .filter(([name]) => name === '?')
+        .map(([, value]) => value),
+    ).toEqual([word])
+  })
+
+  it("reads a jq cluster's letters before the refused one", () => {
+    expect(flagOccurrences(parseCommand(specOf('jq'), ['-hx'], '/', 'jq').flags)).toEqual([
+      ['--help', true],
+      ['?', '-x'],
+    ])
+    expect(flagOccurrences(parseCommand(specOf('jq'), ['-xh'], '/', 'jq').flags)).toEqual([
+      ['?', '-x'],
+    ])
+  })
+
+  it('keeps getopt_long and its refusals for a borrowed jq name', () => {
+    const spec = new CommandSpec({
+      options: [new Option({ long: '--null-input' })],
+      rest: new Operand({ type: 'str' }),
+    })
+    const p = parseCommand(spec, ['--nul', '--bogus'], '/', 'jq')
+    expect(p.flags['--null-input']).toBe(true)
+    expect(p.invalidOptions).toEqual(['--bogus'])
+    expect(flagOccurrences(p.flags)).not.toContainEqual(['?', '--bogus'])
+  })
+
+  it("reads a dash digit as an option outside jq's own grammar", () => {
+    expect(parseCommand(specOf('cat'), ['-1'], '/', 'cat').invalidOptions).toEqual(['1'])
+    const spec = new CommandSpec({
+      options: [new Option({ short: '-n' })],
+      rest: new Operand({ type: 'str' }),
+    })
+    expect(parseCommand(spec, ['-.'], '/', 'jq').invalidOptions).toEqual(['.'])
+  })
 })
 
 describe("parseCommand — tar's old option style", () => {
   it('parses a cluster as flags', () => {
     const p = parseCommand(specOf('tar'), ['xzf', '/data/a.tgz'], '/')
-    expect(p.flags['-x']).toBe(true)
-    expect(p.flags['-z']).toBe(true)
-    expect(p.flags['-f']).toBe('/data/a.tgz')
+    expect(p.flags['--extract']).toBe(true)
+    expect(p.flags['--gzip']).toBe(true)
+    expect(p.flags['--file']).toBe('/data/a.tgz')
     expect(p.paths()).toEqual([])
     expect(p.pathFlagValues).toEqual(['/data/a.tgz'])
   })
 
   it('marks the cluster word TEXT so it is never classified as a path', () => {
-    // The cluster carries no dash, so without an explicit TEXT kind the
-    // shape heuristic would classify it and dispatch would re-read it as
-    // a resolved path instead of letters.
+    // The cluster carries no dash, so without a TEXT kind the shape
+    // heuristic would classify it and dispatch would re-read it as a
+    // resolved path instead of letters.
     const p = parseCommand(specOf('tar'), ['xzf', '/data/a.tgz'], '/')
     expect(p.wordKinds).toEqual(['str', 'path'])
   })
@@ -907,14 +1556,14 @@ describe("parseCommand — tar's old option style", () => {
 
   it('binds two value letters in letter order', () => {
     const p = parseCommand(specOf('tar'), ['xfC', '/data/a.tgz', '/data/out'], '/')
-    expect(p.flags['-f']).toBe('/data/a.tgz')
-    expect(p.flags['-C']).toEqual(['/data/out'])
+    expect(p.flags['--file']).toBe('/data/a.tgz')
+    expect(p.flags['--directory']).toEqual(['/data/out'])
   })
 
   it('keeps a bool letter that follows a value letter', () => {
     const p = parseCommand(specOf('tar'), ['cfz', '/data/a.tgz'], '/')
-    expect(p.flags['-f']).toBe('/data/a.tgz')
-    expect(p.flags['-z']).toBe(true)
+    expect(p.flags['--file']).toBe('/data/a.tgz')
+    expect(p.flags['--gzip']).toBe(true)
   })
 
   it('reports a missing cluster argument instead of throwing', () => {
@@ -930,7 +1579,7 @@ describe("parseCommand — tar's old option style", () => {
   it('reports no old option on a dashed line', () => {
     const p = parseCommand(specOf('tar'), ['-x', '-z', '-f', '/data/a.tgz'], '/')
     expect(p.oldOptionNeedsValue).toBeNull()
-    expect(p.wordKinds).toEqual([null, null, null, 'path'])
+    expect(p.wordKinds).toEqual(['str', 'str', 'str', 'path'])
   })
 
   it('still accepts long options after the cluster', () => {
@@ -940,7 +1589,7 @@ describe("parseCommand — tar's old option style", () => {
       '/',
     )
     expect(p.flags['--strip-components']).toBe('1')
-    expect(p.flags['-C']).toEqual(['/data/out'])
+    expect(p.flags['--directory']).toEqual(['/data/out'])
   })
 
   it('is off for every other command', () => {
@@ -948,6 +1597,45 @@ describe("parseCommand — tar's old option style", () => {
     const p = parseCommand(specOf('gzip'), ['dkf'], '/')
     expect(p.paths()).toEqual(['/dkf'])
     expect(p.oldOptionNeedsValue).toBeNull()
+  })
+})
+
+describe('the kind of a word the scan reads as syntax', () => {
+  // A null kind sent the word to the shape heuristic, which read
+  // `-o/data/s1.txt` as the relative path <cwd>/-o/data/s1.txt, so sort
+  // got a phantom input file and no output option at all.
+  it.each([
+    [['-o/data/s1.txt', '/data/in.txt']],
+    [['-uo/data/s1.txt', '/data/in.txt']],
+    [['--output=/data/s1.txt', '/data/in.txt']],
+  ])('an option word carrying its path is TEXT: %j', (argv) => {
+    const p = parseCommand(specOf('sort'), argv, '/')
+    expect(p.wordKinds).toEqual(['str', 'path'])
+    expect(p.pathFlagValues).toEqual(['/data/s1.txt'])
+    expect(p.paths()).toEqual(['/data/in.txt'])
+  })
+
+  it('a value word keeps its option kind', () => {
+    const p = parseCommand(specOf('sort'), ['-o', '/data/s1.txt', '/data/in.txt'], '/')
+    expect(p.wordKinds).toEqual(['str', 'path', 'path'])
+  })
+
+  it('an invalid option word is TEXT', () => {
+    // GNU refuses the letter: `sort: invalid option -- '/'`. Read as a
+    // path, the word reached dispatch resolved and was opened instead.
+    const p = parseCommand(specOf('sort'), ['-/data/x.txt', '/data/in.txt'], '/')
+    expect(p.wordKinds).toEqual(['str', 'path'])
+    expect(p.invalidOptions).toEqual(['/'])
+  })
+
+  it('a dash word that is an operand keeps the operand kind', () => {
+    expect(parseCommand(specOf('head'), ['--', '-o/data/x.txt'], '/').wordKinds).toEqual([
+      'str',
+      'path',
+    ])
+    // unzip has no long-option parser, so an undeclared `--` word is its
+    // archive operand.
+    expect(parseCommand(specOf('unzip'), ['--a/b.zip'], '/', 'unzip').wordKinds).toEqual(['path'])
   })
 })
 
@@ -1003,8 +1691,8 @@ describe('operandBase (tar -C)', () => {
     expect(parsed.args.filter(([, k]) => k === 'path').map(([v]) => v)).toEqual([
       '/work/check/my_paper',
     ])
-    expect(parsed.flags['-f']).toBe('/home/out.tgz')
-    expect(parsed.flags['-C']).toEqual(['/work/check'])
+    expect(parsed.flags['--file']).toBe('/home/out.tgz')
+    expect(parsed.flags['--directory']).toEqual(['/work/check'])
   })
 
   it('is cumulative like a real chdir', () => {
@@ -1018,7 +1706,7 @@ describe('operandBase (tar -C)', () => {
       '/work/d2/y',
     ])
     // Every occurrence is kept in order: GNU chdirs at each one.
-    expect(parsed.flags['-C']).toEqual(['/work/d1', '/work/d2'])
+    expect(parsed.flags['--directory']).toEqual(['/work/d1', '/work/d2'])
   })
 
   it('only moves what follows it', () => {
@@ -1051,11 +1739,13 @@ describe('options an environment variable supplies', () => {
   })
 
   it('fills an option the line omitted', () => {
-    expect(parseCommand(versioned, [], '/', { X_VERSION: '9' }).flags['--version']).toBe('9')
+    expect(parseCommand(versioned, [], '/', '', { X_VERSION: '9' }).flags['--version']).toBe('9')
   })
 
   it('yields to what the line typed', () => {
-    const parsed = parseCommand(versioned, ['--version', 'typed'], '/', { X_VERSION: '9' })
+    const parsed = parseCommand(versioned, ['--version', 'typed'], '/', '', {
+      X_VERSION: '9',
+    })
     expect(parsed.flags['--version']).toBe('typed')
   })
 
@@ -1065,16 +1755,16 @@ describe('options an environment variable supplies', () => {
         new Option({ long: '--version', type: 'str', default: 'fallback', env: 'X_VERSION' }),
       ],
     })
-    expect(parseCommand(spec, [], '/', { X_VERSION: '9' }).flags['--version']).toBe('9')
-    expect(parseCommand(spec, [], '/', {}).flags['--version']).toBe('fallback')
+    expect(parseCommand(spec, [], '/', '', { X_VERSION: '9' }).flags['--version']).toBe('9')
+    expect(parseCommand(spec, [], '/', '', {}).flags['--version']).toBe('fallback')
   })
 
   it('satisfies a required option before it is refused', () => {
     const spec = new CommandSpec({
       options: [new Option({ long: '--version', type: 'str', env: 'X_VERSION', required: true })],
     })
-    expect(parseCommand(spec, [], '/', { X_VERSION: '9' }).missingRequiredOptions).toEqual([])
-    expect(parseCommand(spec, [], '/', {}).missingRequiredOptions).toEqual(['--version'])
+    expect(parseCommand(spec, [], '/', '', { X_VERSION: '9' }).missingRequiredOptions).toEqual([])
+    expect(parseCommand(spec, [], '/', '', {}).missingRequiredOptions).toEqual(['--version'])
   })
 
   it('is coerced and choice-checked like a typed value', () => {
@@ -1083,22 +1773,22 @@ describe('options an environment variable supplies', () => {
     const ints = new CommandSpec({
       options: [new Option({ long: '--count', type: 'int', env: 'X_COUNT' })],
     })
-    expect(parseCommand(ints, [], '/', { X_COUNT: 'nope' }).invalidIntOptions).toEqual([
+    expect(parseCommand(ints, [], '/', '', { X_COUNT: 'nope' }).invalidIntOptions).toEqual([
       ['--count', 'nope'],
     ])
-    expect(parseCommand(ints, [], '/', { X_COUNT: '4' }).invalidIntOptions).toEqual([])
+    expect(parseCommand(ints, [], '/', '', { X_COUNT: '4' }).invalidIntOptions).toEqual([])
     const picks = new CommandSpec({
       options: [new Option({ long: '--mode', type: 'str', choices: ['a', 'b'], env: 'X_MODE' })],
     })
-    expect(parseCommand(picks, [], '/', { X_MODE: 'zzz' }).invalidValueOptions.length).toBe(1)
-    expect(parseCommand(picks, [], '/', { X_MODE: 'a' }).invalidValueOptions).toEqual([])
+    expect(parseCommand(picks, [], '/', '', { X_MODE: 'zzz' }).invalidValueOptions.length).toBe(1)
+    expect(parseCommand(picks, [], '/', '', { X_MODE: 'a' }).invalidValueOptions).toEqual([])
   })
 
   it('resolves a path value against the cwd like a typed one', () => {
     const spec = new CommandSpec({
       options: [new Option({ long: '--conf', type: 'path', env: 'X_CONF' })],
     })
-    expect(parseCommand(spec, [], '/work', { X_CONF: 'rel.json' }).flags['--conf']).toBe(
+    expect(parseCommand(spec, [], '/work', '', { X_CONF: 'rel.json' }).flags['--conf']).toBe(
       '/work/rel.json',
     )
   })
@@ -1106,7 +1796,7 @@ describe('options an environment variable supplies', () => {
   it('does not count as typed', () => {
     // clap's usage line echoes what the line carried; an env-supplied option
     // is supplied but not typed.
-    const parsed = parseCommand(versioned, [], '/', { X_VERSION: '9' })
+    const parsed = parseCommand(versioned, [], '/', '', { X_VERSION: '9' })
     expect(parsed.flags['--version']).toBe('9')
     expect(parsed.typedDests).toEqual([])
   })
@@ -1143,17 +1833,69 @@ describe('parseCommand — remainder (argparse nargs=REMAINDER)', () => {
   // together is what keeps js from drifting off python again.
   for (const cmd of ['js', 'node', 'python', 'python3']) {
     it(`${cmd} stops parsing flags at the stdin operand`, () => {
-      const p = parseCommand(specOf(cmd), ['-', '-e', 'PROG'], '/')
+      const p = parseCommand(specOf(cmd), ['-', '-e', 'PROG'], '/', cmd)
       expect(p.flags).toEqual({})
-      expect(p.texts()).toEqual(['-', '-e', 'PROG'])
+      expect(p.rawOperands).toEqual([
+        ['-', 'str'],
+        ['-e', 'str'],
+        ['PROG', 'str'],
+      ])
+    })
+
+    it(`${cmd} distinguishes stdin from explicit dash filenames in both spec forms`, () => {
+      for (const spec of [specOf(cmd), registered(cmd)]) {
+        for (const marker of [[], ['--']]) {
+          for (const [word, kind, value] of [
+            ['-', 'str', '-'],
+            ['./-', 'path', '/data/-'],
+            ['/data/-', 'path', '/data/-'],
+          ]) {
+            const p = parseCommand(spec, [...marker, word ?? '', '-e', '/data/arg'], '/data', cmd)
+            expect(p.args).toEqual([
+              [value, kind],
+              ['-e', 'str'],
+              ['/data/arg', 'str'],
+            ])
+            expect(p.wordKinds).toEqual([...marker.map(() => 'str'), kind, 'str', 'str'])
+            expect(p.invalidOptions).toEqual([])
+          }
+        }
+      }
+      const custom = new CommandSpec({ positional: [new Operand({ type: 'path' })] })
+      expect(parseCommand(custom, ['-'], '/data', cmd).paths()).toEqual(['/data/-'])
     })
 
     it(`${cmd} hands a script its own flags`, () => {
       const p = parseCommand(specOf(cmd), ['s.js', '-m', '--module'], '/')
       expect(p.flags).toEqual({})
-      expect(p.texts()).toEqual(['s.js', '-m', '--module'])
+      expect(p.rawOperands).toEqual([
+        ['s.js', 'path'],
+        ['-m', 'str'],
+        ['--module', 'str'],
+      ])
     })
   }
+
+  // The script is a file the interpreter opens, so a rule on its path
+  // has to see it typed as one; the words after it are the program's
+  // own argv, and once a payload option names the program there is no
+  // script at all (`python3 -c code x` hands x to the code).
+  it.each([
+    ['js', '-e'],
+    ['node', '-e'],
+    ['python', '-c'],
+    ['python', '-m'],
+    ['python3', '-c'],
+    ['python3', '-m'],
+  ])('%s reads only its script as a path (payload %s)', (cmd, payload) => {
+    const script = parseCommand(specOf(cmd), ['s.py', 't.py'], '/')
+    expect(script.rawOperands).toEqual([
+      ['s.py', 'path'],
+      ['t.py', 'str'],
+    ])
+    const program = parseCommand(specOf(cmd), [payload, 'PROG', 's.py'], '/')
+    expect(program.rawOperands).toEqual([['s.py', 'str']])
+  })
 
   it('js flags before the first operand are still the interpreter’s', () => {
     const p = parseCommand(specOf('js'), ['-m', '-e', 'CODE', 'a'], '/')
@@ -1161,4 +1903,143 @@ describe('parseCommand — remainder (argparse nargs=REMAINDER)', () => {
     expect(p.flags['-e']).toBe('CODE')
     expect(p.texts()).toEqual(['a'])
   })
+})
+
+// A boolean long handed a value is reported as its own kind, not as an
+// unrecognized option: getopt_long recognized the option and refused the value.
+// The entry carries the CANONICAL spelling plus the typed value, because GNU
+// names the canonical one even for an abbreviation.
+describe('a boolean long handed a value', () => {
+  it.each<[string[], string]>([
+    [['--byte-offset=2', 'x'], '--byte-offset=2'],
+    // Measured: `grep --byte=2` answers for `--byte-offset`.
+    [['--byte=2', 'x'], '--byte-offset=2'],
+    [['--line-buffered=', 'x'], '--line-buffered='],
+  ])('reports %j as its own kind', (argv, token) => {
+    const parsed = parseCommand(specOf('grep'), argv, '/')
+    expect(parsed.invalidOptions).toEqual([token])
+    expect(parsed.optionErrorKinds).toEqual(['unexpected_value'])
+  })
+
+  // The control: the two reports must not collapse into one. `grep --bogus=2`
+  // is `unrecognized option '--bogus=2'` with the value quoted, which is a
+  // different GNU message.
+  it('leaves an undeclared long unrecognized', () => {
+    const parsed = parseCommand(specOf('grep'), ['--bogus=2', 'x'], '/')
+    expect(parsed.invalidOptions).toEqual(['--bogus=2'])
+    expect(parsed.optionErrorKinds).toEqual(['invalid'])
+  })
+
+  // A control: only a BOOLEAN long refuses `=value`.
+  it('leaves a value long alone', () => {
+    const parsed = parseCommand(specOf('nl'), ['--number-width=3'], '/')
+    expect(parsed.invalidOptions).toEqual([])
+    expect(parsed.optionErrorKinds).toEqual([])
+  })
+
+  // GNU stops at the first offending token, so order decides.
+  it.each<[string[], string[]]>([
+    [
+      ['--bogus', '--byte-offset=2'],
+      ['invalid', 'unexpected_value'],
+    ],
+    [
+      ['--byte-offset=2', '--bogus'],
+      ['unexpected_value', 'invalid'],
+    ],
+  ])('keeps scan order for %j', (argv, kinds) => {
+    const parsed = parseCommand(specOf('grep'), [...argv, 'x'], '/')
+    expect(parsed.optionErrorKinds).toEqual(kinds)
+  })
+})
+
+describe('ParsedArgs helpers', () => {
+  const parsed = new ParsedArgs({
+    flags: { '-l': true, '--name': 'README' },
+    args: [
+      ['/ram/x', 'path'],
+      ['literal', 'str'],
+      ['/ram/y', 'path'],
+    ],
+    pathFlagValues: ['/ram/z'],
+  })
+
+  it('paths() returns PATH args only', () => {
+    expect(parsed.paths()).toEqual(['/ram/x', '/ram/y'])
+  })
+
+  it('texts() returns TEXT args only', () => {
+    expect(parsed.texts()).toEqual(['literal'])
+  })
+
+  it('routingPaths() combines paths() and pathFlagValues', () => {
+    expect(parsed.routingPaths()).toEqual(['/ram/x', '/ram/y', '/ram/z'])
+  })
+
+  it('flag() reads with fallback', () => {
+    expect(parsed.flag('-l')).toBe(true)
+    expect(parsed.flag('--missing', 'def')).toBe('def')
+  })
+})
+
+it.each([['-O', '-'], ['-O-']])('keeps wget stdout out of path operands', (...argv) => {
+  const parsed = parseCommand(specOf('wget'), [...argv, 'https://example.test/'], '/data', 'wget')
+  expect(parsed.flags['-O']).toBe('-')
+  expect(parsed.pathFlagValues).toEqual([])
+  const literal = parseCommand(
+    specOf('wget'),
+    ['-O', './-', 'https://example.test/'],
+    '/data',
+    'wget',
+  )
+  expect(literal.flags['-O']).toBe('/data/-')
+  expect(literal.pathFlagValues).toEqual(['/data/-'])
+})
+
+describe('tar long options against its whole table', () => {
+  // Mirrors python's test_tar_long_options_resolve_against_tars_whole_table.
+  it.each([
+    [['--file=/data/a.tar', '-t'], '--file'],
+    [['--file', '/data/a.tar', '-t'], '--file'],
+    [['--get', '-f', '/data/a.tar'], '--extract'],
+    [['--gun', '-tf', '/data/a.tar'], '--gzip'],
+    [['--crea', '-f', '/data/a.tar', '/data/x'], '--create'],
+  ])('%j resolves', (words, dest) => {
+    const parsed = parseCommand(specOf('tar'), words, '/', 'tar')
+    expect(dest in parsed.flags).toBe(true)
+    expect([parsed.invalidOptions, parsed.ambiguousOptions]).toEqual([[], []])
+  })
+
+  it('names an ambiguity with every option the table holds', () => {
+    // `--fil` could be --files-from, which mirage never declared; glibc names
+    // the word as typed, `=value` and all (GNU tar 1.35).
+    const parsed = parseCommand(specOf('tar'), ['--fil=/data/a.tar', '-t'], '/', 'tar')
+    expect(parsed.ambiguousOptions).toEqual([['--fil=/data/a.tar', ['--file', '--files-from']]])
+  })
+
+  it('keeps an option tar has and mirage does not unrecognized', () => {
+    const parsed = parseCommand(specOf('tar'), ['--files-from=x', '-t'], '/', 'tar')
+    expect(parsed.invalidOptions).toEqual(['--files-from=x'])
+  })
+
+  it('names an ambiguous long with its value', () => {
+    // glibc prints d->__nextchar, the whole word after `--` (coreutils 9.7:
+    // `ls: option '--re=x' is ambiguous`).
+    const parsed = parseCommand(specOf('ls'), ['--re=x', '/data'], '/', 'ls')
+    expect(parsed.ambiguousOptions[0]?.[0]).toBe('--re=x')
+  })
+})
+
+it.each(['--uc', '--univ'])('resolves GNU alias %s through its declared synonym', (word) => {
+  const parsed = parseCommand(specOf('date'), [word], '/', 'date')
+  expect(parsed.flags['--utc']).toBe(true)
+  expect(parsed.optionErrorKinds).toEqual([])
+})
+
+it('does not turn cmp options into numeric skips while retaining seq operands', () => {
+  const parsed = parseCommand(specOf('cmp'), ['a', 'b', '-1'], '/', 'cmp')
+  expect(parsed.invalidOptions).toEqual(['1'])
+  const sequence = parseCommand(specOf('seq'), ['-1', '1'], '/', 'seq')
+  expect(sequence.texts()).toEqual(['-1', '1'])
+  expect(sequence.optionErrorKinds).toEqual([])
 })

@@ -1,0 +1,303 @@
+{
+  "cases": [
+    {
+      "id": "pipeline_stops_compound_producer",
+      "seq": 9901202,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "rm -f /data/pipe-produced; for i in {1..20}; do echo x >> /data/pipe-produced; echo \"$i\"; sleep 0.02; done | head -n 1; produced=$(wc -l < /data/pipe-produced); test \"$produced\" -ge 1 && test \"$produced\" -lt 20",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "pipefail_keeps_a_producer_that_finished_before_head_closed",
+      "seq": 9901205,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "set -o pipefail; for i in 1 2 3; do echo \"$i\"; done | { sleep 0.05; head -n 1; }; echo \"status=$? pipestatus=${PIPESTATUS[*]}\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\nstatus=0 pipestatus=0 0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "pipefail_reports_a_write_after_head_closed",
+      "seq": 9901206,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "set -o pipefail; for i in 1 2 3; do echo \"$i\"; sleep 0.05; done | head -n 1; echo \"status=$? pipestatus=${PIPESTATUS[*]}\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\nstatus=141 pipestatus=141 0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "concat_cmdsub_runs_once",
+      "seq": 9901211,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "rm -f /data/sub-count; echo pre$(echo x >> /data/sub-count; printf value)post; wc -l < /data/sub-count",
+      "expect": {
+        "exit": 0,
+        "stdout": "prevaluepost\n1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "brace_cmdsub_runs_once",
+      "seq": 9901213,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "rm -f /data/sub-count; echo {a,b}$(echo x >> /data/sub-count; printf value); wc -l < /data/sub-count",
+      "expect": {
+        "exit": 0,
+        "stdout": "avalue bvalue\n1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_recursive_file_mount_label",
+      "seq": 9901221,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "history -c; history -s unique_history_1221; grep -Rn '^unique_history_1221$' / | sed 's/[0-9][0-9]*:/:/'",
+      "expect": {
+        "exit": 0,
+        "stdout": "/.bash_history::unique_history_1221\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_recursive_file_mount_explicit_no_label",
+      "seq": 9901222,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "history -c; history -s unique_history_no_label_1221; grep -Rnh '^unique_history_no_label_1221$' / | sed 's/[0-9][0-9]*:/:/'",
+      "expect": {
+        "exit": 0,
+        "stdout": ":unique_history_no_label_1221\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "chunk_boundary_utf8",
+      "seq": 9901900,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "note": "The two-byte é begins at byte 16383 (zero based), across the 16 KiB boundary. Covers file and pipeline decoders.",
+      "command": "{ printf '%16383s' '' | tr ' ' a; printf 'é'; printf '%16384s' '' | tr ' ' b; } > /data/chunk-utf8; wc -c < /data/chunk-utf8; wc -m < /data/chunk-utf8; cat /data/chunk-utf8 | wc -m; wc -w < /data/chunk-utf8; grep -bo 'aéb' /data/chunk-utf8; head -c 16385 /data/chunk-utf8 | wc -m; tail -c 16384 /data/chunk-utf8 | wc -c; rm /data/chunk-utf8",
+      "expect": {
+        "exit": 0,
+        "stdout": "32769\n32768\n32768\n1\n16382:aéb\n16384\n16384\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "chunk_boundary_words",
+      "seq": 9901901,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "note": "A word spans byte 16384, with a final line lacking a newline.",
+      "command": "{ printf '%16383s' ''; printf 'alpha beta\\ngamma'; } > /data/chunk-words; wc -w < /data/chunk-words; wc -l < /data/chunk-words; wc -m < /data/chunk-words; grep -o 'alpha' /data/chunk-words; tail -n 1 /data/chunk-words; printf '\\n'; rm /data/chunk-words",
+      "expect": {
+        "exit": 0,
+        "stdout": "3\n1\n16399\nalpha\ngamma\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "chunk_boundary_lines",
+      "seq": 9901902,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "note": "31-byte lines straddle the 16 KiB boundary; count and early-exit consumers read the same stream.",
+      "command": "for i in $(seq 1 700); do printf '012345678901234567890123456789\\n'; done > /data/chunk-lines; wc -c < /data/chunk-lines; cat /data/chunk-lines | wc -l; grep -c '456789' /data/chunk-lines; head -n 529 /data/chunk-lines | wc -c; tail -n 172 /data/chunk-lines | wc -c; rm /data/chunk-lines",
+      "expect": {
+        "exit": 0,
+        "stdout": "21700\n700\n700\n16399\n5332\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_recursive_quiet_match_stops_before_missing_operand",
+      "seq": 9901903,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "note": "Quiet search stops globally, while -m and -c remain per file.",
+      "command": "mkdir -p /data/grep-stop/nested; printf 'hit\\nhit\\n' > /data/grep-stop/nested/a; printf 'hit\\nhit\\n' > /data/grep-stop/z; grep -rq hit /data/grep-stop /data/grep-missing; echo quiet=$?; grep -rhm 1 hit /data/grep-stop; grep -rch hit /data/grep-stop; rm -r /data/grep-stop",
+      "expect": {
+        "exit": 0,
+        "stdout": "quiet=0\nhit\nhit\n2\n2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "recursive_grep_setup",
+      "seq": 9901904,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/grep-stop/a/deep; printf 'hit\\nhit\\n' > /data/grep-stop/a/deep/first; printf 'hit\\nhit\\n' > /data/grep-stop/a/deep/later; printf 'hit\\nhit\\n' > /data/grep-stop/a/later; printf 'hit\\nhit\\n' > /data/grep-stop/z",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "recursive_grep_quiet",
+      "seq": 9901905,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "grep -rq hit /data/grep-stop /data/grep-missing",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": "",
+        "check": "[\"/data/grep-stop/a/deep/first\"]\n"
+      },
+      "clear_cache": true,
+      "check": {
+        "read_paths": true
+      }
+    },
+    {
+      "id": "recursive_grep_quiet_no_match",
+      "seq": 9901906,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "grep -rq absent /data/grep-stop",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "",
+        "check": "[\"/data/grep-stop/a/deep/first\",\"/data/grep-stop/a/deep/later\",\"/data/grep-stop/a/later\",\"/data/grep-stop/z\"]\n"
+      },
+      "clear_cache": true,
+      "check": {
+        "read_paths": true
+      }
+    },
+    {
+      "id": "recursive_grep_max_count",
+      "seq": 9901907,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "grep -rhm 1 hit /data/grep-stop",
+      "expect": {
+        "exit": 0,
+        "stdout": "hit\nhit\nhit\nhit\n",
+        "stderr": "",
+        "check": "[\"/data/grep-stop/a/deep/first\",\"/data/grep-stop/a/deep/later\",\"/data/grep-stop/a/later\",\"/data/grep-stop/z\"]\n"
+      },
+      "clear_cache": true,
+      "check": {
+        "read_paths": true
+      }
+    },
+    {
+      "id": "recursive_grep_count",
+      "seq": 9901908,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "grep -rch hit /data/grep-stop",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n2\n2\n2\n",
+        "stderr": "",
+        "check": "[\"/data/grep-stop/a/deep/first\",\"/data/grep-stop/a/deep/later\",\"/data/grep-stop/a/later\",\"/data/grep-stop/z\"]\n"
+      },
+      "clear_cache": true,
+      "check": {
+        "read_paths": true
+      }
+    },
+    {
+      "id": "recursive_grep_quiet_prior_error",
+      "seq": 9901909,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "grep -rq hit /data/grep-missing /data/grep-stop",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": "grep: /data/grep-missing: No such file or directory\n",
+        "check": "[\"/data/grep-stop/a/deep/first\"]\n"
+      },
+      "clear_cache": true,
+      "check": {
+        "read_paths": true
+      }
+    },
+    {
+      "id": "recursive_grep_cleanup",
+      "seq": 9901910,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "rm -r /data/grep-stop",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    }
+  ]
+}

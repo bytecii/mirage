@@ -13,24 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { GitHubAccessor } from '../../../accessor/github.ts'
-import { ResourceName } from '../../../types.ts'
-import type { ProvisionFn, RegisteredCommand } from '../../config.ts'
+import { VFSName } from '../../../types.ts'
+import type { RegisteredCommand } from '../../config.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
 import { GITHUB_DU } from './du.ts'
 import { GITHUB_FIND } from './find.ts'
 import { GITHUB_GREP } from './grep.ts'
-import { GITHUB_IO } from './io.ts'
-import { metadataProvision } from './_provision.ts'
+import { IO } from './io.ts'
 import { GITHUB_RG } from './rg.ts'
 
 const GITHUB_OVERRIDES = new Set(['du', 'find', 'grep', 'rg'])
 
 export const GITHUB_COMMANDS: readonly RegisteredCommand[] = [
-  ...makeGenericCommands<GitHubAccessor>(ResourceName.GITHUB, GITHUB_IO, {
+  ...makeGenericCommands<GitHubAccessor>(VFSName.GITHUB, IO, {
     overrides: GITHUB_OVERRIDES,
-    provisionOverrides: {
-      ls: metadataProvision as ProvisionFn,
-    },
   }),
   ...GITHUB_DU,
   ...GITHUB_FIND,

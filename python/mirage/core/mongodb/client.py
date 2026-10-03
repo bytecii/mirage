@@ -12,20 +12,21 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from pymongo import AsyncMongoClient
 
 from mirage.core.mongodb.types import EntityKind
-from mirage.resource.mongodb.config import MongoDBConfig
+from mirage.vfs.mongodb.config import MongoDBConfig
 
 if TYPE_CHECKING:
     from mirage.accessor.mongodb import MongoDBAccessor
 
 
-async def list_databases(client: AsyncMongoClient[Any],
-                         config: MongoDBConfig) -> list[str]:
+async def list_databases(
+    client: AsyncMongoClient[Any], config: MongoDBConfig
+) -> list[str]:
     all_dbs = await client.list_database_names()
     system_dbs = {"admin", "local", "config"}
     dbs = [d for d in all_dbs if d not in system_dbs]
@@ -41,7 +42,9 @@ async def list_collections(
 ) -> list[str]:
     db = client[database]
     filter_arg: dict[str, Any] | None = None
-    if kind is not None:
+    if kind == EntityKind.COLLECTION:
+        filter_arg = {"type": {"$ne": EntityKind.VIEW.value}}
+    elif kind is not None:
         filter_arg = {"type": kind.value}
     return sorted(await db.list_collection_names(filter=filter_arg))
 
@@ -110,15 +113,18 @@ async def iter_documents(
     projection: dict[str, Any] | None = None,
     sort: list[tuple[str, int]] | None = None,
     batch_size: int = 100,
-) -> AsyncIterator[dict[str, Any]]:
+) -> AsyncGenerator[dict[str, Any], None]:
     db = client[database]
     col = db[collection]
     cursor = col.find(filter or {}, projection)
     if sort:
         cursor = cursor.sort(sort)
     cursor = cursor.batch_size(batch_size)
-    async for doc in cursor:
-        yield doc
+    try:
+        async for doc in cursor:
+            yield doc
+    finally:
+        await cursor.close()
 
 
 async def count_documents(

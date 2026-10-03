@@ -16,9 +16,9 @@ from typing import Any
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.redis.dest import lookup_error
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.errors import enoent
-from mirage.utils.filetype import guess_type
+from mirage.utils.filetype import content_type_for_path
 from mirage.utils.path import norm
 
 
@@ -40,7 +40,6 @@ async def stat(
     path_spec: PathSpec,
     index: IndexCacheStore = NULL_INDEX,
 ) -> FileStat:
-    virtual = path_spec.virtual
     path = path_spec.mount_path
     store = accessor.store
     p = norm(path)
@@ -63,10 +62,11 @@ async def stat(
             name=p.rsplit("/", 1)[-1],
             size=size,
             modified=await store.get_modified(p),
-            type=guess_type(p),
+            type=FileType.FILE,
+            content=content_type_for_path(p),
             mode=attrs.get("mode"),
             uid=attrs.get("uid"),
             gid=attrs.get("gid"),
             atime=attrs.get("atime"),
         )
-    raise enoent(virtual)
+    raise await lookup_error(store, path_spec, p)

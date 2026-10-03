@@ -18,7 +18,6 @@ import {
   googleDelete,
   googleGet,
   googleGetBytes,
-  googleGetStream,
   googlePatch,
   googlePost,
   googleSendBytes,
@@ -26,10 +25,11 @@ import {
 import type { TokenManager } from './client.ts'
 import type { ByteWindow } from '../../utils/ranges.ts'
 
+// md5Checksum and headRevisionId are a file's token (driveFingerprint).
 const FIELDS =
   'nextPageToken,' +
   'files(id,name,mimeType,driveId,size,quotaBytesUsed,' +
-  'createdTime,modifiedTime,' +
+  'createdTime,modifiedTime,md5Checksum,headRevisionId,' +
   'owners,capabilities/canEdit,parents)'
 
 // A search across every corpus is answered best-effort, so Drive reports
@@ -67,6 +67,9 @@ export interface DriveFile {
   quotaBytesUsed?: string
   createdTime?: string
   modifiedTime?: string
+  md5Checksum?: string
+  headRevisionId?: string
+  trashed?: boolean
   owners?: DriveOwner[]
   capabilities?: { canEdit?: boolean }
   parents?: string[]
@@ -99,6 +102,14 @@ export async function listFiles(
     modifiedAfter?: string | null
     modifiedBefore?: string | null
     name?: string | null
+    /**
+     * Stop once this many files are in hand and do not request another
+     * page. An emptiness probe wants one entry, and `pageSize` alone
+     * cannot express that: it caps the page, not the walk, so a small
+     * page turned a listing of a large folder into many requests
+     * instead of fewer.
+     */
+    limit?: number | null
   } = {},
 ): Promise<DriveFile[]> {
   const folderId = opts.folderId ?? 'root'
@@ -109,6 +120,7 @@ export async function listFiles(
   const modifiedAfter = opts.modifiedAfter ?? null
   const modifiedBefore = opts.modifiedBefore ?? null
   const name = opts.name ?? null
+  const limit = opts.limit ?? null
   const parts: string[] = [`'${folderId}' in parents`]
   if (name !== null) parts.push(`name='${escapeQueryValue(name)}'`)
   if (mimeType !== null) parts.push(`mimeType='${mimeType}'`)
@@ -122,7 +134,7 @@ export async function listFiles(
     const params: Record<string, string | number> = {
       q,
       fields: FIELDS,
-      pageSize,
+      pageSize: limit === null ? pageSize : Math.min(pageSize, limit),
       orderBy: 'modifiedTime desc',
     }
     if (driveId !== null) {
@@ -135,6 +147,7 @@ export async function listFiles(
     const url = `${driveBase(tm)}/files`
     const data = (await googleGet(tm, url, params)) as ListResponse
     if (data.files !== undefined) files.push(...data.files)
+    if (limit !== null && files.length >= limit) break
     pageToken = data.nextPageToken ?? null
     if (pageToken === null) break
   }
@@ -229,16 +242,9 @@ export async function deleteFile(tm: TokenManager, fileId: string): Promise<void
   await googleDelete(tm, url)
 }
 
-export async function* downloadFileStream(
-  tm: TokenManager,
-  fileId: string,
-): AsyncIterable<Uint8Array> {
-  const url = `${driveBase(tm)}/files/${fileId}?alt=media&supportsAllDrives=true`
-  for await (const chunk of googleGetStream(tm, url)) yield chunk
-}
-
 export const FOLDER_MIME = 'application/vnd.google-apps.folder'
-const ITEM_FIELDS = 'id,name,mimeType,driveId,size,quotaBytesUsed,createdTime,modifiedTime,parents'
+const ITEM_FIELDS =
+  'id,name,mimeType,driveId,size,quotaBytesUsed,createdTime,modifiedTime,md5Checksum,headRevisionId,parents,owners,trashed'
 const DEFAULT_UPLOAD_MIME = 'application/octet-stream'
 
 // Escape a value for a Drive API query string literal.

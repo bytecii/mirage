@@ -13,7 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { IndexCacheStore } from './cache/index/store.ts'
-import type { FindOptions } from './resource/base.ts'
+import type { CommandRule } from './policy/types.ts'
+import type { FindOptions } from './vfs/base.ts'
 import { rstripSlash, stripSlash } from './utils/slash.ts'
 
 // Any value that survives a JSON round trip: what a decoded payload holds,
@@ -42,13 +43,13 @@ export type MountMode = (typeof MountMode)[keyof typeof MountMode]
 /**
  * How a mount is exposed to the outside world.
  *
- * `vfs` is the default: the mount lives only inside mirage's own filesystem
+ * `workspace` is the default: the mount lives only inside mirage's own filesystem
  * and is reached through the command surface, with nothing registered with
  * the kernel. `fuse` and `fskit` additionally expose it as a real mountpoint.
  *
  * `fskit` is macOS 15.4+ only and needs no kernel extension. It has no
- * `direct_io` equivalent, so it serves correct reads only for resources that
- * set `sizesAlwaysKnown`; the mount-time guard warns about resources whose
+ * `direct_io` equivalent, so it serves correct reads only for mounts that
+ * set `sizesAlwaysKnown`; the mount-time guard warns about mounts whose
  * size-unknown files will read as empty. Writes are also limited: appends and
  * metadata ops persist, but the macFUSE FSKit shim flushes pages a file did
  * not already have (a new file, or truncate-then-write) as NUL bytes (pinned
@@ -56,7 +57,7 @@ export type MountMode = (typeof MountMode)[keyof typeof MountMode]
  * auto-selecting fskit would silently degrade every API-backed mount.
  */
 export const MountBackend = Object.freeze({
-  VFS: 'vfs',
+  WORKSPACE: 'workspace',
   FUSE: 'fuse',
   FSKIT: 'fskit',
 } as const)
@@ -69,7 +70,7 @@ export const KERNEL_BACKENDS: readonly MountBackend[] = Object.freeze([
   MountBackend.FSKIT,
 ])
 
-const MOUNT_MODE_RANK: Readonly<Record<MountMode, number>> = Object.freeze({
+export const MOUNT_MODE_RANK: Readonly<Record<MountMode, number>> = Object.freeze({
   [MountMode.READ]: 1,
   [MountMode.WRITE]: 2,
   [MountMode.EXEC]: 3,
@@ -83,11 +84,12 @@ export function weakerMode(a: MountMode, b: MountMode): MountMode {
 /**
  * What the data door treats as nonexistent for one session.
  *
- * A sibling of `Session.mountModes`: per-session narrowing that the
+ * A sibling of `SessionState.mountModes`: per-session narrowing that the
  * doors enforce, null-on-the-session means unrestricted. Hiding is
  * "does not exist", never "forbidden" — matching paths answer ENOENT
- * and drop out of listings, the same no-name-leak rule `mountAllowed`
- * applies to ungranted mounts.
+ * and drop out of listings, which is what makes a hide the way a profile
+ * keeps a session away from a mount: naming mounts only narrows their
+ * modes, and a refusal would hand back the name.
  *
  * `paths` are exact virtual paths; hiding a path hides its whole
  * subtree (a name you cannot see cannot be a parent you traverse), so
@@ -102,6 +104,34 @@ export interface HiddenPaths {
 }
 
 /**
+ * One `show` entry of a profile's path axis, compiled.
+ *
+ * `path` is the entry as written: an exact subtree or an anchored
+ * pattern, always absolute (a slashless name pattern is refused at
+ * validation, because a show anchors to a place and a name pattern
+ * names none). `mode` is what the entry states for its subtree; null
+ * for a list-form entry, which inherits the mount's.
+ */
+export interface ShowEntry {
+  readonly path: string
+  readonly mode: MountMode | null
+}
+
+/**
+ * The `show` half of one session's path axis.
+ *
+ * A sibling of `HiddenPaths`: per-session state the doors read,
+ * null-on-the-session means the document states no show. An entry does
+ * two things, each on the one anchor-depth rule: it re-opens a subtree
+ * inside a hidden region when its anchor is deeper than the hide's,
+ * and it states the mode in force below its anchor when it carries
+ * one.
+ */
+export interface ShownPaths {
+  readonly entries: readonly ShowEntry[]
+}
+
+/**
  * What the session door treats as unset for one session.
  *
  * Enforced where env leaves the session: `get` misses, `snapshot`
@@ -112,6 +142,35 @@ export interface HiddenPaths {
 export interface HiddenVars {
   readonly names?: readonly string[]
   readonly patterns?: readonly string[]
+}
+
+/**
+ * What a command's own I/O asks before touching an entry it reached
+ * below its operands.
+ *
+ * The admission gate judges the paths a line names; a walk (`grep -r`,
+ * `find`, `du`, `cp -r`, `tar`) then reaches entries no rule has seen.
+ * The dispatcher binds the admitted command's gate to the session
+ * context for the command's run, and the commands tier reads it there,
+ * so the tier that enforces the rules never imports the tier that
+ * states them. `scoped` is whether a path rule in force reads this
+ * command's paths at all; a native walk (a backend's own find or du)
+ * yields to the guarded readdir walk while it is set, so each entry
+ * passes the gate. `check` throws when a rule in force refuses the entry
+ * for the running command and returns when the command may touch it.
+ */
+export interface EntryGate {
+  readonly scoped: boolean
+  /**
+   * The ask rules this line runs under a grant for. Read by the op
+   * doors, which see the same entries from below and would otherwise
+   * re-derive a verdict that knows nothing of the nod the gate already
+   * took.
+   */
+  readonly granted: readonly CommandRule[]
+  check(virtual: string): void
+  /** True exactly where `check` would throw, for a door that declines instead (the read cache). */
+  refuses(virtual: string): boolean
 }
 
 const MOUNT_MODE_ALIASES: Readonly<Record<string, MountMode>> = Object.freeze({
@@ -134,15 +193,97 @@ export function parseMountMode(value: string): MountMode {
   throw new Error(`invalid mount mode: '${value}'`)
 }
 
-export const ConsistencyPolicy = Object.freeze({
-  LAZY: 'lazy',
-  ALWAYS: 'always',
+/**
+ * How a mount decides whether cached bytes may be served.
+ *
+ * FRESH revalidates against the backend's content token before serving a
+ * cached copy; BOUNDED serves without revalidating, within the staleness
+ * bound the mount declares.
+ *
+ * PINNED names the content a commit's fingerprint records. There is no
+ * version layer to pin to, so a mount declaring it is refused at mount time
+ * rather than quietly degraded to head: the vocabulary is published, so
+ * someone will type it, and an informative refusal costs one branch over a
+ * generic invalid-value error.
+ */
+export const ReadPolicy = Object.freeze({
+  FRESH: 'fresh',
+  BOUNDED: 'bounded',
+  PINNED: 'pinned',
 } as const)
 
-export type ConsistencyPolicy = (typeof ConsistencyPolicy)[keyof typeof ConsistencyPolicy]
+export type ReadPolicy = (typeof ReadPolicy)[keyof typeof ReadPolicy]
 
 /**
- * Behaviour when a remote resource's live fingerprint differs from the
+ * What a backend's cached listings can be checked against under fresh.
+ *
+ * NONE: nothing, so a listing the running command did not write itself is
+ * listed again. MOUNT: one version covers every listing of the mount, and a
+ * stat of the mount root answers it. FOLDER: each listing carries its own
+ * folder's version, and a stat of that folder answers it. The stored version
+ * and the stat's fingerprint must be the same kind of token, since the gate
+ * compares them with `===`.
+ */
+export const ListingVersion = Object.freeze({
+  NONE: 'none',
+  MOUNT: 'mount',
+  FOLDER: 'folder',
+} as const)
+
+export type ListingVersion = (typeof ListingVersion)[keyof typeof ListingVersion]
+
+/** Maximum lifetime in seconds for cached bodies and listings. */
+export const DEFAULT_READ_TTL = 600
+
+/**
+ * One mount's read policy and the bound that goes with it.
+ *
+ * The bound is set under FRESH too, so every cache entry carries one. Two
+ * workspaces sharing one Redis cache under different policies would otherwise
+ * write entries the other refuses to serve, and bounce them between cold reads
+ * indefinitely.
+ *
+ * It is stamped when the entry is written and enforced by the store, so the
+ * bound that applies is the writing mount's, not the reading mount's. Those are
+ * the same mount inside one workspace; they differ across a shared cache, a
+ * lowered `ttl` and a restored snapshot, and there the older bound stands until
+ * the entry expires. Making the reader authoritative needs a write timestamp
+ * every store can read back, which redis does not keep.
+ */
+export interface ReadSpec {
+  readonly policy: ReadPolicy
+  readonly ttl: number
+}
+
+/**
+ * The policy a mount takes when it declares none, and the one pinned onto the
+ * three synthetic anchors (`/dev`, the history view, the implicit `/` root).
+ *
+ * Those three are installed outside `normalizeMounts`, so they never meet the
+ * capability verdict; none of them caches reads, so inheriting a workspace-level
+ * `fresh` would stamp on them exactly the combination the verdict refuses.
+ */
+export const DEFAULT_READ_SPEC: ReadSpec = Object.freeze({
+  policy: ReadPolicy.BOUNDED,
+  ttl: DEFAULT_READ_TTL,
+})
+
+/**
+ * What the cache write path needs to know about a path's mount.
+ *
+ * Answered per path against the mount table pinned at command start, so a
+ * fill that lands after the command is stamped with the bound of the mount
+ * that produced the bytes rather than whatever holds the prefix by then.
+ * `cacheable` is read first and short-circuits, so `ttl` is never consulted
+ * for a path that is not being cached.
+ */
+export interface CacheFacts {
+  readonly cacheable: boolean
+  readonly ttl: number
+}
+
+/**
+ * Behaviour when a remote VFS's live fingerprint differs from the
  * value recorded at snapshot time.
  */
 export const DriftPolicy = Object.freeze({
@@ -171,6 +312,11 @@ export interface LimitInit {
   maxLines?: number | null
   timeoutSeconds?: number | null
   onExceed?: OnExceed
+}
+
+function minBound(values: (number | null)[]): number | null {
+  const bounds = values.filter((v): v is number => v !== null)
+  return bounds.length > 0 ? Math.min(...bounds) : null
 }
 
 function minPositive(values: (number | null)[]): number | null {
@@ -244,8 +390,8 @@ type LimitAggrField = Exclude<keyof Limit, 'kind'>
  * compile error, where the old inline literal would have silently dropped it.
  */
 const LIMIT_AGGR: { [K in LimitAggrField]: (present: readonly Limit[]) => Limit[K] } = {
-  maxBytes: (present) => minPositive(present.map((s) => s.maxBytes)),
-  maxLines: (present) => minPositive(present.map((s) => s.maxLines)),
+  maxBytes: (present) => minBound(present.map((s) => s.maxBytes)),
+  maxLines: (present) => minBound(present.map((s) => s.maxLines)),
   timeoutSeconds: (present) => minPositive(present.map((s) => s.timeoutSeconds)),
   onExceed: (present) =>
     present.some((s) => s.onExceed === OnExceed.ERROR) ? OnExceed.ERROR : OnExceed.TRUNCATE,
@@ -256,10 +402,12 @@ const LIMIT_AGGR: { [K in LimitAggrField]: (present: readonly Limit[]) => Limit[
  *
  * Rides the IO envelope from the dispatch site to the workspace
  * boundary; merge keeps the rightmost producer, so this names the
- * command whose stream the caller actually sees. Post-layer policies
+ * last command that ran; it does not describe every byte of a list. Post-layer policies
  * (output caps today; budgets and attribution later) read it as
- * context. Facts only: policy decisions never travel on the envelope.
- * `declared` is the bound the command's own registration declared,
+ * context. Facts only: no policy reads a decision off the envelope;
+ * the one a chain hands down is written beside it as
+ * `IOResult.refusal` after the last hook has spoken. `declared` is
+ * the bound the command's own registration declared,
  * when the dispatch site knows it (e.g. a CLI leaf).
  */
 export interface Producer {
@@ -268,11 +416,38 @@ export interface Producer {
   readonly declared: Limit | null
 }
 
-export const ResourceName = Object.freeze({
+export type RefusalKind = 'deny' | 'pending' | 'failed'
+export type RefusalScope = 'command' | 'operand'
+
+/**
+ * Why a line did not run, for the caller that reads the result.
+ *
+ * stderr keeps bash's voice (`<cmd>: Permission denied`), which says
+ * nothing about who refused or why; this record carries that beside
+ * the envelope, so a host or an agent adapter can show the reason
+ * without the shell having to. null on every run that was not
+ * refused, and absent on the 127 `command not found` row, which must
+ * not reveal that the word names anything. `kind` is `deny` for a
+ * policy's refusal, `pending` for an ask the host has not answered,
+ * `failed` for a policy that raised and so refused by default;
+ * `policy` is the class name of the policy that spoke, empty for an
+ * ask, which belongs to the host; `askId` is the approval to quote,
+ * for `pending`. Mirrors the Python `Refusal`.
+ */
+export interface Refusal {
+  readonly kind: RefusalKind
+  readonly reason: string
+  readonly policy: string
+  readonly scope: RefusalScope
+  readonly askId: string | null
+}
+
+export const VFSName = Object.freeze({
   DISK: 'disk',
   S3: 's3',
   RAM: 'ram',
   GITHUB: 'github',
+  WANDB: 'wandb',
   LINEAR: 'linear',
   GCAL: 'gcal',
   GDOCS: 'gdocs',
@@ -283,6 +458,7 @@ export const ResourceName = Object.freeze({
   SHAREPOINT: 'sharepoint',
   DROPBOX: 'dropbox',
   BOX: 'box',
+  AIRTABLE: 'airtable',
   SLACK: 'slack',
   DISCORD: 'discord',
   GMAIL: 'gmail',
@@ -323,13 +499,67 @@ export const ResourceName = Object.freeze({
   SCALEWAY: 'scaleway',
   QINGSTOR: 'qingstor',
   HISTORY: 'history',
+  BIN: 'bin',
 } as const)
 
-export type ResourceName = (typeof ResourceName)[keyof typeof ResourceName]
+export type VFSName = (typeof VFSName)[keyof typeof VFSName]
+
+/**
+ * POSIX file type (the `st_mode` kind), the switch behavior branches on.
+ *
+ * One per entry, always present. Directory and symlink are their own
+ * kinds; every regular file is FILE and carries its content shape on
+ * `FileStat.content`. Distinct from ContentType, which is only a
+ * rendering hint for a FILE. Mirrors `FileType` in `mirage/types.py`.
+ *
+ * The full POSIX set is enumerated so the model is comprehensive.
+ * DIRECTORY, FILE, SYMLINK and CHAR_DEVICE (the /dev mount) are produced
+ * today; BLOCK_DEVICE, FIFO and SOCKET are declared but not yet emitted,
+ * and the render/derivation tables (find letter, st_mode bits, ls char)
+ * grow a row for one the moment a backend starts producing it.
+ */
+/** `ls` sort keys: name is the default, time `-t`, size `-S`, version
+ * `-v`, extension `-X`, width `--sort=width`, and none `-U`. */
+export type LsSortBy = 'name' | 'time' | 'size' | 'version' | 'extension' | 'width' | 'none'
+
+/** Which timestamp `ls` shows and sorts by: `-u`/`--time=atime`,
+ * `-c`/`--time=ctime`, `--time=birth`, else the modification time. */
+export type LsTimeKind = 'mtime' | 'atime' | 'ctime' | 'birth'
+
+// The mark `ls` appends to a name, `--indicator-style`'s words: `-p` is
+// `slash`, `--file-type` is `file-type` and `-F` is `classify`.
+export type LsIndicator = 'none' | 'slash' | 'file-type' | 'classify'
+
+// Which symlinks `cp` follows: every one (`-L`), only the command line's
+// (`-H`), or none, copying each link as a link (`-P`, `-d`, `-a`, and a
+// recursive copy's default).
+export type CopyDeref = 'always' | 'command_line' | 'never'
+
+// Which command-line symlinks `ls` resolves before it lists them: every one
+// (`-L`, `-H`), only one leading to a directory (the default), or none (`-d`,
+// a long format, `-F`).
+export type LsLinkMode = 'all' | 'directory' | 'none'
 
 export const FileType = Object.freeze({
   DIRECTORY: 'directory',
+  FILE: 'file',
   SYMLINK: 'symlink',
+  CHAR_DEVICE: 'char_device',
+  BLOCK_DEVICE: 'block_device',
+  FIFO: 'fifo',
+  SOCKET: 'socket',
+} as const)
+
+export type FileType = (typeof FileType)[keyof typeof FileType]
+
+/**
+ * A regular file's content shape: the rendering hint (file/ls color).
+ *
+ * Only meaningful for a FILE; a directory or symlink carries none. Not a
+ * node kind: nothing branches control flow on it. Mirrors `ContentType`
+ * in `mirage/types.py`.
+ */
+export const ContentType = Object.freeze({
   TEXT: 'text',
   BINARY: 'binary',
   JSON: 'json',
@@ -342,12 +572,35 @@ export const FileType = Object.freeze({
   PDF: 'application/pdf',
 } as const)
 
-export type FileType = (typeof FileType)[keyof typeof FileType]
+export type ContentType = (typeof ContentType)[keyof typeof ContentType]
 
 // FileStat.extra key holding a symlink's target, verbatim as it was
 // typed. A link has no backend inode, so this is the only place the
 // target travels with the stat row.
 export const LINK_TARGET_KEY = 'link_target'
+
+// FileStat.extra key holding a synthetic device's logical [major, minor].
+export const DEVICE_NUMBERS_KEY = 'device_numbers'
+
+/**
+ * The metadata fields a `setattr` writes, all optional.
+ *
+ * Spelled the way the op, the CommandOpts bag and the guest bridge
+ * spell them, so one fact keeps one name from a shell line down to a
+ * guest's utime. `nofollow` is not a field but the AT_SYMLINK_NOFOLLOW
+ * bit: it writes the link entry's own attrs rather than its target's.
+ * Lives here rather than beside either consumer because the ops facade
+ * and the runtime bridge both take it and neither may import the
+ * other.
+ */
+export interface SetAttrFields {
+  mode?: number
+  uid?: number | string
+  gid?: number | string
+  atime?: string
+  mtime?: string
+  nofollow?: boolean
+}
 
 export interface FileStatInit {
   name: string
@@ -355,11 +608,14 @@ export interface FileStatInit {
   modified?: string | null
   fingerprint?: string | null
   revision?: string | null
-  type?: FileType | null
+  type: FileType
+  content?: ContentType | null
   mode?: number | null
   uid?: number | string | null
   gid?: number | string | null
   atime?: string | null
+  ctime?: string | null
+  birthtime?: string | null
   extra?: Record<string, unknown>
 }
 
@@ -369,11 +625,14 @@ export class FileStat {
   readonly modified: string | null
   readonly fingerprint: string | null
   readonly revision: string | null
-  readonly type: FileType | null
+  readonly type: FileType
+  readonly content: ContentType | null
   readonly mode: number | null
   readonly uid: number | string | null
   readonly gid: number | string | null
   readonly atime: string | null
+  readonly ctime: string | null
+  readonly birthtime: string | null
   readonly extra: Record<string, unknown>
 
   constructor(init: FileStatInit) {
@@ -382,11 +641,20 @@ export class FileStat {
     this.modified = init.modified ?? null
     this.fingerprint = init.fingerprint ?? null
     this.revision = init.revision ?? null
-    this.type = init.type ?? null
+    this.type = init.type
+    // content is a FILE's rendering hint; a directory or symlink has
+    // none. null on a FILE means "unknown", which is allowed.
+    const content = init.content ?? null
+    if (content !== null && init.type !== FileType.FILE) {
+      throw new Error(`content must be null for ${init.type}, got ${content}`)
+    }
+    this.content = content
     this.mode = init.mode ?? null
     this.uid = init.uid ?? null
     this.gid = init.gid ?? null
     this.atime = init.atime ?? null
+    this.ctime = init.ctime ?? null
+    this.birthtime = init.birthtime ?? null
     this.extra = init.extra ?? {}
     Object.freeze(this)
   }
@@ -406,10 +674,13 @@ export class FileStat {
       fingerprint: this.fingerprint,
       revision: this.revision,
       type: this.type,
+      content: this.content,
       mode: this.mode,
       uid: this.uid,
       gid: this.gid,
       atime: this.atime,
+      ctime: this.ctime,
+      birthtime: this.birthtime,
       extra: this.extra,
       ...update,
     })
@@ -559,6 +830,22 @@ export type StatFn<Args extends unknown[] = [path: PathSpec, index?: IndexCacheS
   ...args: Args
 ) => Promise<FileStat>
 
+/**
+ * What proving a running command's `.` and `..` reads.
+ *
+ * The command tier reaches its backend past the dispatcher's door, so
+ * `Mount.executeCmd` binds the door's facts for it: `stat` is the door's
+ * stat (throwing when nothing is there) and `follow` the namespace's link
+ * resolution, null while it holds none. The kernel walk (`followPaths`)
+ * rewrites an operand to its link's target before the handler runs;
+ * `follow` is how that operand is still known for the one its dotted
+ * spelling names. Mirrors Python's WalkProbe.
+ */
+export interface WalkProbe {
+  readonly stat: StatFn
+  readonly follow: ((path: string) => string) | null
+}
+
 export interface NativeCopy {
   copy: CopyFn
   find: FindFn
@@ -594,53 +881,71 @@ export interface PrimitiveMove {
 
 export type MoveStrategy = NativeMove | PrimitiveMove
 
+// What the kernel walk answers for a path it cannot resolve at all: the
+// empty name (POSIX never resolves a null pathname) or a symlink loop.
+// Mirrors Python's WalkErrno.
+export type WalkErrno = 'ENOENT' | 'ELOOP'
+
 export interface PathSpecInit {
   virtual: string
   directory: string
-  resourcePath: string
+  vfsPath: string
   pattern?: string | null
   resolved?: boolean
   rawPath?: string
+  dotted?: string | null
+  walkError?: WalkErrno | null
 }
 
 export class PathSpec {
   readonly virtual: string
   readonly directory: string
-  readonly resourcePath: string
+  readonly vfsPath: string
   readonly pattern: string | null
   readonly resolved: boolean
   // The word's spelling: as typed for relative words, the absolute path
   // for everything else (defaults to `virtual`).
   readonly rawPath: string
+  // Absolute spelling before dot normalization; excluded from identity.
+  readonly dotted: string | null
+  // What the kernel walk already answered for an operand it cannot
+  // resolve at all, known before the command runs: ENOENT for the empty
+  // name, whose `virtual` reads as the working directory, and ELOOP for
+  // one a symlink loop stands in, which `followPaths` leaves unrewritten.
+  // Every op that reaches it refuses (`walkRefusal`), so each command
+  // words the refusal as its own. Mirrors Python's PathSpec.walk_error.
+  readonly walkError: WalkErrno | null
 
   constructor(init: PathSpecInit) {
     this.virtual = init.virtual
     this.directory = init.directory
-    this.resourcePath = init.resourcePath
+    this.vfsPath = init.vfsPath
     this.pattern = init.pattern ?? null
     this.resolved = init.resolved ?? true
     this.rawPath = init.rawPath ?? init.virtual
+    this.dotted = init.dotted ?? null
+    this.walkError = init.walkError ?? null
     Object.freeze(this)
   }
 
   // Mount-relative path with a leading slash. Pure formatting of
-  // `resourcePath` ('' -> '/', 'sub/x' -> '/sub/x'); used for
+  // `vfsPath` ('' -> '/', 'sub/x' -> '/sub/x'); used for
   // byte-accounting keys and path arithmetic in slash-framed
   // mount-relative space.
   get mountPath(): string {
-    return `/${this.resourcePath}`
+    return `/${this.vfsPath}`
   }
 
   get dir(): PathSpec {
-    // The directory's resourcePath is its virtual form with this path's
+    // The directory's vfsPath is its virtual form with this path's
     // mount prefix removed; the prefix length is recovered from the
-    // (virtual, resourcePath) pair. Idempotent for specs that are already
+    // (virtual, vfsPath) pair. Idempotent for specs that are already
     // directories.
-    const cut = rstripSlash(this.virtual).length - this.resourcePath.length
+    const cut = rstripSlash(this.virtual).length - this.vfsPath.length
     return new PathSpec({
       virtual: this.directory,
       directory: this.directory,
-      resourcePath: stripSlash(this.directory.slice(cut)),
+      vfsPath: stripSlash(this.directory.slice(cut)),
       pattern: this.pattern,
       resolved: false,
     })
@@ -650,15 +955,15 @@ export class PathSpec {
     return `${rstripSlash(this.virtual)}/${name}`
   }
 
-  // Wrap a path string; defaults to a root-mounted resourcePath (the path
+  // Wrap a path string; defaults to a root-mounted vfsPath (the path
   // is assumed to carry no mount prefix).
-  static fromStrPath(path: string, resourcePath?: string): PathSpec {
+  static fromStrPath(path: string, vfsPath?: string): PathSpec {
     const idx = path.lastIndexOf('/')
     const directory = path.slice(0, idx + 1) || '/'
     return new PathSpec({
       virtual: path,
       directory,
-      resourcePath: resourcePath ?? stripSlash(path),
+      vfsPath: vfsPath ?? stripSlash(path),
     })
   }
 }

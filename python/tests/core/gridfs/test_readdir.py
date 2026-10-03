@@ -19,18 +19,22 @@ from unittest.mock import patch
 import pytest
 from bson import ObjectId
 
-from mirage.accessor.gridfs import GridFSAccessor, GridFSConfig
+from mirage.accessor.gridfs import GridFSAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.gridfs.readdir import readdir
 from mirage.types import PathSpec
+from mirage.vfs.gridfs.config import GridFSConfig
 
 _UPLOAD = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 @pytest.fixture
 def accessor():
-    return GridFSAccessor(config=GridFSConfig(
-        uri="mongodb://localhost:27017", database="db", bucket="data"))
+    return GridFSAccessor(
+        config=GridFSConfig(
+            uri="mongodb://localhost:27017", database="db", bucket="data"
+        )
+    )
 
 
 def _doc(filename: str, length: int = 0) -> dict:
@@ -52,7 +56,7 @@ def _fake_iter(docs):
 
 
 def _path(s: str) -> PathSpec:
-    return PathSpec(virtual=s, directory=s, resource_path=s.strip("/"))
+    return PathSpec(virtual=s, directory=s, vfs_path=s.strip("/"))
 
 
 @pytest.mark.asyncio
@@ -63,7 +67,7 @@ async def test_readdir_derives_files_dirs_and_markers(accessor):
         _doc("sub/b.csv", 7),
         _doc("sub/deep/c.txt", 1),
     ]
-    with patch("mirage.core.gridfs.readdir.iter_latest", new=_fake_iter(docs)):
+    with patch("mirage.core.gridfs.driver.iter_latest", new=_fake_iter(docs)):
         entries = await readdir(accessor, _path("/"))
     assert entries == ["/a.txt", "/empty", "/sub"]
 
@@ -76,7 +80,7 @@ async def test_readdir_skips_own_marker_and_dedupes(accessor):
         _doc("sub/deep/c.txt", 1),
         _doc("sub/deep/d.txt", 1),
     ]
-    with patch("mirage.core.gridfs.readdir.iter_latest", new=_fake_iter(docs)):
+    with patch("mirage.core.gridfs.driver.iter_latest", new=_fake_iter(docs)):
         entries = await readdir(accessor, _path("/sub"))
     assert entries == ["/sub/b.csv", "/sub/deep"]
 
@@ -85,7 +89,7 @@ async def test_readdir_skips_own_marker_and_dedupes(accessor):
 async def test_readdir_populates_index(accessor):
     index = RAMIndexCacheStore()
     docs = [_doc("a.txt", 3), _doc("sub/b.csv", 7)]
-    with patch("mirage.core.gridfs.readdir.iter_latest", new=_fake_iter(docs)):
+    with patch("mirage.core.gridfs.driver.iter_latest", new=_fake_iter(docs)):
         await readdir(accessor, _path("/"), index)
     lookup = await index.get("/a.txt")
     assert lookup.entry is not None
@@ -95,7 +99,6 @@ async def test_readdir_populates_index(accessor):
 
 
 class _FakeColl:
-
     def __init__(self, names: list[str]) -> None:
         self._names = names
 
@@ -121,11 +124,20 @@ def _fake_prefix_iter(names: list[str]):
     return iter_latest
 
 
+def _latest_of(names: list[str]):
+
+    async def latest_file(accessor, key):
+        return {"_id": ObjectId(), "length": 0} if key in names else None
+
+    return latest_file
+
+
 def _bucket(names: list[str]):
     return patch.multiple(
-        "mirage.core.gridfs.readdir",
+        "mirage.core.gridfs.driver",
         iter_latest=_fake_prefix_iter(names),
         files_coll=lambda accessor: _FakeColl(names),
+        latest_file=_latest_of(names),
     )
 
 
@@ -173,10 +185,13 @@ async def test_readdir_below_a_file_doc_is_enotdir(accessor):
 @pytest.mark.asyncio
 async def test_readdir_missing_path_under_a_key_prefix_is_enoent():
     prefixed = GridFSAccessor(
-        config=GridFSConfig(uri="mongodb://localhost:27017",
-                            database="db",
-                            bucket="data",
-                            key_prefix="team"))
+        config=GridFSConfig(
+            uri="mongodb://localhost:27017",
+            database="db",
+            bucket="data",
+            key_prefix="team",
+        )
+    )
     with _bucket(["team/dir/f.txt"]), pytest.raises(FileNotFoundError):
         await readdir(prefixed, _path("/never.txt"))
 

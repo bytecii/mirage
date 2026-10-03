@@ -12,11 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.accessor.base import Accessor
+from mirage.accessor.base import SessionAccessor
 from mirage.core.slack.config import SlackConfig
+from mirage.core.time_range import TimeRange
 
 
-class SlackAccessor(Accessor):
-
-    def __init__(self, config: SlackConfig) -> None:
+class SlackAccessor(SessionAccessor):
+    def __init__(
+        self, config: SlackConfig, time_range: TimeRange = TimeRange()
+    ) -> None:
+        super().__init__()
         self.config = config
+        self.time_range = time_range

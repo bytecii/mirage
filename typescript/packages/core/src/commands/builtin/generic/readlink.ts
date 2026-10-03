@@ -13,12 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { lstripSlash } from '../../../utils/slash.ts'
+import { missingOperandError } from '../../spec/usage.ts'
 
 const ENC = new TextEncoder()
 
@@ -42,17 +43,15 @@ export function readlinkGeneric(
   _texts: string[],
   opts: CommandOpts,
 ): CommandFnResult {
-  if (paths.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('readlink: missing operand\n') })]
-  }
+  if (paths.length === 0) throw missingOperandError('readlink', null)
   const fl = new FlagView(opts.flags, specOf('readlink'))
   const normalize = fl.asBool('f') || fl.asBool('e') || fl.asBool('m')
   const noNewline = fl.asBool('n')
   const results: string[] = []
   for (const p of paths) {
     let vp =
-      mountPrefixOf(p.virtual, p.resourcePath) !== ''
-        ? mountPrefixOf(p.virtual, p.resourcePath) + '/' + lstripSlash(p.virtual)
+      mountPrefixOf(p.virtual, p.vfsPath) !== ''
+        ? mountPrefixOf(p.virtual, p.vfsPath) + '/' + lstripSlash(p.virtual)
         : p.virtual
     if (normalize) vp = normPath(vp)
     results.push(vp)

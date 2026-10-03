@@ -12,142 +12,48 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import hashlib
-
-import orjson
-
-from mirage.accessor.postgres import PostgresAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.postgres import client
+from mirage.core.hierarchy.scope import ScopeMatch
+from mirage.core.hierarchy.stat import make_stat
+from mirage.core.postgres.readdir import entity_guard, readdir, schema_guard
 from mirage.core.postgres.scope import detect_scope
-from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.errors import enoent
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
 
 
-async def stat(accessor: PostgresAccessor,
-               path: PathSpec,
-               index: IndexCacheStore = NULL_INDEX) -> FileStat:
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    raw = path.virtual
-    if prefix and raw.startswith(prefix):
-        raw = raw[len(prefix):] or "/"
-    scope = detect_scope(
-        PathSpec(virtual=raw,
-                 directory=raw,
-                 resource_path=mount_key(raw, prefix)))
-
-    if scope.level == "root":
-        return FileStat(name="/", type=FileType.DIRECTORY)
-
-    if scope.level == "database_json":
-        return FileStat(name="database.json", type=FileType.JSON)
-
-    if scope.level == "schema":
-        if not await _schema_exists(accessor, scope.schema):
-            raise enoent(path)
-        return FileStat(name=scope.schema,
-                        type=FileType.DIRECTORY,
-                        extra={"schema": scope.schema})
-
-    if scope.level == "kind":
-        if not await _schema_exists(accessor, scope.schema):
-            raise enoent(path)
-        return FileStat(name=scope.kind,
-                        type=FileType.DIRECTORY,
-                        extra={
-                            "schema": scope.schema,
-                            "kind": scope.kind
-                        })
-
-    if scope.level == "entity":
-        if not await _entity_exists(accessor, scope.schema, scope.kind,
-                                    scope.entity):
-            raise enoent(path)
-        return FileStat(name=scope.entity,
-                        type=FileType.DIRECTORY,
-                        extra={
-                            "schema": scope.schema,
-                            "kind": scope.kind,
-                            "name": scope.entity
-                        })
-
-    if scope.level == "entity_schema":
-        if not await _entity_exists(accessor, scope.schema, scope.kind,
-                                    scope.entity):
-            raise enoent(path)
-        return FileStat(name="schema.json",
-                        type=FileType.JSON,
-                        extra={
-                            "schema": scope.schema,
-                            "kind": scope.kind,
-                            "name": scope.entity
-                        })
-
-    if scope.level == "entity_semantic":
-        if not await _entity_exists(accessor, scope.schema, scope.kind,
-                                    scope.entity):
-            raise enoent(path)
-        return FileStat(name="semantic.json",
-                        type=FileType.JSON,
-                        extra={
-                            "schema": scope.schema,
-                            "kind": scope.kind,
-                            "name": scope.entity
-                        })
-
-    if scope.level == "entity_rows":
-        if not await _entity_exists(accessor, scope.schema, scope.kind,
-                                    scope.entity):
-            raise enoent(path)
-        return await _rows_stat(accessor, scope.schema, scope.kind,
-                                scope.entity)
-
-    raise enoent(path)
+def _schema_extra(match: ScopeMatch) -> dict[str, str]:
+    return {"schema": match.slots["schema"]}
 
 
-async def _schema_exists(accessor: PostgresAccessor, schema: str) -> bool:
-    pool = await accessor.pool()
-    async with pool.acquire() as conn:
-        schemas = await client.list_schemas(conn, accessor.config.schemas)
-    return schema in schemas
+def _kind_extra(match: ScopeMatch) -> dict[str, str]:
+    return {
+        "schema": match.slots["schema"],
+        "kind": match.slots["kind"],
+    }
 
 
-async def _entity_exists(accessor: PostgresAccessor, schema: str, kind: str,
-                         entity: str) -> bool:
-    pool = await accessor.pool()
-    async with pool.acquire() as conn:
-        if kind == "tables":
-            names = await client.list_tables(conn, schema)
-        else:
-            views = await client.list_views(conn, schema)
-            mviews = await client.list_matviews(conn, schema)
-            names = sorted(set(views) | set(mviews))
-    return entity in names
+def _entity_extra(match: ScopeMatch) -> dict[str, str]:
+    return {
+        "schema": match.slots["schema"],
+        "kind": match.slots["kind"],
+        "name": match.slots["entity"],
+    }
 
 
-async def _rows_stat(accessor: PostgresAccessor, schema: str, kind: str,
-                     entity: str) -> FileStat:
-    pool = await accessor.pool()
-    async with pool.acquire() as conn:
-        cols = await client.fetch_columns(conn, schema, entity)
-        rows = await client.estimated_row_count(conn, schema, entity)
-        size = await client.table_size_bytes(conn, schema, entity)
-    fp_payload = orjson.dumps({"columns": cols, "rows": rows})
-    fingerprint = hashlib.sha256(fp_payload).hexdigest()
-    # size stays None: table_size_bytes is the on-disk storage size, not the
-    # rendered JSONL length (FileStat.size must be render-derived or None,
-    # see the CLAUDE.md FUSE rules). The storage size remains in extra.
-    return FileStat(
-        name="rows.jsonl",
-        type=FileType.TEXT,
-        size=None,
-        fingerprint=fingerprint,
-        extra={
-            "schema": schema,
-            "kind": kind,
-            "name": entity,
-            "row_count": rows,
-            "size_bytes": size
-        },
-    )
+stat = make_stat(
+    detect_scope,
+    readdir,
+    guards={
+        "schema": schema_guard,
+        "kind": schema_guard,
+        "entity": entity_guard,
+        "entity_schema": entity_guard,
+        "entity_semantic": entity_guard,
+        "entity_rows": entity_guard,
+    },
+    extras={
+        "schema": _schema_extra,
+        "kind": _kind_extra,
+        "entity": _entity_extra,
+        "entity_schema": _entity_extra,
+        "entity_semantic": _entity_extra,
+        "entity_rows": _entity_extra,
+    },
+)

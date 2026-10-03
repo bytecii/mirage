@@ -15,7 +15,8 @@
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import dotenv from 'dotenv'
-import { LangfuseResource, MountMode, Workspace, type FileStat, type LangfuseConfig } from '@struktoai/mirage-node'
+import { LangfuseVFS, MountMode, Workspace, type FileStat, type LangfuseConfig } from '@struktoai/mirage-node'
+import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 
 const __HERE = fileURLToPath(new URL('.', import.meta.url))
 dotenv.config({ path: resolve(__HERE, '../../../.env.development') })
@@ -32,7 +33,7 @@ function buildConfig(): LangfuseConfig {
 
 async function run(ws: Workspace, cmd: string): Promise<string> {
   console.log(`$ ${cmd}`)
-  const r = await ws.execute(cmd)
+  const r = await ws.shell(cmd)
   if (r.exitCode !== 0 && r.stderrText !== '') {
     console.log(`  STDERR: ${r.stderrText.slice(0, 200)}`)
   }
@@ -45,13 +46,13 @@ async function run(ws: Workspace, cmd: string): Promise<string> {
 
 async function timed(ws: Workspace, cmd: string): Promise<[number, string]> {
   const start = performance.now()
-  const out = (await ws.execute(cmd)).stdoutText
+  const out = (await ws.shell(cmd)).stdoutText
   return [performance.now() - start, out]
 }
 
 async function main(): Promise<void> {
   const ws = new Workspace(
-    { '/langfuse': new LangfuseResource(buildConfig()) },
+    { '/langfuse': new LangfuseVFS(buildConfig()) },
     { mode: MountMode.READ },
   )
   try {
@@ -78,7 +79,7 @@ async function main(): Promise<void> {
     // workspace namespace (durable, snapshot-captured) and merge into
     // dispatch-level stat.
     console.log(`=== metadata overlay on /langfuse/prompts/summarize ===`)
-    const metaRes = await ws.execute(
+    const metaRes = await ws.shell(
       `chmod 640 "/langfuse/prompts/summarize" && chown 500:dev "/langfuse/prompts/summarize" && touch -t 202601021530 "/langfuse/prompts/summarize"`,
     )
     console.log(`  chmod/chown/touch exit=${String(metaRes.exitCode)}`)
@@ -97,11 +98,11 @@ async function main(): Promise<void> {
     await run(ws, 'rg -l "name" /langfuse/prompts/ | head -n 3')
 
     console.log('\n=== datasets ===')
-    const d0 = (await run(ws, 'ls /langfuse/datasets/ | head -n 1')).trim().replace(/\/+$/, '')
+    const d0 = rstripSlash((await run(ws, 'ls /langfuse/datasets/ | head -n 1')).trim())
     if (d0 !== '') {
       const itemsPath = `/langfuse/datasets/${d0}/items.jsonl`
       await run(ws, `head -n 2 "${itemsPath}"`)
-      await run(ws, `jq ".[].id" "${itemsPath}" | head -n 3`)
+      await run(ws, `jq ".id" "${itemsPath}" | head -n 3`)
     }
 
     console.log('\n=== tree -L 2 /langfuse/ ===')
@@ -135,7 +136,7 @@ async function main(): Promise<void> {
     console.log('\n' + '='.repeat(60))
     console.log('GLOB: mid-path patterns walk segment by segment')
     console.log('='.repeat(60))
-    const globR = await ws.execute('echo /langfuse/prom*/*')
+    const globR = await ws.shell('echo /langfuse/prom*/*')
     const globOut = globR.stdoutText.trim()
     console.log(`  echo /langfuse/prom*/* -> ${globOut.slice(0, 200)}`)
     if (!globOut.includes('/langfuse/prompts/')) {
@@ -144,7 +145,7 @@ async function main(): Promise<void> {
 
     // A glob that matches nothing stays the literal word, so the
     // command reports it like GNU coreutils.
-    const litR = await ws.execute('cat /langfuse/zz-none-*/x.json')
+    const litR = await ws.shell('cat /langfuse/zz-none-*/x.json')
     const litErr = litR.stderrText.trim()
     console.log(`  cat /langfuse/zz-none-*/x.json -> exit=${litR.exitCode} ${litErr.slice(0, 120)}`)
     if (litR.exitCode !== 1 || !litErr.includes('zz-none-*')) {

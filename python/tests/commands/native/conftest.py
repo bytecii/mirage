@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import hashlib
 import os
 import subprocess
 import uuid
@@ -26,11 +27,11 @@ import pytest
 from mirage.core.ram.mkdir import mkdir
 from mirage.core.ram.write import write_bytes as mem_write
 from mirage.io.types import ByteSource
-from mirage.resource.disk import DiskResource
-from mirage.resource.ram import RAMResource
-from mirage.resource.redis import RedisResource
-from mirage.resource.s3 import S3Config, S3Resource
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.disk import DiskVFS
+from mirage.vfs.ram import RAMVFS
+from mirage.vfs.redis import RedisVFS
+from mirage.vfs.s3 import S3VFS, S3Config
 from mirage.workspace import Workspace
 
 BUCKET = "test-bucket"
@@ -39,28 +40,16 @@ REGION = "us-east-1"
 # so a fixed past date would wrongly exclude freshly "written" objects.
 LAST_MODIFIED = datetime.now(timezone.utc)
 
+# Every kit-derived op reaches the store through the driver's single
+# connect seam; only read and stream keep a native session of their own.
 _CORE_MODULES = [
+    "mirage.core.s3.driver",
     "mirage.core.s3.read",
-    "mirage.core.s3.write",
-    "mirage.core.s3.stat",
-    "mirage.core.s3.readdir",
-    "mirage.core.s3.find",
-    "mirage.core.s3.du.size",
-    "mirage.core.s3.du.entries",
     "mirage.core.s3.stream",
-    "mirage.core.s3.copy",
-    "mirage.core.s3.rename",
-    "mirage.core.s3.unlink",
-    "mirage.core.s3.rmdir",
-    "mirage.core.s3.rm",
-    "mirage.core.s3.mkdir",
-    "mirage.core.s3.create",
-    "mirage.core.s3.truncate",
 ]
 
 
 class AsyncMockBody:
-
     def __init__(self, data: bytes) -> None:
         self._data = data
 
@@ -69,18 +58,16 @@ class AsyncMockBody:
 
     async def iter_chunks(self, chunk_size: int = 8192):
         for i in range(0, len(self._data), chunk_size):
-            yield self._data[i:i + chunk_size]
+            yield self._data[i : i + chunk_size]
 
 
 class AsyncMockPaginator:
-
     def __init__(self, objects: dict[str, bytes]) -> None:
         self.objects = objects
 
-    async def paginate(self,
-                       Bucket: str,
-                       Prefix: str = "",
-                       Delimiter: str | None = None):
+    async def paginate(
+        self, Bucket: str, Prefix: str = "", Delimiter: str | None = None
+    ):
         del Bucket
         if Delimiter == "/":
             yield _paginate_directory(self.objects, Prefix)
@@ -89,14 +76,12 @@ class AsyncMockPaginator:
 
 
 class AsyncMockS3Client:
-
     def __init__(self, objects: dict[str, bytes]) -> None:
         self.objects = objects
 
-    async def get_object(self,
-                         Bucket: str,
-                         Key: str,
-                         Range: str | None = None) -> dict:
+    async def get_object(
+        self, Bucket: str, Key: str, Range: str | None = None
+    ) -> dict:
         del Bucket
         if Key not in self.objects:
             raise _mock_s3_error("NoSuchKey")
@@ -119,14 +104,16 @@ class AsyncMockS3Client:
         assert name == "list_objects_v2"
         return AsyncMockPaginator(self.objects)
 
-    async def put_object(self, Bucket: str, Key: str, Body: bytes) -> None:
+    async def put_object(self, Bucket: str, Key: str, Body: bytes) -> dict:
         self.objects[Key] = Body
+        return {"ETag": f'"{hashlib.md5(Body).hexdigest()}"'}
 
     async def delete_object(self, Bucket: str, Key: str) -> None:
         self.objects.pop(Key, None)
 
-    async def copy_object(self, Bucket: str, CopySource: dict,
-                          Key: str) -> None:
+    async def copy_object(
+        self, Bucket: str, CopySource: dict, Key: str
+    ) -> None:
         src_key = CopySource["Key"]
         if src_key in self.objects:
             self.objects[Key] = self.objects[src_key]
@@ -135,12 +122,14 @@ class AsyncMockS3Client:
         for obj in Delete.get("Objects", []):
             self.objects.pop(obj["Key"], None)
 
-    async def list_objects_v2(self,
-                              Bucket: str,
-                              Prefix: str = "",
-                              Delimiter: str = "",
-                              MaxKeys: int = 1000,
-                              **kwargs) -> dict:
+    async def list_objects_v2(
+        self,
+        Bucket: str,
+        Prefix: str = "",
+        Delimiter: str = "",
+        MaxKeys: int = 1000,
+        **kwargs,
+    ) -> dict:
         if Delimiter == "/":
             return _paginate_directory(self.objects, Prefix)
         return _paginate_flat(self.objects, Prefix)
@@ -153,7 +142,6 @@ class AsyncMockS3Client:
 
 
 class MockAsyncSession:
-
     def __init__(self, objects: dict[str, bytes]) -> None:
         self._client = AsyncMockS3Client(objects)
 
@@ -173,7 +161,7 @@ def _paginate_directory(objects, prefix):
     for key, data in sorted(objects.items()):
         if not key.startswith(prefix):
             continue
-        relative = key[len(prefix):]
+        relative = key[len(prefix) :]
         if not relative:
             contents.append({"Key": key, "Size": len(data)})
             continue
@@ -183,19 +171,18 @@ def _paginate_directory(objects, prefix):
             continue
         contents.append({"Key": key, "Size": len(data)})
     return {
-        "CommonPrefixes": [{
-            "Prefix": v
-        } for v in sorted(common_prefixes)],
+        "CommonPrefixes": [{"Prefix": v} for v in sorted(common_prefixes)],
         "Contents": contents,
     }
 
 
 def _paginate_flat(objects, prefix):
     return {
-        "Contents": [{
-            "Key": k,
-            "Size": len(v)
-        } for k, v in sorted(objects.items()) if k.startswith(prefix)]
+        "Contents": [
+            {"Key": k, "Size": len(v)}
+            for k, v in sorted(objects.items())
+            if k.startswith(prefix)
+        ]
     }
 
 
@@ -205,7 +192,7 @@ def _slice_range(data: bytes, range_spec: str) -> bytes:
     bounds = range_spec.removeprefix("bytes=").split("-", 1)
     start = int(bounds[0]) if bounds[0] else 0
     end = int(bounds[1]) if bounds[1] else len(data) - 1
-    return data[start:end + 1]
+    return data[start : end + 1]
 
 
 def _patch_async_session(objects):
@@ -213,7 +200,8 @@ def _patch_async_session(objects):
     stack = ExitStack()
     for mod in _CORE_MODULES:
         stack.enter_context(
-            patch(f"{mod}.async_session", return_value=mock_session))
+            patch(f"{mod}.async_session", return_value=mock_session)
+        )
     return stack
 
 
@@ -225,27 +213,27 @@ def _make_s3_env(tmp_path):
         aws_access_key_id="testing",
         aws_secret_access_key="testing",
     )
-    resource = S3Resource(config)
-    return NativeTestEnv(tmp_path, resource, "s3", objects=objects)
+    vfs = S3VFS(config)
+    return NativeTestEnv(tmp_path, vfs, "s3", objects=objects)
 
 
 def _make_memory_env(tmp_path):
-    resource = RAMResource()
-    return NativeTestEnv(tmp_path, resource, "ram")
+    vfs = RAMVFS()
+    return NativeTestEnv(tmp_path, vfs, "ram")
 
 
 def _make_disk_env(tmp_path):
     disk_root = tmp_path / "disk_root"
     disk_root.mkdir()
-    resource = DiskResource(root=str(disk_root))
-    return NativeTestEnv(tmp_path, resource, "disk", disk_root=disk_root)
+    vfs = DiskVFS(root=str(disk_root))
+    return NativeTestEnv(tmp_path, vfs, "disk", disk_root=disk_root)
 
 
 def _make_redis_env(tmp_path):
     url = os.environ["REDIS_URL"]
     prefix = f"mirage:test:{uuid.uuid4().hex[:8]}:"
-    resource = RedisResource(url=url, key_prefix=prefix)
-    return NativeTestEnv(tmp_path, resource, "redis")
+    vfs = RedisVFS(url=url, key_prefix=prefix)
+    return NativeTestEnv(tmp_path, vfs, "redis")
 
 
 def _redis_available():
@@ -268,7 +256,7 @@ def env(request, tmp_path):
     elif request.param == "redis":
         test_env = _make_redis_env(tmp_path)
         yield test_env
-        asyncio.run(test_env.resource._store.clear())
+        asyncio.run(test_env.vfs._store.clear())
     else:
         yield _make_memory_env(tmp_path)
 
@@ -286,20 +274,16 @@ def _collect(stdout: ByteSource | None) -> bytes:
 
 
 class NativeTestEnv:
-
-    def __init__(self,
-                 tmp_path,
-                 resource,
-                 resource_type,
-                 objects=None,
-                 disk_root=None):
+    def __init__(
+        self, tmp_path, vfs, resource_type, objects=None, disk_root=None
+    ):
         self.tmp_path = tmp_path
-        self.resource = resource
+        self.vfs = vfs
         self.resource_type = resource_type
         self.objects = objects
         self.disk_root = disk_root
         self.ws = Workspace(
-            {"/data": (resource, MountMode.WRITE)},
+            {"/data": (vfs, MountMode.WRITE)},
             mode=MountMode.WRITE,
         )
 
@@ -309,9 +293,9 @@ class NativeTestEnv:
         local_path.write_bytes(content)
         remote_path = "/" + name
         if self.resource_type == "disk":
-            resource_path = self.disk_root / name
-            resource_path.parent.mkdir(parents=True, exist_ok=True)
-            resource_path.write_bytes(content)
+            vfs_path = self.disk_root / name
+            vfs_path.parent.mkdir(parents=True, exist_ok=True)
+            vfs_path.write_bytes(content)
         elif self.resource_type == "s3":
             key = name
             self.objects[key] = content
@@ -321,7 +305,7 @@ class NativeTestEnv:
             self._memory_write(remote_path, content)
 
     def _redis_write(self, path: str, content: bytes):
-        store = self.resource._store
+        store = self.vfs._store
         parts = path.strip("/").split("/")
         for i in range(1, len(parts)):
             d = "/" + "/".join(parts[:i])
@@ -329,7 +313,7 @@ class NativeTestEnv:
         asyncio.run(store.set_file(path, content))
 
     def _memory_write(self, path: str, content: bytes):
-        accessor = self.resource.accessor
+        accessor = self.vfs.accessor
         parts = path.strip("/").split("/")
         for i in range(1, len(parts)):
             d = "/" + "/".join(parts[:i])
@@ -352,12 +336,14 @@ class NativeTestEnv:
 
     def mirage(self, cmd: str, stdin: bytes | None = None) -> str:
         self.ws._cwd = "/data"
-        io = asyncio.run(self.ws.execute(cmd, stdin=stdin))
+        io = asyncio.run(self.ws.shell(cmd, stdin=stdin))
         if io.exit_code:
             import sys
+
             err = _collect(io.stderr).decode(errors="replace")
             print(
                 f"\nMIRAGE-DEBUG exit={io.exit_code} cmd={cmd!r} "
                 f"stderr={err!r}",
-                file=sys.stderr)
+                file=sys.stderr,
+            )
         return _collect(io.stdout).decode(errors="replace")

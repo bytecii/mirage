@@ -12,7 +12,6 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-# yapf: disable
 # isort: skip_file
 from mirage.commands.builtin.generic_bind.builders import awk
 from mirage.commands.builtin.generic_bind.builders import base64
@@ -39,7 +38,6 @@ from mirage.commands.builtin.generic_bind.builders import head
 from mirage.commands.builtin.generic_bind.builders import iconv
 from mirage.commands.builtin.generic_bind.builders import join
 from mirage.commands.builtin.generic_bind.builders import jq
-from mirage.commands.builtin.generic_bind.builders import ln
 from mirage.commands.builtin.generic_bind.builders import look
 from mirage.commands.builtin.generic_bind.builders import ls
 from mirage.commands.builtin.generic_bind.builders import md5
@@ -86,9 +84,8 @@ from mirage.commands.builtin.generic_bind.builders import xxd
 from mirage.commands.builtin.generic_bind.builders import zcat
 from mirage.commands.builtin.generic_bind.builders import zgrep
 from mirage.commands.builtin.generic_bind.builders import zip_cmd
-# yapf: enable
 
-_BUILDERS = (
+BUILDERS = (
     awk.BUILDER,
     base64.BUILDER,
     basename.BUILDER,
@@ -114,7 +111,6 @@ _BUILDERS = (
     iconv.BUILDER,
     join.BUILDER,
     jq.BUILDER,
-    ln.BUILDER,
     look.BUILDER,
     ls.BUILDER,
     md5.BUILDER,
@@ -163,4 +159,4 @@ _BUILDERS = (
     zip_cmd.BUILDER,
 )
 
-__all__ = ["_BUILDERS"]
+__all__ = ["BUILDERS"]

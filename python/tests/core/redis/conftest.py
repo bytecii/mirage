@@ -19,20 +19,20 @@ import pytest_asyncio
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.cache.index import RAMIndexCacheStore
-from mirage.resource.redis.store import RedisStore
+from mirage.vfs.redis.store import RedisStore
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 
 
 @pytest_asyncio.fixture()
-async def store():
+async def store(redis_prefix):
     # The env gate lives here because a `pytestmark` in a conftest is a
     # no-op (pytest only honors it in test modules): every module in this
     # directory goes through this fixture, so it skips rather than
     # erroring out of RedisStore's URL parse on machines without redis.
     if not REDIS_URL:
         pytest.skip("REDIS_URL not set")
-    s = RedisStore(url=REDIS_URL, key_prefix="test:core:")
+    s = RedisStore(url=REDIS_URL, key_prefix=redis_prefix)
     await s.clear()
     await s.add_dir("/")
     a = RedisAccessor(s)

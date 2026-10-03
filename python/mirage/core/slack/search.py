@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.core.api.client import SessionArg
 from mirage.core.render.json import compact_json_bytes
 from mirage.core.slack.client import slack_get, slack_search_available
 from mirage.core.slack.config import SlackConfig
@@ -26,6 +27,7 @@ async def search_messages(
     query: str,
     count: int = 20,
     page: int = 1,
+    session: SessionArg = None,
 ) -> bytes:
     """Search messages across workspace (single page).
 
@@ -34,6 +36,7 @@ async def search_messages(
         query (str): search query.
         count (int): results per page (Slack caps at 100).
         page (int): 1-based page number.
+        session (SessionArg): pool or live session to ride.
 
     Returns:
         bytes: JSON response.
@@ -45,9 +48,7 @@ async def search_messages(
         "sort": "timestamp",
     }
     data = await slack_get(
-        config,
-        "search.messages",
-        params=params,
+        config, "search.messages", params=params, session=session
     )
     return compact_json_bytes(data)
 
@@ -57,6 +58,7 @@ async def search_files(
     query: str,
     count: int = 20,
     page: int = 1,
+    session: SessionArg = None,
 ) -> bytes:
     """Search files across workspace via search.files (single page).
 
@@ -65,6 +67,7 @@ async def search_files(
         query (str): search query.
         count (int): results per page (Slack caps at 100).
         page (int): 1-based page number.
+        session (SessionArg): pool or live session to ride.
 
     Returns:
         bytes: JSON response.
@@ -76,8 +79,6 @@ async def search_files(
         "sort": "timestamp",
     }
     data = await slack_get(
-        config,
-        "search.files",
-        params=params,
+        config, "search.files", params=params, session=session
     )
     return compact_json_bytes(data)

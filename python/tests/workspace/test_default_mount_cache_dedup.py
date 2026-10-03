@@ -14,22 +14,23 @@
 
 import pytest
 
-from mirage.resource.ram import RAMResource
 from mirage.types import PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from tests.fixtures.driver_ops import ops
 
 
 @pytest.mark.asyncio
 async def test_cache_hit_does_not_double_store():
-    ram = RAMResource()
-    await ram.write(PathSpec.from_str_path("/big.bin"), b"x" * 4096)
-    ws = Workspace(resources={"/r": ram})
+    ram = RAMVFS()
+    await ops(ram).write(PathSpec.from_str_path("/big.bin"), b"x" * 4096)
+    ws = Workspace(mounts={"/r": ram})
     try:
-        await ws.execute("cat /r/big.bin > /dev/null")
+        await ws.shell("cat /r/big.bin > /dev/null")
         size_after_first = ws._cache.cache_size
         keys_first = sorted(ws._cache._entries.keys())
 
-        await ws.execute("cat /r/big.bin > /dev/null")
+        await ws.shell("cat /r/big.bin > /dev/null")
         size_after_second = ws._cache.cache_size
         keys_second = sorted(ws._cache._entries.keys())
 

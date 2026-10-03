@@ -15,12 +15,12 @@
 import { cutGeneric } from '../../generic/cut.ts'
 import { type Builder, dirAwareStream, resolveGlobOf } from '../adapter.ts'
 
-export const CUT_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'cut',
   read: true,
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return cutGeneric(resolved, opts, dirAwareStream(ops, accessor, idx))
+    return cutGeneric(resolved, opts, dirAwareStream(ops, accessor, opts))
   },
 }

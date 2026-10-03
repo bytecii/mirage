@@ -12,11 +12,14 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.commands.cli.builtin.ntn.util import (content_or_stdin,
-                                                  notion_config, pretty_json)
+from mirage.commands.cli.builtin.ntn.util import (
+    content_or_stdin,
+    notion_config,
+    pretty_json,
+)
 from mirage.commands.cli.types import CLIInvocation
 from mirage.commands.errors import UsageError
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.notion.config import NotionConfig
 from mirage.core.notion.pages import create_page
 from mirage.io.stream import yield_bytes
@@ -43,12 +46,13 @@ def parse_parent(spec: str) -> dict[str, JsonValue]:
     key = PARENT_KEYS.get(kind)
     if key is None or ident == "":
         raise UsageError(
-            "--parent must be page:<id>, database:<id>, or data-source:<id>")
+            "--parent must be page:<id>, database:<id>, or data-source:<id>"
+        )
     return {key: ident}
 
 
 async def create(
-        inv: CLIInvocation[NotionConfig]
+    inv: CLIInvocation[NotionConfig],
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(inv.flags)
     markdown = await content_or_stdin(fl.as_str("content"), inv.stdin)

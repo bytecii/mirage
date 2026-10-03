@@ -15,17 +15,27 @@
 import logging
 
 from mirage.context import DEFAULT_UMASK
+from mirage.io.async_line_iterator import AsyncLineIterator
+from mirage.io.stream import materialize
 from mirage.runtime.types import DispatchFn
+from mirage.shell.descriptors import FileDescription
 from mirage.types import PathSpec
 from mirage.utils.errors import FS_ERRORS
-from mirage.workspace.session import Session
+from mirage.utils.ranges import splice_window
+from mirage.workspace.session import SessionState
 
 logger = logging.getLogger(__name__)
 
 
-async def create_file(dispatch: DispatchFn, session: Session, scope: PathSpec,
-                      data: bytes) -> None:
-    """Write a file, giving it the umask's mode if the write created it.
+async def create_file(
+    dispatch: DispatchFn,
+    session: SessionState,
+    scope: PathSpec,
+    data: bytes,
+    *,
+    append: bool = False,
+) -> None:
+    """Write or append, giving a newly created file the umask's mode.
 
     Every shell path that opens a file for writing goes through here, so
     `echo x > f` and `exec > f` agree about the mode a fresh file gets:
@@ -41,9 +51,10 @@ async def create_file(dispatch: DispatchFn, session: Session, scope: PathSpec,
 
     Args:
         dispatch (DispatchFn): op dispatcher.
-        session (Session): the session holding the umask.
+        session (SessionState): the session holding the umask.
         scope (PathSpec): the target.
         data (bytes): the bytes to write.
+        append (bool): append through the op door instead of replacing.
     """
     created = False
     if session.umask != DEFAULT_UMASK:
@@ -52,16 +63,71 @@ async def create_file(dispatch: DispatchFn, session: Session, scope: PathSpec,
         except FS_ERRORS as exc:
             logger.debug("write target %s is new: %s", scope.raw_path, exc)
             created = True
-    await dispatch("write", scope, data=data)
+    await dispatch("append" if append else "write", scope, data=data)
     if not created:
         return
     try:
-        await dispatch("setattr",
-                       scope,
-                       mode=0o666 & ~session.umask,
-                       uid=None,
-                       gid=None,
-                       atime=None,
-                       mtime=None)
+        await dispatch(
+            "setattr",
+            scope,
+            mode=0o666 & ~session.umask,
+            uid=None,
+            gid=None,
+            atime=None,
+            mtime=None,
+        )
     except FS_ERRORS as exc:
         logger.debug("umask mode write failed for %s: %s", scope.raw_path, exc)
+
+
+async def write_description(
+    dispatch: DispatchFn,
+    session: SessionState,
+    file: FileDescription,
+    data: bytes,
+) -> None:
+    """Write through a shared open file description, preserving its offset.
+
+    A write-only description lands at its offset with one ``pwrite``, so
+    it needs no read of the file, as a write to a write-only descriptor
+    needs none (``exec 3>f; echo a >&3``). A read-write one (``<>``)
+    still reads it: that description was opened to read, and its own
+    reader resumes over what the write left.
+
+    Args:
+        dispatch (DispatchFn): operation dispatcher.
+        session (SessionState): file creation mode.
+        file (FileDescription): shared open description.
+        data (bytes): bytes emitted by the command.
+    """
+    if file.emit is not None:
+        if data:
+            await file.emit(data)
+        return
+    if not file.opened:
+        await create_file(
+            dispatch,
+            session,
+            file.scope,
+            b"" if file.source else data,
+            append=file.append,
+        )
+        file.opened = True
+        if file.source is None:
+            file.offset += len(data)
+            return
+    if not data:
+        return
+    if file.source is None:
+        if file.append:
+            await create_file(dispatch, session, file.scope, data, append=True)
+        else:
+            await dispatch("pwrite", file.scope, data=data, offset=file.offset)
+            file.offset += len(data)
+        return
+    content, _ = await dispatch("read", file.scope)
+    offset = file.offset + file.source.lines.position
+    content = splice_window(await materialize(content) or b"", offset, data)
+    await create_file(dispatch, session, file.scope, content)
+    file.offset = offset + len(data)
+    file.source.lines = AsyncLineIterator(content[file.offset :])

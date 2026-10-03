@@ -11,6 +11,32 @@ Every `Workspace` ships with a **two-layer cache** so repeated work against remo
 - **Index cache.** Listings and metadata. The first directory walk hits the API; subsequent ones serve from the index until the TTL expires.
 - **File cache.** Object bytes. The first read streams from origin; later pipelines read from cache.
 
+Each mount declares how its cached bytes are served, with `read:` in its mount block. Under `read: fresh`, cached file bytes are checked against a backend freshness probe, bypassing the index. Within one shell command, the first probe of a path supplies its answer to later cache checks and compatible command stats. A write on that mount, the cache clear that follows an external program or a remote runtime line, or a re-list that finds the path gone retires the answer, including a probe still in flight. Another command obtains its own answer, so an outside change after the first probe can remain unseen for the rest of that command. Reads outside a command do not reuse probe answers. A changed fingerprint triggers a fresh read; a deleted file is evicted. Under `read: bounded` — the default — cached bytes are trusted without a check, for as long as the mount's `ttl:` allows. Each listing write is also capped by the mount's `ttl`, under either policy. Existing Redis listings retain their stored expiry until rewritten.
+
+`fresh` is refused at mount time on a backend that cannot honour it: one that does not cache reads has no gate to check at, and one whose `stat` and read stamp different kinds of token could never match. A mount that asked to revalidate and quietly did not is the failure the refusal exists to prevent, so the policy is never silently downgraded. See the [YAML reference](/home/yaml) for the keys and [the VFS matrix](/home/vfs-matrix) for which backends accept `fresh` today.
+
+The check happens wherever cached **bytes** are served, not only for the files a command names: a recursive walk, a glob and a cross-mount fan-out each revalidate every file whose content they read. Each check compares the cached fingerprint, reusing only an eligible answer from its own command; otherwise it asks the backend. One probe can require several requests on a backend that resolves a path through parent listings. One exemption, deliberate: the size a render-dependent backend cannot report for itself is filled from the cache without a check, so a metadata walk (`ls -lR`, `du`) can report a size from a stale render. Content is verified against that probe wherever it is served; that one derived number is not.
+
+When the check cannot be made — the backend supplies no fingerprint, registers no `stat` at all, or the probe itself fails — the cached copy is dropped and the read fetches current bytes. Bytes that could not be verified are never served, but a transient probe failure does not fail the command either: the cold read that follows reports any real backend failure in the command's own voice, and one flaky stat during a recursive walk costs that file a refetch rather than ending the walk.
+
+A fresh directory listing proves a child absent only when that child is not listed. If a listed child's metadata has been evicted independently, object-store stat fetches it from the backend.
+
+### Listings under `fresh`
+
+`fresh` also checks cached listings. A live cached listing (one still inside the mount's `ttl`) is served when one of these holds, checked in this order; otherwise the folder is listed again:
+
+1. The running command wrote it. A read outside any command (FUSE, `ws.vfs`, an agent's file tools) trusts a listing written in the last second instead.
+2. The mount is a GitHub mount pinned to a full 40- or 64-hex commit sha, and the listing was fetched at that sha. This costs no request: github.com refuses a branch or tag named with 40 or 64 hex characters, so such a ref always names a commit (a GitHub Enterprise host is assumed to do the same). A Hugging Face Hub mount never pins: a full-sha revision is checked every command like a branch, since a branch or tag named like the sha could take the name, and mirage does not assume which one the Hub resolves.
+3. The backend versions its listings, and the version stored with the listing still matches the backend's.
+
+Which backends version their listings:
+
+- **GitHub, HF Models, HF Datasets, HF Spaces:** one version for the whole mount, the head commit the ref or revision resolves to. On the Hub a mount with a `key_prefix` stores that commit joined with its key prefix, so mounts of different subtrees of one repository that share an index never share a version. A command sends one small check for the mount (GitHub: a shallow `git/trees/{ref}`; the Hub: `revision/{rev}?expand[]=sha`, about 110 bytes) and then serves every cached listing of the mount at that commit. A moved head re-lists, which on these backends means one full tree fetch. A GitHub repo whose recursive tree comes back truncated stores no version and still re-lists each folder per command.
+- **Disk:** each folder's own version, from its device, inode, change time and modified time. A command pays one local stat per listed folder instead of a scan. A folder changed in the last 2 seconds stores no version and re-lists until it has been quiet that long. This assumes a local POSIX filesystem; set `folder_versions: false` for a network or FUSE root, where a folder's change time may not move (see [Disk](/python/vfs/disk)).
+- **Every other backend:** no version. A cached listing is re-listed once per command, then trusted for the rest of that command. Google Drive and OneDrive, for example, expose no folder value that moves when a folder's entries change.
+
+One check answers for a whole command: later listings of the same mount (or, on disk, the same folder) in that command reuse it, and concurrent commands share a check only when it was sent after they started. Outside a command, a matching check is trusted for the same one-second window as a listing. A moved version, a missing path or a check that fails all re-list; the stored listing is kept for the re-list to compare against, never cleared. `bounded` mounts never check.
+
 ## Stores
 
 Each layer is a pluggable store with two built-ins:
@@ -24,20 +50,20 @@ Each layer is a pluggable store with two built-ins:
 from mirage import Workspace
 from mirage.cache.file.config import RedisCacheConfig
 from mirage.cache.index.config import RedisIndexConfig
-from mirage.resource.s3 import S3Config, S3Resource
+from mirage.vfs.s3 import S3Config, S3VFS
 
 ws = Workspace(
-    {"/s3": S3Resource(S3Config(bucket="my-bucket"))},
+    {"/s3": S3VFS(S3Config(bucket="my-bucket"))},
     cache=RedisCacheConfig(url="redis://localhost:6379/0", limit="8GB"),
     index=RedisIndexConfig(url="redis://localhost:6379/0", ttl=600),
 )
 ```
 
 ```typescript TypeScript
-import { S3Resource, Workspace } from '@struktoai/mirage-node'
+import { S3VFS, Workspace } from '@struktoai/mirage-node'
 
 const ws = new Workspace(
-  { '/s3': new S3Resource({ bucket: 'my-bucket' }) },
+  { '/s3': new S3VFS({ bucket: 'my-bucket' }) },
   {
     cache: { type: 'redis', url: 'redis://localhost:6379/0', limit: '8GB' },
     index: { type: 'redis', url: 'redis://localhost:6379/0', ttl: 600 },
@@ -54,9 +80,9 @@ The two layers are bounded differently:
 | Layer | Holds | Default | Bound | Eviction |
 | --- | --- | --- | --- | --- |
 | **File cache** | object bytes per virtual path | RAM, 512 MB | `cache_limit` (Py) / `cacheLimit` (TS) | LRU: least-recently-used bytes drop once the total exceeds the limit |
-| **Index cache** | directory listings + `FileStat` metadata | RAM, 10-min TTL | `ttl` (seconds) | time-based: entries expire after the TTL, then re-fetch on next access |
+| **Index cache** | directory listings + `FileStat` metadata | RAM, 10-min TTL | backend listing expiry, capped by the mount's `ttl` (seconds) | time-based: entries expire after the TTL, then re-fetch on next access |
 
-Raising the file limit keeps more bytes warm at the cost of memory; lengthening the index TTL serves listings longer between API walks at the cost of staleness.
+Raising the file limit keeps more bytes warm at the cost of memory; lengthening the index TTL reduces API walks at the cost of staleness, up to the mount's `ttl`.
 
 ## Miss/Hit Lifecycle
 
@@ -64,42 +90,105 @@ Raising the file limit keeps more bytes warm at the cost of memory; lengthening 
 
 ```python Python
 from mirage import Workspace
-from mirage.resource.s3 import S3Config, S3Resource
+from mirage.vfs.s3 import S3Config, S3VFS
 
-ws = Workspace({"/s3": S3Resource(S3Config(bucket="my-bucket"))})
+ws = Workspace({"/s3": S3VFS(S3Config(bucket="my-bucket"))})
 
 # 1. Index miss → S3 LIST. Listing stored in index cache.
-await ws.execute("ls /s3/data/")
+await ws.shell("ls /s3/data/")
 
 # 2. Index hit → 0 network calls.
-await ws.execute('find /s3/data/ -name "*.jsonl"')
+await ws.shell('find /s3/data/ -name "*.jsonl"')
 
 # 3. File miss → S3 GET. Bytes stored in file cache.
-await ws.execute("cat /s3/data/log.jsonl | wc -l")
+await ws.shell("cat /s3/data/log.jsonl | wc -l")
 
 # 4. File hit → 0 network calls.
-await ws.execute("grep alert /s3/data/log.jsonl")
+await ws.shell("grep alert /s3/data/log.jsonl")
 ```
 
 ```typescript TypeScript
-import { S3Resource, Workspace } from '@struktoai/mirage-node'
+import { S3VFS, Workspace } from '@struktoai/mirage-node'
 
-const ws = new Workspace({ '/s3': new S3Resource({ bucket: 'my-bucket' }) })
+const ws = new Workspace({ '/s3': new S3VFS({ bucket: 'my-bucket' }) })
 
 // 1. Index miss → S3 LIST. Listing stored in index cache.
-await ws.execute('ls /s3/data/')
+await ws.shell('ls /s3/data/')
 
 // 2. Index hit → 0 network calls.
-await ws.execute('find /s3/data/ -name "*.jsonl"')
+await ws.shell('find /s3/data/ -name "*.jsonl"')
 
 // 3. File miss → S3 GET. Bytes stored in file cache.
-await ws.execute('cat /s3/data/log.jsonl | wc -l')
+await ws.shell('cat /s3/data/log.jsonl | wc -l')
 
 // 4. File hit → 0 network calls.
-await ws.execute('grep alert /s3/data/log.jsonl')
+await ws.shell('grep alert /s3/data/log.jsonl')
 ```
 
 </CodeGroup>
+
+## Metadata Index Contract
+
+The RAM and Redis metadata indexes share the same lookup states: a directory
+never listed is `NOT_FOUND`, a cached empty directory is a successful empty
+listing, and a listing at or past its deadline is `EXPIRED`. Entry metadata
+remains readable after a directory expires. `invalidate()` expires listings
+without deleting their metadata; `invalidate_dir` / `invalidateDir` removes a
+listing and its direct children's entries, and prefix invalidation removes a
+whole subtree. `clear()` removes all index data.
+
+Direct backend lookups trust cached metadata only when a fresh parent listing
+includes the path. Partial or filtered listings may store individual entries
+without a complete parent; these entries require another parent refresh on
+each direct lookup. The old target is removed before refreshing so an omitted
+or renamed item cannot survive as an orphaned cache hit.
+
+Concurrent lookups sharing an index serialize each parent's refresh through
+the final entry lookup. GitHub and Hugging Face snapshot readers hold the same
+guard for the whole mount, so one reader cannot remove a snapshot another is
+still reading. These guards coordinate tasks within one process; unrelated
+parent directories and mounts can refresh concurrently.
+
+`seed()` merges snapshots by path and copies their child lists. Redis queues
+these synchronous calls and flushes them before the next index operation or
+`close()`; `clear()` discards queued snapshots. Multiple seeds accumulate, and
+failed flushes remain queued for retry. `entries()` returns all stored metadata,
+including entries whose directory listing has expired.
+
+Redis stores each entry as the `IndexEntry` JSON under `mirage:idx:entry:`
+and each directory's children and deadline as the `IndexDirectory` JSON under
+`mirage:idx:directory:`. Both are the documents pydantic writes, snake_case
+and every field, and TypeScript writes and reads the same bytes
+(`IndexEntry.toJSON` / `IndexEntry.fromJSON`), so one Redis serves both
+languages and a row that does not parse is an error rather than a miss.
+Invalidation uses permanent keys beside the payload:
+`mirage:idx:generation` for the whole store and
+`mirage:idx:generation:<absolute-directory>` for each directory.
+Each listing records both tokens, and one `MGET` reads the listing and its two
+current tokens. A missing or changed token makes the listing `EXPIRED`.
+New tokens are unique so eviction or a refill cannot revive an old listing.
+Competing initializers retain their attempted tokens; a worker that loses
+initialization incurs a cache refill instead of adopting a later generation.
+Global invalidation rotates the global token atomically. Directory invalidation
+removes that directory's token; subtree invalidation removes tokens under that
+path, preserving fresh listings outside a scoped invalidation.
+Like RAM, these records retain expired listings until explicit removal; they do
+not use Redis TTL deletion. Redis server eviction can still turn any cached
+record into a miss. A listing is served as stored even when one of its
+children's rows was evicted; GitHub and the Hub refill the tree once when a
+stat or read of that listed child finds no row, and a name the listing does
+not hold stays absent with no refill. Configure Redis `maxmemory` for
+server-side size limits.
+
+The layout is not versioned and earlier layouts are not read. Upgrade every
+worker that shares an index together, and flush the key prefix first
+(`clear()`, or delete the keys under it), so no worker opens a row another
+release wrote.
+
+The Redis **file cache** likewise uses server-side limits instead of RAM's
+`cache_size`, `cache_entries`, or LRU. File bytes and metadata occupy separate
+keys, so server eviction can remove either independently: a freshness check
+alone does not guarantee the bytes remain cached.
 
 ## Relationship To Snapshots
 

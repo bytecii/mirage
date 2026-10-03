@@ -14,36 +14,24 @@
 
 import type { LanceDBAccessor } from '../../accessor/lancedb.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
-import type { IndexCacheStore } from '../../cache/index/store.ts'
-import type { LanceRow } from './_driver.ts'
-import { PathSpec } from '../../types.ts'
-import { rstripSlash } from '../../utils/slash.ts'
-import { renderCard } from './render.ts'
-import { ScopeLevel, detectScope } from './scope.ts'
+import type { LanceDBConfigResolved } from '../../vfs/lancedb/config.ts'
+import { globPrefix, globStemPrefix } from '../../utils/glob_walk.ts'
+import { compareCodePoints } from '../../utils/sort.ts'
+import { PATH_SAFE } from '../hierarchy/codec.ts'
+import type { DirListing, Listed } from '../hierarchy/readdir.ts'
+import type { ScopeMatch } from '../hierarchy/scope.ts'
+import { dirEntry } from '../vector/readdir.ts'
+import { filtersOf, tableOf } from '../vector/scope.ts'
+import { tableExists, type LanceRow, type ValueTest } from './query.ts'
+import { cellText, renderCard } from './render.ts'
 
-function notFound(p: string): Error {
-  const err = new Error(p) as Error & { code?: string }
-  err.code = 'ENOENT'
-  return err
-}
-
-function rowFiles(rows: LanceRow[], config: LanceDBAccessor['config']): string[] {
-  const names: string[] = []
-  for (const row of rows) {
-    const id = String(row[config.idColumn])
-    names.push(`${id}.md`)
-    if (config.blobColumn !== null) names.push(`${id}.${config.blobExt}`)
-  }
-  return names
-}
-
-function rowEntries(rows: LanceRow[], config: LanceDBAccessor['config']): [string, IndexEntry][] {
+function rowEntries(rows: LanceRow[], config: LanceDBConfigResolved): [string, IndexEntry][] {
   // The widened select carries every rendered column, so each card's exact
   // size is free here; blob values are deliberately not fetched at listing
   // time, so blob entries stay size-unknown and stat renders them itself.
   const entries: [string, IndexEntry][] = []
   for (const row of rows) {
-    const id = String(row[config.idColumn])
+    const id = cellText(row[config.idColumn])
     entries.push([
       `${id}.md`,
       new IndexEntry({
@@ -70,51 +58,79 @@ function rowEntries(rows: LanceRow[], config: LanceDBAccessor['config']): [strin
   return entries
 }
 
-export async function readdir(
+/** Keep values whose rendered name starts with a glob's literal head. */
+function renderedPrefixTest(prefix: string): ValueTest {
+  return (value) => PATH_SAFE.encode(value).startsWith(prefix)
+}
+
+/**
+ * The row-id prefix a leaf glob narrows the row query to.
+ *
+ * A leaf is named `<rowId>` plus whichever suffix the renderer gave it, and
+ * only the id half is a prefix the query can test.
+ */
+function rowPrefix(pattern: string | null, config: LanceDBConfigResolved): string {
+  const suffixes = ['.md']
+  if (config.blobColumn !== null && config.blobColumn !== '') suffixes.push(`.${config.blobExt}`)
+  return globStemPrefix(pattern, suffixes)
+}
+
+/** The entries under a table or a group. */
+export async function children(
   accessor: LanceDBAccessor,
-  path: PathSpec | string,
-  index?: IndexCacheStore,
-): Promise<string[]> {
-  const spec = typeof path === 'string' ? PathSpec.fromStrPath(path) : path
+  match: ScopeMatch,
+): Promise<Listed | null> {
   const config = accessor.config
-  const scope = detectScope(spec, config)
-  const base = rstripSlash(spec.virtual)
-
-  if (scope.level === ScopeLevel.ROOT) {
-    const tables = await accessor.driver.listTables()
-    return tables.map((name) => `${base}/${name}`)
-  }
-
-  if (scope.level === ScopeLevel.GROUP_DIR && scope.table !== null) {
-    const depth = Object.keys(scope.filters).length
-    const total = config.groupBy.length
-    let names: string[]
-    if (depth < total) {
-      names = await accessor.driver.distinct(
-        scope.table,
-        config.groupBy[depth] ?? '',
-        scope.filters,
-        config.maxRows,
-      )
-    } else {
-      // Select every column except the vector and blob ones (schema order,
-      // so the projected rows render byte-identically to the full rows
-      // read() fetches). Still one data query; the schema lookup is local
-      // metadata on the already-opened table.
-      const columns = (await accessor.driver.tableColumns(scope.table)).filter(
-        (c) => c !== config.vectorColumn && c !== config.blobColumn,
-      )
-      const rows = await accessor.driver.rowsMatching(
-        scope.table,
-        scope.filters,
-        columns,
-        config.maxRows,
-      )
-      names = rowFiles(rows, config)
-      if (index !== undefined) await index.setDir(base, rowEntries(rows, config))
+  const table = tableOf(config.table, match)
+  const filters = filtersOf(config.groupBy, match)
+  const pattern = match.pattern
+  if (!(await tableExists(accessor, table))) return null
+  const depth = Object.keys(filters).length
+  if (depth < config.groupBy.length) {
+    const displayPrefix = globPrefix(pattern)
+    // Values render path-safe, so a glob's head is spelled in rendered names:
+    // the query takes the value prefix the head stands for, which loses
+    // nothing, and the cap counts the renderings that really start with the
+    // head, so a head no value prefix spells (the escape lead alone) still
+    // reaches past the rows at the head of the table.
+    const values = await accessor.driver.distinct(
+      table,
+      config.groupBy[depth] ?? '',
+      filters,
+      config.maxRows,
+      PATH_SAFE.prefixValue(displayPrefix),
+      displayPrefix === '' ? undefined : renderedPrefixTest(displayPrefix),
+    )
+    const names = values.map((value) => PATH_SAFE.encode(value)).sort(compareCodePoints)
+    const listing: DirListing = {
+      entries: names.map((name): [string, IndexEntry] => [name, dirEntry('lancedb', name)]),
+      seeds: {},
+      partial: displayPrefix !== '',
+      window: true,
     }
-    return names.map((name) => `${base}/${name}`)
+    return listing
   }
-
-  throw notFound(spec.virtual)
+  // Select every column except the vector and blob ones (schema order, so
+  // the projected rows render byte-identically to the full rows read()
+  // fetches). Still one data query; the schema lookup is local metadata on
+  // the already-opened table.
+  const columns = (await accessor.driver.tableColumns(table)).filter(
+    (c) => c !== config.vectorColumn && c !== config.blobColumn,
+  )
+  const prefix = rowPrefix(pattern, config)
+  const rows = await accessor.driver.rowsMatching(
+    table,
+    filters,
+    columns,
+    config.maxRows,
+    config.idColumn,
+    prefix,
+  )
+  const listing: DirListing = {
+    entries: rowEntries(rows, config),
+    seeds: {},
+    partial: prefix !== '',
+    window: true,
+  }
+  return listing
 }

@@ -18,9 +18,12 @@ import { NodeType as NT } from '../../shell/types.ts'
 import type { CondNode } from '../executor/builtins/condition/index.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import type { ExecuteFn } from '../expand/node.ts'
-import { expandNode } from '../expand/node.ts'
+import { expandChunks, expandNode } from '../expand/node.ts'
 import { expandPattern } from '../expand/pattern.ts'
-import type { Session } from '../session/session.ts'
+import { splitFields } from '../expand/fields.ts'
+import { ifsValue } from '../expand/variable.ts'
+import { unmarkGlobs } from '../../utils/glob_walk.ts'
+import type { SessionState } from '../session/session.ts'
 
 const CONTAINER_TYPES = new Set<string>([
   NT.BINARY_EXPRESSION,
@@ -28,9 +31,11 @@ const CONTAINER_TYPES = new Set<string>([
   NT.NEGATION_EXPRESSION,
   NT.PARENTHESIZED_EXPRESSION,
 ])
-const FLAT_OP_TOKENS = new Set(['=', '==', '!=', '<', '>', '!', '(', ')'])
+// `[` is a command, so every operator the grammar folds into the test
+// reaches it as an operand word for test to judge (`=~` and `+` are refused
+// there, not dropped); `&&` and `||` end the command in bash.
+const FLAT_SKIP_TOKENS = new Set(['&&', '||'])
 const COND_OP_TOKENS = new Set(['=', '==', '!=', '=~', '<', '>', '&&', '||'])
-const SPLIT_TYPES = new Set<string>([NT.SIMPLE_EXPANSION, NT.EXPANSION])
 
 /**
  * Expand a test_command `[ ... ]` into flat argv, tokens in source order.
@@ -42,7 +47,7 @@ const SPLIT_TYPES = new Set<string>([NT.SIMPLE_EXPANSION, NT.EXPANSION])
  */
 export async function expandTestExpr(
   node: TSNodeLike,
-  session: Session,
+  session: SessionState,
   executeFn: ExecuteFn,
   cs: CallStack | null,
   view?: SessionView,
@@ -61,7 +66,7 @@ export async function expandTestExpr(
 async function flatten(
   node: TSNodeLike,
   out: string[],
-  session: Session,
+  session: SessionState,
   executeFn: ExecuteFn,
   cs: CallStack | null,
   view?: SessionView,
@@ -75,7 +80,7 @@ async function flatten(
       continue
     }
     if (child.isNamed !== true) {
-      if (FLAT_OP_TOKENS.has(ctype)) out.push(child.text)
+      if (!FLAT_SKIP_TOKENS.has(ctype)) out.push(child.text)
       continue
     }
     if (CONTAINER_TYPES.has(ctype)) {
@@ -91,12 +96,8 @@ async function flatten(
       out.push(child.text)
       continue
     }
-    const expanded = await expandNode(child, session, executeFn, cs, view)
-    if (SPLIT_TYPES.has(ctype)) {
-      out.push(...expanded.split(/\s+/).filter((w) => w !== ''))
-      continue
-    }
-    out.push(expanded)
+    const chunks = await expandChunks(child, session, executeFn, cs, view)
+    for (const word of splitFields(chunks, ifsValue(session, cs))) out.push(unmarkGlobs(word))
   }
   return true
 }
@@ -128,7 +129,7 @@ function negativeNumberChild(node: TSNodeLike): TSNodeLike | null {
 /** Build a structured condition tree from a `[[ ... ]]` node. */
 export async function expandDoubleBracket(
   node: TSNodeLike,
-  session: Session,
+  session: SessionState,
   executeFn: ExecuteFn,
   cs: CallStack | null,
   view?: SessionView,
@@ -141,7 +142,7 @@ export async function expandDoubleBracket(
 /** Recursively translate one expression node into a CondNode. */
 async function buildCond(
   node: TSNodeLike,
-  session: Session,
+  session: SessionState,
   executeFn: ExecuteFn,
   cs: CallStack | null,
   view?: SessionView,
@@ -164,7 +165,7 @@ async function buildCond(
 /** Translate a unary/negation expression node. */
 async function buildUnary(
   node: TSNodeLike,
-  session: Session,
+  session: SessionState,
   executeFn: ExecuteFn,
   cs: CallStack | null,
   view?: SessionView,
@@ -197,7 +198,7 @@ async function buildUnary(
 /** Translate a binary expression node (logical or comparison). */
 async function buildBinary(
   node: TSNodeLike,
-  session: Session,
+  session: SessionState,
   executeFn: ExecuteFn,
   cs: CallStack | null,
   view?: SessionView,

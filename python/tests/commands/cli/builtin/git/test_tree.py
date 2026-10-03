@@ -13,22 +13,28 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import pytest
+from dulwich.object_store import MemoryObjectStore
+from dulwich.objects import Blob, Tree
 
 from mirage import Workspace
 from mirage.commands.cli.builtin.git import GIT
+from mirage.commands.cli.builtin.git.tree import tree_entries
 from mirage.commands.cli.specs import cli_spec_for
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 
 HEAD_MAIN = b"ref: refs/heads/main\n"
-NOT_A_REPO = (b"fatal: not a git repository (or any of the parent "
-              b"directories): .git\n")
+NOT_A_REPO = (
+    b"fatal: not a git repository (or any of the parent directories): .git\n"
+)
 # These repositories are a bare HEAD file and nothing else, which is
 # what discovery needs and all these tests are about. Status still
 # renders the whole report for one, and it is the report git gives a
 # repository with no commits in it.
-NOTHING_YET = (b'\n\nNo commits yet\n\nnothing to commit (create/copy files '
-               b'and use "git add" to track)\n')
+NOTHING_YET = (
+    b"\n\nNo commits yet\n\nnothing to commit (create/copy files "
+    b'and use "git add" to track)\n'
+)
 ON_MAIN = b"On branch main" + NOTHING_YET
 
 
@@ -44,8 +50,37 @@ def leaf(name: str):
 def test_tree_shape():
     assert GIT.name == "git"
     assert [v.name for v in GIT.subcommands] == [
-        "status", "log", "show", "diff", "branch", "add", "reset", "commit",
-        "checkout"
+        "reflog",
+        "for-each-ref",
+        "ls-files",
+        "fetch",
+        "clone",
+        "help",
+        "init",
+        "fsck",
+        "stash",
+        "version",
+        "remote",
+        "config",
+        "show-ref",
+        "shortlog",
+        "rev-parse",
+        "rev-list",
+        "diff-tree",
+        "status",
+        "log",
+        "show",
+        "diff",
+        "branch",
+        "add",
+        "reset",
+        "commit",
+        "checkout",
+        "switch",
+        "restore",
+        "rm",
+        "mv",
+        "tag",
     ]
 
 
@@ -74,32 +109,32 @@ def test_status_only_reads():
 
 @pytest.mark.asyncio
 async def test_status_outside_a_repository_is_gits_fatal():
-    with Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE) as ws:
+    with Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE) as ws:
         ws.register_cli("git", GIT)
-        result = await ws.execute("git -C /data status")
+        result = await ws.shell("git -C /data status")
     assert result.exit_code == 128
     assert result.stderr == NOT_A_REPO
 
 
 @pytest.mark.asyncio
 async def test_status_reports_the_checked_out_branch():
-    with Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE) as ws:
+    with Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE) as ws:
         ws.register_cli("git", GIT)
-        await ws.execute("mkdir -p /data/repo/.git")
-        await ws.ops.write("/data/repo/.git/HEAD", HEAD_MAIN)
-        result = await ws.execute("git -C /data/repo status")
+        await ws.shell("mkdir -p /data/repo/.git")
+        await ws.vfs.write("/data/repo/.git/HEAD", HEAD_MAIN)
+        result = await ws.shell("git -C /data/repo status")
     assert result.exit_code == 0
     assert result.stdout == ON_MAIN
 
 
 @pytest.mark.asyncio
 async def test_discovery_walks_up_from_a_subdirectory():
-    with Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE) as ws:
+    with Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE) as ws:
         ws.register_cli("git", GIT)
-        await ws.execute("mkdir -p /data/repo/.git")
-        await ws.execute("mkdir -p /data/repo/src/deep")
-        await ws.ops.write("/data/repo/.git/HEAD", HEAD_MAIN)
-        result = await ws.execute("git -C /data/repo/src/deep status")
+        await ws.shell("mkdir -p /data/repo/.git")
+        await ws.shell("mkdir -p /data/repo/src/deep")
+        await ws.vfs.write("/data/repo/.git/HEAD", HEAD_MAIN)
+        result = await ws.shell("git -C /data/repo/src/deep status")
     assert result.exit_code == 0
     assert result.stdout == ON_MAIN
 
@@ -108,38 +143,61 @@ async def test_discovery_walks_up_from_a_subdirectory():
 async def test_discovery_stops_at_the_mount_root():
     # The .git sits above the mount, on another backend entirely, so
     # git's filesystem-boundary rule must not reach it.
-    with Workspace({
-            "/": RAMResource(),
-            "/data/": RAMResource(),
-    },
-                   mode=MountMode.WRITE) as ws:
+    with Workspace(
+        {
+            "/": RAMVFS(),
+            "/data/": RAMVFS(),
+        },
+        mode=MountMode.WRITE,
+    ) as ws:
         ws.register_cli("git", GIT)
-        await ws.execute("mkdir -p /.git")
-        await ws.ops.write("/.git/HEAD", HEAD_MAIN)
-        await ws.execute("mkdir -p /data/work")
-        result = await ws.execute("git -C /data/work status")
+        await ws.shell("mkdir -p /.git")
+        await ws.vfs.write("/.git/HEAD", HEAD_MAIN)
+        await ws.shell("mkdir -p /data/work")
+        result = await ws.shell("git -C /data/work status")
     assert result.exit_code == 128
     assert result.stderr == NOT_A_REPO
 
 
 @pytest.mark.asyncio
-async def test_detached_head_reports_the_short_commit():
-    with Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE) as ws:
+async def test_a_detached_head_no_checkout_moved_is_on_no_branch():
+    with Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE) as ws:
         ws.register_cli("git", GIT)
-        await ws.execute("mkdir -p /data/repo/.git")
-        await ws.ops.write("/data/repo/.git/HEAD",
-                           b"cdd6234342b147880f5d86c55dad6c1fbe222bfe\n")
-        result = await ws.execute("git -C /data/repo status")
+        await ws.shell("mkdir -p /data/repo/.git")
+        await ws.vfs.write(
+            "/data/repo/.git/HEAD",
+            b"cdd6234342b147880f5d86c55dad6c1fbe222bfe\n",
+        )
+        result = await ws.shell("git -C /data/repo status")
     assert result.exit_code == 0
-    assert result.stdout == b"HEAD detached at cdd6234" + NOTHING_YET
+    assert result.stdout == b"Not currently on any branch." + NOTHING_YET
 
 
 @pytest.mark.asyncio
 async def test_bare_status_uses_the_session_cwd():
-    with Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE) as ws:
+    with Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE) as ws:
         ws.register_cli("git", GIT)
-        await ws.execute("mkdir -p /data/repo/.git")
-        await ws.ops.write("/data/repo/.git/HEAD", HEAD_MAIN)
-        result = await ws.execute("cd /data/repo && git status")
+        await ws.shell("mkdir -p /data/repo/.git")
+        await ws.vfs.write("/data/repo/.git/HEAD", HEAD_MAIN)
+        result = await ws.shell("cd /data/repo && git status")
     assert result.exit_code == 0
     assert result.stdout == ON_MAIN
+
+
+def test_tree_entries_flattens_subtrees_and_keeps_a_submodule_whole():
+    blob = Blob.from_string(b"x\n")
+    commit = b"1" * 40
+    sub = Tree()
+    sub.add(b"b.txt", 0o100644, blob.id)
+    root = Tree()
+    root.add(b"a.txt", 0o100755, blob.id)
+    root.add(b"dir", 0o040000, sub.id)
+    root.add(b"vendor", 0o160000, commit)
+    store = MemoryObjectStore()
+    for obj in (blob, sub, root):
+        store.add_object(obj)
+    assert tree_entries(store, root.id) == {
+        b"a.txt": (0o100755, blob.id),
+        b"dir/b.txt": (0o100644, blob.id),
+        b"vendor": (0o160000, commit),
+    }

@@ -13,13 +13,13 @@ a guest), here the guest has its own `/dev/fuse` and runs Mirage itself.
 
 ```
 your machine (control plane)                 Daytona sandbox (yours)
-  Workspace: /data -> S3Resource               provisioned by you:
+  Workspace: /data -> S3VFS               provisioned by you:
   captures ["python3"] -> DaytonaRuntime  -->    mirage workspace create sandbox.yaml
   vfs runs every other line locally              -> FUSE-mounts S3 at /data
   cd /data; python3 train.py  ------------>    cwd passes through; train.py reads /data
 ```
 
-1. The workspace declares `/data` as an `S3Resource`. A `DaytonaRuntime` captures
+1. The workspace declares `/data` as an `S3VFS`. A `DaytonaRuntime` captures
    `python3` lines; everything else stays on the local vfs.
 1. Mirage never creates, provisions, or deletes sandboxes: you create one
    (below), provision the workspace inside it (`create_sandbox.py` does both:
@@ -65,10 +65,10 @@ export DAYTONA_SANDBOX_ID=$(./python/.venv/bin/python \
 mirage workspace create examples/python/runtimes/daytona/daytona_workspace.yaml --id daytona-demo
 
 printf 'print("hello from the sandbox")\n' \
-  | mirage execute -w daytona-demo -c 'cat > /data/hello.py'
+  | mirage shell -w daytona-demo -c 'cat > /data/hello.py'
 
 # Same prefix on both sides, so the path passes through verbatim.
-mirage execute -w daytona-demo -c 'cd /data && python3 hello.py'
+mirage shell -w daytona-demo -c 'cd /data && python3 hello.py'
 
 mirage workspace delete daytona-demo   # the sandbox stays yours
 ```

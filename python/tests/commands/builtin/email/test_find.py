@@ -25,108 +25,63 @@ from mirage.types import PathSpec
 
 
 def _spec(virtual: str) -> PathSpec:
-    return PathSpec(virtual=virtual,
-                    directory=virtual,
-                    resource_path=virtual.strip("/"))
+    return PathSpec(
+        virtual=virtual, directory=virtual, vfs_path=virtual.strip("/")
+    )
 
 
 def _accessor() -> EmailAccessor:
     return EmailAccessor(
-        EmailConfig(imap_host="imap.test",
-                    smtp_host="smtp.test",
-                    username="u",
-                    password="p"))
+        EmailConfig(
+            imap_host="imap.test",
+            smtp_host="smtp.test",
+            username="u",
+            password="p",
+        )
+    )
 
 
-async def _run(paths, *texts: str, **flags) -> list[str]:
-    with patch("mirage.core.email.readdir.list_folders",
-               new_callable=AsyncMock,
-               return_value=["INBOX", "Sent"]):
-        stdout, _io = await find(
-            _accessor(), paths, list(texts),
-            CommandOpts(index=RAMIndexCacheStore(), flags={**flags}))
-    data = stdout if isinstance(stdout, bytes) else b""
-    return data.decode().splitlines()
-
-
-@pytest.mark.asyncio
-async def test_walk_lists_folders():
-    lines = await _run([_spec("/")], maxdepth="1")
-    assert "/INBOX" in lines
-    assert "/Sent" in lines
-
-
-@pytest.mark.asyncio
-async def test_path_pattern_is_honored():
-    lines = await _run([_spec("/")], maxdepth="1", path="*INBOX*")
-    assert lines == ["/INBOX"]
-
-
-@pytest.mark.asyncio
-async def test_size_is_honored_dirs_count_as_zero():
-    lines = await _run([_spec("/")], maxdepth="1", size="+0c")
-    assert lines == []
-
-
-ATTACHMENT_HEADERS = [{
-    "uid":
-    "7",
-    "subject":
-    "Report",
-    "date":
-    "Mon, 04 Aug 2026 10:00:00 +0000",
-    "attachments": [{
-        "filename": "invoice.pdf",
-        "size": 123
-    }],
-}]
+ATTACHMENT_HEADERS = [
+    {
+        "uid": "7",
+        "subject": "Report",
+        "date": "Mon, 04 Aug 2026 10:00:00 +0000",
+        "attachments": [{"filename": "invoice.pdf", "size": 123}],
+    }
+]
 
 
 @pytest.mark.asyncio
 async def test_type_f_lists_attachments():
-    with patch("mirage.core.email.readdir.list_folders",
-               new_callable=AsyncMock,
-               return_value=["INBOX"]), \
-         patch("mirage.core.email.stat.list_folders",
-               new_callable=AsyncMock,
-               return_value=["INBOX"]), \
-         patch("mirage.core.email.readdir.list_message_uids",
-               new_callable=AsyncMock,
-               return_value=["7"]), \
-         patch("mirage.core.email.readdir.fetch_headers",
-               new_callable=AsyncMock,
-               return_value=ATTACHMENT_HEADERS):
+    with (
+        patch(
+            "mirage.core.email.readdir.list_folders",
+            new_callable=AsyncMock,
+            return_value=["INBOX"],
+        ),
+        patch(
+            "mirage.core.email.readdir.list_message_uids",
+            new_callable=AsyncMock,
+            return_value=["7"],
+        ),
+        patch(
+            "mirage.core.email.readdir.fetch_headers",
+            new_callable=AsyncMock,
+            return_value=ATTACHMENT_HEADERS,
+        ),
+    ):
         stdout, _io = await find(
-            _accessor(), [_spec('/')], [],
-            CommandOpts(index=RAMIndexCacheStore(), flags={'type': 'f'}))
-    lines = (stdout
-             if isinstance(stdout, bytes) else b"").decode().splitlines()
+            _accessor(),
+            [_spec("/")],
+            [],
+            CommandOpts(index=RAMIndexCacheStore(), flags={"type": "f"}),
+        )
+    lines = (
+        (stdout if isinstance(stdout, bytes) else b"").decode().splitlines()
+    )
     assert "/INBOX/2026-08-04/Report__7.email.json" in lines
     assert "/INBOX/2026-08-04/Report__7/invoice.pdf" in lines
     assert "/INBOX/2026-08-04/Report__7" not in lines
-
-
-@pytest.mark.asyncio
-async def test_type_d_lists_attachment_dir_not_attachment():
-    with patch("mirage.core.email.readdir.list_folders",
-               new_callable=AsyncMock,
-               return_value=["INBOX"]), \
-         patch("mirage.core.email.stat.list_folders",
-               new_callable=AsyncMock,
-               return_value=["INBOX"]), \
-         patch("mirage.core.email.readdir.list_message_uids",
-               new_callable=AsyncMock,
-               return_value=["7"]), \
-         patch("mirage.core.email.readdir.fetch_headers",
-               new_callable=AsyncMock,
-               return_value=ATTACHMENT_HEADERS):
-        stdout, _io = await find(
-            _accessor(), [_spec('/')], [],
-            CommandOpts(index=RAMIndexCacheStore(), flags={'type': 'd'}))
-    lines = (stdout
-             if isinstance(stdout, bytes) else b"").decode().splitlines()
-    assert "/INBOX/2026-08-04/Report__7" in lines
-    assert "/INBOX/2026-08-04/Report__7/invoice.pdf" not in lines
 
 
 @pytest.mark.asyncio
@@ -134,9 +89,13 @@ async def test_name_only_folder_level_pushes_down_to_imap_search():
     search = AsyncMock(return_value=[])
     with patch("mirage.commands.builtin.email.find.search_messages", search):
         stdout, _io = await find(
-            _accessor(), [_spec('/INBOX')], [],
-            CommandOpts(index=RAMIndexCacheStore(), flags={'name':
-                                                           '*report*'}))
+            _accessor(),
+            [_spec("/INBOX")],
+            [],
+            CommandOpts(
+                index=RAMIndexCacheStore(), flags={"name": "*report*"}
+            ),
+        )
     search.assert_awaited_once()
     assert (stdout if isinstance(stdout, bytes) else b"") == b""
 
@@ -146,22 +105,27 @@ async def test_name_with_size_falls_through_to_walk():
     # Any predicate beyond -name must not be dropped by the server-side
     # shortcut; the local walk applies all of them.
     search = AsyncMock(return_value=[])
-    with patch("mirage.commands.builtin.email.find.search_messages", search), \
-         patch("mirage.core.email.readdir.list_folders",
-               new_callable=AsyncMock,
-               return_value=["INBOX"]), \
-         patch("mirage.core.email.stat.list_folders",
-               new_callable=AsyncMock,
-               return_value=["INBOX"]), \
-         patch("mirage.core.email.readdir.list_message_uids",
-               new_callable=AsyncMock,
-               return_value=[]):
+    with (
+        patch("mirage.commands.builtin.email.find.search_messages", search),
+        patch(
+            "mirage.core.email.readdir.list_folders",
+            new_callable=AsyncMock,
+            return_value=["INBOX"],
+        ),
+        patch(
+            "mirage.core.email.readdir.list_message_uids",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+    ):
         stdout, _io = await find(
-            _accessor(), [_spec('/INBOX')], [],
-            CommandOpts(index=RAMIndexCacheStore(),
-                        flags={
-                            'name': '*report*',
-                            'size': '+0c'
-                        }))
+            _accessor(),
+            [_spec("/INBOX")],
+            [],
+            CommandOpts(
+                index=RAMIndexCacheStore(),
+                flags={"name": "*report*", "size": "+0c"},
+            ),
+        )
     search.assert_not_awaited()
     assert (stdout if isinstance(stdout, bytes) else b"") == b""

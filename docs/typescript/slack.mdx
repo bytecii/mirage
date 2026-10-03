@@ -4,7 +4,7 @@ icon: slack
 description: Mount a Slack workspace as a virtual filesystem from Node or the browser.
 ---
 
-MIRAGE ships `SlackResource` in **two runtimes**:
+MIRAGE ships `SlackVFS` in **two runtimes**:
 
 - `@struktoai/mirage-node`, talks to `https://slack.com/api/*` directly using a bot token (and optionally a user token for `search.messages`).
 - `@struktoai/mirage-browser`, stays secret-free: a small proxy server on your backend holds the token and forwards `/api/slack/*` to `https://slack.com/api/*`. The browser only ever sees the proxy URL.
@@ -36,15 +36,15 @@ pnpm add @struktoai/mirage-node
 ```
 
 ```ts
-import { MountMode, SlackResource, Workspace } from '@struktoai/mirage-node'
+import { MountMode, SlackVFS, Workspace } from '@struktoai/mirage-node'
 
-const slack = new SlackResource({
+const slack = new SlackVFS({
   token: process.env.SLACK_BOT_TOKEN!,
   searchToken: process.env.SLACK_USER_TOKEN,  // optional
 })
 
 const ws = new Workspace({ '/slack': slack }, { mode: MountMode.READ })
-const res = await ws.execute('ls /slack/channels/')
+const res = await ws.shell('ls /slack/channels/')
 console.log(res.stdoutText)
 ```
 
@@ -97,16 +97,16 @@ createServer(async (req, res) => {
 ### 2. Browser: wire it up
 
 ```ts
-import { MountMode, SlackResource, Workspace } from '@struktoai/mirage-browser'
+import { MountMode, SlackVFS, Workspace } from '@struktoai/mirage-browser'
 
-const slack = new SlackResource({
+const slack = new SlackVFS({
   proxyUrl: '/api/slack',
   // For multi-tenant setups, return per-request auth headers:
   // getHeaders: async () => ({ Authorization: `Bearer ${userJwt}` }),
 })
 
 const ws = new Workspace({ '/slack': slack }, { mode: MountMode.READ })
-const res = await ws.execute('ls /slack/channels/')
+const res = await ws.shell('ls /slack/channels/')
 console.log(res.stdoutText)
 ```
 
@@ -135,7 +135,7 @@ Calling `https://slack.com/api/*` directly from a browser fails CORS. The proxy 
     ...
 ```
 
-Each channel or DM directory contains day-partitioned directories for the last 90 days (or since channel creation). Each date directory contains `chat.jsonl` plus a `files/` directory for attachments shared that day. Each user file is the full profile JSON returned by `users.profile.get`. The Slack ID is embedded after `__` in directory and file names so you can extract it for the resource-specific commands without an extra lookup.
+Each channel or DM directory contains day-partitioned directories for the last 90 days (or since channel creation). Each date directory contains `chat.jsonl` plus a `files/` directory for attachments shared that day. Each user file is the full profile JSON returned by `users.profile.get`. The Slack ID is embedded after `__` in directory and file names so you can extract it for the VFS-specific commands without an extra lookup.
 
 ## Shell commands
 
@@ -147,13 +147,13 @@ Every standard MIRAGE shell command works on the mounted Slack tree:
 | `cat`           | Read `chat.jsonl`, user `.json`, or files  |
 | `head` / `tail` | First/last N lines                         |
 | `grep` / `rg`   | Pattern search (file or directory level)   |
-| `jq`            | Query JSON; use `.[]` prefix for JSONL     |
+| `jq`            | Query JSON, once per JSONL line (`-s` all) |
 | `wc`            | Line/word/byte counts                      |
 | `stat`          | File metadata (name, size, type)           |
 | `find`          | Recursive search with `-name`, `-maxdepth` |
 | `tree`          | Directory tree view                        |
 | `pwd` / `cd`    | Navigate the virtual tree                  |
-| `echo` (glob)   | Glob expansion via `resolve_glob`          |
+| `echo` (glob)   | Glob expansion via the derived `glob` op   |
 
 Acting on Slack (sending, reacting, pins, member info, search) goes
 through the [slack CLI](/typescript/cli/slack) when installed; the
@@ -166,7 +166,7 @@ mounted tree stays read-oriented.
     `search.messages` requires a **user token** (`xoxp-…`) with `search:read` scope. Set `searchToken` on the `SlackConfig`:
 
     ```ts
-    new SlackResource({
+    new SlackVFS({
       token: process.env.SLACK_BOT_TOKEN!,
       searchToken: process.env.SLACK_USER_TOKEN,
     })
@@ -178,7 +178,7 @@ mounted tree stays read-oriented.
     The browser cannot call `https://slack.com/api/*` directly, Slack does not set permissive CORS headers. You must run the proxy server shown above (or your own equivalent) and point `proxyUrl` at it.
   </Accordion>
   <Accordion title="`rate_limited` from Slack">
-    `SlackResource` uses an `IndexCacheStore` (default TTL 600s) to deduplicate channel / user / date listings, but high-volume reads of `.jsonl` files can still hit Slack's per-method rate limits. Cache hits avoid the API entirely; tune `indexTtl` if your workspace changes slowly. Per [Slack docs](https://api.slack.com/docs/rate-limits), Tier 3 methods like `conversations.history` allow ~50 requests / minute / workspace.
+    `SlackVFS` uses an `IndexCacheStore` (default TTL 600s) to deduplicate channel / user / date listings, but high-volume reads of `.jsonl` files can still hit Slack's per-method rate limits. Cache hits avoid the API entirely; tune `indexTtl` if your workspace changes slowly. Per [Slack docs](https://api.slack.com/docs/rate-limits), Tier 3 methods like `conversations.history` allow ~50 requests / minute / workspace.
   </Accordion>
 </AccordionGroup>
 
@@ -187,6 +187,36 @@ mounted tree stays read-oriented.
 - [`examples/typescript/slack/slack.ts`](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/slack/slack.ts), shell commands against `/slack/` (`ls`, `cat`, `grep`, `jq`, `tree`, `find`, `cd`, glob).
 - [`examples/typescript/slack/slack_vfs.ts`](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/slack/slack_vfs.ts), `patchNodeFs(ws)` so native `node:fs` calls route through the workspace.
 - [`examples/typescript/slack/slack_fuse.ts`](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/slack/slack_fuse.ts), FUSE-mount the workspace so external processes can browse `/slack/` as a real filesystem.
-- [`examples/typescript/slack/slack_browser/`](https://github.com/strukto-ai/mirage/tree/main/examples/typescript/slack/slack_browser), proxy server + `@struktoai/mirage-browser` SlackResource demo.
+- [`examples/typescript/slack/slack_browser/`](https://github.com/strukto-ai/mirage/tree/main/examples/typescript/slack/slack_browser), proxy server + `@struktoai/mirage-browser` SlackVFS demo.
 
-See [Python Slack Resource](/python/resource/slack) for the equivalent Python wiring.
+See [Python Slack VFS](/python/vfs/slack) for the equivalent Python wiring.
+
+## Time scope
+
+Set `start_time` and/or `end_time` in the mount's YAML `config` (or pass
+`start_time`/`end_time` to Python; `startTime`/`endTime` to the TypeScript
+constructor). Bounds are RFC3339 timestamps with an explicit timezone and
+at most millisecond precision. Start is inclusive; end is exclusive.
+An omitted or null bound is open. Start must precede end.
+
+```yaml
+mounts:
+  /history:
+    vfs: slack
+    mode: read
+    config:
+      token: "<bot-token>"
+      start_time: "2026-06-01T10:00:00Z"
+      end_time: "2026-06-02T00:00:00Z"
+```
+
+With a bound configured, channel listings cover the selected period rather
+than the default recent window. Day directories use UTC. Messages are selected
+by creation time, and attachments follow their parent messages. Direct paths,
+`stat`, date globs, and `grep`/`rg` cannot escape the scope. Scoped searches scan
+the filtered files instead of using unrestricted provider search. User/member
+and channel/server metadata remain visible as context.
+
+These settings apply to the VFS, not to separately installed account CLIs.
+`mode: read` prevents mount writes; it does not freeze upstream edits or deletions.
+Rebuild/remount the VFS to change its scope so cached listings and bytes are cleared.

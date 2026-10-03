@@ -12,76 +12,154 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from collections.abc import Awaitable, Callable
 from functools import partial
 
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.du import du_generic
-from mirage.commands.builtin.github._provision import metadata_provision
+from mirage.commands.builtin.generic_bind.adapter import (
+    with_path_guards,
+    with_policy_guard,
+)
+from mirage.commands.builtin.generic_bind.builders.du import (
+    WalkBudget,
+    walk_entries,
+    walk_size,
+)
 from mirage.commands.builtin.github.io import IO, resolve_glob
-from mirage.commands.config import CommandOpts
-from mirage.commands.registry import command
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
 from mirage.core.github.tree import ensure_tree
 from mirage.io.types import ByteSource, IOResult
-from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
+from mirage.utils.key_prefix import mount_prefix_of
 
 
-def _subtree(accessor: GitHubAccessor,
-             path: PathSpec) -> list[tuple[str, int]]:
-    """Every sized entry at or under ``path``, in mount-relative space.
+def _subtree(
+    accessor: GitHubAccessor, path: PathSpec
+) -> tuple[list[tuple[str, int]], list[str]]:
+    """Every blob and every directory at or under ``path``.
 
     Read off the git tree rather than the index, mirroring TypeScript's
     du: the tree is keyed repo-relative, which is the space these
-    comparisons are in.
+    comparisons are in, so both come back mount-relative. A blob of
+    unknown size counts 0, as the walked du counts any file. A directory
+    comes back on its own because one holding no blob (only a submodule,
+    which the tree drops) still gets du's 0 row.
 
     Args:
         accessor (GitHubAccessor): backend handle holding the tree.
         path (PathSpec): subtree root.
     """
-    key = path.resource_path.strip("/")
+    key = path.vfs_path.strip("/")
     prefix = key + "/" if key else ""
-    found = [("/" + p, entry.size) for p, entry in accessor.tree.items()
-             if (p == key or p.startswith(prefix)) and entry.size is not None]
-    found.sort()
-    return found
+    blobs: list[tuple[str, int]] = []
+    directories: list[str] = []
+    for p, entry in accessor.tree.items():
+        if p != key and not p.startswith(prefix):
+            continue
+        if entry.type == "blob":
+            blobs.append(("/" + p, entry.size or 0))
+        else:
+            directories.append("/" + p)
+    blobs.sort()
+    return blobs, directories
 
 
-async def _du_size(accessor: GitHubAccessor, path: PathSpec) -> int:
-    return sum(size for _, size in _subtree(accessor, path))
-
-
-async def _du_entries(accessor: GitHubAccessor,
-                      path: PathSpec) -> tuple[list[tuple[str, int]], int]:
-    found = _subtree(accessor, path)
-    return found, sum(size for _, size in found)
-
-
-async def du_provision(accessor: GitHubAccessor, paths: list[PathSpec],
-                       texts: list[str], opts: CommandOpts) -> ProvisionResult:
-    return await metadata_provision("du " + " ".join(
-        p.virtual if isinstance(p, PathSpec) else p for p in paths))
-
-
-async def _resolve(accessor: GitHubAccessor, index: IndexCacheStore,
-                   targets: list[PathSpec]) -> list[PathSpec]:
+async def _resolve(
+    live: Callable[[], Awaitable[None]],
+    accessor: GitHubAccessor,
+    index: IndexCacheStore,
+    targets: list[PathSpec],
+) -> list[PathSpec]:
+    await live()
     return await resolve_glob(accessor, targets, index)
 
 
-async def _stat(accessor: GitHubAccessor, index: IndexCacheStore,
-                path: PathSpec):
+async def _stat(
+    live: Callable[[], Awaitable[None]],
+    accessor: GitHubAccessor,
+    index: IndexCacheStore,
+    path: PathSpec,
+):
+    await live()
     return await IO.stat(accessor, path, index)
 
 
-@command("du", resource="github", spec=SPECS["du"], provision=du_provision)
-async def du(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
-             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    # `_subtree` reads accessor.tree directly rather than the index, so
-    # the tree has to be hydrated first; the mount is built without it.
-    await ensure_tree(accessor, opts.index, opts.mount_prefix)
-    return await du_generic(paths, list(texts), opts,
-                            partial(_resolve, accessor, opts.index),
-                            partial(_stat, accessor, opts.index),
-                            partial(_du_size, accessor),
-                            partial(_du_entries, accessor))
+async def _live_size(
+    live: Callable[[], Awaitable[None]],
+    accessor: GitHubAccessor,
+    index: IndexCacheStore,
+    budget: WalkBudget,
+    path: PathSpec,
+) -> int:
+    await live()
+    # A truncated tree names only some paths and is never refetched, so it
+    # is walked folder by folder, as a backend with no tree would be.
+    if accessor.truncated:
+        return await walk_size(
+            with_policy_guard(with_path_guards(IO)),
+            accessor,
+            index,
+            budget,
+            path,
+        )
+    blobs, _ = _subtree(accessor, path)
+    return sum(size for _, size in blobs)
+
+
+async def _live_entries(
+    live: Callable[[], Awaitable[None]],
+    accessor: GitHubAccessor,
+    index: IndexCacheStore,
+    budget: WalkBudget,
+    path: PathSpec,
+) -> tuple[list[tuple[str, int]], int]:
+    await live()
+    if accessor.truncated:
+        return await walk_entries(
+            with_policy_guard(with_path_guards(IO)),
+            accessor,
+            index,
+            budget,
+            path,
+        )
+    blobs, directories = _subtree(accessor, path)
+    mount = mount_prefix_of(path.virtual, path.vfs_path)
+    budget.directories.extend(mount + d for d in directories)
+    return blobs, sum(size for _, size in blobs)
+
+
+@command("du", vfs="github", spec=SPECS["du"])
+async def du(
+    accessor: GitHubAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
+    checked = False
+    budget = WalkBudget(IO.max_du_entries)
+
+    # `_subtree` reads accessor.tree rather than the index, so the first
+    # callback brings the tree live, after du has validated its flags: an
+    # invalid line must cost no fetch. Once per line, so one du reads one
+    # tree and a Redis index pays one round trip.
+    async def live() -> None:
+        nonlocal checked
+        if not checked:
+            await ensure_tree(accessor, opts.index, opts.mount_prefix)
+            checked = True
+
+    return await du_generic(
+        paths,
+        list(texts),
+        opts,
+        partial(_resolve, live, accessor, opts.index),
+        partial(_stat, live, accessor, opts.index),
+        partial(_live_size, live, accessor, opts.index, budget),
+        partial(_live_entries, live, accessor, opts.index, budget),
+        truncated=lambda: budget.hit,
+        unreadable=lambda: budget.unreadable,
+        directories=lambda: budget.directories,
+    )

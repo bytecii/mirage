@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.redis.dest import lookup_error
 from mirage.observe.context import record_stream
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
@@ -23,21 +24,22 @@ from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.path import norm
 
 
-async def stream(accessor: RedisAccessor,
-                 path: PathSpec) -> AsyncIterator[bytes]:
+async def stream(
+    accessor: RedisAccessor, path: PathSpec
+) -> AsyncIterator[bytes]:
     virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
+    prefix = mount_prefix_of(path.virtual, path.vfs_path)
     raw = path.virtual
     if prefix and raw.startswith(prefix):
-        rest = raw[len(prefix):]
+        rest = raw[len(prefix) :]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
             raw = rest or "/"
     store = accessor.store
     key = norm(raw)
     data = await store.get_file(key)
     if data is None:
-        raise enoent(virtual)
-    rec = record_stream("read", raw, "redis")
+        raise await lookup_error(store, path, key)
+    rec = record_stream("read", virtual, "redis")
     if rec is not None:
         rec.bytes = len(data)
     yield data

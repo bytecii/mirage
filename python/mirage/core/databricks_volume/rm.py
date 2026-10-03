@@ -16,7 +16,7 @@ import asyncio
 from typing import Any
 
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
-from mirage.cache.context import invalidate_after_unlink
+from mirage.cache.context import invalidate_subtree
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.databricks_volume.errors import is_not_found
 from mirage.core.databricks_volume.path import backend_path, virtual_path
@@ -82,11 +82,12 @@ async def rm_recursive(
         return [path.mount_path]
     remote_root = backend_path(accessor.config, path)
     try:
-        removed = await asyncio.to_thread(_remove_tree_sync, accessor,
-                                          remote_root)
+        removed = await asyncio.to_thread(
+            _remove_tree_sync, accessor, remote_root
+        )
     except Exception as exc:
         if is_not_found(exc):
             raise enoent(path) from exc
         raise
-    await invalidate_after_unlink(path)
+    await invalidate_subtree(path)
     return [virtual_path(accessor.config, backend, "") for backend in removed]

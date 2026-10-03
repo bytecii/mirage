@@ -15,7 +15,8 @@
 from collections.abc import AsyncIterator
 
 from mirage.accessor.github import GitHubAccessor
-from mirage.core.github.tree import fetch_tree
+from mirage.core.github.repo import ensure_ref
+from mirage.core.github.tree import fetch_tree, reseat_tree
 from mirage.types import PathSpec, WalkEntry
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.watch.base import DeltaHook
@@ -40,7 +41,7 @@ class GitHubWalk:
 
     def __init__(self, accessor: GitHubAccessor) -> None:
         """Args:
-            accessor (GitHubAccessor): Backend handle.
+        accessor (GitHubAccessor): Backend handle.
         """
         self._accessor = accessor
 
@@ -57,35 +58,43 @@ class GitHubWalk:
                 report every unlisted path as deleted.
         """
         accessor = self._accessor
-        prefix = mount_prefix_of(root.virtual, root.resource_path)
-        tree, truncated = await fetch_tree(accessor.config, accessor.owner,
-                                           accessor.repo, accessor.ref)
+        prefix = mount_prefix_of(root.virtual, root.vfs_path)
+        ref = await ensure_ref(accessor)
+        tree, truncated, head = await fetch_tree(
+            accessor.config, accessor.owner, accessor.repo, ref, accessor.pool
+        )
         if truncated:
             raise IncompleteWalkError(
                 f"github tree for {accessor.owner}/{accessor.repo}"
-                f"@{accessor.ref} was truncated; cannot diff a partial tree")
+                f"@{ref} was truncated; cannot diff a partial tree"
+            )
         # A complete tree for the ref is exactly what the accessor holds,
         # and find/du/grep's scope counter read it directly. Discarding it
         # here left them answering from the tree the mount was built with
         # until an unrelated read happened to refill the index, so a pull
         # that reported a CREATE was followed by a find that could not see
-        # the file.
-        accessor.tree = tree
-        accessor.tree_loaded = True
+        # the file. It carries the head it was walked at, so a walker can
+        # tell it from the tree the index was filled with.
+        reseat_tree(accessor, tree, truncated, head)
         stem = root.mount_path.strip("/")
         base = (stem + "/") if stem else ""
         for entry in tree.values():
             if base and not entry.path.startswith(base):
                 continue
-            virtual = (prefix.rstrip("/") + "/" +
-                       entry.path if prefix else "/" + entry.path)
+            virtual = (
+                prefix.rstrip("/") + "/" + entry.path
+                if prefix
+                else "/" + entry.path
+            )
             if entry.type == "tree":
                 yield WalkEntry(virtual=virtual, is_dir=True, fingerprint=None)
                 continue
-            yield WalkEntry(virtual=virtual,
-                            is_dir=False,
-                            fingerprint=entry.sha,
-                            size=entry.size)
+            yield WalkEntry(
+                virtual=virtual,
+                is_dir=False,
+                fingerprint=entry.sha,
+                size=entry.size,
+            )
 
 
 def build_delta_hook(accessor: GitHubAccessor) -> DeltaHook:

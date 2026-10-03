@@ -12,8 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.cache.file.utils import (default_fingerprint, glob_escape,
-                                     parse_limit)
+from mirage.cache.file.utils import glob_escape, parse_limit
 
 
 def test_parse_limit_bytes():
@@ -38,20 +37,6 @@ def test_parse_limit_lowercase():
 
 def test_parse_limit_plain_string():
     assert parse_limit("1024") == 1024
-
-
-def test_default_fingerprint():
-    fp = default_fingerprint(b"hello")
-    assert isinstance(fp, str)
-    assert len(fp) == 32
-
-
-def test_default_fingerprint_deterministic():
-    assert default_fingerprint(b"same") == default_fingerprint(b"same")
-
-
-def test_default_fingerprint_different_data():
-    assert default_fingerprint(b"a") != default_fingerprint(b"b")
 
 
 def test_glob_escape_leaves_an_ordinary_path_alone():

@@ -18,7 +18,7 @@ import os
 from dotenv import load_dotenv
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.resource.postgres import PostgresConfig, PostgresResource
+from mirage.vfs.postgres import PostgresConfig, PostgresVFS
 
 load_dotenv(".env.development")
 
@@ -27,11 +27,11 @@ config = PostgresConfig(
     max_read_rows=1_000_000,
     max_read_bytes=512 * 1024 * 1024,
 )
-resource = PostgresResource(config=config)
+vfs = PostgresVFS(config=config)
 
 with Workspace(
-    {"/pg/": Mount(resource, mode=MountMode.READ,
-                   backend=MountBackend.FUSE)}) as ws:
+    {"/pg/": Mount(vfs, mode=MountMode.READ, backend=MountBackend.FUSE)}
+) as ws:
     mp = ws.fuse_mountpoint
 
     print(f"=== FUSE MODE: mounted at {mp} ===\n")
@@ -45,9 +45,11 @@ with Workspace(
         db_json = json.loads(f.read())
     print(f"  database: {db_json['database']}")
     print(f"  schemas: {db_json['schemas']}")
-    print(f"  tables: {len(db_json['tables'])} | "
-          f"views: {len(db_json['views'])} | "
-          f"relationships: {len(db_json['relationships'])}")
+    print(
+        f"  tables: {len(db_json['tables'])} | "
+        f"views: {len(db_json['views'])} | "
+        f"relationships: {len(db_json['relationships'])}"
+    )
 
     if "public" in db_json["schemas"]:
         tables = os.listdir(f"{mp}/public/tables")
@@ -99,6 +101,6 @@ with Workspace(
     print(">>> Press Enter to unmount and exit...")
     input()
 
-    records = ws.ops.records
+    records = ws.vfs.records
     total = sum(r.bytes for r in records)
     print(f"\nStats: {len(records)} ops, {total} bytes transferred")

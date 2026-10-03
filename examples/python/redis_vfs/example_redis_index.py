@@ -1,0 +1,78 @@
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import asyncio
+import os
+import time
+
+from mirage import Workspace
+from mirage.cache.index import (
+    IndexEntry,
+    RedisIndexCacheStore,
+    RedisIndexConfig,
+)
+from mirage.vfs.ram import RAMVFS
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+
+def _file(name: str) -> IndexEntry:
+    return IndexEntry(id=name, name=name, resource_type="file")
+
+
+async def main() -> None:
+    # A workspace-level ``index`` config points every mounted VFS's
+    # index cache at the same Redis instance. Two separate Mirage processes
+    # that share a key_prefix then share one index -- the building block for
+    # running the same mounts locally and in a remote sandbox.
+    key_prefix = f"mirage:example:idx:{int(time.time() * 1000)}:"
+    index_config = RedisIndexConfig(url=REDIS_URL, key_prefix=key_prefix)
+
+    # Workspace A: a RAM mount whose INDEX is backed by Redis (not RAM).
+    ram_a = RAMVFS()
+    ws_a = Workspace({"/data": ram_a}, index=index_config)
+    index_a = ws_a.mount("/data").index_store
+    print(
+        "index store A is redis-backed: "
+        f"{isinstance(index_a, RedisIndexCacheStore)}"
+    )
+
+    # Populate the shared Redis index through workspace A.
+    await index_a.put("/data/hello.txt", _file("hello.txt"))
+    await index_a.set_dir(
+        "/data",
+        [("hello.txt", _file("hello.txt")), ("notes.md", _file("notes.md"))],
+    )
+
+    # Workspace B: a separate VFS pointed at the same Redis index
+    # (same key_prefix). It sees what A cached without re-listing anything.
+    ram_b = RAMVFS()
+    ws_b = Workspace({"/data": ram_b}, index=index_config)
+    index_b = ws_b.mount("/data").index_store
+
+    entry = await index_b.get("/data/hello.txt")
+    name = entry.entry.name if entry.entry else "(none)"
+    print(f"shared index entry: {name}")
+
+    listing = await index_b.list_dir("/data")
+    print(f"shared index listing: {', '.join(listing.entries or [])}")
+
+    await index_a.clear()
+    await ws_a.close()
+    await ws_b.close()
+    print("wiped test keys from Redis")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

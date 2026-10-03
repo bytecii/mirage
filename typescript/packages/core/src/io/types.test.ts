@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { CachableAsyncIterator } from './cachable_iterator.ts'
+import type { Refusal } from '../types.ts'
 import { type ByteSource, IOResult, materialize } from './types.ts'
 
 async function* toAsync(chunks: Uint8Array[]): AsyncIterable<Uint8Array> {
@@ -111,16 +112,24 @@ describe('IOResult.merge', () => {
       reads: { '/a': new Uint8Array([1]) },
       writes: { '/x': new Uint8Array([2]) },
       cache: ['/a'],
+      renames: [['/dst', '/dst~']],
     })
     const b = new IOResult({
       reads: { '/b': new Uint8Array([3]) },
       writes: { '/y': new Uint8Array([4]) },
       cache: ['/b'],
+      renames: [['/src', '/dst']],
+      exitCode: 1,
     })
     const merged = await a.merge(b)
     expect(Object.keys(merged.reads).sort()).toEqual(['/a', '/b'])
     expect(Object.keys(merged.writes).sort()).toEqual(['/x', '/y'])
     expect(merged.cache).toEqual(['/a', '/b'])
+    expect(merged.renames).toEqual([
+      ['/dst', '/dst~'],
+      ['/src', '/dst'],
+    ])
+    expect(merged.exitCode).toBe(1)
   })
 
   it('concatenates stderr from both sides', async () => {
@@ -142,6 +151,22 @@ describe('IOResult.merge', () => {
     const b = new IOResult({ exitCode: 3 })
     const merged = await a.merge(b)
     expect(merged.streamSource).toBe(b)
+  })
+
+  it('keeps the latest refusal', async () => {
+    const early: Refusal = { kind: 'deny', reason: 'a', policy: 'P', scope: 'command', askId: null }
+    const late: Refusal = {
+      kind: 'pending',
+      reason: 'b',
+      policy: '',
+      scope: 'command',
+      askId: 'x1',
+    }
+    expect((await new IOResult({ refusal: early }).merge(new IOResult())).refusal).toEqual(early)
+    expect(
+      (await new IOResult({ refusal: early }).merge(new IOResult({ refusal: late }))).refusal,
+    ).toEqual(late)
+    expect((await new IOResult().merge(new IOResult())).refusal).toBeNull()
   })
 })
 

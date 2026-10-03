@@ -19,17 +19,16 @@ import subprocess
 from dotenv import load_dotenv
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.resource.discord import DiscordConfig, DiscordResource
+from mirage.vfs.discord import DiscordConfig, DiscordVFS
 
 load_dotenv(".env.development")
 
 config = DiscordConfig(token=os.environ["DISCORD_BOT_TOKEN"])
-resource = DiscordResource(config=config)
+vfs = DiscordVFS(config=config)
 
-with Workspace({
-        "/discord/":
-        Mount(resource, mode=MountMode.READ, backend=MountBackend.FUSE)
-}) as ws:
+with Workspace(
+    {"/discord/": Mount(vfs, mode=MountMode.READ, backend=MountBackend.FUSE)}
+) as ws:
     mp = ws.fuse_mountpoint
 
     print(f"=== FUSE MODE: mounted at {mp} ===\n")
@@ -76,17 +75,21 @@ with Workspace({
                 # 0 bytes; any open (cat/wc/cp) hydrates it, and stat then
                 # reports the real size (see docs/python/setup/fuse.mdx).
                 print(
-                    f"\n--- size-unknown semantics on {target}/chat.jsonl ---")
+                    f"\n--- size-unknown semantics on {target}/chat.jsonl ---"
+                )
                 print(
-                    f"  stat before open: {os.stat(chat_path).st_size} bytes")
-                wc = subprocess.run(["wc", "-lc", chat_path],
-                                    capture_output=True,
-                                    text=True)
+                    f"  stat before open: {os.stat(chat_path).st_size} bytes"
+                )
+                wc = subprocess.run(
+                    ["wc", "-lc", chat_path], capture_output=True, text=True
+                )
                 n_lines, n_bytes = wc.stdout.split()[:2]
                 print(
-                    f"  wc -lc          : {n_lines} messages, {n_bytes} bytes")
+                    f"  wc -lc          : {n_lines} messages, {n_bytes} bytes"
+                )
                 print(
-                    f"  stat after read : {os.stat(chat_path).st_size} bytes")
+                    f"  stat after read : {os.stat(chat_path).st_size} bytes"
+                )
                 print(f"\n--- open() + read {target}/chat.jsonl ---")
                 with open(chat_path) as f:
                     text = f.read().strip()
@@ -149,6 +152,6 @@ with Workspace({
     input()
 
     # ── stats ────────────────────────────────────
-    records = ws.ops.records
+    records = ws.vfs.records
     total = sum(r.bytes for r in records)
     print(f"\nStats: {len(records)} ops, {total} bytes transferred")

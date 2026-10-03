@@ -12,16 +12,18 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GSheetsAccessor } from '../../accessor/gsheets.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { entryOrWarm } from '../../cache/index/warm.ts'
-import { PathSpec } from '../../types.ts'
+import { record, startOp } from '../../observe/context.ts'
+import type { PathSpec } from '../../types.ts'
 import { sheetsBase, type TokenManager, googleGet } from '../google/client.ts'
-import { readdir } from './readdir.ts'
-import { rstripSlash } from '../../utils/slash.ts'
-import { enoent } from '../../utils/errors.ts'
+import { resolveAppEntry } from '../google/entry.ts'
+import { MIME } from './constants.ts'
+import { makeFilename } from '../../vfs/gsheets/sheet_entry.ts'
+import { makeRead } from '../hierarchy/read.ts'
+import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { compactJsonBytes } from '../render/json.ts'
+import { detectScope } from './scope.ts'
 
 const GRID_DATA_PARAM = 'true'
 
@@ -51,26 +53,30 @@ export async function readValues(
   return compactJsonBytes(data)
 }
 
-export async function read(
+async function readFile(
   accessor: GSheetsAccessor,
+  match: ScopeMatch,
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<Uint8Array> {
-  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
-  const key = path.resourcePath
-  if (index === undefined) throw enoent(path.virtual)
-  const virtualKey = prefix !== '' ? `${prefix}/${key}` : `/${key}`
-  const parentKey = rstripSlash(virtualKey).replace(/\/[^/]+$/, '') || '/'
-  const entry = await entryOrWarm(
+  const entry = await resolveAppEntry(
+    accessor.tokenManager,
+    match,
+    path,
     index,
-    virtualKey,
-    parentKey !== virtualKey
-      ? () => readdir(accessor, PathSpec.fromStrPath(parentKey, mountKey(parentKey, prefix)), index)
-      : null,
+    MIME,
+    'gsheets/file',
+    makeFilename,
   )
-  if (entry === null) throw enoent(path.virtual)
-  return readSpreadsheet(accessor.tokenManager, entry.id)
+  const timer = startOp()
+  const data = await readSpreadsheet(accessor.tokenManager, entry.id)
+  record('read', path.virtual, 'gsheets', data.length, timer, {
+    fingerprint: entry.remoteTime !== '' ? entry.remoteTime : null,
+  })
+  return data
 }
+
+export const read = makeRead<GSheetsAccessor>(detectScope, { file: readFile })
 
 export async function* stream(
   accessor: GSheetsAccessor,

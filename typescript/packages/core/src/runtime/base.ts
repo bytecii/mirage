@@ -12,9 +12,21 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { Activity } from '../utils/activity.ts'
 import { coerceRuntimeConfig, type RuntimeConfig } from './config.ts'
-import { ScriptSource, type PolicyScript } from './policy/types.ts'
-import type { RuntimeOptions, RuntimeReach } from './types.ts'
+import type { WorkspaceBinding } from './binding.ts'
+import { UnsupportedExecutionError } from './errors.ts'
+import { isEvaluator, isLineExecutor, isProcessExecutor } from './mixin.ts'
+import { ScriptSource, type RouteScript } from './routing/types.ts'
+import type {
+  ExecutionRequest,
+  FilesystemOperation,
+  RuntimeCapabilities,
+  RuntimeContext,
+  RunResult,
+  RuntimeOptions,
+  RuntimeReach,
+} from './types.ts'
 
 /**
  * An engine the workspace can route commands or whole lines to.
@@ -43,21 +55,25 @@ export abstract class Runtime {
   readonly captures: readonly string[]
   /**
    * Which doors this runtime's code has to the outside world (see
-   * RuntimeReach): 'vfs' when the workspace dispatch is its only one,
+   * RuntimeReach): 'workspace' when the workspace dispatch is its only one,
    * as the bridged engines (monty, pyodide, quickjs) and the vfs
    * routing marker declare, 'process' or 'remote' when the code can
    * act around that gate. The default is 'process', the no-promise
    * claim, so a custom runtime must declare a narrower reach
    * explicitly rather than inherit it. Embedders read the aggregate:
-   * only a world in which every runtime reaches 'vfs' makes "agent
+   * only a world in which every runtime reaches 'workspace' makes "agent
    * code cannot bypass mount modes and policy" a true statement,
    * which is what the dsh adapter's sandbox claim is built from; one
    * wider runtime voids it.
    */
   readonly reach: RuntimeReach = 'process'
+  readonly filesystem: readonly FilesystemOperation[] = []
   /** The runtime's coerced implementation knobs. */
   config: RuntimeConfig
-  script?: PolicyScript
+  script?: RouteScript
+  private binding: WorkspaceBinding | null = null
+  private readonly activity = new Activity()
+  private retired = false
 
   constructor(
     options: RuntimeOptions<RuntimeConfig> = {},
@@ -67,10 +83,82 @@ export abstract class Runtime {
     if (typeof options.script === 'string') throw scriptStringError()
     this.captures =
       options.captures !== undefined ? options.captures.slice() : defaultCaptures.slice()
+
     this.config = coerceRuntimeConfig(options.config, configKeys)
     if (typeof options.script === 'function' || options.script instanceof ScriptSource) {
       this.script = options.script
     }
+  }
+
+  get capabilities(): RuntimeCapabilities {
+    return {
+      languages: [],
+      shell: isLineExecutor(this),
+      process: isProcessExecutor(this),
+      evaluate: isEvaluator(this),
+      reach: this.reach,
+      filesystem: [...this.filesystem],
+    }
+  }
+
+  /** Attach workspace services; a runtime instance belongs to one workspace. */
+  bind(binding: WorkspaceBinding): void {
+    if (this.retired)
+      throw new Error(`${this.name}: runtime was removed from its workspace; construct a new one`)
+    if (this.binding !== null && this.binding !== binding)
+      throw new Error(`${this.name}: runtime is already bound to another workspace`)
+    this.binding = binding
+  }
+
+  /** Engine entry point; Workspace.shell still owns shell admission and routing. */
+  async execute(request: ExecutionRequest, context?: RuntimeContext): Promise<RunResult> {
+    const release = this.admit()
+    try {
+      const current = context ?? this.captureContext()
+      if (current !== undefined) {
+        if (current.binding !== this.binding)
+          throw new Error(`${this.name}: context belongs to another binding`)
+        return await current.scope.run(() => this.executeRequest(request, current))
+      }
+      return await this.executeRequest(request)
+    } finally {
+      release()
+    }
+  }
+
+  /** Count one unit of work, refused once the runtime is retired. */
+  admit(): () => void {
+    if (this.retired) throw new Error(`${this.name}: runtime was removed from the workspace`)
+    return this.activity.acquire()
+  }
+
+  /** Refuse new executions and binds, then wait for running ones. */
+  async retire(): Promise<void> {
+    this.retired = true
+    await this.activity.wait()
+  }
+
+  protected captureContext(): RuntimeContext | undefined {
+    return this.binding?.capture()
+  }
+
+  protected async executeRequest(
+    request: ExecutionRequest,
+    _context?: RuntimeContext,
+  ): Promise<RunResult> {
+    if (request.kind === 'process' && isProcessExecutor(this)) {
+      if (request.argv.length === 0) throw new Error('process argv must not be empty')
+      return this.runProcess(request)
+    }
+    if (request.kind === 'shell' && isLineExecutor(this))
+      return this.runLine(
+        request.line,
+        request.stdin,
+        request.env,
+        request.cwd.virtual,
+        request.signal,
+      )
+    throw new UnsupportedExecutionError(`${this.name}: ${request.kind} execution is unsupported`)
   }
 
   /** Release engine resources. Default: nothing held. */
@@ -85,7 +173,7 @@ export type RuntimeEntry = Runtime | string
 /** The code API takes functions; script source belongs to config. */
 export function scriptStringError(kind = 'a script'): Error {
   return new Error(
-    `${kind} in code must be a function taking the PolicyContext; config ` +
-      `scripts reference a .py file (script:/policy: in the workspace yaml)`,
+    `${kind} in code must be a function taking the RouteContext; config ` +
+      `scripts reference a .py file (script:/route_policy: in the workspace yaml)`,
   )
 }

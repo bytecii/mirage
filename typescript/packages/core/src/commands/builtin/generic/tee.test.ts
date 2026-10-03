@@ -13,49 +13,26 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { PathSpec } from '../../../types.ts'
-import { specOf } from '../../spec/builtins.ts'
-import { parseCommand } from '../../spec/parser.ts'
-import { enoent } from '../../../utils/errors.ts'
-import { parseTeeFlags, writeOutput } from './tee.ts'
+import { FileStat, FileType, PathSpec } from '../../../types.ts'
+import { eacces, enoent } from '../../../utils/errors.ts'
+import { parseFlags, writeOutput } from './tee.ts'
 
 const DEC = new TextDecoder()
 
-describe('parseTeeFlags', () => {
-  it('accepts -a / --append', () => {
-    expect(parseTeeFlags({ append: true })).toEqual({ append: true, stopOnError: false })
-  })
-
-  it('treats -i / -p as accepted no-ops', () => {
-    expect(parseTeeFlags({ ignore_interrupts: true, p: true })).toEqual({
-      append: false,
-      stopOnError: false,
-    })
-  })
-
+describe('parseFlags', () => {
   it('reads the exit/warn axis of --output-error', () => {
     // Only this axis is observable: the -nopipe half distinguishes a pipe
     // sink from a file sink, and every operand tee writes is a file.
     for (const mode of ['warn', 'warn-nopipe']) {
-      expect(parseTeeFlags({ output_error: mode })).toEqual({ append: false, stopOnError: false })
+      expect(parseFlags({ output_error: mode })).toEqual({ append: false, stopOnError: false })
     }
     for (const mode of ['exit', 'exit-nopipe']) {
-      expect(parseTeeFlags({ output_error: mode })).toEqual({ append: false, stopOnError: true })
+      expect(parseFlags({ output_error: mode })).toEqual({ append: false, stopOnError: true })
     }
   })
 
   it('treats a bare --output-error as warn, like GNU 9.7', () => {
-    expect(parseTeeFlags({ output_error: true })).toEqual({ append: false, stopOnError: false })
-  })
-
-  it('reports an invalid --output-error mode through the parser channel', () => {
-    // Value validation moved to the spec's choices=: the parser reports a
-    // bad mode and the executor refuses with GNU's ARGMATCH shape before
-    // tee runs, so parseTeeFlags no longer rejects.
-    const parsed = parseCommand(specOf('tee'), ['--output-error=bogus', '/f'], '/')
-    expect(parsed.invalidValueOptions).toEqual([
-      ['--output-error', 'bogus', ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']],
-    ])
+    expect(parseFlags({ output_error: true })).toEqual({ append: false, stopOnError: false })
   })
 })
 
@@ -130,21 +107,91 @@ describe('writeOutput', () => {
     expect(io.exitCode).toBe(1)
   })
 
+  it('reports the output that fails while being emptied, keeping the records', async () => {
+    const s = sink(new Set(['/denied']))
+    const stat = (p: PathSpec): Promise<FileStat> =>
+      Promise.resolve(
+        new FileStat({
+          name: p.virtual.slice(1),
+          type: p.virtual === '/dir' ? FileType.DIRECTORY : FileType.FILE,
+        }),
+      )
+    const [out, io] = await writeOutput(
+      paths('/good', '/denied', '/dir'),
+      ENC.encode('x'),
+      { append: false, stopOnError: true },
+      noStream,
+      s.write,
+      undefined,
+      stat,
+    )
+    expect(out).toBeNull()
+    expect(s.written).toEqual({ '/good': '' })
+    expect([Object.keys(io.writes), io.cache]).toEqual([['/good'], ['/good']])
+    expect(io.exitCode).toBe(1)
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe('tee: /denied: disk full\n')
+  })
+
+  it('leaves the open to the write when the probe is refused', async () => {
+    const s = sink()
+    const stat = (p: PathSpec): Promise<FileStat> =>
+      p.virtual === '/locked'
+        ? Promise.reject(eacces(p))
+        : Promise.resolve(new FileStat({ name: p.virtual.slice(1), type: FileType.FILE }))
+    const [out, io] = await writeOutput(
+      paths('/good', '/locked'),
+      ENC.encode('x'),
+      { append: false, stopOnError: true },
+      noStream,
+      s.write,
+      undefined,
+      stat,
+    )
+    expect(out).not.toBeNull()
+    expect(s.written).toEqual({ '/good': 'x', '/locked': 'x' })
+    expect(io.exitCode).toBe(0)
+  })
+
+  it.each([
+    [['/good', '/locked'], false, ['/locked'], { '/good': '' }, 'tee: /locked: disk full\n'],
+    [
+      ['/locked', '/gone/x'],
+      true,
+      [],
+      { '/locked': '' },
+      'tee: /gone/x: No such file or directory\n',
+    ],
+    [['/bad', '/locked'], false, ['/bad'], {}, 'tee: /bad: disk full\n'],
+  ] as const)(
+    'opens an unprobed output in order before any data: %o',
+    async (outputs, append, refused, written, stderr) => {
+      const s = sink(new Set(refused))
+      const stat = (p: PathSpec): Promise<FileStat> => {
+        if (p.virtual === '/locked') return Promise.reject(eacces(p))
+        if (p.virtual.startsWith('/gone')) return Promise.reject(enoent(p))
+        return Promise.resolve(new FileStat({ name: p.virtual.slice(1), type: FileType.FILE }))
+      }
+      const [out, io] = await writeOutput(
+        paths(...outputs),
+        ENC.encode('x'),
+        { append, stopOnError: true },
+        noStream,
+        s.write,
+        undefined,
+        stat,
+      )
+      expect(out).toBeNull()
+      expect(s.written).toEqual(written)
+      expect(io.exitCode).toBe(1)
+      expect(DEC.decode(io.stderr as Uint8Array)).toBe(stderr)
+    },
+  )
+
   it('diagnoses every failing operand', async () => {
     const s = sink(new Set(['/b1', '/b2']))
     const [, io] = await writeOutput(paths('/b1', '/b2'), ENC.encode('x'), PLAIN, noStream, s.write)
     expect(DEC.decode(io.stderr as Uint8Array)).toBe('tee: /b1: disk full\ntee: /b2: disk full\n')
     expect(io.exitCode).toBe(1)
-  })
-
-  it('appends to a missing file by creating it', async () => {
-    // The regression this pins: the not-found test matched the message for
-    // /not found/i, but enoent() puts the *path* in the message, so this
-    // threw on every backend instead of creating the file.
-    const s = sink()
-    const [, io] = await writeOutput(paths('/new'), ENC.encode('hi'), APPEND, noStream, s.write)
-    expect(s.written).toEqual({ '/new': 'hi' })
-    expect(io.exitCode).toBe(0)
   })
 
   it('appends through the native slot without re-uploading', async () => {

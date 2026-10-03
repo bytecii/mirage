@@ -12,14 +12,51 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, TypeVar
 
-from mirage.core.box.client import (BoxTokenManager, box_delete, box_get,
-                                    box_get_bytes, box_get_stream,
-                                    box_post_json, box_put_json,
-                                    box_upload_multipart)
+from mirage.core.box.client import (
+    BoxApiError,
+    BoxTokenManager,
+    box_delete,
+    box_get,
+    box_get_bytes,
+    box_get_stream,
+    box_options,
+    box_post_json,
+    box_put_json,
+    box_upload_multipart,
+)
+from mirage.utils.errors import enoent
 from mirage.utils.ranges import ByteWindow
+
+T = TypeVar("T")
+
+
+async def absent_on_404(virtual: str, call: Callable[[], Awaitable[T]]) -> T:
+    """Read Box's 404 as absence, leaving every other status a failure.
+
+    Box answers a folder id that has been deleted, or was never
+    reachable, with 404, and ``BoxApiError`` carries only an HTTP
+    status. Stamping that one status as ENOENT here keeps a single
+    definition of absence: stat, readdir and du's walk all read the
+    POSIX error instead of sniffing a status, so a 401/429/5xx stays a
+    failure rather than reading back as a missing path.
+
+    Args:
+        virtual (str): virtual path to name in the ENOENT.
+        call (Callable[[], Awaitable[T]]): the Box call to run.
+
+    Returns:
+        T: whatever the call returned.
+    """
+    try:
+        return await call()
+    except BoxApiError as exc:
+        if exc.status == 404:
+            raise enoent(virtual) from exc
+        raise
+
 
 LIST_FIELDS = "id,name,type,size,modified_at,etag,sha1,parent"
 SEARCH_FIELDS = "id,name,type,path_collection"
@@ -27,6 +64,7 @@ SEARCH_PAGE = 200
 # Box search serves at most 10,000 matches across all pages; a result set
 # that reaches the ceiling may be incomplete and must not narrow a scan.
 MAX_SEARCH_MATCHES = 10_000
+EVENTS_PAGE = 500
 
 
 async def list_folder_items(
@@ -61,14 +99,104 @@ async def list_folder_items(
     return out
 
 
-async def get_folder_info(tm: BoxTokenManager,
-                          folder_id: str) -> dict[str, Any]:
+def _next_position(data: dict[str, Any]) -> str | None:
+    value = data.get("next_stream_position")
+    return None if value is None or value == "" else str(value)
+
+
+async def events_now(tm: BoxTokenManager, stream_type: str) -> str:
+    """The current head of the user's event stream.
+
+    Args:
+        tm (BoxTokenManager): token manager.
+        stream_type (str): ``all``, ``changes`` or ``sync``.
+    """
+    data = await box_get(
+        tm,
+        f"{tm.api_base}/events",
+        params={
+            "stream_type": stream_type,
+            "stream_position": "now",
+        },
+    )
+    position = _next_position(data)
+    if position is None:
+        raise RuntimeError("Box GET /events returned no next_stream_position")
+    return position
+
+
+async def events_since(
+    tm: BoxTokenManager,
+    stream_position: str,
+    stream_type: str,
+    limit: int = EVENTS_PAGE,
+) -> tuple[list[dict[str, Any]], str]:
+    """Every user event after ``stream_position``, and the new position.
+
+    Box may answer with fewer events than ``limit`` while more remain,
+    so only an empty page ends the read. A page of events that does not
+    move the position on is refused: reading it again would return the
+    same page for as long as the server keeps answering that way.
+
+    Args:
+        tm (BoxTokenManager): token manager.
+        stream_position (str): position from a previous read.
+        stream_type (str): ``all``, ``changes`` or ``sync``.
+        limit (int): events per request (Box caps it at 500).
+    """
+    out: list[dict[str, Any]] = []
+    position = stream_position
+    while True:
+        data = await box_get(
+            tm,
+            f"{tm.api_base}/events",
+            params={
+                "stream_type": stream_type,
+                "stream_position": position,
+                "limit": limit,
+            },
+        )
+        entries = data.get("entries") or []
+        advanced = _next_position(data)
+        if not entries:
+            return out, advanced or position
+        if advanced is None or advanced == position:
+            raise RuntimeError(
+                "Box GET /events returned events but did not "
+                "advance next_stream_position"
+            )
+        out.extend(entries)
+        position = advanced
+
+
+async def realtime_server(tm: BoxTokenManager) -> dict[str, Any]:
+    """The long-poll server for the user's event stream.
+
+    ``OPTIONS /events`` hands back a ``realtime_server`` entry; a GET on
+    its ``url`` with ``&stream_position=<position>`` blocks until Box
+    answers ``new_change`` (read the events) or ``reconnect`` (ask for a
+    new server). The loop is the caller's.
+
+    Args:
+        tm (BoxTokenManager): token manager.
+    """
+    data = await box_options(tm, f"{tm.api_base}/events")
+    entries = data.get("entries") or []
+    if not entries:
+        raise RuntimeError("Box OPTIONS /events returned no realtime server")
+    server: dict[str, Any] = entries[0]
+    return server
+
+
+async def get_folder_info(
+    tm: BoxTokenManager, folder_id: str
+) -> dict[str, Any]:
     return await box_get(tm, f"{tm.api_base}/folders/{folder_id}")
 
 
-async def download_file(tm: BoxTokenManager,
-                        file_id: str,
-                        window: ByteWindow | None = None) -> bytes:
+async def download_file(
+    tm: BoxTokenManager, file_id: str, window: ByteWindow | None = None
+) -> bytes:
     """Download a file's content, optionally only a byte range of it.
 
     Args:
@@ -77,13 +205,14 @@ async def download_file(tm: BoxTokenManager,
         window (ByteWindow | None): the byte window, or None for the
             whole file.
     """
-    return await box_get_bytes(tm,
-                               f"{tm.api_base}/files/{file_id}/content",
-                               window=window)
+    return await box_get_bytes(
+        tm, f"{tm.api_base}/files/{file_id}/content", window=window
+    )
 
 
-def download_file_stream(tm: BoxTokenManager,
-                         file_id: str) -> AsyncIterator[bytes]:
+def download_file_stream(
+    tm: BoxTokenManager, file_id: str
+) -> AsyncIterator[bytes]:
     return box_get_stream(tm, f"{tm.api_base}/files/{file_id}/content")
 
 
@@ -134,59 +263,60 @@ async def search_content(
             return out, False
 
 
-async def upload_new_file(tm: BoxTokenManager, parent_id: str, name: str,
-                          data: bytes) -> dict[str, Any]:
+async def upload_new_file(
+    tm: BoxTokenManager, parent_id: str, name: str, data: bytes
+) -> dict[str, Any]:
     return await box_upload_multipart(
         tm,
-        f"{tm.api_base}/files/content",
-        {
-            "name": name,
-            "parent": {
-                "id": parent_id
-            }
-        },
+        f"{tm.upload_base}/files/content",
+        {"name": name, "parent": {"id": parent_id}},
         name,
         data,
     )
 
 
-async def upload_file_version(tm: BoxTokenManager, file_id: str, name: str,
-                              data: bytes) -> dict[str, Any]:
+async def upload_file_version(
+    tm: BoxTokenManager, file_id: str, name: str, data: bytes
+) -> dict[str, Any]:
     return await box_upload_multipart(
         tm,
-        f"{tm.api_base}/files/{file_id}/content",
+        f"{tm.upload_base}/files/{file_id}/content",
         {"name": name},
         name,
         data,
     )
 
 
-async def create_folder(tm: BoxTokenManager, parent_id: str,
-                        name: str) -> dict[str, Any]:
-    return await box_post_json(tm, f"{tm.api_base}/folders", {
-        "name": name,
-        "parent": {
-            "id": parent_id
-        }
-    })
+async def create_folder(
+    tm: BoxTokenManager, parent_id: str, name: str
+) -> dict[str, Any]:
+    return await box_post_json(
+        tm,
+        f"{tm.api_base}/folders",
+        {"name": name, "parent": {"id": parent_id}},
+    )
 
 
 async def delete_file(tm: BoxTokenManager, file_id: str) -> None:
     await box_delete(tm, f"{tm.api_base}/files/{file_id}")
 
 
-async def delete_folder(tm: BoxTokenManager,
-                        folder_id: str,
-                        recursive: bool = True) -> None:
-    await box_delete(tm,
-                     f"{tm.api_base}/folders/{folder_id}",
-                     params={"recursive": "true" if recursive else "false"})
+async def delete_folder(
+    tm: BoxTokenManager, folder_id: str, recursive: bool = True
+) -> None:
+    await box_delete(
+        tm,
+        f"{tm.api_base}/folders/{folder_id}",
+        params={"recursive": "true" if recursive else "false"},
+    )
 
 
-async def update_file(tm: BoxTokenManager,
-                      file_id: str,
-                      name: str | None = None,
-                      parent_id: str | None = None) -> dict[str, Any]:
+async def update_file(
+    tm: BoxTokenManager,
+    file_id: str,
+    name: str | None = None,
+    parent_id: str | None = None,
+) -> dict[str, Any]:
     body: dict[str, Any] = {}
     if name is not None:
         body["name"] = name
@@ -195,10 +325,12 @@ async def update_file(tm: BoxTokenManager,
     return await box_put_json(tm, f"{tm.api_base}/files/{file_id}", body)
 
 
-async def update_folder(tm: BoxTokenManager,
-                        folder_id: str,
-                        name: str | None = None,
-                        parent_id: str | None = None) -> dict[str, Any]:
+async def update_folder(
+    tm: BoxTokenManager,
+    folder_id: str,
+    name: str | None = None,
+    parent_id: str | None = None,
+) -> dict[str, Any]:
     body: dict[str, Any] = {}
     if name is not None:
         body["name"] = name
@@ -207,22 +339,24 @@ async def update_folder(tm: BoxTokenManager,
     return await box_put_json(tm, f"{tm.api_base}/folders/{folder_id}", body)
 
 
-async def copy_file(tm: BoxTokenManager,
-                    file_id: str,
-                    parent_id: str,
-                    name: str | None = None) -> dict[str, Any]:
+async def copy_file(
+    tm: BoxTokenManager, file_id: str, parent_id: str, name: str | None = None
+) -> dict[str, Any]:
     body: dict[str, Any] = {"parent": {"id": parent_id}}
     if name is not None:
         body["name"] = name
     return await box_post_json(tm, f"{tm.api_base}/files/{file_id}/copy", body)
 
 
-async def copy_folder(tm: BoxTokenManager,
-                      folder_id: str,
-                      parent_id: str,
-                      name: str | None = None) -> dict[str, Any]:
+async def copy_folder(
+    tm: BoxTokenManager,
+    folder_id: str,
+    parent_id: str,
+    name: str | None = None,
+) -> dict[str, Any]:
     body: dict[str, Any] = {"parent": {"id": parent_id}}
     if name is not None:
         body["name"] = name
-    return await box_post_json(tm, f"{tm.api_base}/folders/{folder_id}/copy",
-                               body)
+    return await box_post_json(
+        tm, f"{tm.api_base}/folders/{folder_id}/copy", body
+    )

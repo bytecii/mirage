@@ -9,7 +9,7 @@
       "world": {
         "runtimes": [
           "pyodide",
-          "vfs"
+          "workspace"
         ]
       },
       "build_error": {
@@ -24,22 +24,7 @@
       "world": {
         "runtimes": [
           "wasi",
-          "vfs"
-        ]
-      },
-      "build_error": {
-        "contains": "Python-only"
-      }
-    },
-    {
-      "id": "ts_rejects_sandlock",
-      "hosts": [
-        "typescript"
-      ],
-      "world": {
-        "runtimes": [
-          "sandlock",
-          "vfs"
+          "workspace"
         ]
       },
       "build_error": {
@@ -51,7 +36,7 @@
       "world": {
         "runtimes": [
           "ghost",
-          "vfs"
+          "workspace"
         ]
       },
       "build_error": {
@@ -71,7 +56,7 @@
               "homee": "/x"
             }
           },
-          "vfs"
+          "workspace"
         ]
       },
       "build_error": {
@@ -91,7 +76,7 @@
               "homee": "/x"
             }
           },
-          "vfs"
+          "workspace"
         ]
       },
       "build_error": {
@@ -111,7 +96,7 @@
               "home": "/nonexistent-wasi-build"
             }
           },
-          "vfs"
+          "workspace"
         ]
       },
       "build_error": {
@@ -122,11 +107,11 @@
       "id": "syntax_error_exit2",
       "world": {
         "runtimes": [
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
@@ -144,20 +129,20 @@
       "id": "syntax_error_unclamped",
       "world": {
         "runtimes": [
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         }
       },
       "steps": [
         {
-          "command": "if then fi this-is-a-deliberately-long-unparsable-line-well-past-forty-chars",
+          "command": "if ; this-is-a-deliberately-long-unparsable-line-well-past-forty-chars",
           "expect": {
             "exit": 2,
-            "stderr": "mirage: syntax error near 'if then fi this-is-a-deliberately-long-unparsable-line-well-past-forty-chars'\n"
+            "stderr": "mirage: syntax error near 'if ; this-is-a-deliberately-long-unparsable-line-well-past-forty-chars'\n"
           }
         }
       ]
@@ -167,14 +152,14 @@
       "world": {
         "runtimes": [
           "monty",
-          "vfs"
+          "workspace"
         ],
         "mounts": {
           "/ram": {
-            "resource": "ram"
+            "vfs": "ram"
           }
         },
-        "policy": "{'deny': 'nothing runs'}"
+        "route_policy": "{'deny': 'nothing runs'}"
       },
       "steps": [
         {
@@ -188,7 +173,7 @@
           "command": "echo hi",
           "expect": {
             "exit": 126,
-            "stderr_contains": "policy denied: nothing runs"
+            "stderr_contains": "echo: Permission denied"
           }
         }
       ]

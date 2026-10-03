@@ -30,6 +30,7 @@ import mirage.commands.builtin
 NATIVE_RANGE = {
     "box",
     "databricks_volume",
+    "dev",
     "dify",
     "discord",
     "disk",
@@ -37,6 +38,7 @@ NATIVE_RANGE = {
     "gdrive",
     "gridfs",
     "hf_buckets",
+    "hf_hub",
     "nextcloud",
     "onedrive",
     "ram",
@@ -56,7 +58,8 @@ def _io_tables() -> dict[str, object]:
             continue
         try:
             io = importlib.import_module(
-                f"mirage.commands.builtin.{mod.name}.io")
+                f"mirage.commands.builtin.{mod.name}.io"
+            )
         except ImportError:
             continue
         table = getattr(io, "IO", None)

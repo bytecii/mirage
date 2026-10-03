@@ -15,29 +15,38 @@
 import json
 
 from mirage.accessor.trello import TrelloAccessor
-from mirage.commands.builtin.trello._input import (file_operand,
-                                                   resolve_text_input)
-from mirage.commands.config import CommandOpts
-from mirage.commands.registry import command
-from mirage.commands.spec.types import CommandSpec, FlagView, Option
+from mirage.commands.builtin.trello._input import (
+    file_operand,
+    resolve_text_input,
+)
+from mirage.commands.builtin.trello._scope import require_list
+from mirage.commands.config import CommandOpts, command
+from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import CommandSpec, Option
+from mirage.context import require_mount_writable
 from mirage.core.trello.client import card_create
 from mirage.core.trello.normalize import normalize_card
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
-SPEC = CommandSpec(options=(
-    Option(long="--list_id", type="str"),
-    Option(long="--name", type="str"),
-    Option(long="--desc", type="str"),
-    Option(long="--desc_file", type="path"),
-), )
+SPEC = CommandSpec(
+    options=(
+        Option(long="--list_id", type="str"),
+        Option(long="--name", type="str"),
+        Option(long="--desc", type="str"),
+        Option(long="--desc_file", type="path"),
+    ),
+)
 
 
-@command("trello card create", resource="trello", spec=SPEC, write=True)
+@command("trello card create", vfs="trello", spec=SPEC, write=True)
 async def trello_card_create(
-        accessor: TrelloAccessor, paths: list[PathSpec], texts: list[str],
-        opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    accessor: TrelloAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPEC)
     config = accessor.config
     list_id = fl.as_str("list_id")
@@ -47,22 +56,31 @@ async def trello_card_create(
     if not name:
         raise ValueError("--name is required")
     desc = None
-    if (fl.as_str("desc") or file_operand(fl, "desc_file")
-            or opts.stdin is not None):
+    if (
+        fl.as_str("desc")
+        or file_operand(fl, "desc_file")
+        or opts.stdin is not None
+    ):
         desc = await resolve_text_input(
-            config,
+            accessor,
             inline_text=fl.as_str("desc"),
             file_path=file_operand(fl, "desc_file"),
             stdin=opts.stdin,
             error_message="desc is required",
         )
+    # A card write is addressed by id, not path, so only the mount-wide
+    # grant can admit it (a write-granting carve-out names no card).
+    require_mount_writable()
+    await require_list(accessor, list_id)
     card = await card_create(
         config,
         list_id=list_id,
         name=name,
         desc=desc,
+        session=accessor.pool,
     )
     return yield_bytes(
-        json.dumps(normalize_card(card),
-                   ensure_ascii=False,
-                   separators=(",", ":")).encode()), IOResult()
+        json.dumps(
+            normalize_card(card), ensure_ascii=False, separators=(",", ":")
+        ).encode()
+    ), IOResult()

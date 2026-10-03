@@ -12,12 +12,22 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from dataclasses import replace
+
 import pytest
 
 from mirage.cache.index import NULL_INDEX
 from mirage.commands.builtin.generic.rm_cmd import make_rm
 from mirage.commands.config import CommandOpts
-from mirage.types import PathSpec
+from mirage.commands.errors import UsageError
+from mirage.context import (
+    reset_current_session,
+    reset_mount_gate,
+    set_current_session,
+    set_mount_gate,
+)
+from mirage.types import MountMode, PathSpec, ShowEntry, ShownPaths
+from mirage.workspace.session import SessionState
 
 
 class FakeAccessor:
@@ -35,7 +45,7 @@ def _make_rm(files: set[str], calls: list[tuple]):
             raise FileNotFoundError(path.virtual)
         files.remove(path.virtual)
 
-    return make_rm(resource="gdocs", glob_fn=resolve_glob, unlink=unlink)
+    return make_rm(vfs="gdocs", glob_fn=resolve_glob, unlink=unlink)
 
 
 @pytest.mark.asyncio
@@ -52,8 +62,23 @@ async def test_rm_threads_accessor_and_index_into_unlink():
 @pytest.mark.asyncio
 async def test_rm_missing_operand():
     rm = _make_rm(set(), [])
-    with pytest.raises(ValueError, match="missing operand"):
+    with pytest.raises(UsageError) as info:
         await rm(FakeAccessor(), [], [], CommandOpts())
+    assert str(info.value) == (
+        "rm: missing operand\nTry 'rm --help' for more information."
+    )
+    assert info.value.exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_rm_force_without_operands_does_nothing():
+    calls: list[tuple] = []
+    rm = _make_rm(set(), calls)
+    out, result = await rm(
+        FakeAccessor(), [], [], CommandOpts(flags={"f": True})
+    )
+    assert (out, result.exit_code, result.stderr) == (None, 0, None)
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -67,18 +92,61 @@ async def test_rm_enoent_reports_and_continues_without_force():
     ]
     _, result = await rm(FakeAccessor(), paths, [], CommandOpts())
     assert result.exit_code == 1
-    assert result.stderr == (b"rm: cannot remove '/owned/x.json': "
-                             b"No such file or directory\n")
+    assert result.stderr == (
+        b"rm: cannot remove '/owned/x.json': No such file or directory\n"
+    )
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_rm_holds_each_path_to_its_regions_mode():
+    # The bound unlink rides the same guard chain as the generic rm's
+    # slots: the command gate admits rm because one region grants
+    # writes, and each unlink still answers for its own path.
+    files = {"/gdocs/plain.json", "/gdocs/build/a.json"}
+    calls: list[tuple] = []
+    rm = _make_rm(files, calls)
+    sess = SessionState(
+        session_id="agent",
+        mount_modes={"/gdocs": MountMode.READ},
+        shown_paths=ShownPaths(
+            entries=(ShowEntry("/gdocs/build", MountMode.WRITE),)
+        ),
+    )
+    session_token = set_current_session(sess)
+    gate_token = set_mount_gate("/gdocs", MountMode.WRITE)
+    try:
+        _, result = await rm(
+            FakeAccessor(),
+            [
+                PathSpec.from_str_path("/gdocs/plain.json"),
+                PathSpec.from_str_path("/gdocs/build/a.json"),
+            ],
+            [],
+            CommandOpts(),
+        )
+    finally:
+        reset_mount_gate(gate_token)
+        reset_current_session(session_token)
+    assert result.exit_code == 1
+    assert result.stderr == (
+        b"rm: cannot remove '/gdocs/plain.json': Read-only file system\n"
+    )
+    # The refused path never reached the backend; the granted one did.
+    assert [c[1].virtual for c in calls] == ["/gdocs/build/a.json"]
+    assert files == {"/gdocs/plain.json"}
 
 
 @pytest.mark.asyncio
 async def test_rm_force_swallows_enoent():
     calls: list[tuple] = []
     rm = _make_rm(set(), calls)
-    _, result = await rm(FakeAccessor(),
-                         [PathSpec.from_str_path("/owned/x.json")], [],
-                         CommandOpts(flags={"f": True}))
+    _, result = await rm(
+        FakeAccessor(),
+        [PathSpec.from_str_path("/owned/x.json")],
+        [],
+        CommandOpts(flags={"f": True}),
+    )
     assert result.exit_code == 0
     assert len(calls) == 1
 
@@ -91,11 +159,26 @@ async def test_rm_verbose_reports_each_removal():
         PathSpec.from_str_path("/owned/a.gdoc.json"),
         PathSpec.from_str_path("/owned/b.gdoc.json"),
     ]
-    output, result = await rm(FakeAccessor(), paths, [],
-                              CommandOpts(flags={"v": True}))
+    output, result = await rm(
+        FakeAccessor(), paths, [], CommandOpts(flags={"v": True})
+    )
     assert isinstance(output, bytes)
     text = output.decode()
     assert "removed '/owned/a.gdoc.json'" in text
     assert "removed '/owned/b.gdoc.json'" in text
     assert result.exit_code == 0
     assert not files
+
+
+@pytest.mark.asyncio
+async def test_rm_empty_operand_keeps_its_spelling():
+    calls: list[tuple] = []
+    rm = _make_rm(set(), calls)
+    path = replace(
+        PathSpec.from_str_path("/owned"), raw_path="", walk_error="ENOENT"
+    )
+    _, result = await rm(FakeAccessor(), [path], [], CommandOpts())
+    assert result.stderr == (
+        b"rm: cannot remove '': No such file or directory\n"
+    )
+    assert calls == []

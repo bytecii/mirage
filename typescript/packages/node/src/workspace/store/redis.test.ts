@@ -15,7 +15,7 @@
 import { randomUUID } from 'node:crypto'
 import { createClient } from 'redis'
 import { describe, expect, it } from 'vitest'
-import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { MountMode } from '@struktoai/mirage-core/types'
 import { Workspace } from '../../workspace.ts'
 import { RedisWorkspaceStateStore } from './redis.ts'
@@ -127,7 +127,7 @@ describe.skipIf(skip)('RedisWorkspaceStateStore', () => {
     const storeA = makeStore(prefix)
     const storeB = makeStore(prefix)
     const ws = new Workspace(
-      { '/data': new RAMResource() },
+      { '/data': new RAMVFS() },
       { mode: MountMode.EXEC, workspaceId: 'agent-ws', store: storeA },
     )
     try {
@@ -145,6 +145,33 @@ describe.skipIf(skip)('RedisWorkspaceStateStore', () => {
       await cleanup(prefix)
       await storeA.close()
       await storeB.close()
+    }
+  })
+
+  it('drops every key of a workspace', async () => {
+    const prefix = testPrefix()
+    const store = makeStore(prefix)
+    try {
+      await store.sessions('ws1').set('s1', { session_id: 's1' })
+      await store.namespace('ws1').set('/a', { mode: 0o600 })
+      await store.observer('ws1').append('d/s1.jsonl', new TextEncoder().encode('{}\n'))
+      await store.setMeta('ws1', { workspace_id: 'ws1' })
+      await store.setMeta('ws2', { workspace_id: 'ws2' })
+      await store.drop('ws1')
+      const c = createClient({ url: REDIS_URL ?? 'redis://localhost:6379/0' })
+      await c.connect()
+      const keys: string[] = []
+      for await (const key of c.scanIterator({ MATCH: `${prefix}ws1:*` })) {
+        keys.push(...(Array.isArray(key) ? key : [key]))
+      }
+      const meta = await c.hGet(`${prefix}workspaces`, 'ws1')
+      await c.quit()
+      expect(keys).toEqual([])
+      expect(meta).toBeNull()
+      expect(await store.loadMeta('ws2')).not.toBeNull()
+    } finally {
+      await cleanup(prefix)
+      await store.close()
     }
   })
 })

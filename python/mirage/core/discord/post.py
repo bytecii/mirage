@@ -14,8 +14,12 @@
 
 from typing import Any
 
-from mirage.core.discord.client import (discord_delete, discord_patch,
-                                        discord_post)
+from mirage.core.api.client import SessionArg
+from mirage.core.discord.client import (
+    discord_delete,
+    discord_patch,
+    discord_post,
+)
 from mirage.core.discord.config import DiscordConfig
 
 
@@ -24,6 +28,7 @@ async def send_message(
     channel_id: str,
     text: str,
     message_reference_id: str | None = None,
+    session: SessionArg = None,
 ) -> dict[str, Any]:
     """Send a message to a channel.
 
@@ -32,6 +37,7 @@ async def send_message(
         channel_id (str): channel ID.
         text (str): message content.
         message_reference_id (str | None): reply to message.
+        session (SessionArg): pool or live session to ride.
 
     Returns:
         dict: API response.
@@ -40,9 +46,7 @@ async def send_message(
     if message_reference_id:
         body["message_reference"] = {"message_id": message_reference_id}
     return await discord_post(
-        config,
-        f"/channels/{channel_id}/messages",
-        body,
+        config, f"/channels/{channel_id}/messages", body, session=session
     )
 
 
@@ -51,6 +55,7 @@ async def edit_message(
     channel_id: str,
     message_id: str,
     text: str,
+    session: SessionArg = None,
 ) -> dict[str, Any]:
     """Edit the content of a message the bot authored.
 
@@ -59,6 +64,7 @@ async def edit_message(
         channel_id (str): channel ID.
         message_id (str): message ID.
         text (str): new message content.
+        session (SessionArg): pool or live session to ride.
 
     Returns:
         dict: the updated message.
@@ -67,6 +73,7 @@ async def edit_message(
         config,
         f"/channels/{channel_id}/messages/{message_id}",
         {"content": text},
+        session=session,
     )
 
 
@@ -74,6 +81,7 @@ async def delete_message(
     config: DiscordConfig,
     channel_id: str,
     message_id: str,
+    session: SessionArg = None,
 ) -> None:
     """Delete a message.
 
@@ -81,10 +89,12 @@ async def delete_message(
         config (DiscordConfig): Discord credentials.
         channel_id (str): channel ID.
         message_id (str): message ID.
+        session (SessionArg): pool or live session to ride.
     """
     await discord_delete(
         config,
         f"/channels/{channel_id}/messages/{message_id}",
+        session=session,
     )
 
 
@@ -95,6 +105,7 @@ async def send_poll(
     answers: list[str],
     duration_hours: int = 24,
     multiselect: bool = False,
+    session: SessionArg = None,
 ) -> dict[str, Any]:
     """Post a poll message to a channel.
 
@@ -105,26 +116,21 @@ async def send_poll(
         answers (list[str]): answer option texts.
         duration_hours (int): poll lifetime in hours.
         multiselect (bool): allow selecting several answers.
+        session (SessionArg): pool or live session to ride.
 
     Returns:
         dict: the created poll message.
     """
     body: dict[str, Any] = {
         "poll": {
-            "question": {
-                "text": question
-            },
-            "answers": [{
-                "poll_media": {
-                    "text": answer
-                }
-            } for answer in answers],
+            "question": {"text": question},
+            "answers": [
+                {"poll_media": {"text": answer}} for answer in answers
+            ],
             "duration": duration_hours,
             "allow_multiselect": multiselect,
         }
     }
     return await discord_post(
-        config,
-        f"/channels/{channel_id}/messages",
-        body,
+        config, f"/channels/{channel_id}/messages", body, session=session
     )

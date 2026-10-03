@@ -19,15 +19,20 @@ from typing import IO, Iterator, cast
 
 from dulwich.object_format import SHA1
 from dulwich.object_store import PackCapableObjectStore
-from dulwich.objects import Blob, ObjectID, RawObjectID, ShaFile
-from dulwich.pack import Pack, PackData, load_pack_index_file
+from dulwich.objects import Blob, ObjectID, RawObjectID, ShaFile, sha_to_hex
+from dulwich.pack import Pack, PackData, load_pack_index_file, write_pack_index
 from dulwich.repo import BaseRepo
 
 from mirage.bridge.sync import run_async_from_sync
 from mirage.commands.cli.builtin.git.format import abbrev_length
-from mirage.commands.cli.builtin.git.io import (file_size, read_file,
-                                                read_names, read_optional,
-                                                write_once)
+from mirage.commands.cli.builtin.git.io import (
+    basename,
+    file_size,
+    read_file,
+    read_names,
+    read_optional,
+    write_once,
+)
 from mirage.commands.cli.builtin.git.lazyfile import LazyFile
 from mirage.runtime.types import DispatchFn
 
@@ -37,16 +42,7 @@ IDX_SUFFIX = ".idx"
 PACK_SUFFIX = ".pack"
 FANOUT_LEN = 2
 SHA_LEN = 40
-
-
-def _basename(entry: str) -> str:
-    """The final segment of a readdir entry, directory marker stripped.
-
-    Args:
-        entry (str): one entry as the backend reported it, which may be
-            a bare name or a path and may carry a trailing slash.
-    """
-    return entry.rstrip("/").rsplit("/", 1)[-1]
+HEX_DIGITS = frozenset(b"0123456789abcdef")
 
 
 def loose_path(commondir: str, oid: ObjectID) -> str:
@@ -62,12 +58,14 @@ def loose_path(commondir: str, oid: ObjectID) -> str:
         oid (ObjectID): hex object id.
     """
     name = oid.decode()
-    return posixpath.join(commondir, OBJECTS_DIR, name[:FANOUT_LEN],
-                          name[FANOUT_LEN:])
+    return posixpath.join(
+        commondir, OBJECTS_DIR, name[:FANOUT_LEN], name[FANOUT_LEN:]
+    )
 
 
-async def store_blob(dispatch: DispatchFn, commondir: str,
-                     data: bytes) -> ObjectID:
+async def store_blob(
+    dispatch: DispatchFn, commondir: str, data: bytes
+) -> ObjectID:
     """Write file contents into the object database as a blob.
 
     Written straight through the dispatcher rather than through the
@@ -83,8 +81,9 @@ async def store_blob(dispatch: DispatchFn, commondir: str,
         data (bytes): the file's contents.
     """
     blob = Blob.from_string(data)
-    await write_once(dispatch, loose_path(commondir, blob.id),
-                     blob.as_legacy_object())
+    await write_once(
+        dispatch, loose_path(commondir, blob.id), blob.as_legacy_object()
+    )
     return blob.id
 
 
@@ -102,8 +101,12 @@ class LooseObjects:
         loop (asyncio.AbstractEventLoop): the loop serving the mount.
     """
 
-    def __init__(self, dispatch: DispatchFn, gitdir: str,
-                 loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        dispatch: DispatchFn,
+        gitdir: str,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
         self._dispatch = dispatch
         self._gitdir = gitdir
         self._root = posixpath.join(gitdir, OBJECTS_DIR)
@@ -127,7 +130,8 @@ class LooseObjects:
         if oid in self._cache:
             return self._cache[oid]
         data = run_async_from_sync(
-            read_optional(self._dispatch, self._path(oid)), self._loop)
+            read_optional(self._dispatch, self._path(oid)), self._loop
+        )
         obj = None if data is None else ShaFile.from_file(BytesIO(data))
         self._cache[oid] = obj
         return obj
@@ -140,10 +144,11 @@ class LooseObjects:
         """
         names = run_async_from_sync(
             read_names(self._dispatch, posixpath.join(self._root, fanout)),
-            self._loop)
+            self._loop,
+        )
         found = []
         for entry in names:
-            rest = _basename(entry)
+            rest = basename(entry)
             if len(fanout) + len(rest) == SHA_LEN:
                 found.append(ObjectID(f"{fanout}{rest}".encode()))
         return found
@@ -151,8 +156,9 @@ class LooseObjects:
     def ids(self) -> Iterator[ObjectID]:
         """Every loose id, walking the fanout directories by name."""
         for entry in run_async_from_sync(
-                read_names(self._dispatch, self._root), self._loop):
-            fanout = _basename(entry)
+            read_names(self._dispatch, self._root), self._loop
+        ):
+            fanout = basename(entry)
             if len(fanout) == FANOUT_LEN:
                 yield from self.ids_under(fanout)
 
@@ -168,9 +174,39 @@ class LooseObjects:
         """
         oid = obj.id
         run_async_from_sync(
-            write_once(self._dispatch, self._path(oid),
-                       obj.as_legacy_object()), self._loop)
+            write_once(
+                self._dispatch, self._path(oid), obj.as_legacy_object()
+            ),
+            self._loop,
+        )
         self._cache[oid] = obj
+
+    def hold(self, obj: ShaFile) -> None:
+        """Cache an object as if it were loose, without writing it.
+
+        Args:
+            obj (ShaFile): the object to hold.
+        """
+        self._cache[obj.id] = obj
+
+
+def _packed_under(pack: Pack, prefix: bytes) -> Iterator[ObjectID]:
+    """The ids one pack holds under a hex prefix, found through its
+    index's fan-out table and sorted names rather than by walking them
+    all.
+
+    Args:
+        pack (Pack): the pack.
+        prefix (bytes): lowercase hex id prefix.
+    """
+    whole = len(prefix) // 2 * 2
+    if not whole:
+        yield from (oid for oid in pack if oid.startswith(prefix))
+        return
+    for raw in pack.index.iter_prefix(bytes.fromhex(prefix[:whole].decode())):
+        oid = sha_to_hex(raw)
+        if oid.startswith(prefix):
+            yield oid
 
 
 class VfsObjectStore(PackCapableObjectStore):
@@ -201,6 +237,17 @@ class VfsObjectStore(PackCapableObjectStore):
         self._loose = loose
         self._packs = packs
         self.object_format = SHA1
+
+    def hold(self, obj: ShaFile) -> None:
+        """Make an object readable for this invocation without writing it.
+
+        What ``git diff`` hashes from the working tree is compared and
+        rendered like any blob, but git writes none of it.
+
+        Args:
+            obj (ShaFile): the object to hold.
+        """
+        self._loose.hold(obj)
 
     @property
     def packed_count(self) -> int:
@@ -240,15 +287,19 @@ class VfsObjectStore(PackCapableObjectStore):
         Overridden because the inherited version walks the whole store,
         which for a lazy database means fetching every object to answer
         an abbreviated id. A pack index is already in memory and sorted,
-        and the loose half narrows to a single fanout directory.
+        so only the fan-out bucket the prefix falls in is read, and the
+        loose half narrows to a single fanout directory. A prefix that is
+        not lowercase hex names no object.
 
         Args:
             prefix (bytes): hex id prefix, as typed.
         """
+        if not set(prefix) <= HEX_DIGITS:
+            return
         seen: set[ObjectID] = set()
         for pack in self._packs:
-            for oid in pack:
-                if oid.startswith(prefix) and oid not in seen:
+            for oid in _packed_under(pack, prefix):
+                if oid not in seen:
                     seen.add(oid)
                     yield oid
         if len(prefix) < FANOUT_LEN:
@@ -310,8 +361,9 @@ class VfsObjectStore(PackCapableObjectStore):
         raise NotImplementedError("VfsObjectStore writes loose objects only")
 
 
-async def load_packs(dispatch: DispatchFn, gitdir: str,
-                     loop: asyncio.AbstractEventLoop) -> list[Pack]:
+async def load_packs(
+    dispatch: DispatchFn, gitdir: str, loop: asyncio.AbstractEventLoop
+) -> list[Pack]:
     """Open every packfile under ``.git/objects/pack``.
 
     The index is read whole, because dulwich unpacks it through the
@@ -329,10 +381,10 @@ async def load_packs(dispatch: DispatchFn, gitdir: str,
     root = posixpath.join(gitdir, PACK_DIR)
     packs: list[Pack] = []
     for entry in await read_names(dispatch, root):
-        name = _basename(entry)
+        name = basename(entry)
         if not name.endswith(IDX_SUFFIX):
             continue
-        stem = name[:-len(IDX_SUFFIX)]
+        stem = name[: -len(IDX_SUFFIX)]
         idx_bytes = await read_file(dispatch, posixpath.join(root, name))
         index = load_pack_index_file(name, BytesIO(idx_bytes), SHA1)
         pack_path = posixpath.join(root, f"{stem}{PACK_SUFFIX}")
@@ -351,8 +403,9 @@ async def load_packs(dispatch: DispatchFn, gitdir: str,
     return packs
 
 
-async def load_object_store(dispatch: DispatchFn,
-                            gitdir: str) -> VfsObjectStore:
+async def load_object_store(
+    dispatch: DispatchFn, gitdir: str
+) -> VfsObjectStore:
     """Assemble the object database for one repository.
 
     Args:
@@ -360,8 +413,46 @@ async def load_object_store(dispatch: DispatchFn,
         gitdir (str): absolute virtual path of the ``.git`` directory.
     """
     loop = asyncio.get_running_loop()
-    return VfsObjectStore(LooseObjects(dispatch, gitdir, loop), await
-                          load_packs(dispatch, gitdir, loop))
+    return VfsObjectStore(
+        LooseObjects(dispatch, gitdir, loop),
+        await load_packs(dispatch, gitdir, loop),
+    )
+
+
+def _index_pack(data: bytes) -> tuple[bytes, bytes]:
+    """A received pack's v2 index and its trailing checksum.
+
+    Args:
+        data (bytes): the whole packfile, deltas resolved inside it.
+    """
+    pack = PackData.from_file(BytesIO(data), SHA1, len(data))
+    checksum = pack.get_stored_checksum()
+    out = BytesIO()
+    write_pack_index(out, pack.sorted_entries(), checksum)
+    return out.getvalue(), checksum
+
+
+async def store_pack(
+    dispatch: DispatchFn, commondir: str, data: bytes
+) -> None:
+    """Keep a fetched pack whole, beside the index git reads it through.
+
+    Named by the pack's own checksum, as git names one it receives, and
+    written index last so a reader that lists ``.idx`` files never
+    finds one whose pack is not there yet.
+
+    Args:
+        dispatch (DispatchFn): workspace op dispatcher.
+        commondir (str): absolute virtual path of the shared git
+            directory, which owns the object database.
+        data (bytes): the packfile; empty stores nothing.
+    """
+    if not data:
+        return
+    index, checksum = await asyncio.to_thread(_index_pack, data)
+    stem = posixpath.join(commondir, PACK_DIR, f"pack-{checksum.hex()}")
+    await write_once(dispatch, f"{stem}{PACK_SUFFIX}", data)
+    await write_once(dispatch, f"{stem}{IDX_SUFFIX}", index)
 
 
 def abbrev_for(repo: BaseRepo) -> int:

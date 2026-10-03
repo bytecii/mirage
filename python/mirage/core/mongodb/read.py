@@ -12,45 +12,84 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+
 from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.mongodb._schema_json import (build_collection_schema_json,
-                                              build_database_json)
-from mirage.core.mongodb.client import database_exists, entity_exists
+from mirage.core.hierarchy.read import make_read
+from mirage.core.hierarchy.scope import ScopeMatch
+from mirage.core.mongodb._schema_json import (
+    build_collection_schema_json,
+    build_database_json,
+)
+from mirage.core.mongodb.readdir import database_guard, entity_guard
 from mirage.core.mongodb.scope import detect_scope
 from mirage.core.mongodb.stream import read_stream, render_doc
-from mirage.core.mongodb.types import ScopeLevel
 from mirage.types import PathSpec
-from mirage.utils.errors import enoent
 
 
-async def read(
+async def _read_documents(
+    accessor: MongoDBAccessor,
+    match: ScopeMatch,
+    path: PathSpec,
+    index: IndexCacheStore,
+) -> bytes:
+    chunks: list[bytes] = []
+    async for chunk in read_stream(accessor, path, index):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _read_schema_json(
+    accessor: MongoDBAccessor,
+    match: ScopeMatch,
+    path: PathSpec,
+    index: IndexCacheStore,
+) -> bytes:
+    await entity_guard(accessor, match, path.virtual)
+    payload = await build_collection_schema_json(
+        accessor, match.slots["database"], match.slots["name"]
+    )
+    return (render_doc(payload) + "\n").encode()
+
+
+async def _read_database_json(
+    accessor: MongoDBAccessor,
+    match: ScopeMatch,
+    path: PathSpec,
+    index: IndexCacheStore,
+) -> bytes:
+    await database_guard(accessor, match, path.virtual)
+    payload = await build_database_json(accessor, match.slots["database"])
+    return (render_doc(payload) + "\n").encode()
+
+
+read = make_read(
+    detect_scope,
+    readers={
+        "documents": _read_documents,
+        "schema_json": _read_schema_json,
+        "database_json": _read_database_json,
+    },
+)
+
+
+async def stream_any(
     accessor: MongoDBAccessor,
     path: PathSpec,
     index: IndexCacheStore = NULL_INDEX,
-) -> bytes:
-    scope = detect_scope(path)
-    if scope.level == ScopeLevel.DOCUMENTS:
-        if not await entity_exists(accessor.client, accessor.config,
-                                   scope.database, scope.name, scope.kind,
-                                   accessor):
-            raise enoent(path)
-        chunks: list[bytes] = []
-        async for chunk in read_stream(accessor, path, index):
-            chunks.append(chunk)
-        return b"".join(chunks)
-    if scope.level == ScopeLevel.SCHEMA_JSON:
-        if not await entity_exists(accessor.client, accessor.config,
-                                   scope.database, scope.name, scope.kind,
-                                   accessor):
-            raise enoent(path)
-        payload = await build_collection_schema_json(accessor, scope.database,
-                                                     scope.name)
-        return (render_doc(payload) + "\n").encode()
-    if scope.level == ScopeLevel.DATABASE_JSON:
-        if not await database_exists(accessor.client, accessor.config,
-                                     scope.database, accessor):
-            raise enoent(path)
-        payload = await build_database_json(accessor, scope.database)
-        return (render_doc(payload) + "\n").encode()
-    raise enoent(path)
+) -> AsyncIterator[bytes]:
+    """Serve every readable leaf through the same streaming interface.
+
+    Args:
+        accessor (MongoDBAccessor): backend handle.
+        path (PathSpec): resolved file.
+        index (IndexCacheStore): command-scoped listing cache.
+    """
+    if detect_scope(path).kind == "documents":
+        async with aclosing(read_stream(accessor, path, index)) as stream:
+            async for chunk in stream:
+                yield chunk
+    else:
+        yield await read(accessor, path, index)

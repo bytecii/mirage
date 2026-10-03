@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { JaegerAccessor, type JaegerAccessorConfig } from '../../accessor/jaeger.ts'
+import type { Evicted, IndexEntry, SetDirOptions } from '../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { PathSpec } from '../../types.ts'
 import { stripSlash } from '../../utils/slash.ts'
@@ -44,8 +45,22 @@ function accessor(transport: JaegerTransport, config: JaegerAccessorConfig = {})
   return new JaegerAccessor(transport, config)
 }
 
+class WindowSpy extends RAMIndexCacheStore {
+  readonly windows = new Map<string, boolean>()
+
+  override setDir(
+    vfsPath: string,
+    entries: readonly [string, IndexEntry][],
+    expiredAt?: Date | null,
+    options: SetDirOptions = {},
+  ): Promise<Evicted[]> {
+    this.windows.set(vfsPath, options.window === true)
+    return super.setDir(vfsPath, entries, expiredAt, options)
+  }
+}
+
 function spec(virtual: string): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath: stripSlash(virtual) })
+  return new PathSpec({ virtual, directory: virtual, vfsPath: stripSlash(virtual) })
 }
 
 import { readdir } from './readdir.ts'
@@ -181,5 +196,20 @@ describe('jaeger readdir', () => {
     await expect(
       readdir(accessor(t), spec('/traces'), new RAMIndexCacheStore()),
     ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+})
+
+describe('jaeger trace window', () => {
+  it('writes a trace listing as a window', async () => {
+    // The listing is the newest defaultTraceLimit traces; an older trace
+    // that falls off it is still in Jaeger.
+    const index = new WindowSpy()
+    const transport = new RecordingTransport({
+      ...SERVICES,
+      '/api/traces': { data: [{ traceID: TRACE_A }] },
+    })
+    const out = await readdir(accessor(transport), spec('/services/checkout/traces'), index)
+    expect(out).toEqual([`/services/checkout/traces/${TRACE_A}.json`])
+    expect(index.windows.get('/services/checkout/traces')).toBe(true)
   })
 })

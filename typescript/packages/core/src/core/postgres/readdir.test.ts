@@ -25,7 +25,7 @@ vi.mock('./client.ts', () => ({
 import { PostgresAccessor } from '../../accessor/postgres.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { PathSpec } from '../../types.ts'
-import { resolvePostgresConfig } from '../../resource/postgres/config.ts'
+import { resolvePostgresConfig } from '../../vfs/postgres/config.ts'
 import type { PgDriver } from './_driver.ts'
 import * as client from './client.ts'
 import { readdir } from './readdir.ts'
@@ -47,38 +47,41 @@ describe('readdir', () => {
     const path = new PathSpec({
       virtual: '/pg/',
       directory: '/pg/',
-      resourcePath: mountKey('/pg/', '/pg'),
+      vfsPath: mountKey('/pg/', '/pg'),
     })
     const out = await readdir(accessor, path)
     expect(out).toEqual(['/pg/database.json', '/pg/public', '/pg/analytics'])
   })
 
   it('lists schema: tables and views directories', async () => {
+    vi.mocked(client.listSchemas).mockResolvedValue(['public'])
     const out = await readdir(
       makeAccessor(),
       new PathSpec({
         virtual: '/pg/public',
         directory: '/pg/public',
-        resourcePath: mountKey('/pg/public', '/pg'),
+        vfsPath: mountKey('/pg/public', '/pg'),
       }),
     )
     expect(out).toEqual(['/pg/public/tables', '/pg/public/views'])
   })
 
   it('lists kind=tables', async () => {
+    vi.mocked(client.listSchemas).mockResolvedValue(['public'])
     vi.mocked(client.listTables).mockResolvedValue(['users', 'orders'])
     const out = await readdir(
       makeAccessor(),
       new PathSpec({
         virtual: '/pg/public/tables',
         directory: '/pg/public/tables',
-        resourcePath: mountKey('/pg/public/tables', '/pg'),
+        vfsPath: mountKey('/pg/public/tables', '/pg'),
       }),
     )
     expect(out).toEqual(['/pg/public/tables/users', '/pg/public/tables/orders'])
   })
 
   it('lists kind=views: union of views and matviews, sorted', async () => {
+    vi.mocked(client.listSchemas).mockResolvedValue(['public'])
     vi.mocked(client.listViews).mockResolvedValue(['z_view'])
     vi.mocked(client.listMatviews).mockResolvedValue(['a_mview', 'z_view'])
     const out = await readdir(
@@ -86,19 +89,21 @@ describe('readdir', () => {
       new PathSpec({
         virtual: '/pg/public/views',
         directory: '/pg/public/views',
-        resourcePath: mountKey('/pg/public/views', '/pg'),
+        vfsPath: mountKey('/pg/public/views', '/pg'),
       }),
     )
     expect(out).toEqual(['/pg/public/views/a_mview', '/pg/public/views/z_view'])
   })
 
   it('lists entity: schema.json + semantic.json + rows.jsonl', async () => {
+    vi.mocked(client.listSchemas).mockResolvedValue(['public'])
+    vi.mocked(client.listTables).mockResolvedValue(['users'])
     const out = await readdir(
       makeAccessor(),
       new PathSpec({
         virtual: '/pg/public/tables/users',
         directory: '/pg/public/tables/users',
-        resourcePath: mountKey('/pg/public/tables/users', '/pg'),
+        vfsPath: mountKey('/pg/public/tables/users', '/pg'),
       }),
     )
     expect(out).toEqual([
@@ -115,7 +120,7 @@ describe('readdir', () => {
     const path = new PathSpec({
       virtual: '/pg/',
       directory: '/pg/',
-      resourcePath: mountKey('/pg/', '/pg'),
+      vfsPath: mountKey('/pg/', '/pg'),
     })
     await readdir(accessor, path, index)
     vi.mocked(client.listSchemas).mockClear()
@@ -130,9 +135,80 @@ describe('readdir', () => {
         new PathSpec({
           virtual: '/pg/public/tables/users/schema.json',
           directory: '/pg/public/tables/users/',
-          resourcePath: mountKey('/pg/public/tables/users/schema.json', '/pg'),
+          vfsPath: mountKey('/pg/public/tables/users/schema.json', '/pg'),
         }),
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('refuses a schema that does not exist', async () => {
+    vi.mocked(client.listSchemas).mockResolvedValue(['public'])
+    await expect(
+      readdir(
+        makeAccessor(),
+        new PathSpec({
+          virtual: '/pg/nope.txt',
+          directory: '/pg/nope.txt',
+          vfsPath: mountKey('/pg/nope.txt', '/pg'),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('refuses a kind directory under a schema that does not exist', async () => {
+    vi.mocked(client.listSchemas).mockResolvedValue(['public'])
+    vi.mocked(client.listTables).mockResolvedValue([])
+    await expect(
+      readdir(
+        makeAccessor(),
+        new PathSpec({
+          virtual: '/pg/nope/tables',
+          directory: '/pg/nope/tables',
+          vfsPath: mountKey('/pg/nope/tables', '/pg'),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('refuses an entity that does not exist', async () => {
+    vi.mocked(client.listSchemas).mockResolvedValue(['public'])
+    vi.mocked(client.listTables).mockResolvedValue(['users'])
+    await expect(
+      readdir(
+        makeAccessor(),
+        new PathSpec({
+          virtual: '/pg/public/tables/ghost',
+          directory: '/pg/public/tables/ghost',
+          vfsPath: mountKey('/pg/public/tables/ghost', '/pg'),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  // The entity guard stands in for the listing chain, so it has to answer for
+  // the schema as well: it used to check only that the table existed, and a
+  // table under a schema `schemas` leaves out listed, stat'd and read as if
+  // the mount could see it.
+  it('refuses an entity under a schema outside schemas', async () => {
+    vi.mocked(client.listSchemas).mockImplementation((_accessor, allow) =>
+      Promise.resolve(['public', 'secret'].filter((s) => allow == null || allow.includes(s))),
+    )
+    vi.mocked(client.listTables).mockClear()
+    vi.mocked(client.listTables).mockResolvedValue(['users'])
+    const accessor = new PostgresAccessor(
+      STUB_DRIVER,
+      resolvePostgresConfig({ dsn: 'postgres://localhost/db', schemas: ['public'] }),
+    )
+    await expect(
+      readdir(
+        accessor,
+        new PathSpec({
+          virtual: '/pg/secret/tables/users',
+          directory: '/pg/secret/tables/users',
+          vfsPath: mountKey('/pg/secret/tables/users', '/pg'),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(client.listTables).not.toHaveBeenCalled()
   })
 })

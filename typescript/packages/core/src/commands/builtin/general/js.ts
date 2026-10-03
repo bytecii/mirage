@@ -13,18 +13,68 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Accessor } from '../../../accessor/base.ts'
-import { IOResult, materialize } from '../../../io/types.ts'
-import type { PathSpec } from '../../../types.ts'
-import { handleJs } from '../../../workspace/executor/js/handle.ts'
+import { type ByteSource, IOResult, materialize } from '../../../io/types.ts'
+import { QuickJsUnavailableError } from '../../../runtime/js/quickjs/errors.ts'
+import type { DispatchFn } from '../../../runtime/types.ts'
+import { PathSpec } from '../../../types.ts'
+import type { ExecutionNode } from '../../../workspace/types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { LanguageRuntime } from '../../../runtime/language.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { resolveScript } from '../utils/operands.ts'
-import { FlagView } from '../../spec/types.ts'
-import { STDIN_OPERAND } from './interpreter.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import { makeInterpreterHandler, runtimeVersion, STDIN_OPERAND } from './interpreter.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
+
+type Result = [ByteSource | null, IOResult, ExecutionNode]
+
+export interface HandleJsDeps {
+  runtime: LanguageRuntime
+}
+
+const runJs = makeInterpreterHandler({
+  label: 'js',
+  payloadFlag: '-e',
+  isUnavailable: (err: unknown) => err instanceof QuickJsUnavailableError,
+})
+
+export async function handleJs(
+  dispatch: DispatchFn,
+  pathScope: PathSpec | null,
+  args: string[],
+  opts: {
+    command?: string
+    stdin: ByteSource | null
+    env: Record<string, string>
+    cwd?: PathSpec
+    code: string | null
+    module: boolean
+    signal?: AbortSignal
+    timeoutSeconds?: number
+  },
+  deps: HandleJsDeps,
+): Promise<Result> {
+  // A .mjs script is a module whatever the flag said (Python's js.py).
+  const module = opts.module || (pathScope?.virtual.endsWith('.mjs') ?? false)
+  return runJs(
+    dispatch,
+    pathScope,
+    args,
+    {
+      command: opts.command ?? 'js',
+      stdin: opts.stdin,
+      env: opts.env,
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      code: opts.code,
+      flags: { module },
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+      ...(opts.timeoutSeconds !== undefined ? { timeoutSeconds: opts.timeoutSeconds } : {}),
+    },
+    deps,
+  )
+}
 
 async function jsCommand(
   _accessor: Accessor,
@@ -32,24 +82,20 @@ async function jsCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  if (opts.execAllowed === false) {
-    return [
-      null,
-      new IOResult({
-        exitCode: 126,
-        stderr: ENC.encode("js: root mount '/' is not in EXEC mode\n"),
-      }),
-    ]
-  }
-
+  const label = opts.command ?? 'js'
   if (!(opts.runtime instanceof LanguageRuntime)) {
     return [
       null,
       new IOResult({
         exitCode: 127,
-        stderr: ENC.encode('js: command not found\n'),
+        stderr: ENC.encode(`${label}: command not found\n`),
       }),
     ]
+  }
+
+  const fl = new FlagView(opts.flags, specOf('js'))
+  if (fl.asBool('version')) {
+    return runtimeVersion(label, opts.runtime, opts.env ?? {}, opts.signal, opts.timeoutSeconds)
   }
 
   if (opts.dispatch === undefined) {
@@ -57,12 +103,11 @@ async function jsCommand(
       null,
       new IOResult({
         exitCode: 1,
-        stderr: ENC.encode('js: no dispatch available\n'),
+        stderr: ENC.encode(`${label}: no dispatch available\n`),
       }),
     ]
   }
 
-  const fl = new FlagView(opts.flags, specOf('js'))
   const code = fl.asStr('e') ?? null
   const hasCode = code !== null
   const module = fl.asBool('module')
@@ -86,6 +131,31 @@ async function jsCommand(
     argStrs = []
   }
 
+  // The x check follows the source's door, exactly as python3's: a
+  // file operand asks the per-path door, everything else keeps the
+  // whole-session rule.
+  if (scriptPath !== null) {
+    const allowed = opts.execPathAllowed?.(scriptPath.virtual) ?? opts.execAllowed !== false
+    if (!allowed) {
+      const display = scriptPath.rawPath !== '' ? scriptPath.rawPath : scriptPath.virtual
+      return [
+        null,
+        new IOResult({
+          exitCode: 126,
+          stderr: ENC.encode(`${label}: ${display}: not in EXEC mode\n`),
+        }),
+      ]
+    }
+  } else if (opts.execAllowed === false) {
+    return [
+      null,
+      new IOResult({
+        exitCode: 126,
+        stderr: ENC.encode(`${label}: root mount '/' is not in EXEC mode\n`),
+      }),
+    ]
+  }
+
   let resolvedCode: string | null = code
   let stdinForRuntime = opts.stdin
   if (resolvedCode === null && scriptPath === null && opts.stdin !== null) {
@@ -101,8 +171,10 @@ async function jsCommand(
     scriptPath,
     argStrs,
     {
+      command: label,
       stdin: stdinForRuntime,
       env: opts.env ?? {},
+      cwd: PathSpec.fromStrPath(opts.cwd),
       code: resolvedCode,
       module,
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
@@ -115,14 +187,14 @@ async function jsCommand(
 
 export const GENERAL_JS = command({
   name: 'js',
-  resource: null,
+  vfs: null,
   spec: specOf('js'),
   fn: jsCommand,
 })
 
 export const GENERAL_NODE = command({
   name: 'node',
-  resource: null,
+  vfs: null,
   spec: specOf('node'),
   fn: jsCommand,
 })

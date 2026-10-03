@@ -13,12 +13,19 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.ram import RAMAccessor
-from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
-                                               compute_nonempty_dirs,
-                                               emit_start_path, keep,
-                                               start_basename)
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.commands.builtin.find_eval import (
+    FindEntry,
+    PredNode,
+    build_tree,
+    compute_nonempty_dirs,
+    emit_start_path,
+    keep,
+    start_basename,
+)
 from mirage.types import PathSpec
 from mirage.utils.path import norm
+from mirage.utils.stat_view import DIR_SIZE
 
 
 async def find(
@@ -38,6 +45,7 @@ async def find(
     mindepth: int | None = None,
     empty: bool = False,
     tree: PredNode | None = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
     start_name = start_basename(path_spec)
     path = path_spec.mount_path
@@ -47,21 +55,43 @@ async def find(
     base_depth = p.count("/")
     results: list[str] = []
     if tree is None:
-        tree = build_tree(name=name,
-                          iname=iname,
-                          path_pattern=path_pattern,
-                          type=type,
-                          name_exclude=name_exclude,
-                          or_names=or_names,
-                          empty=empty)
-    nonempty = compute_nonempty_dirs([
-        *store.files, *(k for k in store.dirs if k != "/")
-    ]) if empty else set()
+        tree = build_tree(
+            name=name,
+            iname=iname,
+            path_pattern=path_pattern,
+            type=type,
+            name_exclude=name_exclude,
+            or_names=or_names,
+            empty=empty,
+        )
+    nonempty = (
+        compute_nonempty_dirs(
+            [*store.files, *(k for k in store.dirs if k != "/")]
+        )
+        if empty
+        else set()
+    )
+
+    device_of = getattr(store.files, "device_of", None)
+
+    def kind_of(key: str) -> str:
+        if device_of is not None and device_of(key) is not None:
+            return "c"
+        return "f"
+
+    def empty_of(key: str, kind: str) -> bool:
+        # GNU -empty matches only regular files (size 0) and empty dirs;
+        # a device is never empty-eligible.
+        if kind == "f":
+            return len(store.files[key]) == 0
+        if kind == "d":
+            return key not in nonempty
+        return False
 
     candidates: list[tuple[str, str]] = []
     if type != "d":
         for key in store.files:
-            candidates.append((key, "f"))
+            candidates.append((key, kind_of(key)))
     if type != "f":
         for key in store.dirs:
             candidates.append((key, "d"))
@@ -76,8 +106,7 @@ async def find(
         if key == p:
             root_kind = kind
             if empty:
-                root_is_empty = (len(store.files[key])
-                                 == 0) if kind == "f" else key not in nonempty
+                root_is_empty = empty_of(key, kind)
             if kind == "f":
                 root_size = len(store.files[key])
             continue
@@ -92,20 +121,19 @@ async def find(
 
         is_empty: bool | None = None
         if empty:
-            is_empty = (len(store.files[key])
-                        == 0) if kind == "f" else key not in nonempty
-        entry = FindEntry(key=key,
-                          name=key.rsplit("/", 1)[-1],
-                          kind=kind,
-                          depth=depth,
-                          is_empty=is_empty)
+            is_empty = empty_of(key, kind)
+        entry = FindEntry(
+            key=key,
+            name=key.rsplit("/", 1)[-1],
+            kind=kind,
+            depth=depth,
+            is_empty=is_empty,
+        )
         if not keep(entry, tree, mindepth):
             continue
 
         if min_size is not None or max_size is not None:
-            # Directories count as size 0 for -size (deliberate GNU
-            # divergence).
-            size = len(store.files[key]) if kind == "f" else 0
+            size = len(store.files[key]) if kind == "f" else DIR_SIZE
             if min_size is not None and size < min_size:
                 continue
             if max_size is not None and size > max_size:
@@ -114,17 +142,19 @@ async def find(
         results.append(key)
 
     if root_kind is not None:
-        emit_start_path(results,
-                        p,
-                        start_name,
-                        kind=root_kind,
-                        is_empty=root_is_empty,
-                        exists=True,
-                        tree=tree,
-                        maxdepth=maxdepth,
-                        mindepth=mindepth,
-                        size=root_size,
-                        min_size=min_size,
-                        max_size=max_size)
+        emit_start_path(
+            results,
+            p,
+            start_name,
+            kind=root_kind,
+            is_empty=root_is_empty,
+            exists=True,
+            tree=tree,
+            maxdepth=maxdepth,
+            mindepth=mindepth,
+            size=root_size,
+            min_size=min_size,
+            max_size=max_size,
+        )
 
     return sorted(results)

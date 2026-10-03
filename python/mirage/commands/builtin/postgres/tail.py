@@ -15,28 +15,32 @@
 import orjson
 
 from mirage.accessor.postgres import PostgresAccessor
-from mirage.commands.builtin.generic.tail import parse_flags
+from mirage.commands.builtin.generic.tail import parse_flags, tail_generic
 from mirage.commands.builtin.generic.tail import tail as generic_tail
-from mirage.commands.builtin.generic.tail import tail_generic
-from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.generic_bind.builders.common import \
-    resolve_or_empty
+from mirage.commands.builtin.generic_bind.adapter import (
+    bound_op,
+    resolve_or_empty,
+)
 from mirage.commands.builtin.postgres.io import IO
+from mirage.commands.builtin.utils.limit import row_cap_notice
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
-from mirage.commands.config import CommandOpts
-from mirage.commands.registry import command
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
 from mirage.core.postgres import client
 from mirage.core.postgres.read import read as postgres_read
-from mirage.core.postgres.scope import PostgresEntityRowsScope, detect_scope
+from mirage.core.postgres.readdir import entity_exists
+from mirage.core.postgres.scope import detect_scope
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("tail", resource="postgres", spec=SPECS["tail"])
-async def tail(accessor: PostgresAccessor, paths: list[PathSpec],
-               texts: list[str],
-               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+@command("tail", vfs="postgres", spec=SPECS["tail"])
+async def tail(
+    accessor: PostgresAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
     try:
         parsed = parse_flags(opts.flags)
     except ValueError as exc:
@@ -45,33 +49,66 @@ async def tail(accessor: PostgresAccessor, paths: list[PathSpec],
     if paths:
         scope = detect_scope(paths[0])
         # Row scopes fetch only the last N rows server-side (COUNT then
-        # OFFSET) instead of reading the whole relation.
-        if (len(paths) == 1 and not has_unresolved_glob(paths)
-                and isinstance(scope, PostgresEntityRowsScope)
-                and counts.byte_count is None and counts.from_byte is None
-                and counts.lines is not None):
-            limit = min(counts.lines, accessor.config.default_row_limit)
+        # OFFSET) instead of reading the whole relation. A follow polls
+        # the file as it grows, and a moving suffix has no byte position
+        # to measure against, so it reads the relation whole.
+        if (
+            len(paths) == 1
+            and not has_unresolved_glob(paths)
+            and scope.kind == "entity_rows"
+            and counts.byte_count is None
+            and counts.from_byte is None
+            and counts.lines is not None
+            and not parsed.follow
+            and await entity_exists(accessor, scope, paths[0].virtual)
+        ):
+            schema = scope.slots["schema"]
+            entity = scope.slots["entity"]
+            cap = accessor.config.max_read_rows
             pool = await accessor.pool()
             async with pool.acquire() as conn:
-                total = await client.count_rows(conn, scope.schema,
-                                                scope.entity)
-                offset = max(0, total - limit)
-                rows = await client.fetch_rows(conn,
-                                               scope.schema,
-                                               scope.entity,
-                                               limit=limit,
-                                               offset=offset)
+                total = await client.count_rows(conn, schema, entity)
+                # max_read_rows is the most rows one read may return; a
+                # suffix longer than that prints the ceiling and says so,
+                # where the ceiling (default_row_limit) used to stand in
+                # for the count with exit 0.
+                limit = min(counts.lines, total)
+                io = IOResult()
+                if limit > cap:
+                    limit = cap
+                    io = IOResult(
+                        exit_code=1,
+                        stderr=row_cap_notice(
+                            "tail",
+                            paths[0].raw_path,
+                            cap,
+                            "rows",
+                            "max_read_rows",
+                        ),
+                    )
+                rows = await client.fetch_rows(
+                    conn, schema, entity, limit=limit, offset=total - limit
+                )
             data = b""
             if rows:
-                data = ("\n".join(
-                    orjson.dumps(r, default=str).decode()
-                    for r in rows) + "\n").encode()
-            return generic_tail(data,
-                                n=counts.lines,
-                                c=counts.byte_count,
-                                from_line=counts.from_line,
-                                from_byte=counts.from_byte), IOResult()
+                data = (
+                    "\n".join(
+                        orjson.dumps(r, default=str).decode() for r in rows
+                    )
+                    + "\n"
+                ).encode()
+            return generic_tail(
+                data,
+                n=counts.lines,
+                c=counts.byte_count,
+                from_line=counts.from_line,
+                from_byte=counts.from_byte,
+            ), io
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
-    return await tail_generic(resolved, list(texts), opts,
-                              bound_op(IO.stat, accessor, opts.index),
-                              bound_op(postgres_read, accessor, opts.index))
+    return await tail_generic(
+        resolved,
+        list(texts),
+        opts,
+        bound_op(IO.stat, accessor, opts.index),
+        bound_op(postgres_read, accessor, opts.index),
+    )

@@ -18,7 +18,7 @@ import { RAMIndexCacheStore } from '../../../cache/index/ram.ts'
 import { SlackApiError, type SlackResponse } from '../../../core/slack/client.ts'
 import { materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
-import { FakeSlackTransport, makeFakeResource, seedChannel } from './_test_util.ts'
+import { FakeSlackTransport, makeFakeVfs, seedChannel } from './_test_util.ts'
 import { SLACK_GREP } from './grep.ts'
 import { SLACK_RG } from './rg.ts'
 
@@ -31,10 +31,10 @@ async function runGrep(
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const cmd = SLACK_GREP[0]
   if (cmd === undefined) throw new Error('grep not registered')
-  const resource = makeFakeResource(options.transport)
-  const result = await cmd.fn(resource.accessor, paths, texts, {
+  const vfs = makeFakeVfs(options.transport)
+  const result = await cmd.fn(vfs.accessor, paths, texts, {
     stdin: null,
-    flags: { args_l: true, w: true },
+    flags: { w: true },
     filetypeFns: null,
     cwd: '/',
     index: options.index,
@@ -62,10 +62,10 @@ async function runRg(
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const cmd = SLACK_RG[0]
   if (cmd === undefined) throw new Error('rg not registered')
-  const resource = makeFakeResource(options.transport)
-  const result = await cmd.fn(resource.accessor, paths, texts, {
+  const vfs = makeFakeVfs(options.transport)
+  const result = await cmd.fn(vfs.accessor, paths, texts, {
     stdin: null,
-    flags: { args_l: true, w: true },
+    flags: { word_regexp: true },
     filetypeFns: null,
     cwd: '/',
     index: options.index,
@@ -107,7 +107,7 @@ describe('slack grep: search push-down fallback', () => {
           virtual: '/mnt/slack/channels/general__C1',
           directory: '/mnt/slack/channels/general__C1',
           resolved: false,
-          resourcePath: mountKey('/mnt/slack/channels/general__C1', '/mnt/slack'),
+          vfsPath: mountKey('/mnt/slack/channels/general__C1', '/mnt/slack'),
         }),
       ],
       ['hello'],
@@ -139,7 +139,7 @@ describe('slack rg: search push-down fallback', () => {
           virtual: '/mnt/slack/channels/general__C1',
           directory: '/mnt/slack/channels/general__C1',
           resolved: false,
-          resourcePath: mountKey('/mnt/slack/channels/general__C1', '/mnt/slack'),
+          vfsPath: mountKey('/mnt/slack/channels/general__C1', '/mnt/slack'),
         }),
       ],
       ['hi'],

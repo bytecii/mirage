@@ -13,12 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.redis import RedisAccessor
-from mirage.cache.context import invalidate_after_unlink
-from mirage.core.redis.dest import check_dest_parents
-from mirage.core.timeutil import now_iso
-from mirage.resource.redis.store import RedisStore
+from mirage.cache.context import invalidate_subtree
+from mirage.core.redis.dest import check_dest_parents, lookup_error
 from mirage.types import PathSpec
+from mirage.utils.dates import now_iso
 from mirage.utils.path import norm
+from mirage.vfs.redis.store import RedisStore
 
 
 async def _move_subtree(store: RedisStore, s: str, d: str) -> None:
@@ -39,7 +39,7 @@ async def _move_subtree(store: RedisStore, s: str, d: str) -> None:
     new_prefix = d.rstrip("/") + "/"
     for key in sorted(await store.list_dirs()):
         if key.startswith(prefix):
-            new_key = new_prefix + key[len(prefix):]
+            new_key = new_prefix + key[len(prefix) :]
             mod = await store.get_modified(key)
             attrs = await store.get_attrs(key)
             await store.remove_dir(key)
@@ -52,7 +52,7 @@ async def _move_subtree(store: RedisStore, s: str, d: str) -> None:
                 await store.set_attrs(new_key, attrs)
     for key in await store.list_files():
         if key.startswith(prefix):
-            new_key = new_prefix + key[len(prefix):]
+            new_key = new_prefix + key[len(prefix) :]
             data = await store.get_file(key) or b""
             mod = await store.get_modified(key)
             attrs = await store.get_attrs(key)
@@ -100,6 +100,6 @@ async def rename(
             await store.set_attrs(d, attrs)
         await _move_subtree(store, s, d)
     else:
-        raise FileNotFoundError(s)
-    await invalidate_after_unlink(dst_spec)
-    await invalidate_after_unlink(src_spec)
+        raise await lookup_error(store, src_spec, s)
+    await invalidate_subtree(dst_spec)
+    await invalidate_subtree(src_spec)

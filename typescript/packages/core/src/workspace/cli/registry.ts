@@ -14,8 +14,9 @@
 
 import type { CLISpec } from '../../commands/cli/types.ts'
 import { BUILTIN_SPECS } from '../../commands/spec/builtins.ts'
+import { errorSummary } from '../../secrets/summary.ts'
 import { snakeToCamel } from '../../utils/normalize.ts'
-import { JOB_BUILTINS, KEYWORDS, NAMESPACE_COMMANDS, SHELL_NAMES } from '../route/constants.ts'
+import { JOB_BUILTINS, KEYWORDS, NAMESPACE_COMMANDS, SHELL_NAMES } from '../lookup/constants.ts'
 import { z } from 'zod'
 
 import type { CLIInstall } from './types.ts'
@@ -37,7 +38,7 @@ import { compareCodePoints } from '../../utils/sort.ts'
  * do is shadow a head word with a shell function, which is bash's own
  * rule, reversible with `unset -f`, bypassable with `command <name>`,
  * and visible through `type -a`. Pinning a head word against that
- * belongs in the policy layer's `preExecute`, since it is a
+ * belongs in the policy layer's `preCommand`, since it is a
  * per-deployment call rather than a property of the registry.
  */
 export class CLIRegistry {
@@ -81,6 +82,14 @@ export class CLIRegistry {
     spec: CLISpec,
     config: Record<string, unknown> | null,
   ): unknown {
+    // A config that is not an object is refused by type, rather than having
+    // its entries read as unknown keys. One the schema already parsed is
+    // still an object with the schema's own keys, so it installs as given,
+    // which is what the python arm does with an instance of its model.
+    if (config !== null && (typeof config !== 'object' || Array.isArray(config))) {
+      const kind = Array.isArray(config) ? 'array' : typeof config
+      throw new Error(`CLI '${name}': config must be an object, got ${kind}`)
+    }
     if (spec.script !== null) {
       // A script spec has no configModel: the mapping passes through
       // as-is for the program to consume.
@@ -95,7 +104,7 @@ export class CLIRegistry {
     const model = spec.configModel
     if (model instanceof z.ZodObject) {
       // The same snake_case YAML config block serves Python and TS alike
-      // (the resource registries already promise this), and the pydantic
+      // (the VFS registries already promise this), and the pydantic
       // arm is snake_case-native, so a key that camelizes onto a declared
       // field is delivered there. Keys that resolve to no field keep the
       // caller's spelling: an unknown key is then reported as typed, and
@@ -131,7 +140,15 @@ export class CLIRegistry {
           )
         }
       }
-      return model.parse(norm)
+      try {
+        return model.parse(norm)
+      } catch (err) {
+        // An account CLI's config is where a fetched credential lands, the
+        // same as a mount's: field and code only, never zod's rendering of
+        // the refused value. Mirrors the python registry's `error_summary`.
+        if (err instanceof z.ZodError) throw new Error(`CLI '${name}': ${errorSummary(err)}`)
+        throw err
+      }
     }
     const result = model(config ?? {})
     // The snapshot stores the normalized config and replays it through

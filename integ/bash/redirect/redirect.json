@@ -1,0 +1,1429 @@
+{
+  "cases": [
+    {
+      "id": "redirect_bare_prep",
+      "seq": 385,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/g9 && cd /data/g9",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_bare_target",
+      "seq": 386,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo hi > OUT && cat OUT && cd / && rm -r /data/g9",
+      "expect": {
+        "exit": 0,
+        "stdout": "hi\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_relative_write",
+      "seq": 391,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo one > sub/LOG",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_relative_append",
+      "seq": 392,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo two >> sub/LOG && cat sub/LOG",
+      "expect": {
+        "exit": 0,
+        "stdout": "one\ntwo\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_stdin_relative",
+      "seq": 393,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "wc -l < sub/LOG && cd / && rm -r /data/g11",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_after_cd",
+      "seq": 399,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/g13 && cd /data/g13 && echo hi > CDOUT && cat /data/g13/CDOUT",
+      "expect": {
+        "exit": 0,
+        "stdout": "hi\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_list_last_only",
+      "seq": 400,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo one && echo two > captured && cat captured; true && true && printf 'x\\n' | cat | cat < captured",
+      "expect": {
+        "exit": 0,
+        "stdout": "one\ntwo\ntwo\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_chain",
+      "seq": 401,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo a > chain && echo b >> chain && cat chain && wc -l < chain",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\nb\n2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_group",
+      "seq": 402,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "{ echo g1; echo g2; } > gout && cat gout && cd / && rm -r /data/g13",
+      "expect": {
+        "exit": 0,
+        "stdout": "g1\ng2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_fd2_dup",
+      "seq": 501101,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo hi >&2",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": "hi\n"
+      }
+    },
+    {
+      "id": "redirect_fd2_explicit",
+      "seq": 501102,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf 'boom\\n' 1>&2",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": "boom\n"
+      }
+    },
+    {
+      "id": "redirect_stderr_to_file",
+      "seq": 501103,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo out; echo err >&2; } 2> ELOG && cat ELOG; true && { echo e1 >&2; echo o; } | { cat; echo e2 >&2; } 2> ELOG2; cat ELOG2",
+      "expect": {
+        "exit": 0,
+        "stdout": "out\nerr\no\ne2\n",
+        "stderr": "e1\n"
+      }
+    },
+    {
+      "id": "redirect_stderr_append",
+      "seq": 501104,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo a1 >&2; } 2> EA && { echo a2 >&2; } 2>> EA && cat EA",
+      "expect": {
+        "exit": 0,
+        "stdout": "a1\na2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_file_then_merge",
+      "seq": 501105,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo out; echo err >&2; } > FM 2>&1 && cat FM",
+      "expect": {
+        "exit": 0,
+        "stdout": "out\nerr\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_merge_then_file",
+      "seq": 501106,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo out; echo err >&2; } 2>&1 > MF && echo --- && cat MF",
+      "expect": {
+        "exit": 0,
+        "stdout": "err\n---\nout\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_both_streams",
+      "seq": 501107,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo out; echo err >&2; } &> BOTH && cat BOTH; true && { echo e1 >&2; echo o; } | { cat; echo e2 >&2; } &> BOTH2; cat BOTH2",
+      "expect": {
+        "exit": 0,
+        "stdout": "out\nerr\no\ne2\n",
+        "stderr": "e1\n"
+      }
+    },
+    {
+      "id": "redirect_both_append",
+      "seq": 501108,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo one &> BA && { echo two >&2; } &>> BA && echo three &>> BA && cat BA",
+      "expect": {
+        "exit": 0,
+        "stdout": "one\ntwo\nthree\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_stderr_pipe_count",
+      "seq": 501109,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo a; echo b >&2; echo c; } |& wc -l; printf 'x\\n' | { cat; echo e >&2; } < /dev/null |& wc -l",
+      "expect": {
+        "exit": 0,
+        "stdout": "3\n1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_stderr_pipe_sort",
+      "seq": 501110,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo out; echo err >&2; } |& sort; ({ echo o1; echo e1 >&2; echo o2; echo e2 >&2; } 2>&1 | cat; f() { echo fo; echo fe >&2; } 2>&1; f | cat; bash -c 'echo bo; echo be >&2' 2>&1 | cat; for i in 1 2; do { echo a$i; break; } > /data/rbrk; done; cat /data/rbrk; rm /data/rbrk; g() { echo go; echo ge >&2; } >/data/rfo 2>&1; g; cat /data/rfo; rm /data/rfo)",
+      "expect": {
+        "exit": 0,
+        "stdout": "err\nout\no1\ne1\no2\ne2\nfo\nfe\nbo\nbe\na1\ngo\nge\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_fd2_through_pipe",
+      "seq": 501111,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo visible >&2 | cat",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": "visible\n"
+      }
+    },
+    {
+      "id": "redirect_bare_create",
+      "seq": 501112,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "> EMPTY && wc -c < EMPTY",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_multi_stdout",
+      "seq": 501113,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo hi > M1 > M2 && wc -c < M1 && cat M2",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\nhi\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_dup_before_stderr_file",
+      "seq": 501114,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo a >&2 2>> DL && cat DL",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": "a\n"
+      }
+    },
+    {
+      "id": "redirect_truncates",
+      "seq": 501115,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo long-old-content > TR && echo new > TR && cat TR",
+      "expect": {
+        "exit": 0,
+        "stdout": "new\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_stderr_creates_empty",
+      "seq": 501116,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo fine 2> QU && test -f QU && echo yes",
+      "expect": {
+        "exit": 0,
+        "stdout": "fine\nyes\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_stdin_stdout",
+      "seq": 501117,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf 'b\\na\\n' > RI && sort < RI > RO && cat RO; false && sort < RI | cat; echo rc=$?; true && sort < RI | tr a-z A-Z; echo \"${PIPESTATUS[@]}\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\nb\nrc=1\nA\nB\n0 0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_input_last_wins",
+      "seq": 501118,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf 'first\\n' > R1 && printf 'second\\n' > R2 && cat < R1 < R2",
+      "expect": {
+        "exit": 0,
+        "stdout": "second\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_bare_truncate",
+      "seq": 501119,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo old > BT && > BT && wc -c < BT",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_bare_append_preserves",
+      "seq": 501120,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo keep > BAP && >> BAP && cat BAP",
+      "expect": {
+        "exit": 0,
+        "stdout": "keep\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_target_quoted_var",
+      "seq": 501121,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "name='space file'; echo spaced > \"$name\" && cat \"$name\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "spaced\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_target_cmdsub",
+      "seq": 501122,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo dynamic > \"$(printf RT)\" && cat RT\n{ echo ${rdq!y}; } 2>/dev/null; echo same\necho \"n=$?\"; exit 1 2 2>&1 | cat; rdf() { return x; }; rdf 2>/dev/null; echo \"rf=$?\"; cat > \"${rdq!y}\"; echo \"c=$?\"\ncommand -v echo > \"${rdq!y}\"; echo same\necho \"v=$?\"\nrdh() { :; }; command rdh > \"${rdq!y}\"; echo \"m=$?\"\ncat > \"${rdq!y}\" > \"$(touch rdside; printf rddest)\"; echo \"s=$?\"; test -e rdside; echo \"side=$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "dynamic\nn=1\nbash: exit: too many arguments\nrf=2\nc=1\nv=1\nm=1\ns=1\nside=1\n",
+        "stderr": "bash: ${rdq!y}: bad substitution\nbash: ${rdq!y}: bad substitution\nbash: ${rdq!y}: bad substitution\nbash: ${rdq!y}: bad substitution\n"
+      }
+    },
+    {
+      "id": "redirect_dup_then_stderr_file",
+      "seq": 501123,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo out; echo err >&2; } >&2 2> SPLIT && echo marker && cat SPLIT",
+      "expect": {
+        "exit": 0,
+        "stdout": "marker\nerr\n",
+        "stderr": "out\n"
+      }
+    },
+    {
+      "id": "redirect_pipeline_dup",
+      "seq": 501124,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo z; echo a >&2; } 2>&1 | sort; false || { echo e1 >&2; echo o; } | { cat; echo e2 >&2; } 2>&1",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\nz\no\ne2\n",
+        "stderr": "e1\n"
+      }
+    },
+    {
+      "id": "redirect_subshell",
+      "seq": 501125,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "(echo sub1; echo sub2) > SUB && cat SUB; true && (printf 'x\\n' | cat) < SUB; true && { printf 'y\\n' | cat; } < SUB",
+      "expect": {
+        "exit": 0,
+        "stdout": "sub1\nsub2\nx\ny\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_failed_command_truncates",
+      "seq": 501127,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo old > RF; false > RF || echo failed; test ! -s RF && echo empty",
+      "expect": {
+        "exit": 0,
+        "stdout": "failed\nempty\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_pipeline_input_precedence",
+      "seq": 501128,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf 'file\\n' > RP; printf 'pipe\\n' | cat < RP; true && printf 'pipe\\n' | cat < RP; false || printf 'pipe\\n' | cat | cat < RP; true && printf 'pipe\\n' | wc -l < /dev/null; (cd .. && true && printf 'pipe\\n' | cat < r5/RP); true && { printf 'pipe\\n' | cat; } < RP",
+      "expect": {
+        "exit": 0,
+        "stdout": "file\nfile\nfile\n0\nfile\npipe\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_pipeline_output_right",
+      "seq": 501129,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf 'pipe\\n' | cat > RPR; cat RPR; true && printf 'a\\n' | cat > RPR; false || printf 'b\\n' | cat >> RPR; cat RPR; true && printf 'c\\n' | cat < RPR > RPR2; cat RPR2",
+      "expect": {
+        "exit": 0,
+        "stdout": "pipe\na\nb\na\nb\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_pipeline_output_left",
+      "seq": 501130,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf 'left\\n' > RPL | cat; cat RPL; ! false | true > RPL; echo rc=$?; ! printf 'x\\n' | cat < RPL | cat; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "left\nrc=1\nrc=1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_not_found_creates",
+      "seq": 501131,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "not_a_real_command > RNC 2>/dev/null || { test -f RNC && test ! -s RNC && echo empty; }",
+      "expect": {
+        "exit": 0,
+        "stdout": "empty\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_force_clobber",
+      "seq": 501132,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo old > RC; echo new >| RC; cat RC",
+      "expect": {
+        "exit": 0,
+        "stdout": "new\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_escaped_target",
+      "seq": 501133,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo x > escaped\\ file; cat escaped\\ file",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_pipe_stderr_order",
+      "seq": 501134,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo out; echo err >&2; } 2> RPE |& sort; test ! -s RPE && echo empty",
+      "expect": {
+        "exit": 0,
+        "stdout": "err\nout\nempty\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_for_loop",
+      "seq": 501135,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "for x in one two; do echo \"$x\"; done > RFOR; cat RFOR",
+      "expect": {
+        "exit": 0,
+        "stdout": "one\ntwo\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_if_compound",
+      "seq": 501136,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "if true; then echo yes; else echo no; fi > RIF; cat RIF",
+      "expect": {
+        "exit": 0,
+        "stdout": "yes\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "redirect_stdin_missing_source",
+      "seq": 501137,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "cat < NOPE",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "NOPE: No such file or directory\n"
+      }
+    },
+    {
+      "id": "redirect_stdin_missing_keeps_line",
+      "seq": 501138,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "s3-prefix",
+        "databricks-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo hi < NOPE; echo next; true && true | cat < NOPE; echo \"${PIPESTATUS[@]}\"; ! cat < NOPE; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "next\n0 1\nrc=0\n",
+        "stderr": "NOPE: No such file or directory\nNOPE: No such file or directory\nNOPE: No such file or directory\n"
+      }
+    },
+    {
+      "id": "redirect_write_target_unwritable",
+      "seq": 501139,
+      "targets": [
+        "ram",
+        "redis",
+        "opfs",
+        "disk",
+        "databricks",
+        "databricks-prefix",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo x > NOPEDIR/f; echo next",
+      "expect": {
+        "exit": 0,
+        "stdout": "next\n",
+        "stderr": "NOPEDIR/f: No such file or directory\n"
+      }
+    },
+    {
+      "id": "redirect_write_stops_at_first_failure",
+      "seq": 501141,
+      "targets": [
+        "ram",
+        "redis",
+        "opfs",
+        "disk",
+        "databricks",
+        "databricks-prefix",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo x > NOPEDIR/f > STOPPED; test -e STOPPED || echo skipped",
+      "expect": {
+        "exit": 0,
+        "stdout": "skipped\n",
+        "stderr": "NOPEDIR/f: No such file or directory\n"
+      }
+    },
+    {
+      "id": "redirect_write_keeps_earlier_target",
+      "seq": 501142,
+      "targets": [
+        "ram",
+        "redis",
+        "opfs",
+        "disk",
+        "databricks",
+        "databricks-prefix",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "echo y > KEPT > NOPEDIR/g; test -e KEPT && wc -c < KEPT",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": "NOPEDIR/g: No such file or directory\n"
+      }
+    }
+  ]
+}

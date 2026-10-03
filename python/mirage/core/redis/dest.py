@@ -12,15 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.resource.redis.store import RedisStore
 from mirage.types import PathSpec
-from mirage.utils.errors import eexist, enoent, enotdir
+from mirage.utils.errors import eexist, eisdir, enoent, enotdir
 from mirage.utils.key_prefix import mounted_path
 from mirage.utils.path import ancestors
+from mirage.vfs.redis.store import RedisStore
 
 
-async def check_dest_parents(store: RedisStore, dst_spec: PathSpec,
-                             d: str) -> None:
+async def check_dest_parents(
+    store: RedisStore, dst_spec: PathSpec, d: str
+) -> None:
     """Reject a destination whose parent chain is not all directories.
 
     Mirrors how ``rename(2)`` resolves the destination: a component that
@@ -49,16 +50,70 @@ async def check_dest_parents(store: RedisStore, dst_spec: PathSpec,
         NotADirectoryError: A parent component is a plain file.
         FileNotFoundError: A parent component does not exist.
     """
-    for ancestor in ancestors(d):
+    broken = await _broken_parent(store, dst_spec, d)
+    if broken is not None:
+        raise broken
+
+
+async def lookup_error(store: RedisStore, spec: PathSpec, key: str) -> OSError:
+    """The error a lookup of a key the store does not hold answers with.
+
+    ``open(2)`` and ``stat(2)`` resolve a path one component at a time and
+    stop at the first that is not a directory, so a plain file above the
+    key is ENOTDIR (``cat a.txt/x`` is "Not a directory") and a missing
+    component, or a key that is simply absent, is ENOENT. It is the walk
+    :func:`check_dest_parents` makes for a destination, so a read, a stat
+    and a write of one path agree on its errno; it runs on a miss only,
+    so a hit still costs one round trip.
+
+    Args:
+        store (RedisStore): The backing store.
+        spec (PathSpec): The operand, reported in the error.
+        key (str): The normalized key that was looked up.
+    """
+    broken = await _broken_parent(store, spec, key)
+    return broken if broken is not None else enoent(spec)
+
+
+async def _broken_parent(
+    store: RedisStore, spec: PathSpec, key: str
+) -> OSError | None:
+    for ancestor in ancestors(key):
         if await store.has_dir(ancestor):
             continue
         if await store.has_file(ancestor):
-            raise enotdir(dst_spec)
-        raise enoent(dst_spec)
+            return enotdir(spec)
+        return enoent(spec)
+    return None
 
 
-async def check_mkdir_target(store: RedisStore, spec: PathSpec, key: str,
-                             parents: bool) -> None:
+async def check_write_target(
+    store: RedisStore, spec: PathSpec, key: str
+) -> None:
+    """Reject a byte write whose target is a directory.
+
+    ``open(2)`` for writing answers a directory with EISDIR whatever the
+    caller meant to do next, so bash prints ``d: Is a directory`` for
+    ``> d`` and ``>> d`` alike and tee and truncate say the same. The
+    real-filesystem backends get this from the kernel; a keyed store has
+    to ask its own directory table, or the bytes land on a key the
+    directory shadows and are unreachable from then on.
+
+    Args:
+        store (RedisStore): The backing store.
+        spec (PathSpec): The operand, reported in the error.
+        key (str): Normalized target key.
+
+    Raises:
+        IsADirectoryError: The target is a directory.
+    """
+    if await store.has_dir(key):
+        raise eisdir(spec)
+
+
+async def check_mkdir_target(
+    store: RedisStore, spec: PathSpec, key: str, parents: bool
+) -> None:
     """Reject a ``mkdir`` the store cannot satisfy.
 
     The companion of :func:`check_dest_parents` for the one op that may

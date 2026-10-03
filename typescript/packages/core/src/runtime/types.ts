@@ -12,10 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { IOResult, OpReport } from '../io/types.ts'
-import type { PathSpec } from '../types.ts'
+import type { ProcessView } from '../process/types.ts'
+
+import type { ByteSource, IOResult, OpReport } from '../io/types.ts'
+import type { PathSpec, SetAttrFields } from '../types.ts'
 import type { RuntimeConfig } from './config.ts'
-import type { PolicyScript } from './policy/types.ts'
+import type { RouteScript } from './routing/types.ts'
+import type { NamespaceView, SessionView } from '../ops/types.ts'
+import type { WorkspaceBinding } from './binding.ts'
+import type { MountResolver } from './resolver.ts'
+import type { ContextScope } from '../utils/context_scope.ts'
 
 /**
  * The languages a runtime can interpret, one name for both doors (run
@@ -30,11 +36,11 @@ export type RuntimeLanguage = 'python' | 'js'
  * The workspace dispatch is a gate: it checks mount modes, session
  * grants, and policy, records the op, and only then touches the real
  * backend behind the mount (S3, disk, an API). Reach states whether
- * that gate is avoidable, not where bytes physically end up; a 'vfs'
+ * that gate is avoidable, not where bytes physically end up; a 'workspace'
  * write to an S3 mount still lands in real S3, but only after the
  * gate said yes.
  *
- * - 'vfs': the gate is the code's only door. The engine runs as an
+ * - 'workspace': the gate is the code's only door. The engine runs as an
  *   in-process guest with no syscalls, so its I/O can only travel the
  *   VFS bridge (or the workspace executor itself) and a mount-mode or
  *   policy refusal is final.
@@ -45,12 +51,12 @@ export type RuntimeLanguage = 'python' | 'js'
  * - 'remote': the code runs on another machine and acts on that
  *   machine's world; the gate never sees those effects.
  */
-export type RuntimeReach = 'vfs' | 'process' | 'remote'
+export type RuntimeReach = 'workspace' | 'process' | 'remote'
 
 /**
  * The workspace op dispatch: run `op` against the mount owning `path`
  * and return its result with the accounting IOResult. Defined here, on
- * the consumer side, because runtimes receive it (attach) while the
+ * the consumer side, because runtimes receive it through a binding while the
  * workspace provides it, and the runtime package imports no workspace
  * module — the home of Python's DispatchFn protocol (runtime/types).
  * `report`, when a caller passes one, is stamped by the door the moment
@@ -66,8 +72,41 @@ export type DispatchFn = (
 ) => Promise<[unknown, IOResult]>
 
 /**
+ * Run one shell line in the calling session and return its result, the
+ * line reading the given input (null keeps the ambient one): the door a
+ * command handler reaches the executor through, as awk's command pipes
+ * and system() do. Defined beside DispatchFn for the same reason: the
+ * consumer receives it, the workspace provides it.
+ */
+export type ShellFn = (line: string, stdin: ByteSource | null) => Promise<IOResult>
+
+/**
+ * Per-op modifiers riding the bridge's attrs slot: setattr's fields,
+ * stat's `nofollow` (the caller's lstat), mkdir's `parents`
+ * (pathlib's mkdir(parents=True), forwarded to the backend op the way
+ * python forwards it as a dispatch kwarg), and setxattr's `create` and
+ * `replace` (XATTR_CREATE and XATTR_REPLACE).
+ */
+export type BridgeOpAttrs = SetAttrFields & {
+  parents?: boolean
+  create?: boolean
+  replace?: boolean
+  /** A ranged read: where it starts and how long it is. */
+  offset?: number
+  size?: number
+  /** A read of the stored bytes rather than a rendering. */
+  raw?: boolean
+}
+
+/**
  * The narrow bridge a sandboxed guest's file I/O rides: fixed op names,
  * string paths, positional payloads (the guest cannot build PathSpecs).
+ *
+ * `dst` carries a rename's destination, a symlink's target and an
+ * extended attribute's name: each is the op's second string, and a link
+ * target is stored verbatim rather than resolved, so there is nothing a
+ * second slot would say. `bytes` carries setxattr's value and `attrs`
+ * its create/replace flags beside every op's `nofollow`.
  */
 export type BridgeDispatchFn = (
   op:
@@ -81,10 +120,18 @@ export type BridgeDispatchFn = (
     | 'unlink'
     | 'mkdir'
     | 'rmdir'
-    | 'rename',
+    | 'rename'
+    | 'symlink'
+    | 'readlink'
+    | 'setattr'
+    | 'getxattr'
+    | 'listxattr'
+    | 'setxattr'
+    | 'removexattr',
   path: string,
   bytes?: Uint8Array,
   dst?: string,
+  attrs?: BridgeOpAttrs,
 ) => Promise<unknown>
 
 /**
@@ -92,6 +139,12 @@ export type BridgeDispatchFn = (
  * added or removed after construction are always picked up.
  */
 export type PrefixSource = () => string[]
+
+/**
+ * Live view of the link names one directory owns, read per listing so a
+ * link created after construction is always seen.
+ */
+export type LinkChildrenSource = (directory: string) => Set<string>
 
 /** One interpreter execution request, language-agnostic. */
 export interface RunArgs {
@@ -106,7 +159,13 @@ export interface RunArgs {
    * interpreter defines that slot (CPython under `-c`) it cannot apply.
    */
   prog?: string
+  /** Installed script CLI: expose bare argv and stdin in the program globals. */
+  scriptCli?: boolean
   env: Record<string, string>
+  /** Virtual working directory for filesystem-aware guest runtimes. */
+  cwd?: PathSpec
+  /** The script file the program was read from, `rawPath` as typed. */
+  scriptPath?: PathSpec
   stdin: Uint8Array | null
   /**
    * Interpreter-level switches parsed by the command's spec (e.g. js
@@ -135,6 +194,60 @@ export interface RunResult {
   /** Captured standard error, null when empty (mirrors Python). */
   stderr: Uint8Array | null
   exitCode: number
+}
+
+/** Language-explicit execution; interpreter switches remain in RunArgs. */
+export interface CodeExecution extends RunArgs {
+  kind: 'code'
+  language: RuntimeLanguage
+}
+
+/** A whole shell line interpreted entirely by the selected runtime. */
+export interface ShellExecution {
+  kind: 'shell'
+  line: string
+  cwd: PathSpec
+  env: Record<string, string>
+  stdin: Uint8Array | null
+  signal?: AbortSignal
+}
+
+/** An argv request executed without shell interpretation. */
+export interface ProcessExecution {
+  kind: 'process'
+  argv: readonly [string, ...string[]]
+  cwd: PathSpec
+  env: Record<string, string>
+  stdin: Uint8Array | null
+  signal?: AbortSignal
+}
+
+export type ExecutionRequest = CodeExecution | ShellExecution | ProcessExecution
+
+/** Guest APIs for workspace files; policy and backend support still apply per operation. */
+export type FilesystemOperation = 'read' | 'write' | 'list' | 'stat' | 'glob'
+
+/** Derived execution support; reach remains a separate guarantee. */
+export interface RuntimeCapabilities {
+  readonly languages: readonly RuntimeLanguage[]
+  readonly shell: boolean
+  readonly process: boolean
+  readonly evaluate: boolean
+  readonly reach: RuntimeReach
+  readonly filesystem: readonly FilesystemOperation[]
+}
+
+/** Local workspace doors captured for one execution, never guest globals. */
+export interface RuntimeContext {
+  readonly binding: WorkspaceBinding
+  readonly dispatch: BridgeDispatchFn
+  readonly resolver: MountResolver
+  readonly ns: NamespaceView
+  readonly sessionView: SessionView | null
+  readonly cwd: PathSpec
+  readonly env: Readonly<Record<string, string>>
+  readonly scope: ContextScope
+  readonly processes: ProcessView | null
 }
 
 /**
@@ -187,7 +300,8 @@ export interface EvalResult {
 /** Constructor options every runtime accepts (a yaml entry's keys). */
 export interface RuntimeOptions<C extends RuntimeConfig = Record<string, unknown>> {
   /**
-   * Commands this runtime claims, overriding the class default; ["*"]
+   * Commands this runtime claims; EXTERNAL_COMMANDS captures unresolved
+   * program names. ["*"]
    * claims every line for a line-executing runtime.
    */
   captures?: readonly string[]
@@ -199,9 +313,9 @@ export interface RuntimeOptions<C extends RuntimeConfig = Record<string, unknown
   config?: C
   /**
    * Per-line admission script for the routing ladder, answering "do I
-   * want this line": a function taking a PolicyContext, or a
+   * want this line": a function taking a RouteContext, or a
    * config-borne ScriptSource. Absent = always willing. Policy, not
    * capability: it can only refuse lines the captures already allow.
    */
-  script?: PolicyScript
+  script?: RouteScript
 }

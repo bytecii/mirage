@@ -15,12 +15,12 @@
 import { md5Generic } from '../../generic/md5.ts'
 import { type Builder, dirAwareStream, resolveGlobOf } from '../adapter.ts'
 
-export const MD5_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'md5',
   read: true,
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined
     const resolved = paths.length > 0 ? await resolveGlobOf(ops)(accessor, paths, idx) : []
-    return md5Generic(resolved, opts, dirAwareStream(ops, accessor, idx))
+    return md5Generic(resolved, opts, dirAwareStream(ops, accessor, opts))
   },
 }

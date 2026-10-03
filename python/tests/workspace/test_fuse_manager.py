@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -20,25 +21,31 @@ import tempfile
 import pytest
 
 from mirage import FuseManager, Mount, MountBackend, MountMode, Workspace
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
 
 class _FakeThread:
-
     def __init__(self):
         self.alive = True
 
 
 def _fake_mount(monkeypatch):
-    monkeypatch.setattr("mirage.workspace.fuse.mount_background",
-                        lambda ops, mountpoint, root_prefix="", session=None,
-                        backend=None: _FakeThread())
+    monkeypatch.setattr(
+        "mirage.workspace.fuse.mount_background",
+        lambda ops, mountpoint, root_prefix="", session=None, backend=None: (
+            _FakeThread()
+        ),
+    )
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "mirage.workspace.fuse.unmount_with_fusermount",
+        lambda _mountpoint: None,
+    )
 
 
 def test_add_fuse_mount_registers_and_returns_mountpoint(monkeypatch):
     _fake_mount(monkeypatch)
-    ws = Workspace({"/a/": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/a/": RAMVFS()}, mode=MountMode.WRITE)
     mp = ws.add_fuse_mount("/a/", "/tmp/forced-a")
     assert mp == "/tmp/forced-a"
     assert ws.fuse_mountpoints == {"/a/": "/tmp/forced-a"}
@@ -48,7 +55,7 @@ def test_add_fuse_mount_registers_and_returns_mountpoint(monkeypatch):
 
 def test_workspace_close_unmounts_managers(monkeypatch):
     _fake_mount(monkeypatch)
-    with Workspace({"/a/": RAMResource()}, mode=MountMode.WRITE) as ws:
+    with Workspace({"/a/": RAMVFS()}, mode=MountMode.WRITE) as ws:
         ws.add_fuse_mount("/a/", "/tmp/tracked-a")
         assert ws.fuse_mountpoints == {"/a/": "/tmp/tracked-a"}
     assert ws.fuse_mountpoints == {}
@@ -56,11 +63,7 @@ def test_workspace_close_unmounts_managers(monkeypatch):
 
 def test_multiple_fuse_mounts_are_independent(monkeypatch):
     _fake_mount(monkeypatch)
-    ws = Workspace({
-        "/a/": RAMResource(),
-        "/b/": RAMResource()
-    },
-                   mode=MountMode.WRITE)
+    ws = Workspace({"/a/": RAMVFS(), "/b/": RAMVFS()}, mode=MountMode.WRITE)
     ws.add_fuse_mount("/a/", "/tmp/mp-a")
     ws.add_fuse_mount("/b/", "/tmp/mp-b")
     assert ws.fuse_mountpoints == {"/a/": "/tmp/mp-a", "/b/": "/tmp/mp-b"}
@@ -74,14 +77,12 @@ def test_collision_rejected_before_mount(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "mirage.workspace.fuse.mount_background",
-        lambda ops, mountpoint, root_prefix="", session=None, backend=None:
-        (calls.append(mountpoint) or _FakeThread()))
+        lambda ops, mountpoint, root_prefix="", session=None, backend=None: (
+            calls.append(mountpoint) or _FakeThread()
+        ),
+    )
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: None)
-    ws = Workspace({
-        "/a/": RAMResource(),
-        "/b/": RAMResource()
-    },
-                   mode=MountMode.WRITE)
+    ws = Workspace({"/a/": RAMVFS(), "/b/": RAMVFS()}, mode=MountMode.WRITE)
     ws.add_fuse_mount("/a/", "/tmp/dup-mp")
     with pytest.raises(ValueError):
         ws.add_fuse_mount("/b/", "/tmp/dup-mp")
@@ -91,7 +92,7 @@ def test_collision_rejected_before_mount(monkeypatch):
 
 def test_double_unmount_is_idempotent(monkeypatch):
     _fake_mount(monkeypatch)
-    ws = Workspace({"/a/": RAMResource()}, mode=MountMode.WRITE)
+    ws = Workspace({"/a/": RAMVFS()}, mode=MountMode.WRITE)
     fm = FuseManager()
     fm.setup(ws._ops, "/a/", mountpoint="/tmp/idem-a")
     fm.unmount()
@@ -102,8 +103,9 @@ def test_double_unmount_is_idempotent(monkeypatch):
 def test_mount_spec_fuse_true_single(monkeypatch):
     _fake_mount(monkeypatch)
     ws = Workspace(
-        {"/gdocs/": Mount(RAMResource(), backend=MountBackend.FUSE)},
-        mode=MountMode.WRITE)
+        {"/gdocs/": Mount(RAMVFS(), backend=MountBackend.FUSE)},
+        mode=MountMode.WRITE,
+    )
     mps = ws.fuse_mountpoints
     assert set(mps) == {"/gdocs/"}
     assert mps["/gdocs/"]
@@ -114,12 +116,12 @@ def test_mount_spec_fuse_pinned_path(monkeypatch):
     _fake_mount(monkeypatch)
     ws = Workspace(
         {
-            "/whatever/":
-            Mount(RAMResource(),
-                  backend=MountBackend.FUSE,
-                  mountpoint="/tmp/pinned-x")
+            "/whatever/": Mount(
+                RAMVFS(), backend=MountBackend.FUSE, mountpoint="/tmp/pinned-x"
+            )
         },
-        mode=MountMode.WRITE)
+        mode=MountMode.WRITE,
+    )
     assert ws.fuse_mountpoints["/whatever/"] == "/tmp/pinned-x"
 
 
@@ -127,10 +129,11 @@ def test_mount_spec_fuse_each_of_multiple(monkeypatch):
     _fake_mount(monkeypatch)
     ws = Workspace(
         {
-            "/a/": Mount(RAMResource(), backend=MountBackend.FUSE),
-            "/b/": Mount(RAMResource(), backend=MountBackend.FUSE)
+            "/a/": Mount(RAMVFS(), backend=MountBackend.FUSE),
+            "/b/": Mount(RAMVFS(), backend=MountBackend.FUSE),
         },
-        mode=MountMode.WRITE)
+        mode=MountMode.WRITE,
+    )
     assert set(ws.fuse_mountpoints) == {"/a/", "/b/"}
     with pytest.raises(RuntimeError):
         ws.fuse_mountpoint
@@ -140,10 +143,11 @@ def test_mount_spec_mode_inherits_and_override(monkeypatch):
     _fake_mount(monkeypatch)
     ws = Workspace(
         {
-            "/inherit/": Mount(RAMResource()),
-            "/override/": Mount(RAMResource(), mode=MountMode.READ),
+            "/inherit/": Mount(RAMVFS()),
+            "/override/": Mount(RAMVFS(), mode=MountMode.READ),
         },
-        mode=MountMode.WRITE)
+        mode=MountMode.WRITE,
+    )
     assert ws.mount("/inherit/").mode == MountMode.WRITE
     assert ws.mount("/override/").mode == MountMode.READ
 
@@ -152,19 +156,43 @@ def test_no_fuse_when_bare_or_tuple(monkeypatch):
     _fake_mount(monkeypatch)
     ws = Workspace(
         {
-            "/bare/": RAMResource(),
-            "/tup/": (RAMResource(), MountMode.WRITE),
+            "/bare/": RAMVFS(),
+            "/tup/": (RAMVFS(), MountMode.WRITE),
         },
-        mode=MountMode.WRITE)
+        mode=MountMode.WRITE,
+    )
     assert ws.fuse_mountpoints == {}
 
 
 def test_mount_spec_fuse_unmounts_on_close(monkeypatch):
     _fake_mount(monkeypatch)
     with Workspace(
-        {"/gdocs/": Mount(RAMResource(), backend=MountBackend.FUSE)},
-            mode=MountMode.WRITE) as ws:
+        {"/gdocs/": Mount(RAMVFS(), backend=MountBackend.FUSE)},
+        mode=MountMode.WRITE,
+    ) as ws:
         assert set(ws.fuse_mountpoints) == {"/gdocs/"}
+    assert ws.fuse_mountpoints == {}
+
+
+def test_mount_spec_fuse_unmounts_on_delete_even_when_the_drop_fails(
+    monkeypatch,
+):
+    # Delete drops the state as well, after the kernel mounts are down,
+    # and a drop that fails still lets teardown finish: a mount left up
+    # keeps a daemon process alive.
+    _fake_mount(monkeypatch)
+    ws = Workspace(
+        {"/gdocs/": Mount(RAMVFS(), backend=MountBackend.FUSE)},
+        mode=MountMode.WRITE,
+    )
+    assert set(ws.fuse_mountpoints) == {"/gdocs/"}
+
+    async def refuse(workspace_id):
+        raise RuntimeError("store on fire")
+
+    monkeypatch.setattr(ws.state_store, "drop", refuse)
+    with pytest.raises(RuntimeError, match="store on fire"):
+        asyncio.run(ws.delete())
     assert ws.fuse_mountpoints == {}
 
 
@@ -179,6 +207,10 @@ def _capture_mount(monkeypatch):
 
     monkeypatch.setattr("mirage.workspace.fuse.mount_background", _fake)
     monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "mirage.workspace.fuse.unmount_with_fusermount",
+        lambda _mountpoint: None,
+    )
     return seen
 
 
@@ -195,14 +227,17 @@ def test_fskit_auto_mountpoint_is_named_not_created(monkeypatch):
     _as_macos(monkeypatch)
     _capture_mount(monkeypatch)
     made = []
-    monkeypatch.setattr(tempfile, "mkdtemp",
-                        lambda *a, **k: made.append(k) or "/tmp/should-not")
+    monkeypatch.setattr(
+        tempfile,
+        "mkdtemp",
+        lambda *a, **k: made.append(k) or "/tmp/should-not",
+    )
     fm = FuseManager()
-    mp = fm.setup(Workspace({
-        "/": RAMResource()
-    }, mode=MountMode.WRITE)._ops,
-                  "/",
-                  backend=MountBackend.FSKIT)
+    mp = fm.setup(
+        Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)._ops,
+        "/",
+        backend=MountBackend.FSKIT,
+    )
     assert mp.startswith("/Volumes/mirage-")
     assert not os.path.exists(mp)
     assert made == []
@@ -214,12 +249,12 @@ def test_fskit_pinned_mountpoint_is_not_created(monkeypatch):
     calls = []
     monkeypatch.setattr(os, "makedirs", lambda *a, **k: calls.append(a))
     fm = FuseManager()
-    fm.setup(Workspace({
-        "/": RAMResource()
-    }, mode=MountMode.WRITE)._ops,
-             "/",
-             mountpoint="/Volumes/pinned-vol",
-             backend=MountBackend.FSKIT)
+    fm.setup(
+        Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)._ops,
+        "/",
+        mountpoint="/Volumes/pinned-vol",
+        backend=MountBackend.FSKIT,
+    )
     assert calls == []
     assert seen["mountpoint"] == "/Volumes/pinned-vol"
 
@@ -227,10 +262,7 @@ def test_fskit_pinned_mountpoint_is_not_created(monkeypatch):
 def test_fuse_auto_mountpoint_still_uses_tempdir(monkeypatch):
     _capture_mount(monkeypatch)
     fm = FuseManager()
-    mp = fm.setup(
-        Workspace({
-            "/": RAMResource()
-        }, mode=MountMode.WRITE)._ops, "/")
+    mp = fm.setup(Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)._ops, "/")
     assert not mp.startswith("/Volumes/")
     assert os.path.isdir(mp)
     os.rmdir(mp)
@@ -243,10 +275,10 @@ def test_unmount_never_rmdirs_a_volumes_entry(monkeypatch):
     removed = []
     monkeypatch.setattr(os, "rmdir", lambda p: removed.append(p))
     fm = FuseManager()
-    fm.setup(Workspace({
-        "/": RAMResource()
-    }, mode=MountMode.WRITE)._ops,
-             "/",
-             backend=MountBackend.FSKIT)
+    fm.setup(
+        Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)._ops,
+        "/",
+        backend=MountBackend.FSKIT,
+    )
     fm.unmount()
     assert removed == []

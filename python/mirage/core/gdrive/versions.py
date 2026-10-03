@@ -12,45 +12,21 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Any
-
-from mirage.core.google.client import (TokenManager, drive_base, google_get,
-                                       google_get_bytes)
+from mirage.core.google.client import (
+    TokenManager,
+    drive_base,
+    google_get,
+    google_get_bytes,
+)
 from mirage.utils.ranges import ByteWindow
 
-REVISION_FIELDS = "nextPageToken,revisions(id,modifiedTime,md5Checksum,size)"
 
-
-async def list_revisions(token_manager: TokenManager,
-                         file_id: str) -> list[dict[str, Any]]:
-    """List a file's revisions via the Drive Revisions API.
-
-    Args:
-        token_manager (TokenManager): OAuth2 token manager.
-        file_id (str): file ID.
-
-    Returns:
-        list[dict]: revision metadata dicts, oldest first (API order).
-    """
-    revisions: list[dict[str, Any]] = []
-    page_token: str | None = None
-    while True:
-        params: dict[str, str | int] = {"fields": REVISION_FIELDS}
-        if page_token:
-            params["pageToken"] = page_token
-        url = f"{drive_base(token_manager)}/files/{file_id}/revisions"
-        data = await google_get(token_manager, url, params=params)
-        revisions.extend(data.get("revisions", []))
-        page_token = data.get("nextPageToken")
-        if not page_token:
-            break
-    return revisions
-
-
-async def download_revision(token_manager: TokenManager,
-                            file_id: str,
-                            revision_id: str,
-                            window: ByteWindow | None = None) -> bytes:
+async def download_revision(
+    token_manager: TokenManager,
+    file_id: str,
+    revision_id: str,
+    window: ByteWindow | None = None,
+) -> bytes:
     """Download a pinned revision's content (binary files only).
 
     Args:
@@ -60,22 +36,29 @@ async def download_revision(token_manager: TokenManager,
         window (ByteWindow | None): the byte window to fetch, or None
             for all of it.
     """
-    url = (f"{drive_base(token_manager)}/files/{file_id}"
-           f"/revisions/{revision_id}?alt=media")
+    url = (
+        f"{drive_base(token_manager)}/files/{file_id}"
+        f"/revisions/{revision_id}?alt=media"
+    )
     return await google_get_bytes(token_manager, url, window)
 
 
-async def capture_file_metadata(token_manager: TokenManager,
-                                file_id: str) -> tuple[str | None, str | None]:
-    """Fetch the (fingerprint, revision) pair for a file at read time.
+async def capture_file_metadata(
+    token_manager: TokenManager, file_id: str
+) -> tuple[str | None, str | None]:
+    """Fetch a file's md5 and head revision at read time.
 
-    The head revision ID doubles as the pinnable revision; the MD5 checksum
-    is the content fingerprint (falls back to the head revision ID for
-    types without one).
+    Returned raw rather than coalesced, because the caller checks the md5
+    against the bytes it downloads. The head revision doubles as the
+    pinnable revision.
 
     Args:
         token_manager (TokenManager): OAuth2 token manager.
         file_id (str): file ID.
+
+    Returns:
+        tuple[str | None, str | None]: the md5 checksum and the head
+        revision id, each absent as None.
     """
     url = f"{drive_base(token_manager)}/files/{file_id}"
     item = await google_get(
@@ -86,6 +69,4 @@ async def capture_file_metadata(token_manager: TokenManager,
             "supportsAllDrives": "true",
         },
     )
-    revision = item.get("headRevisionId")
-    fingerprint = item.get("md5Checksum") or revision
-    return fingerprint, revision
+    return item.get("md5Checksum"), item.get("headRevisionId")

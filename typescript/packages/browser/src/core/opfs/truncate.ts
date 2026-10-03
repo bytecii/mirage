@@ -12,36 +12,38 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { record } from '@struktoai/mirage-core/observe/context'
-import { ResourceName } from '@struktoai/mirage-core/types'
+import { record, startOp } from '@struktoai/mirage-core/observe/context'
+import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { OPFSAccessor } from '../../accessor/opfs.ts'
-import { destError, isNotFound, resolveFileHandle, toWritableChunk } from './utils.ts'
+import { isNotFound, openError, resolveFileHandle, toWritableChunk } from './utils.ts'
 
 export async function truncate(
   accessor: OPFSAccessor,
   path: PathSpec,
   length: number,
+  noCreate = false,
 ): Promise<void> {
-  const start = performance.now()
-  const root = accessor.rootHandle
-  const virtual = path.mountPath
+  const timer = startOp()
+  const root = await accessor.root()
+  const key = path.mountPath
   let handle: FileSystemFileHandle
   let existing: Uint8Array
   try {
-    handle = await resolveFileHandle(root, virtual, { create: false })
+    handle = await resolveFileHandle(root, key, { create: false })
     const file = await handle.getFile()
     existing = new Uint8Array(await file.arrayBuffer())
   } catch (err) {
     if (isNotFound(err)) {
+      if (noCreate) return
       try {
-        handle = await resolveFileHandle(root, virtual, { create: true })
+        handle = await resolveFileHandle(root, key, { create: true })
       } catch (cerr) {
-        throw destError(cerr, path)
+        throw await openError(root, key, cerr, path)
       }
       existing = new Uint8Array()
     } else {
-      throw destError(err, path)
+      throw await openError(root, key, err, path)
     }
   }
   const out = new Uint8Array(length)
@@ -49,5 +51,5 @@ export async function truncate(
   const writable = await handle.createWritable()
   await writable.write(toWritableChunk(out))
   await writable.close()
-  record('truncate', virtual, ResourceName.OPFS, 0, start)
+  record('truncate', path.virtual, VFSName.OPFS, 0, timer)
 }

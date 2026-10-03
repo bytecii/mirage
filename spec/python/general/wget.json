@@ -1,18 +1,16 @@
 {
   "_meta": {
-    "by_resource": {
+    "by_vfs": {
       "": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
         "has_write": false
       }
     },
     "filetypes": [],
     "has_aggregate": false,
-    "has_provision": false,
     "has_write": false,
-    "resources": []
+    "vfs_names": []
   },
   "description": "Retrieve files from the web.",
   "options": [
@@ -25,6 +23,12 @@
       "description": "Run quietly with no output.",
       "short": "-q",
       "type": "bool"
+    },
+    {
+      "description": "Set the network timeout in seconds (zero disables it).",
+      "long": "--timeout",
+      "short": "-T",
+      "type": "float"
     },
     {
       "description": "Check that the URL exists without downloading it.",

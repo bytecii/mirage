@@ -38,9 +38,7 @@ rg = importlib.import_module("mirage.commands.builtin.email.rg").rg
 
 
 def _path(s: str = "/email/INBOX") -> PathSpec:
-    return PathSpec(resource_path=mount_key(s, "/email"),
-                    virtual=s,
-                    directory=s)
+    return PathSpec(vfs_path=mount_key(s, "/email"), virtual=s, directory=s)
 
 
 @pytest.mark.asyncio
@@ -58,20 +56,28 @@ async def test_rg_multi_pattern_skips_imap_search():
         seen["generic"] = [p.virtual for p in paths]
         return b"", IOResult()
 
-    with patch(
+    with (
+        patch(
             "mirage.commands.builtin.email.rg.search_messages",
             new=AsyncMock(side_effect=AssertionError("imap search ran")),
-    ), patch(
+        ),
+        patch(
             "mirage.commands.builtin.email.rg.resolve_glob",
             new=fake_resolve,
-    ), patch(
+        ),
+        patch(
             "mirage.commands.builtin.email.rg.generic_rg",
             new=fake_generic,
+        ),
     ):
         _, io = await rg(
-            accessor, [_path()], [],
-            CommandOpts(index=RAMIndexCacheStore(),
-                        flags={'e': ['ada', 'ben']}))
+            accessor,
+            [_path()],
+            [],
+            CommandOpts(
+                index=RAMIndexCacheStore(), flags={"regexp": ["ada", "ben"]}
+            ),
+        )
 
     assert io.exit_code == 0
     assert seen["resolved"] == ["/email/INBOX"]
@@ -82,15 +88,75 @@ async def test_rg_multi_pattern_skips_imap_search():
 async def test_rg_single_pattern_uses_imap_search():
     accessor = SimpleNamespace(config=SimpleNamespace(max_messages=10))
     search = AsyncMock(return_value=[])
-    with patch(
+    with (
+        patch(
             "mirage.commands.builtin.email.rg.search_messages",
             new=search,
-    ), patch(
+        ),
+        patch(
             "mirage.commands.builtin.email.rg.resolve_glob",
             new=AsyncMock(side_effect=AssertionError("glob ran")),
+        ),
     ):
-        _, io = await rg(accessor, [_path()], ['ada'],
-                         CommandOpts(index=RAMIndexCacheStore()))
+        _, io = await rg(
+            accessor,
+            [_path()],
+            ["ada"],
+            CommandOpts(index=RAMIndexCacheStore()),
+        )
 
     assert io.exit_code == 1
     search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rg_message_file_operand_defers_to_generic():
+    # A single .email.json is not a folder scope, so it reads the one file
+    # rather than reporting exit 1 without searching.
+    accessor = SimpleNamespace(config=SimpleNamespace(max_messages=10))
+    msg = _path("/email/INBOX/2026-01-05/Q2__1.email.json")
+    with (
+        patch(
+            "mirage.commands.builtin.email.rg.search_messages",
+            new=AsyncMock(return_value=[]),
+        ) as search,
+        patch(
+            "mirage.commands.builtin.email.rg.resolve_glob",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "mirage.commands.builtin.email.rg.generic_rg",
+            new=AsyncMock(return_value=(b"", IOResult())),
+        ) as generic,
+    ):
+        _out, io = await rg(
+            accessor,
+            [msg],
+            ["foo"],
+            CommandOpts(index=RAMIndexCacheStore(), flags={}),
+        )
+    search.assert_not_awaited()
+    generic.assert_awaited_once()
+    assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_rg_regex_hands_the_server_its_required_literal():
+    # `worker.3` matches `worker-3`; the server is asked for `worker`.
+    accessor = SimpleNamespace(config=SimpleNamespace(max_messages=10))
+    search = AsyncMock(return_value=[])
+    with (
+        patch("mirage.commands.builtin.email.rg.search_messages", new=search),
+        patch(
+            "mirage.commands.builtin.email.rg.resolve_glob",
+            new=AsyncMock(side_effect=AssertionError("glob ran")),
+        ),
+    ):
+        _, io = await rg(
+            accessor,
+            [_path()],
+            ["worker.3"],
+            CommandOpts(index=RAMIndexCacheStore()),
+        )
+    assert io.exit_code == 1
+    assert search.await_args.kwargs["text"] == "worker"

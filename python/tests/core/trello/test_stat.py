@@ -18,8 +18,8 @@ from mirage.accessor.trello import TrelloAccessor
 from mirage.cache.index import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.trello.stat import stat
-from mirage.resource.trello.config import TrelloConfig
-from mirage.types import FileType, PathSpec
+from mirage.types import ContentType, FileType, PathSpec
+from mirage.vfs.trello.config import TrelloConfig
 
 
 @pytest.fixture
@@ -46,39 +46,50 @@ async def test_stat_workspaces(accessor, index):
 
 @pytest.mark.asyncio
 async def test_stat_workspace_entry(accessor, index):
-    await index.put(
-        "/workspaces/Engineering__ws1",
-        IndexEntry(
-            id="ws1",
-            name="Engineering",
-            resource_type="trello/workspace",
-            remote_time="",
-            vfs_name="Engineering__ws1",
-        ),
+    await index.set_dir(
+        "/workspaces",
+        [
+            (
+                "Engineering__ws1",
+                IndexEntry(
+                    id="ws1",
+                    name="Engineering",
+                    resource_type="trello/workspace",
+                    remote_time="",
+                    vfs_name="Engineering__ws1",
+                ),
+            )
+        ],
     )
-    result = await stat(accessor,
-                        PathSpec.from_str_path("/workspaces/Engineering__ws1"),
-                        index)
+    result = await stat(
+        accessor, PathSpec.from_str_path("/workspaces/Engineering__ws1"), index
+    )
     assert result.type == FileType.DIRECTORY
     assert result.extra["workspace_id"] == "ws1"
 
 
 @pytest.mark.asyncio
 async def test_stat_board_entry(accessor, index):
-    await index.put(
-        "/workspaces/Engineering__ws1/boards/Product_Roadmap__b1",
-        IndexEntry(
-            id="b1",
-            name="Product Roadmap",
-            resource_type="trello/board",
-            remote_time="2026-04-05T00:00:00.000Z",
-            vfs_name="Product_Roadmap__b1",
-        ),
+    await index.set_dir(
+        "/workspaces/Engineering__ws1/boards",
+        [
+            (
+                "Product_Roadmap__b1",
+                IndexEntry(
+                    id="b1",
+                    name="Product Roadmap",
+                    resource_type="trello/board",
+                    remote_time="2026-04-05T00:00:00.000Z",
+                    vfs_name="Product_Roadmap__b1",
+                ),
+            )
+        ],
     )
     result = await stat(
         accessor,
         PathSpec.from_str_path(
-            "/workspaces/Engineering__ws1/boards/Product_Roadmap__b1"),
+            "/workspaces/Engineering__ws1/boards/Product_Roadmap__b1"
+        ),
         index,
     )
     assert result.type == FileType.DIRECTORY
@@ -88,55 +99,68 @@ async def test_stat_board_entry(accessor, index):
 
 @pytest.mark.asyncio
 async def test_stat_card_json(accessor, index):
-    await index.put(
+    await index.set_dir(
         "/workspaces/Engineering__ws1/boards/Product_Roadmap__b1"
-        "/lists/Backlog__l1/cards/Fix_login__c1/card.json",
-        IndexEntry(
-            id="c1",
-            name="card.json",
-            resource_type="trello/card_json",
-            vfs_name="card.json",
-            size=42,
-            remote_time="2026-04-05T00:00:00.000Z",
-        ),
+        "/lists/Backlog__l1/cards/Fix_login__c1",
+        [
+            (
+                "card.json",
+                IndexEntry(
+                    id="c1",
+                    name="card.json",
+                    resource_type="trello/card_json",
+                    vfs_name="card.json",
+                    size=42,
+                    remote_time="2026-04-05T00:00:00.000Z",
+                ),
+            )
+        ],
     )
     result = await stat(
         accessor,
         PathSpec.from_str_path(
             "/workspaces/Engineering__ws1/boards/Product_Roadmap__b1"
-            "/lists/Backlog__l1/cards/Fix_login__c1/card.json"),
+            "/lists/Backlog__l1/cards/Fix_login__c1/card.json"
+        ),
         index,
     )
-    assert result.type == FileType.JSON
+    assert result.content == ContentType.JSON
     assert result.size == 42
     assert result.extra["card_id"] == "c1"
 
 
 @pytest.mark.asyncio
 async def test_stat_comments_jsonl(accessor, index):
-    await index.put(
+    await index.set_dir(
         "/workspaces/Engineering__ws1/boards/Product_Roadmap__b1"
-        "/lists/Backlog__l1/cards/Fix_login__c1/comments.jsonl",
-        IndexEntry(
-            id="c1",
-            name="comments.jsonl",
-            resource_type="trello/comments_jsonl",
-            vfs_name="comments.jsonl",
-        ),
+        "/lists/Backlog__l1/cards/Fix_login__c1",
+        [
+            (
+                "comments.jsonl",
+                IndexEntry(
+                    id="c1",
+                    name="comments.jsonl",
+                    resource_type="trello/comments_jsonl",
+                    vfs_name="comments.jsonl",
+                ),
+            )
+        ],
     )
     result = await stat(
         accessor,
         PathSpec.from_str_path(
             "/workspaces/Engineering__ws1/boards/Product_Roadmap__b1"
-            "/lists/Backlog__l1/cards/Fix_login__c1/comments.jsonl"),
+            "/lists/Backlog__l1/cards/Fix_login__c1/comments.jsonl"
+        ),
         index,
     )
-    assert result.type == FileType.TEXT
+    assert result.content == ContentType.TEXT
     assert result.size is None
 
 
 @pytest.mark.asyncio
 async def test_stat_missing_path(accessor, index):
     with pytest.raises(FileNotFoundError):
-        await stat(accessor, PathSpec.from_str_path("/nonexistent/path"),
-                   index)
+        await stat(
+            accessor, PathSpec.from_str_path("/nonexistent/path"), index
+        )

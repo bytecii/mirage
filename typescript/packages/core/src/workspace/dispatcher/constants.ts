@@ -25,6 +25,7 @@ export const DISPATCH_WRITE_OPS: ReadonlySet<string> = new Set([
   'write',
   'write_bytes',
   'append',
+  'pwrite',
   'unlink',
   'create',
   'truncate',
@@ -42,6 +43,17 @@ export const POLICY_WRITE_OPS: ReadonlySet<string> = new Set([
   ...DISPATCH_WRITE_OPS,
   'setattr',
   'symlink',
+  'setxattr',
+  'removexattr',
+])
+
+// The extended-attribute ops, which the node table answers: what a caller
+// sets is stored on the path's node beside the overlay's mode and times.
+export const XATTR_OPS: ReadonlySet<string> = new Set([
+  'getxattr',
+  'listxattr',
+  'setxattr',
+  'removexattr',
 ])
 
 // Ops the node table itself answers: a symlink is namespace state with
@@ -49,19 +61,41 @@ export const POLICY_WRITE_OPS: ReadonlySet<string> = new Set([
 // directions (create and readlink) rather than a router to a mount.
 export const NAMESPACE_TABLE_OPS: ReadonlySet<string> = new Set(['symlink', 'readlink'])
 
+// Ops the node table answers when the path itself is a link, and only
+// then. The name is the whole of what exists there, so forwarding one
+// reaches a backend that has never heard of it: an unlink answered
+// ENOENT with the link still in the table, and a rename moved nothing.
+// `stat` joins them only under `nofollow`, which is how a caller spells
+// lstat; a following stat arrives already resolved to its target.
+export const LINK_ENTRY_OPS: ReadonlySet<string> = new Set(['unlink', 'rename', 'stat'])
+
 // The attribute fields a setattr op can carry, in one place so the
 // requested/residual split and the overlay write read the same names.
 export const SETATTR_KEYS = ['mode', 'uid', 'gid', 'atime', 'mtime'] as const
 
-// Ops that create the path they name. A hidden target refuses these as
-// EACCES rather than ENOENT, because "does not exist" is nonsense as
-// the answer to a create the caller is spelling out; every other op on
-// a hidden path answers ENOENT, the no-name-leak rule.
-export const HIDDEN_CREATE_OPS: ReadonlySet<string> = new Set([
+// Ops that open the regular file they name with O_CREAT, which answers a
+// slash-terminated name (`x/`, only ever a directory) with EISDIR.
+export const FILE_CREATE_OPS: ReadonlySet<string> = new Set([
   'write',
   'write_bytes',
   'append',
+  'pwrite',
   'create',
+])
+
+// Ops that create the path they name. A hidden target refuses these
+// through `hiddenRefusal` with `create` set: EACCES when the directory
+// the create lands in is visible (a hidden name there reads as a file
+// the session cannot write), ENOENT when that directory is hidden too,
+// the same answer every read gives for it. Every other op on a hidden
+// path answers ENOENT, the no-name-leak rule.
+export const HIDDEN_CREATE_OPS: ReadonlySet<string> = new Set([
+  ...FILE_CREATE_OPS,
+  'truncate',
   'mkdir',
   'symlink',
 ])
+
+// Ops that create the name itself: an existing one answers EEXIST, before a
+// trailing slash on it is judged.
+export const ENTRY_CREATE_OPS: ReadonlySet<string> = new Set(['mkdir', 'symlink'])

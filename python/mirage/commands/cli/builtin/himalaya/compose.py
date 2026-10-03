@@ -14,12 +14,14 @@
 
 from mirage.commands.cli.builtin.himalaya.util import route
 from mirage.commands.cli.types import CLIInvocation
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.email.config import EmailConfig
 from mirage.io.types import ByteSource, IOResult
 
 
 async def compose(
-        inv: CLIInvocation[EmailConfig]) -> tuple[ByteSource | None, IOResult]:
-    return await route(inv.config, FlagView(inv.flags), inv.stdin, None,
-                       inv.doors)
+    inv: CLIInvocation[EmailConfig],
+) -> tuple[ByteSource | None, IOResult]:
+    return await route(
+        inv.config, FlagView(inv.flags), inv.stdin, None, inv.doors
+    )

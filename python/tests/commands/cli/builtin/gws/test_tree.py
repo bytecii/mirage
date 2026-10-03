@@ -33,41 +33,90 @@ def test_tree_lists_every_service():
     assert GWS.name == "gws"
     assert GWS.config_model is GoogleConfig
     assert [g.name for g in GWS.subcommands] == [
-        "drive", "sheets", "docs", "slides", "calendar", "forms", "gmail"
+        "drive",
+        "sheets",
+        "docs",
+        "slides",
+        "calendar",
+        "forms",
+        "gmail",
     ]
 
 
 def test_passthroughs_nest_by_discovery_resource():
     assert [v.name for v in leaf("drive", "files").subcommands] == [
-        "list", "get", "create", "update", "copy", "delete", "export"
+        "list",
+        "get",
+        "create",
+        "update",
+        "copy",
+        "delete",
+        "export",
     ]
-    assert [v.name for v in leaf("gmail", "users", "messages").subcommands
-            ] == ["list", "get", "send", "trash", "attachments"]
-    assert leaf("gmail", "users", "messages", "attachments",
-                "get").fn is not None
+    assert [v.name for v in leaf("slides").subcommands] == ["presentations"]
+    assert [v.name for v in leaf("slides", "presentations").subcommands] == [
+        "get",
+        "create",
+        "batchUpdate",
+    ]
+    assert [v.name for v in leaf("drive", "permissions").subcommands] == [
+        "create",
+        "list",
+        "delete",
+    ]
+    assert [
+        v.name for v in leaf("gmail", "users", "messages").subcommands
+    ] == ["list", "get", "send", "trash", "attachments"]
+    assert (
+        leaf("gmail", "users", "messages", "attachments", "get").fn is not None
+    )
 
 
 def test_bespoke_verbs_drop_the_plus_marker():
     assert [v.name for v in leaf("gmail").subcommands][-6:] == [
-        "send", "read", "reply", "reply-all", "forward", "triage"
+        "send",
+        "read",
+        "reply",
+        "reply-all",
+        "forward",
+        "triage",
     ]
-    assert [v.name for v in leaf("sheets").subcommands
-            ][-3:] == ["read", "write", "append"]
+    assert [v.name for v in leaf("sheets").subcommands][-3:] == [
+        "read",
+        "write",
+        "append",
+    ]
     assert leaf("docs", "write").write
 
 
 def test_writes_follow_http_semantics():
     assert not leaf("drive", "files", "list").write
+    assert not leaf("slides", "presentations", "get").write
+    assert leaf("slides", "presentations", "create").write
+    assert leaf("slides", "presentations", "batchUpdate").write
     assert leaf("drive", "files", "delete").write
+    assert not leaf("drive", "permissions", "list").write
+    assert leaf("drive", "permissions", "create").write
+    assert leaf("drive", "permissions", "delete").write
     assert leaf("sheets", "spreadsheets", "batchUpdate").write
+    assert leaf("gmail", "users", "messages", "trash").write
     assert not leaf("gmail", "triage").write
 
 
 def test_calendar_passthroughs_nest_by_discovery_resource():
-    assert [v.name for v in leaf("calendar").subcommands
-            ] == ["calendarList", "calendars", "events", "freebusy"]
-    assert [v.name for v in leaf("calendar", "events").subcommands
-            ] == ["list", "get", "insert", "patch", "delete"]
+    assert [v.name for v in leaf("calendar").subcommands] == [
+        "calendarList",
+        "calendars",
+        "events",
+        "freebusy",
+    ]
+    assert [v.name for v in leaf("calendar", "events").subcommands] == [
+        "list",
+        "get",
+        "insert",
+        "patch",
+        "delete",
+    ]
     assert not leaf("calendar", "events", "list").write
     assert leaf("calendar", "events", "insert").write
     assert leaf("calendar", "events", "delete").write
@@ -78,10 +127,15 @@ def test_calendar_passthroughs_nest_by_discovery_resource():
 
 def test_forms_passthroughs_nest_by_discovery_resource():
     assert [v.name for v in leaf("forms").subcommands] == ["forms"]
-    assert [v.name for v in leaf("forms", "forms").subcommands
-            ] == ["create", "get", "batchUpdate", "responses"]
-    assert [v.name for v in leaf("forms", "forms", "responses").subcommands
-            ] == ["list", "get"]
+    assert [v.name for v in leaf("forms", "forms").subcommands] == [
+        "create",
+        "get",
+        "batchUpdate",
+        "responses",
+    ]
+    assert [
+        v.name for v in leaf("forms", "forms", "responses").subcommands
+    ] == ["list", "get"]
     assert not leaf("forms", "forms", "get").write
     assert leaf("forms", "forms", "create").write
 
@@ -90,7 +144,7 @@ def test_forms_passthroughs_nest_by_discovery_resource():
 async def test_missing_required_flag_exits_2():
     ws = Workspace({})
     ws.register_cli("gws", GWS, CONFIG)
-    io = await ws.execute("gws gmail send --subject Hi --body yo")
+    io = await ws.shell("gws gmail send --subject Hi --body yo")
     assert io.exit_code == 2
     err = await materialize(io.stderr)
     assert err.startswith(b"gws gmail send: option '--to' is required")
@@ -101,9 +155,10 @@ async def test_missing_required_flag_exits_2():
 async def test_unknown_verb_uses_git_wording():
     ws = Workspace({})
     ws.register_cli("gws", GWS, CONFIG)
-    io = await ws.execute("gws drive bogus")
+    io = await ws.shell("gws drive bogus")
     assert io.exit_code == 1
     err = await materialize(io.stderr)
-    assert err == (b"gws: 'bogus' is not a gws drive command. "
-                   b"See 'gws drive --help'.\n")
+    assert err == (
+        b"gws: 'bogus' is not a gws drive command. See 'gws drive --help'.\n"
+    )
     await ws.close()

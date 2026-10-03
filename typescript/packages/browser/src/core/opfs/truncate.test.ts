@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { makeMockAccessor, spec } from '../../test-utils.ts'
+import { mkdir } from './mkdir.ts'
 import { read } from './read.ts'
 import { truncate } from './truncate.ts'
 import { writeBytes } from './write.ts'
@@ -33,4 +34,15 @@ describe('opfs/truncate', () => {
     expect(out.byteLength).toBe(4)
     expect(out[2]).toBe(0)
   })
+  it('a target that is a directory is EISDIR', async () => {
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/a'), true)
+    await expect(truncate(accessor, spec('/a'), 0)).rejects.toMatchObject({ code: 'EISDIR' })
+  })
+})
+
+it('no-create leaves a missing file absent', async () => {
+  const accessor = makeMockAccessor()
+  await truncate(accessor, spec('/missing'), 3, true)
+  await expect(read(accessor, spec('/missing'))).rejects.toMatchObject({ code: 'ENOENT' })
 })

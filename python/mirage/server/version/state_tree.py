@@ -15,10 +15,13 @@
 import json
 from typing import Any
 
-from mirage.workspace.snapshot.keys import (CacheKey, MountKey,
-                                            ResourceStateKey, StateKey)
+from mirage.workspace.snapshot.keys import (
+    CacheKey,
+    MountKey,
+    StateKey,
+    VFSStateKey,
+)
 from mirage.workspace.snapshot.tar_io import _json_default
-from mirage.workspace.snapshot.utils import FORMAT_VERSION
 
 # The control-plane subtree: everything about the workspace that is
 # not file content lives under one reserved directory, so a commit is
@@ -34,9 +37,6 @@ NAMESPACE_PATH = ".mirage/namespace.json"
 # identical blob, so it dedups in the content-addressed store.
 HISTORY_PREFIX = ".mirage/history/"
 
-# The four restorable categories of a whole-world version.
-CATEGORIES = ("files", "sessions", "namespace", "history")
-
 
 def _is_reserved(tree_path: str) -> bool:
     return tree_path.startswith(CONTROL_PREFIX)
@@ -46,11 +46,13 @@ def _history_entries(events: list[dict[str, Any]]) -> dict[str, bytes]:
     by_session: dict[str, list[str]] = {}
     for e in events:
         session = e.get("session") or "default"
-        by_session.setdefault(session,
-                              []).append(json.dumps(e, default=_json_default))
+        by_session.setdefault(session, []).append(
+            json.dumps(e, default=_json_default)
+        )
     return {
-        f"{HISTORY_PREFIX}{session}.jsonl":
-        ("\n".join(lines) + "\n").encode("utf-8")
+        f"{HISTORY_PREFIX}{session}.jsonl": ("\n".join(lines) + "\n").encode(
+            "utf-8"
+        )
         for session, lines in by_session.items()
     }
 
@@ -63,7 +65,8 @@ def _history_from_entries(entries: dict[str, bytes]) -> list[dict[str, Any]]:
         events.extend(
             json.loads(line)
             for line in entries[tree_path].decode("utf-8").splitlines()
-            if line)
+            if line
+        )
     events.sort(key=lambda e: e.get("timestamp", 0))
     return events
 
@@ -76,7 +79,7 @@ def _tree_path(prefix: str, rel: str) -> str:
 
 def _rel_path(prefix: str, tree_path: str) -> str:
     p = prefix.strip("/")
-    rest = tree_path[len(p) + 1:] if p else tree_path
+    rest = tree_path[len(p) + 1 :] if p else tree_path
     return "/" + rest
 
 
@@ -95,31 +98,36 @@ def blob_to_meta(data: bytes) -> dict[str, Any]:
 
 
 def tree_inputs_from_state(
-        state: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any]]:
+    state: dict[str, Any],
+) -> tuple[dict[str, bytes], dict[str, Any]]:
     entries: dict[str, bytes] = {}
     mounts_meta: list[dict[str, Any]] = []
     for mount in state[StateKey.MOUNTS]:
         prefix = mount[MountKey.PREFIX]
-        resource_state = dict(mount[MountKey.RESOURCE_STATE])
-        files = resource_state.pop(ResourceStateKey.FILES, {})
+        vfs_state = dict(mount[MountKey.VFS_STATE])
+        files = vfs_state.pop(VFSStateKey.FILES, {})
         for rel, data in files.items():
             entries[_tree_path(prefix, rel)] = data
-        mounts_meta.append({
-            MountKey.INDEX:
-            mount[MountKey.INDEX],
-            MountKey.PREFIX:
-            prefix,
-            MountKey.MODE:
-            mount[MountKey.MODE],
-            MountKey.CONSISTENCY:
-            mount[MountKey.CONSISTENCY],
-            MountKey.RESOURCE_CLASS:
-            mount[MountKey.RESOURCE_CLASS],
-            MountKey.RESOURCE_STATE:
-            resource_state,
-        })
+        mounts_meta.append(
+            {
+                MountKey.INDEX: mount[MountKey.INDEX],
+                MountKey.PREFIX: prefix,
+                MountKey.MODE: mount[MountKey.MODE],
+                MountKey.READ: mount[MountKey.READ],
+                MountKey.TTL: mount[MountKey.TTL],
+                MountKey.VFS_CLASS: mount[MountKey.VFS_CLASS],
+                MountKey.VFS_REF: mount.get(MountKey.VFS_REF),
+                MountKey.VFS_STATE: vfs_state,
+            }
+        )
     cache = state[StateKey.CACHE]
     config = {
+        # The snapshot *format* version, distinct from MIRAGE_VERSION,
+        # which is the package's. Without it a commit written under an
+        # older format reads back as whatever the loader currently is,
+        # and the version check below can never fire. TypeScript's twin
+        # carries it on the meta (`stateTree.ts`).
+        StateKey.VERSION: state[StateKey.VERSION],
         StateKey.MIRAGE_VERSION: state[StateKey.MIRAGE_VERSION],
         StateKey.DEFAULT_SESSION_ID: state[StateKey.DEFAULT_SESSION_ID],
         StateKey.DEFAULT_AGENT_ID: state[StateKey.DEFAULT_AGENT_ID],
@@ -127,13 +135,16 @@ def tree_inputs_from_state(
         CacheKey.LIMIT: cache[CacheKey.LIMIT],
         CacheKey.MAX_DRAIN_BYTES: cache[CacheKey.MAX_DRAIN_BYTES],
     }
-    entries[SESSIONS_PATH] = meta_to_blob({
-        "sessions":
-        state.get(StateKey.SESSIONS) or [],
-    })
-    entries[NAMESPACE_PATH] = meta_to_blob({
-        "nodes": state.get(StateKey.NODES) or {},
-    })
+    entries[SESSIONS_PATH] = meta_to_blob(
+        {
+            "sessions": state.get(StateKey.SESSIONS) or [],
+        }
+    )
+    entries[NAMESPACE_PATH] = meta_to_blob(
+        {
+            "nodes": state.get(StateKey.NODES) or {},
+        }
+    )
     entries.update(_history_entries(state.get(StateKey.HISTORY) or []))
     meta = {
         "mounts": mounts_meta,
@@ -143,40 +154,64 @@ def tree_inputs_from_state(
     return entries, meta
 
 
-def to_state(entries: dict[str, bytes], meta: dict[str,
-                                                   Any]) -> dict[str, Any]:
+def to_state(
+    entries: dict[str, bytes], meta: dict[str, Any]
+) -> dict[str, Any]:
     mounts: list[dict[str, Any]] = []
     for mount in meta["mounts"]:
         prefix = mount[MountKey.PREFIX]
         tree_prefix = prefix.strip("/")
-        resource_state = dict(mount[MountKey.RESOURCE_STATE])
+        vfs_state = dict(mount[MountKey.VFS_STATE])
         files: dict[str, bytes] = {}
         for tree_path, data in entries.items():
             if _is_reserved(tree_path):
                 continue
             if _belongs(tree_prefix, tree_path):
                 files[_rel_path(prefix, tree_path)] = data
-        resource_state[ResourceStateKey.FILES] = files
-        mounts.append({
-            MountKey.INDEX: mount[MountKey.INDEX],
-            MountKey.PREFIX: prefix,
-            MountKey.MODE: mount[MountKey.MODE],
-            MountKey.CONSISTENCY: mount[MountKey.CONSISTENCY],
-            MountKey.RESOURCE_CLASS: mount[MountKey.RESOURCE_CLASS],
-            MountKey.RESOURCE_STATE: resource_state,
-        })
+        vfs_state[VFSStateKey.FILES] = files
+        mounts.append(
+            {
+                MountKey.INDEX: mount[MountKey.INDEX],
+                MountKey.PREFIX: prefix,
+                MountKey.MODE: mount[MountKey.MODE],
+                # Read defensively. A commit written before v4 carries
+                # neither key, and subscripting here would raise a bare
+                # KeyError on every checkout, diff and restore -- one frame
+                # before `build_mount_args` could answer with the version
+                # refusal this echo exists to reach.
+                MountKey.READ: mount.get(MountKey.READ),
+                MountKey.TTL: mount.get(MountKey.TTL),
+                MountKey.VFS_CLASS: mount[MountKey.VFS_CLASS],
+                # ``get``: a meta committed before the ref was recorded reads
+                # as None, the answer for a VFS constructed in code.
+                MountKey.VFS_REF: mount.get(MountKey.VFS_REF),
+                MountKey.VFS_STATE: vfs_state,
+            }
+        )
     config = meta.get("config", {})
     sessions_blob = entries.get(SESSIONS_PATH)
-    sessions = (blob_to_meta(sessions_blob).get("sessions", [])
-                if sessions_blob is not None else [])
+    sessions = (
+        blob_to_meta(sessions_blob).get("sessions", [])
+        if sessions_blob is not None
+        else []
+    )
     namespace_blob = entries.get(NAMESPACE_PATH)
-    nodes = (blob_to_meta(namespace_blob).get("nodes", {})
-             if namespace_blob is not None else {})
+    nodes = (
+        blob_to_meta(namespace_blob).get("nodes", {})
+        if namespace_blob is not None
+        else {}
+    )
     history = _history_from_entries(entries)
     return {
-        StateKey.VERSION: FORMAT_VERSION,
-        StateKey.MIRAGE_VERSION: config.get(StateKey.MIRAGE_VERSION,
-                                            "unknown"),
+        # Echoed, not stamped. Stamping FORMAT_VERSION here relabelled
+        # every old commit as current, so `build_mount_args`' refusal
+        # could never fire and a v3 commit landed on a missing required
+        # key instead of the regenerate message. A commit written before
+        # this field existed reads as v3, which is what it is.
+        StateKey.VERSION: config.get(StateKey.VERSION, 3),
+        StateKey.MIRAGE_VERSION: config.get(
+            StateKey.MIRAGE_VERSION, "unknown"
+        ),
         StateKey.MOUNTS: mounts,
         StateKey.SESSIONS: sessions,
         StateKey.DEFAULT_SESSION_ID: config.get(StateKey.DEFAULT_SESSION_ID),

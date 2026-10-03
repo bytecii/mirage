@@ -12,12 +12,30 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.shell.syntax.parse import parse
-from mirage.shell.types import NodeType, RedirectKind, ShellBuiltin
+from mirage.shell.constants import (
+    BUILTIN_GROUP,
+    GRAMMAR_BUILTINS,
+    GROUP_TIER,
+    TOOL_BUILTINS,
+)
+from mirage.shell.parse import parse
+from mirage.shell.types import (
+    BuiltinGroup,
+    BuiltinTier,
+    NodeType,
+    RedirectKind,
+    ShellBuiltin,
+)
 
 __all__ = [
+    "BUILTIN_GROUP",
+    "BuiltinGroup",
+    "BuiltinTier",
+    "GRAMMAR_BUILTINS",
+    "GROUP_TIER",
     "NodeType",
     "RedirectKind",
     "ShellBuiltin",
+    "TOOL_BUILTINS",
     "parse",
 ]

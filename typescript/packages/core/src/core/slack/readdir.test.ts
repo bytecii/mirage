@@ -15,7 +15,7 @@
 import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import { SlackAccessor } from '../../accessor/slack.ts'
-import { IndexEntry } from '../../cache/index/config.ts'
+import { IndexEntry, type Evicted, type SetDirOptions } from '../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { PathSpec } from '../../types.ts'
 import type { SlackResponse, SlackTransport } from './client.ts'
@@ -45,8 +45,22 @@ class FakeTransport implements SlackTransport {
   }
 }
 
+class WindowSpy extends RAMIndexCacheStore {
+  readonly windows = new Map<string, boolean>()
+
+  override setDir(
+    vfsPath: string,
+    entries: readonly [string, IndexEntry][],
+    expiredAt?: Date | null,
+    options: SetDirOptions = {},
+  ): Promise<Evicted[]> {
+    this.windows.set(vfsPath, options.window === true)
+    return super.setDir(vfsPath, entries, expiredAt, options)
+  }
+}
+
 function spec(virtual: string, prefix = ''): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath: mountKey(virtual, prefix) })
+  return new PathSpec({ virtual, directory: virtual, vfsPath: mountKey(virtual, prefix) })
 }
 
 describe('dateRange', () => {
@@ -72,6 +86,31 @@ describe('dateRange', () => {
   it('returns single date when latest equals created', () => {
     const ts = Date.UTC(2024, 5, 15) / 1000
     expect(dateRange(ts, ts)).toEqual(['2024-06-15'])
+  })
+
+  it('escapes the cap for a glob span older than the window', () => {
+    // A day dir is real for any date the channel has existed for, so a glob
+    // older than the 90-day window must still list its days.
+    const end = Date.UTC(2024, 0, 100) / 1000
+    const start = Date.UTC(2010, 0, 1) / 1000
+    const out = dateRange(end, start, 90, ['2010-03-01', '2010-04-01'])
+    expect(out).toHaveLength(31)
+    expect(out[0]).toBe('2010-03-31')
+    expect(out[30]).toBe('2010-03-01')
+  })
+
+  it('clips a glob span at both ends of the channel', () => {
+    const start = Date.UTC(2010, 2, 10) / 1000
+    const end = Date.UTC(2010, 2, 20) / 1000
+    const out = dateRange(end, start, 90, ['2010-03-01', '2010-04-01'])
+    expect(out[0]).toBe('2010-03-20')
+    expect(out[out.length - 1]).toBe('2010-03-10')
+  })
+
+  it('lists nothing for a glob span the channel never covered', () => {
+    const start = Date.UTC(2020, 0, 1) / 1000
+    const end = Date.UTC(2020, 0, 5) / 1000
+    expect(dateRange(end, start, 90, ['2010-03-01', '2010-04-01'])).toEqual([])
   })
 })
 
@@ -351,7 +390,7 @@ describe('readdir channel/<id> (history dates)', () => {
       ok: true,
       messages: [
         {
-          ts: '1775000000.000100',
+          ts: '1775779200.000100',
           files: [
             {
               id: 'F1',
@@ -376,5 +415,98 @@ describe('readdir channel/<id> (history dates)', () => {
     ])
     const lookup = await idx.get('/mnt/slack/channels/general__C1/2026-04-10/files/report__F1.pdf')
     expect(lookup.entry?.size).toBe(12)
+  })
+})
+
+describe('readdir of an end-scoped conversation without a creation time', () => {
+  const latest = Date.UTC(2026, 5, 20) / 1000
+  const first = Date.UTC(2026, 4, 30, 12) / 1000
+  const end = Date.UTC(2026, 5, 2) / 1000
+
+  async function dmWithoutCreated(): Promise<RAMIndexCacheStore> {
+    const idx = new RAMIndexCacheStore()
+    await idx.setDir('/mnt/slack/dms', [
+      [
+        'alice__D1',
+        new IndexEntry({ id: 'D1', name: 'alice', resourceType: 'slack/dm', vfsName: 'alice__D1' }),
+      ],
+    ])
+    return idx
+  }
+
+  function history(): FakeTransport {
+    return new FakeTransport((endpoint, params) => {
+      if (endpoint !== 'conversations.history') return { ok: true }
+      if (params?.limit === '1') return { ok: true, messages: [{ ts: latest.toFixed(6) }] }
+      return {
+        ok: true,
+        messages: [{ ts: (first + 3600).toFixed(6) }, { ts: first.toFixed(6) }],
+        response_metadata: { next_cursor: '' },
+      }
+    })
+  }
+
+  it('takes a glob span as its first day instead of scanning history', async () => {
+    const t = history()
+    const out = await readdir(
+      new SlackAccessor(t, { endTime: '2026-06-02T00:00:00Z' }),
+      new PathSpec({
+        virtual: '/mnt/slack/dms/alice__D1/2026-05-*',
+        directory: '/mnt/slack/dms/alice__D1/',
+        vfsPath: mountKey('/mnt/slack/dms/alice__D1/2026-05-*', '/mnt/slack'),
+        pattern: '2026-05-*',
+      }),
+      await dmWithoutCreated(),
+    )
+    expect(t.calls.filter((c) => c.params?.limit === '200')).toEqual([])
+    expect(out).toHaveLength(31)
+    expect(out[0]).toBe('/mnt/slack/dms/alice__D1/2026-05-31')
+    expect(out[30]).toBe('/mnt/slack/dms/alice__D1/2026-05-01')
+  })
+
+  it('pages only the history before the end for a bare listing', async () => {
+    const t = history()
+    const out = await readdir(
+      new SlackAccessor(t, { endTime: '2026-06-02T00:00:00Z' }),
+      spec('/mnt/slack/dms/alice__D1', '/mnt/slack'),
+      await dmWithoutCreated(),
+    )
+    expect(t.calls.filter((c) => c.params?.limit === '200').map((c) => c.params)).toEqual([
+      { channel: 'D1', limit: '200', latest: end.toFixed(6) },
+    ])
+    expect(out).toEqual([
+      '/mnt/slack/dms/alice__D1/2026-06-01',
+      '/mnt/slack/dms/alice__D1/2026-05-31',
+      '/mnt/slack/dms/alice__D1/2026-05-30',
+    ])
+  })
+})
+
+describe('readdir channel window', () => {
+  it('writes a channel listing as a window', async () => {
+    // The bare listing covers the last 90 days only; a day that falls out
+    // of it still exists and is still readable by path.
+    const created = Date.UTC(2024, 0, 1) / 1000
+    const latest = Date.UTC(2024, 0, 3) / 1000
+    const idx = new WindowSpy()
+    await idx.setDir('/mnt/slack/channels', [
+      [
+        'general__C1',
+        new IndexEntry({
+          id: 'C1',
+          name: 'general',
+          resourceType: 'slack/channel',
+          vfsName: 'general__C1',
+          remoteTime: String(created),
+        }),
+      ],
+    ])
+    const t = new FakeTransport((endpoint) =>
+      endpoint === 'conversations.history'
+        ? { ok: true, messages: [{ ts: String(latest) }] }
+        : { ok: true },
+    )
+    await readdir(new SlackAccessor(t), spec('/mnt/slack/channels/general__C1', '/mnt/slack'), idx)
+    expect(idx.windows.get('/mnt/slack/channels/general__C1')).toBe(true)
   })
 })

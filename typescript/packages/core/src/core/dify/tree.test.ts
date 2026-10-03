@@ -14,14 +14,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
-import {
-  buildDirEntries,
-  extractDocumentSize,
-  extractSlug,
-  normalizeSlug,
-  scalarString,
-  timestampToIso,
-} from './tree.ts'
+import { buildDirEntries, epochText, extractDocumentSize, extractSlug } from './tree.ts'
 
 function doc(overrides: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -58,18 +51,6 @@ function entryFor(
   return (entries.get(dir) ?? []).find(([n]) => n === name)?.[1]
 }
 
-describe('normalizeSlug', () => {
-  it('normalizes a relative slug to an absolute path', () => {
-    expect(normalizeSlug('guides/quickstart')).toBe('/guides/quickstart')
-    expect(normalizeSlug('/CHANGELOG.md/')).toBe('/CHANGELOG.md')
-  })
-
-  it('rejects empty and dot segments', () => {
-    expect(() => normalizeSlug('')).toThrow('Invalid empty Dify document slug.')
-    expect(() => normalizeSlug('a/../b')).toThrow('Invalid Dify document slug segment')
-  })
-})
-
 describe('extractSlug', () => {
   it('reads the slug metadata field when present', () => {
     expect(extractSlug(QUICKSTART, 'slug')).toEqual(['guides/quickstart', true])
@@ -95,25 +76,15 @@ describe('extractDocumentSize', () => {
   })
 })
 
-describe('scalarString', () => {
-  it('coerces primitives and rejects objects', () => {
-    expect(scalarString('x')).toBe('x')
-    expect(scalarString(5)).toBe('5')
-    expect(scalarString(true)).toBe('true')
-    expect(scalarString(null)).toBeNull()
-    expect(scalarString({})).toBeNull()
-  })
-})
-
-describe('timestampToIso', () => {
-  it('converts an epoch-seconds number to ISO', () => {
-    expect(timestampToIso(1716282000)).toBe('2024-05-21T09:00:00.000Z')
+describe('epochText', () => {
+  it('spells epoch seconds like every other backend', () => {
+    expect(epochText(1716282000)).toBe('2024-05-21T09:00:00Z')
   })
 
-  it('passes strings through and empties everything else', () => {
-    expect(timestampToIso('2026-01-01T00:00:00Z')).toBe('2026-01-01T00:00:00Z')
-    expect(timestampToIso(null)).toBe('')
-    expect(timestampToIso({})).toBe('')
+  it('passes strings through and drops everything else', () => {
+    expect(epochText('2026-01-01T00:00:00Z')).toBe('2026-01-01T00:00:00Z')
+    expect(epochText(null)).toBeNull()
+    expect(epochText({})).toBeNull()
   })
 })
 
@@ -133,6 +104,8 @@ describe('buildDirEntries', () => {
     expect(quickstart?.resourceType).toBe('file')
     expect(quickstart?.extra.slug).toBe('guides/quickstart')
     expect(quickstart?.extra.has_slug).toBe(true)
+    expect(quickstart?.size).toBeNull()
+    expect(quickstart?.extra.source_size).toBe(180)
   })
 
   it('drops the deeper document whose ancestor is itself a file', () => {

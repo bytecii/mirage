@@ -15,12 +15,11 @@
 import asyncio
 import json
 import os
-import sys
 
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.gmail import GmailConfig, GmailResource
+from mirage.vfs.gmail import GmailConfig, GmailVFS
 
 load_dotenv(".env.development")
 
@@ -29,27 +28,27 @@ config = GmailConfig(
     client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
     refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
 )
-resource = GmailResource(config=config)
+vfs = GmailVFS(config=config)
 
 
 async def main():
-    with Workspace({"/gmail/": resource}, mode=MountMode.READ) as ws:
-        vos = sys.modules["os"]
+    with Workspace({"/gmail/": vfs}, mode=MountMode.READ) as ws:
         print("=== VFS MODE: open() reads from Gmail transparently ===\n")
 
         print("--- os.listdir() labels ---")
-        labels = vos.listdir("/gmail")
+        labels = os.listdir("/gmail")
         for label in labels:
             print(f"  {label}")
 
         print("\n--- os.listdir() INBOX (date folders) ---")
-        dates = vos.listdir("/gmail/INBOX")
+        dates = os.listdir("/gmail/INBOX")
         for date in dates[:5]:
             print(f"  {date}")
 
         first_date = dates[0] if dates else None
-        entries = vos.listdir(
-            f"/gmail/INBOX/{first_date}") if first_date else []
+        entries = (
+            os.listdir(f"/gmail/INBOX/{first_date}") if first_date else []
+        )
         messages = [e for e in entries if e.endswith(".gmail.json")]
         for msg in messages[:5]:
             print(f"  {first_date}/{msg}")
@@ -66,9 +65,8 @@ async def main():
                 print(f"  snippet: {parsed.get('snippet', '')[:120]}...")
 
             print("\n--- os.path.exists() ---")
-            print(f"  {first}: {vos.path.exists(path)}")
-            print(
-                f"  nonexistent: {vos.path.exists('/gmail/INBOX/nope.json')}")
+            print(f"  {first}: {os.path.exists(path)}")
+            print(f"  nonexistent: {os.path.exists('/gmail/INBOX/nope.json')}")
 
         print("\n--- bash history ---")
         with open("/.bash_history") as f:
@@ -77,7 +75,7 @@ async def main():
                     break
                 print(f"  {line.rstrip()[:120]}")
 
-        records = ws.ops.records
+        records = ws.vfs.records
         total = sum(r.bytes for r in records)
         print(f"\nStats: {len(records)} ops, {total} bytes transferred")
 

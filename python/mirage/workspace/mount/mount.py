@@ -12,43 +12,117 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import dataclasses
-import errno
+import functools
 import inspect
+import logging
+from collections.abc import AsyncIterator, Awaitable, Iterable
+from contextlib import asynccontextmanager
 from typing import Any, Callable
 
 from mirage.cache.context import push_cache_manager
+from mirage.cache.index.config import IndexConfig
+from mirage.cache.index.factory import build_index
+from mirage.cache.index.store import IndexCacheStore
 from mirage.cache.manager import CacheManager
 from mirage.commands.builtin.utils.limit import run_with_timeout
-from mirage.commands.config import CommandOpts, RegisteredCommand
+from mirage.commands.builtin.utils.paths import dispatch_stat, link_follow
+from mirage.commands.config import CommandOpts, ExecContext, RegisteredCommand
+from mirage.commands.errors import CommandTimeoutError, UsageError
 from mirage.commands.resolve import get_extension
 from mirage.commands.spec import CommandSpec
+from mirage.commands.spec.flag_view import FlagBag
+from mirage.commands.spec.standard import has_injected_version
 from mirage.commands.spec.types import FlagValue
-from mirage.context import effective_mount_mode
+from mirage.commands.spec.usage import read_fail_exit
+from mirage.context import (
+    effective_mount_mode,
+    require_paths_writable,
+    reset_mount_gate,
+    reset_walk_probe,
+    set_mount_gate,
+    set_walk_probe,
+    strongest_mode_under,
+)
 from mirage.io.cachable_iterator import CachableAsyncIterator
-from mirage.io.types import ByteSource, IOResult
-from mirage.observe.context import (push_mount_prefix, push_revisions,
-                                    reset_revisions, with_mount_prefix,
-                                    with_revisions)
+from mirage.io.types import ByteSource, IOResult, materialize
+from mirage.observe.context import (
+    push_mount_context,
+    push_revisions,
+    reset_active_recorder,
+    reset_revisions,
+    with_mount_context,
+    with_revisions,
+)
 from mirage.ops.registry import RegisteredOp
-from mirage.ops.types import NamespaceView, ReaddirPath, SessionView, StatPath
 from mirage.policy import resolve_limit
-from mirage.resource.base import BaseResource
-from mirage.runtime.base import Runtime
-from mirage.runtime.types import DispatchFn
-from mirage.types import (ConsistencyPolicy, Limit, MountMode, PathSpec,
-                          Producer)
-from mirage.utils.errors import enotsup
+from mirage.runtime.python.host.host_io import host_io, with_host_io
+from mirage.types import (
+    FileType,
+    Limit,
+    MountMode,
+    PathSpec,
+    Producer,
+    ReadSpec,
+    WalkProbe,
+)
+from mirage.utils.context_scope import ContextScope
+from mirage.utils.errors import ebusy, enotsup, format_fs_error
+from mirage.utils.ids import uuid7
 from mirage.utils.key_prefix import mount_key
+from mirage.vfs.base import BaseVFS
+from mirage.workspace.mount.activity import VFSActivity
+from mirage.workspace.mount.read_policy import coerce_read_policy
+
+logger = logging.getLogger(__name__)
+
+# Ops that mutate everything under their endpoints in one backend call
+# (a directory rename relocates its whole subtree), so the door also
+# refuses a read-only region below either endpoint. The removal ops
+# stay per-path: the runtimes compose rmtree from unlink/rmdir, and
+# each of those answers for its own path above.
+_SUBTREE_OPS = frozenset({"rename"})
+
+
+async def _command_output(
+    source: AsyncIterator[bytes],
+    io: IOResult,
+    command: str,
+    paths: list[PathSpec],
+) -> AsyncIterator[bytes]:
+    """Keep a deferred backend failure on its command, after any emitted bytes.
+
+    Args:
+        source (AsyncIterator[bytes]): mount-owned output.
+        io (IOResult): result finalized when the stream is exhausted.
+        command (str): command whose diagnostic and exit code apply.
+        paths (list[PathSpec]): operands for diagnostic spelling.
+    """
+    try:
+        async for chunk in source:
+            yield chunk
+    except CommandTimeoutError:
+        raise
+    except Exception as exc:
+        logger.debug("%s output failed", command, exc_info=True)
+        existing = await materialize(io.stderr) or b""
+        io.stderr = existing + format_fs_error(command, exc, paths)
+        io.exit_code = (
+            exc.exit_code
+            if isinstance(exc, UsageError)
+            else read_fail_exit(command, exc)
+        )
 
 
 def _wrap_cmd_streams(
     result: tuple[ByteSource | None, IOResult],
-    mount_prefix: str,
     revisions: dict[str, str] | None,
+    mount_id: str | None = None,
+    activity: VFSActivity | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Wrap any async-iterator streams in ``result`` with the mount
-    prefix and active revisions, so ``record_stream`` and
+    identity and active revisions, so ``record_stream`` and
     ``revision_for`` calls inside the lazy backend body see the right
     context when consumed after this frame exits.
 
@@ -59,12 +133,13 @@ def _wrap_cmd_streams(
 
     Args:
         result: ``(stream, io)`` as returned by a command handler.
-        mount_prefix: prefix to push during stream consumption.
         revisions: revisions map to push during stream consumption
             (None when the mount has no pins installed).
+        mount_id (str | None): identity of the serving mount.
     """
     stream, io = result
     seen: dict[int, ByteSource] = {}
+    scope = ContextScope()
 
     def _wrap(obj: ByteSource) -> ByteSource:
         if isinstance(obj, (bytes, bytearray)):
@@ -73,14 +148,16 @@ def _wrap_cmd_streams(
         if oid in seen:
             return seen[oid]
         source = obj.source if isinstance(obj, CachableAsyncIterator) else obj
-        wrapped = with_mount_prefix(mount_prefix, source)
+        wrapped = with_mount_context(source, mount_id)
         if revisions:
             wrapped = with_revisions(revisions, wrapped)
+        wrapped = scope.stream(with_host_io(wrapped))
         if isinstance(obj, CachableAsyncIterator):
             obj.replace_source(wrapped)
             wrapped = obj
-        seen[oid] = wrapped
-        return wrapped
+        held = activity.hold(wrapped) if activity is not None else wrapped
+        seen[oid] = held
+        return held
 
     stream = _wrap(stream) if stream is not None else None
     for k, v in list(io.reads.items()):
@@ -90,25 +167,52 @@ def _wrap_cmd_streams(
     return stream, io
 
 
+def _wrap_op_stream(result: Any, mount_id: str, activity: VFSActivity) -> Any:
+    """Hold the host-I/O bypass around an op result that streams.
+
+    An op that returns an async iterator has not run its body yet: the
+    backend opens the file on the first ``__anext__``, after the frame
+    that called it (and its ``host_io`` scope) is gone. Same reason
+    ``_wrap_cmd_streams`` re-establishes the recorder state.
+
+    Args:
+        result (Any): whatever the op returned.
+        mount_id (str): identity of the serving mount.
+    """
+    if isinstance(result, CachableAsyncIterator):
+        result.replace_source(
+            with_host_io(with_mount_context(result.source, mount_id))
+        )
+        return activity.hold(result)
+    if hasattr(result, "__aiter__"):
+        return activity.hold(
+            with_host_io(with_mount_context(result, mount_id))
+        )
+    return result
+
+
 class MountEntry:
-    """A mounted resource with command and op dispatch.
+    """A mounted VFS with command and op dispatch.
 
     Each mount has its own lookup tables for commands and ops.
-    Different mounts of the same resource type can have
+    Different mounts of the same VFS type can have
     different registered commands/ops.
 
     Resolution hierarchy (same for commands and ops):
     1. (name, extension) -- filetype-specific
-    2. (name, None) -- resource-specific
+    2. (name, None) -- VFS-specific
     3. general[name] -- general fallback
     """
 
     def __init__(
         self,
         prefix: str,
-        resource: BaseResource,
+        vfs: BaseVFS,
         mode: MountMode = MountMode.READ,
-        consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY,
+        read: ReadSpec | None = None,
+        index: IndexCacheStore | None = None,
+        vfs_ref: str | None = None,
+        index_config: IndexConfig | None = None,
     ) -> None:
         if not prefix.startswith("/"):
             raise ValueError(f"prefix must start with /: {prefix!r}")
@@ -116,10 +220,48 @@ class MountEntry:
             raise ValueError(f"prefix must end with /: {prefix!r}")
         if "//" in prefix:
             raise ValueError(f"prefix must not contain //: {prefix!r}")
+        self.mount_id = uuid7()
         self.prefix = prefix
-        self.resource = resource
+        self.vfs = vfs
         self.mode = mode
-        self.consistency = consistency
+        # How this mount's cached bytes are revalidated. Read by the
+        # gate (Reconciler.may_serve_cached) and by the cache write path
+        # for its bound.
+        #
+        # Normalized here, where a spec becomes live mount state, because
+        # `ReadPolicy` is a (str, Enum) and `ReadSpec` coerces nothing:
+        # an embedder writing `ReadSpec(policy="fresh")` against the
+        # public API would otherwise store the bare string, and every
+        # reader compares with `is` -- the verdict, the gate, the routing
+        # reconcile -- so the mount would pass its capability check and
+        # then behave as `bounded` everywhere. That is the silent
+        # downgrade the policy exists to remove, so it is refused rather
+        # than kept. The TypeScript twin freezes its copy at the same
+        # point for the mirror-image reason.
+        spec = read if read is not None else ReadSpec()
+        self.read = dataclasses.replace(
+            spec, policy=coerce_read_policy(spec.policy)
+        )
+        # The store this mount runs its driver under, built by the
+        # registry when the driver is placed and shared with any alias
+        # of the same instance; a bare entry gets a RAM store at the
+        # driver's TTL. ``index`` is the same store scoped by the cache
+        # manager, which is what ops and commands receive.
+        self.index_store: IndexCacheStore = (
+            index if index is not None else build_index(None, vfs.index_ttl)
+        )
+        # The ``vfs:`` value the driver was built from, recorded for
+        # snapshots; None for one constructed in code.
+        self.vfs_ref = vfs_ref
+        self.index_config = (
+            index_config.model_copy(deep=True)
+            if index_config is not None
+            else None
+        )
+        self.activity = VFSActivity()
+        self.retiring = False
+        self.before_use: Callable[[], Awaitable[None]] | None = None
+        self._ready_lock = asyncio.Lock()
         self.cache_manager: CacheManager | None = None
         # Per-path revision pins installed at Workspace.load time. Read
         # functions consult these via the ``revision_for`` contextvar
@@ -140,7 +282,99 @@ class MountEntry:
         self._ops: dict[tuple[Any, ...], RegisteredOp] = {}
         self._general_ops: dict[str, RegisteredOp] = {}
         # key: (cmd_name, target_resource_type)
-        self._cross_cmds: dict[tuple[Any, ...], RegisteredCommand] = {}
+
+    @asynccontextmanager
+    async def use(self) -> AsyncIterator[None]:
+        await self.ensure_ready()
+        if self.retiring:
+            raise ebusy(self.prefix)
+        release = self.activity.acquire()
+        try:
+            yield
+        finally:
+            release()
+
+    def has_op(self, name: str) -> bool:
+        """Whether the op table serves ``name`` on any level of the cascade.
+
+        Args:
+            name (str): the op name.
+        """
+        return bool(
+            self._resolve_cascade(name, None, self._ops, self._general_ops)
+        )
+
+    async def expand_glob(
+        self, paths: list[PathSpec], prefix: str
+    ) -> list[PathSpec]:
+        """Expand glob words through the ``glob`` op, one spec at a time.
+
+        A driver whose table carries no ``glob`` leaves every word as
+        typed. The mount stamps each word's mount-relative key before the
+        op sees it, since the key is the placement's to know, and keeps
+        the VFS retained while the walk reads metadata.
+
+        Args:
+            paths (list[PathSpec]): the words, pattern specs among them.
+            prefix (str): the mount prefix without its trailing slash.
+        """
+        levels = self._resolve_cascade(
+            "glob", None, self._ops, self._general_ops
+        )
+        if not levels:
+            return list(paths)
+        async with self.use():
+            if self.cache_manager is None:
+                return await self._run_glob(
+                    levels, paths, prefix, self.index_store
+                )
+            async with self.cache_manager.mutation():
+                await self.ensure_ready()
+                index = self.cache_manager.scope_index_locked(self.index_store)
+                return await self._run_glob(levels, paths, prefix, index)
+
+    async def _run_glob(
+        self,
+        levels: list[RegisteredOp],
+        paths: list[PathSpec],
+        prefix: str,
+        index: IndexCacheStore,
+    ) -> list[PathSpec]:
+        out: list[PathSpec] = []
+        for p in paths:
+            spec = (
+                dataclasses.replace(p, vfs_path=mount_key(p.virtual, prefix))
+                if prefix
+                else p
+            )
+            for op in levels:
+                matches = await op.fn(self.vfs.accessor, spec, index=index)
+                if matches is not None:
+                    out.extend(matches)
+                    break
+        return out
+
+    @property
+    def index(self) -> IndexCacheStore:
+        index = self.index_store
+        return (
+            self.cache_manager.scope_index(index)
+            if self.cache_manager
+            else index
+        )
+
+    async def ensure_ready(self) -> None:
+        """Finish mount preparation before any backend or cache read."""
+        if self.retiring:
+            raise ebusy(self.prefix)
+        if self.before_use is None:
+            return
+        async with self._ready_lock:
+            if self.before_use is not None:
+                await self.before_use()
+                self.before_use = None
+        if self.retiring:
+            raise ebusy(self.prefix)
 
     def effective_mode(self) -> MountMode:
         """This mount's mode narrowed by the current session's cap.
@@ -153,7 +387,7 @@ class MountEntry:
     # ── command registration ──────────────────────────
 
     def register(self, cmd: RegisteredCommand) -> None:
-        """Register a resource-specific command."""
+        """Register a VFS-specific command."""
         key = (cmd.name, cmd.filetype)
         self._cmds[key] = cmd
         if cmd.spec is not None:
@@ -164,9 +398,9 @@ class MountEntry:
         self,
         cmd: RegisteredCommand,
     ) -> None:
-        """Register a general command (resource=None).
+        """Register a general command (vfs=None).
 
-        General commands work on any resource (e.g. echo, pwd).
+        General commands work on any VFS (e.g. echo, pwd).
         They are the last fallback in resolve_command().
         """
         self._general_cmds[cmd.name] = cmd
@@ -183,7 +417,7 @@ class MountEntry:
 
         Lookup order:
         1. (cmd_name, extension) -- filetype-specific
-        2. (cmd_name, None) -- resource-specific
+        2. (cmd_name, None) -- VFS-specific
         3. general_cmds[cmd_name] -- general fallback
         """
         if extension:
@@ -210,20 +444,23 @@ class MountEntry:
             return 0
         if self._prefix_index is None:
             index: dict[str, set[int]] = {}
-            names = (set(self._cmd_specs) | {n
-                                             for n, _ in self._cmds}
-                     | set(self._general_cmds))
+            names = (
+                set(self._cmd_specs)
+                | {n for n, _ in self._cmds}
+                | set(self._general_cmds)
+            )
             for name in names:
                 tokens = name.split(" ")
                 if len(tokens) > 1:
                     index.setdefault(tokens[0], set()).add(len(tokens))
             self._prefix_index = {
-                k: sorted(v, reverse=True)
-                for k, v in index.items()
+                k: sorted(v, reverse=True) for k, v in index.items()
             }
         for length in self._prefix_index.get(words[0], ()):
-            if length <= len(words) and self.resolve_command(" ".join(
-                    words[:length])) is not None:
+            if (
+                length <= len(words)
+                and self.resolve_command(" ".join(words[:length])) is not None
+            ):
                 return length
         return 1
 
@@ -233,10 +470,6 @@ class MountEntry:
     ) -> CommandSpec | None:
         """Get the spec for a command name."""
         return self._cmd_specs.get(cmd_name)
-
-    def is_general_command(self, cmd_name: str) -> bool:
-        """Whether `cmd_name` is registered as a general command here."""
-        return cmd_name in self._general_cmds
 
     def all_commands(self) -> list[RegisteredCommand]:
         """All registered commands (per-mount + general), deduped by name."""
@@ -278,43 +511,69 @@ class MountEntry:
                     fns[ft] = rc.fn
         return fns
 
-    def register_fns(self, fns: list[Any]) -> None:
-        """Register commands and ops from decorated functions.
+    def register_fns(self, fns: Iterable[Any]) -> None:
+        """Register decorated functions or command/op definitions.
 
         Args:
-            fns (list): Functions decorated with @command and/or @op.
+            fns (iterable): Decorated functions, RegisteredCommand values,
+                and/or RegisteredOp values.
 
         Raises:
-            ValueError: If a command/op's resource doesn't match
-                this mount's resource.
+            ValueError: If a command/op's VFS doesn't match
+                this mount's VFS.
         """
-        pname = self.resource.name
+        pname = self.vfs.name
+        # Grouped by name, because a family table fans out over sibling
+        # VFS names: hf_buckets/hf_datasets/hf_models/hf_spaces share one
+        # `make_generic_ops(HF_VFS_NAMES, IO)` table, so most entries a
+        # mount is handed belong to a sibling and are simply skipped. A
+        # name whose entries name only other VFS is the real mistake (a
+        # table built for the wrong backend), and that still raises.
+        cmd_groups: dict[str, tuple[list[RegisteredCommand], set[str]]] = {}
+        op_groups: dict[str, tuple[list[RegisteredOp], set[str]]] = {}
         for fn in fns:
-            if hasattr(fn, "_registered_commands"):
-                rcs = fn._registered_commands
-                matching = [
-                    rc for rc in rcs
-                    if rc.resource is None or rc.resource == pname
-                ]
-                if rcs and not matching:
-                    resources = sorted({rc.resource for rc in rcs})
-                    raise ValueError(
-                        f"command {rcs[0].name!r} is for resource(s) "
-                        f"{resources!r}, not {pname!r}")
-                for rc in matching:
-                    self.register(rc)
-            if hasattr(fn, "_registered_ops"):
-                ros = fn._registered_ops
-                matching_ops = [
-                    ro for ro in ros
-                    if ro.resource is None or ro.resource == pname
-                ]
-                if ros and not matching_ops:
-                    resources = sorted({ro.resource for ro in ros})
-                    raise ValueError(f"op {ros[0].name!r} is for resource(s) "
-                                     f"{resources!r}, not {pname!r}")
-                for ro in matching_ops:
-                    self.register_op(ro)
+            rcs: list[RegisteredCommand] = (
+                [fn]
+                if isinstance(fn, RegisteredCommand)
+                else getattr(fn, "_registered_commands", [])
+            )
+            for rc in rcs:
+                keep, attempted = cmd_groups.setdefault(rc.name, ([], set()))
+                if rc.vfs is None or rc.vfs == pname:
+                    keep.append(rc)
+                else:
+                    attempted.add(rc.vfs)
+            ros: list[RegisteredOp] = (
+                [fn]
+                if isinstance(fn, RegisteredOp)
+                else getattr(fn, "_registered_ops", [])
+            )
+            for ro in ros:
+                keep_op, attempted_op = op_groups.setdefault(
+                    ro.name, ([], set())
+                )
+                if ro.vfs is None or ro.vfs == pname:
+                    keep_op.append(ro)
+                else:
+                    attempted_op.add(ro.vfs)
+        for name, (keep, attempted) in cmd_groups.items():
+            if not keep:
+                raise ValueError(
+                    f"command {name!r} is for VFS(s) "
+                    f"{sorted(attempted)!r}, not {pname!r}"
+                )
+        for name, (keep_op, attempted_op) in op_groups.items():
+            if not keep_op:
+                raise ValueError(
+                    f"op {name!r} is for VFS(s) "
+                    f"{sorted(attempted_op)!r}, not {pname!r}"
+                )
+        for keep, _attempted in cmd_groups.values():
+            for rc in keep:
+                self.register(rc)
+        for keep_op, _attempted_op in op_groups.values():
+            for ro in keep_op:
+                self.register_op(ro)
 
     def unregister(self, names: list[str]) -> None:
         """Remove all commands and ops with the given names.
@@ -340,13 +599,14 @@ class MountEntry:
             dict[str, list[str | None]]: Command name to filetype list.
         """
         result: dict[str, list[str | None]] = {}
-        for (name, filetype) in self._cmds:
+        for name, filetype in self._cmds:
             result.setdefault(name, []).append(filetype)
         for name in self._general_cmds:
             result.setdefault(name, [])
         for name in result:
-            result[name] = sorted(result[name],
-                                  key=lambda x: (x is not None, x or ""))
+            result[name] = sorted(
+                result[name], key=lambda x: (x is not None, x or "")
+            )
         return dict(sorted(result.items()))
 
     def registered_ops(self) -> dict[str, list[str | None]]:
@@ -356,48 +616,20 @@ class MountEntry:
             dict[str, list[str | None]]: Op name to filetype list.
         """
         result: dict[str, list[str | None]] = {}
-        for (name, filetype) in self._ops:
+        for name, filetype in self._ops:
             result.setdefault(name, []).append(filetype)
         for name in self._general_ops:
             result.setdefault(name, [])
         for name in result:
-            result[name] = sorted(result[name],
-                                  key=lambda x: (x is not None, x or ""))
+            result[name] = sorted(
+                result[name], key=lambda x: (x is not None, x or "")
+            )
         return dict(sorted(result.items()))
-
-    # ── cross-mount registration ─────────────────────
-
-    def register_cross(
-        self,
-        cmd: RegisteredCommand,
-        target_resource_type: str,
-    ) -> None:
-        """Register a cross-mount command for a target.
-
-        Example::
-
-            mount.register_cross(cp_cmd, "ram")
-            # This mount can now cp to ram mounts
-
-        Args:
-            cmd: the cross-mount command.
-            target_resource_type: e.g. "ram", "s3".
-        """
-        key = (cmd.name, target_resource_type)
-        self._cross_cmds[key] = cmd
-
-    def resolve_cross(
-        self,
-        cmd_name: str,
-        target_resource_type: str,
-    ) -> RegisteredCommand | None:
-        """Find a cross-mount command for a target."""
-        return self._cross_cmds.get((cmd_name, target_resource_type))
 
     # ── op registration ───────────────────────────────
 
     def register_op(self, op: RegisteredOp) -> None:
-        """Register a resource-specific VFS op."""
+        """Register a VFS-specific VFS op."""
         key = (op.name, op.filetype)
         self._ops[key] = op
 
@@ -408,7 +640,7 @@ class MountEntry:
         table: dict[tuple[Any, ...], Any],
         general: dict[str, Any],
     ) -> list[Any]:
-        """Resolve with cascade: try filetype, resource, general.
+        """Resolve with cascade: try filetype, VFS, general.
 
         Returns list of matching entries to try in order.
         First non-None result wins.
@@ -426,6 +658,21 @@ class MountEntry:
             levels.append(entry)
         return levels
 
+    def reads_ranges(self, path: str) -> bool:
+        """Whether a ranged read of `path` fetches only that range.
+
+        False where the read op that answers it reads the whole file and
+        slices: a backend with no native range, or a filetype-scoped
+        render.
+
+        Args:
+            path (str): virtual path.
+        """
+        levels = self._resolve_cascade(
+            "read", get_extension(path), self._ops, self._general_ops
+        )
+        return bool(levels) and levels[0].ranges
+
     # ── execution ─────────────────────────────────────
 
     async def execute_cmd(
@@ -434,21 +681,9 @@ class MountEntry:
         paths: list[PathSpec],
         texts: list[str],
         flag_kwargs: dict[str, FlagValue],
-        *,
-        stdin: ByteSource | None = None,
-        cwd: str = "/",
-        dispatch: DispatchFn | None = None,
-        session_id: str | None = None,
-        env: dict[str, str] | None = None,
-        exec_allowed: bool = True,
-        runtime: Runtime | None = None,
-        runtime_unavailable: str | None = None,
-        ns: NamespaceView | None = None,
-        stat_path: StatPath | None = None,
-        readdir_path: ReaddirPath | None = None,
-        session_view: SessionView | None = None,
+        context: ExecContext = ExecContext(),
     ) -> tuple[ByteSource | None, IOResult]:
-        """Execute a command on this mount's resource.
+        """Execute a command on this mount's VFS.
 
         Pure dispatch — flag parsing is done upstream in
         executor/command.py. This method just resolves the
@@ -459,133 +694,226 @@ class MountEntry:
             paths (list[PathSpec]): positional path args.
             texts (list[str]): positional text args.
             flag_kwargs (dict): parsed flags from upstream.
-            stdin (ByteSource | None): stdin data.
-            cwd (str): virtual cwd from session.
-            ns (NamespaceView | None): the name plane's facts
-                (symlinks, mount boundaries, attr overlay, child
-                names), which no backend can see.
-            stat_path (StatPath | None): dispatcher-backed stat of one
-                path, for a traversal command's start point.
-            readdir_path (ReaddirPath | None): dispatcher-backed readdir
-                of one path, for a walker that has to read past a mount
-                boundary (tree).
-            session_view (SessionView | None): the session plane's
-                live, gated handle, beside the frozen ``env`` snapshot.
-                All four ride ``CommandOpts``; a handler reads the
-                fields it wants, so no list of command names is kept
-                here.
+            context (ExecContext): the invocation's execution context —
+                everything the workspace supplies beyond the parsed line
+                (the fifth argument TypeScript's ``executeCmd`` has
+                always taken); re-boxed whole onto ``CommandOpts``
+                beside the facts only this mount can supply. A handler
+                reads the fields it wants, so no list of command names
+                is kept here.
         """
-        extension = get_extension(paths[0].virtual) if paths else None
+        async with self.use():
+            stdin = context.stdin
+            cwd = context.cwd
+            stat_path = context.stat_path
+            extension = get_extension(paths[0].virtual) if paths else None
+            # A filetype handler is selected from the operand's NAME, and a
+            # directory can carry any extension, so the cascade would hand a
+            # renderer a directory to read. One stat settles it, and only when
+            # a handler for this exact extension exists, so a mount with no
+            # filetype registrations never reaches the probe. The built-in is
+            # what a directory should get: it owns GNU's `Is a directory`
+            # wording, and the renderer owns nothing but its own format.
+            # The DISPATCHER's stat, not the backend's, so a mount root and a
+            # namespace-only directory answer too; None means neither plane
+            # saw anything, in which case the renderer reports its own miss.
+            if (
+                extension is not None
+                and paths
+                and stat_path is not None
+                and (cmd_name, extension) in self._cmds
+            ):
+                entry = await stat_path(paths[0].virtual)
+                if entry is not None and entry.type == FileType.DIRECTORY:
+                    extension = None
 
-        handlers = self._resolve_cascade(cmd_name, extension, self._cmds,
-                                         self._general_cmds)
-        if not handlers:
-            return None, IOResult(
-                exit_code=127,
-                stderr=(f"{cmd_name}: command not found".encode()))
+            handlers = self._resolve_cascade(
+                cmd_name, extension, self._cmds, self._general_cmds
+            )
+            if not handlers:
+                return None, IOResult(
+                    exit_code=127,
+                    stderr=(f"{cmd_name}: command not found".encode()),
+                )
 
-        mount_prefix = self.prefix.rstrip("/")
-        filetype_fns = self.filetype_handlers(cmd_name)
-        is_filetype_cmd = extension is not None and (cmd_name,
-                                                     extension) in self._cmds
+            mount_prefix = self.prefix.rstrip("/")
+            filetype_fns = self.filetype_handlers(cmd_name)
+            is_filetype_cmd = (
+                extension is not None and (cmd_name, extension) in self._cmds
+            )
 
-        paths = [
-            dataclasses.replace(
-                p, resource_path=mount_key(p.virtual, mount_prefix))
-            if isinstance(p, PathSpec) else p for p in paths
-        ]
+            paths = [
+                dataclasses.replace(
+                    p, vfs_path=mount_key(p.virtual, mount_prefix)
+                )
+                if isinstance(p, PathSpec)
+                else p
+                for p in paths
+            ]
 
-        # Stamp this mount's backend key onto path-shaped flag values so
-        # backend reads can address them: a single PathSpec (e.g. awk -f,
-        # single grep -f) or a list of PathSpec (multiple grep -f).
-        # Everything else (bools, strings, list[str] like repeated -e) is
-        # not a path and passes through unchanged.
-        flags: dict[str, FlagValue] = {}
-        for k, v in flag_kwargs.items():
-            if isinstance(v, PathSpec):
-                flags[k] = dataclasses.replace(v,
-                                               resource_path=mount_key(
-                                                   v.virtual, mount_prefix))
-            elif isinstance(v, list) and v and all(
-                    isinstance(item, PathSpec) for item in v):
-                specs = [item for item in v if isinstance(item, PathSpec)]
-                flags[k] = [
-                    dataclasses.replace(item,
-                                        resource_path=mount_key(
-                                            item.virtual, mount_prefix))
-                    for item in specs
-                ]
-            else:
-                flags[k] = v
-        # One typed bag, constructed here and nowhere else; a handler
-        # reads the fields it wants and ignores the rest, so there is no
-        # opt-in registry (mirrors Mount.executeCmd building CommandOpts).
-        opts = CommandOpts(
-            stdin=stdin,
-            flags=flags,
-            cwd=PathSpec(
-                virtual=cwd,
-                directory=cwd,
-                resolved=False,
-                resource_path=mount_key(cwd, mount_prefix),
-            ),
-            mount_prefix=mount_prefix,
-            filetype_fns=(filetype_fns if not is_filetype_cmd else None),
-            index=self.resource.index,
-            dispatch=dispatch,
-            session_id=session_id,
-            env=env,
-            exec_allowed=exec_allowed,
-            runtime=runtime,
-            runtime_unavailable=runtime_unavailable,
-            ns=ns,
-            stat_path=stat_path,
-            readdir_path=readdir_path,
-            session_view=session_view,
-        )
+            # Stamp this mount's backend key onto path-shaped flag values so
+            # backend reads can address them: a single PathSpec (e.g. awk -f,
+            # single grep -f) or a list of PathSpec (multiple grep -f).
+            # Everything else (bools, strings, list[str] like repeated -e) is
+            # not a path and passes through unchanged.
+            flags: dict[str, FlagValue] = FlagBag(flag_kwargs)
+            for k, v in flag_kwargs.items():
+                if isinstance(v, PathSpec):
+                    flags[k] = dataclasses.replace(
+                        v, vfs_path=mount_key(v.virtual, mount_prefix)
+                    )
+                elif (
+                    isinstance(v, list)
+                    and v
+                    and all(isinstance(item, PathSpec) for item in v)
+                ):
+                    specs = [item for item in v if isinstance(item, PathSpec)]
+                    flags[k] = [
+                        dataclasses.replace(
+                            item,
+                            vfs_path=mount_key(item.virtual, mount_prefix),
+                        )
+                        for item in specs
+                    ]
+                else:
+                    flags[k] = v
+            # One typed bag, constructed here and nowhere else; a handler
+            # reads the fields it wants and ignores the rest, so there is no
+            # opt-in registry (mirrors Mount.executeCmd building CommandOpts).
+            opts = CommandOpts(
+                command=cmd_name,
+                stdin=stdin,
+                flags=flags,
+                cwd=PathSpec(
+                    virtual=cwd,
+                    directory=cwd,
+                    resolved=False,
+                    vfs_path=mount_key(cwd, mount_prefix),
+                ),
+                mount_prefix=mount_prefix,
+                filetype_fns=(filetype_fns if not is_filetype_cmd else None),
+                index=self.index,
+                dispatch=context.dispatch,
+                session_id=context.session_id,
+                env=context.env,
+                exec_allowed=context.exec_allowed,
+                exec_path_allowed=context.exec_path_allowed,
+                runtime=context.runtime,
+                runtime_unavailable=context.runtime_unavailable,
+                ns=context.ns,
+                stat_path=stat_path,
+                readdir_path=context.readdir_path,
+                session_view=context.session_view,
+                processes=context.processes,
+                shell=context.shell,
+                argv=context.argv,
+            )
 
-        prev_prefix = push_mount_prefix(mount_prefix)
-        revs_token = push_revisions(self.revisions or None)
-        prev_manager = push_cache_manager(self.cache_manager)
-        try:
-            # --help / --version short-circuit inside the handler wrapper
-            # and never touch the backend, so a read-only mount answers
-            # them like GNU instead of refusing them as writes.
-            info_only = (flags.get("help") is True
-                         or flags.get("version") is True)
-            for cmd in handlers:
-                if (cmd.write and not info_only
-                        and self.effective_mode() == MountMode.READ):
-                    return None, IOResult(
-                        exit_code=1,
-                        stderr=(f"{cmd_name}: read-only mount "
-                                f"at {self.prefix}".encode()))
-                # The dispatch-level guard only sees default limits
-                # (the mount is unknown before routing), so the
-                # mount-resolved timeout must also bound the command
-                # body: eager commands do their work inside cmd.fn,
-                # where the stream-consumption guard never runs.
-                resolved_limit = resolve_limit(
-                    cmd_name,
-                    command_default=cmd.limit,
-                    mount_override=self.command_limits.get(cmd_name))
-                cmd_timeout = (resolved_limit.timeout_seconds
-                               if resolved_limit is not None else None)
-                result = await run_with_timeout(
-                    cmd.fn(self.resource.accessor, paths, texts, opts),
-                    cmd_timeout, cmd_name)
-                if result is not None:
-                    stream, io = _wrap_cmd_streams(result, mount_prefix,
-                                                   self.revisions or None)
-                    io.producer = Producer(command=cmd_name,
-                                           prefixes=(self.prefix, ),
-                                           declared=cmd.limit)
-                    return stream, io
-            return None, IOResult()
-        finally:
-            reset_revisions(revs_token)
-            push_mount_prefix(prev_prefix)
-            push_cache_manager(prev_manager)
+            recording_token = push_mount_context(self.mount_id)
+            revs_token = push_revisions(self.revisions or None)
+            prev_manager = push_cache_manager(self.cache_manager)
+            # What the command tier's mode guard reads: each write the
+            # handler makes is held to its own region's mode.
+            gate_token = set_mount_gate(self.prefix, self.mode)
+            # What the command tier's walk guard proves an operand's `.`
+            # and `..` with: the handler reaches its backend past the
+            # door, so the door's stat and link follow are bound here.
+            links = context.ns.links if context.ns is not None else None
+            walk_token = (
+                set_walk_probe(
+                    WalkProbe(
+                        stat=functools.partial(
+                            dispatch_stat, context.dispatch
+                        ),
+                        follow=link_follow(links),
+                    )
+                )
+                if context.dispatch is not None
+                else None
+            )
+            try:
+                for cmd in handlers:
+                    # Only wrapper-owned responses bypass the write guard.
+                    info_only = flags.get("help") is True or (
+                        flags.get("version") is True
+                        and has_injected_version(cmd.spec)
+                    )
+                    # A command whose I/O runs under the path guards is
+                    # refused where it writes, because only the write
+                    # knows whether a line writes: `gzip -c`, `tar -t` and
+                    # `split -n 1/2` read a read-only mount like any
+                    # reader, and `gzip f` is refused at the write of
+                    # `f.gz`, in gzip's own GNU voice. A write command
+                    # that reaches its service some other way (trello's
+                    # id-addressed card writes, a custom backend's own
+                    # verb) is refused here, before it runs, because no
+                    # door would see its write. strongest_mode_under, not
+                    # effective_mode: a mount whose only writable region
+                    # is a show entry still runs it. The trailing newline
+                    # is load-bearing: stderr accumulates across a line.
+                    if (
+                        cmd.write
+                        and not cmd.path_guarded
+                        and not info_only
+                        and strongest_mode_under(self.prefix, self.mode)
+                        == MountMode.READ
+                    ):
+                        return None, IOResult(
+                            exit_code=1,
+                            stderr=(
+                                f"{cmd_name}: read-only mount "
+                                f"at {self.prefix}\n".encode()
+                            ),
+                        )
+                    # The dispatch-level guard only sees default limits
+                    # (the mount is unknown before routing), so the
+                    # mount-resolved timeout must also bound the command
+                    # body: eager commands do their work inside cmd.fn,
+                    # where the stream-consumption guard never runs.
+                    resolved_limit = resolve_limit(
+                        cmd_name,
+                        command_default=cmd.limit,
+                        mount_override=context.limit_override
+                        or self.command_limits.get(cmd_name),
+                    )
+                    cmd_timeout = (
+                        resolved_limit.timeout_seconds
+                        if resolved_limit is not None
+                        else None
+                    )
+                    with host_io():
+                        result = await run_with_timeout(
+                            cmd.fn(self.vfs.accessor, paths, texts, opts),
+                            cmd_timeout,
+                            cmd_name,
+                        )
+                    if result is not None:
+                        stream, io = _wrap_cmd_streams(
+                            result,
+                            self.revisions or None,
+                            self.mount_id,
+                            self.activity,
+                        )
+                        io.producer = Producer(
+                            command=cmd_name,
+                            prefixes=(self.prefix,),
+                            declared=cmd.limit,
+                        )
+                        if stream is not None and not isinstance(
+                            stream, bytes
+                        ):
+                            stream = _command_output(
+                                stream, io, cmd_name, paths
+                            )
+                        return stream, io
+                return None, IOResult()
+            finally:
+                if walk_token is not None:
+                    reset_walk_probe(walk_token)
+                reset_mount_gate(gate_token)
+                reset_revisions(revs_token)
+                reset_active_recorder(recording_token)
+                push_cache_manager(prev_manager)
 
     def supports_op(self, op_name: str, path: str) -> bool:
         """Report whether an op would resolve for a path on this mount.
@@ -596,8 +924,10 @@ class MountEntry:
         """
         filetype = get_extension(path)
         return bool(
-            self._resolve_cascade(op_name, filetype, self._ops,
-                                  self._general_ops))
+            self._resolve_cascade(
+                op_name, filetype, self._ops, self._general_ops
+            )
+        )
 
     async def execute_op(
         self,
@@ -606,13 +936,13 @@ class MountEntry:
         *args,
         **kwargs,
     ) -> Any:
-        """Execute a VFS op on this mount's resource.
+        """Execute a VFS op on this mount's VFS.
 
-        Tries filetype-specific first, then resource-specific.
+        Tries filetype-specific first, then VFS-specific.
         First non-None result wins.
 
         A caller may override the filetype by passing one, and passing
-        None asks for the by-resource op even where a filetype-scoped
+        None asks for the by-VFS op even where a filetype-scoped
         one is registered. That is what a read-modify-write needs: it
         hands whatever it read straight back to ``write``, which always
         stores, so reading a rendered form would store the rendering
@@ -623,45 +953,67 @@ class MountEntry:
             op_name (str): operation name (e.g. "read", "stat").
             path (str): virtual path.
         """
-        filetype = (kwargs.pop("filetype")
-                    if "filetype" in kwargs else get_extension(path))
-        levels = self._resolve_cascade(op_name, filetype, self._ops,
-                                       self._general_ops)
-        if not levels:
-            raise enotsup(str(self.resource.name), op_name, path)
+        async with self.use():
+            filetype = (
+                kwargs.pop("filetype")
+                if "filetype" in kwargs
+                else get_extension(path)
+            )
+            levels = self._resolve_cascade(
+                op_name, filetype, self._ops, self._general_ops
+            )
+            if not levels:
+                raise enotsup(str(self.vfs.name), op_name, path)
 
-        if (self.effective_mode() == MountMode.READ
-                and any(o.write for o in levels)):
-            # GNU reports the operand, not the guard's own wording, so
-            # stamp errno + filename and let format_fs_error render
-            # "<cmd>: <path>: Permission denied" (mirrors the TypeScript
-            # eaccesReadOnly stamp).
-            raise PermissionError(errno.EACCES,
-                                  f"mount {self.prefix!r} is read-only", path)
+            if any(o.write for o in levels):
+                dst = kwargs.get("dst")
+                endpoints = [PathSpec.from_str_path(path)]
+                if isinstance(dst, PathSpec):
+                    endpoints.append(dst)
+                require_paths_writable(
+                    endpoints,
+                    self.prefix,
+                    self.mode,
+                    subtree=op_name in _SUBTREE_OPS,
+                )
 
-        mount_prefix = self.prefix.rstrip("/")
-        scope = PathSpec(
-            virtual=path,
-            directory=path.rsplit("/", 1)[0] or "/",
-            resource_path=mount_key(path, mount_prefix),
-        )
-        kwargs.setdefault("index", self.resource.index)
-        # Per-op caps are policy and fire at the op doors (post_ops);
-        # only the timeout stays here, bounding the backend call itself.
-        op_override = self.command_limits.get(op_name)
-        op_timeout = (op_override.timeout_seconds
-                      if op_override is not None else None)
-        prev_prefix = push_mount_prefix(mount_prefix)
-        revs_token = push_revisions(self.revisions or None)
-        try:
-            for op in levels:
-                result = op.fn(self.resource.accessor, scope, *args, **kwargs)
-                if inspect.isawaitable(result):
-                    result = await run_with_timeout(result, op_timeout,
-                                                    op_name)
-                if result is not None:
-                    return result
-            return None
-        finally:
-            reset_revisions(revs_token)
-            push_mount_prefix(prev_prefix)
+            mount_prefix = self.prefix.rstrip("/")
+            scope = PathSpec(
+                virtual=path,
+                directory=path.rsplit("/", 1)[0] or "/",
+                vfs_path=mount_key(path, mount_prefix),
+            )
+            kwargs.setdefault("index", self.index)
+            # Per-op caps are policy and fire at the op doors (post_ops);
+            # only the timeout stays here, bounding the backend call itself.
+            op_override = self.command_limits.get(op_name)
+            op_timeout = (
+                op_override.timeout_seconds
+                if op_override is not None
+                else None
+            )
+            recording_token = push_mount_context(self.mount_id)
+            revs_token = push_revisions(self.revisions or None)
+            try:
+                for op in levels:
+                    # The backend's own paths are host paths, so the process
+                    # patch (runtime/python/host/fs.py and open.py) must not answer
+                    # them: a disk mount rooted at its own virtual prefix
+                    # spells the two the same, and routing the physical one
+                    # hands the op back to the backend serving it.
+                    with host_io():
+                        result = op.fn(
+                            self.vfs.accessor, scope, *args, **kwargs
+                        )
+                        if inspect.isawaitable(result):
+                            result = await run_with_timeout(
+                                result, op_timeout, op_name
+                            )
+                    if result is not None:
+                        return _wrap_op_stream(
+                            result, self.mount_id, self.activity
+                        )
+                return None
+            finally:
+                reset_revisions(revs_token)
+                reset_active_recorder(recording_token)

@@ -12,15 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace.expand.classify.parts import classify_parts
 from mirage.workspace.mount import MountRegistry
 
 
 def _registry() -> MountRegistry:
     registry = MountRegistry()
-    registry.mount("/ram/", RAMResource(), MountMode.WRITE)
+    registry.mount("/ram/", RAMVFS(), MountMode.WRITE)
     return registry
 
 
@@ -31,37 +31,36 @@ def test_name_never_classified():
 
 
 def test_text_kind_keeps_string():
-    result = classify_parts(["cat", "/ram/x"],
-                            _registry(),
-                            "/",
-                            word_kinds=["str"])
+    result = classify_parts(
+        ["cat", "/ram/x"], _registry(), "/", word_kinds=["str"]
+    )
     assert result[1] == "/ram/x"
 
 
 def test_path_kind_classifies_bare_filename():
-    result = classify_parts(["cat", "file.txt"],
-                            _registry(),
-                            "/ram",
-                            word_kinds=["path"])
+    result = classify_parts(
+        ["cat", "file.txt"], _registry(), "/ram", word_kinds=["path"]
+    )
     assert isinstance(result[1], PathSpec)
     assert result[1].virtual == "/ram/file.txt"
 
 
 def test_duplicate_word_kinds_per_slot():
-    result = classify_parts(["grep", "*.txt", "*.txt"],
-                            _registry(),
-                            "/ram",
-                            word_kinds=["str", "path"])
+    result = classify_parts(
+        ["grep", "*.txt", "*.txt"],
+        _registry(),
+        "/ram",
+        word_kinds=["str", "path"],
+    )
     assert result[1] == "*.txt"
     assert isinstance(result[2], PathSpec)
     assert result[2].pattern == "*.txt"
 
 
 def test_none_kind_falls_back_to_heuristic():
-    result = classify_parts(["cat", "/ram/x", "plain"],
-                            _registry(),
-                            "/",
-                            word_kinds=[None, None])
+    result = classify_parts(
+        ["cat", "/ram/x", "plain"], _registry(), "/", word_kinds=[None, None]
+    )
     assert isinstance(result[1], PathSpec)
     assert result[2] == "plain"
 

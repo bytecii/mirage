@@ -1,6 +1,6 @@
 ---
 title: Python
-description: Choose the interpreter that runs python3 inside the workspace, monty (sandboxed, default), wasi (sandboxed full CPython), sandlock (the host interpreter, confined), or the host interpreter.
+description: Choose the interpreter that runs python3 inside the workspace, monty (sandboxed, default), wasi (sandboxed full CPython), or the host interpreter.
 icon: python
 ---
 
@@ -12,13 +12,12 @@ ship today:
 | --- | --- | --- | --- |
 | `monty` | [Pydantic Monty](https://github.com/pydantic/monty), a sandboxed Python interpreter written in Rust | Workspace mounts only, bridged through Mirage | Yes |
 | `wasi` | Full CPython compiled to WebAssembly, run in-process on [wasmtime](https://wasmtime.dev) | Workspace mounts only, bridged through Mirage; no host filesystem, no network | No |
-| `sandlock` | The host `python` interpreter, confined by [sandlock](https://github.com/multikernel/sandlock) (Landlock + seccomp). Linux only | Only the host paths the config grants | No |
 | `local` | The host `python` interpreter, as a subprocess | The host filesystem | No |
 
 The first two bridge file I/O through the workspace, so code sees your
-mounts and nothing else. The last two run real CPython on the host and see
-the host filesystem instead — `sandlock` bounded to the paths you name,
-`local` unbounded.
+mounts and nothing else. `local` runs CPython against the host filesystem.
+For confined native processes, including Python, use the
+[Sandlock adapter](/python/runtime/sandbox/sandlock).
 
 ## Monty (default)
 
@@ -30,13 +29,13 @@ nothing else:
 
 ```python
 from mirage import MountMode, Workspace
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 
-ws = Workspace({"/data": RAMResource()}, mode=MountMode.EXEC)
-await ws.execute("echo hello > /data/a.txt")
+ws = Workspace({"/data": RAMVFS()}, mode=MountMode.EXEC)
+await ws.shell("echo hello > /data/a.txt")
 
 # Reads a virtualized file; /etc/passwd would raise FileNotFoundError.
-io = await ws.execute(
+io = await ws.shell(
     "python3 -c \"print(open('/data/a.txt').read().strip())\"")
 ```
 
@@ -56,9 +55,8 @@ pip install mirage-ai[monty]
 Runs execute on Monty's own worker pool and are fully async: the event
 loop stays free, and cancelling a run halts the interpreter. One
 ceiling to know about when a server runs many I/O-heavy scripts at
-once: each run waiting on workspace I/O holds one pool worker (the
-Python binding only takes synchronous OS callbacks,
-[pydantic/monty#560](https://github.com/pydantic/monty/issues/560)),
+once: each run waiting on workspace I/O holds one pool worker (Mirage currently uses
+synchronous OS callbacks with Monty),
 and the pool defaults to the machine's core count. Set
 `TOKIO_WORKER_THREADS` to lift it; waiting workers cost kilobytes of
 stack and no CPU, so 100 parallel I/O-bound scripts on one core is a
@@ -67,17 +65,66 @@ stack and no CPU, so 100 parallel I/O-bound scripts on one core is a
 Without it, `python3` exits with code 127 and an install hint; every other
 command keeps working.
 
+### Working directory
+
+Monty commands start in the Mirage shell's current directory. Relative
+`open()` and `pathlib` paths reach the workspace dispatcher as absolute
+virtual paths, so `cd /data; python3 -c "print(open('a.txt').read())"`
+reads `/data/a.txt` through the same mount and policy checks as `cat`.
+The script operand is judged like `cat`'s file too: a rule protecting
+`/data/job.py` refuses `python3 job.py` from `/data`.
+The words after it are the program's argv exactly as typed, globs
+expanded as bash expands them: `python3 job.py data/in.csv` hands the
+script `data/in.csv`, and a word naming another mount is a string the
+script may open, not a second mount for the line.
+`os.getcwd()` and `Path.cwd()` report that virtual directory, and
+`os.chdir()` changes it inside the guest without changing the shell or
+host process directory.
+
+A console evaluation session inherits the workspace cwd on its first
+feed and keeps subsequent guest `os.chdir()` changes. A new session or
+one-shot evaluation starts from the current workspace cwd.
+
 ### Differences from CPython
+
+The pinned Monty 1.0.0 lacks `dir()`, `json.load()` and `json.dump()`.
+Use `hasattr(value, 'name')` to check a specific attribute, `json.loads(f.read())` to read JSON, and
+`f.write(json.dumps(value))` to write it. Mirage does not automatically
+switch interpreters when an API is missing. The shared
+`integ/runtime/monty.json` suite records these gaps and the working forms
+so a dependency update can revisit them.
 
 Monty implements a Python subset. Notably:
 
+- The importable stdlib is `asyncio`, `base64`, `binascii`, `collections`, `copy`, `dataclasses`,
+  `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`,
+  `random`, `re`, `sys`, `time`, `typing` and `unicodedata`, and each is
+  itself partial (`json` has `loads`/`dumps` but no `load`/`dump`).
+- The parser refuses class inheritance and metaclasses, the
+  `classmethod`/`staticmethod`/`property` method decorators, and `yield`.
+  Plain classes, function decorators, `with`, f-strings and
+  comprehensions all work.
+- Introspection builtins are absent: `dir`, `vars`, `globals`,
+  `help`, `callable`, `issubclass`, `super` and
+  `compile`. There is no `__dict__` on any object, so none of them can
+  be written by hand either.
+- `__file__` is the script's name under the directory the run starts in,
+  so it names the script's own file only when the run starts there.
 - Command-line arguments are the `argv` global (`argv[0]` is the script
   name); `sys.argv` does not exist.
 - No `sys.stdin`: piping into `python3` needs the `wasi` or `local` runtime.
 - No third-party imports (`numpy`, `requests`, ...).
 - File handles are not iterable (`for line in f` raises `TypeError`);
   `f.read()`, `f.readline()`, and `f.readlines()` all work.
+- `os.stat()` answers a real namedtuple here, so `st[6]` and `len(st)`
+  work; on the TypeScript host only the named attributes cross.
 - `os.environ` reflects the session env only, never the host's.
+- `os.urandom()` returns cryptographic random bytes, capped at 1 MiB per
+  call on both hosts. Larger requests raise `MemoryError`.
+- `Path.iterdir()` yields native `Path` objects on both hosts, including
+  relative paths whose entries can be read directly.
+- `os` has no extended-attribute calls (`os.getxattr` and its siblings);
+  run `getfattr` or `setfattr` in the shell instead.
 
 ## WASI
 
@@ -98,6 +145,17 @@ key, or any setup. The interpreter's own build directory is served
 read-only from the host; a mount at `/` coexists with it (mount
 prefixes win for their subtrees, the build serves the rest).
 
+Each execution starts at the Mirage session's working directory, so
+`open('file.txt')` and `Path.cwd()` agree with the shell. Direct `run()`
+calls can supply `RunArgs.cwd` to override it. Guest `os.chdir()` changes
+last for that execution; they do not change the Mirage session or host
+process directory. A missing or non-directory cwd fails before user code.
+
+A script file runs the way CPython runs one: `__file__` is its path made
+absolute against the working directory, tracebacks name it and quote
+its lines, and `sys.path[0]` is the script's own directory, so a module
+beside it imports; `-P` and `-I` leave that directory off.
+
 It needs the `wasi` extra plus a CPython WASI build (download and
 unzip a release from
 [cpython-wasi-build](https://github.com/brettcannon/cpython-wasi-build/releases)):
@@ -112,9 +170,9 @@ runtime entry (or the MIRAGE_WASI_HOME environment variable):
 ```python
 from mirage.runtime.python import WasiRuntime
 
-ws = Workspace({"/data": RAMResource()},
+ws = Workspace({"/data": RAMVFS()},
                mode=MountMode.EXEC,
-               runtimes=[WasiRuntime(config={"home": "/path/to/unzipped/build"}), "vfs"])
+               runtimes=[WasiRuntime(config={"home": "/path/to/unzipped/build"}), "workspace"])
 ```
 
 ```yaml
@@ -122,7 +180,7 @@ runtimes:
   - name: wasi
     config:
       home: /path/to/unzipped/build
-  - vfs
+  - workspace
 ```
 
 The first run compiles `python.wasm` (a few hundred milliseconds) and
@@ -131,6 +189,10 @@ boot in milliseconds. The build directory is read-only inside the
 sandbox: guest writes land in the workspace or answer `PermissionError`,
 never in the bundle.
 
+WASI has no extended-attribute calls, so the build's `os` module has no
+`os.getxattr` or its siblings; run `getfattr` or `setfattr` in the shell
+instead.
+
 ## Local
 
 The `local` runtime runs a host interpreter as a subprocess: full
@@ -138,9 +200,9 @@ CPython, host filesystem, host environment. Use it when the code needs
 stdin, third-party packages, or host files:
 
 ```python
-ws = Workspace({"/data": RAMResource()},
+ws = Workspace({"/data": RAMVFS()},
                mode=MountMode.EXEC,
-               runtimes=["local", "vfs"])
+               runtimes=["local", "workspace"])
 ```
 
 It defaults to the interpreter running mirage; point the config
@@ -153,66 +215,24 @@ runtimes:
   - name: local
     config:
       home: /path/to/venv/bin/python
-  - vfs
+  - workspace
 ```
 
 Note that `local` code does **not** see workspace mounts; it sees the real
 host filesystem.
-
-## <img noZoom src="/images/sandlock-logo.svg" alt="" className="inline-block h-5 align-middle mr-2" />Sandlock
-
-`sandlock` is `local` with a fence around it: the same host CPython, the
-same native wheels and exact `sys.flags`, but spawned through
-[sandlock](https://github.com/multikernel/sandlock) so a Landlock ruleset
-and a seccomp filter bound where its I/O can land. Nothing is granted
-except the interpreter's own tree, the system paths CPython needs to
-start, and what you list:
-
-```yaml
-runtimes:
-  - name: sandlock
-    config:
-      fs_readable: ["/opt/data"]
-      fs_writable: ["/mnt/workspace"]
-      max_memory: "512M"
-  - vfs
-```
-
-It needs the sandlock CLI on `PATH` — there is no extra to install,
-because the CLI is the transport. **Linux only**, and the full ruleset
-wants Landlock ABI v6 (Linux 6.12+); sandlock's own degrade options cover
-older kernels with weaker protection.
-
-Two things to know before reaching for it:
-
-- **It does not see workspace mounts either.** Its reach is `process`,
-  the same as `local`: confinement narrows *which* host paths the code
-  can touch, but the workspace gate never sees that I/O, so mount modes,
-  policy, and accounting do not apply. What it buys is that a `process`
-  runtime need no longer be an unbounded one. Point `fs_writable` at a
-  [FUSE-mounted](/python/setup/fuse) workspace path and the code works on
-  your mounts while reaching nothing else on the host.
-- **The environment is not inherited.** `local` passes `os.environ`
-  straight through; `sandlock` starts empty and sets only the config
-  `env` plus the run's own, so confined code is never handed the backend
-  credentials mirage is holding. Anything the code needs must be named:
-
-  ```yaml
-  runtimes:
-    - name: sandlock
-      config:
-        env:
-          HOME: /tmp
-          TZ: UTC
-    - vfs
-  ```
+A script's `__file__` and tracebacks still name its workspace path, as
+CPython names the file, but `sys.path[0]` stays the host's working
+directory: the host has no copy of the directory the script came from.
 
 ## Selecting in YAML
 
 Workspace config files take a top-level `runtimes` list: the ordered
 world of runtimes, each entry a name or a mapping with the uniform
-runtime options (`captures`, `config`, `script`). The first entry that
-captures a command binds it; `vfs` is the in-process catch-all:
+runtime options (`captures`, `config`, `script`). The name is a runtime
+mirage ships, one the host registered with `register_runtime`, or a
+`./file.py:Class` reference to a `Runtime` subclass, the form `vfs:`
+and `cli:` take. The first entry that captures a command binds it; `workspace`
+is the in-process catch-all:
 
 ```yaml
 runtimes:
@@ -220,11 +240,10 @@ runtimes:
   - name: wasi    # knobs live in the entry's config block
     config:
       home: /opt/cpython-wasi
-  - vfs
-
+  - workspace
 mounts:
   /data:
-    resource: ram
+    vfs: ram
     command_limits:
       python3:
         timeout_seconds: 30
@@ -238,6 +257,20 @@ falls back to a MIRAGE_&lt;RUNTIME&gt;_HOME environment variable. Only
 the selected runtime consumes its block and it rejects option keys it
 does not know, so one config stays portable across runtimes and
 languages. `monty` embeds its interpreter and has no options yet.
+
+## Adding and removing on a live workspace
+
+Runtimes come and go like mounts: `add_runtime` appends an entry (the first
+capturer still wins), `remove_runtime` takes one out, and `runtimes()` lists them. To
+swap engines, remove the old one first:
+
+```python
+await ws.remove_runtime("monty")  # python3 rebinds at once
+ws.add_runtime(WasiRuntime(config={"home": "/opt/cpython-wasi"}))
+```
+
+A line already running on a removed runtime finishes before it closes;
+a removed instance cannot be added again, and `workspace` is permanent.
 
 ## Resource limits
 
@@ -253,3 +286,22 @@ cancellation: monty kills its worker process, wasi traps the run
 through wasmtime's epoch interruption, and local kills the
 subprocess. A timed-out `python3` run is reclaimed at the deadline,
 not left burning in the background.
+
+## Managed child commands
+
+Monty keeps its normal module boundary: `import subprocess` raises
+`ModuleNotFoundError`. Mirage tracks the Monty invocation, but does not inject a
+replacement guest API. The TypeScript SDK's Pyodide runtime wires ordinary
+Python `subprocess.Popen` and its standard helpers into the workspace.
+
+See [managed execution](/home/architecture#managed-execution) for process views,
+lifetimes and provider limits.
+
+Host applications can use the same door:
+
+```python
+from mirage.process.types import SpawnRequest
+
+child = ws.spawn(SpawnRequest(("cat",)))
+result = await child.communicate(b"hello\n")
+```

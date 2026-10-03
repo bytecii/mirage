@@ -13,10 +13,8 @@ def _accessor(root: Path) -> DiskAccessor:
     return DiskAccessor(root)
 
 
-def _root(virtual: str, resource_path: str) -> PathSpec:
-    return PathSpec(virtual=virtual,
-                    directory=virtual,
-                    resource_path=resource_path)
+def _root(virtual: str, vfs_path: str) -> PathSpec:
+    return PathSpec(virtual=virtual, directory=virtual, vfs_path=vfs_path)
 
 
 def _touch(root: Path, relative: str, body: bytes, mtime: float) -> None:
@@ -34,7 +32,8 @@ def test_walk_reports_files_and_directories(tmp_path):
     _touch(tmp_path, "data/a.txt", b"alpha", 1_700_000_000)
     _touch(tmp_path, "data/sub/deep.txt", b"deep", 1_700_000_000)
     entries = asyncio.run(
-        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/data", "data")))
+        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/data", "data"))
+    )
     files = {e.virtual for e in entries if not e.is_dir}
     dirs = {e.virtual for e in entries if e.is_dir}
     assert files == {"/d/data/a.txt", "/d/data/sub/deep.txt"}
@@ -44,7 +43,8 @@ def test_walk_reports_files_and_directories(tmp_path):
 def test_walk_carries_size_and_mtime(tmp_path):
     _touch(tmp_path, "data/a.txt", b"alpha", 1_700_000_000)
     entries = asyncio.run(
-        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/data", "data")))
+        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/data", "data"))
+    )
     entry = next(e for e in entries if not e.is_dir)
     assert entry.size == 5
     assert entry.modified is not None
@@ -53,7 +53,8 @@ def test_walk_carries_size_and_mtime(tmp_path):
 
 def test_missing_root_walks_empty(tmp_path):
     entries = asyncio.run(
-        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/gone", "gone")))
+        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/gone", "gone"))
+    )
     assert entries == []
 
 
@@ -94,8 +95,9 @@ def test_new_directory_is_reported(tmp_path):
     first = asyncio.run(hook.pull(root, None))
     (tmp_path / "data" / "fresh").mkdir()
     second = asyncio.run(hook.pull(root, first.checkpoint))
-    assert [(c.kind, c.path.virtual) for c in second.changes
-            ] == [(FileChangeKind.CREATE, "/d/data/fresh")]
+    assert [(c.kind, c.path.virtual) for c in second.changes] == [
+        (FileChangeKind.CREATE, "/d/data/fresh")
+    ]
 
 
 def test_changed_path_carries_the_mount_framing(tmp_path):
@@ -107,12 +109,13 @@ def test_changed_path_carries_the_mount_framing(tmp_path):
     second = asyncio.run(hook.pull(root, first.checkpoint))
     changed = second.changes[0].path
     assert changed.virtual == "/d/data/a.txt"
-    assert changed.resource_path == "data/a.txt"
+    assert changed.vfs_path == "data/a.txt"
 
 
 def test_missing_root_reports_nothing(tmp_path):
     entries = asyncio.run(
-        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/gone", "gone")))
+        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/gone", "gone"))
+    )
     assert entries == []
 
 
@@ -128,7 +131,19 @@ def test_unreadable_directory_aborts_rather_than_reporting_empty(tmp_path):
     try:
         with pytest.raises(PermissionError):
             asyncio.run(
-                _collect(DiskWalk(_accessor(tmp_path)),
-                         _root("/d/data", "data")))
+                _collect(
+                    DiskWalk(_accessor(tmp_path)), _root("/d/data", "data")
+                )
+            )
     finally:
         locked.chmod(0o755)
+
+
+def test_walk_leaves_host_symlinks_out(tmp_path):
+    _touch(tmp_path, "data/lib/a.txt", b"alpha", 1_700_000_000)
+    (tmp_path / "data" / "lib64").symlink_to("lib")
+    (tmp_path / "data" / "python").symlink_to("/nowhere/python3")
+    entries = asyncio.run(
+        _collect(DiskWalk(_accessor(tmp_path)), _root("/d/data", "data"))
+    )
+    assert {e.virtual for e in entries} == {"/d/data/lib", "/d/data/lib/a.txt"}

@@ -12,10 +12,46 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from typing import TypeVar
+
+from mirage.cache.file.io import latest_fingerprint, mutation_lock
 from mirage.cache.file.mixin import FileCacheMixin
+from mirage.cache.index.config import Evicted
+from mirage.cache.index.constants import (
+    CHECKED_LIMIT,
+    LISTING_TRUST_WINDOW,
+    PROBED_LIMIT,
+)
+from mirage.cache.index.scope import command_started, tick
 from mirage.cache.index.store import IndexCacheStore
-from mirage.types import PathSpec
+from mirage.cache.index.view import IndexView
+from mirage.observe.context import active_recorder
+from mirage.observe.record import READ_FINGERPRINT_OPS
+from mirage.types import DEFAULT_READ_TTL, FileStat, PathSpec
 from mirage.utils.key_prefix import mount_key
+
+T = TypeVar("T")
+
+
+def _now() -> float:
+    """Monotonic seconds, read through one name so tests can move it."""
+    return time.monotonic()
+
+
+async def _always_serve(_key: str) -> bool:
+    """Default read gate: trust the cache.
+
+    What a manager built outside a workspace answers, having no
+    reconciler to ask.
+
+    Args:
+        _key (str): Mount-absolute cache key, ignored.
+    """
+    return True
 
 
 class CacheManager:
@@ -31,23 +67,375 @@ class CacheManager:
     pipeline runs instead of after the whole command tree.
     """
 
-    def __init__(self, file_cache: FileCacheMixin | None,
-                 index: IndexCacheStore, prefix: str,
-                 caches_reads: bool) -> None:
+    def __init__(
+        self,
+        file_cache: FileCacheMixin | None,
+        index: IndexCacheStore,
+        prefix: str,
+        caches_reads: bool,
+        owns_path: Callable[[str], bool] = lambda _: True,
+        may_serve_cached: Callable[[str], Awaitable[bool]] = _always_serve,
+        read_ttl: int = DEFAULT_READ_TTL,
+        on_gone: Callable[[list[Evicted]], Awaitable[None]] | None = None,
+        may_serve_listing: Callable[[str, str | None], Awaitable[bool]]
+        | None = None,
+        excluded_prefixes: Callable[[], tuple[str, ...]] = tuple,
+    ) -> None:
         """Args:
-            file_cache (FileCacheMixin | None): Workspace file cache
-                store; entries are keyed by mount-absolute path.
-            index (IndexCacheStore): The mount resource's index cache;
-                listings are keyed by mount-absolute path, which every
-                backend agrees on.
-            prefix (str): Mount prefix (e.g. "/data/").
-            caches_reads (bool): Whether the resource caches reads; the
-                file cache only holds paths for read-caching backends.
+        file_cache (FileCacheMixin | None): Workspace file cache
+            store; entries are keyed by mount-absolute path.
+        index (IndexCacheStore): The mount VFS's index cache;
+            listings are keyed by mount-absolute path, which every
+            backend agrees on.
+        prefix (str): Mount prefix (e.g. "/data/").
+        caches_reads (bool): Whether the VFS caches reads; the
+            file cache only holds paths for read-caching backends.
+        owns_path (Callable[[str], bool]): whether this mount still
+            owns a virtual cache key.
+        may_serve_cached (Callable[[str], Awaitable[bool]]): the read
+            gate, injected because this class holds no mount and no
+            dispatcher and ``mirage.cache.context`` documents that
+            dependency as one-way. Answers whether a warm entry may
+            still be served; the default trusts the cache.
+        read_ttl (int): lifetime of complete backend renders, and the
+            cap on every listing this mount's view writes.
+        on_gone (Callable[[list[Evicted]], Awaitable[None]] | None):
+            cleanup for children a re-list found gone. This keeps the
+            dependency one-way, like the read gate; None cleans nothing.
+        may_serve_listing (Callable[[str, str | None], Awaitable[bool]]
+            | None): the listing gate every view of this mount asks,
+            with the folder and its stored version, before serving a
+            cached listing; None serves them all.
+        excluded_prefixes (Callable[[], tuple[str, ...]]): live nested
+            mount roots protected from recursive deletion.
         """
         self._file_cache = file_cache
         self._index = index
         self._prefix = prefix.rstrip("/")
         self._caches_reads = caches_reads
+        self._owns_path = owns_path
+        self._may_serve_cached = may_serve_cached
+        self._read_ttl = read_ttl
+        self._on_gone = on_gone
+        self._excluded_prefixes = excluded_prefixes
+        self._may_serve_listing = may_serve_listing
+        self._written: dict[str, tuple[int, float]] = {}
+        self._checked: dict[str, tuple[str, int, float]] = {}
+        self._checking: dict[
+            str, tuple[int, float, asyncio.Task[str | None]]
+        ] = {}
+        self._check_epoch = 0
+        self._check_bound = CHECKED_LIMIT
+        self._probed: dict[str, tuple[int, int, FileStat]] = {}
+        self._probe_bound = PROBED_LIMIT
+        self._read_generation = 0
+        self._view: IndexView | None = None
+
+    @asynccontextmanager
+    async def mutation(self) -> AsyncIterator[None]:
+        """Drain raw backend index access before mount cache eviction."""
+        if self._file_cache is None:
+            yield
+            return
+        async with mutation_lock(self._file_cache):
+            yield
+
+    async def clear_index(self, index: IndexCacheStore) -> None:
+        """Clear the whole backend index while this mount still owns it.
+
+        The clear that follows native code (an external program, a remote
+        runtime line) that may have changed the mount, so it also retires
+        what the running command's probes saw.
+        """
+        async with self.mutation():
+            self._retire()
+            if self._owns_path(self._prefix or "/"):
+                await index.clear()
+
+    def scope_index(self, index: IndexCacheStore) -> IndexCacheStore:
+        """Bind backend metadata writes to this mount's lifetime.
+
+        Reuse the view because refill locks are keyed by index identity.
+
+        Args:
+            index (IndexCacheStore): the VFS's own index.
+        """
+        if self._file_cache is None or isinstance(index, IndexView):
+            return index
+        if self._view is None or self._view.store is not index:
+            self._written.clear()
+            if self._view is not None:
+                self._forget_checks()
+            self._view = IndexView(
+                index,
+                self._file_cache,
+                self._prefix,
+                self._owns_path,
+                read_ttl=self._read_ttl,
+                on_gone=self._cleanup,
+                excluded_prefixes=self._excluded_prefixes,
+                may_serve_listing=self._may_serve_listing,
+                note_written=self._note_written,
+            )
+        return self._view
+
+    async def _cleanup(self, gone: list[Evicted]) -> None:
+        async with self.mutation():
+            await self._gone_locked(
+                [child for child in gone if self._owns_path(child.path)]
+            )
+
+    async def _gone_locked(self, gone: list[Evicted]) -> None:
+        if not gone:
+            return
+        # A re-list found children gone: the backend changed under the
+        # command, so nothing its probes saw is safe to serve.
+        self._retire()
+        if self._on_gone is not None:
+            await self._on_gone(gone)
+
+    def _retire(self) -> None:
+        """Retire every in-flight read and every remembered probe answer.
+
+        The one step every cache drop takes: a read that began before it
+        must not stamp the cache after it, and a probe answer from before
+        it must not be served after it.
+        """
+        self._read_generation += 1
+        self._probed.clear()
+        self._probe_bound = PROBED_LIMIT
+
+    def _note_written(self, folder: str) -> None:
+        self._written[folder] = (tick(), _now())
+
+    def listing_trusted(self, folder: str) -> bool:
+        """Whether ``folder``'s listing is recent enough to serve under fresh.
+
+        Inside a command: only if the command wrote it itself, so one
+        command re-lists a folder once however often it reads it. Outside
+        any command (FUSE, a programmatic op) there is no command to
+        belong to, so a listing written within ``LISTING_TRUST_WINDOW``
+        seconds is trusted instead: one ``ls -l`` over FUSE is a burst of
+        calls that can share a re-list until the window expires.
+
+        Every view of the mount, shared or lock-held, records into one map,
+        so a glob's write counts for the ``ls`` that follows it.
+
+        Args:
+            folder (str): mount-absolute listing key.
+        """
+        written = self._written.get(folder)
+        if written is None:
+            return False
+        stamp, at = written
+        started = command_started()
+        if started is not None:
+            return stamp > started
+        return _now() - at < LISTING_TRUST_WINDOW
+
+    def _prune_checks(self) -> None:
+        # A check answers only a caller inside its window, so the rest are
+        # dead weight; the next prune waits for the map to double.
+        self._checked = {
+            key: checked
+            for key, checked in self._checked.items()
+            if self._sent_recently(checked[1], checked[2])
+        }
+        self._check_bound = max(CHECKED_LIMIT, 2 * len(self._checked))
+
+    def _forget_checks(self) -> None:
+        # The versions were checked against listings of the old store, so
+        # none of them says anything about the new one. The first view has
+        # no old store, and a check may be what builds it.
+        self._checked.clear()
+        self._checking.clear()
+        self._check_epoch += 1
+
+    @staticmethod
+    def _sent_recently(sent_tick: int, sent_at: float) -> bool:
+        """Whether a version check is recent enough to answer for the caller.
+
+        The rule ``listing_trusted`` applies to listings: inside a command,
+        only a check sent after the command started, since one sent before
+        may predate a change the command must see; outside any command, one
+        sent within ``LISTING_TRUST_WINDOW`` seconds.
+
+        Args:
+            sent_tick (int): the tick taken just before the check was sent.
+            sent_at (float): the monotonic second it was sent at.
+        """
+        started = command_started()
+        if started is not None:
+            return sent_tick > started
+        return _now() - sent_at < LISTING_TRUST_WINDOW
+
+    async def checked_version(
+        self, key: str, stored: str, check: Callable[[], Awaitable[str | None]]
+    ) -> str | None:
+        """The backend's listing version for ``key``, asking at most once.
+
+        A check recent enough for the caller (``_sent_recently``) that
+        answered ``stored`` is reused, so one command checks a mount once
+        however many of its folders it lists. Otherwise a check in flight
+        that is recent enough is shared, and only then is a new one sent;
+        the newest in flight is the one later callers find. A remembered
+        answer that differs from ``stored`` is asked again rather than
+        trusted, since the listing may have been written since. The shared
+        check is shielded, so one caller's cancellation never reaches the
+        others.
+
+        Args:
+            key (str): what the version covers: the mount root, or a folder.
+            stored (str): the version stored with the caller's listing.
+            check (Callable[[], Awaitable[str | None]]): asks the backend;
+                None when it answers no version.
+        """
+        checked = self._checked.get(key)
+        if (
+            checked is not None
+            and checked[0] == stored
+            and self._sent_recently(checked[1], checked[2])
+        ):
+            return checked[0]
+        flight = self._checking.get(key)
+        if flight is None or not self._sent_recently(flight[0], flight[1]):
+            flight = self._send_check(key, check)
+        return await asyncio.shield(flight[2])
+
+    def _send_check(
+        self, key: str, check: Callable[[], Awaitable[str | None]]
+    ) -> tuple[int, float, asyncio.Task[str | None]]:
+        sent_tick = tick()
+        sent_at = _now()
+        epoch = self._check_epoch
+
+        async def run() -> str | None:
+            version = await check()
+            checked = self._checked.get(key)
+            # Recorded here rather than by a waiter, so the answer lands
+            # even when every waiter was cancelled; an older check that
+            # lands late never replaces a newer one.
+            if (
+                version is not None
+                and epoch == self._check_epoch
+                and (checked is None or checked[1] < sent_tick)
+            ):
+                if checked is None and len(self._checked) >= self._check_bound:
+                    self._prune_checks()
+                self._checked[key] = (version, sent_tick, sent_at)
+            return version
+
+        def finished(completed: asyncio.Task[str | None]) -> None:
+            flight = self._checking.get(key)
+            if flight is not None and flight[2] is completed:
+                self._checking.pop(key, None)
+            # Retrieve failures even if every waiter was cancelled.
+            if not completed.cancelled():
+                completed.exception()
+
+        task = asyncio.create_task(run())
+        flight = (sent_tick, sent_at, task)
+        self._checking[key] = flight
+        task.add_done_callback(finished)
+        return flight
+
+    @property
+    def generation(self) -> int:
+        """Mutation generation, captured before a freshness probe starts."""
+        return self._read_generation
+
+    def note_probed(self, path: PathSpec, stat: FileStat) -> None:
+        """Remember what the freshness probe got from the backend for ``path``.
+
+        Only the reconciler's probe calls this, and only with an answer it
+        got from the backend, so a stat served from an index row -- which
+        may carry no content token -- never lands here. A path the backend
+        reports gone records nothing: the probe asks the backend only when
+        no answer is servable, so there is nothing left to take back.
+
+        Args:
+            path (PathSpec): the probed path; only ``virtual`` is read.
+            stat (FileStat): the backend's answer.
+        """
+        started = command_started()
+        if started is None:
+            return
+        if len(self._probed) >= self._probe_bound:
+            self._prune_probes(started)
+            # What is left is all the running command's; the next prune
+            # waits for the map to double, so one large walk stays linear.
+            self._probe_bound = max(PROBED_LIMIT, 2 * len(self._probed))
+        self._probed[self._cache_key(path)] = (
+            started,
+            self._read_generation,
+            stat,
+        )
+
+    def _prune_probes(self, started: int) -> None:
+        # Only the probing command is ever served an answer, so the other
+        # commands' entries are dead weight here.
+        self._probed = {
+            key: probed
+            for key, probed in self._probed.items()
+            if probed[0] == started
+        }
+
+    def probed_stat(self, path: PathSpec) -> FileStat | None:
+        """The backend's answer for ``path`` from this command's probe.
+
+        A read command stats its own operand after the probe already asked
+        the backend; under fresh, asking again resolves through listings the
+        command has not re-checked, and re-lists every folder on the path.
+        The answer is served only inside the command that probed, and only
+        while no cache drop has landed since: a write in the command
+        (``sed -i``, ``> f``), the clear after an external program, and a
+        re-list that found the path gone all retire it (``_retire``), so the
+        next stat goes back to the backend.
+
+        Args:
+            path (PathSpec): the path to look up; only ``virtual`` is read.
+        """
+        probed = self._probed.get(self._cache_key(path))
+        started = command_started()
+        if probed is None or started is None:
+            return None
+        stamp, generation, stat = probed
+        if stamp != started or generation != self._read_generation:
+            return None
+        return stat
+
+    def scope_index_locked(self, index: IndexCacheStore) -> IndexCacheStore:
+        """A view for a caller already inside ``mutation()``.
+
+        Never share or retain it beyond that hold. A distinct refill lock
+        avoids lock inversion with readers of the shared view.
+
+        Args:
+            index (IndexCacheStore): the VFS's own index, never a view.
+
+        Raises:
+            ValueError: ``index`` is already a view, which would take the
+                lock again.
+        """
+        if self._file_cache is None:
+            return index
+        if isinstance(index, IndexView):
+            raise ValueError(
+                "scope_index_locked needs a raw store; a view "
+                "would take the lock again"
+            )
+        return IndexView(
+            index,
+            self._file_cache,
+            self._prefix,
+            self._owns_path,
+            locked=True,
+            read_ttl=self._read_ttl,
+            on_gone=self._gone_locked,
+            excluded_prefixes=self._excluded_prefixes,
+            may_serve_listing=self._may_serve_listing,
+            note_written=self._note_written,
+        )
 
     async def _evict_dir(self, key: str) -> None:
         """Drop one directory's cached listing.
@@ -73,7 +461,7 @@ class CacheManager:
         Only ``virtual`` is read, and the key is rebuilt against this
         manager's own prefix, exactly as ``Mount.execute_op`` rebuilds
         one before handing a path to a backend. The caller's
-        ``resource_path`` is deliberately ignored: it is not a fact
+        ``vfs_path`` is deliberately ignored: it is not a fact
         this class can trust, because ``PathSpec.from_str_path``
         fabricates one ("assumed root-mounted") for any caller that
         does not know its mount, and ~50 sites take that default.
@@ -92,24 +480,118 @@ class CacheManager:
         key = mount_key(path.virtual, self._prefix)
         return f"{self._prefix}/{key}" if key else self._prefix or "/"
 
-    async def cached_bytes(self, path: PathSpec) -> bytes | None:
-        """Return cached bytes for ``path`` if present, else None.
+    def _readable_cache(self, key: str) -> FileCacheMixin | None:
+        """The file cache this manager may read ``key`` from, if any.
 
-        Lookup only: never fetches from the backend. The single
-        read-cache check, called by the shared read-through wrappers
+        Args:
+            key (str): Mount-absolute cache key.
+        """
+        if not self._caches_reads or not self._owns_path(key):
+            return None
+        return self._file_cache
+
+    async def cached_bytes(self, path: PathSpec) -> bytes | None:
+        """Return cached bytes for ``path`` if present and still valid.
+
+        Never fetches content from the backend. The single read-cache
+        check, called by the shared read-through wrappers
         (``mirage.cache.read_through``) that every read command reads
         through, so warm reads are served from the file cache without the
         command knowing about it.
 
+        This is the second of the two doors that serve cached bytes, and
+        it is the one every shell read uses. It runs the same verdict
+        function as the dispatcher's door, so the two cannot answer
+        differently. ``exists`` comes first so a cold path costs no
+        backend stat; ``get`` comes after the gate so this door never
+        holds bytes a STALE verdict has just evicted (the dispatcher's
+        door reads its copy before asking, and slices whatever it got).
+
         Args:
             path (PathSpec): the path to look up.
         """
-        if not self._caches_reads or self._file_cache is None:
-            return None
         key = self._cache_key(path)
-        if await self._file_cache.exists(key):
-            return await self._file_cache.get(key)
-        return None
+        cache = self._readable_cache(key)
+        if cache is None:
+            return None
+        if not await cache.exists(key):
+            return None
+        if not await self._may_serve_cached(key):
+            return None
+        cached = await cache.get(key)
+        return cached if self._owns_path(key) else None
+
+    async def read_through(
+        self, path: PathSpec, fetch: Callable[[], Awaitable[bytes]]
+    ) -> bytes:
+        """Cache a complete backend read before a consumer transforms it.
+
+        Args:
+            path (PathSpec): file being read.
+            fetch (Callable): cold whole-file reader.
+        """
+        cached = await self.cached_bytes(path)
+        if cached is not None:
+            return cached
+        return await self.fill(path, fetch)
+
+    async def fill(
+        self, path: PathSpec, fetch: Callable[[], Awaitable[T]]
+    ) -> T:
+        """Run a cold whole-file read and keep its bytes for the next one.
+
+        The fill half of ``read_through``, for a door that probed the
+        cache itself (the dispatcher's). A write that lands while the
+        fetch runs retires the generation, so the bytes it read are not
+        kept; an answer that is not bytes is returned and kept nowhere.
+
+        Args:
+            path (PathSpec): file being read.
+            fetch (Callable): cold whole-file reader.
+        """
+        generation = self._read_generation
+        recorder = active_recorder()
+        start = len(recorder.sink) if recorder is not None else 0
+        data = await fetch()
+        if not isinstance(data, bytes):
+            return data
+        key = self._cache_key(path)
+        cache = self._readable_cache(key)
+        if cache is not None:
+            async with mutation_lock(cache):
+                if (
+                    self._owns_path(key)
+                    and generation == self._read_generation
+                ):
+                    records = (
+                        recorder.sink[start:] if recorder is not None else None
+                    )
+                    fingerprint = latest_fingerprint(
+                        records, key, READ_FINGERPRINT_OPS, len(data)
+                    )
+                    await cache.set(
+                        key, data, fingerprint=fingerprint, ttl=self._read_ttl
+                    )
+        return data
+
+    async def cached_size(self, path: PathSpec) -> int | None:
+        """Return the cached render's byte length, without revalidating.
+
+        The size backfill a render-dependent backend cannot answer for
+        itself (``generic_bind.factory``) runs only where the backend
+        reported no size, which is exactly the API mounts, so gating it
+        would turn a stat into a backend stat. It answers a length rather
+        than content, so nothing can serve unverified bytes through it.
+
+        Args:
+            path (PathSpec): the path to look up.
+        """
+        key = self._cache_key(path)
+        cache = self._readable_cache(key)
+        if cache is None:
+            return None
+        cached = await cache.get(key)
+        return None if cached is None else len(cached)
 
     async def invalidate_after_write(self, path: PathSpec) -> None:
         """Invalidate caches after a write to ``path``.
@@ -118,6 +600,7 @@ class CacheManager:
             path (PathSpec): Path that was written; only ``virtual`` is
                 read.
         """
+        self._retire()
         key = self._cache_key(path)
         if self._caches_reads and self._file_cache is not None:
             await self._file_cache.remove(key)
@@ -130,6 +613,7 @@ class CacheManager:
             path (PathSpec): Path that was removed; only ``virtual`` is
                 read.
         """
+        self._retire()
         key = self._cache_key(path)
         if self._caches_reads and self._file_cache is not None:
             await self._file_cache.remove(key)
@@ -139,18 +623,20 @@ class CacheManager:
     async def invalidate_subtree(self, path: PathSpec) -> None:
         """Drop ``path`` and everything cached beneath it.
 
-        For an observed change that names a scope rather than a file: a
-        push notification often says only which folder moved, and the
-        listings below it were cached independently, so evicting the
-        path and its parent leaves stale entries one level down. The
-        cheaper ``invalidate_after_write`` cannot be widened to do this,
-        because it also runs on every ordinary write, where a file has
-        no subtree to drop.
+        Two callers, one shape. A push notification often says only
+        which folder moved, and a recursive delete or a directory
+        rename takes a whole tree with it; either way the listings and
+        bodies below the path were cached independently, so evicting
+        the path and its parent leaves stale entries one level down.
+        The cheaper ``invalidate_after_write`` cannot be widened to do
+        this, because it also runs on every ordinary write, where a
+        file has no subtree to drop.
 
         Args:
             path (PathSpec): Root of the stale subtree; only ``virtual``
                 is read.
         """
+        self._retire()
         key = self._cache_key(path)
         if self._caches_reads and self._file_cache is not None:
             await self._file_cache.remove(key)
@@ -191,6 +677,7 @@ class CacheManager:
         beneath it, since keys are compared by prefix. That costs a
         refetch, which is the safe direction to be wrong in.
         """
+        self._retire()
         if not self._caches_reads or self._file_cache is None:
             return
         await self._file_cache.evict_prefix(self._prefix + "/")

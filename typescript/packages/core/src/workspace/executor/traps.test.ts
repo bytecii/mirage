@@ -12,100 +12,139 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { expect, it } from 'vitest'
-import { IOResult } from '../../io/types.ts'
-import { Session } from '../session/session.ts'
+import { describe, expect, it } from 'vitest'
+import { IOResult, materialize } from '../../io/types.ts'
+import { CallStack } from '../../shell/call_stack.ts'
+import { ExitSignal } from '../../shell/errors.ts'
+import { SessionState } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
-import { finishShell } from './traps.ts'
+import type { ExecuteStringFn } from './builtins/types.ts'
+import { clearExitTrap, endShell, finishShell, inheritExitTrap, runExitTrap } from './traps.ts'
 
-it('awaits cleanup and preserves the body status and IO metadata', async () => {
-  const session = new Session({ sessionId: 'test' })
-  session.exitTrap = 'cleanup'
-  session.evalDepth = 3
-  let release!: () => void
-  let entered!: () => void
-  const gate = new Promise<void>((resolve) => {
-    release = resolve
+const DEC = new TextDecoder()
+const ENC = new TextEncoder()
+
+function makeSession(action: string | null = null): SessionState {
+  const session = new SessionState({ sessionId: 's1' })
+  session.exitTrap = action
+  return session
+}
+
+interface Call {
+  line: string
+  stdin: unknown
+  callStack: CallStack | undefined
+}
+
+function recorder(result: IOResult | Error): { run: ExecuteStringFn; calls: Call[] } {
+  const calls: Call[] = []
+  const run: ExecuteStringFn = (line, opts) => {
+    calls.push({ line, stdin: opts.stdin, callStack: opts.callStack })
+    return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+  }
+  return { run, calls }
+}
+
+describe('runExitTrap', () => {
+  it('runs nothing without an action of its own', async () => {
+    const { run, calls } = recorder(new IOResult())
+    expect(await runExitTrap(run, makeSession(), 3)).toBeNull()
+    const inherited = makeSession('echo x')
+    inheritExitTrap(inherited)
+    expect(await runExitTrap(run, inherited, 3)).toBeNull()
+    expect(await runExitTrap(run, makeSession(''), 3)).toBeNull()
+    expect(calls).toEqual([])
   })
-  const started = new Promise<void>((resolve) => {
-    entered = resolve
+
+  it('runs the action once in the frames given', async () => {
+    const { run, calls } = recorder(new IOResult({ stdout: ENC.encode('bye\n') }))
+    const session = makeSession('echo bye')
+    const frames = new CallStack()
+    frames.push(['a'], 'f')
+    const stdin = ENC.encode('in')
+    const cleanup = await runExitTrap(run, session, 7, stdin, frames)
+    expect(DEC.decode(await materialize(cleanup?.stdout))).toBe('bye\n')
+    expect(cleanup?.exitCode).toBe(7)
+    expect(session.lastExitCode).toBe(7)
+    expect(calls).toEqual([{ line: 'echo bye', stdin, callStack: frames }])
+    expect(session.exitTrap).toBeNull()
+    expect(await runExitTrap(run, session, 7)).toBeNull()
   })
-  const enc = new TextEncoder()
-  let finished = false
-  const pending = finishShell(
-    async (command) => {
-      expect(command).toBe('cleanup')
-      expect(session.lastExitCode).toBe(7)
-      entered()
-      await gate
-      return new IOResult({
-        stdout: enc.encode('cleanup'),
-        stderr: enc.encode('err'),
-        exitCode: 1,
-        writes: { '/after': enc.encode('done') },
-      })
-    },
-    session,
-    [
-      enc.encode('body'),
-      new IOResult({ exitCode: 7, reads: { '/before': enc.encode('body') } }),
-      new ExecutionNode({ exitCode: 7 }),
-    ],
-  ).then((result) => {
-    finished = true
-    return result
+
+  it('lets an exit in the action set the status', async () => {
+    const { run } = recorder(new ExitSignal(9, ENC.encode('e\n'), ENC.encode('o\n')))
+    const cleanup = await runExitTrap(run, makeSession('exit 9'), 7)
+    expect(cleanup?.exitCode).toBe(9)
+    expect(DEC.decode(await materialize(cleanup?.stdout))).toBe('o\n')
+    expect(DEC.decode(await materialize(cleanup?.stderr))).toBe('e\n')
   })
-  await started
-  expect(finished).toBe(false)
-  release()
-  const [out, io, node] = await pending
-  expect(new TextDecoder().decode(out as Uint8Array)).toBe('bodycleanup')
-  expect(await io.stderrStr()).toBe('err')
-  expect([io.exitCode, node.exitCode, session.lastExitCode]).toEqual([7, 7, 7])
-  expect(Object.keys(io.reads)).toEqual(['/before'])
-  expect(Object.keys(io.writes)).toEqual(['/after'])
-  expect(session.evalDepth).toBe(3)
-  expect(session.exitTrap).toBeNull()
+
+  it('counts a failure only under errexit', async () => {
+    const failing = new IOResult({ exitCode: 1 })
+    const plain = await runExitTrap(recorder(failing).run, makeSession('false'), 5)
+    expect(plain?.exitCode).toBe(5)
+    const session = makeSession('false')
+    session.shellOptions.errexit = true
+    const errexit = await runExitTrap(recorder(failing).run, session, 5)
+    expect(errexit?.exitCode).toBe(1)
+  })
+
+  it('does not start an action again while one runs', async () => {
+    const session = makeSession('echo again')
+    session.trapStatus = 2
+    expect(await runExitTrap(recorder(new IOResult()).run, session, 2)).toBeNull()
+  })
 })
 
-it('propagates cancellation from cleanup and clears transient state', async () => {
-  const session = new Session({ sessionId: 'test' })
-  session.exitTrap = 'cleanup'
-  session.evalDepth = 3
-  const abort = new AbortController()
-  session.abortSignal = abort.signal
-  let entered!: () => void
-  const started = new Promise<void>((resolve) => {
-    entered = resolve
+describe('child and new shells', () => {
+  it('list the parent action in a child and drop it in a new shell', () => {
+    const child = makeSession('echo parent')
+    inheritExitTrap(child)
+    expect(child.exitTrap).toBe('echo parent')
+    expect(child.exitTrapInherited).toBe(true)
+    const fresh = makeSession('echo parent')
+    clearExitTrap(fresh)
+    expect(fresh.exitTrap).toBeNull()
+    expect(fresh.exitTrapInherited).toBe(false)
   })
-  let stopped = false
-  const pending = finishShell(
-    async (_command, opts) => {
-      entered()
-      try {
-        await new Promise<void>((_resolve, reject) => {
-          opts.session?.abortSignal?.addEventListener(
-            'abort',
-            () => {
-              reject(new DOMException('aborted', 'AbortError'))
-            },
-            { once: true },
-          )
-        })
-      } finally {
-        stopped = true
-      }
-      return new IOResult()
-    },
-    session,
-    [null, new IOResult(), new ExecutionNode()],
-  )
-  await started
-  const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-  abort.abort()
-  await rejected
-  expect(stopped).toBe(true)
-  expect(session.evalDepth).toBe(3)
-  expect(session.runningExitTrap).toBe(false)
-  expect(session.exitTrap).toBeNull()
+})
+
+describe('finishShell and endShell', () => {
+  it('appends cleanup after the line', async () => {
+    const { run } = recorder(
+      new IOResult({ stdout: ENC.encode('cleanup\n'), stderr: ENC.encode('err\n') }),
+    )
+    const io = await finishShell(
+      run,
+      makeSession('echo cleanup'),
+      new IOResult({ stdout: ENC.encode('body\n'), stderr: ENC.encode('warn\n'), exitCode: 4 }),
+    )
+    expect(DEC.decode(await io.materializeStdout())).toBe('body\ncleanup\n')
+    expect(DEC.decode(await io.materializeStderr())).toBe('warn\nerr\n')
+    expect(io.exitCode).toBe(4)
+  })
+
+  it('carries cleanup on an exit', async () => {
+    const { run } = recorder(new IOResult({ stdout: ENC.encode('cleanup\n') }))
+    const body = Promise.reject(new ExitSignal(3, new Uint8Array(), ENC.encode('body\n')))
+    const err: unknown = await endShell(run, makeSession('echo cleanup'), null, null, body).catch(
+      (thrown: unknown) => thrown,
+    )
+    expect(err).toBeInstanceOf(ExitSignal)
+    expect(DEC.decode((err as ExitSignal).stdout ?? new Uint8Array())).toBe('body\ncleanup\n')
+    expect((err as ExitSignal).containedCode).toBe(3)
+  })
+
+  it('runs cleanup after a normal end', async () => {
+    const { run } = recorder(new IOResult({ stdout: ENC.encode('cleanup\n') }))
+    const body = Promise.resolve<[Uint8Array, IOResult, ExecutionNode]>([
+      ENC.encode('body\n'),
+      new IOResult({ exitCode: 2 }),
+      new ExecutionNode({ exitCode: 2 }),
+    ])
+    const [stdout, io, node] = await endShell(run, makeSession('echo cleanup'), null, null, body)
+    expect(DEC.decode(await materialize(stdout))).toBe('body\ncleanup\n')
+    expect(io.exitCode).toBe(2)
+    expect(node.exitCode).toBe(2)
+  })
 })

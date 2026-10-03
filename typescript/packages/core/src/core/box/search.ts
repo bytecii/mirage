@@ -17,7 +17,8 @@ import type { BoxAccessor } from '../../accessor/box.ts'
 import { PathSpec } from '../../types.ts'
 import { respellRaw } from '../../utils/path.ts'
 import { searchContent, type BoxSearchItem } from './api.ts'
-import { pathParts, resolveItem } from './resolve.ts'
+import { BoxApiError } from './client.ts'
+import { mountRelativeKey, pathParts, resolveItem } from './resolve.ts'
 
 function compareComponents(a: string, b: string): number {
   const ca = a.split('/')
@@ -30,23 +31,6 @@ function compareComponents(a: string, b: string): number {
     if (x > y) return 1
   }
   return ca.length - cb.length
-}
-
-// Reconstruct the mount-relative key from the item's ancestor chain by
-// trimming everything up to and including the mount root folder. Box's
-// path_collection lists ancestors from the account root down to the immediate
-// parent (excluding the item itself).
-function mountRelativeKey(item: BoxSearchItem, rootFolderId: string): string | null {
-  const entries = item.path_collection?.entries ?? []
-  const names: string[] = []
-  let collecting = false
-  for (const anc of entries) {
-    if (collecting) names.push(anc.name)
-    if (anc.id === rootFolderId) collecting = true
-  }
-  if (!collecting) return null
-  names.push(item.name)
-  return names.filter((n) => n !== '').join('/')
 }
 
 /**
@@ -70,7 +54,7 @@ export async function narrowPaths(
 ): Promise<PathSpec[] | null> {
   const first = paths[0]
   if (first === undefined) return []
-  const mountPrefix = mountPrefixOf(first.virtual, first.resourcePath)
+  const mountPrefix = mountPrefixOf(first.virtual, first.vfsPath)
   const root = accessor.rootFolderId
   const narrowed: PathSpec[] = []
   for (const p of paths) {
@@ -88,8 +72,9 @@ export async function narrowPaths(
       const out = await searchContent(accessor.tokenManager, query, folderId)
       if (out.truncated) return null
       results = out.items
-    } catch {
-      // Search is best-effort; an API failure falls back to the full scan.
+    } catch (err) {
+      if (!(err instanceof BoxApiError)) throw err
+      console.warn(`box search push-down failed (${String(err)}); falling back to per-file scan`)
       return null
     }
     const scoped: string[] = []
@@ -104,7 +89,7 @@ export async function narrowPaths(
         new PathSpec({
           virtual,
           directory: '',
-          resourcePath: mountKey(virtual, mountPrefix),
+          vfsPath: mountKey(virtual, mountPrefix),
           resolved: true,
           rawPath: respellRaw([virtual], p.virtual, p.rawPath)[0] ?? virtual,
         }),

@@ -12,12 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, StrEnum
-from typing import Any, Literal, TypeAlias
+from typing import Literal, TypeAlias
 
-from mirage.commands.spec.constants import flag_kwarg_name
 from mirage.types import PathSpec
 
 
@@ -63,9 +61,11 @@ class CommandName(StrEnum):
     ``str`` the executor passes still matches. Mirrors the crossmount
     ``Cmd`` pattern.
     """
+
     BASE64 = "base64"
     CMP = "cmp"
     COMM = "comm"
+    CSPLIT = "csplit"
     DATE = "date"
     DIFF = "diff"
     FIND = "find"
@@ -77,6 +77,7 @@ class CommandName(StrEnum):
     SPLIT = "split"
     TR = "tr"
     TSORT = "tsort"
+    UNAME = "uname"
     UNIQ = "uniq"
     XXD = "xxd"
 
@@ -94,15 +95,16 @@ ValueType = Literal["bool", "str", "int", "float", "path"]
 # value is still text, or the bool/int a flag's own shape implies.
 ParsedFlagValue: TypeAlias = str | bool | int | list[str]
 # What a command receives. The executor rewrites PATH-typed values into
-# PathSpec on the way through (``mount.execute_cmd``), which is the one
-# member the TypeScript twin does not carry -- its bag keeps resolved
-# virtual-path strings instead. A command takes the bag as
+# PathSpec on the way through (``mount.execute_cmd``), the PathSpec of
+# the word that spelled it, so an error line can name the path as typed.
+# Mirrors the TypeScript FlagValue. A command takes the bag as
 # ``**flags: FlagValue`` and reads it through FlagView, never by
 # unpacking these members. The mixed list is the ``pair`` shape: a pair
 # option accumulates (name, value) flattened, so a PATH-typed pair like
 # jq's ``--rawfile name file`` alternates text and PathSpec.
-FlagValue: TypeAlias = (ParsedFlagValue | PathSpec | list[PathSpec]
-                        | list[str | PathSpec])
+FlagValue: TypeAlias = (
+    ParsedFlagValue | PathSpec | list[PathSpec] | list[str | PathSpec]
+)
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,7 @@ class Option:
             and the renderer that reports the line need it.
         description (str | None): help text.
     """
+
     short: str | None = None
     long: str | None = None
     type: ValueType = "bool"
@@ -207,10 +210,13 @@ class Operand:
             mount dispatch; textual operands pass through verbatim
             (never "bool": an operand is a value by definition).
         text_when (tuple[str, ...]): flags that make this slot textual
-            even though it is declared "path". jq's ``--args`` turns the
-            operands after the program into positional string values
-            rather than input files, which is a property of the line, not
-            of the slot, so it cannot be spelled in the type alone.
+            even though it is declared "path". tar's ``-x`` turns the
+            operands into member names rather than files, and jq's
+            ``--args`` turns them into positional string values, which is
+            a property of the line, not of the slot, so it cannot be
+            spelled in the type alone. The flag reaches every operand on
+            the line, or only the ones typed after it for a program that
+            files each operand as it reads it (IN_ORDER_OPERANDS, jq).
         provided_by (tuple[str, ...]): flags that supply this operand's
             value. When any is present the slot is skipped and remaining
             args classify as rest (e.g. grep's pattern with -e/-f). This is
@@ -241,6 +247,7 @@ class Operand:
             python3's own. One switch cannot do both, which is why the
             boundary has to be declared.
     """
+
     type: ValueType = "path"
     provided_by: tuple[str, ...] = ()
     text_when: tuple[str, ...] = ()
@@ -269,199 +276,9 @@ class CommandSpec:
     # every other path-valued flag keeps resolving against the session
     # cwd, which is what GNU does with -f.
     operand_base: str | None = None
-
-
-class FlagView:
-    """Typed read-only view over raw flag kwargs.
-
-    Commands receive flags as an untyped mapping from the dispatcher; this
-    view is the one sanctioned way to read them, replacing ad-hoc
-    `flags.get(...) is True` and isinstance chains.
-
-    Args:
-        flags (Mapping[str, FlagValue] | None): raw flag kwargs.
-        spec (CommandSpec | None): when given, reads of names the spec does
-            not declare raise KeyError. A missing key is otherwise
-            indistinguishable from "flag not passed", so a typo in the name
-            would silently read as False/None.
-    """
-
-    def __init__(self,
-                 flags: Mapping[str, FlagValue] | None,
-                 spec: CommandSpec | None = None) -> None:
-        self._flags = flags if flags is not None else {}
-        self._allowed = spec_flag_names(spec) if spec is not None else None
-
-    def _key(self, name: str) -> str:
-        if self._allowed is not None and name not in self._allowed:
-            raise KeyError(f"flag {name!r} is not declared by the command "
-                           f"spec (known: {sorted(self._allowed)})")
-        return name
-
-    def typed_order(self, *names: str) -> list[str]:
-        """The given flag names, ordered as the line first typed them.
-
-        The parser fills the bag in scan order and every hop between
-        (kwargs, dict copies) preserves insertion order, so a key's
-        position is its first occurrence on the line; a flag supplied
-        by a default or the environment lands after every typed one.
-        Names the line never carried are dropped. This is what an
-        order-sensitive option family (grep's --include/--exclude,
-        where the later kind overrides the earlier) reads, since the
-        bag has no per-occurrence positions.
-
-        Args:
-            names (str): flag names to order.
-        """
-        wanted = {self._key(n) for n in names}
-        return [k for k in self._flags if k in wanted]
-
-    def as_bool(self, name: str) -> bool:
-        value = self._flags.get(self._key(name))
-        if isinstance(value, bool):
-            return value
-        # A count flag holds an int; any occurrence reads as set.
-        return isinstance(value, int) and value > 0
-
-    def as_int(self, name: str) -> int | None:
-        value = self._flags.get(self._key(name))
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value
-        if not isinstance(value, str):
-            return None
-        try:
-            return int(value)
-        except ValueError as exc:
-            raise ValueError(f"flag '{name}' expects an integer, "
-                             f"got '{value}'") from exc
-
-    def as_float(self, name: str) -> float | None:
-        value = self._flags.get(self._key(name))
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        if not isinstance(value, str):
-            return None
-        try:
-            return float(value)
-        except ValueError as exc:
-            raise ValueError(f"flag '{name}' expects a number, "
-                             f"got '{value}'") from exc
-
-    def as_str(self, name: str) -> str | None:
-        value = self._flags.get(self._key(name))
-        return value if isinstance(value, str) else None
-
-    def as_list(self, name: str) -> list[str]:
-        value = self._flags.get(self._key(name))
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, str)]
-        if isinstance(value, str):
-            return [value]
-        return []
-
-    def as_paths(self, name: str) -> list[PathSpec]:
-        # PATH-typed flag values arrive as PathSpec in the python
-        # executor; the TypeScript flag bag carries their resolved
-        # virtual-path strings, so its counterpart is asList.
-        value = self._flags.get(self._key(name))
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, PathSpec)]
-        if isinstance(value, PathSpec):
-            return [value]
-        return []
-
-    def raw(self, name: str) -> FlagValue | None:
-        return self._flags.get(self._key(name))
-
-
-def spec_flag_names(spec: CommandSpec) -> frozenset[str]:
-    """Collect the kwarg names a spec's options can produce.
-
-    One name per option: the long spelling when an option declares
-    both, matching the parser's canonical dest. Keeping the short
-    spelling here too would let a stale ``fl.as_bool("a")`` stay legal
-    and read False forever after dest unification; canonical-only
-    turns that silent miss into a KeyError.
-
-    Args:
-        spec (CommandSpec): command spec whose options to enumerate.
-    """
-    names: set[str] = set()
-    for option in spec.options:
-        canonical = option.long if option.long is not None else option.short
-        if canonical is not None:
-            names.add(flag_kwarg_name(canonical))
-    return frozenset(names)
-
-
-@dataclass
-class ParsedArgs:
-    flags: dict[str, ParsedFlagValue]
-    args: list[tuple[str, ValueType]]
-    cache_paths: list[str] = field(default_factory=list)
-    path_flag_values: list[str] = field(default_factory=list)
-    raw_operands: list[tuple[str, ValueType]] = field(default_factory=list)
-    text_flag_values: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    word_kinds: list[ValueType | None] = field(default_factory=list)
-    # Per-position base directory, aligned with word_kinds: the absolute
-    # path a word resolves against when an operand_base option (tar's -C)
-    # moved it, and None when the session cwd still applies. Only a spec
-    # declaring operand_base ever fills this.
-    word_bases: list[str | None] = field(default_factory=list)
-    # GNU-shaped option errors, reported (never raised) by the parser:
-    # undeclared options ('--bogus' or the offending cluster char 'Y'),
-    # abbreviated longs matching several options (typed prefix, matched
-    # spellings in declaration order), declared value flags that ran out
-    # of line ('--max-depth', 'm'), values outside a declared choices set
-    # (canonical spelling, value, allowed values), non-integer values on
-    # int-typed options (canonical spelling, value), and absent required
-    # options (canonical spelling).
-    invalid_options: list[str] = field(default_factory=list)
-    ambiguous_options: list[tuple[str,
-                                  tuple[str,
-                                        ...]]] = field(default_factory=list)
-    # "invalid" / "ambiguous" tags in scan encounter order, so the refusal
-    # names the FIRST offending token like GNU (grep --c --bogus reports
-    # --c; reversed reports --bogus). needs_value is absent by
-    # construction: it only fires on the line's final token, so it can
-    # never precede another scan error.
-    option_error_kinds: list[str] = field(default_factory=list)
-    needs_value_options: list[str] = field(default_factory=list)
-    invalid_value_options: list[tuple[str, str, tuple[str, ...]]] = field(
-        default_factory=list)
-    invalid_int_options: list[tuple[str, str]] = field(default_factory=list)
-    invalid_float_options: list[tuple[str, str]] = field(default_factory=list)
-    missing_required_options: list[str] = field(default_factory=list)
-    # Display names of required operand slots the line left empty, in
-    # declaration order. Reported rather than raised, like every other
-    # entry here, so the dialect that words it is the caller's choice.
-    missing_required_operands: list[str] = field(default_factory=list)
-    # Dests the line actually carried, in scan order, excluding the ones
-    # a declared default filled in afterwards. A usage line that echoes
-    # what was supplied (clap's) needs exactly this distinction: a
-    # defaulted option is invisible there, a typed one is not.
-    typed_dests: list[str] = field(default_factory=list)
-    # The old-style cluster letter whose argument ran off the end of the
-    # line (`tar xzf` with no archive). Its own report because GNU tar
-    # words it differently and exits differently from every getopt
-    # refusal above, and because it outranks all of them: tar counts the
-    # cluster's argument needs before argp ever validates a letter, so
-    # `tar Qf` and `tar fQ` both name f, not Q.
-    old_option_needs_value: str | None = None
-
-    def paths(self) -> list[str]:
-        return [v for v, k in self.args if k == "path"]
-
-    def routing_paths(self) -> list[str]:
-        return self.paths() + self.path_flag_values
-
-    def texts(self) -> list[str]:
-        return [v for v, k in self.args if k != "path"]
-
-    def flag(self, name: str, default: Any = None) -> Any:
-        return self.flags.get(name, default)
+    # argparse's `allow_abbrev`: whether an unambiguous prefix of a long
+    # option stands for it. getopt_long and argparse both expand one by
+    # default; clap and lexopt (ripgrep) do not, so a program parsed with
+    # either declares False and `--pcr` is refused rather than read as
+    # `--pcre2-unicode`.
+    allow_abbrev: bool = True

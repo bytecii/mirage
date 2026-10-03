@@ -1,9 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "ignoreBinaries": ["diskutil", "fusermount", "smolvm"],
+  "ignoreBinaries": ["diskutil", "fusermount", "openssl", "sandlock"],
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.ts"]
+      "entry": []
+    },
+    "scripts": {
+      "entry": ["*.ts"]
     },
     "packages/node": {
       "ignoreDependencies": [
@@ -12,7 +15,8 @@
         "seek-bzip",
         "tree-sitter-bash",
         "web-tree-sitter"
-      ]
+      ],
+      "entry": ["scripts/*.mjs"]
     },
     "packages/browser": {
       "entry": ["scripts/*.mjs"],

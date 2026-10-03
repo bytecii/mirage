@@ -12,16 +12,21 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mkdirSync, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, stat } from 'node:fs/promises'
 import { dirname, resolve, sep } from 'node:path'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import type { Limit } from '@struktoai/mirage-core/types'
 import type { MountSpec } from '@struktoai/mirage-core/workspace/workspace/workspace'
-import type { Resource } from '@struktoai/mirage-core/resource/base'
-import { DiskWorkspaceStateStore, Workspace } from '@struktoai/mirage-node'
+import type { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+import type { Mount } from '@struktoai/mirage-core/workspace/mount/spec'
+import { DiskWorkspaceStateStore, DOT_IDS, Workspace } from '@struktoai/mirage-node'
 import { newWorkspaceId } from '@struktoai/mirage-core/utils/ids'
 import { type WorkspaceRegistry } from '../registry.ts'
-import { buildOverrideResources, cloneWorkspaceWithOverride, type OverrideShape } from '../clone.ts'
+import type { VersionBackend } from '../version/backend.ts'
+import { z } from '@struktoai/mirage-core/vfs/secrets'
+import { SecretsError } from '@struktoai/mirage-core/secrets/errors'
+import { VFSConfigError } from '@struktoai/mirage-core/vfs/errors'
+import { buildOverrideMounts, cloneWorkspaceWithOverride, type OverrideShape } from '../clone.ts'
 import {
   configToWorkspaceArgs,
   loadWorkspaceConfig,
@@ -34,6 +39,7 @@ export interface WorkspaceRoutesDeps {
   registry: WorkspaceRegistry
   snapshotRoot: string
   stateRoot: string
+  versionBackend: VersionBackend
 }
 
 const WRITE_RATE_LIMIT = {
@@ -68,6 +74,25 @@ interface LoadWorkspaceBody {
   override?: OverrideShape
 }
 
+/** Refuse an id that would name the state root, not a workspace. */
+function refuseId(reply: FastifyReply, id: string): FastifyReply {
+  return reply.status(400).send({ detail: `invalid workspace id: ${id}` })
+}
+
+/**
+ * A stable fingerprint of the config a workspace was created from: the
+ * SHA-256 of its JSON with every object's keys sorted. Mirrors Python's
+ * `config_digest`.
+ */
+function configDigest(config: unknown): string {
+  const canonical = JSON.stringify(config, (_key, value: unknown) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : value,
+  )
+  return createHash('sha256').update(canonical).digest('hex')
+}
+
 export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRoutesDeps): void {
   app.post<{ Body: CreateWorkspaceBody }>(
     '/v1/workspaces',
@@ -77,64 +102,96 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       if (config === null || typeof config !== 'object' || Array.isArray(config)) {
         return reply.status(400).send({ detail: 'config must be a mapping' })
       }
-      if (body.id !== undefined && deps.registry.has(body.id)) {
-        return reply.status(409).send({ detail: `workspace id already exists: ${body.id}` })
-      }
       let cfg: WorkspaceConfigRaw
       try {
         cfg = loadWorkspaceConfig(config as Record<string, unknown>)
+        for (const entry of cfg.runtimes ?? []) {
+          if (typeof entry === 'string') continue
+          const runtimeConfig = entry.config
+          if (
+            runtimeConfig !== null &&
+            typeof runtimeConfig === 'object' &&
+            Object.hasOwn(runtimeConfig, 'initModule')
+          ) {
+            throw new Error('runtime initModule is only allowed in operator-owned configuration')
+          }
+        }
       } catch (e) {
         return reply.status(400).send({ detail: (e as Error).message })
-      }
-      let args: WorkspaceArgs
-      try {
-        args = await configToWorkspaceArgs(cfg)
-      } catch (e) {
-        return reply.status(502).send({ detail: `resource build failed: ${(e as Error).message}` })
-      }
-      const resourceMap: Record<string, MountSpec> = {}
-      const commandLimits: Record<string, Record<string, Limit>> = {}
-      for (const [prefix, [resource, mode, limits]] of Object.entries(args.resources)) {
-        resourceMap[prefix] = [resource, mode]
-        if (Object.keys(limits).length > 0) commandLimits[prefix] = limits
       }
       // The registry id and the state-store scope must be the same identity,
       // so resolve it before construction: explicit REST id, then the
-      // config's workspaceId, then a fresh mint.
-      const wid = body.id ?? args.options.workspaceId ?? newWorkspaceId()
-      let ws: Workspace
-      try {
-        // Every option the config produced rides through: enumerating
-        // them by hand silently dropped `clis` and `guards`, so a yaml
-        // clis block parsed, validated, and then installed nothing.
-        // Only identity and the store default are the daemon's to
-        // decide.
-        ws = new Workspace(resourceMap, {
-          ...args.options,
-          workspaceId: wid,
-          // Daemon default is disk (a created workspace survives restart
-          // with zero infrastructure, like git init); the library default
-          // stays ram. An explicit store always wins.
-          store: args.options.store ?? new DiskWorkspaceStateStore({ root: deps.stateRoot }),
-          // Whichever of the two built it, no sibling workspace shares
-          // it, so this workspace is the one that closes it.
-          ownsStore: true,
-          ...(Object.keys(commandLimits).length > 0 ? { commandLimits } : {}),
-        })
-      } catch (e) {
-        return reply.status(400).send({ detail: (e as Error).message })
-      }
-      let entry
-      try {
-        for (const [prefix, [backend, mountpoint]] of Object.entries(args.kernelMounts)) {
-          await ws.addFuseMount(prefix, mountpoint, undefined, backend)
+      // config's workspaceId, then a fresh mint. A held id is answered or
+      // refused here, before its secrets resolve or its mounts build, and
+      // before a second Workspace opens the live one's state: creating is
+      // idempotent for one config, so an id held by a workspace created
+      // from an identical config answers it with 200, and an id held by
+      // anything else, or by one being deleted, is refused. Creates of one
+      // id run one at a time, so a second of the same config answers what
+      // the first built, and one of another config is refused at once.
+      const wid = body.id ?? cfg.workspaceId ?? newWorkspaceId()
+      if (DOT_IDS.has(wid)) return refuseId(reply, wid)
+      const digest = configDigest(config)
+      return deps.registry.creating(wid, digest, async (admitted) => {
+        if (!admitted) {
+          return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
         }
-        entry = deps.registry.add(ws, wid)
-      } catch (e) {
-        await ws.close()
-        return reply.status(409).send({ detail: (e as Error).message })
-      }
-      return reply.status(201).send(await makeDetail(entry))
+        if (deps.registry.has(wid)) {
+          const held = deps.registry.get(wid)
+          if (deps.registry.removing(wid) || held.configDigest !== digest) {
+            return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
+          }
+          return reply.status(200).send(await makeDetail(held))
+        }
+        let args: WorkspaceArgs
+        try {
+          args = await configToWorkspaceArgs(cfg)
+        } catch (e) {
+          if (e instanceof SecretsError || e instanceof z.ZodError || e instanceof VFSConfigError) {
+            // A `secrets:` block the host cannot resolve is the caller's
+            // config, not a backend that would not answer. Resolution moved
+            // into configToWorkspaceArgs, so without this the same body that
+            // python's create route refuses with 400 got a 502 here.
+            return reply.status(400).send({ detail: e.message })
+          }
+          return reply.status(502).send({ detail: `VFS build failed: ${(e as Error).message}` })
+        }
+        // The Mounts ride through whole; see workspace_config.ts.
+        const vfsMap: Record<string, MountSpec> = { ...args.mounts }
+        let ws: Workspace
+        try {
+          // Every option the config produced rides through: enumerating
+          // them by hand silently dropped `clis` and `guards`, so a yaml
+          // clis block parsed, validated, and then installed nothing.
+          // Only identity and the store default are the daemon's to
+          // decide.
+          ws = new Workspace(vfsMap, {
+            ...args.options,
+            workspaceId: wid,
+            // Daemon default is disk (a created workspace survives restart
+            // with zero infrastructure, like git init); the library default
+            // stays ram. An explicit store always wins.
+            store: args.options.store ?? new DiskWorkspaceStateStore({ root: deps.stateRoot }),
+            // Whichever of the two built it, no sibling workspace shares
+            // it, so this workspace is the one that closes it.
+            ownsStore: true,
+          })
+        } catch (e) {
+          return reply.status(400).send({ detail: (e as Error).message })
+        }
+        let entry
+        try {
+          for (const [prefix, [backend, mountpoint]] of Object.entries(args.kernelMounts)) {
+            await ws.addFuseMount(prefix, mountpoint, undefined, backend)
+          }
+          entry = deps.registry.add(ws, wid)
+          entry.configDigest = digest
+        } catch (e) {
+          await ws.close()
+          return reply.status(409).send({ detail: (e as Error).message })
+        }
+        return reply.status(201).send(await makeDetail(entry))
+      })
     },
   )
 
@@ -155,24 +212,32 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       if (!safePath.startsWith(snapshotRoot + sep)) {
         return reply.status(400).send({ detail: 'path escapes the configured root' })
       }
+      if (workspaceId !== undefined && DOT_IDS.has(workspaceId)) return refuseId(reply, workspaceId)
       if (workspaceId !== undefined && deps.registry.has(workspaceId)) {
         return reply.status(409).send({ detail: `workspace id already exists: ${workspaceId}` })
       }
       let tarBuf: Buffer
       try {
-        tarBuf = readFileSync(safePath)
+        tarBuf = await readFile(safePath)
       } catch {
         return reply.status(400).send({ detail: `snapshot not found: ${path}` })
       }
-      let overrides: Record<string, Resource>
+      let overrides: Record<string, BaseVFS | Mount>
       try {
-        overrides = await buildOverrideResources(override ?? null)
+        // An override mount's credential may be a pointer at one of
+        // these declarations; a container the constructor will reject
+        // is left for it to reject. Mirrors the python load route.
+        overrides = await buildOverrideMounts(override ?? null, override?.secrets)
       } catch (e) {
         return reply.status(400).send({ detail: `override build failed: ${(e as Error).message}` })
       }
       let ws: Workspace
       try {
-        ws = await Workspace.load(new Uint8Array(tarBuf), {}, overrides)
+        ws = await Workspace.load(
+          new Uint8Array(tarBuf),
+          override?.secrets !== undefined ? { secrets: override.secrets } : {},
+          overrides,
+        )
       } catch (e) {
         return reply.status(400).send({ detail: `load failed: ${(e as Error).message}` })
       }
@@ -199,7 +264,13 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
   app.delete<{ Params: WorkspaceIdParams }>('/v1/workspaces/:id', async (req, reply) => {
     const { id } = req.params
     if (!deps.registry.has(id)) return reply.status(404).send({ detail: 'workspace not found' })
-    await deps.registry.remove(id)
+    try {
+      await deps.registry.remove(id, () => deps.versionBackend.dropRepo(id))
+    } catch (err) {
+      return reply
+        .status(500)
+        .send({ detail: `workspace delete failed: ${(err as Error).message}` })
+    }
     return { id, closedAt: Date.now() / 1000 }
   })
 
@@ -209,11 +280,23 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       const { id } = req.params
       if (!deps.registry.has(id)) return reply.status(404).send({ detail: 'workspace not found' })
       const body = req.body
+      if (body.id !== undefined && DOT_IDS.has(body.id)) return refuseId(reply, body.id)
       if (body.id !== undefined && deps.registry.has(body.id)) {
         return reply.status(409).send({ detail: `workspace id already exists: ${body.id}` })
       }
       const src = deps.registry.get(id).runner.ws
-      const newWs = await cloneWorkspaceWithOverride(src, body.override ?? null)
+      let newWs
+      try {
+        newWs = await cloneWorkspaceWithOverride(src, body.override ?? null)
+      } catch (e) {
+        if (e instanceof SecretsError || e instanceof z.ZodError || e instanceof VFSConfigError) {
+          // An override naming a source the host cannot resolve, or a
+          // block the schema refuses, is the caller's mistake -- the
+          // answer create, load and the historical clone already give.
+          return reply.status(400).send({ detail: e.message })
+        }
+        throw e
+      }
       let entry
       try {
         entry = deps.registry.add(newWs, body.id)
@@ -241,9 +324,9 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       if (!safePath.startsWith(snapshotRoot + sep)) {
         return reply.status(400).send({ detail: 'path escapes the configured root' })
       }
-      mkdirSync(dirname(safePath), { recursive: true })
+      await mkdir(dirname(safePath), { recursive: true })
       await deps.registry.get(id).runner.ws.snapshot(safePath)
-      return reply.status(200).send({ id, path: safePath, size: statSync(safePath).size })
+      return reply.status(200).send({ id, path: safePath, size: (await stat(safePath)).size })
     },
   )
 }

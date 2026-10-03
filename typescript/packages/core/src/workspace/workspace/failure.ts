@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { CommandTimeoutError } from '../../commands/builtin/utils/limit.ts'
+import { CommandTimeoutError } from '../../commands/errors.ts'
 import { UsageError } from '../../commands/errors.ts'
 import { ContentDriftError } from '../snapshot/drift.ts'
 
@@ -35,6 +35,9 @@ export function isControlFlowError(err: unknown): boolean {
  */
 export function failureResult(err: unknown): { stderr: Uint8Array; exitCode: number } {
   const enc = new TextEncoder()
+  if (err instanceof DOMException && err.name === 'AbortError') {
+    return { stderr: enc.encode(`${err.message}\n`), exitCode: 130 }
+  }
   if (err instanceof CommandTimeoutError) {
     return { stderr: enc.encode(`${err.message}\n`), exitCode: 124 }
   }

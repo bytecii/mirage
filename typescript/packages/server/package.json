@@ -1,12 +1,12 @@
 {
   "name": "@struktoai/mirage-server",
-  "version": "0.0.5",
+  "version": "0.0.7-alpha.2",
   "description": "A Unified Virtual Filesystem For AI Agents",
   "keywords": [
     "bash",
     "fuse",
     "typescript",
-    "vfs",
+    "workspace",
     "ai-agents",
     "agent-sandbox",
     "langchain",
@@ -41,6 +41,46 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./paths": {
+      "types": "./dist/paths.d.ts",
+      "import": "./dist/paths.js"
+    },
+    "./env": {
+      "types": "./dist/env.d.ts",
+      "import": "./dist/env.js"
+    },
+    "./daemon_config": {
+      "types": "./dist/daemon_config.d.ts",
+      "import": "./dist/daemon_config.js"
+    },
+    "./host_validation_constants": {
+      "types": "./dist/host_validation_constants.d.ts",
+      "import": "./dist/host_validation_constants.js"
+    },
+    "./workspace_config": {
+      "types": "./dist/workspace_config.d.ts",
+      "import": "./dist/workspace_config.js"
+    },
+    "./auth/config": {
+      "types": "./dist/auth/config.d.ts",
+      "import": "./dist/auth/config.js"
+    },
+    "./auth/storage": {
+      "types": "./dist/auth/storage.d.ts",
+      "import": "./dist/auth/storage.js"
+    },
+    "./ssh/constants": {
+      "types": "./dist/ssh/constants.d.ts",
+      "import": "./dist/ssh/constants.js"
+    },
+    "./ssh/config": {
+      "types": "./dist/ssh/config.d.ts",
+      "import": "./dist/ssh/config.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
     "./package.json": "./package.json",
     "./bin/daemon": "./dist/bin/daemon.js"
   },
@@ -58,17 +98,30 @@
   "dependencies": {
     "@fastify/multipart": "^10.0.0",
     "@fastify/rate-limit": "^10.0.0",
+    "@modelcontextprotocol/client": "^2.3.0",
+    "@modelcontextprotocol/server": "^2.3.0",
+    "@struktoai/mirage-agents": "workspace:*",
     "@struktoai/mirage-core": "workspace:*",
     "@struktoai/mirage-node": "workspace:*",
-    "fastify": "^5.8.5",
+    "fastify": "^5.12.5",
     "isomorphic-git": "^1.38.1",
     "jose": "^6.2.3",
     "rate-limiter-flexible": "^11.2.0"
   },
+  "peerDependencies": {
+    "ssh2": "^1.16.0"
+  },
+  "peerDependenciesMeta": {
+    "ssh2": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ssh2": "^1.15.0",
+    "ssh2": "^1.16.0",
     "tsup": "^8.5.0",
     "typescript": "^6.0.0",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.11"
   }
 }

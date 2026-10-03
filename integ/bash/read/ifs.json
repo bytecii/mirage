@@ -1,0 +1,140 @@
+{
+  "cases": [
+    {
+      "id": "read_ifs_colon_splits",
+      "seq": 502500,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "IFS=: read ra rb rc <<< 'x:y:z'; echo \"$ra-$rb-$rc\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "x-y-z\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "read_ifs_rest_to_last",
+      "seq": 502501,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "IFS=: read rp rq <<< 'a:b:c:d'; echo \"$rp,$rq\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "a,b:c:d\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "read_ifs_empty_fields",
+      "seq": 502502,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "IFS=: read re1 re2 re3 <<< 'a::c'; echo \"[$re1][$re2][$re3]\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "[a][][c]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "read_ifs_prefix_not_persistent",
+      "seq": 502503,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "IFS=: read rz1 <<< 'q'; echo \"${IFS-default}\" | grep -c :; printf '[%q]\\n' \"$IFS\"; echo ${#IFS}; declare -p IFS; (v='a,b c'; OLDIFS=$IFS; IFS=,; printf '<%s>' $v; echo; IFS=$OLDIFS; printf '<%s>' $v; echo; unset IFS; echo \"${IFS-unset}\"; printf '<%s>' $v; echo; IFS=, bash -c 'printf \"[%q]\\n\" \"$IFS\"'; bash -c 'echo ${#IFS}')",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n[$' \\t\\n']\n3\ndeclare -- IFS=$' \\t\\n'\n<a><b c>\n<a,b><c>\nunset\n<a,b><c>\n[$' \\t\\n']\n3\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

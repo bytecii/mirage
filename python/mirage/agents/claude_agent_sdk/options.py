@@ -17,10 +17,11 @@ try:
 except ImportError as exc:
     raise ImportError(
         "`claude-agent-sdk` not installed. "
-        "Install with: pip install 'mirage-ai[claude-agent-sdk]'") from exc
+        "Install with: pip install 'mirage-ai[claude-agent-sdk]'"
+    ) from exc
 
-from mirage.agents.claude_agent_sdk.prompt import build_system_prompt
 from mirage.agents.claude_agent_sdk.server import MirageServer
+from mirage.agents.prompt import build_system_prompt
 from mirage.workspace.workspace import Workspace
 
 
@@ -32,7 +33,7 @@ def build_options(
     """Build ClaudeAgentOptions backed by a Mirage Workspace.
 
     Disables all built-in file tools and registers Mirage tools
-    (execute_command, read, write, edit, ls, grep) as the agent's
+    (shell, read, write, edit, ls, grep, glob) as the agent's
     only file access layer.
 
     Args:

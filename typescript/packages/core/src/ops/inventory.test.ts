@@ -19,6 +19,7 @@ import { CHROMA_OPS } from './chroma/index.ts'
 import { DATABRICKS_VOLUME_OPS } from './databricks_volume/index.ts'
 import { DISCORD_OPS } from './discord/index.ts'
 import { DROPBOX_OPS } from './dropbox/index.ts'
+import { GCAL_OPS } from './gcal/index.ts'
 import { GDOCS_OPS } from './gdocs/index.ts'
 import { GDRIVE_OPS } from './gdrive/index.ts'
 import { GITHUB_OPS } from './github/index.ts'
@@ -36,12 +37,13 @@ import { ONEDRIVE_OPS } from './onedrive/index.ts'
 import { POSTGRES_OPS } from './postgres/index.ts'
 import { QDRANT_OPS } from './qdrant/index.ts'
 import { RAM_OPS } from './ram/index.ts'
+import { REDIS_OPS } from './redis/index.ts'
 import { SLACK_OPS } from './slack/index.ts'
 import { SHAREPOINT_OPS } from './sharepoint/index.ts'
 import { TRELLO_OPS } from './trello/index.ts'
 
 // Golden snapshot of every backend's registered op surface, taken before
-// the ops-layer refactor. Each row is [name, resource, filetype, write];
+// the ops-layer refactor. Each row is [name, VFS, filetype, write];
 // filetype '' means no filetype binding. Any diff here is a registration
 // regression unless the change is deliberate.
 
@@ -53,6 +55,7 @@ const TABLES = {
   databricks_volume: DATABRICKS_VOLUME_OPS,
   discord: DISCORD_OPS,
   dropbox: DROPBOX_OPS,
+  gcal: GCAL_OPS,
   gdocs: GDOCS_OPS,
   gdrive: GDRIVE_OPS,
   github: GITHUB_OPS,
@@ -70,6 +73,7 @@ const TABLES = {
   postgres: POSTGRES_OPS,
   qdrant: QDRANT_OPS,
   ram: RAM_OPS,
+  redis: REDIS_OPS,
   slack: SLACK_OPS,
   sharepoint: SHAREPOINT_OPS,
   trello: TRELLO_OPS,
@@ -77,9 +81,12 @@ const TABLES = {
 
 const OPS_INVENTORY: Record<string, Row[]> = {
   box: [
+    ['append', 'box', '', true],
     ['create', 'box', '', true],
     ['mkdir', 'box', '', true],
+    ['pwrite', 'box', '', true],
     ['read', 'box', '', false],
+    ['glob', 'box', '', false],
     ['readdir', 'box', '', false],
     ['rename', 'box', '', true],
     ['rmdir', 'box', '', true],
@@ -90,13 +97,17 @@ const OPS_INVENTORY: Record<string, Row[]> = {
   ],
   chroma: [
     ['read', 'chroma', '', false],
+    ['glob', 'chroma', '', false],
     ['readdir', 'chroma', '', false],
     ['stat', 'chroma', '', false],
   ],
   databricks_volume: [
+    ['append', 'databricks_volume', '', true],
     ['create', 'databricks_volume', '', true],
     ['mkdir', 'databricks_volume', '', true],
+    ['pwrite', 'databricks_volume', '', true],
     ['read', 'databricks_volume', '', false],
+    ['glob', 'databricks_volume', '', false],
     ['readdir', 'databricks_volume', '', false],
     ['rename', 'databricks_volume', '', true],
     ['rmdir', 'databricks_volume', '', true],
@@ -106,13 +117,17 @@ const OPS_INVENTORY: Record<string, Row[]> = {
   ],
   discord: [
     ['read', 'discord', '', false],
+    ['glob', 'discord', '', false],
     ['readdir', 'discord', '', false],
     ['stat', 'discord', '', false],
   ],
   dropbox: [
+    ['append', 'dropbox', '', true],
     ['create', 'dropbox', '', true],
     ['mkdir', 'dropbox', '', true],
+    ['pwrite', 'dropbox', '', true],
     ['read', 'dropbox', '', false],
+    ['glob', 'dropbox', '', false],
     ['readdir', 'dropbox', '', false],
     ['rename', 'dropbox', '', true],
     ['rmdir', 'dropbox', '', true],
@@ -121,15 +136,25 @@ const OPS_INVENTORY: Record<string, Row[]> = {
     ['unlink', 'dropbox', '', true],
     ['write', 'dropbox', '', true],
   ],
+  gcal: [
+    ['read', 'gcal', '', false],
+    ['glob', 'gcal', '', false],
+    ['readdir', 'gcal', '', false],
+    ['stat', 'gcal', '', false],
+  ],
   gdocs: [
     ['read', 'gdocs', '.gdoc.json', false],
+    ['glob', 'gdocs', '', false],
     ['readdir', 'gdocs', '', false],
     ['stat', 'gdocs', '', false],
   ],
   gdrive: [
+    ['append', 'gdrive', '', true],
     ['create', 'gdrive', '', true],
     ['mkdir', 'gdrive', '', true],
+    ['pwrite', 'gdrive', '', true],
     ['read', 'gdrive', '', false],
+    ['glob', 'gdrive', '', false],
     ['readdir', 'gdrive', '', false],
     ['rename', 'gdrive', '', true],
     ['rmdir', 'gdrive', '', true],
@@ -140,63 +165,77 @@ const OPS_INVENTORY: Record<string, Row[]> = {
   ],
   github: [
     ['read', 'github', '', false],
+    ['glob', 'github', '', false],
     ['readdir', 'github', '', false],
     ['stat', 'github', '', false],
   ],
   gmail: [
     ['read', 'gmail', '', false],
+    ['glob', 'gmail', '', false],
     ['readdir', 'gmail', '', false],
     ['stat', 'gmail', '', false],
   ],
   gsheets: [
     ['read', 'gsheets', '.gsheet.json', false],
+    ['glob', 'gsheets', '', false],
     ['readdir', 'gsheets', '', false],
     ['stat', 'gsheets', '', false],
   ],
   gslides: [
     ['read', 'gslides', '.gslide.json', false],
+    ['glob', 'gslides', '', false],
     ['readdir', 'gslides', '', false],
     ['stat', 'gslides', '', false],
   ],
   history: [
     ['read', 'history', '', false],
+    ['glob', 'history', '', false],
     ['readdir', 'history', '', false],
     ['stat', 'history', '', false],
   ],
   lancedb: [
     ['read', 'lancedb', '', false],
+    ['glob', 'lancedb', '', false],
     ['readdir', 'lancedb', '', false],
     ['stat', 'lancedb', '', false],
   ],
   langfuse: [
     ['read', 'langfuse', '', false],
+    ['glob', 'langfuse', '', false],
     ['readdir', 'langfuse', '', false],
     ['stat', 'langfuse', '', false],
   ],
   linear: [
     ['read', 'linear', '', false],
+    ['glob', 'linear', '', false],
     ['readdir', 'linear', '', false],
     ['stat', 'linear', '', false],
   ],
   mem0: [
     ['read', 'mem0', '', false],
+    ['glob', 'mem0', '', false],
     ['readdir', 'mem0', '', false],
     ['stat', 'mem0', '', false],
   ],
   mongodb: [
     ['read', 'mongodb', '', false],
+    ['glob', 'mongodb', '', false],
     ['readdir', 'mongodb', '', false],
     ['stat', 'mongodb', '', false],
   ],
   notion: [
     ['read', 'notion', '', false],
+    ['glob', 'notion', '', false],
     ['readdir', 'notion', '', false],
     ['stat', 'notion', '', false],
   ],
   onedrive: [
+    ['append', 'onedrive', '', true],
     ['create', 'onedrive', '', true],
     ['mkdir', 'onedrive', '', true],
+    ['pwrite', 'onedrive', '', true],
     ['read', 'onedrive', '', false],
+    ['glob', 'onedrive', '', false],
     ['readdir', 'onedrive', '', false],
     ['rename', 'onedrive', '', true],
     ['rmdir', 'onedrive', '', true],
@@ -207,11 +246,13 @@ const OPS_INVENTORY: Record<string, Row[]> = {
   ],
   postgres: [
     ['read', 'postgres', '', false],
+    ['glob', 'postgres', '', false],
     ['readdir', 'postgres', '', false],
     ['stat', 'postgres', '', false],
   ],
   qdrant: [
     ['read', 'qdrant', '', false],
+    ['glob', 'qdrant', '', false],
     ['readdir', 'qdrant', '', false],
     ['stat', 'qdrant', '', false],
   ],
@@ -219,7 +260,9 @@ const OPS_INVENTORY: Record<string, Row[]> = {
     ['append', 'ram', '', true],
     ['create', 'ram', '', true],
     ['mkdir', 'ram', '', true],
+    ['pwrite', 'ram', '', true],
     ['read', 'ram', '', false],
+    ['glob', 'ram', '', false],
     ['readdir', 'ram', '', false],
     ['rename', 'ram', '', true],
     ['rmdir', 'ram', '', true],
@@ -229,15 +272,35 @@ const OPS_INVENTORY: Record<string, Row[]> = {
     ['unlink', 'ram', '', true],
     ['write', 'ram', '', true],
   ],
+  redis: [
+    ['append', 'redis', '', true],
+    ['create', 'redis', '', true],
+    ['mkdir', 'redis', '', true],
+    ['pwrite', 'redis', '', true],
+    ['read', 'redis', '', false],
+    ['glob', 'redis', '', false],
+    ['readdir', 'redis', '', false],
+    ['rename', 'redis', '', true],
+    ['rmdir', 'redis', '', true],
+    ['setattr', 'redis', '', true],
+    ['stat', 'redis', '', false],
+    ['truncate', 'redis', '', true],
+    ['unlink', 'redis', '', true],
+    ['write', 'redis', '', true],
+  ],
   slack: [
     ['read', 'slack', '', false],
+    ['glob', 'slack', '', false],
     ['readdir', 'slack', '', false],
     ['stat', 'slack', '', false],
   ],
   sharepoint: [
+    ['append', 'sharepoint', '', true],
     ['create', 'sharepoint', '', true],
     ['mkdir', 'sharepoint', '', true],
+    ['pwrite', 'sharepoint', '', true],
     ['read', 'sharepoint', '', false],
+    ['glob', 'sharepoint', '', false],
     ['readdir', 'sharepoint', '', false],
     ['rename', 'sharepoint', '', true],
     ['rmdir', 'sharepoint', '', true],
@@ -248,6 +311,7 @@ const OPS_INVENTORY: Record<string, Row[]> = {
   ],
   trello: [
     ['read', 'trello', '', false],
+    ['glob', 'trello', '', false],
     ['readdir', 'trello', '', false],
     ['stat', 'trello', '', false],
   ],
@@ -258,7 +322,7 @@ const sortRows = (rows: Row[]): Row[] =>
 
 for (const [backend, ops] of Object.entries(TABLES)) {
   test(`ops inventory: ${backend}`, () => {
-    const actual = sortRows(ops.map((o) => [o.name, o.resource, o.filetype ?? '', o.write] as Row))
+    const actual = sortRows(ops.map((o) => [o.name, o.vfs, o.filetype ?? '', o.write] as Row))
     const expected = OPS_INVENTORY[backend]
     if (!expected) throw new Error(`missing fixture: ${backend}`)
     expect(actual).toEqual(sortRows(expected))

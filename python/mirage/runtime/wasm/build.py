@@ -15,8 +15,8 @@
 import os
 from pathlib import Path
 
-from mirage.runtime.wasm.abi import FT_DIR, FT_REG
-from mirage.runtime.wasm.types import GuestStat
+from mirage.runtime.types import VFSStat
+from mirage.runtime.wasm.constants import FT_DIR, FT_REG
 
 
 class BuildDir:
@@ -52,25 +52,38 @@ class BuildDir:
         """
         return path == "/" or self.target(path).exists()
 
-    def stat(self, path: str) -> GuestStat:
+    def stat(self, path: str) -> VFSStat:
         """Stat a build path.
+
+        The host's own st_mode is reported as it stands, type bits
+        included: these are real files on this machine, so there is
+        nothing to synthesize.
 
         Args:
             path (str): guest-absolute path.
         """
         host = self.target(path)
         st = os.stat(host)
-        return GuestStat(is_dir=host.is_dir(),
-                         size=st.st_size,
-                         mtime_ns=st.st_mtime_ns)
+        return VFSStat(
+            size=st.st_size,
+            is_dir=host.is_dir(),
+            mode=st.st_mode,
+            mtime_ns=st.st_mtime_ns,
+        )
 
-    def read(self, path: str) -> bytes:
-        """Read a build file.
+    def read(
+        self, path: str, *, offset: int = 0, size: int | None = None
+    ) -> bytes:
+        """Read a build file, or a range of it.
 
         Args:
             path (str): guest-absolute path.
+            offset (int): where the range starts.
+            size (int | None): its length; None reads to the end.
         """
-        return self.target(path).read_bytes()
+        with self.target(path).open("rb") as f:
+            f.seek(offset)
+            return f.read(-1 if size is None else size)
 
     def readdir(self, path: str) -> list[tuple[str, int]]:
         """List a build directory as (name, preview1 filetype) pairs.

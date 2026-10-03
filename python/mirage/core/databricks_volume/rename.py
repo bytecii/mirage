@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
-from mirage.cache.context import invalidate_after_unlink
+from mirage.cache.context import invalidate_subtree
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.databricks_volume.copy import copy
 from mirage.core.databricks_volume.path import backend_path
@@ -46,11 +46,12 @@ async def rename(
             # Refuse before either side effect.
             raise ValueError(
                 f"cannot move '{src.virtual}' to a subdirectory of "
-                f"itself, '{dst.virtual}'")
+                f"itself, '{dst.virtual}'"
+            )
         await copy(accessor, src, dst, index, recursive=True)
         await rm_recursive(accessor, src, index)
     else:
         await copy(accessor, src, dst, index)
         await unlink(accessor, src, index)
-    await invalidate_after_unlink(dst)
-    await invalidate_after_unlink(src)
+    await invalidate_subtree(dst)
+    await invalidate_subtree(src)

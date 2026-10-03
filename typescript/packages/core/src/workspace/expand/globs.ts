@@ -15,8 +15,8 @@
 import { childMountNames, namespaceNames } from '../../ops/namespace_view.ts'
 import type { NamespaceLinks } from '../../ops/config.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
-import type { Resource } from '../../resource/base.ts'
-import { PathSpec } from '../../types.ts'
+import { FileStat, FileType, PathSpec } from '../../types.ts'
+import { isFsError } from '../../utils/errors.ts'
 import type { MountEntry } from '../mount/mount.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import {
@@ -27,12 +27,12 @@ import {
   spellMatch,
   unmarkGlobs,
 } from '../../utils/glob_walk.ts'
-import { CycleError } from '../../utils/path.ts'
+import { CycleError, parent } from '../../utils/path.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
-import { ExitSignal } from '../../shell/errors.ts'
+import { DiscardSignal, ExitSignal } from '../../shell/errors.ts'
 import { SHOPT_DEFAULTS } from '../../shell/constants.ts'
-import type { Session } from '../session/session.ts'
+import type { SessionState } from '../session/session.ts'
 
 // How deep a `**` descends. bash has no cap, but every level here is
 // one listing per directory, so an accidental `**` over a large tree is
@@ -54,7 +54,7 @@ export function globNeedsShell(opts: GlobOptions): boolean {
   return opts.nullglob || opts.failglob || opts.globstar
 }
 
-export function globOptions(session: Session): GlobOptions {
+export function globOptions(session: SessionState): GlobOptions {
   return {
     nullglob: session.shopts.nullglob ?? SHOPT_DEFAULTS.get('nullglob') ?? false,
     failglob: session.shopts.failglob ?? SHOPT_DEFAULTS.get('failglob') ?? false,
@@ -62,14 +62,10 @@ export function globOptions(session: Session): GlobOptions {
   }
 }
 
-export interface ResourceWithGlob extends Resource {
-  glob(paths: readonly PathSpec[], prefix?: string): Promise<PathSpec[]>
-}
-
 // Virtual paths a directory owes the namespace, matching a segment.
 // Child mounts and symlinks are namespace state no backend can see, so a
 // glob that stops at one backend misses both: a nested mount's keys live
-// in another resource, and no resource stores a link. This is the union
+// in another VFS, and no VFS stores a link. This is the union
 // mergeReaddir already applies to a listing, filtered by the glob segment
 // with the same matcher backends use, and session-filtered by
 // namespaceNames so a scoped session never learns an ungranted mount's
@@ -134,7 +130,7 @@ function toSpecs(
     return new PathSpec({
       virtual: base.virtual,
       directory: base.directory,
-      resourcePath: base.resourcePath,
+      vfsPath: base.vfsPath,
       rawPath: spellMatch(unmarkGlobs(item.rawPath), v, walked),
     })
   })
@@ -148,7 +144,7 @@ function toSpecs(
 //
 // A match is a child of the directory it was globbed in, so a spec that is
 // the directory itself is not one. The shared resolver never answers a
-// dir-shaped ask that way, but `glob` is a public hook and a resource
+// dir-shaped ask that way, but `glob` is a public hook and a VFS
 // reinstating the literal on its own would hand back the spec it was given.
 // Unlike the word comparison this replaces, the test cannot discard a real
 // match: a match is strictly longer than the directory holding it, while a
@@ -192,18 +188,19 @@ async function levelMatches(
 ): Promise<string[]> {
   const real = listingDir(links, dirVirtual)
   const owner = mountOf(registry, real, mount)
+  await owner.ensureReady()
   const prefix = rstripSlash(owner.prefix)
   const out: string[] = []
-  if (owner.resource.glob !== undefined) {
+  if (owner.hasOp('glob')) {
     const spec = new PathSpec({
       virtual: real,
       directory: real,
-      resourcePath: mountKey(real, prefix),
+      vfsPath: mountKey(real, prefix),
       pattern: seg,
       resolved: false,
     })
     try {
-      const matches = await owner.resource.glob([spec], prefix)
+      const matches = await owner.expandGlob([spec], prefix)
       // A descent step yields children, so a match that is the parent
       // itself is not one. A backend asked to list a path that is really
       // a file answers with that file, which walked back out as a
@@ -222,38 +219,6 @@ async function levelMatches(
   }
   out.push(...namespaceChildren(registry, links, real, seg))
   return real === dirVirtual ? out : respell(out, dirVirtual)
-}
-
-// Expand a mid-path pattern level by level via the resource's glob. A glob
-// in a non-final segment (`s*/x.txt`) cannot resolve in one listing: each
-// glob segment is matched against its (already expanded) parent directory,
-// using the backend's own single-level glob per parent, so no backend needs
-// mid-path support. Matches are spelled the way bash expansion implies
-// (typed head + matched tail). An intermediate match that cannot be listed
-// is skipped, matching bash's directories-only descent.
-async function walkSegments(
-  item: PathSpec,
-  mount: MountEntry,
-  registry: MountRegistry,
-  links: NamespaceLinks | null,
-): Promise<PathSpec[]> {
-  const segments = stripSlash(item.virtual).split('/')
-  const first = segments.findIndex((seg) => hasGlobChars(seg))
-  const walked = segments.length - first
-  // The head above the first glob segment is a real directory, so a glob
-  // character quoted inside it is part of the name to list.
-  let level: string[] = [unmarkGlobs('/' + segments.slice(0, first).join('/'))]
-  for (const seg of segments.slice(first)) {
-    const gathered: string[] = []
-    for (const parent of level) {
-      gathered.push(...(await levelMatches(registry, mount, links, `${rstripSlash(parent)}/`, seg)))
-    }
-    // bash sorts a pathname expansion, and the backend and the namespace
-    // are enumerated separately, so the union is ordered here.
-    level = [...new Set(gathered)].sort(compareCodePoints)
-    if (level.length === 0) return []
-  }
-  return toSpecs(level, item, registry, mount, walked)
 }
 
 // Stamp a glob match with the spelling the user's word implies.
@@ -276,7 +241,7 @@ function matchRaw(item: PathSpec, match: PathSpec): PathSpec {
     directory: match.directory,
     pattern: match.pattern,
     resolved: match.resolved,
-    resourcePath: match.resourcePath,
+    vfsPath: match.vfsPath,
     rawPath: spelled,
   })
 }
@@ -307,70 +272,133 @@ async function descend(
   return out
 }
 
-// Expand a word holding a `**` segment under `shopt -s globstar`. A `**`
-// matches zero or more directory levels: the parent itself (spelled with
-// a trailing slash when the word has a fixed head, `d/**` -> `d/`, and
-// omitted for a bare `**`) plus every descendant. The spelling is
-// carried level by level, because a `**` matching zero levels leaves the
-// typed word and the match at different depths.
-async function walkGlobstar(
+// Expand a word level by level, one segment at a time. A glob in a
+// non-final segment (`s*/x.txt`) cannot resolve in one listing, so each
+// segment is matched against its (already expanded) parents with the owning
+// backend's own single-level glob, and an intermediate match that cannot be
+// listed is skipped, as in bash's directories-only descent. The walk starts
+// at the first glob or dot segment: a `.` or `..` applies to each parent
+// that is a directory, `..` climbing from where a link leads, which is the
+// kernel's walk of `name/..` that bash's opendir makes, so a missing or
+// plain-file name in front of one matches nothing. Under `globstar` a `**` segment matches
+// zero or more directory levels: the parent itself (spelled with a
+// trailing slash when the word has a fixed head, `d/**` -> `d/`, and left
+// out for a bare `**`) plus every descendant. The spelling is carried level
+// by level, the typed head plus each segment as matched. Mirrors Python's
+// _walk.
+async function walk(
   item: PathSpec,
   mount: MountEntry,
   registry: MountRegistry,
   links: NamespaceLinks | null,
+  globstar: boolean,
 ): Promise<PathSpec[]> {
-  const segments = stripSlash(item.virtual).split('/')
-  const first = segments.findIndex((seg) => hasGlobChars(seg))
-  const raw = unmarkGlobs(item.rawPath)
-  const rawParts = rstripSlash(raw).split('/')
-  let rawHead = rawParts.slice(0, rawParts.length - (segments.length - first)).join('/')
-  if (raw.startsWith('/') && rawHead === '') rawHead = '/'
-  let head = rstripSlash(unmarkGlobs('/' + segments.slice(0, first).join('/')))
-  if (head === '') head = '/'
-  let level: [string, string, boolean][] = [[head, rawHead, false]]
-  for (const seg of segments.slice(first)) {
+  const typed = stripSlash(item.dotted ?? item.virtual).split('/')
+  const first = typed.findIndex((seg) => hasGlobChars(seg) || seg === '.' || seg === '..')
+  const raw = rstripSlash(unmarkGlobs(item.rawPath)).split('/')
+  let spelledHead = raw.slice(0, raw.length - (typed.length - first)).join('/')
+  if (item.rawPath.startsWith('/') && spelledHead === '') spelledHead = '/'
+  // The head above the first glob or dot segment is a real directory, so a
+  // glob character quoted inside it is part of the name to list.
+  const head = unmarkGlobs('/' + typed.slice(0, first).join('/'))
+  let level: [string, string, boolean][] = [[head, spelledHead, false]]
+  for (const seg of typed.slice(first)) {
     const gathered: [string, string, boolean][] = []
-    for (const [parent, spelled] of level) {
-      if (seg === '**') {
-        gathered.push([parent, spelled, true])
-        for (const [v, sp] of await descend(registry, mount, links, parent, spelled, 0)) {
+    for (const [dir, spelled] of level) {
+      if (seg === '.' || seg === '..') {
+        if (await isDirectory(registry, mount, links, dir)) {
+          const real = links !== null ? links.follow(dir) : dir
+          gathered.push([seg === '..' ? parent(real) : dir, joinSpelling(spelled, seg), false])
+        }
+      } else if (globstar && seg === '**') {
+        gathered.push([dir, spelled, true])
+        for (const [v, sp] of await descend(registry, mount, links, dir, spelled, 0)) {
           gathered.push([v, sp, false])
         }
-        continue
-      }
-      for (const child of await levelMatches(
-        registry,
-        mount,
-        links,
-        `${rstripSlash(parent)}/`,
-        seg,
-      )) {
-        gathered.push([child, joinSpelling(spelled, child.split('/').pop() ?? ''), false])
+      } else {
+        for (const child of await levelMatches(
+          registry,
+          mount,
+          links,
+          `${rstripSlash(dir)}/`,
+          seg,
+        )) {
+          gathered.push([child, joinSpelling(spelled, child.split('/').pop() ?? ''), false])
+        }
       }
     }
-    const seen = new Set<string>()
-    level = []
-    for (const entry of gathered.sort((a, b) => compareCodePoints(a[0], b[0]))) {
-      if (seen.has(entry[0])) continue
-      seen.add(entry[0])
-      level.push(entry)
-    }
+    // bash sorts a pathname expansion, and the backend and the namespace
+    // are enumerated separately, so the union is ordered here, one entry
+    // per spelling.
+    const seen = new Map<string, [string, string, boolean]>()
+    for (const entry of gathered) if (!seen.has(entry[1])) seen.set(entry[1], entry)
+    level = [...seen.values()].sort((a, b) => compareCodePoints(a[1], b[1]))
     if (level.length === 0) return []
   }
-  const out: PathSpec[] = []
-  for (const [v, sp, isSelf] of level) {
-    if (isSelf && sp === '') continue
-    const owner = rstripSlash(mountOf(registry, v, mount).prefix)
-    out.push(
-      new PathSpec({
-        virtual: v,
-        directory: v,
-        resourcePath: mountKey(v, owner),
+  return level
+    .filter(([, sp, isSelf]) => sp !== '' || !isSelf)
+    .map(([v, sp, isSelf]) => {
+      const base = PathSpec.fromStrPath(
+        v,
+        mountKey(v, rstripSlash(mountOf(registry, v, mount).prefix)),
+      )
+      return new PathSpec({
+        virtual: base.virtual,
+        directory: base.directory,
+        vfsPath: base.vfsPath,
         rawPath: isSelf ? `${rstripSlash(sp)}/` : sp,
-      }),
-    )
+      })
+    })
+}
+
+// Whether a match is a directory, the way a trailing slash asks. bash keeps
+// a directory or a symlink to one and drops a regular file or a broken link
+// (bash 5.2, `*/`). A nested mount root is a directory by construction;
+// anything else is asked of the mount that owns the link-resolved path, one
+// stat per match. That mount is readied first, as levelMatches readies one
+// before listing it, because a link can point into a mount nothing has
+// touched yet. The mount's op table supplies stat; an unclassified match is dropped.
+async function isDirectory(
+  registry: MountRegistry,
+  mount: MountEntry,
+  links: NamespaceLinks | null,
+  virtual: string,
+): Promise<boolean> {
+  let real = virtual
+  if (links !== null) {
+    try {
+      real = links.follow(virtual)
+    } catch (err) {
+      if (err instanceof CycleError) return false
+      throw err
+    }
   }
-  return out
+  const owner = mountOf(registry, real, mount)
+  const prefix = rstripSlash(owner.prefix)
+  if (rstripSlash(real) === prefix) return true
+  let row: unknown
+  try {
+    await owner.ensureReady()
+    row =
+      registry.opStat === null
+        ? await owner.executeOp('stat', real)
+        : await registry.opStat(owner, PathSpec.fromStrPath(real, mountKey(real, prefix)))
+  } catch (err) {
+    if (isFsError(err)) return false
+    throw err
+  }
+  return row instanceof FileStat && row.type === FileType.DIRECTORY
+}
+
+function withTrailingSlash(spec: PathSpec): PathSpec {
+  return new PathSpec({
+    virtual: spec.virtual,
+    directory: spec.directory,
+    pattern: spec.pattern,
+    resolved: spec.resolved,
+    vfsPath: spec.vfsPath,
+    rawPath: `${spec.rawPath}/`,
+  })
 }
 
 function hasGlobstarSegment(item: PathSpec): boolean {
@@ -399,10 +427,10 @@ export async function resolveGlobs(
         continue
       }
       const prefix = rstripSlash(mount.prefix)
-      // A resource with no glob of its own can still hold a nested mount
+      // A VFS with no glob of its own can still hold a nested mount
       // root or a link under the globbed directory; with nothing for the
       // namespace to add it keeps the untouched pass-through it had.
-      const midPath = hasGlobChars(item.directory)
+      const midPath = item.dotted !== null || hasGlobChars(item.directory)
       // The parent directory is a real directory to list, so a glob
       // character quoted inside it is part of its name.
       const directory = unmarkGlobs(item.directory)
@@ -411,24 +439,42 @@ export async function resolveGlobs(
       const linked = !midPath && listingDir(links, directory) !== directory
       const extra =
         midPath || linked ? [] : namespaceChildren(registry, links, directory, item.pattern)
-      if (!linked && mount.resource.glob === undefined && extra.length === 0) {
+      if (!linked && !mount.hasOp('glob') && extra.length === 0) {
         result.push(item)
         continue
       }
+      // A trailing slash asks for directories only, and every match keeps
+      // one (`*/` -> `sub/`, and so does `*//`). The slash is not part of
+      // the spelling to rebuild, so it comes off the word here and goes
+      // back on each match; the literal answer to a zero-match glob is
+      // still the word as typed. normpath already dropped it from
+      // `virtual`, which is what tells a typed word from a
+      // directory-shaped spec (#1065).
+      const dirsOnly = item.rawPath.endsWith('/') && item.rawPath !== item.virtual
       const withPrefix = new PathSpec({
         virtual: item.virtual,
         directory: item.directory,
         pattern: item.pattern,
         resolved: item.resolved,
-        resourcePath: mountKey(item.virtual, prefix),
-        rawPath: item.rawPath,
+        vfsPath: mountKey(item.virtual, prefix),
+        rawPath: dirsOnly ? rstripSlash(item.rawPath) : item.rawPath,
+        dotted: item.dotted,
       })
+      const typed = dirsOnly
+        ? new PathSpec({
+            virtual: withPrefix.virtual,
+            directory: withPrefix.directory,
+            pattern: withPrefix.pattern,
+            resolved: withPrefix.resolved,
+            vfsPath: withPrefix.vfsPath,
+            rawPath: item.rawPath,
+          })
+        : withPrefix
+      await mount.ensureReady()
       try {
         let resolved: PathSpec[]
-        if (opts.globstar && hasGlobstarSegment(withPrefix)) {
-          resolved = await walkGlobstar(withPrefix, mount, registry, links)
-        } else if (midPath) {
-          resolved = await walkSegments(withPrefix, mount, registry, links)
+        if (midPath || (opts.globstar && hasGlobstarSegment(withPrefix))) {
+          resolved = await walk(withPrefix, mount, registry, links, opts.globstar)
         } else if (linked) {
           const found = await levelMatches(registry, mount, links, directory, item.pattern)
           resolved = toSpecs(
@@ -445,29 +491,52 @@ export async function resolveGlobs(
           // to `xa.txt` lost its first match to that ambiguity. The
           // directory-shaped spec has no literal to reinstate, so an
           // empty list means no match and every spec returned is one.
-          const own =
-            mount.resource.glob !== undefined
-              ? await mount.resource.glob([withPrefix.dir], prefix)
-              : []
+          const own = await mount.expandGlob([withPrefix.dir], prefix)
           resolved = mergeNamespace(own, extra, directory, registry, mount)
+        }
+        if (dirsOnly) {
+          const kept: PathSpec[] = []
+          for (const p of resolved) {
+            if (await isDirectory(registry, mount, links, p.virtual)) kept.push(p)
+          }
+          resolved = kept
         }
         if (resolved.length === 0) {
           // bash's three answers to a zero-match glob: the literal word
           // (default), nothing at all under nullglob, and a fatal
-          // expansion error under failglob.
+          // expansion error under failglob. The literal is resolved, or the
+          // command's backend would glob it again over the simplified path
+          // (`missing/../*` as `*`); the pattern stays, so a push-down still
+          // reads it as no entity name.
           if (opts.failglob) {
-            const word = unmarkGlobs(withPrefix.rawPath)
-            throw new ExitSignal(1, new TextEncoder().encode(`bash: no match: ${word}\n`), null, 1)
+            const word = unmarkGlobs(typed.rawPath)
+            throw new DiscardSignal(new TextEncoder().encode(`bash: no match: ${word}\n`))
           }
-          if (!opts.nullglob) result.push(withPrefix)
+          if (!opts.nullglob) {
+            result.push(
+              new PathSpec({
+                virtual: item.virtual,
+                directory: item.directory,
+                vfsPath: item.vfsPath,
+                rawPath: item.rawPath,
+                dotted: item.dotted,
+                walkError: item.walkError,
+                pattern: item.pattern,
+                resolved: true,
+              }),
+            )
+          }
         } else {
-          for (const p of resolved) result.push(matchRaw(withPrefix, p))
+          for (const p of resolved) {
+            const spelled = matchRaw(withPrefix, p)
+            result.push(dirsOnly ? withTrailingSlash(spelled) : spelled)
+          }
         }
       } catch (err) {
         // A failglob refusal is fatal and propagates; an ordinary
         // resolution failure keeps the literal word.
         if (err instanceof ExitSignal) throw err
-        result.push(withPrefix)
+        result.push(typed)
       }
     } else {
       result.push(item)
@@ -494,7 +563,7 @@ function globHead(spec: PathSpec): string {
  * A glob operand is normally left for the owning backend to resolve,
  * which is how a prefix store pushes the listing down. That only holds
  * while every match belongs to that backend: a nested mount's root is a
- * child of the directory but its keys live in another resource, so the
+ * child of the directory but its keys live in another VFS, so the
  * backend answers "no such file" for a name its own listing shows. When
  * the glob's fixed head holds a child mount, the word is expanded here
  * instead, before routing, so the matches route per mount exactly as the

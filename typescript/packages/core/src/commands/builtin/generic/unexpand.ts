@@ -13,11 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/types.ts'
+import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { readStdinAsync } from '../utils/stream.ts'
+import { readStdinAsync, stdinStream } from '../utils/stream.ts'
 import { operandsIo, readOperands } from '../utils/operands.ts'
 
 const ENC = new TextEncoder()
@@ -73,6 +73,7 @@ export async function unexpandGeneric(
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
+  stream = stdinStream(stream, opts.stdin)
   const fl = new FlagView(opts.flags, specOf('unexpand'))
   const tabsValue = fl.asStr('tabs')
   const tabsize = tabsValue === undefined ? 8 : Number.parseInt(tabsValue, 10)
@@ -83,18 +84,14 @@ export async function unexpandGeneric(
     const [ok, err] = await readOperands(paths, stream, 'unexpand')
     const io = operandsIo(err)
     if (ok.length === 0 && err !== '') return [null, io]
-    const parts: string[] = []
-    for (const o of ok) {
-      const data = DEC.decode(o.data)
-      for (const ln of splitLinesKeepEnds(data)) parts.push(unexpandLine(ln, tabsize, allSpaces))
-    }
+    // GNU reads its operands as one stream, so a line a file leaves
+    // unfinished continues into the next one, column and all.
+    const text = ok.map((o) => DEC.decode(o.data)).join('')
+    const parts = splitLinesKeepEnds(text).map((ln) => unexpandLine(ln, tabsize, allSpaces))
     const result: ByteSource = ENC.encode(parts.join(''))
     return [result, io]
   }
-  const stdinData = await readStdinAsync(opts.stdin)
-  if (stdinData === null) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('unexpand: missing operand\n') })]
-  }
+  const stdinData = (await readStdinAsync(opts.stdin)) ?? new Uint8Array(0)
   const text = DEC.decode(stdinData)
   const lines = splitLinesKeepEnds(text)
   const result: ByteSource = ENC.encode(

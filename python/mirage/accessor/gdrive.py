@@ -12,17 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.accessor.base import Accessor
-from mirage.core.google.client import TokenManager
+from mirage.accessor.google_api import GoogleApiAccessor
 
 
-class GDriveAccessor(Accessor):
-
+class GDriveAccessor(GoogleApiAccessor):
     # Memoized by core.gdrive.resolve.root_context: the scoped root's
     # shared drive id (None when the root is in My Drive). Unset until
     # the first resolution.
     root_drive_id: str | None
-
-    def __init__(self, config, token_manager: TokenManager) -> None:
-        self.config = config
-        self.token_manager = token_manager

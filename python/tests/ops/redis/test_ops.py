@@ -21,8 +21,8 @@ from mirage.accessor.redis import RedisAccessor
 from mirage.cache.index import RAMIndexCacheStore
 from mirage.core.redis.mkdir import mkdir
 from mirage.ops.redis import OPS
-from mirage.resource.redis.store import RedisStore
-from mirage.types import FileType, PathSpec
+from mirage.types import ContentType, FileType, PathSpec
+from mirage.vfs.redis.store import RedisStore
 
 
 def _op(name: str):
@@ -46,15 +46,14 @@ pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
 
 
 def _scope(path: str) -> PathSpec:
-    return PathSpec(resource_path=(path).strip("/"),
-                    virtual=path,
-                    directory=path,
-                    resolved=True)
+    return PathSpec(
+        vfs_path=(path).strip("/"), virtual=path, directory=path, resolved=True
+    )
 
 
 @pytest_asyncio.fixture()
-async def accessor():
-    s = RedisStore(url=REDIS_URL, key_prefix="test:ops:")
+async def accessor(redis_prefix):
+    s = RedisStore(url=REDIS_URL, key_prefix=redis_prefix)
     await s.clear()
     await s.add_dir("/")
     await s.add_dir("/sub")
@@ -101,7 +100,7 @@ async def test_op_stat_file(accessor, index):
     result = await stat(accessor, _scope("/hello.txt"), index=index)
     assert result.name == "hello.txt"
     assert result.size == 5
-    assert result.type == FileType.TEXT
+    assert result.content == ContentType.TEXT
 
 
 @pytest.mark.asyncio
@@ -145,7 +144,8 @@ async def test_op_unlink_not_found(accessor):
 async def test_op_rmdir(accessor):
     await mkdir(
         accessor,
-        PathSpec(resource_path="empty", virtual="/empty", directory="/empty"))
+        PathSpec(vfs_path="empty", virtual="/empty", directory="/empty"),
+    )
     await rmdir(accessor, _scope("/empty"))
     assert not await accessor.store.has_dir("/empty")
 

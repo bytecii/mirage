@@ -12,11 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.accessor.base import Accessor
-from mirage.resource.trello.config import TrelloConfig
+from mirage.accessor.base import SessionAccessor
+from mirage.vfs.trello.config import TrelloConfig
 
 
-class TrelloAccessor(Accessor):
-
+class TrelloAccessor(SessionAccessor):
     def __init__(self, config: TrelloConfig) -> None:
+        super().__init__()
         self.config = config

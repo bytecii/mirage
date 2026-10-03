@@ -4,22 +4,28 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 
-from mirage.commands.builtin.utils.formatting import _human_size
+from mirage.commands.builtin.utils.formatting import human_size
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
+from mirage.commands.quote import quote_text
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
-from mirage.context import hidden_paths_active, path_allowed
+from mirage.commands.spec.flag_view import FlagView
+from mirage.context import (
+    hidden_paths_intersect,
+    path_allowed,
+    path_rules_active,
+)
 from mirage.io.types import IOResult
 from mirage.ops.types import LinkView, MountView, StatPath
 from mirage.types import FileStat, PathSpec
+from mirage.utils.errors import ZERO_LENGTH_NAME, DotWalkError, fs_strerror
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.path import respell_raw
+from mirage.vfs.types import DuEntries
 
 logger = logging.getLogger(__name__)
 
-DuEntries = tuple[list[tuple[str, int]], int]
 ComputeSize = Callable[[PathSpec], Awaitable[int]]
 ComputeEntries = Callable[[PathSpec], Awaitable[DuEntries]]
 
@@ -96,13 +102,15 @@ def parse_depth(text: str) -> int | None:
     return None
 
 
-def parse_flags(*,
-                s: bool,
-                a: bool,
-                h: bool,
-                c: bool,
-                max_depth: str | None,
-                separate_dirs: bool = False) -> DuFlags:
+def parse_flags(
+    *,
+    s: bool,
+    a: bool,
+    h: bool,
+    c: bool,
+    max_depth: str | None,
+    separate_dirs: bool = False,
+) -> DuFlags:
     """Validate a ``du`` command line the way GNU does, before any I/O.
 
     GNU parses ``--max-depth`` as each option is read, so a bad depth is
@@ -125,10 +133,14 @@ def parse_flags(*,
         depth = parse_depth(max_depth)
         if depth is None:
             raise UsageError(
-                f"du: invalid maximum depth '{max_depth}'\n{USAGE_HINT}", 1)
+                f"du: invalid maximum depth '{quote_text(max_depth)}'\n"
+                f"{USAGE_HINT}",
+                1,
+            )
     if s and a:
         raise UsageError(
-            f"du: cannot both summarize and show all entries\n{USAGE_HINT}", 1)
+            f"du: cannot both summarize and show all entries\n{USAGE_HINT}", 1
+        )
     warning: str | None = None
     if s and depth is not None:
         # GNU treats -s and --max-depth=0 as the same request, so it warns
@@ -136,16 +148,13 @@ def parse_flags(*,
         if depth != 0:
             raise UsageError(
                 "du: warning: summarizing conflicts with "
-                f"--max-depth={depth}\n{USAGE_HINT}", 1)
-        warning = ("du: warning: summarizing is the same as using "
-                   "--max-depth=0")
-    return DuFlags(s=s,
-                   a=a,
-                   h=h,
-                   c=c,
-                   S=separate_dirs,
-                   max_depth=depth,
-                   warning=warning)
+                f"--max-depth={depth}\n{USAGE_HINT}",
+                1,
+            )
+        warning = "du: warning: summarizing is the same as using --max-depth=0"
+    return DuFlags(
+        s=s, a=a, h=h, c=c, S=separate_dirs, max_depth=depth, warning=warning
+    )
 
 
 def cwd_spec(cwd: PathSpec | str) -> PathSpec:
@@ -156,10 +165,9 @@ def cwd_spec(cwd: PathSpec | str) -> PathSpec:
     """
     if isinstance(cwd, PathSpec):
         return cwd
-    return PathSpec(virtual=cwd,
-                    directory=cwd,
-                    resolved=False,
-                    resource_path=cwd.strip("/"))
+    return PathSpec(
+        virtual=cwd, directory=cwd, resolved=False, vfs_path=cwd.strip("/")
+    )
 
 
 ENOENT_TEXT = "No such file or directory"
@@ -183,16 +191,17 @@ async def du_operands(
     A failed stat is not proof of absence, and du runs bound to one
     backend, so its own stat cannot see two things that make a path a
     real directory: a mount nested below it and a symlink below it are
-    both namespace state, held in another resource or in no resource at
+    both namespace state, held in another VFS or in no VFS at
     all. ``stat_path`` is the channel that knows, because it resolves
     through the dispatcher rather than one accessor, and it is the same
     probe ``find`` classifies its start point with. Session filtering
     rides along with it: a mount the session may not see contributes no
     directory here, so absence stays the answer for it.
 
-    ``has_content`` is the last resort behind that, for a backend that
+    ``has_content`` is the second channel behind that, for a backend that
     never materialises a directory entry for its own mount root (redis is
-    one) while the subtree below it is full.
+    one) while the subtree below it is full. It counts only what the
+    session may see, so it cannot re-open what the first channel closed.
 
     Args:
         paths (list[PathSpec]): the operands as parsed, possibly empty.
@@ -226,6 +235,12 @@ async def du_operands(
             continue
         try:
             await stat(path)
+            stattable = True
+        except DotWalkError as exc:
+            # The operand did not resolve, so no channel asked about the
+            # path it simplifies to can find it there.
+            missing.append((path.raw_path, fs_strerror(exc) or ENOENT_TEXT))
+            continue
         except NotADirectoryError:
             # An operand typed with a trailing slash that did not name a
             # directory. Unreadable like a missing one, but GNU reports
@@ -233,20 +248,62 @@ async def du_operands(
             missing.append((path.raw_path, "Not a directory"))
             continue
         except (FileNotFoundError, ValueError):
-            probed: FileStat | None = None
-            if stat_path is not None:
-                probed = await stat_path(path.virtual)
-            if probed is None and (has_content is None
-                                   or not await has_content(path)):
-                missing.append((path.raw_path, ENOENT_TEXT))
-                continue
+            stattable = False
+        if not await du_operand_exists(
+            path, stattable, has_content, stat_path
+        ):
+            missing.append((path.raw_path, ENOENT_TEXT))
+            continue
         present.append(path)
     return present, missing
 
 
-async def du_has_content(compute_entries: ComputeEntries,
-                         path: PathSpec) -> bool:
-    """Whether an operand holds anything, for the unstattable case.
+async def du_operand_exists(
+    path: PathSpec,
+    stattable: bool,
+    has_content: Callable[[PathSpec], Awaitable[bool]] | None,
+    stat_path: StatPath | None,
+) -> bool:
+    """Whether one operand is there at all, before anything is measured.
+
+    A point lookup alone cannot decide, so this asks both channels a
+    backend can answer on, the way ``find`` classifies its start point:
+    on a prefix store a directory is not an object, it is the set of keys
+    under it, so ``stat`` misses what a listing would show (redis never
+    materialises an entry for its own mount root). Absence takes both
+    coming back empty.
+
+    Where a dispatcher is wired it replaces the bound backend's stat,
+    because that stat sees one accessor and knows nothing of hides:
+    trusting it answered ``0 <path>`` for a hidden directory and
+    confirmed to the agent what the profile was not meant to show it. The
+    content probe behind it counts only what the session may see, so it
+    cannot re-open what the first channel closed.
+
+    Args:
+        path (PathSpec): the operand.
+        stattable (bool): whether the bound backend's stat succeeded.
+        has_content (HasContent | None): the content probe, which tells
+            an implicit directory from an absent path.
+        stat_path (StatPath | None): dispatcher-backed stat.
+    """
+    if stat_path is None and stattable:
+        return True
+    if stat_path is not None and await stat_path(path.virtual) is not None:
+        return True
+    return has_content is not None and await has_content(path)
+
+
+async def du_has_content(
+    compute_entries: ComputeEntries, path: PathSpec
+) -> bool:
+    """Whether an operand holds anything the session may see.
+
+    The visibility filter is what makes this safe to ask after the
+    dispatcher already said no: ``compute_entries`` runs on the bound
+    accessor, which knows nothing of hides, so counting its raw answer
+    would confirm a walled-off subtree's parent. Entries are lifted onto
+    virtual paths first, since that is the space a hide is written in.
 
     Args:
         compute_entries (ComputeEntries): per-file breakdown.
@@ -254,7 +311,7 @@ async def du_has_content(compute_entries: ComputeEntries,
     """
     try:
         entries, _ = await compute_entries(path)
-        return bool(entries)
+        return any(path_allowed(leaf) for leaf, _ in to_virtual(entries, path))
     except Exception as exc:
         # This runs only after stat already failed, to tell an implicit
         # directory from an absent path. Backends raise their own error
@@ -266,7 +323,7 @@ async def du_has_content(compute_entries: ComputeEntries,
 
 
 def _format_size(size: int, human: bool) -> str:
-    return _human_size(size) if human else str(size)
+    return human_size(size) if human else str(size)
 
 
 def _line(size: int, human: bool, label: str) -> str:
@@ -284,14 +341,15 @@ def _parent(path: str) -> str:
 
 def _depth(entry_path: str, base_path: str) -> int:
     base = base_path.rstrip("/")
-    rel = entry_path.rstrip("/")[len(base):]
+    rel = entry_path.rstrip("/")[len(base) :]
     if not rel:
         return 0
     return rel.strip("/").count("/") + 1
 
 
-def to_virtual(entries: Sequence[tuple[str, int]],
-               path: PathSpec) -> list[tuple[str, int]]:
+def to_virtual(
+    entries: Sequence[tuple[str, int]], path: PathSpec
+) -> list[tuple[str, int]]:
     """Lift mount-relative walk entries onto absolute virtual paths.
 
     Backends walk their own key space and report mount-relative paths, so
@@ -306,11 +364,12 @@ def to_virtual(entries: Sequence[tuple[str, int]],
     Returns:
         list[tuple[str, int]]: the pairs with absolute virtual paths.
     """
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
+    prefix = mount_prefix_of(path.virtual, path.vfs_path)
     if not prefix:
         return list(entries)
-    return [(prefix + "/" + entry.lstrip("/"), size)
-            for entry, size in entries]
+    return [
+        (prefix + "/" + entry.lstrip("/"), size) for entry, size in entries
+    ]
 
 
 def separate_total(entries: Sequence[tuple[str, int]], root: str) -> int:
@@ -325,8 +384,9 @@ def separate_total(entries: Sequence[tuple[str, int]], root: str) -> int:
         root (str): the operand's absolute virtual path.
     """
     root_key = _norm(root)
-    return sum(size for leaf, size in entries
-               if _parent(_norm(leaf)) == root_key)
+    return sum(
+        size for leaf, size in entries if _parent(_norm(leaf)) == root_key
+    )
 
 
 def rollup(
@@ -360,9 +420,9 @@ def rollup(
         a (bool): -a, keep the file lines as well as the directories.
         max_depth (int | None): drop nodes deeper than this many levels.
         dirs (Sequence[str]): paths that are directories even though no
-            leaf points at them. mirage cannot otherwise see an empty
-            directory, so this is the one case it can: an empty mount
-            still gets GNU's ``0`` row.
+            leaf may point at them: the directories a walk met (an empty
+            one, or one it could not open) and the roots of descendant
+            mounts, which still get GNU's ``0`` row.
         separate_dirs (bool): -S, exclude subdirectory sizes.
 
     Returns:
@@ -424,8 +484,9 @@ def rollup(
     return order
 
 
-def drop_shadowed(entries: Sequence[tuple[str, int]],
-                  roots: Sequence[str]) -> list[tuple[str, int]]:
+def drop_shadowed(
+    entries: Sequence[tuple[str, int]], roots: Sequence[str]
+) -> list[tuple[str, int]]:
     """Drop leaves that fall under a descendant mount's root.
 
     The parent backend's keys under a nested mount are shadowed: no read
@@ -478,6 +539,7 @@ async def _du_one(
     flags: DuFlags,
     links: LinkView | None = None,
     mounts: MountView | None = None,
+    directories: Callable[[], Sequence[str]] | None = None,
 ) -> tuple[list[str], int]:
     label = path.raw_path
 
@@ -494,17 +556,36 @@ async def _du_one(
         leaves = drop_shadowed(leaves, roots)
     link_total = sum(size for _, size in leaves)
 
-    if flags.s and not flags.S and not roots and not hidden_paths_active():
+    if (
+        flags.s
+        and not flags.S
+        and not roots
+        and not hidden_paths_intersect(path.virtual)
+        and not path_rules_active()
+    ):
         # The one-total fast path trusts the backend's own sum, which a
-        # session hiding paths cannot: hidden leaves would be counted
-        # into a total their names never justify, so that session takes
-        # the entries walk below instead.
+        # session hiding paths under this operand cannot: hidden leaves
+        # would be counted into a total their names never justify, so
+        # that session takes the entries walk below instead; a path
+        # rule likewise, since the walk is where a refused directory is
+        # reported. Per operand: a hide elsewhere keeps this total.
         total = await compute_size(path) + link_total
         return [_line(total, flags.h, label)], total
 
     entries, total = await compute_entries(path)
     total += link_total
-    if not entries and not leaves:
+    root_key = _norm(path.virtual)
+    under = root_key.rstrip("/") + "/"
+    dirs = [
+        d
+        for d in (directories() if directories is not None else ())
+        if _norm(d).startswith(under)
+        and path_allowed(d)
+        and not any(
+            _norm(d) == r or _norm(d).startswith(r + "/") for r in roots
+        )
+    ]
+    if not entries and not leaves and not dirs:
         # A backend that can only produce a size degrades to one total;
         # it cannot enumerate, so shadowed keys cannot be excluded either.
         total = await compute_size(path)
@@ -522,7 +603,6 @@ async def _du_one(
         # honest number is the sum of what survived.
         virtual = drop_shadowed(virtual, roots)
         total = sum(size for _, size in virtual)
-    root_key = _norm(path.virtual)
     # A file operand walks to itself. GNU prints it once, with or
     # without -a, never as a leaf line plus a roll-up line. GNU scopes
     # -S to directories, so a file operand keeps its own size in both
@@ -536,11 +616,14 @@ async def _du_one(
     if flags.s:
         return [_line(own, flags.h, label)], total
 
-    rows = rollup(virtual,
-                  path.virtual,
-                  a=flags.a,
-                  max_depth=flags.max_depth,
-                  separate_dirs=flags.S)
+    rows = rollup(
+        virtual,
+        path.virtual,
+        a=flags.a,
+        max_depth=flags.max_depth,
+        dirs=dirs,
+        separate_dirs=flags.S,
+    )
     shown = respell_raw([node for node, _ in rows], path.virtual, label)
     lines = [
         _line(size, flags.h, name) for name, (_, size) in zip(shown, rows)
@@ -567,6 +650,8 @@ async def run_du(
     links: LinkView | None = None,
     mounts: MountView | None = None,
     stat_path: StatPath | None = None,
+    unreadable: Callable[[], Sequence[str]] | None = None,
+    directories: Callable[[], Sequence[str]] | None = None,
 ) -> DuOutput:
     """Run one whole ``du`` invocation, from raw flags to rendered bytes.
 
@@ -595,32 +680,38 @@ async def run_du(
             and total.
         stat_path (StatPath | None): dispatcher-backed stat, which is what
             answers for a directory the bound backend cannot see.
+        unreadable (Callable[[], Sequence[str]] | None): the directories
+            a walk could not open, read after the walks.
+        directories (Callable[[], Sequence[str]] | None): every directory
+            a walk met, read after each operand's walk.
 
     Raises:
         UsageError: on a bad depth or a conflicting flag combination.
     """
-    flags = parse_flags(s=s,
-                        a=a,
-                        h=h,
-                        c=c,
-                        max_depth=max_depth,
-                        separate_dirs=separate_dirs)
-    present, missing = await du_operands(paths,
-                                         cwd,
-                                         resolve_glob,
-                                         stat,
-                                         partial(du_has_content,
-                                                 compute_entries),
-                                         links=links,
-                                         stat_path=stat_path)
-    return await du(present,
-                    compute_size=compute_size,
-                    compute_entries=compute_entries,
-                    flags=flags,
-                    missing=missing,
-                    truncated=truncated,
-                    links=links,
-                    mounts=mounts)
+    flags = parse_flags(
+        s=s, a=a, h=h, c=c, max_depth=max_depth, separate_dirs=separate_dirs
+    )
+    present, missing = await du_operands(
+        paths,
+        cwd,
+        resolve_glob,
+        stat,
+        partial(du_has_content, compute_entries),
+        links=links,
+        stat_path=stat_path,
+    )
+    return await du(
+        present,
+        compute_size=compute_size,
+        compute_entries=compute_entries,
+        flags=flags,
+        missing=missing,
+        truncated=truncated,
+        unreadable=unreadable,
+        directories=directories,
+        links=links,
+        mounts=mounts,
+    )
 
 
 async def du(
@@ -633,6 +724,8 @@ async def du(
     truncated: Callable[[], bool] | None = None,
     links: LinkView | None = None,
     mounts: MountView | None = None,
+    unreadable: Callable[[], Sequence[str]] | None = None,
+    directories: Callable[[], Sequence[str]] | None = None,
 ) -> DuOutput:
     """Render ``du`` output for a list of operands.
 
@@ -654,12 +747,28 @@ async def du(
         mounts (MountView | None): where the mount boundaries are; leaves
             under a descendant mount's root are shadowed and dropped from
             every row and total (see ``drop_shadowed``).
+        unreadable (Callable[[], Sequence[str]] | None): read after the
+            walks for the directories a walk could not open (a rule
+            refused them below the operand). GNU names each one,
+            counts what it could, and exits 1; the line is spelled as
+            the operand was typed, and follows the unreadable-operand
+            lines since those are known before any walk.
+        directories (Callable[[], Sequence[str]] | None): read after each
+            operand's walk for every directory it met, so one no file
+            points at (empty, or refused) still gets GNU's row.
     """
     lines: list[str] = []
     totals: list[int] = []
     for path in paths:
-        block, total = await _du_one(path, compute_size, compute_entries,
-                                     flags, links, mounts)
+        block, total = await _du_one(
+            path,
+            compute_size,
+            compute_entries,
+            flags,
+            links,
+            mounts,
+            directories,
+        )
         lines.extend(block)
         totals.append(total)
     # GNU still prints the grand total when every operand failed ("0
@@ -668,15 +777,40 @@ async def du(
         lines.append(_line(sum(totals), flags.h, "total"))
 
     notes = [flags.warning] if flags.warning else []
-    notes.extend(f"du: cannot access '{raw}': {detail}"
-                 for raw, detail in missing)
+    notes.extend(
+        f"du: {ZERO_LENGTH_NAME}"
+        if raw == ""
+        else f"du: cannot access '{raw}': {detail}"
+        for raw, detail in missing
+    )
     exit_code = 1 if missing else 0
+    for virtual in unreadable() if unreadable is not None else ():
+        notes.append(
+            f"du: cannot read directory "
+            f"'{_respell_under(virtual, paths)}': Permission denied"
+        )
+        exit_code = 1
     if truncated is not None and truncated():
-        notes.append("du: walk stopped early: the reported sizes are "
-                     "incomplete")
+        notes.append(
+            "du: walk stopped early: the reported sizes are incomplete"
+        )
         exit_code = 1
     stderr = ("\n".join(notes) + "\n").encode() if notes else b""
     return DuOutput(format_records(lines), stderr, exit_code)
+
+
+def _respell_under(virtual: str, paths: Sequence[PathSpec]) -> str:
+    """Spell a walked path as the operand it lies under was typed.
+
+    Args:
+        virtual (str): the absolute virtual path the walk reached.
+        paths (Sequence[PathSpec]): the operands, as parsed.
+    """
+    for path in paths:
+        base = path.virtual.rstrip("/") or "/"
+        if virtual == base or virtual.startswith(base.rstrip("/") + "/"):
+            return respell_raw([virtual], path.virtual, path.raw_path)[0]
+    return virtual
 
 
 async def du_generic(
@@ -688,6 +822,8 @@ async def du_generic(
     compute_size: ComputeSize,
     compute_entries: ComputeEntries,
     truncated: Callable[[], bool] | None = None,
+    unreadable: Callable[[], Sequence[str]] | None = None,
+    directories: Callable[[], Sequence[str]] | None = None,
 ) -> tuple[bytes, IOResult]:
     """Run du over the given operands; mirrors duGeneric.
 
@@ -708,6 +844,10 @@ async def du_generic(
         compute_size (ComputeSize): Recursive byte size of one operand.
         compute_entries (ComputeEntries): Per-file breakdown.
         truncated (Callable[[], bool] | None): Whether the walk was cut.
+        unreadable (Callable[[], Sequence[str]] | None): The directories
+            the walk could not open.
+        directories (Callable[[], Sequence[str]] | None): Every directory
+            the walk met.
     """
     fl = FlagView(opts.flags, spec=SPECS["du"])
     out = await run_du(
@@ -724,8 +864,15 @@ async def du_generic(
         max_depth=fl.as_str("max_depth"),
         separate_dirs=fl.as_bool("separate_dirs"),
         truncated=truncated,
-        links=(None if fl.as_bool("L") else
-               opts.ns.links if opts.ns is not None else None),
+        unreadable=unreadable,
+        directories=directories,
+        links=(
+            None
+            if fl.as_bool("L")
+            else opts.ns.links
+            if opts.ns is not None
+            else None
+        ),
         mounts=opts.ns.mounts if opts.ns is not None else None,
         stat_path=opts.stat_path,
     )

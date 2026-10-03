@@ -12,170 +12,24 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import json
-import re
-from dataclasses import replace
-from typing import Any
+from functools import partial
 
 from mirage.accessor.langfuse import LangfuseAccessor
-from mirage.commands.builtin.generic.grep import grep as generic_grep
-from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.grep_helper import compile_pattern, pattern_arg
-from mirage.commands.builtin.langfuse._provision import file_read_provision
-from mirage.commands.builtin.langfuse.io import resolve_glob
-from mirage.commands.builtin.utils.output import format_records
-from mirage.commands.config import CommandOpts
-from mirage.commands.registry import command
+from mirage.commands.builtin.generic_bind.search import run_search
+from mirage.commands.builtin.langfuse.io import IO
+from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagView
-from mirage.core.langfuse.client import (fetch_datasets, fetch_prompts,
-                                         fetch_sessions, fetch_traces)
-from mirage.core.langfuse.read import read as langfuse_read
-from mirage.core.langfuse.readdir import readdir as _readdir
-from mirage.core.langfuse.scope import detect_scope
-from mirage.core.langfuse.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
-from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 
-
-def _filter_traces(
-    traces: list[dict[str, Any]],
-    pattern: re.Pattern[str],
-) -> tuple[bytes, IOResult]:
-    lines: list[str] = []
-    for t in traces:
-        trace_id = t.get("id", "")
-        line_json = json.dumps(t, ensure_ascii=False, separators=(",", ":"))
-        if not pattern.search(line_json):
-            continue
-        line = f"traces/{trace_id}.json:{line_json}"
-        lines.append(line)
-    if not lines:
-        return b"", IOResult(exit_code=1)
-    return format_records(lines), IOResult()
+_search = partial(run_search, IO, "grep")
 
 
-def _format_session_results(
-    sessions: list[dict[str, Any]],
-    pattern: re.Pattern[str],
-) -> tuple[bytes, IOResult]:
-    lines: list[str] = []
-    for s in sessions:
-        session_id = s.get("id", "")
-        if not pattern.search(session_id):
-            continue
-        line_json = json.dumps(s, ensure_ascii=False, separators=(",", ":"))
-        line = f"sessions/{session_id}:{line_json}"
-        lines.append(line)
-    if not lines:
-        return b"", IOResult(exit_code=1)
-    return format_records(lines), IOResult()
-
-
-def _format_prompt_results(
-    prompts: list[dict[str, Any]],
-    pattern: re.Pattern[str],
-) -> tuple[bytes, IOResult]:
-    lines: list[str] = []
-    seen: set[str] = set()
-    for p in prompts:
-        prompt_name = p.get("name", "")
-        if prompt_name in seen:
-            continue
-        if not pattern.search(prompt_name):
-            continue
-        seen.add(prompt_name)
-        line_json = json.dumps(p, ensure_ascii=False, separators=(",", ":"))
-        line = f"prompts/{prompt_name}:{line_json}"
-        lines.append(line)
-    if not lines:
-        return b"", IOResult(exit_code=1)
-    return format_records(lines), IOResult()
-
-
-def _format_dataset_results(
-    datasets: list[dict[str, Any]],
-    pattern: re.Pattern[str],
-) -> tuple[bytes, IOResult]:
-    lines: list[str] = []
-    for d in datasets:
-        dataset_name = d.get("name", "")
-        if not pattern.search(dataset_name):
-            continue
-        line_json = json.dumps(d, ensure_ascii=False, separators=(",", ":"))
-        line = f"datasets/{dataset_name}:{line_json}"
-        lines.append(line)
-    if not lines:
-        return b"", IOResult(exit_code=1)
-    return format_records(lines), IOResult()
-
-
-async def grep_provision(accessor: LangfuseAccessor, paths: list[PathSpec],
-                         texts: list[str],
-                         opts: CommandOpts) -> ProvisionResult:
-    line = "grep " + " ".join(list(texts) + [str(p) for p in paths])
-    return await file_read_provision(accessor, paths, texts,
-                                     replace(opts, command=line))
-
-
-@command("grep",
-         resource="langfuse",
-         spec=SPECS["grep"],
-         provision=grep_provision)
-async def grep(accessor: LangfuseAccessor, paths: list[PathSpec],
-               texts: list[str],
-               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(opts.flags, spec=SPECS["grep"])
-    pattern = pattern_arg(texts, fl)
-
-    limit = accessor.config.default_search_limit
-
-    if paths and pattern is not None and "\n" not in pattern:
-        scope = detect_scope(paths[0])
-        ignore_case = fl.as_bool("i")
-        fixed_string = fl.as_bool("F")
-        whole_word = fl.as_bool("w")
-
-        if scope.level == "traces" or scope.level == "root":
-            traces = await fetch_traces(
-                accessor.api,
-                limit=limit,
-            )
-            pat = compile_pattern(pattern, ignore_case, fixed_string,
-                                  whole_word)
-            return _filter_traces(traces, pat)
-
-        if scope.level == "sessions":
-            sessions = await fetch_sessions(
-                accessor.api,
-                limit=limit,
-            )
-            pat = compile_pattern(pattern, ignore_case, fixed_string,
-                                  whole_word)
-            return _format_session_results(sessions, pat)
-
-        if scope.level == "prompts":
-            prompts = await fetch_prompts(accessor.api)
-            pat = compile_pattern(pattern, ignore_case, fixed_string,
-                                  whole_word)
-            return _format_prompt_results(prompts, pat)
-
-        if scope.level == "datasets":
-            datasets = await fetch_datasets(accessor.api)
-            pat = compile_pattern(pattern, ignore_case, fixed_string,
-                                  whole_word)
-            return _format_dataset_results(datasets, pat)
-
-    resolved = await resolve_glob(accessor, paths,
-                                  index=opts.index) if paths else []
-    return await generic_grep(
-        resolved,
-        texts,
-        opts.flags,
-        readdir=bound_op(_readdir, accessor, opts.index),
-        stat=bound_op(_stat, accessor, opts.index),
-        read_bytes=bound_op(langfuse_read, accessor, opts.index),
-        read_stream=None,
-        stdin=opts.stdin,
-    )
+@command("grep", vfs="langfuse", spec=SPECS["grep"])
+async def grep(
+    accessor: LangfuseAccessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
+) -> tuple[ByteSource | None, IOResult]:
+    return await _search(accessor, paths, texts, opts)

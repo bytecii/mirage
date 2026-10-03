@@ -19,18 +19,18 @@ from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
 from mirage.commands.cli.builtin.ntn import NTN
-from mirage.resource.notion import NotionConfig, NotionResource
 from mirage.types import PathSpec
+from mirage.vfs.notion import NotionConfig, NotionVFS
 
 load_dotenv(".env.development")
 
 config = NotionConfig(api_key=os.environ["NOTION_API_KEY"])
-resource = NotionResource(config=config)
+vfs = NotionVFS(config=config)
 
 
 async def run(ws: Workspace, cmd: str, limit: int = 1500) -> str:
     print(f"=== {cmd} ===")
-    result = await ws.execute(cmd)
+    result = await ws.shell(cmd)
     out = await result.stdout_str()
     err = (await result.stderr_str()).strip()
     print(out[:limit] if out.strip() else "(empty)")
@@ -41,7 +41,7 @@ async def run(ws: Workspace, cmd: str, limit: int = 1500) -> str:
 
 
 async def first_entry(ws: Workspace, path: str) -> str:
-    result = await ws.execute(f"ls {path}")
+    result = await ws.shell(f"ls {path}")
     out = (await result.stdout_str()).strip()
     if not out:
         return ""
@@ -49,7 +49,7 @@ async def first_entry(ws: Workspace, path: str) -> str:
 
 
 async def pick_child(ws: Workspace, path: str, skip: str) -> str:
-    result = await ws.execute(f"ls {path}/")
+    result = await ws.shell(f"ls {path}/")
     for line in (await result.stdout_str()).strip().splitlines():
         name = os.path.basename(line.rstrip("/"))
         if name != skip:
@@ -77,15 +77,19 @@ async def explore_pages(ws: Workspace) -> None:
     # workspace namespace (durable, snapshot-captured) and merge into
     # dispatch-level stat.
     print(f"=== metadata overlay on {base}/page.json ===")
-    meta_res = await ws.execute(f'chmod 640 "{base}/page.json"'
-                                f' && chown 500:dev "{base}/page.json"'
-                                f' && touch -t 202601021530 "{base}/page.json"'
-                                )
+    meta_res = await ws.shell(
+        f'chmod 640 "{base}/page.json"'
+        f' && chown 500:dev "{base}/page.json"'
+        f' && touch -t 202601021530 "{base}/page.json"'
+    )
     print(f"  chmod/chown/touch exit={meta_res.exit_code}")
-    meta_st, _ = await ws.dispatch("stat",
-                                   PathSpec.from_str_path(f"{base}/page.json"))
-    print(f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
-          f"gid={meta_st.gid} mtime={meta_st.modified}")
+    meta_st, _ = await ws.dispatch(
+        "stat", PathSpec.from_str_path(f"{base}/page.json")
+    )
+    print(
+        f"  dispatch stat: mode={oct(meta_st.mode)[2:]} uid={meta_st.uid} "
+        f"gid={meta_st.gid} mtime={meta_st.modified}"
+    )
     await run(ws, f'jq ".title" {base}/page.json')
     await run(ws, f'jq ".page_id" {base}/page.json')
     await run(ws, f'jq ".parent_type" {base}/page.json')
@@ -134,20 +138,27 @@ async def explore_databases(ws: Workspace) -> None:
     await run(ws, f"cat {source_base}/data_source.json", limit=1500)
     await run(ws, f'jq ".properties | keys" {source_base}/data_source.json')
 
-    row = await pick_child(ws, source_base, "data_source.json")
-    if not row:
-        print("Data source has no row pages\n")
-        return
-    row_base = f"{source_base}/{row}"
-    print(f"--- row page: {row} ---\n")
-    await run(ws, f"ls {row_base}/")
-    await run(ws, f"stat {row_base}/page.json")
-    await run(ws, f"cat {row_base}/page.json", limit=1200)
-    await run(ws, f'jq ".parent_type" {row_base}/page.json')
-    await run(ws, f'jq ".parent_id" {row_base}/page.json')
-    # A row's cells ride in the file, as Notion's own property objects,
+    await run(ws, f"head -n 2 {source_base}/rows.jsonl", limit=1200)
+    await run(ws, f"wc -l {source_base}/rows.jsonl")
+    await run(ws, f'jq -r ".title" {source_base}/rows.jsonl')
+    # A row's cells ride on its line, as Notion's own property objects,
     # answering to the schema in the data_source.json above.
-    await run(ws, f'jq ".properties | keys" {row_base}/page.json')
+    await run(
+        ws, f'head -n 1 {source_base}/rows.jsonl | jq ".properties | keys"'
+    )
+
+    row = (
+        await run(ws, f'head -n 1 {source_base}/rows.jsonl | jq -r ".path"')
+    ).strip()
+    if not row:
+        print("Data source has no rows\n")
+        return
+    row_json = f"{source_base}/{row}"
+    print(f"--- row page: {row} ---\n")
+    await run(ws, f"stat {row_json}")
+    await run(ws, f"cat {row_json}", limit=1200)
+    await run(ws, f'jq ".parent_type" {row_json}')
+    await run(ws, f'jq ".markdown" {row_json}')
 
 
 async def explore_cross_cutting(ws: Workspace) -> None:
@@ -162,7 +173,7 @@ async def explore_cross_cutting(ws: Workspace) -> None:
 
 
 async def main() -> None:
-    ws = Workspace({"/notion": resource}, mode=MountMode.READ)
+    ws = Workspace({"/notion": vfs}, mode=MountMode.READ)
     ws.register_cli("ntn", NTN, config.model_dump())
     await explore_pages(ws)
     await explore_databases(ws)

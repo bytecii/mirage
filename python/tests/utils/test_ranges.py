@@ -14,9 +14,16 @@
 
 import pytest
 
-from mirage.utils.ranges import (ByteWindow, is_unsatisfiable_range,
-                                 range_header, slice_window, window_for,
-                                 window_if_unranged, window_of)
+from mirage.utils.ranges import (
+    ByteWindow,
+    is_unsatisfiable_range,
+    range_header,
+    slice_window,
+    splice_window,
+    window_for,
+    window_if_unranged,
+    window_of,
+)
 
 DATA = b"0123456789"
 
@@ -68,6 +75,17 @@ def test_slicing_to_the_end():
     assert slice_window(DATA, 7, None) == b"789"
 
 
+def test_splicing_keeps_both_sides_of_the_window():
+    assert splice_window(DATA, 2, b"ab") == b"01ab456789"
+    assert splice_window(DATA, 8, b"xyz") == b"01234567xyz"
+
+
+def test_splicing_past_the_end_fills_zeros():
+    assert splice_window(b"ab", 4, b"z") == b"ab\0\0z"
+    assert splice_window(b"", 0, b"new") == b"new"
+    assert splice_window(b"ab", 4, b"") == b"ab"
+
+
 def test_slicing_the_whole_thing():
     assert slice_window(DATA, 0, None) == DATA
 
@@ -81,21 +99,15 @@ def test_slicing_from_past_the_end_is_empty():
 
 
 class _BotoError(Exception):
-
     def __init__(self, code: str, status: int) -> None:
         super().__init__(code)
         self.response = {
-            "Error": {
-                "Code": code
-            },
-            "ResponseMetadata": {
-                "HTTPStatusCode": status
-            },
+            "Error": {"Code": code},
+            "ResponseMetadata": {"HTTPStatusCode": status},
         }
 
 
 class _AiohttpError(Exception):
-
     def __init__(self, status: int) -> None:
         super().__init__("boom")
         self.status = status
@@ -127,7 +139,8 @@ def test_the_opendal_seek_shape_is_unsatisfiable():
     """hf and nextcloud seek instead of sending a header, and the seek
     itself raises rather than surfacing a status."""
     assert is_unsatisfiable_range(
-        OSError("invalid seek to a position beyond the end of the range"))
+        OSError("invalid seek to a position beyond the end of the range")
+    )
 
 
 def test_an_ordinary_seek_error_is_not_unsatisfiable():
@@ -158,7 +171,8 @@ SABRE_416 = (
     "response: Parts { status: 416 } } <d:error><s:exception>"
     "Sabre\\DAV\\Exception\\RequestedRangeNotSatisfiable</s:exception>"
     "<s:message>The start offset (99) exceeded the size of the entity "
-    "(3)</s:message></d:error>")
+    "(3)</s:message></d:error>"
+)
 
 
 def test_the_sabre_webdav_416_shape_is_unsatisfiable():
@@ -195,7 +209,8 @@ HF_INVALID_CONTENT_RANGE = (
     "Unexpected (permanent) at read, context: { value: bytes 99-2/3, "
     "called: BytesContentRange::from_str, service: hf, path: "
     "range_past.txt, range: 99-103 } => header content range is invalid: "
-    "end is less than start")
+    "end is less than start"
+)
 
 
 def test_the_huggingface_backwards_content_range_is_unsatisfiable():

@@ -12,23 +12,25 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { IOResult, materialize } from '../../io/types.ts'
-import { RAMResource } from '../../resource/ram/ram.ts'
-import { FileStat, FileType, MountMode, type PathSpec } from '../../types.ts'
+import { RAMVFS } from '../../vfs/ram/ram.ts'
+import { FileStat, FileType, MountMode, PathSpec } from '../../types.ts'
 import { MountRegistry } from '../mount/registry.ts'
 import type { MountEntry } from '../mount/mount.ts'
-import { Session } from '../session/session.ts'
-import type { ExecuteNodeFn } from './types.ts'
-import type { DispatchFn } from './cross_mount.ts'
-import { handleCommand } from './command.ts'
-import { filterUnderPrefixes } from './fanout.ts'
-import { basename } from '../../core/ram/utils.ts'
+import { SessionState } from '../session/session.ts'
+import type { ExecuteNodeFn } from './jobs.ts'
+import type { DispatchFn } from '../../runtime/types.ts'
+import { handleCommand } from './command/command.ts'
+import { fanOutTraversal, filterUnderPrefixes } from './fanout.ts'
+import { gnuBasename } from '../../utils/path.ts'
 import { OpsRegistry } from '../../ops/registry.ts'
 import { getTestParser, stdoutStr } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace.ts'
-import { specFlagNames } from '../../commands/spec/types.ts'
+import { specFlagNames } from '../../commands/spec/flag_view.ts'
 import { specOf } from '../../commands/spec/builtins.ts'
+import type { StatPath } from '../../ops/types.ts'
+import { eacces } from '../../utils/errors.ts'
 
 const NEVER_EXECUTE: ExecuteNodeFn = () => {
   throw new Error('executeNode should not have been called')
@@ -40,19 +42,16 @@ const NEVER_EXECUTE: ExecuteNodeFn = () => {
 const STAT_ONLY_DISPATCH: DispatchFn = ((op: string, path: PathSpec) => {
   if (op !== 'stat') throw new Error(`dispatch(${op}) should not have been called`)
   return Promise.resolve([
-    new FileStat({ name: basename(path.virtual), type: FileType.DIRECTORY }),
+    new FileStat({ name: gnuBasename(path.virtual), type: FileType.DIRECTORY }),
     new IOResult(),
   ])
 }) as unknown as DispatchFn
 
 function wireMount(mount: MountEntry): void {
-  const cmds = mount.resource.commands?.()
-  if (cmds !== undefined) {
-    for (const cmd of cmds) {
-      if (cmd.filetype !== null) mount.register(cmd)
-      else if (cmd.resource === null) mount.registerGeneral(cmd)
-      else mount.register(cmd)
-    }
+  for (const cmd of mount.vfs.commands()) {
+    if (cmd.filetype !== null) mount.register(cmd)
+    else if (cmd.vfs === null) mount.registerGeneral(cmd)
+    else mount.register(cmd)
   }
 }
 
@@ -63,11 +62,11 @@ function wireRegistry(reg: MountRegistry): void {
 describe('fanOutTraversal glob matching', () => {
   it('find -name with a lone [ does not throw', async () => {
     const reg = new MountRegistry(
-      { '/data/': new RAMResource(), '/data/sub/': new RAMResource() },
+      { '/data/': new RAMVFS(), '/data/sub/': new RAMVFS() },
       MountMode.WRITE,
     )
     wireRegistry(reg)
-    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const s = new SessionState({ sessionId: 'test', cwd: '/' })
     const [, io] = await handleCommand(
       NEVER_EXECUTE,
       STAT_ONLY_DISPATCH,
@@ -80,11 +79,11 @@ describe('fanOutTraversal glob matching', () => {
 
   it('find -name matches descendant mount names with [...] classes like Python', async () => {
     const reg = new MountRegistry(
-      { '/data/': new RAMResource(), '/data/sub1/': new RAMResource() },
+      { '/data/': new RAMVFS(), '/data/sub1/': new RAMVFS() },
       MountMode.WRITE,
     )
     wireRegistry(reg)
-    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const s = new SessionState({ sessionId: 'test', cwd: '/' })
     const [out, io] = await handleCommand(
       NEVER_EXECUTE,
       STAT_ONLY_DISPATCH,
@@ -102,14 +101,14 @@ describe('fanOutTraversal mount-entry synthesis honors the expression tree', () 
   async function runFind(argv: string[]): Promise<string> {
     const reg = new MountRegistry(
       {
-        '/data/': new RAMResource(),
-        '/data/ram/': new RAMResource(),
-        '/data/disk/': new RAMResource(),
+        '/data/': new RAMVFS(),
+        '/data/ram/': new RAMVFS(),
+        '/data/disk/': new RAMVFS(),
       },
       MountMode.WRITE,
     )
     wireRegistry(reg)
-    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const s = new SessionState({ sessionId: 'test', cwd: '/' })
     const [out] = await handleCommand(NEVER_EXECUTE, STAT_ONLY_DISPATCH, reg, argv, s)
     return out === null ? '' : new TextDecoder().decode(await materialize(out))
   }
@@ -131,13 +130,134 @@ describe('fanOutTraversal mount-entry synthesis honors the expression tree', () 
     expect(text).not.toContain('/data/ram')
     expect(text).not.toContain('/data/disk')
   })
+
+  it('-prune of a mount root under -o hides it and names nothing beneath', async () => {
+    const text = await runFind(['find', '/data', '-path', '/data/ram', '-prune', '-o', '-print'])
+    expect(text).not.toContain('/data/ram')
+    expect(text).toContain('/data/disk')
+  })
+
+  it('a time test before -prune gates the mounts under it', async () => {
+    // Namespace-only ancestors `/w/old` and `/w/new` hold the mounts; only
+    // `/w/old` predates the cutoff, so only its contents stay in the walk.
+    const stamps: Record<string, string> = { '/w/old': '2000-01-01T00:00:00Z' }
+    const dispatch: DispatchFn = ((op: string, path: PathSpec) => {
+      if (op !== 'stat') throw new Error(`dispatch(${op}) should not have been called`)
+      return Promise.resolve([
+        new FileStat({
+          name: gnuBasename(path.virtual),
+          type: FileType.DIRECTORY,
+          modified: stamps[path.virtual] ?? '2026-01-01T00:00:00Z',
+        }),
+        new IOResult(),
+      ])
+    }) as unknown as DispatchFn
+    const reg = new MountRegistry(
+      { '/w/': new RAMVFS(), '/w/old/deep/': new RAMVFS(), '/w/new/deep/': new RAMVFS() },
+      MountMode.WRITE,
+    )
+    wireRegistry(reg)
+    const s = new SessionState({ sessionId: 'test', cwd: '/' })
+    const run = async (argv: string[]): Promise<string[]> => {
+      const [out] = await handleCommand(NEVER_EXECUTE, dispatch, reg, argv, s)
+      if (out === null) return []
+      return new TextDecoder()
+        .decode(await materialize(out))
+        .split('\n')
+        .filter((l) => l !== '')
+        .sort()
+    }
+    expect(await run(['find', '/w', '-mindepth', '1', '-newermt', '2010-01-01', '-prune'])).toEqual(
+      ['/w/new', '/w/old/deep'],
+    )
+    expect(await run(['find', '/w', '-mindepth', '1', '-prune', '-newermt', '2010-01-01'])).toEqual(
+      ['/w/new'],
+    )
+  })
+
+  it('a mount under a pruned directory is not statted', async () => {
+    // `find /w -path /w/skip -prune -newermt X`: GNU never visits `/w/skip/deep`,
+    // so the fan-out asks nothing about it, and a backend refusing the probe
+    // cannot fail the line.
+    const dispatch: DispatchFn = ((op: string, path: PathSpec) => {
+      if (op !== 'stat') throw new Error(`dispatch(${op}) should not have been called`)
+      if (path.virtual.startsWith('/w/skip/')) throw new Error(`statted ${path.virtual}`)
+      return Promise.resolve([
+        new FileStat({
+          name: gnuBasename(path.virtual),
+          type: FileType.DIRECTORY,
+          modified: '2026-01-01T00:00:00Z',
+        }),
+        new IOResult(),
+      ])
+    }) as unknown as DispatchFn
+    const reg = new MountRegistry(
+      { '/w/': new RAMVFS(), '/w/skip/deep/': new RAMVFS() },
+      MountMode.WRITE,
+    )
+    wireRegistry(reg)
+    const s = new SessionState({ sessionId: 'test', cwd: '/' })
+    const [out] = await handleCommand(
+      NEVER_EXECUTE,
+      dispatch,
+      reg,
+      ['find', '/w', '-path', '/w/skip', '-prune', '-newermt', '2010-01-01'],
+      s,
+    )
+    expect(out === null ? '' : new TextDecoder().decode(await materialize(out))).toBe('/w/skip\n')
+  })
+
+  it('-prune at the start point is one row', async () => {
+    expect(await runFind(['find', '/data', '-type', 'd', '-prune'])).toBe('/data\n')
+  })
+})
+
+describe('fanOutTraversal -prune above a nested mount', () => {
+  async function runFind(argv: string[]): Promise<string> {
+    const parent = new RAMVFS()
+    parent.store.files.set('/top.txt', new TextEncoder().encode('top\n'))
+    parent.store.dirs.add('/skip')
+    parent.store.files.set('/skip/x.txt', new TextEncoder().encode('x\n'))
+    const child = new RAMVFS()
+    child.store.files.set('/leaf.txt', new TextEncoder().encode('deep\n'))
+    const reg = new MountRegistry({ '/': parent, '/skip/deep/': child }, MountMode.WRITE)
+    wireRegistry(reg)
+    const s = new SessionState({ sessionId: 'test', cwd: '/' })
+    const [out] = await handleCommand(NEVER_EXECUTE, STAT_ONLY_DISPATCH, reg, argv, s)
+    return out === null ? '' : new TextDecoder().decode(await materialize(out))
+  }
+
+  it('skips the walk of a mount under the pruned directory', async () => {
+    const text = await runFind([
+      'find',
+      '/',
+      '-path',
+      '/skip',
+      '-prune',
+      '-o',
+      '-name',
+      '*.txt',
+      '-print',
+    ])
+    expect(text).toBe('/top.txt\n')
+  })
+
+  it('a pruned root is the only row', async () => {
+    expect(await runFind(['find', '/', '-type', 'd', '-prune'])).toBe('/\n')
+  })
+
+  it('a pruned mount root keeps its siblings', async () => {
+    const text = await runFind(['find', '/', '-path', '/skip/deep', '-prune', '-o', '-print'])
+    expect(text).toContain('/skip/x.txt')
+    expect(text).not.toContain('/skip/deep')
+  })
 })
 
 describe('find actions on structural rows', () => {
   function nestedGhostRegistry(): MountRegistry {
-    const parent = new RAMResource()
+    const parent = new RAMVFS()
     parent.store.files.set('/top.txt', new TextEncoder().encode('hello\n'))
-    const deep = new RAMResource()
+    const deep = new RAMVFS()
     deep.store.files.set('/leaf.txt', new TextEncoder().encode('deep\n'))
     const reg = new MountRegistry({ '/': parent, '/ghost/very/deep/': deep }, MountMode.WRITE)
     wireRegistry(reg)
@@ -146,7 +266,7 @@ describe('find actions on structural rows', () => {
 
   it('-ls renders namespace-only ancestor rows', async () => {
     const reg = nestedGhostRegistry()
-    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const s = new SessionState({ sessionId: 'test', cwd: '/' })
     const [out, io] = await handleCommand(
       NEVER_EXECUTE,
       STAT_ONLY_DISPATCH,
@@ -166,33 +286,40 @@ describe('find actions on structural rows', () => {
   })
 
   it('-delete skips structural rows and exits 0', async () => {
-    const reg = nestedGhostRegistry()
-    const s = new Session({ sessionId: 'test', cwd: '/' })
-    const [, io] = await handleCommand(
-      NEVER_EXECUTE,
-      STAT_ONLY_DISPATCH,
-      reg,
-      ['find', '/', '-delete'],
-      s,
+    const parser = await getTestParser()
+    const root = new RAMVFS()
+    root.store.files.set('/top.txt', new TextEncoder().encode('hello\n'))
+    const deep = new RAMVFS()
+    deep.store.files.set('/leaf.txt', new TextEncoder().encode('deep\n'))
+    const ws = new Workspace(
+      { '/': root, '/ghost/very/deep': deep },
+      {
+        mode: MountMode.WRITE,
+        shellParser: parser,
+      },
     )
-    expect(io.exitCode).toBe(0)
-    expect(new TextDecoder().decode(await materialize(io.stderr))).toBe('')
-    const [after] = await handleCommand(NEVER_EXECUTE, STAT_ONLY_DISPATCH, reg, ['find', '/'], s)
-    const text = after === null ? '' : new TextDecoder().decode(await materialize(after))
-    expect(text).toContain('/ghost/very/deep')
-    expect(text).not.toContain('/top.txt')
-    expect(text).not.toContain('leaf.txt')
+    try {
+      const io = await ws.shell("find / -not -path '/usr*' -delete")
+      expect(io.exitCode).toBe(0)
+      expect(io.stderrText).toBe('')
+      const after = await ws.shell('find /')
+      expect(after.stdoutText).toContain('/ghost/very/deep')
+      expect(after.stdoutText).not.toContain('/top.txt')
+      expect(after.stdoutText).not.toContain('leaf.txt')
+    } finally {
+      await ws.close()
+    }
   })
 })
 
 describe('fanOutTraversal -maxdepth applies to child-mount depth', () => {
   it('a deeper child entry beyond the budget is excluded', async () => {
-    const child = new RAMResource()
+    const child = new RAMVFS()
     child.store.dirs.add('/a')
     child.store.files.set('/a/b.txt', new TextEncoder().encode('deep\n'))
-    const reg = new MountRegistry({ '/': new RAMResource(), '/data/': child }, MountMode.WRITE)
+    const reg = new MountRegistry({ '/': new RAMVFS(), '/data/': child }, MountMode.WRITE)
     wireRegistry(reg)
-    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const s = new SessionState({ sessionId: 'test', cwd: '/' })
     const [out] = await handleCommand(
       NEVER_EXECUTE,
       STAT_ONLY_DISPATCH,
@@ -237,22 +364,22 @@ describe('filterUnderPrefixes', () => {
 describe('fanOutTraversal du at a descendant mount boundary', () => {
   async function runLines(cmds: string[], top = 10, real = 7): Promise<string> {
     const parser = await getTestParser()
-    const parent = new RAMResource()
+    const parent = new RAMVFS()
     parent.store.files.set('/top.txt', new Uint8Array(top))
     parent.store.dirs.add('/inner')
     parent.store.files.set('/inner/leftover.txt', new Uint8Array(1000))
-    const child = new RAMResource()
+    const child = new RAMVFS()
     child.store.files.set('/real.txt', new Uint8Array(real))
     const registry = new OpsRegistry()
-    registry.registerResource(parent)
-    registry.registerResource(child)
+    registry.registerVfs(parent)
+    registry.registerVfs(child)
     const ws = new Workspace(
       { '/base': parent, '/base/inner': child },
       { mode: MountMode.WRITE, ops: registry, shellParser: parser },
     )
     try {
       let out = ''
-      for (const cmd of cmds) out = stdoutStr(await ws.execute(cmd))
+      for (const cmd of cmds) out = stdoutStr(await ws.shell(cmd))
       return out
     } finally {
       await ws.close()
@@ -367,24 +494,24 @@ describe('fanOutTraversal du at a descendant mount boundary', () => {
 describe('fanOutTraversal operands spanning mounts', () => {
   async function runLine(cmd: string): Promise<string> {
     const parser = await getTestParser()
-    const parent = new RAMResource()
+    const parent = new RAMVFS()
     parent.store.files.set('/top.txt', new Uint8Array(10))
     parent.store.dirs.add('/inner')
     parent.store.files.set('/inner/leftover.txt', new Uint8Array(1000))
-    const child = new RAMResource()
+    const child = new RAMVFS()
     child.store.files.set('/real.txt', new TextEncoder().encode('hit here\n'))
-    const other = new RAMResource()
+    const other = new RAMVFS()
     other.store.files.set('/o.txt', new TextEncoder().encode('hit there\n'))
     const registry = new OpsRegistry()
-    registry.registerResource(parent)
-    registry.registerResource(child)
-    registry.registerResource(other)
+    registry.registerVfs(parent)
+    registry.registerVfs(child)
+    registry.registerVfs(other)
     const ws = new Workspace(
       { '/base': parent, '/base/inner': child, '/other': other },
       { mode: MountMode.WRITE, ops: registry, shellParser: parser },
     )
     try {
-      return stdoutStr(await ws.execute(cmd))
+      return stdoutStr(await ws.shell(cmd))
     } finally {
       await ws.close()
     }
@@ -412,7 +539,11 @@ describe('fanOutTraversal operands spanning mounts', () => {
     // Chooses whether a run counts the symlinks on its own mount, which
     // is a per-run question; the merge only ever sees the rows.
     const perRun = ['L', 'P']
-    expect([...specFlagNames(specOf('du'))].sort()).toEqual([...central, ...perRun].sort())
+    // Keeps the walk on its operand's mount, so there is no merge at all.
+    const noFanOut = ['one_file_system']
+    expect([...specFlagNames(specOf('du'))].sort()).toEqual(
+      [...central, ...perRun, ...noFanOut].sort(),
+    )
   })
 
   // -S has to survive both fan-outs at once: the per-operand one that
@@ -446,4 +577,416 @@ describe('fanOutTraversal operands spanning mounts', () => {
       '/base:\ninner\ntop.txt\n\n/base/inner:\nreal.txt\n\n/other:\no.txt\n',
     )
   })
+})
+
+// Direct port of the ls cases in tests/workspace/executor/test_fanout.py:
+// a mount root is an ordinary directory entry of its parent, listed by
+// the walk but never descended by it.
+describe('ls -R across a mount boundary', () => {
+  async function runLine(mounts: Record<string, RAMVFS>, cmd: string): Promise<string> {
+    const parser = await getTestParser()
+    const registry = new OpsRegistry()
+    for (const vfs of Object.values(mounts)) registry.registerVfs(vfs)
+    const ws = new Workspace(mounts, { mode: MountMode.WRITE, ops: registry, shellParser: parser })
+    try {
+      return stdoutStr(await ws.shell(cmd))
+    } finally {
+      await ws.close()
+    }
+  }
+
+  function ram(files: Record<string, string>, dirs: string[] = []): RAMVFS {
+    const vfs = new RAMVFS()
+    for (const dir of dirs) vfs.store.dirs.add(dir)
+    for (const [key, text] of Object.entries(files)) {
+      vfs.store.files.set(key, new TextEncoder().encode(text))
+    }
+    return vfs
+  }
+
+  // Pinned on coreutils 9.7 over a tmpfs mounted at `base/nested`:
+  // `ls -R base` prints `nested` in `base`'s own listing, then its group.
+  // `-R` used to withhold the namespace merge and leave the whole nested
+  // mount to the fan-out, which contributes the group but not the row, so
+  // the row went missing wherever the parent's backend held no key of that
+  // name. The mirror image of the shadowed fixture above, where the parent
+  // owns keys under `inner/` and so names the mountpoint from its own
+  // readdir whatever the namespace says.
+  it('lists a mountpoint the parent backend cannot name', async () => {
+    const mounts = {
+      '/base': ram({ '/top.txt': 'T\n' }),
+      '/base/nested': ram({ '/real.txt': 'hit\n' }),
+    }
+    expect(await runLine(mounts, 'ls -R /base')).toBe(
+      '/base:\nnested\ntop.txt\n\n/base/nested:\nreal.txt\n',
+    )
+  })
+
+  // The merge is per directory listed, not per operand. Pinned on
+  // coreutils 9.7 over a tmpfs mounted at `base/sub/deep`: `deep` is a row
+  // of `base/sub`, which is a directory the parent's own backend serves.
+  it('lists a mountpoint below the operand', async () => {
+    const mounts = {
+      '/base': ram({ '/sub/p.txt': 'P\n' }, ['/sub']),
+      '/base/sub/deep': ram({ '/real.txt': 'hit\n' }),
+    }
+    expect(await runLine(mounts, 'ls -R /base')).toBe(
+      '/base:\nsub\n\n/base/sub:\ndeep\np.txt\n\n/base/sub/deep:\nreal.txt\n',
+    )
+  })
+
+  // `/ghost` exists only because a mount lives below it, and `/` is served
+  // by a backend, so the withheld merge dropped the row and the two groups
+  // the walk renders from it. Only a mount root is left to the fan-out;
+  // the namespace-only directories above one are this walk's, because no
+  // other run renders them.
+  it('lists a namespace-only ancestor under a served root', async () => {
+    const mounts = {
+      '/': ram({ '/top.txt': 'hello\n' }),
+      '/ghost/very/deep': ram({ '/leaf.txt': 'deep\n' }),
+    }
+    expect(await runLine(mounts, 'ls -R /')).toMatch(
+      /^\/:\ndev\nghost\ntop\.txt\nusr\n\n\/ghost:\nvery\n\n\/ghost\/very:\ndeep\n/,
+    )
+  })
+
+  // `/.bash_history` is a whole mount serving a single file. GNU
+  // (coreutils 9.7, `mount --bind` of one file onto another) lists a file
+  // that happens to be a mountpoint as an ordinary row of its parent — no
+  // '/' under -F, no block of its own. The row used to be synthesized as a
+  // directory, and the fan-out ran a sub-run for the mount on top of it,
+  // so the same name arrived twice in two wrong shapes.
+  it('renders a file mount as one row and no group', async () => {
+    const mounts = { '/': ram({ '/top.txt': 'T\n' }) }
+    const out = await runLine(mounts, 'ls -aRF /')
+    expect(
+      out.startsWith(
+        '/:\n./\n../\n.bash_history\ndev/\ntop.txt\nusr/\n\n/usr:\n./\n../\nbin/\n\n/dev:\n./\n../\nnull\nzero\n\n',
+      ),
+    ).toBe(true)
+    expect(out.split('.bash_history').length).toBe(2)
+  })
+
+  // A mount root is listed but not descended, so the shadowed group is
+  // never produced rather than produced and filtered. `dropShadowedLsGroups`
+  // only recognizes an absolute header, so a relative operand printed
+  // `base/inner:` twice: once with the parent's shadowed `leftover.txt`,
+  // once with the mount's own listing. GNU 9.7 prints the mounted
+  // directory once.
+  it('never descends the mount root under a relative operand', async () => {
+    const mounts = {
+      '/base': ram({ '/top.txt': 'TTTTTTTTTT', '/inner/leftover.txt': 'S'.repeat(1000) }, [
+        '/inner',
+      ]),
+      '/base/inner': ram({ '/real.txt': 'RRRRRRR' }),
+    }
+    expect(await runLine(mounts, 'ls -R base')).toBe(
+      'base:\ninner\ntop.txt\n\nbase/inner:\nreal.txt\n',
+    )
+  })
+})
+
+describe('traversal cancellation', () => {
+  it.each([
+    ['find', '/data'],
+    ['du', '/data', '/other'],
+  ])('forwards cancellation through %j', async (...parts) => {
+    for (const source of ['caller', 'session'] as const) {
+      for (const checksSignal of [false, true]) {
+        const parent = new RAMVFS()
+        const child = new RAMVFS()
+        const other = new RAMVFS()
+        parent.store.files.set('/parent', new Uint8Array([1]))
+        child.store.files.set('/child', new Uint8Array([2]))
+        other.store.files.set('/other', new Uint8Array([3]))
+        const reg = new MountRegistry(
+          {
+            '/data/': parent,
+            '/data/sub/': child,
+            '/other/': other,
+          },
+          MountMode.WRITE,
+        )
+        wireRegistry(reg)
+        const controller = new AbortController()
+        let calls = 0
+        let received: AbortSignal | undefined
+        for (const mount of reg.allMounts()) {
+          mount.executeCmd = (_name, _paths, _texts, _flags, opts) => {
+            calls++
+            received = opts?.signal
+            controller.abort()
+            if (checksSignal) received?.throwIfAborted()
+            return Promise.resolve([null, new IOResult()])
+          }
+        }
+        const session = new SessionState({ sessionId: 'test', cwd: '/' })
+        if (source === 'session') session.abortSignal = controller.signal
+        await expect(
+          handleCommand(
+            NEVER_EXECUTE,
+            STAT_ONLY_DISPATCH,
+            reg,
+            parts.map((part, index) => (index === 0 ? part : PathSpec.fromStrPath(part))),
+            session,
+            null,
+            null,
+            null,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            null,
+            source === 'caller' ? controller.signal : undefined,
+          ),
+        ).rejects.toMatchObject({ name: 'AbortError' })
+        expect(received?.aborted).toBe(true)
+        expect(calls).toBe(1)
+      }
+    }
+  })
+})
+
+// A walk into a nested mount sets each file's context off with `--`, as one run
+// does: ripgrep 14.1.1 and GNU grep 3.11 both separate one file's context from
+// the next file's.
+describe('fanOutTraversal context across a nested mount', () => {
+  async function runLine(cmd: string): Promise<string> {
+    const parser = await getTestParser()
+    const parent = new RAMVFS()
+    parent.store.files.set('/top.txt', new TextEncoder().encode('x\nhit\ny\n'))
+    parent.store.dirs.add('/inner')
+    const child = new RAMVFS()
+    child.store.files.set('/real.txt', new TextEncoder().encode('hit\nz\n'))
+    const registry = new OpsRegistry()
+    registry.registerVfs(parent)
+    registry.registerVfs(child)
+    const ws = new Workspace(
+      { '/base': parent, '/base/inner': child },
+      { mode: MountMode.WRITE, ops: registry, shellParser: parser },
+    )
+    try {
+      return stdoutStr(await ws.shell(cmd))
+    } finally {
+      await ws.close()
+    }
+  }
+
+  it.each([['rg -A1 hit /base'], ['grep -r -A1 hit /base']])('separates %s', async (line) => {
+    expect(await runLine(line)).toBe(
+      '/base/inner/real.txt:hit\n/base/inner/real.txt-z\n--\n/base/top.txt:hit\n/base/top.txt-y\n',
+    )
+  })
+  it.each([
+    ['--sort path -l', '/base/inner/real.txt\n/base/top.txt\n'],
+    ['--sortr path -l', '/base/top.txt\n/base/inner/real.txt\n'],
+    ['--sort path -I', 'hit\nhit\n'],
+    ['-d 1 -l', '/base/top.txt\n'],
+    ['-d 2 --sort path -l', '/base/inner/real.txt\n/base/top.txt\n'],
+    ['--sort path --heading', '/base/inner/real.txt\nhit\n\n/base/top.txt\nhit\n'],
+    [
+      '--sort path -A1',
+      '/base/inner/real.txt:hit\n/base/inner/real.txt-z\n--\n/base/top.txt:hit\n/base/top.txt-y\n',
+    ],
+    ["--type-add 'foo:*.txt' --type-clear foo --type-add 'foo:*.py' -t foo -l", ''],
+    ['-t txt -T txt -t txt --sort path -l', '/base/inner/real.txt\n/base/top.txt\n'],
+    ['-t txt -T txt -t txt -l', '/base/inner/real.txt\n/base/top.txt\n'],
+  ])('applies rg %s across the whole tree', async (options, expected) => {
+    expect(await runLine(`rg ${options} hit /base`)).toBe(expected)
+  })
+})
+
+it.each(["'' /base", "/base ''", 'loop/child /base', '/base loop/child'])(
+  'walks nested mounts with refused operands: %s',
+  async (operands) => {
+    const ws = new Workspace(
+      { '/base': new RAMVFS(), '/base/inner': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    try {
+      await ws.shell(
+        "printf 'x\\nhit\\ny\\n' > /base/top.txt; printf 'hit\\nz\\n' > /base/inner/real.txt; cd /base; ln -s loop loop",
+      )
+      for (const [command, expected, exitCode] of [
+        ['find', '/base\n/base/inner\n/base/inner/real.txt\n/base/loop\n/base/top.txt\n', 1],
+        ['du -s', '18\t/base\n', 1],
+        ['grep -rl hit', '/base/top.txt\n/base/inner/real.txt\n', 2],
+        ['rg -l hit', '/base/top.txt\n/base/inner/real.txt\n', 2],
+      ] as const) {
+        const io = await ws.shell(`cd /base; ${command} ${operands}`)
+        expect(stdoutStr(io)).toBe(expected)
+        expect(io.exitCode).toBe(exitCode)
+        expect(new TextDecoder().decode(io.stderr)).not.toBe('')
+      }
+    } finally {
+      await ws.close()
+    }
+  },
+)
+
+it.each([
+  ['find', 1],
+  ['du', 1],
+  ['grep', 2],
+  ['rg', 2],
+] as const)('keeps a failed mount status for %s', async (command, code) => {
+  const reg = new MountRegistry({ '/': new RAMVFS(), '/data': new RAMVFS() }, MountMode.WRITE)
+  const primary = reg.tryMountFor('/')
+  const child = reg.tryMountFor('/data')
+  if (primary === null || child === null) throw new Error('missing test mount')
+  vi.spyOn(primary, 'executeCmd').mockResolvedValue([null, new IOResult()])
+  vi.spyOn(child, 'executeCmd').mockResolvedValue([
+    null,
+    new IOResult({ exitCode: code, stderr: new TextEncoder().encode('backend failed\n') }),
+  ])
+  // The reserved /dev mount is placed with its command table too, so it
+  // answers as one more mount that succeeds with nothing to report.
+  for (const m of reg.allMounts()) {
+    if (m !== primary && m !== child)
+      vi.spyOn(m, 'executeCmd').mockResolvedValue([null, new IOResult()])
+  }
+  const [, io] = await fanOutTraversal(
+    command,
+    [PathSpec.fromStrPath('/')],
+    [],
+    {},
+    reg,
+    primary,
+    '/',
+    command,
+    null,
+    undefined,
+  )
+  expect(io.exitCode).toBe(code)
+  expect(new TextDecoder().decode(await materialize(io.stderr))).toBe('backend failed\n')
+})
+
+function duProbe(refused: string): StatPath {
+  return (path: string) => {
+    if (path === refused) return Promise.reject(eacces(path))
+    const type = path === '/empty' || path === '/data' ? FileType.DIRECTORY : FileType.FILE
+    return Promise.resolve(new FileStat({ name: gnuBasename(path), type }))
+  }
+}
+
+async function duAcross(primaryRows: string, refused: string): Promise<[string, number, string]> {
+  const reg = new MountRegistry({ '/': new RAMVFS(), '/data': new RAMVFS() }, MountMode.WRITE)
+  const primary = reg.tryMountFor('/')
+  const child = reg.tryMountFor('/data')
+  if (primary === null || child === null) throw new Error('missing test mount')
+  const enc = new TextEncoder()
+  vi.spyOn(primary, 'executeCmd').mockResolvedValue([enc.encode(primaryRows), new IOResult()])
+  vi.spyOn(child, 'executeCmd').mockResolvedValue([
+    enc.encode('4\t/data/x\n4\t/data\n'),
+    new IOResult(),
+  ])
+  for (const mount of reg.allMounts()) {
+    if (mount !== primary && mount !== child)
+      vi.spyOn(mount, 'executeCmd').mockResolvedValue([null, new IOResult()])
+  }
+  const [out, io] = await fanOutTraversal(
+    'du',
+    [PathSpec.fromStrPath('/')],
+    [],
+    {},
+    reg,
+    primary,
+    '/',
+    'du /',
+    null,
+    undefined,
+    duProbe(refused),
+  )
+  const dec = new TextDecoder()
+  return [dec.decode(await materialize(out)), io.exitCode, dec.decode(await materialize(io.stderr))]
+}
+
+it('keeps the du rows when an empty row refuses stat', async () => {
+  const [out, code, err] = await duAcross('0\t/empty\n0\t/sealed\n3\t/f\n3\t/\n', '/sealed')
+  expect(out).toBe('4\t/data\n0\t/empty\n7\t/\n')
+  expect(code).toBe(1)
+  expect(err).toBe("du: cannot access '/sealed': Permission denied\n")
+})
+
+it('keeps the du rows when a mount root refuses stat', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+  const [out, code] = await duAcross('3\t/f\n3\t/\n', '/data')
+  expect(out).toBe('4\t/data\n7\t/\n')
+  expect(code).toBe(0)
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('du: mount root /data refused stat'))
+  warn.mockRestore()
+})
+
+it('keeps every producing mount when the last operand is refused', async () => {
+  const reg = new MountRegistry({ '/': new RAMVFS(), '/data': new RAMVFS() }, MountMode.WRITE)
+  wireRegistry(reg)
+  const primary = reg.tryMountFor('/')
+  const child = reg.tryMountFor('/data')
+  if (primary === null || child === null) throw new Error('missing test mount')
+  vi.spyOn(primary, 'executeCmd').mockResolvedValue([null, new IOResult()])
+  vi.spyOn(child, 'executeCmd').mockResolvedValue([null, new IOResult()])
+  const refused = new PathSpec({
+    virtual: '/',
+    directory: '/',
+    vfsPath: '',
+    rawPath: '',
+    walkError: 'ENOENT',
+  })
+  const [, io] = await fanOutTraversal(
+    'find',
+    [PathSpec.fromStrPath('/'), refused],
+    [],
+    {},
+    reg,
+    primary,
+    '/',
+    'find',
+    null,
+    undefined,
+  )
+  expect(io.producer?.prefixes).toEqual(expect.arrayContaining(['/', '/data/']))
+})
+
+// /data holding a.txt and s, whose f sits beside a link to ../a.txt and one to
+// nowhere, over a descendant mount /data/m holding g.
+async function linkedTree(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/data/': new RAMVFS(), '/data/m/': new RAMVFS() },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  await ws.shell(
+    "mkdir /data/s && printf o > /data/s/f && printf 'hello\\n' > /data/a.txt && " +
+      'printf o > /data/m/g && cd /data && ln -s ../a.txt s/al && ln -s nowhere s/dang',
+  )
+  return ws
+}
+
+const DANGLING =
+  'rg: /data/s/dang: IO error for operation on /data/s/dang: No such file or directory (os error 2)\n'
+
+// Both fan-outs hand the walk the namespace and the door: the unified walk
+// --sort takes skipped every link as ripgrep does only once it could tell
+// one, and a per-mount run follows them under -L.
+it.each([
+  ['rg --sort path o /data', '/data/a.txt:hello\n/data/m/g:o\n/data/s/f:o\n', '', 0],
+  [
+    'rg -L --sort path o /data',
+    '/data/a.txt:hello\n/data/m/g:o\n/data/s/al:hello\n/data/s/f:o\n',
+    DANGLING,
+    2,
+  ],
+  ['rg -L o /data', '/data/a.txt:hello\n/data/s/f:o\n/data/s/al:hello\n/data/m/g:o\n', DANGLING, 2],
+])('follows links across mounts only under -L: %s', async (line, stdout, stderr, code) => {
+  const ws = await linkedTree()
+  try {
+    const io = await ws.shell(line)
+    expect([stdoutStr(io), new TextDecoder().decode(io.stderr), io.exitCode]).toEqual([
+      stdout,
+      stderr,
+      code,
+    ])
+  } finally {
+    await ws.close()
+  }
 })

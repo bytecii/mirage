@@ -16,14 +16,12 @@ from dataclasses import dataclass
 
 from mirage.observe.store import ObserverStore
 from mirage.runtime.base import Runtime
-from mirage.runtime.resolver import MountResolver
-from mirage.runtime.table import VFSRuntime, bind_commands
-from mirage.runtime.types import DispatchFn
+from mirage.runtime.binding import WorkspaceBinding
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace.store import NamespaceStore
 from mirage.workspace.session import SessionStore
 from mirage.workspace.store import RAMWorkspaceStateStore, WorkspaceStateStore
-from mirage.workspace.workspace.policy import PolicyRouter
+from mirage.workspace.workspace.routing import Router
 from mirage.workspace.workspace.runtimes import Runtimes
 
 
@@ -43,9 +41,13 @@ class ControlStores:
 
 
 def resolve_control_stores(
-        workspace_id: str, store: WorkspaceStateStore | None, owns_store: bool,
-        observe: ObserverStore | None, namespace_store: NamespaceStore | None,
-        session_store: SessionStore | None) -> ControlStores:
+    workspace_id: str,
+    store: WorkspaceStateStore | None,
+    owns_store: bool,
+    observe: ObserverStore | None,
+    namespace_store: NamespaceStore | None,
+    session_store: SessionStore | None,
+) -> ControlStores:
     """Resolve the state-store provider and its three planes.
 
     A caller-passed provider may be shared with sibling workspaces, so
@@ -69,19 +71,23 @@ def resolve_control_stores(
         namespace_store = state_store.namespace(workspace_id)
     if session_store is None:
         session_store = state_store.sessions(workspace_id)
-    return ControlStores(state_store=state_store,
-                         owned=owned,
-                         observe=observe,
-                         namespace=namespace_store,
-                         sessions=session_store)
+    return ControlStores(
+        state_store=state_store,
+        owned=owned,
+        observe=observe,
+        namespace=namespace_store,
+        sessions=session_store,
+    )
 
 
 def wire_runtime_world(
-        registry: MountRegistry, dispatch: DispatchFn, resolver: MountResolver,
-        entries: list[Runtime | str] | None) -> tuple[Runtimes, PolicyRouter]:
-    """Build the ordered runtime world and its policy router.
+    registry: MountRegistry,
+    binding: WorkspaceBinding,
+    entries: list[Runtime | str] | None,
+) -> tuple[Runtimes, Router]:
+    """Build the ordered runtime world and its route-policy router.
 
-    Instances and the vfs marker; the first capturer binds each
+    Instances and the workspace marker; the first capturer binds each
     command. An explicit list fails loud per entry; the default world
     builds gracefully (a missing extra leaves the command reporting
     its install hint per invocation, never a silent escalation to
@@ -89,17 +95,10 @@ def wire_runtime_world(
 
     Args:
         registry (MountRegistry): mount table the bindings install on.
-        dispatch (DispatchFn): the workspace's op dispatch.
-        resolver (MountResolver): the live mount routing table.
+        binding (WorkspaceBinding): workspace services for runtime adapters.
         entries (list[Runtime | str] | None): explicit runtime world;
             None builds the default.
     """
-    runtimes = Runtimes(registry, dispatch, resolver)
+    runtimes = Runtimes(registry, binding)
     runtimes.resolve(entries)
-    router = PolicyRouter(registry, runtimes, resolver)
-    registry.runtime_bindings = bind_commands(runtimes.entries)
-    registry.runtime_entries = runtimes.entries
-    registry.vfs_runtime = next(
-        (entry for entry in runtimes.entries if isinstance(entry, VFSRuntime)),
-        None)
-    return runtimes, router
+    return runtimes, Router(registry, runtimes, binding.resolver)

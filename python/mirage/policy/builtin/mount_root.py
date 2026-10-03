@@ -16,8 +16,56 @@ from collections.abc import Sequence
 
 from mirage.commands.builtin.generic.tar.mode import is_create_mode
 from mirage.policy.base import Policy
-from mirage.policy.types import Action, CommandContext, Deny, MountRootQuery
+from mirage.policy.types import (
+    Action,
+    CommandContext,
+    Deny,
+    DenyScope,
+    MountRootQuery,
+)
 from mirage.types import PathSpec
+
+LN_VALUED_SHORTS = "tS"
+LN_VALUED_LONGS = frozenset({"--target-directory", "--suffix"})
+
+
+def ln_flag_present(argv: tuple[str, ...], letter: str, long: str) -> bool:
+    """Whether ln's raw argv carries one short flag or its long spelling.
+
+    The scan is option-aware so an operand cannot pose as a flag: it
+    stops at ``--``, skips the value of a valued option (``-t DIR``,
+    ``-S SUF``, their long forms), and inside a cluster stops at the
+    first valued letter, whose remainder is its attached value
+    (``-SfooT`` carries no ``-T``).
+
+    Args:
+        argv (tuple[str, ...]): raw argv after the command name.
+        letter (str): the short flag letter.
+        long (str): the long spelling, with its dashes.
+    """
+    skip = False
+    for tok in argv:
+        if skip:
+            skip = False
+            continue
+        if not isinstance(tok, str):
+            continue
+        if tok == "--":
+            return False
+        if tok == long:
+            return True
+        if tok.startswith("--"):
+            skip = tok in LN_VALUED_LONGS
+            continue
+        if not tok.startswith("-") or len(tok) < 2:
+            continue
+        for pos, ch in enumerate(tok[1:], 1):
+            if ch == letter:
+                return True
+            if ch in LN_VALUED_SHORTS:
+                skip = pos == len(tok) - 1
+                break
+    return False
 
 
 def has_symlink_flag(argv: tuple[str, ...]) -> bool:
@@ -30,12 +78,16 @@ def has_symlink_flag(argv: tuple[str, ...]) -> bool:
     Args:
         argv (tuple[str, ...]): raw argv after the command name.
     """
-    for tok in argv:
-        if isinstance(tok, str) and (tok == "--symbolic" or
-                                     (tok.startswith("-") and "s" in tok[1:]
-                                      and not tok.startswith("--"))):
-            return True
-    return False
+    return ln_flag_present(argv, "s", "--symbolic")
+
+
+def has_no_target_flag(argv: tuple[str, ...]) -> bool:
+    """Spot ln's -T/--no-target-directory by raw token scan.
+
+    Args:
+        argv (tuple[str, ...]): raw argv after the command name.
+    """
+    return ln_flag_present(argv, "T", "--no-target-directory")
 
 
 def has_parents_flag(argv: tuple[str, ...]) -> bool:
@@ -50,15 +102,37 @@ def has_parents_flag(argv: tuple[str, ...]) -> bool:
         argv (tuple[str, ...]): raw argv after the command name.
     """
     for tok in argv:
-        if isinstance(tok, str) and (tok == "-p" or tok == "--parents" or
-                                     (tok.startswith("-") and "p" in tok[1:]
-                                      and not tok.startswith("--"))):
+        if isinstance(tok, str) and (
+            tok == "-p"
+            or tok == "--parents"
+            or (
+                tok.startswith("-")
+                and "p" in tok[1:]
+                and not tok.startswith("--")
+            )
+        ):
             return True
     return False
 
 
-def first_root(query: MountRootQuery,
-               paths: Sequence[PathSpec]) -> PathSpec | None:
+def names_root(query: MountRootQuery, path: PathSpec) -> bool:
+    """Whether an operand names a mount root.
+
+    An operand the kernel walk refused (``walk_error``) names nothing,
+    whatever its ``virtual`` reads as: the empty name simplifies to the
+    working directory, which can be a mount root, and the command
+    reports it ENOENT rather than busy.
+
+    Args:
+        query (MountRootQuery): the mount-root oracle.
+        path (PathSpec): the operand.
+    """
+    return path.walk_error is None and query.is_mount_root(path.virtual)
+
+
+def first_root(
+    query: MountRootQuery, paths: Sequence[PathSpec]
+) -> PathSpec | None:
     """The first of these paths that is a mount root, if any.
 
     Args:
@@ -66,7 +140,7 @@ def first_root(query: MountRootQuery,
         paths (Sequence[PathSpec]): paths to test, in operand order.
     """
     for path in paths:
-        if query.is_mount_root(path.virtual):
+        if names_root(query, path):
             return path
     return None
 
@@ -106,61 +180,92 @@ class MountRootPolicy(Policy):
         cmd = ctx.command
         if cmd in ("rm", "rmdir"):
             for p in ctx.paths:
-                if ctx.registry.is_mount_root(p.virtual):
+                if names_root(ctx.registry, p):
                     if cmd == "rmdir":
-                        msg = (f"rmdir: failed to remove '{p.virtual}': "
-                               f"Device or resource busy\n")
+                        msg = (
+                            f"failed to remove '{p.virtual}': "
+                            f"Device or resource busy"
+                        )
                     else:
-                        msg = (f"rm: cannot remove '{p.virtual}': "
-                               f"Device or resource busy\n")
-                    return Deny(msg)
+                        msg = (
+                            f"cannot remove '{p.virtual}': "
+                            f"Device or resource busy"
+                        )
+                    return Deny(msg, DenyScope.OPERAND)
         elif cmd == "mv":
-            if ctx.registry.is_mount_root(ctx.paths[0].virtual):
+            # The source is a slot, so it is read off the positionals:
+            # `mv -t /mnt f` moves INTO a mount root, which is ordinary.
+            if ctx.operands and names_root(ctx.registry, ctx.operands[0]):
                 dst = ctx.paths[1].virtual if len(ctx.paths) > 1 else "?"
                 return Deny(
-                    f"mv: cannot move '{ctx.paths[0].virtual}' to '{dst}': "
-                    f"Device or resource busy\n")
+                    f"cannot move '{ctx.operands[0].virtual}' to '{dst}': "
+                    f"Device or resource busy",
+                    DenyScope.OPERAND,
+                )
         elif cmd == "mkdir":
             # GNU mkdir -p makes "already exists" a no-op.
             if has_parents_flag(ctx.argv):
                 return None
             for p in ctx.paths:
-                if ctx.registry.is_mount_root(p.virtual):
-                    return Deny(f"mkdir: cannot create directory "
-                                f"'{p.virtual}': File exists\n")
-        elif cmd == "touch":
-            for p in ctx.paths:
-                if ctx.registry.is_mount_root(p.virtual):
+                if names_root(ctx.registry, p):
                     return Deny(
-                        f"touch: cannot touch '{p.virtual}': Is a directory\n")
+                        f"cannot create directory '{p.virtual}': File exists",
+                        DenyScope.OPERAND,
+                    )
+        elif cmd == "touch":
+            # Positionals only: `-r REF` is read, never touched.
+            for p in ctx.operands:
+                if names_root(ctx.registry, p):
+                    return Deny(
+                        f"cannot touch '{p.virtual}': Is a directory",
+                        DenyScope.OPERAND,
+                    )
         elif cmd == "ln":
-            if ctx.registry.is_mount_root(ctx.paths[-1].virtual):
-                kind = ("symbolic link"
-                        if has_symlink_flag(ctx.argv) else "link")
-                return Deny(f"ln: failed to create {kind} "
-                            f"'{ctx.paths[-1].virtual}': File exists\n")
+            # A mount root is refused only as the link NAME. Without -T
+            # a directory operand is the directory to link into, GNU's
+            # rule, and creating inside a mount is ordinary.
+            if has_no_target_flag(ctx.argv) and names_root(
+                ctx.registry, ctx.paths[-1]
+            ):
+                kind = (
+                    "symbolic link" if has_symlink_flag(ctx.argv) else "link"
+                )
+                return Deny(
+                    f"failed to create {kind} "
+                    f"'{ctx.paths[-1].virtual}': File exists",
+                    DenyScope.OPERAND,
+                )
         elif cmd == "tar":
             # Only -c reads the filesystem; -t and -x match their
             # operands against names inside the archive.
-            root = (first_root(ctx.registry, ctx.operands)
-                    if is_create_mode(ctx.argv) else None)
+            root = (
+                first_root(ctx.registry, ctx.operands)
+                if is_create_mode(ctx.argv)
+                else None
+            )
             if root is not None:
                 return Deny(
-                    f"tar: {root.raw_path}: Cannot open: "
+                    f"{root.raw_path}: Cannot open: "
                     f"Device or resource busy\n"
-                    f"tar: Error is not recoverable: exiting now\n", 2)
+                    f"tar: Error is not recoverable: exiting now",
+                    DenyScope.OPERAND,
+                )
         elif cmd == "zip":
             # The first operand is the archive being written, not a
             # source; only what follows it is read.
             root = first_root(ctx.registry, ctx.operands[1:])
             if root is not None:
-                return Deny(f"zip: cannot read '{root.raw_path}': "
-                            f"Device or resource busy\n")
+                return Deny(
+                    f"cannot read '{root.raw_path}': Device or resource busy",
+                    DenyScope.OPERAND,
+                )
         elif cmd == "cp":
             # The last operand is the destination, and copying INTO a
             # mount is ordinary; only the sources are refused.
             root = first_root(ctx.registry, ctx.operands[:-1])
             if root is not None:
-                return Deny(f"cp: cannot copy '{root.raw_path}': "
-                            f"Device or resource busy\n")
+                return Deny(
+                    f"cannot copy '{root.raw_path}': Device or resource busy",
+                    DenyScope.OPERAND,
+                )
         return None

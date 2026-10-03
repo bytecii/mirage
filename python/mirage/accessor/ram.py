@@ -13,10 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.base import Accessor
-from mirage.resource.ram.store import RAMStore
+from mirage.vfs.ram.store import RAMStore
 
 
 class RAMAccessor(Accessor):
-
     def __init__(self, store: RAMStore) -> None:
         self.store = store

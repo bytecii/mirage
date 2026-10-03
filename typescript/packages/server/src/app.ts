@@ -20,7 +20,10 @@ import { JobTable } from './jobs.ts'
 import type { AuthConfig } from './auth/index.ts'
 import { registerAuth, resolveAuthConfig } from './auth/index.ts'
 import { isHostAllowed, resolveAllowedHosts } from './host_validation.ts'
-import { registerExecuteRoutes } from './routers/execute.ts'
+import { registerMcpRoutes } from './mcp/http.ts'
+import { registerAsksRoutes } from './routers/asks.ts'
+import { registerShellRoutes } from './routers/shell.ts'
+import { registerToolsRoutes } from './routers/tools.ts'
 import { registerHealthRoutes } from './routers/health.ts'
 import { registerJobsRoutes } from './routers/jobs.ts'
 import { registerSessionsRoutes } from './routers/sessions.ts'
@@ -34,6 +37,8 @@ import {
   stateRootPath,
   versionRootPath,
 } from './paths.ts'
+import { resolveSSHConfig, type SSHConfig } from './ssh/config.ts'
+import type { SSHDoor } from './ssh/types.ts'
 import { LocalBackend } from './version/backend.ts'
 
 export interface BuildAppOptions {
@@ -45,6 +50,13 @@ export interface BuildAppOptions {
   snapshotRoot?: string
   stateRoot?: string
   pidFile?: string
+  /**
+   * The SSH door, opened when the app is ready and closed with it.
+   * Undefined resolves it from the `MIRAGE_SSH_*` env vars and the
+   * `ssh_*` config keys; it stays shut unless a port is set, and null
+   * keeps it shut regardless.
+   */
+  sshConfig?: SSHConfig | null
 }
 
 export type MirageApp = ReturnType<typeof buildApp>
@@ -93,13 +105,37 @@ export function buildApp(options: BuildAppOptions = {}) {
     limits: { fileSize: 10 * 1024 * 1024 * 1024 },
   })
   registerHealthRoutes(app, { registry, startedAt, exit: exitFn })
-  registerWorkspacesRoutes(app, { registry, snapshotRoot, stateRoot })
+  registerWorkspacesRoutes(app, { registry, snapshotRoot, stateRoot, versionBackend })
   registerVersionsRoutes(app, { registry, versionBackend })
   registerSessionsRoutes(app, { registry })
-  registerExecuteRoutes(app, { registry, jobs })
+  registerAsksRoutes(app, { registry })
+  registerShellRoutes(app, { registry, jobs })
   registerJobsRoutes(app, { jobs })
+  const mcp = registerMcpRoutes(app, registry, jobs)
+  registerToolsRoutes(app, { mcp })
+  const ssh: SSHDoor = {
+    config: options.sshConfig !== undefined ? options.sshConfig : resolveSSHConfig(),
+    listener: null,
+  }
+  const sshConfig = ssh.config
+  if (sshConfig !== null) {
+    // A configured door that cannot open (the port is taken, ssh2 is
+    // missing) fails the start rather than leaving the daemon up without
+    // the door its config asked for. Loaded on demand so a daemon with no
+    // SSH never loads ssh2 or the node barrel the SFTP side needs.
+    app.addHook('onReady', async () => {
+      const { startSSHServer } = await import('./ssh/server.ts')
+      ssh.listener = await startSSHServer(registry, sshConfig, mcp)
+    })
+  }
   app.addHook('onClose', async () => {
-    await registry.closeAll()
+    if (ssh.listener !== null) await ssh.listener.close()
+    try {
+      await mcp.close()
+      await jobs.close()
+    } finally {
+      await registry.closeAll()
+    }
   })
-  return Object.assign(app, { registry, jobs, versionBackend, pidFile })
+  return Object.assign(app, { registry, jobs, versionBackend, pidFile, ssh, mcp })
 }

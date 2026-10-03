@@ -12,27 +12,13 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from functools import partial
+from mirage.core.qdrant.tree import SEARCH, read, readdir, stat
+from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.types import ReadOps
 
-from mirage.commands.builtin.generic_bind import CommandIO
-from mirage.commands.builtin.utils.wrap import stream_from_bytes
-from mirage.core.qdrant.read import read as _read
-from mirage.core.qdrant.readdir import readdir as _readdir
-from mirage.core.qdrant.stat import stat as _stat
-
-# Qdrant points are read through the generic factory (find walks readdir,
-# classifying via stat); search pushes down to the Qdrant query API.
-# Qdrant is read-only, so the generic
-# byte-mutation commands are intentionally absent (no write op wired). There is
-# no native streaming read, so the stream op is synthesized from the whole-row
-# read.
-IO = CommandIO(
-    readdir=_readdir,
-    read_bytes=_read,
-    read_stream=partial(stream_from_bytes, _read),
-    stat=_stat,
+IO = VFSAdapter(
+    search=SEARCH,
+    read=ReadOps(readdir=readdir, read_bytes=read, stat=stat),
     is_mounted=lambda a: True,
     local=False,
-)
-
-resolve_glob = IO.resolve_glob
+).to_command_io()

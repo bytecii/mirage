@@ -338,12 +338,11 @@ const CASES: [string, string, string, string, number][] = [
     2,
   ],
   ['wait_n_answers_first_finisher', '(exit 3) & wait -n', '', '', 3],
-  // `-p` holds a job id, not bash's pid (a mirage job has no OS
-  // process); the rest of the line is bash's.
+  // `-p` holds the managed PID `$!` reported; the rest of the line is bash's.
   [
     'wait_p_names_the_job_reported',
-    '(exit 3) & (exit 5) & wait -p V %1 %2; echo rc=$? V=$V',
-    'rc=5 V=2\n',
+    '(exit 3) & (exit 5) & p=$!; wait -p V %1 %2; echo rc=$?; [ "$V" = "$p" ] && echo pid-match',
+    'rc=5\npid-match\n',
     '',
     0,
   ],
@@ -401,6 +400,58 @@ const CASES: [string, string, string, string, number][] = [
       'test -e /data/t.txt && test -e /data/n.txt && cat /data/k.txt',
     'old\n',
     '',
+    0,
+  ],
+  [
+    // bash 5.2 keeps the file each earlier redirect opened but restores
+    // the descriptors, and writes the diagnostic through the descriptors
+    // as they stood at the failure.
+    'exec_failed_later_redirect_puts_earlier_ones_back',
+    '( exec > /data/good < /data/missing; echo visible ); ' +
+      'test -e /data/good && wc -c < /data/good',
+    'visible\n0\n',
+    '/data/missing: No such file or directory\n',
+    0,
+  ],
+  [
+    // bash 5.2: a dup copies the terminal stream it names, so `2>&1` puts
+    // stderr on stdout and `1>&2` then `2>&1` leaves both on stderr.
+    'exec_dup_copies_the_terminal_stream_it_names',
+    '( exec 2>&1; echo err >&2 ); ( exec 1>&2; echo a ); ( exec 1>&2; exec 2>&1; echo c; echo d >&2 ); echo after >&2',
+    'err\n',
+    'a\nc\nd\nafter\n',
+    0,
+  ],
+  [
+    'exec_failed_redirect_diagnostic_follows_a_dup_to_stdout',
+    '( exec 2>&1 < /data/missing; echo out; echo err >&2 )',
+    '/data/missing: No such file or directory\nout\n',
+    'err\n',
+    0,
+  ],
+  [
+    // bash 5.2: after `exec 1>&0` every write to stdout is `write error:
+    // Bad file descriptor`, status 1.
+    'exec_stream_bound_to_stdin_cannot_be_written',
+    '( exec 1>&0; echo hi; echo rc=$? >&2; echo again ); ( exec 2>&0; echo hi >&2; echo rc=$? ); echo back',
+    'rc=1\nback\n',
+    'echo: write error: Bad file descriptor\nrc=1\necho: write error: Bad file descriptor\n',
+    0,
+  ],
+  [
+    // bash 5.2: `0<&0` and `0>&0` are a descriptor dup onto itself, so
+    // the file an earlier `exec <f` bound stays; `<&-` still closes it.
+    'exec_stdin_dup_onto_itself_keeps_the_bound_file',
+    "printf 'l1\\nl2\\n' > /data/in; ( exec < /data/in; exec 0<&0; read a; exec 0>&0; read b; echo $a-$b; exec <&-; read c; echo rc=$? )",
+    'l1-l2\nrc=1\n',
+    'bash: read: read error: 0: Bad file descriptor\n',
+    0,
+  ],
+  [
+    'exec_failed_redirect_diagnostic_goes_where_stderr_pointed',
+    '( exec 2> /data/e < /data/missing; echo toerr >&2 ); cat /data/e',
+    '/data/missing: No such file or directory\n',
+    'toerr\n',
     0,
   ],
   [

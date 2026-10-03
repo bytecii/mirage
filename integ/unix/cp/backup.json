@@ -283,6 +283,143 @@
         "gdrive-folder",
         "box"
       ]
+    },
+    {
+      "id": "cp_backup_quotes_a_multibyte_control",
+      "seq": 613095,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "cp --backup='xé' /data/a.txt /data/b.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cp: invalid argument 'x\\303\\251' for 'backup type'\nValid arguments are:\n  - 'none', 'off'\n  - 'simple', 'never'\n  - 'existing', 'nil'\n  - 'numbered', 't'\nTry 'cp --help' for more information.\n"
+      },
+      "flags": [
+        "backup"
+      ]
+    },
+    {
+      "id": "cp_backup_prefix_spanning_four_values_is_ambiguous",
+      "seq": 991024,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "cp --backup=n /data/a.txt /data/b.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cp: ambiguous argument 'n' for 'backup type'\nValid arguments are:\n  - 'none', 'off'\n  - 'simple', 'never'\n  - 'existing', 'nil'\n  - 'numbered', 't'\nTry 'cp --help' for more information.\n"
+      },
+      "flags": [
+        "backup"
+      ]
+    },
+    {
+      "id": "cp_backup_prefix_resolves_numbered",
+      "seq": 991025,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/cpb9 && printf 'S\\n' > /data/cpb9/s.txt && printf 'D\\n' > /data/cpb9/d.txt && cp --backup=nu /data/cpb9/s.txt /data/cpb9/d.txt && ls -1 /data/cpb9",
+      "expect": {
+        "exit": 0,
+        "stdout": "d.txt\nd.txt.~1~\ns.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "backup"
+      ]
+    },
+    {
+      "id": "cp_numbered_backup_lets_a_same_name_source_through",
+      "seq": 991026,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box",
+        "databricks",
+        "databricks-prefix",
+        "sharepoint-prefix",
+        "ssh"
+      ],
+      "command": "mkdir -p /data/r10nb/x /data/r10nb/y /data/r10nb/d && echo X > /data/r10nb/x/a && echo Y > /data/r10nb/y/a && cp --backup=numbered /data/r10nb/x/a /data/r10nb/y/a /data/r10nb/d; echo rc=$?; cat /data/r10nb/d/a /data/r10nb/d/a.~1~; cp -b /data/r10nb/x/a /data/r10nb/x/a /data/r10nb/d; echo rc=$?; cat /data/r10nb/d/a /data/r10nb/d/a.~2~; rm -r /data/r10nb",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=0\nY\nX\nrc=1\nX\nY\n",
+        "stderr": "cp: will not overwrite just-created '/data/r10nb/d/a' with '/data/r10nb/x/a'\n"
+      }
     }
   ]
 }

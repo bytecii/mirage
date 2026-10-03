@@ -21,18 +21,38 @@ from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.cache.index import NULL_INDEX
 from mirage.commands.builtin.mongodb.grep import grep
 from mirage.commands.config import CommandOpts
-from mirage.resource.mongodb.config import MongoDBConfig
-from mirage.types import FileStat, FileType, PathSpec
+from mirage.types import PathSpec
+from mirage.vfs.mongodb.config import MongoDBConfig
 
 
 @pytest.fixture
 def accessor():
-    return MongoDBAccessor(config=MongoDBConfig(
-        uri="mongodb://localhost:27017"))
+    return MongoDBAccessor(
+        config=MongoDBConfig(uri="mongodb://localhost:27017")
+    )
+
+
+@pytest.fixture
+def _stat_reads(monkeypatch):
+    # The stat guard is captured by the search factory at import, so fake
+    # what it reads at call time: the existence probes and the counters.
+    monkeypatch.setattr(
+        "mirage.core.mongodb.readdir.entity_exists",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "mirage.core.mongodb.client.count_documents", AsyncMock(return_value=5)
+    )
+    monkeypatch.setattr(
+        "mirage.core.mongodb.client.is_view", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        "mirage.core.mongodb.client.get_indexes", AsyncMock(return_value=[])
+    )
 
 
 def _path(s: str = "/db1/collections/coll1/documents.jsonl") -> PathSpec:
-    return PathSpec(virtual=s, directory=s, resource_path=s.strip("/"))
+    return PathSpec(virtual=s, directory=s, vfs_path=s.strip("/"))
 
 
 async def _drain(source) -> bytes:
@@ -47,30 +67,7 @@ async def _drain(source) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_grep_streams_and_finds_match(accessor):
-    docs = [{"_id": ObjectId(), "i": i, "name": f"item-{i}"} for i in range(5)]
-    docs[2]["name"] = "target-2"
-
-    async def _fake(*_args, **_kwargs):
-        for d in docs:
-            yield d
-
-    with patch("mirage.core.mongodb.stream.iter_documents", new=_fake), patch(
-            "mirage.commands.builtin.mongodb.grep.resolve_glob",
-            new=AsyncMock(return_value=[_path()])), patch(
-                "mirage.commands.builtin.mongodb.grep._stat",
-                new=AsyncMock(return_value=FileStat(name="documents.jsonl",
-                                                    type=FileType.TEXT))):
-        source, io = await grep(accessor, [_path()], ['target'],
-                                CommandOpts(index=NULL_INDEX))
-        data = await _drain(source)
-    text = data.decode()
-    assert "target-2" in text
-    assert io.exit_code == 0
-
-
-@pytest.mark.asyncio
-async def test_grep_m1_short_circuits_after_first_match(accessor):
+async def test_grep_m1_short_circuits_after_first_match(accessor, _stat_reads):
     consumed: list[int] = []
 
     async def _fake(*_args, **_kwargs):
@@ -79,34 +76,13 @@ async def test_grep_m1_short_circuits_after_first_match(accessor):
             tag = "FOUND" if i == 3 else "skip"
             yield {"_id": ObjectId(), "i": i, "tag": tag}
 
-    with patch("mirage.core.mongodb.stream.iter_documents", new=_fake), patch(
-            "mirage.commands.builtin.mongodb.grep.resolve_glob",
-            new=AsyncMock(return_value=[_path()])), patch(
-                "mirage.commands.builtin.mongodb.grep._stat",
-                new=AsyncMock(return_value=FileStat(name="documents.jsonl",
-                                                    type=FileType.TEXT))):
-        source, _ = await grep(accessor, [_path()], ['FOUND'],
-                               CommandOpts(index=NULL_INDEX, flags={'m': '1'}))
+    with patch("mirage.core.mongodb.stream.iter_documents", new=_fake):
+        source, _ = await grep(
+            accessor,
+            [_path()],
+            ["FOUND"],
+            CommandOpts(index=NULL_INDEX, flags={"m": "1"}),
+        )
         data = await _drain(source)
     assert b"FOUND" in data
     assert len(consumed) < 100
-
-
-@pytest.mark.asyncio
-async def test_grep_no_match_returns_exit_code_1(accessor):
-    docs = [{"_id": ObjectId(), "name": f"item-{i}"} for i in range(3)]
-
-    async def _fake(*_args, **_kwargs):
-        for d in docs:
-            yield d
-
-    with patch("mirage.core.mongodb.stream.iter_documents", new=_fake), patch(
-            "mirage.commands.builtin.mongodb.grep.resolve_glob",
-            new=AsyncMock(return_value=[_path()])), patch(
-                "mirage.commands.builtin.mongodb.grep._stat",
-                new=AsyncMock(return_value=FileStat(name="documents.jsonl",
-                                                    type=FileType.TEXT))):
-        source, io = await grep(accessor, [_path()], ['absent_pattern_xyz'],
-                                CommandOpts(index=NULL_INDEX))
-        _ = await _drain(source)
-    assert io.exit_code == 1

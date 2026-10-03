@@ -13,47 +13,17 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { LangfuseAccessor } from '../../../accessor/langfuse.ts'
-import type { IndexCacheStore } from '../../../cache/index/index.ts'
-import { resolveGlobOf } from '../generic_bind/index.ts'
-import { LANGFUSE_IO } from './io.ts'
-import { read as langfuseRead } from '../../../core/langfuse/read.ts'
-import { readdir as langfuseReaddir } from '../../../core/langfuse/readdir.ts'
-import { stat as langfuseStat } from '../../../core/langfuse/stat.ts'
-import { type FileStat, ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { VFSName } from '../../../types.ts'
+import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { rgGeneric } from '../generic/rg.ts'
+import { runSearch } from '../generic_bind/search.ts'
 
-const resolveLangfuseGlob = resolveGlobOf(LANGFUSE_IO)
-
-async function* langfuseStream(
-  accessor: LangfuseAccessor,
-  p: PathSpec,
-  index: IndexCacheStore | undefined,
-): AsyncIterable<Uint8Array> {
-  yield await langfuseRead(accessor, p, index)
-}
-
-async function rgCommand(
-  accessor: LangfuseAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const resolved =
-    paths.length > 0 ? await resolveLangfuseGlob(accessor, paths, opts.index ?? undefined) : []
-  const stat = (p: PathSpec): Promise<FileStat> =>
-    langfuseStat(accessor, p, opts.index ?? undefined)
-  const readdir = (p: PathSpec): Promise<string[]> =>
-    langfuseReaddir(accessor, p, opts.index ?? undefined)
-  const stream = (p: PathSpec): AsyncIterable<Uint8Array> =>
-    langfuseStream(accessor, p, opts.index ?? undefined)
-  return rgGeneric(resolved, texts, opts, stat, readdir, stream)
-}
+import { IO } from './io.ts'
 
 export const LANGFUSE_RG = command({
   name: 'rg',
-  resource: ResourceName.LANGFUSE,
+  vfs: VFSName.LANGFUSE,
   spec: specOf('rg'),
-  fn: rgCommand,
+  fn: (accessor: LangfuseAccessor, paths, texts, opts) =>
+    runSearch(IO, 'rg', accessor, paths, texts, opts),
 })

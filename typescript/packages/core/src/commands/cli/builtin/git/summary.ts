@@ -12,18 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import git from 'isomorphic-git'
-
-import { getOpcodes } from '../../../builtin/diff_helper.ts'
+import { getOpcodes } from '../../../builtin/diff_format.ts'
 import { DiffOpTag } from '../../../builtin/diff_types.ts'
 import { short } from './format.ts'
-import { repoArgs, type Repo } from './repo.ts'
+import { readBlobBytes, type Repo } from './repo.ts'
 import type { TreeEntry } from './tree.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 
 const ROOT_COMMIT = '(root-commit) '
-const CREATE = 'create'
-const DELETE = 'delete'
 // git's diffstat geometry for piped output: 80 columns total, binary
 // sniffing over the first 8000 bytes, and the 3/8 cap that splits the
 // line between the name column and the +/- graph (diff.c show_stats).
@@ -59,8 +55,7 @@ export interface FileStat {
 async function blobData(repo: Repo, oid: string | null): Promise<Uint8Array> {
   if (oid === null) return new Uint8Array(0)
   try {
-    const { blob } = await git.readBlob({ ...repoArgs(repo), oid })
-    return blob
+    return await readBlobBytes(repo, oid)
   } catch {
     return new Uint8Array(0)
   }
@@ -157,7 +152,10 @@ export function statTable(stats: readonly FileStat[], width: number = STAT_WIDTH
   const maxLen = Math.max(...stats.map((stat) => stat.path.length))
   const changes = stats.filter((s) => !s.binary).map((s) => s.insertions + s.deletions)
   const maxChange = changes.length > 0 ? Math.max(...changes) : 0
-  const numberWidth = maxChange > 0 ? String(maxChange).length : 1
+  const numberWidth = Math.max(
+    maxChange > 0 ? String(maxChange).length : 1,
+    stats.some((s) => s.binary) ? 3 : 1,
+  )
   const binWidths = stats
     .filter((s) => s.binary)
     .map((s) => `Bin ${String(s.oldSize)} -> ${String(s.newSize)} bytes`.length - 4)
@@ -226,56 +224,29 @@ function statLine(files: number, insertions: number, deletions: number): string 
   return parts.join(', ')
 }
 
-/** The `create mode` / `delete mode` lines, in git's order. */
-function modeLines(
-  before: ReadonlyMap<string, TreeEntry>,
-  after: ReadonlyMap<string, TreeEntry>,
-): string[] {
-  const lines: string[] = []
-  for (const path of [...after.keys()].filter((p) => !before.has(p)).sort(compareCodePoints)) {
-    lines.push(` ${CREATE} mode ${after.get(path)?.mode ?? ''} ${path}`)
-  }
-  for (const path of [...before.keys()].filter((p) => !after.has(p)).sort(compareCodePoints)) {
-    lines.push(` ${DELETE} mode ${before.get(path)?.mode ?? ''} ${path}`)
-  }
-  return lines
-}
-
 /**
  * What `git commit` prints once the commit exists.
  *
- * The counts come from `diffstat`, so a binary file adds to the file total
- * but zero lines, exactly as git reports it.
+ * The title line, then the counts and `--summary` lines that `commitSummary`
+ * renders for the change the commit records.
  *
- * @param repo the opened repository
  * @param oid the commit just written
  * @param message its message
  * @param branch the branch it landed on, null when detached
- * @param before the parent tree
- * @param after the new tree
+ * @param changes the rendered counts and summary lines
  * @param width how many hex digits to abbreviate the id to
  * @param root whether this is the repository's first commit
  */
-export async function report(
-  repo: Repo,
+export function report(
   oid: string,
   message: string,
   branch: string | null,
-  before: ReadonlyMap<string, TreeEntry>,
-  after: ReadonlyMap<string, TreeEntry>,
+  changes: string,
   width: number,
   root: boolean,
-): Promise<string> {
-  const stats = await diffstat(repo, before, after)
+): string {
   const title = message.split('\n')[0] ?? ''
   const where = branch ?? 'detached HEAD'
   const marker = root ? ROOT_COMMIT : ''
-  const lines = [`[${where} ${marker}${short(oid, width)}] ${title}`]
-  if (stats.length > 0) {
-    const insertions = stats.reduce((sum, stat) => sum + stat.insertions, 0)
-    const deletions = stats.reduce((sum, stat) => sum + stat.deletions, 0)
-    lines.push(statLine(stats.length, insertions, deletions))
-  }
-  lines.push(...modeLines(before, after))
-  return lines.map((line) => `${line}\n`).join('')
+  return `[${where} ${marker}${short(oid, width)}] ${title}\n${changes}`
 }

@@ -12,15 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.resource.gdocs import GDocsConfig, GDocsResource
-from mirage.resource.ram import RAMResource
-from mirage.resource.slack import SlackConfig, SlackResource
 from mirage.types import MountMode
+from mirage.vfs.gdocs import GDocsConfig, GDocsVFS
+from mirage.vfs.ram import RAMVFS
+from mirage.vfs.sharepoint import SharePointConfig, SharePointVFS
+from mirage.vfs.slack import SlackConfig, SlackVFS
 from mirage.workspace import Workspace
 
 
-def test_file_prompt_includes_mounted_resources():
-    ram = RAMResource()
+def test_file_prompt_includes_mounts():
+    ram = RAMVFS()
     ws = Workspace(
         {"/": (ram, MountMode.WRITE)},
         mode=MountMode.WRITE,
@@ -31,7 +32,7 @@ def test_file_prompt_includes_mounted_resources():
 
 
 def test_file_prompt_shows_write_commands_for_writable_mounts():
-    slack = SlackResource(config=SlackConfig(token="xoxb-fake"))
+    slack = SlackVFS(config=SlackConfig(token="xoxb-fake"))
     ws = Workspace(
         {"/slack": (slack, MountMode.WRITE)},
         mode=MountMode.WRITE,
@@ -42,7 +43,7 @@ def test_file_prompt_shows_write_commands_for_writable_mounts():
 
 
 def test_file_prompt_hides_write_commands_for_readonly():
-    slack = SlackResource(config=SlackConfig(token="xoxb-fake"))
+    slack = SlackVFS(config=SlackConfig(token="xoxb-fake"))
     ws = Workspace(
         {"/slack": (slack, MountMode.READ)},
         mode=MountMode.READ,
@@ -54,7 +55,7 @@ def test_file_prompt_hides_write_commands_for_readonly():
 
 def test_file_prompt_substitutes_prefix_in_write_prompt():
     cfg = GDocsConfig(client_id="x", client_secret="y", refresh_token="z")
-    gdocs = GDocsResource(config=cfg)
+    gdocs = GDocsVFS(config=cfg)
     ws = Workspace(
         {"/home/zecheng/gdocs": (gdocs, MountMode.WRITE)},
         mode=MountMode.WRITE,
@@ -62,3 +63,32 @@ def test_file_prompt_substitutes_prefix_in_write_prompt():
     prompt = ws.file_prompt
     assert "/home/zecheng/gdocs/owned/<file>.gdoc.json" in prompt
     assert "{prefix}" not in prompt
+
+
+def test_file_prompt_keeps_literal_braces():
+    sharepoint = SharePointVFS(SharePointConfig(access_token="tok"))
+    ws = Workspace(
+        {"/sp": (sharepoint, MountMode.READ)},
+        mode=MountMode.READ,
+    )
+    prompt = ws.file_prompt
+    assert "/{site_name}/{library_name}/{path_to_file}" in prompt
+    assert "{prefix}" not in prompt
+
+
+def test_file_prompt_states_each_mount_mode():
+    ws = Workspace(
+        {
+            "/": (RAMVFS(), MountMode.EXEC),
+            "/data": (RAMVFS(), MountMode.READ),
+            "/scratch": (RAMVFS(), MountMode.WRITE),
+        },
+        mode=MountMode.WRITE,
+    )
+    sections = {
+        section.split("\n", 1)[0]: section
+        for section in ws.file_prompt.split("\n\n")[1:]
+    }
+    assert "Mode: read-only; writes are refused." in sections["/data"]
+    assert "Mode: read-write." in sections["/scratch"]
+    assert "Mode: read-write; programs can run." in sections["/"]

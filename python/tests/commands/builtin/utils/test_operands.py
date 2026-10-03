@@ -14,11 +14,14 @@
 
 import pytest
 
-from mirage.commands.builtin.utils.operands import (materialized_read,
-                                                    merge_split_errors,
-                                                    normalized_read,
-                                                    operands_io, read_operands,
-                                                    split_readable)
+from mirage.commands.builtin.utils.operands import (
+    materialized_read,
+    merge_split_errors,
+    normalized_read,
+    operands_io,
+    read_operands,
+    split_readable,
+)
 from mirage.io.types import IOResult
 from mirage.types import FileStat, FileType, PathSpec
 
@@ -31,7 +34,11 @@ def _stat_over(files: dict[str, bytes], dirs: set[str] | None = None):
             return FileStat(name=path.virtual, type=FileType.DIRECTORY)
         if path.virtual not in files:
             raise FileNotFoundError(path.virtual)
-        return FileStat(name=path.virtual, size=len(files[path.virtual]))
+        return FileStat(
+            type=FileType.FILE,
+            name=path.virtual,
+            size=len(files[path.virtual]),
+        )
 
     return stat
 
@@ -53,26 +60,31 @@ async def test_split_readable_keeps_order_and_reports_missing():
         PathSpec.from_str_path("/f.txt"),
         PathSpec.from_str_path("/m2.txt"),
     ]
-    good, err = await split_readable(paths, _stat_over({"/f.txt": b"x"}),
-                                     "cat")
+    good, err = await split_readable(
+        paths, _stat_over({"/f.txt": b"x"}), "cat"
+    )
     assert [p.virtual for p in good] == ["/f.txt"]
-    assert err == (b"cat: /m1.txt: No such file or directory\n"
-                   b"cat: /m2.txt: No such file or directory\n")
+    assert err == (
+        b"cat: /m1.txt: No such file or directory\n"
+        b"cat: /m2.txt: No such file or directory\n"
+    )
 
 
 @pytest.mark.asyncio
 async def test_split_readable_reports_stat_typed_dir_as_eisdir():
-    good, err = await split_readable([PathSpec.from_str_path("/sub")],
-                                     _stat_over({}, dirs={"/sub"}), "head")
+    good, err = await split_readable(
+        [PathSpec.from_str_path("/sub")], _stat_over({}, dirs={"/sub"}), "head"
+    )
     assert good == []
-    assert err == b"head: /sub: Is a directory\n"
+    assert err == b"head: error reading '/sub': Is a directory\n"
 
 
 @pytest.mark.asyncio
 async def test_split_readable_all_good_no_stderr():
     paths = [PathSpec.from_str_path("/f.txt")]
-    good, err = await split_readable(paths, _stat_over({"/f.txt": b"x"}),
-                                     "head")
+    good, err = await split_readable(
+        paths, _stat_over({"/f.txt": b"x"}), "head"
+    )
     assert [p.virtual for p in good] == ["/f.txt"]
     assert err == b""
 
@@ -96,8 +108,10 @@ async def test_read_operands_reports_and_continues():
         PathSpec.from_str_path("/c.txt"),
     ]
     ok, err = await read_operands(paths, _read_over(files), "md5sum")
-    assert [(o.path.virtual, o.data) for o in ok] == [("/a.txt", b"aa"),
-                                                      ("/c.txt", b"cc")]
+    assert [(o.path.virtual, o.data) for o in ok] == [
+        ("/a.txt", b"aa"),
+        ("/c.txt", b"cc"),
+    ]
     assert err == b"md5sum: /b.txt: No such file or directory\n"
 
 

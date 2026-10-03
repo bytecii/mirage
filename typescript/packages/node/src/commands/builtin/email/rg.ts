@@ -13,31 +13,36 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
-import { rgGeneric } from '@struktoai/mirage-core/commands/builtin/generic/rg'
-import { resolveGlobOf } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
 import {
-  compilePattern,
-  grepLines,
-  patternArg,
-} from '@struktoai/mirage-core/commands/builtin/grep_helper'
-import type { GrepLinesOptions } from '@struktoai/mirage-core/commands/builtin/grep_helper'
+  parseFlags,
+  refuseMissingPattern,
+  rgGeneric,
+  rgMatcher,
+  rgSyntax,
+} from '@struktoai/mirage-core/commands/builtin/generic/rg'
+import { resolveGlobOf } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
+import { patternArg } from '@struktoai/mirage-core/commands/builtin/grep_pattern'
+import { pushdownOperand, searchQuery } from '@struktoai/mirage-core/commands/builtin/grep_pushdown'
+import { grepLines } from '@struktoai/mirage-core/commands/builtin/grep_scan'
+import type { GrepLinesOptions } from '@struktoai/mirage-core/commands/builtin/grep_scan'
 import { command } from '@struktoai/mirage-core/commands/config'
 import type { CommandFnResult, CommandOpts } from '@struktoai/mirage-core/commands/config'
 import { FlagView, specOf } from '@struktoai/mirage-core/commands/spec/index'
 import { IOResult } from '@struktoai/mirage-core/io/types'
 import type { ByteSource } from '@struktoai/mirage-core/io/types'
-import { ResourceName } from '@struktoai/mirage-core/types'
+import { VFSName } from '@struktoai/mirage-core/types'
 import type { FileStat, PathSpec } from '@struktoai/mirage-core/types'
 import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { EmailAccessor } from '../../../accessor/email.ts'
 import { read as emailRead } from '../../../core/email/read.ts'
 import { readdir as emailReaddir } from '../../../core/email/readdir.ts'
 import { stat as emailStat } from '../../../core/email/stat.ts'
-import { detectScope } from '../../../core/email/scope.ts'
+import { detectScope, NATIVE_KINDS } from '../../../core/email/scope.ts'
 import { searchAndFormat } from '../../../core/email/search.ts'
-import { EMAIL_IO } from './io.ts'
+import { IO } from './io.ts'
+import { RG_SEARCH_HONORED, messageLines } from './grep.ts'
 
-const resolveGlob = resolveGlobOf(EMAIL_IO)
+const resolveGlob = resolveGlobOf(IO)
 
 const ENC = new TextEncoder()
 
@@ -55,55 +60,51 @@ async function rgCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  const pattern = patternArg(texts, opts.flags)
-  if (pattern === null) {
-    return [
-      null,
-      new IOResult({ exitCode: 2, stderr: ENC.encode('rg: usage: rg [flags] pattern [path]\n') }),
-    ]
-  }
+  const pattern = patternArg(texts, opts.flags, 'regexp')
   const fl = new FlagView(opts.flags, specOf('rg'))
-  const ignoreCase = fl.asBool('i')
-  const invert = fl.asBool('v')
-  const lineNumbers = fl.asBool('n')
-  const countOnly = fl.asBool('c')
-  // -l is short-only, so it lands on the disambiguated `args_l` dest
-  // (`AMBIGUOUS_NAMES`); a plain `l` key is one the parser never emits.
-  const filesOnly = fl.asBool('args_l')
-  const wholeWord = fl.asBool('w')
-  const fixedString = fl.asBool('F')
-  const onlyMatching = fl.asBool('o')
-  const maxCount = fl.asInt('m') ?? null
-  const pat = compilePattern(pattern, ignoreCase, fixedString, wholeWord)
-
+  const f = parseFlags(fl)
+  const refused = refuseMissingPattern(pattern, fl, f)
+  if (refused !== null) return refused
   const lineOpts: GrepLinesOptions = {
-    invert,
-    lineNumbers,
-    countOnly,
-    filesOnly,
-    onlyMatching,
-    maxCount,
+    invert: false,
+    lineNumbers: f.lineNumbers,
+    countOnly: false,
+    filesOnly: f.filesOnly,
+    onlyMatching: f.onlyMatching,
+    maxCount: f.maxCount,
   }
 
-  if (paths.length > 0) {
-    const first = paths[0]
-    if (first !== undefined) {
-      const scope = detectScope(first)
-      if (scope.useNative && !pattern.includes('\n')) {
-        const filePrefix =
-          mountPrefixOf(first.virtual, first.resourcePath) !== ''
-            ? mountPrefixOf(first.virtual, first.resourcePath)
-            : ''
-        const pairs = await searchAndFormat(accessor, scope, pattern, filePrefix, maxCount ?? 50)
-        const lines: string[] = []
-        for (const [vfsPath, msgText] of pairs) {
-          const matched = grepLines(vfsPath, [msgText], pat, lineOpts)
-          for (const line of matched) lines.push(`${vfsPath}:${line}`)
+  // Same gate as email grep, from the same table, and it reads the scope the
+  // same way: a line the push-down cannot answer takes the generic scan.
+  const operand = pushdownOperand(paths, opts.flags, pattern, RG_SEARCH_HONORED)
+  // The server is asked for the literal every match must contain, never
+  // the regex's own spelling: IMAP TEXT is a substring search.
+  const query = pattern === null ? null : searchQuery(pattern, f.fixedString, rgSyntax(f))
+  if (operand !== null && pattern !== null && query !== null) {
+    const match = detectScope(operand)
+    if (NATIVE_KINDS.has(match.kind)) {
+      const filePrefix = mountPrefixOf(operand.virtual, operand.vfsPath)
+      const pairs = await searchAndFormat(
+        accessor,
+        match.slots.folder ?? '',
+        query,
+        filePrefix,
+        accessor.config.maxMessages,
+      )
+      const pat = rgMatcher(pattern, false, f)
+      const lines: string[] = []
+      for (const [vfsPath, msgText] of pairs) {
+        const matched = grepLines(vfsPath, messageLines(msgText), pat, lineOpts)
+        if (matched.length === 0) continue
+        if (lineOpts.filesOnly) {
+          lines.push(vfsPath)
+          continue
         }
-        if (lines.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-        const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
-        return [out, new IOResult()]
+        for (const line of matched) lines.push(`${vfsPath}:${line}`)
       }
+      if (lines.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
+      const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
+      return [out, new IOResult()]
     }
   }
 
@@ -119,7 +120,7 @@ async function rgCommand(
 
 export const EMAIL_RG = command({
   name: 'rg',
-  resource: ResourceName.EMAIL,
+  vfs: VFSName.EMAIL,
   spec: specOf('rg'),
   fn: rgCommand,
 })

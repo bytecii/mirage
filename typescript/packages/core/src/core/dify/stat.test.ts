@@ -22,7 +22,7 @@ vi.mock('./client.ts', async () => {
 
 import type { DifyAccessor } from '../../accessor/dify.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
-import { FileType, PathSpec } from '../../types.ts'
+import { ContentType, FileType, PathSpec } from '../../types.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import * as clientMod from './client.ts'
 import { stat, statLight } from './stat.ts'
@@ -51,7 +51,7 @@ function document(
 
 function pathAt(virtual: string): PathSpec {
   return new PathSpec({
-    resourcePath: mountKey(virtual, '/knowledge'),
+    vfsPath: mountKey(virtual, '/knowledge'),
     virtual,
     directory: virtual,
   })
@@ -75,22 +75,12 @@ describe('dify stat', () => {
     const item = await statLight(ACCESSOR, pathAt('/knowledge/guides/quickstart'), index)
 
     expect(item.name).toBe('quickstart')
-    expect(item.type).toBe(FileType.TEXT)
+    expect(item.content).toBe(ContentType.TEXT)
     expect(item.size).toBeNull()
     expect(item.extra.source_size).toBe(123)
-    expect(item.modified).toBe('2024-05-21T09:00:00.000Z')
+    expect(item.modified).toBe('2024-05-21T09:00:00Z')
+    expect(item.birthtime).toBe('2024-05-21T09:00:00Z')
     expect(item.extra.slug).toBe('guides/quickstart')
-    expect(clientMod.getDocumentDetail).not.toHaveBeenCalled()
-  })
-
-  it('statLight returns a directory without a detail call', async () => {
-    const index = new RAMIndexCacheStore()
-
-    const item = await statLight(ACCESSOR, pathAt('/knowledge/guides'), index)
-
-    expect(item.name).toBe('guides')
-    expect(item.type).toBe(FileType.DIRECTORY)
-    expect(item.extra).toEqual({ children_count: 0 })
     expect(clientMod.getDocumentDetail).not.toHaveBeenCalled()
   })
 
@@ -108,7 +98,7 @@ describe('dify stat', () => {
   it('stat fetches document detail and fills the refreshed fields', async () => {
     const index = new RAMIndexCacheStore()
     vi.mocked(clientMod.getDocumentDetail).mockResolvedValue({
-      updated_at: 1716282000,
+      updated_at: 1716285600,
       tokens: 21,
       indexing_status: 'completed',
       data_source_detail_dict: { upload_file: { size: 456 } },
@@ -118,18 +108,19 @@ describe('dify stat', () => {
 
     expect(clientMod.getDocumentDetail).toHaveBeenCalledWith(ACCESSOR, 'doc-1')
     expect(item.name).toBe('quickstart')
-    expect(item.type).toBe(FileType.TEXT)
+    expect(item.content).toBe(ContentType.TEXT)
     expect(item.size).toBeNull()
     expect(item.extra.document_id).toBe('doc-1')
     expect(item.extra.source_size).toBe(456)
     expect(item.extra.tokens).toBe(21)
     expect(item.extra.indexing_status).toBe('completed')
-    expect(item.modified).toBe('2024-05-21T09:00:00Z')
+    expect(item.modified).toBe('2024-05-21T10:00:00Z')
+    expect(item.birthtime).toBe('2024-05-21T09:00:00Z')
   })
 
-  it('stat falls back to the entry size when the detail has none', async () => {
+  it('stat keeps the listed source size when the detail has none', async () => {
     const index = new RAMIndexCacheStore()
-    vi.mocked(clientMod.getDocumentDetail).mockResolvedValue({ updated_at: 1716282000 })
+    vi.mocked(clientMod.getDocumentDetail).mockResolvedValue({})
 
     const item = await stat(ACCESSOR, pathAt('/knowledge/guides/quickstart'), index)
 
@@ -137,5 +128,6 @@ describe('dify stat', () => {
     expect(item.extra.tokens).toBe(9)
     expect(item.extra.indexing_status).toBe('completed')
     expect(item.modified).toBe('2024-05-21T09:00:00Z')
+    expect(item.birthtime).toBe('2024-05-21T09:00:00Z')
   })
 })

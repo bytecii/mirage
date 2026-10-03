@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { FlagView } from '../../../../../commands/spec/types.ts'
+import { FlagView } from '../../../../../commands/spec/flag_view.ts'
 import { appendText } from '../../../../../core/gdocs/write.ts'
 import { TokenManager } from '../../../../../core/google/client.ts'
 import type { GoogleConfig } from '../../../../../core/google/config.ts'
@@ -28,6 +28,7 @@ export async function write(inv: CLIInvocation): Promise<CommandFnResult> {
     new TokenManager(inv.config as GoogleConfig),
     fl.asStr('document') ?? '',
     fl.asStr('text') ?? '',
+    fl.asStr('tab') ?? undefined,
   )
   const out: ByteSource = ENC.encode(JSON.stringify(result))
   return [out, new IOResult()]

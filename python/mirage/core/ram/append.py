@@ -12,28 +12,28 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import time
-
 from mirage.accessor.ram import RAMAccessor
 from mirage.cache.context import invalidate_after_write
-from mirage.core.ram.dest import check_dest_parents
-from mirage.core.timeutil import now_iso
-from mirage.observe.context import record
+from mirage.core.ram.dest import check_dest_parents, check_write_target
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
+from mirage.utils.dates import now_iso
 from mirage.utils.path import norm
 
 
-async def append_bytes(accessor: RAMAccessor, path_spec: PathSpec,
-                       data: bytes) -> None:
+async def append_bytes(
+    accessor: RAMAccessor, path_spec: PathSpec, data: bytes
+) -> None:
     path = path_spec.mount_path
     store = accessor.store
-    start_ms = int(time.monotonic() * 1000)
+    timer = start_op()
     p = norm(path)
     check_dest_parents(store, path_spec, p)
+    check_write_target(store, path_spec, p)
     if p in store.files:
         store.files[p] += data
     else:
         store.files[p] = data
     store.modified[p] = now_iso()
-    record("append", path, "ram", len(data), start_ms)
+    record("append", path_spec.virtual, "ram", len(data), timer)
     await invalidate_after_write(path_spec)

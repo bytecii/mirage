@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { evaluateArith } from './arith.ts'
-import { ArithError } from './errors.ts'
+import { ArithError, UnboundVariable } from './errors.ts'
 import type { ElementOps } from './types.ts'
 
 describe('evaluateArith', () => {
@@ -34,7 +34,7 @@ describe('evaluateArith', () => {
   it('parses hex and octal literals', () => {
     expect(evaluateArith('0x10', {}).value).toBe(16n)
     expect(evaluateArith('010', {}).value).toBe(8n)
-    expect(() => evaluateArith('08', {})).toThrow(ArithError)
+    expect(() => evaluateArith('08', {})).toThrow('value too great for base')
   })
 
   it('records assignments as writes', () => {
@@ -137,6 +137,9 @@ function fakeElements(): ElementOps {
     ['arr 1', '20'],
   ])
   const ops: ElementOps = {
+    isAssoc(name: string) {
+      return name === 'm'
+    },
     resolve(name, subscript, env) {
       if (name === 'm') return subscript.replace(/^["']|["']$/g, '')
       return evaluateArith(subscript, env, 0, ops).value.toString()
@@ -199,5 +202,111 @@ describe('evaluateArith elements', () => {
   it('tokenizes nested brackets', () => {
     const ops = fakeElements()
     expect(evaluateArith('arr[arr[1] - 19]', {}, 0, ops).value).toBe(20n)
+  })
+})
+
+describe('dynamic reads', () => {
+  it('asks the reader first and tells it of every write', () => {
+    // A dynamic name's reader answers before the pending assignments
+    // and the environment, and hears each scalar assignment as it is
+    // made, nested evaluations included, so it can act on it at once.
+    const events: [string, string][] = []
+    const result = evaluateArith(
+      'D=42, x=D, y',
+      { y: 'D+1' },
+      0,
+      null,
+      (name) => (name === 'D' ? '7' : null),
+      (name, value) => {
+        events.push([name, value])
+      },
+    )
+    expect(result.value).toBe(8n)
+    expect(events).toEqual([
+      ['D', '42'],
+      ['x', '7'],
+    ])
+    expect(result.writes.map((w) => [w.name, w.value])).toEqual([
+      ['D', '42'],
+      ['x', '7'],
+    ])
+  })
+})
+
+describe('compound assignment', () => {
+  it('reads the target before the right side', () => {
+    // bash 5.2: `RANDOM=42, RANDOM-=RANDOM` is the first draw minus the
+    // second, so a dynamic name is read for the target first.
+    const draws = ['17772', '26794']
+    const result = evaluateArith('D-=D', {}, 0, null, () => draws.shift() ?? null)
+    expect(result.value).toBe(-9022n)
+  })
+})
+
+describe('a variable evaluated as an expression', () => {
+  it('shares the record of the expression around it', () => {
+    // bash: `x='y=5'; $((x))` leaves y at 5, and the nested read sees
+    // the pending updates of the expression around it.
+    const first = evaluateArith('x, y + 1', { x: 'y=5' })
+    expect(first.value).toBe(6n)
+    expect(first.writes.map((w) => [w.name, w.value])).toEqual([['y', '5']])
+    const second = evaluateArith('y=1, x, y', { x: 'y+=1' })
+    expect(second.value).toBe(2n)
+    expect(second.writes.map((w) => [w.name, w.value])).toEqual([['y', '2']])
+  })
+})
+
+describe('an indexed subscript', () => {
+  it('evaluates in the record of the expression around it', () => {
+    // bash: `a[5]=7; $((a[x=5] + x))` is 12 and leaves x at 5; the
+    // subscript's assignment is seen by the rest of the expression and
+    // recorded with it.
+    const result = evaluateArith('arr[x=1] + x', {}, 0, fakeElements())
+    expect(result.value).toBe(21n)
+    expect(result.writes.map((w) => [w.name, w.key, w.value])).toEqual([['x', null, '1']])
+    // An associative subscript stays a key, never an expression.
+    const assoc = evaluateArith('m[a] + 1', {}, 0, fakeElements())
+    expect(assoc.value).toBe(8n)
+    expect(assoc.writes).toEqual([])
+  })
+})
+
+// `set -u` for the names an expression reads, pinned on bash 5.2.37: an
+// unset name is fatal, an empty one is 0, an assignment target and a
+// short-circuited operand are never read, and an array name is set
+// whatever its element 0 holds.
+describe('nounset', () => {
+  const unbound = (expr: string, env: Record<string, string> = {}): string => {
+    try {
+      evaluateArith(expr, env, 0, null, null, null, true)
+    } catch (err) {
+      if (!(err instanceof UnboundVariable)) throw err
+      expect([err.exitCode, err.containedCode]).toEqual([127, 1])
+      return new TextDecoder().decode(err.stderr)
+    }
+    throw new Error(`${expr} did not refuse`)
+  }
+
+  it('refuses a name no variable holds', () => {
+    expect(unbound('v + 1')).toBe('bash: v: unbound variable\n')
+    expect(unbound('v++')).toBe('bash: v: unbound variable\n')
+    expect(unbound('v += 1')).toBe('bash: v: unbound variable\n')
+    expect(unbound('w', { w: 'v' })).toBe('bash: v: unbound variable\n')
+  })
+
+  it('reads what is set and skips what is never read', () => {
+    const run = (expr: string, env: Record<string, string> = {}, ops: ElementOps | null = null) =>
+      evaluateArith(expr, env, 0, ops, null, null, true).value
+    expect(run('v', { v: '' })).toBe(0n)
+    expect(run('v = 1, v + 1')).toBe(2n)
+    expect(run('1 || v')).toBe(1n)
+    expect(run('0 && v')).toBe(0n)
+    expect(run('1 ? 2 : v')).toBe(2n)
+    const ops: ElementOps = { ...fakeElements(), holdsArray: (name) => name === 'holes' }
+    expect(run('holes + 1', {}, ops)).toBe(1n)
+  })
+
+  it('reads an unset name as 0 without it', () => {
+    expect(evaluateArith('v + 1', {}).value).toBe(1n)
   })
 })

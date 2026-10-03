@@ -15,8 +15,8 @@
 import asyncio
 
 from mirage.commands.cli.types import CLISpec
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 
@@ -25,41 +25,58 @@ def _run(coro):
 
 
 def _ws():
-    ram = RAMResource()
+    ram = RAMVFS()
     ram._store.files["/hello.txt"] = b"hi\n"
-    return Workspace(resources={"/ram/": (ram, MountMode.EXEC)}, )
+    return Workspace(
+        mounts={"/ram/": (ram, MountMode.EXEC)},
+    )
 
 
 def _multi_ws():
-    ram = RAMResource()
+    ram = RAMVFS()
     ram._store.files["/a.txt"] = b"a\n"
-    other = RAMResource()
+    other = RAMVFS()
     other._store.files["/b.txt"] = b"b\n"
-    ro = RAMResource()
+    ro = RAMVFS()
     ro._store.files["/c.txt"] = b"c\n"
     return Workspace(
-        resources={
+        mounts={
             "/ram/": (ram, MountMode.EXEC),
             "/other/": (other, MountMode.EXEC),
             "/ro/": (ro, MountMode.READ),
-        })
+        }
+    )
 
 
 def _exec(ws, cmd):
-    return _run(ws.execute(cmd))
+    return _run(ws.shell(cmd))
 
 
 def _out(io):
-    return io.stdout.decode() if isinstance(io.stdout, bytes) else _run(
-        _materialize(io.stdout))
+    return (
+        io.stdout.decode()
+        if isinstance(io.stdout, bytes)
+        else _run(_materialize(io.stdout))
+    )
+
+
+def _err(io):
+    return (
+        io.stderr.decode()
+        if isinstance(io.stderr, bytes)
+        else _run(_materialize(io.stderr))
+    )
 
 
 def test_help_flag_renders_help_through_executor():
     ws = _ws()
     io = _exec(ws, "cat --help")
     assert io.exit_code == 0
-    out = io.stdout.decode() if isinstance(io.stdout, bytes) else _run(
-        _materialize(io.stdout))
+    out = (
+        io.stdout.decode()
+        if isinstance(io.stdout, bytes)
+        else _run(_materialize(io.stdout))
+    )
     assert "Usage: cat" in out
     assert "--help" in out
     assert "--version" in out
@@ -69,8 +86,11 @@ def test_version_flag_prints_mirage_package_version():
     ws = _ws()
     io = _exec(ws, "tsort --version")
     assert io.exit_code == 0
-    out = io.stdout.decode() if isinstance(io.stdout, bytes) else _run(
-        _materialize(io.stdout))
+    out = (
+        io.stdout.decode()
+        if isinstance(io.stdout, bytes)
+        else _run(_materialize(io.stdout))
+    )
     assert out.startswith("tsort (Mirage) ")
     assert out.endswith("\n")
 
@@ -114,29 +134,39 @@ def test_man_renders_help_for_known_command():
     ws = _ws()
     io = _exec(ws, "man cat")
     assert io.exit_code == 0
-    out = io.stdout.decode() if isinstance(io.stdout, bytes) else _run(
-        _materialize(io.stdout))
+    out = (
+        io.stdout.decode()
+        if isinstance(io.stdout, bytes)
+        else _run(_materialize(io.stdout))
+    )
     assert "cat" in out
 
 
-def test_man_no_args_lists_commands_grouped_by_resource():
+def test_man_no_args_lists_commands_by_kind_of_word():
     ws = _ws()
     io = _exec(ws, "man")
     assert io.exit_code == 0
-    out = io.stdout.decode() if isinstance(io.stdout, bytes) else _run(
-        _materialize(io.stdout))
-    assert "RAM" in out
+    out = (
+        io.stdout.decode()
+        if isinstance(io.stdout, bytes)
+        else _run(_materialize(io.stdout))
+    )
+    assert out.startswith("# commands\n\n")
     assert "- cat" in out
     assert "- ls" in out
-    assert "# general" in out
+    assert "RAM" not in out
+    assert "# general" not in out
 
 
 def test_man_unknown_command_exits_1():
     ws = _ws()
     io = _exec(ws, "man definitely-not-a-real-command")
     assert io.exit_code == 1
-    err = io.stderr.decode() if isinstance(io.stderr, bytes) else _run(
-        _materialize(io.stderr))
+    err = (
+        io.stderr.decode()
+        if isinstance(io.stderr, bytes)
+        else _run(_materialize(io.stderr))
+    )
     assert "no entry for" in err
 
 
@@ -144,21 +174,52 @@ def _cli_ws():
     ws = _ws()
     ws.register_cli(
         "linear",
-        CLISpec(name="linear",
-                description="Linear API client",
-                subcommands=(CLISpec(name="issue",
-                                     description="Manage issues",
-                                     fn=lambda: None), )))
+        CLISpec(
+            name="linear",
+            description="Linear API client",
+            subcommands=(
+                CLISpec(
+                    name="issue", description="Manage issues", fn=lambda: None
+                ),
+                CLISpec(
+                    name="team", description="Manage one", fn=lambda: None
+                ),
+            ),
+        ),
+    )
     return ws
 
 
 def test_installed_cli_is_discoverable_from_the_shell():
     ws = _cli_ws()
-    assert _out(_exec(ws, "type linear")) == "linear is a mirage CLI\n"
-    assert _out(_exec(ws, "type -t linear")) == "cli\n"
-    assert _out(_exec(ws, "which linear")) == "linear\n"
+    assert _out(_exec(ws, "type linear")) == "linear is /usr/bin/linear\n"
+    assert _out(_exec(ws, "type -t linear")) == "file\n"
+    assert _out(_exec(ws, "which linear")) == "/usr/bin/linear\n"
+    assert "command linear" in _out(_exec(ws, "cat /usr/bin/linear"))
     assert "Usage: linear" in _out(_exec(ws, "man linear"))
     assert "# clis" in _out(_exec(ws, "man"))
+
+
+def test_man_lists_only_the_cli_verbs_the_profile_can_reach():
+    ws = _cli_ws()
+    ws.create_session(
+        "narrow",
+        profile={"commands": {"allow": ["man", "linear issue", "which"]}},
+    )
+    page = _out(_run(ws.shell("man linear", session_id="narrow")))
+    assert "issue" in page
+    assert "team" not in page
+    # The head word still routes, because one line of the tree runs.
+    assert (
+        _out(_run(ws.shell("which linear", session_id="narrow")))
+        == "/usr/bin/linear\n"
+    )
+    # A verb the list does not reach has no page.
+    io = _run(ws.shell("man linear team", session_id="narrow"))
+    assert io.exit_code == 1
+    assert _err(io) == "man: no entry for linear team\n"
+    # The host's own view is unnarrowed.
+    assert "team" in _out(_exec(ws, "man linear"))
 
 
 def test_which_reports_a_missing_name_through_the_status_only():
@@ -171,7 +232,9 @@ def test_which_reports_a_missing_name_through_the_status_only():
 def test_a_shell_function_shadows_a_cli_and_type_a_shows_both():
     ws = _cli_ws()
     assert _out(_exec(ws, "linear() { echo shadowed; }; type -a linear")) == (
-        "linear is a function\nlinear is a mirage CLI\n")
+        "linear is a function\nlinear () \n{ \n    echo shadowed\n}\n"
+        "linear is /usr/bin/linear\n"
+    )
 
 
 def test_workspace_file_prompt_mentions_help_and_man():

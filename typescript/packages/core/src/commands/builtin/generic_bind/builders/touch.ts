@@ -15,24 +15,23 @@
 import { IOResult } from '../../../../io/types.ts'
 import { fsStrerror, isFsError } from '../../../../utils/errors.ts'
 import { specOf } from '../../../spec/builtins.ts'
-import { FlagView } from '../../../spec/types.ts'
-import { type Builder, resolveGlobOf } from '../adapter.ts'
+import { FlagView } from '../../../spec/flag_view.ts'
+import { type Builder, requireOp, resolveGlobOf } from '../adapter.ts'
+import { UsageError } from '../../../errors.ts'
+import { usageHint } from '../../../spec/usage.ts'
 
 const ENC = new TextEncoder()
 
-export const TOUCH_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'touch',
   write: true,
-  requirements: ['exists', 'write'],
   fn: async (ops, accessor, paths, _texts, opts) => {
     if (paths.length === 0) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('touch: missing operand\n') })]
+      throw new UsageError(`touch: missing file operand\n${usageHint('touch')}`, 1)
     }
     const idx = opts.index ?? undefined
-    const { write, exists } = ops
-    if (write === undefined || exists === undefined) {
-      throw new Error('touch: backend provides no write op')
-    }
+    const write = requireOp(ops.write, 'write')
+    const exists = requireOp(ops.exists, 'exists')
     const resolved = await resolveGlobOf(ops)(accessor, paths, idx)
     const createOnly = new FlagView(opts.flags, specOf('touch')).asBool('c')
     const writes: Record<string, Uint8Array> = {}

@@ -31,6 +31,8 @@ const ADVICE_IGNORED =
   'hint: Disable this message with "git config set advice.addIgnoredFile false"'
 const ADVICE_EMPTY_PATHSPEC =
   'hint: Disable this message with "git config set advice.addEmptyPathspec false"'
+const ADVICE_REF_FORMAT = 'hint: See `man git check-ref-format`'
+const ADVICE_REF_SYNTAX = 'hint: Disable this message with "git config set advice.refSyntax false"'
 
 /**
  * Base for a git fatal: rendered as `fatal: <message>`, exit 128.
@@ -41,11 +43,17 @@ const ADVICE_EMPTY_PATHSPEC =
  * what git does when the refusal is a report rather than an error ("nothing to
  * commit"), and such a report goes to stdout because that is where the report it
  * replaces would have gone.
+ *
+ * `report` is the other half of a refusal git splits across both streams: the
+ * sentence saying it refused goes to stderr, and the per-path diagnosis naming
+ * what is in the way goes to stdout, which is where the same lines would have
+ * gone had the command run.
  */
 export class GitError extends Error {
   readonly prefix: string | null = 'fatal'
   readonly code: number = FATAL_EXIT
   readonly stream: 'stdout' | 'stderr' = 'stderr'
+  readonly report: string = ''
 }
 
 /**
@@ -92,6 +100,32 @@ export class AmbiguousArgumentError extends GitError {
 }
 
 /**
+ * A negated revision (`^<rev>`) that resolves to nothing.
+ *
+ * git words this one differently from a plain unknown revision, and refuses a
+ * negated range (`^A..B`) the same way (pinned against git 2.50).
+ */
+export class BadRevisionError extends GitError {
+  constructor(revision: string) {
+    super(`bad revision '${revision}'`)
+  }
+}
+
+/** `diff A...B` between two histories that share no commit. */
+export class NoMergeBaseError extends GitError {
+  constructor(revision: string) {
+    super(`${revision}: no merge base`)
+  }
+}
+
+/** A boolean config variable whose value git cannot read as one. */
+export class BadConfigValueError extends GitError {
+  constructor(value: string, key: string) {
+    super(`bad boolean config value '${value}' for '${key}'`)
+  }
+}
+
+/**
  * A date flag whose value could not be read.
  *
  * git accepts relative wording (`2 weeks ago`) that mirage does not, so an
@@ -113,6 +147,38 @@ export class BadDateError extends GitError {
 export class NoWorkspaceError extends GitError {
   constructor() {
     super('this operation must be run in a work tree')
+  }
+}
+
+/**
+ * A verb that reads or writes files, run with no work tree to enter.
+ *
+ * git's `setup_work_tree` refuses a bare repository and a work tree that is not
+ * a directory in the same words (pinned against git 2.54), so a mistyped
+ * `--work-tree` is never taken for an empty tree.
+ */
+export class NotAWorkTreeError extends GitError {
+  constructor() {
+    super('this operation must be run in a work tree')
+  }
+}
+
+/** `git reset` in a bare repository, refused in its own words. */
+export class BareResetError extends GitError {
+  constructor() {
+    super('mixed reset is not allowed in a bare repository')
+  }
+}
+
+/**
+ * A relative `core.worktree` that git cannot enter.
+ *
+ * git resolves one by entering it before any verb runs, so every verb fails,
+ * the read-only ones included (pinned against git 2.54).
+ */
+export class WorkTreeChdirError extends GitError {
+  constructor(path: string, reason = 'No such file or directory') {
+    super(`cannot chdir to '${path}': ${reason}`)
   }
 }
 
@@ -176,6 +242,35 @@ export class UnrecognizedArgumentError extends GitError {
 }
 
 /**
+ * `commit -a` given paths as well.
+ *
+ * git refuses the pair before reading anything, naming the first path (pinned
+ * against git 2.50).
+ */
+export class AllWithPathsError extends GitError {
+  constructor(path: string) {
+    super(`paths '${path} ...' with -a does not make sense`)
+  }
+}
+
+/**
+ * `commit` given paths, which this build does not take.
+ *
+ * Real git commits only those paths, from the working tree, and leaves the
+ * rest of the index staged. mirage commits the whole index, and doing that while
+ * the caller named a subset would record changes they never asked to commit, so
+ * the operand is refused instead.
+ */
+export class PartialCommitError extends GitError {
+  constructor(path: string) {
+    super(
+      `cannot commit '${path}' alone: this build commits the whole index; ` +
+        `stage it and commit without paths`,
+    )
+  }
+}
+
+/**
  * A --pretty/--format value naming no format at all.
  *
  * git's own wording and exit code for a name it has never heard of.
@@ -189,7 +284,7 @@ export class BadPrettyError extends GitError {
 /**
  * A --pretty/--format preset git has but this build does not.
  *
- * `raw`, `email`, `mboxrd` and `reference` are real git formats; answering
+ * `email`, `mboxrd` and `reference` are real git formats; answering
  * "invalid" for them would gaslight an agent that spelled a valid one, so the
  * refusal says unsupported and names what exists instead.
  */
@@ -197,7 +292,7 @@ export class UnsupportedPrettyError extends GitError {
   constructor(value: string) {
     super(
       `unsupported --pretty format: ${value} (this build implements ` +
-        `oneline, short, medium, full, fuller and format:/tformat: strings)`,
+        `oneline, short, medium, full, fuller, raw and format:/tformat: strings)`,
     )
   }
 }
@@ -213,6 +308,35 @@ export class OutsideRepositoryError extends GitError {
 export class PathspecError extends GitError {
   constructor(pathspec: string) {
     super(`pathspec '${pathspec}' did not match any files`)
+  }
+}
+
+/**
+ * An empty pathspec operand, which git refuses rather than reading as
+ * everything (pinned against git 2.54).
+ */
+export class EmptyPathspecError extends GitError {
+  constructor() {
+    super(
+      'empty string is not a valid pathspec. please use . instead if ' +
+        'you meant to match all paths',
+    )
+  }
+}
+
+/**
+ * Pathspec magic git has but this build does not read.
+ *
+ * `:(top)`, `:!`, `:(icase)` and their kin are real git; matching the operand
+ * as a plain path would select nothing, or the wrong paths, and look like an
+ * answer, so the refusal says unsupported and names what exists instead.
+ */
+export class UnsupportedPathspecError extends GitError {
+  constructor(pathspec: string) {
+    super(
+      `unsupported pathspec magic: ${pathspec} (this build implements ` +
+        'paths, leading directories and wildcard patterns)',
+    )
   }
 }
 
@@ -294,11 +418,23 @@ export class BranchExistsError extends GitError {
   }
 }
 
-/** `branch -d` with nothing to delete. */
-export class BranchNameRequiredError extends GitError {
-  override readonly prefix = 'error'
-  override readonly code = OPTION_EXIT
+/**
+ * A branch name git's ref rules refuse.
+ *
+ * Refused before the name reaches a ref file, because a ref is written as a path
+ * below `.git`: `../../config` would land on the repository's own configuration
+ * rather than on a branch. git closes the refusal with the two hint lines kept
+ * here, and words it without the full stop its tag twin carries. Pinned against
+ * git 2.50.1.
+ */
+export class InvalidBranchNameError extends GitError {
+  constructor(name: string) {
+    super(`'${name}' is not a valid branch name\n${ADVICE_REF_FORMAT}\n${ADVICE_REF_SYNTAX}`)
+  }
+}
 
+/** `branch -d` with nothing to delete: git dies, 128 (pinned against git 2.50.1). */
+export class BranchNameRequiredError extends GitError {
   constructor() {
     super('branch name required')
   }
@@ -367,8 +503,12 @@ export class UnknownPathspecError extends GitError {
 
 /**
  * One named-files paragraph of a checkout refusal.
+ *
+ * The advice line is optional because one of git's three paragraphs has none:
+ * the directory one ends at its list, which renders as the blank line before
+ * the next paragraph.
  */
-function conflictBlock(header: string, paths: readonly string[], advice: string): string {
+function conflictBlock(header: string, paths: readonly string[], advice = ''): string {
   const listed = [...paths]
     .sort(compareCodePoints)
     .map((path) => `\t${path}`)
@@ -384,16 +524,21 @@ function conflictBlock(header: string, paths: readonly string[], advice: string)
  * silently destroys whatever was edited and not staged.
  *
  * Two kinds of work are at risk and git words them differently: a tracked file
- * carrying uncommitted changes, and an untracked file the target branch would
- * write over. Both are carried here rather than thrown separately because when
- * both apply git prints both paragraphs and aborts once, pinned against git
- * 2.50.
+ * carrying uncommitted changes, an untracked *directory* the target replaces
+ * with a file of the same name, and an untracked file the target branch would
+ * write over. All three are carried here rather than thrown separately because
+ * when several apply git prints every paragraph and aborts once, in this
+ * order, pinned against git 2.50.1.
  */
 export class CheckoutConflictError extends GitError {
   override readonly prefix = 'error'
   override readonly code = 1
 
-  constructor(local: readonly string[], untracked: readonly string[]) {
+  constructor(
+    local: readonly string[],
+    untracked: readonly string[],
+    directories: readonly string[] = [],
+  ) {
     const blocks: string[] = []
     if (local.length > 0) {
       blocks.push(
@@ -401,6 +546,14 @@ export class CheckoutConflictError extends GitError {
           'Your local changes to the following files would be overwritten by checkout:',
           local,
           'Please commit your changes or stash them before you switch branches.',
+        ),
+      )
+    }
+    if (directories.length > 0) {
+      blocks.push(
+        conflictBlock(
+          'Updating the following directories would lose untracked files in them:',
+          directories,
         ),
       )
     }
@@ -416,6 +569,62 @@ export class CheckoutConflictError extends GitError {
     // git emits each paragraph as its own error, so the second one carries the
     // prefix inline: the renderer only writes the first.
     super(`${blocks.map((block) => `${block}\n`).join('error: ')}Aborting`)
+  }
+}
+
+/**
+ * A branch move while the index still records conflict stages.
+ *
+ * Every collision check a checkout makes reads stage 0, so a path held only as
+ * stages 1-3 is invisible to all of them: the move would clear the stages and
+ * delete the working-tree copy, throwing away a conflict resolution in progress
+ * with no reflog to recover it from. git refuses first, before it reads either
+ * tree.
+ *
+ * Both streams carry part of it, pinned against git 2.50.1: the per-path
+ * diagnosis is stdout's, written by the index refresh that found the stages, and
+ * the sentence saying the command stopped is stderr's. Exit 1, not the 128 a
+ * fatal takes.
+ */
+export class ResolveIndexError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = 1
+  override readonly report: string
+
+  constructor(paths: readonly string[]) {
+    super('you need to resolve your current index first')
+    this.report = [...paths]
+      .sort(compareCodePoints)
+      .map((path) => `${path}: needs merge\n`)
+      .join('')
+  }
+}
+
+/**
+ * `restore` naming a path the source cannot put back.
+ *
+ * A path with conflict stages has no stage-0 content, so restoring the working
+ * tree from the index has nothing to write and restoring the index from a tree
+ * that does not hold the path has nothing to stage. git names each such path and
+ * does none of the work; a path the source *does* hold restores normally and the
+ * stages go with it.
+ *
+ * One line per path, so several are refused in one answer rather than one per
+ * run. Pinned against git 2.50.1.
+ */
+export class UnmergedPathError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = 1
+
+  constructor(paths: readonly string[]) {
+    // git emits each path as its own error, so every line after the first
+    // carries the prefix inline: the renderer writes one.
+    super(
+      [...paths]
+        .sort(compareCodePoints)
+        .map((path) => `path '${path}' is unmerged`)
+        .join('\nerror: '),
+    )
   }
 }
 
@@ -451,5 +660,543 @@ export class InvalidOptionError extends GitError {
 
   constructor(argument: string) {
     super(`invalid option: ${argument}`)
+  }
+}
+
+/** `rm` with no pathspec at all. */
+export class NoPathspecRemoveError extends GitError {
+  constructor() {
+    super('No pathspec was given. Which files should I remove?')
+  }
+}
+
+/** `rm` naming a directory without `-r`. */
+export class NotRecursiveError extends GitError {
+  constructor(operand: string) {
+    super(`not removing '${operand}' recursively without -r`)
+  }
+}
+
+// The three refusals `rm` groups its paths under, in the order git prints
+// them: a path whose staged content matches neither the file nor HEAD, a path
+// with a staged change, a path with an unstaged edit. Each header comes in a
+// singular and a plural form.
+const STAGED_BOTH: [string, string, string] = [
+  'the following file has staged content different from both the\nfile and the HEAD:',
+  'the following files have staged content different from both the\nfile and the HEAD:',
+  '(use -f to force removal)',
+]
+const STAGED_INDEX: [string, string, string] = [
+  'the following file has changes staged in the index:',
+  'the following files have changes staged in the index:',
+  '(use --cached to keep the file, or -f to force removal)',
+]
+const LOCAL_CHANGES: [string, string, string] = [
+  'the following file has local modifications:',
+  'the following files have local modifications:',
+  '(use --cached to keep the file, or -f to force removal)',
+]
+
+/** One paragraph of an `rm` refusal. */
+function removalBlock(wording: [string, string, string], paths: readonly string[]): string {
+  const header = paths.length === 1 ? wording[0] : wording[1]
+  const listed = [...paths]
+    .sort(compareCodePoints)
+    .map((path) => `    ${path}`)
+    .join('\n')
+  return `${header}\n${listed}\n${wording[2]}`
+}
+
+/**
+ * `rm` naming a path whose removal would lose uncommitted work.
+ *
+ * git refuses rather than deleting, and names every path under the reason it
+ * refused it. Three reasons, printed as three paragraphs in a fixed order when
+ * more than one applies, pinned against git 2.50.1.
+ */
+export class RemovalRefusedError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = 1
+
+  constructor(both: readonly string[], staged: readonly string[], local: readonly string[]) {
+    const blocks: string[] = []
+    if (both.length > 0) blocks.push(removalBlock(STAGED_BOTH, both))
+    if (staged.length > 0) blocks.push(removalBlock(STAGED_INDEX, staged))
+    if (local.length > 0) blocks.push(removalBlock(LOCAL_CHANGES, local))
+    // git emits each paragraph as its own error, so the second one carries the
+    // prefix inline: the renderer only writes the first.
+    super(blocks.join('\nerror: '))
+  }
+}
+
+/**
+ * `rm` whose working-tree deletion the mount refused.
+ *
+ * git names the path and the strerror. The one reason a mount gives is a
+ * directory standing where a tracked file was: `unlink` refuses that, and git
+ * reports it rather than removing the tree.
+ *
+ * The `rm` lines ride along on stdout because git prints them for every
+ * selected path before it deletes anything, so the ones printed before the
+ * failure are printed whether the line goes through or not.
+ */
+export class RemovePathError extends GitError {
+  override readonly report: string
+
+  constructor(path: string, report = '', reason = 'Is a directory') {
+    super(`git rm: '${path}': ${reason}`)
+    this.report = report
+  }
+}
+
+/**
+ * A working-tree removal that would take a nested mount with it.
+ *
+ * A mount nested inside the repository is served by another VFS entirely,
+ * so removing the directory it stands in empties that backend rather than the
+ * repository: the store behind it is gone, and no branch ever recorded a line
+ * of it. mirage refuses instead, which is the rule `MountRootPolicy` already
+ * enforces for `rm` and `mv` at the command tier; a git verb reaches the
+ * dispatcher directly, so it has to ask for itself.
+ *
+ * The mount is named only when the session may be told about it. A hidden one
+ * blocks the removal just the same, because avoiding a boundary and naming it
+ * are two different questions, and naming a hidden mount is the one thing the
+ * hide exists to prevent.
+ */
+export class MountInWayError extends GitError {
+  constructor(path: string, mount: string | null = null) {
+    const held =
+      mount === null
+        ? 'it holds a mount root'
+        : mount === path
+          ? 'it is a mount root'
+          : `'${mount}' is a mount root`
+    super(`cannot remove '${path}': ${held}`)
+  }
+}
+
+/**
+ * `mv` with fewer than two operands.
+ *
+ * git prints its usage and exits 129. Only the two synopsis lines are kept: the
+ * option list below them describes flags this build does not all have.
+ */
+export class MoveUsageError extends GitError {
+  override readonly prefix = null
+  override readonly code = OPTION_EXIT
+
+  constructor() {
+    super(
+      'usage: git mv [-v] [-f] [-n] [-k] <source> <destination>\n' +
+        '   or: git mv [-v] [-f] [-n] [-k] <source>... <destination-directory>',
+    )
+  }
+}
+
+/** `mv` refusing one source, in git's `reason, source, destination` shape. */
+export class MoveRefusedError extends GitError {
+  constructor(reason: string, source: string, destination: string) {
+    super(`${reason}, source=${source}, destination=${destination}`)
+  }
+}
+
+/**
+ * `mv` given both a directory and something inside it.
+ *
+ * git refuses the whole line rather than one source, and `-k` does not skip it:
+ * the two moves would race for the same bytes, and the one that lost would be
+ * reported as a rename that failed after the other had already changed the
+ * working tree. The child is named first however the operands were ordered.
+ * Pinned against git 2.50.1.
+ */
+export class MoveOverlapError extends GitError {
+  constructor(child: string, parent: string) {
+    super(`cannot move both '${child}' and its parent directory '${parent}'`)
+  }
+}
+
+/** `mv` with several sources and a destination that is not a directory. */
+export class NotADirectoryDestinationError extends GitError {
+  constructor(destination: string) {
+    super(`destination '${destination}' is not a directory`)
+  }
+}
+
+/**
+ * `mv` whose rename the mount refused.
+ *
+ * git names the source and the strerror. The one reason a mount gives is a
+ * destination whose directory does not exist: git does not create it, and
+ * neither does this.
+ */
+export class RenameFailedError extends GitError {
+  constructor(source: string, reason = 'No such file or directory') {
+    super(`renaming '${source}' failed: ${reason}`)
+  }
+}
+
+/** `restore` with no pathspec at all. */
+export class NoRestorePathsError extends GitError {
+  constructor() {
+    super('you must specify path(s) to restore')
+  }
+}
+
+/**
+ * `restore --source` naming an object that is no tree.
+ *
+ * A revision that resolves is reported by the id it resolved to rather than by
+ * the spelling, which is git's own wording: the complaint is about the object
+ * found, not about the name.
+ */
+export class UnreadableTreeError extends GitError {
+  constructor(oid: string) {
+    super(`unable to read tree (${oid})`)
+  }
+}
+
+/** `restore --source` naming a tree this repository cannot resolve. */
+export class UnresolvableSourceError extends GitError {
+  constructor(source: string) {
+    super(`could not resolve ${source}`)
+  }
+}
+
+/**
+ * `switch` naming something that is neither a branch nor a commit.
+ *
+ * `switch` words the miss differently from `checkout`, which calls the same
+ * operand a pathspec: switch never takes a path, so nothing it was given could
+ * have been one.
+ */
+export class InvalidReferenceError extends GitError {
+  constructor(name: string) {
+    super(`invalid reference: ${name}`)
+  }
+}
+
+/**
+ * `switch` given a commit, tag or remote branch without `--detach`.
+ *
+ * git refuses rather than detaching, because a detached HEAD is the state an
+ * agent loses commits in, and `switch` exists to be the verb that never gets
+ * there by accident.
+ */
+export class BranchExpectedError extends GitError {
+  constructor(kind: string, name: string) {
+    super(
+      `a branch is expected, got ${kind} '${name}'\n` +
+        `hint: If you want to detach HEAD at the commit, try again with the --detach option.`,
+    )
+  }
+}
+
+/** `switch` with nothing to switch to. */
+export class MissingBranchArgumentError extends GitError {
+  constructor() {
+    super('missing branch or commit argument')
+  }
+}
+
+/** `switch` given more than one operand. */
+export class OneReferenceError extends GitError {
+  constructor() {
+    super('only one reference expected')
+  }
+}
+
+/** `switch -c` together with `--detach`. */
+export class DetachWithCreateError extends GitError {
+  constructor() {
+    super(`'--detach' cannot be used with '-b/-B/--orphan'`)
+  }
+}
+
+/** `tag <name>` naming a tag that is already there. */
+export class TagExistsError extends GitError {
+  constructor(name: string) {
+    super(`tag '${name}' already exists`)
+  }
+}
+
+/**
+ * `tag -d` naming a tag that is not there.
+ *
+ * Reported and moved past: git deletes the other names on the line and exits 1
+ * at the end, so this is rendered per name rather than thrown.
+ */
+export class TagNotFoundError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = 1
+
+  constructor(name: string) {
+    super(`tag '${name}' not found.`)
+  }
+}
+
+/**
+ * A listing option on a `tag` line that deletes rather than lists.
+ *
+ * `-n` asks for message lines beside each name and `--contains` and its kin
+ * narrow which names are listed, all of which only a listing does, and git
+ * makes each *imply* a listing rather than refuse it: `git tag -n1 nosuch` is a
+ * listing whose pattern matches nothing and exits 0. The implication is what
+ * cannot happen once `-d` has already said what mode the line is in, so git
+ * dies there instead, with the tags untouched, naming the first of `-n`,
+ * `--contains`, `--no-contains`, `--points-at`, `--merged`, `--no-merged` the
+ * line holds. Refusing it matters more here than the wording does: read as a
+ * listing flag and dropped, the line went on to delete the refs its operands
+ * named. Pinned against git 2.50.1.
+ */
+export class ListModeOnlyError extends GitError {
+  constructor(option = '-n') {
+    super(`the '${option}' option is only allowed in list mode`)
+  }
+}
+
+/**
+ * `tag -d` naming one tag twice.
+ *
+ * git stages every deletion on the line as one ref transaction, and a
+ * transaction holding two updates for the same ref is refused before any of
+ * them applies, so the whole line is a no-op: the repeated tag survives, and so
+ * does every other tag the line named. The ref it blames is the first in ref
+ * order rather than the first typed, since the transaction sorts before it
+ * looks for the repeat. Reported the way git reports it, as an `error` exiting
+ * 1 rather than a fatal.
+ */
+export class RefUpdateConflictError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = 1
+
+  constructor(ref: string) {
+    super(`could not delete references: multiple updates for ref '${ref}' not allowed`)
+  }
+}
+
+/**
+ * A ref that cannot be written because another one holds its path.
+ *
+ * git reports this as a failure to take the lock rather than as a name that is
+ * already taken, and names the ref standing in the way. `-f` does not help: the
+ * obstacle is the path, not the value. Pinned against git 2.50.1.
+ */
+export class RefLockError extends GitError {
+  constructor(ref: string, held: string) {
+    super(`cannot lock ref '${ref}': '${held}' exists; cannot create '${ref}'`)
+  }
+}
+
+/** A tag name git's ref rules refuse. */
+export class InvalidTagNameError extends GitError {
+  constructor(name: string) {
+    super(`'${name}' is not a valid tag name.`)
+  }
+}
+
+/** `tag` given an object it cannot resolve. */
+export class UnresolvedRefError extends GitError {
+  constructor(revision: string) {
+    super(`Failed to resolve '${revision}' as a valid ref.`)
+  }
+}
+
+/**
+ * `tag` given a creation option with no tag name to create.
+ *
+ * `-a`, `-m` and `-f` are creation options, so git refuses them on a line that
+ * lists or deletes instead: no operand at all lists, and `-l` or `-d` says so
+ * outright. It prints its usage and exits 129, where an operand-free `git tag`
+ * or `git tag -d` lists and exits 0. The synopsis is trimmed to the options this
+ * build has, the way `mv`'s is: git's own lines advertise `-s`, `-u`, `-F`, `-e`
+ * and `-v`, which would be a promise nothing here keeps. Pinned against git
+ * 2.50.1.
+ */
+export class TagUsageError extends GitError {
+  override readonly prefix = null
+  override readonly code = OPTION_EXIT
+
+  constructor() {
+    super(
+      'usage: git tag [-a] [-f] [-m <msg>] <tagname> [<commit> | <object>]\n' +
+        '   or: git tag -d <tagname>...\n' +
+        '   or: git tag [-n[<num>]] -l [<pattern>...]',
+    )
+  }
+}
+
+/** `tag` given more operands than a name and an object. */
+export class TooManyArgumentsError extends GitError {
+  constructor() {
+    super('too many arguments')
+  }
+}
+
+/**
+ * `tag -a` with no `-m`.
+ *
+ * git would open an editor here, exactly as `commit` would, and the same answer
+ * applies: a mount has no editor, and inventing a message would put an
+ * unreviewed one into the repository.
+ */
+export class MissingTagMessageError extends GitError {
+  constructor() {
+    super('no tag message supplied (mirage has no editor to open; pass -m)')
+  }
+}
+
+/** Two options git refuses to take together. */
+export class IncompatibleOptionsError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = OPTION_EXIT
+
+  constructor(first: string, second: string) {
+    super(`options '${first}' and '${second}' cannot be used together`)
+  }
+}
+
+/**
+ * Two revision-walk options git refuses to take together.
+ *
+ * The same sentence as IncompatibleOptionsError, from the revision parser
+ * rather than parse-options, so git dies with 128 instead of refusing with
+ * 129: `log --graph --reverse` (pinned against git 2.50.1).
+ */
+export class IncompatibleLogOptionsError extends GitError {
+  constructor(first: string, second: string) {
+    super(`options '${first}' and '${second}' cannot be used together`)
+  }
+}
+
+/**
+ * `--contains` or `--points-at` given a name that resolves to no object.
+ *
+ * Both refuse while the options are parsed, so the line exits 129 and nothing
+ * is listed; `--points-at` quotes the name and `--contains` does not, which is
+ * git's own inconsistency (pinned against git 2.50.1).
+ */
+export class MalformedObjectError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = OPTION_EXIT
+
+  constructor(name: string, quoted = false) {
+    super(`malformed object name ${quoted ? `'${name}'` : name}`)
+  }
+}
+
+/**
+ * `--merged` or `--no-merged` given a name that resolves to no object.
+ *
+ * The same mistake `MalformedObjectError` reports, and git dies on this one
+ * instead of refusing the option: exit 128 (pinned against git 2.50.1).
+ */
+export class MalformedMergeFilterError extends GitError {
+  constructor(name: string) {
+    super(`malformed object name ${name}`)
+  }
+}
+
+/**
+ * A commit filter given an object that is no commit, such as a blob.
+ *
+ * git names the object and its type, then says which option could not use it:
+ * `--contains` as `no such commit <name>` and `--merged` as the option itself
+ * (pinned against git 2.50.1).
+ */
+export class NotACommitError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = OPTION_EXIT
+
+  constructor(oid: string, type: string, reason: string) {
+    super(`object ${oid} is a ${type}, not a commit\nerror: ${reason}`)
+  }
+}
+
+/**
+ * `branch` asked to list and to delete on one line.
+ *
+ * `--contains` and its kin imply a listing, and a listing is one mode among
+ * the others, so a line that also deletes names two: git prints its usage and
+ * exits 129 (pinned against git 2.50.1). The lines are git's own, less the
+ * forms this build does not implement.
+ */
+export class BranchUsageError extends GitError {
+  override readonly prefix = null
+  override readonly code = OPTION_EXIT
+
+  constructor() {
+    super(
+      'usage: git branch [<options>] [-r | -a] [--merged] [--no-merged]\n' +
+        '   or: git branch [<options>] <branch-name> [<start-point>]\n' +
+        '   or: git branch [<options>] [-l] [<pattern>...]\n' +
+        '   or: git branch [<options>] [-r] (-d | -D) <branch-name>...\n' +
+        '   or: git branch [<options>] [-r | -a] [--points-at]',
+    )
+  }
+}
+
+/** A local path that holds no repository, in clone's words. */
+export class MissingRepositoryError extends GitError {
+  constructor(url: string) {
+    super(`repository '${url}' does not exist`)
+  }
+}
+
+/**
+ * A `--date` value, or a date atom's argument, git has no style for.
+ *
+ * Named as git's `parse_date_format` names it: the whole value, a `-local`
+ * suffix and all (pinned against git 2.50.1).
+ */
+export class UnknownDateFormatError extends GitError {
+  constructor(value: string) {
+    super(`unknown date format ${value}`)
+  }
+}
+
+/** `format` with no `:` before its strftime template. */
+export class DateFormatColonError extends GitError {
+  constructor(value: string) {
+    super(`date format missing colon separator: ${value}`)
+  }
+}
+
+/**
+ * A ref field git has but this build does not render.
+ *
+ * `%(describe)`, `%(trailers)`, `%(signature)` and their kin are real git
+ * fields; calling one unknown would gaslight an agent that spelled it right, so
+ * the refusal says unsupported instead.
+ */
+export class UnsupportedFieldError extends GitError {
+  constructor(name: string) {
+    super(`unsupported field name: ${name} (this build does not render it)`)
+  }
+}
+
+/**
+ * A ref format or option set a verb refuses with its usage.
+ *
+ * git prints the line, then the verb's usage, and exits 129; the usage is
+ * omitted here as it is for every other verb.
+ */
+export class FormatUsageError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = OPTION_EXIT
+}
+
+/**
+ * `branch` and `tag` given a format with a `%(` left open.
+ *
+ * `for-each-ref` answers the same format with its usage; these two say it
+ * twice instead, once as git's `error:` and once as the fatal that follows it
+ * (pinned against git 2.50.1).
+ */
+export class UnparsableFormatError extends GitError {
+  override readonly prefix = 'error'
+
+  constructor(rest: string) {
+    super(`malformed format string ${rest}\nfatal: unable to parse format string`)
   }
 }

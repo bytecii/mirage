@@ -16,20 +16,21 @@ import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
 from mirage.cache.context import invalidate_after_write
-from mirage.core.ssh.client import _abs
+from mirage.core.ssh.utils import join_root
 from mirage.types import PathSpec
 
 
-async def copy(accessor: SSHAccessor, src_spec: PathSpec,
-               dst_spec: PathSpec) -> None:
+async def copy(
+    accessor: SSHAccessor, src_spec: PathSpec, dst_spec: PathSpec
+) -> None:
     src = src_spec.mount_path
     dst = dst_spec.mount_path
     config = accessor.config
     sftp = await accessor.sftp()
     try:
-        async with sftp.open(_abs(config, src), "rb") as f:
+        async with sftp.open(join_root(config.root, src), "rb") as f:
             content = await f.read()
-        async with sftp.open(_abs(config, dst), "wb") as f:
+        async with sftp.open(join_root(config.root, dst), "wb") as f:
             await f.write(content)
     except asyncssh.SFTPNoSuchFile:
         raise FileNotFoundError(src)

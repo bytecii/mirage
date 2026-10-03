@@ -1,0 +1,1294 @@
+{
+  "cases": [
+    {
+      "id": "readfail_seed",
+      "seq": 963000,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/rfdir && echo inner > /data/rfdir/inner.txt && echo ok",
+      "expect": {
+        "exit": 0,
+        "stdout": "ok\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_base64_dir",
+      "seq": 963001,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "base64 /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "base64: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_base64_missing",
+      "seq": 963002,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "base64 /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "base64: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_od_dir",
+      "seq": 963003,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "od /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "od: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_od_missing",
+      "seq": 963004,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "od /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "od: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_xxd_dir",
+      "seq": 963005,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "xxd /data/rfdir",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "xxd: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_xxd_missing",
+      "seq": 963006,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "xxd /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "xxd: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_dir",
+      "seq": 963007,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sort /data/rfdir",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: read failed: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_missing",
+      "seq": 963008,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sort /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: cannot read: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_awk_dir",
+      "seq": 963009,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "awk '{print}' /data/rfdir",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "awk: cannot open \"/data/rfdir\" (Is a directory)\n"
+      }
+    },
+    {
+      "id": "readfail_awk_missing",
+      "seq": 963010,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "awk '{print}' /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "awk: cannot open \"/data/rfnope.txt\" (No such file or directory)\n"
+      }
+    },
+    {
+      "id": "readfail_sed_dir",
+      "seq": 963011,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sed -n p /data/rfdir",
+      "expect": {
+        "exit": 4,
+        "stdout": "",
+        "stderr": "sed: read error on /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_missing",
+      "seq": 963012,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sed -n p /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sed: can't read /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_jq_dir",
+      "seq": 963013,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "jq . /data/rfdir",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "jq: error: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_jq_missing",
+      "seq": 963014,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "jq . /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "jq: error: Could not open file /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_uniq_dir",
+      "seq": 963015,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "uniq /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "uniq: error reading '/data/rfdir': Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_uniq_missing",
+      "seq": 963016,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "uniq /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "uniq: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_paste_dir",
+      "seq": 963017,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "paste /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "paste: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_paste_missing",
+      "seq": 963018,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "paste /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "paste: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_tsort_dir",
+      "seq": 963019,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "tsort /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "tsort: /data/rfdir: read error: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_tsort_missing",
+      "seq": 963020,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "tsort /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "tsort: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_shuf_dir",
+      "seq": 963021,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "shuf /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "shuf: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_shuf_missing",
+      "seq": 963022,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "shuf /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "shuf: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_split_dir",
+      "seq": 963023,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "split /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "split: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_split_missing",
+      "seq": 963024,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "split /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "split: cannot open '/data/rfnope.txt' for reading: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_csplit_dir",
+      "seq": 963025,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "csplit /data/rfdir 1",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "csplit: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_csplit_missing",
+      "seq": 963026,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "csplit /data/rfnope.txt 1",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "csplit: cannot open '/data/rfnope.txt' for reading: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_column_dir",
+      "seq": 963027,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "column /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "column: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_column_missing",
+      "seq": 963028,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "column /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "column: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_look_dir",
+      "seq": 963029,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "look x /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "look: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_look_missing",
+      "seq": 963030,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "look x /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "look: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_comm_dir",
+      "seq": 963031,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "comm /data/rfdir /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "comm: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_comm_missing",
+      "seq": 963032,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "comm /data/rfnope.txt /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "comm: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_join_dir",
+      "seq": 963033,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "join /data/rfdir /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "join: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_join_missing",
+      "seq": 963034,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "join /data/rfnope.txt /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "join: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_iconv_dir",
+      "seq": 963035,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "iconv -f utf-8 -t utf-8 /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "iconv: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_iconv_missing",
+      "seq": 963036,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "iconv -f utf-8 -t utf-8 /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "iconv: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_gzip_dir",
+      "seq": 963037,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "gzip -c /data/rfdir",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "gzip: /data/rfdir is a directory -- ignored\n"
+      }
+    },
+    {
+      "id": "readfail_gzip_missing",
+      "seq": 963038,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "gzip -c /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gzip: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_gunzip_dir",
+      "seq": 963039,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "gunzip -c /data/rfdir",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "gzip: /data/rfdir is a directory -- ignored\n"
+      }
+    },
+    {
+      "id": "readfail_gunzip_missing",
+      "seq": 963040,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "gunzip -c /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gzip: /data/rfnope.txt.gz: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_zcat_dir",
+      "seq": 963041,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "zcat /data/rfdir",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "gzip: /data/rfdir is a directory -- ignored\n"
+      }
+    },
+    {
+      "id": "readfail_zcat_missing",
+      "seq": 963042,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "zcat /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gzip: /data/rfnope.txt.gz: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_zgrep_dir",
+      "seq": 963043,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "zgrep x /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_zgrep_missing",
+      "seq": 963044,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "zgrep x /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "gzip: /data/rfnope.txt.gz: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_cmp_dir",
+      "seq": 963045,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cmp /data/rfdir /data/rfdir/inner.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "cmp: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_cmp_missing",
+      "seq": 963046,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cmp /data/rfnope.txt /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "cmp: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_cat_dir",
+      "seq": 963047,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cat /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cat: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_cat_missing",
+      "seq": 963048,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cat /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cat: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_wc_dir",
+      "seq": 963049,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "wc /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "      0       0       0 /data/rfdir\n",
+        "stderr": "wc: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_wc_missing",
+      "seq": 963050,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "wc /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "wc: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_tac_dir",
+      "seq": 963051,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "tac /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "tac: /data/rfdir: read error: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_tac_missing",
+      "seq": 963052,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "tac /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "tac: failed to open '/data/rfnope.txt' for reading: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_stat_missing",
+      "seq": 963053,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "stat /data/rfnope.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "stat: cannot statx '/data/rfnope.txt': No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_truncate_dir",
+      "seq": 963054,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "truncate -s 0 /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "truncate: cannot open '/data/rfdir' for writing: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_multi_seed",
+      "seq": 963060,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "printf 'a\\nb\\n' > /data/rfok.txt && printf 'c\\nd\\n' > /data/rfok2.txt && echo ok",
+      "expect": {
+        "exit": 0,
+        "stdout": "ok\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_sed_open_error_continues",
+      "seq": 963061,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sed -n p /data/rfnope /data/rfok.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "a\nb\n",
+        "stderr": "sed: can't read /data/rfnope: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_read_error_is_fatal",
+      "seq": 963062,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sed -n p /data/rfdir /data/rfok.txt",
+      "expect": {
+        "exit": 4,
+        "stdout": "",
+        "stderr": "sed: read error on /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_read_error_stops_the_rest",
+      "seq": 963063,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sed -n p /data/rfok.txt /data/rfdir /data/rfok2.txt",
+      "expect": {
+        "exit": 4,
+        "stdout": "a\nb\n",
+        "stderr": "sed: read error on /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_open_error_keeps_the_rest",
+      "seq": 963064,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sed -n p /data/rfok.txt /data/rfnope /data/rfok2.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "a\nb\nc\nd\n",
+        "stderr": "sed: can't read /data/rfnope: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_read_error_reports_once",
+      "seq": 963065,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sed -n p /data/rfdir /data/rfdir",
+      "expect": {
+        "exit": 4,
+        "stdout": "",
+        "stderr": "sed: read error on /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_open_then_read_error",
+      "seq": 963066,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sed -n p /data/rfnope /data/rfdir",
+      "expect": {
+        "exit": 4,
+        "stdout": "",
+        "stderr": "sed: can't read /data/rfnope: No such file or directory\nsed: read error on /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_emits_nothing_on_failure",
+      "seq": 963067,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sort /data/rfok.txt /data/rfdir /data/rfok2.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: read failed: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_cat_continues_past_a_directory",
+      "seq": 963068,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cat /data/rfok.txt /data/rfdir /data/rfok2.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "a\nb\nc\nd\n",
+        "stderr": "cat: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_zcat_error_outranks_warning",
+      "seq": 963069,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "zcat /data/rfdir /data/rfnope",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gzip: /data/rfdir is a directory -- ignored\ngzip: /data/rfnope.gz: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_zcat_error_outranks_warning_reversed",
+      "seq": 963070,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "zcat /data/rfnope /data/rfdir",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gzip: /data/rfnope.gz: No such file or directory\ngzip: /data/rfdir is a directory -- ignored\n"
+      }
+    },
+    {
+      "id": "readfail_zcat_warning_alone_stays_a_warning",
+      "seq": 963071,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "zcat /data/rfdir /data/rfdir",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "gzip: /data/rfdir is a directory -- ignored\ngzip: /data/rfdir is a directory -- ignored\n"
+      }
+    },
+    {
+      "id": "readfail_tac_continues_past_a_directory",
+      "seq": 963072,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "tac /data/rfok.txt /data/rfdir /data/rfok2.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "b\na\nd\nc\n",
+        "stderr": "tac: /data/rfdir: read error: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_missing_outranks_a_dir",
+      "seq": 1299050,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sort /data/rfdir /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: cannot read: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_check_missing_is_open_failed",
+      "seq": 1299051,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sort -c /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: open failed: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_output_dir_is_open_failed",
+      "seq": 1299052,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sort -o /data/rfdir /data/rfok.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: open failed: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_output_missing_parent_is_open_failed",
+      "seq": 1299053,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "sort -o /data/rfnodir/out.txt /data/rfok.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: open failed: /data/rfnodir/out.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_cmp_s_still_reports_a_directory_it_cannot_read",
+      "seq": 1301040,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cmp -s /data/sub /data/a.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "cmp: /data/sub: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_cmp_s_open_failure_outranks_a_directory",
+      "seq": 1301041,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cmp -s /data/sub /data/nope1301; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_cmp_names_a_failed_open_before_a_directory",
+      "seq": 1301042,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cmp /data/sub /data/nope1301",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "cmp: /data/nope1301: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_cmp_one_directory_named_twice_is_equal",
+      "seq": 1301043,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "cmp /data/sub /data/sub; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_gunzip_retried_name_is_a_directory",
+      "seq": 1301044,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "(cd /data && gunzip -c sub1301; echo rc=$?; mkdir sub1301.gz && gunzip -c sub1301; echo rc=$?; rmdir sub1301.gz)",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nrc=2\n",
+        "stderr": "gzip: sub1301.gz: No such file or directory\ngzip: sub1301.gz is a directory -- ignored\n"
+      }
+    },
+    {
+      "id": "readfail_sed_last_line_skips_dir",
+      "seq": 9960301,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\n' > /data/sla/f && printf 'x\\n' > /data/sla/g && sed -n '$p' /data/sla/f /data/sla/d; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "two\nrc=0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_sed_last_line_reads_past_dir",
+      "seq": 9960302,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\n' > /data/sla/f && printf 'x\\n' > /data/sla/g && sed -n '$p' /data/sla/f /data/sla/d /data/sla/g; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\nrc=0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_sed_n_then_dir",
+      "seq": 9960303,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\n' > /data/sla/f && printf 'x\\n' > /data/sla/g && sed n /data/sla/f /data/sla/d; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "one\ntwo\nrc=4\n",
+        "stderr": "sed: read error on /data/sla/d: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_N_then_dir",
+      "seq": 9960304,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\n' > /data/sla/f && printf 'x\\n' > /data/sla/g && sed '$!N' /data/sla/f /data/sla/d; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "one\ntwo\nrc=4\n",
+        "stderr": "sed: read error on /data/sla/d: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_separate_last_line_dir",
+      "seq": 9960305,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\n' > /data/sla/f && printf 'x\\n' > /data/sla/g && sed -s -n '$p' /data/sla/f /data/sla/d; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "two\nrc=4\n",
+        "stderr": "sed: read error on /data/sla/d: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sed_last_line_names_dir",
+      "seq": 9960306,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\n' > /data/sla/f && printf 'x\\n' > /data/sla/g && sed '$F' /data/sla/f /data/sla/d; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "one\n/data/sla/d\ntwo\nrc=0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_sed_n_looks_past_dir",
+      "seq": 9960307,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\nthree\\n' > /data/sla/f && printf 'L1\\nL2\\n' > /data/sla/g && sed -n 'n;p' /data/sla/f /data/sla/d /data/sla/g; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "two\nL1\nrc=0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_sed_N_looks_past_dir",
+      "seq": 9960308,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\nthree\\n' > /data/sla/f && printf 'L1\\nL2\\n' > /data/sla/g && sed -n 'N;p' /data/sla/f /data/sla/d /data/sla/g; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "one\ntwo\nthree\nL1\nrc=0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "readfail_sed_separate_n_stops_at_dir",
+      "seq": 9960309,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/sla/d && printf 'x\\n' > /data/sla/d/in && printf 'one\\ntwo\\nthree\\n' > /data/sla/f && printf 'L1\\nL2\\n' > /data/sla/g && sed -s -n 'n;p' /data/sla/f /data/sla/d /data/sla/g; echo rc=$?; rm -r /data/sla",
+      "expect": {
+        "exit": 0,
+        "stdout": "two\nrc=4\n",
+        "stderr": "sed: read error on /data/sla/d: Is a directory\n"
+      }
+    }
+  ]
+}

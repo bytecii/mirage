@@ -24,6 +24,9 @@ from openhands.sdk.workspace.local import LocalWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from pydantic import Field, PrivateAttr
 
+from mirage.agents.io_text import with_refusal
+from mirage.ops.ops import Ops
+from mirage.workspace.workspace import Session
 from mirage.workspace.workspace import Workspace as MirageBackingWorkspace
 
 logger = logging.getLogger(__name__)
@@ -44,12 +47,14 @@ async def _execute_with_timeout(
     ws: MirageBackingWorkspace,
     command: str,
     timeout: float,
+    session_id: str | None,
 ) -> Any:
-    return await asyncio.wait_for(ws.execute(command), timeout=timeout)
+    return await asyncio.wait_for(
+        ws.shell(command, session_id=session_id), timeout=timeout
+    )
 
 
 class _AsyncBridge:
-
     def __init__(self) -> None:
         self._state: dict[str, Any] = {}
         self._thread: threading.Thread | None = None
@@ -104,6 +109,9 @@ class MirageWorkspace(LocalWorkspace):
             commands when no explicit cwd is provided. Must be a valid
             host path (OpenHands validates it on the host fs). Defaults
             to "/".
+        session_id: The Mirage session the shell and file operations
+            act as, so its profile judges every call; None is the
+            workspace's default session.
     """
 
     working_dir: str = Field(
@@ -112,6 +120,7 @@ class MirageWorkspace(LocalWorkspace):
     )
 
     _ws: Any = PrivateAttr()
+    _session_id: str | None = PrivateAttr()
     _bridge: Any = PrivateAttr()
 
     def __init__(
@@ -119,11 +128,20 @@ class MirageWorkspace(LocalWorkspace):
         *,
         workspace: MirageBackingWorkspace,
         working_dir: str = "/",
+        session_id: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(working_dir=working_dir, **kwargs)
         self._ws = workspace
+        self._session_id = session_id
         self._bridge = _AsyncBridge()
+
+    @property
+    def _vfs(self) -> Ops:
+        """The op facade run as this workspace's session."""
+        if self._session_id is None:
+            return self._ws.vfs
+        return Session(self._ws, self._session_id).vfs
 
     @property
     def workspace(self) -> MirageBackingWorkspace:
@@ -149,9 +167,15 @@ class MirageWorkspace(LocalWorkspace):
             full_command = command
         try:
             io_result = self._bridge.run(
-                _execute_with_timeout(self._ws, full_command, timeout))
+                _execute_with_timeout(
+                    self._ws, full_command, timeout, self._session_id
+                )
+            )
             stdout = self._coerce_text(getattr(io_result, "stdout", b""))
-            stderr = self._coerce_text(getattr(io_result, "stderr", b""))
+            stderr = with_refusal(
+                self._coerce_text(getattr(io_result, "stderr", b"")),
+                io_result.refusal,
+            )
             exit_code = int(getattr(io_result, "exit_code", 0) or 0)
             return CommandResult(
                 command=command,
@@ -181,7 +205,7 @@ class MirageWorkspace(LocalWorkspace):
             parent = str(Path(dst).parent)
             if parent and parent not in (".", "/"):
                 self._ensure_parent(parent)
-            self._bridge.run(self._ws.ops.write(dst, data))
+            self._bridge.run(self._vfs.write(dst, data))
             return FileOperationResult(
                 success=True,
                 source_path=str(src),
@@ -205,7 +229,7 @@ class MirageWorkspace(LocalWorkspace):
         src = str(source_path)
         dst = Path(destination_path)
         try:
-            data = self._bridge.run(self._ws.ops.read(src))
+            data = self._bridge.run(self._vfs.read(src))
             if isinstance(data, str):
                 data = data.encode("utf-8")
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -228,21 +252,27 @@ class MirageWorkspace(LocalWorkspace):
     def git_changes(self, path: str | Path) -> list[GitChange]:
         raise NotImplementedError(
             "Mirage workspaces do not expose git semantics over their "
-            "virtual mounts; query the underlying resource directly.")
+            "virtual mounts; query the underlying VFS directly."
+        )
 
     def git_diff(self, path: str | Path) -> GitDiff:
         raise NotImplementedError(
             "Mirage workspaces do not expose git semantics over their "
-            "virtual mounts; query the underlying resource directly.")
+            "virtual mounts; query the underlying VFS directly."
+        )
 
     def _ensure_parent(self, parent: str) -> None:
         result = self._bridge.run(
-            self._ws.execute(f"mkdir -p {shlex.quote(parent)}"))
+            self._ws.shell(
+                f"mkdir -p {shlex.quote(parent)}", session_id=self._session_id
+            )
+        )
         exit_code = int(getattr(result, "exit_code", 0) or 0)
         if exit_code != 0:
             stderr = self._coerce_text(getattr(result, "stderr", b""))
             raise RuntimeError(
-                f"mkdir -p {parent!r} failed (exit {exit_code}): {stderr}")
+                f"mkdir -p {parent!r} failed (exit {exit_code}): {stderr}"
+            )
 
     @staticmethod
     def _coerce_text(value: Any) -> str:

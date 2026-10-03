@@ -14,6 +14,7 @@
 
 import asyncio
 import os
+import pathlib
 
 import pytest
 import pytest_asyncio
@@ -28,15 +29,18 @@ pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
 
 
 @pytest_asyncio.fixture()
-async def cache():
+async def cache(redis_prefix):
     c = RedisFileCacheStore(
         cache_limit="1MB",
         url=REDIS_URL,
-        key_prefix="test:cache:",
+        key_prefix=redis_prefix,
     )
     await c.clear()
     yield c
     await c.clear()
+    # The cache's clear() drops cached data, not the keys its VFS store
+    # wrote (the root directory set), and the prefix is this test's own.
+    await c.accessor.store.clear()
     await c.close()
 
 
@@ -65,6 +69,32 @@ async def test_exists(cache):
     assert await cache.exists("/file.txt") is False
     await cache.set("/file.txt", b"data")
     assert await cache.exists("/file.txt") is True
+
+
+@pytest.mark.asyncio
+async def test_is_unbounded_distinguishes_absent_from_boundless(cache):
+    """Redis answers this as a ttl probe, so the two sentinels matter.
+
+    ``-1`` is present with no expiry and ``-2`` is absent; reading one as
+    the other makes every warm bounded read either drop and refetch its
+    entry forever, or never self-heal a bound-less one. The RAM store's
+    twin cannot catch it: only redis encodes the answer this way.
+    """
+    assert await cache.is_unbounded("/absent") is False
+    await cache.set("/no-bound", b"x")
+    assert await cache.is_unbounded("/no-bound") is True
+    await cache.set("/bounded", b"x", ttl=30)
+    assert await cache.is_unbounded("/bounded") is False
+
+
+@pytest.mark.asyncio
+async def test_a_bound_set_on_redis_actually_expires_the_key(cache):
+    # The stamp has to reach redis itself, not just the client's view:
+    # a `set` that dropped the ttl would leave `is_unbounded` answering
+    # off a key redis never expires.
+    await cache.set("/bounded.txt", b"x", ttl=30)
+    remaining = await cache._cache_client.ttl(cache._data_key("/bounded.txt"))
+    assert 0 < remaining <= 30
 
 
 @pytest.mark.asyncio
@@ -105,11 +135,15 @@ async def test_add_existing(cache):
 
 @pytest.mark.asyncio
 async def test_concurrent_add_has_one_winner(cache):
-    contenders = [(f"value-{i}".encode(), f"fingerprint-{i}")
-                  for i in range(32)]
+    contenders = [
+        (f"value-{i}".encode(), f"fingerprint-{i}") for i in range(32)
+    ]
     inserted = await asyncio.gather(
-        *(cache.add("/shared.txt", data, fingerprint=fingerprint)
-          for data, fingerprint in contenders))
+        *(
+            cache.add("/shared.txt", data, fingerprint=fingerprint)
+            for data, fingerprint in contenders
+        )
+    )
 
     assert sum(inserted) == 1
     winner = inserted.index(True)
@@ -142,18 +176,18 @@ async def test_cache_limit(cache):
 
 
 @pytest.mark.asyncio
-async def test_key_prefix_isolation():
-    c1 = RedisFileCacheStore(url=REDIS_URL, key_prefix="test:cache:ns1:")
-    c2 = RedisFileCacheStore(url=REDIS_URL, key_prefix="test:cache:ns2:")
+async def test_key_prefix_isolation(redis_prefix):
+    c1 = RedisFileCacheStore(url=REDIS_URL, key_prefix=f"{redis_prefix}ns1:")
+    c2 = RedisFileCacheStore(url=REDIS_URL, key_prefix=f"{redis_prefix}ns2:")
     await c1.clear()
     await c2.clear()
     await c1.set("/shared", b"from-c1")
     assert await c2.get("/shared") is None
     assert await c1.get("/shared") == b"from-c1"
-    await c1.clear()
-    await c2.clear()
-    await c1.close()
-    await c2.close()
+    for c in (c1, c2):
+        await c.clear()
+        await c.accessor.store.clear()
+        await c.close()
 
 
 @pytest.mark.asyncio
@@ -167,13 +201,15 @@ async def test_apply_io_drains_stream_into_cache(cache):
     stream = CachableAsyncIterator(_gen())
     io = IOResult(reads={"/file.txt": stream}, cache=["/file.txt"])
     records = [
-        OpRecord(op="read",
-                 path="/file.txt",
-                 source="s3",
-                 bytes=0,
-                 timestamp=0,
-                 duration_ms=0,
-                 fingerprint="etag-9")
+        OpRecord(
+            op="read",
+            path="/file.txt",
+            source="s3",
+            bytes=0,
+            timestamp=0,
+            duration_ms=0,
+            fingerprint="etag-9",
+        )
     ]
     await cache_io.apply_io(cache, io, records=records)
     tasks = list(cache._drain_tasks.values())
@@ -201,3 +237,124 @@ async def test_remove_cancels_pending_drain(cache):
     assert "/slow.txt" not in cache._drain_tasks
     await asyncio.sleep(0.05)
     assert await cache.get("/slow.txt") is None
+
+
+# The invalidation guard is exercised in `tests/cache/file/test_ram.py`:
+# on this store no await remains between `_invalidation.enter` and
+# `_invalidation.stale`, so a writer cannot be parked here at all. It
+# stays as the shared cross-language contract (TypeScript's redis store
+# awaits its client first, so the window is live there).
+
+
+@pytest.mark.asyncio
+async def test_a_token_bearing_set_bounds_its_meta_key_too(cache):
+    # The other side of the branch the tokenless case added: when there IS
+    # a token the meta key still has to take the ttl. Leaving it immortal
+    # lets it outlive the data key redis expires, and the next is_fresh
+    # then matches a token describing bytes that are gone -- the same
+    # false positive the tokenless delete exists to prevent, one branch
+    # over.
+    await cache.set("/a", b"data", fingerprint="etag-1", ttl=100)
+    assert await cache._cache_client.ttl(cache._meta_key("/a")) > 0
+    assert await cache._cache_client.ttl(cache._data_key("/a")) > 0
+
+
+@pytest.mark.asyncio
+async def test_a_tokenless_add_still_bounds_its_data_key(cache):
+    # add.lua nests the meta EXPIRE inside the data EXPIRE, so a mistake
+    # in that nesting takes the data key's bound with it. This is the
+    # combination the background drain now reaches: it calls `add` with
+    # whatever `latest_fingerprint` returned -- which may be None -- and
+    # the mount's bound. An immortal tokenless entry is the one thing
+    # `bounded` can never expire.
+    assert await cache.add("/a", b"data", ttl=100)
+    assert await cache._cache_client.ttl(cache._data_key("/a")) > 0
+    assert not await cache._cache_client.exists(cache._meta_key("/a"))
+
+
+@pytest.mark.asyncio
+async def test_a_losing_tokenless_add_leaves_the_incumbent_token_alone(cache):
+    # The early return has to happen before the meta delete. A drain that
+    # finishes late correctly declines to overwrite a newer fill; if it
+    # still dropped that fill's token on the way out, the survivor would
+    # be unverifiable and a `fresh` mount would refetch it on every read
+    # -- turning this PR's measured one-off cost into a permanent one.
+    await cache.set("/a", b"new", fingerprint="etag-new")
+    assert not await cache.add("/a", b"stale-drain")
+    assert await cache.get("/a") == b"new"
+    assert await cache.is_fresh("/a", "etag-new")
+
+
+def test_the_two_add_lua_copies_are_byte_identical():
+    # `redis.py` says so in a comment and nothing enforced it. This PR is
+    # the first edit to the file, and the '' sentinel only works if both
+    # hosts run the same script.
+    root = pathlib.Path(__file__).resolve().parents[3].parent
+    py = (root / "python/mirage/cache/file/add.lua").read_bytes()
+    ts = (
+        root / "typescript/packages/node/src/cache/file/add.lua"
+    ).read_bytes()
+    assert py == ts
+
+
+@pytest.mark.asyncio
+async def test_a_fill_with_no_token_writes_no_meta_key(cache):
+    await cache.set("/a", b"data")
+    assert await cache.get("/a") == b"data"
+    assert not await cache._cache_client.exists(cache._meta_key("/a"))
+    assert not await cache.is_fresh("/a", "etag-1")
+
+
+@pytest.mark.asyncio
+async def test_a_tokenless_set_deletes_a_stale_meta_key(cache):
+    """The one false positive the naive change would have introduced.
+
+    Redis expires and evicts the data and meta keys independently, so a
+    meta key can outlive the bytes it described. Re-filling without a
+    token has to clear it; leaving it would let `is_fresh` match the old
+    token against the new bytes and serve them as fresh.
+    """
+    await cache.set("/a", b"old", fingerprint="etag-old")
+    assert await cache.is_fresh("/a", "etag-old")
+    await cache.set("/a", b"new")
+    assert await cache.get("/a") == b"new"
+    assert not await cache.is_fresh("/a", "etag-old")
+    assert not await cache._cache_client.exists(cache._meta_key("/a"))
+
+
+@pytest.mark.asyncio
+async def test_a_tokenless_add_deletes_a_meta_key_that_outlived_its_data(
+    cache,
+):
+    """`add.lua` only checks the data key, so a surviving meta key is
+    invisible to its insert-only guard and has to be dropped explicitly."""
+    await cache.set("/a", b"old", fingerprint="etag-old")
+    await cache._cache_client.delete(cache._data_key("/a"))
+    assert await cache._cache_client.exists(cache._meta_key("/a"))
+    assert await cache.add("/a", b"new")
+    assert await cache.get("/a") == b"new"
+    assert not await cache.is_fresh("/a", "etag-old")
+    assert not await cache._cache_client.exists(cache._meta_key("/a"))
+
+
+@pytest.mark.asyncio
+async def test_an_empty_token_is_treated_as_absent(cache):
+    await cache.set("/a", b"data", fingerprint="")
+    assert not await cache._cache_client.exists(cache._meta_key("/a"))
+    assert not await cache.is_fresh("/a", "")
+
+
+@pytest.mark.asyncio
+async def test_prefix_eviction_preserves_nested_mount(cache):
+    for key in (
+        "/data/sub/old",
+        "/data/sub/nested",
+        "/data/sub/nested/file",
+        "/data/sub/nested2",
+    ):
+        await cache.set(key, b"value")
+    await cache.evict_prefix("/data/sub/", excluded=("/data/sub/nested",))
+    assert await cache.get("/data/sub/nested") == b"value"
+    assert await cache.get("/data/sub/nested/file") == b"value"
+    assert await cache.get("/data/sub/old") is None
+    assert await cache.get("/data/sub/nested2") is None

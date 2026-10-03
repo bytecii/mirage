@@ -24,22 +24,24 @@ CONFIG = SlackConfig(token="xoxb-test")
 
 @pytest.mark.asyncio
 async def test_list_emoji_returns_mapping():
-    with patch("mirage.core.slack.emoji.slack_get",
-               new_callable=AsyncMock,
-               return_value={
-                   "ok": True,
-                   "emoji": {
-                       "shipit": "https://emoji/shipit.png"
-                   },
-               }) as get:
+    with patch(
+        "mirage.core.slack.emoji.slack_get",
+        new_callable=AsyncMock,
+        return_value={
+            "ok": True,
+            "emoji": {"shipit": "https://emoji/shipit.png"},
+        },
+    ) as get:
         emoji = await list_emoji(CONFIG)
-    get.assert_awaited_once_with(CONFIG, "emoji.list")
+    get.assert_awaited_once_with(CONFIG, "emoji.list", session=None)
     assert emoji == {"shipit": "https://emoji/shipit.png"}
 
 
 @pytest.mark.asyncio
 async def test_list_emoji_tolerates_missing_key():
-    with patch("mirage.core.slack.emoji.slack_get",
-               new_callable=AsyncMock,
-               return_value={"ok": True}):
+    with patch(
+        "mirage.core.slack.emoji.slack_get",
+        new_callable=AsyncMock,
+        return_value={"ok": True},
+    ):
         assert await list_emoji(CONFIG) == {}

@@ -14,15 +14,11 @@
 
 import git from 'isomorphic-git'
 
-import type { FlagView } from '../../../spec/types.ts'
-import { discover } from './discover.ts'
-import { NoWorkspaceError } from './errors.ts'
 import { abbrevLength, type CommitFacts } from './format.ts'
-import { gitFs } from './fs.ts'
-import { readNames, readRange, under } from './io.ts'
-import { basename } from './path.ts'
-import type { CLIDoors } from '../../types.ts'
-import { startPoint } from './util.ts'
+import { configValues, gitFs } from './fs.ts'
+import { basename, exists, readNames, readRange, under, writeFile } from './io.ts'
+import { compareCodePoints } from '../../../../utils/sort.ts'
+import { gitBool } from './util.ts'
 import type { Dispatch, RepoLocation } from './types.ts'
 
 const PACK_DIR = 'objects/pack'
@@ -30,6 +26,14 @@ const IDX_SUFFIX = '.idx'
 // A v2 pack index is a 8-byte header then 256 fanout entries; the last one is
 // the object count, so the total is four bytes at a fixed offset.
 const FANOUT_END = 8 + 256 * 4
+const FANOUT_SIZE = 256 * 4
+// A v2 index opens with this magic; a v1 one has none and starts with the
+// fanout, its entries an offset and a name each rather than names alone.
+const IDX_MAGIC = [0xff, 0x74, 0x4f, 0x63]
+const SHA_BYTES = 20
+const V1_OFFSET_BYTES = 4
+const OBJECTS_DIR = 'objects'
+const LOOSE_NAME_LENGTH = 38
 
 /**
  * A repository living in a mount, opened for reading.
@@ -47,16 +51,26 @@ export interface Repo {
   readonly fs: ReturnType<typeof gitFs>
   readonly dispatch: Dispatch
   readonly location: RepoLocation
+  /** Parsed packs shared by this invocation, never retained across commands. */
+  readonly cache: Record<symbol, unknown>
   /** How many hex digits this repository abbreviates an id to. */
   readonly abbrev: number
+  /** Blobs this invocation hashed from the working tree and never wrote. */
+  readonly held: Map<string, Uint8Array>
 }
 
 /** The argument bag every isomorphic-git call in this package shares. */
-export function repoArgs(repo: Repo): { fs: never; dir: string; gitdir: string } {
+export function repoArgs(repo: Repo): {
+  fs: never
+  dir: string
+  gitdir: string
+  cache: Repo['cache']
+} {
   return {
     fs: repo.fs as never,
     dir: repo.location.worktree,
-    gitdir: repo.location.commondir,
+    gitdir: repo.location.gitdir,
+    cache: repo.cache,
   }
 }
 
@@ -81,50 +95,119 @@ async function packedCount(dispatch: Dispatch, commondir: string): Promise<numbe
   return total
 }
 
+function hex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * The ids one pack index holds whose first byte is `byte`: its fanout table
+ * says where that bucket of the sorted names starts and ends, so only the
+ * bucket is read rather than every name.
+ */
+async function packedUnder(dispatch: Dispatch, path: string, byte: number): Promise<string[]> {
+  const head = await readRange(dispatch, path, 0, IDX_MAGIC.length)
+  const v2 = IDX_MAGIC.every((value, i) => head[i] === value)
+  const fanoutAt = v2 ? FANOUT_END - FANOUT_SIZE : 0
+  const fanout = await readRange(dispatch, path, fanoutAt, FANOUT_SIZE)
+  if (fanout.byteLength < FANOUT_SIZE) return []
+  const table = new DataView(fanout.buffer, fanout.byteOffset, FANOUT_SIZE)
+  const start = byte === 0 ? 0 : table.getUint32((byte - 1) * 4, false)
+  const end = table.getUint32(byte * 4, false)
+  if (end <= start) return []
+  const stride = v2 ? SHA_BYTES : SHA_BYTES + V1_OFFSET_BYTES
+  const skip = v2 ? 0 : V1_OFFSET_BYTES
+  const names = await readRange(
+    dispatch,
+    path,
+    fanoutAt + FANOUT_SIZE + start * stride,
+    (end - start) * stride,
+  )
+  const ids: string[] = []
+  for (let at = skip; at + SHA_BYTES <= names.byteLength; at += stride)
+    ids.push(hex(names.subarray(at, at + SHA_BYTES)))
+  return ids
+}
+
+/**
+ * Every id, loose or packed, starting with a two-digit fanout prefix, sorted.
+ * Nothing is read but each pack index's bucket for that byte and the one loose
+ * directory, which is what widening abbreviated ids needs.
+ *
+ * @param fanout two lowercase hex digits
+ */
+export async function idsUnder(repo: Repo, fanout: string): Promise<string[]> {
+  const found = new Set<string>()
+  const byte = parseInt(fanout, 16)
+  const root = under(repo.location.commondir, PACK_DIR)
+  for (const entry of await readNames(repo.dispatch, root)) {
+    const name = basename(entry)
+    if (!name.endsWith(IDX_SUFFIX)) continue
+    for (const oid of await packedUnder(repo.dispatch, under(root, name), byte)) found.add(oid)
+  }
+  const loose = under(repo.location.commondir, `${OBJECTS_DIR}/${fanout}`)
+  for (const entry of await readNames(repo.dispatch, loose)) {
+    const name = basename(entry)
+    if (name.length === LOOSE_NAME_LENGTH) found.add(`${fanout}${name}`)
+  }
+  return [...found].sort(compareCodePoints)
+}
+
+/** Which of commit/tag/tree/blob an id names, null when the repository lacks it. */
+export async function objectType(repo: Repo, oid: string): Promise<string | null> {
+  try {
+    // Deprecated upstream for being general, but the general answer is what a
+    // walk needs: which kind this id names, without reading it as each in turn
+    // until one does not throw.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    return (await git.readObject({ ...repoArgs(repo), oid, format: 'content' })).type
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Keep a fetched pack whole, beside the index git reads it through.
+ *
+ * Named by the pack's own checksum, as git names one it receives, and indexed
+ * after the pack is written, so a reader that lists `.idx` files never finds
+ * one whose pack is not there yet. An empty pack stores nothing.
+ */
+export async function storePack(repo: Repo, data: Uint8Array): Promise<void> {
+  if (!data.length) return
+  const checksum = [...data.subarray(data.length - 20)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  const dir = under(repo.location.commondir, PACK_DIR)
+  const name = `pack-${checksum}.pack`
+  if (await exists(repo.dispatch, under(dir, name.replace(/\.pack$/, IDX_SUFFIX)))) return
+  await writeFile(repo.dispatch, under(dir, name), data)
+  await git.indexPack({ ...repoArgs(repo), dir, filepath: name })
+}
+
 /**
  * Open a repository living in a mount.
  *
  * @param dispatch workspace op dispatcher
  * @param location the discovered repository
  */
-async function openRepo(dispatch: Dispatch, location: RepoLocation): Promise<Repo> {
+export async function openRepo(dispatch: Dispatch, location: RepoLocation): Promise<Repo> {
   return {
-    fs: gitFs(dispatch),
+    fs: gitFs(dispatch, location),
     dispatch,
     location,
+    cache: {},
     abbrev: abbrevLength(await packedCount(dispatch, location.commondir)),
+    held: new Map(),
   }
 }
 
 /**
- * Discover and open the repository a verb was invoked against.
- *
- * Every verb starts the same way: honor `-C`, walk up to the mount root looking
- * for a `.git`, then open the object database across the dispatcher. Kept in one
- * place so a new verb inherits the discovery rules rather than restating them.
- *
- * @param fl the leaf's flag bag, read for `-C`
- * @param statPath dispatcher-backed stat, both channels
- * @param mountRoot the mount prefix serving a path
- * @param dispatch workspace op dispatcher
+ * A blob's bytes, a held one first: what `git diff` hashes from the working
+ * tree is rendered like any blob, but git writes none of it. Mirrors
+ * Python's VfsObjectStore.hold.
  */
-export async function opened(fl: FlagView, doors: CLIDoors): Promise<Repo> {
-  const dispatch = doors.dispatch
-  const statPath = doors.statPath
-  // The mount root comes from the name plane rather than a door of its own:
-  // `ns.mounts.rootOf` is the same fact the command tier reads, and a second
-  // field holding the same callable is a second thing to keep in step.
-  const mounts = doors.ns?.mounts
-  if (statPath === undefined || mounts === undefined || dispatch === undefined) {
-    throw new NoWorkspaceError()
-  }
-  const location = await discover(
-    dispatch,
-    statPath,
-    (path: string) => mounts.rootOf(path),
-    startPoint(fl),
-  )
-  return openRepo(dispatch, location)
+export async function readBlobBytes(repo: Repo, oid: string): Promise<Uint8Array> {
+  return repo.held.get(oid) ?? (await git.readBlob({ ...repoArgs(repo), oid })).blob
 }
 
 /**
@@ -150,4 +233,16 @@ export async function commitFacts(repo: Repo, oid: string): Promise<CommitFacts>
     committerTimezoneMinutes: -commit.committer.timezoneOffset,
     parents: commit.parent,
   }
+}
+
+/**
+ * A boolean from the repository's config, read the way git reads one.
+ *
+ * @param repo the opened repository
+ * @param path the variable, e.g. `core.quotepath`
+ * @param fallback the answer when the variable is unset
+ */
+export async function configBool(repo: Repo, path: string, fallback: boolean): Promise<boolean> {
+  const values = await configValues(repo.dispatch, repo.location, path)
+  return gitBool(values, path.toLowerCase(), fallback)
 }

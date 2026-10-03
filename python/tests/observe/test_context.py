@@ -12,16 +12,31 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+
 import pytest
 
-from mirage.observe.context import (RecordingScope, push_mount_prefix,
-                                    push_revisions, record, record_stream,
-                                    reset_revisions, revision_for,
-                                    with_mount_prefix, with_revisions)
+from mirage.observe.context import (
+    RecordingScope,
+    active_recorder,
+    push_mount_context,
+    push_revisions,
+    record,
+    record_stream,
+    reset_active_recorder,
+    reset_revisions,
+    revision_for,
+    start_op,
+    with_mount_context,
+    with_revisions,
+)
+from mirage.ops.registry import RegisteredOp, op
+from mirage.types import PathSpec
+from mirage.vfs.ram import RAMVFS
+from mirage.workspace import Workspace
 
 
 class ClosingIterator:
-
     def __init__(self) -> None:
         self.yielded = False
         self.closed = False
@@ -40,13 +55,13 @@ class ClosingIterator:
 
 
 def test_record_no_context():
-    record("read", "/a.txt", "s3", 100, 0)
+    record("read", "/a.txt", "s3", 100, start_op())
 
 
 def test_recording_scope_collects_records():
     scope = RecordingScope()
     records = scope.records
-    record("read", "/a.txt", "s3", 100, 0)
+    record("read", "/a.txt", "s3", 100, start_op())
     scope.close()
     assert len(records) == 1
     assert records[0].op == "read"
@@ -56,79 +71,147 @@ def test_recording_scope_collects_records():
 def test_record_after_stop_is_noop():
     scope = RecordingScope()
     records = scope.records
-    record("read", "/a.txt", "s3", 100, 0)
+    record("read", "/a.txt", "s3", 100, start_op())
     scope.close()
-    record("read", "/b.txt", "s3", 200, 0)
+    record("read", "/b.txt", "s3", 200, start_op())
     assert len(records) == 1
 
 
 def test_multiple_records():
     scope = RecordingScope()
     records = scope.records
-    record("read", "/a.txt", "s3", 100, 0)
-    record("write", "/b.txt", "ram", 50, 0)
+    record("read", "/a.txt", "s3", 100, start_op())
+    record("write", "/b.txt", "ram", 50, start_op())
     scope.close()
     assert len(records) == 2
     assert records[0].source == "s3"
     assert records[1].source == "ram"
 
 
-def test_record_with_virtual_prefix():
-    scope = RecordingScope()
-    records = scope.records
-    push_mount_prefix("/s3")
-    record("read", "/data/file.json", "s3", 100, 0)
-    push_mount_prefix("")
-    scope.close()
-    assert records[0].path == "/s3/data/file.json"
-
-
 def test_record_without_prefix():
     scope = RecordingScope()
     records = scope.records
-    record("read", "/data/file.json", "s3", 100, 0)
+    record("read", "/data/file.json", "s3", 100, start_op())
     scope.close()
     assert records[0].path == "/data/file.json"
 
 
-def test_record_prefix_already_applied():
+def test_push_mount_context_carries_mount_id():
     scope = RecordingScope()
-    records = scope.records
-    push_mount_prefix("/s3")
-    record("read", "/s3/data/file.json", "s3", 100, 0)
-    push_mount_prefix("")
+    token = push_mount_context("mount-a")
+    try:
+        record("read", "/s3/a", "s3", 1, start_op())
+        record_stream("read", "/s3/b", "s3")
+    finally:
+        reset_active_recorder(token)
+    record("read", "/s3/c", "s3", 1, start_op())
     scope.close()
-    assert records[0].path == "/s3/data/file.json"
+    assert [(r.path, r.mount_id) for r in scope.records] == [
+        ("/s3/a", "mount-a"),
+        ("/s3/b", "mount-a"),
+        ("/s3/c", None),
+    ]
 
 
-def test_record_prefixes_name_sharing_prefix_leading_text():
-    # A bare startswith test would read this as already-prefixed and record
-    # "/s3-report.txt", dropping the mount.
-    scope = RecordingScope()
-    records = scope.records
-    push_mount_prefix("/s3")
-    record("read", "/s3-report.txt", "s3", 1, 0)
-    push_mount_prefix("")
-    scope.close()
-    assert records[0].path == "/s3/s3-report.txt"
+def test_push_mount_context_no_recorder_is_noop():
+    token = push_mount_context("mount-a")
+    try:
+        assert active_recorder() is None
+        record("read", "/s3/a", "s3", 1, start_op())
+        assert record_stream("read", "/s3/a", "s3") is None
+    finally:
+        reset_active_recorder(token)
 
 
-def test_push_mount_prefix_returns_previous():
-    scope = RecordingScope()
-    assert push_mount_prefix("/s3") == ""
-    assert push_mount_prefix("/r2") == "/s3"
-    push_mount_prefix("")
-    scope.close()
-
-
-def test_push_mount_prefix_no_recorder_is_noop():
-    assert push_mount_prefix("/s3") == ""
+async def _record_under_mount(
+    mount_id: str, path: str, opened: set[str], other: str
+) -> None:
+    token = push_mount_context(mount_id)
+    try:
+        opened.add(mount_id)
+        while other not in opened:
+            await asyncio.sleep(0)
+        record("read", path, "s3", 1, start_op())
+    finally:
+        reset_active_recorder(token)
 
 
 @pytest.mark.asyncio
-async def test_with_mount_prefix_close_propagates_to_source():
+async def test_push_mount_context_is_task_local_across_concurrent_branches():
+    # Each branch records only after the other has pushed its own frame.
+    scope = RecordingScope()
+    opened: set[str] = set()
+    try:
+        await asyncio.gather(
+            asyncio.create_task(
+                _record_under_mount("A", "/a/x.txt", opened, "B")
+            ),
+            asyncio.create_task(
+                _record_under_mount("B", "/b/y.txt", opened, "A")
+            ),
+        )
+    finally:
+        scope.close()
+    assert sorted((r.path, r.mount_id) for r in scope.records) == [
+        ("/a/x.txt", "A"),
+        ("/b/y.txt", "B"),
+    ]
+
+
+class RecordingIterator:
+    def __init__(self, paths: list[str]) -> None:
+        self.paths = list(paths)
+
+    def __aiter__(self) -> "RecordingIterator":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if not self.paths:
+            raise StopAsyncIteration
+        record_stream("read", self.paths.pop(0), "s3")
+        return b"chunk"
+
+
+@pytest.mark.asyncio
+async def test_with_mount_context_keeps_mount_id_across_steps():
+    # The consumer runs under a foreign mount's frame; every lazy record the
+    # wrapped stream emits must still carry the captured mount's identity.
+    scope = RecordingScope()
+    wrapped = with_mount_context(
+        RecordingIterator(["/s3/a", "/s3/b"]), "mount-a"
+    )
+    outer = push_mount_context("mount-b")
+    try:
+        chunks = [chunk async for chunk in wrapped]
+        record("read", "/r/x", "ram", 1, start_op())
+    finally:
+        reset_active_recorder(outer)
+    scope.close()
+    assert chunks == [b"chunk", b"chunk"]
+    assert [(r.path, r.mount_id) for r in scope.records] == [
+        ("/s3/a", "mount-a"),
+        ("/s3/b", "mount-a"),
+        ("/r/x", "mount-b"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_with_mount_context_without_id_inherits_the_frame():
+    scope = RecordingScope()
+    wrapped = with_mount_context(RecordingIterator(["/s3/a"]), None)
+    outer = push_mount_context("mount-b")
+    try:
+        _ = [chunk async for chunk in wrapped]
+    finally:
+        reset_active_recorder(outer)
+    scope.close()
+    assert [r.mount_id for r in scope.records] == ["mount-b"]
+
+
+@pytest.mark.asyncio
+async def test_with_mount_context_close_propagates_to_source():
     source = ClosingIterator()
-    wrapped = with_mount_prefix("/s3", source)
+    wrapped = with_mount_context(source, "mount-a")
     assert await anext(wrapped) == b"chunk"
     await wrapped.aclose()
     assert source.closed
@@ -146,7 +229,7 @@ async def test_with_revisions_close_propagates_to_source():
 def test_record_carries_fingerprint_when_passed():
     scope = RecordingScope()
     records = scope.records
-    record("read", "/s3/x", "s3", 10, 0, fingerprint="abc")
+    record("read", "/s3/x", "s3", 10, start_op(), fingerprint="abc")
     scope.close()
     assert records[0].fingerprint == "abc"
     assert records[0].revision is None
@@ -155,7 +238,7 @@ def test_record_carries_fingerprint_when_passed():
 def test_record_carries_revision_when_passed():
     scope = RecordingScope()
     records = scope.records
-    record("read", "/s3/x", "s3", 10, 0, revision="v1")
+    record("read", "/s3/x", "s3", 10, start_op(), revision="v1")
     scope.close()
     assert records[0].revision == "v1"
     assert records[0].fingerprint is None
@@ -164,7 +247,9 @@ def test_record_carries_revision_when_passed():
 def test_record_carries_both_when_passed():
     scope = RecordingScope()
     records = scope.records
-    record("read", "/s3/x", "s3", 10, 0, fingerprint="abc", revision="v1")
+    record(
+        "read", "/s3/x", "s3", 10, start_op(), fingerprint="abc", revision="v1"
+    )
     scope.close()
     assert records[0].fingerprint == "abc"
     assert records[0].revision == "v1"
@@ -173,7 +258,7 @@ def test_record_carries_both_when_passed():
 def test_record_fingerprint_default_is_none():
     scope = RecordingScope()
     records = scope.records
-    record("read", "/s3/x", "s3", 10, 0)
+    record("read", "/s3/x", "s3", 10, start_op())
     scope.close()
     assert records[0].fingerprint is None
     assert records[0].revision is None
@@ -235,11 +320,11 @@ def test_revision_for_with_none_context():
 
 def test_nested_scope_close_restores_outer():
     outer = RecordingScope()
-    record("read", "/a", "s3", 1, 0)
+    record("read", "/a", "s3", 1, start_op())
     inner = RecordingScope()
-    record("read", "/b", "s3", 1, 0)
+    record("read", "/b", "s3", 1, start_op())
     inner.close()
-    record("read", "/c", "s3", 1, 0)
+    record("read", "/c", "s3", 1, start_op())
     outer.close()
     assert [r.path for r in outer.records] == ["/a", "/c"]
     assert [r.path for r in inner.records] == ["/b"]
@@ -248,8 +333,53 @@ def test_nested_scope_close_restores_outer():
 def test_inactive_scope_joins_enclosing():
     outer = RecordingScope()
     joined = RecordingScope(active=False)
-    record("read", "/a", "s3", 1, 0)
+    record("read", "/a", "s3", 1, start_op())
     joined.close()
     outer.close()
     assert [r.path for r in outer.records] == ["/a"]
     assert joined.records == []
+
+
+async def _dispatch_recording_read(
+    recorded: list[str], stream: bool
+) -> list[str]:
+    # A custom read on a RAM mount at /m records exactly the paths it is
+    # given, inside a real mount frame, so the recorder's own treatment of
+    # the path is what the ledger shows.
+    @op("read", vfs="ram")
+    async def recording_read(accessor, scope, **kwargs):
+        for path in recorded:
+            if stream:
+                record_stream("read", path, "ram")
+            else:
+                record("read", path, "ram", 0, start_op())
+        yield b""
+
+    class RecordingRAMVFS(RAMVFS):
+        def ops(self) -> list[RegisteredOp]:
+            return [*super().ops(), *recording_read._registered_ops]
+
+    ws = Workspace({"/m": RecordingRAMVFS()})
+    scope = RecordingScope()
+    try:
+        out, _ = await ws.dispatch("read", PathSpec.from_str_path("/m/k.txt"))
+        async for _chunk in out:
+            pass
+    finally:
+        scope.close()
+        await ws.close()
+    return [r.path for r in scope.records]
+
+
+@pytest.mark.asyncio
+async def test_record_stores_the_path_as_given_inside_a_mount_frame():
+    # "/x/y" names no mount, so it must not gain the frame's /m.
+    paths = await _dispatch_recording_read(["/x/y", "/m/k.txt"], stream=False)
+    assert paths == ["/x/y", "/m/k.txt"]
+
+
+@pytest.mark.asyncio
+async def test_record_stream_stores_the_path_as_given_inside_a_mount_frame():
+    # The record_stream twin: same rule, separate code path.
+    paths = await _dispatch_recording_read(["/x/y", "/m/k.txt"], stream=True)
+    assert paths == ["/x/y", "/m/k.txt"]

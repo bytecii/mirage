@@ -12,33 +12,48 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import shlex
 from collections.abc import Callable
 from functools import partial
 from typing import Any
 
-import tree_sitter
-
+from mirage.io import IOResult
 from mirage.ops.types import SessionView
 from mirage.shell.arith import evaluate_arith
+from mirage.shell.backticks import split_backtick_region
 from mirage.shell.call_stack import CallStack
-from mirage.shell.errors import ArithError
-from mirage.shell.escapes import decode_ansi_c
-from mirage.shell.syntax.helpers import get_text
-from mirage.shell.syntax.parse import parse
+from mirage.shell.errors import (
+    ArithError,
+    BadSubstitution,
+    DiscardSignal,
+    named,
+)
+from mirage.shell.escapes import (
+    decode_ansi_c,
+    unescape_dquoted,
+    unescape_unquoted,
+)
+from mirage.shell.helpers import byte_offset, get_text, quoted_parts
+from mirage.shell.parameter import scan_parameter
+from mirage.shell.parse import parse
 from mirage.shell.types import NodeType as NT
+from mirage.shell.types import TSNodeLike
 from mirage.utils.glob_walk import mark_escaped_globs, mark_globs, unmark_globs
 from mirage.utils.path import expand_tilde
-from mirage.workspace.executor.traps import execute_child_shell
 from mirage.workspace.expand.constants import ARITH_DELIMITERS, ARITH_OPERATORS
-from mirage.workspace.expand.variable import (_lookup_var, expand_braces,
-                                              expansion_write)
-from mirage.workspace.session import Session, visible_env
+from mirage.workspace.expand.fields import join_chunks, value_piece
+from mirage.workspace.expand.types import Chunk, Piece
+from mirage.workspace.expand.variable import (
+    expand_braces,
+    is_at_splat,
+    land_arith_writes,
+    parameter_chunks,
+)
+from mirage.workspace.session import SessionState, visible_env
 from mirage.workspace.session.shell_dirs import home_dir
-from mirage.workspace.session.state import session_elements
+from mirage.workspace.session.state import random_reader, session_elements
 
 
-def _folded_whitespace(node: tree_sitter.Node) -> str:
+def _folded_whitespace(node: TSNodeLike) -> str:
     """Whitespace tree-sitter folds into an expansion's opening token.
 
     Inside a double-quoted string, a run of whitespace between two
@@ -49,96 +64,98 @@ def _folded_whitespace(node: tree_sitter.Node) -> str:
     fold, so the prefix is empty there and this stays a no-op.
 
     Args:
-        node (tree_sitter.Node): the expansion node being expanded.
+        node (TSNodeLike): the expansion node being expanded.
     """
     raw = get_text(node)
-    return raw[:len(raw) - len(raw.lstrip())]
-
-
-def _split_backtick_segments(raw: str) -> list[tuple[str, bool]]:
-    """Split a backtick region into (text, is_command) segments.
-
-    tree-sitter-bash lexes the gap between two backtick substitutions as
-    a single token when that gap is empty or whitespace-only, so
-    ``\\`a\\` \\`b\\``` arrives as ONE command_substitution node holding
-    both commands and the literal text between them. Re-lexing the
-    node's own text on unescaped backticks recovers the real segments;
-    a single pair simply yields one command segment.
-
-    Inside a command, POSIX keeps the backslash literal except before
-    ``$``, `` ` `` and ``\\``, where it escapes. Consuming those pairs
-    whole is what makes the parity right: ``\\\\`` is one escaped
-    backslash, so a backtick straight after it still closes the region
-    rather than reading as an escaped backtick.
-
-    Args:
-        raw (str): the node's text, opening and closing with a backtick.
-    """
-    segments: list[tuple[str, bool]] = []
-    buf: list[str] = []
-    in_command = False
-    i = 0
-    while i < len(raw):
-        if (raw[i] == "\\" and in_command and i + 1 < len(raw)
-                and raw[i + 1] in ("$", "`", "\\")):
-            buf.append(raw[i + 1])
-            i += 2
-            continue
-        if raw[i] == "`":
-            segments.append(("".join(buf), in_command))
-            buf = []
-            in_command = not in_command
-            i += 1
-            continue
-        buf.append(raw[i])
-        i += 1
-    segments.append(("".join(buf), in_command))
-    return [(text, cmd) for text, cmd in segments if text or cmd]
+    return raw[: len(raw) - len(raw.lstrip())]
 
 
 async def _expand_backtick_region(
     raw: str,
-    session: Session,
+    session: SessionState,
     execute_fn: Callable[..., Any],
+    node: TSNodeLike,
+    offset: int,
+    call_stack: CallStack | None,
 ) -> str:
+    """Expand a backtick region, one nested line per pair.
+
+    Args:
+        raw (str): the region's text, the folded prefix stripped.
+        session (SessionState): the session expanding it.
+        execute_fn (Callable[..., Any]): the nested-line door.
+        node (TSNodeLike): the region's node.
+        offset (int): where ``raw`` starts in the node's text, in the
+            parser's offsets.
+        call_stack (CallStack | None): the frames each pair runs on.
+    """
     parts: list[str] = []
-    for text, is_command in _split_backtick_segments(raw):
-        if not is_command:
-            parts.append(text)
+    for segment in split_backtick_region(raw):
+        if not segment.command:
+            parts.append(segment.text)
             continue
-        io = await execute_child_shell(execute_fn, session, text)
-        session._cmdsub_stderr += await io.materialize_stderr()
+        # Each pair is its own place on the line: the node holds every
+        # touching pair, so the span within it says which one runs,
+        # measured as the parser measures the node.
+        io = await child_line(
+            session,
+            execute_fn,
+            segment.text,
+            node,
+            call_stack,
+            (
+                offset + byte_offset(raw, segment.start),
+                offset + byte_offset(raw, segment.end),
+            ),
+        )
         parts.append((await io.stdout_str()).rstrip("\n"))
+        session._diagnostics.append(await io.materialize_stderr())
         session._cmdsub_seq += 1
         session._cmdsub_status = io.exit_code
     return "".join(parts)
 
 
-def _unescape_unquoted(text: str) -> str:
-    if "\\" not in text:
-        return text
-    try:
-        parts = shlex.split(text, posix=True)
-    except ValueError:
-        return text
-    return parts[0] if parts else text
+async def child_line(
+    session: SessionState,
+    execute_fn: Callable[..., Any],
+    text: str,
+    node: Any,
+    call_stack: CallStack | None,
+    span: tuple[int, int] | None = None,
+) -> IOResult:
+    """Run a substitution's line in a child shell.
 
+    The evaluator isolates the child shell, except for Bash's ``$(< file)``
+    optimization, whose filename expands in the parent. It decides from
+    a fresh parse of the body, including each pair in a backtick region.
+    The line reaches the executor unwrapped,
+    under the node that named it, so the pass places its commands
+    where they were typed rather than under a subshell of their own.
+    The child runs on a copy of the caller's frames: inside a function
+    it reads the function's ``$1``, ``return`` ends it, and so does a
+    ``break`` from a loop the caller is in.
 
-def unescape_heredoc(text: str) -> str:
-    """Unquoted-heredoc escapes: \\$, \\`, \\\\, \\<newline> only.
-
-    Unlike double quotes, \\" stays literal in heredoc bodies.
+    Args:
+        session (SessionState): the parent shell's session.
+        execute_fn (Callable[..., Any]): the workspace's nested-line
+            executor.
+        text (str): the line the substitution holds.
+        node (Any): the tree-sitter node the substitution stands under.
+        call_stack (CallStack | None): the caller's frames.
+        span (tuple[int, int] | None): the pair's byte span within the
+            node, for a backtick region holding several.
     """
-    if "\\" not in text:
-        return text
-    text = text.replace("\\\\", "\x00")
-    text = text.replace("\\$", "$")
-    text = text.replace("\\`", "`")
-    text = text.replace("\\\n", "")
-    return text.replace("\x00", "\\")
+    return await execute_fn(
+        text,
+        session_id=session.session_id,
+        node=node,
+        span=span,
+        substitution=True,
+        call_stack=(call_stack or CallStack()).fork(),
+    )
 
 
-def _find_first(node: tree_sitter.Node, ntype: str) -> tree_sitter.Node | None:
+def _find_first(node: TSNodeLike, ntype: str) -> TSNodeLike | None:
     if node.type == ntype:
         return node
     for child in node.named_children:
@@ -148,9 +165,28 @@ def _find_first(node: tree_sitter.Node, ntype: str) -> tree_sitter.Node | None:
     return None
 
 
+def arith_exit(expr: str, exc: ArithError) -> DiscardSignal:
+    """The fatal shape of an arithmetic expansion error.
+
+    bash discards the rest of the line on a bad ``$((...))``: the
+    command never runs, ``$?`` is 1, and a subshell or pipeline segment
+    containing it reports 1. The old return of the expansion's
+    own text printed ``$((1/0))`` with exit 0, the silent wrong answer
+    the fail-loud rule forbids. The diagnostic is the expression as
+    expanded (``1/0`` for ``$((1/$x))`` with ``x=0``), trimmed, in the
+    house style that drops bash's ``line N:`` prefix and its
+    ``(error token is ...)`` suffix, the same shape ``(( ))`` reports.
+
+    Args:
+        expr (str): the expression text handed to the evaluator.
+        exc (ArithError): what the evaluator refused.
+    """
+    return DiscardSignal(f"bash: {expr.strip()}: {exc}\n".encode())
+
+
 async def expand_arith(
-    ts_node: tree_sitter.Node,
-    session: Session,
+    ts_node: TSNodeLike,
+    session: SessionState,
     execute_fn: Callable[..., Any],
     call_stack: CallStack | None,
     view: SessionView | None = None,
@@ -160,48 +196,84 @@ async def expand_arith(
     ``$``-expansions substitute textually (bash performs expansions
     before arithmetic evaluation), while bare variable names stay as
     names so the evaluator can resolve and assign them
-    (``$(( y = 3 ))`` needs ``y``, not its value).
+    (``$(( y = 3 ))`` needs ``y``, not its value). A bad substitution
+    names the expression as written.
     """
+    return await named(
+        _arith_inside(ts_node),
+        _arith_text(ts_node, session, execute_fn, call_stack, view),
+    )
+
+
+def _arith_inside(ts_node: TSNodeLike) -> str:
+    text = get_text(ts_node).lstrip()
+    for opener, closer in (("$((", "))"), ("((", "))"), ("$[", "]")):
+        if text.startswith(opener) and text.endswith(closer):
+            return text[len(opener) : -len(closer)]
+    return text
+
+
+async def _arith_text(
+    ts_node: TSNodeLike,
+    session: SessionState,
+    execute_fn: Callable[..., Any],
+    call_stack: CallStack | None,
+    view: SessionView | None,
+) -> str:
     parts = []
+    raw = ts_node.text or b""
+    end = 0
     for child in ts_node.children:
+        start = child.start_byte - ts_node.start_byte
+        parts.append(raw[end:start].decode("utf-8"))
+        end = child.end_byte - ts_node.start_byte
         if child.type in ARITH_DELIMITERS:
             continue
-        if child.type in (NT.BINARY_EXPRESSION, NT.UNARY_EXPRESSION,
-                          NT.PARENTHESIZED_EXPRESSION, NT.TERNARY_EXPRESSION,
-                          NT.POSTFIX_EXPRESSION):
-            parts.append(await expand_arith(child,
-                                            session,
-                                            execute_fn,
-                                            call_stack,
-                                            view=view))
+        if child.type in (
+            NT.BINARY_EXPRESSION,
+            NT.UNARY_EXPRESSION,
+            NT.PARENTHESIZED_EXPRESSION,
+            NT.TERNARY_EXPRESSION,
+            NT.POSTFIX_EXPRESSION,
+        ):
+            parts.append(
+                await _arith_text(child, session, execute_fn, call_stack, view)
+            )
         elif child.type == "subscript":
-            parts.append(await _arith_subscript(child, session, execute_fn,
-                                                call_stack, view))
+            parts.append(
+                await _arith_subscript(
+                    child, session, execute_fn, call_stack, view
+                )
+            )
         elif child.type in ARITH_OPERATORS:
             parts.append(get_text(child))
         elif child.type == NT.NUMBER:
             parts.append(get_text(child))
-        elif child.type in (NT.SIMPLE_EXPANSION, NT.EXPANSION,
-                            NT.COMMAND_SUBSTITUTION):
-            parts.append(await expand_node(child,
-                                           session,
-                                           execute_fn,
-                                           call_stack,
-                                           view=view))
+        elif child.type in (
+            NT.SIMPLE_EXPANSION,
+            NT.EXPANSION,
+            NT.COMMAND_SUBSTITUTION,
+        ):
+            parts.append(
+                await expand_node(
+                    child, session, execute_fn, call_stack, view=view
+                )
+            )
         elif child.type == NT.VARIABLE_NAME:
             parts.append(get_text(child))
         else:
-            parts.append(await expand_node(child,
-                                           session,
-                                           execute_fn,
-                                           call_stack,
-                                           view=view))
-    return " ".join(parts)
+            parts.append(
+                await expand_node(
+                    child, session, execute_fn, call_stack, view=view
+                )
+            )
+    parts.append(raw[end:].decode("utf-8"))
+    return "".join(parts).strip()
 
 
 async def _arith_subscript(
-    sub_node: tree_sitter.Node,
-    session: Session,
+    sub_node: TSNodeLike,
+    session: SessionState,
     execute_fn: Callable[..., Any],
     call_stack: CallStack | None,
     view: SessionView | None,
@@ -216,41 +288,47 @@ async def _arith_subscript(
     still gets the arithmetic spelling.
 
     Args:
-        sub_node (tree_sitter.Node): the ``subscript`` node.
-        session (Session): shell session state.
+        sub_node (TSNodeLike): the ``subscript`` node.
+        session (SessionState): shell session state.
         execute_fn (Callable): evaluator for command substitutions.
         call_stack (CallStack | None): shell call stack.
         view (SessionView | None): the session plane's gated door.
     """
     name = ""
-    inner: list[tree_sitter.Node] = []
+    inner: list[TSNodeLike] = []
     for sc in sub_node.named_children:
         if sc.type == NT.VARIABLE_NAME and not name:
             name = get_text(sc)
         else:
             inner.append(sc)
-    raw = get_text(sub_node)[len(name) + 1:-1]
+    raw = get_text(sub_node)[len(name) + 1 : -1]
     if not any(ch in raw for ch in "$'\"`"):
         return f"{name}[{raw}]"
     parts = []
     for sc in inner:
-        if sc.type in (NT.SIMPLE_EXPANSION, NT.EXPANSION,
-                       NT.COMMAND_SUBSTITUTION, NT.STRING, NT.RAW_STRING,
-                       NT.ANSI_C_STRING, NT.TRANSLATED_STRING,
-                       NT.CONCATENATION):
-            parts.append(await expand_node(sc,
-                                           session,
-                                           execute_fn,
-                                           call_stack,
-                                           view=view))
+        if sc.type in (
+            NT.SIMPLE_EXPANSION,
+            NT.EXPANSION,
+            NT.COMMAND_SUBSTITUTION,
+            NT.STRING,
+            NT.RAW_STRING,
+            NT.ANSI_C_STRING,
+            NT.TRANSLATED_STRING,
+            NT.CONCATENATION,
+        ):
+            parts.append(
+                await expand_node(
+                    sc, session, execute_fn, call_stack, view=view
+                )
+            )
         else:
             parts.append(get_text(sc))
     return f"{name}[{''.join(parts)}]"
 
 
 async def expand_node(
-    ts_node: tree_sitter.Node,
-    session: Session,
+    ts_node: TSNodeLike,
+    session: SessionState,
     execute_fn: Callable[..., Any],
     call_stack: CallStack | None = None,
     view: SessionView | None = None,
@@ -258,23 +336,23 @@ async def expand_node(
     """Expand a tree-sitter node to the string it stands for.
 
     Args:
-        ts_node (tree_sitter.Node): the node to expand.
-        session (Session): shell session state.
+        ts_node (TSNodeLike): the node to expand.
+        session (SessionState): shell session state.
         execute_fn (Callable): evaluator for command substitutions.
         call_stack (CallStack | None): shell call stack.
         view (SessionView | None): the session plane's gated door, for
             the expansions that write; None outside a workspace.
     """
-    return unmark_globs(await expand_node_marked(ts_node,
-                                                 session,
-                                                 execute_fn,
-                                                 call_stack,
-                                                 view=view))
+    return unmark_globs(
+        await expand_node_marked(
+            ts_node, session, execute_fn, call_stack, view=view
+        )
+    )
 
 
 async def expand_node_marked(
-    ts_node: tree_sitter.Node,
-    session: Session,
+    ts_node: TSNodeLike,
+    session: SessionState,
     execute_fn: Callable[..., Any],
     call_stack: CallStack | None = None,
     view: SessionView | None = None,
@@ -282,173 +360,351 @@ async def expand_node_marked(
     """Expand a node, marking the glob characters quoting made literal.
 
     Same string as :func:`expand_node`, except that a glob character
-    quoting neutralized travels under its own mark.
-    Only pathname expansion cares, so this is what ``expand_words``
-    reads while every other caller takes the unmarked wrapper above.
+    quoting neutralized travels under its own mark. The node is read
+    where no field splitting happens, so a splat reads as its elements
+    joined (``$@`` on a space, ``$*`` on IFS's first character).
 
     Args:
-        ts_node (tree_sitter.Node): the node to expand.
-        session (Session): shell session state.
+        ts_node (TSNodeLike): the node to expand.
+        session (SessionState): shell session state.
         execute_fn (Callable): evaluator for command substitutions.
         call_stack (CallStack | None): shell call stack.
         view (SessionView | None): the session plane's gated door, for
             the expansions that write; None outside a workspace.
     """
+    return join_chunks(
+        await expand_chunks(
+            ts_node, session, execute_fn, call_stack, view=view
+        )
+    )
+
+
+async def expand_chunks(
+    ts_node: TSNodeLike,
+    session: SessionState,
+    execute_fn: Callable[..., Any],
+    call_stack: CallStack | None = None,
+    view: SessionView | None = None,
+    quoted: bool = False,
+) -> list[Chunk]:
+    """Expand a node to the pieces field splitting reads.
+
+    What an unquoted expansion produces splits on IFS, and what quoting
+    protects does not; a splat's elements are separate fields.
+    ``split_fields`` turns the pieces into words and ``join_chunks``
+    into the one string a context without splitting reads.
+
+    Args:
+        ts_node (TSNodeLike): the node to expand.
+        session (SessionState): shell session state.
+        execute_fn (Callable): evaluator for command substitutions.
+        call_stack (CallStack | None): shell call stack.
+        view (SessionView | None): the session plane's gated door, for
+            the expansions that write; None outside a workspace.
+        quoted (bool): whether the node sits inside double quotes.
+    """
+    try:
+        return await _node_chunks(
+            ts_node, session, execute_fn, call_stack, view, quoted
+        )
+    except BadSubstitution as exc:
+        raise exc.within(get_text(ts_node).lstrip())
+
+
+async def _node_chunks(
+    ts_node: TSNodeLike,
+    session: SessionState,
+    execute_fn: Callable[..., Any],
+    call_stack: CallStack | None,
+    view: SessionView | None,
+    quoted: bool,
+) -> list[Chunk]:
     ntype = ts_node.type
 
     if ntype == NT.WORD:
-        word = _unescape_unquoted(mark_escaped_globs(get_text(ts_node)))
-        return expand_tilde(word, home_dir(session))
-
-    if ntype == NT.NUMBER:
-        return get_text(ts_node)
+        word = unescape_unquoted(mark_escaped_globs(get_text(ts_node)))
+        return [Piece(expand_tilde(word, home_dir(session)))]
 
     if ntype == NT.COMMAND_NAME:
         # The name is a word like any other: $CMD, "quoted", $(sub) all
         # expand. A bare word has one named child (or none) and falls
         # through to its own expansion rule.
         for child in ts_node.named_children:
-            return await expand_node(child,
-                                     session,
-                                     execute_fn,
-                                     call_stack,
-                                     view=view)
-        return get_text(ts_node)
+            return await expand_chunks(
+                child, session, execute_fn, call_stack, view=view
+            )
+        return [Piece(get_text(ts_node))]
 
     if ntype == NT.SIMPLE_EXPANSION:
         prefix = _folded_whitespace(ts_node)
-        raw = get_text(ts_node)[len(prefix):]
-        for child in ts_node.named_children:
-            if child.type == NT.SPECIAL_VARIABLE_NAME:
-                return prefix + _lookup_var(get_text(child), session,
-                                            call_stack)
-        # Slice past the leading "$" rather than searching for it, so
-        # `$$` keeps its name instead of splitting into prefix + "".
-        return prefix + _lookup_var(raw[1:], session, call_stack)
+        raw = get_text(ts_node)[len(prefix) :]
+        lead = [Piece(prefix)] if prefix else []
+        ref = scan_parameter(raw, 0)
+        if ref is None:
+            return [*lead, Piece(mark_globs(raw) if quoted else raw)]
+        name, end = ref
+        tail = raw[end:]
+        return [
+            *lead,
+            *parameter_chunks(name, session, call_stack, quoted),
+            *([Piece(mark_globs(tail) if quoted else tail)] if tail else []),
+        ]
 
     if ntype == NT.EXPANSION:
         prefix = _folded_whitespace(ts_node)
-        expand_child = partial(expand_node,
-                               session=session,
-                               execute_fn=execute_fn,
-                               call_stack=call_stack)
-        return prefix + await expand_braces(
-            ts_node, session, call_stack, expand_child, view=view)
+        expand_child = partial(
+            _expand_child,
+            session=session,
+            execute_fn=execute_fn,
+            call_stack=call_stack,
+            view=view,
+        )
+        braces = await expand_braces(
+            ts_node,
+            session,
+            call_stack,
+            expand_child,
+            view=view,
+            quoted=quoted,
+        )
+        return [Piece(prefix), *braces] if prefix else braces
 
-    if ntype == NT.COMMAND_SUBSTITUTION:
+    if ntype in (NT.COMMAND_SUBSTITUTION, NT.ARITHMETIC_EXPANSION):
+        text = await _substitution(
+            ts_node, session, execute_fn, call_stack, view
+        )
         prefix = _folded_whitespace(ts_node)
-        raw = get_text(ts_node)[len(prefix):]
-        if raw.startswith("`") and raw.endswith("`"):
-            # Backtick regions are re-lexed here rather than trusted from
-            # the grammar, which merges adjacent pairs (see
-            # _split_backtick_segments).
-            return prefix + await _expand_backtick_region(
-                raw, session, execute_fn)
-        if raw.startswith("$((") and raw.endswith("))"):
-            # Inside heredoc bodies tree-sitter parses `$((expr))` as a
-            # command substitution wrapping a subshell; reparse in
-            # command context so it routes to the arithmetic branch.
-            sub = ts_node.named_children
-            if len(sub) == 1 and sub[0].type == NT.SUBSHELL:
-                reparsed = parse("echo " + raw)
-                arith = _find_first(reparsed, NT.ARITHMETIC_EXPANSION)
-                if arith is not None:
-                    return prefix + await expand_node(
-                        arith, session, execute_fn, call_stack, view=view)
-        # The whole body goes to the evaluator: bash substitutes the
-        # full statement list, and picking child nodes dropped every
-        # statement after a `;` and every non-command statement
-        # (declarations, assignments, control flow).
-        inner = raw[2:-1]
-        if not inner.strip():
-            return prefix
-        io = await execute_child_shell(execute_fn, session, inner)
-        session._cmdsub_stderr += await io.materialize_stderr()
-        text = (await io.stdout_str()).rstrip("\n")
-        # Record the substitution's status: an assignment-only
-        # statement whose value ran substitutions reports the last
-        # one's status as its own (see assignment_status).
-        session._cmdsub_seq += 1
-        session._cmdsub_status = io.exit_code
-        return prefix + text
-
-    if ntype == NT.ARITHMETIC_EXPANSION:
-        prefix = _folded_whitespace(ts_node)
-        expr = await expand_arith(ts_node,
-                                  session,
-                                  execute_fn,
-                                  call_stack,
-                                  view=view)
-        try:
-            # Reads resolve against the visible env, so a hidden name
-            # counts as unset; the write-back below goes through the
-            # session plane's door, so a pre_session rule governs
-            # `$((X=5))` exactly as it governs `X=5`.
-            result = evaluate_arith(expr,
-                                    visible_env(session),
-                                    elements=session_elements(session))
-        except ArithError:
-            return get_text(ts_node)
-        for write in result.writes:
-            await expansion_write(session, view, write.name, write.key,
-                                  write.value)
-        return prefix + str(result.value)
+        lead = [Piece(prefix)] if prefix else []
+        return [*lead, value_piece(text, quoted)]
 
     if ntype == NT.CONCATENATION:
         # Each piece carries its own quoting, which is the whole reason
         # marks are per character: `'*'?.txt` joins a marked star to a
         # live question mark and still globs, on the `?` alone.
-        parts = []
+        chunks: list[Chunk] = []
         children = ts_node.children
         for position, child in enumerate(children):
             # A $"..." in a concatenation arrives as an anonymous `$`
             # token followed by the string node; the `$` is the
             # translation marker, not text. A bare trailing `$` (a$)
             # has no string after it and stays literal.
-            if (child.type == "$" and position + 1 < len(children)
-                    and children[position + 1].type == NT.STRING):
+            if (
+                child.type == "$"
+                and position + 1 < len(children)
+                and children[position + 1].type == NT.STRING
+            ):
                 continue
-            parts.append(await expand_node_marked(child,
-                                                  session,
-                                                  execute_fn,
-                                                  call_stack,
-                                                  view=view))
-        return "".join(parts)
+            chunks.extend(
+                await expand_chunks(
+                    child, session, execute_fn, call_stack, view=view
+                )
+            )
+        return chunks
 
     if ntype == NT.STRING:
-        # The newline bytes of a multi-line string belong to no child
-        # token, so each row step re-emits them; the quote tokens
-        # anchor the count, which keeps leading, trailing and blank
-        # lines alive ("a\n\nb" is five bytes in bash).
-        parts = []
-        prev_end_row = None
-        for child in ts_node.children:
-            if prev_end_row is not None:
-                parts.append("\n" * (child.start_point[0] - prev_end_row))
-            prev_end_row = child.end_point[0]
-            if child.type == NT.DQUOTE:
-                continue
-            parts.append(await expand_node(child,
-                                           session,
-                                           execute_fn,
-                                           call_stack,
-                                           view=view))
-        # Everything the quotes enclose is literal, the text and any
-        # value expanded inside it alike: "$p"?.txt globs on the `?`
-        # while $p?.txt globs on whatever `p` holds too.
-        return mark_globs("".join(parts))
+        return await _string_chunks(
+            ts_node, session, execute_fn, call_stack, view
+        )
+
+    if ntype == NT.TRANSLATED_STRING:
+        # $"..." asks for a locale translation; no message catalog is
+        # ever loaded, so the translation is the identity and the word
+        # keeps plain double-quote semantics.
+        for child in ts_node.named_children:
+            if child.type == NT.STRING:
+                return await _string_chunks(
+                    child, session, execute_fn, call_stack, view
+                )
+        return [Piece("")]
+
+    text = await _literal_node(ts_node, session, execute_fn, call_stack, view)
+    return [Piece(mark_globs(text) if quoted else text)]
+
+
+async def _expand_child(
+    node: TSNodeLike,
+    quoted: bool,
+    *,
+    session: SessionState,
+    execute_fn: Callable[..., Any],
+    call_stack: CallStack | None,
+    view: SessionView | None,
+) -> list[Chunk]:
+    """``expand_chunks`` in the shape ``expand_braces`` calls back.
+
+    Args:
+        node (TSNodeLike): the nested node.
+        quoted (bool): whether it sits inside double quotes.
+        session (SessionState): shell session state.
+        execute_fn (Callable): evaluator for command substitutions.
+        call_stack (CallStack | None): shell call stack.
+        view (SessionView | None): the session plane's gated door.
+    """
+    return await expand_chunks(
+        node, session, execute_fn, call_stack, view=view, quoted=quoted
+    )
+
+
+async def _string_chunks(
+    node: TSNodeLike,
+    session: SessionState,
+    execute_fn: Callable[..., Any],
+    call_stack: CallStack | None,
+    view: SessionView | None,
+) -> list[Chunk]:
+    """A double-quoted string's pieces, one field unless a splat splits it.
+
+    Everything the quotes enclose is literal, the text and every value
+    alike: ``"$p"?.txt`` globs on the ``?`` alone. The quotes open a
+    field even around nothing (``""``), except that a ``$@``-style
+    splat over no elements, with no other text, is no field at all:
+    with no parameters ``"$@"`` and ``"$u$@"`` are nothing, while one
+    empty parameter is one empty word. Only the element count decides
+    that, never the rendered text.
+
+    A bad substitution names what the quotes enclose, or the whole
+    document of a heredoc the string stands for.
+
+    Args:
+        node (TSNodeLike): the string node.
+        session (SessionState): shell session state.
+        execute_fn (Callable): evaluator for command substitutions.
+        call_stack (CallStack | None): shell call stack.
+        view (SessionView | None): the session plane's gated door.
+    """
+    chunks: list[Chunk] = [Piece("")]
+    splat = False
+    yielded = False
+    document = getattr(node.parent, "heredoc", None)
+    inside = (
+        document.body.decode()
+        if document is not None
+        else get_text(node)[1:-1]
+    )
+    for part in quoted_parts(node):
+        if isinstance(part, str):
+            chunks.append(Piece(mark_globs(part)))
+            continue
+        pieces = await named(
+            inside,
+            expand_chunks(
+                part, session, execute_fn, call_stack, view=view, quoted=True
+            ),
+        )
+        if is_at_splat(part):
+            splat = True
+            yielded = yielded or bool(pieces)
+        chunks.extend(pieces)
+    if splat and not yielded and not join_chunks(chunks):
+        return []
+    return chunks
+
+
+async def _substitution(
+    ts_node: TSNodeLike,
+    session: SessionState,
+    execute_fn: Callable[..., Any],
+    call_stack: CallStack | None,
+    view: SessionView | None,
+) -> str:
+    """A command substitution's output or an arithmetic expansion's value.
+
+    Args:
+        ts_node (TSNodeLike): the substitution node.
+        session (SessionState): shell session state.
+        execute_fn (Callable): evaluator for command substitutions.
+        call_stack (CallStack | None): shell call stack.
+        view (SessionView | None): the session plane's gated door.
+    """
+    prefix = _folded_whitespace(ts_node)
+    if ts_node.type == NT.ARITHMETIC_EXPANSION:
+        expr = await expand_arith(
+            ts_node, session, execute_fn, call_stack, view=view
+        )
+        try:
+            # Reads resolve against the visible env, so a hidden name
+            # counts as unset; the write-back below goes through the
+            # session plane's door, so a pre_session rule governs
+            # `$((X=5))` exactly as it governs `X=5`.
+            reader = random_reader(session)
+            result = evaluate_arith(
+                expr,
+                visible_env(session),
+                elements=session_elements(session, reader),
+                read_var=reader.read,
+                wrote_var=reader.wrote,
+            )
+        except ArithError as exc:
+            # bash bound the assignments made before the error, RANDOM's
+            # seed included; they land before the line dies.
+            await land_arith_writes(session, view, exc.writes, reader)
+            raise arith_exit(expr, exc) from exc
+        await land_arith_writes(session, view, result.writes, reader)
+        return str(result.value)
+    source = getattr(ts_node, "source_text", ts_node.text) or b""
+    raw = source.decode()[len(prefix) :]
+    if raw.startswith("`") and raw.endswith("`"):
+        # Backtick regions are re-lexed here rather than trusted from
+        # the grammar, which merges adjacent pairs (see
+        # split_backtick_region).
+        return await _expand_backtick_region(
+            raw, session, execute_fn, ts_node, len(prefix.encode()), call_stack
+        )
+    if raw.startswith("$((") and raw.endswith("))"):
+        # Inside heredoc bodies tree-sitter parses `$((expr))` as a
+        # command substitution wrapping a subshell; reparse in
+        # command context so it routes to the arithmetic branch.
+        sub = ts_node.named_children
+        if len(sub) == 1 and sub[0].type == NT.SUBSHELL:
+            reparsed = parse("echo " + raw)
+            arith = _find_first(reparsed, NT.ARITHMETIC_EXPANSION)
+            if arith is not None:
+                return await expand_node(
+                    arith, session, execute_fn, call_stack, view=view
+                )
+    # The whole body goes to the evaluator: bash substitutes the
+    # full statement list, and picking child nodes dropped every
+    # statement after a `;` and every non-command statement
+    # (declarations, assignments, control flow).
+    inner = raw[2:-1]
+    if not inner.strip():
+        return ""
+    # The substitution names its own node: the nested line's
+    # commands stand under it, which is where the pass placed them.
+    io = await child_line(session, execute_fn, inner, ts_node, call_stack)
+    text = (await io.stdout_str()).rstrip("\n")
+    # Record the substitution's status: an assignment-only
+    # statement whose value ran substitutions reports the last
+    # one's status as its own (see assignment_status).
+    session._diagnostics.append(await io.materialize_stderr())
+    session._cmdsub_seq += 1
+    session._cmdsub_status = io.exit_code
+    return text
+
+
+async def _literal_node(
+    ts_node: TSNodeLike,
+    session: SessionState,
+    execute_fn: Callable[..., Any],
+    call_stack: CallStack | None,
+    view: SessionView | None,
+) -> str:
+    """The text of a node no expansion splits: quoted words and the rest.
+
+    Args:
+        ts_node (TSNodeLike): the node to expand.
+        session (SessionState): shell session state.
+        execute_fn (Callable): evaluator for command substitutions.
+        call_stack (CallStack | None): shell call stack.
+        view (SessionView | None): the session plane's gated door.
+    """
+    ntype = ts_node.type
+
+    if ntype == NT.NUMBER:
+        return get_text(ts_node)
 
     if ntype == NT.STRING_CONTENT:
-        # Bash double-quote escapes: \$, \`, \", \\, \<newline>.
-        # Everything else preserves the backslash literally.
-        text = get_text(ts_node)
-        text = text.replace("\\\\", "\x00")
-        text = text.replace('\\"', '"')
-        text = text.replace("\\$", "$")
-        text = text.replace("\\`", "`")
-        text = text.replace("\\\n", "")
-        text = text.replace("\x00", "\\")
-        return text
+        return unescape_dquoted(get_text(ts_node))
 
     if ntype == NT.RAW_STRING:
         raw = get_text(ts_node)
@@ -458,19 +714,6 @@ async def expand_node_marked(
         raw = get_text(ts_node)
         return mark_globs(decode_ansi_c(raw[2:-1]))
 
-    if ntype == NT.TRANSLATED_STRING:
-        # $"..." asks for a locale translation; no message catalog is
-        # ever loaded, so the translation is the identity and the word
-        # keeps plain double-quote semantics.
-        for child in ts_node.named_children:
-            if child.type == NT.STRING:
-                return await expand_node_marked(child,
-                                                session,
-                                                execute_fn,
-                                                call_stack,
-                                                view=view)
-        return ""
-
     if ntype == NT.VARIABLE_ASSIGNMENT:
         raw = get_text(ts_node)
         if "=" in raw:
@@ -479,11 +722,9 @@ async def expand_node_marked(
                 c for c in ts_node.named_children if c.type != NT.VARIABLE_NAME
             ]
             if val_nodes:
-                expanded = await expand_node(val_nodes[0],
-                                             session,
-                                             execute_fn,
-                                             call_stack,
-                                             view=view)
+                expanded = await expand_node(
+                    val_nodes[0], session, execute_fn, call_stack, view=view
+                )
                 return f"{key}={expanded}"
             return f"{key}={val_part}"
         return raw

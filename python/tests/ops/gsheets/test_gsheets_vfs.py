@@ -21,33 +21,36 @@ from mirage import MountMode, Workspace
 from mirage.cache.index import IndexCacheStore
 from mirage.cache.index.config import IndexEntry
 from mirage.ops import Ops
-from mirage.resource.gsheets import GSheetsConfig, GSheetsResource
+from mirage.vfs.gsheets import GSheetsConfig, GSheetsVFS
 
 
 def _make_gsheets_ops() -> tuple[Ops, IndexCacheStore]:
-    # Mounting re-derives the resource's index from the workspace's
-    # config, so the store to seed is the one the mount ends up with.
-    resource = GSheetsResource(
-        config=GSheetsConfig(client_id="x", refresh_token="y"))
-    ws = Workspace({"/gsheets/": resource}, mode=MountMode.READ)
-    return ws.ops, resource.index
+    # The store to seed is the one the mount runs the driver under.
+    vfs = GSheetsVFS(config=GSheetsConfig(client_id="x", refresh_token="y"))
+    ws = Workspace({"/gsheets/": vfs}, mode=MountMode.READ)
+    return ws.vfs, ws.mount("/gsheets/").index_store
 
 
 @pytest.mark.asyncio
 async def test_readdir():
     ops, index = _make_gsheets_ops()
-    await index.set_dir("/gsheets/owned", [(
-        "budget.gsheet.json",
-        IndexEntry(
-            id="sheet1",
-            name="Budget",
-            resource_type="gsheets/sheet",
-            remote_time="2026-04-01T00:00:00Z",
-            vfs_name="budget.gsheet.json",
-        ),
-    )])
+    await index.set_dir(
+        "/gsheets/owned",
+        [
+            (
+                "Budget__sheet1.gsheet.json",
+                IndexEntry(
+                    id="sheet1",
+                    name="Budget",
+                    resource_type="gsheets/sheet",
+                    remote_time="2026-04-01T00:00:00Z",
+                    vfs_name="Budget__sheet1.gsheet.json",
+                ),
+            )
+        ],
+    )
     result = await ops.readdir("/gsheets/owned")
-    assert "/gsheets/owned/budget.gsheet.json" in result
+    assert "/gsheets/owned/Budget__sheet1.gsheet.json" in result
 
 
 @pytest.mark.asyncio
@@ -55,10 +58,10 @@ async def test_read_spreadsheet():
     ops, _ = _make_gsheets_ops()
     sheet_json = json.dumps({"spreadsheetId": "sheet1"}).encode()
     with patch(
-            "mirage.ops.gsheets.read.core_read",
-            new_callable=AsyncMock,
-            return_value=sheet_json,
+        "mirage.ops.gsheets.read.core_read",
+        new_callable=AsyncMock,
+        return_value=sheet_json,
     ):
-        result = await ops.read("/gsheets/owned/budget.gsheet.json")
+        result = await ops.read("/gsheets/owned/Budget__sheet1.gsheet.json")
         parsed = json.loads(result)
         assert parsed["spreadsheetId"] == "sheet1"

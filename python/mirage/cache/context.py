@@ -12,10 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from typing import Protocol
+from typing import Protocol, TypeVar
 
-from mirage.types import PathSpec
+from mirage.types import FileStat, PathSpec
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 class CacheInvalidator(Protocol):
@@ -26,29 +32,42 @@ class CacheInvalidator(Protocol):
     core mutators -> cache.context <- mount (pushes a manager).
     """
 
-    async def invalidate_after_write(self, path: PathSpec) -> None:
-        ...
+    async def invalidate_after_write(self, path: PathSpec) -> None: ...
 
-    async def invalidate_after_unlink(self, path: PathSpec) -> None:
-        ...
+    async def invalidate_after_unlink(self, path: PathSpec) -> None: ...
 
-    async def cached_bytes(self, path: PathSpec) -> bytes | None:
-        ...
+    async def invalidate_subtree(self, path: PathSpec) -> None: ...
+
+    async def invalidate_ancestors(self, path: PathSpec) -> None: ...
+
+    async def cached_bytes(self, path: PathSpec) -> bytes | None: ...
+
+    async def read_through(
+        self, path: PathSpec, fetch: Callable[[], Awaitable[bytes]]
+    ) -> bytes: ...
+
+    async def cached_size(self, path: PathSpec) -> int | None: ...
+
+    def listing_trusted(self, folder: str) -> bool: ...
+
+    def probed_stat(self, path: PathSpec) -> FileStat | None: ...
 
 
 _active: ContextVar[CacheInvalidator | None] = ContextVar(
-    "_active_cache_manager", default=None)
+    "_active_cache_manager", default=None
+)
 
 
 def push_cache_manager(
-        manager: CacheInvalidator | None) -> CacheInvalidator | None:
+    manager: CacheInvalidator | None,
+) -> CacheInvalidator | None:
     """Set the active cache manager for the current async context.
 
-    Mirrors ``observe.context.push_mount_prefix``: the mount entry point
-    pushes its manager before dispatching a command, core backend
-    mutators report through :func:`invalidate_after_write` /
-    :func:`invalidate_after_unlink`, and the caller restores the
-    previous value afterwards.
+    The mount entry point pushes its manager before dispatching a
+    command, core backend mutators report through
+    :func:`invalidate_after_write` / :func:`invalidate_after_unlink`, and
+    the caller restores the previous value afterwards by pushing the
+    manager this call returns.
 
     Args:
         manager (CacheInvalidator | None): Manager to activate, or None
@@ -73,7 +92,7 @@ async def invalidate_after_write(path: PathSpec) -> None:
     site. No-op if no cache manager is active.
 
     Args:
-        path (PathSpec): Resource-relative path that was written.
+        path (PathSpec): VFS-relative path that was written.
     """
     manager = _active.get()
     if manager is not None:
@@ -85,11 +104,62 @@ async def invalidate_after_unlink(path: PathSpec) -> None:
     mutation site. No-op if no cache manager is active.
 
     Args:
-        path (PathSpec): Resource-relative path that was removed.
+        path (PathSpec): VFS-relative path that was removed.
     """
     manager = _active.get()
     if manager is not None:
         await manager.invalidate_after_unlink(path)
+
+
+async def invalidate_subtree(path: PathSpec) -> None:
+    """Report a backend deletion that took a whole subtree with it.
+
+    ``invalidate_after_unlink`` evicts the path's own listing and its
+    parent's, which is the whole story for a file. A recursive delete
+    or a directory rename also strands every listing and every cached
+    body *below* the path, and those were cached under their own keys,
+    so nothing above them evicts one: ``ls`` kept printing a deleted
+    directory's contents and ``cat`` kept serving a deleted file's
+    bytes until the index TTL expired.
+
+    Unlike :func:`invalidate_ancestors`, this cannot be assembled from
+    ``invalidate_after_write`` calls, because the set of keys beneath
+    the path is only known to the caches themselves.
+
+    Args:
+        path (PathSpec): Root of the subtree that is gone.
+    """
+    manager = _active.get()
+    if manager is not None:
+        await manager.invalidate_subtree(path)
+
+
+async def evict_after(
+    op: Awaitable[T], evict: Callable[[T | None], Awaitable[None]]
+) -> T:
+    """Run ``op``, then ``evict``, also when ``op`` fails.
+
+    An op that fails partway (a paginated delete, a folder copy that
+    merged some children) has already changed the backend, so what it
+    touched is stale either way. ``evict`` gets the op's result, or None
+    when the op failed. After a failed op an eviction error is logged,
+    not raised, so the caller still learns why the op failed.
+
+    Args:
+        op (Awaitable[T]): The backend change.
+        evict (Callable[[T | None], Awaitable[None]]): Records and
+            evicts what the op changed, given its result or None.
+    """
+    try:
+        result = await op
+    except BaseException:
+        try:
+            await evict(None)
+        except Exception as exc:
+            logger.debug("evicting after a failed op: %s", exc)
+        raise
+    await evict(result)
+    return result
 
 
 async def invalidate_ancestors(path: PathSpec) -> None:
@@ -103,9 +173,21 @@ async def invalidate_ancestors(path: PathSpec) -> None:
     each one.
 
     Args:
-        path (PathSpec): Mount-relative path that was mutated.
+        path (PathSpec): Mutated path, retaining its full virtual path.
     """
-    parent = path.mount_path.rsplit("/", 1)[0]
-    while parent:
-        await invalidate_after_write(PathSpec.from_str_path(parent))
-        parent = parent.rsplit("/", 1)[0]
+    manager = _active.get()
+    if manager is not None:
+        await manager.invalidate_ancestors(path)
+
+
+def listing_refreshed(folder: str) -> bool:
+    """Whether the active mount's listing of ``folder`` is recent enough.
+
+    The same rule as the fresh listing gate: written during this command,
+    or within the trust window when no command is running.
+
+    Args:
+        folder (str): mount-absolute directory key.
+    """
+    manager = active_cache_manager()
+    return manager is not None and manager.listing_trusted(folder)

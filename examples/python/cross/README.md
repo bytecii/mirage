@@ -1,4 +1,4 @@
-# Cross-resource workspace (CLI)
+# Cross-VFS workspace (CLI)
 
 Drive a multi-mount workspace (`/s3`, `/gdrive`, `/gmail`, `/slack`,
 `/discord`) end-to-end from the shell using `workspace.yaml`.
@@ -71,27 +71,7 @@ mirage       execute --workspace_id cross \
   --command 'cat /s3/data/example.jsonl "/gdrive/AWS CDK.gdoc.json" | wc -l'
 ```
 
-## 4. Dry-run with `provision`
-
-```bash
-mirage       provision --workspace_id cross --command "cat /s3/data/example.jsonl | wc -l"
-./mirage-ts  provision --workspace_id cross --command "cat /s3/data/example.jsonl | wc -l"
-```
-
-After a real read the same path flips from a network read to a cache
-hit (`cache_hits=1`):
-
-```bash
-mirage       execute   --workspace_id cross --command "cat /s3/data/example.jsonl > /dev/null"
-./mirage-ts  execute   --workspace_id cross --command "cat /s3/data/example.jsonl > /dev/null"
-```
-
-```bash
-mirage       provision --workspace_id cross --command "cat /s3/data/example.jsonl"
-./mirage-ts  provision --workspace_id cross --command "cat /s3/data/example.jsonl"
-```
-
-## 5. Snapshot and restore
+## 4. Snapshot and restore
 
 Snapshots redact cloud creds at snapshot time, so loading needs fresh
 creds via a config file. The same workspace YAML used for create works.
@@ -113,7 +93,7 @@ mirage       workspace get cross_loaded --verbose
 ./mirage-ts  workspace get cross_loaded --verbose
 ```
 
-## 6. Clean up
+## 5. Clean up
 
 The daemon exits ~30s after the last workspace is deleted.
 
@@ -127,7 +107,7 @@ mirage       workspace delete cross_loaded
 ./mirage-ts  workspace delete cross_loaded
 ```
 
-## 7. Per-mount command limits (Python CLI)
+## 6. Per-mount command limits (Python CLI)
 
 A mount can cap what a command streams back with `command_limits`,
 so a runaway `cat`/`grep`/`rg` can't flood the agent or hang forever.
@@ -151,35 +131,35 @@ Warm the object once (the first S3 read fetches the whole object and can
 take a few seconds; later reads are cache hits):
 
 ```bash
-mirage execute --workspace_id cross_sg --command "head -n 1 /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "head -n 1 /s3/data/example.jsonl"
 ```
 
 `max_lines` + `on_exceed: truncate` — asking for 50 lines yields 10 plus a
 notice on stderr, exit `0`:
 
 ```bash
-mirage execute --workspace_id cross_sg --command "head -n 50 /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "head -n 50 /s3/data/example.jsonl"
 ```
 
 `max_lines` + `on_exceed: error` — `grep` matches thousands of lines, trips
 the 20-line cap, and fails with exit `1`:
 
 ```bash
-mirage execute --workspace_id cross_sg --command "grep mirage /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "grep mirage /s3/data/example.jsonl"
 ```
 
 `timeout_seconds` — the 1 ms deadline trips on any real read, exit `124`
 with `rg: timed out after 0.001s`:
 
 ```bash
-mirage execute --workspace_id cross_sg --command "rg mirage /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "rg mirage /s3/data/example.jsonl"
 ```
 
 Commands below their cap are untouched, so the earlier shapes still work
 unchanged (1 line, no notice):
 
 ```bash
-mirage execute --workspace_id cross_sg --command "head -n 1 /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "head -n 1 /s3/data/example.jsonl"
 ```
 
 Clean up:
@@ -188,7 +168,7 @@ Clean up:
 mirage workspace delete cross_sg
 ```
 
-## 8. Versioning (Python CLI)
+## 7. Versioning (Python CLI)
 
 The daemon keeps a git-backed history per workspace under
 `~/.mirage/repos/<id>` (set `MIRAGE_HOME` to relocate the whole data
@@ -216,10 +196,10 @@ mirage workspace create examples/python/cross/workspace_versioning.yaml --id cro
 Commit two versions, then `log` (newest first):
 
 ```bash
-mirage execute --workspace_id cross_ver --command "echo v1 > /notes.txt"
+mirage shell --workspace_id cross_ver --command "echo v1 > /notes.txt"
 mirage workspace commit cross_ver -m "first"
 
-mirage execute --workspace_id cross_ver --command "echo v2 > /notes.txt"
+mirage shell --workspace_id cross_ver --command "echo v2 > /notes.txt"
 mirage workspace commit cross_ver -m "second"
 
 mirage workspace log cross_ver
@@ -239,7 +219,7 @@ is left untouched:
 
 ```bash
 mirage workspace branch cross_ver exp
-mirage execute --workspace_id cross_ver --command "echo on-exp > /notes.txt"
+mirage shell --workspace_id cross_ver --command "echo on-exp > /notes.txt"
 mirage workspace commit cross_ver -b exp -m "on exp"
 mirage workspace log cross_ver -b exp           # on exp, second, first
 mirage workspace log cross_ver                  # main unchanged: second, first
@@ -250,7 +230,7 @@ mirage workspace log cross_ver                  # main unchanged: second, first
 
 ```bash
 mirage workspace checkout cross_ver <v1>
-mirage execute --workspace_id cross_ver --command "cat /notes.txt"   # => v1
+mirage shell --workspace_id cross_ver --command "cat /notes.txt"   # => v1
 ```
 
 `clone --at` builds a new workspace from one of the source's past versions
@@ -258,7 +238,7 @@ mirage execute --workspace_id cross_ver --command "cat /notes.txt"   # => v1
 
 ```bash
 mirage workspace clone cross_ver --at <v1> --id cross_ver_at
-mirage execute --workspace_id cross_ver_at --command "cat /notes.txt" # => v1
+mirage shell --workspace_id cross_ver_at --command "cat /notes.txt" # => v1
 ```
 
 Clean up (and drop the histories so a rerun starts fresh):

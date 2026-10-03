@@ -20,9 +20,8 @@ import { rstripSlash } from '../../../../utils/slash.ts'
 import type { CommandOpts } from '../../../config.ts'
 import { sedGeneric } from '../../generic/sed.ts'
 import { specOf } from '../../../spec/builtins.ts'
-import { FlagView } from '../../../spec/types.ts'
+import { FlagView } from '../../../spec/flag_view.ts'
 import { type Builder, resolveGlobOf } from '../adapter.ts'
-import { makeSedProvision } from '../provision.ts'
 
 const ENC = new TextEncoder()
 
@@ -40,14 +39,13 @@ function positionalAsPaths(texts: string[], opts: CommandOpts): PathSpec[] {
       virtual: resolved,
       directory: slash >= 0 ? resolved.slice(0, slash + 1) : '/',
       resolved: true,
-      resourcePath: mountKey(resolved, prefix),
+      vfsPath: mountKey(resolved, prefix),
     })
   })
 }
 
-export const SED_BUILDER: Builder = {
+export const BUILDER: Builder = {
   name: 'sed',
-  provision: makeSedProvision,
   fn: async (ops, accessor, paths, texts, opts) => {
     const idx = opts.index ?? undefined
     const { write } = ops

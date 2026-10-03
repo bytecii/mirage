@@ -16,12 +16,11 @@ import { expect, test } from 'vitest'
 
 import { DISK_OPS } from './disk/index.ts'
 import { EMAIL_OPS } from './email/index.ts'
-import { HF_OPS } from './hf/index.ts'
-import { REDIS_OPS } from './redis/index.ts'
+import { HF_BUCKETS_OPS } from './hf_buckets/index.ts'
 import { SSH_OPS } from './ssh/index.ts'
 
 // Golden snapshot of every backend's registered op surface, taken before
-// the ops-layer refactor. Each row is [name, resource, filetype, write];
+// the ops-layer refactor. Each row is [name, VFS, filetype, write];
 // filetype '' means no filetype binding. Any diff here is a registration
 // regression unless the change is deliberate.
 
@@ -30,8 +29,7 @@ type Row = [string, string, string, boolean]
 const TABLES = {
   disk: DISK_OPS,
   email: EMAIL_OPS,
-  hf: HF_OPS,
-  redis: REDIS_OPS,
+  hf_buckets: HF_BUCKETS_OPS,
   ssh: SSH_OPS,
 }
 
@@ -39,7 +37,9 @@ const OPS_INVENTORY: Record<string, Row[]> = {
   disk: [
     ['append', 'disk', '', true],
     ['create', 'disk', '', true],
+    ['glob', 'disk', '', false],
     ['mkdir', 'disk', '', true],
+    ['pwrite', 'disk', '', true],
     ['read', 'disk', '', false],
     ['readdir', 'disk', '', false],
     ['rename', 'disk', '', true],
@@ -51,58 +51,29 @@ const OPS_INVENTORY: Record<string, Row[]> = {
     ['write', 'disk', '', true],
   ],
   email: [
+    ['glob', 'email', '', false],
     ['read', 'email', '', false],
     ['readdir', 'email', '', false],
     ['stat', 'email', '', false],
   ],
-  hf: [
+  hf_buckets: [
+    ['append', 'hf_buckets', '', true],
     ['create', 'hf_buckets', '', true],
-    ['create', 'hf_datasets', '', true],
-    ['create', 'hf_models', '', true],
-    ['create', 'hf_spaces', '', true],
+    ['glob', 'hf_buckets', '', false],
     ['mkdir', 'hf_buckets', '', true],
-    ['mkdir', 'hf_datasets', '', true],
-    ['mkdir', 'hf_models', '', true],
-    ['mkdir', 'hf_spaces', '', true],
+    ['pwrite', 'hf_buckets', '', true],
     ['read', 'hf_buckets', '', false],
-    ['read', 'hf_datasets', '', false],
-    ['read', 'hf_models', '', false],
-    ['read', 'hf_spaces', '', false],
     ['readdir', 'hf_buckets', '', false],
-    ['readdir', 'hf_datasets', '', false],
-    ['readdir', 'hf_models', '', false],
-    ['readdir', 'hf_spaces', '', false],
     ['stat', 'hf_buckets', '', false],
-    ['stat', 'hf_datasets', '', false],
-    ['stat', 'hf_models', '', false],
-    ['stat', 'hf_spaces', '', false],
     ['unlink', 'hf_buckets', '', true],
-    ['unlink', 'hf_datasets', '', true],
-    ['unlink', 'hf_models', '', true],
-    ['unlink', 'hf_spaces', '', true],
     ['write', 'hf_buckets', '', true],
-    ['write', 'hf_datasets', '', true],
-    ['write', 'hf_models', '', true],
-    ['write', 'hf_spaces', '', true],
-  ],
-  redis: [
-    ['append', 'redis', '', true],
-    ['create', 'redis', '', true],
-    ['mkdir', 'redis', '', true],
-    ['read', 'redis', '', false],
-    ['readdir', 'redis', '', false],
-    ['rename', 'redis', '', true],
-    ['rmdir', 'redis', '', true],
-    ['setattr', 'redis', '', true],
-    ['stat', 'redis', '', false],
-    ['truncate', 'redis', '', true],
-    ['unlink', 'redis', '', true],
-    ['write', 'redis', '', true],
   ],
   ssh: [
     ['append', 'ssh', '', true],
     ['create', 'ssh', '', true],
+    ['glob', 'ssh', '', false],
     ['mkdir', 'ssh', '', true],
+    ['pwrite', 'ssh', '', true],
     ['read', 'ssh', '', false],
     ['readdir', 'ssh', '', false],
     ['rename', 'ssh', '', true],
@@ -120,7 +91,7 @@ const sortRows = (rows: Row[]): Row[] =>
 
 for (const [backend, ops] of Object.entries(TABLES)) {
   test(`ops inventory: ${backend}`, () => {
-    const actual = sortRows(ops.map((o) => [o.name, o.resource, o.filetype ?? '', o.write] as Row))
+    const actual = sortRows(ops.map((o) => [o.name, o.vfs, o.filetype ?? '', o.write] as Row))
     const expected = OPS_INVENTORY[backend]
     if (!expected) throw new Error(`missing fixture: ${backend}`)
     expect(actual).toEqual(sortRows(expected))

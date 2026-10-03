@@ -13,67 +13,173 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-from io import BytesIO
+from dataclasses import replace
 
-from dulwich.patch import write_tree_diff
 from dulwich.repo import BaseRepo
 
-from mirage.commands.cli.builtin.git.errors import (GitError,
-                                                    InvalidOptionError,
-                                                    NoWorkspaceError)
-from mirage.commands.cli.builtin.git.revparse import resolve_commit
+from mirage.commands.cli.builtin.git.changes import (
+    head_entries,
+    staged_entries,
+    work_entries,
+)
+from mirage.commands.cli.builtin.git.diff_output import (
+    DiffFlags,
+    compare,
+    limited,
+    parse_diff_flags,
+    renames_enabled,
+    render_changes,
+)
+from mirage.commands.cli.builtin.git.errors import (
+    GitError,
+    InvalidOptionError,
+    NoMergeBaseError,
+    NoWorkspaceError,
+)
+from mirage.commands.cli.builtin.git.index_file import (
+    read_index,
+    refuse_unresolved,
+)
+from mirage.commands.cli.builtin.git.pathspec import pathspec_patterns
+from mirage.commands.cli.builtin.git.repo import config_bool
+from mirage.commands.cli.builtin.git.revparse import (
+    merge_bases,
+    range_commits,
+    resolve_commit,
+)
 from mirage.commands.cli.builtin.git.session import opened
-from mirage.commands.cli.builtin.git.util import check_operands, fatal
+from mirage.commands.cli.builtin.git.tree import tree_entries
+from mirage.commands.cli.builtin.git.util import (
+    check_operands,
+    escaped,
+    fatal,
+    links_of,
+    split_marked,
+    start_point,
+)
 from mirage.commands.cli.types import CLIDoors, CLIInvocation
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 
-HEAD = "HEAD"
-
 # Deliberate divergence, verified against git 2.47.3 on a real
 # repository. The patch is correct and applies cleanly, and file
-# headers, mode lines and blob abbreviations match git exactly, but the
-# hunks are not byte-identical:
-#
-#   ours: @@ -3,6 +3,10 @@
-#   git:  @@ -4,6 +4,10 @@ from collections import defaultdict
-#
-# Two causes, both from dulwich rendering through Python's difflib
-# rather than git's xdiff. git appends the enclosing function or section
-# to a hunk header (xfuncname), and git slides a hunk to the equivalent
-# boundary xdiff prefers, so a blank line can be attributed to the
-# additions on one side and the context on the other. Closing this means
-# reimplementing xdl_change_compact and the xfuncname scan; until then
-# do not claim byte parity for diff bodies. `log`, `log --oneline`,
-# `show`'s header and `branch` ARE byte-identical.
+# headers, mode lines, blob abbreviations and hunk function context
+# match git exactly, but a hunk can still sit a line off where git's
+# does (`@@ -3,6 +3,10 @@` against `@@ -4,6 +4,10 @@`): git slides a
+# hunk to the equivalent boundary xdiff prefers (xdl_change_compact),
+# so a blank line can be attributed to the additions on one side and
+# the context on the other. Closing this means reimplementing that
+# pass; until then do not claim byte parity for diff bodies. `log`,
+# `log --oneline`, `show`'s header and `branch` ARE byte-identical.
 
 
-def _render(repo: BaseRepo, old_rev: str, new_rev: str) -> bytes:
-    """Resolve both revisions and render the patch, synchronously.
+Tree = dict[bytes, tuple[int, bytes]]
 
-    Runs on a worker thread, because resolving and reading blobs both
-    fetch through the dispatcher.
+
+def _sides(
+    repo: BaseRepo, texts: tuple[str, ...]
+) -> tuple[Tree | None, Tree | None, bytes]:
+    """Resolve the two sides a diff compares, synchronously.
+
+    No revision compares the index with the working tree, one compares
+    that revision with it, and two compare them with each other.
+    ``A..B`` is the two-revision form written as one operand, and
+    ``A...B`` compares B with the merge base of the two, which is what
+    a branch changed since it forked; with several bases git warns and
+    takes the first (pinned against git 2.50).
+
+    Runs on a worker thread, because resolving fetches through the
+    dispatcher.
 
     Args:
         repo (BaseRepo): repository to read.
-        old_rev (str): the revision on the minus side.
-        new_rev (str): the revision on the plus side.
+        texts (tuple[str, ...]): the revision operands.
+
+    Returns:
+        tuple: the old side's entries, None for the index; the new
+            side's, None for the working tree; and any warning.
     """
-    old = resolve_commit(repo, old_rev)
-    new = resolve_commit(repo, new_rev)
-    out = BytesIO()
-    write_tree_diff(out, repo.object_store, old.tree, new.tree)
-    return out.getvalue()
+    warning = b""
+    ends = range_commits(repo, texts[0]) if len(texts) == 1 else None
+    if ends is None:
+        if not texts:
+            return None, None, warning
+        old = resolve_commit(repo, texts[0])
+        if len(texts) == 1:
+            return tree_entries(repo.object_store, old.tree), None, warning
+        new = resolve_commit(repo, texts[1])
+    else:
+        old, new, symmetric = ends
+        if symmetric:
+            bases = merge_bases(repo, old, new)
+            if not bases:
+                raise NoMergeBaseError(texts[0])
+            old = bases[0]
+            if len(bases) > 1:
+                warning = (
+                    f"warning: {texts[0]}: multiple merge bases, "
+                    f"using {old.id.decode()}\n"
+                ).encode()
+    return (
+        tree_entries(repo.object_store, old.tree),
+        tree_entries(repo.object_store, new.tree),
+        warning,
+    )
+
+
+def _base(repo: BaseRepo, texts: tuple[str, ...]) -> Tree:
+    """The tree ``--cached`` compares the index with, synchronously.
+
+    The named revision, HEAD by default, or the empty tree on an unborn
+    branch.
+
+    Args:
+        repo (BaseRepo): repository to read.
+        texts (tuple[str, ...]): optional base revision.
+    """
+    if len(texts) > 1:
+        raise GitError("--cached accepts at most one revision")
+    if texts:
+        return tree_entries(
+            repo.object_store, resolve_commit(repo, texts[0]).tree
+        )
+    return head_entries(repo) or {}
+
+
+def _output(
+    repo: BaseRepo, before: Tree, after: Tree, flags: DiffFlags
+) -> bytes:
+    """Render what changed from one side's entries to the other's.
+
+    Args:
+        repo (BaseRepo): repository to read.
+        before (Tree): the old side, path to (mode, id).
+        after (Tree): the new side.
+        flags (DiffFlags): output options.
+    """
+    return render_changes(
+        repo,
+        compare(
+            repo,
+            limited(before, flags.pathspecs),
+            limited(after, flags.pathspecs),
+            flags.renames,
+        ),
+        flags,
+    )
 
 
 async def diff(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
-    """Diff two commits.
+    """Diff the working tree, staged content or commits.
 
-    One revision diffs it against HEAD's tree, two diff against each
-    other. The working tree is not a party to this yet: comparing
-    against it needs the index and the worktree scan, which is where
-    unstaged and staged diffs live.
+    No revision compares the index with the working tree, and one
+    compares that revision with it, as git does; two diff against each
+    other. With --cached or --staged, compare the index with the named
+    revision, HEAD by default, or the empty tree on an unborn branch.
+    Operands after ``--`` are pathspecs, read once the revisions have
+    resolved, as git reads them, and every format shows only the paths
+    they name.
 
     Args:
         inv (CLIInvocation[None]): the line's invocation record.
@@ -82,22 +188,52 @@ async def diff(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
             ``inv.doors``.
     """
     doors = inv.doors or CLIDoors()
-    dispatch = doors.dispatch
-    doors.stat_path
+    dispatch, stat_path = doors.dispatch, doors.stat_path
     texts = inv.texts
-    flags = inv.flags
-    fl = FlagView(flags)
-    if not texts:
-        return None, IOResult()
+    fl = FlagView(inv.flags)
+    cached = fl.as_bool("cached") or fl.as_bool("staged")
+    revisions, paths = split_marked(tuple(texts), inv.argv)
     try:
-        if dispatch is None:
+        if dispatch is None or stat_path is None:
             raise NoWorkspaceError()
-        check_operands(texts, InvalidOptionError)
-        repo, _location = await opened(fl, doors)
-        new_rev = texts[1] if len(texts) >= 2 else HEAD
-        body = await asyncio.to_thread(_render, repo, texts[0], new_rev)
+        check_operands(texts, InvalidOptionError, escaped(inv.argv))
+        repo, location = await opened(fl, doors)
+        parsed = parse_diff_flags(
+            fl,
+            default_renames=await renames_enabled(dispatch, location),
+            quote_path_fully=await config_bool(
+                dispatch, location, b"core", b"quotepath", True
+            ),
+        )
+        warning = b""
+        if cached:
+            state = await read_index(dispatch, location.gitdir)
+            refuse_unresolved(state)
+            before = await asyncio.to_thread(_base, repo, revisions)
+            after = staged_entries(state)
+        else:
+            old, new, warning = await asyncio.to_thread(
+                _sides, repo, revisions
+            )
+            if new is None:
+                state = await read_index(dispatch, location.gitdir)
+                after = await work_entries(
+                    dispatch, stat_path, repo, location, state, links_of(doors)
+                )
+                if old is None:
+                    for path in state.conflicts:
+                        after.pop(path, None)
+                before = staged_entries(state) if old is None else old
+            else:
+                before, after = old or {}, new
+        parsed = replace(
+            parsed,
+            pathspecs=pathspec_patterns(location, start_point(fl), paths),
+        )
+        body = await asyncio.to_thread(_output, repo, before, after, parsed)
     except GitError as exc:
         return fatal(exc)
+    result = IOResult(stderr=warning) if warning else IOResult()
     if not body:
-        return None, IOResult()
-    return yield_bytes(body), IOResult()
+        return None, result
+    return yield_bytes(body), result

@@ -17,8 +17,8 @@ import os
 import pytest
 
 from mirage import MountMode, Workspace
-from mirage.resource.disk import DiskResource
 from mirage.types import PathSpec
+from mirage.vfs.disk import DiskVFS
 
 # The ops factory forwards the index cache store into read/readdir/stat for
 # every backend. Disk carries a 60s index TTL, so a cached listing would hide
@@ -30,7 +30,7 @@ from mirage.types import PathSpec
 
 
 def _spec(virtual: str, rel: str) -> PathSpec:
-    return PathSpec(virtual=virtual, directory=virtual, resource_path=rel)
+    return PathSpec(virtual=virtual, directory=virtual, vfs_path=rel)
 
 
 def _names(entries: list[str]) -> list[str]:
@@ -40,8 +40,9 @@ def _names(entries: list[str]) -> list[str]:
 @pytest.fixture
 def disk_ws(tmp_path):
     os.mkdir(tmp_path / "seed")
-    return Workspace({"/d/": DiskResource(root=str(tmp_path))},
-                     mode=MountMode.WRITE)
+    return Workspace(
+        {"/d/": DiskVFS(root=str(tmp_path))}, mode=MountMode.WRITE
+    )
 
 
 @pytest.mark.asyncio
@@ -57,9 +58,9 @@ async def test_readdir_sees_dir_created_after_listing_cached(disk_ws):
 async def test_readdir_sees_file_written_after_listing_cached(disk_ws):
     before, _ = await disk_ws.dispatch("readdir", _spec("/d/", ""))
     assert _names(before) == ["seed"]
-    await disk_ws.dispatch("write",
-                           _spec("/d/note.txt", "note.txt"),
-                           data=b"hi")
+    await disk_ws.dispatch(
+        "write", _spec("/d/note.txt", "note.txt"), data=b"hi"
+    )
     after, _ = await disk_ws.dispatch("readdir", _spec("/d/", ""))
     assert _names(after) == ["note.txt", "seed"]
 
@@ -76,14 +77,14 @@ async def test_readdir_drops_dir_removed_after_listing_cached(disk_ws):
 
 @pytest.mark.asyncio
 async def test_ops_facade_readdir_reflects_mkdir(disk_ws):
-    assert _names(await disk_ws.ops.readdir("/d/")) == ["seed"]
-    await disk_ws.ops.mkdir("/d/sub")
-    assert _names(await disk_ws.ops.readdir("/d/")) == ["seed", "sub"]
+    assert _names(await disk_ws.vfs.readdir("/d/")) == ["seed"]
+    await disk_ws.vfs.mkdir("/d/sub")
+    assert _names(await disk_ws.vfs.readdir("/d/")) == ["seed", "sub"]
 
 
 @pytest.mark.asyncio
 async def test_ops_facade_readdir_reflects_write_then_unlink(disk_ws):
-    await disk_ws.ops.write("/d/a.txt", b"a")
-    assert _names(await disk_ws.ops.readdir("/d/")) == ["a.txt", "seed"]
-    await disk_ws.ops.unlink("/d/a.txt")
-    assert _names(await disk_ws.ops.readdir("/d/")) == ["seed"]
+    await disk_ws.vfs.write("/d/a.txt", b"a")
+    assert _names(await disk_ws.vfs.readdir("/d/")) == ["a.txt", "seed"]
+    await disk_ws.vfs.unlink("/d/a.txt")
+    assert _names(await disk_ws.vfs.readdir("/d/")) == ["seed"]

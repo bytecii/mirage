@@ -16,20 +16,25 @@ import asyncio
 
 import pytest
 
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from tests.fixtures.driver_ops import ops
 
 
 @pytest.fixture
 def ws():
-    mem = RAMResource()
+    mem = RAMVFS()
     big_content = b"\n".join([f"line {i}".encode() for i in range(10000)])
-    asyncio.run(mem.write(PathSpec.from_str_path("/big.txt"),
-                          data=big_content))
     asyncio.run(
-        mem.write(PathSpec.from_str_path("/small.txt"),
-                  data=b"apple\nbanana\napricot\ncherry\n"))
+        ops(mem).write(PathSpec.from_str_path("/big.txt"), data=big_content)
+    )
+    asyncio.run(
+        ops(mem).write(
+            PathSpec.from_str_path("/small.txt"),
+            data=b"apple\nbanana\napricot\ncherry\n",
+        )
+    )
     return Workspace(
         {"/data": (mem, MountMode.WRITE)},
         mode=MountMode.WRITE,
@@ -38,7 +43,7 @@ def ws():
 
 @pytest.mark.asyncio
 async def test_pipe_cat_grep(ws):
-    io = await ws.execute("cat /data/small.txt | grep ap")
+    io = await ws.shell("cat /data/small.txt | grep ap")
     result = await io.stdout_str()
     assert "apple" in result
     assert "apricot" in result
@@ -47,7 +52,7 @@ async def test_pipe_cat_grep(ws):
 
 @pytest.mark.asyncio
 async def test_pipe_cat_head_early_termination(ws):
-    io = await ws.execute("cat /data/big.txt | head -n 5")
+    io = await ws.shell("cat /data/big.txt | head -n 5")
     result = await io.stdout_str()
     lines = result.strip().split("\n")
     assert len(lines) == 5
@@ -56,7 +61,7 @@ async def test_pipe_cat_head_early_termination(ws):
 
 @pytest.mark.asyncio
 async def test_pipe_cat_grep_sort(ws):
-    io = await ws.execute("cat /data/small.txt | grep a | sort")
+    io = await ws.shell("cat /data/small.txt | grep a | sort")
     result = await io.stdout_str()
     lines = result.strip().split("\n")
     assert lines == sorted(lines)
@@ -65,7 +70,7 @@ async def test_pipe_cat_grep_sort(ws):
 def test_execute_via_asyncio_run(ws):
 
     async def _run():
-        io = await ws.execute("cat /data/small.txt")
+        io = await ws.shell("cat /data/small.txt")
         return await io.stdout_str()
 
     assert "apple" in asyncio.run(_run())
@@ -73,13 +78,13 @@ def test_execute_via_asyncio_run(ws):
 
 @pytest.mark.asyncio
 async def test_pipe_cat_wc(ws):
-    io = await ws.execute("cat /data/small.txt | wc -l")
+    io = await ws.shell("cat /data/small.txt | wc -l")
     assert (await io.stdout_str()).strip() == "4"
 
 
 @pytest.mark.asyncio
 async def test_pipe_cat_tail(ws):
-    io = await ws.execute("cat /data/big.txt | tail -n 3")
+    io = await ws.shell("cat /data/big.txt | tail -n 3")
     result = await io.stdout_str()
     lines = result.strip().split("\n")
     assert len(lines) == 3
@@ -88,6 +93,6 @@ async def test_pipe_cat_tail(ws):
 
 @pytest.mark.asyncio
 async def test_pipe_cat_sort_uniq(ws):
-    io = await ws.execute("cat /data/small.txt | sort | uniq")
+    io = await ws.shell("cat /data/small.txt | sort | uniq")
     lines = (await io.stdout_str()).strip().split("\n")
     assert len(lines) == len(set(lines))

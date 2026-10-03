@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { DiskAccessor } from '../../accessor/disk.ts'
@@ -40,10 +40,35 @@ describe('core/disk/readdir', () => {
     expect(await readdir(accessor, spec('/'))).toEqual(['/a', '/b'])
   })
 
+  it('leaves a host symlink out', async () => {
+    await mkdir(join(root, 'lib'))
+    await symlink('lib', join(root, 'lib64'))
+    await symlink('/nowhere/python3', join(root, 'python'))
+    expect(await readdir(accessor, spec('/'))).toEqual(['/lib'])
+  })
+
+  it('refuses a directory reached through a host symlink', async () => {
+    await mkdir(join(root, 'lib'))
+    await symlink('lib', join(root, 'lib64'))
+    await expect(readdir(accessor, spec('/lib64'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('lists nested directory', async () => {
     await mkdir(join(root, 'sub'))
     await writeFile(join(root, 'sub', 'x'), '')
     expect(await readdir(accessor, spec('/sub'))).toEqual(['/sub/x'])
+  })
+
+  it('preserves a cached subdirectory when listing its parent', async () => {
+    await mkdir(join(root, 'sub'))
+    await writeFile(join(root, 'sub', 'child'), 'data')
+    await writeFile(join(root, 'file.txt'), 'data')
+    const index = new RAMIndexCacheStore({ ttl: 600 })
+    const children = await readdir(accessor, spec('/sub'), index)
+    await readdir(accessor, spec('/'), index)
+    expect((await index.listDir('/sub')).entries).toEqual(children)
+    expect((await index.get('/sub')).entry?.resourceType).toBe('folder')
+    expect((await index.get('/file.txt')).entry?.resourceType).toBe('file')
   })
 
   it('throws ENOENT on a missing path', async () => {
@@ -69,7 +94,7 @@ describe('core/disk/readdir', () => {
     const prefixed = new PathSpec({
       virtual: '/data/',
       directory: '/data/',
-      resourcePath: mountKey('/data/', '/data'),
+      vfsPath: mountKey('/data/', '/data'),
     })
     const cold = await readdir(accessor, prefixed, index)
     const warm = await readdir(accessor, prefixed, index)
@@ -83,12 +108,12 @@ describe('core/disk/readdir', () => {
     const slashed = new PathSpec({
       virtual: '/data/',
       directory: '/data/',
-      resourcePath: mountKey('/data/', '/data'),
+      vfsPath: mountKey('/data/', '/data'),
     })
     const bare = new PathSpec({
       virtual: '/data',
       directory: '/data',
-      resourcePath: mountKey('/data', '/data'),
+      vfsPath: mountKey('/data', '/data'),
     })
     const first = await readdir(accessor, slashed, index)
     const second = await readdir(accessor, bare, index)

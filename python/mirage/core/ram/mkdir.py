@@ -15,14 +15,14 @@
 from mirage.accessor.ram import RAMAccessor
 from mirage.cache.context import invalidate_after_write, invalidate_ancestors
 from mirage.core.ram.dest import check_dest_parents, check_mkdir_target
-from mirage.core.timeutil import now_iso
 from mirage.types import PathSpec
+from mirage.utils.dates import now_iso
 from mirage.utils.path import norm
 
 
-async def mkdir(accessor: RAMAccessor,
-                path_spec: PathSpec,
-                parents: bool = False) -> None:
+async def mkdir(
+    accessor: RAMAccessor, path_spec: PathSpec, parents: bool = False
+) -> None:
     path = path_spec.mount_path
     store = accessor.store
     p = norm(path)

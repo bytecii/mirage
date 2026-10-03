@@ -13,8 +13,28 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { z } from 'zod'
-import type { ConfigOf } from '../../resource/secrets.ts'
-import { secretStr } from '../../resource/secrets.ts'
+import type { ConfigOf, RedactedConfig } from '../../vfs/secrets.ts'
+import { parseConfigWithSchema, redactConfigWithSchema, secretStr } from '../../vfs/secrets.ts'
+
+const GitHubConfigSchema = z.object({
+  token: secretStr(),
+  owner: z.string(),
+  repo: z.string(),
+  ref: z.string().optional(),
+  baseUrl: z.string().optional(),
+})
+
+export type GitHubConfig = ConfigOf<typeof GitHubConfigSchema>
+
+export type GitHubConfigRedacted = RedactedConfig<GitHubConfig, 'token'>
+
+export function redactGitHubConfig(config: GitHubConfig): GitHubConfigRedacted {
+  return redactConfigWithSchema(GitHubConfigSchema, config) as unknown as GitHubConfigRedacted
+}
+
+export function normalizeGitHubConfig(input: Record<string, unknown>): GitHubConfig {
+  return parseConfigWithSchema(GitHubConfigSchema, input)
+}
 
 export const GhConfigSchema = z.object({
   token: secretStr(),

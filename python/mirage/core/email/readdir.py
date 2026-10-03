@@ -12,38 +12,38 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import re
 from email.utils import parsedate_to_datetime
+from functools import partial
 from typing import Any
 
 from mirage.accessor.email import EmailAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
-from mirage.core.email.client import (INTERNAL_DATE_KEY, fetch_headers,
-                                      list_message_uids)
+from mirage.cache.index import IndexEntry
+from mirage.core.email.client import (
+    INTERNAL_DATE_KEY,
+    fetch_headers,
+    list_message_uids,
+)
 from mirage.core.email.folders import list_folders
 from mirage.core.email.render import message_json_bytes
-from mirage.types import PathSpec
-from mirage.utils.errors import enoent
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
+from mirage.core.email.scope import detect_scope
+from mirage.core.hierarchy.readdir import DirListing, Listed, make_readdir
+from mirage.core.hierarchy.scope import ScopeMatch
+from mirage.utils.sanitize import NAME_MAX_BYTES, byte_len, sanitize_label
 
 TITLE_MAX = 80
-UNSAFE = re.compile(r"[^\w\s\-.]")
-MULTI_UNDERSCORE = re.compile(r"_+")
 EPOCH_DATE = "1970-01-01"
+MSG_SUFFIX = ".email.json"
 
-
-def _sanitize(text: str) -> str:
-    if not text.strip():
-        return "No_Subject"
-    cleaned = UNSAFE.sub("_", text).replace(" ", "_")
-    cleaned = MULTI_UNDERSCORE.sub("_", cleaned).strip("_")
-    if len(cleaned) > TITLE_MAX:
-        cleaned = cleaned[:TITLE_MAX - 3] + "..."
-    return cleaned
+_sanitize = partial(sanitize_label, fallback="No_Subject", max_len=TITLE_MAX)
 
 
 def _msg_filename(subject: str, uid: str) -> str:
-    return f"{_sanitize(subject)}__{uid}.email.json"
+    # 80 characters is 240 bytes of CJK, which overflows the 255-byte
+    # NAME_MAX once the uid and `.email.json` are added, so the subject
+    # takes what they leave rather than a flat character count.
+    fixed = len("__") + byte_len(uid) + len(MSG_SUFFIX)
+    label = _sanitize(subject, max_bytes=NAME_MAX_BYTES - fixed)
+    return f"{label}__{uid}{MSG_SUFFIX}"
 
 
 def _parse_date(value: str) -> str | None:
@@ -88,132 +88,150 @@ def _date_bucket(message: dict[str, Any]) -> str:
     return internal if internal is not None else EPOCH_DATE
 
 
-async def readdir(
-    accessor: EmailAccessor,
-    path_spec: PathSpec,
-    index: IndexCacheStore = NULL_INDEX,
-) -> list[str]:
-    virtual = path_spec.virtual
-    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
-    path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
-    key = path.strip("/")
-    virtual_key = prefix + "/" + key if key else prefix or "/"
-    parts = key.split("/") if key else []
-    depth = len(parts)
+def _date_children(
+    headers: list[dict[str, Any]],
+) -> tuple[
+    list[tuple[str, IndexEntry]], dict[str, list[tuple[str, IndexEntry]]]
+]:
+    """One date directory's children, plus its attachment-dir seeds.
 
-    if depth == 0:
-        cached = await index.list_dir(virtual_key)
-        if cached.entries is not None:
-            return cached.entries
-        folders = await list_folders(accessor)
-        entries = []
-        for folder_name in folders:
-            entry = IndexEntry(
-                id=folder_name,
-                name=folder_name,
-                resource_type="email/folder",
-                vfs_name=folder_name,
-            )
-            entries.append((folder_name, entry))
-        await index.set_dir(virtual_key, entries)
-        return [f"{prefix}/{name}" for name, _ in entries]
-
-    if depth == 1:
-        folder_name = parts[0]
-        cached = await index.list_dir(virtual_key)
-        if cached.entries is not None:
-            return cached.entries
-        # An unknown folder must be ENOENT: selecting it over IMAP fails with
-        # "command SEARCH illegal in state AUTH", which leaked to the caller.
-        if folder_name not in await list_folders(accessor):
-            raise enoent(virtual)
-        max_msgs = accessor.config.max_messages
-        uids = await list_message_uids(accessor,
-                                       folder_name,
-                                       max_results=max_msgs)
-        headers_list = await fetch_headers(accessor, folder_name, uids)
-        date_groups: dict[str, list[dict[str, Any]]] = {}
-        for hdr in headers_list:
-            date_str = _date_bucket(hdr)
-            date_groups.setdefault(date_str, []).append(hdr)
-        date_entries: list[tuple[str, IndexEntry]] = []
-        for date_str in sorted(date_groups.keys(), reverse=True):
-            date_entry = IndexEntry(
-                id=date_str,
-                name=date_str,
-                resource_type="email/date",
-                vfs_name=date_str,
-            )
-            date_entries.append((date_str, date_entry))
-            msg_entries: list[tuple[str, IndexEntry]] = []
-            for hdr in date_groups[date_str]:
-                uid = hdr["uid"]
-                subject = hdr.get("subject", "") or "No Subject"
-                filename = _msg_filename(subject, uid)
-                msg_entry = IndexEntry(
+    Args:
+        headers (list[dict]): the date's fetched message headers.
+    """
+    children: list[tuple[str, IndexEntry]] = []
+    seeds: dict[str, list[tuple[str, IndexEntry]]] = {}
+    for hdr in headers:
+        uid = hdr["uid"]
+        subject = hdr.get("subject", "") or "No Subject"
+        filename = _msg_filename(subject, uid)
+        children.append(
+            (
+                filename,
+                IndexEntry(
                     id=uid,
                     name=subject,
                     resource_type="email/message",
                     vfs_name=filename,
                     size=len(message_json_bytes(hdr)),
-                )
-                msg_entries.append((filename, msg_entry))
-                attachments = hdr.get("attachments", [])
-                if attachments:
-                    att_dir_name = filename.replace(".email.json", "")
-                    att_dir_entry = IndexEntry(
+                ),
+            )
+        )
+        attachments = hdr.get("attachments", [])
+        if attachments:
+            att_dir_name = filename.replace(".email.json", "")
+            children.append(
+                (
+                    att_dir_name,
+                    IndexEntry(
                         id=uid,
                         name=att_dir_name,
                         resource_type="email/attachment_dir",
                         vfs_name=att_dir_name,
-                    )
-                    msg_entries.append((att_dir_name, att_dir_entry))
-                    att_entries: list[tuple[str, IndexEntry]] = []
-                    for att in attachments:
-                        att_entry = IndexEntry(
-                            id=att["filename"],
-                            name=att["filename"],
-                            resource_type="email/attachment",
-                            vfs_name=att["filename"],
-                            size=att.get("size"),
-                        )
-                        att_entries.append((att["filename"], att_entry))
-                    att_dir_vkey = (virtual_key + "/" + date_str + "/" +
-                                    att_dir_name)
-                    await index.set_dir(att_dir_vkey, att_entries)
-            date_vkey = virtual_key + "/" + date_str
-            await index.set_dir(date_vkey, msg_entries)
-        await index.set_dir(virtual_key, date_entries)
-        return [f"{prefix}/{key}/{name}" for name, _ in date_entries]
+                    ),
+                )
+            )
+            seeds[att_dir_name] = [
+                (
+                    att["filename"],
+                    IndexEntry(
+                        id=att["filename"],
+                        name=att["filename"],
+                        resource_type="email/attachment",
+                        vfs_name=att["filename"],
+                        size=att.get("size"),
+                    ),
+                )
+                for att in attachments
+            ]
+    return children, seeds
 
-    if depth == 2:
-        cached = await index.list_dir(virtual_key)
-        if cached.entries is not None:
-            return cached.entries
-        folder_vkey = PathSpec(
-            virtual=prefix + "/" + parts[0],
-            directory=prefix + "/" + parts[0],
-            resource_path=mount_key(prefix + "/" + parts[0], prefix),
+
+async def _folder_headers(
+    accessor: EmailAccessor, folder_name: str
+) -> list[dict[str, Any]]:
+    uids = await list_message_uids(
+        accessor, folder_name, max_results=accessor.config.max_messages
+    )
+    return await fetch_headers(accessor, folder_name, uids)
+
+
+async def _list_root(accessor: EmailAccessor, match: ScopeMatch) -> Listed:
+    folders = await list_folders(accessor)
+    return [
+        (
+            name,
+            IndexEntry(
+                id=name,
+                name=name,
+                resource_type="email/folder",
+                vfs_name=name,
+            ),
         )
-        await readdir(accessor, folder_vkey, index)
-        cached = await index.list_dir(virtual_key)
-        if cached.entries is not None:
-            return cached.entries
-        raise enoent(virtual)
+        for name in folders
+    ]
 
-    if depth == 3:
-        cached = await index.list_dir(virtual_key)
-        if cached.entries is not None:
-            return cached.entries
-        folder_vkey = PathSpec(
-            virtual=prefix + "/" + parts[0],
-            directory=prefix + "/" + parts[0],
-            resource_path=mount_key(prefix + "/" + parts[0], prefix),
+
+async def _list_folder(
+    accessor: EmailAccessor, match: ScopeMatch, own: IndexEntry
+) -> Listed:
+    headers_list = await _folder_headers(accessor, own.id)
+    date_groups: dict[str, list[dict[str, Any]]] = {}
+    for hdr in headers_list:
+        date_groups.setdefault(_date_bucket(hdr), []).append(hdr)
+    entries: list[tuple[str, IndexEntry]] = []
+    seeds: dict[str, list[tuple[str, IndexEntry]]] = {}
+    for date_str in sorted(date_groups.keys(), reverse=True):
+        entries.append(
+            (
+                date_str,
+                IndexEntry(
+                    id=date_str,
+                    name=date_str,
+                    resource_type="email/date",
+                    vfs_name=date_str,
+                ),
+            )
         )
-        await readdir(accessor, folder_vkey, index)
-        cached = await index.list_dir(virtual_key)
-        if cached.entries is not None:
-            return cached.entries
-        raise enoent(virtual)
+        children, att_seeds = _date_children(date_groups[date_str])
+        seeds[date_str] = children
+        for att_dir, att_entries in att_seeds.items():
+            seeds[f"{date_str}/{att_dir}"] = att_entries
+    return DirListing(entries=entries, seeds=seeds, window=True)
 
-    raise enoent(virtual)
+
+async def _list_day(
+    accessor: EmailAccessor, match: ScopeMatch, own: IndexEntry
+) -> Listed:
+    # Normally served from the folder lister's seed; reached only when
+    # the index evicted the day listing while the date entry survived.
+    headers_list = await _folder_headers(accessor, match.slots["folder"])
+    day = match.slots["day"]
+    children, att_seeds = _date_children(
+        [hdr for hdr in headers_list if _date_bucket(hdr) == day]
+    )
+    return DirListing(entries=children, seeds=att_seeds, window=True)
+
+
+async def _list_attachment_dir(
+    accessor: EmailAccessor, match: ScopeMatch, own: IndexEntry
+) -> Listed:
+    # Same eviction fallback: one header fetch rebuilds the listing.
+    headers_list = await fetch_headers(
+        accessor, match.slots["folder"], [own.id]
+    )
+    for hdr in headers_list:
+        _, seeds = _date_children([hdr])
+        for att_entries in seeds.values():
+            return att_entries
+    return []
+
+
+readdir = make_readdir(
+    detect_scope,
+    listers={"root": _list_root},
+    entry_listers={
+        "folder": _list_folder,
+        "day": _list_day,
+        "attachment_dir": _list_attachment_dir,
+    },
+)

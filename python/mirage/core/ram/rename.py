@@ -13,12 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.ram import RAMAccessor
-from mirage.cache.context import invalidate_after_unlink
-from mirage.core.ram.dest import check_dest_parents
-from mirage.core.timeutil import now_iso
-from mirage.resource.ram.store import RAMStore
+from mirage.cache.context import invalidate_subtree
+from mirage.core.ram.dest import check_dest_parents, lookup_error
 from mirage.types import PathSpec
+from mirage.utils.dates import now_iso
 from mirage.utils.path import norm
+from mirage.vfs.ram.store import RAMStore
 
 
 def _move_subtree(store: RAMStore, s: str, d: str) -> None:
@@ -40,21 +40,23 @@ def _move_subtree(store: RAMStore, s: str, d: str) -> None:
     for key in list(store.dirs):
         if key.startswith(prefix):
             store.dirs.discard(key)
-            store.dirs.add(new_prefix + key[len(prefix):])
+            store.dirs.add(new_prefix + key[len(prefix) :])
     for key in list(store.files):
         if key.startswith(prefix):
-            store.files[new_prefix + key[len(prefix):]] = store.files.pop(key)
+            store.files[new_prefix + key[len(prefix) :]] = store.files.pop(key)
     for key in list(store.modified):
         if key.startswith(prefix):
-            store.modified[new_prefix +
-                           key[len(prefix):]] = store.modified.pop(key)
+            store.modified[new_prefix + key[len(prefix) :]] = (
+                store.modified.pop(key)
+            )
     for key in list(store.attrs):
         if key.startswith(prefix):
-            store.attrs[new_prefix + key[len(prefix):]] = store.attrs.pop(key)
+            store.attrs[new_prefix + key[len(prefix) :]] = store.attrs.pop(key)
 
 
-async def rename(accessor: RAMAccessor, src_spec: PathSpec,
-                 dst_spec: PathSpec) -> None:
+async def rename(
+    accessor: RAMAccessor, src_spec: PathSpec, dst_spec: PathSpec
+) -> None:
     src = src_spec.mount_path
     dst = dst_spec.mount_path
     store = accessor.store
@@ -74,6 +76,6 @@ async def rename(accessor: RAMAccessor, src_spec: PathSpec,
             store.attrs[d] = store.attrs.pop(s)
         _move_subtree(store, s, d)
     else:
-        raise FileNotFoundError(s)
-    await invalidate_after_unlink(dst_spec)
-    await invalidate_after_unlink(src_spec)
+        raise lookup_error(store, src_spec, s)
+    await invalidate_subtree(dst_spec)
+    await invalidate_subtree(src_spec)

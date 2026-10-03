@@ -18,10 +18,12 @@ import { LinearAccessor } from '../../accessor/linear.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import type { FileStat } from '../../types.ts'
-import { FileType, PathSpec } from '../../types.ts'
+import { ContentType, FileType, PathSpec } from '../../types.ts'
 import type { LinearTransport } from './client.ts'
-import { readBytes } from './read.ts'
+import { read } from './read.ts'
 import { readdir } from './readdir.ts'
+import { Slot } from '../hierarchy/scope.ts'
+import { detectScope } from './scope.ts'
 import { stat } from './stat.ts'
 
 class NoopTransport implements LinearTransport {
@@ -31,22 +33,24 @@ class NoopTransport implements LinearTransport {
 }
 
 function spec(virtual: string, prefix = ''): PathSpec {
-  return new PathSpec({ virtual, directory: virtual, resourcePath: mountKey(virtual, prefix) })
+  return new PathSpec({ virtual, directory: virtual, vfsPath: mountKey(virtual, prefix) })
 }
 
 describe('linear stat modified', () => {
   it('returns modified from the cached team entry', async () => {
     const idx = new RAMIndexCacheStore()
-    await idx.put(
-      '/teams/ENG__Engineering__TEAM1',
-      new IndexEntry({
-        id: 'TEAM1',
-        name: 'Engineering',
-        resourceType: 'linear/team',
-        remoteTime: '2026-04-05T00:00:00Z',
-        vfsName: 'ENG__Engineering__TEAM1',
-      }),
-    )
+    await idx.setDir('/teams', [
+      [
+        'ENG__Engineering__TEAM1',
+        new IndexEntry({
+          id: 'TEAM1',
+          name: 'Engineering',
+          resourceType: 'linear/team',
+          remoteTime: '2026-04-05T00:00:00Z',
+          vfsName: 'ENG__Engineering__TEAM1',
+        }),
+      ],
+    ])
     const s = await stat(
       new LinearAccessor(new NoopTransport()),
       spec('/teams/ENG__Engineering__TEAM1'),
@@ -59,23 +63,25 @@ describe('linear stat modified', () => {
 
   it('reports the pushed-down size for a cached issue.json entry', async () => {
     const idx = new RAMIndexCacheStore()
-    await idx.put(
-      '/teams/ENG__Engineering__TEAM1/issues/ENG-1__ISSUE1/issue.json',
-      new IndexEntry({
-        id: 'ISSUE1',
-        name: 'issue.json',
-        resourceType: 'linear/issue_json',
-        remoteTime: '2026-04-05T00:00:00Z',
-        vfsName: 'issue.json',
-        size: 321,
-      }),
-    )
+    await idx.setDir('/teams/ENG__Engineering__TEAM1/issues/ENG-1__ISSUE1', [
+      [
+        'issue.json',
+        new IndexEntry({
+          id: 'ISSUE1',
+          name: 'issue.json',
+          resourceType: 'linear/issue_json',
+          remoteTime: '2026-04-05T00:00:00Z',
+          vfsName: 'issue.json',
+          size: 321,
+        }),
+      ],
+    ])
     const s = await stat(
       new LinearAccessor(new NoopTransport()),
       spec('/teams/ENG__Engineering__TEAM1/issues/ENG-1__ISSUE1/issue.json'),
       idx,
     )
-    expect(s.type).toBe(FileType.JSON)
+    expect(s.content).toBe(ContentType.JSON)
     expect(s.size).toBe(321)
     expect(s.modified).toBe('2026-04-05T00:00:00Z')
     expect(s.extra.issue_id).toBe('ISSUE1')
@@ -222,6 +228,25 @@ class FixtureTransport implements LinearTransport {
   }
 }
 
+async function walkNodes(
+  accessor: LinearAccessor,
+  idx: RAMIndexCacheStore,
+): Promise<[string, FileStat][]> {
+  const stack = ['/']
+  const nodes: [string, FileStat][] = []
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (current === undefined) break
+    const listing = await readdir(accessor, spec(current), idx)
+    for (const child of listing) {
+      const s = await stat(accessor, spec(child), idx)
+      if (s.type === FileType.DIRECTORY) stack.push(child)
+      nodes.push([child, s])
+    }
+  }
+  return nodes
+}
+
 describe('linear size push-down', () => {
   it('stat size equals the read byte length for every file in the tree', async () => {
     // The fskit invariant: whatever size stat reports at lookup must equal
@@ -229,25 +254,37 @@ describe('linear size push-down', () => {
     const transport = new FixtureTransport()
     const accessor = new LinearAccessor(transport)
     const idx = new RAMIndexCacheStore()
-    const stack = ['/']
-    const files: [string, FileStat][] = []
-    while (stack.length > 0) {
-      const current = stack.pop()
-      if (current === undefined) break
-      const listing = await readdir(accessor, spec(current), idx)
-      for (const child of listing) {
-        const s = await stat(accessor, spec(child), idx)
-        if (s.type === FileType.DIRECTORY) stack.push(child)
-        else files.push([child, s])
-      }
-    }
+    const files = (await walkNodes(accessor, idx)).filter(([, s]) => s.type !== FileType.DIRECTORY)
     expect(files.length).toBe(9)
     // Sizing never refetches an issue: the issues listing already carries the
     // payloads, so walking the whole tree costs no per-file issue fetch.
     expect(transport.issueFetches).toBe(0)
     for (const [child, s] of files) {
-      const body = await readBytes(transport, child, child)
+      const body = await read(accessor, spec(child), idx)
       expect(s.size, child).toBe(body.length)
+    }
+  })
+})
+
+// Mirrors python's test_stat_extra_names_the_id_the_path_carries: every
+// id-addressed node's stat carries its id under the key its path slot names
+// (team_id, member_id, issue_id, ...). The member kind wrote `user_id` while
+// its slot and trello's member say `member_id`.
+describe('linear stat extra', () => {
+  it('names the id the path carries', async () => {
+    const accessor = new LinearAccessor(new FixtureTransport())
+    const nodes = await walkNodes(accessor, new RAMIndexCacheStore())
+    expect(nodes.some(([path]) => path.includes('/members/'))).toBe(true)
+    for (const [path, s] of nodes) {
+      const match = detectScope(spec(path))
+      const segments = match.scope?.segments ?? []
+      const last = segments[segments.length - 1]
+      if (typeof last === 'string' && s.type === FileType.DIRECTORY) continue
+      const idKeys = segments.flatMap((seg) =>
+        seg instanceof Slot && seg.idKey !== null ? [seg.idKey] : [],
+      )
+      const idKey = idKeys[idKeys.length - 1] ?? ''
+      expect(s.extra, path).toEqual({ [idKey]: match.slots[idKey] })
     }
   })
 })

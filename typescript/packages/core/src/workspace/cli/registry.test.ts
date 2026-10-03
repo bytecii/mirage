@@ -22,6 +22,7 @@ import { DISCORD } from '../../commands/cli/builtin/discord/index.ts'
 import { GIT } from '../../commands/cli/builtin/git/index.ts'
 import { GWS } from '../../commands/cli/builtin/gws/index.ts'
 import { LINEAR } from '../../commands/cli/builtin/linear/index.ts'
+import { AIRTABLE } from '../../commands/cli/builtin/airtable/index.ts'
 import { NTN } from '../../commands/cli/builtin/ntn/index.ts'
 import { SLACK } from '../../commands/cli/builtin/slack/index.ts'
 import { CLIRegistry } from './registry.ts'
@@ -131,6 +132,32 @@ describe('CLIRegistry', () => {
 })
 
 describe('CLIRegistry zod config schemas', () => {
+  // Twin of the python arm taking an instance of its model as it is: a
+  // config the schema already parsed carries the schema's own keys.
+  it('installs a config the schema already parsed', () => {
+    const reg = new CLIRegistry()
+    const model = z.object({ imapHost: z.string(), imapPort: z.number().default(993) })
+    const parsed = model.parse({ imapHost: 'mail.example.com' })
+    expect(reg.install('prog', tree(model), parsed).config).toEqual({
+      imapHost: 'mail.example.com',
+      imapPort: 993,
+    })
+  })
+
+  it.each([
+    ['token', 'string'],
+    [['token'], 'array'],
+  ])('refuses a config that is not an object (%o)', (config, kind) => {
+    const reg = new CLIRegistry()
+    expect(() =>
+      reg.install(
+        'prog',
+        tree(z.object({ token: z.string() })),
+        config as unknown as Record<string, unknown>,
+      ),
+    ).toThrow(`CLI 'prog': config must be an object, got ${kind}`)
+  })
+
   it('rejects unknown keys on a plain object schema', () => {
     const reg = new CLIRegistry()
     expect(() =>
@@ -139,7 +166,7 @@ describe('CLIRegistry zod config schemas', () => {
   })
 
   // The same snake_case YAML config block must serve the Python and TS
-  // sides alike (the resource registries already promise this); the
+  // sides alike (the VFS registries already promise this); the
   // pydantic arm is snake_case-native, so the zod arm normalizes.
   it('accepts python-style snake_case keys for camelCase fields', () => {
     const reg = new CLIRegistry()
@@ -197,7 +224,7 @@ describe('CLIRegistry zod config schemas', () => {
     const reg = new CLIRegistry()
     expect(() =>
       reg.install('prog', tree(z.strictObject({ token: z.string() })), { token: 'x', typo: 'y' }),
-    ).toThrow(/Unrecognized key/)
+    ).toThrow(/^CLI 'prog': typo: unrecognized_keys$/)
   })
 
   it('refuses a normalizer that returns a non-object', () => {
@@ -223,6 +250,7 @@ const BUILTIN_CLIS: readonly (readonly [string, CLISpec])[] = [
   ['discord', DISCORD],
   ['ntn', NTN],
   ['linear', LINEAR],
+  ['airtable', AIRTABLE],
   ['git', GIT],
 ]
 
@@ -254,6 +282,23 @@ describe('builtin CLI configs install from the python spelling', () => {
       }
       const install = new CLIRegistry().install(name, spec, config)
       expect(Object.keys(install.config as Record<string, unknown>).sort()).toEqual(fields.sort())
+    })
+  }
+})
+
+describe('account CLIs take no mount time scope', () => {
+  for (const [name, spec] of [
+    ['slack', SLACK],
+    ['discord', DISCORD],
+  ] as const) {
+    it(`${name} refuses start_time and end_time`, () => {
+      expect(() =>
+        new CLIRegistry().install(name, spec, {
+          token: 'x',
+          start_time: '2026-06-01T00:00:00Z',
+          end_time: '2026-06-02T00:00:00Z',
+        }),
+      ).toThrow(`CLI '${name}': unknown config keys: end_time, start_time`)
     })
   }
 })

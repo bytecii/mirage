@@ -1,0 +1,479 @@
+{
+  "suite": "config",
+  "cases": [
+    {
+      "id": "ssh_password_and_passphrase_reach_the_host",
+      "vfs": "ssh",
+      "config": {
+        "host": "h",
+        "username": "u",
+        "password": "pw",
+        "identity_file": "~/k",
+        "passphrase": "pp"
+      },
+      "expect": {
+        "state": {
+          "host": "h",
+          "username": "u",
+          "password": "<REDACTED>",
+          "identity_file": "~/k",
+          "passphrase": "<REDACTED>"
+        }
+      }
+    },
+    {
+      "id": "ssh_port_must_be_numeric",
+      "vfs": "ssh",
+      "config": {
+        "host": "h",
+        "port": "twenty-two"
+      },
+      "expect": {
+        "refused": "ssh: port"
+      }
+    },
+    {
+      "id": "nextcloud_password_is_a_credential",
+      "vfs": "nextcloud",
+      "config": {
+        "url": "https://cloud.example/remote.php/dav/files/u/",
+        "username": "u",
+        "password": "pw",
+        "verify_ssl": false
+      },
+      "expect": {
+        "state": {
+          "url": "https://cloud.example/remote.php/dav/files/u/",
+          "username": "u",
+          "password": "<REDACTED>",
+          "verify_ssl": false
+        }
+      }
+    },
+    {
+      "id": "s3_bucket_must_be_a_string",
+      "vfs": "s3",
+      "config": {
+        "bucket": 123
+      },
+      "expect": {
+        "refused": "s3: bucket"
+      }
+    },
+    {
+      "id": "github_token_must_be_a_string",
+      "vfs": "github",
+      "config": {
+        "token": [],
+        "owner": "o",
+        "repo": "r"
+      },
+      "expect": {
+        "refused": "github: token"
+      }
+    },
+    {
+      "id": "google_access_token_is_a_credential",
+      "vfs": "gdrive",
+      "config": {
+        "access_token": "sa-token"
+      },
+      "expect": {
+        "state": {
+          "access_token": "<REDACTED>"
+        }
+      }
+    },
+    {
+      "id": "google_refresh_grant_still_works",
+      "vfs": "gdrive",
+      "config": {
+        "client_id": "id",
+        "client_secret": "s",
+        "refresh_token": "rt"
+      },
+      "expect": {
+        "state": {
+          "client_id": "id",
+          "client_secret": "<REDACTED>",
+          "refresh_token": "<REDACTED>"
+        }
+      }
+    },
+    {
+      "id": "google_needs_a_credential",
+      "vfs": "gdrive",
+      "config": {
+        "api_base": "http://127.0.0.1:1"
+      },
+      "expect": {
+        "refused": "gdrive: config: "
+      }
+    },
+    {
+      "id": "calendar_knobs_live_on_the_calendar_mount",
+      "vfs": "gcal",
+      "config": {
+        "access_token": "t",
+        "time_zone": "UTC",
+        "min_access_role": "writer"
+      },
+      "expect": {
+        "state": {
+          "time_zone": "UTC",
+          "min_access_role": "writer"
+        }
+      }
+    },
+    {
+      "id": "calendar_knobs_are_refused_on_a_drive_mount",
+      "vfs": "gdrive",
+      "config": {
+        "access_token": "t",
+        "time_zone": "UTC"
+      },
+      "expect": {
+        "refused": "gdrive: time_zone: "
+      }
+    },
+    {
+      "id": "unknown_key_is_refused_by_name",
+      "vfs": "linear",
+      "config": {
+        "api_key": "k",
+        "team_idz": [
+          "x"
+        ]
+      },
+      "expect": {
+        "refused": "linear: team_idz: "
+      }
+    },
+    {
+      "id": "renamed_key_is_still_known",
+      "vfs": "s3",
+      "config": {
+        "bucket": "b",
+        "endpoint_url": "http://127.0.0.1:1",
+        "aws_profile": "p",
+        "timeout": 3
+      },
+      "expect": {
+        "state": {
+          "bucket": "b",
+          "endpoint_url": "http://127.0.0.1:1",
+          "aws_profile": "p"
+        }
+      }
+    },
+    {
+      "id": "unknown_key_is_refused_on_a_renaming_config",
+      "vfs": "s3",
+      "config": {
+        "bucket": "b",
+        "endpoint_urll": "http://127.0.0.1:1"
+      },
+      "expect": {
+        "refused": "s3: endpoint_urll: "
+      }
+    },
+    {
+      "id": "unknown_key_is_refused_without_a_schema",
+      "vfs": "ram",
+      "config": {
+        "root": "/tmp"
+      },
+      "expect": {
+        "refused": "ram: root: "
+      }
+    },
+    {
+      "id": "notion_api_version_is_kept",
+      "vfs": "notion",
+      "config": {
+        "api_key": "k",
+        "api_version": "2025-09-03"
+      },
+      "expect": {
+        "state": {
+          "api_version": "2025-09-03",
+          "api_key": "<REDACTED>"
+        }
+      }
+    },
+    {
+      "id": "oci_path_style_can_be_turned_off",
+      "vfs": "oci",
+      "config": {
+        "bucket": "b",
+        "namespace": "ns",
+        "region": "us-ashburn-1",
+        "path_style": false
+      },
+      "expect": {
+        "state": {
+          "bucket": "b",
+          "path_style": false
+        }
+      }
+    },
+    {
+      "id": "supabase_path_style_defaults_on",
+      "vfs": "supabase",
+      "config": {
+        "bucket": "b",
+        "project_ref": "p",
+        "region": "us-east-1"
+      },
+      "expect": {
+        "state": {
+          "bucket": "b",
+          "path_style": true
+        }
+      }
+    },
+    {
+      "id": "hf_bucket_endpoint_is_optional",
+      "vfs": "hf_buckets",
+      "config": {
+        "bucket": "ns/name"
+      },
+      "expect": {
+        "state": {
+          "bucket": "ns/name"
+        }
+      }
+    },
+    {
+      "id": "gcs_region_is_optional",
+      "vfs": "gcs",
+      "config": {
+        "bucket": "b",
+        "access_key_id": "a",
+        "secret_access_key": "s"
+      },
+      "expect": {
+        "state": {
+          "bucket": "b",
+          "access_key_id": "<REDACTED>"
+        }
+      }
+    },
+    {
+      "id": "onedrive_refuses_two_drive_targets",
+      "vfs": "onedrive",
+      "config": {
+        "access_token": "t",
+        "drive_id": "d",
+        "site_id": "s"
+      },
+      "expect": {
+        "refused": "onedrive: config: "
+      }
+    },
+    {
+      "id": "wandb_read_only_config",
+      "vfs": "wandb",
+      "config": {
+        "entities": [
+          "lab"
+        ],
+        "api_key": "test-key",
+        "base_url": "https://api.wandb.ai",
+        "page_size": 25,
+        "max_pages": 30
+      },
+      "expect": {
+        "state": {
+          "entities": [
+            "lab"
+          ],
+          "api_key": "<REDACTED>",
+          "page_size": 25,
+          "max_pages": 30
+        }
+      }
+    },
+    {
+      "id": "wandb_requires_entities",
+      "vfs": "wandb",
+      "config": {},
+      "expect": {
+        "refused": "wandb: entities"
+      }
+    },
+    {
+      "id": "wandb_empty_entities_refused",
+      "vfs": "wandb",
+      "config": {
+        "entities": []
+      },
+      "expect": {
+        "refused": "wandb: entities"
+      }
+    },
+    {
+      "id": "wandb_page_size_bounded",
+      "vfs": "wandb",
+      "config": {
+        "entities": [
+          "lab"
+        ],
+        "page_size": 1001
+      },
+      "expect": {
+        "refused": "wandb: page"
+      }
+    },
+    {
+      "id": "slack_time_scope_round_trips",
+      "vfs": "slack",
+      "config": {
+        "token": "t",
+        "start_time": "2026-06-01T10:00:00+08:00",
+        "end_time": "2026-06-01T03:00:00Z"
+      },
+      "expect": {
+        "state": {
+          "start_time": "2026-06-01T10:00:00+08:00",
+          "end_time": "2026-06-01T03:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "slack_time_scope_requires_timezone",
+      "vfs": "slack",
+      "config": {
+        "token": "t",
+        "start_time": "2026-06-01"
+      },
+      "expect": {
+        "refused": "slack: start"
+      }
+    },
+    {
+      "id": "discord_time_scope_round_trips",
+      "vfs": "discord",
+      "config": {
+        "token": "t",
+        "start_time": "2026-06-01T10:00:00+08:00",
+        "end_time": "2026-06-01T03:00:00Z"
+      },
+      "expect": {
+        "state": {
+          "start_time": "2026-06-01T10:00:00+08:00",
+          "end_time": "2026-06-01T03:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "discord_time_scope_requires_timezone",
+      "vfs": "discord",
+      "config": {
+        "token": "t",
+        "start_time": "2026-06-01"
+      },
+      "expect": {
+        "refused": "discord: start"
+      }
+    },
+    {
+      "id": "gcal_time_scope_round_trips",
+      "vfs": "gcal",
+      "config": {
+        "access_token": "t",
+        "start_time": "2026-06-01T10:00:00+08:00",
+        "end_time": "2026-06-01T03:00:00Z"
+      },
+      "expect": {
+        "state": {
+          "start_time": "2026-06-01T10:00:00+08:00",
+          "end_time": "2026-06-01T03:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "gcal_time_scope_requires_timezone",
+      "vfs": "gcal",
+      "config": {
+        "access_token": "t",
+        "start_time": "2026-06-01"
+      },
+      "expect": {
+        "refused": "gcal: start"
+      }
+    },
+    {
+      "id": "gcal_bucket_days_round_trips",
+      "vfs": "gcal",
+      "config": {
+        "access_token": "t",
+        "bucket_days": 7
+      },
+      "expect": {
+        "state": {
+          "bucket_days": 7
+        }
+      }
+    },
+    {
+      "id": "gcal_bucket_days_is_1_7_or_30",
+      "vfs": "gcal",
+      "config": {
+        "access_token": "t",
+        "bucket_days": 14
+      },
+      "expect": {
+        "refused": "gcal: bucket"
+      }
+    },
+    {
+      "id": "disk_folder_versions_default_on",
+      "vfs": "disk",
+      "config": {
+        "root": "/tmp/mirage-integ-config-disk"
+      },
+      "expect": {
+        "state": {
+          "folder_versions": true
+        }
+      }
+    },
+    {
+      "id": "disk_folder_versions_can_be_turned_off",
+      "vfs": "disk",
+      "config": {
+        "root": "/tmp/mirage-integ-config-disk",
+        "folder_versions": false
+      },
+      "expect": {
+        "state": {
+          "folder_versions": false
+        }
+      }
+    },
+    {
+      "id": "disk_folder_versions_must_be_a_boolean",
+      "vfs": "disk",
+      "config": {
+        "root": "/tmp/mirage-integ-config-disk",
+        "folder_versions": "no"
+      },
+      "expect": {
+        "refused": "disk: folder_versions: must be a boolean"
+      }
+    },
+    {
+      "id": "disk_unknown_key_is_refused_before_a_bad_folder_versions",
+      "vfs": "disk",
+      "config": {
+        "root": "/tmp/mirage-integ-config-disk",
+        "folder_versions": "no",
+        "bogus": 1
+      },
+      "expect": {
+        "refused": "bogus"
+      }
+    }
+  ]
+}

@@ -14,15 +14,15 @@
 
 import type { MongoDBAccessor } from '../../../accessor/mongodb.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
-import { MONGODB_IO } from './io.ts'
+import { IO } from './io.ts'
 import { streamAny } from '../../../core/mongodb/read.ts'
 import { stat as mongoStat } from '../../../core/mongodb/stat.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
+import { VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { catGeneric } from '../generic/cat.ts'
 
-const resolveGlob = resolveGlobOf(MONGODB_IO)
+const resolveGlob = resolveGlobOf(IO)
 
 async function catCommand(
   accessor: MongoDBAccessor,
@@ -43,7 +43,7 @@ async function catCommand(
 
 export const MONGODB_CAT = command({
   name: 'cat',
-  resource: ResourceName.MONGODB,
+  vfs: VFSName.MONGODB,
   spec: specOf('cat'),
   fn: catCommand,
 })

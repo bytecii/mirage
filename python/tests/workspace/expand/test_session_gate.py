@@ -16,7 +16,7 @@ import pytest
 
 from mirage.policy import Action, Deny, Policy
 from mirage.policy.types import SessionContext
-from mirage.resource.ram import RAMResource
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 
@@ -32,7 +32,7 @@ class DenyAws(Policy):
 @pytest.fixture
 def guarded():
     """A workspace whose policy refuses writes to ``AWS_*``."""
-    with Workspace({"/ram/": RAMResource()}, policies=[DenyAws()]) as ws:
+    with Workspace({"/ram/": RAMVFS()}, policies=[DenyAws()]) as ws:
         yield ws
 
 
@@ -43,7 +43,7 @@ async def value_of(ws, name: str) -> bytes:
         ws (Workspace): the workspace under test.
         name (str): variable name.
     """
-    result = await ws.execute(f"echo [${name}]")
+    result = await ws.shell(f"echo [${name}]")
     return (result.stdout or b"").strip()
 
 
@@ -58,14 +58,17 @@ async def value_of(ws, name: str) -> bytes:
         # being irrelevant.
         ('echo "${AWS_PROFILE:=x}"', "AWS_PROFILE"),
         ("echo $((AWS_LIMIT=5))", "AWS_LIMIT"),
+        ('v=abcdef; echo "${v:$((AWS_LIMIT=1)):2}"', "AWS_LIMIT"),
+        ('a=(one two); echo "${a[@]:${AWS_LIMIT:=1}}"', "AWS_LIMIT"),
         ("((AWS_LIMIT=5))", "AWS_LIMIT"),
         ("printf -v AWS_KEY %s x", "AWS_KEY"),
         ("for ((AWS_I=0; AWS_I<1; AWS_I++)); do :; done", "AWS_I"),
     ],
 )
-async def test_every_session_writer_clears_the_gate(guarded, line: str,
-                                                    name: str):
-    result = await guarded.execute(line)
+async def test_every_session_writer_clears_the_gate(
+    guarded, line: str, name: str
+):
+    result = await guarded.shell(line)
     assert result.exit_code != 0, f"{line!r} was not refused"
     assert b"not yours to set" in (result.stderr or b""), line
     assert await value_of(guarded, name) == b"[]", f"{line!r} wrote anyway"
@@ -82,9 +85,10 @@ async def test_every_session_writer_clears_the_gate(guarded, line: str,
         ("for ((I=0; I<1; I++)); do :; done", "I", b"[1]"),
     ],
 )
-async def test_a_name_no_rule_covers_still_writes(guarded, line: str,
-                                                  name: str, expected: bytes):
-    await guarded.execute(line)
+async def test_a_name_no_rule_covers_still_writes(
+    guarded, line: str, name: str, expected: bytes
+):
+    await guarded.shell(line)
     assert await value_of(guarded, name) == expected
 
 
@@ -94,10 +98,10 @@ async def test_a_subscripted_printf_target_clears_the_gate(guarded):
     # session write like any other. Taking the direct path for it left
     # `printf -v 'AWS_KEY[0]'` as the one spelling a pre_session rule
     # could not refuse.
-    result = await guarded.execute("printf -v 'AWS_KEY[0]' %s x")
+    result = await guarded.shell("printf -v 'AWS_KEY[0]' %s x")
     assert result.exit_code != 0
     assert b"not yours to set" in (result.stderr or b"")
-    read = await guarded.execute('echo "[${AWS_KEY[0]}]"')
+    read = await guarded.shell('echo "[${AWS_KEY[0]}]"')
     assert (read.stdout or b"").strip() == b"[]"
 
 
@@ -109,13 +113,25 @@ async def test_a_subscripted_printf_target_clears_the_gate(guarded):
         # element 0 and leaves the rest of the array alone, and so does
         # a `${name:=}` default. Writing the whole variable as a scalar
         # instead discards every other element.
-        ("A=(1 2 3); echo $((A=5)) >/dev/null; echo \"${A[@]}\"", b"5 2 3"),
+        ('A=(1 2 3); echo $((A=5)) >/dev/null; echo "${A[@]}"', b"5 2 3"),
         ('C=("" 9); echo "${C:=x}" >/dev/null; echo "${C[@]}"', b"x 9"),
-        ("B=(1 2 3); printf -v B %s X; echo \"${B[@]}\"", b"X 2 3"),
+        ('B=(1 2 3); printf -v B %s X; echo "${B[@]}"', b"X 2 3"),
         ("D=(1 2 3); printf -v 'D[1]' %s Y; echo \"${D[@]}\"", b"1 Y 3"),
     ],
 )
 async def test_an_expansion_write_keeps_the_other_elements(
-        guarded, line: str, expected: bytes):
-    result = await guarded.execute(line)
+    guarded, line: str, expected: bytes
+):
+    result = await guarded.shell(line)
     assert (result.stdout or b"").strip() == expected
+
+
+@pytest.mark.asyncio
+async def test_refused_offset_does_not_expand_length(guarded):
+    result = await guarded.shell(
+        'v=abcdef; echo "${v:(AWS_LIMIT=1):${OTHER:=2}}"'
+    )
+    assert result.exit_code == 1
+    assert b"not yours to set" in (result.stderr or b"")
+    assert await value_of(guarded, "AWS_LIMIT") == b"[]"
+    assert await value_of(guarded, "OTHER") == b"[]"

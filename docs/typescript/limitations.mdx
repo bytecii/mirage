@@ -10,29 +10,15 @@ Most of Mirage's behavior is identical across Python and TypeScript. The two TS 
   `python3` has its own set of WASM-runtime-level divergences from Python Mirage's subprocess model. See [Python](/typescript/python#limitations) for the full list.
 </Note>
 
-## Virtual shell traps (Python, Node and Browser)
+## Shell traps (Python, Node and Browser)
 
-`trap 'commands' EXIT` (also `0`) registers asynchronous cleanup. Mirage awaits
-it on explicit `exit`, `set -e` termination, or completion of a child shell:
-`bash -c`, a script file, `( ... )`, a pipeline stage, command substitution, or
-background job. Cleanup uses the ordinary executor, so commands, redirects,
-mount permissions and cancellation apply. `$?` starts with the terminating
-status; an explicit `exit N` inside cleanup can replace it.
+`trap 'commands' EXIT` (or `0`) registers cleanup for the shell that ends. It runs at `exit`, in the frame that called it, so a function's locals and `$1` are still in scope. It also runs when a child shell ends (`bash -c`, a script, `( ... )`, a pipeline stage, `$( )`, a background job) or when `set -e` or a fatal expansion error ends the shell. `$?` starts at the ending status. The status stays that unless the cleanup calls `exit N` or fails under `set -e`.
 
-`trap -p` lists registrations, `trap - EXIT` removes one, and `trap '' EXIT`
-disables cleanup. Subshells can inspect the parent's registration but must
-register their own handler to run one. `bash` and `sh` start without a handler.
+`trap -p` lists the registration, `trap - EXIT` removes it and `trap '' EXIT` turns cleanup off. A subshell lists its parent's registration but runs only one it registers itself. `bash` and `sh` start with none.
 
-A workspace session persists across `execute()` calls, so returning from an
-ordinary call does **not** fire `EXIT`. Register cleanup inside `bash -c` when
-it should finish before that call returns. Registrations are live shell state,
-like functions; they are not persisted in session stores.
+A workspace session persists across `shell()` calls, so a call that returns does not fire `EXIT`. Register the cleanup inside `bash -c` when it has to finish before the call returns. Registrations are live shell state: session stores do not keep them.
 
-Mirage cancellation, `kill`, timeouts and workspace/session teardown are hard
-stops, not POSIX signal delivery. They do not start cleanup; cancellation can
-interrupt cleanup already running. `INT`, `TERM`, `ERR`, `DEBUG`, `RETURN` and
-other events are explicitly refused. `trap -l` is unsupported because Mirage
-has no OS signal table. No handler installs a signal listener on the host.
+Mirage has no OS signals. Cancellation, `kill`, timeouts and closing a workspace or session stop the work without running cleanup, and they interrupt cleanup that is already running (bash runs `EXIT` on a `SIGTERM`). `trap` refuses every other event (`INT`, `TERM`, `ERR`, `DEBUG`, `RETURN`, ...) with `mirage: trap: NAME: not supported`, and `trap -l` the same way.
 
 ## Node
 
@@ -50,7 +36,7 @@ has no OS signal table. No handler installs a signal listener on the host.
 // ✅ Works, this is CJS and goes through require('fs')
 const { readFileSync } = require('fs')
 patchNodeFs(ws)
-readFileSync('/data/x.txt')  // routes through RAM resource
+readFileSync('/data/x.txt')  // routes through RAM VFS
 
 // ❌ Does not work, this is ESM and bypasses the patch
 import { readFileSync } from 'node:fs'
@@ -68,17 +54,17 @@ readFileSync('/data/x.txt')  // hits the real filesystem, throws ENOENT
 
     ```ts
     import { readFile } from 'node:fs/promises'
-    const ws = new Workspace({ '/data': new Mount(new RAMResource(), { backend: MountBackend.FUSE }) })
+    const ws = new Workspace({ '/data': new Mount(new RAMVFS(), { backend: MountBackend.FUSE }) })
     await ws.fuseReady()
     // The `/data` subtree is exposed at the mountpoint root, so paths are relative to it.
     const bytes = await readFile(`${ws.fuseMountpoint}/x.txt`)
     ```
   </Tab>
   <Tab title="Use Mirage's VFS API directly">
-    The most reliable approach: call `ws.execute()` or the resource methods. No magic, no monkey-patching, works from ESM or CJS.
+    The most reliable approach: call `ws.shell()` or the VFS methods. No magic, no monkey-patching, works from ESM or CJS.
 
     ```ts
-    const res = await ws.execute('cat /data/x.txt')
+    const res = await ws.shell('cat /data/x.txt')
     const bytes = res.stdout
     ```
   </Tab>
@@ -101,7 +87,7 @@ readFileSync('/data/x.txt')  // hits the real filesystem, throws ENOENT
 **The problem.** `@zkochan/fuse-native` dispatches every FUSE request (`getattr`, `read`, …) as a callback on the mounting process's Node event loop. Any *synchronous* access to your own mountpoint from that same process (`readFileSync`, `statSync`, `execFileSync('cat', …)`) blocks the loop that must answer the request: the call deadlocks, the kernel eventually times the filesystem out, and later operations fail with `Device not configured` / `ENOTCONN`.
 
 ```ts
-const ws = new Workspace({ '/data': new Mount(new RAMResource(), { backend: MountBackend.FUSE }) })
+const ws = new Workspace({ '/data': new Mount(new RAMVFS(), { backend: MountBackend.FUSE }) })
 await ws.fuseReady()
 const mp = ws.fuseMountpoint
 
@@ -122,7 +108,7 @@ execFileSync('cat', [`${mp}/x.txt`])
 
 ### 3. Size-unknown API files stat as 0 bytes until first open
 
-**The behavior.** API-backed resources (Trello, Linear, Slack, MongoDB, …) return `stat.size = null` because the byte size isn't known until the API has been called. Over the FUSE mount these files behave like Linux `/proc` files: they stat as **0 bytes until first open**, and become fully readable the moment anything opens them. Mirage mounts with `direct_io` (the kernel reads to EOF regardless of the reported size; `@zkochan/fuse-native` doesn't expose the option, so Mirage appends it to the mount option string itself) and `attr_timeout=0` (post-open `fstat` returns the real size of the now-fetched content, kept warm in a 30-second cache).
+**The behavior.** API-backed mounts (Trello, Linear, Slack, MongoDB, …) return `stat.size = null` because the byte size isn't known until the API has been called. Over the FUSE mount these files behave like Linux `/proc` files: they stat as **0 bytes until first open**, and become fully readable the moment anything opens them. Mirage mounts with `direct_io` (the kernel reads to EOF regardless of the reported size; `@zkochan/fuse-native` doesn't expose the option, so Mirage appends it to the mount option string itself) and `attr_timeout=0` (post-open `fstat` returns the real size of the now-fetched content, kept warm in a 30-second cache).
 
 What that means per tool:
 
@@ -145,34 +131,36 @@ The browser SDK runs entirely in-page: no kernel, no subprocesses, no Node `fs`.
 
 ### 1. No FUSE
 
-Browsers can't mount filesystems. A workspace with a fuse `Mount` throws on construction. Use `ws.execute(...)` (virtual executor) and `ws.fs.readFile/writeFile` instead. Every builtin (`cat`, `grep`, `jq`, `awk`, `python3`, etc.) is reimplemented in-process, so most agent code paths work unchanged from Node.
+Browsers can't mount filesystems. The browser `Workspace` takes plain mounts: there is no `Mount` backend option and no `addFuseMount`. Use `ws.shell(...)` (virtual executor) and `ws.vfs.read`/`write` instead. Every builtin (`cat`, `grep`, `jq`, `awk`, `python3`, etc.) is reimplemented in-process, so most agent code paths work unchanged from Node.
 
 ### 2. OPFS quotas and persistence
 
-`OPFSResource` writes through the [Origin Private File System](https://web.dev/articles/origin-private-file-system). Two things to know:
+`OPFSVFS` writes through the [Origin Private File System](https://web.dev/articles/origin-private-file-system). Two things to know:
 
 - **Storage quota.** The browser sets per-origin quotas (typically a fraction of free disk, single-digit GB on most setups). Hitting it raises `QuotaExceededError`. Call `navigator.storage.estimate()` to inspect.
 - **Eviction.** Origins that aren't [persisted](https://web.dev/articles/persistent-storage) can be cleared by the browser under storage pressure. For long-lived workspaces, request `navigator.storage.persist()` early.
 
-### 3. CORS for HTTP-backed resources
+### 3. CORS for HTTP-backed VFS
 
 Mounts that hit third-party APIs (S3, GitHub, Linear, etc.) make `fetch` calls from the page. Anything not configured to allow your origin via CORS will fail with the usual browser error. Workarounds:
 
-- **Browser-native auth flows.** Resources like Box, Dropbox, GDrive, GDocs ship PKCE OAuth examples that work entirely in-browser.
+- **Browser-native auth flows.** mounts like Box, Dropbox, GDrive, GDocs ship PKCE OAuth examples that work entirely in-browser.
 - **Pre-signed URLs.** For S3/R2/GCS, generate pre-signed URLs server-side and pass them in. The Mirage browser examples include a Vite dev-server `presigner` plugin as reference.
 - **Same-origin proxy.** Stand up a tiny proxy on your own domain that forwards to the upstream API with the right auth headers.
 
-### 4. Python sees the mount as of the start of the run
+### 4. Pyodide caches accessed files for each run
 
-`open()` against a mounted path is served by a filesystem Mirage registers inside the interpreter. Its callbacks are synchronous, so the tree is collected before the script starts and writes are replayed after it ends: an edit made to the resource from elsewhere mid-run is not visible until the next run.
+Pyodide's worker fetches workspace files on access and caches them for that
+execution. An external edit to a cached file is not visible until the next
+run. Without workers or `SharedArrayBuffer`, the fallback collects whole
+mounts before execution, which can be expensive for large mounts.
 
-This needs no [JSPI](https://github.com/WebAssembly/js-promise-integration) and no V8 flag, so it works the same in Chrome, Firefox, Safari and Node.
+See [Pyodide workspace file access](/typescript/runtime/python#workspace-file-access)
+for browser requirements and limitations.
 
-See [Python filesystem](/typescript/python-fs) for the details.
+### 5. Some VFS drivers remain Node-only
 
-### 5. Some resource drivers remain Node-only
-
-SSH, LanceDB, Email, Disk, Redis, and the Hugging Face resources are only exposed by `@struktoai/mirage-node` because their drivers need Node APIs or raw TCP. Importing them from `@struktoai/mirage-browser` is a build error.
+SSH, LanceDB, Email, Disk, and the Hugging Face mounts are only exposed by `@struktoai/mirage-node` because their drivers need Node APIs or raw TCP. Importing them from `@struktoai/mirage-browser` is a build error.
 
 Postgres and MongoDB do have browser implementations:
 
@@ -192,14 +180,24 @@ Those HTTP drivers still need a browser-reachable endpoint with the correct CORS
 | FUSE `cat`/`readFile` of API-backed size-unknown files | Node | ✅ works (stats 0 until opened, like `/proc`) |
 | `tar`/`rsync` of an unopened size-unknown file | Node | ❌ copies 0 bytes (stat-only tools; same in Python) — read the file first or use `cp` |
 | Synchronous access to your own mount from the mounting process | Node | ❌ deadlocks; use async APIs or a child process |
-| `ws.execute(...)` virtual builtins | Browser | ✅ works |
-| `Workspace` with a fuse `Mount` | Browser | ❌ throws; not supported |
+| `ws.shell(...)` virtual builtins | Browser | ✅ works |
+| `Workspace` with a fuse `Mount` | Browser | ❌ not supported; the browser `Workspace` takes plain mounts |
 | OPFS reads/writes within quota | Browser | ✅ works |
 | OPFS over quota | Browser | ❌ `QuotaExceededError`; check `navigator.storage.estimate()` |
-| HTTP-backed resources without CORS allow-list | Browser | ❌ blocked; use PKCE, presigned URLs, or a same-origin proxy |
+| HTTP-backed mounts without CORS allow-list | Browser | ❌ blocked; use PKCE, presigned URLs, or a same-origin proxy |
 | Python `open()` writes back through mount | Browser | ✅ on any engine |
 | Postgres through `NeonPgDriver` | Browser | ✅ over HTTP; endpoint must allow the browser origin |
 | MongoDB through `HttpMongoDriver` | Browser | ✅ through an HTTP proxy; direct MongoDB sockets are unavailable |
-| Node-only resources (SSH, LanceDB, Email, Disk, Redis, Hugging Face, GridFS, FUSE) | Browser | ❌ Node APIs or raw TCP required |
+| Node-only VFS types (SSH, LanceDB, Email, Disk, Hugging Face, GridFS, FUSE) | Browser | ❌ Node APIs or raw TCP required |
 
 The Node limitations are runtime-level, not Mirage design decisions. Python's equivalent behavior is strictly better in each case, so if a workflow absolutely requires ESM-level `fs` patching or large API-backed FUSE reads, consider whether the Python SDK fits better for that specific piece. The Browser limitations are by design (no kernel, no subprocess), so the workarounds there are about choosing the right runtime for the task.
+
+## CPU-bound builtin processing
+
+Line readers, cache drains, and `wc` processing periodically yield to the event loop. Large RAM files and warm cache reads therefore allow host timers and I/O callbacks to run. `Workspace.shell(command, { signal })` forwards caller cancellation to builtin input processing; Python provides the corresponding `cancel=asyncio.Event()` path and task cancellation.
+
+File-cache fingerprints use incremental MD5: the Node package installs native hashing with 64 KiB updates, while browser/core uses JavaScript block batches. Both yield on a time budget; Python uses incremental `hashlib` updates.
+
+These checkpoints are cooperative, not a hard execution-time bound. A synchronous regex call, native sort, whole-buffer allocation, or individual hash chunk can still occupy the thread until that operation returns. Custom handlers must observe cancellation themselves. Embeddings requiring isolation from arbitrary CPU work should run the workspace in a separate worker or process.
+
+Cancellation itself has one seam. Python runs the whole line as one task, cancels it and joins it, so every await in the line unwinds before `execute` raises; the line's own flush and history record get the same 250 ms grace after the cancel and are cancelled too if a store holds them past it. A JavaScript promise cannot be cancelled, so TypeScript fires the signal, joins the tree for a short grace (250 ms) while responsive leaves close their producers and settle, then releases the caller. `execute` always rejects with an `AbortError` whose `cause` is the signal's reason. A leaf that does not observe the signal within the grace (a custom handler, a backend call with no signal parameter) keeps running in the background until it settles on its own; its output is dropped and it cannot change `$?` (the status door refuses a statement that settles after the release), but any write it completes still lands on the backend. A handler that loops over operands reaches its backend through slots (a generic-bound command such as `rm`, `cp` or `mkdir`) or through the op door (a namespace-routed one such as `chmod`, `touch` or `rm` of a link), and both refuse to start once the signal has fired, so a released line begins no further read or write between operands; only a custom handler that reaches its backend directly can. Python's cancelled task never reaches the next operand, and a Python handler or store must let `CancelledError` propagate: one that swallows both deliveries holds `execute` until it returns, as it would hold `asyncio.wait_for`, and a warning is logged while it does. A caller cancelled from outside (`asyncio.wait_for` around `execute`) gets the same grace as the event. Loading workspace state, parsing, routing, the fetch of a managed variable's secret, the history record and the session flush are raced against the signal as well, so a stalled state store or secret source cannot hold the caller either. A line is recorded in history once it has been parsed; an abort that lands while workspace state is still loading records nothing, in both languages. A command timeout is the line's own answer (exit 124), never an abort of the invocation: neither language writes the caller's signal or event. A background job, and every line it evaluates, runs without the caller's signal or event; only `kill` reaches it.

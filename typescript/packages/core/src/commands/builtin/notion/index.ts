@@ -13,17 +13,12 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { NotionAccessor } from '../../../accessor/notion.ts'
-import { ResourceName } from '../../../types.ts'
+import { VFSName } from '../../../types.ts'
 import type { RegisteredCommand } from '../../config.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
-import { NOTION_FIND } from './find.ts'
-import { NOTION_IO } from './io.ts'
+import { IO } from './io.ts'
 
-const NOTION_OVERRIDES = new Set(['find'])
-
-export const NOTION_COMMANDS: readonly RegisteredCommand[] = [
-  ...makeGenericCommands<NotionAccessor>(ResourceName.NOTION, NOTION_IO, {
-    overrides: NOTION_OVERRIDES,
-  }),
-  ...NOTION_FIND,
-]
+export const NOTION_COMMANDS: readonly RegisteredCommand[] = makeGenericCommands<NotionAccessor>(
+  VFSName.NOTION,
+  IO,
+)

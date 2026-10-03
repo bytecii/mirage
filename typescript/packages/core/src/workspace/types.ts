@@ -23,6 +23,7 @@ export interface ExecutionNodeInit {
   children?: ExecutionNode[]
   records?: OpRecord[]
   paths?: PathSpec[]
+  refused?: boolean
 }
 
 export class ExecutionNode {
@@ -36,6 +37,11 @@ export class ExecutionNode {
   // serialized): lets the lazy-stream drain respell filesystem errors as
   // typed, like the eager chokepoint.
   paths: PathSpec[]
+  // The admission gate refused the line, so it never ran. Transient:
+  // the redirect layer reads it to leave output targets untouched,
+  // where an ordinary failure still creates and truncates them as
+  // bash's open-before-exec would.
+  refused: boolean
 
   constructor(init: ExecutionNodeInit = {}) {
     this.command = init.command ?? null
@@ -45,6 +51,7 @@ export class ExecutionNode {
     this.children = init.children ?? []
     this.records = init.records ?? []
     this.paths = init.paths ?? []
+    this.refused = init.refused ?? false
   }
 
   toJSON(): Record<string, unknown> {
@@ -56,52 +63,5 @@ export class ExecutionNode {
     if (this.children.length > 0) d.children = this.children.map((c) => c.toJSON())
     if (this.records.length > 0) d.records = this.records.map((r) => r.toJSON())
     return d
-  }
-}
-
-export interface ExecutionRecordInit {
-  agent: string
-  command: string
-  stdout: Uint8Array
-  stdin?: Uint8Array | null
-  exitCode: number
-  tree: ExecutionNode
-  timestamp: number
-  sessionId?: string
-}
-
-export class ExecutionRecord {
-  readonly agent: string
-  readonly command: string
-  readonly stdout: Uint8Array
-  readonly stdin: Uint8Array | null
-  readonly exitCode: number
-  readonly tree: ExecutionNode
-  readonly timestamp: number
-  readonly sessionId: string
-
-  constructor(init: ExecutionRecordInit) {
-    this.agent = init.agent
-    this.command = init.command
-    this.stdout = init.stdout
-    this.stdin = init.stdin ?? null
-    this.exitCode = init.exitCode
-    this.tree = init.tree
-    this.timestamp = init.timestamp
-    this.sessionId = init.sessionId ?? ''
-  }
-
-  toJSON(): Record<string, unknown> {
-    const decoder = new TextDecoder('utf-8', { fatal: false })
-    return {
-      agent: this.agent,
-      command: this.command,
-      stdout: decoder.decode(this.stdout),
-      stdin: this.stdin === null ? null : decoder.decode(this.stdin),
-      exitCode: this.exitCode,
-      tree: this.tree.toJSON(),
-      timestamp: this.timestamp,
-      sessionId: this.sessionId,
-    }
   }
 }

@@ -20,8 +20,8 @@ import pytest_asyncio
 
 from mirage.commands.cli.builtin.git import lazyfile
 from mirage.commands.cli.builtin.git.lazyfile import LazyFile
-from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
+from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
 CONTENT = bytes(range(256)) * 8
@@ -45,15 +45,16 @@ async def opened(ws) -> LazyFile:
     Args:
         ws (Workspace): the workspace holding the blob.
     """
-    return LazyFile(ws.dispatch, PATH, len(CONTENT),
-                    asyncio.get_running_loop())
+    return LazyFile(
+        ws.dispatch, PATH, len(CONTENT), asyncio.get_running_loop()
+    )
 
 
 @pytest_asyncio.fixture
 async def ram_ws():
     """A workspace holding one binary blob."""
-    with Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE) as ws:
-        await ws.ops.write(PATH, CONTENT)
+    with Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE) as ws:
+        await ws.vfs.write(PATH, CONTENT)
         yield ws
 
 
@@ -77,7 +78,7 @@ async def test_a_read_spanning_several_blocks(ram_ws, block_size):
     f = await opened(ram_ws)
     await asyncio.to_thread(f.seek, SMALL_BLOCK - 3)
     got = await asyncio.to_thread(f.read, SMALL_BLOCK * 2 + 6)
-    assert got == CONTENT[SMALL_BLOCK - 3:SMALL_BLOCK * 3 + 3]
+    assert got == CONTENT[SMALL_BLOCK - 3 : SMALL_BLOCK * 3 + 3]
 
 
 @pytest.mark.asyncio
@@ -100,7 +101,8 @@ async def test_a_block_is_fetched_once(ram_ws, block_size, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_read_only_fetches_the_blocks_it_lands_in(
-        ram_ws, block_size, monkeypatch):
+    ram_ws, block_size, monkeypatch
+):
     calls = []
     original = lazyfile.read_range
 

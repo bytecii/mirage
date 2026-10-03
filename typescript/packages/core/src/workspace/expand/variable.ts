@@ -12,7 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { substringOperands } from './substring.ts'
+
+import { badSubstitution, scanParameter } from '../../shell/parameter.ts'
+import { nextRandom } from '../session/state.ts'
 import { evaluateArith } from '../../shell/arith.ts'
+import type { ArithWrite } from '../../shell/types.ts'
+import type { RandomReader } from '../session/state.ts'
 import {
   type ShellArray,
   arrayExtent,
@@ -23,33 +29,45 @@ import {
   arrayValues,
 } from '../../shell/array.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
-import { ArithError, ExitSignal } from '../../shell/errors.ts'
-import { NodeType as NT, type ElementOps, type TSNodeLike } from '../../shell/types.ts'
+import { RANDOM } from '../../shell/constants.ts'
+import {
+  ArithError,
+  BadSubstitution,
+  DiscardSignal,
+  ExitSignal,
+  named,
+  UnboundVariable,
+} from '../../shell/errors.ts'
+import { NodeType as NT, type TSNodeLike } from '../../shell/types.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
 import type { SessionView } from '../../ops/types.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
-import type { Session } from '../session/session.ts'
+import type { SessionState } from '../session/session.ts'
 import { assignElement } from '../session/elements.ts'
 import { ReadonlyVariableError } from '../session/errors.ts'
 import {
   ensureVarVisible,
-  sessionElements,
   visibleArrays,
   visibleAssocs,
   visibleEnv,
   deref,
   namerefTarget,
+  positionalParams,
+  randomReader,
+  sessionElements,
+  subscriptIndex,
 } from '../session/state.ts'
 import { homeDir } from '../session/shell_dirs.ts'
 import { decodeAnsiC } from '../../shell/escapes.ts'
+import { sourceParts } from '../../shell/helpers.ts'
 import { fnmatch } from '../../utils/fnmatch.ts'
-import { escapeGlob } from '../../utils/glob_walk.ts'
+import { escapeGlob, markGlobs } from '../../utils/glob_walk.ts'
+import { expandTilde } from '../../utils/path.ts'
+import { OPERAND_DQUOTE_ESCAPES } from './constants.ts'
+import { chunksText, ifsJoiner, splatChunks, valuePiece } from './fields.ts'
+import { type Chunk, piece } from './types.ts'
 
-// $$ reports the host process id where one exists (Node); browsers have
-// no process, so a fixed positive placeholder keeps the expansion usable.
-const REALM_PID: number = (globalThis as { process?: { pid?: number } }).process?.pid ?? 1
-
-export type ExpandChild = (node: TSNodeLike) => Promise<string>
+export type ExpandChild = (node: TSNodeLike, quoted: boolean) => Promise<Chunk[]>
 
 const PARAM_OPS: ReadonlySet<string> = new Set([
   ':-',
@@ -86,16 +104,6 @@ const CASE_OPS: ReadonlySet<string> = new Set(['^', '^^', ',', ',,'])
 // spelling (no unescaping) while still expanding nested $-expansions.
 const PATTERN_OPS: ReadonlySet<string> = new Set([...REPLACE_OPS, ...STRIP_OPS, ...CASE_OPS])
 
-// Ops on a "${a[@]...}" splat that act per element, so a quoted splat
-// still splits into one word per element; every other op acts on the
-// space-joined value and stays a single word.
-const MULTIWORD_AT_OPS: ReadonlySet<string> = new Set([
-  ':',
-  ...STRIP_OPS,
-  ...REPLACE_OPS,
-  ...CASE_OPS,
-])
-
 const LITERAL_ARG_TYPES: ReadonlySet<string> = new Set([NT.WORD, NT.NUMBER, 'regex'])
 
 // Quote-carrying operand nodes: in pattern position their value matches
@@ -111,12 +119,6 @@ const QUOTED_ARG_TYPES: ReadonlySet<string> = new Set([
 // on the lookup that feeds them.
 const UNSET_GUARD_OPS: ReadonlySet<string> = new Set(['-', ':-', '+', ':+', '=', ':=', '?', ':?'])
 
-// GNU: fatal at top level with status 127; a containing
-// subshell/pipeline segment reports 1 (same shape as ${var:?}).
-function unbound(name: string): ExitSignal {
-  return new ExitSignal(127, new TextEncoder().encode(`bash: ${name}: unbound variable\n`), null, 1)
-}
-
 /**
  * Refuse expansion-time writes that name hidden variables.
  *
@@ -125,13 +127,13 @@ function unbound(name: string): ExitSignal {
  * (`ensureVarVisible`) is applied here, and the refusal takes the
  * fatal expansion-error shape `${var:?}` uses.
  */
-function guardExpansionWrite(session: Session, ...names: string[]): void {
+function guardExpansionWrite(session: SessionState, ...names: string[]): void {
   for (const name of names) {
     try {
       ensureVarVisible(session, name)
     } catch (err) {
       if (!(err instanceof PolicyDenied)) throw err
-      throw new ExitSignal(1, new TextEncoder().encode(`bash: ${err.message}\n`), null, 1)
+      throw new DiscardSignal(new TextEncoder().encode(`bash: ${err.message}\n`))
     }
   }
 }
@@ -146,53 +148,44 @@ function guardExpansionWrite(session: Session, ...names: string[]): void {
  */
 export function lookupVar(
   name: string,
-  session: Session,
+  session: SessionState,
   callStack: CallStack | null,
   strict = true,
 ): string {
   const env = visibleEnv(session)
   const lastExitCode = session.lastExitCode
-  const positional = session.positionalArgs
+  const positional = positionalParams(session, callStack)
   const nounset = strict && session.shellOptions.nounset === true
   if (name === '@' || name === '*') {
-    if (callStack && callStack.getAllPositional().length > 0) {
-      return callStack.getAllPositional().join(' ')
-    }
-    if (positional.length > 0) return positional.join(' ')
-    return ''
+    // Read where nothing splits: `$@` joins on a space and `$*` on the
+    // first character of IFS, as `v=$*` stores them.
+    const joiner = name === '@' ? ' ' : ifsJoiner(ifsValue(session, callStack))
+    return positional.join(joiner)
   }
-  if (name === '#') {
-    if (callStack && callStack.getAllPositional().length > 0) {
-      return String(callStack.getPositionalCount())
-    }
-    if (positional.length > 0) return String(positional.length)
-    return '0'
-  }
+  if (name === '#') return String(positional.length)
   if (name === '?') {
     return String(lastExitCode)
   }
   if (name === '$') {
-    return String(REALM_PID)
+    return String(session.shellPid ?? session.processId ?? 0)
   }
   if (name === '!') {
-    // Deliberate divergence from bash: jobs are identified by job
-    // table id, not OS pid, so $! yields the id `wait`/`kill` accept.
     return session.lastBgJobId !== null ? String(session.lastBgJobId) : ''
   }
   if (/^\d+$/.test(name)) {
     const idx = parseInt(name, 10)
     if (idx === 0) return session.argv0
-    if (callStack) {
-      const fromCall = callStack.getPositional(idx)
-      if (fromCall !== '') return fromCall
-    }
-    if (idx > 0 && idx <= positional.length) return positional[idx - 1] ?? ''
-    if (nounset) throw unbound(name)
+    if (idx <= positional.length) return positional[idx - 1] ?? ''
+    if (nounset) throw new UnboundVariable(name)
     return ''
   }
   if (callStack) {
     const localVal = callStack.getLocal(name)
     if (localVal !== null) return localVal
+  }
+  if (name === RANDOM) {
+    const drawn = nextRandom(session, env[RANDOM])
+    if (drawn !== null) return String(drawn)
   }
   // A name reference resolves to its target before the store is read.
   name = deref(session, name) || name
@@ -211,10 +204,48 @@ export function lookupVar(
   // and `unset PWD` silently do nothing.
   if (name === 'HOME') return homeDir(session) ?? ''
   if (!(name in env)) {
-    if (nounset) throw unbound(name)
+    if (nounset) throw new UnboundVariable(name)
     return ''
   }
   return env[name] ?? ''
+}
+
+/** Whether `name` is a positional parameter the current count reaches. */
+function positionalSet(name: string, session: SessionState, callStack: CallStack | null): boolean {
+  if (!/^\d+$/.test(name)) return false
+  const idx = parseInt(name, 10)
+  return idx === 0 || idx <= positionalParams(session, callStack).length
+}
+
+/**
+ * The IFS in scope, a function's `local IFS` first; null when IFS is
+ * unset, which splits the way the default does.
+ */
+export function ifsValue(session: SessionState, callStack: CallStack | null): string | null {
+  if (callStack) {
+    const local = callStack.getLocal('IFS')
+    if (local !== null) return local
+  }
+  return visibleEnv(session).IFS ?? null
+}
+
+/**
+ * One `$name` reference as pieces of the word it stands in. `$@` is one
+ * field per positional parameter, quoted or not, and so is an unquoted
+ * `$*`; inside double quotes `$*` is the parameters joined on the first
+ * character of IFS.
+ */
+export function parameterChunks(
+  name: string,
+  session: SessionState,
+  callStack: CallStack | null,
+  quoted: boolean,
+): Chunk[] {
+  if (name !== '@' && name !== '*') return [valuePiece(lookupVar(name, session, callStack), quoted)]
+  const params = positionalParams(session, callStack)
+  const joiner = name === '@' ? ' ' : ifsJoiner(ifsValue(session, callStack))
+  if (name === '*' && quoted) return [valuePiece(params.join(joiner), true)]
+  return splatChunks(params, joiner, quoted)
 }
 
 /**
@@ -231,7 +262,7 @@ interface BraceParse {
   lengthOp: boolean
   indirectOp: boolean
   op: string | null
-  groups: TSNodeLike[][]
+  groups: (string | TSNodeLike)[][]
   subscriptNodes: TSNodeLike[]
 }
 
@@ -248,10 +279,14 @@ function parseBraces(node: TSNodeLike): BraceParse {
   let lengthOp = false
   let indirectOp = false
   let op: string | null = null
-  const groups: TSNodeLike[][] = []
+  const groups: (string | TSNodeLike)[][] = []
   let seenVar = false
 
-  for (const c of node.children) {
+  for (const c of sourceParts(node)) {
+    if (typeof c === 'string') {
+      if (op !== null) groups[groups.length - 1]?.push(c)
+      continue
+    }
     if (c.type === '${' || c.type === '}') continue
     if (c.type === '#' && !seenVar) {
       lengthOp = true
@@ -298,6 +333,12 @@ function parseBraces(node: TSNodeLike): BraceParse {
       groups[groups.length - 1]?.push(c)
     }
   }
+  if (lengthOp && varName === null) {
+    // A `#` naming nothing after it is the parameter itself: `${#}` is the
+    // count and `${!#}` the last positional parameter.
+    varName = '#'
+    lengthOp = false
+  }
   return { varName, subscript, lengthOp, indirectOp, op, groups, subscriptNodes }
 }
 
@@ -316,26 +357,8 @@ function escapedFind(text: string, start: number, quote: string): number {
   return -1
 }
 
-// A $name/${name} reference starting after the $: the name and the index
-// past it, or null when the $ starts no reference and stays literal.
-function refEnd(text: string, start: number): [string, number] | null {
-  const n = text.length
-  let j = start
-  const braced = text[j] === '{'
-  if (braced) j += 1
-  const from = j
-  while (j < n && /[A-Za-z0-9_]/.test(text[j] ?? '')) j += 1
-  const name = text.slice(from, j)
-  if (name === '') return null
-  if (braced) {
-    if (j >= n || text[j] !== '}') return null
-    j += 1
-  }
-  return [name, j]
-}
-
 // A double-quoted pattern segment: everything in it is literal.
-function dquotedPattern(inner: string, session: Session, callStack: CallStack | null): string {
+function dquotedPattern(inner: string, session: SessionState, callStack: CallStack | null): string {
   const out: string[] = []
   let i = 0
   const n = inner.length
@@ -347,7 +370,7 @@ function dquotedPattern(inner: string, session: Session, callStack: CallStack | 
       continue
     }
     if (ch === '$' && i + 1 < n) {
-      const ref = refEnd(inner, i + 1)
+      const ref = scanParameter(inner, i)
       if (ref !== null) {
         out.push(escapeGlob(lookupVar(ref[0], session, callStack)))
         i = ref[1]
@@ -368,7 +391,7 @@ function dquotedPattern(inner: string, session: Session, callStack: CallStack | 
 // live pattern while a double-quoted one splices literal text, and every
 // other character - glob syntax included - stays live. Literal text is
 // spelled in one-character classes because fnmatch has no escape character.
-function patternText(text: string, session: Session, callStack: CallStack | null): string {
+function patternText(text: string, session: SessionState, callStack: CallStack | null): string {
   if (!text.includes('$') && !text.includes('\\') && !text.includes("'") && !text.includes('"')) {
     return text
   }
@@ -407,7 +430,7 @@ function patternText(text: string, session: Session, callStack: CallStack | null
           continue
         }
       }
-      const ref = refEnd(text, i + 1)
+      const ref = scanParameter(text, i)
       if (ref !== null) {
         out.push(lookupVar(ref[0], session, callStack))
         i = ref[1]
@@ -420,48 +443,212 @@ function patternText(text: string, session: Session, callStack: CallStack | null
   return out.join('')
 }
 
-async function expandOperand(
+/** A nested node's text where nothing splits, glob marks removed. */
+async function childText(expandChild: ExpandChild, node: TSNodeLike): Promise<string> {
+  return chunksText(await expandChild(node, false))
+}
+
+async function patternOperand(
   node: TSNodeLike,
   expandChild: ExpandChild,
-  patternMode: boolean,
-  session: Session,
+  session: SessionState,
   callStack: CallStack | null,
 ): Promise<string> {
   if (node.type === NT.CONCATENATION) {
-    return expandGroup(node.children, expandChild, patternMode, session, callStack)
+    return patternGroup([...sourceParts(node)], expandChild, session, callStack)
   }
-  if (patternMode && QUOTED_ARG_TYPES.has(node.type)) {
+  if (QUOTED_ARG_TYPES.has(node.type)) {
     // Quoted pattern text matches literally, the same rule case
     // patterns follow: the value, inner expansions included, is
     // escaped so its glob characters match themselves.
-    return escapeGlob(await expandChild(node))
+    return escapeGlob(await childText(expandChild, node))
   }
-  if (patternMode && LITERAL_ARG_TYPES.has(node.type)) {
+  if (LITERAL_ARG_TYPES.has(node.type)) {
     return patternText(node.text, session, callStack)
   }
-  return expandChild(node)
+  return childText(expandChild, node)
 }
 
-// ${x:?custom msg} carries its message as sibling nodes whose gap (the
-// space) exists only in the source bytes; stitch gaps back from node
-// offsets so multi-word operands round-trip.
-async function expandGroup(
-  nodes: TSNodeLike[],
+// Expand one pattern operand, the source text between its nodes included.
+// That text is only ever the scanner's extras: blanks, a line
+// continuation, which vanishes, and an escaped blank, which is the blank
+// as in an unquoted word.
+async function patternGroup(
+  parts: readonly (string | TSNodeLike)[],
   expandChild: ExpandChild,
-  patternMode: boolean,
-  session: Session,
+  session: SessionState,
   callStack: CallStack | null,
 ): Promise<string> {
   const pieces: string[] = []
-  let prevEnd: number | null = null
-  for (const c of nodes) {
-    if (prevEnd !== null && c.startIndex !== undefined && c.startIndex > prevEnd) {
-      pieces.push(' '.repeat(c.startIndex - prevEnd))
-    }
-    pieces.push(await expandOperand(c, expandChild, patternMode, session, callStack))
-    prevEnd = c.endIndex ?? null
+  for (const part of parts) {
+    pieces.push(
+      typeof part === 'string'
+        ? part.replaceAll('\\\n', '').replaceAll('\\', '')
+        : await patternOperand(part, expandChild, session, callStack),
+    )
   }
   return pieces.join('')
+}
+
+/**
+ * Literal operand text as pieces; the rules are `wordChunks`'. `home` is
+ * what a leading `~` names, null where no tilde prefix can stand.
+ */
+function operandLiteral(
+  text: string,
+  quoted: boolean,
+  session: SessionState,
+  callStack: CallStack | null,
+  home: string | null,
+): Chunk[] {
+  if (!quoted && home !== null && !text.includes('\\') && !text.includes('$')) {
+    const tilde = expandTilde(text, home)
+    if (tilde !== text) return [piece(tilde)]
+  }
+  const out: Chunk[] = []
+  let run = ''
+  const flush = (): void => {
+    if (run !== '') out.push(valuePiece(run, quoted))
+    run = ''
+  }
+  let index = 0
+  while (index < text.length) {
+    const char = text[index] ?? ''
+    if (char === '\\' && index + 1 < text.length) {
+      const escaped = text[index + 1] ?? ''
+      index += 2
+      if (escaped === '\n') continue
+      if (!quoted) {
+        flush()
+        out.push(piece(markGlobs(escaped)))
+      } else if (OPERAND_DQUOTE_ESCAPES.has(escaped)) {
+        run += escaped
+      } else {
+        run += char + escaped
+      }
+      continue
+    }
+    const ref = char === '$' ? scanParameter(text, index) : null
+    if (ref !== null) {
+      flush()
+      for (const c of parameterChunks(ref[0], session, callStack, quoted)) out.push(c)
+      index = ref[1]
+      continue
+    }
+    run += char
+    index += 1
+  }
+  flush()
+  return out
+}
+
+/** An operand word's source parts, concatenations opened up. */
+function* flatParts(parts: readonly (string | TSNodeLike)[]): Generator<string | TSNodeLike> {
+  for (const part of parts) {
+    if (typeof part !== 'string' && part.type === NT.CONCATENATION) {
+      yield* flatParts([...sourceParts(part)])
+    } else {
+      yield part
+    }
+  }
+}
+
+/** Text whose every backslash quotes the character after it. */
+function unescapeAll(text: string): string {
+  let out = ''
+  let index = 0
+  while (index < text.length) {
+    if (text[index] === '\\' && index + 1 < text.length) {
+      if (text[index + 1] !== '\n') out += text[index + 1] ?? ''
+      index += 2
+      continue
+    }
+    out += text[index] ?? ''
+    index += 1
+  }
+  return out
+}
+
+/**
+ * A double-quoted string inside the word of a quoted expansion. bash
+ * reads the inner pair as leaving the outer quotes, so a backslash there
+ * quotes any character, as in an unquoted word (`"${u:-"a\ b"}"` is
+ * `a b`); the text is quoted all the same, a single quote and a glob
+ * character literal and nothing splitting.
+ */
+async function nestedString(node: TSNodeLike, expandChild: ExpandChild): Promise<Chunk[]> {
+  const out: Chunk[] = [piece('')]
+  const inside = node.text.slice(1, -1)
+  for (const part of sourceParts(node)) {
+    let text: string
+    if (typeof part === 'string') text = part
+    else if (part.type === NT.STRING_CONTENT) text = part.text
+    else if (part.type === NT.DQUOTE) text = part.text.slice(0, -1)
+    else {
+      for (const c of await named(inside, expandChild(part, true))) out.push(c)
+      continue
+    }
+    out.push(piece(markGlobs(unescapeAll(text))))
+  }
+  return out
+}
+
+/**
+ * Expand an operator's word to pieces of the word it stands in.
+ *
+ * Inside double quotes the word follows double-quote rules: a backslash
+ * escapes only `$ ` " \ }` and a newline, a single-quoted string is
+ * literal text, quotes and all, and nothing splits. Unquoted, an escaped
+ * character and a quoted string are quoted text, which never splits,
+ * while the word's literal text and its expansions split the way the
+ * expansion's value would. The literal text runs between nodes are read
+ * whole, source text between nodes included, since the grammar can split
+ * one escape across two of them (`\\` arrives as a gap and a word); `$*`,
+ * `$#` and the other special parameters arrive as literal text too, which
+ * the grammar leaves unlexed inside an operand.
+ */
+async function wordChunks(
+  parts: readonly (string | TSNodeLike)[],
+  expandChild: ExpandChild,
+  quoted: boolean,
+  session: SessionState,
+  callStack: CallStack | null,
+): Promise<Chunk[]> {
+  const home = homeDir(session)
+  const out: Chunk[] = []
+  let literal = ''
+  for (const part of flatParts(parts)) {
+    if (typeof part === 'string' || LITERAL_ARG_TYPES.has(part.type)) {
+      literal += typeof part === 'string' ? part : part.text
+      continue
+    }
+    for (const c of operandLiteral(
+      literal,
+      quoted,
+      session,
+      callStack,
+      out.length === 0 ? home : null,
+    ))
+      out.push(c)
+    literal = ''
+    if (quoted && part.type === NT.RAW_STRING) out.push(piece(markGlobs(part.text)))
+    else {
+      const chunks =
+        quoted && part.type === NT.STRING
+          ? await nestedString(part, expandChild)
+          : await expandChild(part, quoted)
+      for (const c of chunks) out.push(c)
+    }
+  }
+  for (const c of operandLiteral(
+    literal,
+    quoted,
+    session,
+    callStack,
+    out.length === 0 ? home : null,
+  ))
+    out.push(c)
+  return out
 }
 
 function globStrip(value: string, pattern: string, greedy: boolean, prefix: boolean): string {
@@ -550,66 +737,85 @@ function caseMod(op: string, val: string, pattern: string): string {
   return out
 }
 
-// bash evaluates substring offsets and array subscripts as arithmetic
-// (${v:1+1}, ${a[i+1]}); `elements` lets the operand itself reference
-// an array element (`a[b[0]]`).
-function arithInt(
-  text: string,
-  env: Record<string, string>,
-  elements: ElementOps | null = null,
-): number | null {
-  if (/^\s*-?\d+\s*$/.test(text)) return Number.parseInt(text.trim(), 10)
-  try {
-    const { value } = evaluateArith(text, env, 0, elements)
-    return Number(value)
-  } catch (err) {
-    if (err instanceof ArithError) return null
-    throw err
+/** Evaluate and apply one substring bound before expanding the next. */
+class ArithOperand {
+  ref = ''
+
+  constructor(
+    private readonly session: SessionState,
+    private readonly view?: SessionView,
+  ) {}
+
+  async value(text: string): Promise<number> {
+    const reader = randomReader(this.session)
+    let result
+    try {
+      result = evaluateArith(
+        text,
+        visibleEnv(this.session),
+        0,
+        sessionElements(this.session, reader),
+        reader.read,
+        reader.wrote,
+        this.session.shellOptions.nounset === true,
+      )
+    } catch (err) {
+      if (!(err instanceof ArithError)) throw err
+      await landArithWrites(this.session, this.view, err.writes, reader)
+      throw new ExitSignal(
+        1,
+        new TextEncoder().encode(`bash: ${this.ref}: ${text.trim()}: ${err.message}\n`),
+        null,
+        1,
+      )
+    }
+    await landArithWrites(this.session, this.view, result.writes, reader)
+    return Number(result.value)
   }
 }
 
-function substring(val: string, groups: string[], env: Record<string, string>): string {
-  const offsetRaw = groups[0]
-  if (offsetRaw === undefined) return val
-  let offset = arithInt(offsetRaw, env)
-  if (offset === null) return val
-  let length: number | null = null
-  const lengthRaw = groups[1]
-  if (lengthRaw !== undefined) {
-    length = arithInt(lengthRaw, env)
-    if (length === null) return val
+/** Expand/evaluate bounds left to right, stopping at an invalid offset. */
+async function sliceBounds(
+  node: TSNodeLike,
+  expandChild: ExpandChild,
+  operand: ArithOperand,
+  extent: number,
+  allowEnd = false,
+): Promise<[number, number | null] | null> {
+  const values: number[] = []
+  for await (const text of substringOperands(node, (n) => childText(expandChild, n))) {
+    let value = await operand.value(text)
+    if (values.length === 0) {
+      if (value < 0) value += extent
+      if (value < 0 || value > extent || (value === extent && !allowEnd)) return null
+    }
+    values.push(value)
   }
-  if (offset < 0) offset = Math.max(0, val.length + offset)
+  return [values[0] ?? 0, values[1] ?? null]
+}
+
+async function substring(
+  val: string,
+  node: TSNodeLike,
+  expandChild: ExpandChild,
+  operand: ArithOperand,
+): Promise<string> {
+  const bounds = await sliceBounds(node, expandChild, operand, val.length, true)
+  if (bounds === null) return ''
+  const [offset, length] = bounds
   if (length === null) return val.slice(offset)
   if (length < 0) return val.slice(offset, Math.max(offset, val.length + length))
   return val.slice(offset, offset + length)
 }
 
-/** Resolve `${a[@]:offset:length}` against a shell array. */
-function sliceArray(arr: ShellArray, groups: string[], env: Record<string, string>): string[] {
-  const offsetRaw = groups[0]
-  if (offsetRaw === undefined) return arrayValues(arr)
-  const offset = arithInt(offsetRaw, env)
-  if (offset === null) return arrayValues(arr)
-  let length: number | null = null
-  const lengthRaw = groups[1]
-  if (lengthRaw !== undefined) {
-    length = arithInt(lengthRaw, env)
-    if (length === null) return arrayValues(arr)
-  }
-  return arraySlice(arr, offset, length)
-}
-
-// True for the "${a[@]...}" forms bash keeps as one word per element:
-// plain, slice, per-element strip/replace/case ops, and ${!a[@]}
-// indices. False for single-word forms (${a[*]}, ${#a[@]}, non-@
-// subscript, or a default/alternate op acting on the joined value).
-// The positional parameters in scope, function args winning.
-function positionalArgs(session: Session, callStack: CallStack | null): string[] {
-  if (callStack !== null && callStack.getAllPositional().length > 0) {
-    return callStack.getAllPositional()
-  }
-  return session.positionalArgs
+async function sliceArray(
+  arr: ShellArray,
+  node: TSNodeLike,
+  expandChild: ExpandChild,
+  operand: ArithOperand,
+): Promise<string[]> {
+  const bounds = await sliceBounds(node, expandChild, operand, arrayExtent(arr))
+  return bounds === null ? [] : arraySlice(arr, ...bounds)
 }
 
 // Whether a parsed "${...}" splats one word per element. Two spellings
@@ -617,94 +823,85 @@ function positionalArgs(session: Session, callStack: CallStack | null): string[]
 // positional parameters themselves (`${@}`, which bash word-splits
 // exactly like the bare `$@`). `${*}` and `${a[*]}` are excluded
 // because they join.
-function isAtSplat(p: { subscript: string | null; varName: string | null }): boolean {
+function isAtSplatParse(p: { subscript: string | null; varName: string | null }): boolean {
   if (p.subscript === '@') return true
   return p.subscript === null && p.varName === '@'
 }
 
-export function isMultiwordAt(node: TSNodeLike): boolean {
-  if (node.type === NT.SIMPLE_EXPANSION) {
-    // Bare "$@" is the positional splat. It word-splits exactly like
-    // "${a[@]}" and stitches onto surrounding literals the same way, so
-    // it takes the same path rather than a rule of its own.
-    return node.text.trim() === '$@'
-  }
+/**
+ * Whether an expansion is a `$@`-style splat. Inside double quotes such
+ * a splat yields one field per element and no field at all when there is
+ * none: `"$@"` with no parameters is no word, where `"$*"` is one empty
+ * word. `${#a[@]}` is a count, so it is one word like any other.
+ */
+export function isAtSplat(node: TSNodeLike): boolean {
+  if (node.type === NT.SIMPLE_EXPANSION) return node.text.trim() === '$@'
   if (node.type !== NT.EXPANSION) return false
   const p = parseBraces(node)
-  if (!isAtSplat(p) || p.lengthOp) return false
-  if (p.indirectOp || p.op === null) return true
-  return MULTIWORD_AT_OPS.has(p.op)
-}
-
-// Resolve a multi-word "${a[@]...}" splat to its word list. Only call
-// when isMultiwordAt is true; the caller word-splits (or stitches
-// prefix/suffix onto) the words, matching bash's quoted-splat rule.
-export async function expandArrayAt(
-  node: TSNodeLike,
-  session: Session,
-  callStack: CallStack | null,
-  expandChild: ExpandChild,
-): Promise<string[]> {
-  if (node.type === NT.SIMPLE_EXPANSION) return positionalArgs(session, callStack)
-  const p = parseBraces(node)
-  const env = visibleEnv(session)
-  let arr: ShellArray | undefined
-  if (p.subscript === null && p.varName === '@') {
-    // "${@}" splats the positional parameters; every op below then
-    // applies per element, which is what bash does for "${@/x/y}". A
-    // slice is the exception: bash numbers the parameters from 1 there,
-    // so index 0 is the shell's own name and "${@:0}" yields it ahead
-    // of $1. Pinned on bash 5.2.37; macOS bash 3.2 drops it, so probe
-    // this one in docker, not locally.
-    const params = positionalArgs(session, callStack)
-    arr = p.op === ':' ? [session.argv0, ...params] : params
-  } else {
-    const arrName = p.varName === null ? '' : deref(session, p.varName) || p.varName
-    arr = visibleArrays(session)[arrName]
-    if (arr === undefined && p.varName !== null) {
-      const amap = visibleAssocs(session)[arrName]
-      if (amap !== undefined) {
-        if (p.indirectOp) {
-          // Sorted keys, the same deterministic order every other walk
-          // of an associative array answers in.
-          return Object.keys(amap).sort(compareCodePoints)
-        }
-        arr = Object.keys(amap)
-          .sort(compareCodePoints)
-          .map((k) => amap[k] ?? '')
-      }
-    }
-  }
-  if (arr === undefined) {
-    const scalarName = p.varName === null ? '' : deref(session, p.varName) || p.varName
-    const scalar = env[scalarName]
-    arr = scalar === undefined ? [] : [scalar]
-  }
-  if (p.indirectOp) return arrayIndices(arr).map((i) => String(i))
-  const values = arrayValues(arr)
-  if (p.op === null) return values
-  const op = p.op
-  const groups: string[] = []
-  for (let gi = 0; gi < p.groups.length; gi++) {
-    const patternMode = gi === 0 && PATTERN_OPS.has(op)
-    groups.push(await expandGroup(p.groups[gi] ?? [], expandChild, patternMode, session, callStack))
-  }
-  if (op === ':') return sliceArray(arr, groups, env)
-  return values.map((el) => valueOp(op, el, groups, env))
-}
-
-// bash evaluates subscripts in arithmetic context (${a[i+1]});
-// unresolvable expressions index element 0, mirroring bash's
-// unset-name-is-zero arithmetic rule.
-export function arrayIndex(
-  idxText: string,
-  env: Record<string, string>,
-  elements: ElementOps | null = null,
-): number {
-  return arithInt(idxText, env, elements) ?? 0
+  return isAtSplatParse(p) && !p.lengthOp
 }
 
 const SUBSCRIPT_LITERAL_TYPES: ReadonlySet<string> = new Set([NT.WORD, NT.NUMBER, NT.ERROR])
+
+// The operators whose word bash expands only once the parameter's state
+// selects it (a default, an alternate, an assignment, a message).
+const LAZY_OPS: ReadonlySet<string> = new Set(['?', ':?', '=', ':=', ':-', '-', ':+', '+'])
+
+/** The word of a conditional operator, expanded now that it is needed. */
+async function operatorWord(
+  p: BraceParse,
+  expandChild: ExpandChild,
+  quoted: boolean,
+  session: SessionState,
+  callStack: CallStack | null,
+): Promise<Chunk[]> {
+  const group = p.groups[0]
+  if (group === undefined) return []
+  return named(source(group), wordChunks(group, expandChild, quoted, session, callStack))
+}
+
+/** An operand's text as written, the word a bad substitution names. */
+function source(parts: readonly (string | TSNodeLike)[]): string {
+  return parts.map((part) => (typeof part === 'string' ? part : part.text)).join('')
+}
+
+/**
+ * An operator's word standing in for a splat. A quoted splat that
+ * selects its word yields that word even when it is empty: `"${e[@]:-}"`
+ * is one empty word where `"${e[@]}"` is none.
+ */
+function wordResult(chunks: Chunk[], quoted: boolean): Chunk[] {
+  return quoted ? [piece(''), ...chunks] : chunks
+}
+
+/**
+ * The death of a line whose `${v:?word}` found v unset or null. The word
+ * is the message, read with unquoted rules even inside double quotes, as
+ * bash reads it. GNU: fatal at top level with status 127; a containing
+ * subshell/pipeline segment reports 1. A subscripted reference is named
+ * whole: `bash: m[zz]: nope`.
+ */
+async function unsetError(
+  p: BraceParse,
+  expandChild: ExpandChild,
+  session: SessionState,
+  callStack: CallStack | null,
+): Promise<ExitSignal> {
+  const word = chunksText(await operatorWord(p, expandChild, false, session, callStack))
+  const message =
+    word !== '' ? word : p.op === '?' ? 'parameter not set' : 'parameter null or not set'
+  const ref = p.subscript === null ? (p.varName ?? '') : `${p.varName ?? ''}[${p.subscript}]`
+  return new ExitSignal(127, new TextEncoder().encode(`bash: ${ref}: ${message}\n`), null, 1)
+}
+
+/** The refusal of a `:=` that names no single element. */
+function badSubscript(p: BraceParse): DiscardSignal {
+  return new DiscardSignal(
+    new TextEncoder().encode(
+      `bash: ${p.varName ?? ''}[${p.subscript ?? ''}]: bad array subscript\n`,
+    ),
+  )
+}
 
 /**
  * The associative key one subscript spells.
@@ -720,11 +917,11 @@ async function expandSubscriptKey(p: BraceParse, expandChild: ExpandChild): Prom
     return p.subscript ?? ''
   }
   const parts: string[] = []
-  for (const n of nodes) parts.push(await expandChild(n))
+  for (const n of nodes) parts.push(await childText(expandChild, n))
   return parts.join('')
 }
 
-function valueOp(op: string, val: string, groups: string[], env: Record<string, string>): string {
+function valueOp(op: string, val: string, groups: string[]): string {
   if (STRIP_OPS.has(op)) {
     const pattern = groups[0] ?? ''
     return globStrip(val, pattern, op === '##' || op === '%%', op === '#' || op === '##')
@@ -739,9 +936,6 @@ function valueOp(op: string, val: string, groups: string[], env: Record<string, 
   }
   if (CASE_OPS.has(op)) {
     return caseMod(op, val, groups[0] ?? '')
-  }
-  if (op === ':') {
-    return substring(val, groups, env)
   }
   return val
 }
@@ -770,8 +964,58 @@ function valueOp(op: string, val: string, groups: string[], env: Record<string, 
  * shape `${var:?}` uses); ReadonlyVariableError when the name is
  * readonly, the same refusal a plain assignment raises through the door.
  */
+/**
+ * Land an arithmetic expansion's assignments and settle its draws. Each
+ * write goes through `expansionWrite` in evaluation order; then the
+ * `RANDOM` reader replays the draws the expression made after it seeded
+ * the generator, now that the door holds the seed. One door for a
+ * completed expression and for one that failed partway, since bash
+ * binds each assignment as it is made.
+ */
+/**
+ * The line's death for a refused expansion-time write: the gate's own
+ * reason discards the line, as a readonly name's does; the `-i` coercion
+ * refusing the text ends the shell with 1, as `n=1+` does.
+ */
+function writeRefusal(err: PolicyDenied | ArithError): ExitSignal {
+  const stderr = new TextEncoder().encode(`bash: ${err.message}\n`)
+  return err instanceof PolicyDenied
+    ? new DiscardSignal(stderr)
+    : new ExitSignal(1, stderr, null, 1)
+}
+
+/**
+ * `subscriptIndex` in the expansion's voice: the subscript's assignments
+ * land as the index resolves (`${a[x=3]}` leaves x at 3, `${a[RANDOM=42]}`
+ * seeds), and a refused one dies the way `expansionWrite`'s does.
+ */
+async function expansionIndex(
+  session: SessionState,
+  view: SessionView | undefined,
+  subscript: string,
+): Promise<number> {
+  try {
+    return await subscriptIndex(session, subscript, view ?? null)
+  } catch (err) {
+    if (err instanceof PolicyDenied || err instanceof ArithError) throw writeRefusal(err)
+    throw err
+  }
+}
+
+export async function landArithWrites(
+  session: SessionState,
+  view: SessionView | undefined,
+  writes: readonly ArithWrite[],
+  reader: RandomReader,
+): Promise<void> {
+  for (const write of writes) {
+    await expansionWrite(session, view, write.name, write.key, write.value)
+  }
+  reader.settle()
+}
+
 export async function expansionWrite(
-  session: Session,
+  session: SessionState,
   view: SessionView | undefined,
   name: string,
   key: string | null,
@@ -785,90 +1029,122 @@ export async function expansionWrite(
     // A PolicyDenied is the gate; an ArithError is the name carrying
     // `-i` refusing the text. Both die as `n=1+` does, in that voice.
     if (!(err instanceof PolicyDenied) && !(err instanceof ArithError)) throw err
-    throw new ExitSignal(1, new TextEncoder().encode(`bash: ${err.message}\n`), null, 1)
+    throw writeRefusal(err)
   }
   if (status === 'readonly') throw new ReadonlyVariableError(name)
   if (status !== 'ok') {
-    throw new ExitSignal(
-      1,
+    throw new DiscardSignal(
       new TextEncoder().encode(`bash: ${name}[${key ?? ''}]: bad array subscript\n`),
-      null,
-      1,
     )
   }
 }
 
+/**
+ * Expand `${VAR}`, `${VAR<op>...}`, `${a[i]}`, `${#a[@]}`, etc. to pieces.
+ *
+ * An offset, length or slice bound is arithmetic and may assign
+ * (`${v:x=1:y=2}`) or seed (`${v:RANDOM%10:1}`); those land through the
+ * door before the next bound expands, including its nested substitutions.
+ * `quoted` says whether the expansion sits inside double quotes, which
+ * decides the rules an operator's word follows and the shape a
+ * `$*`-style splat takes.
+ */
 export async function expandBraces(
   node: TSNodeLike,
-  session: Session,
+  session: SessionState,
   callStack: CallStack | null,
   expandChild: ExpandChild,
   view?: SessionView,
-): Promise<string> {
+  quoted = false,
+): Promise<Chunk[]> {
+  return expandBracesIn(
+    node,
+    session,
+    callStack,
+    expandChild,
+    view,
+    new ArithOperand(session, view),
+    quoted,
+  )
+}
+
+async function expandBracesIn(
+  node: TSNodeLike,
+  session: SessionState,
+  callStack: CallStack | null,
+  expandChild: ExpandChild,
+  view: SessionView | undefined,
+  operand: ArithOperand,
+  quoted: boolean,
+): Promise<Chunk[]> {
+  const text = node.text.trimStart()
+  if (badSubstitution(text)) throw new BadSubstitution(text)
   const p = parseBraces(node)
-  if (node.children.some((c) => c.type === '}' && c.isMissing)) {
-    // tree-sitter-bash cannot parse a $-spelled substring offset
-    // (${v:$o}, ${v:$o:n}): it truncates the expansion with a
-    // zero-width `}` and reparses the tail as stray siblings. bash
-    // accepts the form, so emitting the mis-parse would corrupt the
-    // value silently; fail loudly instead. Spell it ${v:o} or
-    // ${v:$((o))}.
-    throw new ExitSignal(
-      2,
-      new TextEncoder().encode(`bash: \${${p.varName ?? ''}}: bad substitution\n`),
-      null,
-      2,
-    )
-  }
   const env = visibleEnv(session)
   const arrays = visibleArrays(session)
+  operand.ref = (p.varName ?? '') + (p.subscript === null ? '' : `[${p.subscript}]`)
 
+  // A conditional operator's word expands only if the parameter's state
+  // selects it, as bash's does: `${RANDOM:-$RANDOM}` draws once and
+  // `${x:-$(cmd)}` runs cmd only when x is unset. Every other operator's
+  // words are needed whatever the value, and expand here: the pattern as
+  // a pattern, the replacement with unquoted rules even inside double
+  // quotes, as bash reads it.
   const groups: string[] = []
-  for (let gi = 0; gi < p.groups.length; gi++) {
-    const patternMode = gi === 0 && p.op !== null && PATTERN_OPS.has(p.op)
-    groups.push(await expandGroup(p.groups[gi] ?? [], expandChild, patternMode, session, callStack))
+  if (p.op !== ':' && (p.op === null || !LAZY_OPS.has(p.op))) {
+    for (let gi = 0; gi < p.groups.length; gi++) {
+      const group = p.groups[gi] ?? []
+      if (gi === 0 && p.op !== null && PATTERN_OPS.has(p.op)) {
+        groups.push(
+          await named(source(group), patternGroup(group, expandChild, session, callStack)),
+        )
+      } else {
+        groups.push(
+          chunksText(
+            await named(source(group), wordChunks(group, expandChild, false, session, callStack)),
+          ),
+        )
+      }
+    }
   }
-
-  let val = ''
-  let varInEnv = false
-  // The subscript as `:=` would write it: the key itself for an
-  // associative name, the resolved index for an indexed one, null for
-  // `[@]`/`[*]` and a negative index past the front, which bash refuses
-  // to assign through.
-  let writeKey: string | null = null
 
   // A subscripted reference reads and writes through a name reference
   // the way a bare one does, so the target is resolved once here.
   const baseName = p.varName === null ? null : deref(session, p.varName) || p.varName
   const amap = baseName !== null ? visibleAssocs(session)[baseName] : undefined
+
+  const splat = splatSource(p, session, callStack, env, arrays, baseName, amap)
+  if (splat !== null) {
+    return expandSplat(
+      p,
+      splat[0],
+      splat[1],
+      node,
+      expandChild,
+      operand,
+      session,
+      callStack,
+      quoted,
+      groups,
+    )
+  }
+
+  let val = ''
+  let varInEnv = false
+  // The subscript as `:=` would write it: the key itself for an
+  // associative name, the resolved index for an indexed one, null for a
+  // negative index past the front, which bash refuses to assign through.
+  let writeKey: string | null = null
+
   if (p.subscript !== null && baseName !== null && amap !== undefined) {
-    if (p.subscript === '@' || p.subscript === '*') {
-      // Sorted-key order everywhere an associative array is walked:
-      // bash iterates its hash table, whose order is unpredictable,
-      // and a deterministic answer beats reproducing noise.
-      const keys = Object.keys(amap).sort(compareCodePoints)
-      const values = keys.map((k) => amap[k] ?? '')
-      if (p.indirectOp) return keys.join(' ')
-      if (p.lengthOp) return String(values.length)
-      if (p.op === ':') {
-        return sliceArray(values, groups, env).join(' ')
-      }
-      if (p.op !== null && (STRIP_OPS.has(p.op) || REPLACE_OPS.has(p.op) || CASE_OPS.has(p.op))) {
-        const op = p.op
-        return values.map((el) => valueOp(op, el, groups, env)).join(' ')
-      }
-      val = values.join(' ')
-      varInEnv = keys.length > 0
-    } else {
-      // A key, not an expression: `${m[1+1]}` reads the key "1+1",
-      // never element 2. An empty key reads as unset (GNU warns "bad
-      // array subscript" on stderr and expands empty; expansion has no
-      // warning channel, so the empty answer stands alone).
-      const key = await expandSubscriptKey(p, expandChild)
-      val = amap[key] ?? ''
-      varInEnv = amap[key] !== undefined
-      writeKey = key
-    }
+    // A key, not an expression: `${m[1+1]}` reads the key "1+1", never
+    // element 2. An empty key reads as unset (GNU warns "bad array
+    // subscript" on stderr and expands empty; expansion has no warning
+    // channel, so the empty answer stands alone).
+    const key = await named(p.subscript, expandSubscriptKey(p, expandChild))
+    val = amap[key] ?? ''
+    varInEnv = amap[key] !== undefined
+    writeKey = key
   } else if (p.subscript !== null && baseName !== null) {
     let arr = arrays[baseName]
     if (arr === undefined) {
@@ -877,34 +1153,12 @@ export async function expandBraces(
       const scalar = env[baseName]
       arr = scalar === undefined ? [] : [scalar]
     }
-    varInEnv = baseName in arrays || baseName in env
-    if (p.subscript === '@' || p.subscript === '*') {
-      // ${a[@]} and friends see only the assigned elements: a hole left
-      // by `unset a[i]` (or skipped by a[9]=v) neither expands nor
-      // counts, though it keeps the later indices in place.
-      const values = arrayValues(arr)
-      if (p.indirectOp) {
-        return arrayIndices(arr)
-          .map((i) => String(i))
-          .join(' ')
-      }
-      if (p.lengthOp) return String(values.length)
-      if (p.op === ':') {
-        return sliceArray(arr, groups, env).join(' ')
-      }
-      if (p.op !== null && (STRIP_OPS.has(p.op) || REPLACE_OPS.has(p.op) || CASE_OPS.has(p.op))) {
-        const op = p.op
-        return values.map((el) => valueOp(op, el, groups, env)).join(' ')
-      }
-      val = values.join(' ')
-    } else {
-      const subText = await expandSubscriptKey(p, expandChild)
-      let idx = arrayIndex(subText, env, sessionElements(session))
-      if (idx < 0) idx += arrayExtent(arr)
-      val = arrayGet(arr, idx)
-      varInEnv = arrayHas(arr, idx)
-      if (idx >= 0) writeKey = String(idx)
-    }
+    const subText = await named(p.subscript, expandSubscriptKey(p, expandChild))
+    let idx = await expansionIndex(session, view, subText)
+    if (idx < 0) idx += arrayExtent(arr)
+    val = arrayGet(arr, idx)
+    varInEnv = arrayHas(arr, idx)
+    if (idx >= 0) writeKey = String(idx)
   } else if (p.varName !== null) {
     if (callStack) {
       const localVal = callStack.getLocal(p.varName)
@@ -923,73 +1177,195 @@ export async function expandBraces(
       val = amap['0'] ?? ''
       varInEnv = amap['0'] !== undefined
     }
+    if (!varInEnv && p.varName === RANDOM) {
+      // `${RANDOM}` draws as `$RANDOM` does: the env holds the last word,
+      // which a read must not hand back unchanged.
+      const drawn = nextRandom(session, env[RANDOM])
+      if (drawn !== null) {
+        val = String(drawn)
+        varInEnv = true
+      }
+    }
     if (!varInEnv && p.varName in env) {
       val = env[p.varName] ?? ''
       varInEnv = true
     }
     if (!varInEnv) {
       // Specials, positionals, PWD/HOME fall back to the shared
-      // lookup; set-ness follows value presence.
+      // lookup; set-ness follows value presence, except that a
+      // positional parameter is set whenever the count reaches it,
+      // empty or not (`set -- ""` sets $1).
       val = lookupVar(p.varName, session, callStack, p.op === null || !UNSET_GUARD_OPS.has(p.op))
-      varInEnv = val !== ''
+      varInEnv = val !== '' || positionalSet(p.varName, session, callStack)
     }
   }
 
+  // `set -u` refuses an element or key that holds nothing, named as typed
+  // (`a[i]`, `m[$k]`), unless the operator handles unset itself; a length
+  // is 0 (bash 5.2.37). A scalar's refusal is lookupVar's.
+  if (
+    p.subscript !== null &&
+    !varInEnv &&
+    session.shellOptions.nounset === true &&
+    !p.lengthOp &&
+    !p.indirectOp &&
+    (p.op === null || !UNSET_GUARD_OPS.has(p.op))
+  ) {
+    throw new UnboundVariable(`${p.varName ?? ''}[${p.subscript}]`)
+  }
   if (p.indirectOp) {
     // `${!r}` on a name reference is the target's *name*, not an
     // indirection through the value.
     const target = p.varName !== null ? namerefTarget(session, p.varName) : null
-    if (target !== null) return target
-    return val !== '' ? lookupVar(val, session, callStack) : ''
+    if (target !== null) return [valuePiece(target, quoted)]
+    return [valuePiece(val !== '' ? lookupVar(val, session, callStack) : '', quoted)]
   }
-  if (p.lengthOp) return String(val.length)
-  if (p.op === null) return val
+  if (p.lengthOp) return [valuePiece(String(val.length), quoted)]
+  if (p.op === null) return [valuePiece(val, quoted)]
   if (p.op === '?' || p.op === ':?') {
     const triggered = p.op === '?' ? !varInEnv : val === ''
-    if (!triggered) return val
-    const message =
-      groups[0] !== undefined && groups[0] !== ''
-        ? groups[0]
-        : p.op === '?'
-          ? 'parameter not set'
-          : 'parameter null or not set'
-    // GNU: fatal at top level with status 127; a containing
-    // subshell/pipeline segment reports 1. A subscripted reference is
-    // named whole: `bash: m[zz]: nope`.
-    const ref = p.subscript === null ? (p.varName ?? '') : `${p.varName ?? ''}[${p.subscript}]`
-    throw new ExitSignal(127, new TextEncoder().encode(`bash: ${ref}: ${message}\n`), null, 1)
+    if (!triggered) return [valuePiece(val, quoted)]
+    throw await unsetError(p, expandChild, session, callStack)
   }
   if (p.op === '=' || p.op === ':=') {
     const triggered = p.op === '=' ? !varInEnv : val === ''
-    if (!triggered) return val
-    const defaultVal = groups[0] ?? ''
+    if (!triggered) return [valuePiece(val, quoted)]
+    const defaultVal = chunksText(await operatorWord(p, expandChild, quoted, session, callStack))
     if (p.varName !== null && p.subscript !== null) {
       // The default lands on the element the reference named, never on
       // element 0: `${m[k]:=v}` writes key k and `${a[3]:=v}` writes
-      // index 3, as bash does. `[@]`, `[*]` and an index before the
-      // front are refused in bash's words.
-      if (writeKey === null) {
-        throw new ExitSignal(
-          1,
-          new TextEncoder().encode(`bash: ${p.varName}[${p.subscript}]: bad array subscript\n`),
-          null,
-          1,
-        )
-      }
+      // index 3, as bash does. An index before the front is refused in
+      // bash's words.
+      if (writeKey === null) throw badSubscript(p)
       await expansionWrite(session, view, p.varName, writeKey, defaultVal)
     } else if (callStack !== null && callStack.getLocal(p.varName ?? '') !== null) {
       callStack.setLocal(p.varName ?? '', defaultVal)
     } else if (p.varName !== null) {
       await expansionWrite(session, view, p.varName, null, defaultVal)
     }
-    return defaultVal
+    return [valuePiece(defaultVal, quoted)]
   }
-  if (p.op === ':-') return val !== '' ? val : (groups[0] ?? '')
-  if (p.op === '-') {
-    if (varInEnv) return val
-    return groups[0] ?? ''
+  if (p.op === ':-' || p.op === '-') {
+    if (p.op === ':-' ? val !== '' : varInEnv) return [valuePiece(val, quoted)]
+    return operatorWord(p, expandChild, quoted, session, callStack)
   }
-  if (p.op === ':+') return val !== '' ? (groups[0] ?? '') : ''
-  if (p.op === '+') return varInEnv ? (groups[0] ?? '') : ''
-  return valueOp(p.op, val, groups, env)
+  if (p.op === ':+' || p.op === '+') {
+    if (!(p.op === ':+' ? val !== '' : varInEnv)) return []
+    return operatorWord(p, expandChild, quoted, session, callStack)
+  }
+  if (p.op === ':') {
+    // bash slices only a set parameter: an unset one expands empty and
+    // its bounds are never evaluated, so `${a[i]:.2f}` is nothing while
+    // a[i] is unset and an arithmetic error once it is set (5.2.37).
+    if (!varInEnv) return [valuePiece('', quoted)]
+    return [valuePiece(await substring(val, node, expandChild, operand), quoted)]
+  }
+  return [valuePiece(valueOp(p.op, val, groups), quoted)]
+}
+
+/**
+ * The elements a `$@`/`$*`-style splat walks, and their keys.
+ *
+ * The positional parameters for `${@...}` and `${*...}`, which a slice
+ * numbers from 1 so that index 0 is the shell's own name (`"${@:0}"`
+ * yields it ahead of $1; pinned on bash 5.2.37, macOS bash 3.2 drops
+ * it). Every element of an array for `${a[@]...}` and `${a[*]...}`,
+ * holes left by `unset a[i]` included so a slice keeps its indices; an
+ * associative array walks its keys sorted, since bash's hash order is
+ * unpredictable and a deterministic answer beats reproducing noise. A
+ * scalar is element 0 of a one-element array. Null for any other
+ * expansion.
+ */
+function splatSource(
+  p: BraceParse,
+  session: SessionState,
+  callStack: CallStack | null,
+  env: Record<string, string>,
+  arrays: Record<string, ShellArray>,
+  baseName: string | null,
+  amap: Record<string, string> | undefined,
+): [ShellArray, string[]] | null {
+  if (p.subscript === null) {
+    if (p.varName !== '@' && p.varName !== '*') return null
+    const params = positionalParams(session, callStack)
+    const keys = params.map((_, i) => String(i + 1))
+    return [p.op === ':' ? [session.argv0, ...params] : [...params], keys]
+  }
+  if (baseName === null || (p.subscript !== '@' && p.subscript !== '*')) return null
+  if (amap !== undefined) {
+    const keys = Object.keys(amap).sort(compareCodePoints)
+    return [keys.map((k) => amap[k] ?? ''), keys]
+  }
+  let arr = arrays[baseName]
+  if (arr === undefined) {
+    const scalar = env[baseName]
+    arr = scalar === undefined ? [] : [scalar]
+  }
+  return [arr, arrayIndices(arr).map((i) => String(i))]
+}
+
+/**
+ * Expand a splat: one field per element, whatever the operator.
+ *
+ * `@` keeps its elements apart inside double quotes too, and a quoted
+ * `*` joins them on IFS's first character. A slice, the per-element
+ * strip, replace and case operators and `${!a[@]}`'s keys all stay a
+ * splat; `${#a[@]}` is the count. A conditional operator tests the
+ * elements as one: set when there is any, null when they join to
+ * nothing, a space joining `@`'s as IFS joins `*`'s, so `("" "")` is
+ * null for `*` alone under `IFS=`. Unselected, `:+` yields no field over
+ * no elements and one empty field over empty ones, as bash does.
+ */
+async function expandSplat(
+  p: BraceParse,
+  arr: ShellArray,
+  keys: string[],
+  node: TSNodeLike,
+  expandChild: ExpandChild,
+  operand: ArithOperand,
+  session: SessionState,
+  callStack: CallStack | null,
+  quoted: boolean,
+  groups: string[],
+): Promise<Chunk[]> {
+  const star = (p.subscript ?? p.varName) === '*'
+  const joiner = star ? ifsJoiner(ifsValue(session, callStack)) : ' '
+  const values = arrayValues(arr)
+  if (p.lengthOp) return [valuePiece(String(values.length), quoted)]
+  let items = values
+  const op = p.op
+  if (p.indirectOp) {
+    items = keys
+  } else if (op === ':') {
+    // An array with no element is unset to a slice, as a scalar is:
+    // empty, bounds unevaluated. The positional parameters always
+    // evaluate theirs, since `$0` stands at their front.
+    const unset = p.subscript !== null && values.length === 0
+    items = unset ? [] : await sliceArray(arr, node, expandChild, operand)
+  } else if (op !== null && (STRIP_OPS.has(op) || REPLACE_OPS.has(op) || CASE_OPS.has(op))) {
+    items = values.map((el) => valueOp(op, el, groups))
+  } else if (op !== null && UNSET_GUARD_OPS.has(op)) {
+    const triggered =
+      op === '-' || op === '+' || op === '=' || op === '?'
+        ? values.length === 0
+        : values.join(joiner) === ''
+    if (op === '+' || op === ':+') {
+      if (triggered) return values.length > 0 ? splatChunks([''], joiner, quoted) : []
+      return wordResult(await operatorWord(p, expandChild, quoted, session, callStack), quoted)
+    }
+    if (triggered && (op === '-' || op === ':-')) {
+      return wordResult(await operatorWord(p, expandChild, quoted, session, callStack), quoted)
+    }
+    if (triggered && (op === '?' || op === ':?')) {
+      throw await unsetError(p, expandChild, session, callStack)
+    }
+    if (triggered && p.subscript !== null) throw badSubscript(p)
+    if (triggered) {
+      throw new DiscardSignal(
+        new TextEncoder().encode(`bash: $${p.varName ?? ''}: cannot assign in this way\n`),
+      )
+    }
+  }
+  if (star && quoted) return [valuePiece(items.join(joiner), true)]
+  return splatChunks(items, joiner, quoted)
 }

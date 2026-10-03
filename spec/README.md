@@ -7,15 +7,22 @@ registries. `python/general` is the Python surface; `typescript/node` and
 
 Each file carries the parsed spec (description, epilog, options, positional
 operands, rest operand, ignored tokens) plus a `_meta` block recording which
-resources register the command and whether any registration carries a
-provision, an aggregate, or the write flag.
+VFS register the command and whether any registration carries an
+aggregate or the write flag.
 
-`_meta.by_resource` keys those same facts by the registering resource. The
-union flags cannot say *which* backend carries a provision, so dropping one
-backend's provision while another keeps it leaves every union unchanged. The
-parity check compares per resource for that reason, and falls back to the
-unions only once the per-resource entries agree. Registrations with no
-resource (the general commands) are keyed under the empty string.
+`vfs_commands` beside each `general` holds, in the same shape, every
+registered command the shared `SPECS` table does not declare: a backend verb
+such as `trello card create` carries its spec inline, so without this dump
+the parity check could not see a flag one language dropped. A file is named
+after the command with spaces as underscores (`trello_card_create.json`),
+and the directory is rewritten whole on every run.
+
+`_meta.by_vfs` keys those same facts by the registering VFS. The
+union flags cannot say *which* backend carries an aggregate, so dropping one
+backend's aggregate while another keeps it leaves every union unchanged. The
+parity check compares per VFS for that reason, and falls back to the
+unions only once the per-VFS entries agree. Registrations with no
+vfs (the general commands) are keyed under the empty string.
 
 ```bash
 # Regenerate
@@ -33,8 +40,8 @@ so the checked-in surface always matches the code.
 
 `Spec parity` runs `scripts/check_spec_parity.py`, which diffs Python against
 TypeScript command by command: every option (including its help text, value
-kind, repeatability and shorthand form), every operand, the resource set each
-command registers under, and the per-resource metadata. Resources are compared
+kind, repeatability and shorthand form), every operand, the VFS set each
+command registers under, and the per-VFS metadata. VFS are compared
 against the union of the `node` and `browser` variants, since Python has no
 runtime split.
 
@@ -48,23 +55,23 @@ variants are also diffed against each other, since Python is compared against
 `node` and nothing else would otherwise read `spec/typescript/browser`'s
 non-`_meta` content.
 
-## `resources.json`
+## `vfs.json`
 
 One per implementation tree, beside `general/`. Registry membership is a
 *different table* from command registration, and only the second was ever
-dumped — so a resource could register commands under every backend's `_meta`
-while `build_resource` / `buildResource` had no factory for it. That is how
+dumped — so a VFS could register commands under every backend's `_meta`
+while `build_vfs` / `buildVfs` had no factory for it. That is how
 Python shipped without a `sharepoint` factory and the TypeScript registries
 without chroma/dify/lancedb/qdrant while every command spec stayed identical.
 
 Each file records `registry` (what can be constructed by name) and
-`command_resources` (what registers at least one builtin command). The gate
-asserts `command_resources ⊆ registry` per tree, and that Python's registry
+`command_vfs_names` (what registers at least one builtin command). The gate
+asserts `command_vfs_names ⊆ registry` per tree, and that Python's registry
 equals the union of the two TypeScript ones. Deliberate omissions — the
 workspace-internal `history` view mount — are declared under
-`unconstructible_resources.<tree>` and stale-checked like every other
-exemption. `python/tests/resource/test_registry.py` and
-`packages/node/src/resource/registry.test.ts` both read these files instead of
+`unconstructible_vfs_names.<tree>` and stale-checked like every other
+exemption. `python/tests/vfs/test_registry.py` and
+`packages/node/src/vfs/registry.test.ts` both read these files instead of
 re-copying the name list, so neither can pin an omission the way the old
 hand-written set pinned SharePoint's.
 
@@ -75,17 +82,33 @@ side.
 
 `capabilities` carries, per registry name, `index_ttl`, `caches_reads`,
 `supports_snapshot` and `sizes_always_known`, plus whether the class overrides
-`storage_id` and `statfs` (booleans, since the base answers are per-instance
-identity and UNKNOWN). Python reads them off the class. TypeScript reads them
-from the class *declarations* (`scripts/resource_facts.ts`): the twins are
+`storage_location` and `capacity` (booleans, since the base answers are
+per-instance identity and UNKNOWN). Python reads them off the class. TypeScript reads them
+from the class *declarations* (`scripts/vfs_facts.ts`): the twins are
 instance fields, so observing them at runtime would mean constructing the
-resource, and construction is not inert — `buildResource('github', {})` issues
+VFS, and construction is not inert — `buildVfs('github', {})` issues
 an HTTP request and `postgres` opens a connection. A value the extractor
 cannot read as a literal is dumped verbatim as `<expr:…>` rather than guessed,
 so it surfaces as a real mismatch instead of a plausible default. A browser
 factory that exists only to explain that the runtime cannot serve the backend
 (`lancedb`, `email`) dumps `null`, and the node entry is the one compared
 against Python.
+
+`configs` carries, per registry name, what a mount can be *told*: Python dumps
+the pydantic model's wire names (the alias where a field has one) with whether
+each is required; TypeScript dumps the zod shape behind the VFS's
+`normalize*Config` door, the rename map that door applies, and whether it
+validates at all. The gate maps every Python name through the rename map (or
+`snakeToCamel`) onto a TypeScript field with the same requiredness, demands the
+reverse reachability, and refuses a door that does not parse. Node against
+browser is not compared for this table, since the browser S3 family
+authenticates with a presigned-URL provider by design; the node entry is the
+one that mirrors Python. Read from source (`configFacts` in
+`scripts/vfs_facts.ts`) for the same reason capabilities are: most
+schemas are module-private and construction is not inert. A backend whose
+factory calls no normalizer (ram, disk, redis take raw kwargs on both sides)
+dumps `null`. Exemptions live under `config_fields` in
+`parity_exceptions.json`, keyed by VFS then field in either spelling.
 
 `command_io` carries, per backend command package, the wired `CommandIO` slot
 names plus `local`, `max_glob_matches` and `max_du_entries`. The adapter's slot
@@ -99,26 +122,26 @@ Both tables are diffed **node against browser first**, then the merged
 TypeScript view against Python. Python has no runtime split, so the merge has
 to pick one variant and it prefers node; without the first diff that preference
 silently discarded a divergence instead of resolving one. It did: the fifteen
-browser S3-family resources declared neither `sizes_always_known` nor
-`storage_id` where their node twins declared both, and Python matched node, so
+browser S3-family VFS declared neither `sizes_always_known` nor
+`storage_location` where their node twins declared both, and Python matched node, so
 every gate passed while a browser `mv` between two mounts of one bucket saw two
 separate storages.
 
 Divergences that are structural rather than bugs live in
 `parity_exceptions.json`:
 
-- `resource_expansions` — one implementation registers a command once for a
-  name that stands for several resource kinds. Python's HF commands declare
-  `hf_buckets` and the datasets/models/spaces resources rebind them at
+- `vfs_expansions` — one implementation registers a command once for a
+  name that stands for several VFS kinds. Python's HF commands declare
+  `hf_buckets` and the datasets/models/spaces VFS rebind them at
   construction, where TypeScript names all four up front.
-- `language_only_resources` — a backend that exists in only one runtime, such
+- `language_only_vfs_names` — a backend that exists in only one runtime, such
   as the browser's OPFS.
 - `commands` — per-command exemptions. `fields` mutes a whole top-level field;
-  `by_resource` names one resource and one metadata key, so an exemption
+  `by_vfs` names one VFS and one metadata key, so an exemption
   cannot quietly hide a second divergence on the same command.
-- `resource_capabilities` and `command_io` — one resource and one key per
+- `vfs_capabilities` and `command_io` — one VFS and one key per
   entry, same rule: an exemption covers the fact it names and nothing else.
-- `variant_resource_facts.<table>` — the same, for a fact that legitimately
+- `variant_vfs_facts.<table>` — the same, for a fact that legitimately
   differs between the node and browser runtimes rather than between languages.
 
 The checker fails on a *stale* exception, so an entry cannot outlive the
@@ -137,4 +160,4 @@ that will not import registers nothing, so a venv missing the optional extras
 quietly drops every backend behind them. Regenerating in that state looks like
 a legitimate deletion of thousands of committed lines. Generation now names
 the modules that failed to import and exits without writing, so run
-`cd python && uv sync --all-extras --no-extra camel` first.
+`cd python && uv sync --all-extras` first.

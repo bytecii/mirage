@@ -15,8 +15,16 @@
 import json
 from datetime import datetime, timezone
 
-from mirage.types import (Delta, FileChangeKind, FileEvent, FileMetadata,
-                          PathSpec, WalkEntry, WalkFn)
+from mirage.runtime.python.host.host_io import with_host_io
+from mirage.types import (
+    Delta,
+    FileChangeKind,
+    FileEvent,
+    FileMetadata,
+    PathSpec,
+    WalkEntry,
+    WalkFn,
+)
 from mirage.watch.constants import DIR_FINGERPRINT
 
 
@@ -24,16 +32,71 @@ def spec_for(root: PathSpec, virtual: str) -> PathSpec:
     """Build a PathSpec for ``virtual`` using ``root``'s mount framing.
 
     The mount prefix length is recovered from the (virtual,
-    resource_path) pair of the root, the same arithmetic as
+    vfs_path) pair of the root, the same arithmetic as
     ``PathSpec.dir``.
 
     Args:
         root (PathSpec): Watch root carrying the mount prefix.
         virtual (str): Workspace-virtual path under the same mount.
     """
-    cut = len(root.virtual.rstrip("/")) - len(root.resource_path)
-    return PathSpec.from_str_path(virtual,
-                                  resource_path=virtual[cut:].strip("/"))
+    cut = len(root.virtual.rstrip("/")) - len(root.vfs_path)
+    return PathSpec.from_str_path(virtual, vfs_path=virtual[cut:].strip("/"))
+
+
+def diff_snapshots(
+    root: PathSpec,
+    previous: dict[str, str],
+    current: dict[str, str],
+    entries: dict[str, WalkEntry],
+    observed: datetime,
+) -> tuple[FileEvent, ...]:
+    """Classify two ``{virtual: fingerprint}`` snapshots as changes.
+
+    A key only in ``current`` is a CREATE, one only in ``previous`` a
+    DELETE, and a changed fingerprint an UPDATE. A file change that is
+    not a DELETE carries the metadata of its row in ``entries``, when
+    there is one.
+
+    Args:
+        root (PathSpec): Watch root carrying the mount prefix.
+        previous (dict[str, str]): Snapshot the last pull handed out.
+        current (dict[str, str]): Snapshot as of this pull.
+        entries (dict[str, WalkEntry]): Rows read this pull, by path.
+        observed (datetime): Timestamp every change carries.
+    """
+    changes: list[FileEvent] = []
+    for virtual in sorted(current.keys() | previous.keys()):
+        old = previous.get(virtual)
+        new = current.get(virtual)
+        if old == new:
+            continue
+        if old is None:
+            kind = FileChangeKind.CREATE
+        elif new is None:
+            kind = FileChangeKind.DELETE
+        else:
+            kind = FileChangeKind.UPDATE
+        entry = entries.get(virtual)
+        metadata = None
+        if (
+            entry is not None
+            and not entry.is_dir
+            and kind is not FileChangeKind.DELETE
+        ):
+            metadata = FileMetadata(
+                fingerprint=entry.fingerprint,
+                size=entry.size,
+                modified=entry.modified,
+            )
+        changes.append(
+            FileEvent(
+                kind=kind,
+                path=spec_for(root, virtual),
+                timestamp=observed,
+                metadata=metadata,
+            )
+        )
+    return tuple(changes)
 
 
 class ListingDeltaHook:
@@ -49,8 +112,8 @@ class ListingDeltaHook:
 
     def __init__(self, walk: WalkFn) -> None:
         """Args:
-            walk (WalkFn): Async generator over all entries under a
-                root, reading the backend directly.
+        walk (WalkFn): Async generator over all entries under a
+            root, reading the backend directly.
         """
         self._walk = walk
 
@@ -64,7 +127,10 @@ class ListingDeltaHook:
         """
         snapshot: dict[str, str] = {}
         entries: dict[str, WalkEntry] = {}
-        async for entry in self._walk(root):
+        # The walk reads the backend, so its own paths are host paths:
+        # a disk mount rooted at its own prefix spells them like virtual
+        # ones, and the process patch must not answer them (host_io).
+        async for entry in with_host_io(self._walk(root)):
             entries[entry.virtual] = entry
             if entry.is_dir:
                 snapshot[entry.virtual] = DIR_FINGERPRINT
@@ -74,28 +140,9 @@ class ListingDeltaHook:
         if checkpoint is None:
             return Delta(changes=(), checkpoint=serialized)
         previous: dict[str, str] = json.loads(checkpoint)
-        observed = datetime.now(timezone.utc)
-        changes: list[FileEvent] = []
-        for virtual in sorted(snapshot.keys() | previous.keys()):
-            old = previous.get(virtual)
-            new = snapshot.get(virtual)
-            if old == new:
-                continue
-            if old is None and new is not None:
-                kind = FileChangeKind.CREATE
-            elif new is None:
-                kind = FileChangeKind.DELETE
-            else:
-                kind = FileChangeKind.UPDATE
-            current = entries.get(virtual)
-            metadata = None
-            if current is not None and not current.is_dir:
-                metadata = FileMetadata(fingerprint=current.fingerprint,
-                                        size=current.size,
-                                        modified=current.modified)
-            changes.append(
-                FileEvent(kind=kind,
-                          path=spec_for(root, virtual),
-                          timestamp=observed,
-                          metadata=metadata))
-        return Delta(changes=tuple(changes), checkpoint=serialized)
+        return Delta(
+            changes=diff_snapshots(
+                root, previous, snapshot, entries, datetime.now(timezone.utc)
+            ),
+            checkpoint=serialized,
+        )

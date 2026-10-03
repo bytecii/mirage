@@ -13,8 +13,16 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import re
+from collections.abc import Mapping
 
-from mirage.shell.types import NodeType
+from mirage.shell.types import (
+    BuiltinGroup,
+    BuiltinTier,
+    NodeType,
+    ShellBuiltin,
+)
+
+PARAMETER_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-]")
 
 # Bash arithmetic tokens: integer literals (base#value/decimal/hex/
 # octal), variable names, then operators longest-first so `<<=` never
@@ -28,7 +36,9 @@ ARITH_TOKEN = re.compile(
        |[-+*/%<>=!~&|^?:(),])
   | (?P<ws>\s+)
   | (?P<bad>.)
-""", re.VERBOSE)
+""",
+    re.VERBOSE,
+)
 
 ARITH_NAME = re.compile(r"[A-Za-z_]\w*")
 
@@ -39,7 +49,8 @@ ARITH_NAME = re.compile(r"[A-Za-z_]\w*")
 ARITH_ELEM = re.compile(r"([A-Za-z_]\w*)\[(.*)\]\Z", re.DOTALL)
 
 ARITH_ASSIGN_OPS = frozenset(
-    {"=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "^=", "|="})
+    {"=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "^=", "|="}
+)
 
 # 64-bit wrap like bash (intmax_t arithmetic).
 ARITH_WRAP = 1 << 64
@@ -50,17 +61,76 @@ ARITH_SIGN = 1 << 63
 ARITH_MAX_DEPTH = 16
 
 # What the shell calls itself when no script is running, bash's "bash".
-# A nested `bash`/`sh` overrides it through Session.script_name, and
-# `Session.argv0` is the one place the two are folded together.
+# A nested `bash`/`sh` overrides it through SessionState.script_name, and
+# `SessionState.argv0` is the one place the two are folded together.
 SHELL_ARGV0 = "mirage"
+
+# The one directory PATH names, bash's default PATH for a shell that
+# starts without one: every program a session can run has a file here
+# (the /usr/bin view mount), which is the path which, type and
+# command -v report.
+BIN_PREFIX = "/usr/bin"
+
+# The IFS a shell starts with, what an unset IFS splits on, and the
+# characters of any IFS that count as its whitespace.
+IFS_DEFAULT = " \t\n"
+
+# What bash says when fork(2) fails with EAGAIN, as at `ulimit -u`: the
+# forking shell abandons the rest of its line with status 254 (bash 5.2,
+# pinned in debian:stable-slim), and a subshell dying of it reports 254
+# to its parent. A session's `processes.max` is the cap here. bash first
+# retries with backoff, printing `fork: retry:`; the refusal here is
+# immediate.
+FORK_FAILED = b"bash: fork: Resource temporarily unavailable\n"
+FORK_FAILED_STATUS = 254
+
+# The descriptors the shell models: stdin, stdout and stderr, and no
+# table above them. A redirect naming any other number is refused
+# before it does anything (`shell/descriptors.py`), because the old
+# fall-through aliased fd 3 onto stdout and `exec 3>&-` closed the
+# session's stdout. FD_BOTH is `Redirect.fd` for `&>`; FD_CLOSE is
+# `Redirect.target` for `>&-`.
+FD_STDIN = 0
+FD_STDOUT = 1
+FD_STDERR = 2
+FD_BOTH = -1
+FD_CLOSE = -1
+SHELL_FDS = frozenset({FD_STDIN, FD_STDOUT, FD_STDERR})
+
+# The dynamic variables the shell answers itself: PIPESTATUS reads the
+# session's record of the last pipeline (`SessionState.pipe_status`),
+# FUNCNAME the frames on the call stack (`SessionState.function_names`)
+# and RANDOM steps a generator (`session/rng.py`). None lives in the
+# variable store.
+PIPESTATUS = "PIPESTATUS"
+FUNCNAME = "FUNCNAME"
+RANDOM = "RANDOM"
+# bash 5.2's generator (lib/sh/random.c): a Park-Miller minimal-standard
+# step through Schrage's method, the value folding the state's two
+# halves and keeping 15 bits, and a draw that never repeats the value
+# before it. A seed is the assigned integer truncated to 32 bits, and a
+# zero state steps from ZERO_SEED. Identical in both languages, so
+# `RANDOM=42` is the same sequence everywhere, and bash's.
+RANDOM_A = 16807
+RANDOM_Q = 127773
+RANDOM_R = 2836
+RANDOM_M = 0x7FFFFFFF
+RANDOM_ZERO_SEED = 123459876
+RANDOM_MODULUS = 1 << 32
+RANDOM_MAX = 32767
+# What `SessionState._random_seed` holds once `unset RANDOM` has stripped the
+# name of its meaning: no generated word is ever empty.
+RANDOM_UNSET = ""
 
 # Node types whose failure never triggers `set -e` by shape alone.
 # Lists are NOT exempt: bash exits when the command after the final
-# `&&`/`||` fails; short-circuit failures set Session.errexit_immune
+# `&&`/`||` fails; short-circuit failures set SessionState.errexit_immune
 # instead, so the executor loops skip only those.
-ERREXIT_EXEMPT_TYPES = frozenset({
-    NodeType.NEGATED_COMMAND,
-})
+ERREXIT_EXEMPT_TYPES = frozenset(
+    {
+        NodeType.NEGATED_COMMAND,
+    }
+)
 
 # Every letter bash's `set` accepts, mapped to the `-o` name it is a
 # synonym for. The full table is here rather than only the letters
@@ -96,35 +166,37 @@ SET_FLAG_TO_OPTION = {
 # name absent from here is the one thing bash rejects outright, and it
 # rejects it with exit 2 -- which is what keeps a silently-ignored
 # `set -o physical` from looking supported.
-SET_OPTION_NAMES = frozenset({
-    "allexport",
-    "braceexpand",
-    "emacs",
-    "errexit",
-    "errtrace",
-    "functrace",
-    "hashall",
-    "histexpand",
-    "history",
-    "ignoreeof",
-    "interactive-comments",
-    "keyword",
-    "monitor",
-    "noclobber",
-    "noexec",
-    "noglob",
-    "nolog",
-    "notify",
-    "nounset",
-    "onecmd",
-    "physical",
-    "pipefail",
-    "posix",
-    "privileged",
-    "verbose",
-    "vi",
-    "xtrace",
-})
+SET_OPTION_NAMES = frozenset(
+    {
+        "allexport",
+        "braceexpand",
+        "emacs",
+        "errexit",
+        "errtrace",
+        "functrace",
+        "hashall",
+        "histexpand",
+        "history",
+        "ignoreeof",
+        "interactive-comments",
+        "keyword",
+        "monitor",
+        "noclobber",
+        "noexec",
+        "noglob",
+        "nolog",
+        "notify",
+        "nounset",
+        "onecmd",
+        "physical",
+        "pipefail",
+        "posix",
+        "privileged",
+        "verbose",
+        "vi",
+        "xtrace",
+    }
+)
 
 # Every name GNU's `shopt` accepts and what it reads as before anything
 # sets it, pinned from `bash -c shopt` on debian:stable-slim (5.2.37), in
@@ -209,3 +281,95 @@ SET_OPTION_DEFAULTS: dict[str, bool] = {
     name: name in ("braceexpand", "hashall", "interactive-comments")
     for name in sorted(SET_OPTION_NAMES)
 }
+
+GROUP_TIER: Mapping[BuiltinGroup, BuiltinTier] = {
+    BuiltinGroup.WORKING_DIRECTORY: BuiltinTier.GRAMMAR,
+    BuiltinGroup.VARIABLES: BuiltinTier.GRAMMAR,
+    BuiltinGroup.SHELL_STATE: BuiltinTier.GRAMMAR,
+    BuiltinGroup.CONDITIONS: BuiltinTier.GRAMMAR,
+    BuiltinGroup.OUTPUT: BuiltinTier.GRAMMAR,
+    BuiltinGroup.RUNNING_LINES: BuiltinTier.GRAMMAR,
+    BuiltinGroup.NAME_LOOKUP: BuiltinTier.GRAMMAR,
+    BuiltinGroup.CONTROL_FLOW: BuiltinTier.GRAMMAR,
+    BuiltinGroup.ENVIRONMENT: BuiltinTier.TOOL,
+    BuiltinGroup.MANUALS_AND_HISTORY: BuiltinTier.TOOL,
+    BuiltinGroup.JOB_CONTROL: BuiltinTier.TOOL,
+    BuiltinGroup.CLOCK: BuiltinTier.TOOL,
+    BuiltinGroup.NESTED_SHELLS: BuiltinTier.TOOL,
+    BuiltinGroup.INTERPRETERS: BuiltinTier.TOOL,
+    BuiltinGroup.COMMAND_RUNNERS: BuiltinTier.TOOL,
+}
+
+# One row per ShellBuiltin. tests/shell/test_types.py pins that the rows
+# cover the enum, that every group is used, and that the tier sets below
+# are the rows' partition, so a new member has to be filed here on
+# purpose.
+BUILTIN_GROUP: Mapping[ShellBuiltin, BuiltinGroup] = {
+    ShellBuiltin.PWD: BuiltinGroup.WORKING_DIRECTORY,
+    ShellBuiltin.CD: BuiltinGroup.WORKING_DIRECTORY,
+    ShellBuiltin.EXPORT: BuiltinGroup.VARIABLES,
+    ShellBuiltin.UNSET: BuiltinGroup.VARIABLES,
+    ShellBuiltin.LOCAL: BuiltinGroup.VARIABLES,
+    ShellBuiltin.DECLARE: BuiltinGroup.VARIABLES,
+    ShellBuiltin.TYPESET: BuiltinGroup.VARIABLES,
+    ShellBuiltin.READONLY: BuiltinGroup.VARIABLES,
+    ShellBuiltin.SET: BuiltinGroup.VARIABLES,
+    ShellBuiltin.READ: BuiltinGroup.VARIABLES,
+    ShellBuiltin.MAPFILE: BuiltinGroup.VARIABLES,
+    ShellBuiltin.READARRAY: BuiltinGroup.VARIABLES,
+    ShellBuiltin.SHIFT: BuiltinGroup.VARIABLES,
+    ShellBuiltin.GETOPTS: BuiltinGroup.VARIABLES,
+    ShellBuiltin.LET: BuiltinGroup.VARIABLES,
+    ShellBuiltin.TRAP: BuiltinGroup.SHELL_STATE,
+    ShellBuiltin.SHOPT: BuiltinGroup.SHELL_STATE,
+    ShellBuiltin.UMASK: BuiltinGroup.SHELL_STATE,
+    ShellBuiltin.ALIAS: BuiltinGroup.SHELL_STATE,
+    ShellBuiltin.UNALIAS: BuiltinGroup.SHELL_STATE,
+    ShellBuiltin.EXEC: BuiltinGroup.SHELL_STATE,
+    ShellBuiltin.TEST: BuiltinGroup.CONDITIONS,
+    ShellBuiltin.BRACKET: BuiltinGroup.CONDITIONS,
+    ShellBuiltin.DOUBLE_BRACKET: BuiltinGroup.CONDITIONS,
+    ShellBuiltin.ECHO: BuiltinGroup.OUTPUT,
+    ShellBuiltin.PRINTF: BuiltinGroup.OUTPUT,
+    ShellBuiltin.SOURCE: BuiltinGroup.RUNNING_LINES,
+    ShellBuiltin.DOT: BuiltinGroup.RUNNING_LINES,
+    ShellBuiltin.EVAL: BuiltinGroup.RUNNING_LINES,
+    ShellBuiltin.COMMAND: BuiltinGroup.RUNNING_LINES,
+    ShellBuiltin.TYPE: BuiltinGroup.NAME_LOOKUP,
+    ShellBuiltin.WHICH: BuiltinGroup.NAME_LOOKUP,
+    ShellBuiltin.TRUE: BuiltinGroup.CONTROL_FLOW,
+    ShellBuiltin.FALSE: BuiltinGroup.CONTROL_FLOW,
+    ShellBuiltin.COLON: BuiltinGroup.CONTROL_FLOW,
+    ShellBuiltin.BREAK: BuiltinGroup.CONTROL_FLOW,
+    ShellBuiltin.CONTINUE: BuiltinGroup.CONTROL_FLOW,
+    ShellBuiltin.RETURN: BuiltinGroup.CONTROL_FLOW,
+    ShellBuiltin.EXIT: BuiltinGroup.CONTROL_FLOW,
+    ShellBuiltin.PRINTENV: BuiltinGroup.ENVIRONMENT,
+    ShellBuiltin.ENV: BuiltinGroup.ENVIRONMENT,
+    ShellBuiltin.WHOAMI: BuiltinGroup.ENVIRONMENT,
+    ShellBuiltin.MAN: BuiltinGroup.MANUALS_AND_HISTORY,
+    ShellBuiltin.HISTORY: BuiltinGroup.MANUALS_AND_HISTORY,
+    ShellBuiltin.WAIT: BuiltinGroup.JOB_CONTROL,
+    ShellBuiltin.FG: BuiltinGroup.JOB_CONTROL,
+    ShellBuiltin.KILL: BuiltinGroup.JOB_CONTROL,
+    ShellBuiltin.JOBS: BuiltinGroup.JOB_CONTROL,
+    ShellBuiltin.DISOWN: BuiltinGroup.JOB_CONTROL,
+    ShellBuiltin.PS: BuiltinGroup.JOB_CONTROL,
+    ShellBuiltin.SLEEP: BuiltinGroup.CLOCK,
+    ShellBuiltin.BASH: BuiltinGroup.NESTED_SHELLS,
+    ShellBuiltin.SH: BuiltinGroup.NESTED_SHELLS,
+    ShellBuiltin.PYTHON: BuiltinGroup.INTERPRETERS,
+    ShellBuiltin.PYTHON3: BuiltinGroup.INTERPRETERS,
+    ShellBuiltin.NODE: BuiltinGroup.INTERPRETERS,
+    ShellBuiltin.JS: BuiltinGroup.INTERPRETERS,
+    ShellBuiltin.XARGS: BuiltinGroup.COMMAND_RUNNERS,
+    ShellBuiltin.TIMEOUT: BuiltinGroup.COMMAND_RUNNERS,
+}
+
+GRAMMAR_BUILTINS: frozenset[ShellBuiltin] = frozenset(
+    b for b, g in BUILTIN_GROUP.items() if GROUP_TIER[g] is BuiltinTier.GRAMMAR
+)
+
+TOOL_BUILTINS: frozenset[ShellBuiltin] = frozenset(
+    b for b, g in BUILTIN_GROUP.items() if GROUP_TIER[g] is BuiltinTier.TOOL
+)

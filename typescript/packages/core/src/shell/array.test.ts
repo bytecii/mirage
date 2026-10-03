@@ -15,7 +15,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   type ShellArray,
-  arrayAppend,
   arrayCount,
   arrayExtent,
   arrayGet,
@@ -82,21 +81,6 @@ describe('shell array', () => {
     expect(arr).toEqual(['x'])
   })
 
-  it('append starts at the extent', () => {
-    const arr = makeArray(['x', 'y', 'z'])
-    arrayUnset(arr, 1)
-    arrayAppend(arr, ['w'])
-    expect(arr).toEqual(['x', null, 'z', 'w'])
-    expect(arrayIndices(arr)).toEqual([0, 2, 3])
-  })
-
-  it('append refills a trailing hole', () => {
-    const arr = makeArray(['x', 'y', 'z'])
-    arrayUnset(arr, 2)
-    arrayAppend(arr, ['w'])
-    expect(arr).toEqual(['x', 'y', 'w'])
-  })
-
   it('a hole can be reassigned', () => {
     const arr = makeArray(['x', 'y', 'z'])
     arrayUnset(arr, 1)
@@ -159,11 +143,12 @@ describe('keyedWord', () => {
 })
 
 describe('buildIndexedLiteral', () => {
-  it('places subscripted elements and continues from them', () => {
-    const built = buildIndexedLiteral(null, ['[3]=x', 'y', '[1]=z'], false, (t) => Number(t))
+  it('places subscripted elements and continues from them', async () => {
+    const intOf = (t: string) => Promise.resolve(Number(t))
+    const built = await buildIndexedLiteral(null, ['[3]=x', 'y', '[1]=z'], false, intOf)
     expect(built).toEqual([null, 'z', null, 'x', 'y'])
     // `+=` starts the cursor at the extent; last index wins.
-    const appended = buildIndexedLiteral(['a'], ['b', '[0]=A'], true, (t) => Number(t))
+    const appended = await buildIndexedLiteral(['a'], ['b', '[0]=A'], true, intOf)
     expect(appended).toEqual(['A', 'b'])
   })
 })

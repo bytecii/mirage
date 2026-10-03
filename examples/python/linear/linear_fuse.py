@@ -19,17 +19,16 @@ import subprocess
 from dotenv import load_dotenv
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.resource.linear import LinearConfig, LinearResource
+from mirage.vfs.linear import LinearConfig, LinearVFS
 
 load_dotenv(".env.development")
 
 config = LinearConfig(api_key=os.environ["LINEAR_API_KEY"])
-resource = LinearResource(config=config)
+vfs = LinearVFS(config=config)
 
-with Workspace({
-        "/linear/":
-        Mount(resource, mode=MountMode.READ, backend=MountBackend.FUSE)
-}) as ws:
+with Workspace(
+    {"/linear/": Mount(vfs, mode=MountMode.READ, backend=MountBackend.FUSE)}
+) as ws:
     mp = ws.fuse_mountpoint
 
     print(f"=== FUSE MODE: mounted at {mp} ===\n")
@@ -54,9 +53,9 @@ with Workspace({
         team_json = f"{team_path}/team.json"
         print("\n--- size-unknown semantics on team.json ---")
         print(f"  stat before open: {os.stat(team_json).st_size} bytes")
-        wc = subprocess.run(["wc", "-c", team_json],
-                            capture_output=True,
-                            text=True)
+        wc = subprocess.run(
+            ["wc", "-c", team_json], capture_output=True, text=True
+        )
         print(f"  wc -c           : {wc.stdout.split()[0]} bytes")
         print(f"  stat after read : {os.stat(team_json).st_size} bytes")
 
@@ -73,6 +72,6 @@ with Workspace({
     print(">>> Press Enter to unmount and exit...")
     input()
 
-    records = ws.ops.records
+    records = ws.vfs.records
     total = sum(r.bytes for r in records)
     print(f"\nStats: {len(records)} ops, {total} bytes")

@@ -12,21 +12,22 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import errno
-import os
-import time
-
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.cache.context import invalidate_after_unlink, invalidate_ancestors
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.dropbox.api import delete_path, get_metadata, list_folder
 from mirage.core.dropbox.client import DropboxApiError
 from mirage.core.dropbox.paths import dropbox_path_of
-from mirage.observe.context import record
+from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
-from mirage.utils.errors import enoent, enotdir
+from mirage.utils.errors import enoent, enotdir, enotempty
 
 
-async def rmdir(accessor: DropboxAccessor, path: PathSpec) -> None:
+async def rmdir(
+    accessor: DropboxAccessor,
+    path: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+) -> None:
     """Remove an empty folder.
 
     delete_v2 removes a folder RECURSIVELY; kernel/GNU rmdir must fail
@@ -36,6 +37,8 @@ async def rmdir(accessor: DropboxAccessor, path: PathSpec) -> None:
     Args:
         accessor (DropboxAccessor): Dropbox accessor.
         path (PathSpec): folder to remove.
+        index (IndexCacheStore): accepted for the rmdir slot's shape;
+            unused.
     """
     api_path = dropbox_path_of(accessor, path)
     try:
@@ -48,10 +51,9 @@ async def rmdir(accessor: DropboxAccessor, path: PathSpec) -> None:
         raise enotdir(path.virtual)
     children = await list_folder(accessor.token_manager, api_path, limit=1)
     if children:
-        raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY),
-                      path.virtual)
-    start_ms = int(time.monotonic() * 1000)
+        raise enotempty(path)
+    timer = start_op()
     await delete_path(accessor.token_manager, api_path)
-    record("rmdir", path.virtual, "dropbox", 0, start_ms)
+    record("rmdir", path.virtual, "dropbox", 0, timer)
     await invalidate_after_unlink(path)
     await invalidate_ancestors(path)

@@ -12,12 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { FlagView } from '../../../spec/types.ts'
+import { FlagView } from '../../../spec/flag_view.ts'
 import { unpinMessage as unpinMessageCore } from '../../../../core/slack/pins.ts'
 import { IOResult, type ByteSource } from '../../../../io/types.ts'
 import type { CommandFnResult } from '../../../config.ts'
 import type { CLIInvocation } from '../../types.ts'
-import { slackAccessor } from './accessor.ts'
+import { slackAccessor } from '../../../../accessor/slack.ts'
 
 const ENC = new TextEncoder()
 

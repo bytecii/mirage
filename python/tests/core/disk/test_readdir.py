@@ -27,9 +27,9 @@ async def test_empty_directory(tmp_path):
     index = RAMIndexCacheStore(ttl=0)
     result = await readdir(
         accessor,
-        PathSpec(resource_path=mount_key("/", "/disk"),
-                 virtual="/",
-                 directory="/"), index)
+        PathSpec(vfs_path=mount_key("/", "/disk"), virtual="/", directory="/"),
+        index,
+    )
     assert result == []
 
 
@@ -40,8 +40,8 @@ async def test_directory_with_files(tmp_path):
     accessor = DiskAccessor(tmp_path)
     index = RAMIndexCacheStore(ttl=0)
     result = await readdir(
-        accessor, PathSpec(resource_path="", virtual="/", directory="/"),
-        index)
+        accessor, PathSpec(vfs_path="", virtual="/", directory="/"), index
+    )
     assert result == ["/a.txt", "/b.txt"]
 
 
@@ -52,9 +52,25 @@ async def test_directory_with_subdirectories(tmp_path):
     accessor = DiskAccessor(tmp_path)
     index = RAMIndexCacheStore(ttl=0)
     result = await readdir(
-        accessor, PathSpec(resource_path="", virtual="/", directory="/"),
-        index)
+        accessor, PathSpec(vfs_path="", virtual="/", directory="/"), index
+    )
     assert result == ["/file.txt", "/sub"]
+
+
+@pytest.mark.asyncio
+async def test_parent_listing_preserves_a_cached_subdirectory(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "child").write_text("data")
+    (tmp_path / "file.txt").write_text("data")
+    accessor = DiskAccessor(tmp_path)
+    index = RAMIndexCacheStore(ttl=600)
+    children = await readdir(
+        accessor, PathSpec.from_str_path("/sub", "sub"), index
+    )
+    await readdir(accessor, PathSpec.from_str_path("/", ""), index)
+    assert (await index.list_dir("/sub")).entries == children
+    assert (await index.get("/sub")).entry.resource_type == "folder"
+    assert (await index.get("/file.txt")).entry.resource_type == "file"
 
 
 @pytest.mark.asyncio
@@ -63,12 +79,12 @@ async def test_cache_hit(tmp_path):
     accessor = DiskAccessor(tmp_path)
     index = RAMIndexCacheStore(ttl=600)
     first = await readdir(
-        accessor, PathSpec(resource_path="", virtual="/", directory="/"),
-        index)
+        accessor, PathSpec(vfs_path="", virtual="/", directory="/"), index
+    )
     (tmp_path / "b.txt").write_text("b")
     second = await readdir(
-        accessor, PathSpec(resource_path="", virtual="/", directory="/"),
-        index)
+        accessor, PathSpec(vfs_path="", virtual="/", directory="/"), index
+    )
     assert first == second
 
 
@@ -79,9 +95,13 @@ async def test_with_prefix(tmp_path):
     index = RAMIndexCacheStore(ttl=0)
     result = await readdir(
         accessor,
-        PathSpec(resource_path=mount_key("/disk/", "/disk"),
-                 virtual="/disk/",
-                 directory="/disk/"), index)
+        PathSpec(
+            vfs_path=mount_key("/disk/", "/disk"),
+            virtual="/disk/",
+            directory="/disk/",
+        ),
+        index,
+    )
     assert result == ["/disk/a.txt"]
 
 
@@ -90,9 +110,11 @@ async def test_with_glob_scope(tmp_path):
     (tmp_path / "a.txt").write_text("a")
     accessor = DiskAccessor(tmp_path)
     index = RAMIndexCacheStore(ttl=0)
-    scope = PathSpec(resource_path=mount_key("/disk/", "/disk"),
-                     virtual="/disk/",
-                     directory="/disk/")
+    scope = PathSpec(
+        vfs_path=mount_key("/disk/", "/disk"),
+        virtual="/disk/",
+        directory="/disk/",
+    )
     result = await readdir(accessor, scope, index)
     assert result == ["/disk/a.txt"]
 
@@ -105,9 +127,11 @@ async def test_not_a_directory(tmp_path):
     with pytest.raises(NotADirectoryError):
         await readdir(
             accessor,
-            PathSpec(resource_path="file.txt",
-                     virtual="/file.txt",
-                     directory="/file.txt"), index)
+            PathSpec(
+                vfs_path="file.txt", virtual="/file.txt", directory="/file.txt"
+            ),
+            index,
+        )
 
 
 @pytest.mark.asyncio
@@ -115,9 +139,11 @@ async def test_cache_hit_entries_stay_clean(tmp_path):
     (tmp_path / "a.txt").write_text("a")
     accessor = DiskAccessor(tmp_path)
     index = RAMIndexCacheStore(ttl=600)
-    spec = PathSpec(resource_path=mount_key("/data/", "/data"),
-                    virtual="/data/",
-                    directory="/data/")
+    spec = PathSpec(
+        vfs_path=mount_key("/data/", "/data"),
+        virtual="/data/",
+        directory="/data/",
+    )
     cold = await readdir(accessor, spec, index)
     warm = await readdir(accessor, spec, index)
     assert cold == ["/data/a.txt"]
@@ -129,12 +155,16 @@ async def test_cache_key_ignores_trailing_slash(tmp_path):
     (tmp_path / "a.txt").write_text("a")
     accessor = DiskAccessor(tmp_path)
     index = RAMIndexCacheStore(ttl=600)
-    slashed = PathSpec(resource_path=mount_key("/data/", "/data"),
-                       virtual="/data/",
-                       directory="/data/")
-    bare = PathSpec(resource_path=mount_key("/data", "/data"),
-                    virtual="/data",
-                    directory="/data")
+    slashed = PathSpec(
+        vfs_path=mount_key("/data/", "/data"),
+        virtual="/data/",
+        directory="/data/",
+    )
+    bare = PathSpec(
+        vfs_path=mount_key("/data", "/data"),
+        virtual="/data",
+        directory="/data",
+    )
     first = await readdir(accessor, slashed, index)
     second = await readdir(accessor, bare, index)
     assert first == second == ["/data/a.txt"]
@@ -151,9 +181,13 @@ async def test_missing_path_is_not_found(tmp_path):
         with pytest.raises(FileNotFoundError):
             await readdir(
                 accessor,
-                PathSpec(resource_path=virtual.lstrip("/"),
-                         virtual=virtual,
-                         directory=virtual), index)
+                PathSpec(
+                    vfs_path=virtual.lstrip("/"),
+                    virtual=virtual,
+                    directory=virtual,
+                ),
+                index,
+            )
 
 
 @pytest.mark.asyncio
@@ -165,9 +199,13 @@ async def test_file_component_is_not_a_directory(tmp_path):
         with pytest.raises(NotADirectoryError):
             await readdir(
                 accessor,
-                PathSpec(resource_path=virtual.lstrip("/"),
-                         virtual=virtual,
-                         directory=virtual), index)
+                PathSpec(
+                    vfs_path=virtual.lstrip("/"),
+                    virtual=virtual,
+                    directory=virtual,
+                ),
+                index,
+            )
 
 
 @pytest.mark.asyncio
@@ -179,7 +217,35 @@ async def test_readdir_error_reports_the_virtual_path(tmp_path):
     with pytest.raises(FileNotFoundError) as excinfo:
         await readdir(
             accessor,
-            PathSpec(resource_path="nope", virtual="/nope", directory="/nope"),
-            index)
+            PathSpec(vfs_path="nope", virtual="/nope", directory="/nope"),
+            index,
+        )
     assert str(excinfo.value) == "/nope"
     assert str(tmp_path) not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_leaves_a_host_symlink_out(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib64").symlink_to("lib")
+    (tmp_path / "python").symlink_to("/nowhere/python3")
+    accessor = DiskAccessor(tmp_path)
+    result = await readdir(
+        accessor,
+        PathSpec(vfs_path="", virtual="/", directory="/"),
+        RAMIndexCacheStore(ttl=0),
+    )
+    assert result == ["/lib"]
+
+
+@pytest.mark.asyncio
+async def test_refuses_a_directory_reached_through_a_host_symlink(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib64").symlink_to("lib")
+    accessor = DiskAccessor(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        await readdir(
+            accessor,
+            PathSpec(vfs_path="lib64", virtual="/lib64", directory="/lib64"),
+            RAMIndexCacheStore(ttl=0),
+        )

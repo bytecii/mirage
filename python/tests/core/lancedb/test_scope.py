@@ -12,70 +12,52 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.core.lancedb.scope import ScopeLevel, detect_scope
-from mirage.resource.lancedb.config import LanceDBConfig
+from mirage.core.hierarchy.scope import INVALID, make_detect_scope
+from mirage.core.lancedb.scope import scopes_for
+from mirage.core.vector.scope import filters_of
 from mirage.types import PathSpec
+from mirage.vfs.lancedb.config import LanceDBConfig
 
 
 def _cfg(**kw) -> LanceDBConfig:
-    base = dict(uri="/tmp/db",
-                group_by=["label", "kind"],
-                id_column="id",
-                title_column="name",
-                blob_column="image_bytes",
-                blob_ext="png",
-                vector_column="vector")
+    base = dict(
+        uri="/tmp/db",
+        group_by=["label", "kind"],
+        id_column="id",
+        title_column="name",
+        blob_column="image_bytes",
+        blob_ext="png",
+        vector_column="vector",
+    )
     base.update(kw)
     return LanceDBConfig(**base)
 
 
 def _ps(path: str) -> PathSpec:
-    return PathSpec(virtual=path,
-                    directory=path,
-                    resource_path=path.strip("/"))
+    return PathSpec(virtual=path, directory=path, vfs_path=path.strip("/"))
 
 
-def test_root_multi_table():
-    s = detect_scope(_ps("/"), _cfg())
-    assert s.level == ScopeLevel.ROOT
-
-
-def test_table_group_dir():
-    s = detect_scope(_ps("/animals"), _cfg())
-    assert s.level == ScopeLevel.GROUP_DIR
-    assert s.table == "animals"
-    assert s.filters == {}
-
-
-def test_nested_group_dir():
-    s = detect_scope(_ps("/animals/cat"), _cfg())
-    assert s.level == ScopeLevel.GROUP_DIR
-    assert s.filters == {"label": "cat"}
-
-
-def test_leaf_group_dir():
-    s = detect_scope(_ps("/animals/cat/big"), _cfg())
-    assert s.level == ScopeLevel.GROUP_DIR
-    assert s.filters == {"label": "cat", "kind": "big"}
+def _detect(config: LanceDBConfig):
+    return make_detect_scope(scopes_for(config))
 
 
 def test_row_card():
-    s = detect_scope(_ps("/animals/cat/big/3.md"), _cfg())
-    assert s.level == ScopeLevel.ROW
-    assert s.row_id == "3"
-    assert s.blob is False
-    assert s.filters == {"label": "cat", "kind": "big"}
+    config = _cfg()
+    match = _detect(config)(_ps("/animals/cat/big/3.md"))
+    assert match.kind == "row_card"
+    assert match.slots["row_id"] == "3"
+    assert filters_of(config.group_by, match) == {
+        "label": "cat",
+        "kind": "big",
+    }
 
 
 def test_row_blob():
-    s = detect_scope(_ps("/animals/cat/big/3.png"), _cfg())
-    assert s.level == ScopeLevel.ROW
-    assert s.row_id == "3"
-    assert s.blob is True
+    match = _detect(_cfg())(_ps("/animals/cat/big/3.png"))
+    assert match.kind == "row_blob"
+    assert match.slots["row_id"] == "3"
 
 
-def test_single_table_pin_elides_table():
-    s = detect_scope(_ps("/cat/big"), _cfg(table="animals"))
-    assert s.level == ScopeLevel.GROUP_DIR
-    assert s.table == "animals"
-    assert s.filters == {"label": "cat", "kind": "big"}
+def test_blob_needs_blob_column():
+    match = _detect(_cfg(blob_column=None))(_ps("/animals/cat/big/3.png"))
+    assert match.kind == INVALID

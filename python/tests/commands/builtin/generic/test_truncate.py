@@ -14,8 +14,13 @@
 
 import pytest
 
-from mirage.commands.builtin.generic.truncate import parse_size
+from mirage.commands.builtin.generic.truncate import (
+    TruncateFlags,
+    parse_size,
+    truncate,
+)
 from mirage.commands.errors import UsageError
+from mirage.types import FileStat, FileType, PathSpec
 
 
 def test_plain_and_operation_sizes():
@@ -61,42 +66,48 @@ def test_whitespace_skipped_around_the_mode_character():
     assert parse_size("< 10K", 10) == 10
 
 
-@pytest.mark.parametrize("value",
-                         ["<+4", "< +4", "<-4", "%+4", ">-4", "<\t+4"])
+@pytest.mark.parametrize(
+    "value", ["<+4", "< +4", "<-4", "%+4", ">-4", "<\t+4"]
+)
 def test_sign_after_mode_is_multiple_relative_modifiers(value):
     # A sign after <, >, / or % is refused as a second relative modifier
     # before the number is read, not reported as an invalid number.
     with pytest.raises(UsageError) as exc:
         parse_size(value, 10)
-    assert str(exc.value) == ("truncate: multiple relative modifiers "
-                              "specified\nTry 'truncate --help' for more "
-                              "information.")
+    assert str(exc.value) == (
+        "truncate: multiple relative modifiers "
+        "specified\nTry 'truncate --help' for more "
+        "information."
+    )
     assert exc.value.exit_code == 1
 
 
-@pytest.mark.parametrize(("value", "quoted"), [
-    ("abc", "abc"),
-    ("", ""),
-    ("1x1K", "1x1K"),
-    ("2b", "2b"),
-    ("5c", "5c"),
-    ("1e", "1e"),
-    ("+ 4", "+ 4"),
-    ("++4", "++4"),
-    ("+4 ", "+4 "),
-    ("4 ", "4 "),
-    ("4\t", "4\t"),
-    ("10 K", "10 K"),
-    (" ", ""),
-    (" abc", "abc"),
-    ("<abc", "abc"),
-    ("<", ""),
-    ("< ", ""),
-    ("<4 ", "4 "),
-    ("4B", "4B"),
-    ("4iB", "4iB"),
-    ("0x10", "0x10"),
-])
+@pytest.mark.parametrize(
+    ("value", "quoted"),
+    [
+        ("abc", "abc"),
+        ("", ""),
+        ("1x1K", "1x1K"),
+        ("2b", "2b"),
+        ("5c", "5c"),
+        ("1e", "1e"),
+        ("+ 4", "+ 4"),
+        ("++4", "++4"),
+        ("+4 ", "+4 "),
+        ("4 ", "4 "),
+        ("4\t", "4\t"),
+        ("10 K", "10 K"),
+        (" ", ""),
+        (" abc", "abc"),
+        ("<abc", "abc"),
+        ("<", ""),
+        ("< ", ""),
+        ("<4 ", "4 "),
+        ("4B", "4B"),
+        ("4iB", "4iB"),
+        ("0x10", "0x10"),
+    ],
+)
 def test_junk_is_invalid_number(value, quoted):
     # The digits must follow the sign immediately: no second sign, no gap,
     # and no trailing whitespace. GNU quotes the remainder past the skipped
@@ -112,8 +123,9 @@ def test_junk_is_invalid_number(value, quoted):
 def test_off_t_overflow_appends_value_too_large():
     with pytest.raises(UsageError) as exc:
         parse_size("1Z", 0)
-    assert str(exc.value) == ("truncate: Invalid number: '1Z': "
-                              "Value too large for defined data type")
+    assert str(exc.value) == (
+        "truncate: Invalid number: '1Z': Value too large for defined data type"
+    )
 
 
 def test_off_t_bound_is_asymmetric():
@@ -123,8 +135,9 @@ def test_off_t_bound_is_asymmetric():
     assert parse_size("-9223372036854775808", 10) == 0
     with pytest.raises(UsageError) as exc:
         parse_size("8E", 0)
-    assert str(exc.value) == ("truncate: Invalid number: '8E': "
-                              "Value too large for defined data type")
+    assert str(exc.value) == (
+        "truncate: Invalid number: '8E': Value too large for defined data type"
+    )
     with pytest.raises(UsageError):
         parse_size("9223372036854775808", 0)
 
@@ -133,3 +146,74 @@ def test_division_by_zero():
     with pytest.raises(UsageError) as exc:
         parse_size("/0", 10)
     assert str(exc.value) == "truncate: division by zero"
+
+
+def _operand(path: str, raw: str) -> PathSpec:
+    return PathSpec(
+        virtual=path, directory="/", vfs_path=path.strip("/"), raw_path=raw
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_slashed_operand_is_the_opens_eisdir():
+    # GNU opens with O_CREAT before it stats, so `missing/` and `reg/` are
+    # the open's EISDIR, not the stat's miss, and an absent bare name is
+    # made where its directory exists. The EISDIR is settled before the
+    # op, so a backend with no truncate op says it too. The chain answers
+    # first: under an absent directory the name is ENOENT and the op never
+    # runs, every operand is still tried, and -c leaves an absent name
+    # alone.
+    lengths: list[tuple[str, int]] = []
+
+    async def stat(path):
+        raise FileNotFoundError(path.virtual)
+
+    async def truncate_fn(path, length, no_create) -> None:
+        lengths.append((path.raw_path, length))
+
+    _, io = await truncate(
+        [
+            _operand("/missing", "/missing/"),
+            _operand("/nodir/x", "/nodir/x"),
+            _operand("/missing", "/missing"),
+        ],
+        flags=TruncateFlags(size="4", no_create=False),
+        stat=stat,
+        truncate_fn=truncate_fn,
+    )
+    assert lengths == [("/missing", 4)]
+    assert io.exit_code == 1
+    assert io.stderr == (
+        b"truncate: cannot open '/missing/' for writing: Is a directory\n"
+        b"truncate: cannot open '/nodir/x' for writing: "
+        b"No such file or directory\n"
+    )
+    _, io = await truncate(
+        [_operand("/missing", "/missing")],
+        flags=TruncateFlags(size="4", no_create=True),
+        stat=stat,
+        truncate_fn=truncate_fn,
+    )
+    assert io.exit_code == 0
+    assert lengths == [("/missing", 4)]
+
+
+@pytest.mark.asyncio
+async def test_no_create_reaches_the_mutation_after_a_successful_stat():
+    calls = []
+
+    async def stat(path):
+        calls.append("stat")
+        return FileStat(name=path.virtual, type=FileType.FILE, size=4)
+
+    async def mutate(path, length, no_create):
+        calls.append((path.virtual, length, no_create))
+
+    _, result = await truncate(
+        [PathSpec.from_str_path("/file")],
+        flags=TruncateFlags("2", True),
+        stat=stat,
+        truncate_fn=mutate,
+    )
+    assert result.exit_code == 0
+    assert calls == ["stat", ("/file", 2, True)]

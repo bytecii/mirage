@@ -17,9 +17,13 @@ from dulwich.object_store import BaseObjectStore, MemoryObjectStore
 from dulwich.objects import Blob, Commit
 
 from mirage.commands.cli.builtin.git.format import short
-from mirage.commands.cli.builtin.git.summary import (FileStat, diffstat,
-                                                     mode_lines, report,
-                                                     stat_line, stat_table)
+from mirage.commands.cli.builtin.git.summary import (
+    FileStat,
+    diffstat,
+    report,
+    stat_line,
+    stat_table,
+)
 
 MODE = 0o100644
 EXECUTABLE = 0o100755
@@ -42,8 +46,9 @@ def store_with(*contents: bytes) -> tuple[MemoryObjectStore, list[bytes]]:
     return store, ids
 
 
-def total_changes(store: BaseObjectStore, before: Tree,
-                  after: Tree) -> tuple[int, int]:
+def total_changes(
+    store: BaseObjectStore, before: Tree, after: Tree
+) -> tuple[int, int]:
     """The line totals the commit report sums out of the diffstat.
 
     Args:
@@ -52,8 +57,10 @@ def total_changes(store: BaseObjectStore, before: Tree,
         after (Tree): the new tree, path to (mode, blob id).
     """
     stats = diffstat(store, before, after)
-    return (sum(stat.insertions
-                for stat in stats), sum(stat.deletions for stat in stats))
+    return (
+        sum(stat.insertions for stat in stats),
+        sum(stat.deletions for stat in stats),
+    )
 
 
 def pinned_commit(message: bytes) -> Commit:
@@ -89,93 +96,75 @@ def test_the_stat_line_matches_git(files, plus, minus, expected):
 
 
 def test_a_new_file_counts_every_line_as_an_insertion():
-    store, (sha, ) = store_with(b"one\ntwo\n")
+    store, (sha,) = store_with(b"one\ntwo\n")
     assert total_changes(store, {}, {b"a.txt": (MODE, sha)}) == (2, 0)
 
 
 def test_a_removed_file_counts_every_line_as_a_deletion():
-    store, (sha, ) = store_with(b"one\ntwo\n")
+    store, (sha,) = store_with(b"one\ntwo\n")
     assert total_changes(store, {b"a.txt": (MODE, sha)}, {}) == (0, 2)
 
 
 def test_an_appended_line_is_one_insertion():
     store, (old, new) = store_with(b"one\n", b"one\ntwo\n")
-    assert total_changes(store, {b"a.txt": (MODE, old)},
-                         {b"a.txt": (MODE, new)}) == (1, 0)
+    assert total_changes(
+        store, {b"a.txt": (MODE, old)}, {b"a.txt": (MODE, new)}
+    ) == (1, 0)
 
 
 def test_a_rewritten_line_is_one_of_each():
     store, (old, new) = store_with(b"one\n", b"uno\n")
-    assert total_changes(store, {b"a.txt": (MODE, old)},
-                         {b"a.txt": (MODE, new)}) == (1, 1)
+    assert total_changes(
+        store, {b"a.txt": (MODE, old)}, {b"a.txt": (MODE, new)}
+    ) == (1, 1)
 
 
 def test_an_unchanged_path_is_never_read():
     # Same blob on both sides, so there is nothing to diff and the
     # comparison must not reach for the object at all.
-    assert total_changes(MemoryObjectStore(), {b"a.txt": (MODE, b"a" * 40)},
-                         {b"a.txt": (MODE, b"a" * 40)}) == (0, 0)
+    assert total_changes(
+        MemoryObjectStore(),
+        {b"a.txt": (MODE, b"a" * 40)},
+        {b"a.txt": (MODE, b"a" * 40)},
+    ) == (0, 0)
 
 
-# Both report pins below reproduce a scratch-repo session against git
-# 2.37: a binary blob counts as a changed file but zero lines, and in a
-# mixed commit the untouched deletions clause drops off the line.
-def test_report_counts_a_binary_file_but_no_lines():
-    store, (bin_id, ) = store_with(b"A\x00B\x00C")
-    commit = pinned_commit(b"add binary")
-    out = report(store, commit, "main", {}, {b"blob.bin": (MODE, bin_id)}, 7,
-                 False)
-    assert out == (f"[main {short(commit.id, 7)}] add binary\n"
-                   " 1 file changed, 0 insertions(+), 0 deletions(-)\n"
-                   " create mode 100644 blob.bin\n").encode()
+def test_report_prints_the_title_then_the_changes():
+    commit = pinned_commit(b"add binary\n\nbody")
+    out = report(commit, "main", b" 1 file changed\n", 7, False)
+    assert (
+        out
+        == (
+            f"[main {short(commit.id, 7)}] add binary\n 1 file changed\n"
+        ).encode()
+    )
 
 
-def test_report_mixes_binary_files_and_text_lines_like_git():
-    store, (txt, bin_id) = store_with(b"x\ny\nz\n", b"DIFFERENT\x00BYTES")
-    commit = pinned_commit(b"mixed")
-    after = {b"text.txt": (MODE, txt), b"blob.bin": (MODE, bin_id)}
-    out = report(store, commit, "main", {}, after, 7, False)
-    assert out == (f"[main {short(commit.id, 7)}] mixed\n"
-                   " 2 files changed, 3 insertions(+)\n"
-                   " create mode 100644 blob.bin\n"
-                   " create mode 100644 text.txt\n").encode()
-
-
-def test_a_created_path_gets_its_mode_line():
-    assert mode_lines({},
-                      {b"a.txt":
-                       (MODE, b"a" * 40)}) == [" create mode 100644 a.txt"]
-
-
-def test_an_executable_says_so():
-    assert mode_lines(
-        {}, {b"run.sh":
-             (EXECUTABLE, b"a" * 40)}) == [" create mode 100755 run.sh"]
-
-
-def test_a_removed_path_gets_a_delete_line():
-    assert mode_lines({b"a.txt": (MODE, b"a" * 40)},
-                      {}) == [" delete mode 100644 a.txt"]
-
-
-def test_a_path_that_only_changed_gets_no_mode_line():
-    before = {b"a.txt": (MODE, b"a" * 40)}
-    after = {b"a.txt": (MODE, b"b" * 40)}
-    assert mode_lines(before, after) == []
+def test_report_marks_a_root_commit_and_a_detached_head():
+    commit = pinned_commit(b"first")
+    assert (
+        report(commit, None, b"", 7, True)
+        == (
+            f"[detached HEAD (root-commit) {short(commit.id, 7)}] first\n"
+        ).encode()
+    )
 
 
 def entry_stat(path: str, insertions: int, deletions: int) -> FileStat:
-    return FileStat(path=path,
-                    insertions=insertions,
-                    deletions=deletions,
-                    binary=False,
-                    old_size=0,
-                    new_size=0)
+    return FileStat(
+        path=path,
+        insertions=insertions,
+        deletions=deletions,
+        binary=False,
+        old_size=0,
+        new_size=0,
+    )
 
 
 def test_diffstat_counts_lines_binaries_and_mode_changes():
-    store, (old, new, bin_id) = store_with(b"one\n", b"one changed\n",
-                                           b"\x00\x01binary")
+    store, (old, new, bin_id) = store_with(
+        b"one\n", b"one changed\n", b"\x00\x01binary"
+    )
     before = {b"a.txt": (MODE, old), b"tool": (MODE, old)}
     after = {
         b"a.txt": (MODE, new),
@@ -197,8 +186,14 @@ def test_diffstat_counts_lines_binaries_and_mode_changes():
 def test_stat_table_matches_gits_scaled_layout():
     stats = [
         FileStat("bin.dat", 0, 0, True, 0, 100),
-        FileStat("deep/nested/dir/structure/a_rather_long_file_name_here.txt",
-                 150, 0, False, 0, 0),
+        FileStat(
+            "deep/nested/dir/structure/a_rather_long_file_name_here.txt",
+            150,
+            0,
+            False,
+            0,
+            0,
+        ),
         FileStat("new.txt", 3, 0, False, 0, 0),
         FileStat("small.txt", 195, 0, False, 0, 0),
         FileStat("tiny.txt", 0, 1, False, 0, 0),

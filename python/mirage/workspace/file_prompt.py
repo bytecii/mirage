@@ -16,20 +16,28 @@ from mirage.types import MountMode
 from mirage.workspace.mount import MountEntry
 
 HELP_HINT = (
-    "Tip: run `man` to list every available command grouped by resource, "
-    "`man <cmd>` for a single entry, and `<cmd> --help` for flag details.")
+    "Tip: run `man` to list every available command grouped by VFS, "
+    "`man <cmd>` for a single entry, and `<cmd> --help` for flag details."
+)
+
+MODE_LINES = {
+    MountMode.READ: "  Mode: read-only; writes are refused.",
+    MountMode.WRITE: "  Mode: read-write.",
+    MountMode.EXEC: "  Mode: read-write; programs can run.",
+}
 
 
 def build_file_prompt(mounts: list[MountEntry]) -> str:
     parts: list[str] = [HELP_HINT]
     for m in mounts:
-        prompt = m.resource.PROMPT
+        prompt = m.vfs.prompt
         if not prompt:
             continue
         prefix = m.prefix.rstrip("/") or "/"
-        section = prompt.format(prefix=prefix)
-        if m.mode != MountMode.READ and m.resource.WRITE_PROMPT:
-            section += "\n" + m.resource.WRITE_PROMPT.replace(
-                "{prefix}", prefix)
+        section = (
+            prompt.replace("{prefix}", prefix) + "\n" + MODE_LINES[m.mode]
+        )
+        if m.mode != MountMode.READ and m.vfs.write_prompt:
+            section += "\n" + m.vfs.write_prompt.replace("{prefix}", prefix)
         parts.append(section)
     return "\n\n".join(parts)

@@ -40,6 +40,11 @@ TS_PACKAGES = {
 
 EXCEPTIONS = ROOT / "spec" / "layout_exceptions.json"
 
+TS_IMPORT = re.compile(
+    r"""(?:\bfrom\s*|\bimport\s*\(?\s*|\bmock\(\s*)['"]([^'"]+)['"]"""
+)
+PACKAGE_IMPORT = re.compile(r"@struktoai/mirage-([a-z]+)/(.+)")
+
 
 @dataclass
 class Findings:
@@ -55,19 +60,21 @@ class Findings:
         # so counting the directory too would double-count it. Counting
         # directories *instead* of their modules is what made the ratchet blind
         # to new modules added under a directory already in the baseline.
-        return (sum(len(v) for v in self.python_only.values()) +
-                sum(len(v) for v in self.typescript_only.values()) +
-                sum(len(v) for v in self.renamed.values()))
+        return (
+            sum(len(v) for v in self.python_only.values())
+            + sum(len(v) for v in self.typescript_only.values())
+            + sum(len(v) for v in self.renamed.values())
+        )
 
 
 def canonical(name: str) -> str:
     """Fold a module name so a rename does not read as a missing module.
 
     ``findEval.ts`` and ``find_eval.py`` are the same module spelled two
-    ways, and so are ``_provision.py`` and ``provision.ts``, and
-    ``claude-agent-sdk`` and ``claude_agent_sdk``. Folding camelCase,
-    hyphens and a leading underscore separates "spelled differently" from
-    "absent", which are different pieces of work.
+    ways, and so are ``claude-agent-sdk`` and ``claude_agent_sdk``.
+    Folding camelCase, hyphens and a leading underscore separates
+    "spelled differently" from "absent", which are different pieces of
+    work.
 
     Args:
         name (str): A module or directory basename with no extension.
@@ -112,18 +119,89 @@ def python_modules() -> dict[str, dict[str, str]]:
     return dict(out)
 
 
-def typescript_modules() -> dict[str, dict[str, str]]:
+def _import_target(source: Path, spec: str) -> Path | None:
+    """The typescript file an import specifier names, or None for a package
+    outside this repo.
+
+    Args:
+        source (Path): the importing file.
+        spec (str): the specifier as written.
+
+    Returns:
+        Path | None: the imported file.
+    """
+    if spec.startswith("."):
+        target = source.parent / spec
+    else:
+        match = PACKAGE_IMPORT.fullmatch(spec)
+        if match is None:
+            return None
+        target = ROOT / "typescript" / "packages" / match[1] / "src" / match[2]
+    if target.suffix == ".js":
+        target = target.with_suffix(".ts")
+    elif target.suffix != ".ts":
+        target = target.with_name(target.name + ".ts")
+    return target.resolve()
+
+
+def test_only_modules() -> set[Path]:
+    """The typescript modules that only test files import.
+
+    TypeScript colocates its tests with the sources, so a fake shared by
+    several suites lands in ``src/``, where python keeps its twin under
+    ``tests/``, which this gate does not scan. A module's own
+    ``<stem>.test.ts`` does not count as a user, or every module with a
+    test and no other importer would pass for a helper; one imported by
+    tests and other helpers only is a helper too. An ``index.ts`` never
+    is: it is a package's public door, which its tests import as a user
+    would.
+
+    Returns:
+        set[Path]: the helper modules.
+    """
+    importers: dict[Path, set[Path]] = defaultdict(set)
+    for source in (ROOT / "typescript" / "packages").glob("*/src/**/*.ts"):
+        for spec in TS_IMPORT.findall(source.read_text()):
+            target = _import_target(source.resolve(), spec)
+            if target is not None:
+                importers[target].add(source.resolve())
+    helpers: set[Path] = set()
+    grew = True
+    while grew:
+        grew = False
+        for target, users in importers.items():
+            others = users - {target.with_name(f"{target.stem}.test.ts")}
+            if target.name == "index.ts" or target in helpers:
+                continue
+            if others and all(
+                user.name.endswith(".test.ts") or user in helpers
+                for user in others
+            ):
+                helpers.add(target)
+                grew = True
+    return helpers
+
+
+def typescript_modules(
+    py: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
     """Every typescript module, keyed by directory then folded name.
 
-    The three runtime packages are unioned: python's ``resource/disk`` has
+    The three runtime packages are unioned: python's ``VFS/disk`` has
     no counterpart in ``core`` because CLAUDE.md puts node-only code in
     ``node``, and that split is the design rather than a gap. ``index.ts``
-    is skipped for the same reason ``__init__.py`` is.
+    is skipped for the same reason ``__init__.py`` is, and so is a module
+    only tests import (``test_only_modules``) that python has no module
+    of the same name for.
+
+    Args:
+        py (dict[str, dict[str, str]]): the python map.
 
     Returns:
         dict[str, dict[str, str]]: directory -> folded name -> real name.
     """
     out: dict[str, dict[str, str]] = defaultdict(dict)
+    helpers = test_only_modules()
     for package, prefix in TS_PACKAGES.items():
         src = ROOT / "typescript" / "packages" / package / "src"
         if not src.is_dir():
@@ -139,12 +217,16 @@ def typescript_modules() -> dict[str, dict[str, str]]:
                 joined = prefix
             else:
                 joined = f"{prefix}/{inner}"
-            out[canonical_dir(joined)][canonical(path.stem)] = path.stem
+            rel, name = canonical_dir(joined), canonical(path.stem)
+            if path.resolve() in helpers and name not in py.get(rel, {}):
+                continue
+            out[rel][name] = path.stem
     return dict(out)
 
 
-def collect(py: dict[str, dict[str, str]],
-            ts: dict[str, dict[str, str]]) -> Findings:
+def collect(
+    py: dict[str, dict[str, str]], ts: dict[str, dict[str, str]]
+) -> Findings:
     """Diff the two module maps.
 
     Args:
@@ -189,8 +271,9 @@ def load_exceptions() -> dict[str, object]:
     return loaded
 
 
-def excuse(found: Findings,
-           exceptions: dict[str, object]) -> tuple[Findings, list[str]]:
+def excuse(
+    found: Findings, exceptions: dict[str, object]
+) -> tuple[Findings, list[str]]:
     """Drop excused findings and name any exception that no longer applies.
 
     A stale entry is the failure mode every hand-maintained allowlist in
@@ -213,13 +296,18 @@ def excuse(found: Findings,
     # module under `agents/agno` or `core/opfs` is expected growth, not drift.
     excused_dirs: dict[str, set[str]] = {"renamed": set()}
 
-    for key, bucket in (("python_only", found.python_only_dirs),
-                        ("typescript_only", found.typescript_only_dirs)):
+    for key, bucket in (
+        ("python_only", found.python_only_dirs),
+        ("typescript_only", found.typescript_only_dirs),
+    ):
         allowed = directories.get(key, {})
         assert isinstance(allowed, dict)
         excused_dirs[key] = set(allowed)
-        target = (remaining.python_only_dirs
-                  if key == "python_only" else remaining.typescript_only_dirs)
+        target = (
+            remaining.python_only_dirs
+            if key == "python_only"
+            else remaining.typescript_only_dirs
+        )
         for rel in bucket:
             if rel not in allowed:
                 target[rel] = None
@@ -246,7 +334,8 @@ def excuse(found: Findings,
             assert isinstance(allowed_names, dict)
             live = set(actual.get(rel, []))
             stale += [
-                f"modules.{rel}.{key}.{name}" for name in allowed_names
+                f"modules.{rel}.{key}.{name}"
+                for name in allowed_names
                 if name not in live
             ]
     return remaining, sorted(set(stale))
@@ -260,8 +349,9 @@ def report(remaining: Findings, stale: list[str], baseline: int) -> None:
         print(f"  python-only directory: mirage/{rel} ({len(names)} modules)")
     for rel in remaining.typescript_only_dirs:
         names = remaining.typescript_only.get(rel, [])
-        print(f"  typescript-only directory: */src/{rel} "
-              f"({len(names)} modules)")
+        print(
+            f"  typescript-only directory: */src/{rel} ({len(names)} modules)"
+        )
     for rel, names in sorted(remaining.renamed.items()):
         for pair in names:
             py_name, ts_name = pair.split(":", 1)
@@ -282,7 +372,8 @@ def report(remaining: Findings, stale: list[str], baseline: int) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Diff the python and typescript module layouts.")
+        description="Diff the python and typescript module layouts."
+    )
     # Advisory by default because 200-odd divergences predate the gate and
     # each needs its own decision. --strict does not demand zero: it fails
     # only when the count rises above the committed baseline, so new drift
@@ -294,7 +385,8 @@ def main() -> int:
     exceptions = load_exceptions()
     baseline_value = exceptions.get("baseline", 0)
     baseline = baseline_value if isinstance(baseline_value, int) else 0
-    found = collect(python_modules(), typescript_modules())
+    py = python_modules()
+    found = collect(py, typescript_modules(py))
     remaining, stale = excuse(found, exceptions)
 
     if args.as_json:
@@ -306,32 +398,40 @@ def main() -> int:
                     "stale": stale,
                     "python_only_dirs": sorted(remaining.python_only_dirs),
                     "typescript_only_dirs": sorted(
-                        remaining.typescript_only_dirs),
+                        remaining.typescript_only_dirs
+                    ),
                     "renamed": remaining.renamed,
                     "python_only": remaining.python_only,
                     "typescript_only": remaining.typescript_only,
                 },
                 indent=2,
                 sort_keys=True,
-            ))
+            )
+        )
     else:
         report(remaining, stale, baseline)
 
     if not args.strict:
         return 0
     if stale:
-        print(f"\nFAIL: {len(stale)} stale entries in {EXCEPTIONS.name}; "
-              "delete them or restore the divergence they describe.")
+        print(
+            f"\nFAIL: {len(stale)} stale entries in {EXCEPTIONS.name}; "
+            "delete them or restore the divergence they describe."
+        )
         return 1
     if remaining.total() > baseline:
-        print(f"\nFAIL: layout divergence rose from {baseline} to "
-              f"{remaining.total()}. Mirror the module, or add it to "
-              f"{EXCEPTIONS.name} with a reason.")
+        print(
+            f"\nFAIL: layout divergence rose from {baseline} to "
+            f"{remaining.total()}. Mirror the module, or add it to "
+            f"{EXCEPTIONS.name} with a reason."
+        )
         return 1
     if remaining.total() < baseline:
-        print(f"\nFAIL: layout divergence fell from {baseline} to "
-              f"{remaining.total()}. Lower the baseline in "
-              f"{EXCEPTIONS.name} to lock the improvement in.")
+        print(
+            f"\nFAIL: layout divergence fell from {baseline} to "
+            f"{remaining.total()}. Lower the baseline in "
+            f"{EXCEPTIONS.name} to lock the improvement in."
+        )
         return 1
     return 0
 

@@ -18,10 +18,11 @@ import { describe, expect, it } from 'vitest'
 import { IOResult, materialize } from '../../io/types.ts'
 import { NodeType as NT } from '../../shell/types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
-import { Session } from '../session/session.ts'
+import { SessionState } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
-import type { ExecuteNodeFn } from './types.ts'
+import type { ExecuteNodeFn } from './jobs.ts'
 import { handleConnection, handlePipe, handleSubshell } from './pipes.ts'
+import { makeIntegrationWS } from '../fixtures/integration_fixture.ts'
 
 function node(text: string): TSNodeLike {
   return { type: 'command', text, children: [], namedChildren: [], isNamed: true }
@@ -52,7 +53,7 @@ describe('handlePipe', () => {
       execute,
       [node('a'), node('b'), node('c')],
       [false, false],
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
       null,
     )
     expect(io.exitCode).toBe(0)
@@ -86,12 +87,50 @@ describe('handlePipe', () => {
       execute,
       [node('left'), node('right')],
       [false],
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
       null,
     )
     const right = calls.find((c) => c.text === 'right')
     expect(right?.stdinIsNull).toBe(false)
     expect(right?.stdinBytes).toBe('')
+  })
+
+  it('shows every segment the status the pipeline started with', async () => {
+    const s = new SessionState({ sessionId: 'test' })
+    s.lastExitCode = 1
+    const seen: number[] = []
+    const execute: ExecuteNodeFn = (nd, session) => {
+      seen.push(session.lastExitCode)
+      // An inner statement of a compound segment lands its own status.
+      session.lastExitCode = 0
+      return Promise.resolve([
+        null,
+        new IOResult({ exitCode: 0 }),
+        new ExecutionNode({ command: nd.text, exitCode: 0 }),
+      ])
+    }
+    await handlePipe(execute, [node('a'), node('b')], [false], s)
+    expect(seen).toEqual([1, 1])
+  })
+
+  it('expands $? in a segment to the pre-pipeline status', async () => {
+    // bash 5.2: each segment is a child of the shell as it stood before
+    // the pipeline, so `$?` is the pre-pipeline status even after a
+    // sibling segment ran a compound command or a function.
+    const { ws } = await makeIntegrationWS()
+    try {
+      for (const line of [
+        'false; { true; } | echo $?',
+        'f() { true; }; false; f | echo $?',
+        'false; true | echo $?',
+      ]) {
+        const io = await ws.shell(line)
+        expect([io.stdoutText, io.exitCode], line).toEqual(['1\n', 0])
+      }
+      expect((await ws.shell('false; { false; } | true; echo $?')).stdoutText).toBe('0\n')
+    } finally {
+      await ws.close()
+    }
   })
 
   it('concatenates stderr from all stages into the final IOResult', async () => {
@@ -105,7 +144,7 @@ describe('handlePipe', () => {
       execute,
       [node('a'), node('b')],
       [],
-      new Session({ sessionId: 'test' }),
+      new SessionState({ sessionId: 'test' }),
     )
     expect(decode(await materialize(io.stderr))).toBe('a-err;b-err;')
   })
@@ -141,7 +180,7 @@ describe('handleConnection (&&, ||, ;)', () => {
   }
 
   it('&& runs right when left exits 0', async () => {
-    const s = new Session({ sessionId: 'test' })
+    const s = new SessionState({ sessionId: 'test' })
     const [stdout, io] = await handleConnection(
       pickLR(leftOK, right),
       node('l'),
@@ -165,7 +204,7 @@ describe('handleConnection (&&, ||, ;)', () => {
       rightCalled = true
       return Promise.resolve([null, new IOResult(), new ExecutionNode()])
     }
-    const s = new Session({ sessionId: 'test' })
+    const s = new SessionState({ sessionId: 'test' })
     const [, io] = await handleConnection(
       pickLR(leftFailFn, rightFn),
       node('l'),
@@ -178,7 +217,7 @@ describe('handleConnection (&&, ||, ;)', () => {
   })
 
   it('|| runs right only when left fails', async () => {
-    const s = new Session({ sessionId: 'test' })
+    const s = new SessionState({ sessionId: 'test' })
     const [, io] = await handleConnection(pickLR(leftFail, right), node('l'), NT.OR, node('r'), s)
     expect(io.exitCode).toBe(0)
   })
@@ -189,7 +228,7 @@ describe('handleConnection (&&, ||, ;)', () => {
       rightCalled = true
       return Promise.resolve([null, new IOResult(), new ExecutionNode()])
     }
-    const s = new Session({ sessionId: 'test' })
+    const s = new SessionState({ sessionId: 'test' })
     await handleConnection(pickLR(leftOK, rightFn), node('l'), NT.OR, node('r'), s)
     expect(rightCalled).toBe(false)
   })
@@ -200,7 +239,7 @@ describe('handleConnection (&&, ||, ;)', () => {
       rightCalled = true
       return Promise.resolve([encode('r'), new IOResult(), new ExecutionNode()])
     }
-    const s = new Session({ sessionId: 'test' })
+    const s = new SessionState({ sessionId: 'test' })
     await handleConnection(pickLR(leftFail, rightFn), node('l'), NT.SEMI, node('r'), s)
     expect(rightCalled).toBe(true)
   })
@@ -208,7 +247,11 @@ describe('handleConnection (&&, ||, ;)', () => {
 
 describe('handleSubshell', () => {
   it('restores cwd and env after body execution', async () => {
-    const s = new Session({ sessionId: 'test', cwd: '/orig', vars: varsFromEnv({ X: 'orig' }) })
+    const s = new SessionState({
+      sessionId: 'test',
+      cwd: '/orig',
+      vars: varsFromEnv({ X: 'orig' }),
+    })
     const execute: ExecuteNodeFn = (_n, session) => {
       session.cwd = '/inside'
       seedVar(session, 'X', 'inside')
@@ -220,7 +263,7 @@ describe('handleSubshell', () => {
   })
 
   it('runs multiple body statements and merges their IOResults', async () => {
-    const s = new Session({ sessionId: 'test' })
+    const s = new SessionState({ sessionId: 'test' })
     let i = 0
     const execute: ExecuteNodeFn = () => {
       i++
@@ -236,7 +279,7 @@ describe('handleSubshell', () => {
   })
 
   it('seeds lastExitCode between body commands for $?', async () => {
-    const s = new Session({ sessionId: 'test' })
+    const s = new SessionState({ sessionId: 'test' })
     s.lastExitCode = 0
     const seen: number[] = []
     const execute: ExecuteNodeFn = (nd, session) => {
@@ -252,4 +295,100 @@ describe('handleSubshell', () => {
     expect(seen).toEqual([0, 7])
     expect(s.lastExitCode).toBe(0)
   })
+})
+
+it.each(['abort', 'timeout'])(
+  'discards pipeline cache reads on %s through wrappers',
+  async (kind) => {
+    const { CachableAsyncIterator } = await import('../../io/cachable_iterator.ts')
+    const { asyncChain } = await import('../../io/stream.ts')
+    const { CommandTimeoutError } = await import('../../commands/errors.ts')
+    let closed = false
+    async function* source() {
+      await Promise.resolve()
+      try {
+        yield encode('first')
+        yield encode('rest')
+      } finally {
+        closed = true
+      }
+    }
+    const input = new CachableAsyncIterator(source())
+    const failure =
+      kind === 'abort'
+        ? new DOMException('cancelled', 'AbortError')
+        : new CommandTimeoutError('wc', 1)
+    const execute: ExecuteNodeFn = async (nd, _session, stdin) => {
+      if (nd.text === 'cat')
+        return [
+          asyncChain([input]),
+          new IOResult({ reads: { '/remote': input }, cache: ['/remote'] }),
+          new ExecutionNode({ command: 'cat' }),
+        ]
+      if (stdin === null || stdin instanceof Uint8Array) throw new Error('expected stream')
+      await stdin[Symbol.asyncIterator]().next()
+      throw failure
+    }
+    await expect(
+      handlePipe(execute, [node('cat'), node('wc')], [], new SessionState({ sessionId: 'test' })),
+    ).rejects.toBe(failure)
+    expect(closed).toBe(true)
+    expect(input.bufferedChunks).toHaveLength(0)
+  },
+)
+
+it('keeps a cache read drainable after a normal early pipeline exit', async () => {
+  const { CachableAsyncIterator } = await import('../../io/cachable_iterator.ts')
+  const { asyncChain } = await import('../../io/stream.ts')
+  let closed = false
+  let readSignal: AbortSignal | null = null
+  async function* source() {
+    await Promise.resolve()
+    try {
+      yield encode('first')
+      yield encode('rest')
+      readSignal?.throwIfAborted()
+    } finally {
+      closed = true
+    }
+  }
+  const input = new CachableAsyncIterator(source())
+  const execute: ExecuteNodeFn = async (nd, child, stdin) => {
+    if (nd.text === 'cat') {
+      readSignal = child.abortSignal
+      return [
+        asyncChain([input]),
+        new IOResult({ reads: { '/remote': input }, cache: ['/remote'] }),
+        new ExecutionNode({ command: 'cat' }),
+      ]
+    }
+    if (stdin === null || stdin instanceof Uint8Array) throw new Error('expected stream')
+    await stdin[Symbol.asyncIterator]().next()
+    return [encode('first'), new IOResult(), new ExecutionNode({ command: 'head' })]
+  }
+  const session = new SessionState({ sessionId: 'test' })
+  session.shellOptions.pipefail = true
+  const [, io] = await handlePipe(execute, [node('cat'), node('head')], [], session)
+  expect(io.exitCode).toBe(0)
+  expect(closed).toBe(false)
+  expect(decode(await input.drain())).toBe('firstrest')
+  expect(closed).toBe(true)
+})
+
+it('pipeline timeout releases the caller even when a producer ignores cancellation', async () => {
+  const session = new SessionState({ sessionId: 'timeout' })
+  session.pipelineTimeoutSeconds = 0.01
+  let finish: ((value: Awaited<ReturnType<ExecuteNodeFn>>) => void) | undefined
+  const pending = new Promise<Awaited<ReturnType<ExecuteNodeFn>>>((resolve) => {
+    finish = resolve
+  })
+  const execute: ExecuteNodeFn = (nd) =>
+    nd.text === 'blocked' ? pending : Promise.resolve([null, new IOResult(), new ExecutionNode()])
+  try {
+    await expect(
+      handlePipe(execute, [node('blocked'), node('done')], [false], session),
+    ).rejects.toThrow('timed out')
+  } finally {
+    finish?.([null, new IOResult(), new ExecutionNode()])
+  }
 })

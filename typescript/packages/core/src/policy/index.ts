@@ -14,15 +14,58 @@
 
 export type { Policy } from './base.ts'
 export { PolicyDenied } from './errors.ts'
+export { Decisions, askRule, covers, decisionId, type AskHandler } from './decisions.ts'
 export { MountRootPolicy } from './builtin/mount_root.ts'
+export { PermissionsPolicy } from './builtin/permissions.ts'
+export { decide, outranks, ruleAt, sourceOf } from './match/decide.ts'
+export { anchorDepth } from '../utils/hidden.ts'
+export {
+  betterMatch,
+  coversDepth,
+  hiddenDepth,
+  matchedOperand,
+  ruleApplies,
+  ruleReach,
+  subjects,
+  type Subject,
+} from './match/rule.ts'
 export { OutputCapPolicy, resolveProducer, resolveLimit } from './builtin/output_cap.ts'
-export { Policies, postExecuteGate, postOpsGate, preOpsGate, preSessionGate } from './policies.ts'
+export { DEFAULT_ASK_REASON, DEFAULT_DENY_REASON, POLICY_DENIED_EXIT } from './constants.ts'
+export {
+  Policies,
+  postExecuteGate,
+  postOpsGate,
+  preOpsGate,
+  preSessionGate,
+  describeRefusal,
+  saysWhy,
+  refusalOf,
+  renderDeny,
+  renderPending,
+} from './policies.ts'
 export {
   type Action,
+  type Ask,
   type CommandContext,
+  type AdmissionRules,
+  type Deny,
+  type DenyScope,
   type ExecuteResultContext,
-  type GuardSpec,
+  type Explanation,
+  type CommandRule,
   type OpsContext,
   type OpsResultContext,
+  Outcome,
+  type Abandoned,
+  type Pending,
+  type Decision,
+  type Claim,
+  type Claimant,
+  type HandOff,
+  type Occurrence,
+  type Ruling,
+  Scope,
+  type SessionDecisionsQuery,
+  type SessionCommandsQuery,
   type SessionContext,
 } from './types.ts'

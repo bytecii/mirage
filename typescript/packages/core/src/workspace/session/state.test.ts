@@ -15,35 +15,46 @@
 import { varsFromEnv } from '../../workspace/session/session.ts'
 import { setAttr } from '../../workspace/session/state.ts'
 import { ArithError } from '../../shell/errors.ts'
-import { VarAttr } from '../../shell/variable.ts'
+import { TempEnv, VarAttr, type ShellVar } from '../../shell/variable.ts'
+import { CallStack } from '../../shell/call_stack.ts'
 import { describe, expect, it } from 'vitest'
 import type { SessionView } from '../../ops/types.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
 import { Policies } from '../../policy/policies.ts'
 import type { Action, SessionContext } from '../../policy/types.ts'
 import { ReadonlyVariableError } from './errors.ts'
-import { Session } from './session.ts'
+import { SessionState } from './session.ts'
 import {
   elementIndex,
   envSnapshot,
+  gateRendering,
+  gateRestoredVars,
+  inCallEnv,
+  nextRandom,
+  outliveCall,
+  positionalParams,
   seedVar,
   sessionElements,
   sessionView,
+  setPositionalParams,
   stripKeyQuotes,
+  subscriptIndex,
   visibleEnv,
 } from './state.ts'
+import { RANDOM } from '../../shell/constants.ts'
+import { makeVar } from '../../shell/variable.ts'
 
 class DenySecrets {
   preSession(ctx: SessionContext): Action | null {
     if (ctx.key.startsWith('SECRET')) {
-      return { kind: 'deny', message: 'SECRET_* refused by policy\n' }
+      return { kind: 'deny', reason: 'SECRET_* refused by policy' }
     }
     return null
   }
 }
 
-function makeView(policies: Policies | null = null): [SessionView, Session] {
-  const session = new Session({ sessionId: 's', cwd: '/', vars: varsFromEnv({ A: '1' }) })
+function makeView(policies: Policies | null = null): [SessionView, SessionState] {
+  const session = new SessionState({ sessionId: 's', cwd: '/', vars: varsFromEnv({ A: '1' }) })
   return [sessionView(session, policies), session]
 }
 
@@ -56,6 +67,13 @@ describe('sessionView', () => {
     expect(snap.A).toBe('1')
     snap.B = '2'
     expect('B' in session.env).toBe(false)
+  })
+
+  it('profile reads the session profile', () => {
+    const [view, session] = makeView()
+    expect(view.profile()).toBeNull()
+    session.profile = 'admin'
+    expect(view.profile()).toBe('admin')
   })
 
   it('set and unset write the session', async () => {
@@ -99,24 +117,24 @@ describe('sessionView', () => {
   })
 
   it('a shaped write gates the value that lands', async () => {
-    // `declare -l role; role=ADMIN` stores `admin`, so a rule refusing
+    // `declare -l profile; profile=ADMIN` stores `admin`, so a rule refusing
     // `admin` has to see `admin`, not the raw text: coercion runs
     // before the gate.
     const seen: (string | null)[] = []
     class Capture {
       preSession(ctx: SessionContext): Action | null {
         seen.push(ctx.value)
-        if (ctx.value === 'admin') return { kind: 'deny', message: 'no admin\n' }
+        if (ctx.value === 'admin') return { kind: 'deny', reason: 'no admin' }
         return null
       }
     }
     const policies = new Policies()
     policies.add(new Capture())
     const [view, session] = makeView(policies)
-    seedVar(session, 'role', '')
-    setAttr(session, 'role', VarAttr.Lower)
-    await expect(view.set('role', 'ADMIN')).rejects.toBeInstanceOf(PolicyDenied)
-    expect(session.env.role).toBe('')
+    seedVar(session, 'profile', '')
+    setAttr(session, 'profile', VarAttr.Lower)
+    await expect(view.set('profile', 'ADMIN')).rejects.toBeInstanceOf(PolicyDenied)
+    expect(session.env.profile).toBe('')
     seedVar(session, 'n', '0')
     setAttr(session, 'n', VarAttr.Integer)
     await view.set('n', '3+4')
@@ -181,9 +199,9 @@ describe('sessionView', () => {
   })
 
   it('envSnapshot is a copy', () => {
-    const session = new Session({ sessionId: 's', cwd: '/', vars: varsFromEnv({ A: '1' }) })
+    const session = new SessionState({ sessionId: 's', cwd: '/', vars: varsFromEnv({ A: '1' }) })
     const snap = envSnapshot(session)
-    expect(snap).toEqual({ ...session.env })
+    expect(snap).toEqual({ A: '1', PWD: '/' })
     expect(snap).not.toBe(session.env)
   })
 
@@ -195,8 +213,8 @@ describe('sessionView', () => {
   })
 })
 
-function makeHiddenView(): [SessionView, Session] {
-  const session = new Session({
+function makeHiddenView(): [SessionView, SessionState] {
+  const session = new SessionState({
     sessionId: 's',
     cwd: '/',
     vars: varsFromEnv({ PUBLIC: '1', SLACK_TOKEN: 'xoxb', AWS_SECRET_KEY: 'k' }),
@@ -252,7 +270,7 @@ describe('hidden vars in the session door', () => {
   })
 
   it('visibleEnv matches the scalars when nothing is hidden', () => {
-    const session = new Session({ sessionId: 's', cwd: '/', vars: varsFromEnv({ A: '1' }) })
+    const session = new SessionState({ sessionId: 's', cwd: '/', vars: varsFromEnv({ A: '1' }) })
     expect(visibleEnv(session)).toEqual({ ...session.env })
   })
 
@@ -262,12 +280,12 @@ describe('hidden vars in the session door', () => {
     expect('SLACK_TOKEN' in env).toBe(false)
     expect('AWS_SECRET_KEY' in env).toBe(false)
     expect(env.PUBLIC).toBe('1')
-    expect(Object.keys(env).sort()).toEqual(['PUBLIC', 'PWD'])
+    expect(Object.keys(env).sort()).toEqual(['IFS', 'PATH', 'PUBLIC', 'PWD'])
   })
 })
 
-function elementSession(): Session {
-  const session = new Session({ sessionId: 's', cwd: '/' })
+function elementSession(): SessionState {
+  const session = new SessionState({ sessionId: 's', cwd: '/' })
   seedVar(session, 'm', { a: '1', k5: '9', '0': 'z' })
   seedVar(session, 'arr', ['10', '20', '30'])
   seedVar(session, 's5', '5')
@@ -293,6 +311,32 @@ describe('elementIndex', () => {
     // An unresolvable expression indexes element 0, bash's
     // unset-name-is-zero arithmetic rule.
     expect(elementIndex('$bad', {})).toBe(0)
+  })
+})
+
+describe('subscriptIndex', () => {
+  it('lands the assignments a subscript makes and seeds RANDOM', async () => {
+    const s = new SessionState({ sessionId: 's' })
+    seedVar(s, 'i', '1')
+    s.vars[RANDOM] = makeVar('1')
+    expect(await subscriptIndex(s, '3')).toBe(3)
+    expect(await subscriptIndex(s, 'i+1')).toBe(2)
+    // The subscript's assignment lands, bash's `a[x=3]`.
+    expect(await subscriptIndex(s, 'x=3')).toBe(3)
+    expect(s.vars.x?.value).toBe('3')
+    // One that fails lands what it assigned before failing, then throws
+    // in bash's words rather than reading element 0.
+    await expect(subscriptIndex(s, 'y=4, 1/0')).rejects.toThrow(/^y=4, 1\/0: /)
+    expect(s.vars.y?.value).toBe('4')
+    // A seed reaches the generator, and the draw after it advances the
+    // session past it.
+    expect(await subscriptIndex(s, 'RANDOM=42, RANDOM')).toBe(17772)
+    const drawn = s.vars[RANDOM].value
+    expect(nextRandom(s, typeof drawn === 'string' ? drawn : undefined)).toBe(26794)
+    // Through a door, a refusal is the gate's.
+    const view = sessionView(s, new Policies([new DenySecrets()]))
+    await expect(subscriptIndex(s, 'SECRET_N=1', view)).rejects.toBeInstanceOf(PolicyDenied)
+    expect(s.env.SECRET_N).toBeUndefined()
   })
 })
 
@@ -322,5 +366,159 @@ describe('sessionElements', () => {
     expect(ops.read('s5', '0')).toBe('5')
     expect(ops.read('s5', '1')).toBeNull()
     expect(ops.read('missing', '0')).toBeNull()
+  })
+})
+
+describe('managed variables through the session door', () => {
+  function managedVar(value: string | null): ShellVar {
+    return {
+      value,
+      attrs: new Set([VarAttr.Export]),
+      managed: { source: 'env', ref: '', key: 'TOKEN', eager: false },
+    }
+  }
+
+  it('set detaches a fetched managed var', async () => {
+    const [view, session] = makeView()
+    session.vars.TOKEN = managedVar('s3cr3t')
+    await view.set('TOKEN', 'mine')
+    const v = session.vars.TOKEN
+    expect(v.managed).toBeUndefined()
+    expect(v.value).toBe('mine')
+    expect(v.attrs).toEqual(new Set([VarAttr.Export]))
+  })
+
+  it('set detaches an unfetched managed var', async () => {
+    const [view, session] = makeView()
+    session.vars.TOKEN = managedVar(null)
+    await view.set('TOKEN', 'mine')
+    const v = session.vars.TOKEN
+    expect(v.managed).toBeUndefined()
+    expect(v.value).toBe('mine')
+  })
+
+  it('unset deletes a managed name quietly', async () => {
+    const [view, session] = makeView()
+    session.vars.TOKEN = managedVar('s3cr3t')
+    await view.unset('TOKEN')
+    expect('TOKEN' in session.vars).toBe(false)
+  })
+})
+
+describe('a failing coercion', () => {
+  it('lands what it assigned before the error', async () => {
+    // bash: `declare -i n; x='y=5,1/0'; n=x` refuses the assignment but
+    // leaves y at 5, and a RANDOM seed in the expression seeds.
+    const [view, s] = makeView()
+    s.vars[RANDOM] = makeVar('1')
+    seedVar(s, 'n', '0')
+    setAttr(s, 'n', VarAttr.Integer)
+    seedVar(s, 'x', 'y=5,1/0')
+    await expect(view.set('n', 'x')).rejects.toBeInstanceOf(ArithError)
+    expect(s.vars.y?.value).toBe('5')
+    // The refused assignment left n as it was.
+    expect(s.env.n).toBe('0')
+    seedVar(s, 'x', 'RANDOM=42,1/0')
+    await expect(view.set('n', 'x')).rejects.toBeInstanceOf(ArithError)
+    const drawn = s.vars[RANDOM].value
+    expect(nextRandom(s, typeof drawn === 'string' ? drawn : undefined)).toBe(17772)
+  })
+})
+
+// A snapshot is the one env input the deployment did not author, so the
+// restore fires the same gate a typed `export` does, name by name, and a
+// refusal aborts the whole restore rather than dropping one variable.
+describe('gateRestoredVars', () => {
+  function denying(): Policies {
+    const policies = new Policies()
+    policies.add(new DenySecrets())
+    return policies
+  }
+
+  it('refuses a denied name and passes the rest', async () => {
+    const table = varsFromEnv({ SECRET_A: '1', PUBLIC: '2' })
+    await expect(gateRestoredVars(denying(), 's', table)).rejects.toBeInstanceOf(PolicyDenied)
+    await gateRestoredVars(denying(), 's', varsFromEnv({ PUBLIC: '2' }))
+    await gateRestoredVars(null, 's', table)
+  })
+
+  // The names the shell keeps current itself (`cd` writes PWD/OLDPWD through
+  // `seedVar`, ungated) stay the shell's on a restore too.
+  it('leaves the shell bookkeeping alone', async () => {
+    class DenyAll {
+      preSession(): Action | null {
+        return { kind: 'deny', reason: 'nothing may be set' }
+      }
+    }
+    const policies = new Policies()
+    policies.add(new DenyAll())
+    await gateRestoredVars(policies, 's', varsFromEnv({ PWD: '/', OLDPWD: '/' }))
+    await expect(gateRestoredVars(policies, 's', varsFromEnv({ X: '1' }))).rejects.toBeInstanceOf(
+      PolicyDenied,
+    )
+  })
+
+  it('renders what setVar shows a hook', () => {
+    expect(gateRendering('x')).toBe('x')
+    expect(gateRendering({ b: '2', a: '1' })).toBe('1 2')
+    expect(gateRendering(['p', 'q'])).toBe('p q')
+    expect(gateRendering(null)).toBeNull()
+  })
+})
+
+describe('positional parameters in scope', () => {
+  it("are a function's own even when empty", () => {
+    const session = new SessionState({ sessionId: 's', positionalArgs: ['a', 'b'] })
+    const stack = new CallStack()
+    expect(positionalParams(session, stack)).toEqual(['a', 'b'])
+    stack.push([])
+    expect(positionalParams(session, stack)).toEqual([])
+    setPositionalParams(session, stack, ['x'])
+    expect(stack.getAllPositional()).toEqual(['x'])
+    expect(session.positionalArgs).toEqual(['a', 'b'])
+    stack.pop()
+    setPositionalParams(session, stack, ['y'])
+    expect(session.positionalArgs).toEqual(['y'])
+  })
+})
+
+function inFunction(session: SessionState, temp: TempEnv): Map<string, ShellVar | null> {
+  const locals = new Map<string, ShellVar | null>()
+  session.localFrames.push(temp, locals)
+  session.localVars = locals
+  return locals
+}
+
+describe('scopes on the call path', () => {
+  it('unset reveals what an enclosing scope saved', async () => {
+    const [view, session] = makeView()
+    inFunction(session, new TempEnv([['A', makeVar('old')]]))
+    seedVar(session, 'A', 'pre')
+    await view.unset('A')
+    expect(session.env.A).toBe('old')
+    expect(session.localFrames[0]?.has('A')).toBe(false)
+  })
+
+  it('unset of a local leaves it unset', async () => {
+    const [view, session] = makeView()
+    const locals = inFunction(session, new TempEnv())
+    locals.set('A', makeVar('1'))
+    seedVar(session, 'A', 'local')
+    await view.unset('A')
+    expect('A' in session.env).toBe(false)
+    expect(locals.get('A')?.value).toBe('1')
+  })
+
+  it('outliveCall keeps a temporary-environment name', () => {
+    const session = new SessionState({ sessionId: 's' })
+    const temp = new TempEnv([['A', null]])
+    const locals = inFunction(session, temp)
+    expect(inCallEnv(session, 'A')).toBe(true)
+    locals.set('B', null)
+    outliveCall(session, 'B')
+    expect([...locals.keys()]).toEqual(['B'])
+    outliveCall(session, 'A')
+    expect(temp.size).toBe(0)
+    expect(inCallEnv(session, 'A')).toBe(false)
   })
 })

@@ -14,9 +14,11 @@
 
 import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it, vi } from 'vitest'
-import { FileStat, FileType, PathSpec } from '../../types.ts'
+import { ContentType, FileStat, FileType, PathSpec } from '../../types.ts'
 import { stripSlash } from '../../utils/slash.ts'
-import type { NotionStatAccessor } from './stat.ts'
+import type { NotionAccessor } from '../../accessor/notion.ts'
+
+const listings: string[] = []
 
 const DIRS = new Set(['/db', '/db/sub'])
 const FILES: Record<string, number> = {
@@ -34,7 +36,10 @@ function normalize(p: PathSpec): string {
 }
 
 vi.mock('./readdir.ts', () => ({
-  readdir: (_accessor: unknown, path: PathSpec) => Promise.resolve(CHILDREN[normalize(path)] ?? []),
+  readdir: (_accessor: unknown, path: PathSpec) => {
+    listings.push(path.virtual)
+    return Promise.resolve(CHILDREN[normalize(path)] ?? [])
+  },
 }))
 
 vi.mock('./stat.ts', () => ({
@@ -46,7 +51,14 @@ vi.mock('./stat.ts', () => ({
         new FileStat({ name: name !== '' ? name : '/', type: FileType.DIRECTORY }),
       )
     }
-    return Promise.resolve(new FileStat({ name, type: FileType.TEXT, size: FILES[key] ?? null }))
+    return Promise.resolve(
+      new FileStat({
+        name,
+        type: FileType.FILE,
+        content: ContentType.TEXT,
+        size: FILES[key] ?? null,
+      }),
+    )
   },
 }))
 
@@ -54,14 +66,14 @@ const { find } = await import('./find.ts')
 
 const accessor = {
   transport: { callTool: () => Promise.reject(new Error('unused')) },
-} as NotionStatAccessor
+} as NotionAccessor
 
 function root(): PathSpec {
   return new PathSpec({
     virtual: '/db',
     directory: '/db',
     resolved: false,
-    resourcePath: 'db',
+    vfsPath: 'db',
   })
 }
 
@@ -76,7 +88,7 @@ describe('notion core find', () => {
       virtual: '/db',
       directory: '/db',
       resolved: false,
-      resourcePath: mountKey('/db', '/db'),
+      vfsPath: mountKey('/db', '/db'),
     })
     const out = await find(accessor, spec, { name: 'db' })
     expect(out).toEqual(['/'])
@@ -111,4 +123,13 @@ describe('notion core find', () => {
     const out = await find(accessor, root(), { type: 'f', minSize: 15 })
     expect(out).toEqual(['/db/sub/page2.md'])
   })
+})
+
+it.each([
+  [0, []],
+  [1, ['/db']],
+] as const)('depth %s bounds backend requests', async (maxDepth, calls) => {
+  listings.length = 0
+  await find(accessor, root(), { maxDepth })
+  expect(listings).toEqual(calls)
 })

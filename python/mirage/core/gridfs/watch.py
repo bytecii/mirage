@@ -15,10 +15,14 @@
 from collections.abc import AsyncIterator
 
 from mirage.accessor.gridfs import GridFSAccessor
-from mirage.core.gridfs.client import (_prefix, _strip_prefix, iter_latest,
-                                       prefix_query)
-from mirage.core.timeutil import to_iso_z
+from mirage.core.gridfs.client import (
+    _prefix,
+    _strip_prefix,
+    iter_latest,
+    prefix_query,
+)
 from mirage.types import PathSpec, WalkEntry
+from mirage.utils.dates import to_iso_z
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.watch.base import DeltaHook
 from mirage.watch.delta import ListingDeltaHook
@@ -42,7 +46,7 @@ class GridFSWalk:
 
     def __init__(self, accessor: GridFSAccessor) -> None:
         """Args:
-            accessor (GridFSAccessor): Backend handle.
+        accessor (GridFSAccessor): Backend handle.
         """
         self._accessor = accessor
 
@@ -53,16 +57,18 @@ class GridFSWalk:
             root (PathSpec): Watch root (mount-virtual path).
         """
         config = self._accessor.config
-        prefix = mount_prefix_of(root.virtual, root.resource_path)
+        prefix = mount_prefix_of(root.virtual, root.vfs_path)
         pfx = _prefix(root.mount_path, config)
         files: list[str] = []
         markers: list[str] = []
         async for doc in iter_latest(self._accessor, prefix_query(pfx)):
             filename = doc["filename"]
             relative = _strip_prefix(filename, config)
-            virtual = (prefix.rstrip("/") + "/" +
-                       relative.lstrip("/") if prefix else "/" +
-                       relative.lstrip("/"))
+            virtual = (
+                prefix.rstrip("/") + "/" + relative.lstrip("/")
+                if prefix
+                else "/" + relative.lstrip("/")
+            )
             if filename.endswith("/"):
                 # A directory marker, the same convention readdir reads
                 # as an immediate child directory.
@@ -71,11 +77,13 @@ class GridFSWalk:
             files.append(virtual)
             upload = doc.get("uploadDate")
             modified = to_iso_z(upload) if upload else None
-            yield WalkEntry(virtual=virtual,
-                            is_dir=False,
-                            fingerprint=str(doc["_id"]),
-                            size=doc["length"],
-                            modified=modified)
+            yield WalkEntry(
+                virtual=virtual,
+                is_dir=False,
+                fingerprint=str(doc["_id"]),
+                size=doc["length"],
+                modified=modified,
+            )
         for entry in synth_dirs(root.virtual, files, markers):
             yield entry
 

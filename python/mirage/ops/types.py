@@ -14,7 +14,7 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from mirage.shell.variable import ShellValue, VarAttr
 from mirage.types import FileStat
@@ -28,7 +28,7 @@ StatPath = Callable[[str], Awaitable["FileStat | None"]]
 # readdir one virtual path through the workspace rather than one backend.
 # What a walker whose output is a single document (tree) reads once it
 # reaches a mount boundary, since the subtree below it lives in another
-# resource that the walker's own accessor cannot open.
+# VFS that the walker's own accessor cannot open.
 ReaddirPath = Callable[[str], Awaitable[list[str]]]
 # The mount prefix serving a virtual path. A mount boundary is a
 # filesystem boundary, which is where git stops looking for a repository
@@ -79,19 +79,18 @@ EnvSnapshot = Callable[[], dict[str, str]]
 class EnvSet(Protocol):
     """Store one variable through the session plane."""
 
-    def __call__(self,
-                 name: str,
-                 value: ShellValue,
-                 follow_ref: bool = True) -> Awaitable[None]:
-        ...
+    def __call__(
+        self, name: str, value: ShellValue, follow_ref: bool = True
+    ) -> Awaitable[None]: ...
 
 
 class EnvUnset(Protocol):
     """Drop one variable through the session plane; a missing name is
     quiet."""
 
-    def __call__(self, name: str, follow_ref: bool = True) -> Awaitable[None]:
-        ...
+    def __call__(
+        self, name: str, follow_ref: bool = True
+    ) -> Awaitable[None]: ...
 
 
 # Turn one attribute on or off through the session plane, or with a None
@@ -103,6 +102,11 @@ class EnvUnset(Protocol):
 EnvMark = Callable[[str, VarAttr | None, bool], Awaitable[None]]
 # Whether `readonly` has marked the name.
 EnvIsReadonly = Callable[[str], bool]
+# The name of the profile the session runs under, None for an
+# unrestricted session. What an owner-rendering command (ls -l, stat %g,
+# find -printf %g) prints in the group column: the profile is the
+# permission set the session acts with, which is what a group is.
+ProfileName = Callable[[], "str | None"]
 
 
 @dataclass(frozen=True)
@@ -118,9 +122,10 @@ class SessionView:
     needs one, and it is the whole capability: no field reaches the raw
     session behind it.
 
-    A command opts in by naming a ``session_view`` parameter (``env``
-    is taken by the snapshot), which is what makes the dispatcher hand
-    it one.
+    Delivered as the ``session_view`` field of ``CommandOpts`` and of
+    ``CLIDoors``; a command opts in by reading it, and one that never
+    reads it cannot write the session. The name is not ``env`` because
+    the snapshot has that one.
     """
 
     get: EnvGet
@@ -129,6 +134,7 @@ class SessionView:
     unset: EnvUnset
     mark: EnvMark
     is_readonly: EnvIsReadonly
+    profile: ProfileName
 
 
 @dataclass(frozen=True)
@@ -137,7 +143,7 @@ class MountView:
 
     A command runs bound to one backend, and that backend cannot see a
     mount nested inside its own tree: the child's keys live in another
-    resource entirely, so the parent's ``readdir`` never lists it. A
+    VFS entirely, so the parent's ``readdir`` never lists it. A
     walker that must account for the whole subtree therefore has to be
     told, the same way ``LinkView`` tells it about symlinks.
 
@@ -151,12 +157,26 @@ class MountView:
     line filter runs, so it reads the boundaries here too and excludes a
     descendant's subtree while accounting.
 
-    Delivered as the ``mounts`` field of ``NamespaceView``; a command
-    opts in by naming an ``ns`` parameter.
+    Two questions, two methods, because one name for both is what let a
+    hidden mount reach a user. **Avoiding** a boundary needs every mount
+    under the path, whatever the session can see: one it cannot see
+    still shadows the parent backend's keys, and those keys must stay
+    out of a walk's entries and a directory's total, or the size alone
+    reports the subtree. **Naming** a boundary needs only the mounts the
+    session may be told about: a member in an archive, a row in a tree,
+    a "different filesystem" warning all hand back a name, and a hidden
+    mount's name is the one thing the hide exists to withhold. A caller
+    that needs both (``tar`` prunes by one and warns by the other) reads
+    both fields.
+
+    Delivered as the ``mounts`` field of ``NamespaceView``, which rides
+    ``CommandOpts.ns``; a command opts in by reading ``opts.ns.mounts``.
     """
 
-    # Mount roots strictly under a path (a walker: tar, zip).
+    # Every mount root strictly under a path, for a caller avoiding one.
     descendants: MountDescendants
+    # The ones this session may be told about, for a caller naming one.
+    visible_descendants: MountDescendants
     # Whether a path is a mount root itself.
     is_root: MountIsRoot
     # The mount serving a path, so a walker can tell "still mine" from
@@ -175,8 +195,8 @@ class LinkView:
     builder in the chain, and the generic; it reads another field off
     the view it already receives.
 
-    Delivered as the ``links`` field of ``NamespaceView``; a command
-    opts in by naming an ``ns`` parameter.
+    Delivered as the ``links`` field of ``NamespaceView``, which rides
+    ``CommandOpts.ns``; a command opts in by reading ``opts.ns.links``.
     """
 
     # lstat one path (a link operand: `ls -l link`, `stat link`).
@@ -207,10 +227,12 @@ class NamespaceView:
     adds a field read, not a new keyword threaded through
     ``execute_cmd``, every builder, and the generic.
 
-    A command opts in by naming an ``ns`` parameter, which is what
-    makes the dispatcher hand it one. Fields default to None so a unit
-    test constructs only what it exercises; inside a workspace the
-    dispatcher fills all four.
+    Delivered as ``CommandOpts.ns`` to every command handler and as
+    ``CLIDoors.ns`` to a CLI verb; a command opts in by reading the
+    field it wants, so there is no signature for the dispatcher to
+    inspect and no registry to keep in step. Fields default to None so
+    a unit test constructs only what it exercises; inside a workspace
+    the dispatcher fills all five.
     """
 
     # The symlink facts; None when the namespace holds no links, which
@@ -222,3 +244,16 @@ class NamespaceView:
     stat_overlay: StatOverlay | None = None
     # Child names the namespace owes a directory (mounts and links).
     child_mounts: ChildMounts | None = None
+    # The workspace user (what whoami prints), None when no agent ever
+    # claimed the workspace. What an owner-rendering command prints in
+    # the owner column for an entry whose backend reports no uid.
+    user: str | None = None
+
+
+# Run one facade op as a session: ``(session_id, run) -> result``, None
+# naming the workspace's default session as it is when the op runs. The
+# workspace supplies it, so the facade binds the session the way a
+# shell line does without holding the session manager itself.
+SessionBind = Callable[
+    [str | None, Callable[[], Awaitable[Any]]], Awaitable[Any]
+]

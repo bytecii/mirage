@@ -15,7 +15,7 @@
 import json
 
 from mirage.commands.cli.types import CLIInvocation
-from mirage.commands.spec.types import FlagView
+from mirage.commands.spec.flag_view import FlagView
 from mirage.core.slack.config import SlackConfig
 from mirage.core.slack.pins import unpin_message as unpin_message_core
 from mirage.io.stream import yield_bytes
@@ -23,13 +23,15 @@ from mirage.io.types import ByteSource, IOResult
 
 
 async def unpin_message(
-        inv: CLIInvocation[SlackConfig]) -> tuple[ByteSource | None, IOResult]:
+    inv: CLIInvocation[SlackConfig],
+) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(inv.flags)
     result = await unpin_message_core(
         inv.config,
         fl.as_str("channel") or "",
         fl.as_str("ts") or "",
     )
-    out = json.dumps(result, ensure_ascii=False,
-                     separators=(",", ":")).encode()
+    out = json.dumps(
+        result, ensure_ascii=False, separators=(",", ":")
+    ).encode()
     return yield_bytes(out), IOResult()

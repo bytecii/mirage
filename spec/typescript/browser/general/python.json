@@ -1,18 +1,16 @@
 {
   "_meta": {
-    "by_resource": {
+    "by_vfs": {
       "": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
         "has_write": false
       }
     },
     "filetypes": [],
     "has_aggregate": false,
-    "has_provision": false,
     "has_write": false,
-    "resources": []
+    "vfs_names": []
   },
   "description": "Run Python on the workspace's bound runtime.",
   "options": [
@@ -116,6 +114,15 @@
       "long": "--version",
       "short": "-V",
       "type": "bool"
+    }
+  ],
+  "positional": [
+    {
+      "provided_by": [
+        "-c",
+        "-m"
+      ],
+      "type": "path"
     }
   ],
   "rest": {

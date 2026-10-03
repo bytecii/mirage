@@ -14,6 +14,7 @@
 
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import type { Shell, ShellAction, ShellResult, ShellOutputResult } from '@openai/agents'
+import { withRefusal } from '../io_text.ts'
 
 export class MirageShell implements Shell {
   constructor(private readonly ws: Workspace) {}
@@ -21,10 +22,10 @@ export class MirageShell implements Shell {
   async run(action: ShellAction): Promise<ShellResult> {
     const output: ShellOutputResult[] = []
     for (const cmd of action.commands) {
-      const io = await this.ws.execute(cmd)
+      const io = await this.ws.shell(cmd)
       output.push({
         stdout: io.stdoutText,
-        stderr: io.stderrText,
+        stderr: withRefusal(io.stderrText, io.refusal),
         outcome: { type: 'exit', exitCode: io.exitCode },
       })
     }

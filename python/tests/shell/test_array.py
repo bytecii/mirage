@@ -1,8 +1,20 @@
-from mirage.shell.array import (array_append, array_count, array_extent,
-                                array_get, array_has, array_indices, array_set,
-                                array_slice, array_unset, array_values,
-                                build_assoc_literal, build_indexed_literal,
-                                keyed_word, make_array)
+import asyncio
+
+from mirage.shell.array import (
+    array_count,
+    array_extent,
+    array_get,
+    array_has,
+    array_indices,
+    array_set,
+    array_slice,
+    array_unset,
+    array_values,
+    build_assoc_literal,
+    build_indexed_literal,
+    keyed_word,
+    make_array,
+)
 
 
 def test_make_array_is_dense_from_zero():
@@ -53,21 +65,6 @@ def test_unset_out_of_range_is_a_no_op():
     array_unset(arr, 5)
     array_unset(arr, -1)
     assert arr == ["x"]
-
-
-def test_append_starts_at_the_extent():
-    arr = make_array(["x", "y", "z"])
-    array_unset(arr, 1)
-    array_append(arr, ["w"])
-    assert arr == ["x", None, "z", "w"]
-    assert array_indices(arr) == [0, 2, 3]
-
-
-def test_append_refills_a_trailing_hole():
-    arr = make_array(["x", "y", "z"])
-    array_unset(arr, 2)
-    array_append(arr, ["w"])
-    assert arr == ["x", "y", "w"]
 
 
 def test_set_reassigns_a_hole():
@@ -128,13 +125,19 @@ def test_keyed_word():
     assert keyed_word("[a]=x]=y") == ("a", "x]=y")
 
 
+async def _int_of(text: str) -> int:
+    return int(text)
+
+
 def test_build_indexed_literal_places_and_continues():
-    built = build_indexed_literal(None, ["[3]=x", "y", "[1]=z"], False,
-                                  lambda t: int(t))
+    built = asyncio.run(
+        build_indexed_literal(None, ["[3]=x", "y", "[1]=z"], False, _int_of)
+    )
     assert built == [None, "z", None, "x", "y"]
     # `+=` starts the cursor at the extent; last index wins.
-    appended = build_indexed_literal(["a"], ["b", "[0]=A"], True,
-                                     lambda t: int(t))
+    appended = asyncio.run(
+        build_indexed_literal(["a"], ["b", "[0]=A"], True, _int_of)
+    )
     assert appended == ["A", "b"]
 
 

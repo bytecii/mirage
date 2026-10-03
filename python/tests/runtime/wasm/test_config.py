@@ -16,7 +16,7 @@ import pytest
 
 from mirage.runtime.config import RuntimeConfig
 from mirage.runtime.wasm.config import WasmFsConfig
-from mirage.runtime.wasm.vfs import WasmVFS
+from mirage.runtime.wasm.view import WasmView
 
 
 def test_defaults_to_no_build_directory():
@@ -24,8 +24,10 @@ def test_defaults_to_no_build_directory():
 
 
 def test_coerces_a_dict():
-    assert WasmFsConfig.coerce({"host_root": "/opt/wasi"}).host_root == \
-        "/opt/wasi"
+    assert (
+        WasmFsConfig.coerce({"host_root": "/opt/wasi"}).host_root
+        == "/opt/wasi"
+    )
 
 
 def test_unknown_field_fails_loud():
@@ -41,5 +43,5 @@ def test_inherits_the_runtime_config_base():
 
 
 def test_filesystem_accepts_the_dict_form_directly():
-    fs = WasmVFS({"host_root": "/opt/wasi"})
+    fs = WasmView({"host_root": "/opt/wasi"})
     assert fs.config == WasmFsConfig(host_root="/opt/wasi")

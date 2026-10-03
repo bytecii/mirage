@@ -12,51 +12,73 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { resourceStateRequiresOverride } from '@struktoai/mirage-core/resource/secrets'
+import { vfsStateRequiresOverride } from '@struktoai/mirage-core/vfs/secrets'
 import { toStateDict } from '@struktoai/mirage-core/workspace/snapshot/state'
 import type { WorkspaceStateDict } from '@struktoai/mirage-core/workspace/snapshot/types'
 import { normMountPrefix } from '@struktoai/mirage-core/workspace/snapshot/utils'
 import type { Workspace as CoreWorkspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
-import type { Resource } from '@struktoai/mirage-core/resource/base'
-import { Workspace, buildResource } from '@struktoai/mirage-node'
+import type { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+import { Mount } from '@struktoai/mirage-core/workspace/mount/spec'
+import type { SecretEntries } from '@struktoai/mirage-core/secrets/config'
+import { resolveSourcesFor } from '@struktoai/mirage-core/secrets/sources'
+import { Workspace, buildVfs } from '@struktoai/mirage-node'
 
 interface OverrideMountBlock {
-  resource: string
+  vfs: string
   config?: Record<string, unknown>
 }
 
 export interface OverrideShape {
   mounts?: Record<string, OverrideMountBlock>
+  /** `secrets:` declarations for the restored env pointers. */
+  secrets?: SecretEntries
 }
 
-export async function buildOverrideResources(
+/**
+ * Build the mounts an override supplies, against the declarations the
+ * new workspace will run with.
+ *
+ * Shared by the clone and load doors, which both take the same
+ * `mounts: {<prefix>: {VFS, config}}` shape. An override mount
+ * reads a pointer the way a yaml one does, so it is built against those
+ * declarations, which are built only when an override config names one:
+ * an override that swaps a RAM mount never reads a bootstrap file.
+ */
+export async function buildOverrideMounts(
   override: OverrideShape | null,
-): Promise<Record<string, Resource>> {
+  declared: unknown,
+): Promise<Record<string, BaseVFS | Mount>> {
   const mounts = override?.mounts
   if (mounts === undefined) return {}
-  const out: Record<string, Resource> = {}
-  for (const [prefix, block] of Object.entries(mounts)) {
-    out[normMountPrefix(prefix)] = await buildResource(block.resource, block.config ?? {})
+  const blocks = Object.entries(mounts)
+  const sources = await resolveSourcesFor(
+    declared,
+    blocks.map(([, block]) => block.config ?? {}),
+  )
+  const out: Record<string, Mount> = {}
+  for (const [prefix, block] of blocks) {
+    const vfs = await buildVfs(block.vfs, block.config ?? {}, sources)
+    out[normMountPrefix(prefix)] = new Mount(vfs, { vfsRef: block.vfs })
   }
   return out
 }
 
-function existingRedactedResources(
+function existingRedactedMounts(
   src: CoreWorkspace,
   state: WorkspaceStateDict,
   skip: Set<string>,
-): Record<string, Resource> {
-  const prefixToResource: Record<string, Resource> = {}
+): Record<string, BaseVFS> {
+  const prefixToVfs: Record<string, BaseVFS> = {}
   for (const m of src.mounts()) {
-    prefixToResource[normMountPrefix(m.prefix)] = m.resource
+    prefixToVfs[normMountPrefix(m.prefix)] = m.vfs
   }
-  const out: Record<string, Resource> = {}
+  const out: Record<string, BaseVFS> = {}
   for (const m of state.mounts) {
     const prefix = normMountPrefix(m.prefix)
     if (skip.has(prefix)) continue
-    const resource = prefixToResource[prefix]
-    if (resource !== undefined && resourceStateRequiresOverride(m.resource_state)) {
-      out[prefix] = resource
+    const vfs = prefixToVfs[prefix]
+    if (vfs !== undefined && vfsStateRequiresOverride(m.vfs_state)) {
+      out[prefix] = vfs
     }
   }
   return out
@@ -66,9 +88,15 @@ export async function cloneWorkspaceWithOverride(
   src: CoreWorkspace,
   override: OverrideShape | null,
 ): Promise<Workspace> {
-  const overrideResources = await buildOverrideResources(override)
   const state = await toStateDict(src)
-  const existing = existingRedactedResources(src, state, new Set(Object.keys(overrideResources)))
-  const merged = { ...existing, ...overrideResources }
-  return Workspace.fromState(state, {}, merged)
+  // Same-process, so the declarations travel with the clone the way a
+  // reused remote VFS does: the state carries the env pointers
+  // but never the `secrets:` block behind them. An override naming its
+  // own wins, the way a mount override does, so a staging clone does
+  // not keep reading production accounts.
+  const secrets = override?.secrets ?? src.declaredSources
+  const overrideMounts = await buildOverrideMounts(override, secrets)
+  const existing = existingRedactedMounts(src, state, new Set(Object.keys(overrideMounts)))
+  const merged = { ...existing, ...overrideMounts }
+  return Workspace.fromState(state, { secrets }, merged)
 }

@@ -13,12 +13,42 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '../../../../../types.ts'
-import { cpGeneric, parseCpFlags } from '../../cp.ts'
+import { cpGeneric, parseFlags } from '../../cp.ts'
 import type { CrossResult, DispatchFn } from '../types.ts'
 import { flatten, readBytesOp, readdirOp, statOp } from '../utils.ts'
 import type { FlagValue } from '../../../../spec/types.ts'
-import { FlagView } from '../../../../spec/types.ts'
+import type { LinkView, MountView, NamespaceView } from '../../../../../ops/types.ts'
+import { FlagView } from '../../../../spec/flag_view.ts'
 import { specOf } from '../../../../spec/builtins.ts'
+import { rstripSlash } from '../../../../../utils/slash.ts'
+
+// List a directory for cp -x: a mount root below the operands is empty, so
+// the copy makes the mount point and reads nothing on the other filesystem,
+// as GNU's --one-file-system does.
+function ownFilesystem(
+  readdir: (p: PathSpec) => Promise<string[]>,
+  mounts: MountView,
+  starts: ReadonlySet<string>,
+  path: PathSpec,
+): Promise<string[]> {
+  if (!starts.has(path.virtual) && mounts.isRoot(path.virtual)) return Promise.resolve([])
+  return readdir(path)
+}
+
+// The links below a directory that cp -x reaches: none under a mount root its
+// listing leaves empty, at or below the directory.
+function ownLinks(
+  links: LinkView,
+  mounts: MountView,
+  starts: ReadonlySet<string>,
+  directory: string,
+): ReturnType<LinkView['subtree']> {
+  const below = `${rstripSlash(directory)}/`
+  return links.subtree(directory).filter(([virtual]) => {
+    const root = rstripSlash(mounts.rootOf(virtual)) || '/'
+    return starts.has(root) || !`${root}/`.startsWith(below)
+  })
+}
 
 // Copy operands that span mounts via the shared generic cp. Pure wiring: the
 // generic runs in its primitive (no native copy) mode, reading from the
@@ -31,23 +61,42 @@ export async function runCp(
   // Maps an operand to its storage identity so two prefixes over one
   // store compare equal.
   storageKey?: (path: PathSpec) => string,
+  // The namespace's links, which a copy that does not follow them recreates
+  // by name.
+  ns?: NamespaceView,
+  // The working directory a typed link source resolves against.
+  cwd = '/',
 ): Promise<CrossResult> {
   const flat = flatten(scopes)
   const stat = statOp(dispatch)
   const readBytes = readBytesOp(dispatch)
-  const readdir = readdirOp(dispatch)
+  const fl = new FlagView(flagKwargs, specOf('cp'))
+  const mounts = fl.asBool('one_file_system') ? ns?.mounts : undefined
+  const starts = new Set(scopes.map((s) => s.virtual))
+  const relayed = readdirOp(dispatch)
+  const readdir: typeof relayed =
+    mounts === undefined ? relayed : (p) => ownFilesystem(relayed, mounts, starts, p)
+  const nsLinks = ns?.links
+  const links: LinkView | undefined =
+    mounts === undefined || nsLinks === undefined
+      ? nsLinks
+      : { ...nsLinks, subtree: (d) => ownLinks(nsLinks, mounts, starts, d) }
   const write = async (p: PathSpec, data: Uint8Array): Promise<void> => {
     await dispatch('write', p, [data])
   }
   const mkdir = async (p: PathSpec): Promise<void> => {
     await dispatch('mkdir', p)
   }
+  const strategy = { readBytes, write, mkdir, readdir }
   return cpGeneric(
     flat,
     stat,
-    { readBytes, write, mkdir, readdir },
-    parseCpFlags(new FlagView(flagKwargs, specOf('cp'))),
+    strategy,
+    parseFlags(fl),
     undefined,
     storageKey,
+    undefined,
+    undefined,
+    links === undefined ? undefined : { links, dispatch, cwd, relay: strategy, relayStat: stat },
   )
 }

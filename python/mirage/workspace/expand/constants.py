@@ -29,72 +29,76 @@ INERT_CLOSE = "\x01"
 NUM_SEQ = re.compile(r"^(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?$")
 CHAR_SEQ = re.compile(r"^([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?$")
 
-# Unquoted expansions whose result splits into words on whitespace.
-SPLIT_TYPES = frozenset({
-    NT.SIMPLE_EXPANSION,
-    NT.EXPANSION,
-})
-
 # Node types that may carry a brace-expandable word.
-BRACE_WORD_TYPES = frozenset({
-    NT.CONCATENATION,
-    NT.BRACE_EXPRESSION,
-})
+BRACE_WORD_TYPES = frozenset(
+    {
+        NT.CONCATENATION,
+        NT.BRACE_EXPRESSION,
+    }
+)
 
 # Children of a brace word whose raw text joins the template as
 # literal, brace-eligible text; everything else expands first and
 # joins as an inert atom.
-BRACE_LITERAL_TYPES = frozenset({
-    NT.WORD,
-    NT.NUMBER,
-    NT.BRACE_EXPRESSION,
-})
+BRACE_LITERAL_TYPES = frozenset(
+    {
+        NT.WORD,
+        NT.NUMBER,
+        NT.BRACE_EXPRESSION,
+    }
+)
 
 # Arithmetic operator tokens from tree-sitter that pass through as-is
 # when the expression text is reconstructed for the shared evaluator
 # (mirage.shell.arith).
-ARITH_OPERATORS = frozenset({
-    "+",
-    "-",
-    "*",
-    "/",
-    "%",
-    "**",
-    "==",
-    "!=",
-    "<",
-    ">",
-    "<=",
-    ">=",
-    "<<",
-    ">>",
-    "&",
-    "|",
-    "^",
-    "~",
-    "&&",
-    "||",
-    "!",
-    "?",
-    ":",
-    "(",
-    ")",
-    ",",
-    "=",
-    "+=",
-    "-=",
-    "*=",
-    "/=",
-    "%=",
-    "<<=",
-    ">>=",
-    "&=",
-    "^=",
-    "|=",
-    "++",
-    "--",
-})
+ARITH_OPERATORS = frozenset(
+    {
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "**",
+        "==",
+        "!=",
+        "<",
+        ">",
+        "<=",
+        ">=",
+        "<<",
+        ">>",
+        "&",
+        "|",
+        "^",
+        "~",
+        "&&",
+        "||",
+        "!",
+        "?",
+        ":",
+        "(",
+        ")",
+        ",",
+        "=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "<<=",
+        ">>=",
+        "&=",
+        "^=",
+        "|=",
+        "++",
+        "--",
+    }
+)
 
-# Arithmetic delimiter tokens that mark the start/end of $((...)) and
+# Arithmetic delimiter tokens that mark the start/end of $((...)), $[...], and
 # the (( ... )) arithmetic command.
-ARITH_DELIMITERS = frozenset({"$((", "((", "))"})
+ARITH_DELIMITERS = frozenset({"$((", "((", "))", "$[", "]"})
+
+# What a backslash escapes in the word of a ``${v:-word}`` inside double
+# quotes: the double-quote set plus the closing brace.
+OPERAND_DQUOTE_ESCAPES = frozenset('$`"\\}')

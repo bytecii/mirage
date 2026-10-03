@@ -22,10 +22,10 @@ const S_IFREG = 0o100000
 
 export function stripPrefix(p: PathSpec): string {
   if (
-    mountPrefixOf(p.virtual, p.resourcePath) &&
-    p.virtual.startsWith(mountPrefixOf(p.virtual, p.resourcePath))
+    mountPrefixOf(p.virtual, p.vfsPath) &&
+    p.virtual.startsWith(mountPrefixOf(p.virtual, p.vfsPath))
   ) {
-    return p.virtual.slice(mountPrefixOf(p.virtual, p.resourcePath).length) || '/'
+    return p.virtual.slice(mountPrefixOf(p.virtual, p.vfsPath).length) || '/'
   }
   return p.virtual
 }
@@ -43,6 +43,24 @@ export function isNoSuchFile(err: unknown): boolean {
   if (typeof err !== 'object') return false
   const code = (err as { code?: unknown }).code
   return code === 2
+}
+
+// SSH_FX_PERMISSION_DENIED: the server's own access check refused the
+// request, which the walk reports as EACCES against the path it named.
+export function isPermissionDenied(err: unknown): boolean {
+  if (err === null || err === undefined) return false
+  if (typeof err !== 'object') return false
+  const code = (err as { code?: unknown }).code
+  return code === 3
+}
+
+// SFTP 3's one generic refusal (SSH_FX_FAILURE): the only vocabulary a
+// version-3 server has for a not-empty rmdir, among other refusals.
+export function isFailure(err: unknown): boolean {
+  if (err === null || err === undefined) return false
+  if (typeof err !== 'object') return false
+  const code = (err as { code?: unknown }).code
+  return code === 4
 }
 
 export function isDirectoryAttrs(attrs: { mode?: number }): boolean {

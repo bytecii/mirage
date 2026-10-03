@@ -12,11 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any
 
+import aiohttp
+
 from mirage.accessor.jaeger import JaegerAccessor
+from mirage.core.api.client import api_request
 
 TRACE_ID_RE = re.compile(r"^[0-9a-f]{16}$|^[0-9a-f]{32}$", re.IGNORECASE)
 
@@ -25,7 +29,6 @@ TRACE_ID_RE = re.compile(r"^[0-9a-f]{16}$|^[0-9a-f]{32}$", re.IGNORECASE)
 
 
 class JaegerApiError(Exception):
-
     def __init__(self, message: str, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -68,9 +71,36 @@ def _now_micros() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1_000_000)
 
 
-async def _get(accessor: JaegerAccessor,
-               endpoint: str,
-               params: dict[str, Any] | None = None) -> dict[str, Any]:
+def _error_of(resp: aiohttp.ClientResponse, text: str) -> Exception:
+    """Map a Jaeger error response to a JaegerApiError.
+
+    Args:
+        resp (aiohttp.ClientResponse): a response with status >= 400.
+        text (str): the response body.
+
+    Returns:
+        Exception: JaegerApiError carrying the API's message when the body
+            supplies one, the HTTP status otherwise.
+    """
+    message = f"Jaeger API error: HTTP {resp.status}"
+    try:
+        body = json.loads(text)
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        errors = body.get("errors")
+        if isinstance(errors, list) and errors:
+            first = errors[0]
+            if isinstance(first, dict) and first.get("msg"):
+                message = str(first["msg"])
+    return JaegerApiError(message, resp.status)
+
+
+async def _get(
+    accessor: JaegerAccessor,
+    endpoint: str,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Call the Jaeger query API and return the decoded body.
 
     Args:
@@ -84,21 +114,10 @@ async def _get(accessor: JaegerAccessor,
     Raises:
         JaegerApiError: the API reported an error status.
     """
-    response = await accessor.request(endpoint, params)
-    if response.status_code >= 400:
-        message = f"Jaeger API error: HTTP {response.status_code}"
-        try:
-            body = response.json()
-        except ValueError:
-            body = None
-        if isinstance(body, dict):
-            errors = body.get("errors")
-            if isinstance(errors, list) and errors:
-                first = errors[0]
-                if isinstance(first, dict) and first.get("msg"):
-                    message = str(first["msg"])
-        raise JaegerApiError(message, response.status_code)
-    payload = response.json()
+    url = f"{accessor.config.host.rstrip('/')}{endpoint}"
+    payload = await api_request(
+        "GET", url, error_of=_error_of, params=params, session=accessor.pool
+    )
     if not isinstance(payload, dict):
         raise JaegerApiError("Jaeger response must be a JSON object")
     return payload
@@ -122,8 +141,9 @@ async def fetch_services(accessor: JaegerAccessor) -> list[str]:
     return [str(name) for name in _data_list(payload)]
 
 
-async def fetch_operations(accessor: JaegerAccessor,
-                           service: str) -> list[dict[str, Any]]:
+async def fetch_operations(
+    accessor: JaegerAccessor, service: str
+) -> list[dict[str, Any]]:
     """List operations recorded for a service.
 
     An unknown service yields an empty list rather than an error, so callers
@@ -172,8 +192,9 @@ async def fetch_traces(
     return [row for row in _data_list(payload) if isinstance(row, dict)]
 
 
-async def fetch_trace(accessor: JaegerAccessor,
-                      trace_id: str) -> dict[str, Any]:
+async def fetch_trace(
+    accessor: JaegerAccessor, trace_id: str
+) -> dict[str, Any]:
     """Fetch one trace by id.
 
     Args:

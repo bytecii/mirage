@@ -12,26 +12,28 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { makeVar, VarAttr } from '../../shell/variable.ts'
+import { makeVar, VarAttr, withValue } from '../../shell/variable.ts'
 import { seedVar, setAttr } from './state.ts'
-import { varsFromEnv } from './session.ts'
+import { varsFromEntries, varsFromEnv, varsFromFields, varsToFields } from './session.ts'
 import { describe, expect, it } from 'vitest'
-import { Session } from './session.ts'
+import { SessionState } from './session.ts'
 import { MountMode } from '../../types.ts'
+import type { AdmissionRules, Decision } from '../../policy/types.ts'
+import { Outcome, Scope } from '../../policy/types.ts'
 
-describe('Session', () => {
+describe('SessionState', () => {
   it('defaults cwd=/ and an env holding only the seeded $PWD', () => {
-    const s = new Session({ sessionId: 'x' })
+    const s = new SessionState({ sessionId: 'x' })
     expect(s.cwd).toBe('/')
     // bash exports $PWD from startup, so even a session that never ran
-    // `cd` has one.
-    expect(s.env).toEqual({ PWD: '/' })
+    // `cd` has one, a PATH when the environment gives none, and IFS.
+    expect(s.env).toEqual({ PWD: '/', PATH: '/usr/bin', IFS: ' \t\n' })
     expect(s.functions).toEqual({})
     expect(s.lastExitCode).toBe(0)
   })
 
   it('cwd and env are mutable', () => {
-    const s = new Session({ sessionId: 'x' })
+    const s = new SessionState({ sessionId: 'x' })
     s.cwd = '/data'
     seedVar(s, 'FOO', 'bar')
     expect(s.cwd).toBe('/data')
@@ -39,16 +41,16 @@ describe('Session', () => {
   })
 
   it('toJSON includes only the serializable fields, snake_case like Python', () => {
-    const s = new Session({ sessionId: 'x', cwd: '/a', vars: varsFromEnv({ K: 'V' }) })
+    const s = new SessionState({ sessionId: 'x', cwd: '/a', vars: varsFromEnv({ K: 'V' }) })
     const json = s.toJSON()
     expect(json).toEqual({
       session_id: 'x',
       cwd: '/a',
-      env: { K: 'V', PWD: '/a' },
+      env: { K: 'V', PWD: '/a', PATH: '/usr/bin', IFS: ' \t\n' },
       // The attributes ride beside the values rather than being guessed
       // on the way back in: `varsFromEnv` exports what it seeds, so both
-      // names carry `x` here, and a plain `Y=1` would carry no entry at
-      // all and restore unexported.
+      // names carry `x` here, while the seeded PATH, like a plain `Y=1`,
+      // carries no entry at all and restores unexported.
       var_attrs: { K: 'x', PWD: 'x' },
       created_at: s.createdAt,
       generation: 0,
@@ -58,8 +60,8 @@ describe('Session', () => {
   })
 
   it('fromJSON round-trips', () => {
-    const original = new Session({ sessionId: 'x', cwd: '/a', vars: varsFromEnv({ K: 'V' }) })
-    const restored = Session.fromJSON(
+    const original = new SessionState({ sessionId: 'x', cwd: '/a', vars: varsFromEnv({ K: 'V' }) })
+    const restored = SessionState.fromJSON(
       original.toJSON() as {
         session_id: string
         cwd: string
@@ -69,11 +71,11 @@ describe('Session', () => {
     )
     expect(restored.sessionId).toBe('x')
     expect(restored.cwd).toBe('/a')
-    expect(restored.env).toEqual({ K: 'V', PWD: '/a' })
+    expect(restored.env).toEqual({ K: 'V', PWD: '/a', PATH: '/usr/bin', IFS: ' \t\n' })
   })
 
   it('round-trips mountModes through toJSON/fromJSON', () => {
-    const original = new Session({
+    const original = new SessionState({
       sessionId: 'x',
       mountModes: new Map([
         ['/s3', MountMode.READ],
@@ -82,23 +84,72 @@ describe('Session', () => {
     })
     const json = original.toJSON()
     expect(json.mount_modes).toEqual({ '/s3': 'read', '/scratch': 'write' })
-    const restored = Session.fromJSON(
+    const restored = SessionState.fromJSON(
       json as { session_id: string; mount_modes?: Record<string, MountMode> | null },
     )
     expect(restored.mountModes?.get('/s3')).toBe(MountMode.READ)
     expect(restored.mountModes?.get('/scratch')).toBe(MountMode.WRITE)
   })
 
+  it('round-trips the profile name and omits it when none', () => {
+    expect('profile' in new SessionState({ sessionId: 'a' }).toJSON()).toBe(false)
+    const original = new SessionState({ sessionId: 'rt', profile: 'admin' })
+    const json = original.toJSON()
+    expect(json.profile).toBe('admin')
+    expect(
+      SessionState.fromJSON(json as { session_id: string; profile?: string | null }).profile,
+    ).toBe('admin')
+    expect(original.fork().profile).toBe('admin')
+  })
+
   it('toJSON omits mount_modes when unrestricted', () => {
-    const s = new Session({ sessionId: 'x' })
+    const s = new SessionState({ sessionId: 'x' })
     expect('mount_modes' in s.toJSON()).toBe(false)
-    expect(Session.fromJSON({ session_id: 'x' }).mountModes).toBeNull()
+    expect(SessionState.fromJSON({ session_id: 'x' }).mountModes).toBeNull()
+  })
+
+  it('round-trips the path axis through toJSON/fromJSON', () => {
+    const original = new SessionState({
+      sessionId: 'x',
+      shownPaths: {
+        entries: [
+          { path: '/repo/public', mode: MountMode.READ },
+          { path: '/repo/notes', mode: null },
+        ],
+      },
+      hideReasons: [{ patterns: ['/repo/vendor'], reason: 'licensing noise' }],
+    })
+    const json = original.toJSON()
+    expect(json.shown_paths).toEqual({
+      entries: [{ path: '/repo/public', mode: 'read' }, { path: '/repo/notes' }],
+    })
+    expect(json.hide_reasons).toEqual([{ patterns: ['/repo/vendor'], reason: 'licensing noise' }])
+    const restored = SessionState.fromJSON(
+      json as {
+        session_id: string
+        shown_paths?: { entries?: { path: string; mode?: MountMode }[] } | null
+        hide_reasons?: { patterns?: string[]; reason?: string }[] | null
+      },
+    )
+    expect(restored.shownPaths).toEqual(original.shownPaths)
+    expect(restored.hideReasons).toEqual(original.hideReasons)
+    const forked = restored.fork({ sessionId: 'y' })
+    expect(forked.shownPaths).toEqual(original.shownPaths)
+    expect(forked.hideReasons).toEqual(original.hideReasons)
+  })
+
+  it('toJSON omits the path axis when the document states none', () => {
+    const s = new SessionState({ sessionId: 'x' })
+    expect('shown_paths' in s.toJSON()).toBe(false)
+    expect('hide_reasons' in s.toJSON()).toBe(false)
+    expect(SessionState.fromJSON({ session_id: 'x' }).shownPaths).toBeNull()
+    expect(SessionState.fromJSON({ session_id: 'x' }).hideReasons).toEqual([])
   })
 })
 
-describe('Session.fork', () => {
+describe('SessionState.fork', () => {
   it('copies every field, including mountModes and shellOptions', () => {
-    const original = new Session({
+    const original = new SessionState({
       sessionId: 'orig',
       cwd: '/disk',
       mountModes: new Map([
@@ -118,7 +169,7 @@ describe('Session.fork', () => {
     const forked = original.fork({})
     expect(forked.sessionId).toBe('orig')
     expect(forked.cwd).toBe('/disk')
-    expect(forked.env).toEqual({ FOO: 'bar', PWD: '/disk' })
+    expect(forked.env).toEqual({ FOO: 'bar', PWD: '/disk', PATH: '/usr/bin', IFS: ' \t\n' })
     expect(forked.mountModes).toBe(original.mountModes)
     expect(forked.shellOptions).toEqual({ errexit: true })
     expect(forked.readonlyVars.has('HOME')).toBe(true)
@@ -128,7 +179,7 @@ describe('Session.fork', () => {
   })
 
   it('applies overrides without mutating the original', () => {
-    const original = new Session({
+    const original = new SessionState({
       sessionId: 'orig',
       cwd: '/disk',
       vars: varsFromEnv({ FOO: 'bar' }),
@@ -136,16 +187,16 @@ describe('Session.fork', () => {
     const forked = original.fork({ cwd: '/ram', vars: varsFromEnv({ BAZ: 'qux' }) })
     expect(forked.cwd).toBe('/ram')
     // $PWD follows the caller-supplied cwd rather than staying stale.
-    expect(forked.env).toEqual({ BAZ: 'qux', PWD: '/ram' })
+    expect(forked.env).toEqual({ BAZ: 'qux', PWD: '/ram', PATH: '/usr/bin', IFS: ' \t\n' })
     expect(original.cwd).toBe('/disk')
-    expect(original.env).toEqual({ FOO: 'bar', PWD: '/disk' })
+    expect(original.env).toEqual({ FOO: 'bar', PWD: '/disk', PATH: '/usr/bin', IFS: ' \t\n' })
   })
 
   // A caller-supplied cwd has no typed spelling behind it, so carrying the
   // source's logical name over would make the fork's pwd describe a
   // directory it is not in — the bug an `execute({cwd})` call hit.
   it('drops the logical cwd when the caller overrides cwd', () => {
-    const original = new Session({
+    const original = new SessionState({
       sessionId: 'orig',
       cwd: '/data/deep/real',
       logicalCwd: '/data/lk',
@@ -155,13 +206,13 @@ describe('Session.fork', () => {
   })
 
   it('keeps an explicitly supplied logical cwd alongside a cwd override', () => {
-    const original = new Session({ sessionId: 'orig', cwd: '/a' })
+    const original = new SessionState({ sessionId: 'orig', cwd: '/a' })
     const forked = original.fork({ cwd: '/data/deep/real', logicalCwd: '/data/lk' })
     expect(forked.logicalCwd).toBe('/data/lk')
   })
 
   it('deep-copies mutable containers so mutations on the fork do not leak', () => {
-    const original = new Session({
+    const original = new SessionState({
       sessionId: 'orig',
       vars: { FOO: makeVar('bar'), A: makeVar(['1']) },
     })
@@ -175,7 +226,7 @@ describe('Session.fork', () => {
 
 describe('ownRecord', () => {
   it('session records treat prototype-colliding names as ordinary keys', () => {
-    const session = new Session({ sessionId: 's' })
+    const session = new SessionState({ sessionId: 's' })
     seedVar(session, '__proto__', '5')
     expect(session.env.__proto__).toBe('5')
     expect(Object.getPrototypeOf(session.env)).toBe(null)
@@ -186,7 +237,7 @@ describe('ownRecord', () => {
   })
 
   it('fork keeps the null prototype and copies prototype-named entries', () => {
-    const session = new Session({ sessionId: 's' })
+    const session = new SessionState({ sessionId: 's' })
     seedVar(session, '__proto__', '5')
     const forked = session.fork()
     expect(forked.env.__proto__).toBe('5')
@@ -202,11 +253,11 @@ describe('a stored session keeps its attributes', () => {
     // `fromJSON` read `env` as a process environment, so one flush and
     // reload turned a plain `X=hello` into an exported one and shipped it
     // to every child runtime.
-    const s = new Session({ sessionId: 's1' })
+    const s = new SessionState({ sessionId: 's1' })
     seedVar(s, 'PLAIN', 'hello')
     s.vars.EXPO = makeVar('world', new Set([VarAttr.Export]))
     s.vars.MARKED = makeVar(null, new Set([VarAttr.Readonly]))
-    const back = Session.fromJSON(s.toJSON() as Parameters<typeof Session.fromJSON>[0])
+    const back = SessionState.fromJSON(s.toJSON() as Parameters<typeof SessionState.fromJSON>[0])
     expect(back.vars.PLAIN?.attrs.size).toBe(0)
     expect(back.vars.PLAIN?.value).toBe('hello')
     expect([...(back.vars.EXPO?.attrs ?? [])]).toEqual([VarAttr.Export])
@@ -219,7 +270,7 @@ describe('a stored session keeps its attributes', () => {
     // values and no letters. That shape *is* a process environment, so
     // every name in it is exported -- which is what `ws.env = {...}` and
     // a cross-language handoff both mean.
-    const back = Session.fromJSON({ session_id: 'x', env: { A: '1' } })
+    const back = SessionState.fromJSON({ session_id: 'x', env: { A: '1' } })
     expect([...(back.vars.A?.attrs ?? [])]).toEqual([VarAttr.Export])
   })
 
@@ -228,20 +279,207 @@ describe('a stored session keeps its attributes', () => {
     // with nothing in it. Written only when non-empty, a session whose
     // last attribute had been cleared serialized as a bare process
     // environment, and the reload re-exported everything it held.
-    const s = new Session({ sessionId: 's1' })
+    const s = new SessionState({ sessionId: 's1' })
     seedVar(s, 'X', 'secret')
     setAttr(s, 'PWD', VarAttr.Export, false)
     const json = s.toJSON() as { var_attrs: Record<string, string> }
     expect(json.var_attrs).toEqual({})
-    const back = Session.fromJSON(json as never)
+    const back = SessionState.fromJSON(json as never)
     expect(back.vars.X?.attrs.has(VarAttr.Export)).toBe(false)
   })
 
   it('carries an unset marked name through with no value', () => {
-    const s = new Session({ sessionId: 's1' })
+    const s = new SessionState({ sessionId: 's1' })
     s.vars.Z = makeVar(null, new Set([VarAttr.Export]))
     const json = s.toJSON() as { env: Record<string, string>; var_attrs: Record<string, string> }
     expect('Z' in json.env).toBe(false)
     expect(json.var_attrs.Z).toBe('x')
+  })
+})
+
+describe('the command tier round-trips through the record', () => {
+  it('writes the Python spelling and reads it back', () => {
+    const own: AdmissionRules = {
+      allow: ['ls', 'git log'],
+      ask: [{ reason: 'sign-off', commands: ['git push'], paths: ['/repo/*'], mount: '/repo' }],
+      deny: [{ reason: 'no', commands: ['rm'] }],
+    }
+    const s = new SessionState({ sessionId: 's1', commands: own })
+    const d = s.toJSON()
+    expect(d.commands).toEqual({
+      allow: ['ls', 'git log'],
+      ask: [{ reason: 'sign-off', commands: ['git push'], paths: ['/repo/*'], mount: '/repo' }],
+      deny: [{ reason: 'no', commands: ['rm'], paths: [] }],
+    })
+    const back = SessionState.fromJSON(d as Parameters<typeof SessionState.fromJSON>[0])
+    expect(back.commands).toEqual({
+      allow: ['ls', 'git log'],
+      ask: [{ reason: 'sign-off', commands: ['git push'], paths: ['/repo/*'], mount: '/repo' }],
+      deny: [{ reason: 'no', commands: ['rm'], paths: [], mount: '' }],
+    })
+    // Null means unstated and is not written; a tier without an allow
+    // list writes allow as null, distinct from an empty list.
+    expect('commands' in new SessionState({ sessionId: 's2' }).toJSON()).toBe(false)
+    const bare = new SessionState({
+      sessionId: 's3',
+      commands: { allow: null, ask: [], deny: [{ reason: 'x' }] },
+    })
+    expect((bare.toJSON().commands as { allow: unknown }).allow).toBeNull()
+    expect(bare.fork().commands).toBe(bare.commands)
+  })
+})
+
+describe('ledger records round-trip through the record', () => {
+  it('writes the Python spelling and reads it back', () => {
+    const rule = { reason: 'sign-off', commands: ['git push'], paths: [], mount: '' }
+    const base = {
+      sessionId: 's1',
+      agentId: 'a',
+      command: 'git',
+      cwd: '/repo',
+      paths: [],
+      reason: 'sign-off',
+      rule,
+      note: '',
+    }
+    const records: Decision[] = [
+      { ...base, id: 'd1', argv: ['push'], outcome: Outcome.ALLOW, scope: Scope.SESSION },
+      { ...base, id: 'd2', argv: ['push', '--force'], outcome: Outcome.DENY, scope: Scope.ONCE },
+    ]
+    const s = new SessionState({ sessionId: 's1', decisions: records })
+    const d = s.toJSON() as { decisions?: { id: string; outcome: string; scope: string }[] }
+    expect(d.decisions?.map((r) => [r.id, r.outcome, r.scope])).toEqual([
+      ['d1', 'allow', 'session'],
+      ['d2', 'deny', 'once'],
+    ])
+    const back = SessionState.fromJSON(d as Parameters<typeof SessionState.fromJSON>[0])
+    expect(back.decisions).toEqual(records)
+    // Nothing held writes nothing, and a fork carries what is held.
+    expect('decisions' in new SessionState({ sessionId: 's2' }).toJSON()).toBe(false)
+    expect(s.fork().decisions).toEqual(records)
+  })
+})
+
+describe('varsFromEntries', () => {
+  it('a bare string is the exported literal short form', () => {
+    const vars = varsFromEntries({ APP: 'integ' })
+    expect(vars.APP?.value).toBe('integ')
+    expect(vars.APP?.attrs).toEqual(new Set([VarAttr.Export]))
+    expect(vars.APP?.managed).toBeUndefined()
+  })
+
+  it('a literal entry compiles readonly and export attrs', () => {
+    const vars = varsFromEntries({ EDITOR: { value: 'vi', readonly: true, export: false } })
+    expect(vars.EDITOR?.value).toBe('vi')
+    expect(vars.EDITOR?.attrs).toEqual(new Set([VarAttr.Readonly]))
+  })
+
+  it('a managed entry is exported, unset, and carries the pointer', () => {
+    const vars = varsFromEntries({ TOKEN: { from: 'aws-sm', ref: 'prod/tokens', key: 'api' } })
+    const v = vars.TOKEN
+    expect(v?.value).toBeNull()
+    expect(v?.attrs).toEqual(new Set([VarAttr.Export]))
+    expect(v?.managed).toEqual({ source: 'aws-sm', ref: 'prod/tokens', key: 'api', eager: false })
+  })
+
+  it('key defaults to the variable name and eager parses', () => {
+    const vars = varsFromEntries({ TOKEN: { from: 'env', fetch: 'eager' } })
+    expect(vars.TOKEN?.managed).toEqual({ source: 'env', ref: '', key: 'TOKEN', eager: true })
+  })
+
+  it('an already-parsed entry passes back through', () => {
+    const entry = { from: 'env', ref: '', fetch: 'lazy' as const }
+    expect(varsFromEntries({ T: entry }).T?.managed?.source).toBe('env')
+  })
+
+  it('a bad entry throws naming the rule', () => {
+    expect(() => varsFromEntries({ X: { value: 'v', from: 'env' } })).toThrow(/not both/)
+  })
+})
+
+describe('managed serialization', () => {
+  function managedSession(value: string | null): SessionState {
+    const session = new SessionState({ sessionId: 's', cwd: '/' })
+    session.vars.TOKEN = {
+      value,
+      attrs: new Set([VarAttr.Export]),
+      managed: { source: 'aws-sm', ref: 'prod/tokens', key: 'api', eager: false },
+    }
+    return session
+  }
+
+  it('serializes the pointer, never the value', () => {
+    const data = managedSession('s3cr3t').toJSON()
+    expect(JSON.stringify(data)).not.toContain('s3cr3t')
+    expect((data.env as Record<string, string>).TOKEN).toBeUndefined()
+    expect((data.var_attrs as Record<string, string>).TOKEN).toBe('x')
+    expect(data.managed).toEqual({
+      TOKEN: { from: 'aws-sm', ref: 'prod/tokens', key: 'api' },
+    })
+  })
+
+  it('writes fetch only when eager', () => {
+    const session = new SessionState({ sessionId: 's', cwd: '/' })
+    session.vars.E = {
+      value: null,
+      attrs: new Set([VarAttr.Export]),
+      managed: { source: 'env', ref: '', key: 'E', eager: true },
+    }
+    const data = session.toJSON()
+    expect(data.managed).toEqual({ E: { from: 'env', ref: '', key: 'E', fetch: 'eager' } })
+  })
+
+  it('round-trips as declared-but-unfetched', () => {
+    const data = managedSession('s3cr3t').toJSON()
+    const restored = SessionState.fromJSON(data as Parameters<typeof SessionState.fromJSON>[0])
+    const v = restored.vars.TOKEN
+    expect(v?.value).toBeNull()
+    expect(v?.attrs).toEqual(new Set([VarAttr.Export]))
+    expect(v?.managed).toEqual({ source: 'aws-sm', ref: 'prod/tokens', key: 'api', eager: false })
+  })
+
+  it('discards a value a tampered payload smuggles into env', () => {
+    const data = managedSession(null).toJSON()
+    ;(data.env as Record<string, string>).TOKEN = 'smuggled'
+    const restored = SessionState.fromJSON(data as Parameters<typeof SessionState.fromJSON>[0])
+    expect(restored.vars.TOKEN?.value).toBeNull()
+    expect(restored.vars.TOKEN?.managed).not.toBeUndefined()
+  })
+})
+
+describe('varsToFields / varsFromFields', () => {
+  it('round trips the pointer, never a value', () => {
+    const table = varsFromEntries({
+      TOKEN: { from: 'aws-sm', ref: 'prod', key: 'api' },
+      MODE: 'prod',
+    })
+    const fields = varsToFields(table)
+    expect(fields.env).toEqual({ MODE: 'prod' })
+    expect(fields.managed).toEqual({ TOKEN: { from: 'aws-sm', ref: 'prod', key: 'api' } })
+    const restored = varsFromFields(fields)
+    expect(restored.TOKEN?.value).toBeNull()
+    expect(restored.TOKEN?.managed).toEqual({
+      source: 'aws-sm',
+      ref: 'prod',
+      key: 'api',
+      eager: false,
+    })
+    expect(restored.MODE).toEqual(table.MODE)
+  })
+
+  it('round trips eager', () => {
+    const table = varsFromEntries({ E: { from: 'aws-sm', ref: 'prod', fetch: 'eager' } })
+    const restored = varsFromFields(varsToFields(table))
+    expect(restored.E?.managed?.eager).toBe(true)
+  })
+
+  it('never writes a fetched value', () => {
+    const table = varsFromEntries({ T: { from: 'aws-sm', ref: 'prod' } })
+    const seeded = table.T
+    if (seeded === undefined) throw new Error('seeded var missing')
+    table.T = withValue(seeded, 'plain')
+    const fields = varsToFields(table)
+    expect(fields.env).toEqual({})
+    expect(varsFromFields(fields).T?.value).toBeNull()
   })
 })

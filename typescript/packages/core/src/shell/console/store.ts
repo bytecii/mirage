@@ -51,12 +51,11 @@ export interface ConsoleStore {
 
   /**
    * Resolve once the console holds a chunk after `seq`.
-   * Aborting rejects and releases this reader, leaving the producer running.
    *
    * Resolves immediately on a closed store, which is what keeps a reader
    * that re-arms from parking on a console nobody will write to again.
    */
-  wait(seq: number, signal?: AbortSignal): Promise<void>
+  wait(seq: number): Promise<void>
 
   /**
    * Release the store's resources.

@@ -17,7 +17,8 @@ import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
 import type { RuntimeOptions } from '@struktoai/mirage-core/runtime/types'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { DaytonaConfig } from './config.ts'
-import { DaytonaRuntime, type DaytonaSdk } from './runtime.ts'
+import { DaytonaRuntime } from './runtime.ts'
+import type { DaytonaSdk } from './sdk.ts'
 
 const DEC = new TextDecoder()
 
@@ -145,6 +146,6 @@ describe('DaytonaRuntime', () => {
   it("registers under the config name 'daytona'", () => {
     const runtime = buildRuntime('daytona', { config: { sandboxId: 'sb-live' } })
     expect(runtime).toBeInstanceOf(DaytonaRuntime)
-    expect(runtime.captures).toEqual(['*'])
+    expect(runtime.captures).toEqual(['@external'])
   })
 })

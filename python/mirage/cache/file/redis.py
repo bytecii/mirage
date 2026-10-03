@@ -18,16 +18,16 @@ from importlib.resources import files
 from typing import Any
 
 from mirage.cache.file.mixin import FileCacheMixin, validate_max_drain_bytes
-from mirage.cache.file.utils import (default_fingerprint, glob_escape,
-                                     parse_limit)
-from mirage.resource.redis.redis import RedisResource
+from mirage.cache.file.utils import glob_escape, parse_limit
+from mirage.cache.invalidation import Invalidation
+from mirage.utils.key_prefix import under_path
+from mirage.vfs.redis.redis import RedisVFS
 
 # Shipped next to this module; byte-identical to the TypeScript add.lua.
 ADD_LUA = (files("mirage.cache.file") / "add.lua").read_text(encoding="utf-8")
 
 
-class RedisFileCacheStore(RedisResource, FileCacheMixin):
-
+class RedisFileCacheStore(RedisVFS, FileCacheMixin):
     def __init__(
         self,
         cache_limit: str | int = "512MB",
@@ -47,6 +47,12 @@ class RedisFileCacheStore(RedisResource, FileCacheMixin):
         self._data_prefix = f"{key_prefix}data:"
         self._meta_prefix = f"{key_prefix}meta:"
         self.max_drain_bytes: int | None = max_drain_bytes
+        # Local invalidation discards a fill whose key was dropped while
+        # it was in flight. Dormant on this host: nothing suspends between
+        # the stamp and the check here (see `set`), so it is the shared
+        # cross-language contract and a guard against a future await
+        # rather than a window that can currently open.
+        self._invalidation = Invalidation()
         self._drain_tasks: dict[str, asyncio.Task[Any]] = {}
         self._add = self._cache_client.register_script(ADD_LUA)
 
@@ -66,17 +72,29 @@ class RedisFileCacheStore(RedisResource, FileCacheMixin):
         fingerprint: str | None = None,
         ttl: int | None = None,
     ) -> None:
-        if fingerprint is None:
-            fingerprint = default_fingerprint(data)
-        pipe = self._cache_client.pipeline()
-        dk = self._data_key(key)
-        mk = self._meta_key(key)
-        pipe.set(dk, data)
-        pipe.set(mk, fingerprint)
-        if ttl is not None:
-            pipe.expire(dk, ttl)
-            pipe.expire(mk, ttl)
-        await pipe.execute()
+        stamp = self._invalidation.enter(key)
+        try:
+            if self._invalidation.stale(key, stamp):
+                return
+            pipe = self._cache_client.pipeline()
+            dk = self._data_key(key)
+            mk = self._meta_key(key)
+            pipe.set(dk, data)
+            # Deleted, not left alone: redis expires the two keys
+            # independently and a re-set of an entry that carried a token
+            # would otherwise leave the old meta key describing the new
+            # bytes, which `is_fresh` would read as fresh.
+            if fingerprint:
+                pipe.set(mk, fingerprint)
+            else:
+                pipe.delete(mk)
+            if ttl is not None:
+                pipe.expire(dk, ttl)
+                if fingerprint:
+                    pipe.expire(mk, ttl)
+            await pipe.execute()
+        finally:
+            self._invalidation.leave(key)
 
     async def add(
         self,
@@ -85,20 +103,29 @@ class RedisFileCacheStore(RedisResource, FileCacheMixin):
         fingerprint: str | None = None,
         ttl: int | None = None,
     ) -> bool:
-        if fingerprint is None:
-            fingerprint = default_fingerprint(data)
-        # The background drain deliberately uses insert-only semantics: an
-        # older drain finishing late must not overwrite a newer cache fill.
-        # add.lua keeps the existence check, bytes, fingerprint and TTL in
-        # one Redis execution so shared-cache writers cannot interleave.
-        inserted = await self._add(
-            keys=[self._data_key(key),
-                  self._meta_key(key)],
-            args=[data, fingerprint, "" if ttl is None else str(ttl)],
-        )
-        return bool(inserted)
+        stamp = self._invalidation.enter(key)
+        try:
+            if self._invalidation.stale(key, stamp):
+                return False
+            # The background drain deliberately uses insert-only
+            # semantics: an older drain finishing late must not overwrite
+            # a newer cache fill. add.lua keeps the existence check, bytes,
+            # fingerprint and TTL in one Redis execution so shared-cache
+            # writers cannot interleave.
+            inserted = await self._add(
+                keys=[self._data_key(key), self._meta_key(key)],
+                args=[
+                    data,
+                    fingerprint or "",
+                    "" if ttl is None else str(ttl),
+                ],
+            )
+            return bool(inserted)
+        finally:
+            self._invalidation.leave(key)
 
     async def remove(self, key: str) -> None:
+        self._invalidation.invalidate(key)
         task = self._drain_tasks.pop(key, None)
         if task:
             task.cancel()
@@ -118,13 +145,19 @@ class RedisFileCacheStore(RedisResource, FileCacheMixin):
             fp = fp.decode()
         return fp == remote_fingerprint
 
+    async def is_unbounded(self, key: str) -> bool:
+        # Redis answers this natively and distinguishes the two cases
+        # that matter: -1 is present with no expiry, -2 is absent.
+        return await self._cache_client.ttl(self._data_key(key)) == -1
+
     async def clear(self) -> None:
+        self._invalidation.invalidate_all()
         for task in self._drain_tasks.values():
             task.cancel()
         self._drain_tasks.clear()
         for pattern in (
-                f"{self._data_prefix}*",
-                f"{self._meta_prefix}*",
+            f"{self._data_prefix}*",
+            f"{self._meta_prefix}*",
         ):
             keys: list[Any] = []
             async for k in self._cache_client.scan_iter(pattern):
@@ -132,15 +165,25 @@ class RedisFileCacheStore(RedisResource, FileCacheMixin):
             if keys:
                 await self._cache_client.delete(*keys)
 
-    async def evict_prefix(self, prefix: str) -> None:
-        for key in [k for k in self._drain_tasks if k.startswith(prefix)]:
+    async def evict_prefix(
+        self, prefix: str, *, excluded: tuple[str, ...] = ()
+    ) -> None:
+        self._invalidation.invalidate_all()
+        for key in [
+            k
+            for k in self._drain_tasks
+            if k.startswith(prefix)
+            and not any(under_path(k, p) for p in excluded)
+        ]:
             task = self._drain_tasks.pop(key)
             task.cancel()
         escaped = glob_escape(prefix)
         for base in (self._data_prefix, self._meta_prefix):
             keys: list[Any] = []
             async for k in self._cache_client.scan_iter(f"{base}{escaped}*"):
-                keys.append(k)
+                key = (k.decode() if isinstance(k, bytes) else k)[len(base) :]
+                if not any(under_path(key, p) for p in excluded):
+                    keys.append(k)
             if keys:
                 await self._cache_client.delete(*keys)
 

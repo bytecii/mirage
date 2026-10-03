@@ -19,7 +19,7 @@ import uuid
 from dotenv import load_dotenv
 
 from mirage import MountMode, Workspace
-from mirage.resource.dropbox import DropboxConfig, DropboxResource
+from mirage.vfs.dropbox import DropboxConfig, DropboxVFS
 
 load_dotenv(".env.development")
 
@@ -35,13 +35,13 @@ config = DropboxConfig(
     # plan with full-text search (Professional/Essentials/Business+).
     content_search=os.environ.get("DROPBOX_CONTENT_SEARCH") == "1",
 )
-backend = DropboxResource(config)
+backend = DropboxVFS(config)
 ws = Workspace({"/dropbox": backend}, mode=MountMode.WRITE)
 
 
 async def show(cmd: str, max_chars: int = 600) -> None:
     print(f"=== {cmd} ===")
-    result = await ws.execute(cmd)
+    result = await ws.shell(cmd)
     out = await result.stdout_str()
     if out:
         print(out[:max_chars] + ("..." if len(out) > max_chars else ""))
@@ -57,9 +57,8 @@ async def main() -> None:
     await show("find /dropbox -name '*.txt' | head -n 5")
     await show("du /dropbox/")
     print("=== not-found errors show the full virtual path ===")
-    result = await ws.execute("cat /dropbox/__nf_missing__.txt")
-    print(f"exit={result.exit_code}  "
-          f"{(await result.stderr_str()).strip()}")
+    result = await ws.shell("cat /dropbox/__nf_missing__.txt")
+    print(f"exit={result.exit_code}  {(await result.stderr_str()).strip()}")
 
     # ── write roundtrip (scoped to a unique folder, cleaned up) ──
     scratch = f"/dropbox/_mirage_example/{uuid.uuid4().hex[:8]}"

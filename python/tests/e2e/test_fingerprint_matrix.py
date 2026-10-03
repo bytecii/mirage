@@ -15,24 +15,24 @@
 import asyncio
 from contextlib import ExitStack
 
-from mirage.resource.s3 import S3Config, S3Resource
-from mirage.types import ConsistencyPolicy, MountMode
+from mirage.types import MountMode, ReadPolicy, ReadSpec
+from mirage.vfs.s3 import S3VFS, S3Config
 from mirage.workspace import Workspace
 from tests.e2e.s3_mock import patch_s3_multi
 
 
-def _make_ws(consistency: ConsistencyPolicy) -> Workspace:
+def _make_ws(policy: ReadPolicy) -> Workspace:
     config = S3Config(
         bucket="test-bucket",
         region="us-east-1",
         aws_access_key_id="fake",
         aws_secret_access_key="fake",
     )
-    resource = S3Resource(config)
+    vfs = S3VFS(config)
     return Workspace(
-        {"/data": (resource, MountMode.WRITE)},
+        {"/data": (vfs, MountMode.WRITE)},
         mode=MountMode.WRITE,
-        consistency=consistency,
+        read=ReadSpec(policy=policy),
     )
 
 
@@ -41,20 +41,21 @@ def test_s3_always_refetches_after_external_mutation():
     stack = ExitStack()
     stack.enter_context(patch_s3_multi({"test-bucket": store}))
     try:
-        ws = _make_ws(ConsistencyPolicy.ALWAYS)
+        ws = _make_ws(ReadPolicy.FRESH)
 
         async def run() -> tuple[bytes, bytes]:
-            io1 = await ws.execute("cat /data/file.txt")
+            io1 = await ws.shell("cat /data/file.txt")
             first = await io1.materialize_stdout()
             store["file.txt"] = b"v2"
-            io2 = await ws.execute("cat /data/file.txt")
+            io2 = await ws.shell("cat /data/file.txt")
             second = await io2.materialize_stdout()
             return first, second
 
         first, second = asyncio.run(run())
         assert first == b"v1"
         assert second == b"v2", (
-            "S3 ALWAYS must refetch after external write to the mocked store")
+            "S3 ALWAYS must refetch after external write to the mocked store"
+        )
     finally:
         stack.close()
 
@@ -64,19 +65,20 @@ def test_s3_lazy_serves_cache():
     stack = ExitStack()
     stack.enter_context(patch_s3_multi({"test-bucket": store}))
     try:
-        ws = _make_ws(ConsistencyPolicy.LAZY)
+        ws = _make_ws(ReadPolicy.BOUNDED)
 
         async def run() -> tuple[bytes, bytes]:
-            io1 = await ws.execute("cat /data/file.txt")
+            io1 = await ws.shell("cat /data/file.txt")
             first = await io1.materialize_stdout()
             store["file.txt"] = b"v2"
-            io2 = await ws.execute("cat /data/file.txt")
+            io2 = await ws.shell("cat /data/file.txt")
             second = await io2.materialize_stdout()
             return first, second
 
         first, second = asyncio.run(run())
         assert first == b"v1"
         assert second == b"v1", (
-            "S3 LAZY must serve cached bytes even after store mutation")
+            "S3 LAZY must serve cached bytes even after store mutation"
+        )
     finally:
         stack.close()

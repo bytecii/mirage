@@ -21,10 +21,13 @@ from mirage.types import PathSpec
 
 
 class _FakeManager:
-
     def __init__(self) -> None:
         self.writes: list[str] = []
         self.unlinks: list[str] = []
+        self.subtrees: list[str] = []
+
+    async def invalidate_ancestors(self, path: PathSpec) -> None:
+        pass
 
     async def invalidate_after_write(self, path: PathSpec) -> None:
         self.writes.append(path.mount_path)
@@ -32,11 +35,12 @@ class _FakeManager:
     async def invalidate_after_unlink(self, path: PathSpec) -> None:
         self.unlinks.append(path.mount_path)
 
+    async def invalidate_subtree(self, path: PathSpec) -> None:
+        self.subtrees.append(path.mount_path)
+
 
 def _spec(path: str) -> PathSpec:
-    return PathSpec(resource_path=path.lstrip("/"),
-                    virtual=path,
-                    directory="/")
+    return PathSpec(vfs_path=path.lstrip("/"), virtual=path, directory="/")
 
 
 @pytest.mark.asyncio
@@ -62,6 +66,6 @@ async def test_rename_evicts_both_identities(tmp_path):
         push_cache_manager(prev)
     # A replaced empty directory loses its own cached listing, not just
     # its parent's: both sides of a rename take the unlink flavor.
-    assert manager.unlinks == ["/src", "/dst"]
+    assert manager.subtrees == ["/src", "/dst"]
     assert manager.writes == []
     assert (tmp_path / "dst" / "f.txt").read_bytes() == b"x"

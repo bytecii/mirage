@@ -12,24 +12,20 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { UsageError } from '../../errors.ts'
 import { PathSpec, type ReaddirFn } from '../../../types.ts'
-import { rekey } from '../../../utils/key_prefix.ts'
+import { rekey, respelled } from '../../../utils/key_prefix.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
+import { argmatchError } from '../../spec/usage.ts'
+import { argmatch } from '../../spec/argmatch.ts'
 
-// GNU version-control names (each canonical control has a legacy alias).
-const BACKUP_CONTROLS: Readonly<Record<string, string>> = Object.freeze({
-  none: 'none',
-  off: 'none',
-  simple: 'simple',
-  never: 'simple',
-  existing: 'existing',
-  nil: 'existing',
-  numbered: 'numbered',
-  t: 'numbered',
-})
-
-export const DEFAULT_BACKUP_SUFFIX = '~'
+// GNU's version-control names as ARGMATCH candidates, aliases of one value on one
+// line, which is how gnulib's `argmatch_valid` prints `backup_args`.
+const BACKUP_ARGS: readonly (readonly string[])[] = [
+  ['none', 'off'],
+  ['simple', 'never'],
+  ['existing', 'nil'],
+  ['numbered', 't'],
+]
 
 const NUMBERED_SUFFIX = /^\.~(\d+)~$/
 
@@ -47,21 +43,22 @@ export function backupControl(
 ): string | null {
   const enabled = value !== undefined && value !== false
   if (!enabled && suffix === null) return null
-  if (typeof value === 'string') {
-    const control = BACKUP_CONTROLS[value]
-    if (control === undefined) {
-      throw new UsageError(
-        `${cmdName}: invalid argument '${value}' for 'backup type'\n` +
-          'Valid arguments are:\n' +
-          "  - 'none', 'off'\n" +
-          "  - 'simple', 'never'\n" +
-          "  - 'existing', 'nil'\n" +
-          "  - 'numbered', 't'\n" +
-          `Try '${cmdName} --help' for more information.`,
-        1,
-      )
+  // An EMPTY control is the default, not a refusal: gnulib's
+  // `xget_version` only calls argmatch when `version && *version`, so
+  // `cp --backup=` is `cp --backup` (measured on coreutils 9.4: exit 0,
+  // and it writes the `existing` backup). This is the one argmatch-shaped
+  // slot in the repo where the empty word is neither invalid nor
+  // ambiguous.
+  if (typeof value === 'string' && value !== '') {
+    // The canonical word of each class IS its control, so an ARGMATCH
+    // match answers the control directly: `--backup=e` is `existing`,
+    // while `--backup=n` spans none/never/nil/numbered and is ambiguous
+    // (both measured on coreutils 9.4).
+    const match = argmatch(value, BACKUP_ARGS)
+    if (!match.matched) {
+      throw argmatchError(cmdName, 'backup type', value, BACKUP_ARGS, 1, match.kind)
     }
-    return control
+    return match.word
   }
   return 'existing'
 }
@@ -69,18 +66,19 @@ export function backupControl(
 // A path next to `path` whose name carries an appended suffix (e.g. '~').
 export function siblingPath(path: PathSpec, appended: string): PathSpec {
   const virtual = rstripSlash(path.virtual) + appended
-  return PathSpec.fromStrPath(virtual, rekey(path.virtual, path.resourcePath, virtual))
+  return respelled(
+    PathSpec.fromStrPath(virtual, rekey(path.virtual, path.vfsPath, virtual)),
+    (rstripSlash(path.rawPath) || path.rawPath) + appended,
+  )
 }
 
 // The directory containing `path` on the same mount.
 export function parentPath(path: PathSpec): PathSpec {
   const strippedVirtual = rstripSlash(path.virtual)
   const virtual = strippedVirtual.slice(0, strippedVirtual.lastIndexOf('/')) || '/'
-  const strippedResource = rstripSlash(path.resourcePath)
-  const resource = strippedResource.includes('/')
-    ? strippedResource.slice(0, strippedResource.lastIndexOf('/'))
-    : ''
-  return PathSpec.fromStrPath(virtual, resource)
+  const strippedVfs = rstripSlash(path.vfsPath)
+  const vfs = strippedVfs.includes('/') ? strippedVfs.slice(0, strippedVfs.lastIndexOf('/')) : ''
+  return PathSpec.fromStrPath(virtual, vfs)
 }
 
 // Existing numbered-backup versions (`name.~N~`) next to a target. A missing

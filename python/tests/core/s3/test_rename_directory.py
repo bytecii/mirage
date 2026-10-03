@@ -19,10 +19,13 @@ import pytest
 
 from mirage.accessor.s3 import S3Accessor
 from mirage.core.s3.rename import rename
-from mirage.resource.s3 import S3Config
 from mirage.types import PathSpec
-from tests.e2e.s3_mock import (MultiBucketSession, patch_s3_multi,
-                               patch_s3_session)
+from mirage.vfs.s3 import S3Config
+from tests.e2e.s3_mock import (
+    MultiBucketSession,
+    patch_s3_multi,
+    patch_s3_session,
+)
 
 BUCKET = "test-bucket"
 
@@ -33,17 +36,16 @@ def _config(key_prefix: str | None = None) -> S3Config:
         region="us-east-1",
         aws_access_key_id="fake",
         aws_secret_access_key="fake",
-        **({
-            "key_prefix": key_prefix
-        } if key_prefix else {}),
+        **({"key_prefix": key_prefix} if key_prefix else {}),
     )
 
 
 def _spec(key: str) -> PathSpec:
-    return PathSpec(resource_path=key,
-                    virtual=f"/{key}",
-                    directory="/" +
-                    key.rsplit("/", 1)[0] if "/" in key else "/")
+    return PathSpec(
+        vfs_path=key,
+        virtual=f"/{key}",
+        directory="/" + key.rsplit("/", 1)[0] if "/" in key else "/",
+    )
 
 
 def _run(store: dict, config: S3Config, src: str, dst: str) -> None:

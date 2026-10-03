@@ -1,11 +1,10 @@
 {
   "_meta": {
-    "by_resource": {},
+    "by_vfs": {},
     "filetypes": [],
     "has_aggregate": false,
-    "has_provision": false,
     "has_write": false,
-    "resources": []
+    "vfs_names": []
   },
   "positional": [
     {

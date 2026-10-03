@@ -13,10 +13,18 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { UsageError } from '../errors.ts'
+import type { ArgmatchChoices, ArgmatchKind } from './argmatch.ts'
+import { quoteText } from '../quote.ts'
+import { gnuStrerror } from '../../utils/errors.ts'
 import {
+  IN_ORDER_OPERANDS,
   OLD_OPTION_EXIT,
+  OPERAND_EXIT,
   PYTHON_NAMES,
   pythonUsage,
+  READ_FAIL_EXIT,
+  READ_FAIL_EXIT_ISDIR,
+  RG_FLAG_NAMES,
   USAGE_EXIT,
   USAGE_HINT_PREFIX,
 } from './constants.ts'
@@ -25,6 +33,100 @@ import { CommandName } from './types.ts'
 /** GNU usage-error exit code for a command. */
 export function usageExitCode(cmdName: string): number {
   return USAGE_EXIT[cmdName] ?? 1
+}
+
+/** Exit code of a command refused on one operand before it ran. */
+export function operandExitCode(cmdName: string): number {
+  return OPERAND_EXIT[cmdName] ?? 1
+}
+
+/**
+ * The exit code for a command that could not read an operand.
+ *
+ * Read off the command, not off the errno, because that is how GNU's own
+ * codes fall; the errno is consulted only for the four commands that do
+ * answer a directory and a missing file differently. Mirrors the python
+ * `read_fail_exit`.
+ *
+ * Gated on READ_FAIL_CODES, and nothing wider: the tables are keyed by
+ * command and the executor's chokepoints catch everything a command can
+ * throw, so a loose gate makes them answer in the wrong voice. Two cases
+ * set the width. A bad script is not a filesystem error at all (`sed
+ * 's/o/O/0'` is exit 1, not sed's 2). And EACCES is as often a WRITE
+ * refusal as a read one (`sed -i` on a read-only backend is exit 1, not
+ * 4), which the chokepoint cannot tell apart. EACCES on a genuine read is
+ * the one case this leaves at 1 where GNU would answer the command's
+ * code; that is the safe side, and it is what the executor already did
+ * before the tables existed.
+ */
+const READ_FAIL_CODES: ReadonlySet<string> = new Set([
+  'ENOENT',
+  'EISDIR',
+  'ENOTDIR',
+  'EFBIG',
+  'ELOOP',
+])
+
+function readFailCode(cmdName: string, isDir: boolean): number {
+  if (isDir) {
+    const isdir = READ_FAIL_EXIT_ISDIR[cmdName]
+    if (isdir !== undefined) return isdir
+  }
+  return READ_FAIL_EXIT[cmdName] ?? 1
+}
+
+export function readFailExitCode(cmdName: string, err: unknown): number {
+  const code = (err as { code?: string }).code
+  if (code === undefined || !READ_FAIL_CODES.has(code)) return 1
+  return readFailCode(cmdName, code === 'EISDIR')
+}
+
+/**
+ * The code one rendered stderr line's terminal errno asks for.
+ *
+ * Read off the LAST field, not searched for anywhere in the line: the
+ * renderer writes `<cmd>: <path>: <strerror>` and a path is free to spell
+ * a strerror itself, so a directory named `No such file or directory` read
+ * as ENOENT under a global scan and sed answered 2 where GNU answers 4.
+ * Null when the terminal field is not a strerror this family knows, which
+ * is what a line that is not a failed read looks like.
+ */
+function lineReadFailCode(cmdName: string, line: string): number | null {
+  const cut = line.lastIndexOf(': ')
+  const terminal = cut === -1 ? line : line.slice(cut + 2)
+  for (const code of READ_FAIL_CODES) {
+    if (gnuStrerror(code) === terminal) return readFailCode(cmdName, code === 'EISDIR')
+  }
+  return null
+}
+
+/**
+ * The same code, for a read failure known only as a rendered line.
+ *
+ * The cross-mount stream path fetches each operand with a native `cat`
+ * sub-run, so a failed operand arrives as cat's rendered stderr rather
+ * than as an error. That line is already respelled into the real
+ * command's voice, and the exit code has to follow it or `sort a
+ * /other/missing` answers 1 while `sort missing` answers 2, a split GNU
+ * does not have. Classified against the very strerrors the renderer
+ * wrote, so the forward and backward directions cannot drift; a blob that
+ * carries no failed-read line keeps the catch-all 1.
+ *
+ * One fetch can render several lines, because one operand can be a glob
+ * the owning mount expanded, and the most severe code is the answer: sed
+ * is the only stream command whose code depends on the errno, and its rule
+ * is the most severe (4 beats 2), which is also how the caller folds one
+ * operand's code into the next.
+ *
+ * Mirrors the python `read_fail_exit_line`.
+ */
+export function readFailExitCodeFromLine(cmdName: string, rendered: string): number {
+  let code = 0
+  for (const line of rendered.split('\n')) {
+    const one = lineReadFailCode(cmdName, line)
+    if (one !== null) code = Math.max(code, one)
+  }
+  return code || 1
 }
 
 /**
@@ -41,7 +143,23 @@ function pythonOptionError(cmdName: string, line: string): [Uint8Array, number] 
   return [new TextEncoder().encode(line + pythonUsage(cmdName)), usageExitCode(cmdName)]
 }
 
+/**
+ * curl's option refusal: one message line, then its own help hint.
+ *
+ * Pinned on curl 8.14.1 (debian:stable-slim). One divergence: curl names
+ * a whole cluster with a bad letter (`option -sW: is unknown`) where the
+ * parser reports the letter, so mirage says `option -W`.
+ */
+export function curlOptionError(line: string): [Uint8Array, number] {
+  const hint = "curl: try 'curl --help' or 'curl --manual' for more information\n"
+  return [new TextEncoder().encode(line + hint), usageExitCode('curl')]
+}
+
 export function unknownOptionError(cmdName: string, token: string): [Uint8Array, number] {
+  if (cmdName === 'curl') {
+    const dashed = token.startsWith('-') ? token : `-${token}`
+    return curlOptionError(`curl: option ${dashed}: is unknown\n`)
+  }
   if (cmdName === (CommandName.FIND as string)) {
     const dashed = token.startsWith('-') ? token : `-${token}`
     return [
@@ -49,6 +167,7 @@ export function unknownOptionError(cmdName: string, token: string): [Uint8Array,
       usageExitCode(cmdName),
     ]
   }
+  if (cmdName === 'rg') return rgUnknownFlag(token)
   if (PYTHON_NAMES.has(cmdName)) {
     // CPython's own two shapes, which do not match each other: the short
     // form capitalizes and takes a colon, the long form does neither.
@@ -62,7 +181,88 @@ export function unknownOptionError(cmdName: string, token: string): [Uint8Array,
   const line = token.startsWith('--')
     ? `${cmdName}: unrecognized option '${token}'\n`
     : `${cmdName}: invalid option -- '${token}'\n`
-  const hint = `Try '${cmdName} --help' for more information.\n`
+  const hint = usageHint(cmdName) + '\n'
+  return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
+}
+
+// ripgrep's `find_similar_names` threshold: the share of 3-grams a flag name
+// must have in common with an unknown one to be suggested.
+const RG_SUGGEST_THRESHOLD = 0.4
+
+/**
+ * ripgrep's refusal of a flag it does not have (14.1.1): the flag as typed
+ * without its value, then the similar flags its own table holds, if any:
+ * `rg --colo` suggests `--color, --colors`, and `rg --pcr` suggests nothing.
+ * No usage hint follows.
+ */
+export function rgUnknownFlag(token: string): [Uint8Array, number] {
+  const dashed = token.startsWith('-') ? token : `-${token}`
+  const name = dashed.split('=', 1)[0] ?? dashed
+  let line = `rg: unrecognized flag ${name}\n`
+  if (name.startsWith('--')) {
+    const similar = similarRgFlags(name.slice(2)).filter((n) => n !== name.slice(2))
+    if (similar.length > 0) {
+      line += `\nsimilar flags that are available: ${similar.map((n) => `--${n}`).join(', ')}\n`
+    }
+  }
+  return [new TextEncoder().encode(line), usageExitCode('rg')]
+}
+
+// ripgrep's `find_similar_names`: its flags whose 3-grams overlap enough.
+export function similarRgFlags(unrecognized: string): string[] {
+  const given = trigrams(unrecognized)
+  return RG_FLAG_NAMES.filter((name) => {
+    const grams = trigrams(name)
+    let shared = 0
+    for (const gram of given) if (grams.has(gram)) shared += 1
+    return shared / (given.size + grams.size - shared) >= RG_SUGGEST_THRESHOLD
+  })
+}
+
+// The 3-grams of a flag name, padded with `!` when shorter.
+function trigrams(name: string): Set<string> {
+  if (name.length < 3) return new Set([(name + '!!!').slice(0, 3)])
+  const out = new Set<string>()
+  for (let i = 0; i + 3 <= name.length; i++) out.add(name.slice(i, i + 3))
+  return out
+}
+
+// The programs that do NOT parse with getopt_long, and so answer an option
+// they will not take by naming the whole typed token as unknown rather than by
+// naming the option. Each one is measured: `curl --silent=2` is
+// `curl: option --silent=2: is unknown`, `python3 --version=2` is
+// `unknown option --version=2`, `jq --tab=2` is `jq: Unknown option --tab=2`,
+// and find reads the word as a predicate. Every other command here is a GNU
+// tool whose getopt_long words the refusal the other way, so the set is the
+// exception list and not the rule.
+const NOT_GETOPT_LONG = new Set<string>(['curl', 'jq', CommandName.FIND, ...PYTHON_NAMES])
+
+/**
+ * getopt_long refusal for a BOOLEAN long option handed a value.
+ *
+ * `grep --byte-offset=2` is not an unrecognized option -- getopt_long
+ * recognized it perfectly well and refused the `=2`, so the message names the
+ * option and drops the value, where the unrecognized-option message quotes the
+ * whole token including it. It also names the CANONICAL spelling, not the one
+ * that was typed: `grep --byte=2` answers for `--byte-offset`. Shape pinned
+ * against GNU grep 3.11 and coreutils 9.4 (`grep --byte-offset=2`,
+ * `grep --line-buffered=2`, `nl --help=2`, `cut --complement=2`,
+ * `sed --debug=2`), all exit 2 for grep and sort and 1 for the coreutils.
+ *
+ * GNU's per-tool usage dump is deliberately omitted, exactly as
+ * unknownOptionError omits it; grep and sed print theirs between the message
+ * and the hint, coreutils print none at all.
+ *
+ * `token` is the option's canonical long spelling and the value that was typed
+ * on it ('--byte-offset=2'). It is carried whole because the programs in
+ * NOT_GETOPT_LONG quote the value along with the option and getopt_long drops
+ * it.
+ */
+export function unexpectedValueError(cmdName: string, token: string): [Uint8Array, number] {
+  if (NOT_GETOPT_LONG.has(cmdName)) return unknownOptionError(cmdName, token)
+  const option = token.split('=', 1)[0] ?? token
+  const line = `${cmdName}: option '${option}' doesn't allow an argument\n`
+  const hint = usageHint(cmdName) + '\n'
   return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
 }
 
@@ -81,7 +281,7 @@ export function ambiguousOptionError(
 ): [Uint8Array, number] {
   const listed = candidates.map((c) => `'${c}'`).join(' ')
   const line = `${cmdName}: option '${token}' is ambiguous; possibilities: ${listed}\n`
-  const hint = `Try '${cmdName} --help' for more information.\n`
+  const hint = usageHint(cmdName) + '\n'
   return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
 }
 
@@ -99,7 +299,7 @@ export function invalidIntError(
   value: string,
 ): [Uint8Array, number] {
   const line = `${cmdName}: invalid int value: '${value}' for '${option}'\n`
-  const hint = `Try '${cmdName} --help' for more information.\n`
+  const hint = usageHint(cmdName) + '\n'
   return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
 }
 
@@ -113,8 +313,11 @@ export function invalidFloatError(
   option: string,
   value: string,
 ): [Uint8Array, number] {
+  if (cmdName === 'curl') {
+    return curlOptionError(`curl: option ${option}: expected a proper numerical parameter\n`)
+  }
   const line = `${cmdName}: invalid float value: '${value}' for '${option}'\n`
-  const hint = `Try '${cmdName} --help' for more information.\n`
+  const hint = usageHint(cmdName) + '\n'
   return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
 }
 
@@ -124,10 +327,14 @@ export function missingValueError(cmdName: string, token: string): [Uint8Array, 
     const dashed = token.startsWith('-') ? token : `-${token}`
     return pythonOptionError(cmdName, `Argument expected for the ${dashed} option\n`)
   }
+  if (cmdName === 'curl') {
+    const dashed = token.startsWith('-') ? token : `-${token}`
+    return curlOptionError(`curl: option ${dashed}: requires parameter\n`)
+  }
   const line = token.startsWith('--')
     ? `${cmdName}: option '${token}' requires an argument\n`
     : `${cmdName}: option requires an argument -- '${token}'\n`
-  const hint = `Try '${cmdName} --help' for more information.\n`
+  const hint = usageHint(cmdName) + '\n'
   return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
 }
 
@@ -148,8 +355,49 @@ export function missingValueError(cmdName: string, token: string): [Uint8Array, 
  */
 export function oldOptionError(cmdName: string, letter: string): [Uint8Array, number] {
   const line = `${cmdName}: Old option '${letter}' requires an argument.\n`
-  const hint = `Try '${cmdName} --help' for more information.\n`
+  const hint = usageHint(cmdName) + '\n'
   return [new TextEncoder().encode(line + hint), OLD_OPTION_EXIT]
+}
+
+/**
+ * The first line of a gnulib ARGMATCH refusal, without its newline.
+ *
+ * Two wordings, and the CALLER's match result picks between them: the
+ * wording is a property of how `argmatch` refused the value, not of the
+ * value itself, so it arrives from `argmatch` rather than being
+ * re-derived here. There is deliberately no `value === ''` branch: the
+ * empty word is ambiguous because it is a prefix of every candidate and
+ * those candidates span two or more values, which is the same rule every
+ * other word goes through and is what `tail --follow=`, `sort --check=`,
+ * `wc --total=`, `uniq --all-repeated=`, `uniq --group=`, `ls --format=`,
+ * `ls -l --time-style=`, `cp --update=` and `tee --output-error=` were
+ * all measured answering `ambiguous argument ''` for. Re-adding the
+ * special case would get those right and a one-candidate slot wrong.
+ * `du --max-depth=` is NOT argmatch and says `invalid maximum depth ''`,
+ * which is why that one is worded in du.
+ *
+ * The word is rendered through `quoteText`, gnulib's own `quote()`:
+ * `tee --output-error=xé` is `invalid argument 'x\303\251'`. Callers must
+ * therefore pass the value as typed and never pre-escape it.
+ *
+ * `argmatch_line` in usage.py is the twin.
+ */
+export function argmatchLine(
+  cmdName: string,
+  option: string,
+  value: string,
+  kind: ArgmatchKind = 'invalid',
+): string {
+  return `${cmdName}: ${kind} argument '${quoteText(value)}' for '${option}'`
+}
+
+/** gnulib's `Valid arguments are:` block, without a trailing newline. */
+export function argmatchValidBlock(choices: ArgmatchChoices): string {
+  const rows = choices.map((choice) => {
+    const group = typeof choice === 'string' ? [choice] : choice
+    return '  - ' + group.map((c) => `'${c}'`).join(', ')
+  })
+  return 'Valid arguments are:\n' + rows.join('\n')
 }
 
 /**
@@ -157,19 +405,49 @@ export function oldOptionError(cmdName: string, letter: string): [Uint8Array, nu
  *
  * Shape pinned against real GNU (`tee --output-error=bogus`): the
  * offending value, the option's canonical long spelling, then every valid
- * argument in declaration order, one per line.
+ * argument in declaration order, aliases of one value on one line, then
+ * the `Try '--help'` hint.
+ *
+ * `exitCode` undefined takes the command's own usage code, which is 1 for
+ * every command that reaches this renderer through the executor. ls and
+ * sort pass 1 explicitly: gnulib's `argmatch_die` always calls
+ * `usage (EXIT_FAILURE)`, so their argmatch refusals are 1 even though
+ * their other usage errors are 2.
  */
 export function invalidArgumentError(
   cmdName: string,
   option: string,
   value: string,
-  choices: readonly string[],
+  choices: ArgmatchChoices,
+  exitCode?: number,
+  kind: ArgmatchKind = 'invalid',
 ): [Uint8Array, number] {
-  const valid = choices.map((c) => `  - '${c}'`).join('\n')
-  const line =
-    `${cmdName}: invalid argument '${value}' for '${option}'\n` + `Valid arguments are:\n${valid}\n`
-  const hint = `Try '${cmdName} --help' for more information.\n`
-  return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
+  const line = `${argmatchLine(cmdName, option, value, kind)}\n${argmatchValidBlock(choices)}\n`
+  const hint = usageHint(cmdName) + '\n'
+  const code = exitCode ?? usageExitCode(cmdName)
+  return [new TextEncoder().encode(line + hint), code]
+}
+
+/**
+ * `invalidArgumentError` as the error a command throws.
+ *
+ * The commands that validate an ARGMATCH value themselves (`sort`, `wc`,
+ * `uniq`, `ls`, `cp`, `tail`) hold the value long after the parser is done
+ * with it, so they render through the same function the executor does
+ * rather than wording a second copy.
+ *
+ * `argmatch_error` in usage.py is the twin.
+ */
+export function argmatchError(
+  cmdName: string,
+  option: string,
+  value: string,
+  choices: ArgmatchChoices,
+  exitCode?: number,
+  kind: ArgmatchKind = 'invalid',
+): UsageError {
+  const [message, code] = invalidArgumentError(cmdName, option, value, choices, exitCode, kind)
+  return new UsageError(new TextDecoder().decode(message).replace(/\n+$/, ''), code)
 }
 
 /**
@@ -181,8 +459,19 @@ export function invalidArgumentError(
  */
 export function missingRequiredError(cmdName: string, option: string): [Uint8Array, number] {
   const line = `${cmdName}: option '${option}' is required\n`
-  const hint = `Try '${cmdName} --help' for more information.\n`
+  const hint = usageHint(cmdName) + '\n'
   return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
+}
+
+/**
+ * The `Try '<cmd> --help'` line as that command prints it.
+ *
+ * coreutils writes the hint bare; diffutils routes it through `error()`,
+ * so cmp and diff carry the command prefix on the hint line too.
+ */
+export function usageHint(cmdName: string): string {
+  const prefix = USAGE_HINT_PREFIX.has(cmdName) ? `${cmdName}: ` : ''
+  return `${prefix}Try '${cmdName} --help' for more information.`
 }
 
 /**
@@ -194,11 +483,41 @@ export function missingRequiredError(cmdName: string, option: string): [Uint8Arr
  * be the as-typed spelling (`rawPath`), never the resolved path.
  */
 export function extraOperandError(cmdName: string, operand: string): UsageError {
+  // mktemp says `too many templates` with no operand, and patch names the
+  // operand first, bare (`patch: x: extra operand`).
   const line =
     cmdName === (CommandName.MKTEMP as string)
       ? 'mktemp: too many templates'
-      : `${cmdName}: extra operand '${operand}'`
-  const prefix = USAGE_HINT_PREFIX.has(cmdName) ? `${cmdName}: ` : ''
-  const hint = `${prefix}Try '${cmdName} --help' for more information.`
-  return new UsageError(`${line}\n${hint}`, usageExitCode(cmdName))
+      : cmdName === (CommandName.PATCH as string)
+        ? `patch: ${operand}: extra operand`
+        : `${cmdName}: extra operand '${operand}'`
+  return new UsageError(`${line}\n${usageHint(cmdName)}`, usageExitCode(cmdName))
+}
+
+/**
+ * GNU-shaped usage error for an operand short of a command's arity.
+ *
+ * Shapes pinned against real GNU: `<cmd>: missing operand after '<arg>'`
+ * names `argv[argc - 1]` once getopt has moved the operands behind the
+ * options, which is the last operand given, or the line's last word for a
+ * program that reads its operands in order (join). With none given,
+ * coreutils says a bare `missing operand`, while diffutils still names the
+ * line's last word, an option or its value included (`cmp: missing operand
+ * after '-s'`, `diff -U 3` names `3`), and the program itself on a bare line
+ * (`cmp: missing operand after 'cmp'`; diffutils 3.10). `argv` is the
+ * line's words after the command name. Mirrors Python's
+ * missing_operand_error.
+ */
+export function missingOperandError(
+  cmdName: string,
+  last: string | null,
+  argv: readonly string[] = [],
+): UsageError {
+  let after = last
+  const lastWord = argv[argv.length - 1]
+  if (after !== null && IN_ORDER_OPERANDS.has(cmdName) && lastWord !== undefined) after = lastWord
+  if (after === null && USAGE_HINT_PREFIX.has(cmdName)) after = lastWord ?? cmdName
+  const line =
+    after === null ? `${cmdName}: missing operand` : `${cmdName}: missing operand after '${after}'`
+  return new UsageError(`${line}\n${usageHint(cmdName)}`, usageExitCode(cmdName))
 }

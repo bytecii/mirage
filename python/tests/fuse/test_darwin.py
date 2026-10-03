@@ -16,14 +16,28 @@ import ctypes
 import errno
 import sys
 
-import mfusepy
 import pytest
 
 from mirage.fuse import darwin
-from mirage.fuse.darwin import (RENAME_EXCL, RENAME_SWAP, SetattrX,
-                                changes_from_setattr,
-                                install_macfuse_extensions, rename_flags_check,
-                                timespec_to_float)
+from mirage.fuse.darwin import (
+    RENAME_EXCL,
+    RENAME_SWAP,
+    SetattrX,
+    changes_from_setattr,
+    install_macfuse_extensions,
+    rename_flags_check,
+    timespec_to_float,
+)
+
+try:
+    import mfusepy
+except (ImportError, OSError):
+    mfusepy = None
+
+requires_mfusepy = pytest.mark.skipif(
+    mfusepy is None,
+    reason="mfusepy needs a libfuse on the system (macFUSE, fuse3, WinFsp)",
+)
 
 
 def make_attr(valid: int, **fields: int) -> SetattrX:
@@ -35,10 +49,9 @@ def make_attr(valid: int, **fields: int) -> SetattrX:
 
 
 def test_decompose_reads_only_valid_bits():
-    attr = make_attr(darwin.SETATTR_MODE | darwin.SETATTR_SIZE,
-                     mode=0o644,
-                     size=42,
-                     uid=999)
+    attr = make_attr(
+        darwin.SETATTR_MODE | darwin.SETATTR_SIZE, mode=0o644, size=42, uid=999
+    )
     changes = changes_from_setattr(attr)
     assert changes == {"mode": 0o644, "size": 42}
 
@@ -47,11 +60,18 @@ def test_decompose_fskit_create_payload():
     # The exact valid mask the FSKit shim sends when finalizing a new item
     # (mode|uid|gid|crtime|flags, observed as 0x90000007 on the wire).
     # crtime and BSD flags are accepted and dropped: mirage stores neither.
-    attr = make_attr((darwin.SETATTR_MODE | darwin.SETATTR_UID
-                      | darwin.SETATTR_GID | (1 << 28) | (1 << 31)),
-                     mode=0o644,
-                     uid=501,
-                     gid=20)
+    attr = make_attr(
+        (
+            darwin.SETATTR_MODE
+            | darwin.SETATTR_UID
+            | darwin.SETATTR_GID
+            | (1 << 28)
+            | (1 << 31)
+        ),
+        mode=0o644,
+        uid=501,
+        gid=20,
+    )
     changes = changes_from_setattr(attr)
     assert changes == {"mode": 0o644, "uid": 501, "gid": 20}
 
@@ -80,26 +100,31 @@ def test_rename_flags_plain_rename_proceeds():
 
 
 def test_rename_flags_excl_rejects_existing_target():
-    assert rename_flags_check(new_exists=True,
-                              flags=RENAME_EXCL) == errno.EEXIST
+    assert (
+        rename_flags_check(new_exists=True, flags=RENAME_EXCL) == errno.EEXIST
+    )
     assert rename_flags_check(new_exists=False, flags=RENAME_EXCL) is None
 
 
 def test_rename_flags_swap_is_unsupported():
     # Atomic swap has no mirage-backend primitive; refusing beats faking.
-    assert rename_flags_check(new_exists=True,
-                              flags=RENAME_SWAP) == errno.ENOTSUP
+    assert (
+        rename_flags_check(new_exists=True, flags=RENAME_SWAP) == errno.ENOTSUP
+    )
 
 
-@pytest.mark.skipif(sys.platform != "darwin",
-                    reason="mfusepy builds fuse_operations per platform; the "
-                    "reserved tail the Apple fields replace only exists in "
-                    "the Darwin layout")
+@requires_mfusepy
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="mfusepy builds fuse_operations per platform; the "
+    "reserved tail the Apple fields replace only exists in "
+    "the Darwin layout",
+)
 def test_install_extends_struct_and_keeps_size(monkeypatch):
     monkeypatch.setattr(darwin, "_installed", False)
     monkeypatch.setattr(darwin.sys, "platform", "darwin")
     before = ctypes.sizeof(mfusepy.fuse_operations)
-    install_macfuse_extensions()
+    install_macfuse_extensions(mfusepy)
     names = [f[0] for f in mfusepy.fuse_operations._fields_]
     assert "setattr_x" in names
     assert "renamex" in names
@@ -111,18 +136,20 @@ def test_install_extends_struct_and_keeps_size(monkeypatch):
     assert hasattr(mfusepy.FUSE, "renamex")
 
 
+@requires_mfusepy
 def test_install_is_idempotent(monkeypatch):
     monkeypatch.setattr(darwin, "_installed", False)
     monkeypatch.setattr(darwin.sys, "platform", "darwin")
-    install_macfuse_extensions()
+    install_macfuse_extensions(mfusepy)
     fields_after_first = mfusepy.fuse_operations
-    install_macfuse_extensions()
+    install_macfuse_extensions(mfusepy)
     assert mfusepy.fuse_operations is fields_after_first
 
 
+@requires_mfusepy
 def test_install_skips_off_darwin(monkeypatch):
     monkeypatch.setattr(darwin, "_installed", False)
     monkeypatch.setattr(darwin.sys, "platform", "linux")
     saved = mfusepy.fuse_operations
-    install_macfuse_extensions()
+    install_macfuse_extensions(mfusepy)
     assert mfusepy.fuse_operations is saved

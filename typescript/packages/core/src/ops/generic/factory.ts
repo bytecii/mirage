@@ -12,52 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { enotsup } from '../../utils/errors.ts'
 import type { Accessor } from '../../accessor/base.ts'
 import type { OpKwargs, RegisteredOp } from '../registry.ts'
-import { extractWriteData } from '../write_args.ts'
-import { isUnsatisfiableRange, sliceWindow } from '../../utils/ranges.ts'
-import type { PathSpec } from '../../types.ts'
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type OpCoreFn = (...args: any[]) => unknown
-
-/**
- * Structural subset of a backend's `CommandIO` the ops factory consumes.
- * The table in `commands/builtin/<b>/ops.ts` already carries every core
- * function the VFS/FUSE op wrappers forward to, so the same table feeds
- * both `makeGenericCommands` and `makeGenericOps`. Command-only fields
- * (`readStream`, `isMounted`, `find`, ...) are ignored.
- */
-export interface OpsTable<A extends Accessor = Accessor> {
-  readdir: (accessor: A, path: PathSpec, index?: OpKwargs['index']) => unknown
-  readBytes: (accessor: A, path: PathSpec, index?: OpKwargs['index']) => Promise<Uint8Array>
-  readRange?: (
-    accessor: A,
-    path: PathSpec,
-    index: OpKwargs['index'],
-    offset: number,
-    size: number | null,
-  ) => Promise<Uint8Array>
-  stat: (accessor: A, path: PathSpec, index?: OpKwargs['index']) => unknown
-  write?: OpCoreFn
-  mkdir?: OpCoreFn
-  unlink?: OpCoreFn
-  rmdir?: OpCoreFn
-  rename?: OpCoreFn
-  create?: OpCoreFn
-  truncate?: OpCoreFn
-  append?: OpCoreFn
-  setAttrs?: OpCoreFn
-}
-
-export interface MakeGenericOpsOptions {
-  /** Synthesize truncate from readBytes + write (no native partial write). */
-  emulateTruncate?: boolean
-  /** Forward `parents=true` to the core mkdir (disk). */
-  mkdirParents?: boolean
-  /** Op names to skip because the backend registers an irregular wrapper. */
-  overrides?: ReadonlySet<string>
-}
+import type { MakeGenericOpsOptions, OpsTable } from './types.ts'
+import { isUnsatisfiableRange, sliceWindow, spliceWindow } from '../../utils/ranges.ts'
+import { DEFAULT_MAX_GLOB_MATCHES, resolveGlobWith } from '../../utils/glob_walk.ts'
+import { einval, eisdir, isMissingPath } from '../../utils/errors.ts'
+import { FileStat, FileType, type PathSpec } from '../../types.ts'
 
 const expectPathSpec = (value: unknown, op: string): PathSpec => {
   if (value === null || typeof value !== 'object' || !('virtual' in value)) {
@@ -66,10 +28,24 @@ const expectPathSpec = (value: unknown, op: string): PathSpec => {
   return value as PathSpec
 }
 
+const extractWriteData = (args: readonly unknown[]): Uint8Array => {
+  const first = args[0]
+  if (first instanceof Uint8Array) return first
+  throw new TypeError('write op requires a Uint8Array as the first arg')
+}
+
 const expectLength = (value: unknown): number => {
   if (typeof value !== 'number') {
     throw new TypeError('truncate op requires a number length as the first arg')
   }
+  return value
+}
+
+const expectOffset = (value: unknown, path: PathSpec): number => {
+  if (typeof value !== 'number') {
+    throw new TypeError('pwrite op requires a number offset as the second arg')
+  }
+  if (!Number.isInteger(value) || value < 0) throw einval(path)
   return value
 }
 
@@ -81,14 +57,16 @@ const expectLength = (value: unknown): number => {
  * table that already feeds `makeGenericCommands`, so a backend declares
  * its core surface once. Ops whose table field is undefined are
  * omitted, mirroring how the command factory skips write commands on
- * read-only backends.
+ * read-only backends. A writable table without a native append or pwrite
+ * builds them from read and write; like emulated truncate, this is not
+ * atomic against concurrent writers.
  */
 export function makeGenericOps<A extends Accessor>(
-  resource: string | readonly string[],
+  vfs: string | readonly string[],
   table: OpsTable<A>,
   options: MakeGenericOpsOptions = {},
 ): RegisteredOp[] {
-  const resources = typeof resource === 'string' ? [resource] : resource
+  const vfsNames = typeof vfs === 'string' ? [vfs] : vfs
   const skip = options.overrides ?? new Set<string>()
   const ops: RegisteredOp[] = []
 
@@ -97,10 +75,11 @@ export function makeGenericOps<A extends Accessor>(
     fn: RegisteredOp['fn'],
     write: boolean,
     filetype: string | null = null,
+    ranges = false,
   ): void => {
     if (skip.has(name)) return
-    for (const res of resources) {
-      ops.push({ name, resource: res, filetype, fn, write })
+    for (const res of vfsNames) {
+      ops.push({ name, vfs: res, filetype, fn, write, ranges })
     }
   }
 
@@ -139,6 +118,8 @@ export function makeGenericOps<A extends Accessor>(
       return whole ? data : sliceWindow(data, offset, size)
     },
     false,
+    null,
+    table.readRange !== undefined,
   )
   emit(
     'readdir',
@@ -151,7 +132,37 @@ export function makeGenericOps<A extends Accessor>(
     false,
   )
 
-  const { write, mkdir, unlink, rmdir, rename, create, truncate, append, setAttrs } = table
+  // Glob expansion is a walk over readdir, so it is derived here rather
+  // than written per driver: one walker, capped by the table's own limit,
+  // with the table's stat so a trailing slash keeps directories only. The
+  // mount hands it one pattern spec at a time and passes the rest
+  // through, which is what every driver's resolver did with the list.
+  const readdirOf = table.readdir as (
+    accessor: A,
+    path: PathSpec,
+    index?: OpKwargs['index'],
+  ) => Promise<string[]>
+  const statOf = table.stat as (
+    accessor: A,
+    path: PathSpec,
+    index?: OpKwargs['index'],
+  ) => Promise<FileStat>
+  emit(
+    'glob',
+    (accessor, path, _args, kwargs) =>
+      resolveGlobWith(
+        readdirOf,
+        asA(accessor),
+        [path],
+        kwargs.index,
+        table.maxGlobMatches ?? DEFAULT_MAX_GLOB_MATCHES,
+        undefined,
+        statOf,
+      ),
+    false,
+  )
+
+  const { write, mkdir, unlink, rmdir, rename, create, truncate, append, pwrite, setAttrs } = table
   if (write) {
     emit(
       'write',
@@ -165,15 +176,104 @@ export function makeGenericOps<A extends Accessor>(
       (accessor, path, args) => append(asA(accessor), path, extractWriteData(args)),
       true,
     )
+  } else if (write) {
+    emit(
+      'append',
+      async (accessor, path, args, kwargs) => {
+        const data = extractWriteData(args)
+        // A zero-byte append is an open for appending with nothing written
+        // after it (`exec >> f`, `: >> f`): it creates a missing file and
+        // leaves an existing one alone. Reading and rewriting the whole
+        // object to add nothing would move it twice and could put back bytes
+        // a concurrent writer had just replaced.
+        if (data.length === 0) {
+          let found: unknown
+          try {
+            found = await table.stat(asA(accessor), path, kwargs.index)
+          } catch (error) {
+            if (!isMissingPath(error)) throw error
+            return write(asA(accessor), path, data)
+          }
+          if (found instanceof FileStat && found.type === FileType.DIRECTORY) throw eisdir(path)
+          return
+        }
+        let existing: Uint8Array
+        // The read takes the caller's index, like every other read here: an
+        // id-addressed backend (Box, Drive) turns a path into an id through
+        // it, and without one every read is a miss, so each append would
+        // overwrite what the last one wrote.
+        try {
+          existing = await table.readBytes(asA(accessor), path, kwargs.index)
+        } catch (error) {
+          if (!isMissingPath(error)) throw error
+          return write(asA(accessor), path, data)
+        }
+        const joined = new Uint8Array(existing.length + data.length)
+        joined.set(existing)
+        joined.set(data, existing.length)
+        return write(asA(accessor), path, joined)
+      },
+      true,
+    )
+  }
+  if (pwrite) {
+    emit(
+      'pwrite',
+      (accessor, path, args) =>
+        pwrite(asA(accessor), path, extractWriteData(args), expectOffset(args[1], path)),
+      true,
+    )
+  } else if (write) {
+    emit(
+      'pwrite',
+      async (accessor, path, args, kwargs) => {
+        const data = extractWriteData(args)
+        const offset = expectOffset(args[1], path)
+        // A zero-length pwrite(2) on an existing file changes nothing and
+        // must not read the file back: a concurrent writer's update between
+        // this stat and a would-be write would be clobbered by the stale
+        // contents. A zero-length pwrite on a missing file creates an empty
+        // file (pwrite(2) with O_CREAT semantics).
+        if (data.length === 0) {
+          try {
+            const found = await table.stat(asA(accessor), path, kwargs.index)
+            if (found instanceof FileStat && found.type === FileType.DIRECTORY) throw eisdir(path)
+            return
+          } catch (error) {
+            if (!isMissingPath(error)) throw error
+            return write(asA(accessor), path, data)
+          }
+        }
+        // The read is this op's own, below the door that judged it a write:
+        // a session that may write a file and not read it still writes at
+        // an offset, as pwrite(2) on a write-only descriptor does. It takes
+        // the caller's index for the reason append does.
+        let existing: Uint8Array
+        try {
+          existing = await table.readBytes(asA(accessor), path, kwargs.index)
+        } catch (error) {
+          if (!isMissingPath(error)) throw error
+          existing = new Uint8Array()
+        }
+        return write(asA(accessor), path, spliceWindow(existing, offset, data))
+      },
+      true,
+    )
   }
   if (create) {
     emit('create', (accessor, path) => create(asA(accessor), path), true)
   }
   if (mkdir) {
+    // A per-call `parents: true` kwarg (pathlib's mkdir(parents=True)
+    // through a runtime bridge) forwards like python's registry, which
+    // hands dispatch kwargs to the op; `mkdirParents` still forces it
+    // for backends whose core requires the flag (disk).
     emit(
       'mkdir',
-      (accessor, path) =>
-        options.mkdirParents ? mkdir(asA(accessor), path, true) : mkdir(asA(accessor), path),
+      (accessor, path, _args, kwargs) =>
+        options.mkdirParents || kwargs.parents === true
+          ? mkdir(asA(accessor), path, true)
+          : mkdir(asA(accessor), path),
       true,
     )
   }
@@ -194,7 +294,8 @@ export function makeGenericOps<A extends Accessor>(
   if (truncate) {
     emit(
       'truncate',
-      (accessor, path, args) => truncate(asA(accessor), path, expectLength(args[0])),
+      (accessor, path, args, opts) =>
+        truncate(asA(accessor), path, expectLength(args[0]), opts.no_create === true),
       true,
     )
   } else if (options.emulateTruncate) {
@@ -203,7 +304,8 @@ export function makeGenericOps<A extends Accessor>(
     }
     emit(
       'truncate',
-      async (accessor, path, args) => {
+      async (accessor, path, args, opts) => {
+        if (opts.no_create === true) throw enotsup('emulated', 'truncate --no-create', path)
         const length = expectLength(args[0])
         let data: Uint8Array
         try {
