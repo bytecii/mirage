@@ -551,8 +551,8 @@ async function buildWorkspace(world: World, runId: string): Promise<Workspace> {
   const mounts: Record<string, MountSpec> = {}
   const seeds: [string, string, string][] = []
   const mountSpecs = world.mounts ?? { '/ram': { vfs: 'ram' } }
-  for (const [prefix, spec] of Object.entries(mountSpecs)) {
-    const vfs = await buildVfs(spec, runId)
+  for (const [index, [prefix, spec]] of Object.entries(mountSpecs).entries()) {
+    const vfs = await buildVfs(spec, `${runId}-${index}`)
     const guards = Object.fromEntries(
       Object.entries(spec.limits ?? {}).map(([cmd, kwargs]) => [
         cmd,
@@ -876,7 +876,7 @@ function forRuntime(testCase: Case, runtime: string): Case | null {
     runtime,
     world,
     steps,
-    requires: RUNTIME_REQUIRES[runtime] ?? [],
+    requires: [...(testCase.requires ?? []), ...(RUNTIME_REQUIRES[runtime] ?? [])],
     filesystem: Object.fromEntries(
       Object.entries(testCase.filesystem ?? {}).filter(([name]) => name === runtime),
     ),

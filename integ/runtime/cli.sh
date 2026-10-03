@@ -93,7 +93,7 @@ runtime_variants() {
           id: ($c.id + "@" + $r),
           world: (($c.world // {}) + {runtimes: [$r, "workspace"]}),
           steps: ($steps | map(del(.guest))),
-          requires: $t.requires[$h][$r]
+          requires: (($c.requires // []) + $t.requires[$h][$r])
         }
     end' <<<"$case_json"
 }

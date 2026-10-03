@@ -97,16 +97,19 @@
         },
         {
           "program": {
-            "python": "from pathlib import Path\ntry:\n    Path('/data/cross.txt').rename('/other/cross.txt')\nexcept OSError as e:\n    print(type(e).__name__)",
+            "python": "from pathlib import Path\ntry:\n    Path('/data/cross.txt').rename('/other/cross.txt')\nexcept OSError as e:\n    try:\n        import errno\n    except ImportError:\n        print(type(e).__name__)\n    else:\n        print(errno.errorcode[e.errno])",
             "js": "console.log(os.rename('/data/cross.txt', '/other/cross.txt'))"
           },
           "expect": {
             "exit": 0,
-            "stdout": "OSError\n"
+            "stdout": "EXDEV\n"
           },
           "expect_on": {
+            "monty": {
+              "stdout": "OSError\n"
+            },
             "wasi": {
-              "stdout": "FileNotFoundError\n"
+              "stdout": "ENOENT\n"
             },
             "quickjs": {
               "stdout": "-44\n"
@@ -118,6 +121,13 @@
           "expect": {
             "exit": 0,
             "stdout": "keep\n"
+          }
+        },
+        {
+          "command": "ls /other",
+          "expect": {
+            "exit": 0,
+            "stdout": ""
           }
         },
         {
@@ -162,16 +172,19 @@
       "steps": [
         {
           "program": {
-            "python": "import os\ntry:\n    os.rename('/data/top.txt', '/data/inner/moved.txt')\n    print('renamed')\nexcept OSError as e:\n    print(type(e).__name__)",
+            "python": "import os\ntry:\n    os.rename('/data/top.txt', '/data/inner/moved.txt')\n    print('renamed')\nexcept OSError as e:\n    try:\n        import errno\n    except ImportError:\n        print(type(e).__name__)\n    else:\n        print(errno.errorcode[e.errno])",
             "js": "console.log(os.rename('/data/top.txt', '/data/inner/moved.txt'))"
           },
           "expect": {
             "exit": 0,
-            "stdout": "OSError\n"
+            "stdout": "EXDEV\n"
           },
           "expect_on": {
+            "monty": {
+              "stdout": "OSError\n"
+            },
             "wasi": {
-              "stdout": "FileNotFoundError\n"
+              "stdout": "ENOENT\n"
             },
             "quickjs": {
               "stdout": "-44\n"
@@ -183,6 +196,13 @@
           "expect": {
             "exit": 0,
             "stdout": "top\n"
+          }
+        },
+        {
+          "command": "ls /data/inner",
+          "expect": {
+            "exit": 0,
+            "stdout": ""
           }
         }
       ]

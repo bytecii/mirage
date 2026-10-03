@@ -21,11 +21,11 @@
       "steps": [
         {
           "program": {
-            "python": "import os\ntry:\n    os.link('/data/t.txt', '/data/hard')\nexcept OSError as exc:\n    print(type(exc).__name__)"
+            "python": "import errno, os\ntry:\n    os.link('/data/t.txt', '/data/hard')\nexcept OSError as exc:\n    print(errno.errorcode[exc.errno])"
           },
           "expect": {
             "exit": 0,
-            "stdout": "PermissionError\n"
+            "stdout": "EPERM\n"
           },
           "expect_on": {
             "pyodide": {

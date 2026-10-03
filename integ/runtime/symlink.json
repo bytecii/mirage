@@ -162,11 +162,11 @@
         },
         {
           "program": {
-            "python": "import os\nfor p in ('/data/t.txt', '/data/d', '/data/missing', '/data/d/deep/missing'):\n    try:\n        os.readlink(p)\n    except OSError as exc:\n        print(p, type(exc).__name__)"
+            "python": "import errno, os\nfor p in ('/data/t.txt', '/data/d', '/data/missing', '/data/d/deep/missing'):\n    try:\n        os.readlink(p)\n    except OSError as exc:\n        print(p, errno.errorcode[exc.errno])"
           },
           "expect": {
             "exit": 0,
-            "stdout": "/data/t.txt OSError\n/data/d OSError\n/data/missing FileNotFoundError\n/data/d/deep/missing FileNotFoundError\n"
+            "stdout": "/data/t.txt EINVAL\n/data/d EINVAL\n/data/missing ENOENT\n/data/d/deep/missing ENOENT\n"
           }
         }
       ]

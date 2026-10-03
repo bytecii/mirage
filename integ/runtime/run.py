@@ -543,8 +543,8 @@ async def _build_workspace(world: dict[str, Any], run_id: str) -> Workspace:
     mounts: dict[str, Any] = {}
     seeds: list[tuple[str, str, bytes]] = []
     mount_specs = world.get("mounts", {"/ram": {"vfs": "ram"}})
-    for prefix, spec in mount_specs.items():
-        vfs = await _build_vfs(spec, run_id)
+    for index, (prefix, spec) in enumerate(mount_specs.items()):
+        vfs = await _build_vfs(spec, f"{run_id}-{index}")
         guards = {
             cmd: Limit(**kwargs)
             for cmd, kwargs in spec.get("limits", {}).items()
@@ -848,7 +848,7 @@ def _for_runtime(case: dict[str, Any], runtime: str) -> dict[str, Any] | None:
         "runtime": runtime,
         "world": world,
         "steps": steps,
-        "requires": RUNTIME_REQUIRES[runtime],
+        "requires": case.get("requires", []) + RUNTIME_REQUIRES[runtime],
     }
     if runtime in case.get("filesystem", {}):
         variant["filesystem"] = {runtime: case["filesystem"][runtime]}
