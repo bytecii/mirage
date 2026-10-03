@@ -74,15 +74,15 @@ describe('glob', () => {
     await ops.write('/src/a.ts', 'a')
     await ops.write('/src/deep/b.ts', 'b')
     await ops.write('/src/c.txt', 'c')
-    const result = await ops.glob('*.ts', '/src')
-    expect((result.content[0]?.text ?? '').split(/\s+/).filter(Boolean).sort()).toEqual([
+    const result = await ops.glob('**/*.ts', '/src')
+    expect((result.content[0]?.text ?? '').split(/\s+/).filter(Boolean)).toEqual([
       '/src/a.ts',
       '/src/deep/b.ts',
     ])
     expect(result.isError).not.toBe(true)
   })
 
-  it('matches only the last path component', async () => {
+  it('matches a pattern with directories in it', async () => {
     await ops.write('/src/deep/b.ts', 'b')
     const result = await ops.glob('src/**/*.ts')
     expect((result.content[0]?.text ?? '').trim()).toBe('/src/deep/b.ts')
@@ -102,7 +102,57 @@ describe('glob', () => {
   it('skips directories', async () => {
     await ops.write('/cache.ts/inner.txt', 'x')
     await ops.write('/src/a.ts', 'a')
-    const result = await ops.glob('*.ts')
+    const result = await ops.glob('**/*.ts')
     expect((result.content[0]?.text ?? '').trim()).toBe('/src/a.ts')
+  })
+
+  it('matches only the named level', async () => {
+    await ops.write('/src/a.ts', 'a')
+    await ops.write('/src/deep/b.ts', 'b')
+    const result = await ops.glob('*.ts', '/src')
+    expect((result.content[0]?.text ?? '').trim()).toBe('/src/a.ts')
+  })
+})
+
+describe('grep options', () => {
+  it('takes the GNU flags', async () => {
+    await ops.write('/src/a.py', 'Needle\nhay\n')
+    await ops.write('/src/b.txt', 'needle\n')
+    const loose = await ops.grep('needle', '/src', { ignoreCase: true, include: '*.py' })
+    const names = await ops.grep('needle', '/src', { filesWithMatches: true })
+    const counted = await ops.grep('e', '/src/a.py', { count: true })
+    const literal = await ops.grep('-dash', '/src')
+    expect(loose.content[0]?.text).toBe('/src/a.py:1:Needle\n')
+    expect(names.content[0]?.text).toBe('/src/b.txt\n')
+    expect(counted.content[0]?.text).toBe('1\n')
+    expect(literal.isError).not.toBe(true)
+  })
+})
+
+describe('write', () => {
+  it('refuses an unread file', async () => {
+    await ws.vfs.write('/exists.txt', 'first')
+    const result = await ops.write('/exists.txt', 'second')
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toContain('read it before overwriting it')
+    expect(await ws.vfs.cat('/exists.txt')).toBe('first')
+  })
+
+  it('overwrites a read file', async () => {
+    await ws.vfs.write('/exists.txt', 'first')
+    await ops.read('/exists.txt')
+    const result = await ops.write('/exists.txt', 'second')
+    expect(result.isError).not.toBe(true)
+    expect(await ws.vfs.cat('/exists.txt')).toBe('second')
+  })
+
+  it('refuses a file changed since it was read', async () => {
+    await ws.vfs.write('/exists.txt', 'first')
+    await ops.read('/exists.txt')
+    await ws.vfs.write('/exists.txt', 'moved')
+    const result = await ops.write('/exists.txt', 'second')
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toContain('changed since it was last read')
+    expect(await ws.vfs.cat('/exists.txt')).toBe('moved')
   })
 })

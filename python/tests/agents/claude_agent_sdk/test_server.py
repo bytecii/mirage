@@ -69,11 +69,11 @@ async def test_write_file(tools, workspace):
 
 
 @pytest.mark.asyncio
-async def test_write_file_already_exists(tools, workspace):
+async def test_write_refuses_an_unread_file(tools, workspace):
     await workspace.vfs.write("/exists.txt", b"first")
     result = await tools.write({"path": "/exists.txt", "content": "second"})
     assert result["is_error"] is True
-    assert "already exists" in result["content"][0]["text"]
+    assert "read it before overwriting it" in result["content"][0]["text"]
 
 
 @pytest.mark.asyncio

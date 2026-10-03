@@ -114,13 +114,24 @@ export class MirageToolOperations {
     })
   }
 
+  /**
+   * Write a file; an existing one must have been read first. A new file
+   * is created with its missing parents. An existing one is overwritten
+   * only when the agent read it and it did not change since, so a write
+   * never clobbers text the agent has not seen.
+   */
   async write(path: string, content: string): Promise<ToolResult> {
     return this.asSession(async () => {
-      if (await this.ws.vfs.exists(path)) {
-        return errorResult(`Error: file '${path}' already exists`)
+      if ((await this.ws.vfs.exists(path)) && !this.versions.hasRead(path)) {
+        return errorResult(`Error: file '${path}' exists; read it before overwriting it`)
       }
       await ensureParents(this.ws, path)
-      await this.versions.write(path, content)
+      try {
+        await this.versions.write(path, content)
+      } catch (err) {
+        if (err instanceof StaleMirageFileError) return errorResult(`Error: ${err.message}`)
+        throw err
+      }
       return textResult(`Written: ${path}`)
     })
   }
@@ -163,11 +174,35 @@ export class MirageToolOperations {
     return ioResult(await this.ws.shell(`ls ${shQuote(path)}`, this.shellOptions))
   }
 
-  async grep(pattern: string, path: string): Promise<ToolResult> {
-    const io = await this.ws.shell(
-      `grep -rn ${shQuote(pattern)} ${shQuote(path)}`,
-      this.shellOptions,
-    )
+  /**
+   * Search recursively for a pattern, as `grep -rn` does. Each option is
+   * the GNU grep flag of the same name, and the line runs in the
+   * session's shell, so the search is the shell's own: the same policy,
+   * push-down and history as typing it.
+   */
+  async grep(
+    pattern: string,
+    path: string,
+    options: {
+      ignoreCase?: boolean | undefined
+      fixedStrings?: boolean | undefined
+      include?: string | undefined
+      context?: number | undefined
+      filesWithMatches?: boolean | undefined
+      count?: boolean | undefined
+      maxCount?: number | undefined
+    } = {},
+  ): Promise<ToolResult> {
+    const words = ['grep', '-rn']
+    if (options.ignoreCase === true) words.push('-i')
+    if (options.fixedStrings === true) words.push('-F')
+    if (options.filesWithMatches === true) words.push('-l')
+    if (options.count === true) words.push('-c')
+    if (options.maxCount !== undefined) words.push('-m', String(options.maxCount))
+    if (options.context !== undefined) words.push('-C', String(options.context))
+    if (options.include !== undefined) words.push(shQuote(`--include=${options.include}`))
+    words.push('-e', shQuote(pattern), shQuote(path))
+    const io = await this.ws.shell(words.join(' '), this.shellOptions)
     // grep exits 1 for "no match", which is a normal empty answer, and
     // >1 for a real failure (bad regex, unreadable path). Only the
     // second is a tool error; reporting the first as one would tell the
@@ -178,19 +213,64 @@ export class MirageToolOperations {
   }
 
   /**
-   * Find files, not directories, whose name matches a pattern. Only the pattern's last path
-   * component is matched, as `find -name` matches it, so a pattern with
-   * directories in it finds every file of that name under `path`. A
-   * symlink to a file counts, as `find -L` reads it; a dangling one does
+   * Find files, not directories, whose path matches a pattern. The
+   * pattern is expanded by `Workspace.glob`, the shell's own resolver:
+   * `**` matches any number of directories, and a relative pattern is
+   * matched under `path`. A symlink to a file counts; a dangling one does
    * not.
    */
   async glob(pattern: string, path = '/'): Promise<ToolResult> {
-    const name = pattern.split('/').pop() ?? pattern
-    return ioResult(
-      await this.ws.shell(
-        `find -L ${shQuote(path)} -type f -name ${shQuote(name)}`,
-        this.shellOptions,
-      ),
-    )
+    const full = pattern.startsWith('/') ? pattern : `${path.replace(/\/+$/, '')}/${pattern}`
+    const matches = await this.ws.glob(full, this.sessionId)
+    const files: string[] = []
+    for (const match of matches) {
+      if (await this.ws.vfs.isFile(match, this.sessionId)) files.push(match)
+    }
+    return textResult(files.map((match) => `${match}\n`).join(''))
+  }
+
+  /**
+   * Run one tool by name with its JSON input. The one entry every door
+   * shares: MCP, the HTTP routes, the CLI and the agent adapters hand a
+   * tool's name and its input, as the tool's `*_INPUT` schema reads it,
+   * to this method, so each tool answers the same way through each of
+   * them. Throws for a name no tool has. Mirrors Python's `call`.
+   */
+  async call(name: string, args: Readonly<Record<string, unknown>>): Promise<ToolResult> {
+    switch (name) {
+      case 'shell':
+        return this.shell(args.command as string)
+      case 'read':
+        return this.read(
+          args.path as string,
+          (args.offset as number | undefined) ?? 0,
+          (args.limit as number | undefined) ?? 2000,
+        )
+      case 'write':
+        return this.write(args.path as string, args.content as string)
+      case 'edit':
+        return this.edit(
+          args.path as string,
+          args.old_string as string,
+          args.new_string as string,
+          (args.replace_all as boolean | undefined) ?? false,
+        )
+      case 'ls':
+        return this.ls(args.path as string)
+      case 'grep':
+        return this.grep(args.pattern as string, args.path as string, {
+          ignoreCase: args.ignore_case as boolean | undefined,
+          fixedStrings: args.fixed_strings as boolean | undefined,
+          include: args.include as string | undefined,
+          context: args.context as number | undefined,
+          filesWithMatches: args.files_with_matches as boolean | undefined,
+          count: args.count as boolean | undefined,
+          maxCount: args.max_count as number | undefined,
+        })
+      case 'glob':
+        return this.glob(args.pattern as string, (args.path as string | undefined) ?? '/')
+      default:
+        throw new Error(`unknown tool: ${name}`)
+    }
   }
 }

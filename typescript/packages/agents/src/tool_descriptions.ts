@@ -27,8 +27,9 @@ export const READ_DESCRIPTION =
   "and 'limit' (default 2000) to cap the number of lines returned."
 
 export const WRITE_DESCRIPTION =
-  'Write content to a new file on the Mirage virtual filesystem. ' +
-  'Fails if the file already exists; use edit to modify an existing file.'
+  'Write a file on the Mirage virtual filesystem, creating missing parent ' +
+  'directories. An existing file must be read first, and the write fails ' +
+  'if it changed since; use edit to change part of a file.'
 
 export const EDIT_DESCRIPTION =
   'Replace a string in an existing file on the Mirage virtual filesystem. ' +
@@ -40,13 +41,14 @@ export const LS_DESCRIPTION =
   'List files and directories at the given path on the Mirage virtual filesystem.'
 
 export const GREP_DESCRIPTION =
-  'Search for a pattern in files on the Mirage virtual filesystem. ' +
-  'Supports regex. Searches recursively under path.'
+  'Search files on the Mirage virtual filesystem for a regular ' +
+  'expression, recursively under path, as GNU grep -rn does. Prints ' +
+  'file:line:text for each match. Finding nothing is not an error.'
 
 export const GLOB_DESCRIPTION =
-  'Find files on the Mirage virtual filesystem whose name matches a ' +
-  'pattern such as *.py, searching recursively under path (default /). ' +
-  'Returns one path per line.'
+  'Find files on the Mirage virtual filesystem whose path matches a ' +
+  'pattern such as **/*.py, where ** matches any number of directories. ' +
+  'Returns one path per line, sorted.'
 
 export const SHELL_INPUT = {
   type: 'object',
@@ -85,7 +87,7 @@ export const WRITE_INPUT = {
   properties: {
     path: {
       type: 'string',
-      description: 'Absolute path of the new file.',
+      description: 'Absolute path of the file to write.',
     },
     content: {
       type: 'string',
@@ -140,6 +142,36 @@ export const GREP_INPUT = {
       type: 'string',
       description: 'Absolute path of the file or directory to search under.',
     },
+    ignore_case: {
+      type: 'boolean',
+      description: 'Match case-insensitively (-i).',
+    },
+    fixed_strings: {
+      type: 'boolean',
+      description: 'Read pattern as a literal string, not a regex (-F).',
+    },
+    include: {
+      type: 'string',
+      description: 'Search only files whose name matches this glob, such as *.py (--include).',
+    },
+    context: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Lines of context to print around each match (-C).',
+    },
+    files_with_matches: {
+      type: 'boolean',
+      description: 'Print only the names of files that match (-l).',
+    },
+    count: {
+      type: 'boolean',
+      description: 'Print only a count of matching lines per file (-c).',
+    },
+    max_count: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Stop each file after this many matching lines (-m).',
+    },
   },
   required: ['pattern', 'path'],
 } as const
@@ -149,11 +181,11 @@ export const GLOB_INPUT = {
   properties: {
     pattern: {
       type: 'string',
-      description: 'File-name pattern such as *.py; only its last path component is matched.',
+      description: 'Pathname pattern such as **/*.py or src/*.ts; a relative one is matched under path.',
     },
     path: {
       type: 'string',
-      description: 'Absolute path of the directory to search under (default /).',
+      description: 'Absolute path of the directory a relative pattern is matched under (default /).',
     },
   },
   required: ['pattern'],

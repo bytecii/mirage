@@ -42,6 +42,7 @@ export function MirageServer(workspace: Workspace, options: MirageToolOperations
   const operations = new MirageToolOperations(workspace, options)
   const read = READ_INPUT.properties
   const edit = EDIT_INPUT.properties
+  const grep = GREP_INPUT.properties
   return createSdkMcpServer({
     name: 'mirage',
     version: VERSION,
@@ -51,7 +52,7 @@ export function MirageServer(workspace: Workspace, options: MirageToolOperations
         'shell',
         SHELL_DESCRIPTION,
         { command: z.string().describe(SHELL_INPUT.properties.command.description) },
-        (args) => operations.shell(args.command),
+        (args) => operations.call('shell', args),
       ),
       tool(
         'read',
@@ -61,7 +62,7 @@ export function MirageServer(workspace: Workspace, options: MirageToolOperations
           offset: z.number().int().min(0).optional().describe(read.offset.description),
           limit: z.number().int().min(1).optional().describe(read.limit.description),
         },
-        (args) => operations.read(args.path, args.offset, args.limit),
+        (args) => operations.call('read', args),
         { annotations: { readOnlyHint: true } },
       ),
       tool(
@@ -71,7 +72,7 @@ export function MirageServer(workspace: Workspace, options: MirageToolOperations
           path: z.string().describe(WRITE_INPUT.properties.path.description),
           content: z.string().describe(WRITE_INPUT.properties.content.description),
         },
-        (args) => operations.write(args.path, args.content),
+        (args) => operations.call('write', args),
       ),
       tool(
         'edit',
@@ -82,23 +83,30 @@ export function MirageServer(workspace: Workspace, options: MirageToolOperations
           new_string: z.string().describe(edit.new_string.description),
           replace_all: z.boolean().optional().describe(edit.replace_all.description),
         },
-        (args) => operations.edit(args.path, args.old_string, args.new_string, args.replace_all),
+        (args) => operations.call('edit', args),
       ),
       tool(
         'ls',
         LS_DESCRIPTION,
         { path: z.string().describe(LS_INPUT.properties.path.description) },
-        (args) => operations.ls(args.path),
+        (args) => operations.call('ls', args),
         { annotations: { readOnlyHint: true } },
       ),
       tool(
         'grep',
         GREP_DESCRIPTION,
         {
-          pattern: z.string().describe(GREP_INPUT.properties.pattern.description),
-          path: z.string().describe(GREP_INPUT.properties.path.description),
+          pattern: z.string().describe(grep.pattern.description),
+          path: z.string().describe(grep.path.description),
+          ignore_case: z.boolean().optional().describe(grep.ignore_case.description),
+          fixed_strings: z.boolean().optional().describe(grep.fixed_strings.description),
+          include: z.string().optional().describe(grep.include.description),
+          context: z.number().int().min(0).optional().describe(grep.context.description),
+          files_with_matches: z.boolean().optional().describe(grep.files_with_matches.description),
+          count: z.boolean().optional().describe(grep.count.description),
+          max_count: z.number().int().min(1).optional().describe(grep.max_count.description),
         },
-        (args) => operations.grep(args.pattern, args.path),
+        (args) => operations.call('grep', args),
         { annotations: { readOnlyHint: true } },
       ),
       tool(
@@ -108,7 +116,7 @@ export function MirageServer(workspace: Workspace, options: MirageToolOperations
           pattern: z.string().describe(GLOB_INPUT.properties.pattern.description),
           path: z.string().optional().describe(GLOB_INPUT.properties.path.description),
         },
-        (args) => operations.glob(args.pattern, args.path),
+        (args) => operations.call('glob', args),
         { annotations: { readOnlyHint: true } },
       ),
     ],

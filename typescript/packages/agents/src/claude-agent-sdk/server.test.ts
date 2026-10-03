@@ -85,12 +85,12 @@ describe('write', () => {
     expect(await ws.vfs.cat('/new.txt')).toBe('hello world')
   })
 
-  it('errors when the file exists', async () => {
+  it('refuses an unread file', async () => {
     const ws = mkWs()
     await ws.vfs.write('/exists.txt', 'first')
     const result = await new MirageToolOperations(ws).write('/exists.txt', 'second')
     expect(result.isError).toBe(true)
-    expect(firstText(result)).toContain('already exists')
+    expect(firstText(result)).toContain('read it before overwriting it')
   })
 
   it('creates parent directories', async () => {

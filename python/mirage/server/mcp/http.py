@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import FastAPI
@@ -34,11 +35,7 @@ from starlette.types import Receive, Scope, Send
 
 from mirage import __version__
 from mirage.agents.io_text import io_to_str
-from mirage.agents.tool_operations import (
-    DEFAULT_READ_LIMIT,
-    MirageToolOperations,
-    ToolResult,
-)
+from mirage.agents.tool_operations import MirageToolOperations, ToolResult
 from mirage.server.io_serde import io_result_to_dict
 from mirage.server.jobs import JobStatus, JobTable
 from mirage.server.mcp.server import MirageMcpServer
@@ -56,7 +53,7 @@ class DaemonToolOperations(MirageToolOperations):
     ``shell`` is a job, submitted to the daemon's job table the way
     ``POST /execute`` submits one, so an MCP command is listed by
     ``/v1/jobs``, can be cancelled there, and is recorded like any other.
-    The file tools run on the workspace's own loop.
+    The other tools run on the workspace's own loop.
 
     Args:
         entry (WorkspaceEntry): the workspace the tools act on.
@@ -108,33 +105,21 @@ class DaemonToolOperations(MirageToolOperations):
             return ToolResult(job.error or "execute failed", True)
         return answers[0]
 
-    async def read(
-        self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT
+    async def call(
+        self, name: str, arguments: Mapping[str, Any]
     ) -> ToolResult:
-        return await self._entry.runner.call(super().read(path, offset, limit))
+        """Run one tool: ``shell`` as a job, the rest on the workspace's loop.
 
-    async def write(self, path: str, content: str) -> ToolResult:
-        return await self._entry.runner.call(super().write(path, content))
+        Args:
+            name (str): the tool's name.
+            arguments (Mapping[str, Any]): the tool's input.
 
-    async def edit(
-        self,
-        path: str,
-        old_string: str,
-        new_string: str,
-        replace_all: bool = False,
-    ) -> ToolResult:
-        return await self._entry.runner.call(
-            super().edit(path, old_string, new_string, replace_all)
-        )
-
-    async def ls(self, path: str) -> ToolResult:
-        return await self._entry.runner.call(super().ls(path))
-
-    async def grep(self, pattern: str, path: str) -> ToolResult:
-        return await self._entry.runner.call(super().grep(pattern, path))
-
-    async def glob(self, pattern: str, path: str = "/") -> ToolResult:
-        return await self._entry.runner.call(super().glob(pattern, path))
+        Returns:
+            ToolResult: the tool's answer.
+        """
+        if name == "shell":
+            return await super().call(name, arguments)
+        return await self._entry.runner.call(super().call(name, arguments))
 
 
 class McpDoor:

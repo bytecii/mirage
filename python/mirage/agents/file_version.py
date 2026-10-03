@@ -104,6 +104,15 @@ class FileVersionTracker:
             self._read_versions[key] = version
         self._edit_versions.pop(key, None)
 
+    def has_read(self, path: str) -> bool:
+        """Whether a write may overwrite the file: the agent read it, or
+        wrote it, since this tracker started, or nothing is checked.
+
+        Args:
+            path (str): Virtual path.
+        """
+        return not self._enabled or self._key(path) in self._read_versions
+
     async def read(self, path: str) -> bytes:
         """Read a file and record what the agent was shown.
 

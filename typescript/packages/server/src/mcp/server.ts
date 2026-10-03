@@ -63,7 +63,7 @@ export function createMirageMcpServer(
       description: SHELL_DESCRIPTION,
       inputSchema: fromJsonSchema<{ command: string }>(SHELL_INPUT as JsonSchemaType),
     },
-    (args) => operations.shell(args.command),
+    (args) => operations.call('shell', args),
   )
   server.registerTool(
     'read',
@@ -74,7 +74,7 @@ export function createMirageMcpServer(
       ),
       annotations: { readOnlyHint: true },
     },
-    (args) => operations.read(args.path, args.offset, args.limit),
+    (args) => operations.call('read', args),
   )
   server.registerTool(
     'write',
@@ -82,7 +82,7 @@ export function createMirageMcpServer(
       description: WRITE_DESCRIPTION,
       inputSchema: fromJsonSchema<{ path: string; content: string }>(WRITE_INPUT as JsonSchemaType),
     },
-    (args) => operations.write(args.path, args.content),
+    (args) => operations.call('write', args),
   )
   server.registerTool(
     'edit',
@@ -95,7 +95,7 @@ export function createMirageMcpServer(
         replace_all?: boolean
       }>(EDIT_INPUT as JsonSchemaType),
     },
-    (args) => operations.edit(args.path, args.old_string, args.new_string, args.replace_all),
+    (args) => operations.call('edit', args),
   )
   server.registerTool(
     'ls',
@@ -104,16 +104,26 @@ export function createMirageMcpServer(
       inputSchema: fromJsonSchema<{ path: string }>(LS_INPUT as JsonSchemaType),
       annotations: { readOnlyHint: true },
     },
-    (args) => operations.ls(args.path),
+    (args) => operations.call('ls', args),
   )
   server.registerTool(
     'grep',
     {
       description: GREP_DESCRIPTION,
-      inputSchema: fromJsonSchema<{ pattern: string; path: string }>(GREP_INPUT as JsonSchemaType),
+      inputSchema: fromJsonSchema<{
+        pattern: string
+        path: string
+        ignore_case?: boolean
+        fixed_strings?: boolean
+        include?: string
+        context?: number
+        files_with_matches?: boolean
+        count?: boolean
+        max_count?: number
+      }>(GREP_INPUT as JsonSchemaType),
       annotations: { readOnlyHint: true },
     },
-    (args) => operations.grep(args.pattern, args.path),
+    (args) => operations.call('grep', args),
   )
   server.registerTool(
     'glob',
@@ -122,7 +132,7 @@ export function createMirageMcpServer(
       inputSchema: fromJsonSchema<{ pattern: string; path?: string }>(GLOB_INPUT as JsonSchemaType),
       annotations: { readOnlyHint: true },
     },
-    (args) => operations.glob(args.pattern, args.path),
+    (args) => operations.call('glob', args),
   )
 
   return server

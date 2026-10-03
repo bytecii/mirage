@@ -64,12 +64,32 @@ async def test_write_then_read_back(ops, workspace):
 
 
 @pytest.mark.asyncio
-async def test_write_refuses_existing(ops, workspace):
+async def test_write_refuses_an_unread_file(ops, workspace):
     await workspace.vfs.write("/exists.txt", b"first")
     result = await ops.write("/exists.txt", "second")
     assert result.is_error is True
-    assert "already exists" in result.text
+    assert "read it before overwriting it" in result.text
     assert await workspace.vfs.read("/exists.txt") == b"first"
+
+
+@pytest.mark.asyncio
+async def test_write_overwrites_a_read_file(ops, workspace):
+    await workspace.vfs.write("/exists.txt", b"first")
+    await ops.read("/exists.txt")
+    result = await ops.write("/exists.txt", "second")
+    assert result.is_error is False
+    assert await workspace.vfs.read("/exists.txt") == b"second"
+
+
+@pytest.mark.asyncio
+async def test_write_refuses_a_file_changed_since_read(ops, workspace):
+    await workspace.vfs.write("/exists.txt", b"first")
+    await ops.read("/exists.txt")
+    await workspace.vfs.write("/exists.txt", b"moved")
+    result = await ops.write("/exists.txt", "second")
+    assert result.is_error is True
+    assert "changed since it was last read" in result.text
+    assert await workspace.vfs.read("/exists.txt") == b"moved"
 
 
 @pytest.mark.asyncio
@@ -182,13 +202,13 @@ async def test_glob_finds_files_by_name(ops):
     await ops.write("/src/a.py", "a")
     await ops.write("/src/deep/b.py", "b")
     await ops.write("/src/c.txt", "c")
-    result = await ops.glob("*.py", "/src")
-    assert sorted(result.text.split()) == ["/src/a.py", "/src/deep/b.py"]
+    result = await ops.glob("**/*.py", "/src")
+    assert result.text.split() == ["/src/a.py", "/src/deep/b.py"]
     assert result.is_error is False
 
 
 @pytest.mark.asyncio
-async def test_glob_matches_the_last_component(ops):
+async def test_glob_matches_a_pattern_with_directories_in_it(ops):
     await ops.write("/src/deep/b.py", "b")
     result = await ops.glob("src/**/*.py")
     assert result.text.split() == ["/src/deep/b.py"]
@@ -207,5 +227,27 @@ async def test_glob_follows_a_link_to_a_file(ops):
 async def test_glob_skips_directories(ops):
     await ops.write("/cache.py/inner.txt", "x")
     await ops.write("/src/a.py", "a")
-    result = await ops.glob("*.py")
+    result = await ops.glob("**/*.py")
     assert result.text.split() == ["/src/a.py"]
+
+
+@pytest.mark.asyncio
+async def test_glob_matches_only_the_named_level(ops):
+    await ops.write("/src/a.py", "a")
+    await ops.write("/src/deep/b.py", "b")
+    result = await ops.glob("*.py", "/src")
+    assert result.text.split() == ["/src/a.py"]
+
+
+@pytest.mark.asyncio
+async def test_grep_takes_gnu_options(ops):
+    await ops.write("/src/a.py", "Needle\nhay\n")
+    await ops.write("/src/b.txt", "needle\n")
+    loose = await ops.grep("needle", "/src", ignore_case=True, include="*.py")
+    names = await ops.grep("needle", "/src", files_with_matches=True)
+    counted = await ops.grep("e", "/src/a.py", count=True)
+    literal = await ops.grep("-dash", "/src")
+    assert loose.text == "/src/a.py:1:Needle\n"
+    assert names.text == "/src/b.txt\n"
+    assert counted.text == "1\n"
+    assert literal.is_error is False

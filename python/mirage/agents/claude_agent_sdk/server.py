@@ -40,7 +40,6 @@ from mirage.agents.tool_descriptions import (
     WRITE_INPUT,
 )
 from mirage.agents.tool_operations import (
-    DEFAULT_READ_LIMIT,
     MirageToolOperations,
     ToolResult,
 )
@@ -71,37 +70,25 @@ class _MirageTools:
         self._ops = MirageToolOperations(workspace, stale_write_protection)
 
     async def shell(self, args: dict[str, Any]) -> dict[str, Any]:
-        return _to_sdk(await self._ops.shell(args["command"]))
+        return _to_sdk(await self._ops.call("shell", args))
 
     async def read(self, args: dict[str, Any]) -> dict[str, Any]:
-        offset = int(args.get("offset", 0))
-        limit = int(args.get("limit", DEFAULT_READ_LIMIT))
-        return _to_sdk(await self._ops.read(args["path"], offset, limit))
+        return _to_sdk(await self._ops.call("read", args))
 
     async def write(self, args: dict[str, Any]) -> dict[str, Any]:
-        return _to_sdk(await self._ops.write(args["path"], args["content"]))
+        return _to_sdk(await self._ops.call("write", args))
 
     async def edit(self, args: dict[str, Any]) -> dict[str, Any]:
-        replace_all = bool(args.get("replace_all", False))
-        return _to_sdk(
-            await self._ops.edit(
-                args["path"],
-                args["old_string"],
-                args["new_string"],
-                replace_all,
-            )
-        )
+        return _to_sdk(await self._ops.call("edit", args))
 
     async def ls(self, args: dict[str, Any]) -> dict[str, Any]:
-        return _to_sdk(await self._ops.ls(args["path"]))
+        return _to_sdk(await self._ops.call("ls", args))
 
     async def grep(self, args: dict[str, Any]) -> dict[str, Any]:
-        return _to_sdk(await self._ops.grep(args["pattern"], args["path"]))
+        return _to_sdk(await self._ops.call("grep", args))
 
     async def glob(self, args: dict[str, Any]) -> dict[str, Any]:
-        return _to_sdk(
-            await self._ops.glob(args["pattern"], args.get("path", "/"))
-        )
+        return _to_sdk(await self._ops.call("glob", args))
 
 
 def MirageServer(

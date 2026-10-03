@@ -138,7 +138,7 @@ async def test_call_ls_and_grep(server):
     assert "a.txt" in listing.content[0].text
     found = await call_tool(server, "grep", {"pattern": "needle", "path": "/"})
     assert "needle" in found.content[0].text
-    globbed = await call_tool(server, "glob", {"pattern": "*.txt"})
+    globbed = await call_tool(server, "glob", {"pattern": "**/*.txt"})
     assert globbed.content[0].text == "/d/a.txt\n"
 
 

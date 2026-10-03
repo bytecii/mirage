@@ -47,7 +47,6 @@ from mirage.agents.tool_descriptions import (
     WRITE_INPUT,
 )
 from mirage.agents.tool_operations import (
-    DEFAULT_READ_LIMIT,
     MirageToolOperations,
     ToolResult,
 )
@@ -208,47 +207,7 @@ class MirageMcpServer:
                 )
             )
         try:
-            return await self._run(params.name, arguments)
+            return _to_mcp(await self._ops.call(params.name, arguments))
         except Exception as exc:
             logger.debug("mcp tool %s failed", params.name, exc_info=True)
             return _to_mcp(ToolResult(str(exc), True))
-
-    async def _run(
-        self, name: str, arguments: dict[str, Any]
-    ) -> CallToolResult:
-        if name == "shell":
-            return _to_mcp(await self._ops.shell(arguments["command"]))
-        if name == "read":
-            return _to_mcp(
-                await self._ops.read(
-                    arguments["path"],
-                    int(arguments.get("offset", 0)),
-                    int(arguments.get("limit", DEFAULT_READ_LIMIT)),
-                )
-            )
-        if name == "write":
-            return _to_mcp(
-                await self._ops.write(arguments["path"], arguments["content"])
-            )
-        if name == "edit":
-            return _to_mcp(
-                await self._ops.edit(
-                    arguments["path"],
-                    arguments["old_string"],
-                    arguments["new_string"],
-                    bool(arguments.get("replace_all", False)),
-                )
-            )
-        if name == "ls":
-            return _to_mcp(await self._ops.ls(arguments["path"]))
-        if name == "grep":
-            return _to_mcp(
-                await self._ops.grep(arguments["pattern"], arguments["path"])
-            )
-        if name == "glob":
-            return _to_mcp(
-                await self._ops.glob(
-                    arguments["pattern"], arguments.get("path", "/")
-                )
-            )
-        raise ValueError(f"unknown tool: {name}")

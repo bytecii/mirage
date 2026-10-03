@@ -76,6 +76,14 @@ export class FileVersionTracker {
     this.editVersions.delete(key)
   }
 
+  /**
+   * Whether a write may overwrite the file: the agent read it, or wrote
+   * it, since this tracker started, or nothing is checked.
+   */
+  hasRead(path: string): boolean {
+    return !this.enabled || this.readVersions.has(this.key(path))
+  }
+
   async read(path: string): Promise<Buffer> {
     const content = await readBuffer(this.ws, path)
     if (this.enabled) this.readVersions.set(this.key(path), fingerprint(content))
