@@ -90,3 +90,12 @@ class Session:
             record=record,
             runtime=runtime,
         )
+
+    async def glob(self, pattern: str) -> list[str]:
+        """The paths a pattern matches as this session;
+        ``Workspace.glob`` with the session fixed.
+
+        Args:
+            pattern (str): the pattern, such as ``/src/**/*.py``.
+        """
+        return await self._ws.glob(pattern, session_id=self._id)

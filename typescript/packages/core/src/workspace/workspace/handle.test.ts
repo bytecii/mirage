@@ -64,6 +64,8 @@ describe('Session', () => {
     })
     expect(await ws.vfs.cat('/repo/secrets/key.pem')).toBe('PRIVATE\n')
     expect(reviewer.vfs.records).toBe(ws.vfs.records)
+    expect(await reviewer.glob('/repo/*')).toEqual(['/repo/README.md'])
+    expect(await ws.glob('/repo/*')).toEqual(['/repo/README.md', '/repo/secrets'])
   })
 
   it('adopts an existing session and refuses a profile for it', async () => {

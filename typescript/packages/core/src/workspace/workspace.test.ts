@@ -1337,3 +1337,68 @@ it('constructor alias cannot enable a disabled shared index', () => {
       }),
   ).toThrow(/caches reads or listings/)
 })
+
+async function globWs(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/': new RAMVFS(), '/data': new RAMVFS(), '/side': new RAMVFS() },
+    {
+      mode: MountMode.WRITE,
+      profiles: { blind: { paths: { hide: ['/side'] } } },
+      shellParser: await getTestParser(),
+    },
+  )
+  await ws.shell(
+    'mkdir -p /src/a/b && echo 1 > /src/top.py && echo 2 > /src/a/b/deep.py' +
+      ' && echo h > /src/.hidden.py && echo d > /data/d.txt' +
+      ' && echo s > /side/s.txt && ln -s /src/top.py /src/link.py',
+  )
+  return ws
+}
+
+describe('glob', () => {
+  it('matches as the shell expands', async () => {
+    const ws = await globWs()
+    try {
+      expect(await ws.glob('/src/*.py')).toEqual(['/src/link.py', '/src/top.py'])
+      expect(await ws.glob('/src/**/*.py')).toEqual([
+        '/src/a/b/deep.py',
+        '/src/link.py',
+        '/src/top.py',
+      ])
+      expect(await ws.glob('/*/*.txt')).toEqual(['/data/d.txt', '/side/s.txt'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('is empty without a match', async () => {
+    const ws = await globWs()
+    try {
+      expect(await ws.glob('/src/*.rs')).toEqual([])
+      expect(await ws.glob('/src/top.py')).toEqual(['/src/top.py'])
+      expect(await ws.glob('/src/missing.py')).toEqual([])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('reads a relative pattern from the cwd', async () => {
+    const ws = await globWs()
+    try {
+      await ws.shell('cd /src')
+      expect(await ws.glob('*.py')).toEqual(['/src/link.py', '/src/top.py'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('runs as the session', async () => {
+    const ws = await globWs()
+    try {
+      ws.createSession('b', { profile: 'blind' })
+      expect(await ws.glob('/*/*.txt', 'b')).toEqual(['/data/d.txt'])
+    } finally {
+      await ws.close()
+    }
+  })
+})

@@ -53,4 +53,9 @@ export class Session {
   shell(command: string, options: SessionExecuteOptions = {}): Promise<ExecuteResult> {
     return this.ws.shell(command, { ...options, sessionId: this.sessionId })
   }
+
+  /** The paths a pattern matches as this session; `Workspace.glob` with the session fixed. */
+  glob(pattern: string): Promise<string[]> {
+    return this.ws.glob(pattern, this.sessionId)
+  }
 }
