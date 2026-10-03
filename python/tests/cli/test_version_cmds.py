@@ -49,17 +49,17 @@ def test_commit_log_checkout_clone(daemon, tmp_path):
     cfg = _write_config(tmp_path)
     wid = _run(env, "workspace", "create", str(cfg))["id"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo v1 > /notes.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo v1 > /notes.txt")
     v1 = _run(env, "workspace", "commit", wid, "-m", "first")["version"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo v2 > /notes.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo v2 > /notes.txt")
     _run(env, "workspace", "commit", wid, "-m", "second")
 
     log = _run(env, "workspace", "log", wid)
     assert [e["message"] for e in log] == ["second", "first"]
 
     _run(env, "workspace", "checkout", wid, v1)
-    reverted = _run(env, "execute", "-w", wid, "-c", "cat /notes.txt")
+    reverted = _run(env, "shell", "-w", wid, "-c", "cat /notes.txt")
     assert reverted["stdout"] == "v1\n"
 
     clone = _run(env, "workspace", "clone", wid, "--at", v1)
@@ -78,18 +78,18 @@ def test_diff_versions_and_live(daemon, tmp_path):
     cfg = _write_config(tmp_path)
     wid = _run(env, "workspace", "create", str(cfg))["id"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo one > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo one > /a.txt")
     v1 = _run(env, "workspace", "commit", wid, "-m", "first")["version"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo two > /a.txt")
-    _run(env, "execute", "-w", wid, "-c", "echo new > /b.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo two > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo new > /b.txt")
     v2 = _run(env, "workspace", "commit", wid, "-m", "second")["version"]
 
     by_version = _run(env, "workspace", "diff", wid, v1, v2)
     assert by_version["modified"] == ["a.txt"]
     assert by_version["added"] == ["b.txt"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo three > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo three > /a.txt")
     live = _run(env, "workspace", "diff", wid)
     assert live["modified"] == ["a.txt"]
 
@@ -99,11 +99,11 @@ def test_branch_diverges_and_guards_commit(daemon, tmp_path):
     cfg = _write_config(tmp_path)
     wid = _run(env, "workspace", "create", str(cfg))["id"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo one > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo one > /a.txt")
     _run(env, "workspace", "commit", wid, "-m", "first")
 
     _run(env, "workspace", "branch", wid, "exp")
-    _run(env, "execute", "-w", wid, "-c", "echo two > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo two > /a.txt")
     _run(env, "workspace", "commit", wid, "-b", "exp", "-m", "on exp")
 
     exp_log = _run(env, "workspace", "log", wid, "-b", "exp")
@@ -129,11 +129,11 @@ def test_diff_includes_deleted(daemon, tmp_path):
     cfg = _write_config(tmp_path)
     wid = _run(env, "workspace", "create", str(cfg))["id"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo one > /a.txt")
-    _run(env, "execute", "-w", wid, "-c", "echo two > /b.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo one > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo two > /b.txt")
     v1 = _run(env, "workspace", "commit", wid, "-m", "first")["version"]
 
-    _run(env, "execute", "-w", wid, "-c", "rm /b.txt")
+    _run(env, "shell", "-w", wid, "-c", "rm /b.txt")
     v2 = _run(env, "workspace", "commit", wid, "-m", "second")["version"]
 
     changes = _run(env, "workspace", "diff", wid, v1, v2)
@@ -144,14 +144,14 @@ def test_clone_live_and_explicit_id(daemon, tmp_path):
     env = daemon["env"]
     cfg = _write_config(tmp_path)
     wid = _run(env, "workspace", "create", str(cfg))["id"]
-    _run(env, "execute", "-w", wid, "-c", "echo hello > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo hello > /a.txt")
 
     auto = _run(env, "workspace", "clone", wid)
     assert auto["id"] != wid
 
     named = _run(env, "workspace", "clone", wid, "--id", "myclone")
     assert named["id"] == "myclone"
-    got = _run(env, "execute", "-w", "myclone", "-c", "cat /a.txt")
+    got = _run(env, "shell", "-w", "myclone", "-c", "cat /a.txt")
     assert got["stdout"] == "hello\n"
 
 
@@ -160,10 +160,10 @@ def test_branch_from_non_main(daemon, tmp_path):
     cfg = _write_config(tmp_path)
     wid = _run(env, "workspace", "create", str(cfg))["id"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo one > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo one > /a.txt")
     _run(env, "workspace", "commit", wid, "-m", "first")
     _run(env, "workspace", "branch", wid, "exp")
-    _run(env, "execute", "-w", wid, "-c", "echo two > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo two > /a.txt")
     _run(env, "workspace", "commit", wid, "-b", "exp", "-m", "on exp")
 
     _run(env, "workspace", "branch", wid, "exp2", "--from", "exp")
@@ -176,18 +176,18 @@ def test_checkout_by_branch_name(daemon, tmp_path):
     cfg = _write_config(tmp_path)
     wid = _run(env, "workspace", "create", str(cfg))["id"]
 
-    _run(env, "execute", "-w", wid, "-c", "echo one > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo one > /a.txt")
     _run(env, "workspace", "commit", wid, "-m", "first")
     _run(env, "workspace", "branch", wid, "exp")
-    _run(env, "execute", "-w", wid, "-c", "echo two > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo two > /a.txt")
     _run(env, "workspace", "commit", wid, "-b", "exp", "-m", "on exp")
 
     _run(env, "workspace", "checkout", wid, "main")
-    on_main = _run(env, "execute", "-w", wid, "-c", "cat /a.txt")
+    on_main = _run(env, "shell", "-w", wid, "-c", "cat /a.txt")
     assert on_main["stdout"] == "one\n"
 
     _run(env, "workspace", "checkout", wid, "exp")
-    on_exp = _run(env, "execute", "-w", wid, "-c", "cat /a.txt")
+    on_exp = _run(env, "shell", "-w", wid, "-c", "cat /a.txt")
     assert on_exp["stdout"] == "two\n"
 
 
@@ -195,7 +195,7 @@ def test_error_paths_exit_2(daemon, tmp_path):
     env = daemon["env"]
     cfg = _write_config(tmp_path)
     wid = _run(env, "workspace", "create", str(cfg))["id"]
-    _run(env, "execute", "-w", wid, "-c", "echo one > /a.txt")
+    _run(env, "shell", "-w", wid, "-c", "echo one > /a.txt")
     _run(env, "workspace", "commit", wid, "-m", "first")
     _run(env, "workspace", "branch", wid, "exp")
 

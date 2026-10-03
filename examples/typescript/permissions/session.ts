@@ -121,7 +121,7 @@ async function read(
       role,
       "vfs.read",
       call,
-      (await handle.vfs.readFileText(path, "utf-8", sessionId)).trim(),
+      (await handle.vfs.cat(path, sessionId)).trim(),
       note,
     );
   } catch (err) {
@@ -136,7 +136,7 @@ async function write(
   note: string,
 ): Promise<void> {
   try {
-    await handle.vfs.writeFile(path, `${role} wrote\n`);
+    await handle.vfs.write(path, `${role} wrote\n`);
     show(role, "vfs.write", path, "ok", note);
   } catch (err) {
     show(role, "vfs.write", path, codeOf(err), note);

@@ -40,11 +40,11 @@ describe('gcal VFS', () => {
     ['raw', { raw: true }, WHOLE],
     ['range', { offset: 2, size: 10 }, WHOLE.slice(2, 12)],
   ])('reads an event cold at the op door (%s)', async (_label, options, data) => {
-    expect(await workspace().vfs.readFile(EVENT, options)).toEqual(data)
+    expect(await workspace().vfs.read(EVENT, options)).toEqual(data)
   })
 
   it('reads calendar.json cold at the op door', async () => {
-    const text = await workspace().vfs.readFileText('/cal/primary/calendar.json')
+    const text = await workspace().vfs.cat('/cal/primary/calendar.json')
     expect(JSON.parse(text)).toMatchObject({ bucketTimeZone: HK })
   })
 

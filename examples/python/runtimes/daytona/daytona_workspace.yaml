@@ -10,8 +10,8 @@
 #     examples/python/runtimes/daytona/create_sandbox.py)
 #   mirage workspace create daytona_workspace.yaml --id daytona-demo
 #   printf 'print("hello from the sandbox")\n' \
-#     | mirage execute -w daytona-demo -c 'cat > /data/hello.py'
-#   mirage execute -w daytona-demo -c 'cd /data && python3 hello.py'
+#     | mirage shell -w daytona-demo -c 'cat > /data/hello.py'
+#   mirage shell -w daytona-demo -c 'cd /data && python3 hello.py'
 #   mirage workspace delete daytona-demo   # the sandbox stays yours
 #
 # Captured lines (python3, pip) run whole inside the Daytona sandbox;

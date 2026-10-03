@@ -12,10 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { rmSync } from 'node:fs'
-import { readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { open, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import {
   FileStat,
   FileType,
@@ -31,6 +33,7 @@ import {
   type OpsResultContext,
   type Policy,
 } from '@struktoai/mirage-node'
+import { resolveFusermountBinary } from '@struktoai/mirage-node/fuse/mount'
 
 // Size-unknown probe: a stat wrapper simulates API-backed mounts (Linear,
 // Slack, Trello, ...) whose byte size is unknown until the content is
@@ -229,7 +232,7 @@ async function runSessionProbe(
   result.session_shell_listing = dec.decode(listing.stdout).trim()
   const capped = await ws.shell('echo x > /data/pub.txt', { sessionId: 'agent' })
   result.session_shell_write_refused = capped.exitCode !== 0
-  result.session_host_reads_hidden = (await ws.vfs.readFileText('/data/vault/secret.txt')).trim()
+  result.session_host_reads_hidden = (await ws.vfs.cat('/data/vault/secret.txt')).trim()
   const handle = await fuseMount(ws, { session })
   const data = join(handle.mountpoint, 'data')
   try {
@@ -255,12 +258,53 @@ async function runSessionProbe(
   }
 }
 
+// Outside-unmount probe: an outside unmount leaves nothing to release, so
+// removing the mount must succeed with no unmount helper on PATH, and a new
+// mount at the same path must serve again.
+async function runExternalUnmountProbe(
+  result: Record<string, string | number | boolean | null>,
+): Promise<void> {
+  const data = new RAMVFS()
+  data.store.dirs.add('/')
+  data.store.files.set('/a.txt', new TextEncoder().encode('alpha\n'))
+  const mountpoint = mkdtempSync(join(tmpdir(), 'mirage-fuse-ext-'))
+  const ws = new Workspace({ '/x': data })
+  try {
+    await ws.addFuseMount('/x', mountpoint)
+    if (process.platform === 'darwin') {
+      await promisify(execFile)('diskutil', ['unmount', mountpoint])
+    } else {
+      await promisify(execFile)(resolveFusermountBinary() ?? 'fusermount', ['-u', mountpoint])
+    }
+    const path = process.env.PATH
+    process.env.PATH = ''
+    let released = false
+    try {
+      await ws.removeFuseMount('/x')
+      released = !('/x' in ws.fuseMountpoints)
+    } catch (err) {
+      result.external_unmount_error = String(err)
+    } finally {
+      process.env.PATH = path
+    }
+    let remounted = false
+    if (released) {
+      await ws.addFuseMount('/x', mountpoint)
+      remounted = (await readFile(`${mountpoint}/a.txt`, 'utf8')) === 'alpha\n'
+    }
+    result.external_unmount_remounts = released && remounted
+  } finally {
+    await ws.close()
+  }
+}
+
 async function main(): Promise<void> {
   const result: Record<string, string | number | boolean | null> = {}
   const enc = new TextEncoder()
   const data = new RAMVFS()
   data.store.dirs.add('/')
   data.store.files.set('/a.txt', enc.encode('alpha\n'))
+  data.store.files.set('/s.txt', enc.encode('.'.repeat(20)))
   const logs = new RAMVFS()
   logs.store.dirs.add('/')
   logs.store.files.set('/b.txt', enc.encode('beta\n'))
@@ -294,6 +338,18 @@ async function main(): Promise<void> {
     await writeFile(`${dataMp}/t.txt`, 'BB\n')
     result.overwrite_short_size = (await stat(`${dataMp}/t.txt`)).size
     result.overwrite_short_body = (await readFile(`${dataMp}/t.txt`, 'utf8')).trim()
+    // Sparse writes on one handle stay separate runs until close, arriving
+    // here from the highest offset down; they land in arrival order, so the
+    // last write over offset 4 wins.
+    const sparse = await open(`${dataMp}/s.txt`, 'r+')
+    try {
+      for (let i = 9; i >= 0; i--)
+        await sparse.write(enc.encode(String.fromCharCode(97 + i)), 0, 1, 2 * i)
+      await sparse.write(enc.encode('Z'), 0, 1, 4)
+    } finally {
+      await sparse.close()
+    }
+    result.sparse_writes_body = await readFile(`${dataMp}/s.txt`, 'utf8')
     result.data_pinned = dataMp === pinned
     result.distinct_mounts = dataMp !== logsMp
 
@@ -324,6 +380,7 @@ async function main(): Promise<void> {
   await runPolicyProbe(result)
   await runLinkProbe(result)
   await runSessionProbe(result)
+  await runExternalUnmountProbe(result)
   process.stdout.write(JSON.stringify(result) + '\n')
 }
 

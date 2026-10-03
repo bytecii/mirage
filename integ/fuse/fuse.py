@@ -23,7 +23,7 @@ from collections.abc import Callable
 from typing import IO
 
 from mirage import Mount, MountBackend, MountMode, Workspace
-from mirage.fuse.mount import mount_background
+from mirage.fuse.mount import mount_background, resolve_fusermount_binary
 from mirage.policy import Policy
 from mirage.policy.types import Deny, OpsContext, OpsResultContext
 from mirage.types import FileStat
@@ -331,11 +331,57 @@ def run_sizeless_probe(result: dict[str, ProbeValue]) -> None:
             )
 
 
+def run_external_unmount_probe(result: dict[str, ProbeValue]) -> None:
+    """Record that a mount released from outside is removed and remounts.
+
+    An outside unmount leaves nothing to release, so removing the mount
+    must succeed with no unmount helper on PATH, and a new mount at the
+    same path must serve again.
+
+    Args:
+        result (dict[str, ProbeValue]): the probe result to extend.
+    """
+    if sys.platform == "win32":
+        # WinFsp holds a mount until the process exits, so nothing outside
+        # can release it and the case does not arise.
+        result["external_unmount_remounts"] = True
+        return
+    data = RAMVFS()
+    data._store.dirs.add("/")
+    data._store.files["/a.txt"] = b"alpha\n"
+    mountpoint = tempfile.mkdtemp(prefix="mirage-fuse-ext-")
+    outside = (
+        ["diskutil", "unmount", mountpoint]
+        if sys.platform == "darwin"
+        else [resolve_fusermount_binary() or "fusermount", "-u", mountpoint]
+    )
+    with Workspace({"/x": data}) as ws:
+        ws.add_fuse_mount("/x", mountpoint)
+        subprocess.run(outside, capture_output=True, check=True)
+        path = os.environ["PATH"]
+        os.environ["PATH"] = ""
+        try:
+            ws.remove_fuse_mount("/x")
+            released = "/x" not in ws.fuse_mountpoints
+        except OSError as err:
+            result["external_unmount_error"] = str(err)
+            released = False
+        finally:
+            os.environ["PATH"] = path
+        remounted = False
+        if released:
+            ws.add_fuse_mount("/x", mountpoint)
+            with open(f"{mountpoint}/a.txt", "rb") as fh:
+                remounted = fh.read() == b"alpha\n"
+    result["external_unmount_remounts"] = released and remounted
+
+
 def main() -> None:
     result: dict[str, ProbeValue] = {}
     data = RAMVFS()
     data._store.dirs.add("/")
     data._store.files["/a.txt"] = b"alpha\n"
+    data._store.files["/s.txt"] = b"." * 20
     logs = RAMVFS()
     logs._store.dirs.add("/")
     logs._store.files["/b.txt"] = b"beta\n"
@@ -376,6 +422,17 @@ def main() -> None:
         result["overwrite_short_size"] = os.path.getsize(f"{data_mp}/t.txt")
         with open(f"{data_mp}/t.txt", "rb") as fh:
             result["overwrite_short_body"] = fh.read().decode().strip()
+        # Sparse writes on one handle stay separate runs until close,
+        # arriving here from the highest offset down; they land in
+        # arrival order, so the last write over offset 4 wins.
+        with open(f"{data_mp}/s.txt", "r+b", buffering=0) as fh:
+            for i in range(9, -1, -1):
+                fh.seek(2 * i)
+                fh.write(bytes([ord("a") + i]))
+            fh.seek(4)
+            fh.write(b"Z")
+        with open(f"{data_mp}/s.txt", "rb") as fh:
+            result["sparse_writes_body"] = fh.read().decode()
         result["data_pinned"] = data_mp == pinned
         result["distinct_mounts"] = data_mp != logs_mp
 
@@ -402,6 +459,7 @@ def main() -> None:
     run_policy_probe(result)
     run_link_probe(result)
     run_session_probe(result)
+    run_external_unmount_probe(result)
     print(json.dumps(result))
 
 

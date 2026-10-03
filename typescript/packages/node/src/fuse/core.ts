@@ -270,7 +270,7 @@ export class MountCore {
       try {
         for (;;) {
           const gen = this.prefetchGen.get(key) ?? 0
-          const data = await this.op(() => this.ops.readFile(this.resolve(path)))
+          const data = await this.op(() => this.ops.read(this.resolve(path)))
           // The file changed while this read was out: what came back is
           // stale, so read again rather than install it.
           if ((this.prefetchGen.get(key) ?? 0) !== gen) continue
@@ -348,23 +348,29 @@ export class MountCore {
   }
 
   private async writeFile(path: string, data: Uint8Array): Promise<void> {
-    await this.op(() => this.ops.writeFile(this.resolve(path), data))
+    await this.op(() => this.ops.write(this.resolve(path), data))
   }
 
   /**
-   * Land buffered writes on the mount, one pwrite per run. A pwrite keeps
+   * Land write runs on the mount, one pwrite each, in order. A pwrite keeps
    * every stored byte the handle did not write, so nothing is read through
    * the door first: a session that may write a file and not read it writes
-   * through FUSE, as through a write-only descriptor. A run that fails still
-   * invalidates what the core holds, since the runs before it have landed.
+   * through FUSE, as through a write-only descriptor. The runs that landed
+   * leave `runs` in one step, so after a failure `runs` holds only what did
+   * not land and a retry never replays a run over bytes another writer has
+   * since put there. A run that fails still invalidates what the core holds,
+   * since the runs before it have landed.
    */
-  private async applyWrites(path: string, writes: [number, Uint8Array][]): Promise<void> {
+  private async applyWrites(path: string, runs: [number, Uint8Array][]): Promise<void> {
     const target = this.resolve(path)
+    let landed = 0
     try {
-      for (const [offset, data] of writeRuns(writes)) {
+      for (const [offset, data] of runs) {
         await this.op(() => this.ops.pwrite(target, data, offset))
+        landed += 1
       }
     } finally {
+      runs.splice(0, landed)
       await this.changed(path)
     }
   }
@@ -431,12 +437,10 @@ export class MountCore {
     if (ctx?.chunked !== undefined && ctx.data === undefined) return ctx.chunked.pread(pos, len)
     if (ctx !== undefined && ctx.data === undefined) {
       const cached = this.cachedData(path)
-      ctx.data = cached ?? (await this.op(() => this.ops.readFile(this.resolve(path))))
+      ctx.data = cached ?? (await this.op(() => this.ops.read(this.resolve(path))))
     }
     const data =
-      ctx?.data ??
-      this.cachedData(path) ??
-      (await this.op(() => this.ops.readFile(this.resolve(path))))
+      ctx?.data ?? this.cachedData(path) ?? (await this.op(() => this.ops.read(this.resolve(path))))
     return data.subarray(pos, pos + len)
   }
 
@@ -545,7 +549,7 @@ export class MountCore {
     if (hydrated.length === 0) return
     let data: Uint8Array
     try {
-      data = await this.op(() => this.ops.readFile(this.resolve(path)))
+      data = await this.op(() => this.ops.read(this.resolve(path)))
     } catch (err) {
       // The mutation has already landed, so a refresh that fails must not
       // report it as failed: an O_TRUNC open would fail after the old
@@ -604,9 +608,10 @@ export class MountCore {
 
   /**
    * Persist a handle's buffered writes. The buffer is detached before the
-   * await so a write arriving meanwhile is not lost to the clear, and
-   * restored ahead of those later writes when persistence fails, so the
-   * acknowledged bytes stay for the handle's own flush to retry.
+   * await so a write arriving meanwhile is not lost to the clear, and the
+   * runs that did not land are restored ahead of those later writes when
+   * persistence fails, so the acknowledged bytes stay for the handle's own
+   * flush to retry.
    */
   private settle(ctx: Handle): Promise<void> {
     if (ctx.writeBuf === undefined || ctx.writeBuf.length === 0) return Promise.resolve()
@@ -615,12 +620,12 @@ export class MountCore {
 
   private async persistBuffered(ctx: Handle): Promise<void> {
     if (ctx.writeBuf === undefined || ctx.writeBuf.length === 0) return
-    const writes = ctx.writeBuf
+    const runs = writeRuns(ctx.writeBuf)
     ctx.writeBuf = []
     try {
-      await this.applyWrites(ctx.path, writes)
+      await this.applyWrites(ctx.path, runs)
     } catch (err) {
-      ctx.writeBuf = [...writes, ...ctx.writeBuf]
+      ctx.writeBuf = [...runs, ...ctx.writeBuf]
       throw err
     }
   }
@@ -644,7 +649,7 @@ export class MountCore {
         await this.op(() => this.ops.truncate(this.resolve(path), size))
       } catch (dispatchErr) {
         if (!isMissingOp(dispatchErr, 'truncate')) throw dispatchErr
-        const data = await this.op(() => this.ops.readFile(this.resolve(path), { raw: true }))
+        const data = await this.op(() => this.ops.read(this.resolve(path), { raw: true }))
         const out = new Uint8Array(size)
         out.set(data.subarray(0, Math.min(data.byteLength, size)), 0)
         await this.writeFile(path, out)
@@ -725,7 +730,7 @@ export class MountCore {
       // moved all of it to answer a `head`. Mirrors Python's MountCore.open.
       // The fetch reads the handle's path as it is then: a rename moves it.
       ctx.chunked = new ChunkedHandle(path, s.size, (offset, size) =>
-        this.op(() => this.ops.readFile(this.resolve(ctx.path), { offset, size })),
+        this.op(() => this.ops.read(this.resolve(ctx.path), { offset, size })),
       )
     }
     return this.handles.add(ctx)
@@ -750,7 +755,7 @@ export class MountCore {
     if (held.length === 0) return
     let data: Uint8Array
     try {
-      data = await this.op(() => this.ops.readFile(this.resolve(path)))
+      data = await this.op(() => this.ops.read(this.resolve(path)))
     } catch (err) {
       console.warn(`fuse: holding ${path} before it goes failed: ${String(err)}`)
       return

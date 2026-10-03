@@ -36,8 +36,8 @@ Providing `cwd` or `env` runs the command in an ephemeral session clone, like a 
   <Tab title="CLI​" icon="terminal">
     ```bash
     # Use a real bash subshell inside the command string
-    mirage execute -w demo -c "(cd /data && ls)"
-    mirage execute -w demo -c "(export FOO=bar; printenv FOO)"
+    mirage shell -w demo -c "(cd /data && ls)"
+    mirage shell -w demo -c "(export FOO=bar; printenv FOO)"
     ```
     The CLI doesn't have `--cwd` / `--env` flags, but bash subshell syntax `(cd ... && cmd)` and `(export FOO=bar; cmd)` give the same per-call isolation. Mutations inside the parens don't leak.
   </Tab>
@@ -93,10 +93,10 @@ Both bindings support cooperative cancellation. TypeScript observes the signal a
   <Tab title="CLI​​" icon="terminal">
     ```bash
     # Background the job, then cancel it
-    JOB_ID=$(mirage execute -w demo -c "sleep 60" --bg)
+    JOB_ID=$(mirage shell -w demo -c "sleep 60" --bg)
     mirage job cancel "$JOB_ID"
     ```
-    Per-call timeout is not a CLI flag yet. Use `--bg` to get a job id and `mirage job cancel` to terminate, or wrap the command in the `timeout` builtin: `mirage execute -w demo -c "timeout 30 <cmd>"` exits `124` on overrun.
+    Per-call timeout is not a CLI flag yet. Use `--bg` to get a job id and `mirage job cancel` to terminate, or wrap the command in the `timeout` builtin: `mirage shell -w demo -c "timeout 30 <cmd>"` exits `124` on overrun.
   </Tab>
 </Tabs>
 
@@ -495,7 +495,7 @@ Both halves fire for every code path that reaches a mount: shell commands (`cat`
     # workspace's `profiles:` block)
     mirage session create demo --id slack-agent --profile slack-only
 
-    mirage execute -w demo -s slack-agent -c "cat /linear/issues/SEC-42"
+    mirage shell -w demo -s slack-agent -c "cat /linear/issues/SEC-42"
     # mirage: cat: /linear/issues/SEC-42: No such file or directory
     ```
   </Tab>
@@ -541,7 +541,7 @@ Agent harnesses commonly fan out tool calls in parallel, each with its own `cwd`
   <Tab title="CLI" icon="terminal">
     ```bash
     # No --cwd/--env flags: isolate each parallel call in a subshell
-    mirage execute -w demo -c "(cd /data && export DEBUG=1 && ls) & (cd /logs && export DEBUG=1 && grep foo *.log) & wait"
+    mirage shell -w demo -c "(cd /data && export DEBUG=1 && ls) & (cd /logs && export DEBUG=1 && grep foo *.log) & wait"
     ```
     Each `( ... )` runs in its own scope, so the parallel `cd` / `export` don't collide. `&` backgrounds them inside Mirage Bash and `wait` joins.
   </Tab>

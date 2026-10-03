@@ -23,7 +23,7 @@ async function invokeReadFile(ws: Workspace, path: string): Promise<MirageReadFi
 describe('mirageReadFileTool', () => {
   it('returns text as structured text input', async () => {
     const ws = mkWs()
-    await ws.vfs.writeFile('/notes.txt', 'hello')
+    await ws.vfs.write('/notes.txt', 'hello')
     await expect(invokeReadFile(ws, '/notes.txt')).resolves.toEqual({
       type: 'text',
       text: 'hello',
@@ -33,7 +33,7 @@ describe('mirageReadFileTool', () => {
   it('returns images as structured image input', async () => {
     const ws = mkWs()
     const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
-    await ws.vfs.writeFile('/photo.png', png)
+    await ws.vfs.write('/photo.png', png)
     const output = await invokeReadFile(ws, '/photo.png')
     expect(output.type).toBe('image')
     if (output.type !== 'image') throw new Error('expected image output')
@@ -43,7 +43,7 @@ describe('mirageReadFileTool', () => {
   it('returns PDFs as structured file input', async () => {
     const ws = mkWs()
     const pdf = new TextEncoder().encode('%PDF-1.4\n%%EOF\n')
-    await ws.vfs.writeFile('/document', pdf)
+    await ws.vfs.write('/document', pdf)
     const output = await invokeReadFile(ws, '/document')
     expect(output.type).toBe('file')
     if (output.type !== 'file') throw new Error('expected file output')
@@ -58,14 +58,14 @@ describe('mirageReadFileTool', () => {
     const ws = mkWs()
     await ws.vfs.mkdir('/archive.v1')
     const pdf = new TextEncoder().encode('%PDF-1.4\n%%EOF\n')
-    await ws.vfs.writeFile('/archive.v1/document', pdf)
+    await ws.vfs.write('/archive.v1/document', pdf)
     const output = await invokeReadFile(ws, '/archive.v1/document')
     expect(output.type).toBe('file')
   })
 
   it('describes unsupported binary files without corrupting them as text', async () => {
     const ws = mkWs()
-    await ws.vfs.writeFile('/blob.bin', new Uint8Array([0, 1, 2, 3]))
+    await ws.vfs.write('/blob.bin', new Uint8Array([0, 1, 2, 3]))
     const output = await invokeReadFile(ws, '/blob.bin')
     expect(output.type).toBe('text')
     if (output.type !== 'text') throw new Error('expected text output')

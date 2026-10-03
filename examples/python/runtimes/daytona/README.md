@@ -65,10 +65,10 @@ export DAYTONA_SANDBOX_ID=$(./python/.venv/bin/python \
 mirage workspace create examples/python/runtimes/daytona/daytona_workspace.yaml --id daytona-demo
 
 printf 'print("hello from the sandbox")\n' \
-  | mirage execute -w daytona-demo -c 'cat > /data/hello.py'
+  | mirage shell -w daytona-demo -c 'cat > /data/hello.py'
 
 # Same prefix on both sides, so the path passes through verbatim.
-mirage execute -w daytona-demo -c 'cd /data && python3 hello.py'
+mirage shell -w daytona-demo -c 'cd /data && python3 hello.py'
 
 mirage workspace delete daytona-demo   # the sandbox stays yours
 ```

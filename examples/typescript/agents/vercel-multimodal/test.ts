@@ -35,8 +35,8 @@ async function main(): Promise<void> {
 
   const ram = new RAMVFS()
   const ws = new Workspace({ '/': ram }, { mode: MountMode.WRITE })
-  await ws.vfs.writeFile('/chart.png', new Uint8Array(readFileSync(PNG_PATH)))
-  await ws.vfs.writeFile('/paper.pdf', new Uint8Array(readFileSync(PDF_PATH)))
+  await ws.vfs.write('/chart.png', new Uint8Array(readFileSync(PNG_PATH)))
+  await ws.vfs.write('/paper.pdf', new Uint8Array(readFileSync(PDF_PATH)))
 
   console.log(`=== Vercel multimodal test (model=${MODEL}) ===\n`)
   console.log(`Files in workspace:`)
@@ -52,8 +52,8 @@ async function main(): Promise<void> {
       tools,
       stopWhen: stepCountIs(4),
       system:
-        'You are a vision-capable assistant with access to a Mirage workspace. Use the readFile tool when you need file contents. After reading, describe what you saw in 2 short sentences.',
-      prompt: `Use the readFile tool to read ${target}, then describe what's in it.`,
+        'You are a vision-capable assistant with access to a Mirage workspace. Use the read tool when you need file contents. After reading, describe what you saw in 2 short sentences.',
+      prompt: `Use the read tool to read ${target}, then describe what's in it.`,
     })
     console.log('reply:', r.text || '(empty)')
     console.log(

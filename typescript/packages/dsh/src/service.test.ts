@@ -27,7 +27,7 @@ describe('MirageService', () => {
     await fiber.await()
     expect(ctx.mirage.workspace).toBe(ws)
     await fiber.dispose()
-    await ws.vfs.writeFile('/data/still-open.txt', 'yes')
+    await ws.vfs.write('/data/still-open.txt', 'yes')
     expect(await ws.vfs.exists('/data/still-open.txt')).toBe(true)
     await ws.close()
   })
@@ -39,7 +39,7 @@ describe('MirageService', () => {
     })
     await fiber.await()
     const ws = ctx.mirage.workspace
-    await ws.vfs.writeFile('/data/a.txt', 'alive')
+    await ws.vfs.write('/data/a.txt', 'alive')
     await fiber.dispose()
     await expect(ws.resolve('/data/a.txt')).rejects.toThrow('closed')
   })
@@ -57,9 +57,9 @@ describe('MirageService', () => {
     expect(() => ctx.mirage.workspace).toThrow('not ready')
     const ws = await ctx.mirage.ready
     expect(ctx.mirage.workspace).toBe(ws)
-    await ws.vfs.writeFile('/scratch/a.txt', 'declared')
+    await ws.vfs.write('/scratch/a.txt', 'declared')
     expect(await ws.vfs.exists('/scratch/a.txt')).toBe(true)
-    await ws.vfs.writeFile('/live/b.txt', 'instance')
+    await ws.vfs.write('/live/b.txt', 'instance')
     expect(await ws.vfs.exists('/live/b.txt')).toBe(true)
     await fiber.dispose()
     await expect(ws.resolve('/scratch/a.txt')).rejects.toThrow('closed')
@@ -260,7 +260,7 @@ describe('MirageService', () => {
     })
     await fiber.await()
     const ws = await ctx.mirage.ready
-    await ws.vfs.writeFile('/data/notes.txt', 'private')
+    await ws.vfs.write('/data/notes.txt', 'private')
     const [asked] = await ctx.mirage.explain('rm /data/notes.txt')
     expect(asked?.outcome).toBe('ask')
     expect(asked?.reason).toBe('deletes are reviewed')

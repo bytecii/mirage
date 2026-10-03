@@ -458,24 +458,31 @@ class MountCore:
             ctx.data = data
         return data[offset : offset + size]
 
-    def _apply_writes(self, path: str, writes: WriteBuf) -> None:
-        """Land buffered writes on the mount, one pwrite per run.
+    def _apply_writes(self, path: str, runs: WriteBuf) -> None:
+        """Land write runs on the mount, one pwrite each, in order.
 
         A pwrite keeps every stored byte the handle did not write, so
         nothing is read through the door first: a session that may write
         a file and not read it writes through FUSE, as through a
-        write-only descriptor. A run that fails still invalidates what
-        the core holds, since the runs before it have landed.
+        write-only descriptor. The runs that landed leave ``runs`` in one
+        step, so after a failure ``runs`` holds only what did not land
+        and a retry never replays a run over bytes another writer has
+        since put there. A run that fails still invalidates what the core
+        holds, since the runs before it have landed.
 
         Args:
             path (str): mount path being written.
-            writes (WriteBuf): (offset, payload) pairs in arrival order.
+            runs (WriteBuf): (offset, payload) runs; the landed ones are
+                removed.
         """
         target = self.resolve(path)
+        landed = 0
         try:
-            for offset, data in write_runs(writes):
+            for offset, data in runs:
                 self._run(self._ops.pwrite(target, data, offset))
+                landed += 1
         finally:
+            del runs[:landed]
             self._changed(path)
 
     def write(
@@ -663,8 +670,8 @@ class MountCore:
         ctx = self._ctx(fh)
         if ctx is None or not ctx.write_buf:
             return
+        ctx.write_buf = write_runs(ctx.write_buf)
         self._apply_writes(ctx.path, ctx.write_buf)
-        ctx.write_buf = []
 
     def open(self, path: str, flags: int = 0) -> int:
         """Open a path, hydrating it when its size is unknown.
@@ -794,8 +801,8 @@ class MountCore:
         key = self.identity(path)
         for ctx in self._handles.values():
             if ctx.key == key and ctx.write_buf:
+                ctx.write_buf = write_runs(ctx.write_buf)
                 self._apply_writes(ctx.path, ctx.write_buf)
-                ctx.write_buf = []
         self._run(self._ops.truncate(self.resolve(path), length))
         self._changed(path)
 

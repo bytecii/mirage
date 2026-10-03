@@ -309,7 +309,7 @@ export class Ops {
   // `offset`/`size` ride the same kwargs the generic read op already reads,
   // so a backend with a native range fetches one window instead of the whole
   // object. Python spells this `read(path, offset, size, raw)`.
-  async readFile(
+  async read(
     path: string,
     options: { raw?: boolean; offset?: number; size?: number | null } = {},
     sessionId?: string,
@@ -329,12 +329,7 @@ export class Ops {
     return (await this.through('read', path, [], kwargs, sessionId)) as Uint8Array
   }
 
-  async readFileText(path: string, encoding = 'utf-8', sessionId?: string): Promise<string> {
-    const bytes = await this.readFile(path, {}, sessionId)
-    return new TextDecoder(encoding, { fatal: false }).decode(bytes)
-  }
-
-  async writeFile(path: string, data: Uint8Array | string, sessionId?: string): Promise<void> {
+  async write(path: string, data: Uint8Array | string, sessionId?: string): Promise<void> {
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data
     await this.through('write', path, [bytes], {}, sessionId)
   }
@@ -561,7 +556,7 @@ export class Ops {
   }
 
   async cat(path: string, sessionId?: string): Promise<string> {
-    return this.readFileText(path, 'utf-8', sessionId)
+    return new TextDecoder('utf-8', { fatal: false }).decode(await this.read(path, {}, sessionId))
   }
 
   async listFiles(path: string, sessionId?: string): Promise<string[]> {

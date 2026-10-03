@@ -106,6 +106,8 @@ from mirage.workspace.cli import CLIInstall
 from mirage.workspace.dispatcher import Dispatcher
 from mirage.workspace.execution import ExecutionScope
 from mirage.workspace.executor.statement import restore_status
+from mirage.workspace.expand.classify.path import classify_bare_path
+from mirage.workspace.expand.globs import GlobOptions, resolve_globs
 from mirage.workspace.file_prompt import build_file_prompt
 from mirage.workspace.lookup import lookup, program, program_note, programs
 from mirage.workspace.lookup.types import Consumer
@@ -1670,6 +1672,48 @@ class Workspace:
         )
         raw, _ = await self.dispatch("readdir", scope)
         return raw
+
+    async def glob(
+        self, pattern: str, *, session_id: str | None = None
+    ) -> list[str]:
+        """The paths a pathname pattern matches, as the shell expands it.
+
+        The shell's own resolver matches it, so a pattern crosses
+        mounts, sees namespace links, and honors the session's hides
+        and ``dotglob``. A ``**`` segment matches any number of
+        directories (bash's ``globstar``); a pattern that matches
+        nothing gives no paths (``nullglob``), and a path with no glob
+        character gives itself when it exists. A relative pattern is
+        read from the session's working directory.
+
+        Args:
+            pattern (str): the pattern, such as ``/src/**/*.py``.
+            session_id (str | None): session to run as outside a line.
+
+        Returns:
+            list[str]: the matching paths, sorted.
+        """
+        return await self._bind_session(
+            session_id, partial(self._glob, pattern)
+        )
+
+    async def _glob(self, pattern: str) -> list[str]:
+        session = get_current_session_for(self._session_mgr)
+        cwd = session.cwd if session is not None else "/"
+        spec = classify_bare_path(pattern, self._registry, cwd)
+        if not isinstance(spec, PathSpec):
+            return []
+        if spec.pattern is None:
+            return (
+                [spec.virtual] if await self.vfs.exists(spec.virtual) else []
+            )
+        matches = await resolve_globs(
+            [spec],
+            self._registry,
+            links=self._namespace,
+            options=GlobOptions(nullglob=True, globstar=True),
+        )
+        return [m.virtual for m in matches if isinstance(m, PathSpec)]
 
     # ── execution ────────────────────────────────────────────────────────────
 

@@ -18,7 +18,7 @@ YAML
 mirage workspace create ./workspace.yaml --id myws
 
 # Run a command in it
-mirage execute -w myws -c 'echo hello'
+mirage shell -w myws -c 'echo hello'
 
 # Inspect / clean up
 mirage workspace list

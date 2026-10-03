@@ -91,8 +91,10 @@ interface FacadeSpec {
 }
 
 interface Step {
-  command?: string
-  script?: string
+  command?: string | Record<string, string>
+  script?: string | Record<string, string>
+  // A guest program per language, run as `python3 -c` or `node -e`.
+  program?: Record<string, string>
   runtime?: string
   stdin?: string
   add_runtime?: string
@@ -107,6 +109,8 @@ interface Step {
 
 interface MountSpecJson {
   vfs: string
+  // The mount's MountMode value ("read", "write", "exec"); exec when absent.
+  mode?: string
   // Set on a `backends` variant: the mount keeps its objects under a
   // prefix of its own, so variants never see each other's.
   scoped?: boolean
@@ -155,6 +159,8 @@ interface PolicySpec {
 interface Case {
   id: string
   hosts?: string[]
+  runtimes?: string[]
+  runtime?: string
   backends?: string[]
   backend?: string
   requires?: string[]
@@ -545,15 +551,17 @@ async function buildWorkspace(world: World, runId: string): Promise<Workspace> {
   const mounts: Record<string, MountSpec> = {}
   const seeds: [string, string, string][] = []
   const mountSpecs = world.mounts ?? { '/ram': { vfs: 'ram' } }
-  for (const [prefix, spec] of Object.entries(mountSpecs)) {
-    const vfs = await buildVfs(spec, runId)
+  for (const [index, [prefix, spec]] of Object.entries(mountSpecs).entries()) {
+    const vfs = await buildVfs(spec, `${runId}-${index}`)
     const guards = Object.fromEntries(
       Object.entries(spec.limits ?? {}).map(([cmd, kwargs]) => [
         cmd,
         new Limit(camelizeKeys(kwargs)),
       ]),
     )
-    mounts[prefix] = Object.keys(guards).length > 0 ? [vfs, MountMode.EXEC, guards] : vfs
+    const mode = (spec.mode ?? MountMode.EXEC) as MountMode
+    mounts[prefix] =
+      Object.keys(guards).length > 0 || spec.mode !== undefined ? [vfs, mode, guards] : vfs
     for (const [name, content] of Object.entries(spec.files ?? {})) {
       seeds.push([prefix, name, content])
     }
@@ -616,7 +624,9 @@ function check(
 ): string[] {
   const problems: string[] = []
   if (expect.exit !== undefined && exitCode !== expect.exit) {
-    problems.push(`exit: expected ${expect.exit}, got ${exitCode}`)
+    problems.push(
+      `exit: expected ${expect.exit}, got ${exitCode} (stderr ${JSON.stringify(stderr.slice(-300))})`,
+    )
   }
   if (expect.stdout !== undefined && stdout !== expect.stdout) {
     problems.push(
@@ -766,7 +776,7 @@ async function runStep(
     return problems.map((p) => `${caseId} ${label}: ${p}`)
   }
   let command = step.command ?? ''
-  if (step.script !== undefined) {
+  if (typeof step.script === 'string') {
     const source = readFileSync(join(SUITE_DIR, '../fixtures/runtime', step.script), 'utf8')
     command += ' ' + singleQuote(source)
   }
@@ -801,14 +811,100 @@ const BACKEND_REQUIRES: Record<string, string[]> = {
   redis: ['env:REDIS_URL'],
   s3: ['s3'],
 }
+// The guest language of every runtime a case's `runtimes` may name, and
+// the line head a step's program runs under in it.
+const RUNTIME_LANGUAGE: Record<string, string> = {
+  monty: 'python',
+  wasi: 'python',
+  pyodide: 'python',
+  quickjs: 'js',
+}
+const PROGRAM_HEAD: Record<string, string> = { python: 'python3 -c', js: 'node -e' }
+// What a `runtimes` entry needs on this host before it can run. A runtime
+// missing here does not exist on this host (wasi is python's), so its
+// variant is not listed at all.
+const RUNTIME_REQUIRES: Record<string, string[]> = {
+  monty: [],
+  pyodide: [],
+  quickjs: [],
+}
 
 /**
- * The case once per backend it names, its RAM mounts swapped for each:
- * an S3 variant keeps its objects under a prefix of its own, and each
- * variant takes its backend's requirements. A step's `expect_on` holds
- * what a backend answers differently. Mirrors run.py `_variants`.
+ * The case as one runtime runs it, or null when nothing runs there. A
+ * step's `program` (inline source) or `script` (a fixture path) maps a
+ * guest language to what that language runs, under `python3 -c` or
+ * `node -e`, and a `command` map gives the whole line per language; a
+ * step with nothing in the runtime's language is left out, and a case
+ * left with no program is not the runtime's. A step's `expect_on` keyed
+ * by the runtime, then by `runtime@host`, is what it answers
+ * differently, and the case's `filesystem` entry for it is the
+ * capabilities it declares. Mirrors run.py `_for_runtime`.
+ */
+function forRuntime(testCase: Case, runtime: string): Case | null {
+  const language = RUNTIME_LANGUAGE[runtime] ?? ''
+  const head = PROGRAM_HEAD[language] ?? ''
+  const steps: Step[] = []
+  let programs = 0
+  for (const listed of testCase.steps ?? []) {
+    let step = listed
+    const key = (['program', 'script', 'command'] as const).find(
+      (k) => typeof listed[k] === 'object',
+    )
+    if (key !== undefined) {
+      const source = (listed[key] as Record<string, string>)[language]
+      if (source === undefined) continue
+      programs += 1
+      const rest = { ...listed }
+      delete rest.program
+      step =
+        key === 'program'
+          ? { ...rest, command: `${head} ${singleQuote(source)}` }
+          : key === 'script'
+            ? { ...rest, command: head, script: source }
+            : { ...rest, command: source }
+    }
+    const on = step.expect_on ?? {}
+    const expect = { ...(step.expect ?? {}), ...on[runtime], ...on[`${runtime}@${HOST}`] }
+    steps.push({ ...step, expect })
+  }
+  if (programs === 0) return null
+  const world = structuredClone(testCase.world ?? {})
+  world.runtimes = [runtime, 'workspace']
+  return {
+    ...testCase,
+    id: `${testCase.id}@${runtime}`,
+    runtime,
+    world,
+    steps,
+    requires: [...(testCase.requires ?? []), ...(RUNTIME_REQUIRES[runtime] ?? [])],
+    filesystem: Object.fromEntries(
+      Object.entries(testCase.filesystem ?? {}).filter(([name]) => name === runtime),
+    ),
+  }
+}
+
+/**
+ * The case once per runtime and backend it names. `runtimes` pins that one
+ * behavior holds whatever guest runs it (see `forRuntime`), `backends`
+ * that it holds whatever serves the mount: each backend variant swaps the
+ * RAM mounts for that backend, an S3 one under a prefix of its own. Each
+ * variant takes its runtime's and backend's requirements. A step's
+ * `expect_on` keyed by the backend, then by `runtime@backend`, holds what
+ * that variant answers differently. Mirrors run.py `_variants`.
  */
 function variants(testCase: Case): Case[] {
+  if (testCase.runtimes === undefined) return backendVariants(testCase)
+  const unknown = testCase.runtimes.filter((r) => RUNTIME_LANGUAGE[r] === undefined)
+  if (unknown.length > 0) throw new Error(`${testCase.id}: unknown runtimes ${unknown.join(', ')}`)
+  return testCase.runtimes
+    .filter((runtime) => RUNTIME_REQUIRES[runtime] !== undefined)
+    .flatMap((runtime) => {
+      const variant = forRuntime(testCase, runtime)
+      return variant === null ? [] : backendVariants(variant)
+    })
+}
+
+function backendVariants(testCase: Case): Case[] {
   if (testCase.backends === undefined) return [testCase]
   return testCase.backends.map((backend) => {
     const world = structuredClone(testCase.world ?? {})
@@ -823,7 +919,10 @@ function variants(testCase: Case): Case[] {
       id: `${testCase.id}@${backend}`,
       backend,
       world,
-      requires: BACKEND_REQUIRES[backend] ?? [`unknown backend ${backend}`],
+      requires: [
+        ...(testCase.requires ?? []),
+        ...(BACKEND_REQUIRES[backend] ?? [`unknown backend ${backend}`]),
+      ],
     }
   })
 }
@@ -862,8 +961,14 @@ async function runCase(suite: string, testCase: Case): Promise<string[]> {
       }
     }
     for (const [index, listed] of (testCase.steps ?? []).entries()) {
-      const override = listed.expect_on?.[testCase.backend ?? ''] ?? {}
-      const step = { ...listed, expect: { ...(listed.expect ?? {}), ...override } }
+      const on = listed.expect_on ?? {}
+      const backend = testCase.backend ?? ''
+      const expect = {
+        ...(listed.expect ?? {}),
+        ...on[backend],
+        ...on[`${testCase.runtime ?? ''}@${backend}`],
+      }
+      const step = { ...listed, expect }
       problems.push(...(await runStep(ws, caseId, index, step)))
     }
   } finally {

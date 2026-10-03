@@ -77,6 +77,10 @@
       "types": "./dist/ssh/config.d.ts",
       "import": "./dist/ssh/config.js"
     },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
     "./package.json": "./package.json",
     "./bin/daemon": "./dist/bin/daemon.js"
   },
@@ -94,6 +98,9 @@
   "dependencies": {
     "@fastify/multipart": "^10.0.0",
     "@fastify/rate-limit": "^10.0.0",
+    "@modelcontextprotocol/client": "^2.3.0",
+    "@modelcontextprotocol/server": "^2.3.0",
+    "@struktoai/mirage-agents": "workspace:*",
     "@struktoai/mirage-core": "workspace:*",
     "@struktoai/mirage-node": "workspace:*",
     "fastify": "^5.12.5",

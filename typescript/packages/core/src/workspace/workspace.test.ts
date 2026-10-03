@@ -513,7 +513,7 @@ describe('Workspace dynamic mount index', () => {
       expect(() => ws.addMount('late/', rejected)).toThrow('duplicate mount prefix')
       expect(ws.mount('/late').indexStore).toBe(index)
       // Mutations must evict the configured store, including after aliasing.
-      await ws.vfs.writeFile('/late/new.txt', 'new')
+      await ws.vfs.write('/late/new.txt', 'new')
       expect((await index.listDir('/late')).status).toBe(LookupStatus.NOT_FOUND)
     } finally {
       await ws.close()
@@ -699,11 +699,9 @@ describe('Workspace.unmount', () => {
         expect((await ws.resolve('/alias'))[0]).toBe(vfs)
         expect(() => ws.addMount('/data', new RAMVFS())).toThrow('duplicate mount prefix')
         await expect(ws.vfs.readdir('/data')).rejects.toMatchObject({ code: 'EBUSY' })
-        await expect(ws.vfs.writeFile('/data/file', bytes.encode('changed'))).rejects.toMatchObject(
-          {
-            code: 'EBUSY',
-          },
-        )
+        await expect(ws.vfs.write('/data/file', bytes.encode('changed'))).rejects.toMatchObject({
+          code: 'EBUSY',
+        })
         for (const line of ['cat /data/file', 'echo changed > /data/file']) {
           expect((await ws.shell(line)).exitCode).not.toBe(0)
         }
@@ -758,7 +756,7 @@ describe('Workspace.unmount', () => {
     const ws = new Workspace({ '/a': a, '/b': b })
     try {
       await ws.unmount('/a')
-      await expect(ws.vfs.readFile('/b/file.txt')).resolves.toEqual(content)
+      await expect(ws.vfs.read('/b/file.txt')).resolves.toEqual(content)
       await ws.unmount('/b')
       await expect(ws.vfs.readdir('/')).resolves.toContain('/dev')
     } finally {
@@ -780,12 +778,12 @@ describe('Workspace.unmount', () => {
     })
     const ws = new Workspace({ '/a': a, '/b': b }, { ops })
     try {
-      await ws.vfs.readFile('/a/file.txt')
-      await ws.vfs.readFile('/b/file.txt')
+      await ws.vfs.read('/a/file.txt')
+      await ws.vfs.read('/b/file.txt')
       await ws.unmount('/a')
       expect(a.closes).toBe(1)
       expect(b.closes).toBe(0)
-      await expect(ws.vfs.readFile('/b/file.txt')).resolves.toEqual(content)
+      await expect(ws.vfs.read('/b/file.txt')).resolves.toEqual(content)
       await ws.unmount('/b')
       expect(b.closes).toBe(1)
       expect(ops.find('read', 'mock')).toBeNull()
@@ -1159,13 +1157,13 @@ it('changes mount modes without remounting and refuses invalid modes atomically'
   try {
     const fs = ws.vfs
     const mount = ws.mount('/data')
-    await fs.writeFile('/data/file', new TextEncoder().encode('kept'))
+    await fs.write('/data/file', new TextEncoder().encode('kept'))
     for (const mode of [MountMode.READ, MountMode.EXEC, MountMode.WRITE]) {
       ws.setMountMode('data/', mode)
       expect(ws.vfs).toBe(fs)
       expect(ws.mount('/data')).toBe(mount)
       expect(mount.mode).toBe(mode)
-      expect(new TextDecoder().decode(await fs.readFile('/data/file'))).toBe('kept')
+      expect(new TextDecoder().decode(await fs.read('/data/file'))).toBe('kept')
     }
     expect(() => {
       ws.setMountMode('/data', 'invalid' as MountMode)
@@ -1180,13 +1178,13 @@ it('updates default-profile policy for unbound ops without replacing the session
   const ws = new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.WRITE })
   try {
     const session = ws.getSession(ws.defaultSessionId)
-    await ws.vfs.writeFile('/data/file', new TextEncoder().encode('kept'))
+    await ws.vfs.write('/data/file', new TextEncoder().encode('kept'))
     const profile = { commands: { deny: [{ paths: ['/data/file'], reason: 'sealed' }] } }
     expect(await ws.setSessionProfile(ws.defaultSessionId, profile)).toBe(session)
-    await expect(ws.vfs.readFile('/data/file')).rejects.toThrow()
+    await expect(ws.vfs.read('/data/file')).rejects.toThrow()
     await ws.setSessionProfile(ws.defaultSessionId, {})
     expect(ws.getSession(ws.defaultSessionId)).toBe(session)
-    expect(new TextDecoder().decode(await ws.vfs.readFile('/data/file'))).toBe('kept')
+    expect(new TextDecoder().decode(await ws.vfs.read('/data/file'))).toBe('kept')
   } finally {
     await ws.close()
   }
@@ -1341,4 +1339,69 @@ it('constructor alias cannot enable a disabled shared index', () => {
         }),
       }),
   ).toThrow(/caches reads or listings/)
+})
+
+async function globWs(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/': new RAMVFS(), '/data': new RAMVFS(), '/side': new RAMVFS() },
+    {
+      mode: MountMode.WRITE,
+      profiles: { blind: { paths: { hide: ['/side'] } } },
+      shellParser: await getTestParser(),
+    },
+  )
+  await ws.shell(
+    'mkdir -p /src/a/b && echo 1 > /src/top.py && echo 2 > /src/a/b/deep.py' +
+      ' && echo h > /src/.hidden.py && echo d > /data/d.txt' +
+      ' && echo s > /side/s.txt && ln -s /src/top.py /src/link.py',
+  )
+  return ws
+}
+
+describe('glob', () => {
+  it('matches as the shell expands', async () => {
+    const ws = await globWs()
+    try {
+      expect(await ws.glob('/src/*.py')).toEqual(['/src/link.py', '/src/top.py'])
+      expect(await ws.glob('/src/**/*.py')).toEqual([
+        '/src/a/b/deep.py',
+        '/src/link.py',
+        '/src/top.py',
+      ])
+      expect(await ws.glob('/*/*.txt')).toEqual(['/data/d.txt', '/side/s.txt'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('is empty without a match', async () => {
+    const ws = await globWs()
+    try {
+      expect(await ws.glob('/src/*.rs')).toEqual([])
+      expect(await ws.glob('/src/top.py')).toEqual(['/src/top.py'])
+      expect(await ws.glob('/src/missing.py')).toEqual([])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('reads a relative pattern from the cwd', async () => {
+    const ws = await globWs()
+    try {
+      await ws.shell('cd /src')
+      expect(await ws.glob('*.py')).toEqual(['/src/link.py', '/src/top.py'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('runs as the session', async () => {
+    const ws = await globWs()
+    try {
+      ws.createSession('b', { profile: 'blind' })
+      expect(await ws.glob('/*/*.txt', 'b')).toEqual(['/data/d.txt'])
+    } finally {
+      await ws.close()
+    }
+  })
 })

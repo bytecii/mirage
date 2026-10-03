@@ -12,57 +12,85 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-// Port of CPython fnmatch.translate matching semantics. Deliberate divergences:
-// always case-sensitive (no normcase, so this equals Python fnmatchcase), an
-// invalid class range like [z-a] becomes the never-matching (?!) instead of
-// raising, and a leading ^ negates a class like ! does (bash/glibc semantics;
-// CPython keeps ^ literal). Mirrors the Python mirage.utils.fnmatch wrapper.
+// CPython fnmatch matching semantics, matched directly rather than through a
+// translated regular expression: a pattern comes from the caller (a glob, a
+// find -name, a grep --include), and a regex built from it backtracks
+// polynomially on a pattern like *a*a*a*b. Every token but * consumes one
+// character, so returning to the last * on a mismatch is enough, and a
+// match costs at most name length times pattern length. Deliberate
+// divergences from CPython: always case-sensitive (no normcase, so this
+// equals Python fnmatchcase), an invalid class range like [z-a] never
+// matches instead of raising, and a leading ^ negates a class like ! does
+// (bash/glibc semantics; CPython keeps ^ literal). Mirrors the Python
+// mirage.utils.fnmatch wrapper.
 export function fnmatch(name: string, pattern: string): boolean {
-  return translate(pattern).test(name)
-}
-
-function classBody(stuff: string): string {
-  let body = stuff.replace(/\\/g, '\\\\').replace(/\]/g, '\\]').replace(/\[/g, '\\[')
-  if (body.startsWith('!')) body = '^' + body.slice(1)
-  else if (body.startsWith('^')) body = '^' + body.slice(1)
-  try {
-    new RegExp('[' + body + ']')
-  } catch {
-    return '(?!)'
-  }
-  return '[' + body + ']'
-}
-
-function translate(pattern: string): RegExp {
-  let re = ''
-  let i = 0
-  const n = pattern.length
-  while (i < n) {
-    const c = pattern[i]
-    if (c === undefined) break
-    i += 1
-    if (c === '*') {
-      if (!re.endsWith('.*')) re += '.*'
-    } else if (c === '?') {
-      re += '.'
-    } else if (c === '[') {
-      let j = i
-      if (j < n && (pattern[j] === '!' || pattern[j] === '^')) j += 1
-      if (j < n && pattern[j] === ']') j += 1
-      while (j < n && pattern[j] !== ']') j += 1
-      if (j >= n) {
-        re += '\\['
-      } else {
-        const stuff = pattern.slice(i, j)
-        i = j + 1
-        if (stuff === '!' || stuff === '^') re += '.'
-        else re += classBody(stuff)
+  let n = 0
+  let p = 0
+  let starP = -1
+  let starN = 0
+  while (n < name.length) {
+    if (p < pattern.length) {
+      const c = pattern[p]
+      if (c === '*') {
+        while (p < pattern.length && pattern[p] === '*') p += 1
+        starP = p
+        starN = n
+        continue
       }
-    } else if (/[.+^$(){}|[\]\\/]/.test(c)) {
-      re += '\\' + c
+      const end = c === '[' ? classEnd(pattern, p) : -1
+      if (end >= 0) {
+        if (classMatches(pattern.slice(p + 1, end), name.charAt(n))) {
+          p = end + 1
+          n += 1
+          continue
+        }
+      } else if (c === '?' || c === name[n]) {
+        p += 1
+        n += 1
+        continue
+      }
+    }
+    if (starP < 0) return false
+    starN += 1
+    n = starN
+    p = starP
+  }
+  while (p < pattern.length && pattern[p] === '*') p += 1
+  return p === pattern.length
+}
+
+// The index of the ] closing the class that opens at `open`, or -1 when
+// none does and the [ is a literal. A ] right after the [ (or after its
+// negation) is a member, not the close.
+function classEnd(pattern: string, open: number): number {
+  let j = open + 1
+  if (j < pattern.length && (pattern[j] === '!' || pattern[j] === '^')) j += 1
+  if (j < pattern.length && pattern[j] === ']') j += 1
+  while (j < pattern.length && pattern[j] !== ']') j += 1
+  return j < pattern.length ? j : -1
+}
+
+// Whether one character is in a class body. Members are literal (a
+// backslash is a member too), a-z is a range, a - at either end is
+// literal, and a class holding a range whose ends are out of order
+// matches nothing. A body of just ! or ^ matches any character.
+function classMatches(body: string, ch: string): boolean {
+  if (body === '!' || body === '^') return true
+  const negate = body.startsWith('!') || body.startsWith('^')
+  const members = negate ? body.slice(1) : body
+  let found = false
+  let i = 0
+  while (i < members.length) {
+    const lo = members.charAt(i)
+    if (members[i + 1] === '-' && i + 2 < members.length) {
+      const hi = members.charAt(i + 2)
+      if (lo > hi) return false
+      if (lo <= ch && ch <= hi) found = true
+      i += 3
     } else {
-      re += c
+      if (lo === ch) found = true
+      i += 1
     }
   }
-  return new RegExp('^(?:' + re + ')$', 's')
+  return found !== negate
 }

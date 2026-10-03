@@ -38,7 +38,7 @@ export class MirageEditor implements Editor {
   ): Promise<ApplyPatchResult> {
     await ensureParent(this.ws, op.path)
     const content = applyDiff('', op.diff, 'create')
-    await this.ws.vfs.writeFile(op.path, content)
+    await this.ws.vfs.write(op.path, content)
     return { status: 'completed' }
   }
 
@@ -47,12 +47,12 @@ export class MirageEditor implements Editor {
   ): Promise<ApplyPatchResult> {
     let current: string
     try {
-      current = await this.ws.vfs.readFileText(op.path)
+      current = await this.ws.vfs.cat(op.path)
     } catch {
       return { status: 'failed', output: `File not found: ${op.path}` }
     }
     const next = applyDiff(current, op.diff)
-    await this.ws.vfs.writeFile(op.path, next)
+    await this.ws.vfs.write(op.path, next)
     return { status: 'completed' }
   }
 

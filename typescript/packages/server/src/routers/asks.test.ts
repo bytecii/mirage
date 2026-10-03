@@ -66,7 +66,7 @@ async function execute(
 ): Promise<{ exitCode: number; stderr: string; refusal: { kind: string; reason: string } | null }> {
   const r = await app.inject({
     method: 'POST',
-    url: `/v1/workspaces/${wsId}/execute`,
+    url: `/v1/workspaces/${wsId}/shell`,
     payload: { command, sessionId },
   })
   expect(r.statusCode).toBe(200)

@@ -12,9 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import shlex
 from collections.abc import Awaitable
-from posixpath import dirname
 from typing import Any, Callable, TypeVar
 
 try:
@@ -24,7 +22,10 @@ except ImportError as exc:
         "`agno` not installed. Install with: pip install 'mirage-ai[agno]'"
     ) from exc
 
-from mirage.agents.io_text import io_to_str
+from mirage.agents.tool_operations import (
+    DEFAULT_READ_LIMIT,
+    MirageToolOperations,
+)
 from mirage.bridge.sync import run_async_from_sync
 from mirage.workspace.workspace import Workspace
 
@@ -34,28 +35,46 @@ T = TypeVar("T")
 class MirageToolkit(Toolkit):
     """Agno toolkit backed by a Mirage Workspace.
 
-    Exposes shell-style filesystem access (execute, read, write, ls, grep)
-    as sync and async tool pairs for Agno agents.
+    Serves Mirage's tool table (shell, read, write, edit, ls, grep, glob)
+    as sync and async tool pairs, each answering as the MCP tool of the
+    same name does. Agno builds a tool's schema from its signature, so
+    each method takes the tool's input fields as parameters.
 
     Args:
         workspace (Workspace): The workspace to operate on.
+        stale_write_protection (bool): False lets an agent overwrite a
+            file that changed since it read it.
+        session_id (str | None): The session the tools act as, with its
+            profile; None is the workspace's default session.
     """
 
-    def __init__(self, workspace: Workspace, **kwargs) -> None:
-        self._ws = workspace
+    def __init__(
+        self,
+        workspace: Workspace,
+        stale_write_protection: bool = True,
+        session_id: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._ops = MirageToolOperations(
+            workspace, stale_write_protection, session_id
+        )
         tools: list[Callable[..., Any]] = [
-            self.execute,
+            self.shell,
             self.read,
             self.write,
+            self.edit,
             self.ls,
             self.grep,
+            self.glob,
         ]
         async_tools: list[tuple[Callable[..., Any], str]] = [
-            (self.aexecute, "execute"),
+            (self.ashell, "shell"),
             (self.aread, "read"),
             (self.awrite, "write"),
+            (self.aedit, "edit"),
             (self.als, "ls"),
             (self.agrep, "grep"),
+            (self.aglob, "glob"),
         ]
         super().__init__(
             name="mirage", tools=tools, async_tools=async_tools, **kwargs
@@ -64,86 +83,179 @@ class MirageToolkit(Toolkit):
     def _run(self, coro: Awaitable[T]) -> T:
         return run_async_from_sync(coro)
 
-    # -- execute ---------------------------------------------------------
+    async def _call(self, name: str, arguments: dict[str, Any]) -> str:
+        return (await self._ops.call(name, arguments)).text
 
-    def execute(self, command: str) -> str:
-        """Run a shell-style command on the mounted filesystem.
-
-        Supports cat, grep, find, head, pipe, and any other Unix command.
-
-        Args:
-            command (str): The shell command to execute.
-        """
-        return self._run(self.aexecute(command))
-
-    async def aexecute(self, command: str) -> str:
-        io = await self._ws.shell(command)
-        return io_to_str(io)
-
-    # -- read --------------------------------------------------------------
-
-    def read(self, path: str) -> str:
-        """Read the full contents of a file at the given path.
+    def shell(self, command: str) -> str:
+        """Run a command line in the workspace's shell (cat, grep, find,
+        pipes and redirects included) and return its output.
 
         Args:
-            path (str): Absolute path to the file on the mounted filesystem.
+            command (str): The command line to run.
         """
-        return self._run(self.aread(path))
+        return self._run(self.ashell(command))
 
-    async def aread(self, path: str) -> str:
-        io = await self._ws.shell(f"cat {shlex.quote(path)}")
-        return io_to_str(io)
+    async def ashell(self, command: str) -> str:
+        return await self._call("shell", {"command": command})
 
-    # -- write -------------------------------------------------------------
+    def read(
+        self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT
+    ) -> str:
+        """Read a text file and return its lines numbered.
+
+        Args:
+            path (str): Absolute path of the file to read.
+            offset (int): Line to start at, 0-based.
+            limit (int): Most lines to return.
+        """
+        return self._run(self.aread(path, offset, limit))
+
+    async def aread(
+        self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT
+    ) -> str:
+        return await self._call(
+            "read", {"path": path, "offset": offset, "limit": limit}
+        )
 
     def write(self, path: str, content: str) -> str:
-        """Write content to a file, creating it if it does not exist.
+        """Write a file, creating missing parent directories. An existing
+        file must be read in full first, and the write fails if it changed
+        since.
 
         Args:
-            path (str): Absolute path to the file on the mounted filesystem.
-            content (str): The content to write to the file.
+            path (str): Absolute path of the file to write.
+            content (str): The text to write.
         """
         return self._run(self.awrite(path, content))
 
     async def awrite(self, path: str, content: str) -> str:
-        parent = dirname(path) or "/"
-        mkdir = await self._ws.shell(f"mkdir -p {shlex.quote(parent)}")
-        if mkdir.exit_code != 0:
-            return io_to_str(mkdir)
-        io = await self._ws.shell(
-            f"tee {shlex.quote(path)}", stdin=content.encode("utf-8")
-        )
-        return io_to_str(io)
+        return await self._call("write", {"path": path, "content": content})
 
-    # -- ls ------------------------------------------------------------------
-
-    def ls(self, path: str = "/") -> str:
-        """List the files and directories at the given path.
+    def edit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> str:
+        """Replace a string in a file read first.
 
         Args:
-            path (str): Absolute directory path to list. Defaults to root.
+            path (str): Absolute path of the file to edit.
+            old_string (str): The exact text to replace.
+            new_string (str): The text to put in its place.
+            replace_all (bool): Replace every occurrence instead of
+                exactly one.
+        """
+        return self._run(self.aedit(path, old_string, new_string, replace_all))
+
+    async def aedit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> str:
+        return await self._call(
+            "edit",
+            {
+                "path": path,
+                "old_string": old_string,
+                "new_string": new_string,
+                "replace_all": replace_all,
+            },
+        )
+
+    def ls(self, path: str) -> str:
+        """List the files and directories at a path.
+
+        Args:
+            path (str): Absolute path of the directory to list.
         """
         return self._run(self.als(path))
 
-    async def als(self, path: str = "/") -> str:
-        io = await self._ws.shell(f"ls {shlex.quote(path)}")
-        return io_to_str(io)
+    async def als(self, path: str) -> str:
+        return await self._call("ls", {"path": path})
 
-    # -- grep ---------------------------------------------------------------
-
-    def grep(self, pattern: str, path: str) -> str:
-        """Search for a pattern in files at the given path.
-
-        Supports regex patterns.
+    def grep(
+        self,
+        pattern: str,
+        path: str,
+        ignore_case: bool = False,
+        fixed_strings: bool = False,
+        include: str | None = None,
+        context: int | None = None,
+        files_with_matches: bool = False,
+        count: bool = False,
+        max_count: int | None = None,
+    ) -> str:
+        """Search files recursively for a regular expression, as
+        GNU grep -rn does.
 
         Args:
-            pattern (str): The string or regex pattern to search for.
-            path (str): The file or directory path to search within.
+            pattern (str): Regular expression to search for.
+            path (str): Absolute path of the file or directory to search.
+            ignore_case (bool): Match case-insensitively (-i).
+            fixed_strings (bool): Read pattern as a literal string (-F).
+            include (str | None): Search only files whose name matches
+                this glob (--include).
+            context (int | None): Lines of context around each match (-C).
+            files_with_matches (bool): Print only matching file names (-l).
+            count (bool): Print only a count of matching lines (-c).
+            max_count (int | None): Stop each file after this many
+                matching lines (-m).
         """
-        return self._run(self.agrep(pattern, path))
-
-    async def agrep(self, pattern: str, path: str) -> str:
-        io = await self._ws.shell(
-            f"grep -r {shlex.quote(pattern)} {shlex.quote(path)}"
+        return self._run(
+            self.agrep(
+                pattern,
+                path,
+                ignore_case,
+                fixed_strings,
+                include,
+                context,
+                files_with_matches,
+                count,
+                max_count,
+            )
         )
-        return io_to_str(io)
+
+    async def agrep(
+        self,
+        pattern: str,
+        path: str,
+        ignore_case: bool = False,
+        fixed_strings: bool = False,
+        include: str | None = None,
+        context: int | None = None,
+        files_with_matches: bool = False,
+        count: bool = False,
+        max_count: int | None = None,
+    ) -> str:
+        arguments: dict[str, Any] = {
+            "pattern": pattern,
+            "path": path,
+            "ignore_case": ignore_case,
+            "fixed_strings": fixed_strings,
+            "files_with_matches": files_with_matches,
+            "count": count,
+        }
+        if include is not None:
+            arguments["include"] = include
+        if context is not None:
+            arguments["context"] = context
+        if max_count is not None:
+            arguments["max_count"] = max_count
+        return await self._call("grep", arguments)
+
+    def glob(self, pattern: str, path: str = "/") -> str:
+        """Find files whose path matches a pattern such as **/*.py.
+
+        Args:
+            pattern (str): Pathname pattern; ** matches any number of
+                directories.
+            path (str): Directory a relative pattern is matched under.
+        """
+        return self._run(self.aglob(pattern, path))
+
+    async def aglob(self, pattern: str, path: str = "/") -> str:
+        return await self._call("glob", {"pattern": pattern, "path": path})

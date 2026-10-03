@@ -869,7 +869,7 @@ describe('a cold read keeps its bytes for the next reader', () => {
       write: false,
       fn: async (_accessor, path, _args, kwargs) => {
         fetched.push(path.virtual)
-        if (race && fetched.length === 1) await ws.vfs.writeFile('/data/f.count', 'NEWER')
+        if (race && fetched.length === 1) await ws.vfs.write('/data/f.count', 'NEWER')
         const offset = typeof kwargs.offset === 'number' ? kwargs.offset : 0
         const size = typeof kwargs.size === 'number' ? kwargs.size : null
         return sliceWindow(ENC.encode('BODY'), offset, size)
@@ -883,11 +883,11 @@ describe('a cold read keeps its bytes for the next reader', () => {
     // and slice it for every range, so the first range keeps the file and
     // the rest, and the whole read, are served from it.
     const { ws, fetched } = counted()
-    await ws.vfs.writeFile('/data/f.count', 'STORED')
-    expect(DEC.decode(await ws.vfs.readFile('/data/f.count', { offset: 0, size: 2 }))).toBe('BO')
-    expect(DEC.decode(await ws.vfs.readFile('/data/f.count', { offset: 2, size: 2 }))).toBe('DY')
-    expect(DEC.decode(await ws.vfs.readFile('/data/f.count', { offset: 0, size: 0 }))).toBe('')
-    expect(await ws.vfs.readFileText('/data/f.count')).toBe('BODY')
+    await ws.vfs.write('/data/f.count', 'STORED')
+    expect(DEC.decode(await ws.vfs.read('/data/f.count', { offset: 0, size: 2 }))).toBe('BO')
+    expect(DEC.decode(await ws.vfs.read('/data/f.count', { offset: 2, size: 2 }))).toBe('DY')
+    expect(DEC.decode(await ws.vfs.read('/data/f.count', { offset: 0, size: 0 }))).toBe('')
+    expect(await ws.vfs.cat('/data/f.count')).toBe('BODY')
     expect(fetched).toEqual(['/data/f.count'])
   })
 
@@ -895,10 +895,10 @@ describe('a cold read keeps its bytes for the next reader', () => {
     // A raw read is not the rendering the cache holds under the same key,
     // and a store that serves a range itself moved only that range.
     const { ws, fetched } = counted()
-    await ws.vfs.writeFile('/data/f.count', 'STORED')
-    await ws.vfs.writeFile('/data/f.txt', '0123456789')
-    expect(DEC.decode(await ws.vfs.readFile('/data/f.count', { raw: true }))).toBe('STORED')
-    expect(DEC.decode(await ws.vfs.readFile('/data/f.txt', { offset: 2, size: 3 }))).toBe('234')
+    await ws.vfs.write('/data/f.count', 'STORED')
+    await ws.vfs.write('/data/f.txt', '0123456789')
+    expect(DEC.decode(await ws.vfs.read('/data/f.count', { raw: true }))).toBe('STORED')
+    expect(DEC.decode(await ws.vfs.read('/data/f.txt', { offset: 2, size: 3 }))).toBe('234')
     expect(await ws.cache.exists('/data/f.count')).toBe(false)
     expect(await ws.cache.exists('/data/f.txt')).toBe(false)
     expect(fetched).toEqual([])
@@ -908,9 +908,9 @@ describe('a cold read keeps its bytes for the next reader', () => {
     // The write lands after the fetch began, so the bytes it read may be
     // older than the file; keeping them would serve the old file.
     const { ws, fetched } = counted(true)
-    await ws.vfs.writeFile('/data/f.count', 'STORED')
-    await ws.vfs.readFile('/data/f.count')
-    await ws.vfs.readFile('/data/f.count')
+    await ws.vfs.write('/data/f.count', 'STORED')
+    await ws.vfs.read('/data/f.count')
+    await ws.vfs.read('/data/f.count')
     expect(fetched).toHaveLength(2)
   })
 })

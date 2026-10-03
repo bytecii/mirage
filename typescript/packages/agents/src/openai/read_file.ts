@@ -12,7 +12,7 @@ export type MirageReadFileOutput = ToolOutputText | ToolOutputImage | ToolOutput
 
 async function readFileOutput(ws: Workspace, path: string): Promise<MirageReadFileOutput> {
   try {
-    const result = await readWorkspaceFile(ws, path)
+    const result = await readWorkspaceFile(ws.vfs, path)
     if (result.kind === 'text') {
       return { type: 'text', text: result.content }
     }

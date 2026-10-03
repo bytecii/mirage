@@ -43,7 +43,7 @@ describe('pyodide extended attributes', { timeout: 120_000 }, () => {
         'except OSError as exc:',
         '    print(exc.errno == errno.ENODATA)',
       ].join('\n')
-      await ws.vfs.writeFile('/data/probe.py', guest)
+      await ws.vfs.write('/data/probe.py', guest)
       const ran = await ws.shell('python3 /data/probe.py')
       expect(DEC.decode(ran.stderr)).toBe('')
       expect(DEC.decode(ran.stdout)).toBe("b'shell'\n['user.guest', 'user.tag']\nTrue\n")

@@ -409,6 +409,36 @@ async def test_a_flush_that_fails_after_a_run_landed_still_refreshes():
 
 
 @pytest.mark.asyncio
+async def test_a_flush_retry_lands_only_the_runs_that_failed():
+    vfs = RAMVFS()
+    ws = Workspace({"/": vfs}, mode=MountMode.WRITE)
+    await ws.shell("printf abcdefgh > /f")
+    failing = _SecondPwriteFails(ws.vfs)
+    core = MountCore(failing)
+    fh = core.open("/f", os.O_WRONLY)
+    core.write("/f", b"Y", 5, fh)
+    core.write("/f", b"X", 0, fh)
+    with pytest.raises(PermissionError):
+        core.flush("/f", fh)
+    await ws.vfs.pwrite("/f", b"W", 5)
+    core.flush("/f", fh)
+    assert vfs._store.files["/f"] == b"XbcdeWgh"
+    assert failing.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_a_failed_direct_write_keeps_its_errno():
+    vfs = RAMVFS()
+    ws = Workspace({"/": vfs}, mode=MountMode.WRITE)
+    await ws.shell("printf abcdefgh > /f")
+    core = MountCore(_SecondPwriteFails(ws.vfs))
+    core.write("/f", b"X", 0, None)
+    with pytest.raises(PermissionError) as raised:
+        core.write("/f", b"Y", 5, None)
+    assert raised.value.errno == errno.EACCES
+
+
+@pytest.mark.asyncio
 async def test_buffered_write_flush_lands_in_the_stored_bytes():
     # A mount that renders this extension must not get the rendering
     # written over the file on a partial write.

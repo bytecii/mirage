@@ -14,6 +14,8 @@
         <img src="https://img.shields.io/github/license/strukto-ai/mirage?label=%E8%AE%B8%E5%8F%AF%E8%AF%81&color=0C0C0C&labelColor=FAFAFA" /></a>
     <a href="https://discord.gg/u8BPQ65KsS" alt="Discord 社区">
         <img src="https://img.shields.io/badge/discord-%E5%8A%A0%E5%85%A5-0C0C0C?labelColor=FAFAFA&logo=discord&logoColor=0C0C0C" /></a>
+    <a href="../assets/wechat-qr-code.jpg" aria-label="微信社区">
+        <img src="https://img.shields.io/badge/wechat-%E5%8A%A0%E5%85%A5-0C0C0C?labelColor=FAFAFA&logo=wechat&logoColor=0C0C0C" alt="微信社区" /></a>
     <br/>
     <a href="https://docs.mirage.strukto.ai/python/quickstart" alt="Python 文档">
         <img src="https://img.shields.io/badge/python-%E6%96%87%E6%A1%A3-0C0C0C?labelColor=FAFAFA&logo=python&logoColor=0C0C0C" alt="Python 文档"></a>
@@ -155,7 +157,7 @@ await ws.snapshot('demo.tar')
 
 ```bash
 mirage workspace create ws.yaml --id demo
-mirage execute   --workspace_id demo --command "cp /s3/report.csv /data/report.csv"
+mirage shell --workspace_id demo --command "cp /s3/report.csv /data/report.csv"
 mirage workspace snapshot demo demo.tar
 mirage workspace load demo.tar --id demo-restored
 ```
@@ -166,7 +168,7 @@ Mirage 可以作为沙箱或工具层接入 Agent 框架。`read` 等 POSIX 操�
 
 |            | 集成                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Python     | [OpenAI Agents SDK](https://docs.mirage.strukto.ai/python/agents/openai-agents)、[LangChain](https://docs.mirage.strukto.ai/python/agents/langchain)、[Pydantic AI](https://docs.mirage.strukto.ai/python/agents/pydantic-ai)、[CAMEL](https://docs.mirage.strukto.ai/python/agents/camel)、[OpenHands](https://docs.mirage.strukto.ai/python/agents/openhands)、[Agno](https://docs.mirage.strukto.ai/python/agents/agno)      |
+| Python     | [OpenAI Agents SDK](https://docs.mirage.strukto.ai/python/agents/openai-agents)、[LangChain](https://docs.mirage.strukto.ai/python/agents/langchain)、[Pydantic AI](https://docs.mirage.strukto.ai/python/agents/pydantic-ai)、[OpenHands](https://docs.mirage.strukto.ai/python/agents/openhands)、[Agno](https://docs.mirage.strukto.ai/python/agents/agno)                                                                   |
 | TypeScript | [Vercel AI SDK](https://docs.mirage.strukto.ai/typescript/agents/vercel)、[OpenAI Agents SDK](https://docs.mirage.strukto.ai/typescript/agents/openai)、[LangChain](https://docs.mirage.strukto.ai/typescript/agents/langchain)、[Mastra](https://docs.mirage.strukto.ai/typescript/agents/mastra)                                                                                                                              |
 | 编码 Agent | [Claude Code](https://docs.mirage.strukto.ai/python/agents/claude-code)、[Codex](https://docs.mirage.strukto.ai/typescript/agents/codex)、[DeepSeek Harness](https://docs.mirage.strukto.ai/typescript/agents/dsh)、[Grok Build](https://docs.mirage.strukto.ai/typescript/agents/grok-build)、[OpenCode](https://docs.mirage.strukto.ai/typescript/agents/opencode)、[Pi](https://docs.mirage.strukto.ai/typescript/agents/pi) |
 

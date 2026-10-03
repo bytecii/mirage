@@ -4,7 +4,7 @@ description: Install Mirage as a Codex plugin and use mounted data from the Code
 icon: /images/openai-logo.svg
 ---
 
-[OpenAI Codex](https://github.com/openai/codex) can load Mirage as a plugin. The plugin packages a Mirage guidance skill and six filesystem tools: `read`, `write`, `edit`, `ls`, `grep`, and `execute_command`.
+[OpenAI Codex](https://github.com/openai/codex) can load Mirage as a plugin. The plugin packages a Mirage guidance skill and seven filesystem tools: `shell`, `read`, `write`, `edit`, `ls`, `grep`, and `glob`.
 
 <Note>
   Codex can work on repositories in any programming language. The Mirage tool
@@ -72,13 +72,7 @@ The plugin launches this command automatically:
 npx -y @struktoai/mirage-cli mcp
 ```
 
-You can also embed the transport in a Node application:
-
-```ts
-import { createMirageMcpServer } from '@struktoai/mirage-agents/mcp'
-
-const server = createMirageMcpServer(workspace)
-```
+It relays to the Mirage daemon, starting it when it is not running, and deletes the workspace it loaded when Codex stops it. See [MCP](/home/mcp) for the other ways in.
 
 ## Run Codex's own tools over SSH
 

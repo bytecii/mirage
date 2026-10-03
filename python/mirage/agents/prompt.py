@@ -29,7 +29,7 @@ a mount searches with its own index only when the search starts inside it
 You can write Python code and execute it. The workspace is pre-configured \
 with your data sources mounted at their respective paths.
 
-Use the execute tool for complex operations. \
+Use the shell tool for complex operations. \
 Use read/write/edit for simple file operations.
 """
 

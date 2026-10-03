@@ -15,8 +15,9 @@
 import sys
 from pathlib import Path
 
+_RUNTIME_DIR = str(Path(__file__).parent)
 _INTEG_DIR = str(Path(__file__).parent.parent)
-sys.path[:] = [p for p in sys.path if p not in (_INTEG_DIR, "")]
+sys.path[:] = [p for p in sys.path if p not in (_RUNTIME_DIR, _INTEG_DIR, "")]
 
 import asyncio  # noqa: E402
 import copy  # noqa: E402
@@ -71,6 +72,23 @@ BACKEND_REQUIRES: dict[str, list[str]] = {
     "ram": [],
     "redis": ["env:REDIS_URL"],
     "s3": ["s3"],
+}
+# The guest language of every runtime a case's `runtimes` may name, and
+# the line head a step's program runs under in it.
+RUNTIME_LANGUAGE: dict[str, str] = {
+    "monty": "python",
+    "wasi": "python",
+    "pyodide": "python",
+    "quickjs": "js",
+}
+PROGRAM_HEAD: dict[str, str] = {"python": "python3 -c", "js": "node -e"}
+# What a `runtimes` entry needs on this host before it can run. A runtime
+# missing here does not exist on this host (pyodide is typescript's), so
+# its variant is not listed at all.
+RUNTIME_REQUIRES: dict[str, list[str]] = {
+    "monty": [],
+    "wasi": ["env:MIRAGE_WASI_HOME"],
+    "quickjs": ["env:MIRAGE_QUICKJS_HOME"],
 }
 
 _moto_server: Any = None
@@ -525,13 +543,16 @@ async def _build_workspace(world: dict[str, Any], run_id: str) -> Workspace:
     mounts: dict[str, Any] = {}
     seeds: list[tuple[str, str, bytes]] = []
     mount_specs = world.get("mounts", {"/ram": {"vfs": "ram"}})
-    for prefix, spec in mount_specs.items():
-        vfs = await _build_vfs(spec, run_id)
+    for index, (prefix, spec) in enumerate(mount_specs.items()):
+        vfs = await _build_vfs(spec, f"{run_id}-{index}")
         guards = {
             cmd: Limit(**kwargs)
             for cmd, kwargs in spec.get("limits", {}).items()
         }
-        mounts[prefix] = (vfs, MountMode.EXEC, guards) if guards else vfs
+        mode = MountMode(spec.get("mode", "exec"))
+        mounts[prefix] = (
+            (vfs, mode, guards) if guards or "mode" in spec else vfs
+        )
         for name, content in spec.get("files", {}).items():
             seeds.append((prefix, name, content.encode()))
     kwargs: dict[str, Any] = {}
@@ -650,7 +671,10 @@ def _check(
 ) -> list[str]:
     problems = []
     if "exit" in expect and exit_code != expect["exit"]:
-        problems.append(f"exit: expected {expect['exit']}, got {exit_code}")
+        problems.append(
+            f"exit: expected {expect['exit']}, got {exit_code} "
+            f"(stderr {stderr[-300:]!r})"
+        )
     if "stdout" in expect and stdout != expect["stdout"]:
         problems.append(
             f"stdout: expected {expect['stdout']!r}, got {stdout!r}"
@@ -765,19 +789,105 @@ async def _run_step(
     return problems
 
 
-def _variants(case: dict[str, Any]) -> list[dict[str, Any]]:
-    """The case once per backend it names, its RAM mounts swapped for each.
+def _for_runtime(case: dict[str, Any], runtime: str) -> dict[str, Any] | None:
+    """The case as one runtime runs it, or None when nothing runs there.
 
-    A case lists ``backends`` to pin that one behavior holds whatever
-    serves the mount: each variant replaces every ``ram`` mount with that
-    backend (an S3 one under a key prefix of its own, so variants never
-    see each other's objects) and takes the backend's requirements. A
-    step's ``expect_on`` holds what a backend answers differently, merged
-    over its ``expect`` for that variant only.
+    A step's ``program`` (inline source) or ``script`` (a fixture path)
+    maps a guest language to what that language runs, under ``python3
+    -c`` or ``node -e``, and a ``command`` map gives the whole line per
+    language; a step with nothing in the runtime's language is left out,
+    and a case left with no program is not the runtime's. A step's
+    ``expect_on`` keyed by the runtime, then by ``runtime@host``, is what
+    it answers differently, and the case's ``filesystem`` entry for it is
+    the capabilities it declares.
+
+    Args:
+        case (dict[str, Any]): the case as the suite spells it.
+        runtime (str): one name from the case's ``runtimes``.
+    """
+    language = RUNTIME_LANGUAGE[runtime]
+    steps: list[dict[str, Any]] = []
+    programs = 0
+    for step in case["steps"]:
+        key = next(
+            (
+                k
+                for k in ("program", "script", "command")
+                if isinstance(step.get(k), dict)
+            ),
+            None,
+        )
+        if key is not None:
+            by_language = step[key]
+            if language not in by_language:
+                continue
+            programs += 1
+            head = PROGRAM_HEAD[language]
+            source = by_language[language]
+            step = {k: v for k, v in step.items() if k != "program"}
+            if key == "program":
+                step["command"] = f"{head} {shlex.quote(source)}"
+            elif key == "script":
+                step.update(command=head, script=source)
+            else:
+                step["command"] = source
+        on = step.get("expect_on", {})
+        expect = {
+            **step.get("expect", {}),
+            **on.get(runtime, {}),
+            **on.get(f"{runtime}@{HOST}", {}),
+        }
+        steps.append({**step, "expect": expect})
+    if programs == 0:
+        return None
+    world = copy.deepcopy(case.get("world", {}))
+    world["runtimes"] = [runtime, "workspace"]
+    variant = {
+        **case,
+        "id": f"{case['id']}@{runtime}",
+        "runtime": runtime,
+        "world": world,
+        "steps": steps,
+        "requires": case.get("requires", []) + RUNTIME_REQUIRES[runtime],
+    }
+    if runtime in case.get("filesystem", {}):
+        variant["filesystem"] = {runtime: case["filesystem"][runtime]}
+    else:
+        variant.pop("filesystem", None)
+    return variant
+
+
+def _variants(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """The case once per runtime and backend it names.
+
+    A case lists ``runtimes`` to pin that one behavior holds whatever
+    guest runs it (see ``_for_runtime``), and ``backends`` to pin that it
+    holds whatever serves the mount: each backend variant replaces every
+    ``ram`` mount with that backend (an S3 one under a key prefix of its
+    own, so variants never see each other's objects). Each variant takes
+    its runtime's and backend's requirements. A step's ``expect_on``
+    keyed by the backend, then by ``runtime@backend``, holds what that
+    variant answers differently, merged over its ``expect`` for it only.
 
     Args:
         case (dict[str, Any]): the case as the suite spells it.
     """
+    if "runtimes" in case:
+        unknown = [r for r in case["runtimes"] if r not in RUNTIME_LANGUAGE]
+        if unknown:
+            raise ValueError(f"{case['id']}: unknown runtimes {unknown}")
+        variants = []
+        for runtime in case["runtimes"]:
+            if runtime not in RUNTIME_REQUIRES:
+                continue
+            variant = _for_runtime(case, runtime)
+            if variant is not None:
+                variants.extend(_backend_variants(variant))
+        return variants
+    return _backend_variants(case)
+
+
+def _backend_variants(case: dict[str, Any]) -> list[dict[str, Any]]:
     backends = case.get("backends")
     if backends is None:
         return [case]
@@ -794,7 +904,8 @@ def _variants(case: dict[str, Any]) -> list[dict[str, Any]]:
                 "id": f"{case['id']}@{backend}",
                 "backend": backend,
                 "world": world,
-                "requires": BACKEND_REQUIRES[backend],
+                "requires": case.get("requires", [])
+                + BACKEND_REQUIRES[backend],
             }
         )
     return variants
@@ -830,10 +941,15 @@ async def _run_case(suite: str, case: dict[str, Any]) -> list[str]:
                     )
         for index, step in enumerate(case["steps"]):
             if "expect_on" in step:
-                override = step["expect_on"].get(case.get("backend"), {})
+                on = step["expect_on"]
+                backend = case.get("backend")
                 step = {
                     **step,
-                    "expect": {**step.get("expect", {}), **override},
+                    "expect": {
+                        **step.get("expect", {}),
+                        **on.get(backend, {}),
+                        **on.get(f"{case.get('runtime')}@{backend}", {}),
+                    },
                 }
             problems.extend(await _run_step(ws, case_id, index, step))
     finally:

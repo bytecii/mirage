@@ -235,7 +235,8 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, opts: { verbose?: boolean }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const path = `/v1/workspaces/${id}` + (opts.verbose === true ? '?verbose=true' : '')
+      const path =
+        `/v1/workspaces/${encodeURIComponent(id)}` + (opts.verbose === true ? '?verbose=true' : '')
       emit(
         (await handleResponse(await c.request('GET', path))) as WorkspaceDetail,
         formatWorkspaceDetail,
@@ -249,7 +250,9 @@ export function registerWorkspaceCommands(program: Command): void {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
       emit(
-        (await handleResponse(await c.request('DELETE', `/v1/workspaces/${id}`))) as {
+        (await handleResponse(
+          await c.request('DELETE', `/v1/workspaces/${encodeURIComponent(id)}`),
+        )) as {
           id: string
         },
         (d) => `Deleted workspace ${d.id}.`,
@@ -279,7 +282,7 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, opts: { message: string; branch: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/commit`, {
+      const r = await c.request('POST', `/v1/workspaces/${encodeURIComponent(id)}/commit`, {
         body: JSON.stringify({ message: opts.message, branch: opts.branch }),
       })
       emit(
@@ -296,7 +299,7 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, name: string, opts: { from: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/branch`, {
+      const r = await c.request('POST', `/v1/workspaces/${encodeURIComponent(id)}/branch`, {
         body: JSON.stringify({ name, fromBranch: opts.from }),
       })
       emit(
@@ -312,7 +315,10 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, opts: { branch: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('GET', `/v1/workspaces/${id}/versions?branch=${opts.branch}`)
+      const r = await c.request(
+        'GET',
+        `/v1/workspaces/${encodeURIComponent(id)}/versions?branch=${encodeURIComponent(opts.branch)}`,
+      )
       emit((await handleResponse(r)) as VersionLogItem[], formatVersionLog)
     })
 
@@ -334,7 +340,10 @@ export function registerWorkspaceCommands(program: Command): void {
         if (b !== undefined) params.set('b', b)
         const c = buildClient()
         await c.ensureRunning({ allowSpawn: false })
-        const r = await c.request('GET', `/v1/workspaces/${id}/diff?${params.toString()}`)
+        const r = await c.request(
+          'GET',
+          `/v1/workspaces/${encodeURIComponent(id)}/diff?${params.toString()}`,
+        )
         emit((await handleResponse(r)) as DiffResult, formatDiff)
       },
     )
@@ -351,7 +360,10 @@ export function registerWorkspaceCommands(program: Command): void {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
       const qs = params.toString()
-      const r = await c.request('GET', `/v1/workspaces/${id}/asks${qs === '' ? '' : `?${qs}`}`)
+      const r = await c.request(
+        'GET',
+        `/v1/workspaces/${encodeURIComponent(id)}/asks${qs === '' ? '' : `?${qs}`}`,
+      )
       emit((await handleResponse(r)) as AskRecord[], formatAsks)
     })
 
@@ -368,9 +380,13 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, askId: string, opts: { scope: string; note: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/asks/${askId}`, {
-        body: JSON.stringify({ answer: 'allow', scope: opts.scope, note: opts.note }),
-      })
+      const r = await c.request(
+        'POST',
+        `/v1/workspaces/${encodeURIComponent(id)}/asks/${encodeURIComponent(askId)}`,
+        {
+          body: JSON.stringify({ answer: 'allow', scope: opts.scope, note: opts.note }),
+        },
+      )
       emit((await handleResponse(r)) as AskRecord, (d) => `Allowed ${d.id} (${d.scope}).`)
     })
 
@@ -382,9 +398,13 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, askId: string, opts: { note: string }) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/asks/${askId}`, {
-        body: JSON.stringify({ answer: 'deny', note: opts.note }),
-      })
+      const r = await c.request(
+        'POST',
+        `/v1/workspaces/${encodeURIComponent(id)}/asks/${encodeURIComponent(askId)}`,
+        {
+          body: JSON.stringify({ answer: 'deny', note: opts.note }),
+        },
+      )
       emit((await handleResponse(r)) as AskRecord, (d) => `Denied ${d.id}.`)
     })
 
@@ -395,7 +415,7 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, ref: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/checkout`, {
+      const r = await c.request('POST', `/v1/workspaces/${encodeURIComponent(id)}/checkout`, {
         body: JSON.stringify({ ref }),
       })
       emit((await handleResponse(r)) as WorkspaceDetail, formatWorkspaceDetail)
@@ -410,7 +430,7 @@ export function registerWorkspaceCommands(program: Command): void {
     .action(async (id: string, output: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${id}/snapshot`, {
+      const r = await c.request('POST', `/v1/workspaces/${encodeURIComponent(id)}/snapshot`, {
         body: JSON.stringify({ path: resolve(output) }),
       })
       const d = (await handleResponse(r)) as { id: string; path: string; size: number }

@@ -15,7 +15,8 @@
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any, Iterable
 
 from mirage import Workspace, WorkspaceRunner
@@ -29,6 +30,7 @@ class WorkspaceEntry:
         self.id = workspace_id
         self.runner = runner
         self.created_at = time.time()
+        self.config_digest: str | None = None
 
 
 class WorkspaceRegistry:
@@ -59,6 +61,7 @@ class WorkspaceRegistry:
         """
         self._entries: dict[str, WorkspaceEntry] = {}
         self._removals: dict[str, asyncio.Task[WorkspaceEntry]] = {}
+        self._creates: dict[str, tuple[str, asyncio.Future[None]]] = {}
         self.idle_grace_seconds = idle_grace_seconds
         self.exit_event = (
             exit_event if exit_event is not None else asyncio.Event()
@@ -70,6 +73,52 @@ class WorkspaceRegistry:
 
     def __len__(self) -> int:
         return len(self._entries)
+
+    @asynccontextmanager
+    async def creating(
+        self, workspace_id: str, config_digest: str
+    ) -> AsyncIterator[bool]:
+        """Run one create of ``workspace_id`` at a time.
+
+        A create of the same config that arrives while another is
+        building waits for it, then finds the workspace it registered,
+        rather than building a second over its state; it would stall on
+        the same secrets and mounts anyway. A create of another config is
+        not admitted and does not wait, so a stuck create never holds it.
+
+        Args:
+            workspace_id (str): the id being created.
+            config_digest (str): the fingerprint of the config it is
+                created from.
+
+        Yields:
+            bool: True when this create holds the id; False when another
+                config's create is building it.
+        """
+        while (pending := self._creates.get(workspace_id)) is not None:
+            digest, building = pending
+            if digest != config_digest:
+                yield False
+                return
+            await asyncio.wait({building})
+        done = asyncio.get_running_loop().create_future()
+        self._creates[workspace_id] = (config_digest, done)
+        try:
+            yield True
+        finally:
+            del self._creates[workspace_id]
+            done.set_result(None)
+
+    def removing(self, workspace_id: str) -> bool:
+        """Whether ``workspace_id`` is still registered only to be deleted.
+
+        Args:
+            workspace_id (str): id to check.
+
+        Returns:
+            bool: True while a ``remove`` of it is in flight.
+        """
+        return workspace_id in self._removals
 
     def get(self, workspace_id: str) -> WorkspaceEntry:
         if workspace_id not in self._entries:

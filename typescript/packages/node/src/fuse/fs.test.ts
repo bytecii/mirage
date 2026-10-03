@@ -155,7 +155,7 @@ describe('MirageFS — read-only mount write consistency', () => {
   it('rejects create and buffered flush through the same mount-mode gate', async () => {
     const vfs = new RAMVFS()
     const seedWs = new Workspace({ '/data/': vfs }, { mode: MountMode.WRITE })
-    await seedWs.vfs.writeFile('/data/existing.txt', 'seed')
+    await seedWs.vfs.write('/data/existing.txt', 'seed')
 
     const readonlyWs = new Workspace({ '/data/': vfs }, { mode: MountMode.READ })
     const mfs = new MirageFS(readonlyWs.vfs)
@@ -198,7 +198,7 @@ describe('MirageFS — read-only mount write consistency', () => {
     // restriction as create.
     const [flushCode] = await callOp<[number]>(mfs, 'flush', '/data/existing.txt', fh)
     expect(flushCode).toBe(EROFS)
-    expect(new TextDecoder().decode(await seedWs.vfs.readFile('/data/existing.txt'))).toBe('seed')
+    expect(new TextDecoder().decode(await seedWs.vfs.read('/data/existing.txt'))).toBe('seed')
   })
 })
 
@@ -252,11 +252,11 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
 
   it('getattr reports size 0 (no API fetch) when stat returns size=null', async () => {
     const ws = mkSizeNullWs()
-    await ws.vfs.writeFile('/data/api.json', new TextEncoder().encode('content'))
+    await ws.vfs.write('/data/api.json', new TextEncoder().encode('content'))
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
-    const readSpy = vi.spyOn(ws.vfs, 'readFile')
+    const readSpy = vi.spyOn(ws.vfs, 'read')
     const mfs = new MirageFS(ws.vfs)
     const [code, attr] = await callOp<[number, FuseAttr]>(mfs, 'getattr', '/data/api.json')
     expect(code).toBe(0)
@@ -268,7 +268,7 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
   it('open prefetches and read returns the actual bytes (kernel sequence)', async () => {
     const ws = mkSizeNullWs()
     const bytes = new TextEncoder().encode('payload from API')
-    await ws.vfs.writeFile('/data/api.json', bytes)
+    await ws.vfs.write('/data/api.json', bytes)
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
@@ -285,7 +285,7 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
   it('read returns 0 past the actual data length (direct_io read past EOF)', async () => {
     const ws = mkSizeNullWs()
     const bytes = new TextEncoder().encode('short')
-    await ws.vfs.writeFile('/data/api.json', bytes)
+    await ws.vfs.write('/data/api.json', bytes)
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
@@ -307,7 +307,7 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
   it('once a file has been opened, subsequent getattrs return the real size', async () => {
     const ws = mkSizeNullWs()
     const bytes = new TextEncoder().encode('cached now')
-    await ws.vfs.writeFile('/data/api.json', bytes)
+    await ws.vfs.write('/data/api.json', bytes)
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
@@ -320,7 +320,7 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
   it('fgetattr serves the real size from the open-hydrated handle', async () => {
     const ws = mkSizeNullWs()
     const bytes = new TextEncoder().encode('hydrated bytes')
-    await ws.vfs.writeFile('/data/api.json', bytes)
+    await ws.vfs.write('/data/api.json', bytes)
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
@@ -336,7 +336,7 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
     // handle must not leave it serving the pre-truncation body.
     const ws = mkSizeNullWs()
     const bytes = new TextEncoder().encode('hydrated bytes')
-    await ws.vfs.writeFile('/data/api.json', bytes)
+    await ws.vfs.write('/data/api.json', bytes)
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
@@ -368,7 +368,7 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
   it('a flush refreshes the hydrated bytes of the handle that wrote', async () => {
     // A read-after-write through the same descriptor sees the write.
     const ws = mkSizeNullWs()
-    await ws.vfs.writeFile('/data/api.json', new TextEncoder().encode('hydrated bytes'))
+    await ws.vfs.write('/data/api.json', new TextEncoder().encode('hydrated bytes'))
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
@@ -388,18 +388,16 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
     // refreshed; a backend hiccup there must not turn a committed
     // truncate into a failure. The reader just fetches again next time.
     const ws = mkSizeNullWs()
-    await ws.vfs.writeFile('/data/api.json', new TextEncoder().encode('hydrated bytes'))
+    await ws.vfs.write('/data/api.json', new TextEncoder().encode('hydrated bytes'))
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
-    const original = ws.vfs.readFile.bind(ws.vfs)
+    const original = ws.vfs.read.bind(ws.vfs)
     let fail = false
-    vi.spyOn(ws.vfs, 'readFile').mockImplementation(
-      async (...args: Parameters<typeof original>) => {
-        if (fail) throw new Error('backend hiccup')
-        return original(...args)
-      },
-    )
+    vi.spyOn(ws.vfs, 'read').mockImplementation(async (...args: Parameters<typeof original>) => {
+      if (fail) throw new Error('backend hiccup')
+      return original(...args)
+    })
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const mfs = new MirageFS(ws.vfs)
     const [, reader] = await callOp<[number, number]>(mfs, 'open', '/data/api.json', 0)
@@ -418,7 +416,7 @@ describe('MirageFS — size=null mounts (API-backed)', () => {
     // hydrated reader must see both: the settled write and the cut.
     const ws = mkSizeNullWs()
     const bytes = new TextEncoder().encode('hydrated bytes')
-    await ws.vfs.writeFile('/data/api.json', bytes)
+    await ws.vfs.write('/data/api.json', bytes)
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
@@ -456,7 +454,7 @@ describe('MirageFS — release flushes pending writes', () => {
     await callOp(mfs, 'write', '/data/greeting.txt', fh, data, data.byteLength, 0)
     const [releaseCode] = await callOp<[number]>(mfs, 'release', '/data/greeting.txt', fh)
     expect(releaseCode).toBe(0)
-    const current = await ws.vfs.readFile('/data/greeting.txt')
+    const current = await ws.vfs.read('/data/greeting.txt')
     expect(new TextDecoder().decode(current)).toBe('clobberorld\n')
   })
 
@@ -468,7 +466,7 @@ describe('MirageFS — release flushes pending writes', () => {
     await callOp(mfs, 'write', '/data/greeting.txt', fh, data, data.byteLength, 0)
     await callOp(mfs, 'flush', '/data/greeting.txt', fh)
     await callOp(mfs, 'release', '/data/greeting.txt', fh)
-    const after = await ws.vfs.readFile('/data/greeting.txt')
+    const after = await ws.vfs.read('/data/greeting.txt')
     expect(new TextDecoder().decode(after)).toBe('CLOBBER world\n')
   })
 
@@ -488,7 +486,7 @@ describe('MirageFS — release flushes pending writes', () => {
     await callOp(mfs, 'write', '/data/greeting.txt', fh, data, data.byteLength, 0)
     await callOp(mfs, 'flush', '/data/greeting.txt', fh)
     await callOp(mfs, 'release', '/data/greeting.txt', fh)
-    const after = await ws.vfs.readFile('/data/greeting.txt')
+    const after = await ws.vfs.read('/data/greeting.txt')
     expect(new TextDecoder().decode(after)).toBe('BB\n')
   })
 })

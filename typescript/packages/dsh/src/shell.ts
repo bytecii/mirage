@@ -525,7 +525,7 @@ export class MirageShellExecutor extends ShellExecutor {
       },
       write: async (p, bytes) => {
         const ws = await this.workspace()
-        await ws.vfs.writeFile(p, bytes)
+        await ws.vfs.write(p, bytes)
       },
       append: async (p, bytes) => {
         const ws = await this.workspace()

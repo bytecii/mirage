@@ -57,54 +57,54 @@ function mkFailingStat(err: unknown): Workspace {
 describe('Ops', () => {
   it('writeFile + readFile round-trips bytes', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/a.txt', 'hello')
-    const text = await ws.vfs.readFileText('/data/a.txt')
+    await ws.vfs.write('/data/a.txt', 'hello')
+    const text = await ws.vfs.cat('/data/a.txt')
     expect(text).toBe('hello')
   })
 
   it('writeFile accepts Uint8Array', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/b.bin', new Uint8Array([1, 2, 3]))
-    const bytes = await ws.vfs.readFile('/data/b.bin')
+    await ws.vfs.write('/data/b.bin', new Uint8Array([1, 2, 3]))
+    const bytes = await ws.vfs.read('/data/b.bin')
     expect([...bytes]).toEqual([1, 2, 3])
   })
 
   it('readFile takes a window the way the python facade does', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/r.txt', '0123456789')
-    expect(DEC.decode(await ws.vfs.readFile('/data/r.txt', { offset: 2, size: 3 }))).toBe('234')
-    expect(DEC.decode(await ws.vfs.readFile('/data/r.txt', { offset: 7 }))).toBe('789')
-    expect(DEC.decode(await ws.vfs.readFile('/data/r.txt', { size: 4 }))).toBe('0123')
+    await ws.vfs.write('/data/r.txt', '0123456789')
+    expect(DEC.decode(await ws.vfs.read('/data/r.txt', { offset: 2, size: 3 }))).toBe('234')
+    expect(DEC.decode(await ws.vfs.read('/data/r.txt', { offset: 7 }))).toBe('789')
+    expect(DEC.decode(await ws.vfs.read('/data/r.txt', { size: 4 }))).toBe('0123')
   })
 
   it('reads a window shorter than asked rather than failing past EOF', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/r.txt', 'abc')
-    expect(DEC.decode(await ws.vfs.readFile('/data/r.txt', { size: 100 }))).toBe('abc')
-    expect(await ws.vfs.readFile('/data/r.txt', { offset: 99, size: 5 })).toEqual(new Uint8Array(0))
-    expect(await ws.vfs.readFile('/data/r.txt', { size: 0 })).toEqual(new Uint8Array(0))
+    await ws.vfs.write('/data/r.txt', 'abc')
+    expect(DEC.decode(await ws.vfs.read('/data/r.txt', { size: 100 }))).toBe('abc')
+    expect(await ws.vfs.read('/data/r.txt', { offset: 99, size: 5 })).toEqual(new Uint8Array(0))
+    expect(await ws.vfs.read('/data/r.txt', { size: 0 })).toEqual(new Uint8Array(0))
   })
 
   it('mkdir + readdir lists entries', async () => {
     const ws = mkWorkspace()
     await ws.vfs.mkdir('/data/sub')
-    await ws.vfs.writeFile('/data/sub/x.txt', 'x')
-    await ws.vfs.writeFile('/data/sub/y.txt', 'y')
+    await ws.vfs.write('/data/sub/x.txt', 'x')
+    await ws.vfs.write('/data/sub/y.txt', 'y')
     const entries = await ws.vfs.readdir('/data/sub')
     expect(entries.sort()).toEqual(['/data/sub/x.txt', '/data/sub/y.txt'])
   })
 
   it('append extends a file through the append op (the python facade has it too)', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/log.txt', 'head')
+    await ws.vfs.write('/data/log.txt', 'head')
     await ws.vfs.append('/data/log.txt', new TextEncoder().encode('-tail'))
-    expect(await ws.vfs.readFileText('/data/log.txt')).toBe('head-tail')
+    expect(await ws.vfs.cat('/data/log.txt')).toBe('head-tail')
     expect(ws.records.map((r) => r.op)).toContain('append')
   })
 
   it('pwrite is one write at the door, so a refused read does not stop it', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/f.txt', 'abc')
+    await ws.vfs.write('/data/f.txt', 'abc')
     const seen: [string, boolean][] = []
     ws.policies.add({
       preOps(ctx: OpsContext): Action | null {
@@ -118,7 +118,7 @@ describe('Ops', () => {
 
   it('exists returns true for existing files and dirs', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/hi.txt', 'hi')
+    await ws.vfs.write('/data/hi.txt', 'hi')
     await ws.vfs.mkdir('/data/dir')
     expect(await ws.vfs.exists('/data/hi.txt')).toBe(true)
     expect(await ws.vfs.exists('/data/dir')).toBe(true)
@@ -127,7 +127,7 @@ describe('Ops', () => {
 
   it('isDir distinguishes files from directories', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/file.txt', 'x')
+    await ws.vfs.write('/data/file.txt', 'x')
     await ws.vfs.mkdir('/data/dir')
     expect(await ws.vfs.isDir('/data/dir')).toBe(true)
     expect(await ws.vfs.isDir('/data/file.txt')).toBe(false)
@@ -137,14 +137,14 @@ describe('Ops', () => {
 
   it('stat returns size', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/a.txt', 'hello')
+    await ws.vfs.write('/data/a.txt', 'hello')
     const s = await ws.vfs.stat('/data/a.txt')
     expect(s.size).toBe(5)
   })
 
   it('unlink removes file', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/gone.txt', 'x')
+    await ws.vfs.write('/data/gone.txt', 'x')
     expect(await ws.vfs.exists('/data/gone.txt')).toBe(true)
     await ws.vfs.unlink('/data/gone.txt')
     expect(await ws.vfs.exists('/data/gone.txt')).toBe(false)
@@ -152,7 +152,7 @@ describe('Ops', () => {
 
   it('cat reads file as string', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/t.txt', 'content')
+    await ws.vfs.write('/data/t.txt', 'content')
     expect(await ws.vfs.cat('/data/t.txt')).toBe('content')
   })
 })
@@ -190,7 +190,7 @@ describe('Ops existence probes', () => {
   // besides ENOENT: `test -e` and every stdlib exists() answer false.
   it('report false for a path under a plain file', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/a.txt', 'x')
+    await ws.vfs.write('/data/a.txt', 'x')
     expect(await ws.vfs.exists('/data/a.txt/x')).toBe(false)
     expect(await ws.vfs.isDir('/data/a.txt/x')).toBe(false)
     expect(await ws.vfs.isFile('/data/a.txt/x')).toBe(false)
@@ -258,27 +258,27 @@ describe('Ops policy door', () => {
 
   it('preOps denies a read through the facade with EACCES', async () => {
     const ws = mkGuarded()
-    await ws.vfs.writeFile('/data/x.sealed', 'nope\n')
-    await expect(ws.vfs.readFile('/data/x.sealed')).rejects.toThrow(PolicyDenied)
+    await ws.vfs.write('/data/x.sealed', 'nope\n')
+    await expect(ws.vfs.read('/data/x.sealed')).rejects.toThrow(PolicyDenied)
   })
 
   it('postOps denies on result content the pre hook cannot see', async () => {
     const ws = mkGuarded()
-    await ws.vfs.writeFile('/data/secret.txt', 'TOPSECRET plans\n')
-    await expect(ws.vfs.readFile('/data/secret.txt')).rejects.toThrow(PolicyDenied)
-    await ws.vfs.writeFile('/data/clean.txt', 'hello\n')
-    expect(await ws.vfs.readFileText('/data/clean.txt')).toBe('hello\n')
+    await ws.vfs.write('/data/secret.txt', 'TOPSECRET plans\n')
+    await expect(ws.vfs.read('/data/secret.txt')).rejects.toThrow(PolicyDenied)
+    await ws.vfs.write('/data/clean.txt', 'hello\n')
+    expect(await ws.vfs.cat('/data/clean.txt')).toBe('hello\n')
   })
 
   it('postOps Limit caps facade read bytes', async () => {
     const ws = mkGuarded()
-    await ws.vfs.writeFile('/data/big.log', 'abcdefghij\n')
-    expect(DEC.decode(await ws.vfs.readFile('/data/big.log'))).toBe('abcde')
+    await ws.vfs.write('/data/big.log', 'abcdefghij\n')
+    expect(DEC.decode(await ws.vfs.read('/data/big.log'))).toBe('abcde')
   })
 
   it('preOps denies a facade write before the backend runs', async () => {
     const ws = mkGuarded()
-    await expect(ws.vfs.writeFile('/data/locked/f.txt', 'hi')).rejects.toThrow(PolicyDenied)
+    await expect(ws.vfs.write('/data/locked/f.txt', 'hi')).rejects.toThrow(PolicyDenied)
     expect(await ws.vfs.exists('/data/locked/f.txt')).toBe(false)
   })
 
@@ -310,8 +310,8 @@ describe('Ops is one door with the dispatcher', () => {
     const ops = new OpsRegistry()
     for (const op of vfs.ops()) ops.register(op)
     const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE, ops, policies: [counter] })
-    await ws.vfs.writeFile('/data/a.txt', 'hello')
-    await ws.vfs.readFile('/data/a.txt')
+    await ws.vfs.write('/data/a.txt', 'hello')
+    await ws.vfs.read('/data/a.txt')
     expect(counter.seen).toEqual(['write:/data/', 'read:/data/'])
   })
 
@@ -399,9 +399,9 @@ describe('Ops is one door with the dispatcher', () => {
       fn: () => Promise.resolve(new TextEncoder().encode('rendered')),
     })
     const ws = new Workspace({ '/m': vfs }, { mode: MountMode.WRITE, ops })
-    await ws.vfs.writeFile('/m/doc.gdoc.json', 'stored')
-    expect(await ws.vfs.readFileText('/m/doc.gdoc.json')).toBe('rendered')
-    expect(DEC.decode(await ws.vfs.readFile('/m/doc.gdoc.json', { raw: true }))).toBe('stored')
+    await ws.vfs.write('/m/doc.gdoc.json', 'stored')
+    expect(await ws.vfs.cat('/m/doc.gdoc.json')).toBe('rendered')
+    expect(DEC.decode(await ws.vfs.read('/m/doc.gdoc.json', { raw: true }))).toBe('stored')
   })
 
   it('does not serve a raw read from the file cache', async () => {
@@ -415,10 +415,10 @@ describe('Ops is one door with the dispatcher', () => {
     const ops = new OpsRegistry()
     ops.registerVfs(vfs)
     const ws = new Workspace({ '/m': vfs }, { mode: MountMode.WRITE, ops })
-    await ws.vfs.writeFile('/m/doc.gdoc.json', 'stored')
+    await ws.vfs.write('/m/doc.gdoc.json', 'stored')
     await ws.cache.set('/m/doc.gdoc.json', new TextEncoder().encode('rendered'), { ttl: 600 })
-    expect(await ws.vfs.readFileText('/m/doc.gdoc.json')).toBe('rendered')
-    expect(DEC.decode(await ws.vfs.readFile('/m/doc.gdoc.json', { raw: true }))).toBe('stored')
+    expect(await ws.vfs.cat('/m/doc.gdoc.json')).toBe('rendered')
+    expect(DEC.decode(await ws.vfs.read('/m/doc.gdoc.json', { raw: true }))).toBe('stored')
   })
 
   it('refuses a write to a read-only mount at the door', async () => {
@@ -426,7 +426,7 @@ describe('Ops is one door with the dispatcher', () => {
     const ops = new OpsRegistry()
     for (const op of vfs.ops()) ops.register(op)
     const ws = new Workspace({ '/ro': vfs }, { mode: MountMode.READ, ops })
-    await expect(ws.vfs.writeFile('/ro/a.txt', 'x')).rejects.toThrow('read-only')
+    await expect(ws.vfs.write('/ro/a.txt', 'x')).rejects.toThrow('read-only')
   })
 })
 
@@ -492,8 +492,8 @@ describe('Ops accounting survives the delegation', () => {
 
   it('records a post-denied read: the backend already ran', async () => {
     const ws = mkWs(new DenyBigReads())
-    await ws.vfs.writeFile('/data/a.txt', 'hello')
-    await expect(ws.vfs.readFile('/data/a.txt')).rejects.toThrow(PolicyDenied)
+    await ws.vfs.write('/data/a.txt', 'hello')
+    await expect(ws.vfs.read('/data/a.txt')).rejects.toThrow(PolicyDenied)
     expect(ws.records.map((r) => r.op)).toEqual(['write', 'read'])
   })
 
@@ -502,8 +502,8 @@ describe('Ops accounting survives the delegation', () => {
     // already happened, so recording the capped length would
     // under-report networkBytes by whatever the cap removed.
     const ws = mkWs(new CapReadsTo3())
-    await ws.vfs.writeFile('/data/a.txt', '0123456789')
-    expect(DEC.decode(await ws.vfs.readFile('/data/a.txt'))).toBe('012')
+    await ws.vfs.write('/data/a.txt', '0123456789')
+    expect(DEC.decode(await ws.vfs.read('/data/a.txt'))).toBe('012')
     expect(ws.records.find((r) => r.op === 'read')?.bytes).toBe(10)
   })
 
@@ -518,9 +518,9 @@ describe('Ops accounting survives the delegation', () => {
       { '/m': vfs },
       { mode: MountMode.WRITE, ops, policies: [new HardCapReadsTo3()] },
     )
-    await ws.vfs.writeFile('/m/a.txt', '0123456789')
+    await ws.vfs.write('/m/a.txt', '0123456789')
     ws.records.length = 0
-    await expect(ws.vfs.readFile('/m/a.txt')).rejects.toThrow(LimitExceededError)
+    await expect(ws.vfs.read('/m/a.txt')).rejects.toThrow(LimitExceededError)
     const read = ws.records.find((r) => r.op === 'read')
     expect([read?.source, read?.bytes]).toEqual(['s3', 10])
     expect(ws.networkBytes).toBe(10)
@@ -541,8 +541,8 @@ describe('Ops accounting survives the delegation', () => {
       { mode: MountMode.WRITE, ops, policies: [new BrokenPostOps()] },
     )
     ws.records.length = 0
-    await expect(ws.vfs.writeFile('/m/a.txt', '123456')).rejects.toThrow(PolicyError)
-    expect(DEC.decode(await ws.vfs.readFile('/m/a.txt'))).toBe('123456')
+    await expect(ws.vfs.write('/m/a.txt', '123456')).rejects.toThrow(PolicyError)
+    expect(DEC.decode(await ws.vfs.read('/m/a.txt'))).toBe('123456')
     const write = ws.records.find((r) => r.op === 'write')
     expect([write?.source, write?.bytes]).toEqual(['s3', 6])
     expect(ws.networkBytes).toBeGreaterThanOrEqual(6)
@@ -561,7 +561,7 @@ describe('Ops accounting survives the delegation', () => {
     )
     await ws.cache.set('/m/a.txt', new TextEncoder().encode('0123456789'), { ttl: 600 })
     ws.records.length = 0
-    await expect(ws.vfs.readFile('/m/a.txt')).rejects.toThrow(LimitExceededError)
+    await expect(ws.vfs.read('/m/a.txt')).rejects.toThrow(LimitExceededError)
     const read = ws.records.find((r) => r.op === 'read')
     expect(read?.source).toBe('ram')
     expect(read?.isCache).toBe(true)
@@ -582,7 +582,7 @@ describe('Ops accounting survives the delegation', () => {
     )
     await ws.cache.set('/m/a.txt', new TextEncoder().encode('0123456789'), { ttl: 600 })
     ws.records.length = 0
-    await expect(ws.vfs.readFile('/m/a.txt')).rejects.toThrow(PolicyDenied)
+    await expect(ws.vfs.read('/m/a.txt')).rejects.toThrow(PolicyDenied)
     const read = ws.records.find((r) => r.op === 'read')
     expect(read?.source).toBe('ram')
     expect(read?.isCache).toBe(true)
@@ -594,16 +594,16 @@ describe('Ops accounting survives the delegation', () => {
     // lived, so without carrying it on the exception the record says
     // zero and networkBytes under-reports traffic that happened.
     const ws = mkWs(new DenyBigReads())
-    await ws.vfs.writeFile('/data/a.txt', 'hello')
-    await expect(ws.vfs.readFile('/data/a.txt')).rejects.toThrow(PolicyDenied)
+    await ws.vfs.write('/data/a.txt', 'hello')
+    await expect(ws.vfs.read('/data/a.txt')).rejects.toThrow(PolicyDenied)
     const read = ws.records.find((r) => r.op === 'read')
     expect(read?.bytes).toBe(5)
   })
 
   it('records nothing for a pre-denied read: the backend never ran', async () => {
     const ws = mkWs(new SealReads())
-    await ws.vfs.writeFile('/data/a.txt', 'hello')
-    await expect(ws.vfs.readFile('/data/a.txt')).rejects.toThrow(PolicyDenied)
+    await ws.vfs.write('/data/a.txt', 'hello')
+    await expect(ws.vfs.read('/data/a.txt')).rejects.toThrow(PolicyDenied)
     expect(ws.records.map((r) => r.op)).toEqual(['write'])
   })
 })
@@ -630,7 +630,7 @@ describe('a warm cache still answers a ranged read with the window', () => {
 
   it('slices the cached bytes instead of returning the whole file', async () => {
     const ws = mkCaching()
-    await ws.vfs.writeFile('/m/f.bin', '0123456789')
+    await ws.vfs.write('/m/f.bin', '0123456789')
     const cold = await readAt(ws, 2, 3)
     await ws.cache.set('/m/f.bin', new TextEncoder().encode('0123456789'), { ttl: 600 })
     expect(await readAt(ws, 2, 3)).toBe(cold)
@@ -642,9 +642,9 @@ describe('a warm cache still answers a ranged read with the window', () => {
 
   it('still serves the whole file when no window was asked for', async () => {
     const ws = mkCaching()
-    await ws.vfs.writeFile('/m/f.bin', '0123456789')
+    await ws.vfs.write('/m/f.bin', '0123456789')
     await ws.cache.set('/m/f.bin', new TextEncoder().encode('CACHED-VAL'), { ttl: 600 })
-    expect(await ws.vfs.readFileText('/m/f.bin')).toBe('CACHED-VAL')
+    expect(await ws.vfs.cat('/m/f.bin')).toBe('CACHED-VAL')
   })
 })
 
@@ -663,9 +663,9 @@ describe('Ops rename is bounded by the mount', () => {
 
   it('renames within one mount', async () => {
     const ws = mkTwoMounts()
-    await ws.vfs.writeFile('/a/x.txt', 'bytes')
+    await ws.vfs.write('/a/x.txt', 'bytes')
     await ws.vfs.rename('/a/x.txt', '/a/y.txt')
-    expect(await ws.vfs.readFileText('/a/y.txt')).toBe('bytes')
+    expect(await ws.vfs.cat('/a/y.txt')).toBe('bytes')
     expect(await ws.vfs.exists('/a/x.txt')).toBe(false)
   })
 
@@ -674,19 +674,19 @@ describe('Ops rename is bounded by the mount', () => {
     // mv behind that) to fall back to copy+unlink instead of addressing
     // the destination against the source's backend.
     const ws = mkTwoMounts()
-    await ws.vfs.writeFile('/a/x.txt', 'bytes')
+    await ws.vfs.write('/a/x.txt', 'bytes')
     await expect(ws.vfs.rename('/a/x.txt', '/b/y.txt')).rejects.toMatchObject({ code: 'EXDEV' })
-    expect(await ws.vfs.readFileText('/a/x.txt')).toBe('bytes')
+    expect(await ws.vfs.cat('/a/x.txt')).toBe('bytes')
     expect(await ws.vfs.exists('/b/y.txt')).toBe(false)
   })
 
   it('refuses a rename to a path no mount serves', async () => {
     const ws = mkTwoMounts()
-    await ws.vfs.writeFile('/a/x.txt', 'bytes')
+    await ws.vfs.write('/a/x.txt', 'bytes')
     await expect(ws.vfs.rename('/a/x.txt', '/nowhere/y.txt')).rejects.toMatchObject({
       code: 'EXDEV',
     })
-    expect(await ws.vfs.readFileText('/a/x.txt')).toBe('bytes')
+    expect(await ws.vfs.cat('/a/x.txt')).toBe('bytes')
   })
 })
 
@@ -705,7 +705,7 @@ describe('Ops.setattr', () => {
   it('lands where stat reads it', async () => {
     const ws = mkWorkspace()
     await ws.vfs.mkdir('/data/dir')
-    await ws.vfs.writeFile('/data/dir/f.txt', 'hello')
+    await ws.vfs.write('/data/dir/f.txt', 'hello')
     await ws.vfs.setattr('/data/dir/f.txt', { mode: 0o600, uid: 4242 })
     const st = await ws.vfs.stat('/data/dir/f.txt')
     expect(st.mode).toBe(0o600)
@@ -715,7 +715,7 @@ describe('Ops.setattr', () => {
   it('writes the link entry itself under nofollow', async () => {
     const ws = mkWorkspace()
     await ws.vfs.mkdir('/data/dir')
-    await ws.vfs.writeFile('/data/dir/f.txt', 'hello')
+    await ws.vfs.write('/data/dir/f.txt', 'hello')
     await ws.vfs.symlink('/data/dir/link', 'f.txt')
     // A link has no backend inode, so the door keeps its attrs and the
     // target is left alone.
@@ -728,7 +728,7 @@ describe('Ops.setattr', () => {
   it('follows a link by default', async () => {
     const ws = mkWorkspace()
     await ws.vfs.mkdir('/data/dir')
-    await ws.vfs.writeFile('/data/dir/f.txt', 'hello')
+    await ws.vfs.write('/data/dir/f.txt', 'hello')
     await ws.vfs.symlink('/data/dir/link', 'f.txt')
     await ws.vfs.setattr('/data/dir/link', { uid: 9 })
     expect((await ws.vfs.stat('/data/dir/f.txt')).uid).toBe(9)
@@ -752,14 +752,14 @@ describe('Ops.readlink', () => {
 
   it('answers the target for a link', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/f.txt', 'x')
+    await ws.vfs.write('/data/f.txt', 'x')
     await ws.vfs.symlink('/data/l', 'f.txt')
     expect(await ws.vfs.readlink('/data/l')).toBe('f.txt')
   })
 
   it('answers EINVAL for a path that is there but is not a link', async () => {
     const ws = mkWorkspace()
-    await ws.vfs.writeFile('/data/f.txt', 'x')
+    await ws.vfs.write('/data/f.txt', 'x')
     await ws.vfs.mkdir('/data/d')
     expect(await codeOf(ws, '/data/f.txt')).toBe('EINVAL')
     expect(await codeOf(ws, '/data/d')).toBe('EINVAL')
@@ -784,7 +784,7 @@ describe('Ops.readlink', () => {
     for (const op of vfs.ops()) ops.register(op)
     const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE, ops })
     await ws.vfs.mkdir('/data/d')
-    await ws.vfs.writeFile('/data/d/under.txt', 'x')
+    await ws.vfs.write('/data/d/under.txt', 'x')
     // Registered after the writes, so only the probe sees them: a prefix
     // store answers stat with nothing for a directory, and a name with
     // no keys under it is in no listing either, which is how such a
@@ -846,8 +846,8 @@ describe('Ops per-call sessionId', () => {
     const ops = new OpsRegistry()
     for (const op of vfs.ops()) ops.register(op)
     const ws = new Workspace({ '/data': vfs }, { mode: MountMode.WRITE, ops })
-    await ws.vfs.writeFile('/data/secret.txt', 'classified')
-    await ws.vfs.writeFile('/data/open.txt', 'public')
+    await ws.vfs.write('/data/secret.txt', 'classified')
+    await ws.vfs.write('/data/open.txt', 'public')
     ws.createSession('blind', {
       permissions: { paths: { hide: ['/data/secret.txt'] } },
     })
@@ -857,14 +857,14 @@ describe('Ops per-call sessionId', () => {
 
   it('runs the op as the session it names', async () => {
     const ws = await splitWs()
-    expect(await ws.vfs.readFileText('/data/secret.txt', 'utf-8', 'seeing')).toBe('classified')
+    expect(await ws.vfs.cat('/data/secret.txt', 'seeing')).toBe('classified')
     expect(await ws.vfs.exists('/data/secret.txt', 'blind')).toBe(false)
     expect(await ws.vfs.readdir('/data', 'blind')).toEqual(['/data/open.txt'])
   })
 
   it('confines a write to the session it names', async () => {
     const ws = await splitWs()
-    await expect(ws.vfs.writeFile('/data/secret.txt', 'x', 'blind')).rejects.toThrow()
+    await expect(ws.vfs.write('/data/secret.txt', 'x', 'blind')).rejects.toThrow()
   })
 
   it('carries the session through a forwarding method', async () => {
