@@ -34,7 +34,7 @@ const system = buildSystemPrompt({
   mountInfo: { '/': 'In-memory filesystem (read/write)' },
   extraInstructions:
     'All file paths start from /. Use the execute tool to run shell commands ' +
-    'and the readFile/writeFile/editFile/ls tools for direct file operations.',
+    'and the read/write/edit/ls/grep/glob tools for direct file operations.',
 })
 
 const task =

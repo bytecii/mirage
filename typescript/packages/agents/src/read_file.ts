@@ -96,6 +96,6 @@ export async function readWorkspaceFile(
     kind: 'binary',
     note:
       `Binary file ${path} (${mimeType}, ${String(data.byteLength)} bytes). ` +
-      'Use the execute tool with shell commands (head, file, wc, od) to inspect.',
+      'Use the shell tool with commands such as head, file, wc and od to inspect it.',
   }
 }

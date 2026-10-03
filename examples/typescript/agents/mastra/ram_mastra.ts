@@ -32,7 +32,7 @@ const ws = new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops })
 const instructions = buildSystemPrompt({
   mountInfo: { '/': 'In-memory filesystem (read/write)' },
   extraInstructions:
-    'All file paths start from /. Use the mirage-execute tool to run shell commands ' +
+    'All file paths start from /. Use the mirage-shell tool to run shell commands ' +
     'and the mirage-read-file / mirage-write-file / mirage-edit-file / mirage-ls tools ' +
     'for direct file operations.',
 })

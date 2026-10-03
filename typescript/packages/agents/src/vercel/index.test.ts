@@ -33,225 +33,109 @@ async function callTool<T>(t: unknown, input: unknown): Promise<T> {
   return result as T
 }
 
-describe('vercel mirageTools.execute', () => {
-  it('runs a shell command and returns stdout/stderr/exitCode', async () => {
-    const tools = mirageTools(mkWs())
-    const r = await callTool<{ stdout: string; stderr: string; exitCode: number }>(tools.execute, {
-      command: 'echo hello',
-    })
-    expect(r.stdout).toBe('hello\n')
-    expect(r.stderr).toBe('')
-    expect(r.exitCode).toBe(0)
+function callToModelOutput(t: unknown, output: unknown): unknown {
+  const fn = (t as { toModelOutput?: (opts: unknown) => unknown }).toModelOutput
+  if (typeof fn !== 'function') throw new Error('tool has no toModelOutput')
+  return fn({ toolCallId: 't', input: {}, output })
+}
+
+interface Answer {
+  text: string
+  isError: boolean
+}
+
+describe('vercel mirageTools', () => {
+  it('serves the tool table under its names', () => {
+    expect(Object.keys(mirageTools(mkWs())).sort()).toEqual(
+      ['edit', 'glob', 'grep', 'ls', 'read', 'shell', 'write'].sort(),
+    )
   })
 
-  it('captures non-zero exit code', async () => {
+  it('answers as the MCP tools do', async () => {
     const tools = mirageTools(mkWs())
-    const r = await callTool<{ stdout: string; stderr: string; exitCode: number }>(tools.execute, {
-      command: 'cat /nope.txt',
+    const written = await callTool<Answer>(tools.write, { path: '/src/a.py', content: 'Needle\n' })
+    const read = await callTool<Answer>(tools.read, { path: '/src/a.py' })
+    const edited = await callTool<Answer>(tools.edit, {
+      path: '/src/a.py',
+      old_string: 'Needle',
+      new_string: 'pin',
     })
-    expect(r.exitCode).not.toBe(0)
-    expect(r.stderr.length).toBeGreaterThan(0)
+    const listed = await callTool<Answer>(tools.ls, { path: '/src' })
+    const found = await callTool<Answer>(tools.grep, {
+      pattern: 'PIN',
+      path: '/src',
+      ignore_case: true,
+    })
+    const globbed = await callTool<Answer>(tools.glob, { pattern: '**/*.py' })
+    const shell = await callTool<Answer>(tools.shell, { command: 'cat /nope.txt' })
+    const missing = await callTool<Answer>(tools.read, { path: '/nope.txt' })
+    expect(written).toEqual({ text: 'Written: /src/a.py', isError: false })
+    expect(read).toEqual({ text: '     1\tNeedle\n', isError: false })
+    expect(edited.isError).toBe(false)
+    expect(listed).toEqual({ text: 'a.py\n', isError: false })
+    expect(found).toEqual({ text: '/src/a.py:1:pin\n', isError: false })
+    expect(globbed).toEqual({ text: '/src/a.py\n', isError: false })
+    expect(shell.isError).toBe(true)
+    expect(missing).toEqual({ text: "Error: file '/nope.txt' not found", isError: true })
   })
 })
 
-describe('vercel mirageTools.readFile', () => {
-  it('reads file content as text', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/notes.txt', 'hello')
-    const r = await callTool<{ kind: string; content: string; mimeType: string }>(
-      mirageTools(ws).readFile,
-      { path: '/notes.txt' },
-    )
-    expect(r.kind).toBe('text')
-    expect(r.content).toBe('hello')
-    expect(r.mimeType).toBe('text/plain')
-  })
-
-  it('returns error for missing file', async () => {
-    const r = await callTool<{ error: string }>(mirageTools(mkWs()).readFile, {
-      path: '/missing.txt',
-    })
-    expect(r.error).toBeDefined()
-    expect(r.error.length).toBeGreaterThan(0)
-  })
-
-  it('returns base64 + mime for image files', async () => {
+describe('vercel mirageTools.read media', () => {
+  it('hands an image to the model as a file', async () => {
     const ws = mkWs()
     const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82])
     await ws.vfs.write('/photo.png', png)
-    const r = await callTool<{
-      kind: string
-      mimeType: string
-      base64: string
-      bytes: number
-    }>(mirageTools(ws).readFile, { path: '/photo.png' })
+    const r = await callTool<{ kind: string; mimeType: string; base64: string }>(
+      mirageTools(ws).read,
+      { path: '/photo.png' },
+    )
     expect(r.kind).toBe('media')
     expect(r.mimeType).toBe('image/png')
-    expect(r.bytes).toBe(16)
-    expect(r.base64.length).toBeGreaterThan(0)
     expect(Buffer.from(r.base64, 'base64')).toEqual(Buffer.from(png))
   })
 
-  it('returns base64 + mime for PDFs', async () => {
+  it('hands a PDF to the model as a file', async () => {
     const ws = mkWs()
-    const pdf = new TextEncoder().encode('%PDF-1.4\n%%EOF\n')
-    await ws.vfs.write('/doc.pdf', pdf)
-    const r = await callTool<{ kind: string; mimeType: string; base64: string }>(
-      mirageTools(ws).readFile,
-      { path: '/doc.pdf' },
-    )
+    await ws.vfs.write('/doc.pdf', new TextEncoder().encode('%PDF-1.4\n%%EOF\n'))
+    const r = await callTool<{ kind: string; mimeType: string }>(mirageTools(ws).read, {
+      path: '/doc.pdf',
+    })
     expect(r.kind).toBe('media')
     expect(r.mimeType).toBe('application/pdf')
-    expect(Buffer.from(r.base64, 'base64').toString('utf-8')).toBe('%PDF-1.4\n%%EOF\n')
   })
 
-  it('returns binary stub for unsupported binary mimes', async () => {
+  it('describes another binary instead of decoding it', async () => {
     const ws = mkWs()
     await ws.vfs.write('/blob.bin', new Uint8Array([0, 1, 2, 3]))
-    const r = await callTool<{ kind: string; mimeType: string; note: string }>(
-      mirageTools(ws).readFile,
-      { path: '/blob.bin' },
-    )
-    expect(r.kind).toBe('binary')
-    expect(r.mimeType).toBe('application/octet-stream')
-    expect(r.note).toContain('Use the execute tool')
+    const r = await callTool<Answer>(mirageTools(ws).read, { path: '/blob.bin' })
+    expect(r.isError).toBe(false)
+    expect(r.text).toContain('Use the shell tool')
   })
-})
 
-describe('vercel mirageTools.readFile.toModelOutput', () => {
-  function callToModelOutput(t: unknown, output: unknown): unknown {
-    const fn = (t as { toModelOutput?: (opts: unknown) => unknown }).toModelOutput
-    if (typeof fn !== 'function') throw new Error('tool has no toModelOutput')
-    return fn({ toolCallId: 't', input: {}, output })
-  }
-
-  it('text → {type:"text", value}', () => {
-    const out = callToModelOutput(mirageTools(mkWs()).readFile, {
-      kind: 'text',
-      path: '/x.txt',
-      mimeType: 'text/plain',
-      content: 'hello',
-      bytes: 5,
+  it('renders each answer for the model', () => {
+    const read = mirageTools(mkWs()).read
+    expect(callToModelOutput(read, { text: 'hello', isError: false })).toEqual({
+      type: 'text',
+      value: 'hello',
     })
-    expect(out).toEqual({ type: 'text', value: 'hello' })
-  })
-
-  it('media → {type:"content", value:[text, file]}', () => {
-    const out = callToModelOutput(mirageTools(mkWs()).readFile, {
-      kind: 'media',
-      path: '/p.png',
-      mimeType: 'image/png',
-      base64: 'AAAA',
-      bytes: 3,
-    }) as {
-      type: string
-      value: {
-        type: string
-        text?: string
-        data?: { type: string; data: string }
-        mediaType?: string
-      }[]
-    }
-    expect(out.type).toBe('content')
-    expect(out.value).toHaveLength(2)
-    expect(out.value[0]).toEqual({ type: 'text', text: '[/p.png] image/png (3 bytes)' })
-    expect(out.value[1]).toEqual({
-      type: 'file',
-      data: { type: 'data', data: 'AAAA' },
-      mediaType: 'image/png',
+    expect(callToModelOutput(read, { text: 'nope', isError: true })).toEqual({
+      type: 'error-text',
+      value: 'nope',
     })
-  })
-
-  it('binary → text stub', () => {
-    const out = callToModelOutput(mirageTools(mkWs()).readFile, {
-      kind: 'binary',
-      path: '/x.bin',
-      mimeType: 'application/octet-stream',
-      bytes: 4,
-      note: 'Binary file /x.bin (application/octet-stream, 4 bytes). Use the execute tool',
-    }) as { type: string; value: string }
-    expect(out.type).toBe('text')
-    expect(out.value).toContain('Use the execute tool')
-  })
-
-  it('error → {type:"error-text"}', () => {
-    const out = callToModelOutput(mirageTools(mkWs()).readFile, { error: 'ENOENT' })
-    expect(out).toEqual({ type: 'error-text', value: 'ENOENT' })
-  })
-})
-
-describe('vercel mirageTools.writeFile', () => {
-  it('creates a new file with content', async () => {
-    const ws = mkWs()
-    const r = await callTool<{ path: string }>(mirageTools(ws).writeFile, {
-      path: '/out.txt',
-      content: 'data',
+    expect(
+      callToModelOutput(read, {
+        kind: 'media',
+        path: '/p.png',
+        mimeType: 'image/png',
+        base64: 'AAAA',
+        bytes: 3,
+      }),
+    ).toEqual({
+      type: 'content',
+      value: [
+        { type: 'text', text: '[/p.png] image/png (3 bytes)' },
+        { type: 'file', data: { type: 'data', data: 'AAAA' }, mediaType: 'image/png' },
+      ],
     })
-    expect(r.path).toBe('/out.txt')
-    expect(await ws.vfs.cat('/out.txt')).toBe('data')
-  })
-
-  it('mkdirs missing parent directories', async () => {
-    const ws = mkWs()
-    const r = await callTool<{ path: string }>(mirageTools(ws).writeFile, {
-      path: '/a/b/c.txt',
-      content: 'x',
-    })
-    expect(r.path).toBe('/a/b/c.txt')
-    expect(await ws.vfs.cat('/a/b/c.txt')).toBe('x')
-  })
-})
-
-describe('vercel mirageTools.editFile', () => {
-  it('replaces single occurrence', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/f.txt', 'foo bar baz')
-    const r = await callTool<{ occurrences: number }>(mirageTools(ws).editFile, {
-      path: '/f.txt',
-      oldString: 'bar',
-      newString: 'BAR',
-    })
-    expect(r.occurrences).toBe(1)
-    expect(await ws.vfs.cat('/f.txt')).toBe('foo BAR baz')
-  })
-
-  it('rejects multiple occurrences without replaceAll', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/f.txt', 'aa aa')
-    const r = await callTool<{ error: string }>(mirageTools(ws).editFile, {
-      path: '/f.txt',
-      oldString: 'aa',
-      newString: 'X',
-    })
-    expect(r.error).toContain('appears 2 times')
-  })
-
-  it('replaces all when replaceAll is true', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/f.txt', 'aa aa')
-    const r = await callTool<{ occurrences: number }>(mirageTools(ws).editFile, {
-      path: '/f.txt',
-      oldString: 'aa',
-      newString: 'X',
-      replaceAll: true,
-    })
-    expect(r.occurrences).toBe(2)
-    expect(await ws.vfs.cat('/f.txt')).toBe('X X')
-  })
-})
-
-describe('vercel mirageTools.ls', () => {
-  it('lists entries with is_dir flags', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/a.txt', 'a')
-    await ws.vfs.mkdir('/d')
-    const r = await callTool<{ files: { path: string; is_dir: boolean }[] }>(mirageTools(ws).ls, {
-      path: '/',
-    })
-    const paths = r.files.map((f) => f.path).sort()
-    expect(paths).toContain('/a.txt')
-    expect(paths).toContain('/d')
-    expect(r.files.find((f) => f.path === '/d')?.is_dir).toBe(true)
-    expect(r.files.find((f) => f.path === '/a.txt')?.is_dir).toBe(false)
   })
 })

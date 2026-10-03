@@ -52,8 +52,8 @@ async function main(): Promise<void> {
       tools,
       stopWhen: stepCountIs(4),
       system:
-        'You are a vision-capable assistant with access to a Mirage workspace. Use the readFile tool when you need file contents. After reading, describe what you saw in 2 short sentences.',
-      prompt: `Use the readFile tool to read ${target}, then describe what's in it.`,
+        'You are a vision-capable assistant with access to a Mirage workspace. Use the read tool when you need file contents. After reading, describe what you saw in 2 short sentences.',
+      prompt: `Use the read tool to read ${target}, then describe what's in it.`,
     })
     console.log('reply:', r.text || '(empty)')
     console.log(

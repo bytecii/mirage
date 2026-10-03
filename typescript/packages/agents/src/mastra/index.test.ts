@@ -11,7 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-
 import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '@struktoai/mirage-core/ops/registry'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
@@ -26,126 +25,45 @@ function mkWs(): Workspace {
   return new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops })
 }
 
-async function runTool<T>(t: unknown, input: unknown): Promise<T> {
-  const exec = (t as { execute?: (input: unknown, ctx: unknown) => unknown }).execute
-  if (typeof exec !== 'function') throw new Error('tool has no execute')
-  return (await exec(input, {})) as T
+interface Answer {
+  text: string
+  isError: boolean
 }
 
-describe('mastra mirageTools.execute', () => {
-  it('runs a shell command and returns stdout/stderr/exitCode', async () => {
+async function runTool(t: unknown, input: unknown): Promise<Answer> {
+  const exec = (t as { execute?: (input: unknown, ctx: unknown) => unknown }).execute
+  if (typeof exec !== 'function') throw new Error('tool has no execute')
+  return (await exec(input, {})) as Answer
+}
+
+describe('mastra mirageTools', () => {
+  it('serves the tool table under its names', () => {
     const tools = mirageTools(mkWs())
-    const r = await runTool<{ stdout: string; stderr: string; exitCode: number }>(tools.execute, {
-      command: 'echo hello',
-    })
-    expect(r.stdout).toBe('hello\n')
-    expect(r.stderr).toBe('')
-    expect(r.exitCode).toBe(0)
-  })
-
-  it('captures non-zero exit code', async () => {
-    const r = await runTool<{ stdout: string; stderr: string; exitCode: number }>(
-      mirageTools(mkWs()).execute,
-      { command: 'cat /nope.txt' },
+    expect(Object.keys(tools).sort()).toEqual(
+      ['edit', 'glob', 'grep', 'ls', 'read', 'shell', 'write'].sort(),
     )
-    expect(r.exitCode).not.toBe(0)
-    expect(r.stderr.length).toBeGreaterThan(0)
+    expect(tools.shell.id).toBe('mirage-shell')
   })
 
-  it('exposes a stable tool id', () => {
-    const tools = mirageTools(mkWs()) as unknown as { execute: { id: string } }
-    expect(tools.execute.id).toBe('mirage-execute')
-  })
-})
-
-describe('mastra mirageTools.readFile', () => {
-  it('reads file content as text', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/notes.txt', 'hello')
-    const r = await runTool<{ content: string }>(mirageTools(ws).readFile, { path: '/notes.txt' })
-    expect(r.content).toBe('hello')
-  })
-
-  it('returns error for missing file', async () => {
-    const r = await runTool<{ error: string; content: string }>(mirageTools(mkWs()).readFile, {
-      path: '/missing.txt',
+  it('answers as the MCP tools do', async () => {
+    const tools = mirageTools(mkWs())
+    const written = await runTool(tools.write, { path: '/src/a.py', content: 'Needle\n' })
+    const read = await runTool(tools.read, { path: '/src/a.py' })
+    const edited = await runTool(tools.edit, {
+      path: '/src/a.py',
+      old_string: 'Needle',
+      new_string: 'pin',
     })
-    expect(r.error.length).toBeGreaterThan(0)
-  })
-})
-
-describe('mastra mirageTools.writeFile', () => {
-  it('creates a new file with content', async () => {
-    const ws = mkWs()
-    const r = await runTool<{ path: string }>(mirageTools(ws).writeFile, {
-      path: '/out.txt',
-      content: 'data',
-    })
-    expect(r.path).toBe('/out.txt')
-    expect(await ws.vfs.cat('/out.txt')).toBe('data')
-  })
-
-  it('mkdirs missing parent directories', async () => {
-    const ws = mkWs()
-    const r = await runTool<{ path: string }>(mirageTools(ws).writeFile, {
-      path: '/a/b/c.txt',
-      content: 'x',
-    })
-    expect(r.path).toBe('/a/b/c.txt')
-    expect(await ws.vfs.cat('/a/b/c.txt')).toBe('x')
-  })
-})
-
-describe('mastra mirageTools.editFile', () => {
-  it('replaces single occurrence', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/f.txt', 'foo bar baz')
-    const r = await runTool<{ occurrences: number }>(mirageTools(ws).editFile, {
-      path: '/f.txt',
-      oldString: 'bar',
-      newString: 'BAR',
-    })
-    expect(r.occurrences).toBe(1)
-    expect(await ws.vfs.cat('/f.txt')).toBe('foo BAR baz')
-  })
-
-  it('rejects multiple occurrences without replaceAll', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/f.txt', 'aa aa')
-    const r = await runTool<{ error: string }>(mirageTools(ws).editFile, {
-      path: '/f.txt',
-      oldString: 'aa',
-      newString: 'X',
-    })
-    expect(r.error).toContain('appears 2 times')
-  })
-
-  it('replaces all when replaceAll is true', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/f.txt', 'aa aa')
-    const r = await runTool<{ occurrences: number }>(mirageTools(ws).editFile, {
-      path: '/f.txt',
-      oldString: 'aa',
-      newString: 'X',
-      replaceAll: true,
-    })
-    expect(r.occurrences).toBe(2)
-    expect(await ws.vfs.cat('/f.txt')).toBe('X X')
-  })
-})
-
-describe('mastra mirageTools.ls', () => {
-  it('lists entries with is_dir flags', async () => {
-    const ws = mkWs()
-    await ws.vfs.write('/a.txt', 'a')
-    await ws.vfs.mkdir('/d')
-    const r = await runTool<{ files: { path: string; is_dir: boolean }[] }>(mirageTools(ws).ls, {
-      path: '/',
-    })
-    const paths = r.files.map((f) => f.path).sort()
-    expect(paths).toContain('/a.txt')
-    expect(paths).toContain('/d')
-    expect(r.files.find((f) => f.path === '/d')?.is_dir).toBe(true)
-    expect(r.files.find((f) => f.path === '/a.txt')?.is_dir).toBe(false)
+    const listed = await runTool(tools.ls, { path: '/src' })
+    const found = await runTool(tools.grep, { pattern: 'PIN', path: '/src', ignore_case: true })
+    const globbed = await runTool(tools.glob, { pattern: '**/*.py' })
+    const shell = await runTool(tools.shell, { command: 'cat /nope.txt' })
+    expect(written).toEqual({ text: 'Written: /src/a.py', isError: false })
+    expect(read).toEqual({ text: '     1\tNeedle\n', isError: false })
+    expect(edited.isError).toBe(false)
+    expect(listed).toEqual({ text: 'a.py\n', isError: false })
+    expect(found).toEqual({ text: '/src/a.py:1:pin\n', isError: false })
+    expect(globbed).toEqual({ text: '/src/a.py\n', isError: false })
+    expect(shell.isError).toBe(true)
   })
 })
