@@ -32,7 +32,7 @@ READ_DESCRIPTION = (
 
 WRITE_DESCRIPTION = (
     "Write a file on the Mirage virtual filesystem, creating missing parent "
-    "directories. An existing file must be read first, and the write fails "
+    "directories. An existing file must be read in full first, and the write fails "
     "if it changed since; use edit to change part of a file."
 )
 

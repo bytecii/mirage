@@ -46,6 +46,18 @@ function mimeForExtension(path: string): ReadFileMime | undefined {
   )
 }
 
+/**
+ * The MIME type of a file a model takes as media, from its extension: an
+ * image the models read, or a PDF. Undefined for anything else, which the
+ * text read answers. Needs no fetch, so a door can choose its path before
+ * reading.
+ */
+export function mediaMimeOf(path: string): ReadFileMime | undefined {
+  const mime = MIME_FOR_EXTENSION[extOf(path)]
+  if (mime === undefined) return undefined
+  return MODEL_IMAGE_MIMES.has(mime) || mime === READ_FILE_MIME.PDF ? mime : undefined
+}
+
 function mimeForDetectedType(type: ContentType): ReadFileMime {
   return MIME_FOR_FILE_TYPE[type] ?? READ_FILE_MIME.BINARY
 }

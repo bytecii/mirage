@@ -63,6 +63,7 @@ class FileVersionTracker:
         self._enabled = enabled
         self._read_versions: dict[str, str] = {}
         self._edit_versions: dict[str, str] = {}
+        self._seen: set[str] = set()
 
     def _key(self, path: str) -> str:
         """The stamp key for a path: one key per file, not per spelling.
@@ -105,13 +106,24 @@ class FileVersionTracker:
         self._edit_versions.pop(key, None)
 
     def has_read(self, path: str) -> bool:
-        """Whether a write may overwrite the file: the agent read it, or
-        wrote it, since this tracker started, or nothing is checked.
+        """Whether a write may overwrite the file: the agent was shown all
+        of it, or wrote all of it, since this tracker started, or nothing
+        is checked. A read of a few lines does not count, so a write never
+        replaces lines the agent did not see.
 
         Args:
             path (str): Virtual path.
         """
-        return not self._enabled or self._key(path) in self._read_versions
+        return not self._enabled or self._key(path) in self._seen
+
+    def mark_seen(self, path: str) -> None:
+        """Record that the agent was shown all of the file.
+
+        Args:
+            path (str): Virtual path.
+        """
+        if self._enabled:
+            self._seen.add(self._key(path))
 
     async def read(self, path: str) -> bytes:
         """Read a file and record what the agent was shown.
@@ -167,6 +179,8 @@ class FileVersionTracker:
                 await self._assert_version(path, read_version)
         await self._ws.vfs.write(path, content.encode("utf-8"))
         await self._record_write(path, key)
+        if self._enabled:
+            self._seen.add(key)
 
     async def write_edit(self, path: str, content: str) -> None:
         """Write an edit, refusing if it moved since it was read for edit.

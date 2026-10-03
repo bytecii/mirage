@@ -73,7 +73,9 @@ async def test_write_refuses_an_unread_file(tools, workspace):
     await workspace.vfs.write("/exists.txt", b"first")
     result = await tools.write({"path": "/exists.txt", "content": "second"})
     assert result["is_error"] is True
-    assert "read it before overwriting it" in result["content"][0]["text"]
+    assert (
+        "read all of it before overwriting it" in result["content"][0]["text"]
+    )
 
 
 @pytest.mark.asyncio

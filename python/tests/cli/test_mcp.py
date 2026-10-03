@@ -1,3 +1,4 @@
+import subprocess
 import sys
 
 import httpx
@@ -145,3 +146,29 @@ async def test_a_named_workspace_stays_and_is_attached_again(daemon, tmp_path):
     listed = httpx.get(f"{daemon['url']}/v1/workspaces").json()
     assert read.content[0].text == "     1\tx"
     assert [w["id"] for w in listed] == ["demo?draft"]
+
+
+def test_a_name_held_by_another_config_is_refused(daemon, tmp_path):
+    httpx.post(
+        f"{daemon['url']}/v1/workspaces",
+        json={
+            "config": {
+                "workspace_id": "shared",
+                "mounts": {"/": {"vfs": "ram", "mode": "WRITE"}},
+            }
+        },
+    ).raise_for_status()
+    other = tmp_path / "other.yaml"
+    other.write_text(
+        "workspace_id: shared\nmounts:\n  /:\n    vfs: ram\n    mode: READ\n"
+    )
+    params = relay(daemon, str(other))
+    refused = subprocess.run(
+        [params.command, *params.args],
+        env=daemon["env"],
+        input=b"",
+        capture_output=True,
+        timeout=60,
+    )
+    assert refused.returncode == 2
+    assert b"workspace id already exists" in refused.stderr

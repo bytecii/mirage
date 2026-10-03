@@ -14,7 +14,8 @@
 
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { tool } from '@openai/agents'
-import { readWorkspaceFile } from '../read_file.ts'
+import { mediaMimeOf } from '../read_file.ts'
+import { READ_FILE_MIME } from '../read_file/constants.ts'
 import {
   EDIT_DESCRIPTION,
   EDIT_INPUT,
@@ -63,27 +64,14 @@ export function mirageTools(ws: Workspace, options: MirageToolOperationsOptions 
       strict: false,
       execute: async (args) => {
         const path = (args as { path: string }).path
-        if (await ws.vfs.isFile(path, options.sessionId)) {
-          const sniffed = await readWorkspaceFile(ws, path, (p) =>
-            ws.vfs.read(p, { raw: true }, options.sessionId),
-          )
-          if (sniffed.kind === 'image') {
-            return {
-              type: 'image' as const,
-              image: { data: Uint8Array.from(sniffed.data), mediaType: sniffed.mimeType },
-            }
+        const mediaType = mediaMimeOf(path)
+        if (mediaType !== undefined && (await ws.vfs.isFile(path, options.sessionId))) {
+          const data = Uint8Array.from(await operations.readRaw(path))
+          if (mediaType === READ_FILE_MIME.PDF) {
+            const filename = path.slice(path.lastIndexOf('/') + 1)
+            return { type: 'file' as const, file: { data, mediaType, filename } }
           }
-          if (sniffed.kind === 'file') {
-            return {
-              type: 'file' as const,
-              file: {
-                data: Uint8Array.from(sniffed.data),
-                mediaType: sniffed.mimeType,
-                filename: sniffed.filename,
-              },
-            }
-          }
-          if (sniffed.kind === 'binary') return sniffed.note
+          return { type: 'image' as const, image: { data, mediaType } }
         }
         return call('read', args)
       },

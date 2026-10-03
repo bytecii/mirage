@@ -15,7 +15,7 @@
 import { encodeBase64 } from '@struktoai/mirage-core/utils/base64'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { jsonSchema, tool, type ToolSet } from 'ai'
-import { readWorkspaceFile } from '../read_file.ts'
+import { mediaMimeOf } from '../read_file.ts'
 import {
   EDIT_DESCRIPTION,
   EDIT_INPUT,
@@ -73,20 +73,16 @@ export function mirageTools(ws: Workspace, options: MirageToolOperationsOptions 
       inputSchema: jsonSchema<Record<string, unknown>>(READ_INPUT as never),
       execute: async (args: Record<string, unknown>): Promise<ReadAnswer> => {
         const path = args.path as string
-        if (await ws.vfs.isFile(path, options.sessionId)) {
-          const sniffed = await readWorkspaceFile(ws, path, (p) =>
-            ws.vfs.read(p, { raw: true }, options.sessionId),
-          )
-          if (sniffed.kind === 'image' || sniffed.kind === 'file') {
-            return {
-              kind: 'media',
-              path: sniffed.path,
-              mimeType: sniffed.mimeType,
-              base64: encodeBase64(sniffed.data),
-              bytes: sniffed.bytes,
-            }
+        const mimeType = mediaMimeOf(path)
+        if (mimeType !== undefined && (await ws.vfs.isFile(path, options.sessionId))) {
+          const data = await operations.readRaw(path)
+          return {
+            kind: 'media',
+            path,
+            mimeType,
+            base64: encodeBase64(data),
+            bytes: data.byteLength,
           }
-          if (sniffed.kind === 'binary') return { text: sniffed.note, isError: false }
         }
         return answer(await operations.call('read', args))
       },

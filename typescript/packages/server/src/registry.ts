@@ -20,6 +20,8 @@ export class WorkspaceEntry {
   readonly id: string
   readonly runner: WorkspaceRunner
   readonly createdAt: number
+  /** The fingerprint of the config it was created from, when it was. */
+  configDigest: string | null = null
 
   constructor(id: string, runner: WorkspaceRunner) {
     this.id = id

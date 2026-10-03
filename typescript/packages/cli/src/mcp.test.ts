@@ -214,6 +214,29 @@ describe('mirage mcp over stdio', () => {
     expect(listed.map((w) => w.id)).toEqual(['demo?draft'])
   }, 60_000)
 
+  it('refuses a name another config holds', async () => {
+    const d = await daemon()
+    const held = await fetch(`${d.url}/v1/workspaces`, {
+      method: 'POST',
+      headers: JSON_AUTH,
+      body: JSON.stringify({
+        config: { workspace_id: 'shared', mounts: { '/': { vfs: 'ram', mode: 'write' } } },
+      }),
+    })
+    expect(held.status).toBe(201)
+    const other = join(mkTempDir(), 'other.yaml')
+    writeFileSync(other, 'workspace_id: shared\nmounts:\n  /:\n    vfs: ram\n    mode: read\n')
+    const child = spawn(process.execPath, [BIN, 'mcp', other], { env: d.env })
+    let stderr = ''
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+    child.stdin.end()
+    const code = await new Promise<number | null>((resolve) => child.on('close', resolve))
+    expect(code).toBe(2)
+    expect(stderr).toContain('workspace id already exists')
+  }, 60_000)
+
   it('takes a config or a workspace, not both', async () => {
     const child = spawn(process.execPath, [BIN, 'mcp', writeConfig(), '-w', 'ws_1'])
     const code = await new Promise<number | null>((resolve) => child.on('close', resolve))

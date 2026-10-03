@@ -64,7 +64,7 @@ export function registerToolCommands(program: Command): void {
       if (opts.limit !== undefined) args.limit = opts.limit
       await callTool(opts, 'read', args)
     })
-  toolCommand(program, 'write', 'Write a file; an existing one must be read first.')
+  toolCommand(program, 'write', 'Write a file; an existing one must be read in full first.')
     .argument('<path>', 'File to write')
     .option('--content <text>', 'Text to write; stdin when absent')
     .action(async (path: string, opts: Target & { content?: string }) => {

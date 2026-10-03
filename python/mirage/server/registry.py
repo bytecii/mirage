@@ -29,6 +29,7 @@ class WorkspaceEntry:
         self.id = workspace_id
         self.runner = runner
         self.created_at = time.time()
+        self.config_digest: str | None = None
 
 
 class WorkspaceRegistry:

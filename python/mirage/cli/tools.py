@@ -86,7 +86,7 @@ def write_cmd(
         None, "--content", help="Text to write; stdin when absent."
     ),
 ) -> None:
-    """Write a file; an existing one must be read first."""
+    """Write a file; an existing one must be read in full first."""
     text = content if content is not None else sys.stdin.read()
     call_tool(
         workspace_id, session_id, "write", {"path": path, "content": text}

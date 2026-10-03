@@ -37,6 +37,7 @@ async function readBuffer(ws: Workspace, path: string): Promise<Buffer> {
 export class FileVersionTracker {
   private readonly readVersions = new Map<string, string>()
   private readonly editVersions = new Map<string, string>()
+  private readonly seen = new Set<string>()
 
   constructor(
     private readonly ws: Workspace,
@@ -77,11 +78,18 @@ export class FileVersionTracker {
   }
 
   /**
-   * Whether a write may overwrite the file: the agent read it, or wrote
-   * it, since this tracker started, or nothing is checked.
+   * Whether a write may overwrite the file: the agent was shown all of it,
+   * or wrote all of it, since this tracker started, or nothing is checked.
+   * A read of a few lines does not count, so a write never replaces lines
+   * the agent did not see.
    */
   hasRead(path: string): boolean {
-    return !this.enabled || this.readVersions.has(this.key(path))
+    return !this.enabled || this.seen.has(this.key(path))
+  }
+
+  /** Record that the agent was shown all of the file. */
+  markSeen(path: string): void {
+    if (this.enabled) this.seen.add(this.key(path))
   }
 
   async read(path: string): Promise<Buffer> {
@@ -111,6 +119,7 @@ export class FileVersionTracker {
     }
     await this.ws.vfs.write(path, content)
     await this.recordWrite(path, key)
+    if (this.enabled) this.seen.add(key)
   }
 
   async writeEdit(path: string, content: string): Promise<void> {

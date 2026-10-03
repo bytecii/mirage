@@ -18,7 +18,7 @@ There are three ways to reach them, and all three end at the daemon's HTTP endpo
 
 ## stdio
 
-`mirage mcp` relays stdin and stdout to the daemon's endpoint, starting the daemon when it is not running. Given a config, it creates a workspace from it. With no `workspace_id` in the config, that workspace is deleted when the client closes stdin, as a stdio server's state ends with its process. A config that names a `workspace_id` keeps its workspace: the first run creates it and later runs attach to it. It looks for `workspace.yaml` walking up from the working directory; `MIRAGE_MCP_CONFIG` or a path argument picks another.
+`mirage mcp` relays stdin and stdout to the daemon's endpoint, starting the daemon when it is not running. Given a config, it creates a workspace from it. With no `workspace_id` in the config, that workspace is deleted when the client closes stdin, as a stdio server's state ends with its process. A config that names a `workspace_id` keeps its workspace: the first run creates it, and a later run of the same config reaches it again, because the daemon answers a create with the live workspace made from an identical config. A different config naming the same id is refused rather than attached. It looks for `workspace.yaml` walking up from the working directory; `MIRAGE_MCP_CONFIG` or a path argument picks another.
 
 ```json
 {

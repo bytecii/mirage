@@ -44,8 +44,9 @@ export function resolveMcpConfig(
  * endpoint, starting the daemon when it is not running. A config with no
  * `workspace_id` makes a workspace that lives as long as this process, as
  * a stdio server's state does. A workspace with a name, the config's
- * `workspace_id` or `--workspace`, outlives it: the config's is created
- * when the daemon does not hold it yet, and attached to when it does.
+ * `workspace_id` or `--workspace`, outlives it. The daemon answers a
+ * config's name with the live workspace created from that same config,
+ * and refuses it when the live one came from another.
  */
 async function runMcp(config: string | undefined, options: McpCommandOptions): Promise<void> {
   if (options.workspace !== undefined && config !== undefined) {
@@ -70,15 +71,10 @@ async function runMcp(config: string | undefined, options: McpCommandOptions): P
   if (path !== undefined) {
     const { checkWorkspaceConfigFile } = await import('@struktoai/mirage-node/config')
     const loaded = checkWorkspaceConfigFile(path)
-    const named = typeof loaded.workspace_id === 'string' ? loaded.workspace_id : ''
     const body = JSON.stringify({ config: loaded })
-    const response = await client.request('POST', '/v1/workspaces', { body })
-    if (named !== '' && response.status === 409) {
-      workspaceId = named
-    } else {
-      workspaceId = ((await handleResponse(response)) as { id: string }).id
-      minted = named === ''
-    }
+    const created = await handleResponse(await client.request('POST', '/v1/workspaces', { body }))
+    workspaceId = (created as { id: string }).id
+    minted = typeof loaded.workspace_id !== 'string' || loaded.workspace_id === ''
   } else {
     workspaceId = options.workspace ?? ''
     await handleResponse(

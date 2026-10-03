@@ -70,8 +70,9 @@ def mcp_cmd(
     not running. A config with no ``workspace_id`` makes a workspace that
     lives as long as this process, as a stdio server's state does. A
     workspace with a name, the config's ``workspace_id`` or
-    ``--workspace``, outlives it: the config's is created when the daemon
-    does not hold it yet, and attached to when it does.
+    ``--workspace``, outlives it. The daemon answers a config's name with
+    the live workspace created from that same config, and refuses it when
+    the live one came from another.
     """
     if workspace_id is None:
         try:
@@ -88,16 +89,13 @@ def mcp_cmd(
             fail(str(e))
         if workspace_id is None:
             body = {"config": resolve_config(path)}
-            named = body["config"].get("workspace_id")
-            response = client.request("POST", "/v1/workspaces", json=body)
-            if named and response.status_code == 409:
-                workspace_id = str(named)
-            else:
-                created = handle_response(response)
-                if not isinstance(created, dict):
-                    fail(f"unexpected daemon response: {created!r}")
-                workspace_id = str(created["id"])
-                minted = not named
+            created = handle_response(
+                client.request("POST", "/v1/workspaces", json=body)
+            )
+            if not isinstance(created, dict):
+                fail(f"unexpected daemon response: {created!r}")
+            workspace_id = str(created["id"])
+            minted = not body["config"].get("workspace_id")
         else:
             handle_response(
                 client.request(

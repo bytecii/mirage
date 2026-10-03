@@ -104,12 +104,15 @@ describe('vercel mirageTools.read media', () => {
     expect(r.mimeType).toBe('application/pdf')
   })
 
-  it('describes another binary instead of decoding it', async () => {
+  it('counts a media read as a read of the whole file', async () => {
     const ws = mkWs()
-    await ws.vfs.write('/blob.bin', new Uint8Array([0, 1, 2, 3]))
-    const r = await callTool<Answer>(mirageTools(ws).read, { path: '/blob.bin' })
-    expect(r.isError).toBe(false)
-    expect(r.text).toContain('Use the shell tool')
+    await ws.vfs.write('/photo.png', new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))
+    const tools = mirageTools(ws)
+    const refused = await callTool<Answer>(tools.write, { path: '/photo.png', content: 'x' })
+    await callTool(tools.read, { path: '/photo.png' })
+    const written = await callTool<Answer>(tools.write, { path: '/photo.png', content: 'x' })
+    expect(refused.isError).toBe(true)
+    expect(written).toEqual({ text: 'Written: /photo.png', isError: false })
   })
 
   it('renders each answer for the model', () => {

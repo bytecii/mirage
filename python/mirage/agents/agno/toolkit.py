@@ -114,7 +114,8 @@ class MirageToolkit(Toolkit):
 
     def write(self, path: str, content: str) -> str:
         """Write a file, creating missing parent directories. An existing
-        file must be read first, and the write fails if it changed since.
+        file must be read in full first, and the write fails if it changed
+        since.
 
         Args:
             path (str): Absolute path of the file to write.

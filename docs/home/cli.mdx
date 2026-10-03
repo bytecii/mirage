@@ -250,7 +250,7 @@ mirage workspace clone demo --at <version> --id demo_at_v1
 
 | Verb | What it does |
 | --- | --- |
-| `mirage workspace create FILE [--id NAME]` | Build mounts from YAML, register a workspace, return its id. |
+| `mirage workspace create FILE [--id NAME]` | Build mounts from YAML, register a workspace, return its id. Creating an id that is live again with the same config returns that workspace; another config is refused. |
 | `mirage workspace list` | Brief one-line summary per active workspace. |
 | `mirage workspace get ID [--verbose]` | Full detail (mounts, sessions, optionally cache / dirty / history internals). |
 | `mirage workspace delete ID` | Stop the workspace and delete its state (links, history, sessions, versions), so a workspace created later under the same id starts empty; daemon may exit on the idle timer. |
@@ -270,7 +270,7 @@ mirage workspace clone demo --at <version> --id demo_at_v1
 | `mirage session delete WS SESSION` | Close a session. |
 | `mirage shell --workspace_id WS [--session_id S] [--background] --command "..."` | Run a shell line. Uploads piped stdin for foreground execution. |
 | `mirage read -w WS PATH [--offset N] [--limit N]` | Read a file with line numbers, as the `read` tool does. |
-| `mirage write -w WS PATH [--content TEXT]` | Write a file (stdin when no `--content`); an existing one must be read first. |
+| `mirage write -w WS PATH [--content TEXT]` | Write a file (stdin when no `--content`); an existing one must be read in full first. |
 | `mirage edit -w WS PATH OLD NEW [--replace-all]` | Replace a string in a file read first. |
 | `mirage ls -w WS PATH` | List a directory. |
 | `mirage grep -w WS [-i] [-F] [-l] [-c] [-m N] [-C N] [--include GLOB] PATTERN PATH` | Search recursively, as `grep -rn` does. |

@@ -12,7 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { fromJsonSchema, type JsonSchemaType } from '@modelcontextprotocol/server'
+import {
+  DEFAULT_MAX_REQUEST_BODY_SIZE,
+  fromJsonSchema,
+  type JsonSchemaType,
+} from '@modelcontextprotocol/server'
 import {
   EDIT_INPUT,
   GLOB_INPUT,
@@ -78,11 +82,16 @@ async function callTool(
   }
 }
 
-/** Serve each tool but `shell` at `POST /v1/workspaces/:wsId/<tool>`; `shell` keeps its own route. */
+/**
+ * Serve each tool but `shell` at `POST /v1/workspaces/:wsId/<tool>`, with
+ * the MCP route's body limit, so an input MCP takes is one these take.
+ * `shell` keeps its own route.
+ */
 export function registerToolsRoutes(app: FastifyInstance, deps: ToolsRoutesDeps): void {
   for (const name of Object.keys(INPUTS)) {
     app.post<{ Params: { wsId: string }; Querystring: { sessionId?: string } }>(
       `/v1/workspaces/:wsId/${name}`,
+      { bodyLimit: DEFAULT_MAX_REQUEST_BODY_SIZE },
       async (req, reply) => {
         const { status, body } = await callTool(
           deps.mcp,

@@ -50,18 +50,24 @@ describe('workspaces router', () => {
     await app.close()
   })
 
-  it('POST /v1/workspaces refuses a held config id without building it', async () => {
+  it('POST /v1/workspaces answers a held config id without building', async () => {
     const app = buildApp()
     const payload = {
       config: { workspace_id: 'named', mounts: { '/': { vfs: 'ram', mode: 'write' } } },
     }
+    const other = {
+      config: { workspace_id: 'named', mounts: { '/': { vfs: 'ram', mode: 'read' } } },
+    }
     const first = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
     const close = vi.spyOn(Workspace.prototype, 'close')
-    const second = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    const again = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    const refused = await app.inject({ method: 'POST', url: '/v1/workspaces', payload: other })
     const closed = close.mock.calls.length
     close.mockRestore()
     expect(first.statusCode).toBe(201)
-    expect(second.statusCode).toBe(409)
+    expect(again.statusCode).toBe(200)
+    expect(again.json<{ id: string }>().id).toBe('named')
+    expect(refused.statusCode).toBe(409)
     expect(closed).toBe(0)
     await app.close()
   })

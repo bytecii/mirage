@@ -90,7 +90,7 @@ describe('write', () => {
     await ws.vfs.write('/exists.txt', 'first')
     const result = await new MirageToolOperations(ws).write('/exists.txt', 'second')
     expect(result.isError).toBe(true)
-    expect(firstText(result)).toContain('read it before overwriting it')
+    expect(firstText(result)).toContain('read all of it before overwriting it')
   })
 
   it('creates parent directories', async () => {

@@ -108,6 +108,7 @@ export class MirageToolOperations {
       const text = decode(data)
       const raw = text.length === 0 ? [] : text.split(/(?<=\n)/)
       const lines = raw.length > 0 && raw[raw.length - 1] === '' ? raw.slice(0, -1) : raw
+      if (offset <= 0 && offset + limit >= lines.length) this.versions.markSeen(path)
       const sliced = lines.slice(offset, offset + limit)
       const numbered = sliced.map((line, i) => `${String(i + offset + 1).padStart(6)}\t${line}`)
       return textResult(numbered.join(''))
@@ -115,15 +116,28 @@ export class MirageToolOperations {
   }
 
   /**
-   * Write a file; an existing one must have been read first. A new file
-   * is created with its missing parents. An existing one is overwritten
-   * only when the agent read it and it did not change since, so a write
-   * never clobbers text the agent has not seen.
+   * A file's bytes for a door that hands media to the model: read as
+   * `read` reads, so the file is stamped for a later edit and counts as
+   * seen in full.
+   */
+  async readRaw(path: string): Promise<Uint8Array> {
+    return this.asSession(async () => {
+      const data = await this.versions.read(path)
+      this.versions.markSeen(path)
+      return data
+    })
+  }
+
+  /**
+   * Write a file; an existing one must have been read in full first. A
+   * new file is created with its missing parents. An existing one is
+   * overwritten only when the agent was shown all of it and it did not
+   * change since, so a write never clobbers text the agent has not seen.
    */
   async write(path: string, content: string): Promise<ToolResult> {
     return this.asSession(async () => {
       if ((await this.ws.vfs.exists(path)) && !this.versions.hasRead(path)) {
-        return errorResult(`Error: file '${path}' exists; read it before overwriting it`)
+        return errorResult(`Error: file '${path}' exists; read all of it before overwriting it`)
       }
       await ensureParents(this.ws, path)
       try {
@@ -220,7 +234,12 @@ export class MirageToolOperations {
    * not.
    */
   async glob(pattern: string, path = '/'): Promise<ToolResult> {
-    const full = pattern.startsWith('/') ? pattern : `${path.replace(/\/+$/, '')}/${pattern}`
+    const full =
+      pattern.startsWith('/') || path === ''
+        ? pattern
+        : path.endsWith('/')
+          ? `${path}${pattern}`
+          : `${path}/${pattern}`
     const matches = await this.ws.glob(full, this.sessionId)
     const files: string[] = []
     for (const match of matches) {

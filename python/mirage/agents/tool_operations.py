@@ -168,14 +168,19 @@ class MirageToolOperations:
                 if not await self._ws.vfs.exists(path):
                     return ToolResult(f"Error: file '{path}' not found", True)
                 return ToolResult(f"Error: {exc}", True)
-            return ToolResult(number_lines(decode(data), offset, limit))
+            text = decode(data)
+            lines = text.count("\n") + (1 if text and text[-1] != "\n" else 0)
+            if offset <= 0 and offset + limit >= lines:
+                self._versions.mark_seen(path)
+            return ToolResult(number_lines(text, offset, limit))
 
     async def write(self, path: str, content: str) -> ToolResult:
-        """Write a file; an existing one must have been read first.
+        """Write a file; an existing one must have been read in full first.
 
         A new file is created with its missing parents. An existing one
-        is overwritten only when the agent read it and it did not change
-        since, so a write never clobbers text the agent has not seen.
+        is overwritten only when the agent was shown all of it and it did
+        not change since, so a write never clobbers text the agent has not
+        seen.
 
         Args:
             path (str): Virtual path.
@@ -189,7 +194,7 @@ class MirageToolOperations:
                 path
             ):
                 return ToolResult(
-                    f"Error: file '{path}' exists; read it before "
+                    f"Error: file '{path}' exists; read all of it before "
                     "overwriting it",
                     True,
                 )

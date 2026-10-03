@@ -58,7 +58,7 @@ console.log(result.text)
 | --- | --- | --- |
 | `shell` | `{ command }` | the line's output; `isError` when it exits nonzero |
 | `read` | `{ path, offset?, limit? }` | numbered lines |
-| `write` | `{ path, content }` | creates parents; an existing file must be read first |
+| `write` | `{ path, content }` | creates parents; an existing file must be read in full first |
 | `edit` | `{ path, old_string, new_string, replace_all? }` | refuses a file changed since it was read |
 | `ls` | `{ path }` | one entry per line |
 | `grep` | `{ pattern, path, ignore_case?, fixed_strings?, include?, context?, files_with_matches?, count?, max_count? }` | `grep -rn` output |

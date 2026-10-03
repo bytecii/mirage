@@ -200,11 +200,19 @@ async def test_create_with_explicit_id():
         assert r.json()["id"] == "myws"
 
         r = await client.post("/v1/workspaces", json=body)
+        assert r.status_code == 200
+        assert r.json()["id"] == "myws"
+
+        other = {
+            "config": {"mounts": {"/": {"vfs": "ram", "mode": "READ"}}},
+            "id": "myws",
+        }
+        r = await client.post("/v1/workspaces", json=other)
         assert r.status_code == 409
 
 
 @pytest.mark.asyncio
-async def test_create_refuses_a_held_config_id_without_building(monkeypatch):
+async def test_create_answers_a_held_config_id_without_building(monkeypatch):
     closed: list[Workspace] = []
     real_close = Workspace.close
 
@@ -214,14 +222,23 @@ async def test_create_refuses_a_held_config_id_without_building(monkeypatch):
 
     app, _ = _make_app_with_short_grace(grace=10.0)
     body = {"config": {**_minimal_config()["config"], "workspace_id": "named"}}
+    other = {
+        "config": {
+            "mounts": {"/": {"vfs": "ram", "mode": "READ"}},
+            "workspace_id": "named",
+        }
+    }
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         first = await client.post("/v1/workspaces", json=body)
         monkeypatch.setattr(Workspace, "close", spy)
-        second = await client.post("/v1/workspaces", json=body)
+        again = await client.post("/v1/workspaces", json=body)
+        refused = await client.post("/v1/workspaces", json=other)
     assert first.status_code == 201
-    assert second.status_code == 409
+    assert again.status_code == 200
+    assert again.json()["id"] == "named"
+    assert refused.status_code == 409
     assert closed == []
 
 

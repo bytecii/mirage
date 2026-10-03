@@ -134,8 +134,17 @@ describe('write', () => {
     await ws.vfs.write('/exists.txt', 'first')
     const result = await ops.write('/exists.txt', 'second')
     expect(result.isError).toBe(true)
-    expect(result.content[0]?.text).toContain('read it before overwriting it')
+    expect(result.content[0]?.text).toContain('read all of it before overwriting it')
     expect(await ws.vfs.cat('/exists.txt')).toBe('first')
+  })
+
+  it('refuses a partly read file', async () => {
+    await ws.vfs.write('/three.txt', '1\n2\n3\n')
+    await ops.read('/three.txt', 0, 1)
+    const result = await ops.write('/three.txt', 'x')
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toContain('read all of it before overwriting it')
+    expect(await ws.vfs.cat('/three.txt')).toBe('1\n2\n3\n')
   })
 
   it('overwrites a read file', async () => {

@@ -12,12 +12,13 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 import jsonschema
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
+from mcp.server.transport_security import DEFAULT_MAX_REQUEST_BODY_SIZE
 from pydantic import BaseModel
 
 from mirage.agents.tool_descriptions import (
@@ -53,26 +54,35 @@ async def call_tool(
     request: Request,
     workspace_id: str,
     name: str,
-    arguments: dict[str, Any],
     session_id: str | None,
 ) -> ToolResponse:
     """Run one tool for an HTTP caller, as MCP runs it.
 
-    The body is the tool's input, checked against the same schema MCP
-    checks it against, and the call goes to the table the MCP endpoint
-    serves the session with, so a read over HTTP stamps the file for an
-    edit over MCP and back.
+    The body is the tool's input, held to the MCP route's size limit and
+    checked against the same schema MCP checks it against, so an input
+    MCP takes is one this takes. The call goes to the table the MCP
+    endpoint serves the session with, so a read over HTTP stamps the
+    file for an edit over MCP and back.
 
     Args:
-        request (Request): the HTTP request, for the app's MCP door.
+        request (Request): the HTTP request, carrying the body and the
+            app's MCP door.
         workspace_id (str): the workspace.
         name (str): the tool.
-        arguments (dict[str, Any]): the tool's input.
         session_id (str | None): the session; None is the default.
 
     Returns:
         ToolResponse: the tool's text and whether it failed.
     """
+    body = await request.body()
+    if len(body) > DEFAULT_MAX_REQUEST_BODY_SIZE:
+        raise HTTPException(status_code=413, detail="request body too large")
+    try:
+        arguments = json.loads(body)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid JSON body for tool {name}"
+        ) from exc
     try:
         jsonschema.validate(arguments, INPUTS[name])
     except jsonschema.ValidationError as exc:
@@ -103,14 +113,9 @@ def tool_route(name: str) -> Callable[..., Awaitable[ToolResponse]]:
     """
 
     async def endpoint(
-        workspace_id: str,
-        request: Request,
-        arguments: dict[str, Any] = Body(...),
-        session_id: str | None = None,
+        workspace_id: str, request: Request, session_id: str | None = None
     ) -> ToolResponse:
-        return await call_tool(
-            request, workspace_id, name, arguments, session_id
-        )
+        return await call_tool(request, workspace_id, name, session_id)
 
     return endpoint
 

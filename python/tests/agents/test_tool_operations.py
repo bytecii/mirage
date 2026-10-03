@@ -68,8 +68,18 @@ async def test_write_refuses_an_unread_file(ops, workspace):
     await workspace.vfs.write("/exists.txt", b"first")
     result = await ops.write("/exists.txt", "second")
     assert result.is_error is True
-    assert "read it before overwriting it" in result.text
+    assert "read all of it before overwriting it" in result.text
     assert await workspace.vfs.read("/exists.txt") == b"first"
+
+
+@pytest.mark.asyncio
+async def test_write_refuses_a_partly_read_file(ops, workspace):
+    await workspace.vfs.write("/three.txt", b"1\n2\n3\n")
+    await ops.read("/three.txt", 0, 1)
+    result = await ops.write("/three.txt", "x")
+    assert result.is_error is True
+    assert "read all of it before overwriting it" in result.text
+    assert await workspace.vfs.read("/three.txt") == b"1\n2\n3\n"
 
 
 @pytest.mark.asyncio
