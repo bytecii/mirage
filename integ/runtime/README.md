@@ -80,46 +80,37 @@ error, or checks that the call is absent).
 | Extended attributes    | no           | no               | no             | yes          | no                | no           |
 | Working directory      | differs (27) | differs (27, 28) | differs (29)   | yes          | differs (29)      | yes          |
 
-1. A backend that fails mid-listing raises `RuntimeError`, not `OSError` (EIO).
-2. A write above the mounts lands in Pyodide's own in-memory file system,
-   and a link that aliases a mount is not found.
-3. `os.stat` returns no tuple form: `st[6]` fails.
-4. The root reports `nlink` 1; CPython on Linux reports 2.
-5. Directories carry no permission bits (`0o40000`).
-6. `std.open` opens a directory; the TypeScript shim refuses it.
-7. No `glob` module, `Path.rglob`, `os.walk` or `os.scandir`.
-8. Only `os.path.exists` runs on monty; `os.path.islink` sits in the link
-   cases monty skips. `isdir`, `isfile`, `getsize`, `join` and `realpath`
-   are not covered yet.
-9. No `+` or `x` modes and no `fileno()`; `FileNotFoundError` carries no
-   `strerror` or `filename`.
-10. Create, truncate and append reach the mount as whole writes when the
-    journal flushes; `x` on a dangling link opens; a file outside the view
-    opens in Pyodide's in-memory file system.
-11. Accepts the mode `rr`, as QuickJS itself does.
-12. `std.open` leaves its `errorObj` argument unset.
-13. File objects are not iterable, and there is no `glob` module.
-14. No `os.open`, `os.pread` or `os.lseek`; `seek` and `tell` on a file work.
-15. `std.SEEK_SET` and `std.SEEK_END` are missing, so `seek` does nothing.
-16. A read-only mount refuses with `OSError`, not `PermissionError`.
-17. A read-only refusal shows only when the journal flushes at exit, and a
-    mount at `/` is not served.
-18. `write(ArrayBuffer)` writes the text `[object ArrayBuffer]`, and
-    `errorObj` stays unset.
-19. On S3, `mkdir` under a missing parent succeeds: the S3 backend has no
-    directories to check. Pyodide checks the parent itself and refuses.
-20. No `shutil` module, and no `errno` module to name EXDEV.
-21. qjs builds without `os.symlink`, `os.readlink` and `os.lstat`, and the
-    TypeScript shim matches it.
-22. Unlinking a directory on RAM or redis raises `FileNotFoundError`, not
-    `IsADirectoryError`.
-23. A rename across mounts fails with ENOENT, not EXDEV.
-24. No `os.symlink`, `os.readlink` or `os.lstat`; `Path.is_symlink` works.
-25. `os.chmod` does nothing.
-26. `os.utime(follow_symlinks=False)` raises `NotImplementedError`.
-27. A module attribute cannot be reassigned (`os.chdir = ...`).
-28. `os.chdir` fails: the host must return a `stat_result`.
-29. `os.getcwd()` after `chdir('..')` keeps the `..` (`/data/sub/..`).
+| Note | What differs                                                                                                                                                                          |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | A backend that fails mid-listing raises `RuntimeError`, not `OSError` (EIO).                                                                                                          |
+| 2    | A write above the mounts lands in Pyodide's own in-memory file system, and a link that aliases a mount is not found.                                                                  |
+| 3    | `os.stat` returns no tuple form: `st[6]` fails.                                                                                                                                       |
+| 4    | The root reports `nlink` 1; CPython on Linux reports 2.                                                                                                                               |
+| 5    | Directories carry no permission bits (`0o40000`).                                                                                                                                     |
+| 6    | `std.open` opens a directory; the TypeScript shim refuses it.                                                                                                                         |
+| 7    | No `glob` module, `Path.rglob`, `os.walk` or `os.scandir`.                                                                                                                            |
+| 8    | Only `os.path.exists` runs on monty; `os.path.islink` sits in the link cases monty skips. `isdir`, `isfile`, `getsize`, `join` and `realpath` are not covered yet.                    |
+| 9    | No `+` or `x` modes and no `fileno()`; `FileNotFoundError` carries no `strerror` or `filename`.                                                                                       |
+| 10   | Create, truncate and append reach the mount as whole writes when the journal flushes; `x` on a dangling link opens; a file outside the view opens in Pyodide's in-memory file system. |
+| 11   | Accepts the mode `rr`, as QuickJS itself does.                                                                                                                                        |
+| 12   | `std.open` leaves its `errorObj` argument unset.                                                                                                                                      |
+| 13   | File objects are not iterable, and there is no `glob` module.                                                                                                                         |
+| 14   | No `os.open`, `os.pread` or `os.lseek`; `seek` and `tell` on a file work.                                                                                                             |
+| 15   | `std.SEEK_SET` and `std.SEEK_END` are missing, so `seek` does nothing.                                                                                                                |
+| 16   | A read-only mount refuses with `OSError`, not `PermissionError`.                                                                                                                      |
+| 17   | A read-only refusal shows only when the journal flushes at exit, and a mount at `/` is not served.                                                                                    |
+| 18   | `write(ArrayBuffer)` writes the text `[object ArrayBuffer]`, and `errorObj` stays unset.                                                                                              |
+| 19   | On S3, `mkdir` under a missing parent succeeds: the S3 backend has no directories to check. Pyodide checks the parent itself and refuses.                                             |
+| 20   | No `shutil` module, and no `errno` module to name EXDEV.                                                                                                                              |
+| 21   | qjs builds without `os.symlink`, `os.readlink` and `os.lstat`, and the TypeScript shim matches it.                                                                                    |
+| 22   | Unlinking a directory on RAM or redis raises `FileNotFoundError`, not `IsADirectoryError`.                                                                                            |
+| 23   | A rename across mounts fails with ENOENT, not EXDEV.                                                                                                                                  |
+| 24   | No `os.symlink`, `os.readlink` or `os.lstat`; `Path.is_symlink` works.                                                                                                                |
+| 25   | `os.chmod` does nothing.                                                                                                                                                              |
+| 26   | `os.utime(follow_symlinks=False)` raises `NotImplementedError`.                                                                                                                       |
+| 27   | A module attribute cannot be reassigned (`os.chdir = ...`).                                                                                                                           |
+| 28   | `os.chdir` fails: the host must return a `stat_result`.                                                                                                                               |
+| 29   | `os.getcwd()` after `chdir('..')` keeps the `..` (`/data/sub/..`).                                                                                                                    |
 
 ### Runtime-specific suites
 
