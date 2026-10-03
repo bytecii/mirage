@@ -56,7 +56,7 @@ describe('runtime door readdir', () => {
   // reaches the backend: the node table answers with the link's own row.
   it('lists a dangling link as its own row instead of failing the listing', async () => {
     const { ws } = mkWorld()
-    await ws.vfs.writeFile('/data/a.txt', 'hi')
+    await ws.vfs.write('/data/a.txt', 'hi')
     await ws.namespace.symlink('/data/lnk', '/data/gone', 1)
     const entries = await doorOn(ws).readdir('/data')
     const row = entries.find((e) => e.path.endsWith('/lnk'))
@@ -74,7 +74,7 @@ describe('runtime door readdir', () => {
     // It is not swallowed either: the row carries no mode, and the
     // guest's own stat of the entry asks again and gets the failure.
     const { ws, ops, vfs } = mkWorld()
-    await ws.vfs.writeFile('/data/a.txt', 'hi')
+    await ws.vfs.write('/data/a.txt', 'hi')
     ops.register({
       name: 'stat',
       vfs: vfs.name,
@@ -93,7 +93,7 @@ describe('runtime door readdir', () => {
   // the size is the target path's length.
   it('lists a live link as its own row, not its target', async () => {
     const { ws } = mkWorld()
-    await ws.vfs.writeFile('/data/a.txt', 'hello')
+    await ws.vfs.write('/data/a.txt', 'hello')
     await ws.namespace.symlink('/data/lnk', '/data/a.txt', 1)
     const entries = await doorOn(ws).readdir('/data')
     expect(entries.find((e) => e.path.endsWith('/lnk'))).toMatchObject({
@@ -114,7 +114,7 @@ describe('runtime door readdir', () => {
   it('marks the links inside a directory reached through a link', async () => {
     const { ws } = mkWorld()
     await ws.dispatch('mkdir', '/data/real')
-    await ws.vfs.writeFile('/data/real/t.txt', 'hi')
+    await ws.vfs.write('/data/real/t.txt', 'hi')
     await ws.namespace.symlink('/data/real/lk', '/data/real/t.txt', 1)
     await ws.namespace.symlink('/data/alias', '/data/real', 1)
     const entries = await doorOn(ws).readdir('/data/alias')

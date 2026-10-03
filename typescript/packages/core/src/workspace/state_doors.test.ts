@@ -645,7 +645,7 @@ async function makeSealedWs(policies: Policy[]): Promise<Workspace> {
   const ws = new Workspace({ '/a': vfs }, { mode: MountMode.WRITE, shellParser: parser })
   open.push(ws)
   await ws.shell('mkdir -p /a/prod')
-  await ws.vfs.writeFile('/a/prod/keep.txt', ENC.encode('keep\n'))
+  await ws.vfs.write('/a/prod/keep.txt', ENC.encode('keep\n'))
   for (const p of policies) ws.policies.add(p)
   return ws
 }
@@ -660,7 +660,7 @@ describe('op hooks bind at the op doors and the command tier', () => {
 
     // The doors hold: the op facade, and a dispatcher-routed redirect
     // write.
-    await expect(ws.vfs.readFile('/a/secret.txt')).rejects.toThrow('secret is sealed')
+    await expect(ws.vfs.read('/a/secret.txt')).rejects.toThrow('secret is sealed')
     const redirect = await ws.shell('echo hi > /a/prod/new.txt')
     expect(redirect.exitCode).not.toBe(0)
 
@@ -1068,7 +1068,7 @@ describe('hidden paths across the tiers', () => {
     const ws = await makeHiddenPathsWs()
     const sess = ws.getSession('agent')
     await runWithSession(sess, async () => {
-      await expect(ws.vfs.readFile('/a/secrets/token.txt')).rejects.toMatchObject({
+      await expect(ws.vfs.read('/a/secrets/token.txt')).rejects.toMatchObject({
         code: 'ENOENT',
       })
       const names = await ws.vfs.readdir('/a')
@@ -1497,8 +1497,8 @@ describe('command permissions end to end', () => {
     // A pure path rule holds at the command plane for any command and
     // at the op door for every op, whatever door.
     expect(await line(ws, 'cat /repo/locked/y')).toEqual([1, '', 'cat: /repo/locked/y: frozen\n'])
-    await expect(ws.vfs.writeFile('/repo/locked/y', 'changed')).rejects.toThrow()
-    await expect(ws.vfs.readFile('/repo/locked/y')).rejects.toThrow()
+    await expect(ws.vfs.write('/repo/locked/y', 'changed')).rejects.toThrow()
+    await expect(ws.vfs.read('/repo/locked/y')).rejects.toThrow()
     // A mount section's rule applies when the line works inside the
     // mount (cwd under it, or a path under it), whole command; the verb
     // walk reads `-C /repo reset --hard` as `git reset --hard`.
@@ -2801,8 +2801,8 @@ describe('a dispatched op is judged by the gate of the command that issued it', 
       'mkdir -p /data/real && echo s > /data/real/secret && echo w > /data/real/walled',
     )
     const handle = await ws.session('g', { profile: 'mixed' })
-    expect(await handle.vfs.readFileText('/data/real/secret')).toBe('s\n')
-    await expect(handle.vfs.readFile('/data/real/walled')).rejects.toThrow()
+    expect(await handle.vfs.cat('/data/real/secret')).toBe('s\n')
+    await expect(handle.vfs.read('/data/real/walled')).rejects.toThrow()
     expect((await handle.shell('cat /data/real/secret')).exitCode).toBe(1)
   })
 })

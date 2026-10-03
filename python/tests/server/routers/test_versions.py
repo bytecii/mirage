@@ -43,14 +43,14 @@ async def _create_ws(client) -> str:
 
 async def _write(client, wid: str, command: str) -> None:
     r = await client.post(
-        f"/v1/workspaces/{wid}/execute", json={"command": command}
+        f"/v1/workspaces/{wid}/shell", json={"command": command}
     )
     assert r.status_code == 200, r.text
 
 
 async def _cat(client, wid: str, path: str) -> str:
     r = await client.post(
-        f"/v1/workspaces/{wid}/execute", json={"command": f"cat {path}"}
+        f"/v1/workspaces/{wid}/shell", json={"command": f"cat {path}"}
     )
     assert r.status_code == 200, r.text
     return r.json()["stdout"]

@@ -29,23 +29,52 @@ def toolkit(workspace):
 
 
 def test_registers_sync_and_async_tools(toolkit):
-    expected = {"execute", "read", "write", "ls", "grep"}
+    expected = {"shell", "read", "write", "edit", "ls", "grep", "glob"}
     assert set(toolkit.functions) == expected
     assert set(toolkit.async_functions) == expected
 
 
 def test_sync_tools(toolkit):
-    toolkit.write("/notes/hello.txt", "hello world\n")
-    assert "hello world" in toolkit.read("/notes/hello.txt")
-    assert "hello.txt" in toolkit.ls("/notes")
-    assert "hello world" in toolkit.grep("hello", "/notes")
-    assert "1" in toolkit.execute("find /notes -type f | wc -l")
+    assert toolkit.write("/notes/hello.txt", "hello world\n") == (
+        "Written: /notes/hello.txt"
+    )
+    assert toolkit.read("/notes/hello.txt") == "     1\thello world\n"
+    assert toolkit.edit("/notes/hello.txt", "world", "there").startswith(
+        "Edited:"
+    )
+    assert toolkit.ls("/notes") == "hello.txt\n"
+    assert toolkit.grep("THERE", "/notes", ignore_case=True) == (
+        "/notes/hello.txt:1:hello there\n"
+    )
+    assert toolkit.glob("**/*.txt") == "/notes/hello.txt\n"
+    assert toolkit.shell("find /notes -type f | wc -l") == "1\n"
 
 
 @pytest.mark.asyncio
 async def test_async_tools(toolkit):
     await toolkit.awrite("/notes/hello.txt", "hello async\n")
-    assert "hello async" in await toolkit.aread("/notes/hello.txt")
-    assert "hello.txt" in await toolkit.als("/notes")
-    assert "hello async" in await toolkit.agrep("hello", "/notes")
-    assert "1" in await toolkit.aexecute("find /notes -type f | wc -l")
+    assert await toolkit.aread("/notes/hello.txt") == "     1\thello async\n"
+    assert await toolkit.als("/notes") == "hello.txt\n"
+    assert await toolkit.agrep("hello", "/notes") == (
+        "/notes/hello.txt:1:hello async\n"
+    )
+    assert await toolkit.aglob("*.txt", "/notes") == "/notes/hello.txt\n"
+    assert await toolkit.ashell("find /notes -type f | wc -l") == "1\n"
+
+
+@pytest.mark.asyncio
+async def test_tools_act_as_the_session():
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"guarded": {"paths": {"hide": ["/vault"]}}},
+    )
+    await ws.shell("echo key > /vault/key.txt")
+    ws.create_session("agent", profile="guarded")
+    try:
+        text = await MirageToolkit(ws, session_id="agent").aread(
+            "/vault/key.txt"
+        )
+    finally:
+        await ws.close()
+    assert text == "Error: file '/vault/key.txt' not found"

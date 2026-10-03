@@ -33,7 +33,8 @@ from mirage.agents.pydantic_ai.convert import (
 )
 from mirage.bridge.sync import run_async_from_sync
 from mirage.io.types import IOResult
-from mirage.workspace.workspace import Workspace
+from mirage.ops.ops import Ops
+from mirage.workspace.workspace import Session, Workspace
 
 T = TypeVar("T")
 
@@ -43,7 +44,14 @@ class PydanticAIWorkspace(SandboxProtocol):
 
     File operations (read, write, edit, ls) go through the Ops layer directly.
     Shell operations (execute, grep, glob) go through Workspace.shell()
-    for pipe and flag support.
+    for pipe and flag support. Both run as the session, so its profile
+    judges every call.
+
+    Args:
+        workspace (Workspace): The workspace to operate on.
+        sandbox_id (str): The id the backend reports.
+        session_id (str | None): The session the backend acts as; None
+            is the workspace's default session.
     """
 
     def __init__(
@@ -58,6 +66,13 @@ class PydanticAIWorkspace(SandboxProtocol):
 
     def _run(self, coro: Awaitable[T]) -> T:
         return run_async_from_sync(coro)
+
+    @property
+    def _vfs(self) -> Ops:
+        """The op facade run as this backend's session."""
+        if self._session_id is None:
+            return self._ws.vfs
+        return Session(self._ws, self._session_id).vfs
 
     @property
     def id(self) -> str:
@@ -76,7 +91,7 @@ class PydanticAIWorkspace(SandboxProtocol):
         return self._run(self.aread_bytes(path))
 
     async def aread_bytes(self, path: str) -> bytes:
-        ops = self._ws.vfs
+        ops = self._vfs
         return await ops.read(path)
 
     def exists(self, path: str) -> bool:
@@ -84,7 +99,7 @@ class PydanticAIWorkspace(SandboxProtocol):
 
     async def aexists(self, path: str) -> bool:
         try:
-            await self._ws.vfs.stat(path)
+            await self._vfs.stat(path)
         except (FileNotFoundError, NotADirectoryError, ValueError):
             return False
         return True
@@ -138,7 +153,7 @@ class PydanticAIWorkspace(SandboxProtocol):
     async def aread(
         self, path: str, offset: int = 0, limit: int = 2000
     ) -> str:
-        ops = self._ws.vfs
+        ops = self._vfs
         try:
             data = await ops.read(path)
         except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
@@ -157,7 +172,7 @@ class PydanticAIWorkspace(SandboxProtocol):
         return self._run(self.awrite(path, content))
 
     async def awrite(self, path: str, content: str | bytes) -> WriteResult:
-        ops = self._ws.vfs
+        ops = self._vfs
         try:
             await ops.stat(path)
             return WriteResult(error=f"Error: file '{path}' already exists")
@@ -192,7 +207,7 @@ class PydanticAIWorkspace(SandboxProtocol):
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
-        ops = self._ws.vfs
+        ops = self._vfs
         try:
             data = await ops.read(path)
         except (FileNotFoundError, NotADirectoryError, ValueError):

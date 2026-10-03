@@ -98,20 +98,20 @@ async function main(): Promise<void> {
     const id = (run(bin, env, ['workspace', 'create', cfg]) as { id: string }).id
     console.log('=== create workspace (ram mount) ===')
 
-    run(bin, env, ['execute', '-w', id, '-c', 'echo one > /a.txt'])
+    run(bin, env, ['shell', '-w', id, '-c', 'echo one > /a.txt'])
     run(bin, env, ['workspace', 'commit', id, '-m', 'first'])
     console.log("=== committed 'first' on main ===")
 
     run(bin, env, ['workspace', 'branch', id, 'exp'])
     console.log('=== branched exp from main ===')
 
-    run(bin, env, ['execute', '-w', id, '-c', 'echo two > /a.txt'])
-    run(bin, env, ['execute', '-w', id, '-c', 'echo new > /b.txt'])
+    run(bin, env, ['shell', '-w', id, '-c', 'echo two > /a.txt'])
+    run(bin, env, ['shell', '-w', id, '-c', 'echo new > /b.txt'])
     run(bin, env, ['workspace', 'commit', id, '-b', 'exp', '-m', 'on exp'])
     console.log("=== committed 'on exp' on exp ===")
 
-    run(bin, env, ['execute', '-w', id, '-c', 'echo three > /a.txt'])
-    run(bin, env, ['execute', '-w', id, '-c', 'rm /b.txt'])
+    run(bin, env, ['shell', '-w', id, '-c', 'echo three > /a.txt'])
+    run(bin, env, ['shell', '-w', id, '-c', 'rm /b.txt'])
     run(bin, env, ['workspace', 'commit', id, '-b', 'main', '-m', 'second'])
     console.log("=== committed 'second' on main ===")
 

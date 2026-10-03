@@ -92,9 +92,9 @@ mode: "frame"
     EOF
 
     mirage workspace create workspace.yaml --id demo
-    mirage execute -w demo -c 'echo "hello mirage" > /data/hello.txt'
-    mirage execute -w demo -c 'ls /s3/reports/'
-    mirage execute -w demo -c 'grep -r "release" /slack/channels/eng__C04QX'
+    mirage shell -w demo -c 'echo "hello mirage" > /data/hello.txt'
+    mirage shell -w demo -c 'ls /s3/reports/'
+    mirage shell -w demo -c 'grep -r "release" /slack/channels/eng__C04QX'
     ```
   </Tab>
 </Tabs>
@@ -139,7 +139,7 @@ grep -r "mirage" /slack /gmail /github
     <div>
       <h4 className="text-lg font-bold mt-4 mb-1">Embed in Apps and Agents</h4>
       <p className="my-0">
-        Python and TypeScript SDKs give your AI agents a virtual filesystem directly inside FastAPI, Express, browser apps, or any async runtime, no separate process required. Works with the major agent frameworks (OpenAI Agents SDK, Vercel AI SDK, LangChain, Pydantic AI, CAMEL, OpenHands) and a lightweight CLI plugs into coding agents like <img noZoom src="/images/claude-logo.svg" alt="" className="inline-block h-4 align-middle mr-1" />Claude Code and <img noZoom src="/images/openai-logo.svg" alt="" className="inline-block h-4 align-middle mr-1 brightness-0 dark:invert" />Codex.
+        Python and TypeScript SDKs give your AI agents a virtual filesystem directly inside FastAPI, Express, browser apps, or any async runtime, no separate process required. Works with the major agent frameworks (OpenAI Agents SDK, Vercel AI SDK, LangChain, Pydantic AI, OpenHands) and a lightweight CLI plugs into coding agents like <img noZoom src="/images/claude-logo.svg" alt="" className="inline-block h-4 align-middle mr-1" />Claude Code and <img noZoom src="/images/openai-logo.svg" alt="" className="inline-block h-4 align-middle mr-1 brightness-0 dark:invert" />Codex.
       </p>
     </div>
   </div>
@@ -349,7 +349,7 @@ EOF
     Anything that exposes a shell tool: Claude Code, Codex / OpenAI Agents SDK, Cursor, OpenHands, Pydantic deepagents. Direct SDK integrations live under <a href="/python/agents">Python agents</a> and <a href="/typescript/agents">TypeScript agents</a>.
   </Accordion>
   <Accordion title="Python or TypeScript?">
-    Both. The Python package is the reference implementation; the TypeScript SDK (<code>@struktoai/mirage-node</code>) ships the same <code>Workspace</code>/<code>execute</code> surface and most mounts. Some agent integrations land on Python first.
+    Both. The Python package is the reference implementation; the TypeScript SDK (<code>@struktoai/mirage-node</code>) ships the same <code>Workspace</code>/<code>shell</code> surface and most mounts. Some agent integrations land on Python first.
   </Accordion>
   <Accordion title="What if a VFS I want isn't supported yet?">
     VFS types are pluggable. The <a href="/python/vfs/new">"Add a VFS"</a> guide walks through the read/write/stat surface a new backend implements. PRs welcome.
@@ -366,7 +366,7 @@ EOF
     Same Workspace API in Node, browser, and edge runtimes.
   </Card>
   <Card title="CLI" icon="terminal" href="/home/cli">
-    Drive workspaces from the shell: create, execute, snapshot, and restore.
+    Drive workspaces from the shell: create, run shell lines, snapshot, and restore.
   </Card>
   <Card title="VFS Matrix" icon="grid-2" href="/home/vfs-matrix">
     Compare VFS types by mount mode, setup path, and common use cases.

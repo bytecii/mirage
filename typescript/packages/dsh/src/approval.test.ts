@@ -78,7 +78,7 @@ async function world(
     .await()
   const ws = await ctx.mirage.ready
   worlds.push(ws)
-  await ws.vfs.writeFile('/data/notes.txt', 'private')
+  await ws.vfs.write('/data/notes.txt', 'private')
   ws.createSession('agent', { profile: 'agent' })
   await ctx.plugin(MirageShellExecutor, { sessionId: 'agent' }).await()
   return { shell: ctx.shell as MirageShellExecutor, ws, asked }
@@ -196,7 +196,7 @@ describe('an asked line with an approval channel', () => {
 
   it('grants once and never for the session, so the next line asks again', async () => {
     const { shell, ws, asked } = await world(ASK_RM, 'allowed-once')
-    await ws.vfs.writeFile('/data/second.txt', 'also private')
+    await ws.vfs.write('/data/second.txt', 'also private')
     expect((await runOn(shell, shell.resolve({ command: 'rm /data/notes.txt' }))).exitCode).toBe(0)
     expect((await runOn(shell, shell.resolve({ command: 'rm /data/second.txt' }))).exitCode).toBe(0)
     // One nod covered one line; the second line raised its own question.

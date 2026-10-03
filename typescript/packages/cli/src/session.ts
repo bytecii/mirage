@@ -76,7 +76,7 @@ export function registerSessionCommands(program: Command): void {
       if (opts.profile !== undefined) body.profile = opts.profile
       emit(
         await handleResponse(
-          await c.request('POST', `/v1/workspaces/${wsId}/sessions`, {
+          await c.request('POST', `/v1/workspaces/${encodeURIComponent(wsId)}/sessions`, {
             body: JSON.stringify(body),
           }),
         ),
@@ -89,7 +89,11 @@ export function registerSessionCommands(program: Command): void {
     .action(async (wsId: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      emit(await handleResponse(await c.request('GET', `/v1/workspaces/${wsId}/sessions`)))
+      emit(
+        await handleResponse(
+          await c.request('GET', `/v1/workspaces/${encodeURIComponent(wsId)}/sessions`),
+        ),
+      )
     })
 
   sess
@@ -101,7 +105,10 @@ export function registerSessionCommands(program: Command): void {
       await c.ensureRunning({ allowSpawn: false })
       emit(
         await handleResponse(
-          await c.request('DELETE', `/v1/workspaces/${wsId}/sessions/${sessionId}`),
+          await c.request(
+            'DELETE',
+            `/v1/workspaces/${encodeURIComponent(wsId)}/sessions/${encodeURIComponent(sessionId)}`,
+          ),
         ),
       )
     })

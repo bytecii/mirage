@@ -2,7 +2,7 @@
 # Drive the runtime JSON suites through the CLI and daemon of both
 # languages: the same cases integ/runtime/run.{py,ts} execute in
 # process, here built from a generated workspace yaml (`mirage
-# workspace create`) and executed with `mirage execute`. This is the
+# workspace create`) and executed with `mirage shell`. This is the
 # yaml -> daemon -> CLI construction path: entry captures, config
 # blocks, per-entry scripts (policy), the global route, workspace,
 # mount and profile command_limits, and the per-line --runtime argument.
@@ -195,7 +195,7 @@ run_case() {
     return 1
   fi
 
-  local execute_args=(execute -w "$wsid")
+  local shell_args=(shell -w "$wsid")
   session_id=$(jq -r '.session_id // empty' <<<"$world_json")
   if [ -n "$session_id" ]; then
     if ! $cli session create "$wsid" --id "$session_id" \
@@ -204,7 +204,7 @@ run_case() {
       $cli workspace delete "$wsid" >/dev/null 2>&1 </dev/null || true
       return 1
     fi
-    execute_args+=(--session "$session_id")
+    shell_args+=(--session "$session_id")
   fi
 
   # Seed declared mount files through the shell (cat reads the piped
@@ -219,13 +219,13 @@ run_case() {
     case "$name" in
       */*)
         quoted_parent=$(jq -nr --arg path "$prefix/${name%/*}" '$path | @sh')
-        $cli "${execute_args[@]}" -c "mkdir -p $quoted_parent" \
+        $cli "${shell_args[@]}" -c "mkdir -p $quoted_parent" \
           >/dev/null </dev/null || return 1
         ;;
     esac
     jq -j --arg p "$prefix" --arg n "$name" \
       '.world.mounts[$p].files[$n]' <<<"$case_json" \
-      | $cli "${execute_args[@]}" -c "cat > $quoted_path" >/dev/null || return 1
+      | $cli "${shell_args[@]}" -c "cat > $quoted_path" >/dev/null || return 1
   done < <(jq -r '(.world.mounts // {}) | to_entries[]
                   | .key as $p | (.value.files // {}) | keys[]
                   | [$p, .] | @tsv' <<<"$case_json")
@@ -241,7 +241,7 @@ run_case() {
     fi
     runtime=$(jq -r '.runtime // empty' <<<"$step")
     expect=$(jq -c '.expect // {}' <<<"$step")
-    local args=("${execute_args[@]}" -c "$cmd")
+    local args=("${shell_args[@]}" -c "$cmd")
     [ -n "$runtime" ] && args+=(--runtime "$runtime")
     if jq -e 'has("stdin")' >/dev/null <<<"$step"; then
       jq -j '.stdin' <<<"$step" > "$work/stdin.bin"

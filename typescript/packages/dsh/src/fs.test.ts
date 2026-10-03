@@ -51,7 +51,7 @@ async function makeFs(
       dir += `/${part}`
       if (dir !== '/data' && !(await ws.vfs.isDir(dir))) await ws.vfs.mkdir(dir)
     }
-    await ws.vfs.writeFile(full, content)
+    await ws.vfs.write(full, content)
   }
   let target = ws
   if (options.readOnly === true) {
@@ -204,7 +204,7 @@ describe('stat and lstat', () => {
     const before = await fs.stat(target)
     const again = await fs.stat(target)
     expect(again?.version).toBe(before?.version)
-    await ws.vfs.writeFile('/data/a.txt', 'three is longer')
+    await ws.vfs.write('/data/a.txt', 'three is longer')
     const after = await fs.stat(target)
     expect(after?.version).not.toBe(before?.version)
   })
@@ -509,7 +509,7 @@ describe('editText', () => {
     const { fs, ws } = await makeFs({ 'a.txt': 'guarded content' })
     const target = await fs.resolve('/data/a.txt')
     const stale = await versionAt(fs, '/data/a.txt')
-    await ws.vfs.writeFile('/data/a.txt', 'now something else entirely')
+    await ws.vfs.write('/data/a.txt', 'now something else entirely')
     expect(
       await errorCode(
         fs.editText(
@@ -590,7 +590,7 @@ describe('sandbox policy', () => {
     expect(await errorCode(fs.editText(target, edit, undefined, undefined, READ_ONLY))).toBe(
       'FS_SANDBOX_DENIED',
     )
-    expect(await ws.vfs.readFileText('/data/a.txt')).toBe('one')
+    expect(await ws.vfs.cat('/data/a.txt')).toBe('one')
   })
 
   it('reads under a read-only policy, since only mutations are fenced', async () => {
@@ -662,8 +662,8 @@ describe('the session the adapter reads as', () => {
     )
     workspaces.push(ws)
     await ws.vfs.mkdir('/data/vault')
-    await ws.vfs.writeFile('/data/vault/secret', 'top')
-    await ws.vfs.writeFile('/data/public.txt', 'pub')
+    await ws.vfs.write('/data/vault/secret', 'top')
+    await ws.vfs.write('/data/public.txt', 'pub')
     await ws.vfs.symlink('/data/vault/lk', '/data/public.txt')
     await ws.vfs.symlink('/data/hidden-lk', '/data/public.txt')
     ws.createSession('agent', { profile: 'agent' })
@@ -685,7 +685,7 @@ describe('the session the adapter reads as', () => {
     expect(await fs.lstat('/data/vault/lk')).toBeUndefined()
     expect(await fs.lstat('/data/hidden-lk')).toBeUndefined()
     expect(String((await fs.resolve('/data/hidden-lk')).targetKey)).toBe('/data/hidden-lk')
-    expect(await ws.vfs.readFileText('/data/vault/secret')).toBe('top')
+    expect(await ws.vfs.cat('/data/vault/secret')).toBe('top')
   })
 
   it('reads links as the ambient session the door will keep', async () => {
@@ -703,7 +703,7 @@ describe('the session the adapter reads as', () => {
     )
     workspaces.push(ws)
     await ws.vfs.mkdir('/data/vault')
-    await ws.vfs.writeFile('/data/public.txt', 'pub')
+    await ws.vfs.write('/data/public.txt', 'pub')
     await ws.vfs.symlink('/data/vault/lk', '/data/public.txt')
     const agent = ws.createSession('agent', { profile: 'agent' })
     const fs = await adapterOn(ws, {})
@@ -759,8 +759,8 @@ describe('the session the adapter reads as', () => {
     const wsA = build()
     workspaces.push(wsA)
     await wsA.vfs.mkdir('/data/vault')
-    await wsA.vfs.writeFile('/data/vault/secret', 'top')
-    await wsA.vfs.writeFile('/data/public.txt', 'pub')
+    await wsA.vfs.write('/data/vault/secret', 'top')
+    await wsA.vfs.write('/data/public.txt', 'pub')
     await wsA.vfs.symlink('/data/vault/lk', '/data/public.txt')
     await wsA.vfs.symlink('/data/lk', '/data/public.txt')
     await wsA.setSessionProfile(
@@ -787,7 +787,7 @@ describe('a policy refusal at the op door', () => {
     const ram = new RAMVFS()
     const seeder = new Workspace({ '/data': [ram, MountMode.WRITE] })
     workspaces.push(seeder)
-    await seeder.vfs.writeFile('/data/keep.txt', 'original')
+    await seeder.vfs.write('/data/keep.txt', 'original')
     const ws = new Workspace(
       { '/data': [ram, MountMode.WRITE] },
       {
@@ -907,7 +907,7 @@ describe('processPathFromHostPath', () => {
     if (virtual === undefined) throw new Error('expected a mapping')
     // The point of the mapping: what it returns is live in this world,
     // not merely well-formed.
-    expect(await ws.vfs.readFileText(virtual)).toBe('hello')
+    expect(await ws.vfs.cat(virtual)).toBe('hello')
     expect(await fs.readText(await fs.resolve(virtual))).toBe('hello')
   })
 })

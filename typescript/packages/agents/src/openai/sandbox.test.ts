@@ -96,7 +96,7 @@ describe('MirageSandboxClient', () => {
   it('resolves relative paths against the manifest root', async () => {
     const ws = mkWs()
     const session = await new MirageSandboxClient(ws).create(new Manifest({ root: '/project' }))
-    await ws.vfs.writeFile('/project/rel.txt', 'rel')
+    await ws.vfs.write('/project/rel.txt', 'rel')
     expect(new TextDecoder().decode(await session.readFile({ path: 'rel.txt' }))).toBe('rel')
     expect(await session.pathExists('rel.txt')).toBe(true)
   })
@@ -105,7 +105,7 @@ describe('MirageSandboxClient', () => {
     const ws = mkWs()
     const session = await new MirageSandboxClient(ws).create(new Manifest({ root: '/project' }))
     await ws.vfs.mkdir('/project/sub')
-    await ws.vfs.writeFile('/project/sub/f.txt', 'f')
+    await ws.vfs.write('/project/sub/f.txt', 'f')
     expect(await session.directoryExists('sub')).toBe(true)
     expect(await session.directoryExists('sub/f.txt')).toBe(false)
     expect(await session.directoryExists('nope')).toBe(false)
@@ -121,7 +121,7 @@ describe('MirageSandboxClient', () => {
         },
       }),
     )
-    expect(await ws.vfs.readFileText('/workspace/a/b/c.txt')).toBe('deep')
+    expect(await ws.vfs.cat('/workspace/a/b/c.txt')).toBe('deep')
   })
 
   it('passes the manifest environment to every command', async () => {
@@ -134,7 +134,7 @@ describe('MirageSandboxClient', () => {
   it('patches files inside the sandbox session, resolved against the root', async () => {
     const ws = mkWs()
     const session = await new MirageSandboxClient(ws).create(new Manifest({ root: '/project' }))
-    const writes = vi.spyOn(ws.vfs, 'writeFile')
+    const writes = vi.spyOn(ws.vfs, 'write')
     const editor = session.createEditor()
     const created = await editor.createFile({
       type: 'create_file',
@@ -142,7 +142,7 @@ describe('MirageSandboxClient', () => {
       diff: '+x = 1\n',
     })
     expect(statusOf(created)).toBe('completed')
-    expect(await ws.vfs.readFileText('/project/pkg/new.py')).toBe('x = 1')
+    expect(await ws.vfs.cat('/project/pkg/new.py')).toBe('x = 1')
     expect(writes.mock.calls.map((call) => [call[0], call[2]])).toEqual([
       ['/project/pkg/new.py', session.sessionId],
     ])
@@ -152,7 +152,7 @@ describe('MirageSandboxClient', () => {
       diff: '@@\n-x = 1\n+x = 2\n',
     })
     expect(statusOf(updated)).toBe('completed')
-    expect(await ws.vfs.readFileText('/project/pkg/new.py')).toBe('x = 2')
+    expect(await ws.vfs.cat('/project/pkg/new.py')).toBe('x = 2')
     expect(statusOf(await editor.deleteFile({ type: 'delete_file', path: 'pkg/new.py' }))).toBe(
       'completed',
     )
@@ -192,7 +192,7 @@ describe('MirageSandboxClient', () => {
     const session = await new MirageSandboxClient(ws).create()
     await ws.vfs.mkdir('/d')
     await ws.vfs.mkdir('/d/sub')
-    await ws.vfs.writeFile('/d/f.txt', 'x')
+    await ws.vfs.write('/d/f.txt', 'x')
     const entries = await session.listDir({ path: '/d' })
     expect(entries.map((e) => [e.name, e.path, e.type]).sort()).toEqual([
       ['f.txt', '/d/f.txt', 'file'],
@@ -275,7 +275,7 @@ describe('MirageSandboxClient', () => {
     const ws = mkWs()
     const target = await new MirageSandboxClient(ws).create()
     await target.hydrateWorkspace(archive)
-    expect(await ws.vfs.readFileText('/kept.txt')).toBe('kept\n')
+    expect(await ws.vfs.cat('/kept.txt')).toBe('kept\n')
   })
 
   it('joins stdout and stderr on separate lines', () => {

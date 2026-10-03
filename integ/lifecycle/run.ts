@@ -233,10 +233,10 @@ async function action(
       return ws.policies.remove(policy)
     }
     case 'write':
-      await ws.vfs.writeFile(step.path, ENC.encode(step.data))
+      await ws.vfs.write(step.path, ENC.encode(step.data))
       break
     case 'read':
-      return DEC.decode(await ws.vfs.readFile(step.path))
+      return DEC.decode(await ws.vfs.read(step.path))
     case 'readdir':
       return (await ws.vfs.readdir(step.path)).sort()
     case 'stat': {

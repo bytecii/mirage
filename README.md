@@ -231,7 +231,7 @@ await ws.snapshot('demo.tar')
 
 ```bash
 mirage workspace create ws.yaml --id demo
-mirage execute   --workspace_id demo --command "cp /s3/report.csv /data/report.csv"
+mirage shell --workspace_id demo --command "cp /s3/report.csv /data/report.csv"
 mirage workspace snapshot demo demo.tar
 mirage workspace load demo.tar --id demo-restored
 ```

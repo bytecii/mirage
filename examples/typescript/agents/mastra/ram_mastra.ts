@@ -32,7 +32,7 @@ const ws = new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops })
 const instructions = buildSystemPrompt({
   mountInfo: { '/': 'In-memory filesystem (read/write)' },
   extraInstructions:
-    'All file paths start from /. Use the mirage-execute tool to run shell commands ' +
+    'All file paths start from /. Use the mirage-shell tool to run shell commands ' +
     'and the mirage-read-file / mirage-write-file / mirage-edit-file / mirage-ls tools ' +
     'for direct file operations.',
 })
@@ -62,6 +62,6 @@ const paths = findAll.stdoutText
 console.log(paths.join('\n'))
 
 for (const path of paths) {
-  const content = await ws.vfs.readFileText(path)
+  const content = await ws.vfs.cat(path)
   console.log(`cat ${path}:\n${content}`)
 }

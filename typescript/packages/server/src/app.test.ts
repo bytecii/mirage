@@ -108,7 +108,7 @@ describe('buildApp ssh door', () => {
     const out = await sshExec(port, wid, pair.private, 'echo over-ssh > /f && cat /f')
     const viaHttp = await app.inject({
       method: 'POST',
-      url: `/v1/workspaces/${wid}/execute`,
+      url: `/v1/workspaces/${wid}/shell`,
       payload: { command: 'cat /f' },
     })
     expect(out).toBe('over-ssh\n')

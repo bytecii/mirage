@@ -87,7 +87,7 @@ export function patchNodeFs(ws: Workspace): () => void {
     promises: {
       readFile: async (p: string, opts?: { encoding?: BufferEncoding } | BufferEncoding) => {
         if (mountedPath(ws, p)) {
-          const bytes = await ws.vfs.readFile(p)
+          const bytes = await ws.vfs.read(p)
           const encoding = typeof opts === 'string' ? opts : opts?.encoding
           if (encoding !== undefined) return Buffer.from(bytes).toString(encoding)
           return Buffer.from(bytes)
@@ -100,7 +100,7 @@ export function patchNodeFs(ws: Workspace): () => void {
       },
       writeFile: async (p: string, data: Uint8Array | string): Promise<void> => {
         if (mountedPath(ws, p)) {
-          await ws.vfs.writeFile(p, typeof data === 'string' ? data : data)
+          await ws.vfs.write(p, typeof data === 'string' ? data : data)
           return
         }
         const native = (originalFs.promises as FsLike).writeFile as (
@@ -152,7 +152,7 @@ export function patchNodeFs(ws: Workspace): () => void {
     readFile: (p: string, cb: Cb<Uint8Array>) => {
       if (mountedPath(ws, p)) {
         ws.vfs
-          .readFile(p)
+          .read(p)
           .then((data) => {
             cb(null, Buffer.from(data))
           })

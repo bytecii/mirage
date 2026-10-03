@@ -78,6 +78,7 @@ This protection is enabled by default. It observes the content returned by the m
 | ---------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `cwd`                  | `'/'`               | Working directory inside the mounted workspace.                                                                 |
 | `staleWriteProtection` | `true`              | Reject mutations when the file changed after Pi read it.                                                        |
+| `sessionId`            | default session     | The Mirage session every operation acts as, under that session's profile.                                       |
 | `systemPrompt`         | Mirage mount prompt | Extra instructions appended to Pi's prompt. Pass a string to replace the Mirage text, or `false` to disable it. |
 
 ## Examples

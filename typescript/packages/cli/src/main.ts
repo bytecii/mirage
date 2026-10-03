@@ -18,7 +18,8 @@ import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import { registerConfigCommands } from './config.ts'
 import { registerDaemonCommands } from './daemon.ts'
-import { registerExecuteCommand } from './execute.ts'
+import { registerShellCommand } from './shell.ts'
+import { registerToolCommands } from './tools.ts'
 import { registerJobCommands } from './job.ts'
 import { registerMcpCommand } from './mcp.ts'
 import { registerSessionCommands } from './session.ts'
@@ -45,12 +46,13 @@ export function buildProgram(): Command {
   const program = new Command()
   program
     .name('mirage')
-    .description('Mirage daemon CLI: manage workspaces and execute commands.')
+    .description('Mirage daemon CLI: manage workspaces and run shell lines.')
     .version(resolveVersion())
   registerWorkspaceCommands(program)
   registerSessionCommands(program)
   registerJobCommands(program)
-  registerExecuteCommand(program)
+  registerShellCommand(program)
+  registerToolCommands(program)
   registerMcpCommand(program)
   registerDaemonCommands(program)
   registerConfigCommands(program)

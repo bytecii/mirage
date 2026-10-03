@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { dirname, resolve, sep } from 'node:path'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
@@ -78,6 +79,20 @@ function refuseId(reply: FastifyReply, id: string): FastifyReply {
   return reply.status(400).send({ detail: `invalid workspace id: ${id}` })
 }
 
+/**
+ * A stable fingerprint of the config a workspace was created from: the
+ * SHA-256 of its JSON with every object's keys sorted. Mirrors Python's
+ * `config_digest`.
+ */
+function configDigest(config: unknown): string {
+  const canonical = JSON.stringify(config, (_key, value: unknown) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : value,
+  )
+  return createHash('sha256').update(canonical).digest('hex')
+}
+
 export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRoutesDeps): void {
   app.post<{ Body: CreateWorkspaceBody }>(
     '/v1/workspaces',
@@ -86,9 +101,6 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       const config: unknown = body.config
       if (config === null || typeof config !== 'object' || Array.isArray(config)) {
         return reply.status(400).send({ detail: 'config must be a mapping' })
-      }
-      if (body.id !== undefined && deps.registry.has(body.id)) {
-        return reply.status(409).send({ detail: `workspace id already exists: ${body.id}` })
       }
       let cfg: WorkspaceConfigRaw
       try {
@@ -107,58 +119,79 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       } catch (e) {
         return reply.status(400).send({ detail: (e as Error).message })
       }
-      let args: WorkspaceArgs
-      try {
-        args = await configToWorkspaceArgs(cfg)
-      } catch (e) {
-        if (e instanceof SecretsError || e instanceof z.ZodError || e instanceof VFSConfigError) {
-          // A `secrets:` block the host cannot resolve is the caller's
-          // config, not a backend that would not answer. Resolution moved
-          // into configToWorkspaceArgs, so without this the same body that
-          // python's create route refuses with 400 got a 502 here.
-          return reply.status(400).send({ detail: e.message })
-        }
-        return reply.status(502).send({ detail: `VFS build failed: ${(e as Error).message}` })
-      }
-      // The Mounts ride through whole; see workspace_config.ts.
-      const vfsMap: Record<string, MountSpec> = { ...args.mounts }
       // The registry id and the state-store scope must be the same identity,
       // so resolve it before construction: explicit REST id, then the
-      // config's workspaceId, then a fresh mint.
-      const wid = body.id ?? args.options.workspaceId ?? newWorkspaceId()
+      // config's workspaceId, then a fresh mint. A held id is answered or
+      // refused here, before its secrets resolve or its mounts build, and
+      // before a second Workspace opens the live one's state: creating is
+      // idempotent for one config, so an id held by a workspace created
+      // from an identical config answers it with 200, and an id held by
+      // anything else, or by one being deleted, is refused. Creates of one
+      // id run one at a time, so a second of the same config answers what
+      // the first built, and one of another config is refused at once.
+      const wid = body.id ?? cfg.workspaceId ?? newWorkspaceId()
       if (DOT_IDS.has(wid)) return refuseId(reply, wid)
-      let ws: Workspace
-      try {
-        // Every option the config produced rides through: enumerating
-        // them by hand silently dropped `clis` and `guards`, so a yaml
-        // clis block parsed, validated, and then installed nothing.
-        // Only identity and the store default are the daemon's to
-        // decide.
-        ws = new Workspace(vfsMap, {
-          ...args.options,
-          workspaceId: wid,
-          // Daemon default is disk (a created workspace survives restart
-          // with zero infrastructure, like git init); the library default
-          // stays ram. An explicit store always wins.
-          store: args.options.store ?? new DiskWorkspaceStateStore({ root: deps.stateRoot }),
-          // Whichever of the two built it, no sibling workspace shares
-          // it, so this workspace is the one that closes it.
-          ownsStore: true,
-        })
-      } catch (e) {
-        return reply.status(400).send({ detail: (e as Error).message })
-      }
-      let entry
-      try {
-        for (const [prefix, [backend, mountpoint]] of Object.entries(args.kernelMounts)) {
-          await ws.addFuseMount(prefix, mountpoint, undefined, backend)
+      const digest = configDigest(config)
+      return deps.registry.creating(wid, digest, async (admitted) => {
+        if (!admitted) {
+          return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
         }
-        entry = deps.registry.add(ws, wid)
-      } catch (e) {
-        await ws.close()
-        return reply.status(409).send({ detail: (e as Error).message })
-      }
-      return reply.status(201).send(await makeDetail(entry))
+        if (deps.registry.has(wid)) {
+          const held = deps.registry.get(wid)
+          if (deps.registry.removing(wid) || held.configDigest !== digest) {
+            return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
+          }
+          return reply.status(200).send(await makeDetail(held))
+        }
+        let args: WorkspaceArgs
+        try {
+          args = await configToWorkspaceArgs(cfg)
+        } catch (e) {
+          if (e instanceof SecretsError || e instanceof z.ZodError || e instanceof VFSConfigError) {
+            // A `secrets:` block the host cannot resolve is the caller's
+            // config, not a backend that would not answer. Resolution moved
+            // into configToWorkspaceArgs, so without this the same body that
+            // python's create route refuses with 400 got a 502 here.
+            return reply.status(400).send({ detail: e.message })
+          }
+          return reply.status(502).send({ detail: `VFS build failed: ${(e as Error).message}` })
+        }
+        // The Mounts ride through whole; see workspace_config.ts.
+        const vfsMap: Record<string, MountSpec> = { ...args.mounts }
+        let ws: Workspace
+        try {
+          // Every option the config produced rides through: enumerating
+          // them by hand silently dropped `clis` and `guards`, so a yaml
+          // clis block parsed, validated, and then installed nothing.
+          // Only identity and the store default are the daemon's to
+          // decide.
+          ws = new Workspace(vfsMap, {
+            ...args.options,
+            workspaceId: wid,
+            // Daemon default is disk (a created workspace survives restart
+            // with zero infrastructure, like git init); the library default
+            // stays ram. An explicit store always wins.
+            store: args.options.store ?? new DiskWorkspaceStateStore({ root: deps.stateRoot }),
+            // Whichever of the two built it, no sibling workspace shares
+            // it, so this workspace is the one that closes it.
+            ownsStore: true,
+          })
+        } catch (e) {
+          return reply.status(400).send({ detail: (e as Error).message })
+        }
+        let entry
+        try {
+          for (const [prefix, [backend, mountpoint]] of Object.entries(args.kernelMounts)) {
+            await ws.addFuseMount(prefix, mountpoint, undefined, backend)
+          }
+          entry = deps.registry.add(ws, wid)
+          entry.configDigest = digest
+        } catch (e) {
+          await ws.close()
+          return reply.status(409).send({ detail: (e as Error).message })
+        }
+        return reply.status(201).send(await makeDetail(entry))
+      })
     },
   )
 

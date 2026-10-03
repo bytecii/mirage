@@ -20,7 +20,7 @@ async function makeWs(sessionID: string): Promise<Workspace> {
   const ops = new OpsRegistry()
   for (const op of ram.ops()) ops.register(op)
   const ws = new Workspace({ '/': ram }, { mode: MountMode.WRITE, ops })
-  await ws.vfs.writeFile('/hello.txt', `hi from session ${sessionID}`)
+  await ws.vfs.write('/hello.txt', `hi from session ${sessionID}`)
   return ws
 }
 

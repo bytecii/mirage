@@ -45,7 +45,7 @@ describe('versions router', () => {
   async function write(id: string, command: string): Promise<void> {
     const res = await app.inject({
       method: 'POST',
-      url: `/v1/workspaces/${id}/execute`,
+      url: `/v1/workspaces/${id}/shell`,
       payload: { command },
     })
     expect(res.statusCode).toBe(200)
@@ -54,7 +54,7 @@ describe('versions router', () => {
   async function cat(id: string, path: string): Promise<string> {
     const res = await app.inject({
       method: 'POST',
-      url: `/v1/workspaces/${id}/execute`,
+      url: `/v1/workspaces/${id}/shell`,
       payload: { command: `cat ${path}` },
     })
     return res.json<{ stdout: string }>().stdout

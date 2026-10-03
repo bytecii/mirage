@@ -4,7 +4,7 @@ description: Give Agno agents shell-based filesystem access to any Mirage worksp
 icon: /images/agno-logo.svg
 ---
 
-[Agno](https://github.com/agno-agi/agno) is an agent framework that groups related tools into `Toolkit` classes. Mirage ships `MirageToolkit`, a toolkit backed by a `Workspace` instead of the host machine. The agent gets five shell-style tools (`execute`, `read`, `write`, `ls`, `grep`); mount RAM, S3, GDrive, Slack, etc. and the agent uses them through the same Agno API.
+[Agno](https://github.com/agno-agi/agno) is an agent framework that groups related tools into `Toolkit` classes. Mirage ships `MirageToolkit`, a toolkit backed by a `Workspace` instead of the host machine. The agent gets Mirage's seven tools (`shell`, `read`, `write`, `edit`, `ls`, `grep`, `glob`), the same table MCP serves; mount RAM, S3, GDrive, Slack, etc. and the agent uses them through the same Agno API.
 
 ## Install
 
@@ -49,19 +49,21 @@ asyncio.run(main())
 
 Every tool is registered as a sync + async pair under one name; Agno picks the async variant in `arun`/`aprint_response` and the sync variant otherwise.
 
-| Tool | Mirage translation |
+| Tool | Answers as the MCP tool does |
 | --- | --- |
-| `execute(command)` | `await ws.shell(command)`, full shell with pipes |
-| `read(path)` | `cat <path>` |
-| `write(path, content)` | `mkdir -p <parent>`, then `tee <path>` with `stdin=` |
-| `ls(path="/")` | `ls <path>` |
-| `grep(pattern, path)` | `grep -r <pattern> <path>` |
+| `shell(command)` | the line's output, through `ws.shell` |
+| `read(path, offset=0, limit=2000)` | numbered lines |
+| `write(path, content)` | creates parents; an existing file must be read in full first |
+| `edit(path, old_string, new_string, replace_all=False)` | refuses a file changed since it was read |
+| `ls(path)` | one entry per line |
+| `grep(pattern, path, ignore_case, fixed_strings, include, context, files_with_matches, count, max_count)` | `grep -rn` output, with GNU grep's options |
+| `glob(pattern, path="/")` | matching files, sorted |
 
 ## Exports
 
 | Symbol | Purpose |
 | --- | --- |
-| `MirageToolkit` | Agno `Toolkit` exposing the 5 shell tools, backed by `Workspace.shell`. |
+| `MirageToolkit` | Agno `Toolkit` exposing Mirage's seven tools, backed by the shared tool table. |
 | `MIRAGE_SYSTEM_PROMPT` | Default system prompt describing the virtual filesystem. |
 | `build_system_prompt` | Compose the default prompt with mount info and extra instructions. |
 

@@ -109,8 +109,8 @@ YML
 
   # RAM mounts start empty; seed through the VFS. The live workspace is what
   # FUSE serves, so these writes are immediately visible at the mountpoints.
-  $cli execute -w cf -c 'echo alpha > /data/a.txt' </dev/null >/dev/null
-  $cli execute -w cf -c 'echo beta > /logs/b.txt' </dev/null >/dev/null
+  $cli shell -w cf -c 'echo alpha > /data/a.txt' </dev/null >/dev/null
+  $cli shell -w cf -c 'echo beta > /logs/b.txt' </dev/null >/dev/null
 
   # The daemon mounts asynchronously; wait for both files to appear via the OS.
   local i
@@ -127,7 +127,7 @@ YML
 
   # The generated mount got a temp mountpoint Mirage picked; exercise it through
   # the kernel the same way as the pinned mounts.
-  $cli execute -w cf -c 'echo gamma > /auto/c.txt' </dev/null >/dev/null
+  $cli shell -w cf -c 'echo gamma > /auto/c.txt' </dev/null >/dev/null
   for i in $(seq 1 50); do
     [ -n "$auto_mp" ] && timeout 2 test -f "$auto_mp/c.txt" && break
     sleep 0.2
@@ -169,7 +169,7 @@ mounts:
 YML
   $cli workspace delete cf2 >/dev/null 2>&1 </dev/null || true
   $cli workspace create "$reuse_yaml" --id cf2 >/dev/null </dev/null
-  $cli execute -w cf2 -c 'echo reused > /data/r.txt' </dev/null >/dev/null
+  $cli shell -w cf2 -c 'echo reused > /data/r.txt' </dev/null >/dev/null
   for i in $(seq 1 50); do
     timeout 2 test -f "$dmnt/r.txt" && break
     sleep 0.2

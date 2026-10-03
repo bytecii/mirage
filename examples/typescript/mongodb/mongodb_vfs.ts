@@ -54,7 +54,7 @@ async function main(): Promise<void> {
     for (const e of await ws.vfs.readdir(`/mongodb/${DB}/collections/${COLL}`)) console.log(`  ${e}`)
 
     console.log('\n--- open() database.json ---')
-    const dbMeta = JSON.parse(await ws.vfs.readFileText(`/mongodb/${DB}/database.json`)) as {
+    const dbMeta = JSON.parse(await ws.vfs.cat(`/mongodb/${DB}/database.json`)) as {
       collections: unknown[]
       views: unknown[]
     }
@@ -63,14 +63,14 @@ async function main(): Promise<void> {
 
     console.log(`\n--- open() schema.json for ${COLL} ---`)
     const schema = JSON.parse(
-      await ws.vfs.readFileText(`/mongodb/${DB}/collections/${COLL}/schema.json`),
+      await ws.vfs.cat(`/mongodb/${DB}/collections/${COLL}/schema.json`),
     ) as { kind: string; fields: unknown[]; indexes: unknown[] }
     console.log(`  kind: ${schema.kind}`)
     console.log(`  fields: ${String(schema.fields.length)}`)
     console.log(`  indexes: ${String(schema.indexes.length)}`)
 
     console.log(`\n--- open() + read documents.jsonl for ${COLL} ---`)
-    const content = await ws.vfs.readFileText(
+    const content = await ws.vfs.cat(
       `/mongodb/${DB}/collections/${COLL}/documents.jsonl`,
     )
     const lines = content.trim().split('\n').filter((ln) => ln.trim() !== '')
@@ -81,7 +81,7 @@ async function main(): Promise<void> {
     }
 
     console.log(`\n--- open() + read view documents for ${VIEW} ---`)
-    const viewContent = await ws.vfs.readFileText(
+    const viewContent = await ws.vfs.cat(
       `/mongodb/${DB}/views/${VIEW}/documents.jsonl`,
     )
     const viewLines = viewContent.trim().split('\n').filter((ln) => ln.trim() !== '')

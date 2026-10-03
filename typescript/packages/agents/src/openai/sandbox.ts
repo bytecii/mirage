@@ -173,18 +173,18 @@ export class MirageSandboxSession implements SandboxSession<MirageSandboxSession
         } catch (error) {
           return { status: 'failed', output: errorText(error) }
         }
-        await this.workspace.vfs.writeFile(path, applyDiff('', op.diff, 'create'), this.sessionId)
+        await this.workspace.vfs.write(path, applyDiff('', op.diff, 'create'), this.sessionId)
         return { status: 'completed' }
       },
       updateFile: async (op) => {
         const path = this.resolve(op.path)
         let current: string
         try {
-          current = await this.workspace.vfs.readFileText(path, 'utf-8', this.sessionId)
+          current = await this.workspace.vfs.cat(path, this.sessionId)
         } catch (error) {
           return { status: 'failed', output: errorText(error) }
         }
-        await this.workspace.vfs.writeFile(path, applyDiff(current, op.diff), this.sessionId)
+        await this.workspace.vfs.write(path, applyDiff(current, op.diff), this.sessionId)
         return { status: 'completed' }
       },
       deleteFile: async (op) => {
@@ -273,12 +273,12 @@ export class MirageSandboxSession implements SandboxSession<MirageSandboxSession
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    const bytes = await this.workspace.vfs.readFile(this.resolve(args.path), {}, this.sessionId)
+    const bytes = await this.workspace.vfs.read(this.resolve(args.path), {}, this.sessionId)
     return imageOutputFromBytes(args.path, bytes)
   }
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
-    const bytes = await this.workspace.vfs.readFile(this.resolve(args.path), {}, this.sessionId)
+    const bytes = await this.workspace.vfs.read(this.resolve(args.path), {}, this.sessionId)
     if (args.maxBytes !== undefined && bytes.byteLength > args.maxBytes) {
       return bytes.subarray(0, args.maxBytes)
     }
@@ -365,7 +365,7 @@ export class MirageSandboxSession implements SandboxSession<MirageSandboxSession
     }
     if (entry.type === 'file') {
       await this.mkdirP(posixDirname(path))
-      await this.workspace.vfs.writeFile(path, entry.content, this.sessionId)
+      await this.workspace.vfs.write(path, entry.content, this.sessionId)
       return
     }
     throw new SandboxUnsupportedFeatureError(

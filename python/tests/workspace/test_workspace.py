@@ -3209,3 +3209,67 @@ async def test_xargs_keeps_foreground_call_queued_until_cancelled():
         await child
         assert "Y" not in ws.get_session(ws.default_session_id).env
         await ws.close()
+
+
+async def _glob_ws() -> Workspace:
+    ws = Workspace(
+        {"/": RAMVFS(), "/data": RAMVFS(), "/side": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"blind": {"paths": {"hide": ["/side"]}}},
+    )
+    await ws.shell(
+        "mkdir -p /src/a/b && echo 1 > /src/top.py && echo 2 > /src/a/b/deep.py"
+        " && echo h > /src/.hidden.py && echo d > /data/d.txt"
+        " && echo s > /side/s.txt && ln -s /src/top.py /src/link.py"
+    )
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_glob_matches_as_the_shell_expands():
+    ws = await _glob_ws()
+    try:
+        flat = await ws.glob("/src/*.py")
+        deep = await ws.glob("/src/**/*.py")
+        across = await ws.glob("/*/*.txt")
+    finally:
+        await ws.close()
+    assert flat == ["/src/link.py", "/src/top.py"]
+    assert deep == ["/src/a/b/deep.py", "/src/link.py", "/src/top.py"]
+    assert across == ["/data/d.txt", "/side/s.txt"]
+
+
+@pytest.mark.asyncio
+async def test_glob_without_a_match_is_empty():
+    ws = await _glob_ws()
+    try:
+        none = await ws.glob("/src/*.rs")
+        plain = await ws.glob("/src/top.py")
+        missing = await ws.glob("/src/missing.py")
+    finally:
+        await ws.close()
+    assert none == []
+    assert plain == ["/src/top.py"]
+    assert missing == []
+
+
+@pytest.mark.asyncio
+async def test_glob_reads_a_relative_pattern_from_the_cwd():
+    ws = await _glob_ws()
+    try:
+        await ws.shell("cd /src")
+        found = await ws.glob("*.py")
+    finally:
+        await ws.close()
+    assert found == ["/src/link.py", "/src/top.py"]
+
+
+@pytest.mark.asyncio
+async def test_glob_runs_as_the_session():
+    ws = await _glob_ws()
+    try:
+        ws.create_session("b", profile="blind")
+        found = await ws.glob("/*/*.txt", session_id="b")
+    finally:
+        await ws.close()
+    assert found == ["/data/d.txt"]

@@ -17,16 +17,16 @@ def tools(workspace):
 
 
 @pytest.mark.asyncio
-async def test_execute_command_echo(tools):
-    result = await tools.execute_command({"command": "echo hello"})
+async def test_shell_echo(tools):
+    result = await tools.shell({"command": "echo hello"})
     assert "hello" in result["content"][0]["text"]
     assert result.get("is_error") is not True
 
 
 @pytest.mark.asyncio
-async def test_execute_command_pipe(tools, workspace):
+async def test_shell_pipe(tools, workspace):
     await workspace.vfs.write("/pipe.txt", b"aaa\nbbb\naaa\n")
-    result = await tools.execute_command(
+    result = await tools.shell(
         {"command": "cat /pipe.txt | sort | uniq | wc -l"}
     )
     assert "2" in result["content"][0]["text"]
@@ -69,11 +69,13 @@ async def test_write_file(tools, workspace):
 
 
 @pytest.mark.asyncio
-async def test_write_file_already_exists(tools, workspace):
+async def test_write_refuses_an_unread_file(tools, workspace):
     await workspace.vfs.write("/exists.txt", b"first")
     result = await tools.write({"path": "/exists.txt", "content": "second"})
     assert result["is_error"] is True
-    assert "already exists" in result["content"][0]["text"]
+    assert (
+        "read all of it before overwriting it" in result["content"][0]["text"]
+    )
 
 
 @pytest.mark.asyncio
@@ -160,3 +162,24 @@ async def test_grep(tools, workspace):
     result = await tools.grep({"pattern": "hello", "path": "/"})
     text = result["content"][0]["text"]
     assert "hello" in text
+
+
+@pytest.mark.asyncio
+async def test_tools_act_as_the_session():
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"guarded": {"paths": {"hide": ["/vault"]}}},
+    )
+    await ws.shell("echo key > /vault/key.txt")
+    ws.create_session("agent", profile="guarded")
+    try:
+        result = await _MirageTools(ws, session_id="agent").read(
+            {"path": "/vault/key.txt"}
+        )
+    finally:
+        await ws.close()
+    assert result["is_error"] is True
+    assert result["content"][0]["text"] == (
+        "Error: file '/vault/key.txt' not found"
+    )

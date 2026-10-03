@@ -58,7 +58,7 @@ async def _raise_ask(client: AsyncClient, wid: str, sid: str) -> str:
     """Run the guarded line once: it is refused pending and the ask id
     is what the pending list now holds."""
     r = await client.post(
-        f"/v1/workspaces/{wid}/execute",
+        f"/v1/workspaces/{wid}/shell",
         json={"command": "rm /f.txt", "session_id": sid},
     )
     assert r.status_code == 200, r.text
@@ -83,7 +83,7 @@ async def test_ask_allow_round_trip():
         wid = await _create_workspace(client)
         await _create_session(client, wid, "agent_a")
         await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "touch /f.txt", "session_id": "agent_a"},
         )
         ask_id = await _raise_ask(client, wid, "agent_a")
@@ -113,7 +113,7 @@ async def test_ask_allow_round_trip():
         assert [a["id"] for a in r.json()] == [ask_id]
 
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "rm /f.txt", "session_id": "agent_a"},
         )
         assert r.json()["exit_code"] == 0, r.text
@@ -140,7 +140,7 @@ async def test_ask_deny_refuses_the_retry():
         assert r.json()["outcome"] == "deny"
 
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "rm /f.txt", "session_id": "agent_a"},
         )
         body = r.json()
@@ -160,7 +160,7 @@ async def test_session_scope_covers_the_next_matching_line():
         wid = await _create_workspace(client)
         await _create_session(client, wid, "agent_a")
         await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "touch /f.txt /g.txt", "session_id": "agent_a"},
         )
         ask_id = await _raise_ask(client, wid, "agent_a")
@@ -174,7 +174,7 @@ async def test_session_scope_covers_the_next_matching_line():
 
         for target in ("/f.txt", "/g.txt"):
             r = await client.post(
-                f"/v1/workspaces/{wid}/execute",
+                f"/v1/workspaces/{wid}/shell",
                 json={"command": f"rm {target}", "session_id": "agent_a"},
             )
             assert r.json()["exit_code"] == 0, r.text
