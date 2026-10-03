@@ -100,12 +100,13 @@ function hashLine(digest: string, label: string, name: string, opts: CommandOpts
   return `${digest} ${marker}${label}${terminator}`
 }
 
-function makePathSpec(virtual: string, mountPrefix: string): PathSpec {
+function makePathSpec(virtual: string, mountPrefix: string, rawPath: string): PathSpec {
   return new PathSpec({
     virtual,
     directory: virtual,
     vfsPath: mountKey(virtual, mountPrefix),
     resolved: true,
+    rawPath,
   })
 }
 
@@ -113,7 +114,7 @@ function makePathSpec(virtual: string, mountPrefix: string): PathSpec {
 // resolves it against the process cwd (a relative `f.txt` in the sums
 // file names a sibling of wherever `-c` runs, not of the sums file).
 function checkTarget(filename: string, cwd: string, mountPrefix: string): PathSpec {
-  return makePathSpec(resolvePath(filename, cwd), mountPrefix)
+  return makePathSpec(resolvePath(filename, cwd), mountPrefix, filename)
 }
 
 function countNoun(count: number, singular: string, plural: string): string {
@@ -121,10 +122,15 @@ function countNoun(count: number, singular: string, plural: string): string {
 }
 
 // Read a path through the workspace's door, on whatever mount holds it: a
-// checksum list names files anywhere, not on the list's mount. Mirrors
-// Python's door_reader.
-export function doorReader(dispatch: NonNullable<CommandOpts['dispatch']>): Stream {
+// checksum list names files anywhere, not on the list's mount. A stdin name
+// (`-`, /dev/stdin) reads the command's input through `stream`, on the
+// cursor the list itself reads from. Mirrors Python's door_reader.
+export function doorReader(dispatch: NonNullable<CommandOpts['dispatch']>, stream: Stream): Stream {
   return async function* read(path: PathSpec): AsyncIterable<Uint8Array> {
+    if (isStdin(path)) {
+      yield* stream(path)
+      return
+    }
     const [data] = await dispatch('read', path)
     yield* ensureStream(data as ByteSource)
   }
@@ -139,7 +145,7 @@ async function checkFile(
 ): Promise<[string, string, number]> {
   const fl = new FlagView(opts.flags, specOf(name))
   const data = DEC.decode(await materialize(stream(p)))
-  const listed = opts.dispatch !== undefined ? doorReader(opts.dispatch) : stream
+  const listed = opts.dispatch !== undefined ? doorReader(opts.dispatch, stream) : stream
   // A list read from stdin names files on the mount the command runs on.
   const mountPrefix = isStdin(p) ? (opts.mountPrefix ?? '') : mountPrefixOf(p.virtual, p.vfsPath)
   // GNU quotes its stdin name, which holds a space.

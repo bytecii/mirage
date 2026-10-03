@@ -14,10 +14,12 @@
 
 import { UsageError } from '../../../errors.ts'
 import { IOResult } from '../../../../io/types.ts'
+import type { LinkView } from '../../../../ops/types.ts'
 import { FileType, type PathSpec } from '../../../../types.ts'
 import { fsStrerror, isFsError } from '../../../../utils/errors.ts'
 import { mountPrefixOf, mountedPath, respelled } from '../../../../utils/key_prefix.ts'
-import { resolvePath } from '../../../../utils/path.ts'
+import { CycleError, resolvePath } from '../../../../utils/path.ts'
+import { rstripSlash } from '../../../../utils/slash.ts'
 import { formatRecords } from '../../utils/output.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
@@ -32,22 +34,46 @@ const MOUNT_ROOT_BUSY = 'Device or resource busy'
 // directory GNU's rmdir would have removed is already gone.
 const VANISHED = 'No such file or directory'
 
+// `virtual` with its parent resolved through the namespace's links: rmdir(2)
+// follows every component but the last, which stays as named, so a link
+// there is refused rather than followed. Mirrors Python's followed_parent.
+function followedParent(virtual: string, links: LinkView | null): string {
+  if (links === null) return virtual
+  const cut = virtual.lastIndexOf('/')
+  try {
+    return `${rstripSlash(links.resolve(virtual.slice(0, cut) || '/'))}/${virtual.slice(cut + 1)}`
+  } catch (err) {
+    if (!(err instanceof CycleError)) throw err
+    return virtual
+  }
+}
+
 // The directories -p removes after `path`, as GNU cuts them from the
 // operand as typed, each with its spelling. null stands for the mount root,
-// which is a mount point and is never removed. Mirrors Python's ancestors.
-export function ancestors(path: PathSpec, cwd: string): [PathSpec | null, string][] {
+// which is a mount point and is never removed. Each is reached through the
+// links in its parent, as GNU's rmdir(2) is: `rmdir -p link/nested/leaf`
+// removes the directory `link/nested` names. Mirrors Python's ancestors.
+export function ancestors(
+  path: PathSpec,
+  cwd: string,
+  links: LinkView | null = null,
+): [PathSpec | null, string][] {
   const prefix = mountPrefixOf(path.virtual, path.vfsPath)
-  let typed = path.rawPath.replace(/\/+$/, '') || '/'
+  let typed = rstripSlash(path.rawPath) || '/'
   const chain: [PathSpec | null, string][] = []
   while (typed.includes('/')) {
     let cut = typed.lastIndexOf('/')
     while (cut > 0 && typed[cut] === '/') cut -= 1
     typed = typed.slice(0, cut + 1)
-    const virtual = resolvePath(typed, cwd).replace(/\/+$/, '')
-    if (!virtual.startsWith(`${prefix}/`)) {
+    const literal = rstripSlash(resolvePath(typed, cwd))
+    if (!literal.startsWith(`${prefix}/`)) {
       chain.push([null, typed])
       break
     }
+    // A parent linked onto another mount is out of this mount's reach, so
+    // the name is tried here as typed.
+    const followed = followedParent(literal, links)
+    const virtual = followed.startsWith(`${prefix}/`) ? followed : literal
     chain.push([respelled(mountedPath(path, virtual.slice(prefix.length)), typed), typed])
   }
   return chain
@@ -116,7 +142,7 @@ export const BUILDER: Builder = {
         continue
       }
       if (!fl.asBool('parents')) continue
-      for (const [ancestor, typed] of ancestors(p, opts.cwd)) {
+      for (const [ancestor, typed] of ancestors(p, opts.cwd, links)) {
         if (verbose) lines.push(`rmdir: removing directory, '${typed}'`)
         const failed = ancestor === null ? MOUNT_ROOT_BUSY : await remove(ancestor)
         if (failed === null || failed === VANISHED) continue

@@ -697,7 +697,9 @@ async def stat(
             mounts=mounts,
             links=links,
         )
-        return await _file_systems(paths, c or _FS_LAYOUT, probe, statfs)
+        return await _file_systems(
+            paths, _FS_LAYOUT if c is None else c, probe, statfs
+        )
     lines: list[str] = []
     err = b""
     for p in paths:

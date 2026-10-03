@@ -23,8 +23,8 @@ import { crossOpts, flatten, statOp, streamOp } from '../utils.ts'
 // output, so --output-error=exit checks that each can be opened before any
 // is written, as GNU opens them all first. Each output is written on the
 // mount that owns it, through the dispatcher, which also drops its cached
-// copy; -a appends by reading the file and writing it whole. Mirrors
-// Python's run_tee.
+// copy; -a goes through the append op, which a mount answers natively or by
+// rewriting the file. Mirrors Python's run_tee.
 export async function runTee(
   scopes: PathSpec[],
   flagKwargs: Record<string, FlagValue>,
@@ -34,13 +34,16 @@ export async function runTee(
   const write = async (path: PathSpec, data: Uint8Array): Promise<void> => {
     await dispatch('write', path, [data])
   }
+  const append = async (path: PathSpec, data: Uint8Array): Promise<void> => {
+    await dispatch('append', path, [data])
+  }
   const [out, io] = (await teeGeneric(
     flatten(scopes),
     [],
     { ...crossOpts(flagKwargs), stdin },
     streamOp(dispatch),
     write,
-    undefined,
+    append,
     statOp(dispatch),
   )) ?? [null, new IOResult()]
   // Relay writes are keyed by the dispatcher; keyed here they would be

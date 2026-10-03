@@ -65,10 +65,12 @@ class ReadResult:
     """An opened archive, its gzip failure and independent tar diagnostics.
 
     ``cut`` is the index of the first member whose data ran past the end
-    of the stream, None when every member is whole.
+    of the stream, None when every member is whole, and ``tail`` is that
+    member's data that arrived, in whole blocks of the decoded stream.
     """
 
     archive: TarFile | None
     failure: GzipDataError | None
     notices: tuple[str, ...] = ()
     cut: int | None = None
+    tail: bytes = b""

@@ -39,11 +39,12 @@ export function modeLine(name: string, stat: FileStat, mode: number, failed: boo
   const old = stat.mode ?? 0
   const shown = shellQuoteAlways(name)
   const perms = lsModeString(stat.with({ mode })).slice(1)
-  const octal = (m: number): string => m.toString(8).padStart(4, '0')
-  if (!failed && old === mode) return `mode of ${shown} retained as ${octal(mode)} (${perms})\n`
+  const newOctal = mode.toString(8).padStart(4, '0')
+  if (!failed && old === mode) return `mode of ${shown} retained as ${newOctal} (${perms})\n`
   const was = lsModeString(stat.with({ mode: old })).slice(1)
+  const oldOctal = old.toString(8).padStart(4, '0')
   const lead = failed ? `failed to change mode of ${shown} from` : `mode of ${shown} changed from`
-  return `${lead} ${octal(old)} (${was}) to ${octal(mode)} (${perms})\n`
+  return `${lead} ${oldOctal} (${was}) to ${newOctal} (${perms})\n`
 }
 
 // chmod MODE FILE...: set permission bits via setattr. Follows symlinks

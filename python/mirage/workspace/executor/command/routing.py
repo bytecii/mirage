@@ -24,6 +24,7 @@ from mirage.commands.spec.constants import (
     OWN_OPTION_LOOP,
     REFUSED,
     STDIN_DASH_COMMANDS,
+    STDIN_DASH_LEADING,
 )
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import CommandSpec
@@ -246,14 +247,20 @@ def routable_scopes(cmd_name: str, scopes: list[PathSpec]) -> list[PathSpec]:
     input reaches it, so it routes nowhere: ``awk p /data/a x=1
     /data/b`` runs on /data like the same line without it. A lone ``-``
     is standard input to the commands in ``STDIN_DASH_COMMANDS``, so it
-    routes nowhere either.
+    routes nowhere either, past ``STDIN_DASH_LEADING``'s leading
+    operands only where it names an output (split's PREFIX).
 
     Args:
         cmd_name (str): command name.
         scopes (list[PathSpec]): the line's routing path words.
     """
     if cmd_name in STDIN_DASH_COMMANDS:
-        scopes = [s for s in scopes if s.raw_path != "-"]
+        leading = STDIN_DASH_LEADING.get(cmd_name, len(scopes))
+        scopes = [
+            s
+            for index, s in enumerate(scopes)
+            if s.raw_path != "-" or index >= leading
+        ]
     if cmd_name != "awk":
         return scopes
     return [s for s in scopes if split_assignment(s.raw_path) is None]

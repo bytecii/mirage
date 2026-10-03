@@ -855,12 +855,15 @@ async function mirrorDirs(
   dstBase: string,
   writes: Record<string, ByteSource>,
   errors: string[],
+  intoItself: boolean,
   index?: IndexCacheStore,
   lines?: string[],
 ): Promise<boolean> {
   if (strategy.mkdir === undefined) return true
+  // A destination inside the source leaves its own subtree out, as the
+  // file pass does.
   const mounts = [srcBase, ...(await strategy.find(src, { type: 'd' }))].filter(
-    (found) => !within(found, dstBase),
+    (found) => !(intoItself && within(found, dstBase)),
   )
   // Shortest first so a parent is created before its children, then by name:
   // sorting on length alone leaves equal-length siblings in whatever order
@@ -1331,6 +1334,7 @@ export async function cpGeneric(
         dstBase,
         writes,
         errors,
+        intoItself,
         index,
         flags.verbose ? lines : undefined,
       )

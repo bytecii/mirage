@@ -349,20 +349,27 @@ async def walk_stats(
         root (PathSpec): subtree root (already link-resolved).
         root_stat (FileStat): the root's stat, already read.
     """
-    entries = [(root, root_stat)]
-    if root_stat.type != FileType.DIRECTORY:
-        return entries
-    children, _ = await dispatch("readdir", root)
-    for listed in children:
-        # A folder-backed readdir spells a directory child with its slash.
-        child_virtual = listed.rstrip("/")
-        if namespace.is_link(child_virtual):
+    entries: list[tuple[PathSpec, FileStat]] = []
+    # An explicit stack, so a deep tree costs no recursion: a directory's
+    # children go on in reverse and come off in listing order.
+    stack = [(root, root_stat)]
+    while stack:
+        path, stat = stack.pop()
+        entries.append((path, stat))
+        if stat.type != FileType.DIRECTORY:
             continue
-        child = PathSpec.from_str_path(child_virtual)
-        child_stat, _ = await dispatch("stat", child)
-        entries.extend(
-            await walk_stats(namespace, dispatch, child, child_stat)
-        )
+        children, _ = await dispatch("readdir", path)
+        found: list[tuple[PathSpec, FileStat]] = []
+        for listed in children:
+            # A folder-backed readdir spells a directory child with its
+            # slash.
+            child_virtual = listed.rstrip("/")
+            if namespace.is_link(child_virtual):
+                continue
+            child = PathSpec.from_str_path(child_virtual)
+            child_stat, _ = await dispatch("stat", child)
+            found.append((child, child_stat))
+        stack.extend(reversed(found))
     return entries
 
 

@@ -98,6 +98,11 @@ STDIN_DASH_COMMANDS = frozenset(
     }
 )
 
+# How many leading operands may read standard input, for a command whose
+# later operands name outputs: split reads FILE and writes PREFIX, so
+# `split f -` writes `-aa` to the working directory (GNU coreutils 9.7).
+STDIN_DASH_LEADING = {"split": 1}
+
 # The name an operand goes by on a FlagBag's tape. The tape records the
 # operands in scan order among the option occurrences, so a program can
 # tell which options were typed before each one. An operand has no dest,

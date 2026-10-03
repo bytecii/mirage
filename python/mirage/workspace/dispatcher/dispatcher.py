@@ -1338,10 +1338,16 @@ class Dispatcher:
             policies, "statfs", path, False, owner, _session_id()
         )
         await self._xattr_target(mount, path)
+        answer: tuple[str, CapacityResult]
         if mount is None:
-            return "-", CapacityResult(state=CapacityState.UNKNOWN)
-        async with mount.use():
-            return mount.vfs.name, await mount.vfs.capacity()
+            answer = "-", CapacityResult(state=CapacityState.UNKNOWN)
+        else:
+            async with mount.use():
+                answer = mount.vfs.name, await mount.vfs.capacity()
+        # A policy may deny the reply as it may any op's; a capacity is
+        # no bytes, so a bound has nothing to cap.
+        await post_ops_gate(policies, "statfs", path, False, owner, answer)
+        return answer
 
     async def _xattr_target(
         self, mount: MountEntry | None, path: PathSpec

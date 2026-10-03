@@ -64,6 +64,39 @@
       "flags": [
         "p"
       ]
+    },
+    {
+      "id": "rmdir_p_reaches_each_parent_through_a_link",
+      "seq": 15700005,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/fcR_rl/real/nested/leaf && printf k > /data/fcR_rl/real/keep && ln -s real /data/fcR_rl/link && (cd /data/fcR_rl && rmdir -pv link/nested/leaf); echo rc=$?; ls -A /data/fcR_rl/real; rm -rf /data/fcR_rl",
+      "expect": {
+        "exit": 0,
+        "stdout": "rmdir: removing directory, 'link/nested/leaf'\nrmdir: removing directory, 'link/nested'\nrmdir: removing directory, 'link'\nrc=1\nkeep\n",
+        "stderr": "rmdir: failed to remove 'link': Not a directory\n"
+      },
+      "flags": [
+        "p",
+        "v"
+      ]
     }
   ]
 }

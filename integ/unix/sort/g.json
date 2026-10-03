@@ -190,6 +190,43 @@
         "C",
         "o"
       ]
+    },
+    {
+      "id": "sort_g_reads_a_long_hex_mantissa_exactly",
+      "seq": 15700008,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "z=$(printf '%0300d' 0); printf \"0x1${z}p-1200\\n0\\n2\\n0.5\\n0x1${z}p-1240\\n-0x1${z}p-1240\\n\" | sort -g | cut -c1-12",
+      "expect": {
+        "exit": 0,
+        "stdout": "-0x100000000\n0\n0x1000000000\n0.5\n0x1000000000\n2\n",
+        "stderr": ""
+      },
+      "flags": [
+        "g"
+      ]
     }
   ]
 }

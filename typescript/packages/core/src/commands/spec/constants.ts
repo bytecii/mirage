@@ -50,6 +50,13 @@ export const STDOUT_DASH_OPTIONS: ReadonlyMap<string, string> = new Map([
 
 // CPython and node read the script from stdin for a lone `-`, including
 // after `--`. Explicit `./-` still names a file (CPython 3.12, node 22).
+export const STDIN_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
+  'python',
+  'python3',
+  'js',
+  'node',
+])
+
 // The commands that read standard input for a lone `-` operand, so the word
 // names no path and routes nowhere: `split - /data/x` runs on /data from any
 // working directory. Everywhere else (`touch -`, `rev -`) it is a file in the
@@ -93,12 +100,10 @@ export const STDIN_DASH_COMMANDS: ReadonlySet<string> = new Set([
   'zcat',
 ])
 
-export const STDIN_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
-  'python',
-  'python3',
-  'js',
-  'node',
-])
+// How many leading operands may read standard input, for a command whose
+// later operands name outputs: split reads FILE and writes PREFIX, so
+// `split f -` writes `-aa` to the working directory (GNU coreutils 9.7).
+export const STDIN_DASH_LEADING: ReadonlyMap<string, number> = new Map([['split', 1]])
 
 // The name an operand goes by on a flag bag's tape. The tape records the
 // operands in scan order among the option occurrences, so a program can tell

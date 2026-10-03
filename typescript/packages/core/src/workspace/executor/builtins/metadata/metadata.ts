@@ -216,16 +216,25 @@ export async function walkStats(
   root: PathSpec,
   rootStat: FileStat,
 ): Promise<[PathSpec, FileStat][]> {
-  const entries: [PathSpec, FileStat][] = [[root, rootStat]]
-  if (rootStat.type !== FileType.DIRECTORY) return entries
-  const [children] = await dispatch('readdir', root)
-  for (const listed of children as string[]) {
-    // A folder-backed readdir spells a directory child with its slash.
-    const childVirtual = rstripSlash(listed)
-    if (namespace.isLink(childVirtual)) continue
-    const child = PathSpec.fromStrPath(childVirtual)
-    const [childStat] = await dispatch('stat', child)
-    entries.push(...(await walkStats(namespace, dispatch, child, childStat as FileStat)))
+  const entries: [PathSpec, FileStat][] = []
+  // An explicit stack, so a deep tree costs no recursion: a directory's
+  // children go on in reverse and come off in listing order.
+  const stack: [PathSpec, FileStat][] = [[root, rootStat]]
+  for (let top = stack.pop(); top !== undefined; top = stack.pop()) {
+    entries.push(top)
+    const [path, stat] = top
+    if (stat.type !== FileType.DIRECTORY) continue
+    const [children] = await dispatch('readdir', path)
+    const found: [PathSpec, FileStat][] = []
+    for (const listed of children as string[]) {
+      // A folder-backed readdir spells a directory child with its slash.
+      const childVirtual = rstripSlash(listed)
+      if (namespace.isLink(childVirtual)) continue
+      const child = PathSpec.fromStrPath(childVirtual)
+      const [childStat] = await dispatch('stat', child)
+      found.push([child, childStat as FileStat])
+    }
+    for (const entry of found.reverse()) stack.push(entry)
   }
   return entries
 }

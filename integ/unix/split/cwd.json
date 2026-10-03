@@ -83,6 +83,24 @@
       "flags": [
         "l"
       ]
+    },
+    {
+      "id": "split_dash_prefix_names_outputs_in_the_cwd",
+      "seq": 15700003,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/fcR_sp/sub && printf '1\\n2\\n' > /data/fcR_sp/in && (cd /data/fcR_sp/sub && split -l1 /data/fcR_sp/in - && ls -A && cat -- -ab && printf '3\\n' | split -l1 - - && cat -- -aa); ls -A /data/fcR_sp; rm -r /data/fcR_sp",
+      "expect": {
+        "exit": 0,
+        "stdout": "-aa\n-ab\n2\n3\nin\nsub\n",
+        "stderr": ""
+      },
+      "flags": [
+        "l"
+      ]
     }
   ]
 }

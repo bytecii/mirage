@@ -230,15 +230,16 @@ def whole_line(source: str, multi_line: bool) -> str:
     return f"{line_start(multi_line)}(?:{source}){line_end(multi_line)}"
 
 
-def whole_word(source: str) -> str:
-    """ripgrep's -w: ``\\b{start-half}(?:...)\\b{end-half}``, Unicode.
+def whole_word(source: str, unicode: bool = True) -> str:
+    """ripgrep's -w: ``\\b{start-half}(?:...)\\b{end-half}``.
 
     Args:
         source (str): the host source.
+        unicode (bool): Unicode word characters, off under --no-unicode.
     """
     return (
-        f"{boundary('start-half', True)}(?:{source})"
-        f"{boundary('end-half', True)}"
+        f"{boundary('start-half', unicode)}(?:{source})"
+        f"{boundary('end-half', unicode)}"
     )
 
 
@@ -919,7 +920,9 @@ def translate_rust(
         RustRegexError: ripgrep refuses the pattern.
     """
     display = display_of(patterns)
-    if ignore_case and not INLINE_CASE.search(display):
+    # The host folds Unicode letters, so only a Unicode pattern hands it
+    # the folding; without Unicode the translator folds ASCII alone.
+    if ignore_case and unicode and not INLINE_CASE.search(display):
         source = RustTranslator(
             display, Flags(m=multi_line, u=unicode)
         ).translate()

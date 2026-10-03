@@ -1,6 +1,9 @@
 import pytest
 
-from mirage.types import MountMode
+from mirage.commands.builtin.generic.crossmount.relay.tee import run_tee
+from mirage.io.types import IOResult
+from mirage.types import MountMode, PathSpec
+from mirage.utils.errors import enoent
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
@@ -26,3 +29,25 @@ async def test_relay_tee_checks_every_output_before_writing_any():
         assert await both.materialize_stdout() == b"yy"
     finally:
         await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_relay_tee_a_appends_through_the_append_op():
+    ops: list[tuple[str, str]] = []
+
+    async def dispatch(op, path, **kwargs):
+        ops.append((op, path.virtual))
+        if op == "stat":
+            raise enoent(path)
+        return None, IOResult()
+
+    outputs = [
+        PathSpec(virtual=v, directory=v, vfs_path=v, raw_path=v, resolved=True)
+        for v in ("/a/f", "/b/g")
+    ]
+    out, io = await run_tee(outputs, {"append": True}, dispatch, b"x")
+    assert (out, io.exit_code) == (b"x", 0)
+    assert [o for o in ops if o[0] != "stat"] == [
+        ("append", "/a/f"),
+        ("append", "/b/g"),
+    ]

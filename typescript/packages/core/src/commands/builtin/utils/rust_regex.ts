@@ -172,9 +172,10 @@ export function wholeLine(source: string, multiLine: boolean): string {
   return `${lineStart(multiLine)}(?:${source})${lineEnd(multiLine)}`
 }
 
-// ripgrep's -w: `\b{start-half}(?:...)\b{end-half}`, Unicode.
-export function wholeWord(source: string): string {
-  return `${boundary('start-half', true)}(?:${source})${boundary('end-half', true)}`
+// ripgrep's -w: `\b{start-half}(?:...)\b{end-half}`, over Unicode word
+// characters unless --no-unicode turned them off.
+export function wholeWord(source: string, unicode = true): string {
+  return `${boundary('start-half', unicode)}(?:${source})${boundary('end-half', unicode)}`
 }
 
 // The one pattern ripgrep parses for a pattern list.
@@ -757,7 +758,9 @@ export function translateRust(
   unicode = true,
 ): HostRegex {
   const display = displayOf(patterns)
-  if (ignoreCase && !INLINE_CASE.test(display)) {
+  // The host folds Unicode letters, so only a Unicode pattern hands it the
+  // folding; without Unicode the translator folds ASCII alone.
+  if (ignoreCase && unicode && !INLINE_CASE.test(display)) {
     const source = new RustTranslator(display, {
       ...DEFAULT_FLAGS,
       m: multiLine,

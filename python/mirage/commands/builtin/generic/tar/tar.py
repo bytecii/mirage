@@ -138,6 +138,7 @@ def _open_archive(
         return
     notices: tuple[str, ...] = ()
     cut: int | None = None
+    tail = b""
     with ExitStack() as stack:
         tf: tarfile.TarFile | None
         try:
@@ -157,6 +158,9 @@ def _open_archive(
                     ),
                     None,
                 )
+                if cut is not None:
+                    member = tf.getmembers()[cut]
+                    tail = data[member.offset_data : whole]
             else:
                 tf.getmembers()
         except tarfile.TarError as exc:
@@ -169,7 +173,7 @@ def _open_archive(
                 if failure is None
                 else ()
             )
-        yield ReadResult(tf, failure, notices, cut)
+        yield ReadResult(tf, failure, notices, cut, tail)
 
 
 def _cut_short(failure: GzipDataError | None, lines: list[str]) -> bytes:
@@ -581,8 +585,7 @@ async def _extract_archive(
                     continue
                 if idx == result.cut:
                     # Only the whole blocks that arrived are written.
-                    whole = len(data) // tarfile.BLOCKSIZE * tarfile.BLOCKSIZE
-                    content = data[member.offset_data : whole][: member.size]
+                    content = result.tail
                     notices.append(UNEXPECTED_EOF)
                 else:
                     extracted = tf.extractfile(member)

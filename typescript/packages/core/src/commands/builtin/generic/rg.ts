@@ -427,7 +427,7 @@ function rustMatcher(patterns: readonly string[], fold: boolean, f: RgFlags): Re
   }
   let source = translated.source
   if (f.lineRegexp) source = wholeLine(source, f.nullData)
-  else if (f.wholeWord) source = wholeWord(source)
+  else if (f.wholeWord) source = wholeWord(source, f.unicode)
   return new RegExp(source, translated.ignoreCase ? 'iu' : 'u')
 }
 

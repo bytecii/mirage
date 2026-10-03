@@ -40,8 +40,8 @@ async def run_tee(
     One run sees every output, so ``--output-error=exit`` checks that each
     can be opened before any is written, as GNU opens them all first.
     Each output is written on the mount that owns it, through the
-    dispatcher, which also drops its cached copy; ``-a`` appends by
-    reading the file and writing it whole.
+    dispatcher, which also drops its cached copy; ``-a`` goes through the
+    append op, which a mount answers natively or by rewriting the file.
 
     Args:
         scopes (list[PathSpec]): the outputs in command-line order.
@@ -55,12 +55,16 @@ async def run_tee(
         async for chunk in ensure_stream(data):
             yield chunk
 
+    async def append_bytes(path: PathSpec, data: bytes) -> None:
+        await dispatch("append", path, data=data)
+
     p = functools.partial
     out, io = await tee(
         flat_scopes(scopes),
         [],
         read_stream=read_stream,
         write_bytes=transfer_primitives(dispatch)["write"],
+        append_bytes=append_bytes,
         stdin=stdin,
         flags=flag_kwargs,
         stat=p(relay, dispatch, "stat"),

@@ -559,7 +559,7 @@ def rust_matcher(
     if f.line_regexp:
         source = whole_line(source, f.null_data)
     elif f.whole_word:
-        source = whole_word(source)
+        source = whole_word(source, f.unicode)
     return re.compile(source, re.IGNORECASE if translated.ignore_case else 0)
 
 

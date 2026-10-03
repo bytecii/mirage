@@ -410,13 +410,35 @@ const LEADING_FLOAT = new RegExp(
     '|([nN][aA][nN](?:\\([0-9A-Za-z_]*\\))?))',
 )
 
-// A hex float such as 0x1.8p3, rounded once from its exact mantissa.
+// A hex float such as 0x1.8p3, rounded once from its exact mantissa to the
+// nearest double, ties to even, as Python's float.fromhex rounds it.
 function hexFloat(text: string): number {
   const [mantissa = '', power = '0'] = text.slice(2).split(/[pP]/)
   const [whole = '', fraction = ''] = mantissa.split('.')
   const digits = BigInt('0x' + (whole + fraction || '0'))
   if (digits === 0n) return 0
-  return Number(digits) * 2 ** (Number(power) - 4 * fraction.length)
+  const bits = digits.toString(2).length
+  let exponent = Number(power) - 4 * fraction.length
+  const lead = bits - 1 + exponent
+  if (lead > 1023) return Infinity
+  // The bits a double keeps at this magnitude: 53, fewer once subnormal.
+  const kept = Math.min(53, lead + 1075)
+  if (kept < 0) return 0
+  let keptDigits = digits
+  if (bits > kept) {
+    const drop = BigInt(bits - kept)
+    keptDigits = digits >> drop
+    const rest = digits - (keptDigits << drop)
+    const half = 1n << (drop - 1n)
+    if (rest > half || (rest === half && (keptDigits & 1n) === 1n)) keptDigits += 1n
+    exponent += bits - kept
+  }
+  // The kept digits times a power of two is a double, so scaling in steps
+  // the range holds is exact: no step overflows or underflows on its own.
+  let value = Number(keptDigits)
+  for (; exponent > 1023; exponent -= 1023) value *= 2 ** 1023
+  for (; exponent < -1022; exponent += 1022) value *= 2 ** -1022
+  return value * 2 ** exponent
 }
 
 // The number strtold reads at the start of a field, null for none.

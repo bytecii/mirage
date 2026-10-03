@@ -101,6 +101,43 @@
       "flags": [
         "n"
       ]
+    },
+    {
+      "id": "cp_rnT_copies_a_directory_into_its_parent",
+      "seq": 15700002,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/fcR_w/sub/e /data/fcR_w/sub/d && echo x > /data/fcR_w/sub/d/f && cp -rnT /data/fcR_w/sub /data/fcR_w; echo rc=$?; find /data/fcR_w | sort; cat /data/fcR_w/d/f; rm -r /data/fcR_w",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=0\n/data/fcR_w\n/data/fcR_w/d\n/data/fcR_w/d/f\n/data/fcR_w/e\n/data/fcR_w/sub\n/data/fcR_w/sub/d\n/data/fcR_w/sub/d/f\n/data/fcR_w/sub/e\nx\n",
+        "stderr": ""
+      },
+      "flags": [
+        "r",
+        "n",
+        "T"
+      ]
     }
   ]
 }

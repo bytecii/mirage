@@ -17,7 +17,12 @@ import { FILE_KEYS } from '../../../commands/builtin/generic/program.ts'
 import { walk } from '../../../commands/cli/walk.ts'
 import { SPECS } from '../../../commands/spec/index.ts'
 import { isBuiltinGrammar } from '../../../commands/spec/builtins.ts'
-import { OWN_OPTION_LOOP, REFUSED, STDIN_DASH_COMMANDS } from '../../../commands/spec/constants.ts'
+import {
+  OWN_OPTION_LOOP,
+  REFUSED,
+  STDIN_DASH_COMMANDS,
+  STDIN_DASH_LEADING,
+} from '../../../commands/spec/constants.ts'
 import type { CommandSpec } from '../../../commands/spec/types.ts'
 import { FlagView } from '../../../commands/spec/flag_view.ts'
 import { parseCommand, parseToKwargs } from '../../../commands/spec/parser.ts'
@@ -207,10 +212,14 @@ export function routedOperands(
  * `var=value` operand is an assignment awk makes when its input reaches
  * it, so it routes nowhere: `awk p /data/a x=1 /data/b` runs on /data like
  * the same line without it. A lone `-` is standard input to the commands in
- * STDIN_DASH_COMMANDS, so it routes nowhere either.
+ * STDIN_DASH_COMMANDS, so it routes nowhere either, past STDIN_DASH_LEADING's
+ * leading operands only where it names an output (split's PREFIX).
  */
 export function routableScopes(cmdName: string, scopes: PathSpec[]): PathSpec[] {
-  const routed = STDIN_DASH_COMMANDS.has(cmdName) ? scopes.filter((s) => s.rawPath !== '-') : scopes
+  const leading = STDIN_DASH_LEADING.get(cmdName) ?? scopes.length
+  const routed = STDIN_DASH_COMMANDS.has(cmdName)
+    ? scopes.filter((s, index) => s.rawPath !== '-' || index >= leading)
+    : scopes
   if (cmdName !== 'awk') return routed
   return routed.filter((s) => splitAssignment(s.rawPath) === null)
 }

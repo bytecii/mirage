@@ -27,7 +27,7 @@ import type {
   ExecContext,
   RegisteredCommand,
 } from '../../commands/config.ts'
-import { STDIN_DASH_COMMANDS } from '../../commands/spec/constants.ts'
+import { STDIN_DASH_COMMANDS, STDIN_DASH_LEADING } from '../../commands/spec/constants.ts'
 import { hasInjectedVersion } from '../../commands/spec/standard.ts'
 import { ROOT_CWD } from '../../commands/constants.ts'
 import type { OpKwargs } from '../../ops/registry.ts'
@@ -598,9 +598,11 @@ export class MountEntry {
         })
       // A stdin `-` routed nowhere, so it rides on whichever mount runs the
       // line, beside the operands that chose it.
-      const stdinDash = STDIN_DASH_COMMANDS.has(cmdName)
-      const prefixedPaths = paths.map((p) =>
-        stdinDash && p.rawPath === '-'
+      const stdinSlots = STDIN_DASH_COMMANDS.has(cmdName)
+        ? (STDIN_DASH_LEADING.get(cmdName) ?? paths.length)
+        : 0
+      const prefixedPaths = paths.map((p, index) =>
+        index < stdinSlots && p.rawPath === '-'
           ? new PathSpec({
               virtual: `${mountPrefix}/-`,
               directory: p.directory,

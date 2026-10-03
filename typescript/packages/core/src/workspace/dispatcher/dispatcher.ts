@@ -1325,8 +1325,14 @@ export class Dispatcher {
     const owner = mount?.prefix ?? ''
     await preOpsGate(this.policies, 'statfs', path, false, owner, sessionId(), issuer)
     await this.xattrTarget(mount, path)
-    if (mount === null) return ['-', { state: CapacityState.UNKNOWN }]
-    return [mount.vfs.name, await mount.use(() => mount.vfs.capacity())]
+    const answer: [string, CapacityResult] =
+      mount === null
+        ? ['-', { state: CapacityState.UNKNOWN }]
+        : [mount.vfs.name, await mount.use(() => mount.vfs.capacity())]
+    // A policy may deny the reply as it may any op's; a capacity is no bytes,
+    // so a bound has nothing to cap.
+    await postOpsGate(this.policies, 'statfs', path, false, owner, answer)
+    return answer
   }
 
   /**

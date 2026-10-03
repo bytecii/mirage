@@ -81,6 +81,43 @@
         "b",
         "z"
       ]
+    },
+    {
+      "id": "sha256sum_c_reads_a_stdin_entry_from_the_pipe",
+      "seq": 15700004,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf x | sha256sum /dev/stdin > /data/fcR_k1; printf x | sha256sum - > /data/fcR_k2; cat /data/fcR_k1 /data/fcR_k2; printf x | sha256sum -c /data/fcR_k1; echo rc=$?; printf x | sha256sum -c /data/fcR_k2; echo rc=$?; printf y | sha256sum -c /data/fcR_k1; echo rc=$?; rm /data/fcR_k1 /data/fcR_k2",
+      "expect": {
+        "exit": 0,
+        "stdout": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881  /dev/stdin\n2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881  -\n/dev/stdin: OK\nrc=0\n-: OK\nrc=0\n/dev/stdin: FAILED\nrc=1\n",
+        "stderr": "sha256sum: WARNING: 1 computed checksum did NOT match\n"
+      },
+      "flags": [
+        "c"
+      ]
     }
   ]
 }

@@ -1386,6 +1386,28 @@
         "c",
         "t"
       ]
+    },
+    {
+      "id": "arch_tar_z_cut_inside_member_data_writes_the_blocks_that_arrived",
+      "seq": 15700001,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs"
+      ],
+      "command": "(mkdir -p /data/fcR_tz && cd /data/fcR_tz && echo 'H4sIAAAAAAACA+3NMQqDUBAE0D2KR5D48T4aQWzV3D+fkELstXDfa2aYZsZljqu1VV/KL6tzlkP/7315ddG0cYPPtg9rvYycBlIbSe0=' | base64 -d > c.tgz && tar -xOzf c.tgz > o; echo rc=$?; tr -s ab < o; echo; wc -c < o; tar -xzf c.tgz; echo rc=$?; tr -s ab < big; echo; wc -c < big; cd / && rm -rf /data/fcR_tz)",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=2\nab\n1024\nrc=2\nab\n1024\n",
+        "stderr": "\ngzip: stdin: unexpected end of file\ntar: Unexpected EOF in archive\ntar: Unexpected EOF in archive\ntar: Error is not recoverable: exiting now\n\ngzip: stdin: unexpected end of file\ntar: Unexpected EOF in archive\ntar: Unexpected EOF in archive\ntar: Error is not recoverable: exiting now\n"
+      },
+      "flags": [
+        "x",
+        "O",
+        "z",
+        "f"
+      ]
     }
   ]
 }

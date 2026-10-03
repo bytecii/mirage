@@ -1107,6 +1107,7 @@ async def _mirror_dirs(
     dst_base: str,
     writes: dict[str, ByteSource],
     errors: list[str],
+    into_itself: bool,
     lines: list[str] | None = None,
 ) -> bool:
     """Recreate a source tree's directories under the destination root.
@@ -1132,6 +1133,8 @@ async def _mirror_dirs(
         dst_base (str): Destination root's mount path, no trailing slash.
         writes (dict[str, ByteSource]): Recorded writes, updated in place.
         errors (list[str]): Collected stderr lines, appended in place.
+        into_itself (bool): Whether the destination lies inside the
+            source; its subtree is then left out, as the file pass does.
         lines (list[str] | None): Verbose sink for the directory entries
             GNU also reports; None keeps them silent.
 
@@ -1144,7 +1147,7 @@ async def _mirror_dirs(
     mounts = [
         found
         for found in [src_base, *await strategy.find(src, type="d")]
-        if not within(found, dst_base)
+        if not (into_itself and within(found, dst_base))
     ]
     # Shortest first so a parent is created before its children. The name is
     # the tiebreak because `sorted` is stable and set iteration over strings
@@ -1726,6 +1729,7 @@ async def cp(
                 dst_base,
                 writes,
                 errors,
+                into_itself,
                 lines if flags.verbose else None,
             ):
                 continue

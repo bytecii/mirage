@@ -245,20 +245,31 @@ def _resolve_check_target(
         virtual=virtual,
         directory=virtual,
         vfs_path=mount_key(virtual, mount_prefix),
+        raw_path=filename,
     )
 
 
 def door_reader(
     dispatch: DispatchFn,
+    stream: Callable[[PathSpec], AsyncIterator[bytes]],
 ) -> Callable[[PathSpec], AsyncIterator[bytes]]:
     """Read a path through the workspace's door, on whatever mount holds
     it: a checksum list names files anywhere, not on the list's mount.
 
+    A stdin name (``-``, ``/dev/stdin``) reads the command's input
+    through ``stream``, on the cursor the list itself reads from.
+
     Args:
         dispatch (DispatchFn): the workspace's op dispatcher.
+        stream (Callable[[PathSpec], AsyncIterator[bytes]]): the
+            command's stdin-aware reader.
     """
 
     async def read(path: PathSpec) -> AsyncIterator[bytes]:
+        if is_stdin(path):
+            async for chunk in stream(path):
+                yield chunk
+            return
         data, _ = await dispatch("read", path)
         async for chunk in ensure_stream(data):
             yield chunk
@@ -525,7 +536,7 @@ async def checksum_generic(
             algorithm=algorithm,
             read_bytes=materialized_read(stream),
             read_stream=(
-                door_reader(opts.dispatch)
+                door_reader(opts.dispatch, normalized_read(stream))
                 if opts.dispatch is not None
                 else normalized_read(stream)
             ),
