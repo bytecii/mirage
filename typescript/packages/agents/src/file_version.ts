@@ -12,8 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { createHash } from 'node:crypto'
 import type { Ops } from '@struktoai/mirage-core/ops/ops'
+import { encodeBase64 } from '@struktoai/mirage-core/utils/base64'
 import { Session } from '@struktoai/mirage-core/workspace/workspace/handle'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 
@@ -27,13 +27,22 @@ export class StaleMirageFileError extends Error {
   }
 }
 
-function fingerprint(content: Uint8Array | string): string {
-  return createHash('sha256').update(content).digest('base64url')
+/**
+ * Version stamp for one file's stored bytes.
+ *
+ * @param content The bytes to stamp.
+ * @returns A base64url digest, matching the Python tracker's stamp.
+ */
+export async function fingerprint(content: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', content as Uint8Array<ArrayBuffer>)
+  return encodeBase64(new Uint8Array(digest))
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '')
 }
 
-async function readBuffer(vfs: Ops, path: string): Promise<Buffer> {
-  const bytes = await vfs.read(path, { raw: true })
-  return Buffer.from(bytes)
+function readBytes(vfs: Ops, path: string): Promise<Uint8Array> {
+  return vfs.read(path, { raw: true })
 }
 
 export class FileVersionTracker {
@@ -70,7 +79,7 @@ export class FileVersionTracker {
 
   private async currentVersion(path: string): Promise<string | null> {
     if (!(await this.vfs.exists(path))) return null
-    return fingerprint(await readBuffer(this.vfs, path))
+    return fingerprint(await readBytes(this.vfs, path))
   }
 
   private async assertVersion(path: string, expected: string): Promise<void> {
@@ -106,17 +115,17 @@ export class FileVersionTracker {
     if (this.enabled) this.seen.add(this.key(path))
   }
 
-  async read(path: string): Promise<Buffer> {
-    const content = await readBuffer(this.vfs, path)
-    if (this.enabled) this.readVersions.set(this.key(path), fingerprint(content))
+  async read(path: string): Promise<Uint8Array> {
+    const content = await readBytes(this.vfs, path)
+    if (this.enabled) this.readVersions.set(this.key(path), await fingerprint(content))
     return content
   }
 
-  async readForEdit(path: string): Promise<Buffer> {
-    const content = await readBuffer(this.vfs, path)
+  async readForEdit(path: string): Promise<Uint8Array> {
+    const content = await readBytes(this.vfs, path)
     if (!this.enabled) return content
     const key = this.key(path)
-    const version = fingerprint(content)
+    const version = await fingerprint(content)
     const readVersion = this.readVersions.get(key)
     if (readVersion !== undefined && readVersion !== version) {
       throw new StaleMirageFileError(path)

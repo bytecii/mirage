@@ -44,6 +44,7 @@ class _RenderingWorkspace:
 
 def test_fingerprint_is_stable_and_url_safe():
     stamp = fingerprint(b"hello")
+    assert stamp == "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
     assert stamp == fingerprint(b"hello")
     assert stamp != fingerprint(b"hello!")
     assert "+" not in stamp and "/" not in stamp and "=" not in stamp

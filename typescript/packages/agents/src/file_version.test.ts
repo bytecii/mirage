@@ -14,7 +14,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest'
 import { MountMode, RAMVFS, Workspace } from '@struktoai/mirage-node'
-import { FileVersionTracker, StaleMirageFileError } from './file_version.ts'
+import { FileVersionTracker, StaleMirageFileError, fingerprint } from './file_version.ts'
 
 let ws: Workspace
 
@@ -42,6 +42,13 @@ function renderingWs(inner: Workspace): Workspace {
     namespace: inner.namespace,
   } as unknown as Workspace
 }
+
+describe('fingerprint', () => {
+  it('is the unpadded base64url sha256 the Python tracker stamps', async () => {
+    const stamp = await fingerprint(new TextEncoder().encode('hello'))
+    expect(stamp).toBe('LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ')
+  })
+})
 
 describe('FileVersionTracker', () => {
   it('refuses a write to a file that changed underneath', async () => {
