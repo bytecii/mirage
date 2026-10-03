@@ -46,7 +46,7 @@ import {
 } from '../../commands/builtin/find_parse.ts'
 import { maybeWithTimeout } from '../../commands/builtin/utils/limit.ts'
 import { resolveProducer, resolveLimit } from '../../policy/index.ts'
-import type { ExecuteNodeFn, JobHandlerResult } from './jobs.ts'
+import type { ExecuteNodeFn, ExecutionResult } from './types.ts'
 import { handleDisown, handleFg, handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
 import { versionRequest } from '../../commands/config.ts'
 
@@ -77,7 +77,8 @@ const JOB_HANDLERS: Record<
     textParts: string[],
     session: Session | null,
     view: SessionView | null,
-  ) => JobHandlerResult | Promise<JobHandlerResult>
+    signal?: AbortSignal,
+  ) => ExecutionResult | Promise<ExecutionResult>
 > = {
   wait: handleWait,
   fg: handleFg,
@@ -100,6 +101,7 @@ export async function handleCommand(
   runtimeBindings?: Record<string, Runtime>,
   namespace?: Namespace,
   routingDecision?: PolicyDecision,
+  signal?: AbortSignal,
 ): Promise<Result> {
   if (parts.length === 0) {
     return [null, new IOResult(), new ExecutionNode({ command: '', exitCode: 0 })]
@@ -116,7 +118,7 @@ export async function handleCommand(
     const textParts = parts.map((p) => (typeof p === 'string' ? p : p.virtual))
     const handler = JOB_HANDLERS[cmdName]
     if (handler !== undefined) {
-      return handler(jobTable, textParts, session, sessionView(session, registry.policies))
+      return handler(jobTable, textParts, session, sessionView(session, registry.policies), signal)
     }
   }
 
@@ -271,6 +273,7 @@ export async function handleCommand(
       registry,
       session,
       dispatch,
+      ...(signal !== undefined ? { signal } : {}),
       ...(namespace !== undefined ? { namespace } : {}),
       ...(ensureOpen !== undefined ? { ensureOpen } : {}),
       ...(runtimeBindings !== undefined ? { runtimeBindings } : {}),
@@ -444,6 +447,7 @@ export async function handleCommand(
     registry,
     session,
     dispatch,
+    ...(signal !== undefined ? { signal } : {}),
     ...(namespace !== undefined ? { namespace } : {}),
     ...(ensureOpen !== undefined ? { ensureOpen } : {}),
     ...(runtimeBindings !== undefined ? { runtimeBindings } : {}),

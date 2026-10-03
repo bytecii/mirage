@@ -20,7 +20,7 @@ import tree_sitter
 from mirage.ops.types import SessionView
 from mirage.shell.call_stack import CallStack
 from mirage.shell.escapes import decode_ansi_c
-from mirage.shell.helpers import get_text
+from mirage.shell.syntax.helpers import get_text
 from mirage.shell.types import NodeType as NT
 from mirage.utils.glob_walk import escape_glob
 from mirage.utils.path import expand_tilde

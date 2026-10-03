@@ -17,7 +17,7 @@ import asyncio
 import pytest
 
 from mirage.resource.ram import RAMResource
-from mirage.shell.parse import find_syntax_error, parse
+from mirage.shell.syntax.parse import find_syntax_error, parse
 from mirage.workspace import Workspace
 
 

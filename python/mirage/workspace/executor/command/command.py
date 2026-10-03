@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import functools
 
 from mirage.commands.builtin.find_parse import (FindParseError, find_expr_tail,
@@ -33,6 +34,7 @@ from mirage.runtime.types import DispatchFn
 from mirage.shell.call_stack import CallStack
 from mirage.shell.job_table import JobTable
 from mirage.types import PathSpec, Producer
+from mirage.workspace.abort import cancellable
 from mirage.workspace.executor.builtins.links import path_stat
 from mirage.workspace.executor.command.cli import handle_cli
 from mirage.workspace.executor.command.flags import option_error, parse_flags
@@ -41,12 +43,12 @@ from mirage.workspace.executor.command.routing import (CWD_DEFAULT_RAW,
                                                        default_cwd_operand,
                                                        merge_scopes,
                                                        path_flag_scopes)
-from mirage.workspace.executor.command.types import ExecuteNodeFn
 from mirage.workspace.executor.fanout import (_fan_out_traversal,
                                               _should_fan_out, run_with_fanout)
 from mirage.workspace.executor.jobs import (handle_disown, handle_fg,
                                             handle_jobs, handle_kill,
                                             handle_ps, handle_wait)
+from mirage.workspace.executor.types import ExecuteNodeFn
 from mirage.workspace.expand.globs import glob_options, resolve_globs
 from mirage.workspace.mount import MountCommandUnsupported, MountRegistry
 from mirage.workspace.mount.namespace import Namespace
@@ -82,6 +84,7 @@ async def handle_command(
     job_table: JobTable | None = None,
     namespace: Namespace | None = None,
     routing_decision: PolicyDecision | None = None,
+    cancel: asyncio.Event | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Execute a simple command.
 
@@ -100,9 +103,10 @@ async def handle_command(
         text_parts = [
             p.virtual if isinstance(p, PathSpec) else p for p in parts
         ]
-        return await JOB_HANDLERS[cmd_name](job_table, text_parts, session,
-                                            session_view(
-                                                session, registry.policies))
+        return await cancellable(
+            JOB_HANDLERS[cmd_name](job_table, text_parts, session,
+                                   session_view(session, registry.policies)),
+            cancel)
 
     # Shell functions
     if cmd_name in session.functions:

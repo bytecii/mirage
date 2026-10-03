@@ -23,7 +23,9 @@ from mirage.policy import CommandContext, PolicyDenied, resolve_limit
 from mirage.policy.types import SessionContext
 from mirage.runtime.policy import PolicyDecision
 from mirage.shell.bytes import encode_text
-from mirage.shell.parse import find_syntax_error, parse, syntax_error_result
+from mirage.shell.errors import ExitSignal
+from mirage.shell.syntax.parse import (find_syntax_error, parse,
+                                       syntax_error_result)
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import ShellBuiltin as SB
 from mirage.shell.variable import ShellVar, VarAttr
@@ -40,6 +42,7 @@ from mirage.workspace.executor.command import handle_command
 from mirage.workspace.executor.command.routing import (path_flag_scopes,
                                                        positional_scopes)
 from mirage.workspace.executor.control import BreakSignal, ContinueSignal
+from mirage.workspace.executor.traps import execute_child_shell, finish_shell
 from mirage.workspace.expand import expand_node
 from mirage.workspace.expand.argv import Argv, expand_argv
 from mirage.workspace.expand.classify import classify_bare_path
@@ -52,7 +55,7 @@ from mirage.workspace.session.state import (ensure_var_visible,
                                             session_view, set_attr)
 from mirage.workspace.types import ExecutionNode
 
-from mirage.shell.helpers import (  # isort: skip
+from mirage.shell.syntax.helpers import (  # isort: skip
     ProcessSubDirection, get_command_name, get_parts, get_process_sub_body,
     get_process_sub_direction, get_text, split_env_prefix)
 
@@ -319,8 +322,8 @@ async def _dispatch_command_body(
                     command=name or "process_sub", exit_code=2, stderr=err)
             inner = get_process_sub_body(p)
             if inner:
-                io_ps = await execute_fn(inner, session_id=session.session_id)
-                proc_sub_parts.append(io_ps.stdout or b"")
+                io_ps = await execute_child_shell(execute_fn, session, inner)
+                proc_sub_parts.append(await materialize(io_ps.stdout))
                 stderr = await materialize(io_ps.stderr)
                 if stderr:
                     proc_sub_stderr.append(stderr)
@@ -636,7 +639,7 @@ async def _run_argv(
             session_view(session, namespace.registry.policies))
 
     if name == SB.TRAP:
-        return await handle_trap(session)
+        return await handle_trap(args, session)
 
     if name == SB.LET:
         return await handle_let(
@@ -692,7 +695,18 @@ async def _run_argv(
         return await handle_return(args, session, call_stack)
 
     if name == SB.EXIT:
-        return await handle_exit(args, session)
+        try:
+            return await handle_exit(args, session)
+        except ExitSignal as sig:
+            # Explicit exit runs cleanup before function locals unwind.
+            stdout, io, _ = await finish_shell(
+                execute_fn, session,
+                (sig.stdout,
+                 IOResult(exit_code=sig.exit_code, stderr=sig.stderr),
+                 ExecutionNode(command="exit", exit_code=sig.exit_code)))
+            raise ExitSignal(io.exit_code,
+                             stderr=await materialize(io.stderr),
+                             stdout=await materialize(stdout))
 
     if name == SB.COMMAND:
         return await handle_command_builtin(execute_fn, args, session,
@@ -807,7 +821,8 @@ async def _run_argv(
         call_stack,
         job_table=job_table,
         namespace=namespace,
-        routing_decision=routing_decision)
+        routing_decision=routing_decision,
+        cancel=cancel)
 
     if io.exit_code == 0 and namespace.nodes:
         if name == "rm":

@@ -20,9 +20,10 @@ import {
   getProcessSubBody,
   getProcessSubDirection,
   ProcessSubDirection,
-} from '../../shell/helpers.ts'
+} from '../../shell/syntax/helpers.ts'
 import { NodeType as NT, Redirect, RedirectKind } from '../../shell/types.ts'
 import type { MountRegistry } from '../mount/registry.ts'
+import { executeChildShell } from '../executor/traps.ts'
 import type { Session } from '../session/session.ts'
 import { visibleEnv } from '../session/state.ts'
 import { classifyBarePath } from './classify/index.ts'
@@ -191,9 +192,7 @@ export async function expandRedirects(
         const inner = getProcessSubBody(procSubNode)
         let innerData: Uint8Array = new Uint8Array()
         if (inner !== '') {
-          const ioPs = await executeFn(inner, {
-            sessionId: session.sessionId,
-          })
+          const ioPs = await executeChildShell(executeFn, session, inner)
           innerData = await materialize(ioPs.stdout)
         }
         expanded.push(

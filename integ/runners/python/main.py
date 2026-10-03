@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import adapters  # noqa: E402
 import harness  # noqa: E402
+from lifecycle import run_lifecycle  # noqa: E402
 
 from mirage.types import HiddenPaths  # noqa: E402
 from mirage.types import ConsistencyPolicy, HiddenVars  # noqa: E402
@@ -108,7 +109,7 @@ async def run_target(target: dict, cases: list[dict], root: Path,
                 ws.create_session(session_id, mounts=spec)
         primary = target["mounts"][0]["path"]
         for case in selected:
-            if "consistency" in case:
+            if "consistency" in case or "lifecycle" in case:
                 continue
             bound = harness.bind_mount(case, primary)
             exit_code, out, err, elapsed, check_out = await harness.run_case(
@@ -118,6 +119,18 @@ async def run_target(target: dict, cases: list[dict], root: Path,
     finally:
         await cleanup()
     for case in selected:
+        if "lifecycle" in case:
+            ws, cleanup = await adapters.open_target({
+                **target, "runtimes": ["local", "vfs"],
+                "mode":
+                "exec"
+            })
+            try:
+                bound = harness.bind_mount(case, primary)
+                result = await asyncio.wait_for(run_lifecycle(ws, bound), 30)
+                _emit_or_record(emit, report, target["id"], bound, *result)
+            finally:
+                await cleanup()
         if "consistency" in case:
             await run_consistency_case(target, case, report, emit)
 
@@ -126,6 +139,10 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", action="append", dest="targets")
     parser.add_argument("--facet", dest="facet")
+    parser.add_argument("--suite",
+                        action="append",
+                        dest="suites",
+                        help="case suite to run (repeatable; default: all)")
     parser.add_argument("--emit", dest="emit")
     parser.add_argument("--strict", action="store_true")
     # A facet can be split across CI jobs (core's databases and vector
@@ -138,7 +155,7 @@ async def main() -> None:
     root = harness.integ_root()
     manifest = harness.load_targets(root)
     services = harness.load_services(root)
-    cases = harness.load_cases(root)
+    cases = harness.load_cases(root, args.suites)
 
     # Targets are grouped into facets so CI can run one backend family per job;
     # a target with no facet belongs to "core", which the shared battery runs.
@@ -159,6 +176,8 @@ async def main() -> None:
     env_skipped: list[str] = []
     for target_id in selected:
         target = manifest[target_id]
+        if not any(target_id in case["targets"] for case in cases):
+            continue
         if HOST not in target["hosts"]:
             print(f"skip [{target_id}]: not a {HOST} host", file=sys.stderr)
             continue
@@ -179,8 +198,8 @@ async def main() -> None:
     # never came up (or whose env var got renamed in the workflow)
     # reports green having tested nothing. Every facet has targets on
     # both hosts, so zero of them running is always a broken job.
-    if args.facet and ran == 0:
-        print(f"facet {args.facet!r} ran no targets", file=sys.stderr)
+    if (args.facet or args.suites) and ran == 0:
+        print("selection ran no targets", file=sys.stderr)
         sys.exit(2)
 
     # The facet guard above only fires when *every* target skipped, so a

@@ -118,13 +118,14 @@ export class JobConsole {
    * Resolves on a closed store too, so a console discarded while someone
    * was joining on it does not strand them.
    */
-  async waitFinished(): Promise<void> {
+  async waitFinished(signal?: AbortSignal): Promise<void> {
     let cursor = 0
     for (;;) {
+      signal?.throwIfAborted()
       const [chunks, next] = await this.backing.readFrom(cursor)
       cursor = next
       if (chunks.some((c) => c.channel === Channel.CONTROL)) return
-      await this.backing.wait(cursor)
+      await this.backing.wait(cursor, signal)
       if (this.backing.closed) return
     }
   }

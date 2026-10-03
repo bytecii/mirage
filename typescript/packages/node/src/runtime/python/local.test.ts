@@ -83,7 +83,7 @@ describe('LocalRuntime', () => {
     expect(result.exitCode).toBe(0)
   })
 
-  it('close() kills any child still running', async () => {
+  it('close() joins every child before resolving', async () => {
     const rt = new LocalRuntime()
     const pending = rt.run({
       code: 'import time; time.sleep(60)',
@@ -92,8 +92,12 @@ describe('LocalRuntime', () => {
       env: {},
       flags: {},
     })
-    await new Promise((r) => setTimeout(r, 100))
+    let settled = false
+    void pending.then(() => {
+      settled = true
+    })
     await rt.close()
+    expect(settled).toBe(true)
     const result = await pending
     expect(result.exitCode).not.toBe(0)
   })

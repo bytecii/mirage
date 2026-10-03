@@ -15,7 +15,7 @@
 import type { SessionView } from '../../ops/types.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import { NodeType as NT } from '../../shell/types.ts'
-import type { ByteSource, IOResult } from '../../io/types.ts'
+import { executeChildShell } from '../executor/traps.ts'
 import type { Session } from '../session/session.ts'
 import { sessionElements, visibleEnv } from '../session/state.ts'
 import { markEscapedGlobs, markGlobs, unmarkGlobs } from '../../utils/glob_walk.ts'
@@ -29,10 +29,8 @@ import { ARITH_DELIMITERS, ARITH_OPERATORS } from './constants.ts'
 import { expandBraces, expansionWrite, lookupVar } from './variable.ts'
 import type { ArithResult, TSNodeLike } from '../../shell/types.ts'
 
-export type ExecuteFn = (
-  command: string,
-  opts: { sessionId: string; stdin?: ByteSource | null },
-) => Promise<IOResult>
+import type { ExecuteFn } from '../executor/types.ts'
+export type { ExecuteFn } from '../executor/types.ts'
 
 export function unescapeUnquoted(text: string): string {
   if (!text.includes('\\')) return text
@@ -103,7 +101,7 @@ async function expandBacktickRegion(
       out += text
       continue
     }
-    const io = await executeFn(text, { sessionId: session.sessionId })
+    const io = await executeChildShell(executeFn, session, text)
     out += (await io.stdoutStr()).replace(/\n+$/, '')
     session.cmdsubSeq += 1
     session.cmdsubStatus = io.exitCode
@@ -357,7 +355,7 @@ export async function expandNodeMarked(
     // assignments, control flow).
     const inner = rawSub.slice(2, -1)
     if (inner.trim() === '') return prefix
-    const io = await executeFn(inner, { sessionId: session.sessionId })
+    const io = await executeChildShell(executeFn, session, inner)
     const text = (await io.stdoutStr()).replace(/\n+$/, '')
     // Record the substitution's status: an assignment-only statement
     // whose value ran substitutions reports the last one's status as

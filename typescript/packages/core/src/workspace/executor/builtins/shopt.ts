@@ -18,7 +18,7 @@ import {
   SET_OPTION_NAMES,
   SHOPT_DEFAULTS,
   SHOPT_UNSUPPORTED,
-} from '../../../shell/types.ts'
+} from '../../../shell/constants.ts'
 import type { Session } from '../../session/session.ts'
 import { lastOf, scanOptions } from './getopt.ts'
 import { ExecutionNode } from '../../types.ts'

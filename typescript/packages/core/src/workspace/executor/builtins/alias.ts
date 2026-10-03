@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { IOResult } from '../../../io/types.ts'
-import { SHOPT_DEFAULTS } from '../../../shell/types.ts'
+import { SHOPT_DEFAULTS } from '../../../shell/constants.ts'
 import type { Session } from '../../session/session.ts'
 import { ownRecord, sessionEntry, setSessionEntry } from '../../session/session.ts'
 import { singleQuote } from '../../../utils/quote.ts'

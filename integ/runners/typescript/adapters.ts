@@ -97,7 +97,10 @@ import { ChromaClient } from 'chromadb'
 import { ImapFlow } from 'imapflow'
 import { Double, MongoClient } from 'mongodb'
 import pg from 'pg'
-import { installFakeNavigator, makeMockRoot } from '../../../typescript/packages/browser/src/test-utils.ts'
+import {
+  installFakeNavigator,
+  makeMockRoot,
+} from '../../../typescript/packages/browser/src/test-utils.ts'
 import { startFakeDropbox, type FakeDropbox } from '../../server/dropbox.ts'
 import { integRoot, walkFiles } from './harness.ts'
 import type { ExecWorkspace, Mount, Target } from './harness.ts'
@@ -119,6 +122,8 @@ export interface OpenConsistency extends Open {
 
 export interface OpenOptions {
   consistency?: ConsistencyPolicy
+  runtimes?: string[]
+  mode?: 'exec'
 }
 
 type MountMap = ConstructorParameters<typeof Workspace>[0]
@@ -141,7 +146,8 @@ function openWorkspaces(build: () => MountMap, options?: OpenOptions): OpenedWor
   const opened: Workspace[] = []
   const make = (consistency?: ConsistencyPolicy): ExecWorkspace => {
     const ws = new Workspace(build(), {
-      mode: MountMode.WRITE,
+      mode: options?.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+      ...(options?.runtimes !== undefined ? { runtimes: options.runtimes } : {}),
       ...(consistency !== undefined ? { consistency } : {}),
     })
     opened.push(ws)
@@ -178,7 +184,10 @@ function runId(): string {
  * all, where every other one needs its mock service to hand over both the tree
  * and the credentials pointing at itself.
  */
-function installLocalClis(ws: { registerCli: (name: string, spec: unknown) => void }, target: Target): void {
+function installLocalClis(
+  ws: { registerCli: (name: string, spec: unknown) => void },
+  target: Target,
+): void {
   if (target.clis?.includes('git') === true) ws.registerCli('git', GIT)
 }
 
@@ -221,7 +230,8 @@ async function openRam(target: Target): Promise<Open> {
   }
   const consoleFactory = consoleFactoryFor(target)
   const ws = new Workspace(mounts, {
-    mode: MountMode.WRITE,
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
     ...(target.agentId !== undefined ? { agentId: target.agentId } : {}),
     ...(consoleFactory !== undefined ? { consoleFactory } : {}),
   })
@@ -238,7 +248,10 @@ async function openDisk(target: Target): Promise<Open> {
     const resource = new DiskResource({ root })
     mounts[m.path] = m.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   installLocalClis(ws, target)
   const cleanup = async (): Promise<void> => {
     await ws.close()
@@ -252,9 +265,15 @@ async function openRedis(target: Target): Promise<Open> {
   const mounts: Record<string, RedisResource> = {}
   for (const m of target.mounts) {
     const safe = m.path.replace(/\/+/g, '-').replace(/^-|-$/g, '') || 'root'
-    mounts[m.path] = new RedisResource({ url: REDIS_URL, keyPrefix: `mirage-integ-${id}-${safe}` })
+    mounts[m.path] = new RedisResource({
+      url: REDIS_URL,
+      keyPrefix: `mirage-integ-${id}-${safe}`,
+    })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
@@ -329,11 +348,18 @@ async function openDatabricksVolume(target: Target): Promise<Open> {
       timeout: 30,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
-function objectStorageResource(name: string, bucket: string, keyPrefix: string | undefined): S3Resource {
+function objectStorageResource(
+  name: string,
+  bucket: string,
+  keyPrefix: string | undefined,
+): S3Resource {
   if (S3_ENDPOINT === undefined) throw new Error('s3 target requires S3_ENDPOINT')
   const common = {
     bucket,
@@ -392,14 +418,21 @@ async function openS3(target: Target, options?: OpenOptions): Promise<Open> {
     }
     return mounts
   }
-  const opened = openWorkspaces(build, options)
+  const opened = openWorkspaces(build, {
+    ...options,
+    ...(target.mode !== undefined ? { mode: target.mode } : {}),
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   const cleanup = async (): Promise<void> => {
     await opened.closeAll()
     for (const bucket of buckets) {
       let token: string | undefined
       do {
         const listed = await client.send(
-          new ListObjectsV2Command({ Bucket: bucket, ContinuationToken: token }),
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            ContinuationToken: token,
+          }),
         )
         for (const obj of listed.Contents ?? []) {
           if (obj.Key) await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: obj.Key }))
@@ -435,7 +468,10 @@ async function openNextcloud(target: Target): Promise<Open> {
       password: NEXTCLOUD_PASSWORD,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
@@ -508,7 +544,10 @@ async function openEmail(target: Target): Promise<Open> {
       maxMessages: 200,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   if (target.clis?.includes('himalaya') === true) {
     // Every registerCli in this file installs the same snake_case block
     // the Python runner does, so the cli facet proves one YAML config
@@ -576,8 +615,11 @@ async function boxCreateFolder(endpoint: string, parentId: string, name: string)
     const list = await fetch(`${endpoint}/2.0/folders/${parentId}/items?limit=1000`, {
       headers: BOX_AUTH,
     })
-    const items = ((await list.json()) as { entries: { id: string; name: string; type: string }[] })
-      .entries
+    const items = (
+      (await list.json()) as {
+        entries: { id: string; name: string; type: string }[]
+      }
+    ).entries
     const hit = items.find((e) => e.type === 'folder' && e.name === name)
     if (hit) return hit.id
   }
@@ -645,7 +687,10 @@ async function openBox(target: Target): Promise<Open> {
       contentSearch: true,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
@@ -754,7 +799,10 @@ async function openNotion(target: Target): Promise<Open> {
     })
     mounts[mount.path] = mount.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   if (target.clis?.includes('ntn') === true) {
     ws.registerCli('ntn', NTN, {
       api_key: NOTION_TOKEN,
@@ -789,7 +837,10 @@ async function openLancedb(target: Target): Promise<Open> {
     })
     mounts[mount.path] = mount.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   const cleanup = async (): Promise<void> => {
     await ws.close()
     rmSync(uri, { recursive: true, force: true })
@@ -822,7 +873,10 @@ async function openQdrant(target: Target): Promise<Open> {
     })),
   })
   for (const field of ['label', 'kind']) {
-    await client.createPayloadIndex(collection, { field_name: field, field_schema: 'keyword' })
+    await client.createPayloadIndex(collection, {
+      field_name: field,
+      field_schema: 'keyword',
+    })
   }
   await new Promise((r) => setTimeout(r, 2000))
   const mounts: Record<string, QdrantResource | [QdrantResource, MountMode]> = {}
@@ -839,7 +893,10 @@ async function openQdrant(target: Target): Promise<Open> {
     })
     mounts[mount.path] = mount.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   const cleanup = async (): Promise<void> => {
     await ws.close()
     await new QdrantClient({ host, port }).deleteCollection(collection)
@@ -885,7 +942,10 @@ async function seedChroma(host: string, port: number, collectionName: string): P
     }
   }
   const client = new ChromaClient({ host, port })
-  const collection = await client.createCollection({ name: collectionName, embeddingFunction: null })
+  const collection = await client.createCollection({
+    name: collectionName,
+    embeddingFunction: null,
+  })
   await collection.add({ ids, documents, metadatas, embeddings })
 }
 
@@ -899,10 +959,15 @@ async function openChroma(target: Target): Promise<Open> {
     const resource = new ChromaResource({ host, port, collectionName })
     mounts[mount.path] = mount.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   const cleanup = async (): Promise<void> => {
     await ws.close()
-    await new ChromaClient({ host, port }).deleteCollection({ name: collectionName })
+    await new ChromaClient({ host, port }).deleteCollection({
+      name: collectionName,
+    })
   }
   return { ws: ws as unknown as ExecWorkspace, cleanup }
 }
@@ -910,10 +975,31 @@ async function openChroma(target: Target): Promise<Open> {
 const MONGODB_DB = 'mirage_integ'
 
 const MONGODB_BOOKS: ReadonlyArray<Record<string, unknown>> = [
-  { _id: 1, title: 'alpha', author: 'ada', year: 2020, tags: ['fiction', 'classic'], rating: 4.5 },
-  { _id: 2, title: 'beta', author: 'ben', year: 2021, tags: ['fiction'], rating: 3.2 },
+  {
+    _id: 1,
+    title: 'alpha',
+    author: 'ada',
+    year: 2020,
+    tags: ['fiction', 'classic'],
+    rating: 4.5,
+  },
+  {
+    _id: 2,
+    title: 'beta',
+    author: 'ben',
+    year: 2021,
+    tags: ['fiction'],
+    rating: 3.2,
+  },
   { _id: 3, title: 'gamma', author: 'cara', year: 2022, rating: 5.0 },
-  { _id: 4, title: 'delta', author: 'ada', year: 2023, tags: ['history'], rating: 4.0 },
+  {
+    _id: 4,
+    title: 'delta',
+    author: 'ada',
+    year: 2023,
+    tags: ['history'],
+    rating: 4.0,
+  },
   { _id: 5, title: 'epsilon', author: 'ben', year: 2024, rating: 2.5 },
 ]
 
@@ -931,9 +1017,12 @@ async function seedMongodb(uri: string): Promise<void> {
     await db.dropDatabase()
     // Python seeds floats (BSON double); insert Double so the inferred schema
     // and rendered documents match byte-for-byte across languages.
-    await db
-      .collection('books')
-      .insertMany(MONGODB_BOOKS.map((d) => ({ ...d, rating: new Double(d.rating as number) })))
+    await db.collection('books').insertMany(
+      MONGODB_BOOKS.map((d) => ({
+        ...d,
+        rating: new Double(d.rating as number),
+      })),
+    )
     await db.collection('authors').insertMany(MONGODB_AUTHORS.map((d) => ({ ...d })))
     await db.createCollection('recent_books', {
       viewOn: 'books',
@@ -955,7 +1044,10 @@ async function openMongodb(target: Target): Promise<Open> {
     resources.push(resource)
     mounts[mount.path] = mount.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   const cleanup = async (): Promise<void> => {
     await ws.close()
     for (const resource of resources) await resource.close()
@@ -1020,7 +1112,10 @@ async function openPostgres(target: Target): Promise<Open> {
     resources.push(resource)
     mounts[mount.path] = mount.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   const cleanup = async (): Promise<void> => {
     await ws.close()
     for (const resource of resources) await resource.close()
@@ -1039,7 +1134,10 @@ async function openMem0(target: Target): Promise<Open> {
       defaultPageSize: 2,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   const cleanup = async (): Promise<void> => {
     await ws.close()
     await server.close()
@@ -1115,7 +1213,11 @@ async function gwsFolder(base: string, name: string, parent: string): Promise<st
   const created = await gwsJson(`${base}/drive/v3/files`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, mimeType: GDRIVE_FOLDER_MIME, parents: [parent] }),
+    body: JSON.stringify({
+      name,
+      mimeType: GDRIVE_FOLDER_MIME,
+      parents: [parent],
+    }),
   })
   return created.id as string
 }
@@ -1289,7 +1391,12 @@ function gwsNativeResource(
 ): GDocsResource | GSheetsResource | GSlidesResource | GmailResource | GCalResource {
   // apiBase points the backend at the fake server through the same
   // config field a real embedder uses; nothing is monkey-patched.
-  const config = { clientId: 'integ', clientSecret: 'integ', refreshToken: 'integ', apiBase: base }
+  const config = {
+    clientId: 'integ',
+    clientSecret: 'integ',
+    refreshToken: 'integ',
+    apiBase: base,
+  }
   if (resource === 'gdocs') return new GDocsResource(config)
   if (resource === 'gsheets') return new GSheetsResource(config)
   if (resource === 'gmail') return new GmailResource(config)
@@ -1363,7 +1470,10 @@ async function openGws(target: Target): Promise<Open> {
   const mail = gwsManifest<MailEntry[]>(target.mail)
   if (mail !== undefined) await seedGwsMail(base, mail)
   if (calendar !== undefined) await seedGwsCalendar(base, calendar.events)
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   if (target.clis?.includes('gws') === true) {
     // A target may scope the gws install to one mount's folder, the
     // configuration where the CLI and the mount are the same folder.
@@ -1403,7 +1513,10 @@ async function openSlack(target: Target): Promise<Open> {
       baseUrl: `${base}/api`,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   if (target.clis?.includes('slack') === true) {
     ws.registerCli('slack', SLACK, {
       token: 'xoxb-integ',
@@ -1436,10 +1549,7 @@ async function openGitHub(target: Target): Promise<Open> {
     const reset = await fetch(`${base}/reset`, { method: 'POST' })
     if (!reset.ok) throw new Error(`github /reset failed: ${String(reset.status)}`)
   }
-  const mounts: Record<
-    string,
-    GitHubResource | RAMResource | [GitHubResource, MountMode]
-  > = {}
+  const mounts: Record<string, GitHubResource | RAMResource | [GitHubResource, MountMode]> = {}
   for (const m of target.mounts) {
     if (m.resource === 'ram') {
       mounts[m.path] = new RAMResource()
@@ -1454,7 +1564,10 @@ async function openGitHub(target: Target): Promise<Open> {
     })
     mounts[m.path] = m.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   if (target.clis?.includes('gh') === true) {
     ws.registerCli('gh', GH, {
       token: 'ghp-integ',
@@ -1477,7 +1590,10 @@ async function openDify(target: Target): Promise<Open> {
       datasetId: target.dataset ?? 'kb-7f3a',
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
@@ -1501,7 +1617,10 @@ async function openTrello(target: Target): Promise<Open> {
       baseUrl: endpoint,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
@@ -1523,7 +1642,10 @@ async function openDiscord(target: Target): Promise<Open> {
       baseUrl: `${endpoint}/api/v10`,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   if (target.clis?.includes('discord') === true) {
     ws.registerCli('discord', DISCORD, {
       token: 'integ-bot-token',
@@ -1553,9 +1675,15 @@ async function openLinear(target: Target): Promise<Open> {
       baseUrl: endpoint,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   if (target.clis?.includes('linear') === true) {
-    ws.registerCli('linear', LINEAR, { api_key: 'integ-key', base_url: endpoint })
+    ws.registerCli('linear', LINEAR, {
+      api_key: 'integ-key',
+      base_url: endpoint,
+    })
   }
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
@@ -1573,7 +1701,10 @@ async function openJaeger(target: Target): Promise<Open> {
     }
     mounts[m.path] = new JaegerResource({ host })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
@@ -1595,7 +1726,10 @@ async function openLangfuse(target: Target): Promise<Open> {
       host,
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
@@ -1607,7 +1741,12 @@ async function openLangfuse(target: Target): Promise<Open> {
 // hf_buckets validates the bucket id.
 const ARG_ERROR_RESOURCES: Record<string, () => Resource> = {
   databricks: () =>
-    new DatabricksVolumeResource({ catalog: 'c', schema: 's', volume: 'v', rootPath: '/' }),
+    new DatabricksVolumeResource({
+      catalog: 'c',
+      schema: 's',
+      volume: 'v',
+      rootPath: '/',
+    }),
   discord: () => new DiscordResource({ token: 'x' }),
   email: () =>
     new EmailResource({
@@ -1646,7 +1785,10 @@ async function openHttp(target: Target): Promise<Open> {
     const resource = new RAMResource()
     mounts[m.path] = m.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   const cleanup = async (): Promise<void> => {
     await ws.close()
     await server.close()
@@ -1661,14 +1803,14 @@ async function openArgError(target: Target): Promise<Open> {
     const resource = ARG_ERROR_RESOURCES[m.backend]()
     mounts[m.path] = m.mode === 'read' ? [resource, MountMode.READ] : resource
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const ws = new Workspace(mounts, {
+    mode: target.mode === 'exec' ? MountMode.EXEC : MountMode.WRITE,
+    ...(target.runtimes !== undefined ? { runtimes: target.runtimes } : {}),
+  })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
-export const ADAPTERS: Record<
-  string,
-  (target: Target, options?: OpenOptions) => Promise<Open>
-> = {
+export const ADAPTERS: Record<string, (target: Target, options?: OpenOptions) => Promise<Open>> = {
   ram: openRam,
   disk: openDisk,
   redis: openRedis,
@@ -1731,7 +1873,9 @@ export async function openConsistency(
   }
   const shadow = opened.shadow()
   const mutate = async (path: string, content: Uint8Array): Promise<void> => {
-    const result = await shadow.execute(`tee ${path} > /dev/null`, { stdin: content })
+    const result = await shadow.execute(`tee ${path} > /dev/null`, {
+      stdin: content,
+    })
     if (result.exitCode !== 0) {
       throw new Error(new TextDecoder().decode(result.stderr))
     }

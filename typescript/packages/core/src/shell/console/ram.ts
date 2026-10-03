@@ -82,12 +82,28 @@ export class RAMConsoleStore implements ConsoleStore {
     return Promise.resolve([window, this.baseSeq + start + window.length, truncated])
   }
 
-  wait(seq: number): Promise<void> {
+  wait(seq: number, signal?: AbortSignal): Promise<void> {
+    // AbortSignal permits arbitrary reasons; preserve the caller's value.
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+    if (signal?.aborted) return Promise.reject(signal.reason)
     // A closed store is checked here too, so a reader that re-arms after
     // close() released it resolves instead of parking forever.
     if (this.isClosed || this.nextSeq > seq) return Promise.resolve()
-    return new Promise<void>((resolve) => {
-      this.waiters.push({ seq, resolve })
+    return new Promise<void>((resolve, reject) => {
+      const waiter: Waiter = {
+        seq,
+        resolve: () => {
+          signal?.removeEventListener('abort', onAbort)
+          resolve()
+        },
+      }
+      const onAbort = (): void => {
+        this.waiters = this.waiters.filter((entry) => entry !== waiter)
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- AbortSignal.reason is caller-owned.
+        reject(signal?.reason)
+      }
+      this.waiters.push(waiter)
+      signal?.addEventListener('abort', onAbort, { once: true })
     })
   }
 

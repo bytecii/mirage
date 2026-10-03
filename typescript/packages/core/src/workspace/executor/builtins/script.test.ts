@@ -12,8 +12,19 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { describe, expect, it } from 'vitest'
+import { describe } from 'vitest'
+import { expect } from 'vitest'
+import { it } from 'vitest'
 import { parseBashArgs } from './script.ts'
+import { vi } from 'vitest'
+import { IOResult } from '../../../io/types.ts'
+import { enoent } from '../../../utils/errors.ts'
+import { Session } from '../../session/session.ts'
+import type { DispatchFn } from '../cross_mount.ts'
+import { handleEval } from './index.ts'
+import { handleSleep } from './index.ts'
+import { handleSource } from './index.ts'
+import { decode } from '../../fixtures/builtin_fixture.ts'
 
 describe('parseBashArgs', () => {
   it('ends option parsing at a script file operand', () => {
@@ -85,5 +96,111 @@ describe('parseBashArgs', () => {
 
   it('reports -c with no value', () => {
     expect(parseBashArgs(['-c']).needsValue).toBe('-c')
+  })
+})
+
+describe('handleSleep', () => {
+  it('rejects invalid seconds', async () => {
+    const [, io] = await handleSleep(['abc'])
+    expect(io.exitCode).toBe(1)
+    expect(decode(io.stderr as Uint8Array)).toBe("sleep: invalid time interval 'abc'\n")
+  })
+
+  it('rejects missing operand', async () => {
+    const [, io] = await handleSleep([])
+    expect(io.exitCode).toBe(1)
+    expect(decode(io.stderr as Uint8Array)).toBe('sleep: missing operand\n')
+  })
+
+  it.each(['-1', 'inf', 'Infinity', 'nan', 'NaN', '0x10', '1_0', '1e309', ''])(
+    'rejects %j as invalid time interval',
+    async (raw) => {
+      const [, io] = await handleSleep([raw])
+      expect(io.exitCode).toBe(1)
+      expect(decode(io.stderr as Uint8Array)).toBe(`sleep: invalid time interval '${raw}'\n`)
+    },
+  )
+
+  it.each(['0', '0.', '.01', '+0.01', '1e-3'])('accepts %j and exits 0', async (raw) => {
+    const [, io] = await handleSleep([raw])
+    expect(io.exitCode).toBe(0)
+    expect(io.stderr).toBeNull()
+  })
+
+  it('sleeps for 0 seconds', async () => {
+    const start = Date.now()
+    const [, io] = await handleSleep(['0'])
+    const elapsed = Date.now() - start
+    expect(io.exitCode).toBe(0)
+    expect(elapsed).toBeLessThan(50)
+  })
+})
+
+describe('handleEval', () => {
+  it('calls the provided executeFn with joined args', async () => {
+    const exec = vi.fn(() => Promise.resolve(new IOResult({ exitCode: 7 })))
+    const s = new Session({ sessionId: 'sess' })
+    const [, io] = await handleEval(exec, ['echo', 'hi'], s)
+    expect(io.exitCode).toBe(7)
+    expect(exec).toHaveBeenCalledWith('echo hi', { session: s, sessionId: 'sess' })
+  })
+})
+
+describe('handleSource', () => {
+  it('dispatches read on the path then runs script', async () => {
+    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const dispatch = vi.fn(() => {
+      const data = new TextEncoder().encode('export FOO=bar\n')
+      return Promise.resolve([data, new IOResult()] as [Uint8Array, IOResult])
+    }) as unknown as DispatchFn
+    let executed = ''
+    const executeFn = vi.fn((script: string, _opts: { sessionId: string }) => {
+      executed = script
+      return Promise.resolve(new IOResult())
+    })
+    const [, io] = await handleSource(dispatch, executeFn, '/script.sh', s)
+    expect(io.exitCode).toBe(0)
+    expect(executed).toBe('export FOO=bar\n')
+    expect(dispatch).toHaveBeenCalled()
+  })
+
+  it('returns exit 1 with stderr on read failure', async () => {
+    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const dispatch = vi.fn(() => Promise.reject(enoent('/missing.sh'))) as unknown as DispatchFn
+    const executeFn = vi.fn(() => Promise.resolve(new IOResult()))
+    const [, io] = await handleSource(dispatch, executeFn, '/missing.sh', s)
+    expect(io.exitCode).toBe(1)
+    expect(decode(io.stderr instanceof Uint8Array ? io.stderr : null)).toBe(
+      'source: /missing.sh: No such file or directory\n',
+    )
+    expect(executeFn).not.toHaveBeenCalled()
+  })
+
+  it('propagates a failure that is not a filesystem error', async () => {
+    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const dispatch = vi.fn(() =>
+      Promise.reject(new Error('token expired')),
+    ) as unknown as DispatchFn
+    const executeFn = vi.fn(() => Promise.resolve(new IOResult()))
+    await expect(handleSource(dispatch, executeFn, '/script.sh', s)).rejects.toThrow(
+      'token expired',
+    )
+    expect(executeFn).not.toHaveBeenCalled()
+  })
+
+  it('sets positional args for the script and restores them after', async () => {
+    const s = new Session({ sessionId: 'test', cwd: '/', positionalArgs: ['P1', 'P2'] })
+    const dispatch = vi.fn(() => {
+      const data = new TextEncoder().encode('echo hi\n')
+      return Promise.resolve([data, new IOResult()] as [Uint8Array, IOResult])
+    }) as unknown as DispatchFn
+    let seen: string[] = []
+    const executeFn = vi.fn((_script: string, _opts: { sessionId: string }) => {
+      seen = [...s.positionalArgs]
+      return Promise.resolve(new IOResult())
+    })
+    await handleSource(dispatch, executeFn, '/script.sh', s, ['AA', 'BB'])
+    expect(seen).toEqual(['AA', 'BB'])
+    expect(s.positionalArgs).toEqual(['P1', 'P2'])
   })
 })

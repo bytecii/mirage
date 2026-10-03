@@ -14,6 +14,7 @@
 
 import { writeFileSync } from 'node:fs'
 import { ConsistencyPolicy } from '@struktoai/mirage-node'
+import { runLifecycle } from './lifecycle.ts'
 import { ADAPTERS, openConsistency } from './adapters.ts'
 import type { Case, Target } from './harness.ts'
 import {
@@ -45,12 +46,14 @@ interface EmitRow {
 
 function parseArgs(): {
   targets: string[]
+  suites: string[]
   emit: string | undefined
   facet: string | undefined
   strict: boolean
   allowSkip: string
 } {
   const targets: string[] = []
+  const suites: string[] = []
   let emit: string | undefined
   let facet: string | undefined
   let strict = false
@@ -58,12 +61,13 @@ function parseArgs(): {
   const argv = process.argv.slice(2)
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--target' && i + 1 < argv.length) targets.push(argv[++i])
+    else if (argv[i] === '--suite' && i + 1 < argv.length) suites.push(argv[++i])
     else if (argv[i] === '--facet' && i + 1 < argv.length) facet = argv[++i]
     else if (argv[i] === '--emit' && i + 1 < argv.length) emit = argv[++i]
     else if (argv[i] === '--strict') strict = true
     else if (argv[i] === '--allow-skip' && i + 1 < argv.length) allowSkip = argv[++i]
   }
-  return { targets, emit, facet, strict, allowSkip }
+  return { targets, suites, emit, facet, strict, allowSkip }
 }
 
 async function runTarget(
@@ -117,22 +121,30 @@ async function runTarget(
             mounts: p.mounts ?? null,
             hiddenPaths:
               p.hidden_paths !== undefined
-                ? { paths: p.hidden_paths.paths ?? [], patterns: p.hidden_paths.patterns ?? [] }
+                ? {
+                    paths: p.hidden_paths.paths ?? [],
+                    patterns: p.hidden_paths.patterns ?? [],
+                  }
                 : null,
             hiddenVars:
               p.hidden_vars !== undefined
-                ? { names: p.hidden_vars.names ?? [], patterns: p.hidden_vars.patterns ?? [] }
+                ? {
+                    names: p.hidden_vars.names ?? [],
+                    patterns: p.hidden_vars.patterns ?? [],
+                  }
                 : null,
             env: p.env ?? null,
           },
         })
       } else {
-        ws.createSession(sessionId, { mounts: spec as Record<string, string> | string[] })
+        ws.createSession(sessionId, {
+          mounts: spec as Record<string, string> | string[],
+        })
       }
     }
     for (const c of cases) {
       if (!c.targets.includes(target.id)) continue
-      if (c.consistency !== undefined) continue
+      if (c.consistency !== undefined || c.lifecycle !== undefined) continue
       const bound = bindMount(c, target.mounts[0].path)
       const { exitCode, out, err, elapsed, checkOut } = await runCase(ws, bound)
       if (emit !== null) {
@@ -151,12 +163,39 @@ async function runTarget(
   } finally {
     await cleanup()
   }
+  for (const c of cases.filter((c) => c.targets.includes(target.id) && c.lifecycle !== undefined)) {
+    const opened = await ADAPTERS[target.mounts[0].resource]({
+      ...target,
+      runtimes: ['local', 'vfs'],
+      mode: 'exec',
+    })
+    try {
+      const bound = bindMount(c, target.mounts[0].path)
+      const result = await runLifecycle(opened.ws, bound)
+      if (emit !== null)
+        emit.push({
+          target: target.id,
+          id: bound.id,
+          exit: result.exitCode,
+          stdout: result.out,
+          stderr: result.err,
+          check: null,
+        })
+      else
+        report?.record(
+          target.id,
+          bound.id,
+          compare(bound, result.exitCode, result.out, result.err, result.elapsed, result.checkOut),
+        )
+    } finally {
+      await opened.cleanup()
+    }
+  }
   const scenarios = cases.filter(
     (c) => c.targets.includes(target.id) && c.consistency !== undefined && c.scenario !== undefined,
   )
   for (const c of scenarios) {
-    const policy =
-      c.consistency === 'always' ? ConsistencyPolicy.ALWAYS : ConsistencyPolicy.LAZY
+    const policy = c.consistency === 'always' ? ConsistencyPolicy.ALWAYS : ConsistencyPolicy.LAZY
     const opened = await openConsistency(target, policy)
     if (opened === null) {
       // Loud on purpose: an adapter that cannot build a shadow workspace used
@@ -173,7 +212,13 @@ async function runTarget(
       opened.ws.env = { ...opened.ws.env, ...(target.env ?? {}) }
       const { exitCode, out } = await runScenario(opened.ws, opened.mutate, c.scenario)
       if (emit !== null) {
-        emit.push({ target: target.id, id: c.id, exit: exitCode, stdout: out, stderr: '' })
+        emit.push({
+          target: target.id,
+          id: c.id,
+          exit: exitCode,
+          stdout: out,
+          stderr: '',
+        })
       } else if (report !== null) {
         report.record(target.id, c.id, compare(c, exitCode, out, '', 0))
       }
@@ -187,16 +232,13 @@ async function main(): Promise<void> {
   const root = integRoot()
   const manifest = loadTargets(root)
   const services = loadServices(root)
-  const cases = loadCases(root)
-
-  const { targets, emit: emitPath, facet, strict, allowSkip } = parseArgs()
+  const { targets, suites, emit: emitPath, facet, strict, allowSkip } = parseArgs()
+  const cases = loadCases(root, suites)
   // Targets are grouped into facets so CI can run one backend family per job; a
   // target with no facet belongs to "core", which the shared battery runs.
   let ids: string[]
   if (facet !== undefined) {
-    ids = [...manifest.entries()]
-      .filter(([, t]) => (t.facet ?? 'core') === facet)
-      .map(([id]) => id)
+    ids = [...manifest.entries()].filter(([, t]) => (t.facet ?? 'core') === facet).map(([id]) => id)
     if (ids.length === 0) {
       process.stderr.write(`no targets in facet '${facet}'\n`)
       process.exit(2)
@@ -216,6 +258,7 @@ async function main(): Promise<void> {
   for (const id of ids) {
     const target = manifest.get(id)
     if (!target) throw new Error(`unknown target: ${id}`)
+    if (!cases.some((c) => c.targets.includes(id))) continue
     if (!target.hosts.some((h) => TS_HOSTS.includes(h))) {
       process.stderr.write(`skip [${id}]: not a typescript host\n`)
       continue
@@ -240,8 +283,8 @@ async function main(): Promise<void> {
   // never came up (or whose env var got renamed in the workflow) reports
   // green having tested nothing. Every facet has targets on both hosts,
   // so zero of them running is always a broken job, never a valid run.
-  if (facet !== undefined && ran === 0) {
-    process.stderr.write(`facet '${facet}' ran no targets\n`)
+  if ((facet !== undefined || suites.length > 0) && ran === 0) {
+    process.stderr.write('selection ran no targets\n')
     process.exit(2)
   }
 

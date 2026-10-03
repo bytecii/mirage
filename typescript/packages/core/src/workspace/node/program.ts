@@ -17,13 +17,16 @@ import { type ByteSource, IOResult, materialize } from '../../io/types.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import { ExitSignal } from '../../shell/errors.ts'
 import type { JobTable } from '../../shell/job_table/index.ts'
-import { getText } from '../../shell/helpers.ts'
-import { ERREXIT_EXEMPT_TYPES, NodeType as NT } from '../../shell/types.ts'
+import { getText } from '../../shell/syntax/helpers.ts'
+import { NodeType as NT } from '../../shell/types.ts'
+import { ERREXIT_EXEMPT_TYPES } from '../../shell/constants.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { errorVirtualPath, gnuStrerror } from '../../utils/errors.ts'
 import { ReturnSignal } from '../executor/command.ts'
 import { BreakSignal, ContinueSignal } from '../executor/control.ts'
 import { divertStatement } from '../executor/builtins/exec_cmd.ts'
+import { finishShell } from '../executor/traps.ts'
+import type { ExecuteFn } from '../executor/types.ts'
 import { handleBackground } from '../executor/jobs.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import type { Session } from '../session/session.ts'
@@ -48,6 +51,7 @@ export async function executeProgram(
   // statement's output to its file; undefined (a nested loop that is not
   // the program root) leaves output undiverted.
   dispatch?: DispatchFn,
+  executeFn?: ExecuteFn,
 ): Promise<Result> {
   // Every program loop is one parse, which is the unit bash's alias rule
   // counts in: an alias defined on this parse and row is not expanded by
@@ -56,9 +60,22 @@ export async function executeProgram(
   session.parseSeq += 1
   const outerParse = session.parseCurrent
   session.parseCurrent = session.parseSeq
+  // Alias expansion reparses through this walker without calling executeLine.
+  session.evalDepth += 1
   try {
-    return await runProgram(recurse, node, session, stdin, callStack, jobTable, agentId, dispatch)
+    return await runProgram(
+      recurse,
+      node,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      dispatch,
+      executeFn,
+    )
   } finally {
+    session.evalDepth -= 1
     session.parseCurrent = outerParse
   }
 }
@@ -77,6 +94,7 @@ async function runProgram(
   jobTable: JobTable,
   agentId: string,
   dispatch?: DispatchFn,
+  executeFn?: ExecuteFn,
 ): Promise<Result> {
   const children = node.children
   const allStdout: ByteSource[] = []
@@ -85,6 +103,8 @@ async function runProgram(
   // Source lines and the highest one `set -v` has already echoed.
   const sourceLines = getText(node).split('\n')
   let echoedRow = -1
+  let exiting = false
+  let containedCode: number | undefined
 
   let i = 0
   while (i < children.length) {
@@ -156,6 +176,7 @@ async function runProgram(
         agentId,
         stdin,
         callStack,
+        executeFn,
       )
       stdout = bgStdout
       io = bgIo
@@ -177,6 +198,8 @@ async function runProgram(
         ;[s, ioResult, execNode] = await recurse(child, session, childStdin, callStack)
       } catch (err) {
         if (err instanceof ExitSignal) {
+          exiting = true
+          containedCode = err.containedCode
           // exit (or a fatal expansion error) ends the line: keep
           // what earlier statements produced, drop the rest.
           if (err.stdout !== null && err.stdout.byteLength > 0) allStdout.push(err.stdout)
@@ -270,13 +293,27 @@ async function runProgram(
       !session.errexitImmune
     ) {
       mergedIo.exitCode = io.exitCode
+      exiting = true
       break
     }
   }
 
-  if (allStdout.length === 1 && allStdout[0] !== undefined) {
-    return [allStdout[0], mergedIo, lastExec]
+  const combined =
+    allStdout.length === 1
+      ? (allStdout[0] ?? null)
+      : allStdout.length > 0
+        ? asyncChain(...allStdout)
+        : null
+  if (exiting) {
+    if (session.evalDepth > 1) {
+      throw new ExitSignal(
+        mergedIo.exitCode,
+        await materialize(mergedIo.stderr),
+        await materialize(combined),
+        containedCode,
+      )
+    }
+    return finishShell(executeFn, session, [combined, mergedIo, lastExec])
   }
-  const combined = allStdout.length > 0 ? asyncChain(...allStdout) : null
   return [combined, mergedIo, lastExec]
 }

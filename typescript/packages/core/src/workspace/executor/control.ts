@@ -20,17 +20,17 @@ import { IOResult } from '../../io/types.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
 import { type Policies } from '../../policy/index.ts'
 import { applyBarrier, BarrierPolicy } from '../../shell/barrier.ts'
-import { ArithError, ReadonlyError } from '../../shell/errors.ts'
-import { finishStatement } from './statement.ts'
+import { ExitSignal, ArithError, ReadonlyError } from '../../shell/errors.ts'
+import { finishStatement, prependExitOutput } from './statement.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
-import { ERREXIT_EXEMPT_TYPES } from '../../shell/types.ts'
+import { ERREXIT_EXEMPT_TYPES } from '../../shell/constants.ts'
 import type { PathSpec } from '../../types.ts'
 import { wordText } from '../../types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import type { Session } from '../session/session.ts'
 import { sessionView } from '../session/state.ts'
 import { ExecutionNode } from '../types.ts'
-import type { ExecuteNodeFn } from './jobs.ts'
+import type { ExecuteNodeFn } from './types.ts'
 import { fnmatch } from '../../utils/fnmatch.ts'
 
 function installStdinBuffer(
@@ -103,6 +103,8 @@ async function executeBody(
         break
       }
     } catch (sig) {
+      if (sig instanceof ExitSignal)
+        throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
       if (sig instanceof BreakSignal) {
         if (sig.stdout !== null) allStdout.push(sig.stdout)
         mergedIo = await mergedIo.merge(sig.io)
@@ -212,6 +214,8 @@ export async function handleFor(
         allStdout.push(stdout)
         mergedIo = await mergedIo.merge(io)
       } catch (sig) {
+        if (sig instanceof ExitSignal)
+          throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
         if (sig instanceof BreakSignal) {
           if (sig.stdout !== null) allStdout.push(sig.stdout)
           mergedIo = await mergedIo.merge(sig.io)
@@ -281,6 +285,8 @@ async function conditionLoop(
         allStdout.push(stdout)
         mergedIo = await mergedIo.merge(io)
       } catch (sig) {
+        if (sig instanceof ExitSignal)
+          throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
         if (sig instanceof BreakSignal) {
           hitLimit = false
           if (sig.stdout !== null) allStdout.push(sig.stdout)
@@ -366,6 +372,8 @@ export async function handleCfor(
           allStdout.push(stdout)
           mergedIo = await mergedIo.merge(io)
         } catch (sig) {
+          if (sig instanceof ExitSignal)
+            throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
           if (sig instanceof BreakSignal) {
             hitLimit = false
             if (sig.stdout !== null) allStdout.push(sig.stdout)
@@ -567,6 +575,8 @@ export async function handleSelect(
         allStdout.push(stdout)
         mergedIo = await mergedIo.merge(io)
       } catch (sig) {
+        if (sig instanceof ExitSignal)
+          throw await prependExitOutput(sig, chainNonNull(allStdout), mergedIo)
         if (sig instanceof BreakSignal) {
           if (sig.stdout !== null) allStdout.push(sig.stdout)
           mergedIo = await mergedIo.merge(sig.io)

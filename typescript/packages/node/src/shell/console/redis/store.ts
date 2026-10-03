@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { setTimeout as sleep } from 'node:timers/promises'
 import type { RedisClientType } from 'redis'
 import { Channel } from '@struktoai/mirage-core/shell/console/index'
 import type {
@@ -32,10 +33,6 @@ export interface RedisConsoleStoreOptions {
   keyPrefix?: string
   /** Expire the keys this long after the last append; absent keeps them. */
   ttlSeconds?: number
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
 /**
@@ -172,7 +169,8 @@ export class RedisConsoleStore implements ConsoleStore {
     return [[], Math.min(seq, total), false]
   }
 
-  async wait(seq: number): Promise<void> {
+  async wait(seq: number, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
     // Checked before touching the client: close() nulls the promise,
     // and a wait arriving later must not reconnect a discarded store.
     if (this.isClosed) return
@@ -190,7 +188,7 @@ export class RedisConsoleStore implements ConsoleStore {
         throw err
       }
       if (raw !== null && Number(raw) > seq) return
-      await sleep(POLL_MS)
+      await sleep(POLL_MS, undefined, { signal })
     }
   }
 

@@ -38,6 +38,8 @@ INHERITED_FIELDS: tuple[str, ...] = (
     "logical_cwd",
     "vars",
     "created_at",
+    "exit_trap",
+    "exit_trap_inherited",
     "functions",
     "readonly_functions",
     "last_exit_code",
@@ -68,6 +70,8 @@ INHERITED_FIELDS: tuple[str, ...] = (
 # stdin the caller happened to pass and the running function's locals.
 TRANSIENT_FIELDS: tuple[str, ...] = (
     "errexit_immune",
+    "eval_depth",
+    "running_exit_trap",
     "source_depth",
     "_stdin_buffer",
     "_stdin_source",
@@ -90,8 +94,12 @@ TRANSIENT_FIELDS: tuple[str, ...] = (
 CHILD_SHELL_FIELDS: tuple[str, ...] = (
     "cwd",
     "logical_cwd",
+    "eval_depth",
+    "running_exit_trap",
     "source_depth",
     "vars",
+    "exit_trap",
+    "exit_trap_inherited",
     "functions",
     "readonly_functions",
     "shell_options",
@@ -205,6 +213,10 @@ class Session:
     # two different frozen things in bash, and each refuses in its own
     # voice.
     readonly_functions: set[str] = field(default_factory=set)
+    exit_trap: str | None = None
+    exit_trap_inherited: bool = False
+    eval_depth: int = field(default=0, repr=False)
+    running_exit_trap: bool = field(default=False, repr=False)
     last_exit_code: int = 0
     shell_options: dict[str, bool] = field(default_factory=dict)
     # `shopt` options, kept apart from `set -o` ones because bash keeps

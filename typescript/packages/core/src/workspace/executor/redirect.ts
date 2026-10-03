@@ -26,7 +26,7 @@ import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import { createFile } from './create.ts'
-import type { ExecuteNodeFn } from './jobs.ts'
+import type { ExecuteNodeFn } from './types.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
 

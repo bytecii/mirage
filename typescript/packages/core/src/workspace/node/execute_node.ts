@@ -13,15 +13,12 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { deref, seedVar } from '../session/state.ts'
-import type { Runtime } from '../../runtime/base.ts'
-import type { PolicyDecision } from '../../runtime/policy/index.ts'
 import { asyncChain } from '../../io/stream.ts'
 import { type ByteSource, IOResult } from '../../io/types.ts'
-import type { Resource } from '../../resource/base.ts'
 import { makeAbortError } from '../abort.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import { applyBarrier, BarrierPolicy } from '../../shell/barrier.ts'
-import { assignmentStatus, finishStatement } from '../executor/statement.ts'
+import { prependExitOutput, assignmentStatus, finishStatement } from '../executor/statement.ts'
 import {
   getCaseItems,
   getCaseWord,
@@ -38,12 +35,13 @@ import {
   getText,
   getUnsetArgs,
   getWhileParts,
-} from '../../shell/helpers.ts'
+} from '../../shell/syntax/helpers.ts'
 import { JobTable } from '../../shell/job_table/index.ts'
-import { ERREXIT_EXEMPT_TYPES, NodeType as NT, Redirect, RedirectKind } from '../../shell/types.ts'
-import { NodeKind, nodeKind } from '../../shell/node_kind.ts'
+import { NodeType as NT } from '../../shell/types.ts'
+import { ERREXIT_EXEMPT_TYPES } from '../../shell/constants.ts'
+import { NodeKind, nodeKind } from '../../shell/syntax/node_kind.ts'
 import { expandRedirects } from '../expand/redirects.ts'
-import { type ExecuteFn, expandArith, expandNode } from '../expand/node.ts'
+import { expandArith, expandNode } from '../expand/node.ts'
 import { expandPattern } from '../expand/pattern.ts'
 import { evaluateArith } from '../../shell/arith.ts'
 import {
@@ -54,13 +52,11 @@ import {
   buildAssocLiteral,
   buildIndexedLiteral,
 } from '../../shell/array.ts'
-import { ArithError, ExitSignal, ReadonlyError } from '../../shell/errors.ts'
+import { ArithError, ExitSignal } from '../../shell/errors.ts'
 import { expandAndClassify } from '../expand/parts.ts'
 import { arrayIndex } from '../expand/variable.ts'
 import { assignElement } from '../session/elements.ts'
 import type { ArithResult, TSNodeLike } from '../../shell/types.ts'
-import { wordText } from '../../types.ts'
-import { compareCodePoints } from '../../utils/sort.ts'
 import {
   type CforEval,
   handleCase,
@@ -71,7 +67,6 @@ import {
   handleUntil,
   handleWhile,
 } from '../executor/control.ts'
-import type { DispatchFn } from '../../runtime/types.ts'
 import {
   handleExport,
   handleDeclareFunctions,
@@ -84,8 +79,6 @@ import {
 } from '../executor/builtins/index.ts'
 import { handleConnection, handlePipe, handleSubshell } from '../executor/pipes.ts'
 import { handleRedirect } from '../executor/redirect.ts'
-import type { Namespace } from '../mount/namespace/namespace.ts'
-import type { MountRegistry } from '../mount/registry.ts'
 import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import { globOptions, resolveGlobs } from '../expand/globs.ts'
@@ -94,43 +87,33 @@ import { executeProgram } from './program.ts'
 import { installExecRedirects } from '../executor/builtins/exec_cmd.ts'
 import { executeCommand } from './command_dispatch.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
-import type { SessionView } from '../../ops/types.ts'
 import {
   elementIndex,
   ensureVarVisible,
   sessionElements,
   sessionView,
-  setAttr,
   visibleEnv,
 } from '../session/state.ts'
-import { type ShellValue, VarAttr } from '../../shell/variable.ts'
+import { VarAttr } from '../../shell/variable.ts'
 import { traceAssignment } from '../../shell/xtrace.ts'
-import { Channel, type JobConsole } from '../../shell/console/index.ts'
-import { type ExecuteNodeOpts, pump } from '../executor/jobs.ts'
-
-const STREAMING_KINDS: ReadonlySet<NodeKind> = new Set([
-  NodeKind.PROGRAM,
-  NodeKind.COMPOUND,
-  NodeKind.LIST,
-  NodeKind.SUBSHELL,
-  NodeKind.IF,
-  NodeKind.FOR,
-  NodeKind.CFOR,
-  NodeKind.SELECT,
-  NodeKind.WHILE,
-  NodeKind.UNTIL,
-  NodeKind.CASE,
-  NodeKind.NEGATED,
-])
-
-type Result = [ByteSource | null, IOResult, ExecutionNode]
-type Recurse = (
-  node: TSNodeLike,
-  session: Session,
-  stdin: ByteSource | null,
-  callStack: CallStack | null,
-  opts?: ExecuteNodeOpts,
-) => Promise<Result>
+import { Channel } from '../../shell/console/index.ts'
+import { pump } from '../executor/jobs.ts'
+import type {
+  ExecuteNodeOpts,
+  ExecutionResult as Result,
+  ExecuteNodeDeps,
+} from '../executor/types.ts'
+import { STREAMING_KINDS } from './constants.ts'
+import { assignVar, expandArrayItems, subscriptKeyText } from './assignment.ts'
+import { evalCforExpr } from './arithmetic.ts'
+import { recurseReassociated, recursePipeStderr } from './pipeline.ts'
+import {
+  attrsFor,
+  mergeConversionErrors,
+  declareOptionRefusal,
+  plusRefusals,
+  stampAttrs,
+} from './declaration.ts'
 
 /**
  * Layer per-call overrides onto the walker's deps.
@@ -144,496 +127,6 @@ function withOpts(base: ExecuteNodeDeps, opts?: ExecuteNodeOpts): ExecuteNodeDep
   if (opts.sink !== undefined) next.sink = opts.sink
   if (opts.signal !== undefined) next.signal = opts.signal
   return next
-}
-
-/**
- * One assignment through the session door; denial is fatal.
- *
- * Every assignment spelling (scalar, array literal, subscript, append)
- * computes its resulting value and stores through `view.set`, so the
- * gate and the storage invariant live in the door, not here. Denial
- * mirrors the readonly case: a fatal variable-assignment error that
- * abandons the rest of the line.
- */
-async function assignVar(view: SessionView, key: string, value: ShellValue): Promise<void> {
-  try {
-    await view.set(key, value)
-  } catch (err) {
-    if (err instanceof PolicyDenied) {
-      const denied = new TextEncoder().encode(`${err.message}\n`)
-      throw new ExitSignal(1, denied, null, 1)
-    }
-    if (err instanceof ArithError) {
-      // The `-i` coercion refused the text. GNU aborts the line the way
-      // a bad subscript does, in the evaluator's voice with the text led.
-      throw new ExitSignal(1, new TextEncoder().encode(`bash: ${err.message}\n`), null, 1)
-    }
-    throw err
-  }
-}
-
-/**
- * Evaluate one C-style for expression slot: the slot's integer value,
- * or the default for an empty slot (1 for the condition so `for
- * ((;;))` loops, 0 for init/update). Re-raises ArithError with the
- * expression text prepended so the loop can print bash's
- * `((: expr: reason` diagnostic, and throws ReadonlyError when the
- * expression assigns to a readonly variable.
- */
-async function evalCforExpr(
-  expr: TSNodeLike | null,
-  dflt: number,
-  session: Session,
-  executeFn: ExecuteFn,
-  callStack: CallStack | null,
-  view?: SessionView,
-): Promise<number> {
-  if (expr === null) return dflt
-  const text = await expandArith(expr, session, executeFn, callStack, view)
-  let result: ArithResult
-  try {
-    // Reads resolve against the visible env so a hidden name counts as
-    // unset; a hidden write refuses through the session door
-    // (ensureVarVisible), caught by the loop beside ReadonlyError.
-    result = evaluateArith(text, visibleEnv(session), 0, sessionElements(session))
-  } catch (err) {
-    if (!(err instanceof ArithError)) throw err
-    throw new ArithError(`${text}: ${err.message}`)
-  }
-  for (const write of result.writes) {
-    ensureVarVisible(session, write.name)
-    if (session.readonlyVars.has(write.name)) throw new ReadonlyError(write.name)
-  }
-  // Through the door, so a preSession rule governs an arithmetic assignment
-  // exactly as it governs `X=1`; in evaluation order, so a bare name and
-  // its element 0 land as the expression wrote them.
-  for (const write of result.writes) {
-    await assignElement(session, view ?? null, write.name, write.key, write.value)
-  }
-  return Number(result.value)
-}
-
-// Array-literal elements behave like any other shell word list: command
-// substitutions word-split and globs resolve to matches
-// (`a=($(cmd) /data/*.txt)`), with zero-match globs kept literal.
-async function expandArrayItems(
-  arrayNode: TSNodeLike,
-  session: Session,
-  executeFn: ExecuteFn,
-  registry: MountRegistry,
-  namespace: Namespace,
-  callStack: CallStack | null,
-): Promise<string[]> {
-  const classified = await expandAndClassify(
-    arrayNode.namedChildren,
-    session,
-    executeFn,
-    registry,
-    session.cwd,
-    callStack,
-    sessionView(session, registry.policies),
-  )
-  const resolved = await resolveGlobs(
-    classified,
-    registry,
-    session.shellOptions.noglob === true,
-    namespace,
-    globOptions(session),
-  )
-  return resolved.map((w) => wordText(w))
-}
-
-async function recurseReassociated(
-  recurse: Recurse,
-  dispatch: DispatchFn,
-  executeFn: ExecuteFn,
-  registry: MountRegistry,
-  redirects: readonly Redirect[],
-  right: TSNodeLike,
-  node: TSNodeLike,
-  session: Session,
-  stdin: ByteSource | null,
-  callStack: CallStack | null,
-): Promise<Result> {
-  if (node !== right) return recurse(node, session, stdin, callStack)
-  const [expanded, pipeNode] = await expandRedirects(
-    redirects,
-    session,
-    executeFn,
-    registry,
-    callStack,
-    sessionView(session, registry.policies),
-  )
-  let [stdout, io, execNode] = await handleRedirect(
-    recurse,
-    dispatch,
-    right,
-    expanded,
-    session,
-    stdin,
-    callStack,
-  )
-  if (pipeNode !== null && stdout !== null) {
-    const [stdout2, io2, execNode2] = await recurse(pipeNode, session, stdout, callStack)
-    stdout = stdout2
-    io = await io.merge(io2)
-    execNode = execNode2
-  }
-  return [stdout, io, execNode]
-}
-
-async function recursePipeStderr(
-  recurse: Recurse,
-  dispatch: DispatchFn,
-  executeFn: ExecuteFn,
-  registry: MountRegistry,
-  targets: readonly TSNodeLike[],
-  node: TSNodeLike,
-  session: Session,
-  stdin: ByteSource | null,
-  callStack: CallStack | null,
-): Promise<Result> {
-  if (!targets.includes(node) || nodeKind(node) !== NodeKind.REDIRECT) {
-    return recurse(node, session, stdin, callStack)
-  }
-  const [command, redirects] = getRedirects(node)
-  redirects.push(new Redirect({ fd: 2, target: 1, kind: RedirectKind.STDERR_TO_STDOUT }))
-  const [expanded, pipeNode] = await expandRedirects(
-    redirects,
-    session,
-    executeFn,
-    registry,
-    callStack,
-    sessionView(session, registry.policies),
-  )
-  let [stdout, io, execNode] = await handleRedirect(
-    recurse,
-    dispatch,
-    command,
-    expanded,
-    session,
-    stdin,
-    callStack,
-  )
-  if (pipeNode !== null && stdout !== null) {
-    const [stdout2, io2, execNode2] = await recurse(pipeNode, session, stdout, callStack)
-    stdout = stdout2
-    io = await io.merge(io2)
-    execNode = execNode2
-  }
-  return [stdout, io, execNode]
-}
-
-export interface ExecuteNodeDeps {
-  dispatch: DispatchFn
-  registry: MountRegistry
-  namespace: Namespace
-  jobTable: JobTable
-  executeFn: ExecuteFn
-  agentId: string
-  workspaceId: string
-  registerCloser: (fn: () => Promise<void>) => void
-  ensureOpen?: (resource: Resource) => Promise<void>
-  runtimeBindings?: Record<string, Runtime>
-  routingDecision?: PolicyDecision
-  signal?: AbortSignal
-  /**
-   * Parse one line into a tree. Only alias expansion needs it: an alias
-   * rewrites the head word textually and the result is read as a fresh
-   * line, so a value holding a pipe is a pipe. Absent (a unit test
-   * driving the walker directly) means an alias definition is stored and
-   * printed but never expanded.
-   */
-  reparse?: (line: string) => TSNodeLike
-  /**
-   * Console this node writes its output to as it is produced.
-   * When set, the node emits and returns no stdout; when unset
-   * it returns stdout as a value, which is what capture sites
-   * (command substitution, pipe stages, redirects) rely on.
-   */
-  sink?: JobConsole
-}
-
-/**
- * Mark every name a `-x` declaration stored as exported.
- *
- * `declare -x NAME` marks an existing name without touching its value and
- * `declare -x NAME=v` assigns then marks, so the stamp lands after the
- * assignment either way. Staged array literals are stamped too, since an
- * array is as exportable as a scalar: GNU answers `declare -x A=(a b)`
- * with `declare -ax A=([0]="a" [1]="b")`, and reading only `assignments`
- * left every `declare -x NAME=(...)` unmarked.
- *
- * Shared by the readonly and the plain declaration branch because
- * `declare -rx X=1` goes down the readonly one and still owes the export
- * attribute.
- *
- * Only the names the handler reports storing are marked, and marking is
- * not gated on the aggregate status: a declaration keeps its valid
- * operands when a sibling refuses, so `declare -x GOOD=1 1BAD=x` exits 1
- * and still answers `declare -x GOOD="1"`.
- *
- * A name that carried a value went through `view.set`, so its mark rides
- * on that decision; a bare name did not, and on an *existing* name the
- * handler writes nothing at all, so the mark is the only session write
- * there is and has to clear `pre_session` itself. Stamping it through
- * `setAttr` let `declare -x AWS_TOKEN` export a host-seeded credential
- * the deployment had refused.
- */
-const SUBSCRIPT_LITERAL_TYPES: ReadonlySet<string> = new Set([NT.WORD, NT.NUMBER, NT.ERROR])
-
-/**
- * The expanded subscript text of one `name[...]=` assignment.
- *
- * A purely literal subscript keeps its raw spelling, spaces included
- * (bash stores `m[ k ]` under the key `" k "`); anything carrying an
- * expansion or quoting expands node by node so `m[$k]` and `m["a b"]`
- * resolve with quote removal. The associative path uses the result as
- * the key verbatim; the indexed path evaluates it as arithmetic.
- */
-async function subscriptKeyText(
-  subscriptNode: TSNodeLike,
-  name: string,
-  session: Session,
-  executeFn: ExecuteFn,
-  callStack: CallStack | null,
-  view?: SessionView,
-): Promise<string> {
-  const inner = subscriptNode.namedChildren.filter((sc) => sc.type !== NT.VARIABLE_NAME)
-  const raw = subscriptNode.text.slice(name.length + 1, -1)
-  if (inner.length === 0 || inner.every((sc) => SUBSCRIPT_LITERAL_TYPES.has(sc.type))) {
-    return raw
-  }
-  const parts: string[] = []
-  for (const sc of inner) {
-    parts.push(await expandNode(sc, session, executeFn, callStack, view))
-  }
-  return parts.join('')
-}
-
-/**
- * Fold kind-conversion refusals into a declaration's result.
- *
- * GNU reports `cannot convert indexed to associative array` per refused
- * name on stderr and fails the builtin with 1 while the other operands
- * still declare, so the refusals ride the handler's own result rather
- * than replacing it.
- */
-function mergeConversionErrors(result: Result, errors: readonly string[]): Result {
-  if (errors.length === 0) return result
-  const [stream, io, node] = result
-  const extra = new TextEncoder().encode(errors.join('\n') + '\n')
-  const prior = io.stderr instanceof Uint8Array ? io.stderr : new Uint8Array(0)
-  const merged = new Uint8Array(prior.length + extra.length)
-  merged.set(prior, 0)
-  merged.set(extra, prior.length)
-  const newIo = new IOResult({
-    exitCode: 1,
-    stderr: merged,
-    reads: io.reads,
-    writes: io.writes,
-    cache: io.cache,
-  })
-  return [stream, newIo, new ExecutionNode({ command: node.command, exitCode: 1, stderr: merged })]
-}
-
-// Every letter GNU's `declare` accepts, so a typo refuses with the usage
-// line instead of being silently dropped. `-a`/`-A` are kinds, not
-// attributes, and are handled by the array branch; `-p`/`-f`/`-F`/`-g`
-// /`-I` are modes the handlers read. `-n` is accepted and stored, but
-// aliasing (reads and writes through the reference) is not wired: it is
-// a separate seam through every expansion site, so a name carrying it
-// declares and prints, and nothing more, rather than a partial alias
-// that works in some spellings and not others.
-// `-n` stores the reference and every reader and writer resolves through
-// it (`deref` in `session/state`).
-const DECLARE_LETTERS: ReadonlySet<string> = new Set('aAfFgiIlnprtux')
-const DECLARE_USAGE =
-  'declare: usage: declare [-aAfFgiIlnrtux] [name[=value] ...] or declare -p [-aAfFilnrtux] [name ...]'
-// The stored attributes a `-letter` / `+letter` toggles.
-const ATTR_LETTERS: ReadonlyMap<string, VarAttr> = new Map([
-  ['i', VarAttr.Integer],
-  ['l', VarAttr.Lower],
-  ['u', VarAttr.Upper],
-  ['n', VarAttr.Nameref],
-  ['t', VarAttr.Trace],
-  ['x', VarAttr.Export],
-  ['r', VarAttr.Readonly],
-])
-
-/** The attributes the given letters name, in the order given, skipping
- * letters that name none (kinds and modes are not attributes). */
-function attrsFor(letters: string, has: (c: string) => boolean): VarAttr[] {
-  const out: VarAttr[] = []
-  for (const c of letters) {
-    const attr = ATTR_LETTERS.get(c)
-    if (attr !== undefined && has(c)) out.push(attr)
-  }
-  return out
-}
-
-/**
- * The refusal a `declare` family option cluster earns, if any.
- *
- * An unknown letter is GNU's `invalid option` plus the usage line, exit
- * 2, and it wins over every other check because bash refuses the
- * cluster before it looks at a single operand.
- */
-function declareOptionRefusal(
-  cmd: string,
-  flagChars: ReadonlySet<string>,
-  plusChars: ReadonlySet<string>,
-): Result | null {
-  const bad = [...flagChars, ...plusChars]
-    .sort(compareCodePoints)
-    .find((c) => !DECLARE_LETTERS.has(c))
-  if (bad === undefined) return null
-  const sign = flagChars.has(bad) ? '-' : '+'
-  const err = new TextEncoder().encode(
-    `bash: ${cmd}: ${sign}${bad}: invalid option\n${DECLARE_USAGE}\n`,
-  )
-  return [
-    null,
-    new IOResult({ exitCode: 2, stderr: err }),
-    new ExecutionNode({ command: cmd, exitCode: 2, stderr: err }),
-  ]
-}
-
-/**
- * The per-name refusals a `+letter` earns after the operands are known.
- *
- * Two letters cannot be taken off. `+r` on a readonly name is
- * `declare: R: readonly variable`, exit 1, and the name stays frozen.
- * `+a` / `+A` on an array is `cannot destroy array variables in this
- * way`, exit 1, since the kind is what the value is, not a mark. Both
- * are pinned on 5.2.37 and neither stops the other operands from
- * declaring; the first refusal is what the builtin reports.
- */
-function plusRefusals(
-  cmd: string,
-  session: Session,
-  view: SessionView,
-  plusChars: ReadonlySet<string>,
-  assignments: readonly string[],
-  staged: readonly { name: string }[] | null,
-): Result | null {
-  if (!plusChars.has('r') && !plusChars.has('a') && !plusChars.has('A')) return null
-  const names = assignments.map((a) => a.split('=')[0] ?? a)
-  for (const { name } of staged ?? []) names.push(name)
-  for (const name of names) {
-    if (plusChars.has('r') && view.isReadonly(name)) {
-      const err = new TextEncoder().encode(`bash: ${cmd}: ${name}: readonly variable\n`)
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr: err }),
-        new ExecutionNode({ command: cmd, exitCode: 1, stderr: err }),
-      ]
-    }
-    if (
-      (plusChars.has('a') && Object.hasOwn(session.arrays, name)) ||
-      (plusChars.has('A') && Object.hasOwn(session.assocs, name))
-    ) {
-      const err = new TextEncoder().encode(
-        `bash: ${cmd}: ${name}: cannot destroy array variables in this way\n`,
-      )
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr: err }),
-        new ExecutionNode({ command: cmd, exitCode: 1, stderr: err }),
-      ]
-    }
-  }
-  return null
-}
-
-/**
- * Apply every `-attr` / `+attr` letter to the names a declaration
- * stored, on top of the export stamp.
- *
- * The letters that shape a value (`-i -l -u`) are stored as attributes
- * and applied by the door on every *later* write, which is GNU's rule:
- * `v=MiXeD; declare -l v` keeps `MiXeD`, and the next `v=ABC` stores
- * `abc`. So this stamps and never rewrites. `-l` and `-u` are exclusive:
- * setting one clears the other, and a cluster naming both (`-lu`, `-ul`)
- * sets neither, both pinned on 5.2.37. A `+` letter clears; `+r` is
- * refused earlier on a readonly name and a no-op otherwise, so it is not
- * an off toggle. Through the gated mark door for every name, covered or
- * not: the handler already cleared the gate for these names, so this is
- * one redundant policy call per attribute, and it keeps this stamp out
- * of the ungated-write allowlist that `setAttr` sites must justify.
- */
-async function stampAttrs(
-  session: Session,
-  view: SessionView,
-  flagChars: ReadonlySet<string>,
-  plusChars: ReadonlySet<string>,
-  assignments: readonly string[],
-  staged: readonly { name: string }[] | null,
-  stored: readonly string[],
-): Promise<Result | null> {
-  const refused = await stampExport(session, view, flagChars, assignments, staged, stored)
-  if (refused !== null) return refused
-  let onAttrs = attrsFor('ilunt', (c) => flagChars.has(c) && !plusChars.has(c))
-  if (flagChars.has('l') && flagChars.has('u')) {
-    onAttrs = onAttrs.filter((a) => a !== VarAttr.Lower && a !== VarAttr.Upper)
-  }
-  const offAttrs = attrsFor('iluntx', (c) => plusChars.has(c))
-  if (onAttrs.length === 0 && offAttrs.length === 0) return null
-  try {
-    for (const name of stored) {
-      for (const attr of onAttrs) {
-        await view.mark(name, attr, true)
-        // `-l` displaces `-u` and vice versa; the record keeps one.
-        if (attr === VarAttr.Lower) await view.mark(name, VarAttr.Upper, false)
-        else if (attr === VarAttr.Upper) await view.mark(name, VarAttr.Lower, false)
-      }
-      for (const attr of offAttrs) await view.mark(name, attr, false)
-    }
-  } catch (err) {
-    if (!(err instanceof PolicyDenied)) throw err
-    const denied = new TextEncoder().encode(`${err.message}\n`)
-    return [
-      null,
-      new IOResult({ exitCode: 1, stderr: denied }),
-      new ExecutionNode({ command: 'declare', exitCode: 1, stderr: denied }),
-    ]
-  }
-  return null
-}
-
-async function stampExport(
-  session: Session,
-  view: SessionView,
-  flagChars: ReadonlySet<string>,
-  assignments: readonly string[],
-  staged: readonly { name: string }[] | null,
-  stored: readonly string[],
-): Promise<Result | null> {
-  if (!flagChars.has('x')) return null
-  const covered = new Set<string>()
-  for (const a of assignments) {
-    const eq = a.indexOf('=')
-    if (eq >= 0) covered.add(a.slice(0, eq))
-  }
-  for (const { name } of staged ?? []) covered.add(name)
-  for (const name of stored) {
-    if (covered.has(name)) {
-      setAttr(session, name, VarAttr.Export)
-      continue
-    }
-    try {
-      await view.mark(name, VarAttr.Export, true)
-    } catch (err) {
-      if (!(err instanceof PolicyDenied)) throw err
-      const encoded = new TextEncoder().encode(`${err.message}\n`)
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr: encoded }),
-        new ExecutionNode({ command: 'declare', exitCode: 1, stderr: encoded }),
-      ]
-    }
-  }
-  return null
 }
 
 /**
@@ -717,7 +210,17 @@ export async function executeNode(
   }
 
   if (kind === NodeKind.PROGRAM) {
-    return executeProgram(stream, node, session, stdin, callStack, jobTable, agentId, dispatch)
+    return executeProgram(
+      stream,
+      node,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      dispatch,
+      executeFn,
+    )
   }
 
   if (kind === NodeKind.COMMAND) {
@@ -762,6 +265,7 @@ export async function executeNode(
       session,
       stdin,
       callStack,
+      executeFn,
     )
     if (!negated) return [stdout, io, execNode]
     const flipped = new IOResult({
@@ -815,7 +319,7 @@ export async function executeNode(
         redirects,
         right,
       )
-      return handlePipe(wrapped, commands, stderrFlags, session, stdin, callStack)
+      return handlePipe(wrapped, commands, stderrFlags, session, stdin, callStack, executeFn)
     }
     const [expandedRedirects, pipeNode] = await expandRedirects(
       redirects,
@@ -878,6 +382,7 @@ export async function executeNode(
       subTable,
       agentId,
       dispatch,
+      executeFn,
     )
   }
 
@@ -960,7 +465,15 @@ export async function executeNode(
     let lastExec = new ExecutionNode({ command: '{}', exitCode: 0 })
     for (const child of node.namedChildren) {
       if (child.type === NT.COMMENT) continue
-      const [rawStdout, io, execNode] = await stream(child, session, stdin, callStack)
+      let result: Result
+      try {
+        result = await stream(child, session, stdin, callStack)
+      } catch (err) {
+        if (err instanceof ExitSignal)
+          throw await prependExitOutput(err, asyncChain(...allStdout), mergedIo)
+        throw err
+      }
+      const [rawStdout, io, execNode] = result
       lastExec = execNode
       const stdout = await finishStatement(rawStdout, io, session)
       if (stdout !== null) allStdout.push(stdout)
@@ -1615,3 +1128,5 @@ export async function executeNode(
     new ExecutionNode({ command: node.text, exitCode: 2, stderr: unsupportedErr }),
   ]
 }
+
+export type { ExecuteNodeDeps } from '../executor/types.ts'

@@ -30,7 +30,7 @@ from mirage.runtime.python.local import LocalRuntime
 from mirage.runtime.python.monty import MontyRuntime
 from mirage.runtime.table import VFSRuntime
 from mirage.runtime.types import RunArgs, RunResult
-from mirage.shell.parse import parse
+from mirage.shell.syntax.parse import parse
 
 
 class AlphaRuntime(Runtime):

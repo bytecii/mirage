@@ -16,8 +16,8 @@ import asyncio
 
 import pytest
 
-from mirage.shell.helpers import get_case_items
-from mirage.shell.parse import parse
+from mirage.shell.syntax.helpers import get_case_items
+from mirage.shell.syntax.parse import parse
 from mirage.utils.fnmatch import fnmatch
 from mirage.utils.glob_walk import escape_glob
 from mirage.workspace.expand.pattern import _unquoted_pattern, expand_pattern

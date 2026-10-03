@@ -12,12 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { ByteSource, IOResult } from '../../../io/types.ts'
-import type { ExecutionNode } from '../../types.ts'
+import type { ExecutionResult } from '../types.ts'
 import type { FlagValue } from '../../../commands/spec/types.ts'
 import type { PathSpec } from '../../../types.ts'
 
-export type Result = [ByteSource | null, IOResult, ExecutionNode]
+export type Result = ExecutionResult
 export type Flags = Record<string, FlagValue>
 
 /**

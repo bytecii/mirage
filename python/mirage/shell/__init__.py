@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.shell.parse import parse
+from mirage.shell.syntax.parse import parse
 from mirage.shell.types import NodeType, RedirectKind, ShellBuiltin
 
 __all__ = [

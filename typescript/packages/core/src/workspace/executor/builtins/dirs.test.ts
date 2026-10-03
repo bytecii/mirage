@@ -13,12 +13,18 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { varsFromEnv } from '../../../workspace/session/session.ts'
-import { describe, expect, it } from 'vitest'
+import { describe } from 'vitest'
+import { expect } from 'vitest'
+import { it } from 'vitest'
 import { PathSpec } from '../../../types.ts'
 import { FileType } from '../../../types.ts'
 import { Session } from '../../session/session.ts'
 import type { DispatchFn } from '../cross_mount.ts'
 import { handleCd } from './dirs.ts'
+import { vi } from 'vitest'
+import { IOResult } from '../../../io/types.ts'
+import { FileStat } from '../../../types.ts'
+import { decode } from '../../fixtures/builtin_fixture.ts'
 
 function dispatcher(dirs: string[] = [], files: string[] = []) {
   const seen: string[] = []
@@ -41,10 +47,6 @@ const noMountRoot = () => false
 
 function session(cwd = '/', env: Record<string, string> = {}): Session {
   return new Session({ sessionId: 'test', cwd, vars: varsFromEnv(env) })
-}
-
-function decode(b: Uint8Array | null): string {
-  return b === null ? '' : new TextDecoder().decode(b)
 }
 
 describe('handleCd', () => {
@@ -236,6 +238,73 @@ describe('handleCd', () => {
     const [, io] = await handleCd(dispatch, noMountRoot, '..', s)
     expect(io.exitCode).toBe(0)
     expect(seen).toEqual(['/data'])
+    expect(s.cwd).toBe('/data')
+  })
+})
+
+describe('handleCd', () => {
+  it('resolves to / for root', async () => {
+    const dispatch = vi.fn<DispatchFn>(() =>
+      Promise.resolve<[unknown, IOResult]>([null, new IOResult()]),
+    )
+    const s = new Session({ sessionId: 'test', cwd: '/ram' })
+    const [, io] = await handleCd(dispatch, () => false, '/', s)
+    expect(io.exitCode).toBe(0)
+    expect(s.cwd).toBe('/')
+  })
+
+  it('sets cwd when target is a directory', async () => {
+    const dispatch = vi.fn<DispatchFn>(() =>
+      Promise.resolve<[unknown, IOResult]>([
+        new FileStat({ name: 'data', type: FileType.DIRECTORY }),
+        new IOResult(),
+      ]),
+    )
+    const s = new Session({ sessionId: 'test', cwd: '/ram' })
+    await handleCd(dispatch, () => true, '/ram/data', s)
+    expect(s.cwd).toBe('/ram/data')
+  })
+
+  it('rejects non-directory targets', async () => {
+    const dispatch = vi.fn<DispatchFn>(() =>
+      Promise.resolve<[unknown, IOResult]>([
+        new FileStat({ name: 'file', type: FileType.TEXT }),
+        new IOResult(),
+      ]),
+    )
+    const s = new Session({ sessionId: 'test', cwd: '/ram' })
+    const [, io] = await handleCd(dispatch, () => true, '/ram/file', s)
+    expect(io.exitCode).toBe(1)
+    expect(decode(io.stderr as Uint8Array)).toMatch(/Not a directory/)
+  })
+
+  it('rejects when stat returns null and path is not a mount root', async () => {
+    const dispatch = vi.fn<DispatchFn>(() =>
+      Promise.resolve<[unknown, IOResult]>([null, new IOResult()]),
+    )
+    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const [, io] = await handleCd(dispatch, () => false, '/missing', s)
+    expect(io.exitCode).toBe(1)
+    expect(decode(io.stderr as Uint8Array)).toMatch(/No such file or directory/)
+    expect(s.cwd).toBe('/')
+  })
+
+  it('rejects when stat throws not-found and path is not a mount root', async () => {
+    const dispatch = vi.fn<DispatchFn>(() => Promise.reject(new Error('not found: /x')))
+    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const [, io] = await handleCd(dispatch, () => false, '/missing', s)
+    expect(io.exitCode).toBe(1)
+    expect(decode(io.stderr as Uint8Array)).toMatch(/No such file or directory/)
+    expect(s.cwd).toBe('/')
+  })
+
+  it('allows cd to a mount root even when stat returns null', async () => {
+    const dispatch = vi.fn<DispatchFn>(() =>
+      Promise.resolve<[unknown, IOResult]>([null, new IOResult()]),
+    )
+    const s = new Session({ sessionId: 'test', cwd: '/' })
+    const [, io] = await handleCd(dispatch, (p) => p === '/data', '/data', s)
+    expect(io.exitCode).toBe(0)
     expect(s.cwd).toBe('/data')
   })
 })

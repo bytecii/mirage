@@ -14,7 +14,7 @@
 
 import { varsFromEnv } from '../../workspace/session/session.ts'
 import { describe, expect, it } from 'vitest'
-import { getCaseItems } from '../../shell/helpers.ts'
+import { getCaseItems } from '../../shell/syntax/helpers.ts'
 import { fnmatch } from '../../utils/fnmatch.ts'
 import { getTestParser } from '../fixtures/workspace_fixture.ts'
 import { Session } from '../session/session.ts'

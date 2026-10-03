@@ -497,7 +497,7 @@ module = [
     "mirage.server.version.state_diff",
     "mirage.server.version.state_tree",
     "mirage.shell.arith",
-    "mirage.shell.parse",
+    "mirage.shell.syntax.parse",
     "mirage.workspace.dispatcher.dispatcher",
     "mirage.workspace.executor.builtins.history",
     "mirage.workspace.executor.builtins.links",

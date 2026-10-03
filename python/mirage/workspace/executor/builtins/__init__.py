@@ -18,7 +18,11 @@ from mirage.workspace.executor.builtins.capacity import handle_df
 from mirage.workspace.executor.builtins.command import handle_command_builtin
 from mirage.workspace.executor.builtins.condition import handle_test
 from mirage.workspace.executor.builtins.dirs import handle_cd
+from mirage.workspace.executor.builtins.environment import (handle_env,
+                                                            handle_printenv,
+                                                            handle_whoami)
 from mirage.workspace.executor.builtins.exec_cmd import handle_exec_command
+from mirage.workspace.executor.builtins.flow import handle_exit, handle_return
 from mirage.workspace.executor.builtins.history import handle_history
 from mirage.workspace.executor.builtins.links import (accepts_line,
                                                       follow_paths, handle_ln,
@@ -35,6 +39,10 @@ from mirage.workspace.executor.builtins.metadata import (handle_chgrp,
                                                          handle_chmod,
                                                          handle_chown,
                                                          handle_touch)
+from mirage.workspace.executor.builtins.positional import (handle_getopts,
+                                                           handle_set,
+                                                           handle_shift)
+from mirage.workspace.executor.builtins.read import handle_read
 from mirage.workspace.executor.builtins.scope import _scope_path, _to_scope
 from mirage.workspace.executor.builtins.script import (handle_bash,
                                                        handle_eval,
@@ -46,14 +54,13 @@ from mirage.workspace.executor.builtins.text import (_interpret_escapes,
                                                      handle_echo,
                                                      handle_printf)
 from mirage.workspace.executor.builtins.timeout import handle_timeout
+from mirage.workspace.executor.builtins.trap import handle_trap
 from mirage.workspace.executor.builtins.umask import handle_umask
 from mirage.workspace.executor.builtins.xargs import handle_xargs
 
-from mirage.workspace.executor.builtins.vars import (  # isort: skip
-    handle_declare_functions, handle_declare_print, handle_env, handle_exit,
-    handle_export, handle_getopts, handle_let, handle_local, handle_printenv,
-    handle_read, handle_readonly, handle_return, handle_set, handle_shift,
-    handle_trap, handle_unset, handle_whoami, note_local_array)
+from .vars import (handle_declare_functions, handle_declare_print,
+                   handle_export, handle_let, handle_local, handle_readonly,
+                   handle_unset, note_local_array)
 
 __all__ = [
     '_collect_man_hits',

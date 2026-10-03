@@ -18,7 +18,7 @@ from mirage.io import IOResult
 from mirage.io.types import materialize
 from mirage.resource.ram import RAMResource
 from mirage.shell.job_table import JobTable
-from mirage.shell.parse import parse
+from mirage.shell.syntax.parse import parse
 from mirage.types import MountMode
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace

@@ -24,11 +24,12 @@ from mirage.shell.arith import evaluate_arith
 from mirage.shell.call_stack import CallStack
 from mirage.shell.errors import ArithError
 from mirage.shell.escapes import decode_ansi_c
-from mirage.shell.helpers import get_text
-from mirage.shell.parse import parse
+from mirage.shell.syntax.helpers import get_text
+from mirage.shell.syntax.parse import parse
 from mirage.shell.types import NodeType as NT
 from mirage.utils.glob_walk import mark_escaped_globs, mark_globs, unmark_globs
 from mirage.utils.path import expand_tilde
+from mirage.workspace.executor.traps import execute_child_shell
 from mirage.workspace.expand.constants import ARITH_DELIMITERS, ARITH_OPERATORS
 from mirage.workspace.expand.variable import (_lookup_var, expand_braces,
                                               expansion_write)
@@ -105,7 +106,7 @@ async def _expand_backtick_region(
         if not is_command:
             parts.append(text)
             continue
-        io = await execute_fn(text, session_id=session.session_id)
+        io = await execute_child_shell(execute_fn, session, text)
         parts.append((await io.stdout_str()).rstrip("\n"))
         session._cmdsub_seq += 1
         session._cmdsub_status = io.exit_code
@@ -360,7 +361,7 @@ async def expand_node_marked(
         inner = raw[2:-1]
         if not inner.strip():
             return prefix
-        io = await execute_fn(inner, session_id=session.session_id)
+        io = await execute_child_shell(execute_fn, session, inner)
         text = (await io.stdout_str()).rstrip("\n")
         # Record the substitution's status: an assignment-only
         # statement whose value ran substitutions reports the last

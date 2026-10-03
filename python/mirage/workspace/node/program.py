@@ -16,15 +16,17 @@ from typing import Any
 
 from mirage.io import IOResult
 from mirage.io.stream import async_chain, materialize
+from mirage.shell.constants import ERREXIT_EXEMPT_TYPES
 from mirage.shell.errors import ExitSignal
-from mirage.shell.helpers import get_text
-from mirage.shell.types import ERREXIT_EXEMPT_TYPES
+from mirage.shell.syntax.helpers import get_text
 from mirage.shell.types import NodeType as NT
 from mirage.utils.errors import format_fs_error
 from mirage.workspace.executor.builtins.exec_cmd import divert_statement
 from mirage.workspace.executor.control import (BreakSignal, ContinueSignal,
                                                ReturnSignal)
 from mirage.workspace.executor.jobs import handle_background
+from mirage.workspace.executor.traps import finish_shell
+from mirage.workspace.executor.types import ExecuteFn
 from mirage.workspace.types import ExecutionNode
 
 
@@ -37,6 +39,7 @@ async def execute_program(
     job_table,
     agent_id,
     dispatch=None,
+    execute_fn: ExecuteFn | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
     """Execute program node (root / semicolon-separated).
 
@@ -52,10 +55,14 @@ async def execute_program(
     session._parse_seq += 1
     outer_parse = session._parse_current
     session._parse_current = session._parse_seq
+    # Count AST evaluations too: alias expansion reparses through the
+    # node walker without re-entering Workspace.execute.
+    session.eval_depth += 1
     try:
         return await _run_program(recurse, node, session, stdin, call_stack,
-                                  job_table, agent_id, dispatch)
+                                  job_table, agent_id, dispatch, execute_fn)
     finally:
+        session.eval_depth -= 1
         session._parse_current = outer_parse
 
 
@@ -68,6 +75,7 @@ async def _run_program(
     job_table,
     agent_id,
     dispatch=None,
+    execute_fn: ExecuteFn | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
     children = node.children
     all_stdout: list[Any] = []
@@ -76,6 +84,8 @@ async def _run_program(
     # Source lines and the highest one `set -v` has already echoed.
     source_lines = get_text(node).split("\n")
     echoed_row = -1
+    exiting = False
+    contained_code = None
 
     i = 0
     while i < len(children):
@@ -127,8 +137,15 @@ async def _run_program(
 
         if is_bg:
             stdout, io, last_exec = await handle_background(
-                recurse, child, None, session, job_table, agent_id, stdin,
-                call_stack)
+                recurse,
+                child,
+                None,
+                session,
+                job_table,
+                agent_id,
+                stdin,
+                call_stack,
+                execute_fn=execute_fn)
             # Launching a job is itself a statement: bash sets $? to 0
             # (the launch status), so `false; cmd & echo $?` prints 0.
             session.last_exit_code = io.exit_code
@@ -145,6 +162,8 @@ async def _run_program(
                 stdout, io, last_exec = await recurse(child, session,
                                                       child_stdin, call_stack)
             except ExitSignal as sig:
+                exiting = True
+                contained_code = sig.contained_code
                 # exit (or a fatal expansion error) ends the line: keep
                 # what earlier statements produced, drop the rest.
                 if sig.stdout:
@@ -223,9 +242,17 @@ async def _run_program(
                 and not is_bg and child.type not in ERREXIT_EXEMPT_TYPES
                 and not session.errexit_immune):
             merged_io.exit_code = io.exit_code
+            exiting = True
             break
 
-    if len(all_stdout) == 1:
-        return all_stdout[0], merged_io, last_exec
-    combined = async_chain(*all_stdout) if all_stdout else None
+    combined = (all_stdout[0] if len(all_stdout) == 1 else async_chain(
+        *all_stdout) if all_stdout else None)
+    if exiting:
+        if session.eval_depth > 1:
+            raise ExitSignal(merged_io.exit_code,
+                             stderr=await materialize(merged_io.stderr),
+                             stdout=await materialize(combined),
+                             contained_code=contained_code)
+        return await finish_shell(execute_fn, session,
+                                  (combined, merged_io, last_exec))
     return combined, merged_io, last_exec

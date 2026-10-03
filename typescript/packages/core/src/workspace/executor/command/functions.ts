@@ -12,19 +12,20 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ExitSignal } from '../../../shell/errors.ts'
 import type { ShellVar } from '../../../shell/variable.ts'
 import type { ByteSource } from '../../../io/types.ts'
 import { IOResult } from '../../../io/types.ts'
-import { finishStatement } from '../statement.ts'
+import { finishStatement, prependExitOutput } from '../statement.ts'
 import { CallStack } from '../../../shell/call_stack.ts'
-import { ERREXIT_EXEMPT_TYPES } from '../../../shell/types.ts'
+import { ERREXIT_EXEMPT_TYPES } from '../../../shell/constants.ts'
 import type { PathSpec } from '../../../types.ts'
 import { wordText } from '../../../types.ts'
 import type { Session } from '../../session/session.ts'
 import { setSessionEntry } from '../../session/session.ts'
 import { ExecutionNode } from '../../types.ts'
 import { asyncChain } from '../../../io/stream.ts'
-import type { ExecuteNodeFn } from '../jobs.ts'
+import type { ExecuteNodeFn } from '../types.ts'
 
 import { ReturnSignal } from '../control.ts'
 import type { Result } from './types.ts'
@@ -76,6 +77,8 @@ export async function executeShellFunction(
           break
         }
       } catch (err) {
+        if (err instanceof ExitSignal)
+          throw await prependExitOutput(err, asyncChain(...allStdout), mergedIo)
         if (err instanceof ReturnSignal) {
           if (err.stderr.length > 0) {
             mergedIo = await mergedIo.merge(new IOResult({ stderr: err.stderr }))

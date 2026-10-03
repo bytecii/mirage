@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ExitSignal } from '../../shell/errors.ts'
+import { executeChildShell, finishShell } from '../executor/traps.ts'
 import type { ShellVar } from '../../shell/variable.ts'
 import { sessionEntry, setSessionEntry } from '../session/session.ts'
 import { seedVar, setAttr } from '../session/state.ts'
@@ -31,7 +33,7 @@ import {
   getProcessSubDirection,
   getText,
   splitEnvPrefix,
-} from '../../shell/helpers.ts'
+} from '../../shell/syntax/helpers.ts'
 import type { JobTable } from '../../shell/job_table/index.ts'
 import { NodeType as NT, ShellBuiltin as SB } from '../../shell/types.ts'
 import { PathSpec, wordText } from '../../types.ts'
@@ -50,7 +52,7 @@ import {
   handleUnalias,
 } from '../executor/builtins/alias.ts'
 import { handleExecCommand } from '../executor/builtins/exec_cmd.ts'
-import { findSyntaxError } from '../../shell/parse.ts'
+import { findSyntaxError } from '../../shell/syntax/parse.ts'
 import { resolvePath } from '../../utils/path.ts'
 import { runWithTimeout } from '../../commands/builtin/utils/limit.ts'
 import { PolicyDenied, resolveLimit } from '../../policy/index.ts'
@@ -429,7 +431,7 @@ async function runCommandBody(
       }
       const inner = getProcessSubBody(p)
       if (inner !== '') {
-        const io = await executeFn(inner, { sessionId: session.sessionId })
+        const io = await executeChildShell(executeFn, session, inner)
         procSubParts.push(await materialize(io.stdout))
         const stderr = await materialize(io.stderr)
         if (stderr.byteLength > 0) procSubStderr.push(stderr)
@@ -789,7 +791,7 @@ async function runArgv(
   if (name === SB.GETOPTS) {
     return handleGetopts(args, session, callStack, sessionView(session, registry.policies))
   }
-  if (name === SB.TRAP) return handleTrap(session)
+  if (name === SB.TRAP) return handleTrap(args, session)
   if (name === SB.LET) {
     return handleLet(args, session, sessionView(session, registry.policies))
   }
@@ -852,7 +854,18 @@ async function runArgv(
     return handleReturn(args, session, callStack)
   }
   if (name === SB.EXIT) {
-    return handleExit(args, session)
+    try {
+      return handleExit(args, session)
+    } catch (err) {
+      if (!(err instanceof ExitSignal)) throw err
+      // Explicit exit runs cleanup before function locals unwind.
+      const [stdout, io] = await finishShell(executeFn, session, [
+        err.stdout,
+        new IOResult({ exitCode: err.exitCode, stderr: err.stderr }),
+        new ExecutionNode({ command: 'exit', exitCode: err.exitCode }),
+      ])
+      throw new ExitSignal(io.exitCode, await materialize(io.stderr), await materialize(stdout))
+    }
   }
   if (name === SB.BREAK) throw new BreakSignal(null, new IOResult(), loopLevels(args))
   if (name === SB.CONTINUE) throw new ContinueSignal(null, new IOResult(), loopLevels(args))
@@ -998,6 +1011,7 @@ async function runArgv(
     runtimeBindings,
     namespace,
     routingDecision,
+    signal,
   )
 
   if (io.exitCode === 0 && namespace.nodes.size > 0) {

@@ -21,12 +21,16 @@ import { divertStatement } from './builtins/exec_cmd.ts'
 import { finishStatement } from './statement.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import { ExitSignal } from '../../shell/errors.ts'
-import { ERREXIT_EXEMPT_TYPES, NodeType as NT } from '../../shell/types.ts'
+import { NodeType as NT } from '../../shell/types.ts'
+import { ERREXIT_EXEMPT_TYPES } from '../../shell/constants.ts'
 import type { JobTable } from '../../shell/job_table/index.ts'
 import type { Session } from '../session/session.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { ExecutionNode } from '../types.ts'
-import { type ExecuteNodeFn, handleBackground } from './jobs.ts'
+import { finishShell } from './traps.ts'
+import type { ExecuteFn } from './types.ts'
+import { handleBackground } from './jobs.ts'
+import type { ExecuteNodeFn } from './types.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
 
@@ -37,6 +41,7 @@ export async function handlePipe(
   session: Session,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
+  executeFn?: ExecuteFn,
 ): Promise<Result> {
   let currentStdin: ByteSource | null = stdin
   let lastStdout: ByteSource | null = null
@@ -51,19 +56,34 @@ export async function handlePipe(
       let stdout: ByteSource | null
       let io: IOResult
       let childExec: ExecutionNode
+      const savedTrap = [
+        session.exitTrap,
+        session.exitTrapInherited,
+        session.runningExitTrap,
+        session.evalDepth,
+      ] as const
+      session.exitTrapInherited = true
+      session.runningExitTrap = false
+      session.evalDepth = 1
       try {
-        ;[stdout, io, childExec] = await executeNode(cmd, session, currentStdin, callStack)
-      } catch (err) {
-        if (!(err instanceof ExitSignal)) throw err
-        // Each pipeline segment is its own shell in bash: exit
-        // (or ${var:?}) ends the segment, not the pipeline.
-        stdout = err.stdout
-        io = new IOResult({ exitCode: err.containedCode, stderr: err.stderr })
-        childExec = new ExecutionNode({
-          command: cmd.text,
-          exitCode: err.containedCode,
-          stderr: err.stderr,
-        })
+        try {
+          ;[stdout, io, childExec] = await executeNode(cmd, session, currentStdin, callStack)
+        } catch (err) {
+          if (!(err instanceof ExitSignal)) throw err
+          // Each pipeline segment is its own shell in bash: exit
+          // (or ${var:?}) ends the segment, not the pipeline.
+          stdout = err.stdout
+          io = new IOResult({ exitCode: err.containedCode, stderr: err.stderr })
+          childExec = new ExecutionNode({
+            command: cmd.text,
+            exitCode: err.containedCode,
+            stderr: err.stderr,
+          })
+        }
+        ;[stdout, io, childExec] = await finishShell(executeFn, session, [stdout, io, childExec])
+      } finally {
+        ;[session.exitTrap, session.exitTrapInherited, session.runningExitTrap, session.evalDepth] =
+          savedTrap
       }
       ios.push(io)
       childNodes.push(childExec)
@@ -257,8 +277,12 @@ export async function handleSubshell(
   // installs is restored with the rest of the snapshot when the body
   // ends.
   dispatch?: DispatchFn,
+  executeFn?: ExecuteFn,
 ): Promise<Result> {
   const saved = session.snapshot()
+  session.exitTrapInherited = true
+  session.runningExitTrap = false
+  session.evalDepth = 1
   try {
     const allStdout: ByteSource[] = []
     let mergedIo = new IOResult()
@@ -285,6 +309,7 @@ export async function handleSubshell(
           agentId ?? '',
           stdin,
           callStack,
+          executeFn,
         )
         if (bgStdout !== null) allStdout.push(bgStdout)
         mergedIo = await mergedIo.merge(bgIo)
@@ -335,11 +360,8 @@ export async function handleSubshell(
         break
       }
     }
-    if (allStdout.length === 1 && allStdout[0] !== undefined) {
-      return [allStdout[0], mergedIo, lastExec]
-    }
     const combined = allStdout.length > 0 ? asyncChain(...allStdout) : null
-    return [combined, mergedIo, lastExec]
+    return await finishShell(executeFn, session, [combined, mergedIo, lastExec])
   } finally {
     session.restore(saved)
   }

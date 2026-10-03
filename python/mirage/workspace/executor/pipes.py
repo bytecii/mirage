@@ -22,14 +22,16 @@ from mirage.io.stream import async_chain, close_quietly, merge_stdout_stderr
 from mirage.io.types import ByteSource, materialize
 from mirage.runtime.types import DispatchFn
 from mirage.shell.call_stack import CallStack
+from mirage.shell.constants import ERREXIT_EXEMPT_TYPES
 from mirage.shell.errors import ExitSignal
-from mirage.shell.helpers import get_text
 from mirage.shell.job_table import JobTable
-from mirage.shell.types import ERREXIT_EXEMPT_TYPES
+from mirage.shell.syntax.helpers import get_text
 from mirage.shell.types import NodeType as NT
 from mirage.workspace.executor.builtins.exec_cmd import divert_statement
 from mirage.workspace.executor.jobs import handle_background
 from mirage.workspace.executor.statement import finish_statement
+from mirage.workspace.executor.traps import finish_shell
+from mirage.workspace.executor.types import ExecuteFn
 from mirage.workspace.session import Session
 from mirage.workspace.types import ExecutionNode
 
@@ -41,6 +43,7 @@ async def handle_pipe(
     session: Session,
     stdin: ByteSource | None = None,
     call_stack: CallStack | None = None,
+    execute_fn: ExecuteFn | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Connect commands via pipes: stdout -> stdin."""
     current_stdin = stdin
@@ -51,18 +54,29 @@ async def handle_pipe(
 
     try:
         for i, cmd in enumerate(commands):
+            saved_trap = (session.exit_trap, session.exit_trap_inherited,
+                          session.running_exit_trap, session.eval_depth)
+            session.exit_trap_inherited = True
+            session.running_exit_trap = False
+            session.eval_depth = 1
             try:
-                stdout, io, child_exec = await execute_node(
-                    cmd, session, current_stdin, call_stack)
-            except ExitSignal as sig:
-                # Each pipeline segment is its own shell in bash: exit
-                # (or ${var:?}) ends the segment, not the pipeline.
-                stdout = sig.stdout
-                io = IOResult(exit_code=sig.contained_code,
-                              stderr=sig.stderr or None)
-                child_exec = ExecutionNode(command=get_text(cmd),
-                                           exit_code=sig.contained_code,
-                                           stderr=sig.stderr)
+                try:
+                    stdout, io, child_exec = await execute_node(
+                        cmd, session, current_stdin, call_stack)
+                except ExitSignal as sig:
+                    # Each pipeline segment is its own shell in bash: exit
+                    # (or ${var:?}) ends the segment, not the pipeline.
+                    stdout = sig.stdout
+                    io = IOResult(exit_code=sig.contained_code,
+                                  stderr=sig.stderr or None)
+                    child_exec = ExecutionNode(command=get_text(cmd),
+                                               exit_code=sig.contained_code,
+                                               stderr=sig.stderr)
+                stdout, io, child_exec = await finish_shell(
+                    execute_fn, session, (stdout, io, child_exec))
+            finally:
+                (session.exit_trap, session.exit_trap_inherited,
+                 session.running_exit_trap, session.eval_depth) = saved_trap
             ios.append(io)
             child_nodes.append(child_exec)
 
@@ -215,6 +229,7 @@ async def handle_subshell(
     job_table: JobTable | None = None,
     agent_id: str | None = None,
     dispatch: DispatchFn | None = None,
+    execute_fn: ExecuteFn | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Execute body in isolated env.
 
@@ -236,6 +251,9 @@ async def handle_subshell(
             with the rest of the snapshot when the body ends.
     """
     saved = session.snapshot()
+    session.exit_trap_inherited = True
+    session.running_exit_trap = False
+    session.eval_depth = 1
     try:
         all_stdout: list[Any] = []
         merged_io = IOResult()
@@ -254,8 +272,15 @@ async def handle_subshell(
             is_bg = (i + 1 < len(body) and body[i + 1].type == NT.BACKGROUND)
             if is_bg and job_table is not None:
                 stdout, io, last_exec = await handle_background(
-                    execute_node, child, None, session, job_table, agent_id
-                    or "", stdin, call_stack)
+                    execute_node,
+                    child,
+                    None,
+                    session,
+                    job_table,
+                    agent_id or "",
+                    stdin,
+                    call_stack,
+                    execute_fn=execute_fn)
                 merged_io = await merged_io.merge(io)
                 # Seed $? for later body commands (mirrors program loop).
                 session.last_exit_code = io.exit_code
@@ -298,9 +323,8 @@ async def handle_subshell(
                     and not session.errexit_immune):
                 merged_io.exit_code = io.exit_code
                 break
-        if len(all_stdout) == 1:
-            return all_stdout[0], merged_io, last_exec
         combined = async_chain(*all_stdout) if all_stdout else None
-        return combined, merged_io, last_exec
+        return await finish_shell(execute_fn, session,
+                                  (combined, merged_io, last_exec))
     finally:
         session.restore(saved)

@@ -10,6 +10,30 @@ Most of Mirage's behavior is identical across Python and TypeScript. The two TS 
   `python3` has its own set of WASM-runtime-level divergences from Python Mirage's subprocess model. See [Python](/typescript/python#limitations) for the full list.
 </Note>
 
+## Virtual shell traps (Python, Node and Browser)
+
+`trap 'commands' EXIT` (also `0`) registers asynchronous cleanup. Mirage awaits
+it on explicit `exit`, `set -e` termination, or completion of a child shell:
+`bash -c`, a script file, `( ... )`, a pipeline stage, command substitution, or
+background job. Cleanup uses the ordinary executor, so commands, redirects,
+mount permissions and cancellation apply. `$?` starts with the terminating
+status; an explicit `exit N` inside cleanup can replace it.
+
+`trap -p` lists registrations, `trap - EXIT` removes one, and `trap '' EXIT`
+disables cleanup. Subshells can inspect the parent's registration but must
+register their own handler to run one. `bash` and `sh` start without a handler.
+
+A workspace session persists across `execute()` calls, so returning from an
+ordinary call does **not** fire `EXIT`. Register cleanup inside `bash -c` when
+it should finish before that call returns. Registrations are live shell state,
+like functions; they are not persisted in session stores.
+
+Mirage cancellation, `kill`, timeouts and workspace/session teardown are hard
+stops, not POSIX signal delivery. They do not start cleanup; cancellation can
+interrupt cleanup already running. `INT`, `TERM`, `ERR`, `DEBUG`, `RETURN` and
+other events are explicitly refused. `trap -l` is unsupported because Mirage
+has no OS signal table. No handler installs a signal listener on the host.
+
 ## Node
 
 ### 1. `fs-monkey` only patches CJS `require('fs')`, not ESM `node:fs`

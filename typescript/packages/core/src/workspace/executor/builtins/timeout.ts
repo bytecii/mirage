@@ -14,6 +14,7 @@
 
 import { SHELL_SPECS, parseShellOptions } from '../../../commands/spec/shell.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
+import { mergeSignals } from '../../abort.ts'
 import { shellJoin } from '../../../shell/join.ts'
 import type { Session } from '../../session/session.ts'
 import { ExecutionNode } from '../../types.ts'
@@ -31,8 +32,6 @@ const UNIT_SECONDS: Readonly<Record<string, number>> = Object.freeze({
 })
 
 const UNSUPPORTED = ['s', 'k', 'preserve-status']
-
-const TIMED_OUT: unique symbol = Symbol('timed-out')
 
 function usageError(message: string): Result {
   // GNU timeout reserves 125 for its own failures; 124 means the
@@ -52,44 +51,15 @@ export function parseDuration(raw: string): number | null {
   return Number(match[1]) * (UNIT_SECONDS[match[2] ?? ''] ?? 1)
 }
 
-async function executeDrained(
-  executeFn: ExecuteStringFn,
-  inner: string,
-  sessionId: string,
-): Promise<[Uint8Array, IOResult]> {
-  const io = await executeFn(inner, { sessionId })
-  const stdout = await materialize(io.stdout)
-  return [stdout, io]
-}
-
-async function raceDeadline(
-  run: Promise<[Uint8Array, IOResult]>,
-  seconds: number,
-): Promise<[Uint8Array, IOResult] | typeof TIMED_OUT> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
-    timer = setTimeout(() => {
-      resolve(TIMED_OUT)
-    }, seconds * 1000)
-  })
-  try {
-    return await Promise.race([run, deadline])
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 /**
  * Run `timeout DURATION COMMAND [ARG...]`, killing at the deadline.
  *
  * The inner line is built with shellJoin so already-expanded words
  * survive re-parsing as one token each (GNU timeout execs the command
  * without a shell). On overrun the exit code is 124 like GNU; the
- * inner run's result is abandoned. The inner stdout is drained inside
- * the race so a lazy pipeline cannot run past the deadline. Signal
- * options (-s, -k, --preserve-status) are parsed but rejected: the
- * inner run is a promise, not a process, so there is nothing to
- * signal.
+ * inner evaluation is aborted and awaited, including cleanup. Signal
+ * options (-s, -k, --preserve-status) remain unsupported because
+ * cancellation is cooperative rather than an OS signal.
  */
 export async function handleTimeout(
   executeFn: ExecuteStringFn,
@@ -116,18 +86,30 @@ export async function handleTimeout(
   if (seconds === null) return usageError(`invalid time interval '${raw}'`)
 
   const inner = shellJoin(rest)
-  const run = executeDrained(executeFn, inner, session.sessionId)
-  const result = seconds > 0 ? await raceDeadline(run, seconds) : await run
-  if (result === TIMED_OUT) {
-    // The abandoned run may still reject later; without a handler that
-    // becomes an unhandled rejection and can crash the process.
-    run.catch(() => undefined)
-    return [
-      null,
-      new IOResult({ exitCode: 124 }),
-      new ExecutionNode({ command: 'timeout', exitCode: 124 }),
-    ]
+  const abort = new AbortController()
+  const timer =
+    seconds > 0
+      ? setTimeout(() => {
+          abort.abort()
+        }, seconds * 1000)
+      : undefined
+  try {
+    const io = await executeFn(inner, {
+      session,
+      sessionId: session.sessionId,
+      signal: mergeSignals(session.abortSignal, abort.signal) ?? abort.signal,
+    })
+    const stdout = await materialize(io.stdout)
+    if (!abort.signal.aborted)
+      return [stdout, io, new ExecutionNode({ command: 'timeout', exitCode: io.exitCode })]
+  } catch (error) {
+    if (!abort.signal.aborted) throw error
+  } finally {
+    clearTimeout(timer)
   }
-  const [stdout, io] = result
-  return [stdout, io, new ExecutionNode({ command: 'timeout', exitCode: io.exitCode })]
+  return [
+    null,
+    new IOResult({ exitCode: 124 }),
+    new ExecutionNode({ command: 'timeout', exitCode: 124 }),
+  ]
 }

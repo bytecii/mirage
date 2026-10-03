@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
@@ -129,6 +130,41 @@ def selftest_case_validation() -> None:
           len(real) > 0, f"loaded {len(real)} cases")
 
 
+def selftest_suite_selection() -> None:
+    all_cases = harness.load_cases(ROOT)
+    shell = harness.load_cases(ROOT, ["shell"])
+    check("suites: shell selection preserves full-battery order",
+          shell == [c for c in all_cases if c["_source"].startswith("shell/")])
+    check(
+        "suites: unknown suite fails",
+        *raises(lambda: harness.load_cases(ROOT, ["typo"]), "unknown suites"))
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "targets.json").write_text((ROOT / "targets.json").read_text())
+        check("suites: empty selection fails",
+              *raises(lambda: harness.load_cases(root, ["shell"]), "no cases"))
+        # Physical folder order differs from family order. Equal seq values
+        # must retain the original family order after a case-file move.
+        for folder, family in [("z", "a"), ("a", "z")]:
+            path = root / "shell" / folder / "cases.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps({
+                    "family":
+                    family,
+                    "cases": [
+                        {
+                            "id": family,
+                            "seq": 1,
+                            "targets": ["ram"]
+                        },
+                    ]
+                }))
+        check("suites: family order survives folder moves",
+              [c["id"]
+               for c in harness.load_cases(root, ["shell"])] == ["a", "z"])
+
+
 def run_main(args: list[str], env: dict) -> int:
     merged = {**os.environ, **env}
     for k, v in env.items():
@@ -147,6 +183,9 @@ def selftest_strict_exit() -> None:
     Uses --target rather than --facet so the older all-skipped facet guard
     cannot be what fires; this pins the new per-target gate on its own.
     """
+    code = run_main(["--suite", "shell", "--target", "linear"], {})
+    check("suites: selection with no applicable cases fails", code != 0,
+          f"exit {code}")
     blanked = {"TRELLO_ENDPOINT": ""}
     code = run_main(["--target", "trello", "--strict"], blanked)
     check("strict: a skipped target exits non-zero", code != 0, f"exit {code}")
@@ -248,7 +287,11 @@ def run_typescript(args: list[str], env: dict) -> tuple[int, str]:
     for k, v in env.items():
         if v == "":
             merged.pop(k, None)
-    proc = subprocess.run([str(TSX), "runners/typescript/main.ts", *args],
+    proc = subprocess.run([
+        "node", "--import",
+        str(ROOT / "node_modules/tsx/dist/loader.mjs"),
+        "runners/typescript/main.ts", *args
+    ],
                           capture_output=True,
                           text=True,
                           cwd=ROOT,
@@ -285,6 +328,12 @@ def selftest_typescript_gates(require: bool) -> None:
     check("typescript runner starts (packages built)", code == 2,
           f"exit {code}: {err}")
 
+    code, err = run_typescript(["--suite", "shell", "--target", "linear"], {})
+    check("suites (ts): selection with no applicable cases fails", code == 2
+          and "selection ran no targets" in err, f"exit {code}: {err}")
+    code, err = run_typescript(["--suite", "typo"], {})
+    check("suites (ts): unknown suite fails", code != 0
+          and "unknown suites" in err, f"exit {code}: {err}")
     blanked = {"TRELLO_ENDPOINT": ""}
     code, err = run_typescript(["--target", "trello", "--strict"], blanked)
     check("strict (ts): a skipped target exits non-zero", code != 0,
@@ -297,6 +346,7 @@ def selftest_typescript_gates(require: bool) -> None:
 def main() -> None:
     selftest_services_table()
     selftest_case_validation()
+    selftest_suite_selection()
     selftest_strict_exit()
     selftest_case_targets()
     selftest_typescript_gates("--require-ts" in sys.argv)

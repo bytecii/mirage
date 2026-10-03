@@ -19,7 +19,7 @@ import pytest
 from mirage import MountMode, Workspace
 from mirage.provision import Precision
 from mirage.resource.ram import RAMResource
-from mirage.shell.node_kind import NodeKind
+from mirage.shell.syntax.node_kind import NodeKind
 from mirage.workspace.node.provision_node import provision_node
 
 # Drift guard: every statement kind the executor supports must have a

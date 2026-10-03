@@ -238,13 +238,14 @@ export class JobTable {
    * task and its console already holds the ending chunk, so it
    * returns without waiting.
    */
-  async wait(jobId: number): Promise<Job> {
+  async wait(jobId: number, signal?: AbortSignal): Promise<Job> {
+    signal?.throwIfAborted()
     const job = this.jobs.get(jobId)
     if (job === undefined) {
       throw new Error(`unknown job: ${jobId.toString()}`)
     }
     if (job.task === null) return job
-    await job.console.waitFinished()
+    await job.console.waitFinished(signal)
     return job
   }
 
@@ -256,10 +257,10 @@ export class JobTable {
    * snapshots each console right after this returns. Joining a
    * finished job costs one read.
    */
-  async waitAll(): Promise<Job[]> {
+  async waitAll(signal?: AbortSignal): Promise<Job[]> {
     const running = this.runningJobs()
     for (const job of this.listJobs()) {
-      await this.wait(job.id)
+      await this.wait(job.id, signal)
     }
     return running
   }

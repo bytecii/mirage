@@ -16,7 +16,7 @@ import re
 
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
-from mirage.shell.types import SHOPT_DEFAULTS
+from mirage.shell.constants import SHOPT_DEFAULTS
 from mirage.utils.quote import single_quote
 from mirage.workspace.executor.builtins.getopt import scan_options
 from mirage.workspace.executor.builtins.shared import fail

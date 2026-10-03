@@ -21,7 +21,7 @@ import { BaseResource, type Resource } from '../../resource/base.ts'
 import { MountMode, PathSpec } from '../../types.ts'
 import { MountRegistry } from '../mount/registry.ts'
 import { Session } from '../session/session.ts'
-import type { ExecuteNodeFn } from './jobs.ts'
+import type { ExecuteNodeFn } from './types.ts'
 import type { DispatchFn } from './cross_mount.ts'
 import { handleCommand } from './command.ts'
 

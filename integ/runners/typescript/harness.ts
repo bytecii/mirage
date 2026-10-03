@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { validateConcurrent } from './execution.ts'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -20,153 +21,11 @@ import { fileURLToPath } from 'node:url'
 
 // integ/runtime holds the runtime suite (its own schema and runners,
 // integ/runtime/run.{py,ts} + cli.sh), not battery cases; keep it out.
-const CASE_DIRS = ['unix', 'bash', 'crossmount', 'resources', 'cli', 'session', 'console']
+const CASE_DIRS = ['unix', 'shell', 'crossmount', 'resources', 'cli', 'session', 'console']
 const ENC = new TextEncoder()
-const DEC = new TextDecoder()
 
-export interface Mount {
-  path: string
-  resource: string
-  backend: string
-  mode?: string
-  fixture?: string
-  // Mount this prefix over an already-built mount's storage instead of
-  // allocating fresh storage, so cp/mv can be exercised against two
-  // prefixes that address the same bytes.
-  alias_of?: string
-  // Fixture seeded by the adapter (over the backend API) instead of the
-  // harness tee path -- used by read-only backends like box.
-  seed?: string
-  // Materialise the mount's backing folder even without a fixture --
-  // folder-backed services 404 on a root nothing ever created.
-  seed_root?: boolean
-  folder?: string
-  bucket?: string
-  volume?: string
-  prefix?: string
-  root?: string
-  drive?: string
-}
-
-export interface ServiceEnv {
-  python: string[]
-  typescript: string[]
-}
-
-export interface Target {
-  id: string
-  hosts: string[]
-  service?: string
-  epoch?: string
-  apps?: string
-  mail?: string
-  calendar?: string
-  forms?: string
-  dataset?: string
-  agentId?: string
-  facet?: string
-  // Where background-job consoles live: { type: 'redis' } puts each
-  // job's console on its own Redis stream (REDIS_URL). Only the ram
-  // opener consults it; main.ts refuses it on any other resource.
-  console?: { type?: string }
-  clis?: string[]
-  // Scope an installed account CLI to this mount's folder, so the CLI and
-  // the mount are pointed at the same place.
-  cli_scope?: string
-  mounts: Mount[]
-  // Sessions a case can name via its `session` field. Grants take either the
-  // mapping form ({ '/data': 'read' }) or the list form (['/data'], which
-  // inherits the mount's own mode).
-  sessions?: Record<
-    string,
-    | Record<string, string>
-    | string[]
-    | {
-        mounts?: Record<string, string> | string[]
-        hidden_paths?: { paths?: string[]; patterns?: string[] }
-        hidden_vars?: { names?: string[]; patterns?: string[] }
-        env?: Record<string, string>
-      }
-  >
-  // Session environment every case on this target runs under. The
-  // conformance runner passes the same map to the real binary, so a CLI
-  // option that reads a variable is compared under one environment.
-  env?: Record<string, string>
-}
-
-export interface Expect {
-  exit: number
-  stdout: string
-  stderr: string
-  // The stat line the case's `check` must produce, asserted alongside stdout
-  // rather than in place of it.
-  check?: string
-  elapsed?: { min: number; max: number }
-}
-
-export interface StatCheck {
-  stat?: string
-  fields?: string[]
-  read?: string
-  offset?: number
-  size?: number | null
-}
-
-export interface Case {
-  id: string
-  seq?: number
-  targets: string[]
-  command: string
-  flags?: string[]
-  check?: StatCheck
-  provision?: boolean
-  clear_cache?: boolean
-  consistency?: 'always' | 'lazy'
-  session?: string
-  scenario?: ScenarioStep[]
-  expect: Expect
-  _source?: string
-}
-
-export type ScenarioStep =
-  | { mutate: { path: string; content: string } }
-  | { command: string }
-
-export interface ProvisionInfo {
-  networkRead: number | string
-  networkWrite: number | string
-  cacheRead: number | string
-  readOps: number
-  cacheHits: number
-  precision: string
-}
-
-interface ProvisionExec {
-  execute(cmd: string, opts: { provision: true }): Promise<ProvisionInfo>
-}
-
-export interface ExecResult {
-  stdout: Uint8Array
-  stderr: Uint8Array
-  exitCode: number
-}
-
-export interface HarnessStat {
-  mode: number | null
-  uid: number | string | null
-  gid: number | string | null
-  modified: string | null
-}
-
-export interface ExecWorkspace {
-  execute(cmd: string, opts?: { stdin?: Uint8Array; sessionId?: string }): Promise<ExecResult>
-  dispatch(opName: string, path: string, args?: readonly unknown[], kwargs?: Record<string, unknown>): Promise<unknown>
-  cache: { clear(): Promise<void> }
-  mounts(): readonly { resource: { index?: { clear(): Promise<void> } } }[]
-  createSession(sessionId: string, options: { mounts: Record<string, string> | string[] }): unknown
-  env: Record<string, string>
-  close(): Promise<void>
-}
+import type { Target, ServiceEnv, Case, ExecWorkspace } from './types.ts'
+export type * from './types.ts'
 
 export function integRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -242,20 +101,46 @@ export function missingEnv(
   return entry[host].filter((v) => !process.env[v])
 }
 
-export function loadCases(root: string): Case[] {
+export function loadCases(root: string, suites: string[] = []): Case[] {
+  const selected = new Set(suites.length ? suites : CASE_DIRS)
+  const unknown = [...selected].filter((suite) => !CASE_DIRS.includes(suite))
+  if (unknown.length) throw new Error(`unknown suites: ${unknown.sort().join(', ')}`)
   const cases: Case[] = []
   for (const name of CASE_DIRS) {
+    if (!selected.has(name)) continue
     const dir = join(root, name)
     let files: string[]
     try {
-      files = walkFiles(dir).filter((f) => f.endsWith('.json')).sort()
+      files = walkFiles(dir)
+        .filter((f) => f.endsWith('.json'))
+        .sort()
     } catch {
       continue
     }
-    for (const file of files) {
+    const tables = files.map((file) => {
+      const data = JSON.parse(readFileSync(file, 'utf8')) as {
+        family?: string
+        cases: Case[]
+      }
+      const family = data.family ?? dirname(relative(root, file))
+      if (typeof family !== 'string' || !family)
+        throw new Error(`${file}: family must be a nonempty string`)
+      return { file, family, cases: data.cases }
+    })
+    tables.sort((a, b) =>
+      a.family < b.family
+        ? -1
+        : a.family > b.family
+          ? 1
+          : a.file < b.file
+            ? -1
+            : a.file > b.file
+              ? 1
+              : 0,
+    )
+    for (const { file, cases: entries } of tables) {
       const rel = relative(root, file)
-      const data = JSON.parse(readFileSync(file, 'utf8')) as { cases: Case[] }
-      for (const c of data.cases) {
+      for (const c of entries) {
         c._source = rel
         cases.push(c)
       }
@@ -263,6 +148,7 @@ export function loadCases(root: string): Case[] {
   }
   cases.sort((a, b) => (a.seq ?? 1 << 30) - (b.seq ?? 1 << 30))
   validateCases(root, cases)
+  if (!cases.length) throw new Error('selected suites contain no cases')
   return cases
 }
 
@@ -280,6 +166,7 @@ export function validateCases(root: string, cases: Case[]): void {
   const duplicates: string[] = []
   const unknown: string[] = []
   for (const c of cases) {
+    validateConcurrent(c)
     const first = seen.get(c.id)
     if (first !== undefined) duplicates.push(`${c.id} (${first} and ${c._source ?? '?'})`)
     else seen.set(c.id, c._source ?? '?')
@@ -344,7 +231,9 @@ async function seedFrom(ws: ExecWorkspace, base: string, mountPath: string): Pro
     const dest = `${mountPath.replace(/\/+$/, '')}/${rel}`
     const parent = dest.slice(0, dest.lastIndexOf('/'))
     await ws.execute(`mkdir -p ${parent}`)
-    await ws.execute(`tee ${dest} > /dev/null`, { stdin: new Uint8Array(readFileSync(file)) })
+    await ws.execute(`tee ${dest} > /dev/null`, {
+      stdin: new Uint8Array(readFileSync(file)),
+    })
   }
 }
 
@@ -357,201 +246,16 @@ export async function seedMountRoot(ws: ExecWorkspace, mountPath: string): Promi
   // the upload auto-creates the folder chain and the delete leaves the
   // folders behind, so the mount lists as empty like every other target.
   const marker = `${mountPath.replace(/\/+$/, '')}/.seed`
-  await ws.execute(`tee ${marker} > /dev/null`, { stdin: ENC.encode('seed\n') })
+  await ws.execute(`tee ${marker} > /dev/null`, {
+    stdin: ENC.encode('seed\n'),
+  })
   await ws.execute(`rm ${marker}`)
 }
 
-export async function runScenario(
-  ws: ExecWorkspace,
-  mutate: (path: string, content: Uint8Array) => Promise<void>,
-  steps: ScenarioStep[],
-): Promise<{ exitCode: number; out: string }> {
-  const outputs: string[] = []
-  let exitCode = 0
-  for (const step of steps) {
-    if ('mutate' in step) {
-      await mutate(step.mutate.path, ENC.encode(step.mutate.content))
-      continue
-    }
-    const result = await ws.execute(step.command)
-    outputs.push(DEC.decode(result.stdout))
-    exitCode = result.exitCode
-  }
-  return { exitCode, out: outputs.join('') }
-}
-
-function checkField(st: HarnessStat, name: string): string {
-  let value: string
-  if (name === 'mode') {
-    value = st.mode !== null ? st.mode.toString(8) : '-'
-  } else if (name === 'uid') {
-    value = st.uid !== null ? String(st.uid) : '-'
-  } else if (name === 'gid') {
-    value = st.gid !== null ? String(st.gid) : '-'
-  } else {
-    // First 19 chars ("2026-01-02T15:30:00") so the Z vs +00:00 suffix
-    // never reaches the comparison.
-    value = st.modified !== null && st.modified !== '' ? st.modified.slice(0, 19) : '-'
-  }
-  return `${name}=${value}`
-}
-
-/**
- * The probe a case runs beside its command, as one printable line.
- *
- * Two forms. `stat` names a path and the FileStat fields to print. `read`
- * names a path and a byte window, and prints what that window returned: no
- * shell command asks for one, because commands read whole files, so the
- * ranged read op is only reachable through the same door FUSE and the ops
- * facade use.
- */
-export async function statCheck(ws: ExecWorkspace, check: StatCheck): Promise<string> {
-  if (check.read !== undefined) {
-    const data = (await ws.dispatch('read', check.read, [], {
-      offset: check.offset ?? 0,
-      size: check.size ?? null,
-    })) as Uint8Array
-    return new TextDecoder().decode(data)
-  }
-  let st: HarnessStat
-  try {
-    st = (await ws.dispatch('stat', check.stat ?? '')) as HarnessStat
-  } catch (err) {
-    if ((err as { code?: string }).code === 'ENOENT') return 'absent\n'
-    throw err
-  }
-  return (check.fields ?? []).map((name) => checkField(st, name)).join(' ') + '\n'
-}
-
-function provisionLine(r: ProvisionInfo): string {
-  return (
-    `net=${r.networkRead} write=${r.networkWrite} ` +
-    `cache=${r.cacheRead} ops=${String(r.readOps)} ` +
-    `hits=${String(r.cacheHits)} precision=${r.precision}`
-  )
-}
-
-/**
- * Substitute {mount} in a case with a target's primary mount path.
- *
- * Lets one case assert a behavior that every backend shares while each target
- * keeps its own mount path. Cases without the token are returned untouched, so
- * this is inert for the existing suite.
- */
-// {mount} lets one case assert a behavior every backend shares while each
-// target keeps its own mount path. {http} carries the fixture HTTP server's
-// base URL, which is only known once the server has bound a port.
+export { runCase, compare, runScenario, statCheck } from './execution.ts'
+import { bindMount as bindCase } from './execution.ts'
 export function bindMount(c: Case, mountPath: string): Case {
-  const tokens: ReadonlyArray<readonly [string, string]> = [
-    ['{mount}', mountPath.replace(/\/+$/, '')],
-    ['{http}', process.env.HTTP_ENDPOINT ?? ''],
-  ]
-  const subst = (text: string): string =>
-    tokens.reduce((acc, [token, value]) => acc.split(token).join(value), text)
-  const present = tokens.some(
-    ([token]) =>
-      c.command?.includes(token) === true ||
-      c.expect.stdout.includes(token) ||
-      c.expect.stderr.includes(token) ||
-      c.check?.stat?.includes(token) === true ||
-      c.check?.read?.includes(token) === true ||
-      c.expect.check?.includes(token) === true,
-  )
-  if (!present) return c
-  const check =
-    c.check === undefined
-      ? undefined
-      : {
-          ...c.check,
-          ...(c.check.stat !== undefined ? { stat: subst(c.check.stat) } : {}),
-          ...(c.check.read !== undefined ? { read: subst(c.check.read) } : {}),
-        }
-  return {
-    ...c,
-    ...(c.command !== undefined ? { command: subst(c.command) } : {}),
-    ...(check !== undefined ? { check } : {}),
-    expect: {
-      ...c.expect,
-      stdout: subst(c.expect.stdout),
-      stderr: subst(c.expect.stderr),
-      ...(c.expect.check !== undefined ? { check: subst(c.expect.check) } : {}),
-    },
-  }
-}
-
-/**
- * Run one case and return what it produced.
- *
- * The post-condition a case declares under `check` is returned beside stdout
- * rather than in place of it, so a case can pin both what the command printed
- * and what it left behind.
- */
-export async function runCase(
-  ws: ExecWorkspace,
-  c: Case,
-): Promise<{
-  exitCode: number
-  out: string
-  err: string
-  elapsed: number
-  checkOut: string | null
-}> {
-  if (c.clear_cache === true) {
-    // A full clear means the file cache AND every mount's index cache:
-    // remote listings live in the per-resource index, and a listing
-    // populated by an earlier case must not leak into this one. Resources
-    // without an index cache (e.g. opfs) have nothing to clear.
-    await ws.cache.clear()
-    for (const m of ws.mounts()) await m.resource.index?.clear()
-  }
-  const start = performance.now()
-  if (c.provision === true) {
-    const plan = await (ws as unknown as ProvisionExec).execute(c.command, { provision: true })
-    return {
-      exitCode: 0,
-      out: provisionLine(plan) + '\n',
-      err: '',
-      elapsed: (performance.now() - start) / 1000,
-      checkOut: null,
-    }
-  }
-  const result = await ws.execute(c.command, { sessionId: c.session })
-  const elapsed = (performance.now() - start) / 1000
-  const out = DEC.decode(result.stdout)
-  const checkOut = c.check !== undefined ? await statCheck(ws, c.check) : null
-  return {
-    exitCode: result.exitCode,
-    out,
-    err: DEC.decode(result.stderr),
-    elapsed,
-    checkOut,
-  }
-}
-
-export function compare(
-  c: Case,
-  exitCode: number,
-  out: string,
-  err: string,
-  elapsed: number,
-  checkOut: string | null = null,
-): string[] {
-  const diffs: string[] = []
-  if (exitCode !== c.expect.exit) diffs.push(`exit: expected ${c.expect.exit}, got ${exitCode}`)
-  if (out !== c.expect.stdout)
-    diffs.push(`stdout: expected ${JSON.stringify(c.expect.stdout)}, got ${JSON.stringify(out)}`)
-  if (err.replace(/\n+$/, '') !== c.expect.stderr.replace(/\n+$/, ''))
-    diffs.push(`stderr: expected ${JSON.stringify(c.expect.stderr)}, got ${JSON.stringify(err)}`)
-  if (c.check !== undefined && checkOut !== c.expect.check)
-    diffs.push(
-      `check: expected ${JSON.stringify(c.expect.check)}, got ${JSON.stringify(checkOut)}`,
-    )
-  const bounds = c.expect.elapsed
-  if (bounds !== undefined && (elapsed < bounds.min || elapsed > bounds.max))
-    diffs.push(
-      `elapsed: expected [${String(bounds.min)}, ${String(bounds.max)}], got ${elapsed.toFixed(3)}`,
-    )
-  return diffs
+  return bindCase(c, mountPath, process.env.HTTP_ENDPOINT ?? '')
 }
 
 export class Report {

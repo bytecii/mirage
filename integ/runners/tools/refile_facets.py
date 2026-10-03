@@ -20,7 +20,7 @@ from collections import defaultdict
 from pathlib import Path
 
 INTEG = Path(__file__).resolve().parents[2]
-CATEGORIES = ("unix", "bash", "crossmount", "resources")
+CATEGORIES = ("unix", "shell", "crossmount", "resources")
 SEGMENT_RE = re.compile(r"\|\||&&|;|\||\(|\)")
 ASSIGN_RE = re.compile(r"^\w+=")
 SHORTFLAG_RE = re.compile(r"^([A-Za-z]+)(\d.*)?$")

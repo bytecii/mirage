@@ -31,6 +31,7 @@ from mirage.utils.path import resolve_path
 from mirage.workspace.abort import cancellable_sleep
 from mirage.workspace.executor.builtins.links import resolve_path_stat
 from mirage.workspace.executor.builtins.scope import _scope_path, _to_scope
+from mirage.workspace.executor.traps import finish_shell
 from mirage.workspace.session import Session
 from mirage.workspace.types import ExecutionNode
 
@@ -360,6 +361,10 @@ async def handle_bash(
     if script is None:
         return None, IOResult(), ExecutionNode(command=name, exit_code=0)
     saved = session.snapshot()
+    session.exit_trap = None
+    session.exit_trap_inherited = False
+    session.running_exit_trap = False
+    session.eval_depth = 0
     session.positional_args = positional
     session.script_name = script_name
     # A child shell is outside every `source` its caller is inside, so a
@@ -372,6 +377,10 @@ async def handle_bash(
         io = await execute_fn(script,
                               session_id=session.session_id,
                               stdin=stdin)
+        _, io, _ = await finish_shell(
+            execute_fn, session,
+            (io.stdout, io, ExecutionNode(command=name,
+                                          exit_code=io.exit_code)))
     finally:
         session.restore(saved)
     label = f"{name} {parsed.path}" if parsed.path else f"{name} -c {script}"

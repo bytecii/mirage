@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-import time
 
 import pytest
 
@@ -67,16 +66,33 @@ def test_local_name():
 
 
 @pytest.mark.asyncio
-async def test_local_cancellation_kills_subprocess():
+@pytest.mark.parametrize("action", ["cancel", "close"])
+async def test_local_teardown_joins_subprocess(monkeypatch, action):
     runtime = LocalRuntime()
-    task = asyncio.ensure_future(
+    started = asyncio.Event()
+    processes = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def track_spawn(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        started.set()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", track_spawn)
+    task = asyncio.create_task(
         runtime.run(RunArgs(code="import time; time.sleep(30)")))
-    await asyncio.sleep(0.3)
-    start = time.monotonic()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert time.monotonic() - start < 5  # killed, not waited out
+    await asyncio.wait_for(started.wait(), 5)
+    try:
+        if action == "cancel":
+            task.cancel()
+        else:
+            await asyncio.wait_for(runtime.close(), 5)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        assert all(process.returncode is not None for process in processes)
+    finally:
+        await runtime.close()
 
 
 def test_reach_is_process():

@@ -19,6 +19,7 @@ import { parseOptionWord } from '../../../shell/options.ts'
 import { FileType } from '../../../types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { eisdir, fsStrerror } from '../../../utils/errors.ts'
+import { finishShell } from '../traps.ts'
 import type { Session } from '../../session/session.ts'
 import { sleep } from '../../abort.ts'
 import { ExecutionNode } from '../../types.ts'
@@ -34,7 +35,7 @@ export async function handleEval(
   session: Session,
 ): Promise<Result> {
   const script = args.join(' ')
-  const io = await executeFn(script, { sessionId: session.sessionId })
+  const io = await executeFn(script, { session, sessionId: session.sessionId })
   return [io.stdout, io, new ExecutionNode({ command: 'eval', exitCode: io.exitCode })]
 }
 
@@ -330,7 +331,7 @@ export async function handleExecPath(
     )
   }
   const line = [...words, path, ...args].map(quoteWord).join(' ')
-  const io = await executeFn(line, { sessionId: session.sessionId, stdin })
+  const io = await executeFn(line, { session, sessionId: session.sessionId, stdin })
   const label = args.length > 0 ? `${path} ${args.join(' ')}` : path
   return [io.stdout, io, new ExecutionNode({ command: label, exitCode: io.exitCode })]
 }
@@ -387,6 +388,10 @@ export async function handleBash(
     return [null, new IOResult(), new ExecutionNode({ command: name, exitCode: 0 })]
   }
   const saved = session.snapshot()
+  session.exitTrap = null
+  session.exitTrapInherited = false
+  session.runningExitTrap = false
+  session.evalDepth = 0
   session.positionalArgs = positional
   session.scriptName = scriptName
   // A child shell is outside every `source` its caller is inside, so a
@@ -396,7 +401,12 @@ export async function handleBash(
   for (const [option, enable] of parsed.settings) session.shellOptions[option] = enable
   let io
   try {
-    io = await executeFn(script, { sessionId: session.sessionId, stdin })
+    io = await executeFn(script, { session, sessionId: session.sessionId, stdin })
+    ;[, io] = await finishShell(executeFn, session, [
+      io.stdout,
+      io,
+      new ExecutionNode({ command: name, exitCode: io.exitCode }),
+    ])
   } finally {
     session.restore(saved)
   }
@@ -428,7 +438,7 @@ export async function handleSource(
   }
   session.sourceDepth += 1
   try {
-    const io = await executeFn(script, { sessionId: session.sessionId })
+    const io = await executeFn(script, { session, sessionId: session.sessionId })
     return [io.stdout, io, new ExecutionNode({ command: `source ${raw}`, exitCode: io.exitCode })]
   } finally {
     session.sourceDepth -= 1

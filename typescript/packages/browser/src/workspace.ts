@@ -13,8 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Resource } from '@struktoai/mirage-core/resource/base'
-import { createShellParser } from '@struktoai/mirage-core/shell/parse'
-import type { ShellParser } from '@struktoai/mirage-core/shell/parse'
+import { createShellParser } from '@struktoai/mirage-core/shell/syntax/parse'
+import type { ShellParser } from '@struktoai/mirage-core/shell/types'
 import { Workspace as CoreWorkspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import type { WorkspaceOptions } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { ENGINE_WASM_BASE64, GRAMMAR_WASM_BASE64 } from './generated/wasm.ts'

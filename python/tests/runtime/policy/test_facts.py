@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.runtime.policy import parsed_commands
-from mirage.shell.parse import parse
+from mirage.shell.syntax.parse import parse
 
 
 def test_parsed_commands_parse_pipes_and_lists():

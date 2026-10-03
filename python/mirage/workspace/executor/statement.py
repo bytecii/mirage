@@ -13,8 +13,10 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.io import IOResult
+from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
+from mirage.shell.errors import ExitSignal
 from mirage.workspace.session import Session
 
 
@@ -58,3 +60,17 @@ def assignment_status(session: Session, seq_before: int) -> int:
     if session._cmdsub_seq != seq_before:
         return session._cmdsub_status
     return 0
+
+
+async def prepend_exit_output(sig: ExitSignal, stdout: ByteSource | None,
+                              io: IOResult) -> ExitSignal:
+    """Keep completed output while an exit unwinds a statement list.
+
+    Args:
+        sig (ExitSignal): terminating command's output and status.
+        stdout (ByteSource | None): preceding statements' output.
+        io (IOResult): preceding statements' diagnostics.
+    """
+    sig.stdout = await materialize(stdout) + (sig.stdout or b"")
+    sig.stderr = await materialize(io.stderr) + sig.stderr
+    return sig

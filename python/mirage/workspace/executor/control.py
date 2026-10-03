@@ -24,11 +24,12 @@ from mirage.io.types import ByteSource
 from mirage.policy import Policies, PolicyDenied
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.call_stack import CallStack
-from mirage.shell.errors import ArithError, ReadonlyError
-from mirage.shell.types import ERREXIT_EXEMPT_TYPES
+from mirage.shell.constants import ERREXIT_EXEMPT_TYPES
+from mirage.shell.errors import ArithError, ExitSignal, ReadonlyError
 from mirage.types import PathSpec, word_text
 from mirage.utils.fnmatch import fnmatch
-from mirage.workspace.executor.statement import finish_statement
+from mirage.workspace.executor.statement import (finish_statement,
+                                                 prepend_exit_output)
 from mirage.workspace.session import Session
 from mirage.workspace.session.state import seed_var, session_view
 from mirage.workspace.types import ExecutionNode
@@ -62,6 +63,9 @@ async def _execute_body(
         try:
             stdout, io, last_exec = await execute_node(cmd, session, stdin,
                                                        call_stack)
+        except ExitSignal as sig:
+            raise await prepend_exit_output(sig, _chain_streams(all_stdout),
+                                            merged_io)
         except BreakSignal as sig:
             if sig.stdout is not None:
                 all_stdout.append(sig.stdout)
@@ -208,6 +212,10 @@ async def handle_for(
             try:
                 stdout, io, _ = await _execute_body(execute_node, body,
                                                     session, stdin, call_stack)
+            except ExitSignal as sig:
+                raise await prepend_exit_output(sig,
+                                                _chain_streams(all_stdout),
+                                                merged_io)
             except BreakSignal as sig:
                 if sig.stdout is not None:
                     all_stdout.append(sig.stdout)
@@ -272,6 +280,10 @@ async def _condition_loop(
             try:
                 stdout, io, _ = await _execute_body(execute_node, body,
                                                     session, stdin, call_stack)
+            except ExitSignal as sig:
+                raise await prepend_exit_output(sig,
+                                                _chain_streams(all_stdout),
+                                                merged_io)
             except BreakSignal as sig:
                 hit_limit = False
                 if sig.stdout is not None:
@@ -352,6 +364,10 @@ async def handle_cfor(
                 try:
                     stdout, io, _ = await _execute_body(
                         execute_node, body, session, stdin, call_stack)
+                except ExitSignal as sig:
+                    raise await prepend_exit_output(sig,
+                                                    _chain_streams(all_stdout),
+                                                    merged_io)
                 except BreakSignal as sig:
                     hit_limit = False
                     if sig.stdout is not None:
@@ -563,6 +579,10 @@ async def handle_select(
             try:
                 stdout, io, _ = await _execute_body(execute_node, body,
                                                     session, None, call_stack)
+            except ExitSignal as sig:
+                raise await prepend_exit_output(sig,
+                                                _chain_streams(all_stdout),
+                                                merged_io)
             except BreakSignal as sig:
                 if sig.stdout is not None:
                     all_stdout.append(sig.stdout)

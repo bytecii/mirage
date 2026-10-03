@@ -116,7 +116,7 @@ export async function handleCommandBuiltin(
   // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
   delete session.functions[innerName]
   try {
-    const io = await executeFn(inner, { sessionId: session.sessionId, stdin })
+    const io = await executeFn(inner, { session, sessionId: session.sessionId, stdin })
     return [io.stdout, io, new ExecutionNode({ command: 'command', exitCode: io.exitCode })]
   } finally {
     if (savedFn !== undefined) session.functions[innerName] = savedFn

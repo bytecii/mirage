@@ -182,3 +182,130 @@ async def test_settle_kill_marker_survives_second_cancel():
         await asyncio.wait_for(job.task, 2)
     await asyncio.wait_for(job.console.wait_finished(), 2)
     assert await job.console.snapshot(Channel.STDERR) == b"Killed"
+
+
+async def _failing_run(job):
+    raise RuntimeError("resource API error")
+
+
+async def _successful_run(job):
+    await job.console.emit(Channel.STDOUT, b"hello")
+    return IOResult(exit_code=0), ExecutionNode(command="echo hello",
+                                                exit_code=0)
+
+
+async def _never_ending_run(job):
+    await job.console.emit(Channel.STDOUT, b"partial")
+    await asyncio.Event().wait()
+    return IOResult(exit_code=0), ExecutionNode(command="noisy", exit_code=0)
+
+
+@pytest.mark.asyncio
+async def test_wait_handles_task_exception():
+    table = JobTable()
+    table.submit(command="bad_cmd", run=_failing_run, cwd="/")
+    job = await table.wait(1)
+    assert job.status == JobStatus.COMPLETED
+    assert job.exit_code == 1
+    stderr = await job.console.snapshot(Channel.STDERR)
+    assert b"resource API error" in stderr
+
+
+@pytest.mark.asyncio
+async def test_wait_all_survives_failing_task():
+    table = JobTable()
+    table.submit(command="bad", run=_failing_run, cwd="/")
+    table.submit(command="good", run=_successful_run, cwd="/")
+    jobs = await table.wait_all()
+    assert len(jobs) == 2
+    bad = table.get(1)
+    good = table.get(2)
+    assert bad.exit_code == 1
+    assert good.exit_code == 0
+    assert await good.console.snapshot(Channel.STDOUT) == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_wait_successful_task():
+    table = JobTable()
+    table.submit(command="echo hello", run=_successful_run, cwd="/")
+    job = await table.wait(1)
+    assert job.status == JobStatus.COMPLETED
+    assert job.exit_code == 0
+    assert await job.console.snapshot(Channel.STDOUT) == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_kill_keeps_output_produced_before_the_kill():
+    table = JobTable()
+    job = table.submit(command="noisy", run=_never_ending_run, cwd="/")
+    while not await job.console.snapshot(Channel.STDOUT):
+        await asyncio.sleep(0)
+
+    assert await table.kill(1)
+
+    assert job.status == JobStatus.KILLED
+    assert job.exit_code == 137
+    assert await job.console.snapshot(Channel.STDOUT) == b"partial"
+    assert await job.console.snapshot(Channel.STDERR) == b"Killed"
+
+
+@pytest.mark.asyncio
+async def test_kill_returns_a_settled_job():
+    table = JobTable()
+    job = table.submit(command="noisy", run=_never_ending_run, cwd="/")
+
+    assert await table.kill(1)
+
+    assert job.console.finished
+    assert job.status == JobStatus.KILLED
+
+
+@pytest.mark.asyncio
+async def test_kill_is_false_for_unknown_and_finished_jobs():
+    table = JobTable()
+    table.submit(command="echo hello", run=_successful_run, cwd="/")
+    await table.wait(1)
+
+    assert not await table.kill(1)
+    assert not await table.kill(404)
+
+
+@pytest.mark.asyncio
+async def test_kill_all_stops_every_running_job():
+    table = JobTable()
+    table.submit(command="a", run=_never_ending_run, cwd="/")
+    table.submit(command="b", run=_never_ending_run, cwd="/")
+
+    killed = await table.kill_all()
+
+    assert len(killed) == 2
+    assert table.running_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_kill_settles_a_runner_that_ignores_cancellation():
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def run(job: Job) -> tuple[IOResult, ExecutionNode]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        return IOResult(), ExecutionNode()
+
+    table = JobTable()
+    job = table.submit(command="deaf", run=run, cwd="/")
+    await started.wait()
+    try:
+        assert await asyncio.wait_for(table.kill(job.id), 2)
+        assert job.console.finished
+        assert job.status is JobStatus.KILLED
+        assert job.exit_code == 137
+    finally:
+        release.set()
+        await job.task
+    assert job.status is JobStatus.KILLED
+    assert job.exit_code == 137

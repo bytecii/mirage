@@ -17,7 +17,8 @@ import { createRequire } from 'node:module'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../ops/registry.ts'
 import { RAMResource } from '../resource/ram/ram.ts'
-import { createShellParser, type ShellParser } from '../shell/parse.ts'
+import { createShellParser } from '../shell/syntax/parse.ts'
+import type { ShellParser } from '../shell/types.ts'
 import { MountMode } from '../types.ts'
 import { Workspace } from './workspace/workspace.ts'
 
@@ -387,4 +388,20 @@ describe('Object.prototype-colliding names', () => {
     expect(gone.exitCode).toBe(127)
     await ws.close()
   })
+})
+
+it('keeps EXIT registration across execute calls until explicit exit', async () => {
+  const { ws } = buildWorkspace()
+  try {
+    const first = await ws.execute("trap 'echo cleanup:$?' EXIT; echo body")
+    expect(first.stdoutText).toBe('body\n')
+    const listing = await ws.execute('trap -p')
+    expect(listing.stdoutText).toBe("trap -- 'echo cleanup:$?' EXIT\n")
+    const ended = await ws.execute('exit 7')
+    expect([ended.exitCode, ended.stdoutText]).toEqual([7, 'cleanup:7\n'])
+    const later = await ws.execute('trap -p; echo alive')
+    expect(later.stdoutText).toBe('alive\n')
+  } finally {
+    await ws.close()
+  }
 })

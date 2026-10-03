@@ -23,6 +23,7 @@ from mirage.shell.console import Channel
 from mirage.shell.job_table import Job, JobStatus, JobTable
 from mirage.types import MountMode
 from mirage.workspace import Workspace
+from mirage.workspace.abort import MirageAbortError
 from mirage.workspace.executor.jobs import (handle_disown, handle_fg,
                                             handle_jobs, handle_kill,
                                             handle_ps, handle_wait)
@@ -34,155 +35,43 @@ def _workspace() -> Workspace:
                      mode=MountMode.WRITE)
 
 
-async def _run_bg(cmd: str, job_id: int = 1) -> tuple[bytes, bytes]:
-    """Run a backgrounded command and return its finished console.
-
-    Args:
-        cmd (str): shell line to execute, ending in ``&``.
-        job_id (int): job to wait for.
-    """
+@pytest.mark.asyncio
+async def test_loop_body_streams_before_the_job_finishes():
     ws = _workspace()
-    await ws.execute(cmd)
-    await ws.job_table.wait(job_id)
-    job = ws.job_table.get(job_id)
-    assert job is not None
-    return (await job.console.snapshot(Channel.STDOUT), await
-            job.console.snapshot(Channel.STDERR))
-
-
-# ── streaming: output lands while the job is still running ──────────
-
-
-def test_loop_body_streams_each_iteration_instead_of_batching():
-    """A reader sees earlier iterations before the loop finishes.
-
-    Without the sink the whole construct is materialized and pumped at
-    completion, so a mid-run snapshot is empty.
-    """
-
-    async def _do():
-        ws = _workspace()
-        await ws.execute("for i in 1 2 3; do echo $i; sleep 0.25; done &")
+    try:
+        await ws.execute("for i in 1 2; do echo $i; sleep 3600; done &")
         job = ws.job_table.get(1)
         assert job is not None
-        await asyncio.sleep(0.35)
-        mid = await job.console.snapshot(Channel.STDOUT)
-        await ws.job_table.wait(1)
-        return mid, await job.console.snapshot(Channel.STDOUT)
-
-    mid, end = asyncio.run(_do())
-    assert end == b"1\n2\n3\n"
-    assert mid, "loop produced nothing until it finished"
-    assert end.startswith(mid) and mid != end
+        await asyncio.wait_for(job.console.store.wait(0), 2)
+        assert job.status is JobStatus.RUNNING
+        assert await job.console.snapshot(Channel.STDOUT) == b"1\n"
+    finally:
+        await ws.close()
 
 
-@pytest.mark.parametrize(
-    "cmd,expected",
-    [
-        ("echo one && echo two &", b"one\ntwo\n"),
-        ("(echo s1; echo s2) &", b"s1\ns2\n"),
-        ("if true; then echo yes; fi &", b"yes\n"),
-        ("i=0; while [ $i -lt 2 ]; do echo w$i; i=$((i+1)); done &",
-         b"w0\nw1\n"),
-        ("for i in a b; do echo $i; done &", b"a\nb\n"),
-    ],
-)
-def test_compound_constructs_reach_the_console(cmd, expected):
-    """Every sequencing construct feeds the job console.
-
-    Args:
-        cmd (str): backgrounded shell line.
-        expected (bytes): the console's stdout once the job ends.
-    """
-    out, _ = asyncio.run(_run_bg(cmd))
-    assert out == expected
-
-
-# ── capture sites: a sink must never leak into a captured value ─────
-
-
-def test_command_substitution_does_not_leak_into_the_console():
-    out, _ = asyncio.run(_run_bg("echo $(echo inner) &"))
-    assert out == b"inner\n"
-
-
-def test_pipe_stages_do_not_leak_into_the_console():
-    """Only the last stage's output is the job's output."""
-    out, _ = asyncio.run(_run_bg("printf 'a\\nb\\n' | grep b &"))
-    assert out == b"b\n"
-
-
-def test_redirected_output_goes_to_the_file_not_the_console():
-
-    async def _do():
-        ws = _workspace()
+@pytest.mark.asyncio
+async def test_redirected_output_goes_to_the_file_not_the_console():
+    ws = _workspace()
+    try:
         await ws.execute("echo hi > /m/f.txt &")
-        await ws.job_table.wait(1)
-        job = ws.job_table.get(1)
-        assert job is not None
+        job = await ws.job_table.wait(1)
         written = await (await ws.execute("cat /m/f.txt")).stdout_str()
-        return await job.console.snapshot(Channel.STDOUT), written
-
-    out, written = asyncio.run(_do())
-    assert out == b""
-    assert written == "hi\n"
-
-
-# ── bare `wait` adopts job output ───────────────────────────────────
+        assert await job.console.snapshot(Channel.STDOUT) == b""
+        assert written == "hi\n"
+    finally:
+        await ws.close()
 
 
-def test_bare_wait_adopts_output_from_every_job_in_id_order():
-    """`wait` with no operand surfaces what the jobs printed.
-
-    A real shell has nothing to adopt because its jobs share the
-    terminal. Mirage jobs print to their console, so bare `wait` has to
-    surface it or the output is stranded.
-    """
-
-    async def _do():
-        ws = _workspace()
-        await ws.execute("echo a &")
-        await ws.execute("echo b &")
-        result = await ws.execute("wait")
-        return await result.stdout_str()
-
-    assert asyncio.run(_do()) == "a\nb\n"
-
-
-def test_job_nested_in_a_backgrounded_subshell_gets_its_own_console():
-    """A nested job's output must not land on the enclosing job's console.
-
-    The parity partner of the TypeScript regression, which is where this
-    can actually break: ``sub_recurse`` is a ``partial``, so a nested
-    ``handle_background`` passing ``sink=<its own console>`` always
-    overrides the bound default, while a hand-written closure can drop
-    the argument. When it is dropped, both nested jobs write straight to
-    the outer console, bare ``wait`` adopts nothing, and the documented
-    job-id order becomes completion order (``b\\na\\n``).
-    """
-    out, _ = asyncio.run(_run_bg("( (sleep 0.15; echo a) & echo b & wait ) &"))
-    assert out == b"a\nb\n"
-
-
-def test_bare_wait_with_no_jobs_returns_nothing():
-
-    async def _do():
-        ws = _workspace()
-        result = await ws.execute("wait")
-        return await result.stdout_str(), result.exit_code
-
-    out, code = asyncio.run(_do())
-    assert out == ""
-    assert code == 0
-
-
-def test_stderr_is_routed_to_its_own_channel():
-    out, err = asyncio.run(_run_bg("echo err >&2 &"))
-    assert out == b""
-    assert err == b"err\n"
-
-
-# ── the shell builtins over a job table ─────────────────────────────
+@pytest.mark.asyncio
+async def test_stderr_is_routed_to_its_own_channel():
+    ws = _workspace()
+    try:
+        await ws.execute("echo err >&2 &")
+        job = await ws.job_table.wait(1)
+        assert await job.console.snapshot(Channel.STDOUT) == b""
+        assert await job.console.snapshot(Channel.STDERR) == b"err\n"
+    finally:
+        await ws.close()
 
 
 async def _emit_and_settle(
@@ -444,3 +333,73 @@ async def test_wait_p_with_no_operand_leaves_the_variable_unset():
                           "echo \"V=[${V-UNSET}]\"")
     assert (await io.stdout_str()) == "V=[UNSET]\n"
     await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_background_does_not_consume_stdin():
+    mem = RAMResource()
+    ws = Workspace(
+        {"/data": (mem, MountMode.WRITE)},
+        mode=MountMode.WRITE,
+    )
+    try:
+        ws.get_session(ws.default_session_id).cwd = "/data"
+        io = await ws.execute("sleep 0 & cat", stdin=b"hello\n")
+        assert (await io.stdout_str()).strip() == "hello"
+
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_wait_n_releases_waiters_without_killing_jobs():
+    table = JobTable()
+    jobs = [_submit_pending(table), _submit_pending(table)]
+    before = asyncio.all_tasks()
+    waiting = asyncio.create_task(handle_wait(table, ["wait", "-n"]))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    waiting.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert not (asyncio.all_tasks() - before)
+        assert all(job.status is JobStatus.RUNNING for job in jobs)
+    finally:
+        await table.kill_all()
+
+
+@pytest.mark.asyncio
+async def test_wait_n_cleans_losing_waiters():
+    table = JobTable()
+    job = _submit_pending(table)
+    loser = _submit_pending(table)
+    before = asyncio.all_tasks()
+    waiting = asyncio.create_task(handle_wait(table, ["wait", "-n"]))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await table.kill(job.id)
+    try:
+        _, result, _ = await waiting
+        assert result.exit_code == 137
+        assert loser.status is JobStatus.RUNNING
+        assert not (asyncio.all_tasks() - before)
+    finally:
+        await table.kill_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["wait", "wait -n", "fg"])
+async def test_execute_cancellation_interrupts_job_wait(command):
+    ws = _workspace()
+    cancel = asyncio.Event()
+    try:
+        await ws.execute("sleep 3600 &")
+        waiting = asyncio.create_task(ws.execute(command, cancel=cancel))
+        await asyncio.sleep(0)
+        cancel.set()
+        with pytest.raises(MirageAbortError):
+            await asyncio.wait_for(waiting, 2)
+        assert ws.job_table.get(1).status is JobStatus.RUNNING
+    finally:
+        await ws.close()

@@ -21,7 +21,7 @@ import { makeIntegrationWS, run, runExit, runResult } from '../fixtures/integrat
 import { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import type { DispatchFn } from './cross_mount.ts'
-import type { ExecuteNodeFn } from './jobs.ts'
+import type { ExecuteNodeFn } from './types.ts'
 import { handleRedirect } from './redirect.ts'
 
 function encode(s: string): Uint8Array {

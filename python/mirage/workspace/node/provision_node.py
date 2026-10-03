@@ -19,7 +19,7 @@ from typing import Any, Callable
 from mirage.provision import Precision, ProvisionResult
 from mirage.provision.rollup import rollup_list, rollup_pipe
 from mirage.runtime.types import DispatchFn
-from mirage.shell.node_kind import NodeKind, node_kind
+from mirage.shell.syntax.node_kind import NodeKind, node_kind
 from mirage.shell.types import FunctionBody
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import RedirectKind
@@ -39,7 +39,7 @@ from mirage.workspace.provision.pipes import (handle_connection_provision,
 from mirage.workspace.provision.redirect import handle_redirect_provision
 from mirage.workspace.session import Session
 
-from mirage.shell.helpers import (  # isort: skip
+from mirage.shell.syntax.helpers import (  # isort: skip
     get_case_items, get_cfor_parts, get_command_name, get_for_parts,
     get_function_body, get_function_name, get_if_branches, get_list_parts,
     get_negated_command, get_parts, get_pipeline_commands, get_redirects,

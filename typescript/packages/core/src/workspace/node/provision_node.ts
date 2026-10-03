@@ -30,8 +30,8 @@ import {
   getWhileParts,
   hasCommandSubstitution,
   splitEnvPrefix,
-} from '../../shell/helpers.ts'
-import { NodeKind, nodeKind } from '../../shell/node_kind.ts'
+} from '../../shell/syntax/helpers.ts'
+import { NodeKind, nodeKind } from '../../shell/syntax/node_kind.ts'
 import {
   NodeType as NT,
   type Redirect,
@@ -172,7 +172,7 @@ async function provisionRedirected(
  * Walk tree-sitter AST and estimate execution cost.
  *
  * Dispatches on the same NodeKind classification as the executor
- * (`shell/node_kind.ts`), so every construct the executor runs has a
+ * (`shell/syntax/node_kind.ts`), so every construct the executor runs has a
  * planner branch; kinds neither walker supports fall through to an
  * honest UNKNOWN.
  */

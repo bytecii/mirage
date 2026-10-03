@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mirage shell integration</title>
+  </head>
+  <body>
+    Mirage shell integration
+    <script type="module">
+      import { runSuite } from './suite.ts'
+      globalThis.mirageSuite = runSuite
+    </script>
+  </body>
+</html>

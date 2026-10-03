@@ -20,7 +20,7 @@ import { NodeType as NT } from '../../shell/types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
-import type { ExecuteNodeFn } from './jobs.ts'
+import type { ExecuteNodeFn } from './types.ts'
 import { handleConnection, handlePipe, handleSubshell } from './pipes.ts'
 
 function node(text: string): TSNodeLike {

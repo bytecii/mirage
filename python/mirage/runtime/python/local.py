@@ -57,6 +57,7 @@ class LocalRuntime(PythonRuntime):
             config: HomeConfig | dict[str, Any] | None = None,
             script: Callable[..., Any] | ScriptSource | None = None) -> None:
         super().__init__(captures, config, script)
+        self._runs: set[asyncio.Task[RunResult]] = set()
         chosen = self.config.home or os.environ.get(LOCAL_HOME_ENV)
         if chosen:
             resolved = shutil.which(chosen)
@@ -70,6 +71,20 @@ class LocalRuntime(PythonRuntime):
             self._python = sys.executable
 
     async def run(self, args: RunArgs) -> RunResult:
+        task = asyncio.create_task(self._run(args))
+        self._runs.add(task)
+        try:
+            return await task
+        finally:
+            self._runs.discard(task)
+
+    async def close(self) -> None:
+        tasks = tuple(self._runs)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _run(self, args: RunArgs) -> RunResult:
         # Honoring the init switches is just handing them back to the
         # real interpreter, which is why this tier gets them exactly
         # right (sys.flags included) where an in-process engine cannot.
@@ -89,10 +104,13 @@ class LocalRuntime(PythonRuntime):
         )
         try:
             stdout, stderr = await proc.communicate(input=args.stdin)
-        except asyncio.CancelledError:
-            proc.kill()
-            await proc.wait()
-            raise
+        finally:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass  # The child exited between the check and the signal.
+                await proc.wait()
         return RunResult(
             stdout=stdout,
             stderr=stderr or None,

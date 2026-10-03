@@ -12,33 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Awaitable, Sequence
-from typing import NamedTuple, Protocol
-
-import tree_sitter
+from collections.abc import Sequence
+from typing import NamedTuple
 
 from mirage.commands.spec.types import FlagValue
-from mirage.io import IOResult
-from mirage.io.types import ByteSource
-from mirage.shell.call_stack import CallStack
 from mirage.types import PathSpec
-from mirage.workspace.session import Session
-from mirage.workspace.types import ExecutionNode
-
-
-class ExecuteNodeFn(Protocol):
-    """The executor's statement runner, re-entered for function bodies.
-
-    ``handle_command`` receives it from the node dispatcher so a shell
-    function can execute each statement of its body through the full
-    executor without a circular import.
-    """
-
-    def __call__(
-        self, node: tree_sitter.Node, session: Session,
-        stdin: ByteSource | None, call_stack: CallStack
-    ) -> Awaitable[tuple[ByteSource | None, IOResult, ExecutionNode]]:
-        ...
 
 
 class ParsedCommand(NamedTuple):

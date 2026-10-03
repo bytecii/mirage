@@ -13,6 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+from collections.abc import Awaitable
+from typing import TypeVar
 
 
 class MirageAbortError(RuntimeError):
@@ -21,22 +23,36 @@ class MirageAbortError(RuntimeError):
         super().__init__("execute aborted")
 
 
-async def cancellable_sleep(
-    seconds: float,
-    cancel: asyncio.Event | None = None,
-) -> None:
+T = TypeVar("T")
+
+
+async def cancellable(awaitable: Awaitable[T],
+                      cancel: asyncio.Event | None) -> T:
+    """Await owned work and join its cleanup when the caller cancels.
+
+    Args:
+        awaitable (Awaitable[T]): work whose lifetime belongs to this call.
+        cancel (asyncio.Event | None): optional cooperative cancellation event.
+    """
     if cancel is None:
-        await asyncio.sleep(seconds)
-        return
-    if cancel.is_set():
-        raise MirageAbortError()
-    sleep_task = asyncio.create_task(asyncio.sleep(seconds))
-    cancel_task = asyncio.create_task(cancel.wait())
-    done, pending = await asyncio.wait(
-        {sleep_task, cancel_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for p in pending:
-        p.cancel()
-    if cancel_task in done:
-        raise MirageAbortError()
+        return await awaitable
+    work = asyncio.ensure_future(awaitable)
+    cancelled = asyncio.create_task(cancel.wait())
+    tasks = (work, cancelled)
+    try:
+        if cancel.is_set():
+            raise MirageAbortError()
+        done, _ = await asyncio.wait(tasks,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if cancelled in done:
+            raise MirageAbortError()
+        return work.result()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def cancellable_sleep(seconds: float,
+                            cancel: asyncio.Event | None = None) -> None:
+    await cancellable(asyncio.sleep(seconds), cancel)

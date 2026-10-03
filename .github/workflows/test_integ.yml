@@ -387,6 +387,19 @@ jobs:
       - name: Run declarative battery (python hosts)
         run: ./python/.venv/bin/python integ/runners/python/main.py --facet core --strict --allow-skip chroma,lancedb,nextcloud,notion,postgres,qdrant
 
+      - name: Run shell concurrency and lifecycle backend matrix (python)
+        run: ./python/.venv/bin/python integ/runners/python/main.py --suite shell --target ram --target disk --target s3 --target gdrive --target redis --strict
+
+      - name: Measure shell integration coverage (python)
+        run: ./python/.venv/bin/python integ/runners/tools/shell_coverage.py python --check
+      - name: Upload shell coverage (python)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-coverage-python
+          path: coverage/shell/python/
+          if-no-files-found: error
+
   integ-shared-ts:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.core == 'true' || needs.changes.outputs.ts == 'true') }}
@@ -438,7 +451,10 @@ jobs:
       # (integ-shared-py passes build-packages: false). --require-ts turns
       # an absent tsx into a failure rather than a silent half-run.
       - name: Assert the integ runner gates (strict exit, services, case ids)
-        run: ./python/.venv/bin/python integ/runners/tools/gate_selftest.py --require-ts
+        run: |
+          ./python/.venv/bin/python integ/runners/tools/gate_selftest.py --require-ts
+          ./python/.venv/bin/python integ/runners/python/test_harness.py
+          node --import ./integ/node_modules/tsx/dist/loader.mjs --test integ/runners/typescript/execution.test.ts
 
       - name: Run declarative battery (typescript hosts)
         working-directory: integ
@@ -450,6 +466,25 @@ jobs:
       - name: Run curl/wget battery (typescript host)
         working-directory: integ
         run: pnpm exec tsx runners/typescript/main.ts --facet http --strict
+
+      - name: Run shell concurrency and lifecycle backend matrix (typescript)
+        run: node --import ./integ/node_modules/tsx/dist/loader.mjs integ/runners/typescript/main.ts --suite shell --target ram --target disk --target s3 --target gdrive --target redis --strict
+
+      - name: Install headless Chromium for shell integration
+        run: node integ/node_modules/playwright-core/cli.js install --with-deps chromium
+
+      - name: Run native browser shell concurrency and lifecycle integration
+        run: node integ/browser/run.mjs
+
+      - name: Measure shell integration coverage (typescript)
+        run: ./python/.venv/bin/python integ/runners/tools/shell_coverage.py typescript --check
+      - name: Upload shell coverage (typescript)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-coverage-typescript
+          path: coverage/shell/typescript/
+          if-no-files-found: error
 
   # The two jobs above prove each language passes its own battery. This one
   # runs both emitters and diffs them case by case, so a change that breaks

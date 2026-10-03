@@ -2277,15 +2277,19 @@ async def open_target(
     factory = console_factory(target, run_id)
     if consistency is not None:
         ws = Workspace(mounts,
-                       mode=MountMode.WRITE,
+                       mode=MountMode.EXEC
+                       if target.get("mode") == "exec" else MountMode.WRITE,
                        consistency=consistency,
                        agent_id=agent_id,
-                       console_factory=factory)
+                       console_factory=factory,
+                       runtimes=target.get("runtimes"))
     else:
         ws = Workspace(mounts,
-                       mode=MountMode.WRITE,
+                       mode=MountMode.EXEC
+                       if target.get("mode") == "exec" else MountMode.WRITE,
                        agent_id=agent_id,
-                       console_factory=factory)
+                       console_factory=factory,
+                       runtimes=target.get("runtimes"))
     for cli_name in target.get("clis", []):
         spec, config = cli_install(service, cli_name)
         ws.register_cli(cli_name, spec, config)

@@ -33,6 +33,10 @@ export interface ChildShellState {
   cwd: string
   logicalCwd: string | undefined
   sourceDepth: number
+  exitTrap: string | null
+  exitTrapInherited: boolean
+  evalDepth: number
+  runningExitTrap: boolean
   vars: Record<string, ShellVar>
   functions: Record<string, unknown>
   readonlyFunctions: Set<string>
@@ -219,6 +223,10 @@ export class Session {
   // came from a short-circuited &&/|| branch or a `!`-negated command,
   // which bash exempts from errexit. Reset on every node execution.
   errexitImmune: boolean
+  exitTrap: string | null = null
+  exitTrapInherited = false
+  evalDepth = 0
+  runningExitTrap = false
   // Depth of nested `source`/`.` execution: `return` is legal and the
   // program loop absorbs its signal only while a file is being sourced.
   sourceDepth = 0
@@ -351,6 +359,8 @@ export class Session {
       pipelineTimeoutSeconds: overrides.pipelineTimeoutSeconds ?? this.pipelineTimeoutSeconds,
       lastBgJobId: overrides.lastBgJobId ?? this.lastBgJobId,
     })
+    forked.exitTrap = this.exitTrap
+    forked.exitTrapInherited = this.exitTrapInherited
     forked.getoptsPos = this.getoptsPos
     forked.getoptsOptind = this.getoptsOptind
     forked.abortSignal = this.abortSignal
@@ -437,6 +447,10 @@ export class Session {
       cwd: this.cwd,
       logicalCwd: this.logicalCwd,
       sourceDepth: this.sourceDepth,
+      exitTrap: this.exitTrap,
+      exitTrapInherited: this.exitTrapInherited,
+      evalDepth: this.evalDepth,
+      runningExitTrap: this.runningExitTrap,
       vars: copyVars(this.vars),
       functions: ownRecord(this.functions),
       readonlyFunctions: new Set(this.readonlyFunctions),
@@ -463,6 +477,10 @@ export class Session {
     this.cwd = state.cwd
     this.logicalCwd = state.logicalCwd
     this.sourceDepth = state.sourceDepth
+    this.exitTrap = state.exitTrap
+    this.exitTrapInherited = state.exitTrapInherited
+    this.evalDepth = state.evalDepth
+    this.runningExitTrap = state.runningExitTrap
     this.vars = state.vars
     this.functions = state.functions
     this.readonlyFunctions = state.readonlyFunctions

@@ -25,9 +25,11 @@ from mirage.observe.context import RecordingScope
 from mirage.policy import resolve_limit
 from mirage.provision import ProvisionResult
 from mirage.runtime.policy import PolicyDecision, PolicyDeny, PolicyError
-from mirage.shell.parse import (find_syntax_error, find_unterminated_backtick,
-                                parse, syntax_error_result)
-from mirage.workspace.abort import MirageAbortError
+from mirage.shell.errors import ExitSignal
+from mirage.shell.syntax.parse import (find_syntax_error,
+                                       find_unterminated_backtick, parse,
+                                       syntax_error_result)
+from mirage.workspace.abort import MirageAbortError, cancellable
 from mirage.workspace.node import provision_node, run_command_tree
 from mirage.workspace.session import (get_current_session_for,
                                       reset_current_session,
@@ -198,25 +200,27 @@ async def execute_line(
                 name)
         line_runtime = ws._runtimes.whole_line(ast, decision)
         if line_runtime is not None:
-            io = await run_whole_line(
-                line_runtime, command, stdin, effective_session,
-                ws._registry.mounts(), ws._registry.policies,
-                ws._dispatcher.invalidate_all_after_remote)
+            io = await cancellable(
+                run_whole_line(line_runtime, command, stdin, effective_session,
+                               ws._registry.mounts(), ws._registry.policies,
+                               ws._dispatcher.invalidate_all_after_remote),
+                cancel)
             session.last_exit_code = io.exit_code
             return io
-        io, _ = await run_command_tree(
-            ws.dispatch,
-            ws._registry,
-            ws._namespace,
-            ws.job_table,
-            exec_recursion,
-            ws._current_agent_id or "",
-            ast,
-            effective_session,
-            stdin,
-            cancel,
-            routing_decision=decision,
-        )
+        io, _ = await cancellable(
+            run_command_tree(
+                ws.dispatch,
+                ws._registry,
+                ws._namespace,
+                ws.job_table,
+                exec_recursion,
+                ws._current_agent_id or "",
+                ast,
+                effective_session,
+                stdin,
+                cancel,
+                routing_decision=decision,
+            ), cancel)
         session.last_exit_code = io.exit_code
         await ws.apply_io(io, records=scope.records)
         return io
@@ -232,7 +236,7 @@ async def execute_line(
         io = failure_result(exc, command)
         session.last_exit_code = io.exit_code
         return io
-    except (MirageAbortError, ContentDriftError, PolicyError):
+    except (ExitSignal, MirageAbortError, ContentDriftError, PolicyError):
         # The caller's problem, not the line's: an abort it requested,
         # drift it must reconcile, a policy it misconfigured.
         raise

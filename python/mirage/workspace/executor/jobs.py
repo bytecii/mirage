@@ -21,11 +21,15 @@ from mirage.commands.builtin.utils.limit import CommandTimeoutError
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
 from mirage.ops.types import SessionView
+from mirage.shell.call_stack import CallStack
 from mirage.shell.console import Channel, JobConsole
 from mirage.shell.errors import ExitSignal
-from mirage.shell.helpers import get_text
 from mirage.shell.job_table import Job, JobStatus, JobTable
+from mirage.shell.syntax.helpers import get_text
 from mirage.workspace.executor.builtins.getopt import scan_options
+from mirage.workspace.executor.traps import finish_shell
+from mirage.workspace.executor.types import (ExecuteFn, ExecuteNodeFn,
+                                             ExecutionResult)
 from mirage.workspace.session import (Session, reset_current_session,
                                       set_current_session)
 from mirage.workspace.types import ExecutionNode
@@ -57,24 +61,27 @@ async def pump(console: JobConsole, channel: Channel,
 
 
 async def handle_background(
-    execute_node,
+    execute_node: ExecuteNodeFn,
     left: tree_sitter.Node,
     right: tree_sitter.Node | None,
     session: Session,
     job_table: JobTable,
     agent_id: str | None,
     stdin: ByteSource | None = None,
-    call_stack=None,
-) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+    call_stack: CallStack | None = None,
+    execute_fn: ExecuteFn | None = None,
+) -> ExecutionResult:
     """Run left side in background."""
     bg_session = session.fork()
+    bg_session.exit_trap_inherited = True
+    bg_session.eval_depth = 1
 
     async def _run_bg(job: Job) -> tuple[IOResult, ExecutionNode]:
         # Background jobs don't receive stdin, matching real shell
         # behavior where bg processes get /dev/null. This prevents
         # race conditions when stdin is an async iterator.
         console = job.console
-        cmd_str_inner = get_text(left) if hasattr(left, "text") else str(left)
+        cmd_str_inner = get_text(left)
         # The task's context snapshot still points at the OUTER session
         # (create_task copies the context before the fork can be bound),
         # and the fork keeps its parent's id, so without this rebind a
@@ -82,6 +89,7 @@ async def handle_background(
         # and escapes the fork.
         token = set_current_session(bg_session)
         try:
+            timed_out = False
             try:
                 # Handing the console down as a sink is what makes
                 # compound bodies stream: each statement writes as it
@@ -95,6 +103,7 @@ async def handle_background(
                                                            call_stack,
                                                            sink=console)
             except CommandTimeoutError as exc:
+                timed_out = True
                 msg = (str(exc) + "\n").encode()
                 stdout = b""
                 io = IOResult(exit_code=124, stderr=msg)
@@ -110,6 +119,9 @@ async def handle_background(
                 exec_node = ExecutionNode(command=cmd_str_inner,
                                           stderr=sig.stderr,
                                           exit_code=sig.contained_code)
+            if not timed_out:
+                stdout, io, exec_node = await finish_shell(
+                    execute_fn, bg_session, (stdout, io, exec_node))
             # Drain inside the rebind: pumping the stream can still run
             # ops that read the ambient session.
             await pump(console, Channel.STDOUT, stdout)
@@ -120,7 +132,7 @@ async def handle_background(
         finally:
             reset_current_session(token)
 
-    cmd_str = get_text(left) if hasattr(left, 'text') else str(left)
+    cmd_str = get_text(left)
 
     # Non-interactive bash announces nothing on launch ("[1] <pid>" is
     # interactive-only); the job stays discoverable via $! and `jobs`.
@@ -153,9 +165,7 @@ _DISOWN_USAGE = "disown: usage: disown [-h] [-ar] [jobspec ... | pid ...]"
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def _job_result(
-        cmd_str: str, msg: str,
-        code: int) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+def _job_result(cmd_str: str, msg: str, code: int) -> ExecutionResult:
     err = msg.encode()
     return None, IOResult(exit_code=code,
                           stderr=err), ExecutionNode(command=cmd_str,
@@ -200,17 +210,19 @@ async def _wait_first(job_table: JobTable, jobs: list[Job]) -> Job:
         asyncio.ensure_future(job_table.wait(job.id)): job
         for job in jobs
     }
-    done, pending = await asyncio.wait(tasks,
-                                       return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    first = min(done, key=lambda t: tasks[t].id)
-    return tasks[first]
+    try:
+        done, _ = await asyncio.wait(tasks,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        first = min(done, key=lambda t: tasks[t].id)
+        return first.result()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _adopt(
-        job_table: JobTable, job: Job,
-        cmd_str: str) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+async def _adopt(job_table: JobTable, job: Job,
+                 cmd_str: str) -> ExecutionResult:
     """Report one finished job's output and status, and reap it.
 
     Args:
@@ -234,7 +246,7 @@ async def handle_wait(
     parts: list[str],
     session: Session | None = None,
     view: SessionView | None = None,
-) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+) -> ExecutionResult:
     """Wait for background jobs, with bash's option surface.
 
     Bare `wait` joins every job and adopts each one's output in id
@@ -388,7 +400,7 @@ async def handle_disown(
     parts: list[str],
     session: Session | None = None,
     view: SessionView | None = None,
-) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+) -> ExecutionResult:
     """Drop jobs from the table without stopping them.
 
     bash's grammar: no operand means the current job (the newest), `-a`
@@ -447,7 +459,7 @@ async def handle_fg(
     parts: list[str],
     session: Session | None = None,
     view: SessionView | None = None,
-) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+) -> ExecutionResult:
     """Foreground a background job: print its command line, then block
     on it and adopt its output and exit code.
 
@@ -498,7 +510,7 @@ async def handle_kill(
     parts: list[str],
     session: Session | None = None,
     view: SessionView | None = None,
-) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+) -> ExecutionResult:
     cmd_str = " ".join(parts)
     if len(parts) < 2:
         err = b"kill: usage: kill <job_id>\n"
@@ -549,7 +561,7 @@ async def handle_jobs(
     parts: list[str],
     session: Session | None = None,
     view: SessionView | None = None,
-) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+) -> ExecutionResult:
     """List jobs, with bash's flags applied to mirage's row shape.
 
     Mirage jobs are identified by table id, not pid, and never stop, so
@@ -614,7 +626,7 @@ async def handle_ps(
     parts: list[str],
     session: Session | None = None,
     view: SessionView | None = None,
-) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+) -> ExecutionResult:
     cmd_str = " ".join(parts)
     running = job_table.running_jobs()
     lines = []

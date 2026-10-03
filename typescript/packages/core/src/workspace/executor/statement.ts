@@ -12,6 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { ExitSignal } from '../../shell/errors.ts'
+import { concat } from '../../io/cachable_iterator.ts'
+import { materialize } from '../../io/types.ts'
 import type { ByteSource, IOResult } from '../../io/types.ts'
 import { applyBarrier, BarrierPolicy } from '../../shell/barrier.ts'
 import type { Session } from '../session/session.ts'
@@ -46,4 +49,15 @@ export async function finishStatement(
 export function assignmentStatus(session: Session, seqBefore: number): number {
   if (session.cmdsubSeq !== seqBefore) return session.cmdsubStatus
   return 0
+}
+
+/** Keep completed output while an exit unwinds a statement list. */
+export async function prependExitOutput(
+  sig: ExitSignal,
+  stdout: ByteSource | null,
+  io: IOResult,
+): Promise<ExitSignal> {
+  sig.stdout = concat([await materialize(stdout), sig.stdout ?? new Uint8Array()])
+  sig.stderr = concat([await materialize(io.stderr), sig.stderr])
+  return sig
 }

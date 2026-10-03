@@ -40,7 +40,7 @@ export class LocalRuntime extends PythonRuntime {
   // one builtin runtime that voids a world's sandbox claim.
   override readonly reach = 'process'
   private readonly python: string
-  private readonly children = new Set<ChildProcess>()
+  private readonly children = new Map<ChildProcess, Promise<void>>()
 
   constructor(options: RuntimeOptions = {}) {
     super(options, HOME_CONFIG_KEYS)
@@ -59,14 +59,19 @@ export class LocalRuntime extends PythonRuntime {
         env: { ...process.env, ...args.env },
         ...(args.signal !== undefined ? { signal: args.signal, killSignal: 'SIGKILL' } : {}),
       })
-      this.children.add(child)
+      const closed = new Promise<void>((done) => {
+        child.once('close', () => {
+          this.children.delete(child)
+          done()
+        })
+      })
+      this.children.set(child, closed)
       const out: Buffer[] = []
       const err: Buffer[] = []
       child.stdout.on('data', (chunk: Buffer) => out.push(chunk))
       child.stderr.on('data', (chunk: Buffer) => err.push(chunk))
       child.on('error', (error: NodeJS.ErrnoException) => {
         if (error.name === 'AbortError') return
-        this.children.delete(child)
         reject(
           error.code === 'ENOENT'
             ? new Error(
@@ -77,7 +82,6 @@ export class LocalRuntime extends PythonRuntime {
         )
       })
       child.on('close', (code) => {
-        this.children.delete(child)
         const stderr = Buffer.concat(err)
         resolve({
           stdout: new Uint8Array(Buffer.concat(out)),
@@ -96,10 +100,12 @@ export class LocalRuntime extends PythonRuntime {
     })
   }
 
-  override close(): Promise<void> {
-    for (const child of this.children) child.kill('SIGKILL')
-    this.children.clear()
-    return Promise.resolve()
+  override async close(): Promise<void> {
+    const children = [...this.children]
+    for (const [child] of children) child.kill('SIGKILL')
+    // Sending the signal is not a join: streams and process handles stay
+    // alive until close. A workspace must await both before releasing resources.
+    await Promise.all(children.map(([, closed]) => closed))
   }
 }
 

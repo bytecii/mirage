@@ -27,23 +27,17 @@ export { handleChgrp, handleChmod, handleChown, handleTouch } from './metadata.t
 export {
   handleDeclareFunctions,
   handleDeclarePrint,
-  handleEnv,
-  handleExit,
   handleExport,
-  handleGetopts,
   handleLet,
   handleLocal,
-  handlePrintenv,
-  handleRead,
   handleReadonly,
-  handleReturn,
-  handleSet,
-  handleShift,
-  handleTrap,
   handleUnset,
-  handleWhoami,
   noteLocalArray,
 } from './vars.ts'
+export { handleEnv, handlePrintenv, handleWhoami } from './environment.ts'
+export { handleExit, handleReturn } from './flow.ts'
+export { handleGetopts, handleSet, handleShift } from './positional.ts'
+export { handleRead } from './read.ts'
 export { handleMan } from './man.ts'
 export { handleMapfile } from './mapfile.ts'
 export { handleShopt } from './shopt.ts'
@@ -58,3 +52,5 @@ export { handleXargs } from './xargs.ts'
 export { handleCommandBuiltin } from './command.ts'
 export { handleType, handleWhich } from './lookup/index.ts'
 export { handleEcho, handlePrintf } from './text.ts'
+
+export { handleTrap } from './trap.ts'

@@ -1,0 +1,287 @@
+{
+  "family": "shell-concurrency",
+  "cases": [
+    {
+      "id": "shell_concurrent_call_env",
+      "seq": 509000,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "concurrent": [
+        {
+          "command": "sleep 0.01; eval 'echo $LABEL'; echo $(echo $LABEL)",
+          "expect": {
+            "exit": 0,
+            "stdout": "left\nleft\n",
+            "stderr": ""
+          },
+          "env": {
+            "LABEL": "left"
+          }
+        },
+        {
+          "command": "eval 'echo $LABEL'; sleep 0.02; echo $(echo $LABEL)",
+          "expect": {
+            "exit": 0,
+            "stdout": "right\nright\n",
+            "stderr": ""
+          },
+          "env": {
+            "LABEL": "right"
+          }
+        }
+      ],
+      "command": "echo ${LABEL-unset}",
+      "expect": {
+        "exit": 0,
+        "stdout": "unset\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_concurrent_file_writes",
+      "seq": 509001,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "concurrent": [
+        {
+          "command": "printf 'left\\n' > {mount}/async-left; cat {mount}/async-left",
+          "expect": {
+            "exit": 0,
+            "stdout": "left\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "printf 'right\\n' > {mount}/async-right; cat {mount}/async-right",
+          "expect": {
+            "exit": 0,
+            "stdout": "right\n",
+            "stderr": ""
+          }
+        }
+      ],
+      "command": "cat {mount}/async-left {mount}/async-right",
+      "expect": {
+        "exit": 0,
+        "stdout": "left\nright\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_concurrent_cwd",
+      "seq": 509002,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "concurrent": [
+        {
+          "command": "sleep 0.01; eval 'pwd'; printf 'left\\n' > value; cat value",
+          "expect": {
+            "exit": 0,
+            "stdout": "{mount}/async-a\nleft\n",
+            "stderr": ""
+          },
+          "cwd": "{mount}/async-a"
+        },
+        {
+          "command": "eval 'pwd'; printf 'right\\n' > value; sleep 0.02; cat value",
+          "expect": {
+            "exit": 0,
+            "stdout": "{mount}/async-b\nright\n",
+            "stderr": ""
+          },
+          "cwd": "{mount}/async-b"
+        }
+      ],
+      "command": "cat {mount}/async-a/value {mount}/async-b/value",
+      "expect": {
+        "exit": 0,
+        "stdout": "left\nright\n",
+        "stderr": ""
+      },
+      "setup": "mkdir -p {mount}/async-a {mount}/async-b"
+    },
+    {
+      "id": "shell_concurrent_failure_isolated",
+      "seq": 509003,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "concurrent": [
+        {
+          "command": "sleep 0.01; echo left; exit 7",
+          "env": {
+            "LABEL": "left"
+          },
+          "expect": {
+            "exit": 7,
+            "stdout": "left\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "sleep 0.02; echo right",
+          "expect": {
+            "exit": 0,
+            "stdout": "right\n",
+            "stderr": ""
+          },
+          "env": {
+            "LABEL": "right"
+          }
+        }
+      ],
+      "command": "echo alive",
+      "expect": {
+        "exit": 0,
+        "stdout": "alive\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_timeout_cancels_before_write",
+      "seq": 509010,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "command": "timeout 0.02 sh -c 'sleep 0.08; echo BAD > {mount}/timeout-late'; echo $?; sleep 0.12; test -e {mount}/timeout-late; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "124\n1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_concurrent_rendezvous",
+      "seq": 509011,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "concurrent": [
+        {
+          "command": "echo left > {mount}/rendezvous-left; while [ ! -f {mount}/rendezvous-right ]; do sleep 0.01; done; cat {mount}/rendezvous-right",
+          "expect": {
+            "exit": 0,
+            "stdout": "right\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "echo right > {mount}/rendezvous-right; while [ ! -f {mount}/rendezvous-left ]; do sleep 0.01; done; cat {mount}/rendezvous-left",
+          "expect": {
+            "exit": 0,
+            "stdout": "left\n",
+            "stderr": ""
+          }
+        }
+      ],
+      "command": "rm {mount}/rendezvous-left {mount}/rendezvous-right; echo joined",
+      "expect": {
+        "exit": 0,
+        "stdout": "joined\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_concurrent_trap_cleanup",
+      "seq": 509006,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "concurrent": [
+        {
+          "command": "bash -c 'trap '\"'\"'sleep .01; echo $LABEL > {mount}/trap-left'\"'\"' EXIT; echo body:$LABEL'",
+          "env": {
+            "LABEL": "left"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "body:left\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "bash -c 'trap '\"'\"'sleep .01; echo $LABEL > {mount}/trap-right'\"'\"' EXIT; echo body:$LABEL'",
+          "env": {
+            "LABEL": "right"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "body:right\n",
+            "stderr": ""
+          }
+        }
+      ],
+      "command": "cat {mount}/trap-left {mount}/trap-right; trap -p",
+      "expect": {
+        "exit": 0,
+        "stdout": "left\nright\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_trap_kill_skips_cleanup",
+      "seq": 509007,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "command": "{ trap 'echo BAD > {mount}/trap-kill-late' EXIT; echo ready > {mount}/trap-kill-ready; sleep 3600; } & victim=$!; while ! test -e {mount}/trap-kill-ready; do sleep .01; done; kill $victim; wait $victim >/dev/null 2>/dev/null; test -e {mount}/trap-kill-late; echo present:$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "present:1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_trap_kill_during_cleanup",
+      "seq": 509008,
+      "targets": [
+        "ram",
+        "disk",
+        "s3",
+        "gdrive",
+        "redis"
+      ],
+      "command": "{ trap 'echo ready > {mount}/trap-cleaning-ready; sleep 3600; echo BAD > {mount}/trap-cleaning-late' EXIT; true; } & victim=$!; while ! test -e {mount}/trap-cleaning-ready; do sleep .01; done; kill $victim; wait $victim >/dev/null 2>/dev/null; test -e {mount}/trap-cleaning-late; echo present:$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "present:1\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

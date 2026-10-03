@@ -22,10 +22,13 @@ import type { JobConsole } from '../../shell/console/job_console.ts'
 import type { Resource } from '../../resource/base.ts'
 import { getCurrentSessionFor, runWithSession } from '../../context/session_context.ts'
 import type { JobTable } from '../../shell/job_table/index.ts'
-import { findSyntaxError, findUnterminatedBacktick, type ShellParser } from '../../shell/parse.ts'
+import { findSyntaxError, findUnterminatedBacktick } from '../../shell/syntax/parse.ts'
+import type { ShellParser } from '../../shell/types.ts'
 import type { ProvisionResult } from '../../provision/types.ts'
 import { errorVirtualPath, gnuStrerror } from '../../utils/errors.ts'
-import { makeAbortError } from '../abort.ts'
+import { ExitSignal } from '../../shell/errors.ts'
+import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
+import { mergeSignals, makeAbortError } from '../abort.ts'
 import type { Dispatcher } from '../dispatcher/index.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import { PolicyDeny, type PolicyDecision } from '../../runtime/policy/index.ts'
@@ -147,8 +150,10 @@ export async function executeLine(
   env: ExecuteEnv,
   command: string,
   options: ExecuteOptions,
+  scope?: Session,
 ): Promise<ExecuteResult | ProvisionResult> {
-  const result = await runLine(env, command, options)
+  const result = await runLine(env, command, options, scope)
+  if (options.signal?.aborted === true) throw makeAbortError()
   const sink = options.sink
   // A provision run answers with a plan, not output, so it has nothing
   // to stream.
@@ -167,6 +172,7 @@ async function runLine(
   env: ExecuteEnv,
   command: string,
   options: ExecuteOptions,
+  scope?: Session,
 ): Promise<ExecuteResult | ProvisionResult> {
   if (options.signal?.aborted === true) {
     throw makeAbortError()
@@ -200,11 +206,13 @@ async function runLine(
   // Only this workspace's own binding counts: a session carries one
   // workspace's cwd, env and mount grants, so a callback reaching a
   // second workspace must resolve that workspace's session instead.
-  const ambient = getCurrentSessionFor(env.sessions)
+  const ambient = asyncContextIsolatesTasks ? getCurrentSessionFor(env.sessions) : null
   const targetSession =
-    ambient !== null && (options.sessionId === undefined || options.sessionId === ambient.sessionId)
+    scope ??
+    (ambient !== null &&
+    (options.sessionId === undefined || options.sessionId === ambient.sessionId)
       ? ambient
-      : env.sessions.get(options.sessionId ?? env.sessions.defaultId)
+      : env.sessions.get(options.sessionId ?? env.sessions.defaultId))
   let routingDecision: PolicyDecision | null
   try {
     routingDecision = await env.policyRouter.decide(rootNode, command, options, targetSession)
@@ -226,7 +234,11 @@ async function runLine(
       record: false,
       sessionId: opts.sessionId,
     }
-    if (options.signal !== undefined) innerOpts.signal = options.signal
+    const signal = mergeSignals(
+      mergeSignals(options.signal, opts.signal),
+      opts.session?.abortSignal,
+    )
+    if (signal !== undefined) innerOpts.signal = signal
     // Nested lines never re-route: the evaluator's inner lines keep
     // the typed line's decision (runtime argument, policy, or scripts).
     if (routingDecision !== null) innerOpts.routingDecision = routingDecision
@@ -234,7 +246,7 @@ async function runLine(
     // stdin so `... | command cat` filters the upstream output; the same
     // path carries `echo hi | bash -c 'cat'` into the inner line.
     if (opts.stdin !== undefined && opts.stdin !== null) innerOpts.stdin = opts.stdin
-    const res = await env.execute(cmd, innerOpts)
+    const res = (await executeLine(env, cmd, innerOpts, opts.session)) as ExecuteResult
     return new IOResult({
       exitCode: res.exitCode,
       stdout: res.stdout,
@@ -337,7 +349,7 @@ async function runParsedLine(
     // execution failure (timeout, usage error, an unsupported shell
     // construct) is surfaced as a failed command rather than crashing
     // the caller.
-    if (isControlFlowError(err)) throw err
+    if (err instanceof ExitSignal || isControlFlowError(err)) throw err
     const failed = failureResult(err)
     targetSession.lastExitCode = failed.exitCode
     return new ExecuteResult(new Uint8Array(), failed.stderr, failed.exitCode)

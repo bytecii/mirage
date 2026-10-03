@@ -126,6 +126,7 @@ export async function handleMapfile(
       // with `sh_single_quote`, so a record reading `x; rm f` arrives as
       // one argument rather than running a second command.
       const io = await executeFn(`${callback} ${String(index)} ${singleQuote(text)}`, {
+        session,
         sessionId: session.sessionId,
       })
       const out = await materialize(io.stdout)

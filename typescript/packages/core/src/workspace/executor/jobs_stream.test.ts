@@ -12,11 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { RAMResource } from '../../resource/ram/ram.ts'
 import { Channel } from '../../shell/console/index.ts'
 import { JobStatus } from '../../shell/job_table/index.ts'
-import type { ShellParser } from '../../shell/parse.ts'
+import type { ShellParser } from '../../shell/types.ts'
 import { MountMode } from '../../types.ts'
 import { getTestParser } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace.ts'
@@ -29,70 +29,51 @@ beforeAll(async () => {
   parser = await getTestParser()
 })
 
+const workspaces: Workspace[] = []
+
+afterEach(async () => {
+  await Promise.all(workspaces.splice(0).map((ws) => ws.close()))
+})
+
 function buildWs(): Workspace {
-  return new Workspace(
+  const workspace = new Workspace(
     { '/m': [new RAMResource(), MountMode.WRITE] },
     { mode: MountMode.WRITE, shellParser: parser },
   )
+  workspaces.push(workspace)
+  return workspace
 }
 
 /** Run a backgrounded command and return its finished console. */
 async function runBg(cmd: string): Promise<{ out: string; err: string }> {
   const ws = buildWs()
-  await ws.execute(cmd)
-  await ws.jobTable.wait(1)
-  const job = ws.jobTable.get(1)
-  if (job === null) throw new Error('job 1 missing')
-  return {
-    out: DEC.decode(await job.console.snapshot(Channel.STDOUT)),
-    err: DEC.decode(await job.console.snapshot(Channel.STDERR)),
+  try {
+    await ws.execute(cmd)
+    await ws.jobTable.wait(1)
+    const job = ws.jobTable.get(1)
+    if (job === null) throw new Error('job 1 missing')
+    return {
+      out: DEC.decode(await job.console.snapshot(Channel.STDOUT)),
+      err: DEC.decode(await job.console.snapshot(Channel.STDERR)),
+    }
+  } finally {
+    await ws.close()
   }
 }
 
 describe('streaming: output lands while the job is still running', () => {
-  it('streams each loop iteration instead of batching at the end', async () => {
+  it('streams before the job finishes', async () => {
     const ws = buildWs()
-    await ws.execute('for i in 1 2 3; do echo $i; sleep 0.25; done &')
+    await ws.execute('for i in 1 2; do echo $i; sleep 3600; done &')
     const job = ws.jobTable.get(1)
     if (job === null) throw new Error('job 1 missing')
-
-    await new Promise((resolve) => setTimeout(resolve, 350))
-    const mid = DEC.decode(await job.console.snapshot(Channel.STDOUT))
-
-    await ws.jobTable.wait(1)
-    const end = DEC.decode(await job.console.snapshot(Channel.STDOUT))
-
-    expect(end).toBe('1\n2\n3\n')
-    // Without the sink the whole construct is pumped at completion, so
-    // a mid-run snapshot is empty.
-    expect(mid).not.toBe('')
-    expect(end.startsWith(mid)).toBe(true)
-    expect(mid).not.toBe(end)
-  })
-
-  it.each([
-    ['echo one && echo two &', 'one\ntwo\n'],
-    ['(echo s1; echo s2) &', 's1\ns2\n'],
-    ['if true; then echo yes; fi &', 'yes\n'],
-    ['i=0; while [ $i -lt 2 ]; do echo w$i; i=$((i+1)); done &', 'w0\nw1\n'],
-    ['for i in a b; do echo $i; done &', 'a\nb\n'],
-  ])('feeds the console for %s', async (cmd, expected) => {
-    const { out } = await runBg(cmd)
-    expect(out).toBe(expected)
+    await job.console.store.wait(0, AbortSignal.timeout(2000))
+    expect(job.status).toBe(JobStatus.RUNNING)
+    expect(DEC.decode(await job.console.snapshot(Channel.STDOUT))).toBe('1\n')
   })
 })
 
 describe('capture sites: a sink must never leak into a captured value', () => {
-  it('does not leak command substitution', async () => {
-    const { out } = await runBg('echo $(echo inner) &')
-    expect(out).toBe('inner\n')
-  })
-
-  it('does not leak intermediate pipe stages', async () => {
-    const { out } = await runBg("printf 'a\\nb\\n' | grep b &")
-    expect(out).toBe('b\n')
-  })
-
   it('sends redirected output to the file, not the console', async () => {
     const ws = buildWs()
     await ws.execute('echo hi > /m/f.txt &')
@@ -111,41 +92,6 @@ describe('capture sites: a sink must never leak into a captured value', () => {
   })
 })
 
-describe('bare wait adopts job output', () => {
-  // A real shell has nothing to adopt because its jobs share the
-  // terminal. Mirage jobs print to their console, so bare `wait` has to
-  // surface it or the output is stranded.
-  it('surfaces every job in id order', async () => {
-    const ws = buildWs()
-    await ws.execute('echo a &')
-    await ws.execute('echo b &')
-    const res = await ws.execute('wait')
-    expect(res.stdoutText).toBe('a\nb\n')
-  })
-
-  it('returns nothing and exit 0 when there are no jobs', async () => {
-    const ws = buildWs()
-    const res = await ws.execute('wait')
-    expect(res.stdoutText).toBe('')
-    expect(res.exitCode).toBe(0)
-  })
-
-  // A job started inside a backgrounded subshell has to reach its own
-  // console, not the enclosing job's. The subshell's executor closure is
-  // the only one built by hand, so it is the only one that can drop the
-  // per-call opts carrying that console; when it does, both nested jobs
-  // write straight to the outer console and bare `wait` adopts nothing,
-  // which turns the documented job-id order into completion order.
-  it('gives a job nested in a backgrounded subshell its own console', async () => {
-    const ws = buildWs()
-    await ws.execute('( (sleep 0.15; echo a) & echo b & wait ) &')
-    await ws.jobTable.wait(1)
-    const job = ws.jobTable.get(1)
-    if (job === null) throw new Error('job 1 missing')
-    expect(DEC.decode(await job.console.snapshot(Channel.STDOUT))).toBe('a\nb\n')
-  })
-})
-
 describe('kill reaches a real running command', () => {
   it('stops a job that is already mid-flight, not one still queued', async () => {
     const ws = buildWs()
@@ -158,11 +104,7 @@ describe('kill reaches a real running command', () => {
     // Wait until the job is genuinely inside the long command. Killing
     // before it starts would pass on the entry check alone and prove
     // nothing about aborting work in progress.
-    const deadline = Date.now() + 3000
-    while (DEC.decode(await job.console.snapshot(Channel.STDOUT)) === '') {
-      if (Date.now() > deadline) throw new Error('job never started')
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
+    await job.console.store.wait(0, AbortSignal.timeout(3000))
 
     const started = Date.now()
     await ws.execute('kill %1')
@@ -173,5 +115,16 @@ describe('kill reaches a real running command', () => {
     // Without a signal reaching the executor this waits the full 10s
     // for `sleep` to finish on its own.
     expect(elapsed).toBeLessThan(3000)
+  })
+})
+
+describe('background stdin', () => {
+  it('leaves stdin for the foreground command', async () => {
+    const ws = buildWs()
+    ws.getSession(ws.defaultSessionId).cwd = '/m'
+    const result = await ws.execute('sleep 0 & cat', {
+      stdin: new TextEncoder().encode('hello\n'),
+    })
+    expect(result.stdoutText).toBe('hello\n')
   })
 })

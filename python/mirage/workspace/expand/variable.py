@@ -26,7 +26,7 @@ from mirage.shell.array import (ShellArray, array_extent, array_get, array_has,
 from mirage.shell.call_stack import CallStack
 from mirage.shell.errors import ArithError, ExitSignal
 from mirage.shell.escapes import decode_ansi_c
-from mirage.shell.helpers import get_text
+from mirage.shell.syntax.helpers import get_text
 from mirage.shell.types import ElementOps
 from mirage.shell.types import NodeType as NT
 from mirage.utils.fnmatch import fnmatch

@@ -506,14 +506,6 @@ def test_shift():
     assert io.exit_code == 0
 
 
-# ── trap ────────────────────────────────────────
-
-
-def test_trap():
-    _, io, _, _, _, _ = _exec("trap")
-    assert io.exit_code == 0
-
-
 # ── return ──────────────────────────────────────
 
 

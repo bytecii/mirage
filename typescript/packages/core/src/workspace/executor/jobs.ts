@@ -28,22 +28,8 @@ import type { Session } from '../session/session.ts'
 import { scanOptions } from './builtins/getopt.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { ExecutionNode } from '../types.ts'
-
-/** Per-call overrides a caller can layer onto the walker's deps. */
-export interface ExecuteNodeOpts {
-  sink?: JobConsole
-  signal?: AbortSignal
-}
-
-export type ExecuteNodeFn = (
-  node: TSNodeLike,
-  session: Session,
-  stdin: ByteSource | null,
-  callStack: CallStack | null,
-  opts?: ExecuteNodeOpts,
-) => Promise<[ByteSource | null, IOResult, ExecutionNode]>
-
-export type JobHandlerResult = [ByteSource | null, IOResult, ExecutionNode]
+import { finishShell } from './traps.ts'
+import type { ExecuteFn, ExecuteNodeFn, ExecutionResult } from './types.ts'
 
 /**
  * Send a command's output to a console as chunks arrive.
@@ -77,8 +63,11 @@ export async function handleBackground(
   agentId: string | null,
   stdin: ByteSource | null = null,
   callStack: CallStack | null = null,
-): Promise<JobHandlerResult> {
+  executeFn?: ExecuteFn,
+): Promise<ExecutionResult> {
   const bgSession = session.fork()
+  bgSession.exitTrapInherited = true
+  bgSession.evalDepth = 1
 
   const abort = new AbortController()
   // `kill %n` aborts this controller; the signal rides the forked
@@ -92,6 +81,7 @@ export async function handleBackground(
       let stdout: ByteSource | null
       let io: IOResult
       let execNode: ExecutionNode
+      let timedOut = false
       try {
         // The sink is what makes compound bodies stream: each statement
         // writes as it finishes rather than the whole construct landing
@@ -103,6 +93,7 @@ export async function handleBackground(
         })
       } catch (err) {
         if (err instanceof CommandTimeoutError) {
+          timedOut = true
           const msg = new TextEncoder().encode(`${err.message}\n`)
           stdout = new Uint8Array()
           io = new IOResult({ exitCode: 124, stderr: msg })
@@ -120,6 +111,9 @@ export async function handleBackground(
           throw err
         }
       }
+      if (!timedOut) {
+        ;[stdout, io, execNode] = await finishShell(executeFn, bgSession, [stdout, io, execNode])
+      }
       // Drained inside the rebind: pumping the stream can still run
       // ops that read the ambient session.
       await pump(console_, Channel.STDOUT, stdout)
@@ -129,19 +123,9 @@ export async function handleBackground(
       }
       return [io, execNode]
     }
-    // The runner's task inherits the OUTER ambient session from its
-    // creation context, and the fork keeps its parent's id, so without
-    // this rebind a nested eval inside the job resolves the ambient
-    // outer session and escapes the fork.
-    //
-    // A job runs concurrently with the rest of the line, so the bind is
-    // only safe where the async context isolates tasks. On the fallback
-    // storage (a browser with no AsyncLocalStorage) it is one global
-    // slot that would stay set while the foreground continues, showing
-    // the job's fork to the rest of the line. There the job's inner
-    // evals resolve by id instead, which is what they did before
-    // ambient sessions existed: a job that leaks into its own nested
-    // eval is narrower than a job that leaks into the whole line.
+    // Bind the fork where the runtime isolates concurrent async contexts.
+    // Browser nested evaluations carry their Session explicitly; rebinding
+    // the fallback global slot here would expose the fork to the foreground.
     return asyncContextIsolatesTasks ? runWithSession(bgSession, body) : body()
   }
 
@@ -181,7 +165,7 @@ const WAIT_USAGE = 'wait: usage: wait [-fn] [-p var] [id ...]'
 const DISOWN_USAGE = 'disown: usage: disown [-h] [-ar] [jobspec ... | pid ...]'
 const JOB_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-function jobResult(cmdStr: string, msg: string, code: number): JobHandlerResult {
+function jobResult(cmdStr: string, msg: string, code: number): ExecutionResult {
   const err = new TextEncoder().encode(msg)
   return [
     null,
@@ -211,16 +195,21 @@ function resolveSpec(jobTable: JobTable, spec: string): [Job | null, string] {
 }
 
 /** Block until the first of several jobs ends, and return it. */
-async function waitFirst(jobTable: JobTable, jobs: Job[]): Promise<Job> {
+async function waitFirst(jobTable: JobTable, jobs: Job[], signal?: AbortSignal): Promise<Job> {
   for (const job of jobs) {
-    if (job.status !== JobStatus.RUNNING) return await jobTable.wait(job.id)
+    if (job.status !== JobStatus.RUNNING) return await jobTable.wait(job.id, signal)
   }
-  const races = jobs.map(async (job) => await jobTable.wait(job.id))
-  return await Promise.race(races)
+  const abort = new AbortController()
+  const waiting = mergeSignals(signal, abort.signal)
+  try {
+    return await Promise.race(jobs.map(async (job) => await jobTable.wait(job.id, waiting)))
+  } finally {
+    abort.abort()
+  }
 }
 
 /** Report one finished job's output and status, and reap it. */
-async function adopt(jobTable: JobTable, job: Job, cmdStr: string): Promise<JobHandlerResult> {
+async function adopt(jobTable: JobTable, job: Job, cmdStr: string): Promise<ExecutionResult> {
   const stdout = await job.console.snapshot(Channel.STDOUT)
   const stderr = await job.console.snapshot(Channel.STDERR)
   // Reaped like GNU bash reaps a job waited on by id, so a later bare
@@ -253,7 +242,8 @@ export async function handleWait(
   parts: string[],
   _session: Session | null = null,
   view: SessionView | null = null,
-): Promise<JobHandlerResult> {
+  signal?: AbortSignal,
+): Promise<ExecutionResult> {
   const cmdStr = parts.join(' ')
   let nextJob = false
   let varName: string | null = null
@@ -332,7 +322,7 @@ export async function handleWait(
         new ExecutionNode({ command: cmdStr, exitCode: 127 }),
       ]
     }
-    const job = await waitFirst(jobTable, candidates)
+    const job = await waitFirst(jobTable, candidates, signal)
     if (varName !== null && view !== null) await view.set(varName, String(job.id))
     const [stdout, io, node] = await adopt(jobTable, job, cmdStr)
     if (errBytes !== null) {
@@ -348,7 +338,7 @@ export async function handleWait(
     // by job id, because jobs finish concurrently and completion order
     // is not reproducible. Reaped afterwards so a second `wait` does not
     // print the same output twice.
-    await jobTable.waitAll()
+    await jobTable.waitAll(signal)
     const finished = jobTable.listJobs().sort((a, b) => a.id - b.id)
     const outs: Uint8Array[] = []
     const errs: Uint8Array[] = []
@@ -377,7 +367,7 @@ export async function handleWait(
   let lastCode = 0
   let lastJob: Job | null = null
   for (const job of picked) {
-    const finished = await jobTable.wait(job.id)
+    const finished = await jobTable.wait(job.id, signal)
     const [stdout, io] = await adopt(jobTable, finished, cmdStr)
     if (stdout instanceof Uint8Array && stdout.byteLength > 0) outs.push(stdout)
     if (io.stderr instanceof Uint8Array && io.stderr.byteLength > 0) errs.push(io.stderr)
@@ -411,7 +401,7 @@ export function handleDisown(
   parts: string[],
   _session: Session | null = null,
   _view: SessionView | null = null,
-): JobHandlerResult {
+): ExecutionResult {
   const cmdStr = parts.join(' ')
   const scan = scanOptions(parts.slice(1), 'arh')
   if (scan.bad !== null) {
@@ -467,7 +457,8 @@ export async function handleFg(
   parts: string[],
   _session: Session | null = null,
   _view: SessionView | null = null,
-): Promise<JobHandlerResult> {
+  signal?: AbortSignal,
+): Promise<ExecutionResult> {
   const cmdStr = parts.join(' ')
   let jobId: number
   if (parts.length <= 1) {
@@ -494,7 +485,7 @@ export async function handleFg(
       ]
     }
   }
-  const job = await jobTable.wait(jobId)
+  const job = await jobTable.wait(jobId, signal)
   const header = new TextEncoder().encode(job.command + '\n')
   const body = await job.console.snapshot(Channel.STDOUT)
   const stderr = await job.console.snapshot(Channel.STDERR)
@@ -514,7 +505,7 @@ export async function handleKill(
   parts: string[],
   _session: Session | null = null,
   _view: SessionView | null = null,
-): Promise<JobHandlerResult> {
+): Promise<ExecutionResult> {
   const cmdStr = parts.join(' ')
   if (parts.length < 2) {
     const err = new TextEncoder().encode('kill: usage: kill <job_id>\n')
@@ -579,7 +570,7 @@ export function handleJobs(
   parts: string[],
   _session: Session | null = null,
   _view: SessionView | null = null,
-): JobHandlerResult {
+): ExecutionResult {
   const cmdStr = parts.join(' ')
   const flags = new Set<string>()
   const specs: string[] = []
@@ -635,7 +626,7 @@ export function handlePs(
   parts: string[],
   _session: Session | null = null,
   _view: SessionView | null = null,
-): JobHandlerResult {
+): ExecutionResult {
   const cmdStr = parts.join(' ')
   const lines: string[] = []
   for (const job of jobTable.runningJobs()) {

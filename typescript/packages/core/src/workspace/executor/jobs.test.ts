@@ -14,10 +14,10 @@
 
 import { describe, expect, it } from 'vitest'
 import { IOResult } from '../../io/types.ts'
-import { Channel } from '../../shell/console/index.ts'
+import { Channel, JobConsole, RAMConsoleStore } from '../../shell/console/index.ts'
 import { type JobResult, type JobRunner, JobStatus, JobTable } from '../../shell/job_table/index.ts'
 import { ExecutionNode } from '../types.ts'
-import { handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
+import { handleFg, handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
 
 /** A runner that finishes immediately with no output. */
 const quiet: JobRunner = () => Promise.resolve([new IOResult(), new ExecutionNode()] as JobResult)
@@ -184,5 +184,80 @@ describe('handlePs', () => {
     const jt = new JobTable()
     const [out] = handlePs(jt, ['ps'])
     expect((out as Uint8Array).byteLength).toBe(0)
+  })
+})
+
+/** Tracks outstanding reads without depending on timers or job completion. */
+class TrackedStore extends RAMConsoleStore {
+  active = 0
+  private began!: () => void
+  readonly started = new Promise<void>((resolve) => {
+    this.began = resolve
+  })
+
+  override async wait(seq: number, signal?: AbortSignal): Promise<void> {
+    this.active += 1
+    this.began()
+    try {
+      await super.wait(seq, signal)
+    } finally {
+      this.active -= 1
+    }
+  }
+}
+
+describe('job wait cancellation', () => {
+  it.each(['wait', 'wait -n', 'fg'])(
+    '%s releases its readers without killing jobs',
+    async (command) => {
+      const stores: TrackedStore[] = []
+      const table = new JobTable(() => {
+        const store = new TrackedStore()
+        stores.push(store)
+        return new JobConsole(store)
+      })
+      const abort = new AbortController()
+      const job = table.submit({ command: 'pending', run: pendingRun(abort), abort, cwd: '/' })
+      const reader = new AbortController()
+      const handler = command === 'fg' ? handleFg : handleWait
+      const waiting = handler(table, command.split(' '), null, null, reader.signal)
+      const store = stores[0]
+      if (store === undefined) throw new Error('missing console')
+      await store.started
+      reader.abort()
+      try {
+        await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+        expect(store.active).toBe(0)
+        expect(job.status).toBe(JobStatus.RUNNING)
+      } finally {
+        await table.killAll()
+      }
+    },
+  )
+
+  it('wait -n releases losing readers and leaves their jobs running', async () => {
+    const stores: TrackedStore[] = []
+    const table = new JobTable(() => {
+      const store = new TrackedStore()
+      stores.push(store)
+      return new JobConsole(store)
+    })
+    const jobs = [1, 2].map(() => {
+      const abort = new AbortController()
+      return table.submit({ command: 'pending', run: pendingRun(abort), abort, cwd: '/' })
+    })
+    const waiting = handleWait(table, ['wait', '-n'])
+    await Promise.all(stores.map((store) => store.started))
+    const [first, second] = jobs
+    if (first === undefined || second === undefined) throw new Error('missing jobs')
+    await table.kill(first.id)
+    try {
+      const [, result] = await waiting
+      expect(result.exitCode).toBe(137)
+      expect(stores.map((store) => store.active)).toEqual([0, 0])
+      expect(second.status).toBe(JobStatus.RUNNING)
+    } finally {
+      await table.killAll()
+    }
   })
 })

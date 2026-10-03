@@ -18,12 +18,14 @@ from mirage.io import IOResult
 from mirage.io.stream import async_chain
 from mirage.io.types import ByteSource
 from mirage.shell.call_stack import CallStack
-from mirage.shell.types import ERREXIT_EXEMPT_TYPES
+from mirage.shell.constants import ERREXIT_EXEMPT_TYPES
+from mirage.shell.errors import ExitSignal
 from mirage.shell.variable import ShellVar
 from mirage.types import PathSpec, word_text
-from mirage.workspace.executor.command.types import ExecuteNodeFn
 from mirage.workspace.executor.control import ReturnSignal
-from mirage.workspace.executor.statement import finish_statement
+from mirage.workspace.executor.statement import (finish_statement,
+                                                 prepend_exit_output)
+from mirage.workspace.executor.types import ExecuteNodeFn
 from mirage.workspace.session import Session
 from mirage.workspace.types import ExecutionNode
 
@@ -75,6 +77,9 @@ async def run_shell_function(
             try:
                 stdout, io, last_exec = await execute_node(
                     cmd, session, stdin, cs)
+            except ExitSignal as sig:
+                combined = async_chain(*all_stdout) if all_stdout else None
+                raise await prepend_exit_output(sig, combined, merged_io)
             except ReturnSignal as sig:
                 if sig.stderr:
                     merged_io = await merged_io.merge(

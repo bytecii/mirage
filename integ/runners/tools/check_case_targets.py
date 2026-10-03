@@ -87,7 +87,8 @@ def modal_set(sets: list[set[str]]) -> set[str]:
     return set(best[0])
 
 
-def collect(targets: dict[str, set[str]]) -> dict[str, list[str]]:
+def collect(targets: dict[str, set[str]],
+            families: dict[str, str] | None = None) -> dict[str, list[str]]:
     """Report every target a case drops that its siblings still test.
 
     The comparison is against the modal target set of the case's own
@@ -108,7 +109,8 @@ def collect(targets: dict[str, set[str]]) -> dict[str, list[str]]:
         parent = str(Path(rel.split(" :: ", 1)[0]).parent)
         if parent.startswith(UNRELATED_DIRS):
             continue
-        by_dir[parent].append((rel, names))
+        path = rel.split(" :: ", 1)[0]
+        by_dir[(families or {}).get(path, parent)].append((rel, names))
     found: dict[str, list[str]] = {}
     for entries in by_dir.values():
         if len(entries) < 2:
@@ -208,7 +210,20 @@ def main() -> int:
     exceptions = load_exceptions()
     baseline_value = exceptions.get("baseline", 0)
     baseline = baseline_value if isinstance(baseline_value, int) else 0
-    found = collect(case_targets(case_files()))
+    paths = case_files()
+    families = {}
+    for path in paths:
+        try:
+            data = json.loads(path.read_text())
+        except ValueError:
+            continue
+        if isinstance(data, dict) and "cases" in data and "family" in data:
+            if not isinstance(data["family"], str) or not data["family"]:
+                raise ValueError(f"{path}: family must be a nonempty string")
+            suite = path.relative_to(CASE_ROOT).parts[0]
+            families[str(
+                path.relative_to(ROOT))] = f"integ/{suite}/{data['family']}"
+    found = collect(case_targets(paths), families)
     remaining, stale = excuse(found, exceptions)
 
     if args.as_json:

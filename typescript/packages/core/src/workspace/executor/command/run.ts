@@ -43,6 +43,7 @@ import { CommandTimeoutError } from '../../../commands/builtin/utils/limit.ts'
 import { UsageError } from '../../../commands/errors.ts'
 import { formatFsError } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
+import { makeAbortError, mergeSignals } from '../../abort.ts'
 
 import type { Flags } from './types.ts'
 
@@ -54,6 +55,7 @@ export interface RunOnMountCtx {
   ensureOpen?: (resource: Resource) => Promise<void>
   runtimeBindings?: Record<string, Runtime>
   routingDecision?: PolicyDecision
+  signal?: AbortSignal
 }
 
 interface RunOnMountOpts {
@@ -277,6 +279,7 @@ export async function runOnMount(
   )
   if (denial !== null) return [null, denial]
 
+  const signal = mergeSignals(ctx.signal, session.abortSignal)
   try {
     const [initialStdout, io] = await mount.executeCmd(cmdName, paths, texts, flags, {
       stdin: opts.stdin ?? null,
@@ -290,9 +293,10 @@ export async function runOnMount(
       ns,
       statPath,
       readdirPath,
-      ...(session.abortSignal !== null ? { signal: session.abortSignal } : {}),
+      ...(signal !== undefined ? { signal } : {}),
       limitOverride,
     })
+    if (signal?.aborted === true) throw makeAbortError()
     let stdout = initialStdout
     if (cmdName === 'find') {
       const [newStdout, actionErr] = await applyFindActions(
@@ -335,7 +339,8 @@ export async function runOnMount(
     }
     // A limit timeout is not a filesystem failure: let it reach the
     // workspace-level handler that answers with exit 124.
-    if (err instanceof CommandTimeoutError) throw err
+    if (err instanceof CommandTimeoutError || (err instanceof Error && err.name === 'AbortError'))
+      throw err
     return [null, new IOResult({ exitCode: 1, stderr: formatFsError(cmdName, err, paths) })]
   }
 }

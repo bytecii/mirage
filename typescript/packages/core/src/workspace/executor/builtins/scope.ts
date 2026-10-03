@@ -13,13 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { stripSlash } from '../../../utils/slash.ts'
-import type { ByteSource, IOResult as IOResultType } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 
-export type ExecuteStringFn = (
-  script: string,
-  opts: { sessionId: string; stdin?: ByteSource | null },
-) => Promise<IOResultType>
+export type { ExecuteFn as ExecuteStringFn } from '../../expand/node.ts'
 
 export function toScope(path: string): PathSpec {
   const lastSlash = path.lastIndexOf('/')

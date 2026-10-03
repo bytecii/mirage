@@ -110,7 +110,13 @@ class RAMConsoleStore:
             if self._closed or self._next_seq > seq:
                 return
             self._waiters.append((seq, loop, future))
-        await future
+        try:
+            await future
+        finally:
+            with self._lock:
+                self._waiters = [
+                    entry for entry in self._waiters if entry[2] is not future
+                ]
 
     async def close(self) -> None:
         with self._lock:

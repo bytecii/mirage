@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import json
 import os
 import subprocess
@@ -24,7 +25,7 @@ from mirage.types import FileStat, PathSpec
 
 # integ/runtime holds the runtime suite (its own schema and runners,
 # integ/runtime/run.{py,ts} + cli.sh), not battery cases; keep it out.
-CASE_DIRS = ("unix", "bash", "crossmount", "resources", "cli", "session",
+CASE_DIRS = ("unix", "shell", "crossmount", "resources", "cli", "session",
              "console")
 
 
@@ -125,15 +126,35 @@ def discover_case_files(root: Path) -> list[Path]:
     return files
 
 
-def load_cases(root: Path) -> list[dict]:
-    cases: list[dict] = []
+def case_family(root: Path, path: Path, data: dict) -> str:
+    family = data.get("family", str(path.relative_to(root).parent))
+    if not isinstance(family, str) or not family:
+        raise ValueError(f"{path}: family must be a nonempty string")
+    return family
+
+
+def load_cases(root: Path, suites: list[str] | None = None) -> list[dict]:
+    selected = set(suites or CASE_DIRS)
+    unknown = selected - set(CASE_DIRS)
+    if unknown:
+        raise ValueError(f"unknown suites: {', '.join(sorted(unknown))}")
+    tables: list[tuple[Path, dict]] = []
     for path in discover_case_files(root):
+        if path.relative_to(root).parts[0] not in selected:
+            continue
         data = json.loads(path.read_text())
+        tables.append((path, data))
+    tables.sort(key=lambda row: (CASE_DIRS.index(row[0].relative_to(
+        root).parts[0]), case_family(root, *row), str(row[0])))
+    cases: list[dict] = []
+    for path, data in tables:
         for case in data["cases"]:
             case["_source"] = str(path.relative_to(root))
             cases.append(case)
     cases.sort(key=lambda c: c.get("seq", 1 << 30))
     validate_cases(root, cases)
+    if not cases:
+        raise ValueError("selected suites contain no cases")
     return cases
 
 
@@ -154,6 +175,7 @@ def validate_cases(root: Path, cases: list[dict]) -> None:
     duplicates: list[str] = []
     unknown: list[str] = []
     for case in cases:
+        validate_concurrent(case)
         first = seen.get(case["id"])
         if first is not None:
             duplicates.append(f"{case['id']} ({first} and {case['_source']})")
@@ -168,6 +190,32 @@ def validate_cases(root: Path, cases: list[dict]) -> None:
     if unknown:
         raise ValueError("cases naming an unknown target: " +
                          "; ".join(unknown))
+
+
+def validate_concurrent(case: dict) -> None:
+    if "concurrent" not in case:
+        return
+    workers = case["concurrent"]
+    if not isinstance(workers, list) or len(workers) < 2:
+        raise ValueError("concurrent requires at least two workers")
+    timeout = case.get("timeout_seconds", 10)
+    if not isinstance(timeout, (int, float)) or not 0 < timeout <= 60:
+        raise ValueError("concurrent timeout_seconds must be in (0, 60]")
+    for worker in workers:
+        if not isinstance(worker, dict) or not isinstance(
+                worker.get("command"), str):
+            raise ValueError("concurrent worker requires a command")
+        expected = worker.get("expect", {})
+        if not isinstance(expected, dict) or not isinstance(
+                expected.get("exit"), int) or not all(
+                    isinstance(expected.get(key), str)
+                    for key in ("stdout", "stderr")):
+            raise ValueError(
+                "concurrent worker requires exit/stdout/stderr expectations")
+        if any(key in worker for key in ("concurrent", "lifecycle", "scenario",
+                                         "provision")):
+            raise ValueError(
+                "concurrent worker must be an ordinary shell command")
 
 
 def build_fixture(
@@ -324,6 +372,16 @@ def bind_mount(case: dict, mount_path: str) -> dict:
             for token, value in tokens.items():
                 expect[name] = expect[name].replace(token, value)
     bound["expect"] = expect
+    if "setup" in bound:
+        for token, value in tokens.items():
+            bound["setup"] = bound["setup"].replace(token, value)
+    if "concurrent" in bound:
+        bound["concurrent"] = [
+            bind_mount(step, mount_path) for step in bound["concurrent"]
+        ]
+    if "cwd" in bound:
+        for token, value in tokens.items():
+            bound["cwd"] = bound["cwd"].replace(token, value)
     return bound
 
 
@@ -357,7 +415,36 @@ async def run_case(ws, case: dict) -> tuple[int, str, str, float, str | None]:
         plan = await ws.execute(case["command"], provision=True)
         return 0, provision_line(
             plan) + "\n", "", time.monotonic() - start, None
-    result = await ws.execute(case["command"], session_id=case.get("session"))
+    if "setup" in case:
+        setup = await ws.execute(case["setup"])
+        if setup.exit_code:
+            return setup.exit_code, await setup.stdout_str(
+            ), await setup.stderr_str(), 0.0, None
+    if "concurrent" in case:
+        validate_concurrent(case)
+        tasks = [
+            asyncio.create_task(run_case(ws, step))
+            for step in case["concurrent"]
+        ]
+        try:
+            results = await asyncio.wait_for(asyncio.gather(*tasks),
+                                             case.get("timeout_seconds", 10))
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        errors = [
+            f"concurrent[{i}]: {diff}"
+            for i, (step,
+                    result) in enumerate(zip(case["concurrent"], results))
+            for diff in compare(step, *result)
+        ]
+        if errors:
+            return 1, "", "\n".join(errors), time.monotonic() - start, None
+    result = await ws.execute(case["command"],
+                              session_id=case.get("session"),
+                              env=case.get("env"),
+                              cwd=case.get("cwd"))
     elapsed = time.monotonic() - start
     out = await result.stdout_str()
     err = await result.stderr_str()

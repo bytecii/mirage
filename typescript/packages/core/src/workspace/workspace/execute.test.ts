@@ -96,14 +96,15 @@ describe('nested evals run in the live ambient session', () => {
     expect(stdoutStr(io)).not.toContain('secret')
   })
 
-  it('cmdsub cd on the live session persists', async () => {
-    // Documented divergence: bash runs $() in a subshell, mirage runs
-    // it in the live session, so a cd inside one persists when no
-    // per-call fork is in play. Pinned so the fork-containment fix is
-    // never "improved" into forking every substitution.
+  it('isolates command-substitution cwd from the parent session', async () => {
     const ws = await makeWs()
-    await ws.execute('echo $(cd /ram/subdir)')
-    expect(ws.getSession(ws.defaultSessionId).cwd).toBe('/ram/subdir')
+    try {
+      const result = await ws.execute('echo $(cd /ram/subdir; pwd); pwd')
+      expect(stdoutStr(result)).toBe('/ram/subdir\n/\n')
+      expect(ws.getSession(ws.defaultSessionId).cwd).toBe('/')
+    } finally {
+      await ws.close()
+    }
   })
 })
 
