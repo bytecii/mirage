@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { SessionView } from '../../ops/types.ts'
+import { concat } from '../../io/cachable_iterator.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import { NodeType as NT } from '../../shell/types.ts'
 import { executeChildShell } from '../executor/traps.ts'
@@ -102,6 +103,7 @@ async function expandBacktickRegion(
       continue
     }
     const io = await executeChildShell(executeFn, session, text)
+    session.cmdsubStderr = concat([session.cmdsubStderr, await io.materializeStderr()])
     out += (await io.stdoutStr()).replace(/\n+$/, '')
     session.cmdsubSeq += 1
     session.cmdsubStatus = io.exitCode
@@ -356,6 +358,7 @@ export async function expandNodeMarked(
     const inner = rawSub.slice(2, -1)
     if (inner.trim() === '') return prefix
     const io = await executeChildShell(executeFn, session, inner)
+    session.cmdsubStderr = concat([session.cmdsubStderr, await io.materializeStderr()])
     const text = (await io.stdoutStr()).replace(/\n+$/, '')
     // Record the substitution's status: an assignment-only statement
     // whose value ran substitutions reports the last one's status as

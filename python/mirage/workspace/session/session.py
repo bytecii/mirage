@@ -79,6 +79,7 @@ TRANSIENT_FIELDS: tuple[str, ...] = (
     "_local_frames",
     "_cmdsub_seq",
     "_cmdsub_status",
+    "_cmdsub_stderr",
     "_parse_seq",
     "_parse_current",
     "_alias_marks",
@@ -281,6 +282,8 @@ class Session:
     # `x=abc` exits 0).
     _cmdsub_seq: int = field(default=0, repr=False)
     _cmdsub_status: int = field(default=0, repr=False)
+    # Diagnostics collected by the current AST node's word expansions.
+    _cmdsub_stderr: bytes = field(default=b"", repr=False)
     # Alias bookkeeping. bash expands an alias when it *parses* the line
     # that uses it, so a definition takes effect from the next line read
     # (`alias x=..; x` on one line finds no `x`; the same two statements

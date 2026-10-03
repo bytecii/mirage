@@ -258,6 +258,8 @@ export class Session {
   // `x=abc` exits 0).
   cmdsubSeq = 0
   cmdsubStatus = 0
+  // Diagnostics collected by the current AST node's word expansions.
+  cmdsubStderr: Uint8Array = new Uint8Array()
   // `shopt` options, kept apart from `set -o` ones (bash keeps two
   // vocabularies). Only names set away from their default are stored.
   shopts: Record<string, boolean> = {}

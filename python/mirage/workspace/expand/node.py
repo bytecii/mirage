@@ -107,6 +107,7 @@ async def _expand_backtick_region(
             parts.append(text)
             continue
         io = await execute_child_shell(execute_fn, session, text)
+        session._cmdsub_stderr += await io.materialize_stderr()
         parts.append((await io.stdout_str()).rstrip("\n"))
         session._cmdsub_seq += 1
         session._cmdsub_status = io.exit_code
@@ -362,6 +363,7 @@ async def expand_node_marked(
         if not inner.strip():
             return prefix
         io = await execute_child_shell(execute_fn, session, inner)
+        session._cmdsub_stderr += await io.materialize_stderr()
         text = (await io.stdout_str()).rstrip("\n")
         # Record the substitution's status: an assignment-only
         # statement whose value ran substitutions reports the last

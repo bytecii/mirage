@@ -117,6 +117,44 @@ async def execute_node(
     routing_decision: PolicyDecision | None = None,
     sink: JobConsole | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
+    """Collect substitution diagnostics once at their owning AST node.
+
+    Each recursive walk gets a fresh buffer, so a nested substitution's
+    stderr returns with its child IO before the parent captures stdout.
+    The finally block also isolates fatal expansion and cancellation paths.
+    """
+    saved = session._cmdsub_stderr
+    session._cmdsub_stderr = b""
+    try:
+        stdout, io, execution = await _execute_node(
+            dispatch, registry, namespace, job_table, execute_fn, agent_id,
+            node, session, stdin, call_stack, cancel, routing_decision, sink)
+        if session._cmdsub_stderr:
+            io.stderr = session._cmdsub_stderr + await io.materialize_stderr()
+            execution.stderr = io.stderr
+        return stdout, io, execution
+    except ExitSignal as sig:
+        sig.stderr = session._cmdsub_stderr + sig.stderr
+        raise
+    finally:
+        session._cmdsub_stderr = saved
+
+
+async def _execute_node(
+    dispatch: DispatchFn,
+    registry: MountRegistry,
+    namespace: Namespace,
+    job_table: JobTable,
+    execute_fn: Callable[..., Any],
+    agent_id: str,
+    node: Any,
+    session: Session,
+    stdin: Any = None,
+    call_stack: CallStack | None = None,
+    cancel: asyncio.Event | None = None,
+    routing_decision: PolicyDecision | None = None,
+    sink: JobConsole | None = None,
+) -> tuple[Any, IOResult, ExecutionNode]:
     """Walk tree-sitter AST and dispatch each node.
 
     Args:
@@ -284,8 +322,22 @@ async def execute_node(
         if _is_bare_exec(command):
             return await install_exec_redirects(dispatch, session,
                                                 expanded_redirects)
-        stdout, io, exec_node = await handle_redirect(recurse, dispatch,
-                                                      command,
+        # A simple command expands its arguments before installing its
+        # redirects. Keep those diagnostics in this frame, outside the
+        # redirected command's IO; compound bodies expand inside theirs.
+        redirect_recurse = recurse
+        if command is not None and command.type == NT.COMMAND:
+            redirect_recurse = partial(_execute_node,
+                                       dispatch,
+                                       registry,
+                                       namespace,
+                                       job_table,
+                                       execute_fn,
+                                       agent_id,
+                                       cancel=cancel,
+                                       routing_decision=routing_decision)
+        stdout, io, exec_node = await handle_redirect(redirect_recurse,
+                                                      dispatch, command,
                                                       expanded_redirects,
                                                       session, stdin, cs)
         if pipe_node is not None and stdout is not None:

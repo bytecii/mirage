@@ -52,6 +52,7 @@ import {
   buildAssocLiteral,
   buildIndexedLiteral,
 } from '../../shell/array.ts'
+import { concat } from '../../io/cachable_iterator.ts'
 import { ArithError, ExitSignal } from '../../shell/errors.ts'
 import { expandAndClassify } from '../expand/parts.ts'
 import { arrayIndex } from '../expand/variable.ts'
@@ -141,7 +142,32 @@ function isBareExec(command: TSNodeLike | null): boolean {
   return named.length === 1 && named[0]?.type === NT.COMMAND_NAME && getText(named[0]) === 'exec'
 }
 
+/** Collect substitution diagnostics once at their owning AST node. */
 export async function executeNode(
+  deps: ExecuteNodeDeps,
+  node: TSNodeLike,
+  session: Session,
+  stdin: ByteSource | null = null,
+  callStack: CallStack | null = null,
+): Promise<Result> {
+  const saved = session.cmdsubStderr
+  session.cmdsubStderr = new Uint8Array()
+  try {
+    const [stdout, io, execution] = await walkNode(deps, node, session, stdin, callStack)
+    if (session.cmdsubStderr.byteLength > 0) {
+      io.stderr = concat([session.cmdsubStderr, await io.materializeStderr()])
+      execution.stderr = io.stderr
+    }
+    return [stdout, io, execution]
+  } catch (err) {
+    if (err instanceof ExitSignal) err.stderr = concat([session.cmdsubStderr, err.stderr])
+    throw err
+  } finally {
+    session.cmdsubStderr = saved
+  }
+}
+
+async function walkNode(
   deps: ExecuteNodeDeps,
   node: TSNodeLike,
   session: Session,
@@ -336,8 +362,15 @@ export async function executeNode(
     if (isBareExec(command)) {
       return await installExecRedirects(dispatch, session, expandedRedirects)
     }
+    // Simple-command arguments expand before its redirects are installed.
+    // Their diagnostics belong to this frame; compound bodies own theirs.
+    const redirectRecurse =
+      command?.type === NT.COMMAND
+        ? (n: TSNodeLike, s: Session, i: ByteSource | null, cs: CallStack | null) =>
+            walkNode(captureDeps, n, s, i, cs)
+        : recurse
     let [stdout, io, execNode] = await handleRedirect(
-      recurse,
+      redirectRecurse,
       dispatch,
       command,
       expandedRedirects,

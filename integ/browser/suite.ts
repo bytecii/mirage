@@ -8,6 +8,11 @@ import { bindMount, runCase, compare } from '../runners/typescript/execution.ts'
 import type { Case, ExecWorkspace } from '../runners/typescript/types.ts'
 import concurrency from '../shell/jobs/concurrency.json'
 import traps from '../shell/builtins/trap.json'
+import commandRun from '../shell/builtins/command/run.json'
+import commandFunction from '../shell/builtins/command/function.json'
+import commandOperands from '../shell/builtins/command/operands.json'
+import substitutionScope from '../shell/expand/cmdsub/scope.json'
+import substitutionStatus from '../shell/expand/cmdsub/status.json'
 
 function workspace(): Workspace {
   return new Workspace({ '/data': new RAMResource() }, { mode: MountMode.WRITE, runtimes: ['vfs'] })
@@ -26,7 +31,15 @@ export async function runSuite(): Promise<{ name: string; error?: string }[]> {
         equal(asyncContextIsolatesTasks, false)
       },
     ],
-    ...[...concurrency.cases, ...traps.cases].map(
+    ...[
+      ...concurrency.cases,
+      ...traps.cases,
+      ...commandRun.cases,
+      ...commandFunction.cases,
+      ...commandOperands.cases,
+      ...substitutionScope.cases,
+      ...substitutionStatus.cases,
+    ].map(
       (c) =>
         [
           c.id,
