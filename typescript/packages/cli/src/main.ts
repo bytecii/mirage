@@ -19,6 +19,7 @@ import { Command } from 'commander'
 import { registerConfigCommands } from './config.ts'
 import { registerDaemonCommands } from './daemon.ts'
 import { registerShellCommand } from './shell.ts'
+import { registerToolCommands } from './tools.ts'
 import { registerJobCommands } from './job.ts'
 import { registerMcpCommand } from './mcp.ts'
 import { registerSessionCommands } from './session.ts'
@@ -51,6 +52,7 @@ export function buildProgram(): Command {
   registerSessionCommands(program)
   registerJobCommands(program)
   registerShellCommand(program)
+  registerToolCommands(program)
   registerMcpCommand(program)
   registerDaemonCommands(program)
   registerConfigCommands(program)

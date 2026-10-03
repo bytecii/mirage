@@ -54,6 +54,7 @@ from mirage.server.routers import (
     jobs,
     sessions,
     shell,
+    tools,
     versions,
     workspaces,
 )
@@ -230,6 +231,7 @@ def build_app(
     app.include_router(sessions.router)
     app.include_router(asks.router)
     app.include_router(shell.router)
+    app.include_router(tools.router)
     app.include_router(jobs.router)
     app.include_router(health.router)
     app.state.mcp = register_mcp_routes(

@@ -209,7 +209,7 @@ describe('mirage CLI end-to-end', () => {
     await runCli(env, ['workspace', 'delete', 'session-ws'])
   }, 30000)
 
-  it('execute returns json io results', async () => {
+  it('shell returns json io results', async () => {
     const cfgPath = writeRamConfig(tmp, 'exec-cfg.yaml')
     const created = (await runCli(env, ['workspace', 'create', cfgPath, '--id', 'exec-json'])) as {
       id: string
@@ -228,7 +228,30 @@ describe('mirage CLI end-to-end', () => {
     await runCli(env, ['workspace', 'delete', 'exec-json'])
   }, 30000)
 
-  it('execute record=false over HTTP leaves no history entry', async () => {
+  it('tool verbs run through the daemon', async () => {
+    const cfgPath = writeRamConfig(tmp, 'tools-cfg.yaml')
+    await runCli(env, ['workspace', 'create', cfgPath, '--id', 'tools'])
+    const written = await runCli(env, ['write', '-w', 'tools', '/src/a.py'], 'Needle\n')
+    await runCli(env, ['shell', '-w', 'tools', '-c', 'echo old > /src/b.txt'])
+    const refused = await execCli(env, ['write', '-w', 'tools', '/src/b.txt', '--content', 'x'])
+    const read = await runCli(env, ['read', '-w', 'tools', '/src/a.py'])
+    const edited = (await runCli(env, ['edit', '-w', 'tools', '/src/a.py', 'Needle', 'pin'])) as {
+      isError: boolean
+    }
+    const listed = (await runCli(env, ['ls', '-w', 'tools', '/src'])) as { text: string }
+    const found = await runCli(env, ['grep', '-w', 'tools', '-i', 'PIN', '/src'])
+    const globbed = await runCli(env, ['glob', '-w', 'tools', '**/*.py'])
+    await runCli(env, ['workspace', 'delete', 'tools'])
+    expect(written).toEqual({ text: 'Written: /src/a.py', isError: false })
+    expect(refused.status).toBe(1)
+    expect(read).toEqual({ text: '     1\tNeedle\n', isError: false })
+    expect(edited.isError).toBe(false)
+    expect(listed.text).toBe('a.py\nb.txt\n')
+    expect(found).toEqual({ text: '/src/a.py:1:pin\n', isError: false })
+    expect(globbed).toEqual({ text: '/src/a.py\n', isError: false })
+  }, 30000)
+
+  it('shell record=false over HTTP leaves no history entry', async () => {
     const cfgPath = writeRamConfig(tmp, 'record-cfg.yaml')
     await runCli(env, ['workspace', 'create', cfgPath, '--id', 'record-ws'])
 
@@ -256,18 +279,14 @@ describe('mirage CLI end-to-end', () => {
     await runCli(env, ['workspace', 'delete', 'record-ws'])
   }, 30000)
 
-  it('execute consumes piped stdin', async () => {
+  it('shell consumes piped stdin', async () => {
     const cfgPath = writeRamConfig(tmp, 'stdin-cfg.yaml')
     const created = (await runCli(env, ['workspace', 'create', cfgPath, '--id', 'stdin-ws'])) as {
       id: string
     }
     expect(created.id).toBe('stdin-ws')
 
-    const result = (await runCli(
-      env,
-      ['shell', '-w', 'stdin-ws', '-c', 'wc -l'],
-      'a\nb\nc\n',
-    )) as {
+    const result = (await runCli(env, ['shell', '-w', 'stdin-ws', '-c', 'wc -l'], 'a\nb\nc\n')) as {
       kind: string
       exitCode: number
       stdout: string
@@ -279,19 +298,15 @@ describe('mirage CLI end-to-end', () => {
     await runCli(env, ['workspace', 'delete', 'stdin-ws'])
   }, 30000)
 
-  it('execute uploads large piped stdin without JSON size limits', async () => {
+  it('shell uploads large piped stdin without JSON size limits', async () => {
     const cfgPath = writeRamConfig(tmp, 'large-stdin.yaml')
     const created = (await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }
     try {
       const input = Buffer.from('α\0\r\n'.repeat(240_000))
       await runCli(env, ['shell', '-w', created.id, '-c', 'cat > /input.bin'], input)
-      const read = (await runCli(env, [
-        'shell',
-        '-w',
-        created.id,
-        '-c',
-        'base64 /input.bin',
-      ])) as { stdout: string }
+      const read = (await runCli(env, ['shell', '-w', created.id, '-c', 'base64 /input.bin'])) as {
+        stdout: string
+      }
       expect(Buffer.from(read.stdout, 'base64')).toEqual(input)
       const submitted = (await runCli(env, [
         'shell',
@@ -317,7 +332,7 @@ describe('mirage CLI end-to-end', () => {
     }
   }, 30000)
 
-  it('execute propagates inner exit code to process exit', async () => {
+  it('shell propagates inner exit code to process exit', async () => {
     const cfgPath = writeRamConfig(tmp, 'exit-cfg.yaml')
     const created = (await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }
 

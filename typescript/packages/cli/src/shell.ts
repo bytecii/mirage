@@ -21,7 +21,7 @@ import { loadDaemonSettings } from './settings.ts'
 export function registerShellCommand(program: Command): void {
   program
     .command('shell')
-    .description('Execute a command.')
+    .description('Run a shell line in a workspace.')
     .requiredOption('-w, --workspace <id>', 'Workspace id')
     .requiredOption('-c, --command <command>', 'Shell line to run')
     .option('-s, --session <id>', 'Session id')

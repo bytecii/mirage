@@ -147,7 +147,12 @@ class McpDoor:
         )
         self._served: dict[
             tuple[str, str],
-            tuple[WorkspaceEntry, SessionState, MirageMcpServer],
+            tuple[
+                WorkspaceEntry,
+                SessionState,
+                DaemonToolOperations,
+                MirageMcpServer,
+            ],
         ] = {}
         self.server: Server[dict[str, Any]] = Server(
             "mirage",
@@ -194,34 +199,47 @@ class McpDoor:
         self._stop.set()
         await self._task
 
-    async def _target(self, request: Request) -> MirageMcpServer:
-        """The tool table a request is for.
+    async def tools(
+        self, workspace_id: str, session_id: str | None = None
+    ) -> DaemonToolOperations:
+        """The tool table a workspace session is served by.
+
+        One table per workspace and live session, shared by every door
+        that serves the tools (this endpoint, the HTTP tool routes, the
+        CLI and SSH through them), so a read through one door stamps
+        the file for an edit through another.
 
         Args:
-            request (Request): the HTTP request.
+            workspace_id (str): the workspace.
+            session_id (str | None): the session; None is the
+                workspace's default.
 
         Returns:
-            MirageMcpServer: the table for its workspace and session.
+            DaemonToolOperations: the table.
 
         Raises:
             LookupError: the workspace or the session does not exist.
         """
-        for key, (entry, held, _) in list(self._served.items()):
+        return (await self._served_for(workspace_id, session_id))[2]
+
+    async def _served_for(
+        self, workspace_id: str, session_id: str | None
+    ) -> tuple[
+        WorkspaceEntry, SessionState, DaemonToolOperations, MirageMcpServer
+    ]:
+        for key, (entry, held, _, _) in list(self._served.items()):
             if (
                 key[0] not in self._registry
                 or self._registry.get(key[0]) is not entry
                 or all(s is not held for s in entry.runner.ws.list_sessions())
             ):
                 del self._served[key]
-        workspace_id = request.path_params["workspace_id"]
         if workspace_id not in self._registry:
             raise LookupError("workspace not found")
         entry = self._registry.get(workspace_id)
         ws = entry.runner.ws
         await entry.runner.call(ws.ensure_sessions_loaded())
-        session_id = (
-            request.query_params.get("session_id") or ws.default_session_id
-        )
+        session_id = session_id or ws.default_session_id
         key = (workspace_id, session_id)
         session = next(
             (s for s in ws.list_sessions() if s.session_id == session_id), None
@@ -231,13 +249,33 @@ class McpDoor:
             raise LookupError("session not found")
         served = self._served.get(key)
         if served is None or served[1] is not session:
-            server = MirageMcpServer(
-                ws,
-                operations=DaemonToolOperations(entry, self._jobs, session_id),
+            operations = DaemonToolOperations(entry, self._jobs, session_id)
+            served = (
+                entry,
+                session,
+                operations,
+                MirageMcpServer(ws, operations=operations),
             )
-            self._served[key] = (entry, session, server)
-            return server
-        return served[2]
+            self._served[key] = served
+        return served
+
+    async def _target(self, request: Request) -> MirageMcpServer:
+        """The MCP server a request is for.
+
+        Args:
+            request (Request): the HTTP request.
+
+        Returns:
+            MirageMcpServer: the server for its workspace and session.
+
+        Raises:
+            LookupError: the workspace or the session does not exist.
+        """
+        served = await self._served_for(
+            request.path_params["workspace_id"],
+            request.query_params.get("session_id"),
+        )
+        return served[3]
 
     async def _context_target(
         self, ctx: ServerRequestContext[dict[str, Any]]

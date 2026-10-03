@@ -72,6 +72,16 @@ With the daemon's [SSH door](/home/ssh) on, the `mcp` subsystem serves the works
 
 Each channel is a fresh session under the login key's profile ([Bind a key to a profile](/home/ssh#bind-a-key-to-a-profile)), with the environment an `ssh` login gets, and it closes when the channel ends. A key whose profile seals a path gets the same refusal from `read` as from `cat`.
 
+## The same tools over HTTP and the CLI
+
+The tools are not only MCP's. The daemon serves each one but `shell` at
+`POST /v1/workspaces/{id}/{read,write,edit,ls,grep,glob}`, with the tool's
+input as the JSON body and the session named in the query as on the MCP
+endpoint; `shell` is `POST /v1/workspaces/{id}/shell`. The CLI has one
+verb per tool (`mirage read -w ID PATH`, `mirage grep -w ID -i PATTERN PATH`,
+and so on). Every door calls the same per-session tool table, so a `read`
+through one stamps the file for a `write` or `edit` through another.
+
 ## Errors
 
 A tool the server does not serve is a protocol error (`-32602 Tool <name> not found`). Arguments outside a tool's input schema, and a failing call, come back as the tool's answer with `isError` set, so the agent reads them and can retry.

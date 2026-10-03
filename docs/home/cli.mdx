@@ -98,6 +98,20 @@ mirage shell --workspace_id demo --command "ls /s3/"
 mirage shell --workspace_id demo --command "head -n 1 /s3/data/example.jsonl"
 ```
 
+The tools an agent gets over MCP are verbs too, one each, answered by the
+same tool table: `read`, `write`, `edit`, `ls`, `grep` and `glob`. They
+print the tool's answer as `{"text", "is_error"}` JSON (the text alone on a
+terminal) and exit 1 when the tool failed. `grep` takes GNU grep's flags,
+and `write` reads its content from stdin unless `--content` is given.
+
+```bash
+mirage read -w demo /data/report.csv --limit 20
+mirage grep -w demo -i --include '*.py' todo /src
+mirage glob -w demo '**/*.py' /src
+echo hello | mirage write -w demo /scratch/new.txt
+mirage edit -w demo /scratch/new.txt hello goodbye
+```
+
 ### 4. Pipe stdin
 
 For foreground commands, piped stdin is uploaded as a binary multipart file.
@@ -254,7 +268,13 @@ mirage workspace clone demo --at <version> --id demo_at_v1
 | `mirage session create WS [--id NAME] [--profile NAME] [-m /prefix[:mode]]...` | Add a named session (own cwd + env), optionally under a [permission profile](/home/permissions) or restricted to mounts with a mode ceiling (`read`/`write`/`exec` or `r`/`rw`/`rwx`). |
 | `mirage session list WS` | List sessions for a workspace. |
 | `mirage session delete WS SESSION` | Close a session. |
-| `mirage shell --workspace_id WS [--session_id S] [--background] --command "..."` | Run a command. Uploads piped stdin for foreground execution. |
+| `mirage shell --workspace_id WS [--session_id S] [--background] --command "..."` | Run a shell line. Uploads piped stdin for foreground execution. |
+| `mirage read -w WS PATH [--offset N] [--limit N]` | Read a file with line numbers, as the `read` tool does. |
+| `mirage write -w WS PATH [--content TEXT]` | Write a file (stdin when no `--content`); an existing one must be read first. |
+| `mirage edit -w WS PATH OLD NEW [--replace-all]` | Replace a string in a file read first. |
+| `mirage ls -w WS PATH` | List a directory. |
+| `mirage grep -w WS [-i] [-F] [-l] [-c] [-m N] [-C N] [--include GLOB] PATTERN PATH` | Search recursively, as `grep -rn` does. |
+| `mirage glob -w WS PATTERN [PATH]` | Files whose path matches a pattern such as `**/*.py`. |
 | `mirage job list [--workspace_id WS]` | List jobs the daemon has run, plus their status. |
 | `mirage job get JOB` | Detail for one job. |
 | `mirage job wait JOB [--timeout SECS]` | Block until the job is done; returns the result. |

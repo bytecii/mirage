@@ -37,7 +37,7 @@ async def _create_workspace(client: AsyncClient) -> str:
 
 
 @pytest.mark.asyncio
-async def test_execute_sync_returns_io_result():
+async def test_shell_sync_returns_io_result():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -57,7 +57,7 @@ async def test_execute_sync_returns_io_result():
 
 
 @pytest.mark.asyncio
-async def test_execute_refuses_an_unknown_field():
+async def test_shell_refuses_an_unknown_field():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -73,7 +73,7 @@ async def test_execute_refuses_an_unknown_field():
 
 
 @pytest.mark.asyncio
-async def test_execute_honors_cwd():
+async def test_shell_honors_cwd():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -96,7 +96,7 @@ async def test_execute_honors_cwd():
 
 
 @pytest.mark.asyncio
-async def test_execute_passes_runtime_through():
+async def test_shell_passes_runtime_through():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -114,7 +114,7 @@ async def test_execute_passes_runtime_through():
 
 
 @pytest.mark.asyncio
-async def test_execute_record_false_leaves_no_history_entry():
+async def test_shell_record_false_leaves_no_history_entry():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -142,7 +142,7 @@ async def test_execute_record_false_leaves_no_history_entry():
 
 
 @pytest.mark.asyncio
-async def test_execute_sync_records_a_job_in_done_state():
+async def test_shell_sync_records_a_job_in_done_state():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -163,7 +163,7 @@ async def test_execute_sync_records_a_job_in_done_state():
 
 
 @pytest.mark.asyncio
-async def test_execute_background_returns_job_id_immediately():
+async def test_shell_background_returns_job_id_immediately():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -270,7 +270,7 @@ async def test_list_jobs_filtered_by_workspace():
 
 
 @pytest.mark.asyncio
-async def test_execute_with_stdin_multipart():
+async def test_shell_with_stdin_multipart():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(

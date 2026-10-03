@@ -34,7 +34,7 @@ const MCP_PATH = '/v1/workspaces/:workspaceId/mcp'
  * `POST /shell` submits one, so an MCP command is listed by `/v1/jobs`,
  * can be cancelled there, and is recorded like any other.
  */
-class DaemonToolOperations extends MirageToolOperations {
+export class DaemonToolOperations extends MirageToolOperations {
   constructor(
     private readonly entry: WorkspaceEntry,
     private readonly jobs: JobTable,
@@ -83,7 +83,12 @@ class DaemonToolOperations extends MirageToolOperations {
 export class McpDoor {
   private readonly served = new Map<
     string,
-    { entry: WorkspaceEntry; session: SessionState; handler: McpHttpHandler }
+    {
+      entry: WorkspaceEntry
+      session: SessionState
+      operations: DaemonToolOperations
+      handler: McpHttpHandler
+    }
   >()
 
   constructor(
@@ -118,32 +123,67 @@ export class McpDoor {
   }
 
   /**
+   * The tool table a workspace session is served by, or why there is
+   * none: the workspace or the session does not exist. One table per
+   * workspace and live session, shared by every door that serves the
+   * tools (this endpoint, the HTTP tool routes, the CLI and SSH through
+   * them), so a read through one door stamps the file for an edit
+   * through another. No session is the workspace's default.
+   */
+  async tools(
+    workspaceId: string,
+    sessionId?: string | null,
+  ): Promise<DaemonToolOperations | string> {
+    const served = await this.servedFor(workspaceId, sessionId ?? '')
+    return typeof served === 'string' ? served : served.operations
+  }
+
+  /**
    * The handler a request's URL is for, or why there is none: the
    * workspace or the session does not exist.
    */
   private async target(url: URL): Promise<McpHttpHandler | string> {
-    await this.dropStale()
     const match = /^\/v1\/workspaces\/([^/]+)\/mcp$/.exec(url.pathname)
     if (match === null) return 'not found'
-    const workspaceId = decodeURIComponent(match[1] ?? '')
+    const served = await this.servedFor(
+      decodeURIComponent(match[1] ?? ''),
+      url.searchParams.get('sessionId') ?? '',
+    )
+    return typeof served === 'string' ? served : served.handler
+  }
+
+  private async servedFor(
+    workspaceId: string,
+    named: string,
+  ): Promise<
+    | {
+        entry: WorkspaceEntry
+        session: SessionState
+        operations: DaemonToolOperations
+        handler: McpHttpHandler
+      }
+    | string
+  > {
+    await this.dropStale()
     if (!this.registry.has(workspaceId)) return 'workspace not found'
     const entry = this.registry.get(workspaceId)
     const ws = entry.runner.ws
     await ws.ensureSessionsLoaded()
-    const sessionId = url.searchParams.get('sessionId') ?? ws.defaultSessionId
+    const sessionId = named === '' ? ws.defaultSessionId : named
     const key = `${workspaceId}\u0000${sessionId}`
     const session = ws.listSessions().find((s) => s.sessionId === sessionId)
     if (session === undefined) {
       await this.forget(key)
       return 'session not found'
     }
-    const served = this.served.get(key)
-    if (served?.session === session) return served.handler
+    const current = this.served.get(key)
+    if (current?.session === session) return current
     await this.forget(key)
     const operations = new DaemonToolOperations(entry, this.jobs, sessionId)
     const handler = createMcpHandler(() => createMirageMcpServer(ws, { operations }))
-    this.served.set(key, { entry, session, handler })
-    return handler
+    const served = { entry, session, operations, handler }
+    this.served.set(key, served)
+    return served
   }
 
   private async dropStale(): Promise<void> {
