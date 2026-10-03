@@ -38,7 +38,7 @@ export interface WorkspaceRegistryOptions {
 export class WorkspaceRegistry {
   private entries = new Map<string, WorkspaceEntry>()
   private readonly removals = new Map<string, Promise<WorkspaceEntry>>()
-  private readonly creates = new Map<string, Promise<unknown>>()
+  private readonly creates = new Map<string, { digest: string; done: Promise<unknown> }>()
   private readonly idleGraceSeconds: number
   private readonly onIdleExit: (() => void) | null
   private idleTimer: NodeJS.Timeout | null = null
@@ -53,21 +53,28 @@ export class WorkspaceRegistry {
   }
 
   /**
-   * Run one create of `id` at a time. A create that arrives while
-   * another of the same id is building waits for it, then finds the
+   * Run one create of `id` at a time. A create of the same config that
+   * arrives while another is building waits for it, then finds the
    * workspace it registered, rather than building a second over its
-   * state and failing to register it.
+   * state; it would stall on the same secrets and mounts anyway. A
+   * create of another config is not admitted and does not wait, so a
+   * stuck create never holds it: `run` gets `admitted` false.
    */
-  async creating<T>(id: string, run: () => Promise<T>): Promise<T> {
+  async creating<T>(
+    id: string,
+    configDigest: string,
+    run: (admitted: boolean) => Promise<T>,
+  ): Promise<T> {
     for (
       let pending = this.creates.get(id);
       pending !== undefined;
       pending = this.creates.get(id)
     ) {
-      await Promise.allSettled([pending])
+      if (pending.digest !== configDigest) return run(false)
+      await Promise.allSettled([pending.done])
     }
-    const done = run()
-    this.creates.set(id, done)
+    const done = run(true)
+    this.creates.set(id, { digest: configDigest, done })
     try {
       return await done
     } finally {

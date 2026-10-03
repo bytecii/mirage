@@ -46,6 +46,29 @@ async def slow_token(config: HeldSourceConfig, ref: str) -> ResolvedSecret:
     return ResolvedSecret(fields={"credential": f"xoxb-{ref}"})
 
 
+def _slack_body(source: str, workspace_id: str) -> dict:
+    return {
+        "config": {
+            "mounts": {
+                "/": {"vfs": "ram", "mode": "WRITE"},
+                "/slack": {
+                    "vfs": "slack",
+                    "mode": "READ",
+                    "config": {
+                        "token": {
+                            "from": "prod",
+                            "ref": "bot",
+                            "key": "credential",
+                        }
+                    },
+                },
+            },
+            "secrets": {"prod": {"source": source}},
+            "workspace_id": workspace_id,
+        }
+    }
+
+
 def _minimal_config() -> dict:
     return {
         "config": {
@@ -243,20 +266,7 @@ async def test_create_answers_a_held_config_id_without_building(monkeypatch):
 
     register_secrets("held-src", HeldSourceConfig, answer_token)
     app, _ = _make_app_with_short_grace(grace=10.0)
-    slack = {
-        "vfs": "slack",
-        "mode": "READ",
-        "config": {
-            "token": {"from": "prod", "ref": "bot", "key": "credential"}
-        },
-    }
-    body = {
-        "config": {
-            "mounts": {"/": {"vfs": "ram", "mode": "WRITE"}, "/slack": slack},
-            "secrets": {"prod": {"source": "held-src"}},
-            "workspace_id": "named",
-        }
-    }
+    body = _slack_body("held-src", "named")
     other = {
         "config": {
             "mounts": {"/": {"vfs": "ram", "mode": "READ"}},
@@ -290,26 +300,7 @@ async def test_concurrent_creates_of_one_config_build_it_once(monkeypatch):
 
     register_secrets("slow-src", HeldSourceConfig, slow_token)
     app, _ = _make_app_with_short_grace(grace=10.0)
-    body = {
-        "config": {
-            "mounts": {
-                "/": {"vfs": "ram", "mode": "WRITE"},
-                "/slack": {
-                    "vfs": "slack",
-                    "mode": "READ",
-                    "config": {
-                        "token": {
-                            "from": "prod",
-                            "ref": "bot",
-                            "key": "credential",
-                        }
-                    },
-                },
-            },
-            "secrets": {"prod": {"source": "slow-src"}},
-            "workspace_id": "racing",
-        }
-    }
+    body = _slack_body("slow-src", "racing")
     monkeypatch.setattr(Workspace, "close", spy)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -321,6 +312,45 @@ async def test_concurrent_creates_of_one_config_build_it_once(monkeypatch):
     assert sorted(r.status_code for r in answers) == [200, 201]
     assert closed == []
     await app.state.registry.remove("racing")
+
+
+@pytest.mark.asyncio
+async def test_a_create_of_another_config_does_not_wait_behind_a_stuck_one():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_token(
+        config: HeldSourceConfig, ref: str
+    ) -> ResolvedSecret:
+        entered.set()
+        await release.wait()
+        return ResolvedSecret(fields={"credential": f"xoxb-{ref}"})
+
+    register_secrets("gated-src", HeldSourceConfig, gated_token)
+    app, _ = _make_app_with_short_grace(grace=10.0)
+    other = {
+        "config": {
+            "mounts": {"/": {"vfs": "ram", "mode": "READ"}},
+            "workspace_id": "stuck",
+        }
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = asyncio.create_task(
+            client.post(
+                "/v1/workspaces", json=_slack_body("gated-src", "stuck")
+            )
+        )
+        await entered.wait()
+        refused = await asyncio.wait_for(
+            client.post("/v1/workspaces", json=other), timeout=5
+        )
+        release.set()
+        built = await first
+    assert refused.status_code == 409
+    assert built.status_code == 201
+    await app.state.registry.remove("stuck")
 
 
 @pytest.mark.asyncio

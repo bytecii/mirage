@@ -98,14 +98,20 @@ async def create_workspace(
     # refused here, before its secrets resolve or its mounts build, and
     # before a second Workspace opens the live one's state; one being
     # deleted is refused, since its state is about to go. Creates of one
-    # id run one at a time, so a second answers what the first built.
+    # id run one at a time, so a second of the same config answers what
+    # the first built, and one of another config is refused at once.
     wid = (
         req.id
         if req.id is not None
         else req.config.workspace_id or new_workspace_id()
     )
     _refuse_dot_id(wid)
-    async with registry.creating(wid):
+    async with registry.creating(wid, digest) as admitted:
+        if not admitted:
+            raise HTTPException(
+                status_code=409,
+                detail=f"workspace id already exists: {wid!r}",
+            )
         if wid in registry:
             held = registry.get(wid)
             if registry.removing(wid) or held.config_digest != digest:

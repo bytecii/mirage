@@ -27,6 +27,23 @@ type LoadAccountConfig = z.infer<typeof LoadAccountConfig>
 
 const UUID7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
+function slackPayload(source: string, workspaceId: string): Record<string, unknown> {
+  return {
+    config: {
+      workspace_id: workspaceId,
+      secrets: { prod: { source } },
+      mounts: {
+        '/': { vfs: 'ram', mode: 'write' },
+        '/slack': {
+          vfs: 'slack',
+          mode: 'read',
+          config: { token: { from: 'prod', ref: 'bot', key: 'credential' } },
+        },
+      },
+    },
+  }
+}
+
 describe('workspaces router', () => {
   it('GET /v1/health returns ok', async () => {
     const app = buildApp()
@@ -56,20 +73,7 @@ describe('workspaces router', () => {
       Promise.resolve({ fields: { credential: `xoxb-${ref}` } }),
     )
     const app = buildApp()
-    const payload = {
-      config: {
-        workspace_id: 'named',
-        secrets: { prod: { source: 'held-src' } },
-        mounts: {
-          '/': { vfs: 'ram', mode: 'write' },
-          '/slack': {
-            vfs: 'slack',
-            mode: 'read',
-            config: { token: { from: 'prod', ref: 'bot', key: 'credential' } },
-          },
-        },
-      },
-    }
+    const payload = slackPayload('held-src', 'named')
     const other = {
       config: { workspace_id: 'named', mounts: { '/': { vfs: 'ram', mode: 'read' } } },
     }
@@ -100,20 +104,7 @@ describe('workspaces router', () => {
       },
     )
     const app = buildApp()
-    const payload = {
-      config: {
-        workspace_id: 'racing',
-        secrets: { prod: { source: 'slow-src' } },
-        mounts: {
-          '/': { vfs: 'ram', mode: 'write' },
-          '/slack': {
-            vfs: 'slack',
-            mode: 'read',
-            config: { token: { from: 'prod', ref: 'bot', key: 'credential' } },
-          },
-        },
-      },
-    }
+    const payload = slackPayload('slow-src', 'racing')
     const close = vi.spyOn(Workspace.prototype, 'close')
     try {
       const answers = await Promise.all([
@@ -124,6 +115,46 @@ describe('workspaces router', () => {
       expect(close).not.toHaveBeenCalled()
     } finally {
       close.mockRestore()
+      await app.close()
+    }
+  })
+
+  it('POST /v1/workspaces does not hold another config behind a stuck create', async () => {
+    let entered = (): void => undefined
+    const reached = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let release = (): void => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    registerSecrets(
+      'gated-src',
+      LoadAccountConfig,
+      async (_config: LoadAccountConfig, ref: string) => {
+        entered()
+        await gate
+        return { fields: { credential: `xoxb-${ref}` } }
+      },
+    )
+    const app = buildApp()
+    const other = {
+      config: { workspace_id: 'stuck', mounts: { '/': { vfs: 'ram', mode: 'read' } } },
+    }
+    try {
+      const first = app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: slackPayload('gated-src', 'stuck'),
+      })
+      await reached
+      const refused = await app.inject({ method: 'POST', url: '/v1/workspaces', payload: other })
+      release()
+      const built = await first
+      expect(refused.statusCode).toBe(409)
+      expect(built.statusCode).toBe(201)
+    } finally {
+      release()
       await app.close()
     }
   })

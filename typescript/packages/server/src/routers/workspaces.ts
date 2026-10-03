@@ -127,11 +127,15 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       // idempotent for one config, so an id held by a workspace created
       // from an identical config answers it with 200, and an id held by
       // anything else, or by one being deleted, is refused. Creates of one
-      // id run one at a time, so a second answers what the first built.
+      // id run one at a time, so a second of the same config answers what
+      // the first built, and one of another config is refused at once.
       const wid = body.id ?? cfg.workspaceId ?? newWorkspaceId()
       if (DOT_IDS.has(wid)) return refuseId(reply, wid)
       const digest = configDigest(config)
-      return deps.registry.creating(wid, async () => {
+      return deps.registry.creating(wid, digest, async (admitted) => {
+        if (!admitted) {
+          return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
+        }
         if (deps.registry.has(wid)) {
           const held = deps.registry.get(wid)
           if (deps.registry.removing(wid) || held.configDigest !== digest) {
