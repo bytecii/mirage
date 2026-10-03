@@ -352,19 +352,25 @@ export class MountCore {
   }
 
   /**
-   * Land buffered writes on the mount, one pwrite per run. A pwrite keeps
+   * Land write runs on the mount, one pwrite each, in order. A pwrite keeps
    * every stored byte the handle did not write, so nothing is read through
    * the door first: a session that may write a file and not read it writes
-   * through FUSE, as through a write-only descriptor. A run that fails still
-   * invalidates what the core holds, since the runs before it have landed.
+   * through FUSE, as through a write-only descriptor. The runs that landed
+   * leave `runs` in one step, so after a failure `runs` holds only what did
+   * not land and a retry never replays a run over bytes another writer has
+   * since put there. A run that fails still invalidates what the core holds,
+   * since the runs before it have landed.
    */
-  private async applyWrites(path: string, writes: [number, Uint8Array][]): Promise<void> {
+  private async applyWrites(path: string, runs: [number, Uint8Array][]): Promise<void> {
     const target = this.resolve(path)
+    let landed = 0
     try {
-      for (const [offset, data] of writeRuns(writes)) {
+      for (const [offset, data] of runs) {
         await this.op(() => this.ops.pwrite(target, data, offset))
+        landed += 1
       }
     } finally {
+      runs.splice(0, landed)
       await this.changed(path)
     }
   }
@@ -602,9 +608,10 @@ export class MountCore {
 
   /**
    * Persist a handle's buffered writes. The buffer is detached before the
-   * await so a write arriving meanwhile is not lost to the clear, and
-   * restored ahead of those later writes when persistence fails, so the
-   * acknowledged bytes stay for the handle's own flush to retry.
+   * await so a write arriving meanwhile is not lost to the clear, and the
+   * runs that did not land are restored ahead of those later writes when
+   * persistence fails, so the acknowledged bytes stay for the handle's own
+   * flush to retry.
    */
   private settle(ctx: Handle): Promise<void> {
     if (ctx.writeBuf === undefined || ctx.writeBuf.length === 0) return Promise.resolve()
@@ -613,12 +620,12 @@ export class MountCore {
 
   private async persistBuffered(ctx: Handle): Promise<void> {
     if (ctx.writeBuf === undefined || ctx.writeBuf.length === 0) return
-    const writes = ctx.writeBuf
+    const runs = writeRuns(ctx.writeBuf)
     ctx.writeBuf = []
     try {
-      await this.applyWrites(ctx.path, writes)
+      await this.applyWrites(ctx.path, runs)
     } catch (err) {
-      ctx.writeBuf = [...writes, ...ctx.writeBuf]
+      ctx.writeBuf = [...runs, ...ctx.writeBuf]
       throw err
     }
   }
