@@ -48,6 +48,56 @@ requirement_met() {
   esac
 }
 
+# The runtime table run.py and run.ts keep: the guest language of each
+# runtime a case's `runtimes` may name, the line head a program runs under,
+# and per host what the runtime needs (absent: not on that host).
+RUNTIMES='{
+  "language": {"monty": "python", "wasi": "python", "pyodide": "python", "quickjs": "js"},
+  "head": {"python": "python3 -c", "js": "node -e"},
+  "requires": {
+    "python": {"monty": [], "wasi": ["env:MIRAGE_WASI_HOME"], "quickjs": ["env:MIRAGE_QUICKJS_HOME"]},
+    "typescript": {"monty": [], "pyodide": [], "quickjs": []}
+  }
+}'
+
+# The case once per runtime it names on this host, one JSON per line (a case
+# without `runtimes` is printed as it is), as run.py `_for_runtime` builds
+# them: a step's `program`, `script` or `command` map picks the runtime's
+# language (a step without it is left out), and `expect_on` keyed by the
+# runtime, then by `runtime@host`, is merged over `expect`.
+runtime_variants() {
+  local case_json="$1" host="$2"
+  jq -c --arg h "$host" --argjson t "$RUNTIMES" '
+    if has("runtimes") | not then . else
+      . as $c
+      | $c.runtimes[]
+      | select($t.requires[$h][.] != null)
+      | . as $r
+      | $t.language[$r] as $lang
+      | [$c.steps[]
+          | if has("program") then
+              select(.program[$lang] != null)
+              | del(.program) + {command: ($t.head[$lang] + " " + (.program[$lang] | @sh)), guest: true}
+            elif (.script | type) == "object" then
+              select(.script[$lang] != null)
+              | . + {command: $t.head[$lang], script: .script[$lang], guest: true}
+            elif (.command | type) == "object" then
+              select(.command[$lang] != null)
+              | . + {command: .command[$lang], guest: true}
+            else . end
+          | .expect = ((.expect // {}) + ((.expect_on // {})[$r] // {})
+              + ((.expect_on // {})[$r + "@" + $h] // {}))
+        ] as $steps
+      | select(any($steps[]; .guest))
+      | $c + {
+          id: ($c.id + "@" + $r),
+          world: (($c.world // {}) + {runtimes: [$r, "workspace"]}),
+          steps: ($steps | map(del(.guest))),
+          requires: (($c.requires // []) + $t.requires[$h][$r])
+        }
+    end' <<<"$case_json"
+}
+
 # Whether this case can run over the CLI at all. Worlds carrying code
 # policies (runner-local Policy classes) or a failing mount (a runner-local
 # VFS) cannot cross the yaml/daemon boundary, and read_op steps need the
@@ -101,6 +151,7 @@ write_world_yaml() {
   jq '{mode: "EXEC",
        mounts: ((.mounts // {"/ram": {"vfs": "ram"}})
          | map_values({vfs: .vfs}
+             + (if .mode then {mode: .mode} else {} end)
              + (if .limits then {command_limits: .limits} else {} end)))}
       + (if .command_limits then {command_limits: .command_limits} else {} end)
       + (if .profiles then {profiles: .profiles} else {} end)
@@ -115,9 +166,10 @@ run_case() {
   local cli="$1" host="$2" suite="$3" case_json="$4" work="$5"
   local case_id wsid world_json session_id
   case_id="$suite/$(jq -r '.id' <<<"$case_json")"
-  # The suite is part of the id: suites share case ids by design (each
-  # runtime's open, view and structure cases).
-  wsid="rt-$(tr '_' '-' <<<"$suite")-$(jq -r '.id' <<<"$case_json" | tr '_' '-')"
+  # The suite is part of the id: two suites may share a case id. A
+  # runtime variant's id carries `@runtime`, which a workspace id spells
+  # with a dash.
+  wsid="rt-$(tr '_' '-' <<<"$suite")-$(jq -r '.id' <<<"$case_json" | tr '_@' '--')"
   world_json=$(jq -c '.world // {}' <<<"$case_json")
   write_world_yaml "$world_json" "$work"
 
@@ -345,25 +397,42 @@ run_host() {
     # The per-host logs print only after both hosts finish, so a suite's
     # cost is not otherwise recoverable from the run.
     local suite_t0=$SECONDS
-    local case_json
-    while IFS= read -r case_json; do
+    local listed case_json case_id
+    while IFS= read -r listed; do
       if ! jq -e --arg h "$host" \
           '(.hosts // ["python", "typescript"]) | index($h)' \
-          >/dev/null <<<"$case_json"; then
+          >/dev/null <<<"$listed"; then
         continue
       fi
-      if ! cli_expressible "$case_json"; then
-        echo "skip $host/$suite/$(jq -r '.id' <<<"$case_json") (sdk-only)"
-        skipped=$((skipped + 1))
-        continue
-      fi
-      if run_case "$cli" "$host" "$suite" "$case_json" "$work"; then
-        echo "ok $host/$suite/$(jq -r '.id' <<<"$case_json")"
-        pass=$((pass + 1))
-      else
-        echo "FAIL $host/$suite/$(jq -r '.id' <<<"$case_json")"
-        fail=$((fail + 1))
-      fi
+      while IFS= read -r case_json; do
+        case_id=$(jq -r '.id' <<<"$case_json")
+        unmet=""
+        for req in $(jq -r '(.requires // [])[]' <<<"$case_json"); do
+          requirement_met "$req" || unmet="$unmet $req"
+        done
+        if [ -n "$unmet" ]; then
+          if [ "$STRICT" == "1" ]; then
+            failures+=("$host/$suite/$case_id: unmet requirements$unmet (INTEG_RUNTIME_STRICT=1)")
+            fail=$((fail + 1))
+          else
+            echo "skip $host/$suite/$case_id (unmet:$unmet)"
+            skipped=$((skipped + 1))
+          fi
+          continue
+        fi
+        if ! cli_expressible "$case_json"; then
+          echo "skip $host/$suite/$case_id (sdk-only)"
+          skipped=$((skipped + 1))
+          continue
+        fi
+        if run_case "$cli" "$host" "$suite" "$case_json" "$work"; then
+          echo "ok $host/$suite/$case_id"
+          pass=$((pass + 1))
+        else
+          echo "FAIL $host/$suite/$case_id"
+          fail=$((fail + 1))
+        fi
+      done < <(runtime_variants "$listed" "$host")
     done < <(jq -c '.cases[]' <<<"$suite_json")
     echo "suite $host/$suite $((SECONDS - suite_t0))s"
   done
