@@ -41,7 +41,7 @@ app.command("grep")(tools_module.grep_cmd)
 app.command("glob")(tools_module.glob_cmd)
 app.add_typer(daemon_module.app, name="daemon")
 app.add_typer(config_module.app, name="config")
-app.add_typer(mcp_module.app, name="mcp")
+app.command("mcp")(mcp_module.mcp_cmd)
 
 
 def main() -> None:

@@ -62,12 +62,19 @@ class _MirageTools:
         workspace (Workspace): The workspace to serve.
         stale_write_protection (bool): False lets an agent overwrite a
             file that changed since it read it.
+        session_id (str | None): The session the tools act as; None is
+            the workspace's default session.
     """
 
     def __init__(
-        self, workspace: Workspace, stale_write_protection: bool = True
+        self,
+        workspace: Workspace,
+        stale_write_protection: bool = True,
+        session_id: str | None = None,
     ) -> None:
-        self._ops = MirageToolOperations(workspace, stale_write_protection)
+        self._ops = MirageToolOperations(
+            workspace, stale_write_protection, session_id
+        )
 
     async def shell(self, args: dict[str, Any]) -> dict[str, Any]:
         return _to_sdk(await self._ops.call("shell", args))
@@ -92,7 +99,9 @@ class _MirageTools:
 
 
 def MirageServer(
-    workspace: Workspace, stale_write_protection: bool = True
+    workspace: Workspace,
+    stale_write_protection: bool = True,
+    session_id: str | None = None,
 ) -> Any:
     """Create an in-process Mirage server for the Claude Agent SDK.
 
@@ -100,12 +109,14 @@ def MirageServer(
         workspace (Workspace): The workspace to serve.
         stale_write_protection (bool): False lets an agent overwrite a
             file that changed since it read it.
+        session_id (str | None): The session the tools act as, with its
+            profile; None is the workspace's default session.
 
     Returns:
         Any: An SDK server object to pass to
             ClaudeAgentOptions(mcp_servers=...).
     """
-    tools_impl = _MirageTools(workspace, stale_write_protection)
+    tools_impl = _MirageTools(workspace, stale_write_protection, session_id)
     return create_sdk_mcp_server(
         name="mirage",
         version=__version__,

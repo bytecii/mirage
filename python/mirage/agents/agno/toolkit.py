@@ -44,15 +44,20 @@ class MirageToolkit(Toolkit):
         workspace (Workspace): The workspace to operate on.
         stale_write_protection (bool): False lets an agent overwrite a
             file that changed since it read it.
+        session_id (str | None): The session the tools act as, with its
+            profile; None is the workspace's default session.
     """
 
     def __init__(
         self,
         workspace: Workspace,
         stale_write_protection: bool = True,
+        session_id: str | None = None,
         **kwargs: Any,
     ) -> None:
-        self._ops = MirageToolOperations(workspace, stale_write_protection)
+        self._ops = MirageToolOperations(
+            workspace, stale_write_protection, session_id
+        )
         tools: list[Callable[..., Any]] = [
             self.shell,
             self.read,

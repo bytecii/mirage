@@ -25,11 +25,6 @@ from mirage.server.workspace_config import resolve_workspace_config
 
 MCP_ENV_NAMES = ("MIRAGE_MCP_CONFIG", "MIRAGE_CONFIG")
 
-app = typer.Typer(
-    invoke_without_command=True,
-    help="Serve a Mirage workspace's MCP tools over stdio.",
-)
-
 
 def resolve_mcp_config(
     config: str | None = None,
@@ -51,7 +46,26 @@ def resolve_mcp_config(
     )
 
 
-@app.callback(invoke_without_command=True)
+def has_session(workspace_path: str, session_id: str) -> bool:
+    """Whether a daemon workspace holds a session.
+
+    Args:
+        workspace_path (str): the workspace's ``/v1/workspaces/{id}``.
+        session_id (str): the session.
+
+    Returns:
+        bool: True when the workspace lists the session.
+    """
+    with make_client() as client:
+        rows = handle_response(
+            client.request("GET", f"{workspace_path}/sessions")
+        )
+    return any(
+        isinstance(row, dict) and row.get("session_id") == session_id
+        for row in rows
+    )
+
+
 def mcp_cmd(
     config: str | None = typer.Argument(
         None, help="Mirage workspace YAML config."
@@ -61,6 +75,13 @@ def mcp_cmd(
         "--workspace",
         "-w",
         help="Serve this daemon workspace instead of loading a config.",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session_id",
+        "--session",
+        "-s",
+        help="Session the tools act as; the workspace's default when absent.",
     ),
 ) -> None:
     """Serve a Mirage workspace's MCP tools over stdio.
@@ -72,7 +93,8 @@ def mcp_cmd(
     workspace with a name, the config's ``workspace_id`` or
     ``--workspace``, outlives it. The daemon answers a config's name with
     the live workspace created from that same config, and refuses it when
-    the live one came from another.
+    the live one came from another. ``--session`` serves the tools as
+    that session, under its profile, as it does for ``mirage shell``.
     """
     if workspace_id is None:
         try:
@@ -104,6 +126,8 @@ def mcp_cmd(
             )
         workspace_path = f"/v1/workspaces/{quote(workspace_id, safe='')}"
         url = f"{client.settings.url}{workspace_path}/mcp"
+        if session_id is not None:
+            url += f"?session_id={quote(session_id, safe='')}"
         token = client.settings.auth_token
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     # Imported here, as the TypeScript twin awaits mirage-server/mcp:
@@ -112,6 +136,10 @@ def mcp_cmd(
     from mirage.server.mcp.relay import relay_stdio
 
     try:
+        if session_id is not None and not has_session(
+            workspace_path, session_id
+        ):
+            fail(f"session not found: {session_id}", exit_code=2)
         asyncio.run(relay_stdio(url, headers))
     finally:
         if minted:

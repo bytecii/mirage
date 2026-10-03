@@ -60,3 +60,21 @@ async def test_async_tools(toolkit):
     )
     assert await toolkit.aglob("*.txt", "/notes") == "/notes/hello.txt\n"
     assert await toolkit.ashell("find /notes -type f | wc -l") == "1\n"
+
+
+@pytest.mark.asyncio
+async def test_tools_act_as_the_session():
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"guarded": {"paths": {"hide": ["/vault"]}}},
+    )
+    await ws.shell("echo key > /vault/key.txt")
+    ws.create_session("agent", profile="guarded")
+    try:
+        text = await MirageToolkit(ws, session_id="agent").aread(
+            "/vault/key.txt"
+        )
+    finally:
+        await ws.close()
+    assert text == "Error: file '/vault/key.txt' not found"

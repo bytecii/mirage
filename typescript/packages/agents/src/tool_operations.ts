@@ -139,12 +139,11 @@ export class MirageToolOperations {
       if ((await this.ws.vfs.exists(path)) && !this.versions.hasRead(path)) {
         return errorResult(`Error: file '${path}' exists; read all of it before overwriting it`)
       }
-      await ensureParents(this.ws, path)
       try {
+        await ensureParents(this.ws, path)
         await this.versions.write(path, content)
       } catch (err) {
-        if (err instanceof StaleMirageFileError) return errorResult(`Error: ${err.message}`)
-        throw err
+        return errorResult(`Error: ${errorMessage(err)}`)
       }
       return textResult(`Written: ${path}`)
     })

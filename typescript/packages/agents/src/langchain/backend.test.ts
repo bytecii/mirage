@@ -17,6 +17,7 @@ import { OpsRegistry } from '@struktoai/mirage-core/ops/registry'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { MountMode } from '@struktoai/mirage-core/types'
 import { Workspace } from '@struktoai/mirage-node'
+import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
 import { LangchainWorkspace } from './backend.ts'
 
 function mkWs(): Workspace {
@@ -322,5 +323,32 @@ describe('LangchainWorkspace.readRaw', () => {
     expect(data.content).toBe('hello')
     expect(typeof data.mimeType).toBe('string')
     expect(data.modified_at).toBeDefined()
+  })
+})
+
+async function guardedWs(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/': new RAMVFS(), '/vault': new RAMVFS() },
+    {
+      mode: MountMode.WRITE,
+      profiles: { guarded: parseSessionProfile({ paths: { hide: ['/vault'] } }) },
+    },
+  )
+  await ws.shell('echo key > /vault/key.txt')
+  ws.createSession('agent', { profile: 'guarded' })
+  return ws
+}
+
+describe('LangchainWorkspace sessionId', () => {
+  it('acts as the session, under its profile', async () => {
+    const ws = await guardedWs()
+    const backend = new LangchainWorkspace(ws, { sessionId: 'agent' })
+    const read = await backend.read('/vault/key.txt')
+    const listed = await backend.ls('/')
+    const ran = await backend.execute('cat /vault/key.txt')
+    expect(read.error).toBeDefined()
+    expect(listed.files?.map((f) => f.path)).not.toContain('/vault')
+    expect(ran.exitCode).not.toBe(0)
+    await ws.close()
   })
 })

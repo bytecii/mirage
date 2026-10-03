@@ -42,8 +42,7 @@ def test_mcp_help_describes_stdio():
         for param in mcp.params
         for opt in (*param.opts, *param.secondary_opts)
     }
-    assert "--workspace" in opts
-    assert "-w" in opts
+    assert {"--workspace", "-w", "--session", "-s"} <= opts
 
 
 def test_missing_config_exits_two(tmp_path, monkeypatch):
@@ -61,6 +60,7 @@ def test_a_config_and_a_workspace_are_exclusive(tree):
         app, ["mcp", str(tree / "workspace.yaml"), "-w", "ws_1"]
     )
     assert result.exit_code == 2
+    assert "pass a config or --workspace, not both" in result.stderr
 
 
 def test_resolve_prefers_the_mcp_env_name(tree):
@@ -172,3 +172,56 @@ def test_a_name_held_by_another_config_is_refused(daemon, tmp_path):
     )
     assert refused.returncode == 2
     assert b"workspace id already exists" in refused.stderr
+
+
+def _guarded(daemon) -> str:
+    created = httpx.post(
+        f"{daemon['url']}/v1/workspaces",
+        json={
+            "config": {
+                "mounts": {
+                    "/": {"vfs": "ram", "mode": "WRITE"},
+                    "/vault": {"vfs": "ram", "mode": "WRITE"},
+                },
+                "profiles": {"guarded": {"paths": {"hide": ["/vault"]}}},
+            }
+        },
+    ).json()
+    wid = created["id"]
+    httpx.post(
+        f"{daemon['url']}/v1/workspaces/{wid}/shell",
+        json={"command": "echo key > /vault/key.txt"},
+    ).raise_for_status()
+    httpx.post(
+        f"{daemon['url']}/v1/workspaces/{wid}/sessions",
+        json={"session_id": "agent", "profile": "guarded"},
+    ).raise_for_status()
+    return wid
+
+
+@pytest.mark.asyncio
+async def test_a_session_serves_the_tools_under_its_profile(daemon):
+    wid = _guarded(daemon)
+    async with Client(relay(daemon, "-w", wid, "-s", "agent")) as client:
+        read = await client.call_tool("read", {"path": "/vault/key.txt"})
+        ran = await client.call_tool("shell", {"command": "pwd; ls /"})
+    async with Client(relay(daemon, "-w", wid)) as client:
+        default = await client.call_tool("read", {"path": "/vault/key.txt"})
+    assert read.content[0].text == "Error: file '/vault/key.txt' not found"
+    assert "vault" not in ran.content[0].text
+    assert default.content[0].text == "     1\tkey\n"
+
+
+def test_an_unknown_session_is_refused(daemon, tree):
+    params = relay(daemon, str(tree / "workspace.yaml"), "-s", "nope")
+    refused = subprocess.run(
+        [params.command, *params.args],
+        env=daemon["env"],
+        input=b"",
+        capture_output=True,
+        timeout=60,
+    )
+    listed = httpx.get(f"{daemon['url']}/v1/workspaces").json()
+    assert refused.returncode == 2
+    assert b"session not found: nope\n" in refused.stderr
+    assert listed == []

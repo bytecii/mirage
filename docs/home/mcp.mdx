@@ -12,7 +12,7 @@ There are three ways to reach them, and all three end at the daemon's HTTP endpo
 
 | Door | Reach | Session |
 | --- | --- | --- |
-| `mirage mcp` | stdio, relayed to the daemon | the default session of the workspace it serves |
+| `mirage mcp` | stdio, relayed to the daemon | the default session of the workspace it serves, or the one `-s` names |
 | `/v1/workspaces/{id}/mcp` | the daemon's HTTP API, streamable HTTP | the default session, or the one the URL names |
 | `ssh -s <id>@host mcp` | the daemon's [SSH door](/home/ssh) | a fresh session under the login key's profile |
 
@@ -34,6 +34,16 @@ There are three ways to reach them, and all three end at the daemon's HTTP endpo
 {
   "mcpServers": {
     "mirage": { "command": "mirage", "args": ["mcp", "-w", "demo"] }
+  }
+}
+```
+
+`-s <session>` serves the tools as a session the workspace already holds, under that session's profile, as `mirage shell -s` runs a line. A session the workspace does not hold is refused before anything is relayed:
+
+```json
+{
+  "mcpServers": {
+    "mirage": { "command": "mirage", "args": ["mcp", "-w", "demo", "-s", "agent"] }
   }
 }
 ```

@@ -28,6 +28,11 @@ is a job, the SSH sessions closed with their channels, a `mirage mcp`
 workspace with no name went with its process, and the MCP endpoint refuses
 a request with no token. Both hosts must give the expected answers.
 
+Then a session made with a profile is chosen through each door that
+takes one (the HTTP routes, the CLI verbs, MCP over HTTP, `mirage mcp`)
+and through an SSH key bound to the profile: each must hide what the
+profile hides, while the default session still sees it.
+
 Then the tool corpus (integ/tools/cases.json, whose in-app door is
 integ/tools/run.py and run.ts) runs through each daemon door, each on a
 fresh workspace built by the corpus setup: the HTTP routes (POST /shell
@@ -60,6 +65,16 @@ DOORS = ("http", "cli", "mcp", "ssh")
 TOKEN = "doors-integ"
 WORKSPACE = "doors"
 RAM = "mounts:\n  /:\n    vfs: ram\n    mode: write\n"
+GUARDED = {
+    "mounts": {
+        "/": {"vfs": "ram", "mode": "write"},
+        "/vault": {"vfs": "ram", "mode": "write"},
+    },
+    "profiles": {"guarded": {"paths": {"hide": ["/vault"]}}},
+}
+HIDDEN = "/vault/key.txt"
+HIDDEN_READ = f"Error: file '{HIDDEN}' not found"
+HIDDEN_CAT = f"cat: {HIDDEN}: No such file or directory\n"
 TOOLS = "edit glob grep ls read shell write"
 EXPECTED = {
     "mcp_http.tools": TOOLS,
@@ -77,6 +92,15 @@ EXPECTED = {
     "mcp_stdio.unnamed_while_open": "2",
     "mcp_stdio.unnamed_after_close": "1",
     "mcp_http.without_token": "401",
+    "session.default_read": "     1\tkey\n",
+    "session.http_read": HIDDEN_READ,
+    "session.http_shell": HIDDEN_CAT,
+    "session.cli_read": HIDDEN_READ,
+    "session.cli_shell": HIDDEN_CAT,
+    "session.mcp_http_read": HIDDEN_READ,
+    "session.mcp_stdio_read": HIDDEN_READ,
+    "session.ssh_key_shell": HIDDEN_CAT,
+    "session.ssh_key_mcp_read": HIDDEN_READ,
 }
 
 
@@ -99,12 +123,17 @@ def daemon(host: str, root: Path) -> Iterator[dict[str, str]]:
             SSH port and client key beside it.
     """
     port, ssh_port = free_port(), free_port()
-    key = root / "id_ed25519"
-    subprocess.run(
-        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
-        check=True,
-    )
+    key, guarded = root / "id_ed25519", root / "id_guarded"
+    for path in (key, guarded):
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(path)],
+            check=True,
+        )
     shutil.copy(root / "id_ed25519.pub", root / "authorized_keys")
+    with (root / "authorized_keys").open("a") as keys:
+        keys.write(
+            'mirage-profile="guarded" ' + (root / "id_guarded.pub").read_text()
+        )
     env = {
         **os.environ,
         "MIRAGE_HOME": str(root / "home"),
@@ -148,7 +177,12 @@ def daemon(host: str, root: Path) -> Iterator[dict[str, str]]:
                         f"{host} daemon did not start:\n{log.read()}"
                     )
                 time.sleep(0.05)
-            yield {**env, "SSH_PORT": str(ssh_port), "SSH_KEY": str(key)}
+            yield {
+                **env,
+                "SSH_PORT": str(ssh_port),
+                "SSH_KEY": str(key),
+                "SSH_GUARDED_KEY": str(guarded),
+            }
         finally:
             process.terminate()
             try:
@@ -325,6 +359,80 @@ def cli_args(tool: str, args: dict) -> list[str]:
     if "max_count" in args:
         words += ["-m", str(args["max_count"])]
     return words + [args["pattern"], args["path"]]
+
+
+async def sessions(
+    host: str, env: dict[str, str], api: httpx.Client
+) -> dict[str, str]:
+    """Read a file a profile hides, as a session under it, through each door.
+
+    Args:
+        host (str): ``python`` or ``typescript``.
+        env (dict[str, str]): the environment reaching this host's daemon.
+        api (httpx.Client): an authenticated client of its HTTP API.
+
+    Returns:
+        dict[str, str]: one answer per door, keyed as ``EXPECTED`` is.
+    """
+    got: dict[str, str] = {}
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    param = "session_id" if host == "python" else "sessionId"
+    wid = "doors-session"
+    workspace = f"/v1/workspaces/{wid}"
+    api.post(
+        "/v1/workspaces", json={"id": wid, "config": GUARDED}
+    ).raise_for_status()
+    api.post(
+        f"{workspace}/shell", json={"command": f"echo key > {HIDDEN}"}
+    ).raise_for_status()
+    await run(
+        mirage_cli(
+            host, "session", "create", wid, "--id", "agent", "-p", "guarded"
+        ),
+        env=env,
+    )
+    read = {"path": HIDDEN}
+    got["session.default_read"] = api.post(
+        f"{workspace}/read", json=read
+    ).json()["text"]
+    got["session.http_read"] = api.post(
+        f"{workspace}/read", json=read, params={param: "agent"}
+    ).json()["text"]
+    reply = api.post(
+        f"{workspace}/shell", json={"command": f"cat {HIDDEN}", param: "agent"}
+    ).json()
+    got["session.http_shell"] = reply["stderr"]
+    _, out, _ = await run_raw(
+        mirage_cli(host, "read", "-w", wid, "-s", "agent", HIDDEN), env
+    )
+    got["session.cli_read"] = json.loads(out)["text"]
+    _, out, _ = await run_raw(
+        mirage_cli(
+            host, "shell", "-w", wid, "-s", "agent", "-c", f"cat {HIDDEN}"
+        ),
+        env,
+    )
+    got["session.cli_shell"] = json.loads(out)["stderr"]
+    url = f"{env['MIRAGE_DAEMON_URL']}{workspace}/mcp?{param}=agent"
+    async with (
+        httpx2.AsyncClient(headers=auth) as http,
+        Client(streamable_http_client(url, http_client=http)) as client,
+    ):
+        result = await client.call_tool("read", read)
+        got["session.mcp_http_read"] = result.content[0].text
+    relay = mirage_cli(host, "mcp", "-w", wid, "-s", "agent")
+    async with Client(stdio(relay, env)) as client:
+        result = await client.call_tool("read", read)
+        got["session.mcp_stdio_read"] = result.content[0].text
+    keyed = {**env, "SSH_KEY": env["SSH_GUARDED_KEY"]}
+    login = f"{wid}@127.0.0.1"
+    _, _, err = await run_raw(ssh_command(keyed, "-T", login, f"cat {HIDDEN}"))
+    got["session.ssh_key_shell"] = err
+    subsystem = ssh_command(keyed, "-T", login, "-s", "mcp")
+    async with Client(stdio(subsystem, env)) as client:
+        result = await client.call_tool("read", read)
+        got["session.ssh_key_mcp_read"] = result.content[0].text
+    return got
 
 
 async def corpus(
@@ -559,6 +667,7 @@ async def probe(
             got["mcp_stdio.unnamed_while_open"] = str(workspaces())
         wait_until(lambda: workspaces() == 1)
         got["mcp_stdio.unnamed_after_close"] = str(workspaces())
+        got.update(await sessions(host, env, api))
         answers = await corpus(host, env, api)
     return got, answers
 

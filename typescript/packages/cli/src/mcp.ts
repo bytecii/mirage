@@ -14,7 +14,7 @@
 
 import { resolveWorkspaceConfig } from '@struktoai/mirage-server/workspace_config'
 import type { Command } from 'commander'
-import { makeClient } from './client.ts'
+import { makeClient, type DaemonClient } from './client.ts'
 import { fail, handleResponse } from './output.ts'
 import { loadDaemonSettings } from './settings.ts'
 
@@ -25,6 +25,7 @@ export interface McpConfigResolutionOptions {
 
 interface McpCommandOptions {
   workspace?: string
+  session?: string
 }
 
 export function resolveMcpConfig(
@@ -38,6 +39,19 @@ export function resolveMcpConfig(
   })
 }
 
+/** Whether a daemon workspace holds a session. */
+async function hasSession(
+  client: DaemonClient,
+  workspacePath: string,
+  sessionId: string,
+): Promise<boolean> {
+  const rows = await handleResponse(await client.request('GET', `${workspacePath}/sessions`))
+  return (
+    Array.isArray(rows) &&
+    rows.some((row) => (row as { sessionId?: unknown }).sessionId === sessionId)
+  )
+}
+
 /**
  * Serve a workspace's MCP tools over stdio. The tools are the daemon's:
  * this relays stdio to the workspace's `/v1/workspaces/:id/mcp`
@@ -46,7 +60,9 @@ export function resolveMcpConfig(
  * a stdio server's state does. A workspace with a name, the config's
  * `workspace_id` or `--workspace`, outlives it. The daemon answers a
  * config's name with the live workspace created from that same config,
- * and refuses it when the live one came from another.
+ * and refuses it when the live one came from another. `--session` serves
+ * the tools as that session, under its profile, as it does for
+ * `mirage shell`.
  */
 async function runMcp(config: string | undefined, options: McpCommandOptions): Promise<void> {
   if (options.workspace !== undefined && config !== undefined) {
@@ -82,9 +98,18 @@ async function runMcp(config: string | undefined, options: McpCommandOptions): P
     )
   }
   const workspacePath = `/v1/workspaces/${encodeURIComponent(workspaceId)}`
-  const url = `${client.settings.url}${workspacePath}/mcp`
+  const query =
+    options.session === undefined ? '' : `?sessionId=${encodeURIComponent(options.session)}`
+  const url = `${client.settings.url}${workspacePath}/mcp${query}`
   const token = client.settings.authToken
   const headers: Record<string, string> = token === '' ? {} : { Authorization: `Bearer ${token}` }
+  if (
+    options.session !== undefined &&
+    !(await hasSession(client, workspacePath, options.session))
+  ) {
+    if (minted) await client.request('DELETE', workspacePath)
+    fail(`session not found: ${options.session}`, 2)
+  }
   const { relayStdio } = await import('@struktoai/mirage-server/mcp')
   try {
     await relayStdio(url, headers)
@@ -98,6 +123,7 @@ export function registerMcpCommand(program: Command): void {
     .command('mcp')
     .argument('[config]', 'Mirage workspace YAML config')
     .option('-w, --workspace <id>', 'Serve this daemon workspace instead of loading a config')
+    .option('-s, --session <id>', "Session the tools act as; the workspace's default when absent")
     .description("Serve a Mirage workspace's MCP tools over stdio.")
     .action(runMcp)
 }

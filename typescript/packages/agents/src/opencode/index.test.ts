@@ -18,6 +18,7 @@ import { OpsRegistry } from '@struktoai/mirage-core/ops/registry'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { MountMode } from '@struktoai/mirage-core/types'
 import { Workspace } from '@struktoai/mirage-node'
+import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
 import { mirageTools, miragePlugin } from './index.ts'
 
 function mkWs(): Workspace {
@@ -282,5 +283,32 @@ describe('opencode resolver (per-session workspace)', () => {
 
     expect(out).toContain('File changed since it was last read')
     expect(await ws.vfs.cat('/note.txt')).toBe('two')
+  })
+})
+
+async function guardedWs(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/': new RAMVFS(), '/vault': new RAMVFS() },
+    {
+      mode: MountMode.WRITE,
+      profiles: { guarded: parseSessionProfile({ paths: { hide: ['/vault'] } }) },
+    },
+  )
+  await ws.shell('echo key > /vault/key.txt')
+  ws.createSession('agent', { profile: 'guarded' })
+  return ws
+}
+
+describe('opencode mirageTools sessionId', () => {
+  it('acts as the session, under its profile', async () => {
+    const ws = await guardedWs()
+    const tools = mirageTools(ws, { sessionId: 'agent' })
+    const read = await callTool(tools.read, { filePath: '/vault/key.txt' })
+    const listed = await callTool(tools.ls, { path: '/' })
+    const ran = await callTool(tools.bash, { command: 'cat /vault/key.txt' })
+    expect(read).toEqual(expect.stringMatching(/^Error: /))
+    expect(listed).not.toEqual(expect.stringContaining('vault'))
+    expect(ran).toEqual(expect.stringContaining('No such file or directory'))
+    await ws.close()
   })
 })

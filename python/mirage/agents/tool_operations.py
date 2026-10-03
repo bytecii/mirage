@@ -198,10 +198,10 @@ class MirageToolOperations:
                     "overwriting it",
                     True,
                 )
-            await ensure_parents(self._ws, path)
             try:
+                await ensure_parents(self._ws, path)
                 await self._versions.write(path, content)
-            except StaleMirageFileError as exc:
+            except (StaleMirageFileError, OSError, ValueError) as exc:
                 return ToolResult(f"Error: {exc}", True)
             return ToolResult(f"Written: {path}")
 
@@ -246,7 +246,7 @@ class MirageToolOperations:
                 )
             try:
                 await self._versions.write_edit(path, new_content)
-            except StaleMirageFileError as exc:
+            except (StaleMirageFileError, OSError, ValueError) as exc:
                 return ToolResult(f"Error: {exc}", True)
             occurrences = count if replace_all else 1
             return ToolResult(f"Edited: {path} ({occurrences} occurrence(s))")

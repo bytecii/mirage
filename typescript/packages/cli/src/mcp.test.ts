@@ -140,6 +140,25 @@ async function listWorkspaces(d: Daemon): Promise<unknown[]> {
   return (await (await fetch(`${d.url}/v1/workspaces`, { headers: AUTH })).json()) as unknown[]
 }
 
+async function guarded(d: Daemon): Promise<string> {
+  const post = (path: string, body: unknown): Promise<Response> =>
+    fetch(`${d.url}${path}`, { method: 'POST', headers: JSON_AUTH, body: JSON.stringify(body) })
+  const created = (await (
+    await post('/v1/workspaces', {
+      config: {
+        mounts: { '/': { vfs: 'ram', mode: 'write' }, '/vault': { vfs: 'ram', mode: 'write' } },
+        profiles: { guarded: { paths: { hide: ['/vault'] } } },
+      },
+    })
+  ).json()) as { id: string }
+  const path = `/v1/workspaces/${encodeURIComponent(created.id)}`
+  expect((await post(`${path}/shell`, { command: 'echo key > /vault/key.txt' })).status).toBe(200)
+  expect((await post(`${path}/sessions`, { sessionId: 'agent', profile: 'guarded' })).status).toBe(
+    201,
+  )
+  return created.id
+}
+
 async function until(check: () => Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 10_000
   while (!(await check())) {
@@ -235,6 +254,35 @@ describe('mirage mcp over stdio', () => {
     const code = await new Promise<number | null>((resolve) => child.on('close', resolve))
     expect(code).toBe(2)
     expect(stderr).toContain('workspace id already exists')
+  }, 60_000)
+
+  it('serves the tools as a session, under its profile', async () => {
+    const d = await daemon()
+    const wid = await guarded(d)
+    const scoped = await relay(d, '-w', wid, '-s', 'agent')
+    const read = await scoped.callTool({ name: 'read', arguments: { path: '/vault/key.txt' } })
+    const ran = await scoped.callTool({ name: 'shell', arguments: { command: 'pwd; ls /' } })
+    await scoped.close()
+    const fallback = await relay(d, '-w', wid)
+    const seen = await fallback.callTool({ name: 'read', arguments: { path: '/vault/key.txt' } })
+    await fallback.close()
+    expect(text(read.content)).toBe("Error: file '/vault/key.txt' not found")
+    expect(text(ran.content)).not.toContain('vault')
+    expect(text(seen.content)).toBe('     1\tkey\n')
+  }, 60_000)
+
+  it('refuses an unknown session', async () => {
+    const d = await daemon()
+    const child = spawn(process.execPath, [BIN, 'mcp', writeConfig(), '-s', 'nope'], { env: d.env })
+    let stderr = ''
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+    child.stdin.end()
+    const code = await new Promise<number | null>((resolve) => child.on('close', resolve))
+    expect(code).toBe(2)
+    expect(stderr).toBe('session not found: nope\n')
+    expect(await listWorkspaces(d)).toEqual([])
   }, 60_000)
 
   it('takes a config or a workspace, not both', async () => {

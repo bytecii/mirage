@@ -261,3 +261,64 @@ async def test_grep_takes_gnu_options(ops):
     assert names.text == "/src/b.txt\n"
     assert counted.text == "1\n"
     assert literal.is_error is False
+
+
+async def _guarded() -> Workspace:
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS(), "/ro": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={
+            "guarded": {
+                "paths": {"hide": ["/vault"]},
+                "mounts": {"/ro": {"mode": "r"}},
+            }
+        },
+    )
+    await ws.shell("echo key > /vault/key.txt && echo r > /ro/r.txt")
+    ws.create_session("agent", profile="guarded")
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_every_tool_acts_under_the_session_profile():
+    ws = await _guarded()
+    ops = MirageToolOperations(ws, session_id="agent")
+    try:
+        read = await ops.call("read", {"path": "/vault/key.txt"})
+        listed = await ops.call("ls", {"path": "/"})
+        globbed = await ops.call("glob", {"pattern": "/*/*.txt"})
+        found = await ops.call("grep", {"pattern": "key", "path": "/vault"})
+        shown = await ops.call("read", {"path": "/ro/r.txt"})
+        default = await MirageToolOperations(ws).call(
+            "read", {"path": "/vault/key.txt"}
+        )
+    finally:
+        await ws.close()
+    assert read.text == "Error: file '/vault/key.txt' not found"
+    assert "vault" not in listed.text
+    assert globbed.text == "/ro/r.txt\n"
+    assert found.is_error
+    assert shown.text == "     1\tr\n"
+    assert default.text == "     1\tkey\n"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_write_or_edit_is_a_tool_error():
+    ws = await _guarded()
+    ops = MirageToolOperations(ws, session_id="agent")
+    try:
+        await ops.call("read", {"path": "/ro/r.txt"})
+        written = await ops.call(
+            "write", {"path": "/ro/r.txt", "content": "x"}
+        )
+        edited = await ops.call(
+            "edit", {"path": "/ro/r.txt", "old_string": "r", "new_string": "R"}
+        )
+        hidden = await ops.call(
+            "write", {"path": "/vault/new/n.txt", "content": "x"}
+        )
+    finally:
+        await ws.close()
+    assert written.is_error and written.text.startswith("Error: ")
+    assert edited.is_error and edited.text.startswith("Error: ")
+    assert hidden.is_error and hidden.text.startswith("Error: ")

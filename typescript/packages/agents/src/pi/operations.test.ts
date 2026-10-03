@@ -18,6 +18,7 @@ import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import type { Action, CommandContext, Policy } from '@struktoai/mirage-core/policy/index'
 import { MountMode } from '@struktoai/mirage-core/types'
 import { Workspace } from '@struktoai/mirage-node'
+import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
 import { mirageOperations } from './operations.ts'
 
 function mkWs(policies: Policy[] = []): Workspace {
@@ -287,5 +288,35 @@ describe('mirageOperations.bash and a refusal', () => {
     const [data, exitCode] = await streamed(ws, 'cat /x')
     expect(exitCode).toBe(1)
     expect(data).toBe('cat: /x: frozen\n')
+  })
+})
+
+async function guardedWs(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/': new RAMVFS(), '/vault': new RAMVFS() },
+    {
+      mode: MountMode.WRITE,
+      profiles: { guarded: parseSessionProfile({ paths: { hide: ['/vault'] } }) },
+    },
+  )
+  await ws.shell('echo key > /vault/key.txt')
+  ws.createSession('agent', { profile: 'guarded' })
+  return ws
+}
+
+describe('mirageOperations sessionId', () => {
+  it('acts as the session, under its profile', async () => {
+    const ws = await guardedWs()
+    const ops = mirageOperations(ws, { sessionId: 'agent' })
+    const chunks: Buffer[] = []
+    const ran = await ops.bash.exec('cat /vault/key.txt', '/', {
+      onData: (data) => chunks.push(data),
+    })
+    await expect(ops.read.readFile('/vault/key.txt')).rejects.toThrow()
+    expect(await ops.find.exists('/vault/key.txt')).toBe(false)
+    expect(await ops.ls.readdir('/')).not.toContain('vault')
+    expect(ran.exitCode).not.toBe(0)
+    expect((await mirageOperations(ws).read.readFile('/vault/key.txt')).toString()).toBe('key\n')
+    await ws.close()
   })
 })

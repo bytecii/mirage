@@ -15,6 +15,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { MountMode, RAMVFS, Workspace } from '@struktoai/mirage-node'
 import { MirageToolOperations } from './tool_operations.ts'
+import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
 
 let ws: Workspace
 let ops: MirageToolOperations
@@ -163,5 +164,62 @@ describe('write', () => {
     expect(result.isError).toBe(true)
     expect(result.content[0]?.text).toContain('changed since it was last read')
     expect(await ws.vfs.cat('/exists.txt')).toBe('moved')
+  })
+})
+
+async function guardedWs(): Promise<Workspace> {
+  const ws = new Workspace(
+    { '/': new RAMVFS(), '/vault': new RAMVFS(), '/ro': new RAMVFS() },
+    {
+      mode: MountMode.WRITE,
+      profiles: {
+        guarded: parseSessionProfile({
+          paths: { hide: ['/vault'] },
+          mounts: { '/ro': { mode: 'r' } },
+        }),
+      },
+    },
+  )
+  await ws.shell('echo key > /vault/key.txt && echo r > /ro/r.txt')
+  ws.createSession('agent', { profile: 'guarded' })
+  return ws
+}
+
+const textOf = (result: { content: { text: string }[] }): string =>
+  result.content.map((c) => c.text).join('')
+
+describe('a session', () => {
+  it('confines every tool to its profile', async () => {
+    const guarded = await guardedWs()
+    const ops = new MirageToolOperations(guarded, { sessionId: 'agent' })
+    const read = await ops.call('read', { path: '/vault/key.txt' })
+    const listed = await ops.call('ls', { path: '/' })
+    const globbed = await ops.call('glob', { pattern: '/*/*.txt' })
+    const found = await ops.call('grep', { pattern: 'key', path: '/vault' })
+    const shown = await ops.call('read', { path: '/ro/r.txt' })
+    const fallback = await new MirageToolOperations(guarded).call('read', {
+      path: '/vault/key.txt',
+    })
+    await guarded.close()
+    expect(textOf(read)).toBe("Error: file '/vault/key.txt' not found")
+    expect(textOf(listed)).not.toContain('vault')
+    expect(textOf(globbed)).toBe('/ro/r.txt\n')
+    expect(found.isError).toBe(true)
+    expect(textOf(shown)).toBe('     1\tr\n')
+    expect(textOf(fallback)).toBe('     1\tkey\n')
+  })
+
+  it('answers a refused write or edit as a tool error', async () => {
+    const guarded = await guardedWs()
+    const ops = new MirageToolOperations(guarded, { sessionId: 'agent' })
+    await ops.call('read', { path: '/ro/r.txt' })
+    const written = await ops.call('write', { path: '/ro/r.txt', content: 'x' })
+    const edited = await ops.call('edit', { path: '/ro/r.txt', old_string: 'r', new_string: 'R' })
+    const hidden = await ops.call('write', { path: '/vault/new/n.txt', content: 'x' })
+    await guarded.close()
+    for (const result of [written, edited, hidden]) {
+      expect(result.isError).toBe(true)
+      expect(textOf(result)).toMatch(/^Error: /)
+    }
   })
 })

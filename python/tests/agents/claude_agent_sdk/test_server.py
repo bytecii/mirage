@@ -162,3 +162,24 @@ async def test_grep(tools, workspace):
     result = await tools.grep({"pattern": "hello", "path": "/"})
     text = result["content"][0]["text"]
     assert "hello" in text
+
+
+@pytest.mark.asyncio
+async def test_tools_act_as_the_session():
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"guarded": {"paths": {"hide": ["/vault"]}}},
+    )
+    await ws.shell("echo key > /vault/key.txt")
+    ws.create_session("agent", profile="guarded")
+    try:
+        result = await _MirageTools(ws, session_id="agent").read(
+            {"path": "/vault/key.txt"}
+        )
+    finally:
+        await ws.close()
+    assert result["is_error"] is True
+    assert result["content"][0]["text"] == (
+        "Error: file '/vault/key.txt' not found"
+    )
