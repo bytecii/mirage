@@ -41,13 +41,14 @@ export async function fingerprint(content: Uint8Array): Promise<string> {
     .replaceAll('=', '')
 }
 
-function readBytes(vfs: Ops, path: string): Promise<Uint8Array> {
-  return vfs.read(path, { raw: true })
+async function readBytes(vfs: Ops, path: string): Promise<Uint8Array> {
+  return (await vfs.read(path, { raw: true })).slice()
 }
 
 export class FileVersionTracker {
   private readonly readVersions = new Map<string, string>()
   private readonly editVersions = new Map<string, string>()
+  private readonly writes = new Map<string, number>()
   private readonly seen = new Set<string>()
 
   /** The op facade reads and writes run through, as the tracker's session. */
@@ -94,6 +95,7 @@ export class FileVersionTracker {
   // look stale with nobody having touched the file.
   private async recordWrite(path: string, key: string): Promise<void> {
     if (!this.enabled) return
+    this.writes.set(key, (this.writes.get(key) ?? 0) + 1)
     const version = await this.currentVersion(path)
     if (version === null) this.readVersions.delete(key)
     else this.readVersions.set(key, version)
@@ -115,9 +117,16 @@ export class FileVersionTracker {
     if (this.enabled) this.seen.add(this.key(path))
   }
 
+  // A write that lands while a read is in flight has already stamped
+  // what a later read returns, and the bytes this read fetched may
+  // predate it, so the read keeps its stamp only when no write did.
   async read(path: string): Promise<Uint8Array> {
+    const key = this.key(path)
+    const writes = this.writes.get(key)
     const content = await readBytes(this.vfs, path)
-    if (this.enabled) this.readVersions.set(this.key(path), await fingerprint(content))
+    if (!this.enabled) return content
+    const version = await fingerprint(content)
+    if (this.writes.get(key) === writes) this.readVersions.set(key, version)
     return content
   }
 

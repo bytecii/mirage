@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from mirage import RAMVFS, MountMode, Workspace
@@ -42,12 +44,56 @@ class _RenderingWorkspace:
         self.namespace = ws.namespace
 
 
+class _HeldOps:
+    """Holds the first read after it fetched its bytes, until released."""
+
+    def __init__(self, ops):
+        self._ops = ops
+        self._first = True
+        self.fetched = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def read(self, path):
+        data = await self._ops.read(path)
+        if self._first:
+            self._first = False
+            self.fetched.set()
+            await self.release.wait()
+        return data
+
+    async def write(self, path, data):
+        await self._ops.write(path, data)
+
+    async def exists(self, path):
+        return await self._ops.exists(path)
+
+
+class _HeldWorkspace:
+    def __init__(self, ws):
+        self.vfs = _HeldOps(ws.vfs)
+        self.namespace = ws.namespace
+
+
 def test_fingerprint_is_stable_and_url_safe():
     stamp = fingerprint(b"hello")
     assert stamp == "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
     assert stamp == fingerprint(b"hello")
     assert stamp != fingerprint(b"hello!")
     assert "+" not in stamp and "/" not in stamp and "=" not in stamp
+
+
+@pytest.mark.asyncio
+async def test_read_in_flight_keeps_the_stamp_of_a_write(workspace):
+    await workspace.vfs.write("/a.txt", b"one")
+    held = _HeldWorkspace(workspace)
+    tracker = FileVersionTracker(held)
+    reading = asyncio.create_task(tracker.read("/a.txt"))
+    await held.vfs.fetched.wait()
+    await tracker.write("/a.txt", "two")
+    held.vfs.release.set()
+    await reading
+    await tracker.write("/a.txt", "three")
+    assert await workspace.vfs.read("/a.txt") == b"three"
 
 
 @pytest.mark.asyncio

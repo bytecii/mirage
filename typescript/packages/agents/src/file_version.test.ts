@@ -51,6 +51,51 @@ describe('fingerprint', () => {
 })
 
 describe('FileVersionTracker', () => {
+  it('keeps the stamp of a write that lands while a read of the old bytes is in flight', async () => {
+    await ws.vfs.write('/a.txt', 'one')
+    let fetched!: () => void
+    let release!: () => void
+    const reachedRead = new Promise<void>((resolve) => {
+      fetched = resolve
+    })
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let first = true
+    const slow = {
+      vfs: {
+        read: async (path: string, options?: { raw?: boolean }): Promise<Uint8Array> => {
+          const bytes = await ws.vfs.read(path, options)
+          if (first) {
+            first = false
+            fetched()
+            await held
+          }
+          return bytes
+        },
+        write: (path: string, content: string): Promise<void> => ws.vfs.write(path, content),
+        exists: (path: string): Promise<boolean> => ws.vfs.exists(path),
+      },
+      namespace: ws.namespace,
+    } as unknown as Workspace
+    const tracker = new FileVersionTracker(slow)
+    const reading = tracker.read('/a.txt')
+    await reachedRead
+    await tracker.write('/a.txt', 'two')
+    release()
+    await reading
+    await tracker.write('/a.txt', 'three')
+    expect(await ws.vfs.cat('/a.txt')).toBe('three')
+  })
+
+  it('hands back bytes the caller can change without changing the file', async () => {
+    const tracker = new FileVersionTracker(ws)
+    await ws.vfs.write('/a.txt', 'one')
+    const bytes = await tracker.read('/a.txt')
+    bytes[0] = 0x4f
+    expect(await ws.vfs.cat('/a.txt')).toBe('one')
+  })
+
   it('refuses a write to a file that changed underneath', async () => {
     const tracker = new FileVersionTracker(ws)
     await ws.vfs.write('/a.txt', 'one')
