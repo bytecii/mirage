@@ -115,7 +115,7 @@ describe('the MCP door over HTTP', () => {
     const url = `${base}/v1/workspaces/${id}/mcp`
     await call(url, 'write', { path: '/a.txt', content: 'first' })
     await call(url, 'read', { path: '/a.txt' })
-    await app.registry.get(id).runner.ws.vfs.writeFile('/a.txt', 'external')
+    await app.registry.get(id).runner.ws.vfs.write('/a.txt', 'external')
     const stale = await call(url, 'edit', {
       path: '/a.txt',
       old_string: 'external',
@@ -177,7 +177,7 @@ describe('the MCP door over HTTP', () => {
     })
     await call(url, 'write', { path: '/a.txt', content: 'first' })
     await call(url, 'read', { path: '/a.txt' })
-    await app.registry.get(id).runner.ws.vfs.writeFile('/a.txt', 'external')
+    await app.registry.get(id).runner.ws.vfs.write('/a.txt', 'external')
     await fetch(`${sessions}/agent`, { method: 'DELETE' })
     await fetch(sessions, {
       method: 'POST',
@@ -201,9 +201,7 @@ describe('the MCP door over HTTP', () => {
       content,
     })
     expect(written).toBe('Written: /big.txt')
-    expect((await app.registry.get(id).runner.ws.vfs.readFileText('/big.txt')).length).toBe(
-      content.length,
-    )
+    expect((await app.registry.get(id).runner.ws.vfs.cat('/big.txt')).length).toBe(content.length)
   })
 
   it('runs shell as a daemon job', async () => {

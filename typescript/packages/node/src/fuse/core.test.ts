@@ -46,9 +46,9 @@ describe('MountCore', () => {
     await ws.shell("echo 'hello' > /data/f.txt")
     const sess = ws.createSession('agent', { profile: {} })
     vi.spyOn(ws.vfs, 'truncate').mockRejectedValue(enotsup('ram', 'truncate', '/data/f.txt'))
-    const realRead = ws.vfs.readFile.bind(ws.vfs)
+    const realRead = ws.vfs.read.bind(ws.vfs)
     const readers: (string | null)[] = []
-    vi.spyOn(ws.vfs, 'readFile').mockImplementation((...args) => {
+    vi.spyOn(ws.vfs, 'read').mockImplementation((...args) => {
       readers.push(getCurrentSession()?.sessionId ?? null)
       return realRead(...args)
     })
@@ -64,11 +64,11 @@ describe('MountCore', () => {
       await ws.shell("echo 'hello' > /data/f.txt")
       const sess = ws.createSession('agent', { profile: {} })
       const core = new MountCore(ws.vfs, { session: sess })
-      const realRead = ws.vfs.readFile.bind(ws.vfs)
-      const write = vi.spyOn(ws.vfs, 'writeFile')
+      const realRead = ws.vfs.read.bind(ws.vfs)
+      const write = vi.spyOn(ws.vfs, 'write')
       const error = errnoError(code, 'fallback read failed')
       vi.spyOn(ws.vfs, 'truncate').mockRejectedValue(enotsup('ram', 'truncate', '/data/f.txt'))
-      vi.spyOn(ws.vfs, 'readFile').mockRejectedValueOnce(error)
+      vi.spyOn(ws.vfs, 'read').mockRejectedValueOnce(error)
 
       await expect(core.truncate('/data/f.txt', 2)).rejects.toBe(error)
       expect(write).not.toHaveBeenCalled()
@@ -314,23 +314,21 @@ describe('MountCore', () => {
     // fetched is the old body, and installing it would let that handle
     // and later stats serve pre-truncation content.
     const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
-    await ws.vfs.writeFile('/data/api.json', new TextEncoder().encode('hydrated bytes'))
+    await ws.vfs.write('/data/api.json', new TextEncoder().encode('hydrated bytes'))
     vi.spyOn(ws.vfs, 'stat').mockResolvedValue(
       new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
     )
-    const original = ws.vfs.readFile.bind(ws.vfs)
+    const original = ws.vfs.read.bind(ws.vfs)
     let release: () => void = () => undefined
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
     let calls = 0
-    vi.spyOn(ws.vfs, 'readFile').mockImplementation(
-      async (...args: Parameters<typeof original>) => {
-        calls += 1
-        if (calls === 1) await gate
-        return original(...args)
-      },
-    )
+    vi.spyOn(ws.vfs, 'read').mockImplementation(async (...args: Parameters<typeof original>) => {
+      calls += 1
+      if (calls === 1) await gate
+      return original(...args)
+    })
     // The O_TRUNC open hydrates through the same in-flight read, so the
     // gate opens once its truncation has landed rather than after it
     // returns.
@@ -363,19 +361,17 @@ describe('MountCore', () => {
     // finish afterwards and restore the old body over the truncation.
     const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
     await ws.shell("echo 'hello world' | tee /data/greeting.txt")
-    const original = ws.vfs.writeFile.bind(ws.vfs)
+    const original = ws.vfs.write.bind(ws.vfs)
     let release: () => void = () => undefined
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
     let calls = 0
-    vi.spyOn(ws.vfs, 'writeFile').mockImplementation(
-      async (...args: Parameters<typeof original>) => {
-        calls += 1
-        if (calls === 1) await gate
-        return original(...args)
-      },
-    )
+    vi.spyOn(ws.vfs, 'write').mockImplementation(async (...args: Parameters<typeof original>) => {
+      calls += 1
+      if (calls === 1) await gate
+      return original(...args)
+    })
     const core = new MountCore(ws.vfs)
     const first = await core.open('/data/greeting.txt', fsConstants.O_WRONLY)
     await core.write('/data/greeting.txt', first, new TextEncoder().encode('QUEUED'), 0)
@@ -387,7 +383,7 @@ describe('MountCore', () => {
     await core.write('/data/greeting.txt', second, new TextEncoder().encode('BB\n'), 0)
     await core.release(second)
     await core.release(first)
-    const body = await ws.vfs.readFile('/data/greeting.txt')
+    const body = await ws.vfs.read('/data/greeting.txt')
     expect(new TextDecoder().decode(body)).toBe('BB\n')
   })
 
@@ -434,7 +430,7 @@ describe('MountCore', () => {
     // buffer.
     const vfs = new RAMVFS()
     const seed = new Workspace({ '/data/': vfs }, { mode: MountMode.WRITE })
-    await seed.vfs.writeFile('/data/existing.txt', 'seed')
+    await seed.vfs.write('/data/existing.txt', 'seed')
     const core = new MountCore(new Workspace({ '/data/': vfs }, { mode: MountMode.READ }).vfs)
     const first = await core.open('/data/existing.txt', fsConstants.O_WRONLY)
     await core.write('/data/existing.txt', first, new TextEncoder().encode('QUEUED'), 0)
@@ -442,7 +438,7 @@ describe('MountCore', () => {
       core.open('/data/existing.txt', fsConstants.O_WRONLY | fsConstants.O_TRUNC),
     ).rejects.toThrow()
     await expect(core.flush('/data/existing.txt', first)).rejects.toThrow()
-    const body = await seed.vfs.readFile('/data/existing.txt')
+    const body = await seed.vfs.read('/data/existing.txt')
     expect(new TextDecoder().decode(body)).toBe('seed')
   })
 
@@ -624,10 +620,10 @@ describe('MountCore chunks', () => {
     // first one moved all of it to answer a `head`. Mirrors Python's
     // test_a_large_file_reads_a_chunk_at_a_time.
     const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
-    await ws.vfs.writeFile('/data/big.bin', new Uint8Array(3 * READ_CHUNK).fill(1))
+    await ws.vfs.write('/data/big.bin', new Uint8Array(3 * READ_CHUNK).fill(1))
     const core = new MountCore(ws.vfs)
     const fd = await core.open('/data/big.bin')
-    const reads = vi.spyOn(ws.vfs, 'readFile')
+    const reads = vi.spyOn(ws.vfs, 'read')
     expect((await core.read('/data/big.bin', fd, 0, 4096)).length).toBe(4096)
     expect((await core.read('/data/big.bin', fd, 4096, 4096)).length).toBe(4096)
     expect((await core.read('/data/big.bin', fd, 3 * READ_CHUNK - 2, 4096)).length).toBe(2)
@@ -640,7 +636,7 @@ describe('MountCore chunks', () => {
 
   it('drops the chunk an open handle kept when the file changes', async () => {
     const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
-    await ws.vfs.writeFile('/data/f.txt', 'old'.repeat(READ_CHUNK))
+    await ws.vfs.write('/data/f.txt', 'old'.repeat(READ_CHUNK))
     const core = new MountCore(ws.vfs)
     const reader = await core.open('/data/f.txt')
     expect(new TextDecoder().decode(await core.read('/data/f.txt', reader, 0, 3))).toBe('old')
@@ -659,7 +655,7 @@ describe('MountCore chunks', () => {
       // included. Mirrors Python's test_an_open_chunked_handle_outlives.
       const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
       const body = Uint8Array.from({ length: 3 * READ_CHUNK }, (_, i) => i % 251)
-      await ws.vfs.writeFile('/data/big.bin', body)
+      await ws.vfs.write('/data/big.bin', body)
       const core = new MountCore(ws.vfs)
       const fd = await core.open('/data/big.bin')
       expect(await core.read('/data/big.bin', fd, 0, 3)).toEqual(body.slice(0, 3))
@@ -677,12 +673,12 @@ describe('MountCore chunks', () => {
     // Python's test_holding_reads_once_and_never_blocks_the_removal.
     const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
     for (const name of ['/data/a.bin', '/data/b.bin']) {
-      await ws.vfs.writeFile(name, new Uint8Array(2 * READ_CHUNK).fill(1))
+      await ws.vfs.write(name, new Uint8Array(2 * READ_CHUNK).fill(1))
     }
     const core = new MountCore(ws.vfs)
     const shared = [await core.open('/data/a.bin'), await core.open('/data/a.bin')]
     for (const fd of shared) await core.read('/data/a.bin', fd, 0, 1)
-    const reads = vi.spyOn(ws.vfs, 'readFile')
+    const reads = vi.spyOn(ws.vfs, 'read')
     await core.unlink('/data/a.bin')
     expect(reads).toHaveBeenCalledTimes(1)
     const refused = await core.open('/data/b.bin')
@@ -702,13 +698,13 @@ describe('MountCore chunks', () => {
     // and then finds the file gone; the early descriptor keeps its bytes.
     const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
     const body = Uint8Array.from({ length: 3 * READ_CHUNK }, (_, i) => i % 251)
-    await ws.vfs.writeFile('/data/a.bin', body)
+    await ws.vfs.write('/data/a.bin', body)
     const core = new MountCore(ws.vfs)
     const early = await core.open('/data/a.bin')
     await core.read('/data/a.bin', early, 0, 1)
-    const real = ws.vfs.readFile.bind(ws.vfs)
+    const real = ws.vfs.read.bind(ws.vfs)
     const late: Promise<number>[] = []
-    const reads = vi.spyOn(ws.vfs, 'readFile').mockImplementation((path, options) => {
+    const reads = vi.spyOn(ws.vfs, 'read').mockImplementation((path, options) => {
       if (options === undefined && late.length === 0) late.push(core.open('/data/a.bin'))
       return real(path, options)
     })
@@ -724,12 +720,12 @@ describe('MountCore chunks', () => {
     // unlink(2) on a link takes the link entry, never the pointee's bytes.
     // Mirrors Python's test_removing_a_link_leaves_its_targets_handles_alone.
     const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
-    await ws.vfs.writeFile('/data/real.bin', new Uint8Array(2 * READ_CHUNK).fill(1))
+    await ws.vfs.write('/data/real.bin', new Uint8Array(2 * READ_CHUNK).fill(1))
     await ws.shell('ln -s real.bin /data/alias')
     const core = new MountCore(ws.vfs)
     const fd = await core.open('/data/real.bin')
     await core.read('/data/real.bin', fd, 0, 1)
-    const reads = vi.spyOn(ws.vfs, 'readFile')
+    const reads = vi.spyOn(ws.vfs, 'read')
     await core.unlink('/data/alias')
     expect(reads).not.toHaveBeenCalled()
     reads.mockRestore()

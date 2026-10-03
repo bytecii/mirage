@@ -414,12 +414,12 @@ describe('a named facade session on the fallback storage', () => {
       const host = ws.createSession('host', { profile: parseSessionProfile({}) })
       const wide = new Session(ws, host.sessionId).vfs
       await wide.mkdir('/data/vault')
-      await wide.writeFile('/data/vault/secret', 'top\n')
+      await wide.write('/data/vault/secret', 'top\n')
       const [held, release] = gate()
       const holding = runWithSession(host, () => held, ws.sessionManager)
       const named = new Session(ws, ws.defaultSessionId).vfs
-      await expect(named.readFile('/data/vault/secret')).rejects.toMatchObject({ code: 'ENOENT' })
-      expect(await ws.vfs.readFileText('/data/vault/secret')).toBe('top\n')
+      await expect(named.read('/data/vault/secret')).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await ws.vfs.cat('/data/vault/secret')).toBe('top\n')
       release()
       await holding
     } finally {

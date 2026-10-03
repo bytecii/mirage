@@ -475,7 +475,7 @@ export class MirageFileSystem extends FileSystem {
     const key = String(target.targetKey)
     let bytes: Uint8Array
     try {
-      bytes = await (await this.ops(signal, 'read')).readFile(key)
+      bytes = await (await this.ops(signal, 'read')).read(key)
     } catch (err) {
       throw mapMirageError(err, 'read', target.displayPath)
     }
@@ -530,7 +530,7 @@ export class MirageFileSystem extends FileSystem {
     const key = String(target.targetKey)
     let bytes: Uint8Array
     try {
-      bytes = await (await this.ops(signal, 'read')).readFile(key, { size: maxBytes + 1 })
+      bytes = await (await this.ops(signal, 'read')).read(key, { size: maxBytes + 1 })
     } catch (err) {
       throw mapMirageError(err, 'read', target.displayPath)
     }
@@ -557,7 +557,7 @@ export class MirageFileSystem extends FileSystem {
     try {
       return await (
         await this.ops(signal, 'read')
-      ).readFile(String(target.targetKey), { offset: range.offset, size: range.length })
+      ).read(String(target.targetKey), { offset: range.offset, size: range.length })
     } catch (err) {
       throw mapMirageError(err, 'read', target.displayPath)
     }
@@ -689,7 +689,7 @@ export class MirageFileSystem extends FileSystem {
       try {
         await (
           await this.ops(signal, 'write')
-        ).writeFile(key, restoreLineEndings(normalizeLineEndings(content), crlf))
+        ).write(key, restoreLineEndings(normalizeLineEndings(content), crlf))
       } catch (err) {
         throw mapMirageError(err, 'write', target.displayPath)
       }
@@ -709,7 +709,7 @@ export class MirageFileSystem extends FileSystem {
     if (Buffer.byteLength(content, 'utf8') >= this.diffBasisMaxBytes) return null
     let bytes: Uint8Array
     try {
-      bytes = await (await this.ops()).readFile(String(target.targetKey))
+      bytes = await (await this.ops()).read(String(target.targetKey))
     } catch {
       return null
     }
@@ -760,7 +760,7 @@ export class MirageFileSystem extends FileSystem {
       }
       let bytes: Uint8Array
       try {
-        bytes = await (await this.ops(signal, 'edit')).readFile(key)
+        bytes = await (await this.ops(signal, 'edit')).read(key)
       } catch (err) {
         throw mapMirageError(err, 'edit', target.displayPath)
       }
@@ -776,7 +776,7 @@ export class MirageFileSystem extends FileSystem {
       try {
         await (
           await this.ops(signal, 'edit')
-        ).writeFile(key, restoreLineEndings(edited, detectsCrlf(raw)))
+        ).write(key, restoreLineEndings(edited, detectsCrlf(raw)))
       } catch (err) {
         throw mapMirageError(err, 'edit', target.displayPath)
       }

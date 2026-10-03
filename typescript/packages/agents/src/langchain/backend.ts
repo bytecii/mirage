@@ -157,7 +157,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     const mimeType = mimeFor(filePath)
     let bytes: Uint8Array
     try {
-      bytes = await this.ws.vfs.readFile(filePath)
+      bytes = await this.ws.vfs.read(filePath)
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) }
     }
@@ -185,7 +185,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     let bytes: Uint8Array
     try {
       stat = await this.ws.vfs.stat(filePath)
-      bytes = await this.ws.vfs.readFile(filePath)
+      bytes = await this.ws.vfs.read(filePath)
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) }
     }
@@ -208,7 +208,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
       return { error: `Error: file '${filePath}' already exists` }
     }
     await ensureParent(this.ws, filePath)
-    await this.ws.vfs.writeFile(filePath, content)
+    await this.ws.vfs.write(filePath, content)
     return { path: filePath }
   }
 
@@ -220,7 +220,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
   ): Promise<EditResult> {
     let current: string
     try {
-      current = await this.ws.vfs.readFileText(filePath)
+      current = await this.ws.vfs.cat(filePath)
     } catch {
       return { error: `Error: file '${filePath}' not found` }
     }
@@ -233,7 +233,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
         error: `Error: string '${oldString}' appears ${String(count)} times. Use replaceAll=true`,
       }
     }
-    await this.ws.vfs.writeFile(filePath, next)
+    await this.ws.vfs.write(filePath, next)
     return { path: filePath, occurrences: replaceAll ? count : 1 }
   }
 
@@ -274,7 +274,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     const results: FileUploadResponse[] = []
     for (const [path, data] of files) {
       await ensureParent(this.ws, path)
-      await this.ws.vfs.writeFile(path, data)
+      await this.ws.vfs.write(path, data)
       results.push({ path, error: null })
     }
     return results
@@ -284,7 +284,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     const results: FileDownloadResponse[] = []
     for (const path of paths) {
       try {
-        const content = await this.ws.vfs.readFile(path)
+        const content = await this.ws.vfs.read(path)
         results.push({ path, content, error: null })
       } catch {
         results.push({ path, content: null, error: 'file_not_found' })

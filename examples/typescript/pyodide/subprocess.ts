@@ -17,8 +17,8 @@ async function main(): Promise<void> {
   const ram = new RAMVFS()
   const ws = new Workspace({ '/data': ram }, { mode: MountMode.EXEC })
   ws.addMount('/ro', ram, MountMode.READ)
-  await ws.vfs.writeFile('/data/app.log', LOG)
-  await ws.vfs.writeFile(
+  await ws.vfs.write('/data/app.log', LOG)
+  await ws.vfs.write(
     '/data/subprocess.py',
     new Uint8Array(readFileSync(resolve(HERE, 'subprocess.py'))),
   )

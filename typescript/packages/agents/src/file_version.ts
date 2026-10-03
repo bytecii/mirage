@@ -30,7 +30,7 @@ function fingerprint(content: Uint8Array | string): string {
 }
 
 async function readBuffer(ws: Workspace, path: string): Promise<Buffer> {
-  const bytes = await ws.vfs.readFile(path, { raw: true })
+  const bytes = await ws.vfs.read(path, { raw: true })
   return Buffer.from(bytes)
 }
 
@@ -101,7 +101,7 @@ export class FileVersionTracker {
       const readVersion = this.readVersions.get(key)
       if (readVersion !== undefined) await this.assertVersion(path, readVersion)
     }
-    await this.ws.vfs.writeFile(path, content)
+    await this.ws.vfs.write(path, content)
     await this.recordWrite(path, key)
   }
 
@@ -111,7 +111,7 @@ export class FileVersionTracker {
       const editVersion = this.editVersions.get(key)
       if (editVersion !== undefined) await this.assertVersion(path, editVersion)
     }
-    await this.ws.vfs.writeFile(path, content)
+    await this.ws.vfs.write(path, content)
     await this.recordWrite(path, key)
   }
 }

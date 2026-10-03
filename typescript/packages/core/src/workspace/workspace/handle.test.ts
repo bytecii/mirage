@@ -58,11 +58,11 @@ describe('Session', () => {
     expect(reviewer.state).toBe(ws.getSession('reviewer'))
     expect(stdoutStr(await reviewer.shell('cat /repo/README.md'))).toBe('hello\n')
     expect((await reviewer.shell('cat /repo/secrets/key.pem')).exitCode).toBe(1)
-    expect(await reviewer.vfs.readFileText('/repo/README.md')).toBe('hello\n')
-    await expect(reviewer.vfs.readFile('/repo/secrets/key.pem')).rejects.toMatchObject({
+    expect(await reviewer.vfs.cat('/repo/README.md')).toBe('hello\n')
+    await expect(reviewer.vfs.read('/repo/secrets/key.pem')).rejects.toMatchObject({
       code: 'ENOENT',
     })
-    expect(await ws.vfs.readFileText('/repo/secrets/key.pem')).toBe('PRIVATE\n')
+    expect(await ws.vfs.cat('/repo/secrets/key.pem')).toBe('PRIVATE\n')
     expect(reviewer.vfs.records).toBe(ws.vfs.records)
   })
 
@@ -115,7 +115,7 @@ describe('Session', () => {
       // A session already bound is kept by the op door, so a handle
       // reached from inside the default session's own command reads
       // as that session, never wider.
-      expect(await reviewer.vfs.readFileText('/repo/secrets/key.pem')).toBe('PRIVATE\n')
+      expect(await reviewer.vfs.cat('/repo/secrets/key.pem')).toBe('PRIVATE\n')
     })
   })
 })

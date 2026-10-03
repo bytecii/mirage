@@ -124,7 +124,7 @@ export function mirageTools(ws: Workspace): ToolSet {
       }),
       execute: async ({ path, content }) => {
         await ensureParent(ws, path)
-        await ws.vfs.writeFile(path, content)
+        await ws.vfs.write(path, content)
         return { path }
       },
     }),
@@ -144,7 +144,7 @@ export function mirageTools(ws: Workspace): ToolSet {
       execute: async ({ path, oldString, newString, replaceAll }) => {
         let current: string
         try {
-          current = await ws.vfs.readFileText(path)
+          current = await ws.vfs.cat(path)
         } catch {
           return { error: `Error: file '${path}' not found` }
         }
@@ -157,7 +157,7 @@ export function mirageTools(ws: Workspace): ToolSet {
             error: `Error: string '${oldString}' appears ${String(count)} times. Use replaceAll=true`,
           }
         }
-        await ws.vfs.writeFile(path, next)
+        await ws.vfs.write(path, next)
         return { path, occurrences: replaceAll === true ? count : 1 }
       },
     }),

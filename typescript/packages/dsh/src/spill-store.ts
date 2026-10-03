@@ -133,7 +133,7 @@ export class MirageSpillStore extends SpillStore {
         { exists: (p) => workspace.vfs.exists(p), mkdir: (p) => workspace.vfs.mkdir(p) },
         dir,
       )
-      await workspace.vfs.writeFile(path, input.content)
+      await workspace.vfs.write(path, input.content)
     } catch (err) {
       // Rejecting is the contract: the spill policy keeps the inline
       // result on a failure, which is a bounded answer, where a locator

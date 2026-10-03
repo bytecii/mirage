@@ -124,14 +124,14 @@ describe('createMirageMcpServer', () => {
 
   it('requires a reread after an external change', async () => {
     const workspace = mkWs()
-    await workspace.vfs.writeFile('/doc.txt', 'first')
+    await workspace.vfs.write('/doc.txt', 'first')
     const server = createMirageMcpServer(workspace)
     const client = new Client({ name: 'mirage-test', version: '1.0.0' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
     await client.connect(clientTransport)
     await client.callTool({ name: 'read', arguments: { path: '/doc.txt' } })
-    await workspace.vfs.writeFile('/doc.txt', 'external')
+    await workspace.vfs.write('/doc.txt', 'external')
     const stale = await client.callTool({
       name: 'edit',
       arguments: { path: '/doc.txt', old_string: 'external', new_string: 'changed' },
@@ -144,7 +144,7 @@ describe('createMirageMcpServer', () => {
       arguments: { path: '/doc.txt', old_string: 'external', new_string: 'changed' },
     })
     expect(edit.isError).not.toBe(true)
-    expect(await workspace.vfs.readFileText('/doc.txt')).toBe('changed')
+    expect(await workspace.vfs.cat('/doc.txt')).toBe('changed')
     await client.close()
     await server.close()
     await workspace.close()

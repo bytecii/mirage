@@ -74,8 +74,7 @@ export async function readWorkspaceFile(
   if (stat.type === FileType.DIRECTORY) {
     throw new Error(`Cannot read directory as a file: ${path}`)
   }
-  const data =
-    reader === undefined ? await ws.vfs.readFile(path, { raw: true }) : await reader(path)
+  const data = reader === undefined ? await ws.vfs.read(path, { raw: true }) : await reader(path)
   const mimeType = mimeFor(path, data, stat)
   const base = { path, mimeType, bytes: data.byteLength }
 

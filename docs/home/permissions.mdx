@@ -71,8 +71,8 @@ that already exists, since it adopts rather than creates.
 Naming a session per call is the other half, and one rule decides
 between them: **a shell line sets the session, an op inherits it.**
 `ws.shell(line, session_id="agent_a")` runs that line as that session.
-`ws.vfs.read(path, session_id="agent_a")` (`ws.vfs.readFile(path, {},
-'agent_a')`) reads as it too, but only when no line is already running:
+`ws.vfs.read(path, session_id="agent_a")` (`ws.vfs.read(path, {},
+'agent_a')` in TypeScript) reads as it too, but only when no line is already running:
 inside a command handler, a runtime callback or a kernel mount, the
 line's own session wins, so a handler reaching this door can never
 widen the view it was given.

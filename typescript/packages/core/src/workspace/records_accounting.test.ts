@@ -51,8 +51,8 @@ describe('Workspace record accounting', () => {
 
   it('Ops facade ops land in ws.records', async () => {
     const ws = new Workspace({ '/data/': new RAMVFS() }, { mode: MountMode.WRITE })
-    await ws.vfs.writeFile('/data/a.txt', 'hello')
-    await ws.vfs.readFile('/data/a.txt')
+    await ws.vfs.write('/data/a.txt', 'hello')
+    await ws.vfs.read('/data/a.txt')
     await ws.vfs.readdir('/data')
     await ws.vfs.stat('/data/a.txt')
     const ops = ws.records.map((r) => r.op)

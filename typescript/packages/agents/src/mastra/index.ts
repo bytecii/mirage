@@ -80,7 +80,7 @@ export function mirageTools(ws: Workspace) {
       execute: async (inputData) => {
         const { path } = inputData as { path: string }
         try {
-          const content = await ws.vfs.readFileText(path)
+          const content = await ws.vfs.cat(path)
           return { content }
         } catch (err) {
           return { error: err instanceof Error ? err.message : String(err) }
@@ -100,7 +100,7 @@ export function mirageTools(ws: Workspace) {
       execute: async (inputData) => {
         const { path, content } = inputData as { path: string; content: string }
         await ensureParent(ws, path)
-        await ws.vfs.writeFile(path, content)
+        await ws.vfs.write(path, content)
         return { path }
       },
     }),
@@ -132,7 +132,7 @@ export function mirageTools(ws: Workspace) {
         }
         let current: string
         try {
-          current = await ws.vfs.readFileText(path)
+          current = await ws.vfs.cat(path)
         } catch {
           return { error: `Error: file '${path}' not found` }
         }
@@ -145,7 +145,7 @@ export function mirageTools(ws: Workspace) {
             error: `Error: string '${oldString}' appears ${String(count)} times. Use replaceAll=true`,
           }
         }
-        await ws.vfs.writeFile(path, next)
+        await ws.vfs.write(path, next)
         return { path, occurrences: replaceAll === true ? count : 1 }
       },
     }),
