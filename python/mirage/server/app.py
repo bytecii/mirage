@@ -50,10 +50,10 @@ from mirage.server.paths import (
 from mirage.server.registry import WorkspaceRegistry
 from mirage.server.routers import (
     asks,
-    execute,
     health,
     jobs,
     sessions,
+    shell,
     versions,
     workspaces,
 )
@@ -229,7 +229,7 @@ def build_app(
     app.include_router(versions.router)
     app.include_router(sessions.router)
     app.include_router(asks.router)
-    app.include_router(execute.router)
+    app.include_router(shell.router)
     app.include_router(jobs.router)
     app.include_router(health.router)
     app.state.mcp = register_mcp_routes(

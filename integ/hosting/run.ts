@@ -142,7 +142,7 @@ async function run(
         },
         201,
       )
-      await request('POST', `/v1/workspaces/${wid}/execute`, { command: 'true' })
+      await request('POST', `/v1/workspaces/${wid}/shell`, { command: 'true' })
     }
     await request('POST', '/v1/workspaces/a/sessions', { sessionId: 'other' }, 201)
 
@@ -155,7 +155,7 @@ async function run(
         for (const wid of [a, b]) {
           await request('POST', '/v1/workspaces', { id: wid, config: mounts.config(wid) }, 201)
           await request('POST', `/v1/workspaces/${wid}/sessions`, { sessionId: 'other' }, 201)
-          const seeded: Result = await request<Result>('POST', `/v1/workspaces/${wid}/execute`, {
+          const seeded: Result = await request<Result>('POST', `/v1/workspaces/${wid}/shell`, {
             command: mounts.seed(wid),
           })
           assert.equal(seeded.exitCode, 0, JSON.stringify(seeded))
@@ -163,7 +163,7 @@ async function run(
         }
       }
       const gate = scenario.gate === 'slack' ? mounts?.arm(a) : undefined
-      const path = `/v1/workspaces/${a}/execute`
+      const path = `/v1/workspaces/${a}/shell`
       const command = `${scenario.command.replace('{url}', `${url}/__integ/hold/${scenario.id}`)} && echo done > /work/${scenario.id}-tail`
       let settled = false
       const foreground = request<Result>(
@@ -238,7 +238,7 @@ async function run(
             command: mounted ? 'python3 /work/probe.py other' : 'echo same-workspace',
             sessionId: 'other',
           }),
-          request<Result>('POST', `/v1/workspaces/${b}/execute`, {
+          request<Result>('POST', `/v1/workspaces/${b}/shell`, {
             command: mounted ? 'python3 /work/probe.py default' : 'echo other-workspace',
           }),
           request<{ status: string }>('GET', '/v1/health'),
@@ -282,7 +282,7 @@ async function run(
           })
           assert.equal(recovered.exitCode, 0, JSON.stringify(recovered))
           assert.equal(recovered.stdout, `${a}:recovered:ram,s3,redis,slack\n`)
-          const isolated = await request<Result>('POST', `/v1/workspaces/${b}/execute`, {
+          const isolated = await request<Result>('POST', `/v1/workspaces/${b}/shell`, {
             command:
               'test ! -e /work/probe-other.txt && test ! -e /s3/probe-other.txt && test ! -e /redis/probe-other.txt',
           })
@@ -304,7 +304,7 @@ async function run(
     await request('POST', '/v1/workspaces/load', { path: 'nested/state.tar', id: 'loaded' }, 201)
     assert.equal(
       (
-        await request<Result>('POST', '/v1/workspaces/loaded/execute', {
+        await request<Result>('POST', '/v1/workspaces/loaded/shell', {
           command: 'cat /work/curl_get-keep',
         })
       ).stdout,

@@ -110,7 +110,7 @@ async def test_lifespan_serves_http_workspaces_over_ssh(tmp_path):
             ) as conn:
                 result = await conn.run("echo over-ssh > /f && cat /f")
             r = await client.post(
-                f"/v1/workspaces/{wid}/execute", json={"command": "cat /f"}
+                f"/v1/workspaces/{wid}/shell", json={"command": "cat /f"}
             )
     assert result.stdout == "over-ssh\n"
     assert r.json()["stdout"] == "over-ssh\n"

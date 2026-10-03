@@ -131,35 +131,35 @@ Warm the object once (the first S3 read fetches the whole object and can
 take a few seconds; later reads are cache hits):
 
 ```bash
-mirage execute --workspace_id cross_sg --command "head -n 1 /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "head -n 1 /s3/data/example.jsonl"
 ```
 
 `max_lines` + `on_exceed: truncate` — asking for 50 lines yields 10 plus a
 notice on stderr, exit `0`:
 
 ```bash
-mirage execute --workspace_id cross_sg --command "head -n 50 /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "head -n 50 /s3/data/example.jsonl"
 ```
 
 `max_lines` + `on_exceed: error` — `grep` matches thousands of lines, trips
 the 20-line cap, and fails with exit `1`:
 
 ```bash
-mirage execute --workspace_id cross_sg --command "grep mirage /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "grep mirage /s3/data/example.jsonl"
 ```
 
 `timeout_seconds` — the 1 ms deadline trips on any real read, exit `124`
 with `rg: timed out after 0.001s`:
 
 ```bash
-mirage execute --workspace_id cross_sg --command "rg mirage /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "rg mirage /s3/data/example.jsonl"
 ```
 
 Commands below their cap are untouched, so the earlier shapes still work
 unchanged (1 line, no notice):
 
 ```bash
-mirage execute --workspace_id cross_sg --command "head -n 1 /s3/data/example.jsonl"
+mirage shell --workspace_id cross_sg --command "head -n 1 /s3/data/example.jsonl"
 ```
 
 Clean up:
@@ -196,10 +196,10 @@ mirage workspace create examples/python/cross/workspace_versioning.yaml --id cro
 Commit two versions, then `log` (newest first):
 
 ```bash
-mirage execute --workspace_id cross_ver --command "echo v1 > /notes.txt"
+mirage shell --workspace_id cross_ver --command "echo v1 > /notes.txt"
 mirage workspace commit cross_ver -m "first"
 
-mirage execute --workspace_id cross_ver --command "echo v2 > /notes.txt"
+mirage shell --workspace_id cross_ver --command "echo v2 > /notes.txt"
 mirage workspace commit cross_ver -m "second"
 
 mirage workspace log cross_ver
@@ -219,7 +219,7 @@ is left untouched:
 
 ```bash
 mirage workspace branch cross_ver exp
-mirage execute --workspace_id cross_ver --command "echo on-exp > /notes.txt"
+mirage shell --workspace_id cross_ver --command "echo on-exp > /notes.txt"
 mirage workspace commit cross_ver -b exp -m "on exp"
 mirage workspace log cross_ver -b exp           # on exp, second, first
 mirage workspace log cross_ver                  # main unchanged: second, first
@@ -230,7 +230,7 @@ mirage workspace log cross_ver                  # main unchanged: second, first
 
 ```bash
 mirage workspace checkout cross_ver <v1>
-mirage execute --workspace_id cross_ver --command "cat /notes.txt"   # => v1
+mirage shell --workspace_id cross_ver --command "cat /notes.txt"   # => v1
 ```
 
 `clone --at` builds a new workspace from one of the source's past versions
@@ -238,7 +238,7 @@ mirage execute --workspace_id cross_ver --command "cat /notes.txt"   # => v1
 
 ```bash
 mirage workspace clone cross_ver --at <v1> --id cross_ver_at
-mirage execute --workspace_id cross_ver_at --command "cat /notes.txt" # => v1
+mirage shell --workspace_id cross_ver_at --command "cat /notes.txt" # => v1
 ```
 
 Clean up (and drop the histories so a rerun starts fresh):

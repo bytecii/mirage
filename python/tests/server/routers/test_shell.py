@@ -45,7 +45,7 @@ async def test_execute_sync_returns_io_result():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "echo hello"},
         )
         assert r.status_code == 200, r.text
@@ -65,7 +65,7 @@ async def test_execute_refuses_an_unknown_field():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "echo hello", "provision": True},
         )
         assert r.status_code == 400, r.text
@@ -81,12 +81,12 @@ async def test_execute_honors_cwd():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "mkdir -p /sub && echo -n nested > /sub/f.txt"},
         )
         assert r.status_code == 200, r.text
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "cat f.txt", "cwd": "/sub"},
         )
         assert r.status_code == 200, r.text
@@ -106,7 +106,7 @@ async def test_execute_passes_runtime_through():
         # An unknown entry name fails loud inside Workspace.shell,
         # proving the field reaches the runtime argument.
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "echo hi", "runtime": "no-such-runtime"},
         )
         assert r.status_code == 500, r.text
@@ -122,17 +122,17 @@ async def test_execute_record_false_leaves_no_history_entry():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "echo recorded"},
         )
         assert r.status_code == 200, r.text
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "echo hidden", "record": False},
         )
         assert r.status_code == 200, r.text
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "history"},
         )
         assert r.status_code == 200, r.text
@@ -150,7 +150,7 @@ async def test_execute_sync_records_a_job_in_done_state():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             json={"command": "echo done-marker"},
         )
         job_id = r.headers["X-Mirage-Job-Id"]
@@ -171,7 +171,7 @@ async def test_execute_background_returns_job_id_immediately():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute?background=true",
+            f"/v1/workspaces/{wid}/shell?background=true",
             json={"command": "sleep 0.3 && echo bg-done"},
         )
         assert r.status_code == 202, r.text
@@ -189,7 +189,7 @@ async def test_background_job_completes_and_result_is_readable():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute?background=true",
+            f"/v1/workspaces/{wid}/shell?background=true",
             json={"command": "echo finished"},
         )
         job_id = r.json()["job_id"]
@@ -208,7 +208,7 @@ async def test_wait_with_timeout_returns_running_status():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute?background=true",
+            f"/v1/workspaces/{wid}/shell?background=true",
             json={"command": "sleep 1.0"},
         )
         job_id = r.json()["job_id"]
@@ -228,7 +228,7 @@ async def test_cancel_running_job():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute?background=true",
+            f"/v1/workspaces/{wid}/shell?background=true",
             json={"command": "sleep 5.0"},
         )
         job_id = r.json()["job_id"]
@@ -253,11 +253,11 @@ async def test_list_jobs_filtered_by_workspace():
         wid_a = await _create_workspace(client)
         wid_b = await _create_workspace(client)
         await client.post(
-            f"/v1/workspaces/{wid_a}/execute",
+            f"/v1/workspaces/{wid_a}/shell",
             json={"command": "echo a"},
         )
         await client.post(
-            f"/v1/workspaces/{wid_b}/execute",
+            f"/v1/workspaces/{wid_b}/shell",
             json={"command": "echo b"},
         )
         r = await client.get("/v1/jobs")
@@ -278,7 +278,7 @@ async def test_execute_with_stdin_multipart():
     ) as client:
         wid = await _create_workspace(client)
         r = await client.post(
-            f"/v1/workspaces/{wid}/execute",
+            f"/v1/workspaces/{wid}/shell",
             data={"request": json.dumps({"command": "wc -l"})},
             files={
                 "stdin": (
@@ -321,7 +321,7 @@ async def test_large_multipart_stdin_roundtrip(tmp_path, vfs, background):
                     }
                 )
                 result = await client.post(
-                    f"/v1/workspaces/{wid}/execute",
+                    f"/v1/workspaces/{wid}/shell",
                     params={"background": str(background).lower()},
                     files={
                         "request": (
@@ -346,7 +346,7 @@ async def test_large_multipart_stdin_roundtrip(tmp_path, vfs, background):
                 else:
                     assert result.json()["exit_code"] == 0, result.text
                 read = await client.post(
-                    f"/v1/workspaces/{wid}/execute",
+                    f"/v1/workspaces/{wid}/shell",
                     json={"command": "base64 /work/input.bin"},
                 )
                 assert read.status_code == 200, read.text
@@ -364,7 +364,7 @@ async def test_unknown_workspace_404():
         transport=transport, base_url="http://test"
     ) as client:
         r = await client.post(
-            "/v1/workspaces/ws_doesnotexist/execute",
+            "/v1/workspaces/ws_doesnotexist/shell",
             json={"command": "echo hi"},
         )
         assert r.status_code == 404

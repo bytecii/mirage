@@ -190,7 +190,7 @@ describe('mirage mcp over stdio', () => {
     await client.callTool({ name: 'write', arguments: { path: '/kept.txt', content: 'x' } })
     await client.close()
     const ran = (await (
-      await fetch(`${d.url}/v1/workspaces/${created.id}/execute`, {
+      await fetch(`${d.url}/v1/workspaces/${created.id}/shell`, {
         method: 'POST',
         headers: JSON_AUTH,
         body: JSON.stringify({ command: 'cat /kept.txt' }),

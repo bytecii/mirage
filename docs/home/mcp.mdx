@@ -8,7 +8,7 @@ icon: plug
 
 Mirage serves seven tools to any [MCP](https://modelcontextprotocol.io) client: `shell`, `read`, `write`, `edit`, `ls`, `grep` and `glob`, the set coding-agent harnesses expect. Each parameter carries a description, and `read`, `ls`, `grep` and `glob` are marked read-only, which lets Claude run them in parallel. Every call runs in a mirage session, so commands go through the shell, file calls go through the workspace's mounts, and the session's profile and policies apply. `edit` refuses to overwrite a file that changed since the agent last read it.
 
-There are three ways to reach them, and all three end at the daemon's HTTP endpoint: stdio and SSH only carry the messages, so auth, sessions and history are decided in one place. Every `shell` call is a daemon job, listed by `GET /v1/jobs` as a `POST /execute` is.
+There are three ways to reach them, and all three end at the daemon's HTTP endpoint: stdio and SSH only carry the messages, so auth, sessions and history are decided in one place. Every `shell` call is a daemon job, listed by `GET /v1/jobs` as a `POST /shell` is.
 
 | Door | Reach | Session |
 | --- | --- | --- |

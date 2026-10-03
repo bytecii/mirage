@@ -31,7 +31,7 @@ const MCP_PATH = '/v1/workspaces/:workspaceId/mcp'
  * The tool table as the daemon serves it: through its own API.
  *
  * `shell` is a job, submitted to the daemon's job table the way
- * `POST /execute` submits one, so an MCP command is listed by `/v1/jobs`,
+ * `POST /shell` submits one, so an MCP command is listed by `/v1/jobs`,
  * can be cancelled there, and is recorded like any other.
  */
 class DaemonToolOperations extends MirageToolOperations {
@@ -63,7 +63,7 @@ class DaemonToolOperations extends MirageToolOperations {
       return { content: [{ type: 'text', text: 'job canceled' }], isError: true }
     }
     if (job.status === JobStatus.FAILED || answer === undefined) {
-      return { content: [{ type: 'text', text: job.error ?? 'execute failed' }], isError: true }
+      return { content: [{ type: 'text', text: job.error ?? 'shell failed' }], isError: true }
     }
     return answer
   }
@@ -73,7 +73,7 @@ class DaemonToolOperations extends MirageToolOperations {
  * Serves every workspace's tools over MCP's streamable HTTP.
  *
  * The endpoint is stateless: each request runs in the workspace's default
- * session, or the one `?sessionId=` names, as `/execute` picks its
+ * session, or the one `?sessionId=` names, as `/shell` picks its
  * session. One tool table per workspace and live session outlives the requests,
  * so the read one request stamps guards the edit the next one makes; the
  * SDK builds a server per request around it. `fetch` answers a web

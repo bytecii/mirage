@@ -77,20 +77,20 @@ def main() -> None:
         wid = run(env, "workspace", "create", str(cfg))["id"]
         print("=== create workspace (ram mount) ===")
 
-        run(env, "execute", "-w", wid, "-c", "echo one > /a.txt")
+        run(env, "shell", "-w", wid, "-c", "echo one > /a.txt")
         run(env, "workspace", "commit", wid, "-m", "first")
         print("=== committed 'first' on main ===")
 
         run(env, "workspace", "branch", wid, "exp")
         print("=== branched exp from main ===")
 
-        run(env, "execute", "-w", wid, "-c", "echo two > /a.txt")
-        run(env, "execute", "-w", wid, "-c", "echo new > /b.txt")
+        run(env, "shell", "-w", wid, "-c", "echo two > /a.txt")
+        run(env, "shell", "-w", wid, "-c", "echo new > /b.txt")
         run(env, "workspace", "commit", wid, "-b", "exp", "-m", "on exp")
         print("=== committed 'on exp' on exp ===")
 
-        run(env, "execute", "-w", wid, "-c", "echo three > /a.txt")
-        run(env, "execute", "-w", wid, "-c", "rm /b.txt")
+        run(env, "shell", "-w", wid, "-c", "echo three > /a.txt")
+        run(env, "shell", "-w", wid, "-c", "rm /b.txt")
         run(env, "workspace", "commit", wid, "-b", "main", "-m", "second")
         print("=== committed 'second' on main ===")
 

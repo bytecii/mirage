@@ -18,12 +18,12 @@ import { makeClient } from './client.ts'
 import { emit, exitCodeFromResponse, handleResponse } from './output.ts'
 import { loadDaemonSettings } from './settings.ts'
 
-export function registerExecuteCommand(program: Command): void {
+export function registerShellCommand(program: Command): void {
   program
-    .command('execute')
+    .command('shell')
     .description('Execute a command.')
     .requiredOption('-w, --workspace <id>', 'Workspace id')
-    .requiredOption('-c, --command <command>', 'Shell command to execute')
+    .requiredOption('-c, --command <command>', 'Shell line to run')
     .option('-s, --session <id>', 'Session id')
     .option('--cwd <path>', 'Working directory for this line (a workspace path)')
     .option('--runtime <name>', "Workspace runtime entry to place this line's captured stages on")
@@ -42,7 +42,7 @@ export function registerExecuteCommand(program: Command): void {
         if (opts.cwd !== undefined) body.cwd = opts.cwd
         if (opts.runtime !== undefined) body.runtime = opts.runtime
         const path =
-          `/v1/workspaces/${encodeURIComponent(opts.workspace)}/execute` +
+          `/v1/workspaces/${encodeURIComponent(opts.workspace)}/shell` +
           (opts.bg === true ? '?background=true' : '')
         const c = makeClient(loadDaemonSettings())
         await c.ensureRunning({ allowSpawn: false })

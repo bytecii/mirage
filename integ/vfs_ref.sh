@@ -64,7 +64,7 @@ YML
 
 run_line() {
   local cli="$1" id="$2" line="$3"
-  $cli execute -w "$id" -c "$line" </dev/null | sout | tr -d '\n'
+  $cli shell -w "$id" -c "$line" </dev/null | sout | tr -d '\n'
 }
 
 # The owned half: create from the ref, write a page, snapshot, change the
@@ -83,12 +83,12 @@ probe_owned() {
     return
   fi
   emit "$lang.$tag.owned.seed=$(run_line "$cli" "$id" 'cat /wiki/notes.md')"
-  $cli execute -w "$id" -c "echo '# Runbook' > /wiki/runbook.md" >/dev/null 2>&1 </dev/null
+  $cli shell -w "$id" -c "echo '# Runbook' > /wiki/runbook.md" >/dev/null 2>&1 </dev/null
   if ! $cli workspace snapshot "$id" "$tar" >/dev/null 2>&1 </dev/null; then
     emit "$lang.$tag.owned.restored=SNAPSHOT_FAILED"
     return
   fi
-  $cli execute -w "$id" -c "echo '# Runbook, revised' > /wiki/runbook.md" >/dev/null 2>&1 </dev/null
+  $cli shell -w "$id" -c "echo '# Runbook, revised' > /wiki/runbook.md" >/dev/null 2>&1 </dev/null
   if ! $cli workspace load "$tar" --id "$rid" >/dev/null 2>&1 </dev/null; then
     emit "$lang.$tag.owned.restored=LOAD_FAILED"
     return
@@ -116,8 +116,8 @@ probe_observed() {
     emit "$lang.$tag.both.refusal=WORKSPACE_CREATE_FAILED"
     return
   fi
-  $cli execute -w "$id" -c "cat /feed/status.md" >/dev/null 2>&1 </dev/null
-  $cli execute -w "$id" -c "echo '# Runbook' > /wiki/runbook.md" >/dev/null 2>&1 </dev/null
+  $cli shell -w "$id" -c "cat /feed/status.md" >/dev/null 2>&1 </dev/null
+  $cli shell -w "$id" -c "echo '# Runbook' > /wiki/runbook.md" >/dev/null 2>&1 </dev/null
   if ! $cli workspace snapshot "$id" "$tar" >/dev/null 2>&1 </dev/null; then
     emit "$lang.$tag.both.refusal=SNAPSHOT_FAILED"
     return

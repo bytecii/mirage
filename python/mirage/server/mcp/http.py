@@ -51,7 +51,7 @@ class DaemonToolOperations(MirageToolOperations):
     """The tool table as the daemon serves it: through its own API.
 
     ``shell`` is a job, submitted to the daemon's job table the way
-    ``POST /execute`` submits one, so an MCP command is listed by
+    ``POST /shell`` submits one, so an MCP command is listed by
     ``/v1/jobs``, can be cancelled there, and is recorded like any other.
     The other tools run on the workspace's own loop.
 
@@ -102,7 +102,7 @@ class DaemonToolOperations(MirageToolOperations):
         if job.status == JobStatus.CANCELED:
             return ToolResult("job canceled", True)
         if job.status == JobStatus.FAILED or not answers:
-            return ToolResult(job.error or "execute failed", True)
+            return ToolResult(job.error or "shell failed", True)
         return answers[0]
 
     async def call(
@@ -126,7 +126,7 @@ class McpDoor:
     """Serves every workspace's tools over MCP's streamable HTTP.
 
     The endpoint is stateless: each request runs in the workspace's
-    default session, or the one ``?session_id=`` names, as ``/execute``
+    default session, or the one ``?session_id=`` names, as ``/shell``
     picks its session. One tool table per workspace and live session outlives
     the requests, so the read one request stamps guards the edit the next
     one makes. The SDK's session manager starts on the first request, so

@@ -137,7 +137,7 @@ def execute(
                 }
             }
     response = client.post(
-        f"/v1/workspaces/{wid}/execute",
+        f"/v1/workspaces/{wid}/shell",
         params={"background": str(background).lower()},
         **kwargs,
     )
@@ -305,7 +305,7 @@ def check_workspace(
                 if host == "typescript":
                     # Base64 JSON still fails at its intended limit.
                     refused = client.post(
-                        f"/v1/workspaces/{wid}/execute",
+                        f"/v1/workspaces/{wid}/shell",
                         json={
                             "command": "cat > /work/saved.txt",
                             "stdinBase64": base64.b64encode(data).decode(),

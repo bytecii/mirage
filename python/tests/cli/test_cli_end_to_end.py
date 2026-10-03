@@ -103,7 +103,7 @@ def test_execute_returns_json_io_result(daemon, tmp_path):
     )
     result = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         created["id"],
         "--command",
@@ -120,7 +120,7 @@ def test_execute_background_returns_job_id(daemon, tmp_path):
     _run_cli(daemon["env"], "workspace", "create", str(cfg), "--id", "bg-test")
     submitted = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "bg-test",
         "--command",
@@ -143,7 +143,7 @@ def test_execute_with_stdin_pipe(daemon, tmp_path):
     )
     result = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "stdin-test",
         "--command",
@@ -162,7 +162,7 @@ def test_save_then_load_round_trip(daemon, tmp_path):
     )
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "save-test",
         "--command",
@@ -190,7 +190,7 @@ def test_save_then_load_round_trip(daemon, tmp_path):
 
     result = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "loaded-ws",
         "--command",
@@ -208,7 +208,7 @@ def test_workspace_clone_round_trip(daemon, tmp_path):
     )
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "clone-src",
         "--command",
@@ -222,7 +222,7 @@ def test_workspace_clone_round_trip(daemon, tmp_path):
 
     result = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "clone-dst",
         "--command",
@@ -232,7 +232,7 @@ def test_workspace_clone_round_trip(daemon, tmp_path):
 
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "clone-dst",
         "--command",
@@ -240,7 +240,7 @@ def test_workspace_clone_round_trip(daemon, tmp_path):
     )
     original = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "clone-src",
         "--command",
@@ -314,12 +314,12 @@ def test_execute_propagates_inner_exit_code(daemon, tmp_path):
         daemon["env"], "workspace", "create", str(cfg), "--id", "exit-test"
     )
 
-    ok = _run_cli(daemon["env"], "execute", "-w", "exit-test", "-c", "echo ok")
+    ok = _run_cli(daemon["env"], "shell", "-w", "exit-test", "-c", "echo ok")
     assert ok["exit_code"] == 0
 
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "exit-test",
         "-c",
@@ -329,7 +329,7 @@ def test_execute_propagates_inner_exit_code(daemon, tmp_path):
 
     bg = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "exit-test",
         "-c",
@@ -347,12 +347,12 @@ def test_execute_subshell_cwd_does_not_leak(daemon, tmp_path):
     _run_cli(
         daemon["env"], "workspace", "create", str(cfg), "--id", "subshell"
     )
-    _run_cli(daemon["env"], "execute", "-w", "subshell", "-c", "mkdir /sub")
+    _run_cli(daemon["env"], "shell", "-w", "subshell", "-c", "mkdir /sub")
     inside = _run_cli(
-        daemon["env"], "execute", "-w", "subshell", "-c", "(cd /sub && pwd)"
+        daemon["env"], "shell", "-w", "subshell", "-c", "(cd /sub && pwd)"
     )
     assert inside["stdout"].strip() == "/sub"
-    after = _run_cli(daemon["env"], "execute", "-w", "subshell", "-c", "pwd")
+    after = _run_cli(daemon["env"], "shell", "-w", "subshell", "-c", "pwd")
     assert after["stdout"].strip() == "/"
     _run_cli(daemon["env"], "workspace", "delete", "subshell")
 
@@ -362,7 +362,7 @@ def test_execute_env_prefix_does_not_leak(daemon, tmp_path):
     _run_cli(daemon["env"], "workspace", "create", str(cfg), "--id", "envpref")
     inside = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "envpref",
         "-c",
@@ -371,7 +371,7 @@ def test_execute_env_prefix_does_not_leak(daemon, tmp_path):
     assert inside["stdout"].strip() == "bar"
     after = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "envpref",
         "-c",
@@ -388,7 +388,7 @@ def test_execute_background_then_cancel(daemon, tmp_path):
     )
     submitted = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "cancel-test",
         "-c",
@@ -457,7 +457,7 @@ def test_execute_limit_truncates_output(daemon, tmp_path):
     )
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "sg-trunc",
         "--command",
@@ -465,7 +465,7 @@ def test_execute_limit_truncates_output(daemon, tmp_path):
     )
     result = _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "sg-trunc",
         "--command",
@@ -481,7 +481,7 @@ def test_execute_limit_error_exits_1(daemon, tmp_path):
     _run_cli(daemon["env"], "workspace", "create", str(cfg), "--id", "sg-err")
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "sg-err",
         "--command",
@@ -489,7 +489,7 @@ def test_execute_limit_error_exits_1(daemon, tmp_path):
     )
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "--workspace_id",
         "sg-err",
         "--command",
@@ -528,7 +528,7 @@ def test_ask_allow_deny_round_trip(daemon, tmp_path):
     )
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "asks-ws",
         "-s",
@@ -539,7 +539,7 @@ def test_ask_allow_deny_round_trip(daemon, tmp_path):
 
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "asks-ws",
         "-s",
@@ -560,7 +560,7 @@ def test_ask_allow_deny_round_trip(daemon, tmp_path):
     assert allowed["scope"] == "once"
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "asks-ws",
         "-s",
@@ -571,7 +571,7 @@ def test_ask_allow_deny_round_trip(daemon, tmp_path):
 
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "asks-ws",
         "-s",
@@ -601,7 +601,7 @@ def test_ask_allow_deny_round_trip(daemon, tmp_path):
     assert denied["note"] == "not now"
     _run_cli(
         daemon["env"],
-        "execute",
+        "shell",
         "-w",
         "asks-ws",
         "-s",

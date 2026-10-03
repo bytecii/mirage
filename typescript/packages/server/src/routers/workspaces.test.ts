@@ -90,7 +90,7 @@ describe('workspaces router', () => {
       expect(create.statusCode).toBe(201)
       const res = await app.inject({
         method: 'POST',
-        url: '/v1/workspaces/cli-ws/execute',
+        url: '/v1/workspaces/cli-ws/shell',
         payload: { command: 'pager' },
       })
       expect(res.statusCode).toBe(200)
@@ -247,7 +247,7 @@ describe('workspaces router', () => {
     const run = async (command: string): Promise<string> => {
       const res = await app.inject({
         method: 'POST',
-        url: '/v1/workspaces/again/execute',
+        url: '/v1/workspaces/again/shell',
         payload: { command },
       })
       return res.json<{ stdout: string }>().stdout
@@ -660,7 +660,7 @@ describe('daemon disk-store default', () => {
     expect(res.statusCode).toBe(201)
     const exec = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/diskws/execute',
+      url: '/v1/workspaces/diskws/shell',
       payload: { command: 'echo hi' },
     })
     expect(exec.statusCode).toBe(200)

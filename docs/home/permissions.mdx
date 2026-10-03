@@ -43,7 +43,7 @@ A session binds a profile by name at creation and keeps it for life:
 ```bash
 mirage workspace create workspace.yaml --id demo
 mirage session create demo --id agent_a --profile guarded
-mirage execute -w demo -s agent_a -c "cat /repo/notes.md"
+mirage shell -w demo -s agent_a -c "cat /repo/notes.md"
 ```
 
 In code, the same two doors: `Workspace(mounts, profiles=...)` and

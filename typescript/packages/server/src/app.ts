@@ -22,7 +22,7 @@ import { registerAuth, resolveAuthConfig } from './auth/index.ts'
 import { isHostAllowed, resolveAllowedHosts } from './host_validation.ts'
 import { registerMcpRoutes } from './mcp/http.ts'
 import { registerAsksRoutes } from './routers/asks.ts'
-import { registerExecuteRoutes } from './routers/execute.ts'
+import { registerShellRoutes } from './routers/shell.ts'
 import { registerHealthRoutes } from './routers/health.ts'
 import { registerJobsRoutes } from './routers/jobs.ts'
 import { registerSessionsRoutes } from './routers/sessions.ts'
@@ -108,7 +108,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   registerVersionsRoutes(app, { registry, versionBackend })
   registerSessionsRoutes(app, { registry })
   registerAsksRoutes(app, { registry })
-  registerExecuteRoutes(app, { registry, jobs })
+  registerShellRoutes(app, { registry, jobs })
   registerJobsRoutes(app, { jobs })
   const mcp = registerMcpRoutes(app, registry, jobs)
   const ssh: SSHDoor = {

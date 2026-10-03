@@ -21,10 +21,10 @@ from pydantic import BaseModel, ConfigDict
 from mirage.server.io_serde import io_result_to_dict
 from mirage.server.jobs import JobStatus
 
-router = APIRouter(prefix="/v1/workspaces/{workspace_id}/execute")
+router = APIRouter(prefix="/v1/workspaces/{workspace_id}/shell")
 
 
-class ExecuteRequest(BaseModel):
+class ShellRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     command: str
@@ -48,8 +48,8 @@ def _require_entry(request: Request, workspace_id: str):
     return registry.get(workspace_id)
 
 
-def _build_execute_kwargs(
-    req: ExecuteRequest, stdin: bytes | None
+def _build_shell_kwargs(
+    req: ShellRequest, stdin: bytes | None
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "command": req.command,
@@ -68,13 +68,13 @@ def _build_execute_kwargs(
     return kwargs
 
 
-async def _invoke_execute(ws, kwargs: dict[str, Any], scope):
+async def _invoke_shell(ws, kwargs: dict[str, Any], scope):
     result = await ws.shell(**kwargs, execution_scope=scope)
     return await io_result_to_dict(result)
 
 
 @router.post("")
-async def execute(
+async def shell(
     workspace_id: str,
     request: Request,
     background: bool = Query(False),
@@ -82,9 +82,9 @@ async def execute(
     entry = _require_entry(request, workspace_id)
     job_table = request.app.state.jobs
     content_type = request.headers.get("content-type", "")
-    req_obj, stdin_bytes = await _parse_execute_body(request, content_type)
+    req_obj, stdin_bytes = await _parse_shell_body(request, content_type)
     await entry.runner.call(entry.runner.ws.ensure_sessions_loaded())
-    kwargs = _build_execute_kwargs(req_obj, stdin_bytes)
+    kwargs = _build_shell_kwargs(req_obj, stdin_bytes)
     session_id = (
         req_obj.session_id
         if req_obj.session_id is not None
@@ -94,7 +94,7 @@ async def execute(
 
     async def run(scope):
         return await entry.runner.call(
-            _invoke_execute(entry.runner.ws, kwargs, scope)
+            _invoke_shell(entry.runner.ws, kwargs, scope)
         )
 
     job = await job_table.submit(
@@ -119,7 +119,7 @@ async def execute(
         raise HTTPException(status_code=499, detail="job canceled")
     if job.status == JobStatus.FAILED:
         raise HTTPException(
-            status_code=500, detail=job.error or "execute failed"
+            status_code=500, detail=job.error or "shell failed"
         )
     return Response(
         content=json.dumps(job.result),
@@ -129,9 +129,9 @@ async def execute(
     )
 
 
-async def _parse_execute_body(
+async def _parse_shell_body(
     request: Request, content_type: str
-) -> tuple[ExecuteRequest, bytes | None]:
+) -> tuple[ShellRequest, bytes | None]:
     if content_type.startswith("multipart/"):
         form = await request.form()
         request_part = form.get("request")
@@ -144,7 +144,7 @@ async def _parse_execute_body(
         else:
             req_text = str(request_part)
         try:
-            req_obj = ExecuteRequest.model_validate(json.loads(req_text))
+            req_obj = ShellRequest.model_validate(json.loads(req_text))
         except (json.JSONDecodeError, ValueError) as e:
             raise HTTPException(
                 status_code=400, detail=f"bad request part: {e}"
@@ -158,8 +158,6 @@ async def _parse_execute_body(
                 stdin_bytes = str(stdin_part).encode("utf-8")
         return req_obj, stdin_bytes
     try:
-        return ExecuteRequest.model_validate(await request.json()), None
+        return ShellRequest.model_validate(await request.json()), None
     except ValueError as e:
-        raise HTTPException(
-            status_code=400, detail=f"bad execute request: {e}"
-        )
+        raise HTTPException(status_code=400, detail=f"bad shell request: {e}")

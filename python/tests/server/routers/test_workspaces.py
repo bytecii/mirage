@@ -579,7 +579,7 @@ async def test_create_defaults_to_disk_store_under_state_root(tmp_path):
         r = await client.post("/v1/workspaces", json=body)
         assert r.status_code == 201, r.text
         r = await client.post(
-            "/v1/workspaces/diskws/execute", json={"command": "echo hi"}
+            "/v1/workspaces/diskws/shell", json={"command": "echo hi"}
         )
         assert r.status_code == 200
     assert (tmp_path / "workspaces" / "diskws" / "workspace.json").is_file()

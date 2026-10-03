@@ -89,13 +89,13 @@ mirage workspace get demo
 
 ### 3. Run commands against your mounts
 
-`execute` runs a shell command inside the workspace. Paths resolve
+`shell` runs a shell line inside the workspace. Paths resolve
 through the mount registry (`/s3/...` hits S3, `/` hits the RAM
 backing, etc.).
 
 ```bash
-mirage execute --workspace_id demo --command "ls /s3/"
-mirage execute --workspace_id demo --command "head -n 1 /s3/data/example.jsonl"
+mirage shell --workspace_id demo --command "ls /s3/"
+mirage shell --workspace_id demo --command "head -n 1 /s3/data/example.jsonl"
 ```
 
 ### 4. Pipe stdin
@@ -104,7 +104,7 @@ For foreground commands, piped stdin is uploaded as a binary multipart file.
 Empty input and arbitrary bytes are preserved; input is buffered before execution.
 
 ```bash
-echo -e "a\nb\nc" | mirage execute --workspace_id demo --command "wc -l"
+echo -e "a\nb\nc" | mirage shell --workspace_id demo --command "wc -l"
 ```
 
 ### 5. Command history
@@ -116,9 +116,9 @@ session's view), and `/.bash_history` renders the GNU histfile across all
 sessions, readable with the ordinary file commands.
 
 ```bash
-mirage execute --workspace_id demo --command "history 5"
-mirage execute --workspace_id demo --command "tail -n 6 /.bash_history"
-mirage execute --workspace_id demo --command "grep cat /.bash_history"
+mirage shell --workspace_id demo --command "history 5"
+mirage shell --workspace_id demo --command "tail -n 6 /.bash_history"
+mirage shell --workspace_id demo --command "grep cat /.bash_history"
 ```
 
 ### 6. Background jobs
@@ -127,7 +127,7 @@ Long-running commands take `--background` and return a `job_id`
 immediately. `mirage job wait` blocks until it's done.
 
 ```bash
-JOB=$(mirage execute --workspace_id demo --background \
+JOB=$(mirage shell --workspace_id demo --background \
   --command "wc -l /s3/data/example.jsonl" \
   | jq -r .job_id)
 mirage job wait $JOB
@@ -149,7 +149,7 @@ mirage workspace load /tmp/demo.tar workspace.yaml \
   --id demo_loaded
 
 mirage workspace get demo_loaded --verbose
-mirage execute --workspace_id demo_loaded \
+mirage shell --workspace_id demo_loaded \
   --command "head -n 1 /s3/data/example.jsonl"
 ```
 
@@ -181,10 +181,10 @@ diff, branch, and restore in place. The verbs follow git.
 ### Commit and log
 
 ```bash
-mirage execute --workspace_id demo --command "echo v1 > /notes.txt"
+mirage shell --workspace_id demo --command "echo v1 > /notes.txt"
 mirage workspace commit demo -m "first"
 
-mirage execute --workspace_id demo --command "echo v2 > /notes.txt"
+mirage shell --workspace_id demo --command "echo v2 > /notes.txt"
 mirage workspace commit demo -m "second"
 
 mirage workspace log demo          # newest first: "second", then "first"
@@ -254,7 +254,7 @@ mirage workspace clone demo --at <version> --id demo_at_v1
 | `mirage session create WS [--id NAME] [--profile NAME] [-m /prefix[:mode]]...` | Add a named session (own cwd + env), optionally under a [permission profile](/home/permissions) or restricted to mounts with a mode ceiling (`read`/`write`/`exec` or `r`/`rw`/`rwx`). |
 | `mirage session list WS` | List sessions for a workspace. |
 | `mirage session delete WS SESSION` | Close a session. |
-| `mirage execute --workspace_id WS [--session_id S] [--background] --command "..."` | Run a command. Uploads piped stdin for foreground execution. |
+| `mirage shell --workspace_id WS [--session_id S] [--background] --command "..."` | Run a command. Uploads piped stdin for foreground execution. |
 | `mirage job list [--workspace_id WS]` | List jobs the daemon has run, plus their status. |
 | `mirage job get JOB` | Detail for one job. |
 | `mirage job wait JOB [--timeout SECS]` | Block until the job is done; returns the result. |

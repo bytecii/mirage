@@ -67,7 +67,7 @@ describe('execute router', () => {
         const upload = new Request('http://localhost', { method: 'POST', body: form })
         const result = await app.inject({
           method: 'POST',
-          url: `/v1/workspaces/large-stdin/execute?background=${String(background)}`,
+          url: `/v1/workspaces/large-stdin/shell?background=${String(background)}`,
           headers: { 'content-type': upload.headers.get('content-type') ?? '' },
           payload: Buffer.from(await upload.arrayBuffer()),
         })
@@ -81,7 +81,7 @@ describe('execute router', () => {
         }
         const read = await app.inject({
           method: 'POST',
-          url: '/v1/workspaces/large-stdin/execute',
+          url: '/v1/workspaces/large-stdin/shell',
           payload: { command: 'base64 /work/input.bin' },
         })
         expect(read.json<{ exitCode: number }>().exitCode).toBe(0)
@@ -107,7 +107,7 @@ describe('execute router', () => {
         const upload = new Request('http://localhost', { method: 'POST', body: form })
         const result = await app.inject({
           method: 'POST',
-          url: '/v1/workspaces/multipart-empty/execute',
+          url: '/v1/workspaces/multipart-empty/shell',
           headers: { 'content-type': upload.headers.get('content-type') ?? '' },
           payload: Buffer.from(await upload.arrayBuffer()),
         })
@@ -128,7 +128,7 @@ describe('execute router', () => {
     await createWs(app, 'ew')
     const res = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/ew/execute',
+      url: '/v1/workspaces/ew/shell',
       payload: { command: 'echo hi' },
     })
     expect(res.statusCode).toBe(200)
@@ -145,7 +145,7 @@ describe('execute router', () => {
     await createWs(app, 'ew-strict')
     const res = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/ew-strict/execute',
+      url: '/v1/workspaces/ew-strict/shell',
       payload: { command: 'echo hi', provision: true },
     })
     expect(res.statusCode).toBe(400)
@@ -158,12 +158,12 @@ describe('execute router', () => {
     await createWs(app, 'ecwd')
     await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/ecwd/execute',
+      url: '/v1/workspaces/ecwd/shell',
       payload: { command: 'mkdir -p /sub && echo -n nested > /sub/f.txt' },
     })
     const res = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/ecwd/execute',
+      url: '/v1/workspaces/ecwd/shell',
       payload: { command: 'cat f.txt', cwd: '/sub' },
     })
     expect(res.statusCode).toBe(200)
@@ -180,7 +180,7 @@ describe('execute router', () => {
     // proving the field reaches the runtime argument.
     const res = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/ert/execute',
+      url: '/v1/workspaces/ert/shell',
       payload: { command: 'echo hi', runtime: 'no-such-runtime' },
     })
     expect(res.statusCode).toBe(500)
@@ -193,7 +193,7 @@ describe('execute router', () => {
     await createWs(app, 'estdin')
     const res = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/estdin/execute',
+      url: '/v1/workspaces/estdin/shell',
       payload: {
         command: 'wc -l',
         stdinBase64: Buffer.from('a\nb\nc\n').toString('base64'),
@@ -212,17 +212,17 @@ describe('execute router', () => {
     await createWs(app, 'erec')
     await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/erec/execute',
+      url: '/v1/workspaces/erec/shell',
       payload: { command: 'echo recorded' },
     })
     await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/erec/execute',
+      url: '/v1/workspaces/erec/shell',
       payload: { command: 'echo hidden', record: false },
     })
     const res = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/erec/execute',
+      url: '/v1/workspaces/erec/shell',
       payload: { command: 'history' },
     })
     expect(res.statusCode).toBe(200)
@@ -237,7 +237,7 @@ describe('execute router', () => {
     await createWs(app, 'ewait')
     const submit = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/ewait/execute?background=true',
+      url: '/v1/workspaces/ewait/shell?background=true',
       payload: { command: 'echo hi' },
     })
     const { jobId } = submit.json<{ jobId: string }>()
@@ -251,7 +251,7 @@ describe('execute router', () => {
     await createWs(app, 'ew2')
     const res = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/ew2/execute?background=true',
+      url: '/v1/workspaces/ew2/shell?background=true',
       payload: { command: 'echo hi' },
     })
     expect(res.statusCode).toBe(202)
@@ -265,7 +265,7 @@ describe('execute router', () => {
     await createWs(app, 'ew3')
     await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/ew3/execute',
+      url: '/v1/workspaces/ew3/shell',
       payload: { command: 'echo hi' },
     })
     const res = await app.inject({ method: 'GET', url: '/v1/jobs?workspaceId=ew3' })
@@ -281,7 +281,7 @@ describe('execute router', () => {
     const pending = app
       .inject({
         method: 'POST',
-        url: '/v1/workspaces/ecancel/execute',
+        url: '/v1/workspaces/ecancel/shell',
         payload: { command: 'sleep 60' },
       })
       .then((reply) => reply)

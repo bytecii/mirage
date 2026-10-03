@@ -126,7 +126,7 @@ async def test_a_named_workspace_stays(daemon, tree):
     async with Client(relay(daemon, "-w", created["id"])) as client:
         await client.call_tool("write", {"path": "/kept.txt", "content": "x"})
     ran = httpx.post(
-        f"{daemon['url']}/v1/workspaces/{created['id']}/execute",
+        f"{daemon['url']}/v1/workspaces/{created['id']}/shell",
         json={"command": "cat /kept.txt"},
     ).json()
     assert ran["stdout"] == "x"

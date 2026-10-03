@@ -155,7 +155,7 @@ describe('mirage CLI end-to-end', () => {
     const listed = (await runCli(env, ['workspace', 'list'])) as { id: string }[]
     expect(listed.some((w) => w.id === created.id)).toBe(true)
 
-    const exec = (await runCli(env, ['execute', '-w', created.id, '-c', 'echo hello world'])) as {
+    const exec = (await runCli(env, ['shell', '-w', created.id, '-c', 'echo hello world'])) as {
       stdout: string
     }
     expect(exec.stdout.trim()).toBe('hello world')
@@ -216,7 +216,7 @@ describe('mirage CLI end-to-end', () => {
     }
     expect(created.id).toBe('exec-json')
 
-    const result = (await runCli(env, ['execute', '-w', 'exec-json', '-c', 'echo json-out'])) as {
+    const result = (await runCli(env, ['shell', '-w', 'exec-json', '-c', 'echo json-out'])) as {
       kind: string
       exitCode: number
       stdout: string
@@ -232,12 +232,12 @@ describe('mirage CLI end-to-end', () => {
     const cfgPath = writeRamConfig(tmp, 'record-cfg.yaml')
     await runCli(env, ['workspace', 'create', cfgPath, '--id', 'record-ws'])
 
-    await runCli(env, ['execute', '-w', 'record-ws', '-c', 'echo recorded'])
+    await runCli(env, ['shell', '-w', 'record-ws', '-c', 'echo recorded'])
     // The CLI has no record flag; the option rides the HTTP body, so an
     // unrecorded run is what a harness does directly against the daemon.
     const token = readFileSync(join(tmp, 'auth_token'), 'utf-8').trim()
     const base = env.MIRAGE_DAEMON_URL ?? ''
-    const res = await fetch(`${base}/v1/workspaces/record-ws/execute`, {
+    const res = await fetch(`${base}/v1/workspaces/record-ws/shell`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ command: 'echo hidden', record: false }),
@@ -247,7 +247,7 @@ describe('mirage CLI end-to-end', () => {
     expect(body.exitCode).toBe(0)
     expect(body.stdout).toBe('hidden\n')
 
-    const history = (await runCli(env, ['execute', '-w', 'record-ws', '-c', 'history'])) as {
+    const history = (await runCli(env, ['shell', '-w', 'record-ws', '-c', 'history'])) as {
       stdout: string
     }
     expect(history.stdout).toContain('echo recorded')
@@ -265,7 +265,7 @@ describe('mirage CLI end-to-end', () => {
 
     const result = (await runCli(
       env,
-      ['execute', '-w', 'stdin-ws', '-c', 'wc -l'],
+      ['shell', '-w', 'stdin-ws', '-c', 'wc -l'],
       'a\nb\nc\n',
     )) as {
       kind: string
@@ -284,9 +284,9 @@ describe('mirage CLI end-to-end', () => {
     const created = (await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }
     try {
       const input = Buffer.from('α\0\r\n'.repeat(240_000))
-      await runCli(env, ['execute', '-w', created.id, '-c', 'cat > /input.bin'], input)
+      await runCli(env, ['shell', '-w', created.id, '-c', 'cat > /input.bin'], input)
       const read = (await runCli(env, [
-        'execute',
+        'shell',
         '-w',
         created.id,
         '-c',
@@ -294,7 +294,7 @@ describe('mirage CLI end-to-end', () => {
       ])) as { stdout: string }
       expect(Buffer.from(read.stdout, 'base64')).toEqual(input)
       const submitted = (await runCli(env, [
-        'execute',
+        'shell',
         '-w',
         created.id,
         '--bg',
@@ -307,8 +307,8 @@ describe('mirage CLI end-to-end', () => {
         const result = (job.parsed as { result: { stdout: string } }).result
         expect(Buffer.from(result.stdout, 'base64')).toEqual(input)
       }
-      await runCli(env, ['execute', '-w', created.id, '-c', 'cat > /input.bin'], new Uint8Array())
-      const empty = (await runCli(env, ['execute', '-w', created.id, '-c', 'cat /input.bin'])) as {
+      await runCli(env, ['shell', '-w', created.id, '-c', 'cat > /input.bin'], new Uint8Array())
+      const empty = (await runCli(env, ['shell', '-w', created.id, '-c', 'cat /input.bin'])) as {
         stdout: string
       }
       expect(empty.stdout).toBe('')
@@ -321,18 +321,18 @@ describe('mirage CLI end-to-end', () => {
     const cfgPath = writeRamConfig(tmp, 'exit-cfg.yaml')
     const created = (await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }
 
-    const ok = await runCliRaw(env, ['execute', '-w', created.id, '-c', 'true'])
+    const ok = await runCliRaw(env, ['shell', '-w', created.id, '-c', 'true'])
     expect(ok.status).toBe(0)
 
-    const fail = await runCliRaw(env, ['execute', '-w', created.id, '-c', 'false'])
+    const fail = await runCliRaw(env, ['shell', '-w', created.id, '-c', 'false'])
     expect(fail.status).toBe(1)
     expect((fail.parsed as { exitCode: number }).exitCode).toBe(1)
 
-    const pipeNoFail = await runCliRaw(env, ['execute', '-w', created.id, '-c', 'false | true'])
+    const pipeNoFail = await runCliRaw(env, ['shell', '-w', created.id, '-c', 'false | true'])
     expect(pipeNoFail.status).toBe(0)
 
     const pipeFail = await runCliRaw(env, [
-      'execute',
+      'shell',
       '-w',
       created.id,
       '-c',
@@ -340,7 +340,7 @@ describe('mirage CLI end-to-end', () => {
     ])
     expect(pipeFail.status).toBe(1)
 
-    const bg = await runCliRaw(env, ['execute', '-w', created.id, '--bg', '-c', 'false'])
+    const bg = await runCliRaw(env, ['shell', '-w', created.id, '--bg', '-c', 'false'])
     expect(bg.status).toBe(0)
     const jobId = (bg.parsed as { jobId: string }).jobId
     expect(jobId).toMatch(/^job_/)
@@ -382,7 +382,7 @@ describe('mirage CLI end-to-end', () => {
     expect(created.id).toBe('perm-ws')
 
     const seeded = await runCliRaw(env, [
-      'execute',
+      'shell',
       '-w',
       'perm-ws',
       '-c',
@@ -390,18 +390,18 @@ describe('mirage CLI end-to-end', () => {
     ])
     expect(seeded.status).toBe(0)
 
-    const hidden = await runCliRaw(env, ['execute', '-w', 'perm-ws', '-c', 'sort /d/x'])
+    const hidden = await runCliRaw(env, ['shell', '-w', 'perm-ws', '-c', 'sort /d/x'])
     expect(hidden.status).toBe(127)
     expect((hidden.parsed as { stderr: string }).stderr).toBe('sort: command not found\n')
 
-    const denied = await runCliRaw(env, ['execute', '-w', 'perm-ws', '-c', 'rm /d/x'])
+    const denied = await runCliRaw(env, ['shell', '-w', 'perm-ws', '-c', 'rm /d/x'])
     expect(denied.status).toBe(126)
     expect((denied.parsed as { stderr: string }).stderr).toBe('rm: Permission denied\n')
     expect((denied.parsed as { refusal: { reason: string } }).refusal.reason).toBe(
       'no deletes here',
     )
 
-    const kept = (await runCli(env, ['execute', '-w', 'perm-ws', '-c', 'ls /d'])) as {
+    const kept = (await runCli(env, ['shell', '-w', 'perm-ws', '-c', 'ls /d'])) as {
       stdout: string
     }
     expect(kept.stdout).toBe('x\n')
@@ -432,9 +432,9 @@ describe('mirage CLI end-to-end', () => {
       ].join('\n'),
     )
     await runCli(env, ['workspace', 'create', cfgPath, '--id', 'asks-ws'])
-    await runCli(env, ['execute', '-w', 'asks-ws', '-c', 'touch /f.txt /g.txt'])
+    await runCli(env, ['shell', '-w', 'asks-ws', '-c', 'touch /f.txt /g.txt'])
 
-    const refused = await runCliRaw(env, ['execute', '-w', 'asks-ws', '-c', 'rm /f.txt'])
+    const refused = await runCliRaw(env, ['shell', '-w', 'asks-ws', '-c', 'rm /f.txt'])
     expect(refused.status).toBe(126)
     const stderr = (refused.parsed as { stderr: string }).stderr
     expect(stderr).toBe('rm: Permission denied\n')
@@ -461,10 +461,10 @@ describe('mirage CLI end-to-end', () => {
     }
     expect(allowed.outcome).toBe('allow')
     expect(allowed.scope).toBe('once')
-    const retried = await runCliRaw(env, ['execute', '-w', 'asks-ws', '-c', 'rm /f.txt'])
+    const retried = await runCliRaw(env, ['shell', '-w', 'asks-ws', '-c', 'rm /f.txt'])
     expect(retried.status).toBe(0)
 
-    const refusedAgain = await runCliRaw(env, ['execute', '-w', 'asks-ws', '-c', 'rm /g.txt'])
+    const refusedAgain = await runCliRaw(env, ['shell', '-w', 'asks-ws', '-c', 'rm /g.txt'])
     expect(refusedAgain.status).toBe(126)
     const nextAsks = (await runCli(env, ['workspace', 'list-asks', 'asks-ws'])) as {
       id: string
@@ -479,7 +479,7 @@ describe('mirage CLI end-to-end', () => {
     ])) as { outcome: string; note: string }
     expect(denied.outcome).toBe('deny')
     expect(denied.note).toBe('not now')
-    const deniedRun = await runCliRaw(env, ['execute', '-w', 'asks-ws', '-c', 'rm /g.txt'])
+    const deniedRun = await runCliRaw(env, ['shell', '-w', 'asks-ws', '-c', 'rm /g.txt'])
     expect(deniedRun.status).toBe(126)
     expect((deniedRun.parsed as { stderr: string }).stderr).toBe('rm: Permission denied\n')
     expect((deniedRun.parsed as { refusal: { kind: string } }).refusal.kind).toBe('deny')
@@ -497,7 +497,7 @@ describe('mirage CLI end-to-end', () => {
     expect(created.id).toBe('bg-ws')
 
     const submitted = (await runCli(env, [
-      'execute',
+      'shell',
       '-w',
       'bg-ws',
       '--bg',
@@ -617,13 +617,13 @@ describe('mirage CLI end-to-end', () => {
     }
     expect(created.id).toBe('cwd-ws')
 
-    await runCli(env, ['execute', '-w', 'cwd-ws', '-c', 'mkdir /sub'])
-    const inner = (await runCli(env, ['execute', '-w', 'cwd-ws', '-c', '(cd /sub && pwd)'])) as {
+    await runCli(env, ['shell', '-w', 'cwd-ws', '-c', 'mkdir /sub'])
+    const inner = (await runCli(env, ['shell', '-w', 'cwd-ws', '-c', '(cd /sub && pwd)'])) as {
       stdout: string
     }
     expect(inner.stdout.trim()).toBe('/sub')
 
-    const outer = (await runCli(env, ['execute', '-w', 'cwd-ws', '-c', 'pwd'])) as {
+    const outer = (await runCli(env, ['shell', '-w', 'cwd-ws', '-c', 'pwd'])) as {
       stdout: string
     }
     expect(outer.stdout.trim()).toBe('/')
@@ -645,7 +645,7 @@ describe('mirage CLI end-to-end', () => {
     expect(created.id).toBe('env-prefix-ws')
 
     const inner = (await runCli(env, [
-      'execute',
+      'shell',
       '-w',
       'env-prefix-ws',
       '-c',
@@ -654,7 +654,7 @@ describe('mirage CLI end-to-end', () => {
     expect(inner.stdout.trim()).toBe('bar')
 
     const outer = (await runCli(env, [
-      'execute',
+      'shell',
       '-w',
       'env-prefix-ws',
       '-c',
@@ -673,7 +673,7 @@ describe('mirage CLI end-to-end', () => {
     expect(created.id).toBe('cancel-ws')
 
     const submitted = (await runCli(env, [
-      'execute',
+      'shell',
       '-w',
       'cancel-ws',
       '--bg',
@@ -754,20 +754,20 @@ describe('mirage CLI end-to-end', () => {
     writeFileSync(cfgPath, 'mounts:\n  /:\n    vfs: ram\n    mode: write\n')
     const id = ((await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }).id
 
-    await runCli(env, ['execute', '-w', id, '-c', 'echo v1 > /notes.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo v1 > /notes.txt'])
     const v1 = (
       (await runCli(env, ['workspace', 'commit', id, '-m', 'first'])) as {
         version: string
       }
     ).version
-    await runCli(env, ['execute', '-w', id, '-c', 'echo v2 > /notes.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo v2 > /notes.txt'])
     await runCli(env, ['workspace', 'commit', id, '-m', 'second'])
 
     const log = (await runCli(env, ['workspace', 'log', id])) as { message: string }[]
     expect(log.map((e) => e.message)).toEqual(['second', 'first'])
 
     await runCli(env, ['workspace', 'checkout', id, v1])
-    const reverted = (await runCli(env, ['execute', '-w', id, '-c', 'cat /notes.txt'])) as {
+    const reverted = (await runCli(env, ['shell', '-w', id, '-c', 'cat /notes.txt'])) as {
       stdout: string
     }
     expect(reverted.stdout).toBe('v1\n')
@@ -791,15 +791,15 @@ describe('mirage CLI end-to-end', () => {
     writeFileSync(cfgPath, 'mounts:\n  /:\n    vfs: ram\n    mode: write\n')
     const id = ((await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }).id
 
-    await runCli(env, ['execute', '-w', id, '-c', 'echo one > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo one > /a.txt'])
     const v1 = (
       (await runCli(env, ['workspace', 'commit', id, '-m', 'first'])) as {
         version: string
       }
     ).version
 
-    await runCli(env, ['execute', '-w', id, '-c', 'echo two > /a.txt'])
-    await runCli(env, ['execute', '-w', id, '-c', 'echo new > /b.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo two > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo new > /b.txt'])
     const v2 = (
       (await runCli(env, ['workspace', 'commit', id, '-m', 'second'])) as {
         version: string
@@ -813,7 +813,7 @@ describe('mirage CLI end-to-end', () => {
     expect(byVersion.modified).toEqual(['a.txt'])
     expect(byVersion.added).toEqual(['b.txt'])
 
-    await runCli(env, ['execute', '-w', id, '-c', 'echo three > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo three > /a.txt'])
     const live = (await runCli(env, ['workspace', 'diff', id])) as { modified: string[] }
     expect(live.modified).toEqual(['a.txt'])
 
@@ -825,11 +825,11 @@ describe('mirage CLI end-to-end', () => {
     writeFileSync(cfgPath, 'mounts:\n  /:\n    vfs: ram\n    mode: write\n')
     const id = ((await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }).id
 
-    await runCli(env, ['execute', '-w', id, '-c', 'echo one > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo one > /a.txt'])
     await runCli(env, ['workspace', 'commit', id, '-m', 'first'])
 
     await runCli(env, ['workspace', 'branch', id, 'exp'])
-    await runCli(env, ['execute', '-w', id, '-c', 'echo two > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo two > /a.txt'])
     await runCli(env, ['workspace', 'commit', id, '-b', 'exp', '-m', 'on exp'])
 
     const expLog = (await runCli(env, ['workspace', 'log', id, '-b', 'exp'])) as {
@@ -853,15 +853,15 @@ describe('mirage CLI end-to-end', () => {
     writeFileSync(cfgPath, 'mounts:\n  /:\n    vfs: ram\n    mode: write\n')
     const id = ((await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }).id
 
-    await runCli(env, ['execute', '-w', id, '-c', 'echo one > /a.txt'])
-    await runCli(env, ['execute', '-w', id, '-c', 'echo two > /b.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo one > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo two > /b.txt'])
     const v1 = (
       (await runCli(env, ['workspace', 'commit', id, '-m', 'first'])) as {
         version: string
       }
     ).version
 
-    await runCli(env, ['execute', '-w', id, '-c', 'rm /b.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'rm /b.txt'])
     const v2 = (
       (await runCli(env, ['workspace', 'commit', id, '-m', 'second'])) as {
         version: string
@@ -878,7 +878,7 @@ describe('mirage CLI end-to-end', () => {
     const cfgPath = join(tmp, 'ver-clone.yaml')
     writeFileSync(cfgPath, 'mounts:\n  /:\n    vfs: ram\n    mode: write\n')
     const id = ((await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }).id
-    await runCli(env, ['execute', '-w', id, '-c', 'echo hello > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo hello > /a.txt'])
 
     const auto = (await runCli(env, ['workspace', 'clone', id])) as { id: string }
     expect(auto.id).not.toBe(id)
@@ -887,7 +887,7 @@ describe('mirage CLI end-to-end', () => {
       id: string
     }
     expect(named.id).toBe('myclone')
-    const got = (await runCli(env, ['execute', '-w', 'myclone', '-c', 'cat /a.txt'])) as {
+    const got = (await runCli(env, ['shell', '-w', 'myclone', '-c', 'cat /a.txt'])) as {
       stdout: string
     }
     expect(got.stdout).toBe('hello\n')
@@ -900,10 +900,10 @@ describe('mirage CLI end-to-end', () => {
     writeFileSync(cfgPath, 'mounts:\n  /:\n    vfs: ram\n    mode: write\n')
     const id = ((await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }).id
 
-    await runCli(env, ['execute', '-w', id, '-c', 'echo one > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo one > /a.txt'])
     await runCli(env, ['workspace', 'commit', id, '-m', 'first'])
     await runCli(env, ['workspace', 'branch', id, 'exp'])
-    await runCli(env, ['execute', '-w', id, '-c', 'echo two > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo two > /a.txt'])
     await runCli(env, ['workspace', 'commit', id, '-b', 'exp', '-m', 'on exp'])
 
     await runCli(env, ['workspace', 'branch', id, 'exp2', '--from', 'exp'])
@@ -918,20 +918,20 @@ describe('mirage CLI end-to-end', () => {
     writeFileSync(cfgPath, 'mounts:\n  /:\n    vfs: ram\n    mode: write\n')
     const id = ((await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }).id
 
-    await runCli(env, ['execute', '-w', id, '-c', 'echo one > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo one > /a.txt'])
     await runCli(env, ['workspace', 'commit', id, '-m', 'first'])
     await runCli(env, ['workspace', 'branch', id, 'exp'])
-    await runCli(env, ['execute', '-w', id, '-c', 'echo two > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo two > /a.txt'])
     await runCli(env, ['workspace', 'commit', id, '-b', 'exp', '-m', 'on exp'])
 
     await runCli(env, ['workspace', 'checkout', id, 'main'])
-    const onMain = (await runCli(env, ['execute', '-w', id, '-c', 'cat /a.txt'])) as {
+    const onMain = (await runCli(env, ['shell', '-w', id, '-c', 'cat /a.txt'])) as {
       stdout: string
     }
     expect(onMain.stdout).toBe('one\n')
 
     await runCli(env, ['workspace', 'checkout', id, 'exp'])
-    const onExp = (await runCli(env, ['execute', '-w', id, '-c', 'cat /a.txt'])) as {
+    const onExp = (await runCli(env, ['shell', '-w', id, '-c', 'cat /a.txt'])) as {
       stdout: string
     }
     expect(onExp.stdout).toBe('two\n')
@@ -943,7 +943,7 @@ describe('mirage CLI end-to-end', () => {
     const cfgPath = join(tmp, 'ver-err.yaml')
     writeFileSync(cfgPath, 'mounts:\n  /:\n    vfs: ram\n    mode: write\n')
     const id = ((await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }).id
-    await runCli(env, ['execute', '-w', id, '-c', 'echo one > /a.txt'])
+    await runCli(env, ['shell', '-w', id, '-c', 'echo one > /a.txt'])
     await runCli(env, ['workspace', 'commit', id, '-m', 'first'])
     await runCli(env, ['workspace', 'branch', id, 'exp'])
 
@@ -962,7 +962,7 @@ describe('mirage CLI end-to-end', () => {
     }
     expect(created.id).toBe('clone-src')
 
-    await runCli(env, ['execute', '-w', 'clone-src', '-c', 'echo source > /report.txt'])
+    await runCli(env, ['shell', '-w', 'clone-src', '-c', 'echo source > /report.txt'])
     const cloned = (await runCli(env, [
       'workspace',
       'clone',
@@ -975,7 +975,7 @@ describe('mirage CLI end-to-end', () => {
     expect(cloned.id).toBe('clone-dst')
 
     const cloneRead = (await runCli(env, [
-      'execute',
+      'shell',
       '-w',
       'clone-dst',
       '-c',
@@ -985,9 +985,9 @@ describe('mirage CLI end-to-end', () => {
     }
     expect(cloneRead.stdout).toContain('source')
 
-    await runCli(env, ['execute', '-w', 'clone-dst', '-c', 'echo clone > /report.txt'])
+    await runCli(env, ['shell', '-w', 'clone-dst', '-c', 'echo clone > /report.txt'])
     const originalRead = (await runCli(env, [
-      'execute',
+      'shell',
       '-w',
       'clone-src',
       '-c',

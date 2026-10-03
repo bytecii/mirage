@@ -19,7 +19,7 @@ permissions:
       - integ/index_store.*
       - integ/snapshot_smoke.*
       - integ/parity.sh
-      - integ/execute_stdin.py
+      - integ/shell_stdin.py
       - integ/doors.py
       - integ/fuse/cli_fuse.sh
       - integ/cli_config.sh
@@ -76,7 +76,7 @@ jobs:
               - 'integ/index_store.*'
               - 'integ/snapshot_smoke.*'
               - 'integ/parity.sh'
-              - 'integ/execute_stdin.py'
+              - 'integ/shell_stdin.py'
               - 'integ/doors.py'
               - 'integ/fuse/cli_fuse.sh'
               - 'integ/cli_config.sh'
@@ -195,16 +195,16 @@ jobs:
             echo "PASS"
           }
 
-          check "echo ok succeeds" 0 0 $MIRAGE execute -w smoke -c 'echo ok'
-          check "false exits 1" 1 1 $MIRAGE execute -w smoke -c 'false'
+          check "echo ok succeeds" 0 0 $MIRAGE shell -w smoke -c 'echo ok'
+          check "false exits 1" 1 1 $MIRAGE shell -w smoke -c 'false'
           check "false | echo: pipefail off => last cmd wins" 0 0 \
-            $MIRAGE execute -w smoke -c 'false | echo done'
+            $MIRAGE shell -w smoke -c 'false | echo done'
           check "pipefail on => rightmost failure wins" 1 1 \
-            $MIRAGE execute -w smoke -c 'set -o pipefail; false | echo done'
+            $MIRAGE shell -w smoke -c 'set -o pipefail; false | echo done'
 
           echo
           echo "--- background + job wait"
-          submit=$($MIRAGE execute -w smoke --bg -c 'false')
+          submit=$($MIRAGE shell -w smoke --bg -c 'false')
           echo "submit response:"
           echo "$submit" | sed 's/^/  /'
           JID=$(echo "$submit" | jq -r .job_id)
@@ -213,13 +213,13 @@ jobs:
 
           echo
           echo "--- shell composition (&& and ||)"
-          if $MIRAGE execute -w smoke -c 'false' > /dev/null && echo "should not print"; then
+          if $MIRAGE shell -w smoke -c 'false' > /dev/null && echo "should not print"; then
             echo "FAIL: && short-circuit did not work"
             fail=1
           else
             echo "PASS: && correctly short-circuited on inner failure"
           fi
-          if $MIRAGE execute -w smoke -c 'echo ok' > /dev/null && echo "should print"; then
+          if $MIRAGE shell -w smoke -c 'echo ok' > /dev/null && echo "should print"; then
             echo "PASS: && correctly proceeded on inner success"
           else
             echo "FAIL: && incorrectly short-circuited on success"
@@ -252,13 +252,13 @@ jobs:
           $MIRAGE workspace delete sgerr > /dev/null 2>&1 || true
           $MIRAGE workspace create /tmp/sg.yaml --id sg
           $MIRAGE workspace create /tmp/sgerr.yaml --id sgerr
-          $MIRAGE execute -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
-          $MIRAGE execute -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
 
           check "cat over max_lines, on_exceed=truncate => exit 0" 0 0 \
-            $MIRAGE execute -w sg -c 'cat /f.txt'
+            $MIRAGE shell -w sg -c 'cat /f.txt'
           echo "+ verify truncated to 2 lines"
-          lines=$($MIRAGE execute -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
+          lines=$($MIRAGE shell -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
           echo "  truncated stdout lines: $lines (expected 2)"
           if [ "$lines" != "2" ]; then
             echo "FAIL: truncate did not cap to 2 lines"
@@ -267,7 +267,7 @@ jobs:
             echo "PASS"
           fi
           check "cat over max_lines, on_exceed=error => exit 1" 1 1 \
-            $MIRAGE execute -w sgerr -c 'cat /f.txt'
+            $MIRAGE shell -w sgerr -c 'cat /f.txt'
           $MIRAGE workspace delete sg
           $MIRAGE workspace delete sgerr
 
@@ -297,9 +297,9 @@ jobs:
           else
             echo "PASS"
           fi
-          $MIRAGE execute -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
           check "ops work with snake_case cache/index configured => exit 0" 0 0 \
-            $MIRAGE execute -w cfgkeys -c 'cat /f.txt'
+            $MIRAGE shell -w cfgkeys -c 'cat /f.txt'
           $MIRAGE workspace delete cfgkeys
 
           curl_check() {
@@ -505,16 +505,16 @@ jobs:
             echo "PASS"
           }
 
-          check "echo ok succeeds" 0 0 $MIRAGE execute -w smoke -c 'echo ok'
-          check "false exits 1" 1 1 $MIRAGE execute -w smoke -c 'false'
+          check "echo ok succeeds" 0 0 $MIRAGE shell -w smoke -c 'echo ok'
+          check "false exits 1" 1 1 $MIRAGE shell -w smoke -c 'false'
           check "false | echo: pipefail off => last cmd wins" 0 0 \
-            $MIRAGE execute -w smoke -c 'false | echo done'
+            $MIRAGE shell -w smoke -c 'false | echo done'
           check "pipefail on => rightmost failure wins" 1 1 \
-            $MIRAGE execute -w smoke -c 'set -o pipefail; false | echo done'
+            $MIRAGE shell -w smoke -c 'set -o pipefail; false | echo done'
 
           echo
           echo "--- background + job wait"
-          submit=$($MIRAGE execute -w smoke --bg -c 'false')
+          submit=$($MIRAGE shell -w smoke --bg -c 'false')
           echo "submit response:"
           echo "$submit" | sed 's/^/  /'
           JID=$(echo "$submit" | jq -r .jobId)
@@ -523,13 +523,13 @@ jobs:
 
           echo
           echo "--- shell composition (&& and ||)"
-          if $MIRAGE execute -w smoke -c 'false' > /dev/null && echo "should not print"; then
+          if $MIRAGE shell -w smoke -c 'false' > /dev/null && echo "should not print"; then
             echo "FAIL: && short-circuit did not work"
             fail=1
           else
             echo "PASS: && correctly short-circuited on inner failure"
           fi
-          if $MIRAGE execute -w smoke -c 'echo ok' > /dev/null && echo "should print"; then
+          if $MIRAGE shell -w smoke -c 'echo ok' > /dev/null && echo "should print"; then
             echo "PASS: && correctly proceeded on inner success"
           else
             echo "FAIL: && incorrectly short-circuited on success"
@@ -562,13 +562,13 @@ jobs:
           $MIRAGE workspace delete sgerr > /dev/null 2>&1 || true
           $MIRAGE workspace create /tmp/sg.yaml --id sg
           $MIRAGE workspace create /tmp/sgerr.yaml --id sgerr
-          $MIRAGE execute -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
-          $MIRAGE execute -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
 
           check "cat over max_lines, on_exceed=truncate => exit 0" 0 0 \
-            $MIRAGE execute -w sg -c 'cat /f.txt'
+            $MIRAGE shell -w sg -c 'cat /f.txt'
           echo "+ verify truncated to 2 lines"
-          lines=$($MIRAGE execute -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
+          lines=$($MIRAGE shell -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
           echo "  truncated stdout lines: $lines (expected 2)"
           if [ "$lines" != "2" ]; then
             echo "FAIL: truncate did not cap to 2 lines"
@@ -577,7 +577,7 @@ jobs:
             echo "PASS"
           fi
           check "cat over max_lines, on_exceed=error => exit 1" 1 1 \
-            $MIRAGE execute -w sgerr -c 'cat /f.txt'
+            $MIRAGE shell -w sgerr -c 'cat /f.txt'
           $MIRAGE workspace delete sg
           $MIRAGE workspace delete sgerr
 
@@ -607,9 +607,9 @@ jobs:
           else
             echo "PASS"
           fi
-          $MIRAGE execute -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
+          $MIRAGE shell -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
           check "ops work with snake_case cache/index configured => exit 0" 0 0 \
-            $MIRAGE execute -w cfgkeys -c 'cat /f.txt'
+            $MIRAGE shell -w cfgkeys -c 'cat /f.txt'
           $MIRAGE workspace delete cfgkeys
 
           curl_check() {
@@ -767,7 +767,7 @@ jobs:
 
       # Each door's tools and commands have unit tests; this proves the
       # wiring on both hosts. One workspace is written through each door
-      # (HTTP, MCP over HTTP, `mirage mcp`, `mirage execute`, ssh, the ssh
+      # (HTTP, MCP over HTTP, `mirage mcp`, `mirage shell`, ssh, the ssh
       # mcp subsystem, sftp) and read back through the next.
       - name: Run door wiring (CLI, HTTP, MCP, SSH) on both hosts
         run: ./python/.venv/bin/python integ/doors.py
@@ -835,7 +835,7 @@ jobs:
             mb --ignore-existing local/mirage-cross local/mirage-state
 
       - name: Run daemon large-stdin and grep round trips (both languages)
-        run: ./python/.venv/bin/python integ/execute_stdin.py
+        run: ./python/.venv/bin/python integ/shell_stdin.py
 
       - name: Run cross-language snapshot interop (both directions)
         run: |

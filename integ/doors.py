@@ -22,7 +22,7 @@ with its own daemon and its own `mirage` CLI. Each daemon gets a private
 home, HTTP port and SSH port. `mirage workspace create` makes one
 workspace, which is written through each door in turn and read back
 through the next: the HTTP API, MCP over the HTTP endpoint, `mirage mcp`
-over stdio, `mirage execute`, `ssh` exec, the SSH `mcp` subsystem, `sftp`,
+over stdio, `mirage shell`, `ssh` exec, the SSH `mcp` subsystem, `sftp`,
 and the HTTP API again. Then the daemon's own records are read: every MCP `shell` call
 is a job, the SSH sessions closed with their channels, a `mirage mcp`
 workspace with no name went with its process, and the MCP endpoint refuses
@@ -274,9 +274,9 @@ async def probe(host: str, root: Path) -> dict[str, str]:
             env=env,
         )
 
-        def execute(command: str) -> str:
+        def http_shell(command: str) -> str:
             response = api.post(
-                f"{workspace}/execute", json={"command": command}
+                f"{workspace}/shell", json={"command": command}
             )
             response.raise_for_status()
             return response.json()["stdout"]
@@ -289,7 +289,7 @@ async def probe(host: str, root: Path) -> dict[str, str]:
             ids = [row.get("session_id", row.get("sessionId")) for row in rows]
             return [i for i in ids if i.startswith("ssh_")]
 
-        execute("echo from-http > /http.txt")
+        http_shell("echo from-http > /http.txt")
 
         mcp_url = f"{base}{workspace}/mcp"
         async with (
@@ -316,7 +316,7 @@ async def probe(host: str, root: Path) -> dict[str, str]:
         executed = await run(
             mirage_cli(
                 host,
-                "execute",
+                "shell",
                 "-w",
                 WORKSPACE,
                 "-c",
@@ -350,7 +350,7 @@ async def probe(host: str, root: Path) -> dict[str, str]:
         )
         await run(ssh_command(env, "-b", "-", login, program="sftp"), batch)
         got["sftp.reads_ssh_mcp"] = (root / "got.txt").read_text()
-        got["http.reads_sftp"] = execute("cat /sftp.txt")
+        got["http.reads_sftp"] = http_shell("cat /sftp.txt")
 
         commands = {row["command"] for row in api.get("/v1/jobs").json()}
         mcp_calls = [

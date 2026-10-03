@@ -22,16 +22,18 @@ import typer
 from mirage.cli.client import make_client
 from mirage.cli.output import emit, exit_code_from_response, handle_response
 
-app = typer.Typer(invoke_without_command=True, help="Execute a command.")
+app = typer.Typer(
+    invoke_without_command=True, help="Run a shell line in a workspace."
+)
 
 
 @app.callback(invoke_without_command=True)
-def execute_cmd(
+def shell_cmd(
     workspace_id: str = typer.Option(
         ..., "--workspace_id", "--workspace", "-w", help="Workspace id."
     ),
     command: str = typer.Option(
-        ..., "--command", "-c", help="Shell command to execute."
+        ..., "--command", "-c", help="Shell line to run."
     ),
     session_id: str | None = typer.Option(
         None, "--session_id", "--session", "-s", help="Session id."
@@ -54,7 +56,7 @@ def execute_cmd(
         help="Don't wait; return job_id immediately.",
     ),
 ) -> None:
-    """Execute a command in a workspace."""
+    """Run a shell line in a workspace."""
     payload: dict[str, Any] = {"command": command}
     if session_id:
         payload["session_id"] = session_id
@@ -62,7 +64,7 @@ def execute_cmd(
         payload["cwd"] = cwd
     if runtime:
         payload["runtime"] = runtime
-    path = f"/v1/workspaces/{quote(workspace_id, safe='')}/execute"
+    path = f"/v1/workspaces/{quote(workspace_id, safe='')}/shell"
     if background:
         path += "?background=true"
     with make_client() as client:

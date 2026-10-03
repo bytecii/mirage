@@ -19,16 +19,16 @@ import type { WorkspaceRegistry } from '../registry.ts'
 import { JobStatus, type JobTable } from '../jobs.ts'
 import { ioResultToDict } from '../io_serde.ts'
 
-export interface ExecuteRoutesDeps {
+export interface ShellRoutesDeps {
   registry: WorkspaceRegistry
   jobs: JobTable
 }
 
-interface ExecuteParams {
+interface ShellParams {
   wsId: string
 }
 
-const ExecuteBodySchema = z
+const ShellBodySchema = z
   .object({
     command: z.string(),
     sessionId: z.string().optional(),
@@ -40,13 +40,13 @@ const ExecuteBodySchema = z
   })
   .strict()
 
-type ExecuteBody = z.infer<typeof ExecuteBodySchema>
+type ShellBody = z.infer<typeof ShellBodySchema>
 
-async function parseExecuteBody(
+async function parseShellBody(
   req: FastifyRequest,
-): Promise<[ExecuteBody, Uint8Array | undefined]> {
+): Promise<[ShellBody, Uint8Array | undefined]> {
   if (!req.isMultipart()) {
-    const body = ExecuteBodySchema.parse(req.body)
+    const body = ShellBodySchema.parse(req.body)
     return [
       body,
       body.stdinBase64 === undefined ? undefined : Buffer.from(body.stdinBase64, 'base64'),
@@ -66,28 +66,28 @@ async function parseExecuteBody(
       stdin = Buffer.isBuffer(value) ? value : Buffer.from(String(value))
     }
   }
-  return [ExecuteBodySchema.parse(request), stdin]
+  return [ShellBodySchema.parse(request), stdin]
 }
 
-interface ExecuteQuery {
+interface ShellQuery {
   background?: string
 }
 
-export function registerExecuteRoutes(app: FastifyInstance, deps: ExecuteRoutesDeps): void {
-  app.post<{ Params: ExecuteParams; Body: ExecuteBody; Querystring: ExecuteQuery }>(
-    '/v1/workspaces/:wsId/execute',
+export function registerShellRoutes(app: FastifyInstance, deps: ShellRoutesDeps): void {
+  app.post<{ Params: ShellParams; Body: ShellBody; Querystring: ShellQuery }>(
+    '/v1/workspaces/:wsId/shell',
     async (req, reply) => {
       const { wsId } = req.params
       if (!deps.registry.has(wsId)) {
         return reply.status(404).send({ detail: 'workspace not found' })
       }
-      let body: ExecuteBody
+      let body: ShellBody
       let stdin: Uint8Array | undefined
       try {
-        ;[body, stdin] = await parseExecuteBody(req)
+        ;[body, stdin] = await parseShellBody(req)
       } catch (error) {
         if (error instanceof SyntaxError || error instanceof z.ZodError) {
-          return reply.status(400).send({ detail: `bad execute request: ${error.message}` })
+          return reply.status(400).send({ detail: `bad shell request: ${error.message}` })
         }
         throw error
       }
@@ -127,7 +127,7 @@ export function registerExecuteRoutes(app: FastifyInstance, deps: ExecuteRoutesD
         return reply.status(499).send({ detail: 'job canceled' })
       }
       if (job.status === JobStatus.FAILED) {
-        return reply.status(500).send({ detail: job.error ?? 'execute failed' })
+        return reply.status(500).send({ detail: job.error ?? 'shell failed' })
       }
       return job.result
     },
