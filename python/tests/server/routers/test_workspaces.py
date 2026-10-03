@@ -342,7 +342,7 @@ async def test_a_create_of_another_config_does_not_wait_behind_a_stuck_one():
                 "/v1/workspaces", json=_slack_body("gated-src", "stuck")
             )
         )
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=5)
         refused = await asyncio.wait_for(
             client.post("/v1/workspaces", json=other), timeout=5
         )
