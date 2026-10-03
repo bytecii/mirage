@@ -174,9 +174,9 @@ describe('the path axis end to end', () => {
     const door = new Session(ws, host.sessionId).vfs
     expect(door.records).toBe(ws.vfs.records)
     await door.mkdir('/data/vault')
-    await door.writeFile('/data/vault/secret', 'top\n')
-    expect(await door.readFileText('/data/vault/secret')).toBe('top\n')
-    await expect(ws.vfs.readFile('/data/vault/secret')).rejects.toMatchObject({ code: 'ENOENT' })
+    await door.write('/data/vault/secret', 'top\n')
+    expect(await door.cat('/data/vault/secret')).toBe('top\n')
+    await expect(ws.vfs.read('/data/vault/secret')).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(ws.stat('/data/vault')).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(ws.dispatch('read', '/data/vault/secret')).rejects.toMatchObject({
       code: 'ENOENT',
@@ -184,7 +184,7 @@ describe('the path axis end to end', () => {
     expect(await ws.readdir('/data')).toEqual([])
     expect(await ws.vfs.readdir('/data')).toEqual([])
     await runWithSession(host, async () => {
-      expect(await ws.vfs.readFileText('/data/vault/secret')).toBe('top\n')
+      expect(await ws.vfs.cat('/data/vault/secret')).toBe('top\n')
     })
   })
 
@@ -206,19 +206,19 @@ describe('the path axis end to end', () => {
     const host = ws.createSession('host', { profile: parseSessionProfile({}) })
     const door = new Session(ws, host.sessionId).vfs
     await door.mkdir('/data/vault')
-    await door.writeFile('/data/vault/secret', 'top\n')
+    await door.write('/data/vault/secret', 'top\n')
     await runWithSession(
       wide,
       async () => {
-        await expect(ws.vfs.readFile('/data/vault/secret')).rejects.toMatchObject({
+        await expect(ws.vfs.read('/data/vault/secret')).rejects.toMatchObject({
           code: 'ENOENT',
         })
-        expect(await door.readFileText('/data/vault/secret')).toBe('top\n')
+        expect(await door.cat('/data/vault/secret')).toBe('top\n')
       },
       other.sessionManager,
     )
     await runWithSession(wide, async () => {
-      expect(await ws.vfs.readFileText('/data/vault/secret')).toBe('top\n')
+      expect(await ws.vfs.cat('/data/vault/secret')).toBe('top\n')
     })
   })
 
@@ -232,15 +232,15 @@ describe('the path axis end to end', () => {
     const ws = await hiding()
     const host = ws.createSession('host', { profile: parseSessionProfile({}) })
     const door = new Session(ws, host.sessionId).vfs
-    await door.writeFile('/data/pub.txt', 'pub\n')
+    await door.write('/data/pub.txt', 'pub\n')
     await door.mkdir('/data/vault')
     await door.symlink('/data/vault/lk', '/data/pub.txt')
-    expect(await door.readFileText('/data/vault/lk')).toBe('pub\n')
-    await expect(ws.vfs.readFile('/data/vault/lk')).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(ws.vfs.writeFile('/data/vault/lk', 'x\n')).rejects.toMatchObject({
+    expect(await door.cat('/data/vault/lk')).toBe('pub\n')
+    await expect(ws.vfs.read('/data/vault/lk')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(ws.vfs.write('/data/vault/lk', 'x\n')).rejects.toMatchObject({
       code: 'ENOENT',
     })
-    expect(await door.readFileText('/data/pub.txt')).toBe('pub\n')
+    expect(await door.cat('/data/pub.txt')).toBe('pub\n')
   })
 
   it('a write below the mode reads Read-only file system', async () => {

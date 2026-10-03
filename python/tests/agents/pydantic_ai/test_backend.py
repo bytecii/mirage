@@ -125,3 +125,22 @@ async def test_exists(backend):
     assert not await backend.aexists("/missing.txt")
     await backend.awrite("/exists.txt", "content")
     assert await backend.aexists("/exists.txt")
+
+
+@pytest.mark.asyncio
+async def test_file_operations_act_as_the_session():
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"guarded": {"paths": {"hide": ["/vault"]}}},
+    )
+    await ws.shell("echo key > /vault/key.txt")
+    ws.create_session("agent", profile="guarded")
+    backend = PydanticAIWorkspace(ws, session_id="agent")
+    try:
+        exists = await backend.aexists("/vault/key.txt")
+        read = await backend.aread("/vault/key.txt")
+    finally:
+        await ws.close()
+    assert exists is False
+    assert read.startswith("Error: ")

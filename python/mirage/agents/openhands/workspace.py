@@ -25,6 +25,8 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from pydantic import Field, PrivateAttr
 
 from mirage.agents.io_text import with_refusal
+from mirage.ops.ops import Ops
+from mirage.workspace.workspace import Session
 from mirage.workspace.workspace import Workspace as MirageBackingWorkspace
 
 logger = logging.getLogger(__name__)
@@ -45,8 +47,11 @@ async def _execute_with_timeout(
     ws: MirageBackingWorkspace,
     command: str,
     timeout: float,
+    session_id: str | None,
 ) -> Any:
-    return await asyncio.wait_for(ws.shell(command), timeout=timeout)
+    return await asyncio.wait_for(
+        ws.shell(command, session_id=session_id), timeout=timeout
+    )
 
 
 class _AsyncBridge:
@@ -104,6 +109,9 @@ class MirageWorkspace(LocalWorkspace):
             commands when no explicit cwd is provided. Must be a valid
             host path (OpenHands validates it on the host fs). Defaults
             to "/".
+        session_id: The Mirage session the shell and file operations
+            act as, so its profile judges every call; None is the
+            workspace's default session.
     """
 
     working_dir: str = Field(
@@ -112,6 +120,7 @@ class MirageWorkspace(LocalWorkspace):
     )
 
     _ws: Any = PrivateAttr()
+    _session_id: str | None = PrivateAttr()
     _bridge: Any = PrivateAttr()
 
     def __init__(
@@ -119,11 +128,20 @@ class MirageWorkspace(LocalWorkspace):
         *,
         workspace: MirageBackingWorkspace,
         working_dir: str = "/",
+        session_id: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(working_dir=working_dir, **kwargs)
         self._ws = workspace
+        self._session_id = session_id
         self._bridge = _AsyncBridge()
+
+    @property
+    def _vfs(self) -> Ops:
+        """The op facade run as this workspace's session."""
+        if self._session_id is None:
+            return self._ws.vfs
+        return Session(self._ws, self._session_id).vfs
 
     @property
     def workspace(self) -> MirageBackingWorkspace:
@@ -149,7 +167,9 @@ class MirageWorkspace(LocalWorkspace):
             full_command = command
         try:
             io_result = self._bridge.run(
-                _execute_with_timeout(self._ws, full_command, timeout)
+                _execute_with_timeout(
+                    self._ws, full_command, timeout, self._session_id
+                )
             )
             stdout = self._coerce_text(getattr(io_result, "stdout", b""))
             stderr = with_refusal(
@@ -185,7 +205,7 @@ class MirageWorkspace(LocalWorkspace):
             parent = str(Path(dst).parent)
             if parent and parent not in (".", "/"):
                 self._ensure_parent(parent)
-            self._bridge.run(self._ws.vfs.write(dst, data))
+            self._bridge.run(self._vfs.write(dst, data))
             return FileOperationResult(
                 success=True,
                 source_path=str(src),
@@ -209,7 +229,7 @@ class MirageWorkspace(LocalWorkspace):
         src = str(source_path)
         dst = Path(destination_path)
         try:
-            data = self._bridge.run(self._ws.vfs.read(src))
+            data = self._bridge.run(self._vfs.read(src))
             if isinstance(data, str):
                 data = data.encode("utf-8")
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -243,7 +263,9 @@ class MirageWorkspace(LocalWorkspace):
 
     def _ensure_parent(self, parent: str) -> None:
         result = self._bridge.run(
-            self._ws.shell(f"mkdir -p {shlex.quote(parent)}")
+            self._ws.shell(
+                f"mkdir -p {shlex.quote(parent)}", session_id=self._session_id
+            )
         )
         exit_code = int(getattr(result, "exit_code", 0) or 0)
         if exit_code != 0:

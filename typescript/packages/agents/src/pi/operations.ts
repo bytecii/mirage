@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { Ops } from '@struktoai/mirage-core/ops/ops'
 import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import type { ExecuteResult, Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import type {
@@ -31,6 +32,11 @@ export { StaleMirageFileError } from '../file_version.ts'
 
 export interface MirageOperationsOptions {
   staleWriteProtection?: boolean
+  /**
+   * The session the operations act as, so its profile judges every
+   * call; the workspace's default session when absent.
+   */
+  sessionId?: string
 }
 
 export interface MirageOperationsBundle {
@@ -43,15 +49,15 @@ export interface MirageOperationsBundle {
   ls: LsOperations
 }
 
-async function ensureParent(ws: Workspace, dir: string): Promise<void> {
+async function ensureParent(vfs: Ops, dir: string): Promise<void> {
   const norm = rstripSlash(dir) || '/'
-  if (norm === '/' || (await ws.vfs.exists(norm))) return
+  if (norm === '/' || (await vfs.exists(norm))) return
   const parent = norm.substring(0, norm.lastIndexOf('/')) || '/'
-  await ensureParent(ws, parent)
+  await ensureParent(vfs, parent)
   try {
-    await ws.vfs.mkdir(norm)
+    await vfs.mkdir(norm)
   } catch (err) {
-    if (await ws.vfs.isDir(norm)) return
+    if (await vfs.isDir(norm)) return
     throw err
   }
 }
@@ -62,7 +68,7 @@ interface WalkOptions {
 }
 
 async function walkDirectory(
-  ws: Workspace,
+  vfs: Ops,
   dir: string,
   cwdPrefix: string,
   matcher: (relativePath: string) => boolean,
@@ -70,14 +76,14 @@ async function walkDirectory(
   results: string[],
 ): Promise<void> {
   if (results.length >= opts.limit) return
-  const entries = await ws.vfs.readdir(dir)
+  const entries = await vfs.readdir(dir)
   for (const full of entries) {
     if (results.length >= opts.limit) return
     const rel = full.startsWith(cwdPrefix) ? full.slice(cwdPrefix.length) : full
     if (opts.ignoreMatchers.some((m) => m(rel))) continue
-    const isDir = await ws.vfs.isDir(full)
+    const isDir = await vfs.isDir(full)
     if (matcher(rel)) results.push(full)
-    if (isDir) await walkDirectory(ws, full, cwdPrefix, matcher, opts, results)
+    if (isDir) await walkDirectory(vfs, full, cwdPrefix, matcher, opts, results)
   }
 }
 
@@ -85,20 +91,22 @@ export function mirageOperations(
   ws: Workspace,
   options: MirageOperationsOptions = {},
 ): MirageOperationsBundle {
-  const versions = new FileVersionTracker(ws, options.staleWriteProtection ?? true)
+  const sessionId = options.sessionId
+  const versions = new FileVersionTracker(ws, options.staleWriteProtection ?? true, sessionId)
+  const vfs = versions.vfs
   const read: ReadOperations = {
     readFile: (absolutePath: string) => versions.read(absolutePath),
     access: async (absolutePath: string) => {
-      await ws.vfs.stat(absolutePath)
+      await vfs.stat(absolutePath)
     },
   }
 
   const write: WriteOperations = {
     writeFile: (absolutePath: string, content: string) => versions.write(absolutePath, content),
     mkdir: async (dir: string) => {
-      await ensureParent(ws, dir)
-      if (!(await ws.vfs.exists(dir))) {
-        await ws.vfs.mkdir(dir)
+      await ensureParent(vfs, dir)
+      if (!(await vfs.exists(dir))) {
+        await vfs.mkdir(dir)
       }
     },
   }
@@ -121,10 +129,11 @@ export function mirageOperations(
           : (options.signal ?? timeoutSignal)
       let result: ExecuteResult
       try {
-        result =
-          signal === undefined
-            ? await ws.shell(command, { cwd })
-            : await ws.shell(command, { cwd, signal })
+        result = await ws.shell(command, {
+          cwd,
+          ...(signal === undefined ? {} : { signal }),
+          ...(sessionId === undefined ? {} : { sessionId }),
+        })
       } catch (error) {
         if (options.signal?.aborted === true) {
           throw new Error('aborted')
@@ -149,12 +158,12 @@ export function mirageOperations(
   }
 
   const grep: GrepOperations = {
-    isDirectory: async (absolutePath: string) => ws.vfs.isDir(absolutePath),
+    isDirectory: async (absolutePath: string) => vfs.isDir(absolutePath),
     readFile: async (absolutePath: string) => (await versions.read(absolutePath)).toString('utf-8'),
   }
 
   const find: FindOperations = {
-    exists: async (absolutePath: string) => ws.vfs.exists(absolutePath),
+    exists: async (absolutePath: string) => vfs.exists(absolutePath),
     glob: async (pattern, cwd, options) => {
       const matcher = picomatch(pattern, { dot: false })
       const ignoreMatchers = options.ignore.map((p) => picomatch(p, { dot: false }))
@@ -162,7 +171,7 @@ export function mirageOperations(
       const cwdPrefix = root === '/' ? '/' : `${root}/`
       const results: string[] = []
       await walkDirectory(
-        ws,
+        vfs,
         root,
         cwdPrefix,
         matcher,
@@ -174,13 +183,13 @@ export function mirageOperations(
   }
 
   const ls: LsOperations = {
-    exists: async (absolutePath: string) => ws.vfs.exists(absolutePath),
+    exists: async (absolutePath: string) => vfs.exists(absolutePath),
     stat: async (absolutePath: string) => {
-      const isDir = await ws.vfs.isDir(absolutePath)
+      const isDir = await vfs.isDir(absolutePath)
       return { isDirectory: () => isDir }
     },
     readdir: async (absolutePath: string) => {
-      const entries = await ws.vfs.readdir(absolutePath)
+      const entries = await vfs.readdir(absolutePath)
       const prefix = absolutePath === '/' ? '/' : `${rstripSlash(absolutePath)}/`
       return entries.map((e) => (e.startsWith(prefix) ? e.slice(prefix.length) : e))
     },

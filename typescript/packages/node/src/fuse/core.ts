@@ -270,7 +270,7 @@ export class MountCore {
       try {
         for (;;) {
           const gen = this.prefetchGen.get(key) ?? 0
-          const data = await this.op(() => this.ops.readFile(this.resolve(path)))
+          const data = await this.op(() => this.ops.read(this.resolve(path)))
           // The file changed while this read was out: what came back is
           // stale, so read again rather than install it.
           if ((this.prefetchGen.get(key) ?? 0) !== gen) continue
@@ -348,7 +348,7 @@ export class MountCore {
   }
 
   private async writeFile(path: string, data: Uint8Array): Promise<void> {
-    await this.op(() => this.ops.writeFile(this.resolve(path), data))
+    await this.op(() => this.ops.write(this.resolve(path), data))
   }
 
   /**
@@ -437,12 +437,10 @@ export class MountCore {
     if (ctx?.chunked !== undefined && ctx.data === undefined) return ctx.chunked.pread(pos, len)
     if (ctx !== undefined && ctx.data === undefined) {
       const cached = this.cachedData(path)
-      ctx.data = cached ?? (await this.op(() => this.ops.readFile(this.resolve(path))))
+      ctx.data = cached ?? (await this.op(() => this.ops.read(this.resolve(path))))
     }
     const data =
-      ctx?.data ??
-      this.cachedData(path) ??
-      (await this.op(() => this.ops.readFile(this.resolve(path))))
+      ctx?.data ?? this.cachedData(path) ?? (await this.op(() => this.ops.read(this.resolve(path))))
     return data.subarray(pos, pos + len)
   }
 
@@ -551,7 +549,7 @@ export class MountCore {
     if (hydrated.length === 0) return
     let data: Uint8Array
     try {
-      data = await this.op(() => this.ops.readFile(this.resolve(path)))
+      data = await this.op(() => this.ops.read(this.resolve(path)))
     } catch (err) {
       // The mutation has already landed, so a refresh that fails must not
       // report it as failed: an O_TRUNC open would fail after the old
@@ -651,7 +649,7 @@ export class MountCore {
         await this.op(() => this.ops.truncate(this.resolve(path), size))
       } catch (dispatchErr) {
         if (!isMissingOp(dispatchErr, 'truncate')) throw dispatchErr
-        const data = await this.op(() => this.ops.readFile(this.resolve(path), { raw: true }))
+        const data = await this.op(() => this.ops.read(this.resolve(path), { raw: true }))
         const out = new Uint8Array(size)
         out.set(data.subarray(0, Math.min(data.byteLength, size)), 0)
         await this.writeFile(path, out)
@@ -732,7 +730,7 @@ export class MountCore {
       // moved all of it to answer a `head`. Mirrors Python's MountCore.open.
       // The fetch reads the handle's path as it is then: a rename moves it.
       ctx.chunked = new ChunkedHandle(path, s.size, (offset, size) =>
-        this.op(() => this.ops.readFile(this.resolve(ctx.path), { offset, size })),
+        this.op(() => this.ops.read(this.resolve(ctx.path), { offset, size })),
       )
     }
     return this.handles.add(ctx)
@@ -757,7 +755,7 @@ export class MountCore {
     if (held.length === 0) return
     let data: Uint8Array
     try {
-      data = await this.op(() => this.ops.readFile(this.resolve(path)))
+      data = await this.op(() => this.ops.read(this.resolve(path)))
     } catch (err) {
       console.warn(`fuse: holding ${path} before it goes failed: ${String(err)}`)
       return

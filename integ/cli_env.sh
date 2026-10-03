@@ -64,24 +64,24 @@ YML
   # `execute` prints a JSON envelope carrying the streams, and the two
   # hosts spell its keys differently, so every probe greps a distinctive
   # value out of it rather than reading lines (cli_config.sh's pattern).
-  echo "literal=$($cli execute -w env1 -c 'echo $APP_NAME' </dev/null | grep -o 'lit-app-name' | head -1)"
+  echo "literal=$($cli shell -w env1 -c 'echo $APP_NAME' </dev/null | grep -o 'lit-app-name' | head -1)"
 
-  $cli execute -w env1 -c 'EDITOR=x' >"/tmp/cli-env-$lang-ro.txt" 2>&1 </dev/null
+  $cli shell -w env1 -c 'EDITOR=x' >"/tmp/cli-env-$lang-ro.txt" 2>&1 </dev/null
   echo "readonly_write=exit$?"
   echo "readonly_msg=$(grep -o 'EDITOR: readonly variable' "/tmp/cli-env-$lang-ro.txt" | head -1)"
 
-  echo "dotenv=$($cli execute -w env1 -c 'echo $FROM_DOTFILE' </dev/null | grep -o 'sec-dotfile-v1' | head -1)"
+  echo "dotenv=$($cli shell -w env1 -c 'echo $FROM_DOTFILE' </dev/null | grep -o 'sec-dotfile-v1' | head -1)"
   # printenv is a whole-env command: FROM_ENV has not been referenced
   # yet, and the operand word is not a $-reference the fill walk could
   # see, so this proves the whole-env fetch of an unspelled name.
-  echo "wholeenv=$($cli execute -w env1 -c 'printenv FROM_ENV' </dev/null | grep -o 'sec-daemon-env-v1' | head -1)"
+  echo "wholeenv=$($cli shell -w env1 -c 'printenv FROM_ENV' </dev/null | grep -o 'sec-daemon-env-v1' | head -1)"
 
-  $cli execute -w env1 -c 'export FROM_ENV=sec-rewritten' >/dev/null </dev/null
+  $cli shell -w env1 -c 'export FROM_ENV=sec-rewritten' >/dev/null </dev/null
   echo "detach_write=exit$?"
   # A separate CLI invocation: the detached value is served from the
   # daemon's session, never refetched from the source.
-  echo "detach_read=$($cli execute -w env1 -c 'echo $FROM_ENV' </dev/null | grep -o 'sec-rewritten' | head -1)"
-  echo "detach_env_row=$($cli execute -w env1 -c 'env' </dev/null | grep -o 'FROM_ENV=sec-rewritten' | head -1)"
+  echo "detach_read=$($cli shell -w env1 -c 'echo $FROM_ENV' </dev/null | grep -o 'sec-rewritten' | head -1)"
+  echo "detach_env_row=$($cli shell -w env1 -c 'env' </dev/null | grep -o 'FROM_ENV=sec-rewritten' | head -1)"
 
   cat > "$work/bad.yaml" <<YML
 mounts:

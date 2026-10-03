@@ -19,7 +19,7 @@ const BINARY_SAMPLE_BYTES = 8192
 
 // dsh text semantics: a NUL in the leading sample or invalid UTF-8 is a
 // binary file, refused as FS_NOT_TEXT rather than decoded lossily (the
-// mirage facade's readFileText decodes with fatal: false, which the dsh
+// mirage facade's cat decodes with fatal: false, which the dsh
 // seam contract forbids).
 export function decodeStrictText(bytes: Uint8Array, displayPath: string): string {
   if (bytes.subarray(0, BINARY_SAMPLE_BYTES).includes(0)) {

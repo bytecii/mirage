@@ -137,7 +137,7 @@ describe('the op facade evicts the index like the shell does', () => {
   it('readdir reflects a writeFile then unlink issued through ws.vfs', async () => {
     const { ws, cleanup } = diskWorkspace()
     try {
-      await ws.vfs.writeFile('/d/a.txt', 'a')
+      await ws.vfs.write('/d/a.txt', 'a')
       expect(names(await ws.vfs.readdir('/d'))).toEqual(['a.txt', 'seed'])
       await ws.vfs.unlink('/d/a.txt')
       expect(names(await ws.vfs.readdir('/d'))).toEqual(['seed'])

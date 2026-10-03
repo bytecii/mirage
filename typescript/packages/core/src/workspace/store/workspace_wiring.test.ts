@@ -123,7 +123,7 @@ describe('Workspace on a WorkspaceStateStore', () => {
     const wsB = build()
     open.push(wsB)
     const minted = wsB.defaultSessionId
-    await expect(wsB.vfs.readFile('/data/vault/secret')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(wsB.vfs.read('/data/vault/secret')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(wsB.defaultSessionId).toBe(wsA.defaultSessionId)
     expect(wsB.defaultSessionId).not.toBe(minted)
   })

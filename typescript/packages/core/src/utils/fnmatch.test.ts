@@ -113,4 +113,18 @@ describe('fnmatch edge semantics', () => {
     expect(fnmatch('^', '[a^]')).toBe(true)
     expect(fnmatch('b', '[a^]')).toBe(false)
   })
+
+  it('matches a many-star pattern in linear time', () => {
+    const name = 'a'.repeat(5000)
+    const started = performance.now()
+    expect(fnmatch(name, '*a'.repeat(12) + '*b')).toBe(false)
+    expect(fnmatch(name, '*a'.repeat(12) + '*')).toBe(true)
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+
+  it('never matches a class with an out-of-order range', () => {
+    expect(fnmatch('b', '[z-a]')).toBe(false)
+    expect(fnmatch('b', '[!z-a]')).toBe(false)
+    expect(fnmatch('-', '[a-]')).toBe(true)
+  })
 })

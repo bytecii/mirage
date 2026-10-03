@@ -1,7 +1,7 @@
 import { detectFileType } from '@struktoai/mirage-core/commands/builtin/file_sniff'
-import { FileType } from '@struktoai/mirage-core/types'
-import type { ContentType, FileStat } from '@struktoai/mirage-core/types'
-import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
+import type { Ops } from '@struktoai/mirage-core/ops/ops'
+import { FileStat, FileType } from '@struktoai/mirage-core/types'
+import type { ContentType } from '@struktoai/mirage-core/types'
 import {
   MIME_FOR_EXTENSION,
   MIME_FOR_FILE_TYPE,
@@ -22,6 +22,8 @@ export type WorkspaceFileReadResult =
   | (WorkspaceFileBase & { kind: 'image'; data: Uint8Array })
   | (WorkspaceFileBase & { kind: 'file'; data: Uint8Array; filename: string })
   | (WorkspaceFileBase & { kind: 'binary'; note: string })
+
+export type WorkspaceMediaRead = Extract<WorkspaceFileReadResult, { kind: 'image' | 'file' }>
 
 export type WorkspaceFileReader = (path: string) => Promise<Uint8Array>
 
@@ -57,6 +59,29 @@ function mimeFor(path: string, bytes: Uint8Array, stat: FileStat): ReadFileMime 
   return mimeForDetectedType(detectFileType(bytes, stat))
 }
 
+/**
+ * A file a model takes as media, from the bytes already read: an image
+ * the models read, or a PDF. Its extension decides; a name with none is
+ * sniffed from its bytes alone, so no stat is needed beyond the read.
+ * Undefined for anything else, which the text read answers.
+ */
+export function mediaOf(path: string, data: Uint8Array): WorkspaceMediaRead | undefined {
+  const ext = extOf(path)
+  const mimeType =
+    ext === ''
+      ? mimeForDetectedType(
+          detectFileType(data, new FileStat({ name: filenameOf(path), type: FileType.FILE })),
+        )
+      : MIME_FOR_EXTENSION[ext]
+  if (mimeType === undefined) return undefined
+  const base = { path, mimeType, bytes: data.byteLength }
+  if (MODEL_IMAGE_MIMES.has(mimeType)) return { ...base, kind: 'image', data }
+  if (mimeType === READ_FILE_MIME.PDF) {
+    return { ...base, kind: 'file', data, filename: filenameOf(path) }
+  }
+  return undefined
+}
+
 function isTextMime(mimeType: ReadFileMime): boolean {
   return (
     mimeType.startsWith('text/') ||
@@ -66,16 +91,15 @@ function isTextMime(mimeType: ReadFileMime): boolean {
 }
 
 export async function readWorkspaceFile(
-  ws: Workspace,
+  vfs: Ops,
   path: string,
   reader?: WorkspaceFileReader,
 ): Promise<WorkspaceFileReadResult> {
-  const stat = await ws.vfs.stat(path)
+  const stat = await vfs.stat(path)
   if (stat.type === FileType.DIRECTORY) {
     throw new Error(`Cannot read directory as a file: ${path}`)
   }
-  const data =
-    reader === undefined ? await ws.vfs.readFile(path, { raw: true }) : await reader(path)
+  const data = reader === undefined ? await vfs.read(path, { raw: true }) : await reader(path)
   const mimeType = mimeFor(path, data, stat)
   const base = { path, mimeType, bytes: data.byteLength }
 
@@ -97,6 +121,6 @@ export async function readWorkspaceFile(
     kind: 'binary',
     note:
       `Binary file ${path} (${mimeType}, ${String(data.byteLength)} bytes). ` +
-      'Use the execute tool with shell commands (head, file, wc, od) to inspect.',
+      'Use the shell tool with commands such as head, file, wc and od to inspect it.',
   }
 }

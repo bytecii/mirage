@@ -2,6 +2,11 @@ import pytest
 
 from mirage import RAMVFS, MountMode, Workspace
 from mirage.agents.tool_operations import MirageToolOperations, number_lines
+from mirage.context.session_context import (
+    reset_current_session,
+    set_current_session,
+)
+from mirage.workspace.store.ram import RAMWorkspaceStateStore
 
 
 @pytest.fixture
@@ -15,22 +20,22 @@ def ops(workspace):
 
 
 @pytest.mark.asyncio
-async def test_execute_command_echo(ops):
-    result = await ops.execute("echo hello")
+async def test_shell_echo(ops):
+    result = await ops.shell("echo hello")
     assert "hello" in result.text
     assert result.is_error is False
 
 
 @pytest.mark.asyncio
-async def test_execute_command_pipe(ops, workspace):
+async def test_shell_pipe(ops, workspace):
     await workspace.vfs.write("/pipe.txt", b"aaa\nbbb\naaa\n")
-    result = await ops.execute("cat /pipe.txt | sort | uniq | wc -l")
+    result = await ops.shell("cat /pipe.txt | sort | uniq | wc -l")
     assert "2" in result.text
 
 
 @pytest.mark.asyncio
-async def test_execute_reports_failure(ops):
-    result = await ops.execute("ls /nowhere")
+async def test_shell_reports_failure(ops):
+    result = await ops.shell("ls /nowhere")
     assert result.is_error is True
 
 
@@ -64,12 +69,42 @@ async def test_write_then_read_back(ops, workspace):
 
 
 @pytest.mark.asyncio
-async def test_write_refuses_existing(ops, workspace):
+async def test_write_refuses_an_unread_file(ops, workspace):
     await workspace.vfs.write("/exists.txt", b"first")
     result = await ops.write("/exists.txt", "second")
     assert result.is_error is True
-    assert "already exists" in result.text
+    assert "read all of it before overwriting it" in result.text
     assert await workspace.vfs.read("/exists.txt") == b"first"
+
+
+@pytest.mark.asyncio
+async def test_write_refuses_a_partly_read_file(ops, workspace):
+    await workspace.vfs.write("/three.txt", b"1\n2\n3\n")
+    await ops.read("/three.txt", 0, 1)
+    result = await ops.write("/three.txt", "x")
+    assert result.is_error is True
+    assert "read all of it before overwriting it" in result.text
+    assert await workspace.vfs.read("/three.txt") == b"1\n2\n3\n"
+
+
+@pytest.mark.asyncio
+async def test_write_overwrites_a_read_file(ops, workspace):
+    await workspace.vfs.write("/exists.txt", b"first")
+    await ops.read("/exists.txt")
+    result = await ops.write("/exists.txt", "second")
+    assert result.is_error is False
+    assert await workspace.vfs.read("/exists.txt") == b"second"
+
+
+@pytest.mark.asyncio
+async def test_write_refuses_a_file_changed_since_read(ops, workspace):
+    await workspace.vfs.write("/exists.txt", b"first")
+    await ops.read("/exists.txt")
+    await workspace.vfs.write("/exists.txt", b"moved")
+    result = await ops.write("/exists.txt", "second")
+    assert result.is_error is True
+    assert "changed since it was last read" in result.text
+    assert await workspace.vfs.read("/exists.txt") == b"moved"
 
 
 @pytest.mark.asyncio
@@ -175,3 +210,156 @@ def test_number_lines_keeps_unterminated_last_line():
 
 def test_number_lines_empty():
     assert number_lines("", 0, 10) == ""
+
+
+@pytest.mark.asyncio
+async def test_glob_finds_files_by_name(ops):
+    await ops.write("/src/a.py", "a")
+    await ops.write("/src/deep/b.py", "b")
+    await ops.write("/src/c.txt", "c")
+    result = await ops.glob("**/*.py", "/src")
+    assert result.text.split() == ["/src/a.py", "/src/deep/b.py"]
+    assert result.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_glob_matches_a_pattern_with_directories_in_it(ops):
+    await ops.write("/src/deep/b.py", "b")
+    result = await ops.glob("src/**/*.py")
+    assert result.text.split() == ["/src/deep/b.py"]
+
+
+@pytest.mark.asyncio
+async def test_glob_follows_a_link_to_a_file(ops):
+    await ops.write("/src/a.py", "a")
+    await ops.shell("ln -s /src/a.py /src/link.py")
+    await ops.shell("ln -s /src/none.py /src/dangling.py")
+    result = await ops.glob("*.py", "/src")
+    assert result.text.split() == ["/src/a.py", "/src/link.py"]
+
+
+@pytest.mark.asyncio
+async def test_glob_skips_directories(ops):
+    await ops.write("/cache.py/inner.txt", "x")
+    await ops.write("/src/a.py", "a")
+    result = await ops.glob("**/*.py")
+    assert result.text.split() == ["/src/a.py"]
+
+
+@pytest.mark.asyncio
+async def test_glob_matches_only_the_named_level(ops):
+    await ops.write("/src/a.py", "a")
+    await ops.write("/src/deep/b.py", "b")
+    result = await ops.glob("*.py", "/src")
+    assert result.text.split() == ["/src/a.py"]
+
+
+@pytest.mark.asyncio
+async def test_grep_takes_gnu_options(ops):
+    await ops.write("/src/a.py", "Needle\nhay\n")
+    await ops.write("/src/b.txt", "needle\n")
+    loose = await ops.grep("needle", "/src", ignore_case=True, include="*.py")
+    names = await ops.grep("needle", "/src", files_with_matches=True)
+    counted = await ops.grep("e", "/src/a.py", count=True)
+    literal = await ops.grep("-dash", "/src")
+    assert loose.text == "/src/a.py:1:Needle\n"
+    assert names.text == "/src/b.txt\n"
+    assert counted.text == "1\n"
+    assert literal.is_error is False
+
+
+async def _guarded() -> Workspace:
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS(), "/ro": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={
+            "guarded": {
+                "paths": {"hide": ["/vault"]},
+                "mounts": {"/ro": {"mode": "r"}},
+            }
+        },
+    )
+    await ws.shell("echo key > /vault/key.txt && echo r > /ro/r.txt")
+    ws.create_session("agent", profile="guarded")
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_every_tool_acts_under_the_session_profile():
+    ws = await _guarded()
+    ops = MirageToolOperations(ws, session_id="agent")
+    try:
+        read = await ops.call("read", {"path": "/vault/key.txt"})
+        listed = await ops.call("ls", {"path": "/"})
+        globbed = await ops.call("glob", {"pattern": "/*/*.txt"})
+        found = await ops.call("grep", {"pattern": "key", "path": "/vault"})
+        shown = await ops.call("read", {"path": "/ro/r.txt"})
+        default = await MirageToolOperations(ws).call(
+            "read", {"path": "/vault/key.txt"}
+        )
+    finally:
+        await ws.close()
+    assert read.text == "Error: file '/vault/key.txt' not found"
+    assert "vault" not in listed.text
+    assert globbed.text == "/ro/r.txt\n"
+    assert found.is_error
+    assert shown.text == "     1\tr\n"
+    assert default.text == "     1\tkey\n"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_write_or_edit_is_a_tool_error():
+    ws = await _guarded()
+    ops = MirageToolOperations(ws, session_id="agent")
+    try:
+        await ops.call("read", {"path": "/ro/r.txt"})
+        written = await ops.call(
+            "write", {"path": "/ro/r.txt", "content": "x"}
+        )
+        edited = await ops.call(
+            "edit", {"path": "/ro/r.txt", "old_string": "r", "new_string": "R"}
+        )
+        hidden = await ops.call(
+            "write", {"path": "/vault/new/n.txt", "content": "x"}
+        )
+    finally:
+        await ws.close()
+    assert written.is_error and written.text.startswith("Error: ")
+    assert edited.is_error and edited.text.startswith("Error: ")
+    assert hidden.is_error and hidden.text.startswith("Error: ")
+
+
+@pytest.mark.asyncio
+async def test_a_bound_session_is_kept_rather_than_widened():
+    ws = await _guarded()
+    wide = MirageToolOperations(ws, session_id=ws.default_session_id)
+    token = set_current_session(ws.get_session("agent"))
+    try:
+        read = await wide.call("read", {"path": "/vault/key.txt"})
+    finally:
+        reset_current_session(token)
+        await ws.close()
+    assert read.text == "Error: file '/vault/key.txt' not found"
+
+
+@pytest.mark.asyncio
+async def test_a_stored_session_serves_the_first_call():
+    store = RAMWorkspaceStateStore()
+    ram = RAMVFS()
+    writer = Workspace(
+        {"/": ram}, mode=MountMode.WRITE, workspace_id="shared", store=store
+    )
+    writer.create_session("agent")
+    await writer.ensure_sessions_loaded()
+    await writer.flush_sessions()
+    attached = Workspace(
+        {"/": ram}, mode=MountMode.WRITE, workspace_id="shared", store=store
+    )
+    try:
+        written = await MirageToolOperations(
+            attached, session_id="agent"
+        ).call("write", {"path": "/a.txt", "content": "x\n"})
+    finally:
+        await writer.close()
+        await attached.close()
+    assert written.text == "Written: /a.txt"

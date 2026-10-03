@@ -240,3 +240,24 @@ async def test_als_names_the_reason_beside_a_refusal():
     result = await LangchainWorkspace(ws).als("/")
     assert result.entries is None
     assert result.error == "ls: Permission denied\npolicy denied: no lists"
+
+
+@pytest.mark.asyncio
+async def test_file_operations_act_as_the_session():
+    ws = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"guarded": {"paths": {"hide": ["/vault"]}}},
+    )
+    await ws.shell("echo key > /vault/key.txt")
+    ws.create_session("agent", profile="guarded")
+    backend = LangchainWorkspace(ws, session_id="agent")
+    try:
+        read = await backend.aread("/vault/key.txt")
+        downloaded = await backend.adownload_files(["/vault/key.txt"])
+        listed = await backend.als("/")
+    finally:
+        await ws.close()
+    assert read.error is not None
+    assert downloaded[0].content is None
+    assert all("vault" not in entry["path"] for entry in listed.entries)

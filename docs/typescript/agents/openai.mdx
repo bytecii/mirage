@@ -52,7 +52,7 @@ const agent = new Agent({
 await run(agent, "Create /hello.txt with 'hi from mirage' and cat it.")
 ```
 
-The examples also support OpenAI-compatible providers. Set `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`; a custom base URL defaults to Chat Completions, uses `mirageExecuteTool`, and disables OpenAI tracing so the third-party key stays with that provider. Set `OPENAI_API=responses` when a compatible endpoint implements the Responses API and the examples will use OpenAI's hosted shell and editor tools instead.
+The examples also support OpenAI-compatible providers. Set `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`; a custom base URL defaults to Chat Completions, uses `mirageTools`, and disables OpenAI tracing so the third-party key stays with that provider. Set `OPENAI_API=responses` when a compatible endpoint implements the Responses API and the examples will use OpenAI's hosted shell and editor tools instead.
 
 ## Sandbox Agent
 
@@ -84,7 +84,7 @@ How the session behaves:
 
 | Symbol | Purpose |
 | --- | --- |
-| `mirageExecuteTool(ws)` | Adds an `execute` function tool backed by `ws`; works with Chat Completions and Responses. |
+| `mirageTools(ws, options?)` | Mirage's seven function tools (`shell`, `read`, `write`, `edit`, `ls`, `grep`, `glob`), the same table MCP serves; `read` hands images and PDFs over as model input. Works with Chat Completions and Responses. |
 | `mirageReadFileTool(ws)` | Adds a `read_file` function tool. Text becomes `input_text`, images become `input_image`, and PDFs become `input_file`. |
 | `MirageShell` | `Shell` implementation; pass to `shellTool({ shell })`. |
 | `MirageEditor` | `Editor` implementation; pass to `applyPatchTool({ editor })`. |

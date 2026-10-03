@@ -14,6 +14,7 @@
 
 import { tool, type Plugin, type ToolContext, type ToolDefinition } from '@opencode-ai/plugin'
 import type { Workspace } from '@struktoai/mirage-node'
+import type { Ops } from '@struktoai/mirage-core/ops/ops'
 import { encodeBase64 } from '@struktoai/mirage-core/utils/base64'
 import { gnuDirname } from '@struktoai/mirage-core/utils/path'
 import { FileVersionTracker } from '../file_version.ts'
@@ -27,6 +28,11 @@ export type WsLike = Workspace | WsResolver
 
 export interface MirageOpenCodeOptions {
   staleWriteProtection?: boolean
+  /**
+   * The mirage session the tools act as, so its profile judges every
+   * call; the workspace's default session when absent.
+   */
+  sessionId?: string
 }
 
 type SessionTrackers = Map<string, FileVersionTracker>
@@ -39,15 +45,15 @@ async function resolveWs(ws: WsLike, ctx: ToolContext): Promise<Workspace> {
   return isResolver(ws) ? ws(ctx) : ws
 }
 
-async function ensureParent(ws: Workspace, path: string): Promise<void> {
+async function ensureParent(vfs: Ops, path: string): Promise<void> {
   const parent = gnuDirname(path)
   if (parent === '/' || parent === '' || parent === '.') return
-  if (await ws.vfs.exists(parent)) return
-  await ensureParent(ws, parent)
+  if (await vfs.exists(parent)) return
+  await ensureParent(vfs, parent)
   try {
-    await ws.vfs.mkdir(parent)
+    await vfs.mkdir(parent)
   } catch (err) {
-    if (!(await ws.vfs.exists(parent))) throw err
+    if (!(await vfs.exists(parent))) throw err
   }
 }
 
@@ -60,6 +66,7 @@ function trackerFor(
   ws: Workspace,
   ctx: ToolContext,
   enabled: boolean,
+  sessionId: string | undefined,
 ): FileVersionTracker {
   let sessions = trackers.get(ws)
   if (sessions === undefined) {
@@ -68,7 +75,7 @@ function trackerFor(
   }
   let tracker = sessions.get(ctx.sessionID)
   if (tracker === undefined) {
-    tracker = new FileVersionTracker(ws, enabled)
+    tracker = new FileVersionTracker(ws, enabled, sessionId)
     sessions.set(ctx.sessionID, tracker)
   }
   return tracker
@@ -80,6 +87,8 @@ export function mirageTools(
 ): Record<string, ToolDefinition> {
   const trackers = new WeakMap<Workspace, SessionTrackers>()
   const staleWriteProtection = options.staleWriteProtection ?? true
+  const sessionId = options.sessionId
+  const shellOptions = sessionId === undefined ? {} : { sessionId }
   const read = tool({
     description:
       'Read a file. Returns UTF-8 text for source/data files, attaches PDFs and images for multimodal models, and returns metadata for other binary files.',
@@ -88,9 +97,9 @@ export function mirageTools(
     },
     execute: async ({ filePath }, ctx) => {
       const w = await resolveWs(ws, ctx)
-      const versions = trackerFor(trackers, w, ctx, staleWriteProtection)
+      const versions = trackerFor(trackers, w, ctx, staleWriteProtection, sessionId)
       try {
-        const result = await readWorkspaceFile(w, filePath, versions.read.bind(versions))
+        const result = await readWorkspaceFile(versions.vfs, filePath, versions.read.bind(versions))
         if (result.kind === 'text') return result.content
         if (result.kind === 'image' || result.kind === 'file') {
           const filename = result.path.split('/').pop() ?? result.path
@@ -121,9 +130,9 @@ export function mirageTools(
     },
     execute: async ({ filePath, content }, ctx) => {
       const w = await resolveWs(ws, ctx)
-      const versions = trackerFor(trackers, w, ctx, staleWriteProtection)
+      const versions = trackerFor(trackers, w, ctx, staleWriteProtection, sessionId)
       try {
-        await ensureParent(w, filePath)
+        await ensureParent(versions.vfs, filePath)
         await versions.write(filePath, content)
         return `Wrote ${String(content.length)} bytes to ${filePath}`
       } catch (err) {
@@ -146,12 +155,12 @@ export function mirageTools(
     },
     execute: async ({ filePath, oldString, newString, replaceAll }, ctx) => {
       const w = await resolveWs(ws, ctx)
-      const versions = trackerFor(trackers, w, ctx, staleWriteProtection)
+      const versions = trackerFor(trackers, w, ctx, staleWriteProtection, sessionId)
       let current: string
       try {
         current = (await versions.readForEdit(filePath)).toString('utf8')
       } catch (err) {
-        if (await w.vfs.exists(filePath)) return `Error: ${errMsg(err)}`
+        if (await versions.vfs.exists(filePath)) return `Error: ${errMsg(err)}`
         return `Error: file '${filePath}' not found`
       }
       const [next, count] = replaceText(current, oldString, newString, replaceAll === true)
@@ -178,15 +187,16 @@ export function mirageTools(
     },
     execute: async ({ path }, ctx) => {
       const w = await resolveWs(ws, ctx)
+      const vfs = trackerFor(trackers, w, ctx, staleWriteProtection, sessionId).vfs
       let entries: string[]
       try {
-        entries = await w.vfs.readdir(path)
+        entries = await vfs.readdir(path)
       } catch (err) {
         return `Error: ${errMsg(err)}`
       }
       const lines: string[] = []
       for (const entry of entries) {
-        const isDir = await w.vfs.isDir(entry)
+        const isDir = await vfs.isDir(entry)
         lines.push(isDir ? `${entry}/` : entry)
       }
       return lines.join('\n')
@@ -200,7 +210,7 @@ export function mirageTools(
     },
     execute: async ({ command }, ctx) => {
       const w = await resolveWs(ws, ctx)
-      const io = await w.shell(command)
+      const io = await w.shell(command, shellOptions)
       const parts: string[] = []
       if (io.stdoutText.length > 0) parts.push(io.stdoutText)
       if (io.stderrText.length > 0) parts.push(io.stderrText)
@@ -217,7 +227,10 @@ export function mirageTools(
     execute: async ({ pattern, path }, ctx) => {
       const w = await resolveWs(ws, ctx)
       const root = path ?? '/'
-      const io = await w.shell(`find ${root} -name '${pattern.replace(/'/g, "'\\''")}'`)
+      const io = await w.shell(
+        `find ${root} -name '${pattern.replace(/'/g, "'\\''")}'`,
+        shellOptions,
+      )
       return io.stdoutText.trim()
     },
   })
@@ -232,7 +245,7 @@ export function mirageTools(
       const w = await resolveWs(ws, ctx)
       const root = path ?? '/'
       const escaped = pattern.replace(/'/g, "'\\''")
-      const io = await w.shell(`grep -rn '${escaped}' ${root}`)
+      const io = await w.shell(`grep -rn '${escaped}' ${root}`, shellOptions)
       return io.stdoutText.trim()
     },
   })

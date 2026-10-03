@@ -50,7 +50,8 @@ dependencies = [
     "pyjwt[crypto]>=2.14.0",
     "dulwich>=1.2.9",
     "tenacity>=9.1.4",
-    "mcp>=1.28.1",
+    "mcp>=2.3.0,<3",
+    "jsonschema>=4.26.0",
     "regex>=2026.4.4",
 ]
 
@@ -155,8 +156,8 @@ deepagents  = [
 
 # --- openhands ---
 openhands   = [
-    "openhands-sdk>=1.51.0 ; python_full_version >= '3.12'",
-    "openhands-tools>=1.51.0 ; python_full_version >= '3.12'",
+    "openhands-sdk==1.49.1 ; python_full_version >= '3.12'",
+    "openhands-tools==1.49.1 ; python_full_version >= '3.12'",
 ]
 
 # --- agno ---
@@ -167,12 +168,6 @@ agno        = [
 # --- claude-agent-sdk ---
 claude-agent-sdk = [
     "claude-agent-sdk>=0.2.123",
-]
-
-# --- camel ---
-camel       = [
-    "camel-ai>=0.2.90,<0.3",
-    "markitdown>=0.1.5",
 ]
 
 # --- sandboxes ---
@@ -243,24 +238,6 @@ e2b = [
 
 [tool.uv]
 constraint-dependencies = ["pypdf>=6.19.0"]
-conflicts = [
-    [
-        { extra = "camel" },
-        { extra = "openai" },
-    ],
-    [
-        { extra = "camel" },
-        { extra = "openhands" },
-    ],
-    [
-        { extra = "camel" },
-        { extra = "pydantic-ai" },
-    ],
-    [
-        { extra = "camel" },
-        { extra = "all" },
-    ],
-]
 
 [dependency-groups]
 dev = [
@@ -364,7 +341,6 @@ warn_return_any = true
 module = [
     "mirage.accessor.nextcloud",
     "mirage.agents.agno.toolkit",
-    "mirage.agents.camel.file",
     "mirage.agents.openai_agents.runner",
     "mirage.agents.openai_agents.shell",
     "mirage.agents.openhands.workspace",
@@ -485,9 +461,9 @@ module = [
     "mirage.runtime.vfs",
     "mirage.runtime.wasm.fs",
     "mirage.server.app",
-    "mirage.server.routers.execute",
     "mirage.server.routers.jobs",
     "mirage.server.routers.sessions",
+    "mirage.server.routers.shell",
     "mirage.server.summary",
     "mirage.server.version.api",
     "mirage.server.version.state_tree",

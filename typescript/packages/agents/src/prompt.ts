@@ -25,7 +25,7 @@ Capabilities beyond standard filesystem:
 
 You can write Python code and execute it. The workspace is pre-configured with your data sources mounted at their respective paths.
 
-Use the execute tool for complex operations. Use read/write/edit for simple file operations.
+Use the shell tool for complex operations. Use read/write/edit for simple file operations.
 `
 
 export interface BuildSystemPromptOptions {

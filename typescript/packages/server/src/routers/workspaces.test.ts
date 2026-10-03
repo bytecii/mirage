@@ -16,14 +16,33 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { Workspace } from '@struktoai/mirage-node'
 import { buildApp } from '../app.ts'
 import { z } from '@struktoai/mirage-core/vfs/secrets'
 import { registerSecrets } from '@struktoai/mirage-core/secrets/registry'
+import { SecretsError } from '@struktoai/mirage-core/secrets/errors'
 
 const LoadAccountConfig = z.strictObject({ account: z.string().default('default') })
 type LoadAccountConfig = z.infer<typeof LoadAccountConfig>
 
 const UUID7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+function slackPayload(source: string, workspaceId: string): Record<string, unknown> {
+  return {
+    config: {
+      workspace_id: workspaceId,
+      secrets: { prod: { source } },
+      mounts: {
+        '/': { vfs: 'ram', mode: 'write' },
+        '/slack': {
+          vfs: 'slack',
+          mode: 'read',
+          config: { token: { from: 'prod', ref: 'bot', key: 'credential' } },
+        },
+      },
+    },
+  }
+}
 
 describe('workspaces router', () => {
   it('GET /v1/health returns ok', async () => {
@@ -47,6 +66,121 @@ describe('workspaces router', () => {
     const body = res.json<{ id: string }>()
     expect(body.id).toMatch(UUID7_RE)
     await app.close()
+  })
+
+  it('POST /v1/workspaces answers a held config id without building', async () => {
+    registerSecrets('held-src', LoadAccountConfig, (_config: LoadAccountConfig, ref: string) =>
+      Promise.resolve({ fields: { credential: `xoxb-${ref}` } }),
+    )
+    const app = buildApp()
+    const payload = slackPayload('held-src', 'named')
+    const other = {
+      config: { workspace_id: 'named', mounts: { '/': { vfs: 'ram', mode: 'read' } } },
+    }
+    const first = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    registerSecrets('held-src', LoadAccountConfig, () =>
+      Promise.reject(new SecretsError('source unreachable')),
+    )
+    const close = vi.spyOn(Workspace.prototype, 'close')
+    const again = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    const refused = await app.inject({ method: 'POST', url: '/v1/workspaces', payload: other })
+    const closed = close.mock.calls.length
+    close.mockRestore()
+    expect(first.statusCode).toBe(201)
+    expect(again.statusCode).toBe(200)
+    expect(again.json<{ id: string }>().id).toBe('named')
+    expect(refused.statusCode).toBe(409)
+    expect(closed).toBe(0)
+    await app.close()
+  })
+
+  it('POST /v1/workspaces builds one config once when two creates race', async () => {
+    registerSecrets(
+      'slow-src',
+      LoadAccountConfig,
+      async (_config: LoadAccountConfig, ref: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        return { fields: { credential: `xoxb-${ref}` } }
+      },
+    )
+    const app = buildApp()
+    const payload = slackPayload('slow-src', 'racing')
+    const close = vi.spyOn(Workspace.prototype, 'close')
+    try {
+      const answers = await Promise.all([
+        app.inject({ method: 'POST', url: '/v1/workspaces', payload }),
+        app.inject({ method: 'POST', url: '/v1/workspaces', payload }),
+      ])
+      expect(answers.map((r) => r.statusCode).sort()).toEqual([200, 201])
+      expect(close).not.toHaveBeenCalled()
+    } finally {
+      close.mockRestore()
+      await app.close()
+    }
+  })
+
+  it('POST /v1/workspaces does not hold another config behind a stuck create', async () => {
+    let entered = (): void => undefined
+    const reached = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let release = (): void => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    registerSecrets(
+      'gated-src',
+      LoadAccountConfig,
+      async (_config: LoadAccountConfig, ref: string) => {
+        entered()
+        await gate
+        return { fields: { credential: `xoxb-${ref}` } }
+      },
+    )
+    const app = buildApp()
+    const other = {
+      config: { workspace_id: 'stuck', mounts: { '/': { vfs: 'ram', mode: 'read' } } },
+    }
+    try {
+      const first = app.inject({
+        method: 'POST',
+        url: '/v1/workspaces',
+        payload: slackPayload('gated-src', 'stuck'),
+      })
+      await reached
+      const refused = await app.inject({ method: 'POST', url: '/v1/workspaces', payload: other })
+      release()
+      const built = await first
+      expect(refused.statusCode).toBe(409)
+      expect(built.statusCode).toBe(201)
+    } finally {
+      release()
+      await app.close()
+    }
+  })
+
+  it('POST /v1/workspaces refuses an id whose deletion is in flight', async () => {
+    const app = buildApp()
+    const payload = {
+      config: { workspace_id: 'going', mounts: { '/': { vfs: 'ram', mode: 'write' } } },
+    }
+    let release = (): void => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    try {
+      const first = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      const removal = app.registry.remove('going', () => gate)
+      const during = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      release()
+      await removal
+      const after = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      expect(first.statusCode).toBe(201)
+      expect(during.statusCode).toBe(409)
+      expect(after.statusCode).toBe(201)
+    } finally {
+      await app.close()
+    }
   })
 
   it('POST /v1/workspaces installs the config clis section', async () => {
@@ -73,7 +207,7 @@ describe('workspaces router', () => {
       expect(create.statusCode).toBe(201)
       const res = await app.inject({
         method: 'POST',
-        url: '/v1/workspaces/cli-ws/execute',
+        url: '/v1/workspaces/cli-ws/shell',
         payload: { command: 'pager' },
       })
       expect(res.statusCode).toBe(200)
@@ -230,7 +364,7 @@ describe('workspaces router', () => {
     const run = async (command: string): Promise<string> => {
       const res = await app.inject({
         method: 'POST',
-        url: '/v1/workspaces/again/execute',
+        url: '/v1/workspaces/again/shell',
         payload: { command },
       })
       return res.json<{ stdout: string }>().stdout
@@ -643,7 +777,7 @@ describe('daemon disk-store default', () => {
     expect(res.statusCode).toBe(201)
     const exec = await app.inject({
       method: 'POST',
-      url: '/v1/workspaces/diskws/execute',
+      url: '/v1/workspaces/diskws/shell',
       payload: { command: 'echo hi' },
     })
     expect(exec.statusCode).toBe(200)

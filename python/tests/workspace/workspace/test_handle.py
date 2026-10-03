@@ -58,6 +58,8 @@ async def test_a_handle_binds_both_doors_to_one_session():
             await reviewer.vfs.read("/repo/secrets/key.pem")
         assert await ws.vfs.read("/repo/secrets/key.pem") == b"PRIVATE\n"
         assert reviewer.vfs.records is ws.vfs.records
+        assert await reviewer.glob("/repo/*") == ["/repo/README.md"]
+        assert await ws.glob("/repo/*") == ["/repo/README.md", "/repo/secrets"]
     finally:
         await ws.close()
 

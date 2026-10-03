@@ -16,10 +16,12 @@ import { access, readFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import type * as Ssh2Mod from 'ssh2'
 import type { AuthContext, Connection, ParsedKey, PseudoTtyInfo, ServerChannel } from 'ssh2'
+import type { McpDoor } from '../mcp/http.ts'
 import type { WorkspaceRegistry } from '../registry.ts'
 import { serveCodex } from './codex.ts'
 import type { SSHConfig } from './config.ts'
-import { CODEX_SUBSYSTEM, PROFILE_OPTION } from './constants.ts'
+import { CODEX_SUBSYSTEM, MCP_SUBSYSTEM, PROFILE_OPTION } from './constants.ts'
+import { serveMcp } from './mcp.ts'
 import { SSHConfigError } from './errors.ts'
 import { loadHostKey } from './keys.ts'
 import {
@@ -187,6 +189,7 @@ async function authenticate(
 function serveConnection(
   client: Connection,
   registry: WorkspaceRegistry,
+  door: McpDoor,
   config: SSHConfig,
   utils: typeof Ssh2Mod.utils,
   peer: Endpoint,
@@ -241,7 +244,7 @@ function serveConnection(
       })
       session.on('subsystem', (acceptSubsystem, _reject, info) => {
         const channel = acceptSubsystem()
-        if (info.name !== CODEX_SUBSYSTEM) {
+        if (info.name !== CODEX_SUBSYSTEM && info.name !== MCP_SUBSYSTEM) {
           refuseSubsystem(channel, info.name)
           return
         }
@@ -253,7 +256,8 @@ function serveConnection(
           peer,
           local,
         }
-        void serveCodex(registry, channel, request)
+        if (info.name === MCP_SUBSYSTEM) void serveMcp(registry, door, channel, request)
+        else void serveCodex(registry, channel, request)
       })
     })
   })
@@ -269,13 +273,15 @@ function serveConnection(
  *
  * `ssh <workspace-id>@host` opens a shell in that workspace, `ssh
  * <workspace-id>@host cmd` runs one line, `sftp`/`scp` reach its files,
- * and the `codex-exec` subsystem serves Codex's tools. Each channel runs as a fresh mirage session under the
+ * the `codex-exec` subsystem serves Codex's tools, and the `mcp` subsystem
+ * serves the workspace's MCP tools. Each channel runs as a fresh mirage session under the
  * workspace's default profile. ssh2 is loaded here, on first use, the way
  * the Python daemon loads asyncssh only once a port is set.
  */
 export async function startSSHServer(
   registry: WorkspaceRegistry,
   config: SSHConfig,
+  door: McpDoor,
 ): Promise<SSHListener> {
   const ssh2 = await loadSsh2()
   try {
@@ -295,7 +301,10 @@ export async function startSSHServer(
       clients.delete(client)
     })
     const peer = { address: info.ip, port: info.port }
-    serveConnection(client, registry, config, ssh2.utils, peer, { address: config.host, port })
+    serveConnection(client, registry, door, config, ssh2.utils, peer, {
+      address: config.host,
+      port,
+    })
   })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)

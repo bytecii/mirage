@@ -43,7 +43,7 @@ mount_row() { mount | grep -F "$1" | head -1; }
 
 vfs_out() {
   local cli="$1" cmd="$2"
-  $cli execute -w cfk -c "$cmd" </dev/null 2>/dev/null | jq -r '.stdout' | tr '\n' '|'
+  $cli shell -w cfk -c "$cmd" </dev/null 2>/dev/null | jq -r '.stdout' | tr '\n' '|'
 }
 
 # Run the battery against one CLI; emit one "key=value" line per probe.
@@ -66,8 +66,8 @@ YML
 
   # RAM mounts start empty; seed through the VFS. The daemon serves the live
   # workspace, so the write is immediately visible at the kernel mountpoint.
-  $cli execute -w cfk -c 'printf "{\"messages\": 2}\n" > /data/api.json' </dev/null >/dev/null
-  $cli execute -w cfk -c 'printf "old\n" > /data/existing.txt' </dev/null >/dev/null
+  $cli shell -w cfk -c 'printf "{\"messages\": 2}\n" > /data/api.json' </dev/null >/dev/null
+  $cli shell -w cfk -c 'printf "old\n" > /data/existing.txt' </dev/null >/dev/null
 
   local detail mp i
   detail="$($cli workspace get cfk </dev/null)"

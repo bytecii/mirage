@@ -4,7 +4,7 @@ description: Wire mirage tools into the Vercel AI SDK via the @struktoai/mirage-
 icon: triangle
 ---
 
-The [Vercel AI SDK](https://sdk.vercel.ai) (`ai`) drives tool-calling agents around any provider in its registry. Mirage ships an AI SDK 7 tool factory that exposes a `Workspace` as five typed tools (`execute`, `readFile`, `writeFile`, `editFile`, `ls`) for `generateText` / `streamText` / agent loops.
+The [Vercel AI SDK](https://sdk.vercel.ai) (`ai`) drives tool-calling agents around any provider in its registry. Mirage ships an AI SDK 7 tool factory that exposes a `Workspace` as Mirage's seven tools (`shell`, `read`, `write`, `edit`, `ls`, `grep`, `glob`), the same table MCP serves, for `generateText` / `streamText` / agent loops.
 
 ## Install
 
@@ -52,21 +52,21 @@ console.log(text)
 
 | Symbol | Purpose |
 | --- | --- |
-| `mirageTools(ws)` | Returns `{ execute, readFile, writeFile, editFile, ls }`, each a `tool()` from `ai` ready to spread into `tools: { ... }`. |
+| `mirageTools(ws, options?)` | Returns `{ shell, read, write, edit, ls, grep, glob }`, each a `tool()` from `ai` ready to spread into `tools: { ... }`. Each answers `{ text, isError }` as the MCP tool of the same name does. |
 
 ### Tool reference
 
-| Tool | Input | Output |
+| Tool | Input | Answer |
 | --- | --- | --- |
-| `execute` | `{ command: string }` | `{ stdout, stderr, exitCode }` |
-| `readFile` | `{ path: string }` | Text, multimodal PDF/image file parts, binary metadata, or an error |
-| `writeFile` | `{ path, content }` | `{ path }` (auto-mkdirs parent) |
-| `editFile` | `{ path, oldString, newString, replaceAll? }` | `{ path, occurrences }` or `{ error }` |
-| `ls` | `{ path: string }` | `{ files: { path, is_dir }[] }` or `{ error }` |
+| `shell` | `{ command }` | the line's output; `isError` when it exits nonzero |
+| `read` | `{ path, offset?, limit? }` | numbered lines; images and PDFs become file content parts |
+| `write` | `{ path, content }` | creates parents; an existing file must be read in full first |
+| `edit` | `{ path, old_string, new_string, replace_all? }` | refuses a file changed since it was read |
+| `ls` | `{ path }` | one entry per line |
+| `grep` | `{ pattern, path, ignore_case?, fixed_strings?, include?, context?, files_with_matches?, count?, max_count? }` | `grep -rn` output |
+| `glob` | `{ pattern, path? }` | matching files, sorted |
 
-`writeFile` always succeeds for new paths and overwrites existing ones; if you want create-only semantics (error when the file exists), wrap it yourself.
-
-`readFile` uses AI SDK 7's `toModelOutput`: UTF-8 source and data files become text, PDFs and supported images become file content parts, and unknown binary formats return a metadata note. The bytes stay in the Mirage workspace until the model requests the file.
+`read` uses AI SDK 7's `toModelOutput`: text files come back as numbered lines, PDFs and supported images become file content parts, and other binary formats return a metadata note.
 
 ## Examples
 

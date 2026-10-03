@@ -54,8 +54,8 @@ async function structureWorld(): Promise<Workspace> {
   // Seeded through the op facade, not the shell: a shell line would be
   // recorded into /.bash_history, which every session may read, and the
   // scoped-world tests would then find the seed line instead of a leak.
-  await ws.vfs.writeFile('/base/a.txt', 'top')
-  await ws.vfs.writeFile('/base/inner/deep.txt', 'needle')
+  await ws.vfs.write('/base/a.txt', 'top')
+  await ws.vfs.write('/base/inner/deep.txt', 'needle')
   return ws
 }
 
@@ -81,8 +81,8 @@ async function scopedWorld(): Promise<Workspace> {
   )
   ws.addMount('/open', open, MountMode.WRITE)
   ws.addMount('/closed', closed, MountMode.WRITE)
-  await ws.vfs.writeFile('/open/pub.txt', 'public')
-  await ws.vfs.writeFile('/closed/sec.txt', 'SECRET-xyz')
+  await ws.vfs.write('/open/pub.txt', 'public')
+  await ws.vfs.write('/closed/sec.txt', 'SECRET-xyz')
   ws.createSession('agent', { profile: { paths: { hide: ['/closed'] } } })
   return ws
 }
@@ -217,8 +217,8 @@ describe('structure world', () => {
     )
     ws.addMount('/base', base, MountMode.WRITE)
     ws.addMount('/ghost/deep', deep, MountMode.WRITE)
-    await ws.vfs.writeFile('/base/a.txt', 'top')
-    await ws.vfs.writeFile('/ghost/deep/x.txt', 'inside')
+    await ws.vfs.write('/base/a.txt', 'top')
+    await ws.vfs.write('/ghost/deep/x.txt', 'inside')
     try {
       const [rCode, rOut] = await run(ws, 'ls -R /ghost')
       expect(rCode).toBe(0)
@@ -348,11 +348,11 @@ describe('scoped world', () => {
       },
     )
     ws.addMount('/base', base, MountMode.WRITE)
-    await ws.vfs.writeFile('/base/a.txt', 'top')
+    await ws.vfs.write('/base/a.txt', 'top')
     await ws.vfs.mkdir('/base/inner')
-    await ws.vfs.writeFile('/base/inner/leftover.txt', 'SHADOWED-xyz')
+    await ws.vfs.write('/base/inner/leftover.txt', 'SHADOWED-xyz')
     ws.addMount('/base/inner', inner, MountMode.WRITE)
-    await ws.vfs.writeFile('/base/inner/deep.txt', 'needle')
+    await ws.vfs.write('/base/inner/deep.txt', 'needle')
     ws.createSession('agent', { profile: { paths: { hide: ['/base/inner'] } } })
     try {
       const [, out] = await run(ws, line, 'agent')
@@ -437,7 +437,7 @@ async function exclusiveWorld(): Promise<Workspace> {
     },
   )
   ws.addMount('/w', w, MountMode.WRITE)
-  await ws.vfs.writeFile('/w/keep.txt', 'keep')
+  await ws.vfs.write('/w/keep.txt', 'keep')
   return ws
 }
 

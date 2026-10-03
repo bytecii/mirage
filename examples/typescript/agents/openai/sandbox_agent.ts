@@ -26,7 +26,7 @@ loadEnv({
 
 const data = new RAMVFS()
 const seed = new Workspace({ '/': data }, { mode: MountMode.WRITE })
-await seed.vfs.writeFile('/report.csv', 'region,revenue\nnorth,120\nsouth,95\neast,143\nwest,88\n')
+await seed.vfs.write('/report.csv', 'region,revenue\nnorth,120\nsouth,95\neast,143\nwest,88\n')
 
 const ws = new Workspace(
   { '/': new RAMVFS(), '/data': [data, MountMode.READ] },
@@ -47,5 +47,5 @@ const result = await run(agent, task, { sandbox: { client: new MirageSandboxClie
 console.log(result.finalOutput)
 
 console.log('\n--- /summary.txt ---')
-console.log(await ws.vfs.readFileText('/summary.txt'))
+console.log(await ws.vfs.cat('/summary.txt'))
 await ws.close()

@@ -19,9 +19,54 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel
 
+from mirage import Workspace
+from mirage.secrets.errors import SecretsError
+from mirage.secrets.registry import register_secrets
+from mirage.secrets.types import ResolvedSecret
 from mirage.server import build_app
 from mirage.server.registry import WorkspaceRegistry
+
+
+class HeldSourceConfig(BaseModel):
+    account: str = "default"
+
+
+async def answer_token(config: HeldSourceConfig, ref: str) -> ResolvedSecret:
+    return ResolvedSecret(fields={"credential": f"xoxb-{ref}"})
+
+
+async def refuse_token(config: HeldSourceConfig, ref: str) -> ResolvedSecret:
+    raise SecretsError("source unreachable")
+
+
+async def slow_token(config: HeldSourceConfig, ref: str) -> ResolvedSecret:
+    await asyncio.sleep(0.05)
+    return ResolvedSecret(fields={"credential": f"xoxb-{ref}"})
+
+
+def _slack_body(source: str, workspace_id: str) -> dict:
+    return {
+        "config": {
+            "mounts": {
+                "/": {"vfs": "ram", "mode": "WRITE"},
+                "/slack": {
+                    "vfs": "slack",
+                    "mode": "READ",
+                    "config": {
+                        "token": {
+                            "from": "prod",
+                            "ref": "bot",
+                            "key": "credential",
+                        }
+                    },
+                },
+            },
+            "secrets": {"prod": {"source": source}},
+            "workspace_id": workspace_id,
+        }
+    }
 
 
 def _minimal_config() -> dict:
@@ -199,7 +244,139 @@ async def test_create_with_explicit_id():
         assert r.json()["id"] == "myws"
 
         r = await client.post("/v1/workspaces", json=body)
+        assert r.status_code == 200
+        assert r.json()["id"] == "myws"
+
+        other = {
+            "config": {"mounts": {"/": {"vfs": "ram", "mode": "READ"}}},
+            "id": "myws",
+        }
+        r = await client.post("/v1/workspaces", json=other)
         assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_answers_a_held_config_id_without_building(monkeypatch):
+    closed: list[Workspace] = []
+    real_close = Workspace.close
+
+    async def spy(self: Workspace) -> None:
+        closed.append(self)
+        await real_close(self)
+
+    register_secrets("held-src", HeldSourceConfig, answer_token)
+    app, _ = _make_app_with_short_grace(grace=10.0)
+    body = _slack_body("held-src", "named")
+    other = {
+        "config": {
+            "mounts": {"/": {"vfs": "ram", "mode": "READ"}},
+            "workspace_id": "named",
+        }
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.post("/v1/workspaces", json=body)
+        register_secrets("held-src", HeldSourceConfig, refuse_token)
+        monkeypatch.setattr(Workspace, "close", spy)
+        again = await client.post("/v1/workspaces", json=body)
+        refused = await client.post("/v1/workspaces", json=other)
+        await app.state.registry.remove("named")
+    assert first.status_code == 201, first.text
+    assert again.status_code == 200, again.text
+    assert again.json()["id"] == "named"
+    assert refused.status_code == 409
+    assert closed == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_creates_of_one_config_build_it_once(monkeypatch):
+    closed: list[Workspace] = []
+    real_close = Workspace.close
+
+    async def spy(self: Workspace) -> None:
+        closed.append(self)
+        await real_close(self)
+
+    register_secrets("slow-src", HeldSourceConfig, slow_token)
+    app, _ = _make_app_with_short_grace(grace=10.0)
+    body = _slack_body("slow-src", "racing")
+    monkeypatch.setattr(Workspace, "close", spy)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        answers = await asyncio.gather(
+            client.post("/v1/workspaces", json=body),
+            client.post("/v1/workspaces", json=body),
+        )
+    assert sorted(r.status_code for r in answers) == [200, 201]
+    assert closed == []
+    await app.state.registry.remove("racing")
+
+
+@pytest.mark.asyncio
+async def test_a_create_of_another_config_does_not_wait_behind_a_stuck_one():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_token(
+        config: HeldSourceConfig, ref: str
+    ) -> ResolvedSecret:
+        entered.set()
+        await release.wait()
+        return ResolvedSecret(fields={"credential": f"xoxb-{ref}"})
+
+    register_secrets("gated-src", HeldSourceConfig, gated_token)
+    app, _ = _make_app_with_short_grace(grace=10.0)
+    other = {
+        "config": {
+            "mounts": {"/": {"vfs": "ram", "mode": "READ"}},
+            "workspace_id": "stuck",
+        }
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = asyncio.create_task(
+            client.post(
+                "/v1/workspaces", json=_slack_body("gated-src", "stuck")
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        refused = await asyncio.wait_for(
+            client.post("/v1/workspaces", json=other), timeout=5
+        )
+        release.set()
+        built = await first
+    assert refused.status_code == 409
+    assert built.status_code == 201
+    await app.state.registry.remove("stuck")
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_an_id_whose_deletion_is_in_flight():
+    app, _ = _make_app_with_short_grace(grace=10.0)
+    body = {"config": {**_minimal_config()["config"], "workspace_id": "going"}}
+    release = asyncio.Event()
+
+    async def cleanup() -> None:
+        await release.wait()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.post("/v1/workspaces", json=body)
+        removal = asyncio.create_task(
+            app.state.registry.remove("going", cleanup)
+        )
+        await asyncio.sleep(0)
+        during = await client.post("/v1/workspaces", json=body)
+        release.set()
+        await removal
+        after = await client.post("/v1/workspaces", json=body)
+    assert first.status_code == 201
+    assert during.status_code == 409
+    assert after.status_code == 201
 
 
 @pytest.mark.asyncio
@@ -556,7 +733,7 @@ async def test_create_defaults_to_disk_store_under_state_root(tmp_path):
         r = await client.post("/v1/workspaces", json=body)
         assert r.status_code == 201, r.text
         r = await client.post(
-            "/v1/workspaces/diskws/execute", json={"command": "echo hi"}
+            "/v1/workspaces/diskws/shell", json={"command": "echo hi"}
         )
         assert r.status_code == 200
     assert (tmp_path / "workspaces" / "diskws" / "workspace.json").is_file()

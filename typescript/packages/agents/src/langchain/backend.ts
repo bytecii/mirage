@@ -13,6 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Workspace } from '@struktoai/mirage-node'
+import type { Ops } from '@struktoai/mirage-core/ops/ops'
+import { Session } from '@struktoai/mirage-core/workspace/workspace/handle'
 import type {
   EditResult,
   ExecuteResponse,
@@ -77,15 +79,15 @@ function shellQuote(s: string): string {
   return `'${s.replaceAll(`'`, `'\\''`)}'`
 }
 
-async function ensureParent(ws: Workspace, path: string): Promise<void> {
+async function ensureParent(vfs: Ops, path: string): Promise<void> {
   const parent = gnuDirname(path)
   if (parent === '/' || parent === '' || parent === '.') return
-  if (await ws.vfs.exists(parent)) return
-  await ensureParent(ws, parent)
+  if (await vfs.exists(parent)) return
+  await ensureParent(vfs, parent)
   try {
-    await ws.vfs.mkdir(parent)
+    await vfs.mkdir(parent)
   } catch (err) {
-    if (!(await ws.vfs.exists(parent))) throw err
+    if (!(await vfs.exists(parent))) throw err
   }
 }
 
@@ -122,32 +124,49 @@ const ANTHROPIC_BINARY_MIMES = new Set([
 
 export interface LangchainWorkspaceOptions {
   sandboxId?: string
+  /**
+   * The session the backend acts as, so its profile judges every call;
+   * the workspace's default session when absent.
+   */
+  sessionId?: string
 }
 
 export class LangchainWorkspace implements SandboxBackendProtocol {
   readonly id: string
   private readonly ws: Workspace
+  private readonly sessionId: string | undefined
 
   constructor(workspace: Workspace, options: LangchainWorkspaceOptions = {}) {
     this.ws = workspace
     this.id = options.sandboxId ?? 'mirage'
+    this.sessionId = options.sessionId
+  }
+
+  /** The op facade run as this backend's session. */
+  private get vfs(): Ops {
+    if (this.sessionId === undefined) return this.ws.vfs
+    return new Session(this.ws, this.sessionId).vfs
+  }
+
+  private exec(command: string): ReturnType<Workspace['shell']> {
+    return this.ws.shell(command, this.sessionId === undefined ? {} : { sessionId: this.sessionId })
   }
 
   async execute(command: string): Promise<ExecuteResponse> {
-    const io = await this.ws.shell(command)
+    const io = await this.exec(command)
     return ioToExecuteResponse(io)
   }
 
   async ls(path: string): Promise<LsResult> {
     let entries: string[]
     try {
-      entries = await this.ws.vfs.readdir(path)
+      entries = await this.vfs.readdir(path)
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) }
     }
     const files: FileInfo[] = []
     for (const entry of entries) {
-      const isDir = await this.ws.vfs.isDir(entry)
+      const isDir = await this.vfs.isDir(entry)
       files.push({ path: entry, is_dir: isDir })
     }
     return { files }
@@ -157,7 +176,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     const mimeType = mimeFor(filePath)
     let bytes: Uint8Array
     try {
-      bytes = await this.ws.vfs.readFile(filePath)
+      bytes = await this.vfs.read(filePath)
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) }
     }
@@ -184,8 +203,8 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     let stat: Awaited<ReturnType<Workspace['vfs']['stat']>>
     let bytes: Uint8Array
     try {
-      stat = await this.ws.vfs.stat(filePath)
-      bytes = await this.ws.vfs.readFile(filePath)
+      stat = await this.vfs.stat(filePath)
+      bytes = await this.vfs.read(filePath)
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) }
     }
@@ -204,11 +223,11 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
   }
 
   async write(filePath: string, content: string): Promise<WriteResult> {
-    if (await this.ws.vfs.exists(filePath)) {
+    if (await this.vfs.exists(filePath)) {
       return { error: `Error: file '${filePath}' already exists` }
     }
-    await ensureParent(this.ws, filePath)
-    await this.ws.vfs.writeFile(filePath, content)
+    await ensureParent(this.vfs, filePath)
+    await this.vfs.write(filePath, content)
     return { path: filePath }
   }
 
@@ -220,7 +239,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
   ): Promise<EditResult> {
     let current: string
     try {
-      current = await this.ws.vfs.readFileText(filePath)
+      current = await this.vfs.cat(filePath)
     } catch {
       return { error: `Error: file '${filePath}' not found` }
     }
@@ -233,7 +252,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
         error: `Error: string '${oldString}' appears ${String(count)} times. Use replaceAll=true`,
       }
     }
-    await this.ws.vfs.writeFile(filePath, next)
+    await this.vfs.write(filePath, next)
     return { path: filePath, occurrences: replaceAll ? count : 1 }
   }
 
@@ -254,7 +273,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     }
     parts.push(shellQuote(pattern))
     parts.push(shellQuote(path ?? '/'))
-    const io = await this.ws.shell(parts.join(' '))
+    const io = await this.exec(parts.join(' '))
     const matches = ioToGrepMatches(io)
     if (maxCount === undefined || maxCount === null || matches.length <= maxCount) {
       return { matches }
@@ -264,7 +283,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
 
   async glob(pattern: string, path = '/'): Promise<GlobResult> {
     const name = pattern.includes('/') ? (pattern.split('/').pop() ?? pattern) : pattern
-    const io = await this.ws.shell(`find ${shellQuote(path)} -name ${shellQuote(name)}`)
+    const io = await this.exec(`find ${shellQuote(path)} -name ${shellQuote(name)}`)
     return { files: ioToFileInfos(io) }
   }
 
@@ -273,8 +292,8 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
   ): Promise<FileUploadResponse[]> {
     const results: FileUploadResponse[] = []
     for (const [path, data] of files) {
-      await ensureParent(this.ws, path)
-      await this.ws.vfs.writeFile(path, data)
+      await ensureParent(this.vfs, path)
+      await this.vfs.write(path, data)
       results.push({ path, error: null })
     }
     return results
@@ -284,7 +303,7 @@ export class LangchainWorkspace implements SandboxBackendProtocol {
     const results: FileDownloadResponse[] = []
     for (const path of paths) {
       try {
-        const content = await this.ws.vfs.readFile(path)
+        const content = await this.vfs.read(path)
         results.push({ path, content, error: null })
       } catch {
         results.push({ path, content: null, error: 'file_not_found' })

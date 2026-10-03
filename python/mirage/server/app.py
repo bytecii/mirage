@@ -39,6 +39,7 @@ from mirage.server.host_validation import (
     resolve_allowed_hosts,
 )
 from mirage.server.jobs import JobTable
+from mirage.server.mcp.http import register_mcp_routes
 from mirage.server.paths import (
     mirage_home,
     pid_file_path,
@@ -49,10 +50,11 @@ from mirage.server.paths import (
 from mirage.server.registry import WorkspaceRegistry
 from mirage.server.routers import (
     asks,
-    execute,
     health,
     jobs,
     sessions,
+    shell,
+    tools,
     versions,
     workspaces,
 )
@@ -120,7 +122,7 @@ async def _start_ssh(app: FastAPI) -> SSHListener | None:
     if config is None:
         return None
     start = _load_ssh_starter()
-    return await start(app.state.registry, config)
+    return await start(app.state.registry, config, app.state.mcp)
 
 
 @asynccontextmanager
@@ -137,6 +139,7 @@ async def _lifespan(app: FastAPI):
             ssh.close()
             await ssh.wait_closed()
         try:
+            await app.state.mcp.close()
             await app.state.jobs.close()
         finally:
             await app.state.registry.close_all()
@@ -227,7 +230,11 @@ def build_app(
     app.include_router(versions.router)
     app.include_router(sessions.router)
     app.include_router(asks.router)
-    app.include_router(execute.router)
+    app.include_router(shell.router)
+    app.include_router(tools.router)
     app.include_router(jobs.router)
     app.include_router(health.router)
+    app.state.mcp = register_mcp_routes(
+        app, app.state.registry, app.state.jobs
+    )
     return app

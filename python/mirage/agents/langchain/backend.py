@@ -41,7 +41,8 @@ from mirage.agents.langchain.convert import (
 )
 from mirage.bridge.sync import run_async_from_sync
 from mirage.io.types import IOResult
-from mirage.workspace.workspace import Workspace
+from mirage.ops.ops import Ops
+from mirage.workspace.workspace import Session, Workspace
 
 T = TypeVar("T")
 
@@ -126,7 +127,14 @@ class LangchainWorkspace(SandboxBackendProtocol):
 
     File operations (read, write, edit, ls, upload, download) go through the
     Ops layer directly. Shell operations (execute, grep, glob) go through
-    Workspace.shell() for pipe and flag support.
+    Workspace.shell() for pipe and flag support. Both run as the session,
+    so its profile judges every call.
+
+    Args:
+        workspace (Workspace): The workspace to operate on.
+        sandbox_id (str): The id the backend reports.
+        session_id (str | None): The session the backend acts as; None
+            is the workspace's default session.
     """
 
     def __init__(
@@ -141,6 +149,13 @@ class LangchainWorkspace(SandboxBackendProtocol):
 
     def _run(self, coro: Awaitable[T]) -> T:
         return run_async_from_sync(coro)
+
+    @property
+    def _vfs(self) -> Ops:
+        """The op facade run as this backend's session."""
+        if self._session_id is None:
+            return self._ws.vfs
+        return Session(self._ws, self._session_id).vfs
 
     @property
     def id(self) -> str:
@@ -196,7 +211,7 @@ class LangchainWorkspace(SandboxBackendProtocol):
     async def aread(
         self, file_path: str, offset: int = 0, limit: int = 2000
     ) -> ReadResult:
-        ops = self._ws.vfs
+        ops = self._vfs
         try:
             data = await ops.read(file_path)
         except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
@@ -209,7 +224,7 @@ class LangchainWorkspace(SandboxBackendProtocol):
         return self._run(self.awrite(file_path, content))
 
     async def awrite(self, file_path: str, content: str) -> WriteResult:
-        ops = self._ws.vfs
+        ops = self._vfs
         try:
             await ops.stat(file_path)
             return WriteResult(
@@ -247,7 +262,7 @@ class LangchainWorkspace(SandboxBackendProtocol):
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
-        ops = self._ws.vfs
+        ops = self._vfs
         try:
             data = await ops.read(file_path)
         except (FileNotFoundError, NotADirectoryError, ValueError):
@@ -345,7 +360,7 @@ class LangchainWorkspace(SandboxBackendProtocol):
     async def aupload_files(
         self, files: list[tuple[str, bytes]]
     ) -> list[FileUploadResponse]:
-        ops = self._ws.vfs
+        ops = self._vfs
         results: list[FileUploadResponse] = []
         for path, data in files:
             parent = "/".join(path.rstrip("/").split("/")[:-1]) or "/"
@@ -364,7 +379,7 @@ class LangchainWorkspace(SandboxBackendProtocol):
     async def adownload_files(
         self, paths: list[str]
     ) -> list[FileDownloadResponse]:
-        ops = self._ws.vfs
+        ops = self._vfs
         results: list[FileDownloadResponse] = []
         for path in paths:
             try:

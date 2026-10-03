@@ -20,6 +20,10 @@ implementations cannot drift apart.
   Some fakes carry a selftest (`pnpm run <name>:selftest`; the list is the
   `*:selftest` scripts in `package.json`); linear and trello have none, and
   the battery is what exercises them.
+- `tools/`: the tool corpus. One JSON list of tool calls (`shell`, `read`,
+  `write`, `edit`, `ls`, `grep`, `glob`) and their answers, run in-app by
+  `tools/run.py` and `tools/run.ts` and through every daemon door (HTTP
+  routes, CLI verbs, MCP over HTTP, SSH) on both hosts by `doors.py`.
 - `prisma/`: one schema per kit fake.
 - `fixtures/`: the seed data cases assume.
 

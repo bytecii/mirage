@@ -49,8 +49,8 @@ YML
   echo "home_health=$([ "$health" == "200" ] && echo ok || echo "$health")"
   echo "home_pid=$([ -s "$home/daemon.pid" ] && echo exists || echo absent)"
 
-  $cli execute -w cc -c 'echo hello > /data/f.txt' </dev/null >/dev/null
-  echo "home_readback=$($cli execute -w cc -c 'cat /data/f.txt' </dev/null | tail -c 200 | grep -o hello | head -1)"
+  $cli shell -w cc -c 'echo hello > /data/f.txt' </dev/null >/dev/null
+  echo "home_readback=$($cli shell -w cc -c 'cat /data/f.txt' </dev/null | tail -c 200 | grep -o hello | head -1)"
   $cli workspace commit cc -m v1 >/dev/null </dev/null
   echo "home_repo=$([ -d "$home/repos/cc/objects" ] && echo exists || echo absent)"
   echo "home_log=$($cli workspace log cc </dev/null | grep -o v1 | head -1)"

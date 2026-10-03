@@ -49,6 +49,8 @@ import {
   toStateDict,
   withRebuiltMounts,
 } from '../snapshot/state.ts'
+import { classifyBarePath } from '../expand/classify/path.ts'
+import { resolveGlobs } from '../expand/globs.ts'
 import { readSnapshotTar } from '../snapshot/tar_io.ts'
 import { normMountPrefix } from '../snapshot/utils.ts'
 import type { WorkspaceStateDict, MountSnapshot } from '../snapshot/types.ts'
@@ -1254,6 +1256,32 @@ export class Workspace {
 
   async readdir(path: string): Promise<string[]> {
     return this.vfs.readdir(path)
+  }
+
+  /**
+   * The paths a pathname pattern matches, as the shell expands it.
+   *
+   * The shell's own resolver matches it, so a pattern crosses mounts,
+   * sees namespace links, and honors the session's hides and `dotglob`.
+   * A `**` segment matches any number of directories (bash's
+   * `globstar`); a pattern that matches nothing gives no paths
+   * (`nullglob`), and a path with no glob character gives itself when it
+   * exists. A relative pattern is read from the session's working
+   * directory. Mirrors Python's `Workspace.glob`.
+   */
+  async glob(pattern: string, sessionId?: string): Promise<string[]> {
+    return this.bindSession(sessionId ?? null, async () => {
+      const session = getCurrentSessionFor(this.sessionManager)
+      const spec = classifyBarePath(pattern, this.registry, session?.cwd ?? '/')
+      if (typeof spec === 'string') return []
+      if (spec.pattern === null) return (await this.vfs.exists(spec.virtual)) ? [spec.virtual] : []
+      const matches = await resolveGlobs([spec], this.registry, false, this.namespace, {
+        nullglob: true,
+        failglob: false,
+        globstar: true,
+      })
+      return matches.filter((m): m is PathSpec => m instanceof PathSpec).map((m) => m.virtual)
+    })
   }
 
   /**

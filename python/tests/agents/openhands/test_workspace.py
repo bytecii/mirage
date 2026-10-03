@@ -130,3 +130,19 @@ def test_execute_command_names_the_reason_beside_a_refusal():
         assert result.stderr == (
             "rm: Permission denied\npolicy denied: no deletes\n"
         )
+
+
+def test_operations_act_as_the_session(tmp_path: Path):
+    backing = Workspace(
+        {"/": RAMVFS(), "/vault": RAMVFS()},
+        mode=MountMode.WRITE,
+        profiles={"guarded": {"paths": {"hide": ["/vault"]}}},
+    )
+    backing.create_session("agent", profile="guarded")
+    with MirageWorkspace(workspace=backing) as seeding:
+        seeding.execute_command("echo key > /vault/key.txt")
+        with MirageWorkspace(workspace=backing, session_id="agent") as mw:
+            shown = mw.execute_command("cat /vault/key.txt")
+            fetched = mw.file_download("/vault/key.txt", tmp_path / "k")
+    assert shown.exit_code != 0
+    assert fetched.success is False
