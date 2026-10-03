@@ -20,6 +20,7 @@ permissions:
       - integ/snapshot_smoke.*
       - integ/parity.sh
       - integ/execute_stdin.py
+      - integ/doors.py
       - integ/fuse/cli_fuse.sh
       - integ/cli_config.sh
       - integ/cli_env.sh
@@ -76,6 +77,7 @@ jobs:
               - 'integ/snapshot_smoke.*'
               - 'integ/parity.sh'
               - 'integ/execute_stdin.py'
+              - 'integ/doors.py'
               - 'integ/fuse/cli_fuse.sh'
               - 'integ/cli_config.sh'
               - 'integ/cli_env.sh'
@@ -762,6 +764,13 @@ jobs:
           bash integ/parity.sh \
             "python/.venv/bin/mirage" \
             "node typescript/packages/cli/dist/bin/mirage.js"
+
+      # Each door's tools and commands have unit tests; this proves the
+      # wiring on both hosts. One workspace is written through each door
+      # (HTTP, MCP over HTTP, `mirage mcp`, `mirage execute`, ssh, the ssh
+      # mcp subsystem, sftp) and read back through the next.
+      - name: Run door wiring (CLI, HTTP, MCP, SSH) on both hosts
+        run: ./python/.venv/bin/python integ/doors.py
 
   cross-snapshot:
     needs: [changes, typescript-build]
