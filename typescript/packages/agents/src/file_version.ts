@@ -117,16 +117,22 @@ export class FileVersionTracker {
     if (this.enabled) this.seen.add(this.key(path))
   }
 
-  // A write that lands while a read is in flight has already stamped
-  // what a later read returns, and the bytes this read fetched may
-  // predate it, so the read keeps its stamp only when no write did.
+  // The bytes a read fetched may predate a write that lands while it is
+  // in flight, so such a read fetches once more: the agent is never shown
+  // bytes older than a write it already saw finish. A write that lands
+  // during the second fetch too leaves the stamp of what was shown, and
+  // the next write is refused as stale.
   async read(path: string): Promise<Uint8Array> {
     const key = this.key(path)
     const writes = this.writes.get(key)
-    const content = await readBytes(this.vfs, path)
+    let content = await readBytes(this.vfs, path)
     if (!this.enabled) return content
-    const version = await fingerprint(content)
-    if (this.writes.get(key) === writes) this.readVersions.set(key, version)
+    let version = await fingerprint(content)
+    if (this.writes.get(key) !== writes) {
+      content = await readBytes(this.vfs, path)
+      version = await fingerprint(content)
+    }
+    this.readVersions.set(key, version)
     return content
   }
 

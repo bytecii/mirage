@@ -143,10 +143,11 @@ class FileVersionTracker:
     async def read(self, path: str) -> bytes:
         """Read a file and record what the agent was shown.
 
-        A write that lands while the read is in flight has already
-        stamped what a later read returns, and the bytes fetched here
-        may predate it, so the read keeps its stamp only when no write
-        did.
+        The bytes fetched may predate a write that lands while the read
+        is in flight, so such a read fetches once more: the agent is
+        never shown bytes older than a write it already saw finish. A
+        write that lands during the second fetch too leaves the stamp of
+        what was shown, and the next write is refused as stale.
 
         Args:
             path (str): Virtual path.
@@ -157,8 +158,11 @@ class FileVersionTracker:
         key = self._key(path)
         writes = self._writes.get(key)
         content = await self.vfs.read(path)
-        if self._enabled and self._writes.get(key) == writes:
-            self._read_versions[key] = fingerprint(content)
+        if not self._enabled:
+            return content
+        if self._writes.get(key) != writes:
+            content = await self.vfs.read(path)
+        self._read_versions[key] = fingerprint(content)
         return content
 
     async def read_for_edit(self, path: str) -> bytes:
