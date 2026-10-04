@@ -105,11 +105,20 @@ export async function handlePipe(
       const stageStack = (callStack ?? new CallStack()).fork()
       // A job a stage before the last starts writes into the pipe, and
       // the reader sees end of input only once the job has closed it.
-      const waits = new JobWaits()
-      if (i < commands.length - 1) {
-        child.jobOutput = new JobOutput(output)
+      const waits =
+        i < commands.length - 1
+          ? new JobWaits(
+              new JobOutput(output),
+              new Set(
+                stderrFlags[i] === true ? [Channel.STDOUT, Channel.STDERR] : [Channel.STDOUT],
+              ),
+            )
+          : null
+      if (waits !== null) {
+        child.jobOutput = waits.output
         child.jobWaits = waits
       }
+      const rest = session.jobOutput ?? session.tty.jobs
       try {
         const [stdout, result, execution] = await endShell(
           executeFn,
@@ -122,7 +131,7 @@ export async function handlePipe(
         childExec = execution
         await pump(output, Channel.STDOUT, stdout)
         await pump(output, Channel.STDERR, io.stderr)
-        await waits.join()
+        await waits?.join(rest)
       } catch (error) {
         if (error instanceof PipeClosed) {
           io.exitCode = 141
@@ -132,7 +141,7 @@ export async function handlePipe(
           io.exitCode = unwound.exitCode
           await pump(output, Channel.STDOUT, unwound.stdout)
           await pump(output, Channel.STDERR, unwound.stderr)
-          await waits.join()
+          await waits?.join(rest)
         } else {
           output.end(error)
           throw error
@@ -459,7 +468,18 @@ export async function handleSubshell(
         break
       }
     }
-    const cleanup = await runExitTrap(executeFn, session, mergedIo.exitCode, stdin, callStack)
+    // The EXIT action is the subshell's: its `wait` and `jobs` see the
+    // subshell's jobs, not the caller's.
+    const cleanup = await runExitTrap(
+      executeFn === null
+        ? null
+        : (action, opts) =>
+            executeFn(action, { ...opts, ...(jobTable === null ? {} : { jobTable }) }),
+      session,
+      mergedIo.exitCode,
+      stdin,
+      callStack,
+    )
     if (cleanup !== null) {
       const written: Written[] = []
       const out = await cleanup.materializeStdout()

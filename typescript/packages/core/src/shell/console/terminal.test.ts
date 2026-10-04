@@ -17,6 +17,37 @@ import { Recorder } from '../descriptors.ts'
 import { Channel, JobConsole, Tee, Terminal } from './index.ts'
 
 const enc = (text: string): Uint8Array => new TextEncoder().encode(text)
+
+/** A reader a job writes to the terminal while it takes its first chunk. */
+class JobWritesMeanwhile extends JobConsole {
+  wrote = false
+
+  constructor(readonly tty: Terminal) {
+    super()
+  }
+
+  override async emit(channel: Channel, data: Uint8Array): Promise<void> {
+    if (!this.wrote) {
+      this.wrote = true
+      await this.tty.jobs.emit(Channel.STDOUT, enc('meanwhile\n'))
+    }
+    await super.emit(channel, data)
+  }
+}
+
+/** A reader whose writes wait for `release`. */
+class Stalled extends JobConsole {
+  release: () => void = () => undefined
+  private enter: () => void = () => undefined
+  readonly entered = new Promise<void>((resolve) => (this.enter = resolve))
+  private readonly released = new Promise<void>((resolve) => (this.release = resolve))
+
+  override async emit(channel: Channel, data: Uint8Array): Promise<void> {
+    this.enter()
+    await this.released
+    await super.emit(channel, data)
+  }
+}
 const dec = ([out, err]: [Uint8Array, Uint8Array]): [string, string] => [
   new TextDecoder().decode(out),
   new TextDecoder().decode(err),
@@ -52,6 +83,32 @@ describe('Terminal', () => {
     await tty.emit(Channel.STDOUT, enc('now\n'))
     expect(new TextDecoder().decode(await reader.snapshot(Channel.STDOUT))).toBe('waited\nnow\n')
     expect(dec(tty.take())).toEqual(['', ''])
+  })
+
+  it('a job writing while a reader attaches lands after what waited', async () => {
+    const tty = new Terminal()
+    await tty.jobs.emit(Channel.STDOUT, enc('one\n'))
+    await tty.jobs.emit(Channel.STDOUT, enc('two\n'))
+    const reader = new JobWritesMeanwhile(tty)
+    await tty.attach(reader)
+    expect(new TextDecoder().decode(await reader.snapshot(Channel.STDOUT))).toBe(
+      'one\ntwo\nmeanwhile\n',
+    )
+    expect(tty.reader).toBe(reader)
+  })
+
+  it('a line ended while its reader attaches never attaches it', async () => {
+    const tty = new Terminal()
+    await tty.jobs.emit(Channel.STDOUT, enc('waited\n'))
+    const reader = new Stalled()
+    const attach = tty.attach(reader)
+    await reader.entered
+    tty.dropLine()
+    reader.release()
+    await attach
+    expect(tty.reader).toBeNull()
+    await tty.jobs.emit(Channel.STDOUT, enc('later\n'))
+    expect(dec(tty.take())).toEqual(['later\n', ''])
   })
 
   it('an abandoned line keeps only its jobs output', async () => {

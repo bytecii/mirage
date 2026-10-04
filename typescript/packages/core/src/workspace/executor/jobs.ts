@@ -18,12 +18,19 @@ import type { ByteSource } from '../../io/types.ts'
 import { IOResult } from '../../io/types.ts'
 import { CommandTimeoutError } from '../../commands/errors.ts'
 import { CallStack } from '../../shell/call_stack.ts'
-import { FORK_FAILED, FORK_FAILED_STATUS } from '../../shell/constants.ts'
+import { FD_BOTH, FD_CLOSE, FORK_FAILED, FORK_FAILED_STATUS } from '../../shell/constants.ts'
 import { ExitSignal, ReturnSignal } from '../../shell/errors.ts'
-import { isBackgrounded } from '../../shell/helpers.ts'
+import { getRedirects, isBackgrounded } from '../../shell/helpers.ts'
+import { NodeKind, nodeKind } from '../../shell/node_kind.ts'
 import { type Job, JobStatus, type JobTable } from '../../shell/job_table/index.ts'
 import { PipeConsole } from '../../shell/console/pipe.ts'
-import { Channel, type JobConsole, JobOutput, Tee } from '../../shell/console/index.ts'
+import {
+  Channel,
+  type JobConsole,
+  JobOutput,
+  type OwnedStream,
+  Tee,
+} from '../../shell/console/index.ts'
 import { isProgramInvocation, runWithSession } from '../../context/session_context.ts'
 import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
 import { abortable, mergeSignals } from '../abort.ts'
@@ -120,6 +127,30 @@ export async function drained(
     io.stderr = null
   }
   return [null, io, execNode]
+}
+
+/**
+ * The streams a job started from `node` writes, as its shell hands them
+ * on: stdout, stderr and the copies the shell holds (`3>&1`), after the
+ * job's own redirects (`sleep 9 >/dev/null &`). A stream sent to a file
+ * or closed is gone.
+ */
+function jobStreams(node: TSNodeLike, session: SessionState): Set<Channel | OwnedStream> {
+  const fds = new Map<number, Channel | OwnedStream | null>([
+    [1, Channel.STDOUT],
+    [2, Channel.STDERR],
+  ])
+  for (const [fd, descriptor] of session.descriptors)
+    if (fd > 2) fds.set(fd, descriptor.stream ?? null)
+  if (nodeKind(node) === NodeKind.REDIRECT)
+    for (const r of getRedirects(node)[1]) {
+      if (r.target === FD_CLOSE) fds.delete(r.fd)
+      else if (typeof r.target === 'number') fds.set(r.fd, fds.get(r.target) ?? null)
+      else for (const fd of r.fd === FD_BOTH ? [1, 2] : [r.fd]) fds.set(fd, null)
+    }
+  const streams = new Set<Channel | OwnedStream>()
+  for (const stream of fds.values()) if (stream !== null) streams.add(stream)
+  return streams
 }
 
 export async function handleBackground(
@@ -263,7 +294,8 @@ export async function handleBackground(
   }
   bgSession.processId = job.process?.info.pid ?? null
   session.lastBgJobId = job.pid
-  session.jobWaits?.add(job)
+  if (session.jobWaits?.reaches(output, jobStreams(left, session)) === true)
+    session.jobWaits.add(job)
 
   if (right === null) {
     const tree = new ExecutionNode({

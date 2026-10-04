@@ -112,10 +112,18 @@ async def handle_pipe(
         stage_stack = (call_stack or CallStack()).fork()
         # A job a stage before the last starts writes into the pipe, and
         # the reader sees end of input only once the job has closed it.
-        waits = JobWaits()
+        waits = None
         if i < len(commands) - 1:
-            child.job_output = JobOutput(output)
+            piped = i < len(stderr_flags) and stderr_flags[i]
+            waits = JobWaits(
+                JobOutput(output),
+                frozenset({Channel.STDOUT, Channel.STDERR})
+                if piped
+                else frozenset({Channel.STDOUT}),
+            )
+            child.job_output = waits.output
             child.job_waits = waits
+        rest = session.job_output or session.tty.jobs
         try:
             stdout, io, child_exec = await end_shell(
                 execute_fn,
@@ -128,7 +136,8 @@ async def handle_pipe(
             )
             await pump(output, Channel.STDOUT, stdout)
             await pump(output, Channel.STDERR, io.stderr)
-            await waits.join()
+            if waits is not None:
+                await waits.join(rest)
         except PipeClosed:
             io.exit_code = 141
         except UNWINDING as sig:
@@ -137,7 +146,8 @@ async def handle_pipe(
             io.exit_code = unwound.exit_code
             await pump(output, Channel.STDOUT, unwound.stdout)
             await pump(output, Channel.STDERR, unwound.stderr)
-            await waits.join()
+            if waits is not None:
+                await waits.join(rest)
         except BaseException as error:
             output.end(error)
             raise
@@ -455,6 +465,10 @@ async def handle_subshell(
             ):
                 merged_io.exit_code = io.exit_code
                 break
+        # The EXIT action is the subshell's: its `wait` and `jobs` see the
+        # subshell's jobs, not the caller's.
+        if execute_fn is not None and job_table is not None:
+            execute_fn = partial(execute_fn, job_table=job_table)
         cleanup = await run_exit_trap(
             execute_fn, session, merged_io.exit_code, stdin, call_stack
         )

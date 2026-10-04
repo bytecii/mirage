@@ -15,7 +15,7 @@
 import { FD_BOTH, FD_CLOSE } from './constants.ts'
 import { SharedInput } from '../io/async_line_iterator.ts'
 import { createAsyncContext } from '../utils/async_context.ts'
-import { type Channel, JobConsole, Terminal } from './console/index.ts'
+import { type Channel, JobConsole, type OwnedStream, Terminal } from './console/index.ts'
 import type { PathSpec } from '../types.ts'
 import { ebadfStdin } from '../utils/errors.ts'
 import { RedirectKind, type Redirect } from './types.ts'
@@ -68,6 +68,8 @@ export class FileDescription {
   offset = 0
   source: FileInput | null = null
   emit: ((data: Uint8Array) => Promise<void>) | null = null
+  /** Settles when the last write through this description has. */
+  writing: Promise<void> = Promise.resolve()
   constructor(
     readonly scope: PathSpec,
     readonly append = false,
@@ -119,8 +121,9 @@ export class Recorder extends JobConsole {
     this.chunks.push([channel, data])
     return Promise.resolve()
   }
-  emitTo(stream: Inherited, data: Uint8Array): void {
-    this.chunks.push([stream, data])
+  override async emitTo(stream: OwnedStream, data: Uint8Array): Promise<void> {
+    if (stream instanceof Inherited) this.chunks.push([stream, data])
+    else await this.emit(stream.channel, data)
   }
 }
 
@@ -146,9 +149,8 @@ export async function deliver(
 ): Promise<boolean> {
   const target =
     sink !== null && !(sink instanceof Terminal) ? sink : (ENCLOSING.getStore() ?? null)
-  if (target instanceof Recorder) target.emitTo(stream, data)
-  else if (target !== null) await target.emit(stream.channel, data)
-  else return false
+  if (target === null) return false
+  await target.emitTo(stream, data)
   return true
 }
 

@@ -14,13 +14,14 @@
 
 import asyncio
 from functools import partial
+from typing import Any
 
 import pytest
 
 from mirage.io import IOResult
 from mirage.shell.console import Channel, JobConsole
 from mirage.shell.job_table import Job, JobStatus, JobTable
-from mirage.types import MountMode
+from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.executor.jobs import (
@@ -187,6 +188,71 @@ def test_job_nested_in_a_backgrounded_subshell_writes_through_its_job():
     console, later = asyncio.run(_do())
     assert console == b"b\na\n"
     assert later == "b\na\n"
+
+
+def _slow_first_writes(ws: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make each file's first write take 0.2 s, as a remote mount's can.
+
+    Args:
+        ws (Workspace): the workspace whose dispatcher to slow.
+        monkeypatch (pytest.MonkeyPatch): patches the dispatcher.
+    """
+    inner = ws._dispatcher.dispatch
+    seen: set[tuple[str, str]] = set()
+
+    async def slow(
+        op: str, path: PathSpec, **kwargs: Any
+    ) -> tuple[Any, IOResult]:
+        if (
+            op in ("write", "append", "pwrite")
+            and (op, path.virtual) not in seen
+        ):
+            seen.add((op, path.virtual))
+            await asyncio.sleep(0.2)
+        return await inner(op, path, **kwargs)
+
+    monkeypatch.setattr(ws._dispatcher, "dispatch", slow)
+
+
+async def _slowly(line: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Run a line on a workspace whose first writes are slow.
+
+    Args:
+        line (str): the line.
+        monkeypatch (pytest.MonkeyPatch): patches the dispatcher.
+    """
+    ws = _workspace()
+    _slow_first_writes(ws, monkeypatch)
+    return await (await ws.shell(line)).stdout_str()
+
+
+def test_a_job_writing_while_its_redirect_opens_the_file_keeps_both(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    line = (
+        "{ echo first; (sleep .05; echo second) & } > /m/out; wait; cat /m/out"
+    )
+    assert asyncio.run(_slowly(line, monkeypatch)) == "first\nsecond\n"
+
+
+def test_jobs_writing_one_file_at_once_keep_every_line(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    line = (
+        "{ echo a; (sleep .3; echo b) & (sleep .3; echo c) & } > /m/out; "
+        "wait; sort /m/out"
+    )
+    assert asyncio.run(_slowly(line, monkeypatch)) == "a\nb\nc\n"
+
+
+def test_a_job_writes_after_what_its_redirect_held_in_every_file(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    line = (
+        "{ echo a; echo b >&2; (sleep .05; echo c >&2) & } > /m/out "
+        "2> /m/err; wait; cat /m/err"
+    )
+    assert asyncio.run(_slowly(line, monkeypatch)) == "b\nc\n"
 
 
 def test_bare_wait_with_no_jobs_returns_nothing():

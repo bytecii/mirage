@@ -12,10 +12,45 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+
 import pytest
 
 from mirage.shell.console import Channel, JobConsole, Tee, Terminal
 from mirage.shell.descriptors import Recorder
+
+
+class _JobWritesMeanwhile(JobConsole):
+    """A reader a job writes to the terminal while it takes its first chunk.
+
+    Args:
+        tty (Terminal): the terminal the job writes to.
+    """
+
+    def __init__(self, tty: Terminal) -> None:
+        super().__init__()
+        self.tty = tty
+        self.wrote = False
+
+    async def emit(self, channel: Channel, data: bytes) -> None:
+        if not self.wrote:
+            self.wrote = True
+            await self.tty.jobs.emit(Channel.STDOUT, b"meanwhile\n")
+        await super().emit(channel, data)
+
+
+class _Stalled(JobConsole):
+    """A reader whose writes wait for ``release``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def emit(self, channel: Channel, data: bytes) -> None:
+        self.entered.set()
+        await self.release.wait()
+        await super().emit(channel, data)
 
 
 @pytest.mark.asyncio
@@ -50,6 +85,32 @@ async def test_a_reader_gets_what_waited_and_then_everything():
     await tty.emit(Channel.STDOUT, b"now\n")
     assert await reader.snapshot(Channel.STDOUT) == b"waited\nnow\n"
     assert tty.take() == (b"", b"")
+
+
+@pytest.mark.asyncio
+async def test_a_job_writing_while_a_reader_attaches_lands_after_what_waited():
+    tty = Terminal()
+    await tty.jobs.emit(Channel.STDOUT, b"one\n")
+    await tty.jobs.emit(Channel.STDOUT, b"two\n")
+    reader = _JobWritesMeanwhile(tty)
+    await tty.attach(reader)
+    assert await reader.snapshot(Channel.STDOUT) == b"one\ntwo\nmeanwhile\n"
+    assert tty.reader is reader
+
+
+@pytest.mark.asyncio
+async def test_a_line_ended_while_its_reader_attaches_never_attaches_it():
+    tty = Terminal()
+    await tty.jobs.emit(Channel.STDOUT, b"waited\n")
+    reader = _Stalled()
+    attach = asyncio.create_task(tty.attach(reader))
+    await reader.entered.wait()
+    tty.drop_line()
+    reader.release.set()
+    await attach
+    assert tty.reader is None
+    await tty.jobs.emit(Channel.STDOUT, b"later\n")
+    assert tty.take() == (b"later\n", b"")
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@
 
 import { concat } from '../../io/cachable_iterator.ts'
 import { JobConsole } from './job_console.ts'
-import { Channel } from './types.ts'
+import { Channel, type OwnedStream } from './types.ts'
 
 /**
  * A shell's screen: what its lines and its background jobs wrote, in the
@@ -31,6 +31,7 @@ export class Terminal extends JobConsole {
   chunks: [Channel, Uint8Array, boolean][] = []
   reader: JobConsole | null = null
   readonly jobs: JobOutput = new JobOutput(new JobSide(this))
+  ended = 0
 
   /** Take what the line wrote. */
   override async emit(channel: Channel, data: Uint8Array): Promise<void> {
@@ -47,13 +48,26 @@ export class Terminal extends JobConsole {
     this.chunks.push([channel, data, job])
   }
 
-  /** Start a line, handing a streaming caller (`reader`) what waited for it. */
+  /**
+   * Start a line, handing a streaming caller (`reader`) what waited for it.
+   *
+   * The reader takes the chunks one at a time and becomes the line's only
+   * once none is left, so a job that writes meanwhile lands behind what
+   * waited; a line ended before that never attaches it.
+   */
   async attach(reader: JobConsole | null): Promise<void> {
+    if (reader === null) {
+      this.reader = null
+      return
+    }
+    const ended = this.ended
+    let chunk = this.chunks.shift()
+    while (chunk !== undefined) {
+      await reader.emit(chunk[0], chunk[1])
+      if (this.ended !== ended) return
+      chunk = this.chunks.shift()
+    }
     this.reader = reader
-    if (reader === null) return
-    const waiting = this.chunks
-    this.chunks = []
-    for (const [channel, data] of waiting) await reader.emit(channel, data)
   }
 
   /** What reached the terminal so far, taken out to be bounded and put back. */
@@ -76,6 +90,7 @@ export class Terminal extends JobConsole {
   /** End a line: its stdout and stderr, jobs' output among them. */
   take(): [Uint8Array, Uint8Array] {
     this.reader = null
+    this.ended += 1
     return this.drain()
   }
 
@@ -83,6 +98,7 @@ export class Terminal extends JobConsole {
   dropLine(): void {
     this.chunks = this.chunks.filter(([, , job]) => job)
     this.reader = null
+    this.ended += 1
   }
 }
 
@@ -111,17 +127,27 @@ export class JobSide extends JobConsole {
 export class JobOutput extends JobConsole {
   recorder: JobConsole | null = null
 
-  constructor(readonly target: JobConsole) {
+  constructor(public target: JobConsole) {
     super()
   }
 
   /** Write what a job wrote where it belongs now. */
   override async emit(channel: Channel, data: Uint8Array): Promise<void> {
-    if (this.recorder !== null) {
-      await this.recorder.emit(channel, data)
-      return
-    }
-    await this.target.emit(channel, data)
+    await (this.recorder ?? this.target).emit(channel, data)
+  }
+
+  /** Write what a job wrote to a stream a level owns, keeping the stream. */
+  override async emitTo(stream: OwnedStream, data: Uint8Array): Promise<void> {
+    await (this.recorder ?? this.target).emitTo(stream, data)
+  }
+
+  /**
+   * Which of the writes of the shell this leads to (`target`), or the
+   * streams above it, a job's streams reach: a shell passes them on as
+   * they are, a redirect (`JobRoute`) through its descriptors.
+   */
+  passes(streams: ReadonlySet<Channel | OwnedStream>): Set<Channel | OwnedStream> {
+    return new Set(streams)
   }
 }
 
@@ -141,5 +167,11 @@ export class Tee extends JobConsole {
   override async emit(channel: Channel, data: Uint8Array): Promise<void> {
     await this.console.emit(channel, data)
     await this.copy.emit(channel, data)
+  }
+
+  /** Write to both, the copy keeping the stream. */
+  override async emitTo(stream: OwnedStream, data: Uint8Array): Promise<void> {
+    await this.console.emit(stream.channel, data)
+    await this.copy.emitTo(stream, data)
   }
 }

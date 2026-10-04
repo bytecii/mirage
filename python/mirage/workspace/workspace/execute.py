@@ -211,14 +211,11 @@ async def recurse(
         )
         record_status(session, io.exit_code, transparent=True)
     else:
-        if opts.pop("own_jobs", False):
-            # A nested shell's jobs are its own: its `jobs` and `wait`
-            # see only them, and its caller's never see them.
-            opts["job_table"] = JobTable(processes=ws.job_table.processes)
         saved = session.snapshot() if substitution else None
         terminal_output = session.terminal_output
         capture = Terminal()
-        waits = JobWaits()
+        waits = JobWaits(capture.jobs)
+        rest = session.job_output or session.tty.jobs
         if saved is not None:
             session.terminal_output = False
             inherit_exit_trap(session)
@@ -275,7 +272,7 @@ async def recurse(
                     (Channel.STDERR, await io.materialize_stderr()),
                 ):
                     await capture.emit(channel, data)
-                await waits.join()
+                await waits.join(rest)
                 out, err = capture.take()
                 io.stdout = out or None
                 io.stderr = err or None
@@ -420,17 +417,17 @@ async def execute_line(
     )
     if tty is None:
         return await _run_line(ws, command, session, cwd, run_line)
-    await tty.attach(sink)
     try:
+        await tty.attach(sink)
         io = await _run_line(ws, command, session, cwd, run_line)
+        for channel, data in (
+            (Channel.STDOUT, await io.materialize_stdout()),
+            (Channel.STDERR, await io.materialize_stderr()),
+        ):
+            await tty.emit(channel, data)
     except BaseException:
         tty.drop_line()
         raise
-    for channel, data in (
-        (Channel.STDOUT, await io.materialize_stdout()),
-        (Channel.STDERR, await io.materialize_stderr()),
-    ):
-        await tty.emit(channel, data)
     out, err = tty.take()
     io.stdout = out
     io.stderr = err or None

@@ -29,12 +29,24 @@ from mirage.policy.decisions import Decisions
 from mirage.policy.types import HandOff
 from mirage.process.types import ProcessInfo, ProcessView
 from mirage.shell.call_stack import CallStack
-from mirage.shell.console import Channel, JobConsole, JobOutput, Tee
+from mirage.shell.console import (
+    Channel,
+    JobConsole,
+    JobOutput,
+    OwnedStream,
+    Tee,
+)
 from mirage.shell.console.pipe import PipeConsole
-from mirage.shell.constants import FORK_FAILED, FORK_FAILED_STATUS
+from mirage.shell.constants import (
+    FD_BOTH,
+    FD_CLOSE,
+    FORK_FAILED,
+    FORK_FAILED_STATUS,
+)
 from mirage.shell.errors import ExitSignal, ReturnSignal
-from mirage.shell.helpers import get_text, is_backgrounded
+from mirage.shell.helpers import get_redirects, get_text, is_backgrounded
 from mirage.shell.job_table import Job, JobStatus, JobTable
+from mirage.shell.node_kind import NodeKind, node_kind
 from mirage.shell.types import TSNodeLike
 from mirage.workspace.execution import ExecutionScope
 from mirage.workspace.executor.builtins.getopt import scan_options
@@ -112,6 +124,37 @@ async def drained(
         await sink.emit(Channel.STDERR, stderr)
         io.stderr = None
     return None, io, exec_node
+
+
+def _job_streams(
+    node: TSNodeLike, session: SessionState
+) -> set[Channel | OwnedStream]:
+    """The streams a job started from ``node`` writes, as its shell hands
+    them on: stdout, stderr and the copies the shell holds (``3>&1``),
+    after the job's own redirects (``sleep 9 >/dev/null &``). A stream
+    sent to a file or closed is gone.
+
+    Args:
+        node (TSNodeLike): the backgrounded command.
+        session (SessionState): the shell that starts it.
+    """
+    fds: dict[int, Channel | OwnedStream | None] = {
+        1: Channel.STDOUT,
+        2: Channel.STDERR,
+    }
+    for fd, descriptor in session.descriptors.items():
+        if fd > 2:
+            fds[fd] = descriptor.stream
+    if node_kind(node) == NodeKind.REDIRECT:
+        for r in get_redirects(node)[1]:
+            if r.target == FD_CLOSE:
+                fds.pop(r.fd, None)
+            elif isinstance(r.target, int):
+                fds[r.fd] = fds.get(r.target)
+            else:
+                for fd in (1, 2) if r.fd == FD_BOTH else (r.fd,):
+                    fds[fd] = None
+    return {stream for stream in fds.values() if stream is not None}
 
 
 async def handle_background(
@@ -264,8 +307,11 @@ async def handle_background(
         job.process.info.pid if job.process is not None else None
     )
     session.last_bg_job_id = job.pid
-    if session.job_waits is not None:
-        session.job_waits.add(job)
+    waits = session.job_waits
+    if waits is not None and waits.reaches(
+        output, _job_streams(left, session)
+    ):
+        waits.add(job)
 
     if right is None:
         return (

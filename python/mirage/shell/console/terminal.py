@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.shell.console.job_console import JobConsole
-from mirage.shell.console.types import Channel
+from mirage.shell.console.types import Channel, OwnedStream
 
 
 class Terminal(JobConsole):
@@ -33,6 +33,7 @@ class Terminal(JobConsole):
         self.chunks: list[tuple[Channel, bytes, bool]] = []
         self.reader: JobConsole | None = None
         self.jobs = JobOutput(JobSide(self))
+        self.ended = 0
 
     async def emit(self, channel: Channel, data: bytes) -> None:
         """Take what the line wrote.
@@ -61,16 +62,24 @@ class Terminal(JobConsole):
     async def attach(self, reader: JobConsole | None) -> None:
         """Start a line, handing a streaming caller what waited for it.
 
+        The reader takes the chunks one at a time and becomes the line's
+        only once none is left, so a job that writes meanwhile lands
+        behind what waited; a line ended before that never attaches it.
+
         Args:
             reader (JobConsole | None): where the caller streams the line,
                 None to collect it.
         """
-        self.reader = reader
         if reader is None:
+            self.reader = None
             return
-        waiting, self.chunks = self.chunks, []
-        for channel, data, _ in waiting:
+        ended = self.ended
+        while self.chunks:
+            channel, data, _ = self.chunks.pop(0)
             await reader.emit(channel, data)
+            if self.ended != ended:
+                return
+        self.reader = reader
 
     def drain(self) -> tuple[bytes, bytes]:
         """What reached the terminal so far, stdout and stderr, taken out
@@ -98,12 +107,14 @@ class Terminal(JobConsole):
     def take(self) -> tuple[bytes, bytes]:
         """End a line: its stdout and stderr, jobs' output among them."""
         self.reader = None
+        self.ended += 1
         return self.drain()
 
     def drop_line(self) -> None:
         """End an abandoned line: what it wrote goes, its jobs' stays."""
         self.chunks = [chunk for chunk in self.chunks if chunk[2]]
         self.reader = None
+        self.ended += 1
 
 
 class JobSide(JobConsole):
@@ -153,10 +164,32 @@ class JobOutput(JobConsole):
             channel (Channel): stdout or stderr.
             data (bytes): the bytes.
         """
-        if self.recorder is not None:
-            await self.recorder.emit(channel, data)
-            return
-        await self.target.emit(channel, data)
+        to = self.recorder if self.recorder is not None else self.target
+        await to.emit(channel, data)
+
+    async def emit_to(self, stream: OwnedStream, data: bytes) -> None:
+        """Write what a job wrote to a stream a level owns, keeping the
+        stream.
+
+        Args:
+            stream (OwnedStream): the stream the bytes were written to.
+            data (bytes): the bytes.
+        """
+        to = self.recorder if self.recorder is not None else self.target
+        await to.emit_to(stream, data)
+
+    def passes(
+        self, streams: set[Channel | OwnedStream]
+    ) -> set[Channel | OwnedStream]:
+        """Which of the writes of the shell this leads to (``target``),
+        or the streams above it, a job's streams reach: a shell passes
+        them on as they are, a redirect (``JobRoute``) through its
+        descriptors.
+
+        Args:
+            streams (set[Channel | OwnedStream]): what the job writes.
+        """
+        return set(streams)
 
 
 class Tee(JobConsole):
@@ -182,3 +215,13 @@ class Tee(JobConsole):
         """
         await self.console.emit(channel, data)
         await self.copy.emit(channel, data)
+
+    async def emit_to(self, stream: OwnedStream, data: bytes) -> None:
+        """Write to both, the copy keeping the stream.
+
+        Args:
+            stream (OwnedStream): the stream the bytes were written to.
+            data (bytes): the bytes.
+        """
+        await self.console.emit(stream.channel, data)
+        await self.copy.emit_to(stream, data)

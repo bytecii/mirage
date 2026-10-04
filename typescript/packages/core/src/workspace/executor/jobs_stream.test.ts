@@ -17,7 +17,7 @@ import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { Channel } from '../../shell/console/index.ts'
 import { JobStatus } from '../../shell/job_table/index.ts'
 import type { ShellParser } from '../../shell/parse/index.ts'
-import { MountMode } from '../../types.ts'
+import { MountMode, type PathSpec } from '../../types.ts'
 import { getTestParser } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace.ts'
 
@@ -150,6 +150,52 @@ describe('job output reaches the session terminal as it is written', () => {
     if (job === null) throw new Error('job 1 missing')
     expect(DEC.decode(await job.console.snapshot(Channel.STDOUT))).toBe('b\na\n')
     expect((await ws.shell('true')).stdoutText).toBe('b\na\n')
+  })
+})
+
+/** Make each file's first write take 0.2 s, as a remote mount's can. */
+function slowFirstWrites(ws: Workspace): void {
+  type Dispatch = (op: string, path: PathSpec, ...rest: unknown[]) => Promise<unknown>
+  const dispatcher = (ws as unknown as { dispatcher: { dispatch: Dispatch } }).dispatcher
+  const inner = dispatcher.dispatch.bind(dispatcher)
+  const seen = new Set<string>()
+  dispatcher.dispatch = async (op, path, ...rest) => {
+    const key = `${op} ${path.virtual}`
+    if (['write', 'append', 'pwrite'].includes(op) && !seen.has(key)) {
+      seen.add(key)
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+    return inner(op, path, ...rest)
+  }
+}
+
+async function slowly(line: string): Promise<string> {
+  const ws = buildWs()
+  slowFirstWrites(ws)
+  return (await ws.shell(line)).stdoutText
+}
+
+describe('a job writing through its redirect', () => {
+  it('keeps both when it writes while the redirect opens the file', async () => {
+    expect(
+      await slowly('{ echo first; (sleep .05; echo second) & } > /m/out; wait; cat /m/out'),
+    ).toBe('first\nsecond\n')
+  })
+
+  it('keeps every line when jobs write one file at once', async () => {
+    expect(
+      await slowly(
+        '{ echo a; (sleep .3; echo b) & (sleep .3; echo c) & } > /m/out; wait; sort /m/out',
+      ),
+    ).toBe('a\nb\nc\n')
+  })
+
+  it('writes after what the redirect held, in every file', async () => {
+    expect(
+      await slowly(
+        '{ echo a; echo b >&2; (sleep .05; echo c >&2) & } > /m/out 2> /m/err; wait; cat /m/err',
+      ),
+    ).toBe('b\nc\n')
   })
 })
 

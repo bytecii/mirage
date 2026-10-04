@@ -14,7 +14,7 @@
 
 export { KILLED_OUTCOME } from './constants.ts'
 export { Channel } from './types.ts'
-export type { ConsoleChunk, ReadResult } from './types.ts'
+export type { ConsoleChunk, OwnedStream, ReadResult } from './types.ts'
 export { exitOutcome } from './utils.ts'
 export { JobConsole } from './job_console.ts'
 export { JobOutput, JobSide, Tee, Terminal } from './terminal.ts'

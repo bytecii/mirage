@@ -781,6 +781,7 @@ async function routeArgv(
       namespace,
       executeFn,
       ...(sink === undefined ? {} : { sink }),
+      ...(jobTable === null ? {} : { jobTable }),
     })
   }
 

@@ -505,8 +505,7 @@ async function runPreparedLine(
           // A nested shell's jobs are its own: its `jobs` and `wait` see
           // only them, and its caller's never see them.
           const jobs = opts.jobTable ?? options.jobTable
-          if (opts.ownJobs === true) innerOpts.jobTable = new JobTable(null, env.jobTable.processes)
-          else if (jobs !== undefined) innerOpts.jobTable = jobs
+          if (jobs !== undefined) innerOpts.jobTable = jobs
           const session = opts.session ?? effectiveSession
           const substitutionTree =
             opts.substitution === true && opts.node?.type === NT.COMMAND_SUBSTITUTION
@@ -540,7 +539,8 @@ async function runPreparedLine(
           const saved = opts.substitution === true ? session.snapshot() : null
           const terminalOutput = session.terminalOutput
           const capture = new Terminal()
-          const waits = new JobWaits()
+          const waits = new JobWaits(capture.jobs)
+          const rest = session.jobOutput ?? session.tty.jobs
           if (saved !== null) {
             session.terminalOutput = false
             inheritExitTrap(session)
@@ -592,7 +592,7 @@ async function runPreparedLine(
             )
             await capture.emit(Channel.STDOUT, await io.materializeStdout())
             await capture.emit(Channel.STDERR, await io.materializeStderr())
-            await waits.join()
+            await waits.join(rest)
             const [out, err] = capture.take()
             io.stdout = out.byteLength > 0 ? out : null
             io.stderr = err.byteLength > 0 ? err : null

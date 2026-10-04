@@ -374,12 +374,9 @@ async def test_factory_failure_never_enters_job_runner():
 
 @pytest.mark.asyncio
 async def test_a_substitution_lists_its_callers_jobs_before_its_own():
-    async def run(job):
-        return IOResult(), ExecutionNode(command="x", exit_code=0)
-
     caller = JobTable()
-    outer = caller.submit("outer", run, cwd="/")
+    outer = caller.submit("outer", _run_forever, cwd="/")
     inner_table = JobTable(processes=caller.processes, parent=caller)
-    inner = inner_table.submit("inner", run, cwd="/")
+    inner = inner_table.submit("inner", _run_forever, cwd="/")
     assert inner_table.listing() == [outer, inner]
     assert inner_table.list_jobs() == [inner]

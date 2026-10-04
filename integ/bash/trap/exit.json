@@ -1597,6 +1597,142 @@
         "stdout": "present:1\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "shell_trap_bash_c_exit_waits_its_own_jobs",
+      "seq": 512047,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "bash -c 'trap \"wait; echo cleanup\" EXIT; (sleep 0.1; echo child) & true'",
+      "expect": {
+        "exit": 0,
+        "stdout": "child\ncleanup\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_trap_bash_c_exit_sees_none_of_the_callers_jobs",
+      "seq": 512048,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "(sleep 0.2) & bash -c 'trap \"wait %1 2>/dev/null; echo st=\\$?\" EXIT; true'; wait",
+      "expect": {
+        "exit": 0,
+        "stdout": "st=127\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_trap_subshell_exit_waits_its_own_jobs",
+      "seq": 512049,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "( trap 'wait; echo cleanup' EXIT; (sleep 0.1; echo child) & true )",
+      "expect": {
+        "exit": 0,
+        "stdout": "child\ncleanup\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_trap_subshell_exit_sees_none_of_the_callers_jobs",
+      "seq": 512050,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "(sleep 0.2) & ( trap 'wait %1 2>/dev/null; echo st=$?' EXIT; true ); wait",
+      "expect": {
+        "exit": 0,
+        "stdout": "st=127\n",
+        "stderr": ""
+      }
     }
   ]
 }

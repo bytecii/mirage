@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import { IOResult } from '../../io/types.ts'
 import { ExecutionNode } from '../../workspace/types.ts'
+import { Channel, JobConsole, JobOutput } from '../console/index.ts'
 import { JobTable } from './table.ts'
 import type { JobResult } from './types.ts'
 import { JobWaits } from './waits.ts'
@@ -22,7 +23,7 @@ import { JobWaits } from './waits.ts'
 describe('JobWaits', () => {
   it('join outlasts every job, including ones added meanwhile', async () => {
     const table = new JobTable()
-    const waits = new JobWaits()
+    const waits = new JobWaits(new JobOutput(new JobConsole()))
     let open: () => void = () => undefined
     const gate = new Promise<void>((resolve) => {
       open = resolve
@@ -55,7 +56,7 @@ describe('JobWaits', () => {
       }),
     )
     let joined = false
-    const join = waits.join().then(() => {
+    const join = waits.join(new JobConsole()).then(() => {
       joined = true
     })
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -63,5 +64,24 @@ describe('JobWaits', () => {
     open()
     await join
     expect(finished).toEqual(['first', 'late'])
+  })
+
+  it('counts a job only through a stream the capture reads', () => {
+    const capture = new JobOutput(new JobConsole())
+    const waits = new JobWaits(capture)
+    expect(waits.reaches(capture, new Set([Channel.STDOUT]))).toBe(true)
+    expect(waits.reaches(capture, new Set([Channel.STDERR]))).toBe(false)
+    expect(waits.reaches(new JobOutput(capture), new Set([Channel.STDOUT]))).toBe(true)
+    expect(
+      new JobWaits(capture, new Set([Channel.STDERR])).reaches(capture, new Set([Channel.STDERR])),
+    ).toBe(true)
+  })
+
+  it('hands what the other jobs write on to the caller once it ends', async () => {
+    const capture = new JobOutput(new JobConsole())
+    const rest = new JobConsole()
+    await new JobWaits(capture).join(rest)
+    await capture.emit(Channel.STDERR, new TextEncoder().encode('late'))
+    expect(new TextDecoder().decode(await rest.snapshot(Channel.STDERR))).toBe('late')
   })
 })

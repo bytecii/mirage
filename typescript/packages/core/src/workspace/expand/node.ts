@@ -63,7 +63,6 @@ export type ExecuteFn = (
     substitution?: boolean
     sink?: JobConsole
     callStack?: CallStack
-    ownJobs?: boolean
     jobTable?: JobTable
   },
 ) => Promise<IOResult>
