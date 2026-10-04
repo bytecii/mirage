@@ -304,6 +304,56 @@ async def test_a_killed_job_ends_while_a_streamed_line_takes_what_waited():
     await line
 
 
+def _hold_second_write(
+    ws: Workspace, held: asyncio.Event, monkeypatch: pytest.MonkeyPatch
+) -> list[str]:
+    """Make the second write to ``/m/out`` wait for ``held``, recording
+    every write to it.
+
+    Args:
+        ws (Workspace): the workspace whose dispatcher to gate.
+        held (asyncio.Event): releases the second write.
+        monkeypatch (pytest.MonkeyPatch): patches the dispatcher.
+    """
+    inner = ws._dispatcher.dispatch
+    writes: list[str] = []
+
+    async def gated(
+        op: str, path: PathSpec, **kwargs: Any
+    ) -> tuple[Any, IOResult]:
+        if op in ("write", "append", "pwrite") and path.virtual == "/m/out":
+            writes.append(op)
+            if len(writes) == 2:
+                await held.wait()
+        return await inner(op, path, **kwargs)
+
+    monkeypatch.setattr(ws._dispatcher, "dispatch", gated)
+    return writes
+
+
+@pytest.mark.asyncio
+async def test_a_job_killed_while_its_write_waits_its_turn_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ws = _workspace()
+    held = asyncio.Event()
+    writes = _hold_second_write(ws, held, monkeypatch)
+    sid = ws._session_mgr.default_id
+    await ws.shell("{ (sleep 0.05; echo a) & (sleep 0.1; echo b) & } > /m/out")
+    await asyncio.sleep(0.3)
+    job = ws.job_table.get(2, sid)
+    assert job is not None and job.process is not None
+    assert len(writes) == 2
+    await ws.job_table.kill(2, sid)
+    done, _ = await asyncio.wait({job.process.task}, timeout=1)
+    assert done == {job.process.task}
+    held.set()
+    await ws.job_table.wait(1, sid)
+    await asyncio.sleep(0.05)
+    assert len(writes) == 2
+    assert await (await ws.shell("cat /m/out")).stdout_str() == "a\n"
+
+
 @pytest.mark.asyncio
 async def test_a_held_job_write_that_fails_leaves_the_line_running(
     monkeypatch: pytest.MonkeyPatch,

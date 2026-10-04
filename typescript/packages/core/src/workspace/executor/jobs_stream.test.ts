@@ -190,6 +190,22 @@ class Stalled extends JobConsole {
   }
 }
 
+/** Make the second write to `/m/out` wait for `held`, recording every write to it. */
+function holdSecondWrite(ws: Workspace, held: Promise<void>): string[] {
+  type Dispatch = (op: string, path: PathSpec, ...rest: unknown[]) => Promise<unknown>
+  const dispatcher = (ws as unknown as { dispatcher: { dispatch: Dispatch } }).dispatcher
+  const inner = dispatcher.dispatch.bind(dispatcher)
+  const writes: string[] = []
+  dispatcher.dispatch = async (op, path, ...rest) => {
+    if (['write', 'append', 'pwrite'].includes(op) && path.virtual === '/m/out') {
+      writes.push(op)
+      if (writes.length === 2) await held
+    }
+    return inner(op, path, ...rest)
+  }
+  return writes
+}
+
 /** Make every write fail after 0.2 s, as a remote mount's can. */
 function failingSlowWrites(ws: Workspace): void {
   type Dispatch = (op: string, path: PathSpec, ...rest: unknown[]) => Promise<unknown>
@@ -252,6 +268,26 @@ describe('a job writing through its redirect', () => {
     expect(ended).toBe(true)
     reader.release()
     await line
+  })
+
+  it('writes nothing for a job killed while its write waits its turn', async () => {
+    const ws = buildWs()
+    let release: () => void = () => undefined
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const writes = holdSecondWrite(ws, held)
+    const sid = ws.sessionManager.defaultId
+    await ws.shell('{ (sleep 0.05; echo a) & (sleep 0.1; echo b) & } > /m/out')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const job = ws.jobTable.get(2, sid)
+    if (job?.process == null) throw new Error('job 2 missing')
+    expect(writes).toHaveLength(2)
+    await ws.jobTable.kill(2, sid)
+    await job.process.task
+    release()
+    await ws.jobTable.wait(1, sid)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(writes).toHaveLength(2)
+    expect((await ws.shell('cat /m/out')).stdoutText).toBe('a\n')
   })
 
   it('leaves the line running when a held write fails', async () => {

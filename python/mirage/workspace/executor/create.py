@@ -96,7 +96,9 @@ async def write_description(
     description take turns, the first one (which opens the file)
     included, as the kernel orders writes to an open file: a background
     job writing alongside the shell neither reopens the file nor lands on
-    an offset another write has not advanced yet.
+    an offset another write has not advanced yet. A writer killed while it
+    waits for its turn writes nothing: its cancelled task leaves the
+    queue.
 
     Args:
         dispatch (DispatchFn): operation dispatcher.

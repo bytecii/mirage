@@ -15,12 +15,13 @@ import type { FileDescription } from '../../shell/descriptors.ts'
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { DEFAULT_UMASK } from '../../context/session_context.ts'
+import { DEFAULT_UMASK, getCurrentSession } from '../../context/session_context.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import type { PathSpec } from '../../types.ts'
 import { isFsError } from '../../utils/errors.ts'
 import { spliceWindow } from '../../utils/ranges.ts'
 import type { SessionState } from '../session/session.ts'
+import { hasAborted, makeAbortError } from '../abort.ts'
 
 /**
  * Write or append, giving a newly created file the umask's mode.
@@ -72,7 +73,10 @@ export async function createFile(
  * write left. Writes through one description take turns, the first one
  * (which opens the file) included, as the kernel orders writes to an open
  * file: a background job writing alongside the shell neither reopens the
- * file nor lands on an offset another write has not advanced yet.
+ * file nor lands on an offset another write has not advanced yet. A writer
+ * killed while it waits for its turn writes nothing: a promise cannot be
+ * cancelled, so the turn checks the writer's session (a job's own), as
+ * Python's cancelled task leaves the queue.
  */
 export async function writeDescription(
   dispatch: DispatchFn,
@@ -89,6 +93,8 @@ export async function writeDescription(
   file.writing = new Promise((resolve) => (done = resolve))
   try {
     await turn
+    const writer = getCurrentSession()?.abortSignal ?? undefined
+    if (hasAborted(writer)) throw makeAbortError(writer)
     await writeThrough(dispatch, session, file, data)
   } finally {
     done()
