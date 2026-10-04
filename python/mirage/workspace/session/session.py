@@ -28,6 +28,7 @@ from mirage.policy.types import (
 from mirage.process.config import ProcessPermissions
 from mirage.secrets.config import EnvVar
 from mirage.shell.array import ShellArray
+from mirage.shell.console import JobOutput, Terminal
 from mirage.shell.constants import (
     BIN_PREFIX,
     IFS_DEFAULT,
@@ -36,6 +37,7 @@ from mirage.shell.constants import (
     SHELL_ARGV0,
 )
 from mirage.shell.descriptors import Descriptor, StreamOwner
+from mirage.shell.job_table import JobWaits
 from mirage.shell.types import FunctionBody
 from mirage.shell.variable import (
     ManagedRef,
@@ -347,12 +349,11 @@ class SessionState:
     # sets it to the script file it is running, or to the name given after
     # `-c`, and restores it afterwards.
     script_name: str | None = None
-    # The `trap ... EXIT` action, run when this shell ends; "" is an
-    # ignored EXIT. A child shell sees its parent's action (`trap -p`
-    # lists it) with `exit_trap_inherited` set, and runs none until it
-    # registers its own. Live shell state: a session store keeps none.
     exit_trap: str | None = None
     exit_trap_inherited: bool = False
+    tty: Terminal = field(default_factory=Terminal, repr=False)
+    job_output: JobOutput | None = field(default=None, repr=False)
+    job_waits: JobWaits | None = field(default=None, repr=False)
     # Transient `set -e` marker: True when the failure just returned
     # came from a short-circuited &&/|| branch or a `!`-negated command,
     # which bash exempts from errexit. Reset on every node execution.
@@ -379,8 +380,6 @@ class SessionState:
     # word being scanned, plus the OPTIND value that offset belongs to.
     # A caller resetting OPTIND (e.g. to 1) makes the seen value stale,
     # which restarts the scan, matching bash's internal char pointer.
-    # The status the shell is ending with while its EXIT action runs: a
-    # bare `exit` in the action keeps it, as bash's does.
     _trap_status: int | None = field(default=None, repr=False)
     _getopts_pos: int = field(default=1, repr=False)
     _getopts_optind: int | None = field(default=None, repr=False)

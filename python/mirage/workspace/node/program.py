@@ -21,7 +21,7 @@ from mirage.io.types import ByteSource
 from mirage.policy.decisions import Decisions
 from mirage.policy.types import HandOff
 from mirage.shell.call_stack import CallStack
-from mirage.shell.console import JobConsole
+from mirage.shell.console import Channel, JobConsole
 from mirage.shell.constants import ERREXIT_EXEMPT_TYPES
 from mirage.shell.descriptors import ENCLOSING, Recorder, StreamOwner
 from mirage.shell.errors import DiscardSignal, ExitSignal
@@ -180,8 +180,11 @@ async def _run_program(
             last = child.end_point[0]
             if session.shell_options.get("verbose") and last >= first:
                 text = "\n".join(source_lines[first : last + 1])
-                merged_io = await merged_io.merge(
-                    IOResult(stderr=text.encode() + b"\n")
+                merged_io = await land(
+                    [(Channel.STDERR, text.encode() + b"\n", False)],
+                    sink,
+                    all_stdout,
+                    merged_io,
                 )
             # Marked read either way: a line reaches the reader once, so
             # a line whose own first statement turned the option on was
@@ -237,10 +240,18 @@ async def _run_program(
             # stream goes on there.
             recorder = Recorder()
             enclosing = ENCLOSING.set(recorder)
+            # A job this shell started writes into the statement while it
+            # runs, among what the statement writes.
+            jobs = session.job_output or session.tty.jobs
+            held = jobs.recorder
             try:
-                stdout, io, last_exec = await recurse(
-                    child, session, child_stdin, call_stack, sink=recorder
-                )
+                jobs.recorder = recorder
+                try:
+                    stdout, io, last_exec = await recurse(
+                        child, session, child_stdin, call_stack, sink=recorder
+                    )
+                finally:
+                    jobs.recorder = held
             except UNWINDING as sig:
                 merged_io = await land(
                     await statement_output(
@@ -257,13 +268,20 @@ async def _run_program(
                 ):
                     # bash's DISCARD: the rest of this line goes, and the
                     # loop resumes at the next line with `$?` at 1.
-                    if sig.stdout:
-                        all_stdout.append(sig.stdout)
-                    merged_io = await merged_io.merge(
-                        IOResult(
-                            exit_code=sig.exit_code, stderr=sig.stderr or None
-                        )
+                    merged_io = await land(
+                        [
+                            (channel, data, False)
+                            for channel, data in (
+                                (Channel.STDOUT, sig.stdout or b""),
+                                (Channel.STDERR, sig.stderr),
+                            )
+                            if data
+                        ],
+                        sink,
+                        all_stdout,
+                        merged_io,
                     )
+                    merged_io.exit_code = sig.exit_code
                     record_status(session, sig.exit_code)
                     last_exec = ExecutionNode(
                         command=get_text(child),

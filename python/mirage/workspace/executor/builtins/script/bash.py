@@ -20,7 +20,7 @@ from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
 from mirage.runtime.types import DispatchFn
-from mirage.shell.console import JobConsole
+from mirage.shell.console import JobConsole, JobOutput
 from mirage.shell.constants import IFS_DEFAULT
 from mirage.shell.options import parse_option_word
 from mirage.workspace.executor.builtins.script.constants import (
@@ -158,6 +158,7 @@ async def handle_bash(
         return None, IOResult(), ExecutionNode(command=name, exit_code=0)
     saved = session.snapshot()
     clear_exit_trap(session)
+    session.job_output = JobOutput(session.job_output or session.tty.jobs)
     session.positional_args = positional
     session.script_name = script_name
     # bash starts every shell with the default IFS and never reads one
@@ -172,8 +173,14 @@ async def handle_bash(
     # its builtins again, whatever `find -exec` marked the outer line.
     token = clear_program_invocation()
     try:
+        # A nested shell is its own process, with its own jobs: its
+        # `jobs` and `wait` see only them, and they are not its caller's.
         io = await execute_fn(
-            script, session_id=session.session_id, stdin=stdin, sink=sink
+            script,
+            session_id=session.session_id,
+            stdin=stdin,
+            sink=sink,
+            own_jobs=True,
         )
         io = await finish_shell(execute_fn, session, io, stdin)
     finally:

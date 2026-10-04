@@ -3449,6 +3449,54 @@
           }
         }
       ]
+    },
+    {
+      "id": "job_output_after_a_line_comes_first_in_the_next",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "(sleep 0.05; echo late) & echo now",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "now\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "sleep 0.2; echo next",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "late\nnext\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "wait; echo done",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "done\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
     }
   ]
 }

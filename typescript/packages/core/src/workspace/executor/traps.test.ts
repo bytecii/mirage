@@ -89,6 +89,16 @@ describe('runExitTrap', () => {
     expect(errexit?.exitCode).toBe(1)
   })
 
+  // `false && x` or `! true` ends the action failing, but `set -e` does
+  // not act on it, so it ends no shell.
+  it('keeps the status on a failure errexit exempts', async () => {
+    const session = makeSession('false && echo skipped')
+    session.shellOptions.errexit = true
+    session.errexitImmune = true
+    const exempt = await runExitTrap(recorder(new IOResult({ exitCode: 1 })).run, session, 7)
+    expect(exempt?.exitCode).toBe(7)
+  })
+
   it('does not start an action again while one runs', async () => {
     const session = makeSession('echo again')
     session.trapStatus = 2

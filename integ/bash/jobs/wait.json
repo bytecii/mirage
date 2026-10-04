@@ -69,7 +69,7 @@
       }
     },
     {
-      "id": "job_wait_adopts_output_only_once",
+      "id": "job_wait_shows_output_only_once",
       "seq": 513030,
       "targets": [
         "ram",

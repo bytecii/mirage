@@ -18,7 +18,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 
 from mirage.io.async_line_iterator import SharedInput
-from mirage.shell.console import Channel, JobConsole
+from mirage.shell.console import Channel, JobConsole, Terminal
 from mirage.shell.constants import FD_BOTH, FD_CLOSE
 from mirage.shell.types import Redirect, RedirectKind
 from mirage.types import PathSpec
@@ -147,16 +147,21 @@ async def deliver(
     """Send bytes written to a stream another level owns toward it.
 
     They go up through the sink, or the enclosing level's recorder when
-    the level returns its output as a value. A console that keeps no
-    streams takes them on their channel. False when there is nowhere
-    above.
+    the level returns its output as a value or writes to a terminal of
+    its own (a line's, a substitution's), which owns no stream above
+    it. A console that keeps no streams takes them on their channel.
+    False when there is nowhere above.
 
     Args:
         sink (JobConsole | None): where the level writes.
         stream (Inherited): the stream the bytes were written to.
         data (bytes): the bytes.
     """
-    target = sink if sink is not None else ENCLOSING.get()
+    target = (
+        sink
+        if sink is not None and not isinstance(sink, Terminal)
+        else ENCLOSING.get()
+    )
     if isinstance(target, Recorder):
         await target.emit_to(stream, data)
     elif target is not None:

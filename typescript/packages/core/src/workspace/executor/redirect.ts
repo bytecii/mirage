@@ -53,7 +53,7 @@ import {
 import { drained, type ExecuteNodeFn, pump } from './jobs.ts'
 import { carried, isUnwinding, takeStderr, type Unwinding } from './control.ts'
 import type { JobConsole } from '../../shell/console/index.ts'
-import { Channel } from '../../shell/console/index.ts'
+import { Channel, JobOutput } from '../../shell/console/index.ts'
 import { concat } from '../../io/cachable_iterator.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
@@ -65,6 +65,41 @@ const TO_STDERR = Symbol('stderr')
 // echo does.
 const CLOSED = Symbol('closed')
 type FdDest = typeof TO_STDOUT | typeof TO_STDERR | typeof CLOSED | FileDescription | Inherited
+
+/**
+ * Where a background job started under a redirect writes.
+ *
+ * Into the redirected command's recorder while the command runs, so it
+ * goes through the descriptors with what the command writes; after that
+ * straight through them, to the file the redirect opened or the stream it
+ * pointed at, as bash's job keeps the descriptors it was started with.
+ */
+export class JobRoute extends JobOutput {
+  constructor(
+    recorder: Recorder,
+    readonly outputs: ReadonlyMap<number, FdDest>,
+    outer: JobConsole,
+    readonly dispatch: DispatchFn,
+    readonly session: SessionState,
+  ) {
+    super(outer)
+    this.recorder = recorder
+  }
+
+  /** Route what a job wrote. */
+  override async emit(channel: Channel, data: Uint8Array): Promise<void> {
+    if (this.recorder !== null) {
+      await this.recorder.emit(channel, data)
+      return
+    }
+    const dest = this.outputs.get(channel === Channel.STDOUT ? 1 : 2)
+    if (dest === TO_STDOUT) await this.target.emit(Channel.STDOUT, data)
+    else if (dest === TO_STDERR) await this.target.emit(Channel.STDERR, data)
+    else if (dest instanceof Inherited) await this.target.emit(dest.channel, data)
+    else if (dest instanceof FileDescription)
+      await writeDescription(this.dispatch, this.session, dest, data)
+  }
+}
 
 /** Ordered descriptor bindings for one command, restored after execution.
  * Output opens remain deferred until admission completes so a refused command
@@ -243,6 +278,9 @@ export async function handleRedirect(
     .map((r) => ensureScope(r.target))
   const terminalOutput = session.terminalOutput
   session.terminalOutput = terminalOutput && outputs.get(1) === TO_STDOUT
+  const jobOutput = session.jobOutput
+  const route = new JobRoute(recorder, outputs, jobOutput ?? session.tty.jobs, dispatch, session)
+  session.jobOutput = route
   try {
     const given = inputs.get(0) ?? null
     if (command === null) {
@@ -277,6 +315,8 @@ export async function handleRedirect(
       if (diagnostic.byteLength > 0) await recorder.emit(Channel.STDERR, diagnostic)
     }
   } finally {
+    route.recorder = null
+    session.jobOutput = jobOutput
     for (const file of files) file.emit = null
     session.terminalOutput = terminalOutput
     for (const fd of claimed) {

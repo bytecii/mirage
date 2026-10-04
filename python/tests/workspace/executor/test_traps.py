@@ -1,3 +1,17 @@
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
 import pytest
 
 from mirage.io import IOResult
@@ -88,6 +102,17 @@ async def test_failure_counts_only_under_errexit():
 
 
 @pytest.mark.asyncio
+async def test_an_exempt_failure_keeps_the_status_under_errexit():
+    # `false && x` or `! true` ends the action failing, but `set -e`
+    # does not act on it, so it ends no shell.
+    session = make_session("false && echo skipped")
+    session.shell_options["errexit"] = True
+    session.errexit_immune = True
+    exempt = await run_exit_trap(Recorder(IOResult(exit_code=1)), session, 7)
+    assert exempt is not None and exempt.exit_code == 7
+
+
+@pytest.mark.asyncio
 async def test_an_action_running_does_not_start_again():
     session = make_session("echo again")
     session._trap_status = 2
@@ -118,26 +143,30 @@ async def test_finish_shell_appends_cleanup_after_the_line():
     assert io.exit_code == 4
 
 
+async def _exits():
+    raise ExitSignal(3, stdout=b"body\n")
+
+
+async def _ends():
+    return b"body\n", IOResult(exit_code=2), ExecutionNode(exit_code=2)
+
+
 @pytest.mark.asyncio
 async def test_end_shell_carries_cleanup_on_an_exit():
-    async def body():
-        raise ExitSignal(3, stdout=b"body\n")
-
     run = Recorder(IOResult(stdout=b"cleanup\n"))
     with pytest.raises(ExitSignal) as exc:
-        await end_shell(run, make_session("echo cleanup"), None, None, body())
+        await end_shell(
+            run, make_session("echo cleanup"), None, None, _exits()
+        )
     assert exc.value.stdout == b"body\ncleanup\n"
     assert exc.value.contained_code == 3
 
 
 @pytest.mark.asyncio
 async def test_end_shell_runs_cleanup_after_a_normal_end():
-    async def body():
-        return b"body\n", IOResult(exit_code=2), ExecutionNode(exit_code=2)
-
     run = Recorder(IOResult(stdout=b"cleanup\n"))
     stdout, io, node = await end_shell(
-        run, make_session("echo cleanup"), None, None, body()
+        run, make_session("echo cleanup"), None, None, _ends()
     )
     chunks = [chunk async for chunk in stdout]
     assert b"".join(chunks) == b"body\ncleanup\n"

@@ -45,6 +45,8 @@ import {
   type ScriptJSON,
 } from './serialize.ts'
 import type { HiddenPaths, HiddenVars, ShowEntry, ShownPaths } from '../../types.ts'
+import { type JobOutput, Terminal } from '../../shell/console/index.ts'
+import type { JobWaits } from '../../shell/job_table/index.ts'
 import type { MountMode } from '../../types.ts'
 
 /**
@@ -71,6 +73,8 @@ export interface ChildShellState {
   exitTrap: string | null
   exitTrapInherited: boolean
   trapStatus: number | null
+  jobOutput: JobOutput | null
+  jobWaits: JobWaits | null
   lastBgJobId: number | null
   getoptsPos: number
   getoptsOptind: number | null
@@ -456,15 +460,12 @@ export class SessionState {
   // sets it to the script file it is running, or to the name given after
   // `-c`, and restores it afterwards.
   scriptName: string | null
-  // The `trap ... EXIT` action, run when this shell ends; "" is an
-  // ignored EXIT. A child shell sees its parent's action (`trap -p`
-  // lists it) with `exitTrapInherited` set, and runs none until it
-  // registers its own. Live shell state: a session store keeps none.
   exitTrap: string | null = null
   exitTrapInherited = false
-  // The status the shell is ending with while its EXIT action runs: a
-  // bare `exit` in the action keeps it, as bash's does.
   trapStatus: number | null = null
+  tty = new Terminal()
+  jobOutput: JobOutput | null = null
+  jobWaits: JobWaits | null = null
   shellOptions: Record<string, boolean>
   // Transient `set -e` marker: true when the failure just returned
   // came from a short-circuited &&/|| branch or a `!`-negated command,
@@ -669,6 +670,9 @@ export class SessionState {
     forked.functionNames = this.functionNames
     forked.exitTrap = this.exitTrap
     forked.exitTrapInherited = this.exitTrapInherited
+    forked.tty = this.tty
+    forked.jobOutput = this.jobOutput
+    forked.jobWaits = this.jobWaits
     forked.getoptsPos = this.getoptsPos
     forked.getoptsOptind = this.getoptsOptind
     forked.abortSignal = this.abortSignal
@@ -768,6 +772,8 @@ export class SessionState {
       exitTrap: this.exitTrap,
       exitTrapInherited: this.exitTrapInherited,
       trapStatus: this.trapStatus,
+      jobOutput: this.jobOutput,
+      jobWaits: this.jobWaits,
       lastBgJobId: this.lastBgJobId,
       getoptsPos: this.getoptsPos,
       getoptsOptind: this.getoptsOptind,
@@ -818,6 +824,8 @@ export class SessionState {
     this.exitTrap = state.exitTrap
     this.exitTrapInherited = state.exitTrapInherited
     this.trapStatus = state.trapStatus
+    this.jobOutput = state.jobOutput
+    this.jobWaits = state.jobWaits
     this.lastBgJobId = state.lastBgJobId
     this.getoptsPos = state.getoptsPos
     this.getoptsOptind = state.getoptsOptind

@@ -111,16 +111,25 @@ describe('capture sites: a sink must never leak into a captured value', () => {
   })
 })
 
-describe('bare wait adopts job output', () => {
-  // A real shell has nothing to adopt because its jobs share the
-  // terminal. Mirage jobs print to their console, so bare `wait` has to
-  // surface it or the output is stranded.
-  it('surfaces every job in id order', async () => {
+describe('job output reaches the session terminal as it is written', () => {
+  // A job writes to the terminal its shell writes to, as bash's does: the
+  // line running when it wrote shows it, or the next one does, and `wait`
+  // has nothing left to print.
+  it('reaches the lines once, and wait prints none', async () => {
     const ws = buildWs()
-    await ws.shell('echo a &')
-    await ws.shell('echo b &')
-    const res = await ws.shell('wait')
-    expect(res.stdoutText).toBe('a\nb\n')
+    const lines = [
+      await ws.shell('echo a &'),
+      await ws.shell('echo b &'),
+      await ws.shell('wait'),
+      await ws.shell('true'),
+    ]
+    expect(lines.map((line) => line.stdoutText).join('')).toBe('a\nb\n')
+  })
+
+  it('shows a line its jobs in the order they wrote', async () => {
+    const ws = buildWs()
+    const res = await ws.shell('(sleep 0.05; echo bg) & for i in 1 2; do echo $i; sleep 0.1; done')
+    expect(res.stdoutText).toBe('1\nbg\n2\n')
   })
 
   it('returns nothing and exit 0 when there are no jobs', async () => {
@@ -130,19 +139,17 @@ describe('bare wait adopts job output', () => {
     expect(res.exitCode).toBe(0)
   })
 
-  // A job started inside a backgrounded subshell has to reach its own
-  // console, not the enclosing job's. The subshell's executor closure is
-  // the only one built by hand, so it is the only one that can drop the
-  // per-call opts carrying that console; when it does, both nested jobs
-  // write straight to the outer console and bare `wait` adopts nothing,
-  // which turns the documented job-id order into completion order.
-  it('gives a job nested in a backgrounded subshell its own console', async () => {
+  // A nested job writes where the job that started it writes, its stdout,
+  // so that job's console and the terminal both show the two in the order
+  // they were written (bash's `b` then `a`).
+  it('writes a job nested in a backgrounded subshell through its job', async () => {
     const ws = buildWs()
     await ws.shell('( (sleep 0.15; echo a) & echo b & wait ) &')
     await ws.jobTable.wait(1, ws.sessionManager.defaultId)
     const job = ws.jobTable.get(1, ws.sessionManager.defaultId)
     if (job === null) throw new Error('job 1 missing')
-    expect(DEC.decode(await job.console.snapshot(Channel.STDOUT))).toBe('a\nb\n')
+    expect(DEC.decode(await job.console.snapshot(Channel.STDOUT))).toBe('b\na\n')
+    expect((await ws.shell('true')).stdoutText).toBe('b\na\n')
   })
 })
 

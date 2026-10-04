@@ -30,11 +30,11 @@ import { isFsError } from '../../utils/errors.ts'
 import { BreakSignal, ContinueSignal, carried, isUnwinding } from '../executor/control.ts'
 import { divertStatement } from '../executor/builtins/exec/index.ts'
 import { type ExecuteNodeFn, handleBackground } from '../executor/jobs.ts'
-import { failedRead, land, statementOutput } from '../executor/statement.ts'
+import { failedRead, land, statementOutput, type Written } from '../executor/statement.ts'
 import { runExitTrap } from '../executor/traps.ts'
 import type { ExecuteFn } from '../expand/node.ts'
 import { ENCLOSING, Recorder, type StreamOwner } from '../../shell/descriptors.ts'
-import type { JobConsole } from '../../shell/console/index.ts'
+import { Channel, type JobConsole } from '../../shell/console/index.ts'
 import type { Decisions } from '../../policy/decisions.ts'
 import type { HandOff } from '../../policy/types.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
@@ -174,8 +174,11 @@ async function runProgram(
       const last = child.endPosition?.row ?? startRow
       if (session.shellOptions.verbose === true && last >= first) {
         const text = sourceLines.slice(first, last + 1).join('\n')
-        mergedIo = await mergedIo.merge(
-          new IOResult({ stderr: new TextEncoder().encode(`${text}\n`) }),
+        mergedIo = await land(
+          [[Channel.STDERR, new TextEncoder().encode(`${text}\n`), false]],
+          sink,
+          allStdout,
+          mergedIo,
         )
       }
       // Marked read either way: a line reaches the reader once, so
@@ -237,14 +240,23 @@ async function runProgram(
       // (`exec 3>&1`) keeps its place, past an `exec` diversion, and what it
       // wrote to an enclosing level's stream goes on there.
       const recorder = new Recorder()
+      // A job this shell started writes into the statement while it
+      // runs, among what the statement writes.
+      const jobs = session.jobOutput ?? session.tty.jobs
+      const held = jobs.recorder
       try {
         // `exec < file` feeds the shell's stdin: a later `read` or
         // `while read` sees it, and each statement reads on from where
         // the one before it stopped.
         const childStdin = statementStdin(session, stdin, bound)
-        ;[s, ioResult, execNode] = await ENCLOSING.run(recorder, () =>
-          recurse(child, session, childStdin, callStack, { sink: recorder }),
-        )
+        jobs.recorder = recorder
+        try {
+          ;[s, ioResult, execNode] = await ENCLOSING.run(recorder, () =>
+            recurse(child, session, childStdin, callStack, { sink: recorder }),
+          )
+        } finally {
+          jobs.recorder = held
+        }
       } catch (err) {
         if (!isUnwinding(err)) throw err
         mergedIo = await land(
@@ -260,10 +272,17 @@ async function runProgram(
         ) {
           // bash's DISCARD: the rest of this line goes, and the loop
           // resumes at the next line with `$?` at 1.
-          if (err.stdout !== null) allStdout.push(err.stdout)
-          mergedIo = await mergedIo.merge(
-            new IOResult({ exitCode: err.exitCode, stderr: err.stderr }),
+          const discarded: Written[] = [
+            [Channel.STDOUT, err.stdout ?? new Uint8Array(), false],
+            [Channel.STDERR, err.stderr, false],
+          ]
+          mergedIo = await land(
+            discarded.filter(([, data]) => data.byteLength > 0),
+            sink,
+            allStdout,
+            mergedIo,
           )
+          mergedIo.exitCode = err.exitCode
           recordStatus(session, err.exitCode)
           lastExec = new ExecutionNode({
             command: getText(child),

@@ -15,7 +15,7 @@
 import { runAsShell } from '../../../../context/session_context.ts'
 import { materialize, IOResult } from '../../../../io/types.ts'
 import type { ByteSource } from '../../../../io/types.ts'
-import type { JobConsole } from '../../../../shell/console/index.ts'
+import { type JobConsole, JobOutput } from '../../../../shell/console/index.ts'
 import { IFS_DEFAULT } from '../../../../shell/constants.ts'
 import { parseOptionWord } from '../../../../shell/options.ts'
 import type { SessionState } from '../../../session/session.ts'
@@ -155,6 +155,7 @@ export async function handleBash(
   }
   const saved = session.snapshot()
   clearExitTrap(session)
+  session.jobOutput = new JobOutput(session.jobOutput ?? session.tty.jobs)
   session.positionalArgs = positional
   session.scriptName = scriptName
   // bash starts every shell with the default IFS and never reads one from
@@ -172,10 +173,13 @@ export async function handleBash(
       finishShell(
         executeFn,
         session,
+        // A nested shell is its own process, with its own jobs: its
+        // `jobs` and `wait` see only them, and they are not its caller's.
         await executeFn(script, {
           sessionId: session.sessionId,
           stdin,
           ...(sink === undefined ? {} : { sink }),
+          ownJobs: true,
         }),
         stdin,
       ),

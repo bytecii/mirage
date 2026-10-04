@@ -20,6 +20,7 @@ from mirage.shell.job_table.types import (
     JobRunner,
     JobStatus,
 )
+from mirage.shell.job_table.waits import JobWaits
 
 __all__ = [
     "KILLED_EXIT_CODE",
@@ -28,5 +29,6 @@ __all__ = [
     "JobRunner",
     "JobStatus",
     "JobTable",
+    "JobWaits",
     "cancel_job",
 ]

@@ -29,8 +29,11 @@ from mirage.workspace.types import ExecutionNode
 def inherit_exit_trap(session: SessionState) -> None:
     """Start a child shell: ``( )``, a pipeline stage, a job, ``$( )``.
 
-    It lists its parent's EXIT action, as bash's ``trap -p`` does there,
-    and runs none of it.
+    The session's ``exit_trap`` is the ``trap ... EXIT`` action, "" for
+    an ignored EXIT. A child shell keeps its parent's with
+    ``exit_trap_inherited`` set: it lists it, as bash's ``trap -p`` does
+    there, and runs none of it until it registers its own. It is live
+    shell state, which a session store keeps none of.
 
     Args:
         session (SessionState): the child's state.
@@ -92,6 +95,8 @@ async def run_exit_trap(
     if not action:
         return None
     record_status(session, status)
+    # The status the shell is ending with, while the action runs: a bare
+    # `exit` in it keeps it, as bash's does.
     saved = session._trap_status
     session._trap_status = status
     final = status
@@ -104,7 +109,13 @@ async def run_exit_trap(
         )
         stdout = await materialize(io.stdout) or b""
         stderr = await materialize(io.stderr) or b""
-        if io.exit_code != 0 and session.shell_options.get("errexit"):
+        # Only a failure `set -e` acts on ends the shell: one in a test,
+        # the left of `&&`/`||` or after `!` leaves the status alone.
+        if (
+            io.exit_code != 0
+            and session.shell_options.get("errexit")
+            and not session.errexit_immune
+        ):
             final = io.exit_code
     except ExitSignal as sig:
         stdout, stderr, final = sig.stdout or b"", sig.stderr, sig.exit_code

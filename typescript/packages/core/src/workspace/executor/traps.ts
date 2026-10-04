@@ -24,9 +24,13 @@ import type { ExecutionNode } from '../types.ts'
 import { recordStatus } from './statement.ts'
 
 /**
- * Start a child shell: `( )`, a pipeline stage, a job, `$( )`. It lists
- * its parent's EXIT action, as bash's `trap -p` does there, and runs none
- * of it.
+ * Start a child shell: `( )`, a pipeline stage, a job, `$( )`.
+ *
+ * The session's `exitTrap` is the `trap ... EXIT` action, '' for an
+ * ignored EXIT. A child shell keeps its parent's with `exitTrapInherited`
+ * set: it lists it, as bash's `trap -p` does there, and runs none of it
+ * until it registers its own. It is live shell state, which a session
+ * store keeps none of.
  */
 export function inheritExitTrap(session: SessionState): void {
   session.exitTrapInherited = session.exitTrap !== null
@@ -71,6 +75,8 @@ export async function runExitTrap(
   session.exitTrap = null
   if (action === '') return null
   recordStatus(session, status)
+  // The status the shell is ending with, while the action runs: a bare
+  // `exit` in it keeps it, as bash's does.
   const saved = session.trapStatus
   session.trapStatus = status
   let final = status
@@ -85,7 +91,10 @@ export async function runExitTrap(
     })
     stdout = await materialize(io.stdout)
     stderr = await io.materializeStderr()
-    if (io.exitCode !== 0 && session.shellOptions.errexit === true) final = io.exitCode
+    // Only a failure `set -e` acts on ends the shell: one in a test, the
+    // left of `&&`/`||` or after `!` leaves the status alone.
+    if (io.exitCode !== 0 && session.shellOptions.errexit === true && !session.errexitImmune)
+      final = io.exitCode
   } catch (err) {
     if (err instanceof ExitSignal) {
       stdout = err.stdout ?? new Uint8Array()

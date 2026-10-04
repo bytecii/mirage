@@ -16,6 +16,7 @@ from mirage.shell.console.constants import KILLED_OUTCOME
 from mirage.shell.console.job_console import JobConsole
 from mirage.shell.console.ram import RAMConsoleStore
 from mirage.shell.console.store import ConsoleStore
+from mirage.shell.console.terminal import JobOutput, JobSide, Tee, Terminal
 from mirage.shell.console.types import Channel, ConsoleChunk, ReadResult
 from mirage.shell.console.utils import exit_outcome
 
@@ -25,7 +26,11 @@ __all__ = [
     "ConsoleChunk",
     "ConsoleStore",
     "JobConsole",
+    "JobOutput",
+    "JobSide",
     "RAMConsoleStore",
     "ReadResult",
+    "Tee",
+    "Terminal",
     "exit_outcome",
 ]

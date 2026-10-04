@@ -1055,6 +1055,74 @@
       }
     },
     {
+      "id": "shell_trap_handler_errexit_exempt_and",
+      "seq": 512045,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "bash -c 'set -e; trap \"false && echo skipped\" EXIT; exit 7'; echo \"status:$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "status:7\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_trap_handler_errexit_exempt_negated",
+      "seq": 512046,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "bash -c 'set -e; trap \"echo cleanup; ! true\" EXIT; exit 7'; echo \"status:$?\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "cleanup\nstatus:7\n",
+        "stderr": ""
+      }
+    },
+    {
       "id": "shell_trap_alias_exit",
       "seq": 512031,
       "targets": [

@@ -12,6 +12,25 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-export { JobTable } from './table.ts'
-export { JobWaits } from './waits.ts'
-export { type ConsoleFactory, Job, type JobResult, type JobRunner, JobStatus } from './types.ts'
+import type { Job } from './types.ts'
+
+/**
+ * The background jobs started inside a capture (`$( )`, a pipe stage),
+ * which the capture waits for before it ends: bash reads the pipe until
+ * every writer has closed it, and a job holds it open.
+ */
+export class JobWaits {
+  readonly jobs: Job[] = []
+
+  /** Count a job the capture has to outlast. */
+  add(job: Job): void {
+    this.jobs.push(job)
+  }
+
+  /** Return once every job, including any a job started, has ended. */
+  async join(): Promise<void> {
+    // A job added while this waits is still reached: the loop reads the
+    // list as it grows.
+    for (const job of this.jobs) await job.console.waitFinished()
+  }
+}

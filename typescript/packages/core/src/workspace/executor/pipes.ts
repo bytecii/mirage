@@ -36,7 +36,7 @@ import { ExitSignal, PipeClosed, ReturnSignal } from '../../shell/errors.ts'
 import { carried, ended, isUnwinding } from './control.ts'
 import { ERREXIT_EXEMPT_TYPES, FORK_FAILED, FORK_FAILED_STATUS } from '../../shell/constants.ts'
 import { NodeType as NT } from '../../shell/types.ts'
-import type { JobTable } from '../../shell/job_table/index.ts'
+import { type JobTable, JobWaits } from '../../shell/job_table/index.ts'
 import type { SessionState } from '../session/session.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { ExecutionNode } from '../types.ts'
@@ -47,7 +47,7 @@ import type { Decisions } from '../../policy/decisions.ts'
 import type { HandOff } from '../../policy/types.ts'
 
 import { PipeConsole } from '../../shell/console/pipe.ts'
-import type { JobConsole } from '../../shell/console/index.ts'
+import { type JobConsole, JobOutput } from '../../shell/console/index.ts'
 import { ENCLOSING, Recorder } from '../../shell/descriptors.ts'
 import { Channel } from '../../shell/console/types.ts'
 import { runWithSession } from '../../context/session_context.ts'
@@ -103,6 +103,13 @@ export async function handlePipe(
       let io = new IOResult()
       let childExec = new ExecutionNode({ command: cmd.text })
       const stageStack = (callStack ?? new CallStack()).fork()
+      // A job a stage before the last starts writes into the pipe, and
+      // the reader sees end of input only once the job has closed it.
+      const waits = new JobWaits()
+      if (i < commands.length - 1) {
+        child.jobOutput = new JobOutput(output)
+        child.jobWaits = waits
+      }
       try {
         const [stdout, result, execution] = await endShell(
           executeFn,
@@ -115,6 +122,7 @@ export async function handlePipe(
         childExec = execution
         await pump(output, Channel.STDOUT, stdout)
         await pump(output, Channel.STDERR, io.stderr)
+        await waits.join()
       } catch (error) {
         if (error instanceof PipeClosed) {
           io.exitCode = 141
@@ -124,6 +132,7 @@ export async function handlePipe(
           io.exitCode = unwound.exitCode
           await pump(output, Channel.STDOUT, unwound.stdout)
           await pump(output, Channel.STDERR, unwound.stderr)
+          await waits.join()
         } else {
           output.end(error)
           throw error
@@ -331,6 +340,7 @@ export async function handleSubshell(
 ): Promise<Result> {
   const saved = session.snapshot()
   inheritExitTrap(session)
+  session.jobOutput = new JobOutput(session.jobOutput ?? session.tty.jobs)
   session.lineOpen = true
   // A child shell: `shift` or `set --` in it leaves the caller's
   // parameters alone, and it runs in none of the caller's loops.
@@ -397,11 +407,18 @@ export async function handleSubshell(
       let io: IOResult
       let childExec: ExecutionNode
       const recorder = new Recorder()
+      const jobs = session.jobOutput
+      const held = jobs.recorder
       try {
         const childStdin = statementStdin(session, stdin, bound)
-        ;[stdout, io, childExec] = await ENCLOSING.run(recorder, () =>
-          executeNode(child, session, childStdin, callStack, { sink: recorder }),
-        )
+        jobs.recorder = recorder
+        try {
+          ;[stdout, io, childExec] = await ENCLOSING.run(recorder, () =>
+            executeNode(child, session, childStdin, callStack, { sink: recorder }),
+          )
+        } finally {
+          jobs.recorder = held
+        }
       } catch (err) {
         if (!(err instanceof ExitSignal || err instanceof ReturnSignal)) throw err
         // A subshell is its own shell: exit (or ${var:?}) ends the

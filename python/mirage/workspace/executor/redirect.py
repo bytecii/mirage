@@ -24,7 +24,7 @@ from mirage.io.types import ByteSource, DeviceInput
 from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import encode_text
 from mirage.shell.call_stack import CallStack
-from mirage.shell.console import Channel, JobConsole
+from mirage.shell.console import Channel, JobConsole, JobOutput
 from mirage.shell.constants import (
     FD_BOTH,
     FD_CLOSE,
@@ -91,6 +91,59 @@ class _Unreadable(Enum):
     """A descriptor a read cannot use: closed, or open for writing only."""
 
     TOKEN = auto()
+
+
+class JobRoute(JobOutput):
+    """Where a background job started under a redirect writes.
+
+    Into the redirected command's recorder while the command runs, so
+    it goes through the descriptors with what the command writes; after
+    that straight through them, to the file the redirect opened or the
+    stream it pointed at, as bash's job keeps the descriptors it was
+    started with.
+
+    Args:
+        recorder (Recorder): the redirected command's recorder.
+        outputs (dict[int, _Fd | FileDescription | Inherited]): where
+            the redirect pointed stdout and stderr.
+        outer (JobConsole): where a job writes outside the redirect.
+        dispatch (DispatchFn): op door, for a file the job writes later.
+        session (SessionState): the shell, for file creation.
+    """
+
+    def __init__(
+        self,
+        recorder: Recorder,
+        outputs: dict[int, "_Fd | FileDescription | Inherited"],
+        outer: JobConsole,
+        dispatch: DispatchFn,
+        session: SessionState,
+    ) -> None:
+        super().__init__(outer)
+        self.recorder = recorder
+        self.outputs = outputs
+        self.dispatch = dispatch
+        self.session = session
+
+    async def emit(self, channel: Channel, data: bytes) -> None:
+        """Route what a job wrote.
+
+        Args:
+            channel (Channel): stdout or stderr.
+            data (bytes): the bytes.
+        """
+        if self.recorder is not None:
+            await self.recorder.emit(channel, data)
+            return
+        dest = self.outputs[1 if channel == Channel.STDOUT else 2]
+        if dest is _TO_STDOUT:
+            await self.target.emit(Channel.STDOUT, data)
+        elif dest is _TO_STDERR:
+            await self.target.emit(Channel.STDERR, data)
+        elif isinstance(dest, Inherited):
+            await self.target.emit(dest.channel, data)
+        elif isinstance(dest, FileDescription):
+            await write_description(self.dispatch, self.session, dest, data)
 
 
 def _persistently_closed(session: SessionState) -> set[int]:
@@ -322,6 +375,15 @@ async def handle_redirect(
     )
     terminal_output = session.terminal_output
     session.terminal_output = terminal_output and outputs[1] is _TO_STDOUT
+    job_output = session.job_output
+    route = JobRoute(
+        recorder,
+        outputs,
+        job_output or session.tty.jobs,
+        dispatch,
+        session,
+    )
+    session.job_output = route
     enclosing = ENCLOSING.set(recorder)
     try:
         if command is None:
@@ -356,6 +418,8 @@ async def handle_redirect(
                 await recorder.emit(Channel.STDERR, diagnostic)
     finally:
         ENCLOSING.reset(enclosing)
+        route.recorder = None
+        session.job_output = job_output
         for file in files:
             file.emit = None
         session.terminal_output = terminal_output

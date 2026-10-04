@@ -38,6 +38,7 @@ export type ExecuteStringFn = (
     signal?: AbortSignal
     sink?: JobConsole
     callStack?: CallStack
+    ownJobs?: boolean
   },
 ) => Promise<IOResult>
 

@@ -31,7 +31,7 @@ from mirage.policy.types import HandOff
 from mirage.process.supervisor import ProcessSupervisor
 from mirage.runtime.types import DispatchFn
 from mirage.shell.call_stack import CallStack
-from mirage.shell.console import JobConsole
+from mirage.shell.console import JobConsole, JobOutput
 from mirage.shell.console.pipe import PipeConsole
 from mirage.shell.console.types import Channel
 from mirage.shell.constants import (
@@ -41,7 +41,7 @@ from mirage.shell.constants import (
 )
 from mirage.shell.descriptors import ENCLOSING, Recorder
 from mirage.shell.errors import ExitSignal, PipeClosed, ReturnSignal
-from mirage.shell.job_table import JobTable
+from mirage.shell.job_table import JobTable, JobWaits
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import TSNodeLike
 from mirage.types import PathSpec
@@ -110,6 +110,12 @@ async def handle_pipe(
         io = IOResult()
         child_exec = ExecutionNode()
         stage_stack = (call_stack or CallStack()).fork()
+        # A job a stage before the last starts writes into the pipe, and
+        # the reader sees end of input only once the job has closed it.
+        waits = JobWaits()
+        if i < len(commands) - 1:
+            child.job_output = JobOutput(output)
+            child.job_waits = waits
         try:
             stdout, io, child_exec = await end_shell(
                 execute_fn,
@@ -122,6 +128,7 @@ async def handle_pipe(
             )
             await pump(output, Channel.STDOUT, stdout)
             await pump(output, Channel.STDERR, io.stderr)
+            await waits.join()
         except PipeClosed:
             io.exit_code = 141
         except UNWINDING as sig:
@@ -130,6 +137,7 @@ async def handle_pipe(
             io.exit_code = unwound.exit_code
             await pump(output, Channel.STDOUT, unwound.stdout)
             await pump(output, Channel.STDERR, unwound.stderr)
+            await waits.join()
         except BaseException as error:
             output.end(error)
             raise
@@ -323,6 +331,7 @@ async def handle_subshell(
     """
     saved = session.snapshot()
     inherit_exit_trap(session)
+    session.job_output = JobOutput(session.job_output or session.tty.jobs)
     session._line_open = True
     # A child shell: `shift` or `set --` in it leaves the caller's
     # parameters alone, and it runs in none of the caller's loops.
@@ -386,10 +395,16 @@ async def handle_subshell(
             child_stdin = statement_stdin(session, stdin, bound)
             recorder = Recorder()
             enclosing = ENCLOSING.set(recorder)
+            jobs = session.job_output
+            held = jobs.recorder
             try:
-                stdout, io, last_exec = await execute_node(
-                    child, session, child_stdin, call_stack, sink=recorder
-                )
+                jobs.recorder = recorder
+                try:
+                    stdout, io, last_exec = await execute_node(
+                        child, session, child_stdin, call_stack, sink=recorder
+                    )
+                finally:
+                    jobs.recorder = held
             except (ExitSignal, ReturnSignal) as sig:
                 # A subshell is its own shell: exit (or ${var:?}) ends
                 # the subshell only, becoming its exit status, and so
