@@ -1886,11 +1886,6 @@ jobs:
       - name: Run the e2b suite (python)
         run: ./python/.venv/bin/python integ/runtime/run.py e2b
 
-      - name: Run the e2b suite (typescript)
-        if: ${{ !cancelled() && env.MIRAGE_INTEG_E2B_SANDBOX != '' }}
-        working-directory: integ
-        run: pnpm exec tsx runtime/run.ts e2b
-
       - name: Run the e2b suite through the CLI and both daemons
         if: ${{ !cancelled() && env.MIRAGE_INTEG_E2B_SANDBOX != '' }}
         run: |

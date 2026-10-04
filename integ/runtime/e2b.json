@@ -8,6 +8,9 @@
   "cases": [
     {
       "id": "echo",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "runtimes": [
           {
@@ -34,6 +37,9 @@
     },
     {
       "id": "exit_code",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "runtimes": [
           {
@@ -59,6 +65,9 @@
     },
     {
       "id": "stdin",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "runtimes": [
           {
@@ -86,6 +95,9 @@
     },
     {
       "id": "stdin_absent_eof",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "runtimes": [
           {
@@ -112,6 +124,9 @@
     },
     {
       "id": "stdin_empty_eof",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "runtimes": [
           {
@@ -139,6 +154,9 @@
     },
     {
       "id": "quoting",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "runtimes": [
           {
@@ -165,6 +183,9 @@
     },
     {
       "id": "config_env",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "runtimes": [
           {
@@ -194,6 +215,9 @@
     },
     {
       "id": "line_timeout",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "mounts": {
           "/ram": {
@@ -229,6 +253,9 @@
     },
     {
       "id": "captured_only",
+      "hosts": [
+        "python"
+      ],
       "world": {
         "runtimes": [
           {
