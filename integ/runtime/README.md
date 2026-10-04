@@ -131,10 +131,15 @@ line door, not file calls: a file the line touches lives on the box.
 | ---------------------- | ---------------------------------------------------------------------- | ------------------ |
 | `docker.json`          | echo, exit code, stdin, config env, line timeout, captured commands    | yes                |
 | `ssh.json`             | the docker cases, stdin end of input, quoting                          | yes                |
-| `e2b.json`             | the ssh cases, against E2B Embed on the runner                         | yes (`integ-e2b`)  |
+| `e2b.json`             | the ssh cases, against E2B Embed on the runner; python host only       | yes (`integ-e2b`)  |
 | `smolvm.json`          | the docker cases and the guest's own kernel                            | no, needs KVM host |
 | `apple_container.json` | the docker cases, stderr, env, an unserved cwd, per-session containers | no, needs macOS 26 |
 | `sandlock.json`        | real CPython and node under Landlock, granted and refused writes       | no, needs Landlock |
+
+The e2b cases run on the python host only. E2B's sandbox proxy now and then
+closes its connection to envd while a command's output is still streaming
+and answers `unavailable ... ended before the stream completed`; only the
+JS SDK's traffic trips it, with or without mirage in between.
 
 ## Running
 
