@@ -28,6 +28,7 @@ import commandFunction from '../bash/command/function.json'
 import commandRun from '../bash/command/run.json'
 import jobsBackground from '../bash/jobs/bg.json'
 import jobsOutput from '../bash/jobs/output.json'
+import nestedSyntax from '../bash/quoted/nested_subshell.json'
 import traps from '../bash/trap/exit.json'
 
 export interface Outcome {
@@ -83,6 +84,7 @@ function battery(): [string, Check][] {
     commandFunction,
     jobsBackground,
     jobsOutput,
+    nestedSyntax,
   ]
   return files.flatMap((file) =>
     (file.cases as unknown as Case[]).map((c): [string, Check] => [
