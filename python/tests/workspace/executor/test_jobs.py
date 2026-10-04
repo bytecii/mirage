@@ -24,6 +24,7 @@ from mirage.shell.job_table import Job, JobStatus, JobTable
 from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from mirage.workspace.abort import MirageAbortError
 from mirage.workspace.executor.jobs import (
     handle_disown,
     handle_fg,
@@ -253,6 +254,53 @@ def test_a_job_writes_after_what_its_redirect_held_in_every_file(
         "2> /m/err; wait; cat /m/err"
     )
     assert asyncio.run(_slowly(line, monkeypatch)) == "b\nc\n"
+
+
+def _failing_slow_writes(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Make every write fail after 0.2 s, as a remote mount's can.
+
+    Args:
+        ws (Workspace): the workspace whose dispatcher to break.
+        monkeypatch (pytest.MonkeyPatch): patches the dispatcher.
+    """
+    inner = ws._dispatcher.dispatch
+
+    async def failing(
+        op: str, path: PathSpec, **kwargs: Any
+    ) -> tuple[Any, IOResult]:
+        if op in ("write", "append", "pwrite"):
+            await asyncio.sleep(0.2)
+            raise PermissionError(path.virtual)
+        return await inner(op, path, **kwargs)
+
+    monkeypatch.setattr(ws._dispatcher, "dispatch", failing)
+
+
+@pytest.mark.asyncio
+async def test_a_held_job_write_that_fails_leaves_the_line_running(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ws = _workspace()
+    _failing_slow_writes(ws, monkeypatch)
+    result = await ws.shell(
+        "{ echo first; (sleep .05; echo job) & } > /m/out; echo next=$?; wait"
+    )
+    assert await result.stdout_str() == "next=1\n"
+
+
+@pytest.mark.asyncio
+async def test_a_job_writes_the_file_after_its_redirect_is_canceled():
+    ws = _workspace()
+    cancel = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.05, cancel.set)
+    with pytest.raises(MirageAbortError):
+        await ws.shell(
+            "{ { sleep .1; echo late; } & sleep 5; } > /m/out", cancel=cancel
+        )
+    result = await ws.shell("sleep .3; cat /m/out")
+    assert await result.stdout_str() == "late\n"
 
 
 def test_bare_wait_with_no_jobs_returns_nothing():

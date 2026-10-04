@@ -3497,6 +3497,106 @@
           }
         }
       ]
+    },
+    {
+      "id": "aborted_redirect_still_takes_its_jobs_output",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "true",
+          "expect": {
+            "value": {
+              "exit_code": 0
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "{ { sleep 0.3; echo late; } & sleep 5; } > /data/out",
+          "cancel_after_ms": 100,
+          "expect": {
+            "value": {
+              "aborted": true
+            }
+          }
+        },
+        {
+          "op": "drain_processes"
+        },
+        {
+          "op": "exec",
+          "command": "cat /data/out",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "late\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "noisy_job_does_not_hold_back_a_streamed_line",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "mode": "write"
+          }
+        },
+        "runtimes": []
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "for i in $(seq 1 5000); do echo x; sleep 0.001; done &",
+          "expect": {
+            "value": {
+              "exit_code": 0
+            }
+          }
+        },
+        {
+          "op": "session",
+          "id": "other"
+        },
+        {
+          "op": "exec",
+          "session": "other",
+          "command": "sleep 0.2",
+          "expect": {
+            "value": {
+              "exit_code": 0
+            }
+          }
+        },
+        {
+          "op": "exec",
+          "command": "kill %1 && echo killed",
+          "sink_delay_ms": 5,
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "streamed_contains": "killed\n"
+            }
+          }
+        },
+        {
+          "op": "drain_processes"
+        }
+      ]
     }
   ]
 }

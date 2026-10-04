@@ -124,16 +124,27 @@ export class JobRoute extends JobOutput {
   /**
    * Send on, in order, what jobs wrote while the redirect wrote its
    * command's output, then let them write straight through: the command
-   * wrote first, and its first write is the one that opens the file.
+   * wrote first, and its first write is the one that opens the file. A
+   * held write that fails is the job's, which has moved on, so it never
+   * stops the line that released it.
    */
   async release(): Promise<void> {
-    let held = this.recorder
-    while (held instanceof Recorder && held.chunks.length > 0) {
-      this.recorder = new Recorder()
-      for (const [key, data] of held.chunks) await this.write(key, data)
-      held = this.recorder
+    try {
+      let held = this.recorder
+      while (held instanceof Recorder && held.chunks.length > 0) {
+        this.recorder = new Recorder()
+        for (const [key, data] of held.chunks) {
+          try {
+            await this.write(key, data)
+          } catch (error) {
+            if (!isFsError(error)) throw error
+          }
+        }
+        held = this.recorder
+      }
+    } finally {
+      this.recorder = null
     }
-    this.recorder = null
   }
 
   private async write(key: Channel | Inherited, data: Uint8Array): Promise<void> {
@@ -365,9 +376,9 @@ export async function handleRedirect(
       if (diagnostic.byteLength > 0) await recorder.emit(Channel.STDERR, diagnostic)
     }
   } finally {
-    // What a job writes from here waits until the command's own output
-    // is written (`route.release()`).
-    route.recorder = new Recorder()
+    // A body that raised (an abort, an error) skips the writes below: its
+    // jobs write straight through.
+    route.recorder = null
     session.jobOutput = jobOutput
     for (const file of files) file.emit = null
     session.terminalOutput = terminalOutput
@@ -378,6 +389,9 @@ export async function handleRedirect(
     }
   }
   let stdout: Uint8Array | null = null
+  // What a job writes from here waits until the command's own output is
+  // written (`route.release()`).
+  route.recorder = new Recorder()
   try {
     const chunks = recorder.chunks
     if (refused) {

@@ -18,20 +18,23 @@ import { Channel, JobConsole, Tee, Terminal } from './index.ts'
 
 const enc = (text: string): Uint8Array => new TextEncoder().encode(text)
 
-/** A reader a job writes to the terminal while it takes its first chunk. */
-class JobWritesMeanwhile extends JobConsole {
-  wrote = false
+const turn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
-  constructor(readonly tty: Terminal) {
-    super()
-  }
-
+/** A reader that lets the loop turn before it takes each chunk. */
+class Paced extends JobConsole {
   override async emit(channel: Channel, data: Uint8Array): Promise<void> {
-    if (!this.wrote) {
-      this.wrote = true
-      await this.tty.jobs.emit(Channel.STDOUT, enc('meanwhile\n'))
-    }
+    await turn()
     await super.emit(channel, data)
+  }
+}
+
+/** Write a numbered line as a job on every turn of the loop until `stop.done`. */
+async function writeUntil(tty: Terminal, stop: { done: boolean }): Promise<void> {
+  let count = 0
+  while (!stop.done) {
+    count += 1
+    await tty.jobs.emit(Channel.STDOUT, enc(`${String(count)}\n`))
+    await turn()
   }
 }
 
@@ -89,13 +92,40 @@ describe('Terminal', () => {
     const tty = new Terminal()
     await tty.jobs.emit(Channel.STDOUT, enc('one\n'))
     await tty.jobs.emit(Channel.STDOUT, enc('two\n'))
-    const reader = new JobWritesMeanwhile(tty)
-    await tty.attach(reader)
+    const reader = new Stalled()
+    const attach = tty.attach(reader)
+    await reader.entered
+    let landed = false
+    const job = tty.jobs.emit(Channel.STDOUT, enc('meanwhile\n')).then(() => {
+      landed = true
+    })
+    await turn()
+    expect(landed).toBe(false)
+    reader.release()
+    await attach
+    await job
     expect(new TextDecoder().decode(await reader.snapshot(Channel.STDOUT))).toBe(
       'one\ntwo\nmeanwhile\n',
     )
     expect(tty.reader).toBe(reader)
   })
+
+  it('a noisy job does not hold a reader from attaching', async () => {
+    const tty = new Terminal()
+    const stop = { done: false }
+    const job = writeUntil(tty, stop)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const reader = new Paced()
+    await tty.attach(reader)
+    expect(tty.reader).toBe(reader)
+    stop.done = true
+    await job
+    const lines = new TextDecoder()
+      .decode(await reader.snapshot(Channel.STDOUT))
+      .split('\n')
+      .filter((line) => line !== '')
+    expect(lines).toEqual(lines.map((_, i) => String(i + 1)))
+  }, 1000)
 
   it('a line ended while its reader attaches never attaches it', async () => {
     const tty = new Terminal()
@@ -103,12 +133,15 @@ describe('Terminal', () => {
     const reader = new Stalled()
     const attach = tty.attach(reader)
     await reader.entered
+    const job = tty.jobs.emit(Channel.STDOUT, enc('meanwhile\n'))
+    await turn()
     tty.dropLine()
+    await job
     reader.release()
     await attach
     expect(tty.reader).toBeNull()
     await tty.jobs.emit(Channel.STDOUT, enc('later\n'))
-    expect(dec(tty.take())).toEqual(['later\n', ''])
+    expect(dec(tty.take())).toEqual(['meanwhile\nlater\n', ''])
   })
 
   it('an abandoned line keeps only its jobs output', async () => {

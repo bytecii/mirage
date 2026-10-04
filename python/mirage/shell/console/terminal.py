@@ -12,6 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+from collections import deque
+
 from mirage.shell.console.job_console import JobConsole
 from mirage.shell.console.types import Channel, OwnedStream
 
@@ -30,10 +33,11 @@ class Terminal(JobConsole):
 
     def __init__(self) -> None:
         super().__init__()
-        self.chunks: list[tuple[Channel, bytes, bool]] = []
+        self.chunks: deque[tuple[Channel, bytes, bool]] = deque()
         self.reader: JobConsole | None = None
         self.jobs = JobOutput(JobSide(self))
         self.ended = 0
+        self.attaching: asyncio.Event | None = None
 
     async def emit(self, channel: Channel, data: bytes) -> None:
         """Take what the line wrote.
@@ -45,7 +49,8 @@ class Terminal(JobConsole):
         await self.put(channel, data, False)
 
     async def put(self, channel: Channel, data: bytes, job: bool) -> None:
-        """Pass a chunk to the reader, or keep it for the line.
+        """Pass a chunk to the reader, or keep it for the line; while a
+        reader takes what waited (``attach``), keep it and wait.
 
         Args:
             channel (Channel): stdout or stderr.
@@ -58,13 +63,17 @@ class Terminal(JobConsole):
             await self.reader.emit(channel, data)
             return
         self.chunks.append((channel, data, job))
+        if self.attaching is not None:
+            await self.attaching.wait()
 
     async def attach(self, reader: JobConsole | None) -> None:
         """Start a line, handing a streaming caller what waited for it.
 
         The reader takes the chunks one at a time and becomes the line's
-        only once none is left, so a job that writes meanwhile lands
-        behind what waited; a line ended before that never attaches it.
+        only once none is left. A job that writes meanwhile lands behind
+        what waited and waits until the reader is attached, so each
+        writer adds at most one chunk and a noisy job cannot hold the
+        line back; a line ended before that never attaches the reader.
 
         Args:
             reader (JobConsole | None): where the caller streams the line,
@@ -74,17 +83,23 @@ class Terminal(JobConsole):
             self.reader = None
             return
         ended = self.ended
-        while self.chunks:
-            channel, data, _ = self.chunks.pop(0)
-            await reader.emit(channel, data)
-            if self.ended != ended:
-                return
-        self.reader = reader
+        attaching = self.attaching = asyncio.Event()
+        try:
+            while self.chunks:
+                channel, data, _ = self.chunks.popleft()
+                await reader.emit(channel, data)
+                if self.ended != ended:
+                    return
+            self.reader = reader
+        finally:
+            if self.attaching is attaching:
+                self.attaching = None
+            attaching.set()
 
     def drain(self) -> tuple[bytes, bytes]:
         """What reached the terminal so far, stdout and stderr, taken out
         to be bounded and put back (``put_back``)."""
-        chunks, self.chunks = self.chunks, []
+        chunks, self.chunks = self.chunks, deque()
         return (
             b"".join(d for c, d, _ in chunks if c == Channel.STDOUT),
             b"".join(d for c, d, _ in chunks if c == Channel.STDERR),
@@ -102,19 +117,26 @@ class Terminal(JobConsole):
             for channel, data in ((Channel.STDOUT, out), (Channel.STDERR, err))
             if data
         ]
-        self.chunks = returned + self.chunks
+        self.chunks = deque(returned) + self.chunks
 
     def take(self) -> tuple[bytes, bytes]:
         """End a line: its stdout and stderr, jobs' output among them."""
-        self.reader = None
-        self.ended += 1
+        self._end()
         return self.drain()
 
     def drop_line(self) -> None:
         """End an abandoned line: what it wrote goes, its jobs' stays."""
-        self.chunks = [chunk for chunk in self.chunks if chunk[2]]
+        self.chunks = deque(chunk for chunk in self.chunks if chunk[2])
+        self._end()
+
+    def _end(self) -> None:
+        """Detach the line's reader and let go the writers waiting on
+        its attach."""
         self.reader = None
         self.ended += 1
+        if self.attaching is not None:
+            self.attaching.set()
+            self.attaching = None
 
 
 class JobSide(JobConsole):

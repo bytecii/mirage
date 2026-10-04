@@ -743,6 +743,7 @@ async function routeArgv(
       namespace,
       stdin,
       sink,
+      jobTable ?? undefined,
     )
   }
 

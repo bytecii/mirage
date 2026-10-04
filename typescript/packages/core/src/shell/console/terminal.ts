@@ -32,13 +32,18 @@ export class Terminal extends JobConsole {
   reader: JobConsole | null = null
   readonly jobs: JobOutput = new JobOutput(new JobSide(this))
   ended = 0
+  attaching: Promise<void> | null = null
+  private attached: () => void = () => undefined
 
   /** Take what the line wrote. */
   override async emit(channel: Channel, data: Uint8Array): Promise<void> {
     await this.put(channel, data, false)
   }
 
-  /** Pass a chunk to the reader, or keep it for the line; `job` says a job wrote it. */
+  /**
+   * Pass a chunk to the reader, or keep it for the line; while a reader
+   * takes what waited (`attach`), keep it and wait. `job` says a job wrote it.
+   */
   async put(channel: Channel, data: Uint8Array, job: boolean): Promise<void> {
     if (data.byteLength === 0) return
     if (this.reader !== null) {
@@ -46,14 +51,17 @@ export class Terminal extends JobConsole {
       return
     }
     this.chunks.push([channel, data, job])
+    if (this.attaching !== null) await this.attaching
   }
 
   /**
    * Start a line, handing a streaming caller (`reader`) what waited for it.
    *
    * The reader takes the chunks one at a time and becomes the line's only
-   * once none is left, so a job that writes meanwhile lands behind what
-   * waited; a line ended before that never attaches it.
+   * once none is left. A job that writes meanwhile lands behind what waited
+   * and waits until the reader is attached, so each writer adds at most one
+   * chunk and a noisy job cannot hold the line back; a line ended before
+   * that never attaches the reader.
    */
   async attach(reader: JobConsole | null): Promise<void> {
     if (reader === null) {
@@ -61,13 +69,24 @@ export class Terminal extends JobConsole {
       return
     }
     const ended = this.ended
-    let chunk = this.chunks.shift()
-    while (chunk !== undefined) {
-      await reader.emit(chunk[0], chunk[1])
-      if (this.ended !== ended) return
-      chunk = this.chunks.shift()
+    let attached: () => void = () => undefined
+    const attaching = new Promise<void>((resolve) => {
+      attached = resolve
+    })
+    this.attaching = attaching
+    this.attached = attached
+    try {
+      let chunk = this.chunks.shift()
+      while (chunk !== undefined) {
+        await reader.emit(chunk[0], chunk[1])
+        if (this.ended !== ended) return
+        chunk = this.chunks.shift()
+      }
+      this.reader = reader
+    } finally {
+      if (this.attaching === attaching) this.attaching = null
+      attached()
     }
-    this.reader = reader
   }
 
   /** What reached the terminal so far, taken out to be bounded and put back. */
@@ -89,16 +108,22 @@ export class Terminal extends JobConsole {
 
   /** End a line: its stdout and stderr, jobs' output among them. */
   take(): [Uint8Array, Uint8Array] {
-    this.reader = null
-    this.ended += 1
+    this.end()
     return this.drain()
   }
 
   /** End an abandoned line: what it wrote goes, its jobs' stays. */
   dropLine(): void {
     this.chunks = this.chunks.filter(([, , job]) => job)
+    this.end()
+  }
+
+  /** Detach the line's reader and let go the writers waiting on its attach. */
+  private end(): void {
     this.reader = null
     this.ended += 1
+    this.attaching = null
+    this.attached()
   }
 }
 

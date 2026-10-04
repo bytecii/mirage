@@ -18,6 +18,7 @@ import { Channel } from '../../shell/console/index.ts'
 import { JobStatus } from '../../shell/job_table/index.ts'
 import type { ShellParser } from '../../shell/parse/index.ts'
 import { MountMode, type PathSpec } from '../../types.ts'
+import { eacces } from '../../utils/errors.ts'
 import { getTestParser } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace.ts'
 
@@ -175,6 +176,20 @@ async function slowly(line: string): Promise<string> {
   return (await ws.shell(line)).stdoutText
 }
 
+/** Make every write fail after 0.2 s, as a remote mount's can. */
+function failingSlowWrites(ws: Workspace): void {
+  type Dispatch = (op: string, path: PathSpec, ...rest: unknown[]) => Promise<unknown>
+  const dispatcher = (ws as unknown as { dispatcher: { dispatch: Dispatch } }).dispatcher
+  const inner = dispatcher.dispatch.bind(dispatcher)
+  dispatcher.dispatch = async (op, path, ...rest) => {
+    if (['write', 'append', 'pwrite'].includes(op)) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      throw eacces(path)
+    }
+    return inner(op, path, ...rest)
+  }
+}
+
 describe('a job writing through its redirect', () => {
   it('keeps both when it writes while the redirect opens the file', async () => {
     expect(
@@ -196,6 +211,27 @@ describe('a job writing through its redirect', () => {
         '{ echo a; echo b >&2; (sleep .05; echo c >&2) & } > /m/out 2> /m/err; wait; cat /m/err',
       ),
     ).toBe('b\nc\n')
+  })
+
+  it('leaves the line running when a held write fails', async () => {
+    const ws = buildWs()
+    failingSlowWrites(ws)
+    const result = await ws.shell(
+      '{ echo first; (sleep .05; echo job) & } > /m/out; echo next=$?; wait',
+    )
+    expect(result.stdoutText).toBe('next=1\n')
+  })
+
+  it('writes the file after its redirect is aborted', async () => {
+    const ws = buildWs()
+    const abort = new AbortController()
+    setTimeout(() => {
+      abort.abort()
+    }, 50)
+    await expect(
+      ws.shell('{ { sleep .1; echo late; } & sleep 5; } > /m/out', { signal: abort.signal }),
+    ).rejects.toThrow()
+    expect((await ws.shell('sleep .3; cat /m/out')).stdoutText).toBe('late\n')
   })
 })
 

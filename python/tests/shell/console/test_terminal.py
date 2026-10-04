@@ -20,23 +20,26 @@ from mirage.shell.console import Channel, JobConsole, Tee, Terminal
 from mirage.shell.descriptors import Recorder
 
 
-class _JobWritesMeanwhile(JobConsole):
-    """A reader a job writes to the terminal while it takes its first chunk.
+class _Paced(JobConsole):
+    """A reader that lets the loop turn before it takes each chunk."""
+
+    async def emit(self, channel: Channel, data: bytes) -> None:
+        await asyncio.sleep(0)
+        await super().emit(channel, data)
+
+
+async def _write_until(tty: Terminal, stop: asyncio.Event) -> None:
+    """Write a numbered line as a job on every turn of the loop.
 
     Args:
         tty (Terminal): the terminal the job writes to.
+        stop (asyncio.Event): ends the writes once set.
     """
-
-    def __init__(self, tty: Terminal) -> None:
-        super().__init__()
-        self.tty = tty
-        self.wrote = False
-
-    async def emit(self, channel: Channel, data: bytes) -> None:
-        if not self.wrote:
-            self.wrote = True
-            await self.tty.jobs.emit(Channel.STDOUT, b"meanwhile\n")
-        await super().emit(channel, data)
+    count = 0
+    while not stop.is_set():
+        count += 1
+        await tty.jobs.emit(Channel.STDOUT, f"{count}\n".encode())
+        await asyncio.sleep(0)
 
 
 class _Stalled(JobConsole):
@@ -92,10 +95,32 @@ async def test_a_job_writing_while_a_reader_attaches_lands_after_what_waited():
     tty = Terminal()
     await tty.jobs.emit(Channel.STDOUT, b"one\n")
     await tty.jobs.emit(Channel.STDOUT, b"two\n")
-    reader = _JobWritesMeanwhile(tty)
-    await tty.attach(reader)
+    reader = _Stalled()
+    attach = asyncio.create_task(tty.attach(reader))
+    await reader.entered.wait()
+    job = asyncio.create_task(tty.jobs.emit(Channel.STDOUT, b"meanwhile\n"))
+    await asyncio.sleep(0)
+    assert not job.done()
+    reader.release.set()
+    await attach
+    await job
     assert await reader.snapshot(Channel.STDOUT) == b"one\ntwo\nmeanwhile\n"
     assert tty.reader is reader
+
+
+@pytest.mark.asyncio
+async def test_a_noisy_job_does_not_hold_a_reader_from_attaching():
+    tty = Terminal()
+    stop = asyncio.Event()
+    job = asyncio.create_task(_write_until(tty, stop))
+    await asyncio.sleep(0.01)
+    reader = _Paced()
+    await asyncio.wait_for(tty.attach(reader), 1)
+    assert tty.reader is reader
+    stop.set()
+    await job
+    lines = (await reader.snapshot(Channel.STDOUT)).decode().split()
+    assert lines == [str(n) for n in range(1, len(lines) + 1)]
 
 
 @pytest.mark.asyncio
@@ -105,12 +130,15 @@ async def test_a_line_ended_while_its_reader_attaches_never_attaches_it():
     reader = _Stalled()
     attach = asyncio.create_task(tty.attach(reader))
     await reader.entered.wait()
+    job = asyncio.create_task(tty.jobs.emit(Channel.STDOUT, b"meanwhile\n"))
+    await asyncio.sleep(0)
     tty.drop_line()
+    await job
     reader.release.set()
     await attach
     assert tty.reader is None
     await tty.jobs.emit(Channel.STDOUT, b"later\n")
-    assert tty.take() == (b"later\n", b"")
+    assert tty.take() == (b"meanwhile\nlater\n", b"")
 
 
 @pytest.mark.asyncio

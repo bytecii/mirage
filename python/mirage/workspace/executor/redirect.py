@@ -181,14 +181,20 @@ class JobRoute(JobOutput):
         """Send on, in order, what jobs wrote while the redirect wrote its
         command's output, then let them write straight through: the
         command wrote first, and its first write is the one that opens
-        the file."""
-        held = self.recorder
-        while isinstance(held, Recorder) and held.chunks:
-            self.recorder = Recorder()
-            for key, data in held.chunks:
-                await self._write(key, data)
+        the file. A held write that fails is the job's, which has moved
+        on, so it never stops the line that released it."""
+        try:
             held = self.recorder
-        self.recorder = None
+            while isinstance(held, Recorder) and held.chunks:
+                self.recorder = Recorder()
+                for key, data in held.chunks:
+                    try:
+                        await self._write(key, data)
+                    except FS_ERRORS as exc:
+                        logger.debug("held job write failed: %s", exc)
+                held = self.recorder
+        finally:
+            self.recorder = None
 
     async def _write(self, key: Channel | Inherited, data: bytes) -> None:
         """Write through the redirect's descriptors.
@@ -486,9 +492,9 @@ async def handle_redirect(
                 await recorder.emit(Channel.STDERR, diagnostic)
     finally:
         ENCLOSING.reset(enclosing)
-        # What a job writes from here waits until the command's own
-        # output is written (`route.release()`).
-        route.recorder = Recorder()
+        # A body that raised (a cancel, an error) skips the writes below:
+        # its jobs write straight through.
+        route.recorder = None
         session.job_output = job_output
         for file in files:
             file.emit = None
@@ -501,6 +507,9 @@ async def handle_redirect(
             else:
                 session.descriptors.pop(fd, None)
     stdout: bytes | None = None
+    # What a job writes from here waits until the command's own output is
+    # written (`route.release()`).
+    route.recorder = Recorder()
     try:
         chunks = recorder.chunks
         if refused:
