@@ -141,53 +141,42 @@ def test_redirected_output_goes_to_the_file_not_the_console():
 # ── job output reaches the session's terminal as it is written ─────
 
 
-def test_job_output_reaches_the_lines_once_and_wait_prints_none():
+@pytest.mark.asyncio
+async def test_job_output_reaches_the_lines_once_and_wait_prints_none():
     """A job writes to the terminal its shell writes to, as bash's does:
     the line running when it wrote shows it, or the next one does, and
     `wait` has nothing left to print."""
-
-    async def _do():
-        ws = _workspace()
-        lines = [
-            await ws.shell("echo a &"),
-            await ws.shell("echo b &"),
-            await ws.shell("wait"),
-            await ws.shell("true"),
-        ]
-        return "".join([await line.stdout_str() for line in lines])
-
-    assert asyncio.run(_do()) == "a\nb\n"
+    ws = _workspace()
+    lines = [
+        await ws.shell("echo a &"),
+        await ws.shell("echo b &"),
+        await ws.shell("wait"),
+        await ws.shell("true"),
+    ]
+    assert "".join([await line.stdout_str() for line in lines]) == "a\nb\n"
 
 
-def test_a_line_shows_its_jobs_in_the_order_they_wrote():
-    async def _do():
-        ws = _workspace()
-        return await (
-            await ws.shell(
-                "(sleep 0.05; echo bg) & for i in 1 2; do echo $i; "
-                "sleep 0.1; done"
-            )
-        ).stdout_str()
-
-    assert asyncio.run(_do()) == "1\nbg\n2\n"
+@pytest.mark.asyncio
+async def test_a_line_shows_its_jobs_in_the_order_they_wrote():
+    ws = _workspace()
+    result = await ws.shell(
+        "(sleep 0.05; echo bg) & for i in 1 2; do echo $i; sleep 0.1; done"
+    )
+    assert await result.stdout_str() == "1\nbg\n2\n"
 
 
-def test_job_nested_in_a_backgrounded_subshell_writes_through_its_job():
+@pytest.mark.asyncio
+async def test_job_nested_in_a_backgrounded_subshell_writes_through_its_job():
     """A nested job writes where the job that started it writes, its
     stdout, so that job's console and the terminal both show the two in
     the order they were written (bash's ``b`` then ``a``)."""
-
-    async def _do():
-        ws = _workspace()
-        await ws.shell("( (sleep 0.15; echo a) & echo b & wait ) &")
-        await ws.job_table.wait(1, ws.default_session_id)
-        job = ws.job_table.get(1, ws.default_session_id)
-        assert job is not None
-        later = await (await ws.shell("true")).stdout_str()
-        return await job.console.snapshot(Channel.STDOUT), later
-
-    console, later = asyncio.run(_do())
-    assert console == b"b\na\n"
+    ws = _workspace()
+    await ws.shell("( (sleep 0.15; echo a) & echo b & wait ) &")
+    await ws.job_table.wait(1, ws.default_session_id)
+    job = ws.job_table.get(1, ws.default_session_id)
+    assert job is not None
+    later = await (await ws.shell("true")).stdout_str()
+    assert await job.console.snapshot(Channel.STDOUT) == b"b\na\n"
     assert later == "b\na\n"
 
 
@@ -276,6 +265,43 @@ def _failing_slow_writes(
         return await inner(op, path, **kwargs)
 
     monkeypatch.setattr(ws._dispatcher, "dispatch", failing)
+
+
+class _Stalled(JobConsole):
+    """A streaming caller whose writes wait for ``release``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def emit(self, channel: Channel, data: bytes) -> None:
+        self.entered.set()
+        await self.release.wait()
+        await super().emit(channel, data)
+
+
+@pytest.mark.asyncio
+async def test_a_killed_job_ends_while_a_streamed_line_takes_what_waited():
+    ws = _workspace()
+    sid = ws._session_mgr.default_id
+    await ws.shell(
+        "(sleep 0.03; echo early; sleep 0.1; echo late; sleep 30) &"
+    )
+    await asyncio.sleep(0.08)
+    reader = _Stalled()
+    line = asyncio.create_task(ws.shell("true", sink=reader))
+    await reader.entered.wait()
+    tty = ws.get_session(sid).tty
+    while not any(data == b"late\n" for _, data, _ in tty.chunks):
+        await asyncio.sleep(0.01)
+    job = ws.job_table.get(1, sid)
+    assert job is not None and job.process is not None
+    await ws.job_table.kill(1, sid)
+    done, _ = await asyncio.wait({job.process.task}, timeout=1)
+    assert done == {job.process.task}
+    reader.release.set()
+    await line
 
 
 @pytest.mark.asyncio

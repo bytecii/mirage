@@ -28,7 +28,7 @@ import type { JobConsole } from '../../shell/console/job_console.ts'
 import { Terminal } from '../../shell/console/index.ts'
 import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
 import { getCurrentSessionFor, runWithSession } from '../../context/session_context.ts'
-import { JobTable, JobWaits } from '../../shell/job_table/index.ts'
+import { type JobTable, JobWaits } from '../../shell/job_table/index.ts'
 import {
   syntaxErrorMessage,
   findSyntaxError,
@@ -550,7 +550,7 @@ async function runPreparedLine(
             session.jobOutput = capture.jobs
             session.jobWaits = waits
             const caller = innerOpts.jobTable ?? env.jobTable
-            innerOpts.jobTable = new JobTable(null, caller.processes, caller)
+            innerOpts.jobTable = caller.child(caller)
             innerOpts.sink = capture
           }
           try {

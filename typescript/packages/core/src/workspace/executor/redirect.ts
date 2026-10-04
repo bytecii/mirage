@@ -126,7 +126,9 @@ export class JobRoute extends JobOutput {
    * command's output, then let them write straight through: the command
    * wrote first, and its first write is the one that opens the file. A
    * held write that fails is the job's, which has moved on, so it never
-   * stops the line that released it.
+   * stops the line that released it: Python logs it at debug, and core,
+   * which runs on every host, has no logger to give it to (`console`
+   * writes to a Node process's stdout).
    */
   async release(): Promise<void> {
     try {

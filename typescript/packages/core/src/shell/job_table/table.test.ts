@@ -382,6 +382,25 @@ describe('JobTable.popCompleted', () => {
     expect(stores.every((s) => s.closed)).toBe(true)
   })
 
+  it('a child table builds consoles its owner releases', async () => {
+    const stores: RAMConsoleStore[] = []
+    const factory = (): JobConsole => {
+      const store = new RAMConsoleStore()
+      stores.push(store)
+      return new JobConsole(store)
+    }
+    const jt = new JobTable(factory)
+    const child = jt.child().child(jt)
+    const j = child.submit({ command: 'a', run: quiet, abort: new AbortController(), cwd: '/' })
+    expect(child.processes).toBe(jt.processes)
+    expect(child.parent).toBe(jt)
+    expect(jt.listJobs()).toEqual([])
+    await child.wait(j.id)
+    await jt.closeConsoles()
+    expect(stores).toHaveLength(1)
+    expect(stores.every((s) => s.closed)).toBe(true)
+  })
+
   it('closeConsoles leaves default consoles alone', async () => {
     const jt = new JobTable()
     const j = jt.submit({ command: 'a', run: quiet, abort: new AbortController(), cwd: '/' })

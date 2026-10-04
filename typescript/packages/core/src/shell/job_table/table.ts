@@ -95,6 +95,9 @@ export class JobTable {
   private readonly nextIds = new Map<string, number>()
   private readonly consoleFactory: ConsoleFactory | null
   private factoryConsoles: JobConsole[] = []
+  // The table whose closeConsoles() releases what the factory builds for
+  // this one: itself, or the table a child came from.
+  private consoleOwner: JobTable = this
   // Jobs `disown` removed while still running: the shell forgets them,
   // the workspace still owns their tasks so teardown can stop them.
   private disowned: Job[] = []
@@ -119,6 +122,18 @@ export class JobTable {
     readonly parent: JobTable | null = null,
   ) {
     this.consoleFactory = consoleFactory
+  }
+
+  /**
+   * A table for a child shell (`bash -c`, a script, `( )`, `$( )`): a job
+   * list of its own on the same processes, whose jobs get their consoles
+   * from this table's factory, released at teardown with this table's.
+   * `parent` is the table a `$( )` still lists in `jobs`.
+   */
+  child(parent: JobTable | null = null): JobTable {
+    const table = new JobTable(this.consoleFactory, this.processes, parent)
+    table.consoleOwner = this.consoleOwner
+    return table
   }
 
   private sessionJobs(sessionId: string): Map<number, Job> {
@@ -177,7 +192,7 @@ export class JobTable {
         jobConsole = new JobConsole()
       } else {
         jobConsole = this.consoleFactory(jobId)
-        this.factoryConsoles.push(jobConsole)
+        this.consoleOwner.factoryConsoles.push(jobConsole)
       }
       job = new Job({
         id: jobId,

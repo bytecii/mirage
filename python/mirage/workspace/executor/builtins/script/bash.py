@@ -181,9 +181,7 @@ async def handle_bash(
     # `wait` see only them, its EXIT action's included, and they are not
     # its caller's.
     if job_table is not None:
-        execute_fn = partial(
-            execute_fn, job_table=JobTable(processes=job_table.processes)
-        )
+        execute_fn = partial(execute_fn, job_table=job_table.child())
     try:
         io = await execute_fn(
             script,

@@ -24,13 +24,7 @@ import { getRedirects, isBackgrounded } from '../../shell/helpers.ts'
 import { NodeKind, nodeKind } from '../../shell/node_kind.ts'
 import { type Job, JobStatus, type JobTable } from '../../shell/job_table/index.ts'
 import { PipeConsole } from '../../shell/console/pipe.ts'
-import {
-  Channel,
-  type JobConsole,
-  JobOutput,
-  type OwnedStream,
-  Tee,
-} from '../../shell/console/index.ts'
+import { Channel, JobConsole, JobOutput, type OwnedStream, Tee } from '../../shell/console/index.ts'
 import { isProgramInvocation, runWithSession } from '../../context/session_context.ts'
 import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
 import { abortable, mergeSignals } from '../abort.ts'
@@ -130,6 +124,31 @@ export async function drained(
 }
 
 /**
+ * Where a job's output goes on from its own console, given up once the
+ * job is killed. A promise cannot be cancelled, so a write that a stalled
+ * reader holds, or that waits for a reader to take what waited for it,
+ * would keep a killed job's runner (and its process slot) waiting; each
+ * write races the job's signal instead. Python's cancelled task unwinds
+ * at that await on its own.
+ */
+class JobCopy extends JobConsole {
+  constructor(
+    readonly target: JobConsole,
+    readonly signal: AbortSignal,
+  ) {
+    super()
+  }
+
+  override async emit(channel: Channel, data: Uint8Array): Promise<void> {
+    await abortable(this.target.emit(channel, data), this.signal)
+  }
+
+  override async emitTo(stream: OwnedStream, data: Uint8Array): Promise<void> {
+    await abortable(this.target.emitTo(stream, data), this.signal)
+  }
+}
+
+/**
  * The streams a job started from `node` writes, as its shell hands them
  * on: stdout, stderr and the copies the shell holds (`3>&1`), after the
  * job's own redirects (`sleep 9 >/dev/null &`). A stream sent to a file
@@ -192,13 +211,14 @@ export async function handleBackground(
   // `kill %n` aborts this controller; the signal rides the forked
   // session so the job's whole subtree (builtins, mounts, runtimes)
   // observes the kill, merged with any enclosing job's channel.
-  bgSession.abortSignal = mergeSignals(session.abortSignal, abort.signal) ?? abort.signal
+  const killed = mergeSignals(session.abortSignal, abort.signal) ?? abort.signal
+  bgSession.abortSignal = killed
   const cmdStrInner = left.text
   const runBg = async (job: Job): Promise<[IOResult, ExecutionNode]> => {
     // What the job writes stays in its console and goes where its shell
     // writes as it is written: the terminal, or the substitution or pipe
     // it was started in.
-    const console_ = new Tee(job.console, output)
+    const console_ = new Tee(job.console, new JobCopy(output, killed))
     const body = async (): Promise<[IOResult, ExecutionNode]> => {
       let stdout: ByteSource | null
       let io: IOResult

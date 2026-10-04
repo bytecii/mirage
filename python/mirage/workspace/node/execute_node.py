@@ -1218,9 +1218,7 @@ async def _execute_node(
         # live in a private job table (`$!`/`wait`/`kill` in the body
         # see them; the parent's table never does), mirroring bash's
         # forked process.
-        sub_table = JobTable(
-            processes=job_table.processes if job_table is not None else None
-        )
+        sub_table = job_table.child() if job_table is not None else JobTable()
         sub_recurse = partial(
             execute_node,
             dispatch,

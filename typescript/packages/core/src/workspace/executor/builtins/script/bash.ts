@@ -17,7 +17,7 @@ import { materialize, IOResult } from '../../../../io/types.ts'
 import type { ByteSource } from '../../../../io/types.ts'
 import { type JobConsole, JobOutput } from '../../../../shell/console/index.ts'
 import { IFS_DEFAULT } from '../../../../shell/constants.ts'
-import { JobTable } from '../../../../shell/job_table/index.ts'
+import type { JobTable } from '../../../../shell/job_table/index.ts'
 import { parseOptionWord } from '../../../../shell/options.ts'
 import type { SessionState } from '../../../session/session.ts'
 import { seedVar } from '../../../session/state.ts'
@@ -170,7 +170,7 @@ export async function handleBash(
   // A nested shell is its own process, with its own jobs: its `jobs` and
   // `wait` see only them, its EXIT action's included, and they are not its
   // caller's.
-  const jobs = jobTable === undefined ? {} : { jobTable: new JobTable(null, jobTable.processes) }
+  const jobs = jobTable === undefined ? {} : { jobTable: jobTable.child() }
   let io
   // A nested shell is a program of its own: the builtins it runs are its
   // builtins again, whatever `find -exec` marked the outer line.

@@ -149,6 +149,21 @@ async def test_close_consoles_releases_factory_stores():
 
 
 @pytest.mark.asyncio
+async def test_a_child_table_builds_consoles_its_owner_releases():
+    stores: list[RAMConsoleStore] = []
+    table = JobTable(console_factory=partial(_tracked_ram_console, stores))
+    child = table.child().child(table)
+    job = child.submit(command="deaf", run=_run_forever, cwd="/")
+    assert child.processes is table.processes
+    assert child.parent is table
+    assert table.list_jobs() == []
+    await child.kill(job.id)
+    await table.close_consoles()
+    assert len(stores) == 1
+    assert all(s.closed for s in stores)
+
+
+@pytest.mark.asyncio
 async def test_close_consoles_leaves_default_consoles_alone():
     table = JobTable()
     job = table.submit(command="deaf", run=_run_forever, cwd="/")

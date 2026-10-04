@@ -225,9 +225,7 @@ async def recurse(
             session.job_output = capture.jobs
             session.job_waits = waits
             caller = opts.get("job_table") or ws.job_table
-            opts["job_table"] = JobTable(
-                processes=caller.processes, parent=caller
-            )
+            opts["job_table"] = caller.child(caller)
             opts["sink"] = capture
         try:
             try:

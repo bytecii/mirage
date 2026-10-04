@@ -14,7 +14,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest'
 import { RAMVFS } from '../../vfs/ram/ram.ts'
-import { Channel } from '../../shell/console/index.ts'
+import { Channel, JobConsole } from '../../shell/console/index.ts'
 import { JobStatus } from '../../shell/job_table/index.ts'
 import type { ShellParser } from '../../shell/parse/index.ts'
 import { MountMode, type PathSpec } from '../../types.ts'
@@ -176,6 +176,20 @@ async function slowly(line: string): Promise<string> {
   return (await ws.shell(line)).stdoutText
 }
 
+/** A streaming caller whose writes wait for `release`. */
+class Stalled extends JobConsole {
+  release: () => void = () => undefined
+  private enter: () => void = () => undefined
+  readonly entered = new Promise<void>((resolve) => (this.enter = resolve))
+  private readonly released = new Promise<void>((resolve) => (this.release = resolve))
+
+  override async emit(channel: Channel, data: Uint8Array): Promise<void> {
+    this.enter()
+    await this.released
+    await super.emit(channel, data)
+  }
+}
+
 /** Make every write fail after 0.2 s, as a remote mount's can. */
 function failingSlowWrites(ws: Workspace): void {
   type Dispatch = (op: string, path: PathSpec, ...rest: unknown[]) => Promise<unknown>
@@ -211,6 +225,33 @@ describe('a job writing through its redirect', () => {
         '{ echo a; echo b >&2; (sleep .05; echo c >&2) & } > /m/out 2> /m/err; wait; cat /m/err',
       ),
     ).toBe('b\nc\n')
+  })
+
+  it('lets a killed job end while a streamed line takes what waited', async () => {
+    const ws = buildWs()
+    const sid = ws.sessionManager.defaultId
+    await ws.shell('(sleep 0.03; echo early; sleep 0.1; echo late; sleep 30) &')
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const reader = new Stalled()
+    const line = ws.shell('true', { sink: reader })
+    await reader.entered
+    const tty = ws.getSession(sid).tty
+    while (!tty.chunks.some(([, data]) => DEC.decode(data) === 'late\n'))
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    const job = ws.jobTable.get(1, sid)
+    if (job?.process == null) throw new Error('job 1 missing')
+    await ws.jobTable.kill(1, sid)
+    const ended = await Promise.race([
+      job.process.task.then(() => true),
+      new Promise<boolean>((resolve) =>
+        setTimeout(() => {
+          resolve(false)
+        }, 1000),
+      ),
+    ])
+    expect(ended).toBe(true)
+    reader.release()
+    await line
   })
 
   it('leaves the line running when a held write fails', async () => {

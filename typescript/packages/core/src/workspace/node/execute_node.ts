@@ -55,7 +55,7 @@ import {
   getUnsetArgs,
   getWhileParts,
 } from '../../shell/helpers.ts'
-import { JobTable } from '../../shell/job_table/index.ts'
+import type { JobTable } from '../../shell/job_table/index.ts'
 import { ERREXIT_EXEMPT_TYPES, FORK_FAILED, FORK_FAILED_STATUS } from '../../shell/constants.ts'
 import { NodeType as NT, type PipelineStages, Redirect, RedirectKind } from '../../shell/types.ts'
 import { NodeKind, nodeKind, pipelineTransparent } from '../../shell/node_kind.ts'
@@ -1134,7 +1134,7 @@ async function executeNodeBody(
     // A subshell is its own shell: background jobs started inside live
     // in a private job table (`$!`/`wait`/`kill` in the body see them;
     // the parent's table never does), mirroring bash's forked process.
-    const subTable = new JobTable(null, jobTable.processes)
+    const subTable = jobTable.child()
     const abort = new AbortController()
     const subDeps: ExecuteNodeDeps = {
       ...captureDeps,

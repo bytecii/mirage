@@ -182,10 +182,27 @@ class JobTable:
         self._next_ids: dict[str, int] = {}
         self._console_factory = console_factory
         self._factory_consoles: list[JobConsole] = []
+        # The table whose ``close_consoles`` releases what the factory
+        # builds for this one: itself, or the table a child came from.
+        self._console_owner: JobTable = self
         # Jobs `disown` removed from the table while they still run. The
         # shell no longer lists, waits for or reports them, but the
         # workspace still owns their tasks, so teardown can stop them.
         self._disowned: list[Job] = []
+
+    def child(self, parent: "JobTable | None" = None) -> "JobTable":
+        """A table for a child shell (``bash -c``, a script, ``( )``,
+        ``$( )``): a job list of its own on the same processes, whose
+        jobs get their consoles from this table's factory, released at
+        teardown with this table's.
+
+        Args:
+            parent (JobTable | None): the table a ``$( )`` still lists
+                in ``jobs``.
+        """
+        table = JobTable(self._console_factory, self.processes, parent)
+        table._console_owner = self._console_owner
+        return table
 
     def submit(
         self,
@@ -246,7 +263,7 @@ class JobTable:
                 console = JobConsole()
             else:
                 console = self._console_factory(job_id)
-                self._factory_consoles.append(console)
+                self._console_owner._factory_consoles.append(console)
             job = Job(
                 id=job_id,
                 command=command,
