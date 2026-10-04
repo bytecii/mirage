@@ -705,6 +705,361 @@
           }
         }
       ]
+    },
+    {
+      "id": "argv_is_typed_and_names_no_mount",
+      "hosts": [
+        "typescript"
+      ],
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "workspace"
+        ],
+        "mounts": {
+          "/disk": {
+            "vfs": "ram",
+            "files": {
+              "app/argv.py": "import sys\nprint(sys.argv[1:])\n",
+              "app/file.py": "print(__file__)\n",
+              "data/in.csv": "x\n"
+            }
+          },
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "notes.txt": "line1\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "cd /disk",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "python3 app/argv.py data/in.csv data/in ./data/in.csv /disk/data/",
+          "expect": {
+            "exit": 0,
+            "stdout": "['data/in.csv', 'data/in', './data/in.csv', '/disk/data/']\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -c 'import os, sys; print(os.path.join(\"backup\", sys.argv[1]))' data/in.csv",
+          "expect": {
+            "exit": 0,
+            "stdout": "backup/data/in.csv\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 app/argv.py data/*.csv 'data/*.csv'",
+          "expect": {
+            "exit": 0,
+            "stdout": "['data/in.csv', 'data/*.csv']\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 /disk/app/argv.py /ram/notes.txt /ram/new.csv",
+          "expect": {
+            "exit": 0,
+            "stdout": "['/ram/notes.txt', '/ram/new.csv']\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -c 'import sys; print(sys.argv[1:])' /ram/notes.txt /disk/data/in.csv",
+          "expect": {
+            "exit": 0,
+            "stdout": "['/ram/notes.txt', '/disk/data/in.csv']\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "cd /ram && python3 /disk/app/argv.py --input /ram/notes.txt --out=/ram/o.csv",
+          "expect": {
+            "exit": 0,
+            "stdout": "['--input', '/ram/notes.txt', '--out=/ram/o.csv']\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "cat /disk/app/file.py | python3",
+          "expect": {
+            "exit": 0,
+            "stdout": "<stdin>\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "version_names_the_pyodide_guest",
+      "hosts": [
+        "typescript"
+      ],
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "workspace"
+        ],
+        "mounts": {
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "version.py": "import sys; print(sys.argv[-1])\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "v=$(python3 -c 'import sys; print(sys.version.split()[0])'); for n in python python3; do for f in --version -V -VV; do test \"$($n $f 2>&1)\" = \"Python $v (pyodide)\" && echo ok; done; done",
+          "expect": {
+            "exit": 0,
+            "stdout": "ok\nok\nok\nok\nok\nok\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -c 'import sys; print(sys.argv[-1])' --version",
+          "expect": {
+            "exit": 0,
+            "stdout": "--version\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 /ram/version.py --version",
+          "expect": {
+            "exit": 0,
+            "stdout": "--version\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "echo 'import sys; print(sys.argv[-1])' | python3 - --version",
+          "expect": {
+            "exit": 0,
+            "stdout": "--version\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "no_input_and_missing_scripts",
+      "hosts": [
+        "typescript"
+      ],
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "workspace"
+        ],
+        "mounts": {
+          "/ram": {
+            "vfs": "ram"
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "python3",
+          "expect": {
+            "exit": 1,
+            "stderr_contains": "no input"
+          }
+        },
+        {
+          "command": "cd /ram && python3 missing.py",
+          "expect": {
+            "exit": 1,
+            "stderr_contains": "No such file"
+          }
+        },
+        {
+          "command": "python /missing-script",
+          "expect": {
+            "exit": 1,
+            "stdout": "",
+            "stderr": "python: /missing-script: No such file\n"
+          }
+        },
+        {
+          "command": "python3 /missing-script",
+          "expect": {
+            "exit": 1,
+            "stdout": "",
+            "stderr": "python3: /missing-script: No such file\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "system_exit_sets_the_status",
+      "hosts": [
+        "typescript"
+      ],
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "python3 -c 'import sys; sys.exit()'",
+          "expect": {
+            "exit": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -c 'import sys; sys.exit(\"boom\")'",
+          "expect": {
+            "exit": 1,
+            "stdout": "",
+            "stderr": "boom\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "each_call_starts_with_a_clean_interpreter",
+      "hosts": [
+        "typescript"
+      ],
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "python3 -c \"import os; os.environ['LEAKED'] = 'yes'\"",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "python3 -c \"import os; print(os.environ.get('LEAKED', 'absent'))\"",
+          "expect": {
+            "exit": 0,
+            "stdout": "absent\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -c 'leaked_var = 42'",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "python3 -c \"print('leaked_var' in dir())\"",
+          "expect": {
+            "exit": 0,
+            "stdout": "False\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "warning_and_x_options",
+      "hosts": [
+        "typescript"
+      ],
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "python3 -W nonsense -c 'print(42)'",
+          "expect": {
+            "exit": 0,
+            "stdout": "42\n",
+            "stderr": "Invalid -W option ignored: invalid action: 'nonsense'\n"
+          }
+        },
+        {
+          "command": "python3 -X nosuchopt -c 'import sys; print(sys._xoptions)'",
+          "expect": {
+            "exit": 0,
+            "stdout": "{'nosuchopt': True}\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -X dev -c 'print(7)'",
+          "expect": {
+            "exit": 0,
+            "stdout": "7\n",
+            "stderr": "python3: warning: -X dev is ignored by the 'pyodide' runtime\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "shadowing_function_and_the_handoff",
+      "hosts": [
+        "typescript"
+      ],
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "python3() { echo \"$@\"; }",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "python3 -c payload -u x",
+          "expect": {
+            "exit": 0,
+            "stdout": "-c payload -u x\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "command python3 -c \"import sys; print(sys.argv)\" -u x",
+          "expect": {
+            "exit": 0,
+            "stdout": "['-c', '-u', 'x']\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "unset -f python3",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "python3 -c \"import sys; print(sys.argv)\" -u x",
+          "expect": {
+            "exit": 0,
+            "stdout": "['-c', '-u', 'x']\n",
+            "stderr": ""
+          }
+        }
+      ]
     }
   ]
 }
