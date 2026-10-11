@@ -69,14 +69,19 @@ async def test_a_line_takes_what_reached_the_terminal_in_order():
 
 
 @pytest.mark.asyncio
-async def test_a_job_writes_into_the_statement_running():
+async def test_a_job_writes_into_the_statement_running_never_one_already_left():
     tty = Terminal()
     statement = Recorder()
-    tty.jobs.recorder = statement
+    abandoned = Recorder()
+    leave = tty.jobs.record(statement)
     await tty.jobs.emit(Channel.STDOUT, b"bg\n")
-    tty.jobs.recorder = None
+    leave_abandoned = tty.jobs.record(abandoned)
+    await tty.jobs.emit(Channel.STDOUT, b"inner\n")
+    leave()
+    leave_abandoned()
     await tty.jobs.emit(Channel.STDOUT, b"after\n")
     assert statement.chunks == [(Channel.STDOUT, b"bg\n")]
+    assert abandoned.chunks == [(Channel.STDOUT, b"inner\n")]
     assert tty.take() == (b"after\n", b"")
 
 

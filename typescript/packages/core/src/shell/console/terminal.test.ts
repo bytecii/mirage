@@ -69,14 +69,19 @@ describe('Terminal', () => {
     expect(dec(tty.take())).toEqual(['', ''])
   })
 
-  it('a job writes into the statement running', async () => {
+  it('a job writes into the statement running, never one already left', async () => {
     const tty = new Terminal()
     const statement = new Recorder()
-    tty.jobs.recorder = statement
+    const abandoned = new Recorder()
+    const leave = tty.jobs.record(statement)
     await tty.jobs.emit(Channel.STDOUT, enc('bg\n'))
-    tty.jobs.recorder = null
+    const leaveAbandoned = tty.jobs.record(abandoned)
+    await tty.jobs.emit(Channel.STDOUT, enc('inner\n'))
+    leave()
+    leaveAbandoned()
     await tty.jobs.emit(Channel.STDOUT, enc('after\n'))
     expect(statement.chunks).toEqual([[Channel.STDOUT, enc('bg\n')]])
+    expect(abandoned.chunks).toEqual([[Channel.STDOUT, enc('inner\n')]])
     expect(dec(tty.take())).toEqual(['after\n', ''])
   })
 

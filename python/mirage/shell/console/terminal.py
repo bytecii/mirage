@@ -14,6 +14,7 @@
 
 import asyncio
 from collections import deque
+from collections.abc import Callable
 
 from mirage.io.cooperative import CHUNK_SIZE
 from mirage.shell.console.job_console import JobConsole
@@ -193,6 +194,31 @@ class JobOutput(JobConsole):
         super().__init__()
         self.target = target
         self.recorder: JobConsole | None = None
+        self._taken: list[JobConsole] = []
+
+    def record(self, recorder: JobConsole) -> Callable[[], None]:
+        """Send what jobs write into ``recorder`` until the returned call
+        puts back what was there before.
+
+        That call also ends every recording begun inside this one: a run
+        its caller abandoned (timeout's) can end after the caller has, and
+        then has nothing left to put back.
+
+        Args:
+            recorder (JobConsole): where jobs write meanwhile.
+        """
+        held = self.recorder
+        depth = len(self._taken)
+        self._taken.append(recorder)
+        self.recorder = recorder
+
+        def leave() -> None:
+            if len(self._taken) <= depth or self._taken[depth] is not recorder:
+                return
+            del self._taken[depth:]
+            self.recorder = held
+
+        return leave
 
     async def emit(self, channel: Channel, data: bytes) -> None:
         """Write what a job wrote where it belongs now.
