@@ -102,7 +102,7 @@ def directories_action(fl: FlagView) -> str:
     -r and -R are --directories=recurse, so the last of the three on the
     line wins (grep 3.11: `grep -r -d skip` skips, `-d skip -r`
     recurses). A word argmatch names none of the three by comes back as
-    typed, for ``parse_flags`` to refuse.
+    typed; ``check_actions`` refuses it.
 
     Args:
         fl (FlagView): spec-validated view over the raw flag kwargs.
@@ -120,31 +120,29 @@ def directories_action(fl: FlagView) -> str:
     return action
 
 
-def refuse_directories(word: str) -> UsageError:
-    """gnulib's refusal of a --directories word, then grep's usage, exit 1.
+def check_actions(fl: FlagView) -> None:
+    """Refuse a -d or -D word as GNU does, each one typed and not only
+    the last: its option loop stops at the first bad one.
 
-    Args:
-        word (str): the word argmatch named no action by.
-    """
-    match = argmatch(word, DIRECTORIES)
-    kind = "invalid" if isinstance(match, ArgmatchMatch) else match.kind
-    return UsageError(
-        f"{argmatch_line('grep', '--directories', word, kind)}\n"
-        f"{argmatch_valid_block(DIRECTORIES)}\n{GREP_NO_PATTERN}",
-        1,
-    )
-
-
-def skip_devices(fl: FlagView) -> bool:
-    """Whether -D skip was asked for; GNU takes only the exact words.
+    A -d word argmatch names no action by is gnulib's refusal and grep's
+    usage, exit 1; -D takes only the exact words, exit 2.
 
     Args:
         fl (FlagView): spec-validated view over the raw flag kwargs.
     """
-    word = fl.as_str("devices")
-    if word is not None and word not in DEVICES:
-        raise UsageError("grep: unknown devices method")
-    return word == "skip"
+    for name, value in fl.occurrences("directories", "devices"):
+        word = str(value)
+        if name == "devices":
+            if word not in DEVICES:
+                raise UsageError("grep: unknown devices method")
+            continue
+        match = argmatch(word, DIRECTORIES)
+        if not isinstance(match, ArgmatchMatch):
+            raise UsageError(
+                f"{argmatch_line('grep', '--directories', word, match.kind)}"
+                f"\n{argmatch_valid_block(DIRECTORIES)}\n{GREP_NO_PATTERN}",
+                1,
+            )
 
 
 def group_separator(fl: FlagView) -> bytes | None:
@@ -263,9 +261,8 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
     b_ctx = contexts.get("before_context")
     c_ctx = contexts.get("context")
     label = fl.as_str("label")
+    check_actions(fl)
     directories = directories_action(fl)
-    if directories not in DIRECTORIES:
-        raise refuse_directories(directories)
     return GrepFlags(
         ignore_case=ignores_case(fl),
         invert=fl.as_bool("invert_match"),
@@ -285,7 +282,7 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
         no_messages=fl.as_bool("no_messages"),
         recursive=directories == "recurse",
         skip_directories=directories == "skip",
-        skip_devices=skip_devices(fl),
+        skip_devices=fl.as_str("devices") == "skip",
         with_filename=filename is True,
         no_filename=filename is False,
         max_count=fl.as_int("max_count"),

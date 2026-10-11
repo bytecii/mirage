@@ -75,6 +75,82 @@
       "flags": [
         "exclude-from"
       ]
+    },
+    {
+      "id": "grep_exclude_from_keeps_its_place",
+      "seq": 14490050,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; printf 'foo log\\n' > /data/gfl/c.log; printf '*.txt\\n' > /data/gfl/skip.lst; grep -r --exclude='*.log' --include='*.txt' --exclude-from=/data/gfl/skip.lst foo /data/gfl; echo rc=$?; grep -r --exclude-from=/data/gfl/skip.lst --include='*.txt' -l foo /data/gfl | sort; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\n/data/gfl/a.txt\n/data/gfl/b.txt\n/data/gfl/c.log\n",
+        "stderr": ""
+      },
+      "flags": [
+        "exclude-from",
+        "include",
+        "exclude"
+      ]
+    },
+    {
+      "id": "grep_exclude_from_reads_stdin",
+      "seq": 14490051,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; printf 'foo log\\n' > /data/gfl/c.log; printf '*.txt\\n' | grep -r --exclude-from=- -l foo /data/gfl; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/gfl/c.log\n",
+        "stderr": ""
+      },
+      "flags": [
+        "exclude-from"
+      ]
     }
   ]
 }

@@ -151,6 +151,45 @@
       "flags": [
         "d"
       ]
+    },
+    {
+      "id": "grep_directories_refuses_an_earlier_word",
+      "seq": 14490052,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; grep -d bogus -r foo /data/gfl/a.txt; echo rc=$?; grep -D bogus -D read foo /data/gfl/a.txt; echo rc=$?; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nrc=2\n",
+        "stderr": "grep: invalid argument 'bogus' for '--directories'\nValid arguments are:\n  - 'read'\n  - 'recurse'\n  - 'skip'\nUsage: grep [OPTION]... PATTERNS [FILE]...\nTry 'grep --help' for more information.\ngrep: unknown devices method\n"
+      },
+      "flags": [
+        "d",
+        "D",
+        "r"
+      ]
     }
   ]
 }

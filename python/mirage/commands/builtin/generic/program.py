@@ -121,45 +121,46 @@ def program_files(name: str, flags: dict[str, FlagValue]) -> list[PathSpec]:
 
 
 async def lower_exclude_from(
-    fl: FlagView, flags: dict[str, FlagValue], dispatch: DispatchFn
-) -> tuple[dict[str, FlagValue], IOResult | None]:
-    """grep's --exclude-from files as --exclude globs, in line order.
+    fl: FlagView,
+    flags: dict[str, FlagValue],
+    source: ByteSource,
+    dispatch: DispatchFn,
+) -> tuple[dict[str, FlagValue], bool, IOResult | None]:
+    """grep's --exclude-from files read into the globs they hold.
 
     gnulib's add_exclude_file takes one glob per line, trailing blanks
-    dropped and blank lines skipped. A file grep cannot read stops it
-    before it searches anything, exit 2.
+    dropped and blank lines skipped, and ``-`` is stdin. The globs stay
+    under ``exclude_from``, where the option stood among --include and
+    --exclude. A file grep cannot read stops it before it searches
+    anything, exit 2.
 
     Args:
         fl (FlagView): grep's flag view.
         flags (dict[str, FlagValue]): grep's spec-bound flags.
+        source (ByteSource): the invocation's stdin, shared with -f.
         dispatch (DispatchFn): the policy-gated workspace reader.
+
+    Returns:
+        tuple[dict[str, FlagValue], bool, IOResult | None]: the flags,
+            whether stdin was read, and the refusal if a file failed.
     """
-    files = iter(fl.as_paths("exclude_from"))
-    typed = iter(fl.as_list("exclude"))
     globs: list[str] = []
-    for kind, _ in fl.occurrences("exclude", "exclude_from"):
-        if kind == "exclude":
-            globs.append(next(typed))
-            continue
-        path = next(files)
+    consumed = False
+    for path in fl.as_paths("exclude_from"):
         try:
-            data = await read_program_file("grep", path, dispatch)
+            if is_stdin(path):
+                data = await materialize(source)
+                consumed = True
+            else:
+                data = await read_program_file("grep", path, dispatch)
         except FS_ERRORS as exc:
             line = fs_error_line("grep", path, exc)
-            return flags, IOResult(exit_code=2, stderr=line.encode())
+            return flags, consumed, IOResult(exit_code=2, stderr=line.encode())
         for line in decode_text(data).split("\n"):
             glob = line.rstrip(" \t\n\v\f\r")
             if glob:
                 globs.append(glob)
-    out: dict[str, FlagValue] = {}
-    for key, value in flags.items():
-        if key == "exclude" or (
-            key == "exclude_from" and "exclude" not in flags
-        ):
-            out["exclude"] = globs
-        elif key != "exclude_from":
-            out[key] = value
-    return out, None
+    return {**flags, "exclude_from": globs}, consumed, None
 
 
 async def prepare_program(
@@ -190,17 +191,19 @@ async def prepare_program(
             checks for a `-` once `-f -` has read stdin.
     """
     fl = FlagView(flags, spec=SPECS[name])
-    if name == "grep":
-        flags, refusal = await lower_exclude_from(fl, flags, dispatch)
+    source = resolve_source(stdin)
+    consumed = False
+    if name == "grep" and fl.as_paths("exclude_from"):
+        flags, consumed, refusal = await lower_exclude_from(
+            fl, flags, source, dispatch
+        )
         if refusal is not None:
             return texts, flags, stdin, refusal
         fl = FlagView(flags, spec=SPECS[name])
     key = FILE_KEYS[name]
     files = fl.as_paths(key)
     if not files:
-        return texts, flags, stdin, None
-    source = resolve_source(stdin)
-    consumed = False
+        return texts, flags, source if consumed else stdin, None
     # Only a literal `-` takes stdin in ripgrep's sense: `-f /dev/stdin`
     # reads the same bytes as a file, so neither refusal follows from it.
     taken = False

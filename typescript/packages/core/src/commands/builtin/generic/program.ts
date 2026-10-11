@@ -93,45 +93,42 @@ export function programFiles(name: string, bag: Record<string, FlagValue>): Path
 }
 
 /**
- * grep's --exclude-from files as --exclude globs, in line order. gnulib's
+ * grep's --exclude-from files read into the globs they hold. gnulib's
  * add_exclude_file takes one glob per line, trailing blanks dropped and blank
- * lines skipped. A file grep cannot read stops it before it searches anything,
- * exit 2. Mirrors Python's lower_exclude_from.
+ * lines skipped, and `-` is stdin (`source`, shared with -f). The globs stay
+ * under `exclude_from`, where the option stood among --include and --exclude.
+ * A file grep cannot read stops it before it searches anything, exit 2.
+ * Returns the flags, whether stdin was read, and the refusal. Mirrors
+ * Python's lower_exclude_from.
  */
 async function lowerExcludeFrom(
   fl: FlagView,
   bag: Record<string, FlagValue>,
+  source: ByteSource,
   dispatch: DispatchFn,
-): Promise<[Record<string, FlagValue>, IOResult | null]> {
-  const files = fl.asPaths('exclude_from').values()
-  const typed = fl.asList('exclude').values()
+): Promise<[Record<string, FlagValue>, boolean, IOResult | null]> {
   const globs: string[] = []
-  for (const [kind] of fl.occurrences('exclude', 'exclude_from')) {
-    if (kind === 'exclude') {
-      globs.push(typed.next().value ?? '')
-      continue
-    }
-    const path = files.next().value
-    if (path === undefined) continue
+  let consumed = false
+  for (const path of fl.asPaths('exclude_from')) {
     let data: Uint8Array
     try {
-      data = await readProgramFile('grep', path, dispatch)
+      if (isStdin(path)) {
+        data = await materialize(source)
+        consumed = true
+      } else {
+        data = await readProgramFile('grep', path, dispatch)
+      }
     } catch (err) {
       if (!isFsError(err)) throw err
       const line = fsErrorLine('grep', path, err)
-      return [bag, new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(line) })]
+      return [bag, consumed, new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(line) })]
     }
     for (const line of decodeText(data).split('\n')) {
       const glob = line.replace(/[ \t\n\v\f\r]+$/, '')
       if (glob) globs.push(glob)
     }
   }
-  const out: Record<string, FlagValue> = {}
-  for (const [key, value] of Object.entries(bag)) {
-    if (key === 'exclude' || (key === 'exclude_from' && !('exclude' in bag))) out.exclude = globs
-    else if (key !== 'exclude_from') out[key] = value
-  }
-  return [out, null]
+  return [{ ...bag, exclude_from: globs }, consumed, null]
 }
 
 /** Read program files once before input routing or traversal fan-out.
@@ -150,17 +147,18 @@ export async function prepareProgram(
   operands: readonly PathSpec[] = [],
 ): Promise<[string[], Record<string, FlagValue>, ByteSource | null, IOResult | null]> {
   let fl = new FlagView(bag, specOf(name))
-  if (name === 'grep') {
-    const [lowered, refusal] = await lowerExcludeFrom(fl, bag, dispatch)
+  const source = resolveSource(stdin)
+  let consumed = false
+  if (name === 'grep' && fl.asPaths('exclude_from').length > 0) {
+    const [lowered, read, refusal] = await lowerExcludeFrom(fl, bag, source, dispatch)
     if (refusal !== null) return [texts, bag, stdin, refusal]
     bag = lowered
+    consumed = read
     fl = new FlagView(bag, specOf(name))
   }
   const key = FILE_KEYS[name] ?? 'f'
   const files = fl.asPaths(key)
-  if (files.length === 0) return [texts, bag, stdin, null]
-  const source = resolveSource(stdin)
-  let consumed = false
+  if (files.length === 0) return [texts, bag, consumed ? source : stdin, null]
   // Only a literal `-` takes stdin in ripgrep's sense: `-f /dev/stdin` reads
   // the same bytes as a file, so neither refusal follows from it.
   let taken = false

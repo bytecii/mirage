@@ -135,6 +135,7 @@ def test_path_flag_scopes_leaves_a_program_file_out(cmd: str, flag: str):
 @pytest.mark.parametrize(
     "cmd, argv",
     [
+        ("grep", ["--exclude-from", "/other/skip.lst", "foo", "/data/in"]),
         ("curl", ["-o", "/other/body", "-D", "/data/h", "http://x.test/"]),
         (
             "curl",

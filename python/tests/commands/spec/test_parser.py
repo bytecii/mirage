@@ -314,6 +314,14 @@ def test_grep_reads_digits_as_its_context(argv, context):
     assert parsed.texts() == ["pat"]
 
 
+@pytest.mark.parametrize("argv", [["-1m2"], ["-1m", "2"], ["-1nm2"]])
+def test_grep_digits_end_at_a_value_option(argv):
+    parsed = parse_command(SPECS["grep"], [*argv, "pat"], "/", "grep")
+    assert parsed.flags["--context"] == "1"
+    assert parsed.flags["--max-count"] == "2"
+    assert parsed.texts() == ["pat"]
+
+
 def test_known_flags_produce_no_warnings():
     parsed = parse_command(SPECS["grep"], ["-n", "-e", "pat", "/a.txt"], "/")
     assert parsed.warnings == []

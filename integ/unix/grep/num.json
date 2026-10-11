@@ -74,6 +74,44 @@
         "C",
         "A"
       ]
+    },
+    {
+      "id": "grep_digits_before_a_value_option",
+      "seq": 14490053,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; grep -1m1 foo /data/gfl/a.txt; grep -n1m1 two /data/gfl/a.txt; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "beta\nfoo one\ngamma\n5-delta\n6:foo two\n7-epsilon\n",
+        "stderr": ""
+      },
+      "flags": [
+        "C",
+        "m"
+      ]
     }
   ]
 }

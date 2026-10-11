@@ -526,6 +526,13 @@ describe('parseCommand — unknown dash tokens warn and drop', () => {
     expect(p.texts()).toEqual(['pat'])
   })
 
+  it.each([[['-1m2']], [['-1m', '2']], [['-1nm2']]])('grep digits end at %j', (argv) => {
+    const p = parseCommand(specOf('grep'), [...argv, 'pat'], '/', 'grep')
+    expect(p.flags['--context']).toBe('1')
+    expect(p.flags['--max-count']).toBe('2')
+    expect(p.texts()).toEqual(['pat'])
+  })
+
   it('known flags produce no warnings', () => {
     const p = parseCommand(specOf('grep'), ['-n', '-e', 'pat', '/a.txt'], '/')
     expect(p.warnings).toEqual([])

@@ -81,7 +81,7 @@ function binaryMode(fl: FlagView): string {
  * What grep does with a directory: read, recurse or skip. -r and -R are
  * --directories=recurse, so the last of the three on the line wins (grep
  * 3.11: `grep -r -d skip` skips, `-d skip -r` recurses). A word argmatch names
- * none of the three by comes back as typed, for `parseFlags` to refuse.
+ * none of the three by comes back as typed; `checkActions` refuses it.
  */
 export function directoriesAction(fl: FlagView): string {
   let action = 'read'
@@ -97,23 +97,27 @@ export function directoriesAction(fl: FlagView): string {
   return action
 }
 
-/** gnulib's refusal of a --directories word, then grep's usage, exit 1. */
-function refuseDirectories(word: string): UsageError {
-  const match = argmatch(word, DIRECTORIES)
-  const kind = match.matched ? 'invalid' : match.kind
-  return new UsageError(
-    `${argmatchLine('grep', '--directories', word, kind)}\n` +
-      `${argmatchValidBlock(DIRECTORIES)}\n${GREP_NO_PATTERN}`,
-    1,
-  )
-}
-
-/** Whether -D skip was asked for; GNU takes only the exact words. */
-function skipDevices(fl: FlagView): boolean {
-  const word = fl.asStr('devices')
-  if (word !== undefined && !DEVICES.includes(word))
-    throw new UsageError('grep: unknown devices method')
-  return word === 'skip'
+/**
+ * Refuse a -d or -D word as GNU does, each one typed and not only the last:
+ * its option loop stops at the first bad one. A -d word argmatch names no
+ * action by is gnulib's refusal and grep's usage, exit 1; -D takes only the
+ * exact words, exit 2.
+ */
+function checkActions(fl: FlagView): void {
+  for (const [name, value] of fl.occurrences('directories', 'devices')) {
+    const word = String(value)
+    if (name === 'devices') {
+      if (!DEVICES.includes(word)) throw new UsageError('grep: unknown devices method')
+      continue
+    }
+    const match = argmatch(word, DIRECTORIES)
+    if (!match.matched)
+      throw new UsageError(
+        `${argmatchLine('grep', '--directories', word, match.kind)}\n` +
+          `${argmatchValidBlock(DIRECTORIES)}\n${GREP_NO_PATTERN}`,
+        1,
+      )
+  }
 }
 
 /**
@@ -198,13 +202,13 @@ export function parseFlags(fl: FlagView): FlagSet {
   const aCtx = contexts.get('after_context')
   const bCtx = contexts.get('before_context')
   const cCtx = contexts.get('context')
+  checkActions(fl)
   const directories = directoriesAction(fl)
-  if (!DIRECTORIES.includes(directories)) throw refuseDirectories(directories)
   return {
     binaryMode: mode,
     recursive: directories === 'recurse',
     skipDirectories: directories === 'skip',
-    skipDevices: skipDevices(fl),
+    skipDevices: fl.asStr('devices') === 'skip',
     filters: {
       fileGlobs: parseFileGlobs(fl),
       excludeDir: fl.asList('exclude_dir'),
