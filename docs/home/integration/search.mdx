@@ -142,6 +142,7 @@ instead, and grep exits 2.
 | Slack | `search.messages`, `search.files` | `-w`, channel days (`channels/*/*/chat.jsonl`) | `content_search` |
 | Gmail | messages search | `-w`, messages (`*/*/*.gmail.json`) | `content_search` |
 | PostgreSQL | `LIKE` per column (`lines_containing`) | `rows.jsonl` of a table with text, integer, boolean and uuid columns | always |
+| SSH | GNU `grep` on the server | every text, where the server runs commands | always |
 
 A word a backend's search is known not to see reads every file: a key of the
 rendered JSON, a fixed word such as a file type, a user's name on Slack. Each
@@ -152,3 +153,8 @@ bytes hold the word, the end of a large file, or a Docs, Sheets or Slides
 file's JSON; their pages list the cases. Discord reads every file, since a
 reply carries the message it answers, which its search does not tie to the
 reply.
+
+SSH runs `grep --dereference-recursive -lF --null` in the C locale over the
+mount's connection, so its answer is exact. A server that runs no commands
+(an SFTP-only account), a grep that is not GNU's, or a file the server's grep
+cannot read leaves every file to be read.

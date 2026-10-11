@@ -32,6 +32,7 @@ import { stat as sshStat } from '../../core/ssh/stat.ts'
 import { readStream as sshStream } from '../../core/ssh/stream.ts'
 import { exists as sshExists } from '../../core/ssh/exists.ts'
 import { find as sshFind } from '../../core/ssh/find.ts'
+import { filesContaining as sshFilesContaining } from '../../core/ssh/search.ts'
 import { size as sshDu, entries as sshDuAll } from '../../core/ssh/du/index.ts'
 import { write as sshWrite } from '../../core/ssh/write.ts'
 import { appendBytes as sshAppend } from '../../core/ssh/append.ts'
@@ -110,6 +111,15 @@ export class SSHVFS extends BaseVFS {
 
   override find(path: PathSpec, options: FindOptions, _index?: IndexCacheStore): Promise<string[]> {
     return sshFind(this.accessor, path, options)
+  }
+
+  override filesContaining(
+    text: string,
+    under: PathSpec[],
+    opts: { wholeWord: boolean; ignoreCase: boolean },
+    _index?: IndexCacheStore,
+  ): Promise<PathSpec[] | null> {
+    return sshFilesContaining(this.accessor, text, under, opts.ignoreCase)
   }
 
   override duSize(path: PathSpec, _index?: IndexCacheStore): Promise<number> {

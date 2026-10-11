@@ -17,6 +17,7 @@ import asyncio
 import functools
 import os
 import posixpath
+import shlex
 import tempfile
 from collections.abc import AsyncIterator
 
@@ -40,6 +41,10 @@ BIND_HOST = os.environ.get("MIRAGE_BIND_HOST", "127.0.0.1")
 # so the battery cannot make one through the shell.
 UNLISTABLE = b"unlistable"
 
+# The one command the server runs: the remote grep an ssh mount's search
+# sends. Nothing else runs on a server that asks for no password.
+GREP = ["env", "LC_ALL=C", "grep"]
+
 
 class NoAuthServer(asyncssh.SSHServer):
     def begin_auth(self, username: str) -> bool:
@@ -57,8 +62,40 @@ class ChrootSFTPServer(asyncssh.SFTPServer):
             yield name
 
 
+async def run_grep(root: str, process: asyncssh.SSHServerProcess) -> None:
+    """Run the search's grep without a shell, under the same chroot the
+    SFTP server applies: each scope is taken under ``root``, and each name
+    grep prints is given back as the client named it.
+
+    Args:
+        root (str): Local directory served as the SFTP root.
+        process (asyncssh.SSHServerProcess): The exec request.
+    """
+    argv = shlex.split(process.command or "")
+    if argv[:3] != GREP or "--" not in argv:
+        process.stderr.write(b"only the search's grep runs here\n")
+        process.exit(127)
+        return
+    cut = argv.index("--") + 1
+    scopes = [scope.lstrip("/") or "." for scope in argv[cut:]]
+    child = await asyncio.create_subprocess_exec(
+        *argv[:cut],
+        *scopes,
+        cwd=root,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await child.communicate()
+    names = [name.removeprefix(b"./") for name in out.split(b"\0")[:-1]]
+    process.stdout.write(b"".join(b"/" + name + b"\0" for name in names))
+    process.stderr.write(err)
+    process.exit(child.returncode or 0)
+
+
 async def start_server(root: str, port: int = 0) -> asyncssh.SSHAcceptor:
-    """Start a no-auth SFTP-only server chrooted to root.
+    """Start a no-auth SFTP server chrooted to root, which runs no command
+    but the ssh search's grep.
 
     Args:
         root (str): Local directory served as the SFTP root.
@@ -71,6 +108,8 @@ async def start_server(root: str, port: int = 0) -> asyncssh.SSHAcceptor:
         server_host_keys=[host_key],
         server_factory=NoAuthServer,
         sftp_factory=functools.partial(ChrootSFTPServer, root),
+        process_factory=functools.partial(run_grep, root),
+        encoding=None,
     )
 
 
