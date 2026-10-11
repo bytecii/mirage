@@ -51,8 +51,9 @@ export function driveQueries(text: string, vocabulary: ReadonlySet<string>): str
  * answer.
  *
  * Drive searches a file's text, so the answer can leave out one whose JSON
- * holds the word only in a value that is not text: a font, a time zone, a link
- * or image address, a tab title, an id or a formula. Mirrors Python's
+ * holds the word only in a value that is not text (a font, a time zone, a link
+ * or image address, a tab title, an id or a formula), or only as part of a word
+ * styling splits into text runs (`snow` bold in `snowman`). Mirrors Python's
  * `files_containing`.
  */
 export async function filesContaining<A extends GoogleApiAccessor>(

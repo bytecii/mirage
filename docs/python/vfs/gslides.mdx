@@ -180,7 +180,8 @@ enum value of the Slides API (`pageElements`, `SLIDE`), or a word every
 rendering carries (`https`, `arial`). It is off by default: Drive indexes a
 write some time after it lands and searches the file's text, so one whose JSON
 holds the word only in another value (a font, a link or image address, a layout
-name or an id) can be left out.
+name or an id), or only as part of a word styling splits into text runs
+(`snow` bold in `snowman`), can be left out.
 
 Acting on presentations (create, batchUpdate, raw API calls) goes
 through the [gws CLI](/python/cli/gws) when installed.
