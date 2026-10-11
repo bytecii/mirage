@@ -25,7 +25,7 @@ import {
   buildVfs as buildBrowserVfs,
   registerVfsFactory as registerBrowserVfs,
 } from '@struktoai/mirage-browser'
-import { MountMode, type PathSpec } from '@struktoai/mirage-core/types'
+import { Limit, MountMode, type PathSpec } from '@struktoai/mirage-core/types'
 import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
 import type { BaseVFS } from '@struktoai/mirage-core/vfs/base'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
@@ -41,13 +41,18 @@ import type { Policy } from '@struktoai/mirage-core/policy/base'
 import {
   Outcome,
   Scope,
+  type Action,
   type Ask,
   type CommandContext,
   type CommandExplanation,
+  type CommandResultContext,
   type Deny,
+  type ExecuteResultContext,
   type VfsContext,
+  type VfsResultContext,
   type Route,
   type SessionContext,
+  type SessionResultContext,
   type ShellExplanation,
   type ShellNode,
   type VfsExplanation,
@@ -121,16 +126,7 @@ type Step = (
       exit_code?: number
       stderr?: string
     }
-  | {
-      op: 'register_policy'
-      id: string
-      commands?: string[]
-      paths?: string[]
-      vars?: string[]
-      lines?: string[]
-      routes?: Record<string, string>
-      reason: string
-    }
+  | ({ op: 'register_policy'; id: string } & RuleHooks)
   | { op: 'tools' | 'asks' }
   | { op: 'tool'; tool: string; arguments: Record<string, unknown> }
   | { op: 'answer'; outcome?: Outcome; scope?: Scope }
@@ -143,43 +139,78 @@ type Step = (
   | { op: 'concurrent'; steps: Step[] }
 ) & { expect?: Record<string, unknown>; session?: string }
 
-/** A host policy whose command and op refusals are supplied by JSON. Mirrors Python's `RulePolicy`. */
+type RuleAnswer =
+  | { deny: string }
+  | { ask: string }
+  | { route: string }
+  | { limit: { max_bytes?: number; max_lines?: number } }
+
+type RuleHooks = Partial<
+  Record<
+    | 'pre_execute'
+    | 'post_execute'
+    | 'pre_command'
+    | 'post_command'
+    | 'pre_vfs'
+    | 'post_vfs'
+    | 'pre_session'
+    | 'post_session',
+    Record<string, RuleAnswer>
+  >
+>
+
+/**
+ * A host policy whose answers are supplied by JSON: per hook, the answer
+ * for a word of the line, a command, a path or a variable. Mirrors
+ * Python's `RulePolicy`.
+ */
 class RulePolicy implements Policy {
-  constructor(
-    private readonly rule: {
-      commands?: string[]
-      paths?: string[]
-      vars?: string[]
-      lines?: string[]
-      routes?: Record<string, string>
-      reason: string
-    },
-  ) {}
+  constructor(private readonly rule: RuleHooks) {}
 
-  preCommand(ctx: CommandContext): Deny | null {
-    return this.rule.commands?.includes(ctx.command) === true
-      ? { kind: 'deny', reason: this.rule.reason }
-      : null
-  }
-
-  preVfs(ctx: VfsContext): Deny | null {
-    return this.rule.paths?.includes(ctx.path.virtual) === true
-      ? { kind: 'deny', reason: this.rule.reason }
-      : null
-  }
-
-  preSession(ctx: SessionContext): Deny | null {
-    return this.rule.vars?.includes(ctx.key) === true
-      ? { kind: 'deny', reason: this.rule.reason }
-      : null
-  }
-
-  preExecute(ctx: RouteContext): Deny | Route | null {
-    if ((this.rule.lines ?? []).some((word) => ctx.line.includes(word))) {
-      return { kind: 'deny', reason: this.rule.reason }
+  answer(hook: keyof RuleHooks, subject: string, line = false): Action | null {
+    for (const [key, answer] of Object.entries(this.rule[hook] ?? {})) {
+      if (key !== subject && !(line && subject.includes(key))) continue
+      if ('deny' in answer) return { kind: 'deny', reason: answer.deny }
+      if ('ask' in answer) return { kind: 'ask', reason: answer.ask }
+      if ('route' in answer) return { kind: 'route', runtime: answer.route }
+      return new Limit({
+        maxBytes: answer.limit.max_bytes ?? null,
+        maxLines: answer.limit.max_lines ?? null,
+      })
     }
-    const routed = Object.entries(this.rule.routes ?? {}).find(([word]) => ctx.line.includes(word))
-    return routed === undefined ? null : { kind: 'route', runtime: routed[1] }
+    return null
+  }
+
+  preExecute(ctx: RouteContext): Action | null {
+    return this.answer('pre_execute', ctx.line, true)
+  }
+
+  postExecute(ctx: ExecuteResultContext): Action | null {
+    return this.answer('post_execute', ctx.line, true)
+  }
+
+  preCommand(ctx: CommandContext): Action | null {
+    return this.answer('pre_command', ctx.command)
+  }
+
+  postCommand(ctx: CommandResultContext): Action | null {
+    return this.answer('post_command', ctx.command)
+  }
+
+  preVfs(ctx: VfsContext): Action | null {
+    return this.answer('pre_vfs', ctx.path.virtual)
+  }
+
+  postVfs(ctx: VfsResultContext): Action | null {
+    return this.answer('post_vfs', ctx.path.virtual)
+  }
+
+  preSession(ctx: SessionContext): Action | null {
+    return this.answer('pre_session', ctx.key)
+  }
+
+  postSession(ctx: SessionResultContext): Action | null {
+    return this.answer('post_session', ctx.key)
   }
 }
 

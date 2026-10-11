@@ -19,8 +19,6 @@ import { ASK_SECOND, DENY_FIRST } from '../constants.ts'
 import { Outcome, type CommandContext, type CommandRule, type AdmissionRules } from '../types.ts'
 import { decide, outranks, sourceOf } from './decide.ts'
 
-const registry = { isMountRoot: () => false }
-
 function path(virtual: string): PathSpec {
   return new PathSpec({
     virtual,
@@ -39,7 +37,6 @@ function ctx(command: string, ...paths: string[]): CommandContext {
     operands: specs,
     argv: paths,
     cwd: '/',
-    registry,
     tokens: [command, ...paths],
   }
 }

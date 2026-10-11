@@ -26,7 +26,6 @@ from mirage.policy.constants import (
 )
 from mirage.policy.mixin import SessionScopedMixin
 from mirage.policy.types import (
-    VALIDITY,
     Action,
     Ask,
     CommandContext,
@@ -76,7 +75,8 @@ def script_context(
     inside a sandboxed engine that a live object cannot cross into.
     Paths are spelled as resolved virtual paths, so a script matches
     what the command will actually touch, not what was typed; the raw
-    words are in ``argv`` for a script that wants them.
+    words are in ``argv`` for a script that wants them. The session's
+    environment is in ``session.env``.
 
     Args:
         profile (str): the profile the script speaks for.
@@ -100,6 +100,7 @@ def script_context(
             "id": ctx.session_id,
             "agent": ctx.agent_id,
             "cwd": ctx.cwd,
+            "env": dict(ctx.session.snapshot()) if ctx.session else {},
         },
         "mounts": list(mounts),
     }
@@ -118,13 +119,21 @@ def ops_script_context(
     """
     return {
         "profile": profile,
-        "op": {
-            "name": ctx.op,
+        "call": {
+            "name": ctx.call.name,
+            "effect": ctx.call.effect.value,
+            "target": ctx.call.target.value,
+            "creates": ctx.call.creates,
+            "subtree": ctx.call.subtree,
             "path": ctx.path.virtual,
             "write": ctx.write,
             "prefix": ctx.prefix,
         },
-        "session": {"id": ctx.session_id},
+        "session": {
+            "id": ctx.session_id,
+            "cwd": ctx.session.cwd() if ctx.session else "",
+            "env": dict(ctx.session.snapshot()) if ctx.session else {},
+        },
         "mounts": list(mounts),
     }
 
@@ -149,7 +158,11 @@ def session_script_context(
             "key": ctx.key,
             "value": ctx.value,
         },
-        "session": {"id": ctx.session_id},
+        "session": {
+            "id": ctx.session_id,
+            "cwd": ctx.session.cwd() if ctx.session else "",
+            "env": dict(ctx.session.snapshot()) if ctx.session else {},
+        },
         "mounts": list(mounts),
     }
 
@@ -240,52 +253,42 @@ def defined_hooks(script: ScriptSource, value: EvalValue) -> frozenset[str]:
     raise ValueError(f"script hook probe answered {value!r}")
 
 
-def script_action(
-    value: EvalValue, hook: str = "pre_command"
-) -> Deny | Ask | None:
+def script_action(value: EvalValue) -> Deny | Ask | None:
     """The policy answer a policy's hook returns.
 
     The vocabulary is the coded hook's own, spelled as data: ``None``
     or ``'allow'`` is no opinion (the command runs unless another rule
     refuses it, and can never override one that does), ``'deny'`` /
-    ``{'deny': reason}`` refuses, and at ``pre_command`` and ``pre_vfs``
-    ``'ask'`` / ``{'ask': reason}`` takes the line (or an op no line is
-    running behind) to the approval ledger, since the session view cannot
-    wait on a host (``VALIDITY``). The bare strings carry the document's
-    default reasons, the same ones a rule stating no reason gets.
+    ``{'deny': reason}`` refuses, and ``'ask'`` / ``{'ask': reason}``
+    takes it to the approval ledger, as every hook may (``VALIDITY``).
+    The bare strings carry the document's default reasons, the same
+    ones a rule stating no reason gets.
 
     Args:
         value (EvalValue): what the script evaluated to.
-        hook (str): the hook that answered, in python spelling.
 
     Raises:
         ValueError: the value is none of the hook's shapes. The message
             is a clause about "script", for the caller to prefix with
             whose policy it is.
     """
-    asks = Ask.kind in VALIDITY[hook]
     if value is None or value == "allow":
         return None
     if value == "deny":
         return Deny(DEFAULT_DENY_REASON)
-    if asks and value == "ask":
+    if value == "ask":
         return Ask(DEFAULT_ASK_REASON)
     if isinstance(value, Mapping) and len(value) == 1:
         verb, reason = next(iter(value.items()))
         if isinstance(reason, str) and reason:
             if verb == "deny":
                 return Deny(reason)
-            if asks and verb == "ask":
+            if verb == "ask":
                 return Ask(reason)
-    if asks:
-        raise ValueError(
-            f"script must answer allow, deny or ask: None or 'allow', "
-            f"'deny', 'ask', {{'deny': reason}} or {{'ask': reason}}; "
-            f"got {value!r}"
-        )
     raise ValueError(
-        f"script must answer allow or deny: None or 'allow', "
-        f"'deny' or {{'deny': reason}}; got {value!r}"
+        f"script must answer allow, deny or ask: None or 'allow', "
+        f"'deny', 'ask', {{'deny': reason}} or {{'ask': reason}}; "
+        f"got {value!r}"
     )
 
 
@@ -461,7 +464,7 @@ class ScriptPolicy(Policy, SessionScopedMixin):
             # probe's (the program answered it with something else).
             return self._failed(entry, _clause(exc))
         try:
-            return script_action(value, hook)
+            return script_action(value)
         except ValueError as exc:
             return self._failed(entry, _clause(exc))
 

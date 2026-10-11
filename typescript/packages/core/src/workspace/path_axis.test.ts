@@ -25,7 +25,7 @@ import { Session, Workspace } from './workspace/workspace.ts'
 /** Refuse the unlink of one exact path, whatever entry point asked. */
 class DenyRemnantUnlink implements Policy {
   preVfs(ctx: VfsContext): Action | null {
-    if (ctx.op === 'unlink' && ctx.path.virtual === '/a/d/sec/k') {
+    if (ctx.call.name === 'unlink' && ctx.path.virtual === '/a/d/sec/k') {
       return { kind: 'deny', reason: 'protected' }
     }
     return null
@@ -35,7 +35,7 @@ class DenyRemnantUnlink implements Policy {
 /** Refuse every unlink once it has run. */
 class DenyUnlinkAfter implements Policy {
   postVfs(ctx: VfsResultContext): Action | null {
-    return ctx.op === 'unlink' ? { kind: 'deny', reason: 'too late' } : null
+    return ctx.call.name === 'unlink' ? { kind: 'deny', reason: 'too late' } : null
   }
 }
 

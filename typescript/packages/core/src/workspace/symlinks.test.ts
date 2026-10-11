@@ -22,9 +22,9 @@ import { RAMVFS } from '../vfs/ram/ram.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { rstripSlash } from '../utils/slash.ts'
 import { FileStat, FileType, MountMode } from '../types.ts'
-import type { Action, VfsContext } from '../policy/index.ts'
 import { applyStateDict, toStateDict } from './snapshot/state.ts'
 import { Workspace } from './workspace/workspace.ts'
+import { dispatched } from '../test-utils.ts'
 
 const require = createRequire(import.meta.url)
 const engineWasm = readFileSync(require.resolve('web-tree-sitter/web-tree-sitter.wasm'))
@@ -150,30 +150,21 @@ describe('symlinks (namespace-backed)', () => {
     await ws.close()
   })
 
-  it('mv of a link passes the admission gate', async () => {
-    // The link rename is the dispatcher's, so a policy that denies it wins. mv
-    // used to move the node itself, which made it the one write in the
-    // shell no admission policy could see.
-    const ram = new RAMVFS()
+  it('mv of a link goes through the dispatcher', async () => {
+    // The link rename is the dispatcher's, where every op a line makes is
+    // judged. mv used to move the node itself, which made it the one write
+    // in the shell no gate could see.
     const ws = new Workspace(
-      { '/data': ram },
-      {
-        mode: MountMode.WRITE,
-        shellParser: parser,
-        policies: [
-          {
-            preVfs: (ctx: VfsContext): Action | null =>
-              ctx.op === 'rename' ? { kind: 'deny', reason: 'frozen' } : null,
-          },
-        ],
-      },
+      { '/data': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: parser },
     )
     await ws.shell('echo hi > /data/a.txt')
     await ws.shell('ln -s /data/a.txt /data/lk')
+    const seen = dispatched(ws)
     const r = await ws.shell('mv /data/lk /data/lk2')
-    expect(r.exitCode).toBe(1)
-    expect(dec(r.stderr)).toBe("mv: cannot move '/data/lk' to '/data/lk2': Permission denied\n")
-    expect(dec((await ws.shell('readlink /data/lk')).stdout)).toBe('/data/a.txt\n')
+    expect(r.exitCode).toBe(0)
+    expect(seen).toContainEqual(['rename', '/data/lk'])
+    expect(dec((await ws.shell('readlink /data/lk2')).stdout)).toBe('/data/a.txt\n')
     await ws.close()
   })
 

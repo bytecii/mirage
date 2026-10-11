@@ -410,7 +410,26 @@ export class Workspace {
     // The approval ledger an Ask is taken to (design 3.9): grants live on
     // the sessions, the host answers through `onAsk` (or just records
     // the question when none is wired) and reads `ws.decisions`.
-    this.registry.decisions = new Decisions(this.sessionManager, options.onAsk ?? null)
+    this.registry.policies.decisions = new Decisions(this.sessionManager, options.onAsk ?? null)
+    // What every hook sees of its session: the one the call is made under
+    // when the hook's is it (a call's cwd and env included), else the
+    // session the id names, the default for none; nothing for an id this
+    // workspace holds no session for.
+    this.registry.policies.views = (sessionId) => {
+      let session = asyncContextIsolatesTasks
+        ? getCurrentSessionUnlessForeign(this.sessionManager)
+        : null
+      if (session === null || (sessionId !== '' && session.sessionId !== sessionId)) {
+        const wanted = sessionId === '' ? this.sessionManager.defaultId : sessionId
+        session = this.sessionManager.list().find((s) => s.sessionId === wanted) ?? null
+      }
+      if (session === null) return null
+      return {
+        session: sessionView(session, this.policies),
+        ns: namespaceViewOf(this.registry, this.namespace, this.dispatcher.dispatch, session),
+        vfs: this.vfs.forSession(session.sessionId),
+      }
+    }
     // Installed CLIs, fully separate from mounts: a spec name resolves
     // against the named registry and every entry installs through the
     // same fail-loud path as registerCli.
@@ -525,7 +544,7 @@ export class Workspace {
       binding: this.runtimeBinding,
     })
     this.closers.push(() => this.runtimeWorld.close())
-    this.router = new Router(this.registry, this.runtimeWorld, this.agentId, sandboxResolver)
+    this.router = new Router(this.registry, this.runtimeWorld, this.agentId)
     if (options.routePolicy !== undefined) {
       this.registry.policies.place(
         new PlacementPolicy(options.routePolicy, () => this.runtimeWorld.entries),
@@ -1088,7 +1107,7 @@ export class Workspace {
         return {
           ...explainedLine(line, judged, () => '', reparse),
           answers,
-          outcome: Outcome.DENY,
+          outcome: placed.kind === 'pending' ? Outcome.ASK : Outcome.DENY,
           reason: placed.reason,
           source: '',
           refusal: refused.refusal,

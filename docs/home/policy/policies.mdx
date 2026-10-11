@@ -24,8 +24,24 @@ ws.policies.remove(reports)
 
 </CodeGroup>
 
-Hooks come in two groups. TypeScript spells them in camelCase
-(`preCommand`, `ctx.sessionId`).
+Hooks come in pairs: a `pre_` hook before something runs, a `post_` hook
+after it, which sees what the `pre_` hook saw plus what came back. A post
+hook never undoes what ran; it holds back what came back. TypeScript
+spells them in camelCase (`preCommand`, `ctx.sessionId`).
+
+## What every hook gets
+
+Besides the facts in the tables below, every hook's `ctx` carries:
+
+| Field | What it is |
+| --- | --- |
+| `session_id` | the session the action runs as |
+| `session` | the session, read only: `get(name)`, `snapshot()`, `cwd()`, `is_readonly(name)`, `profile()` |
+| `ns` | the session's namespace, as commands get it: mounts, links, the stat overlay, hides applied |
+| `vfs` | the session's files, read only: `read`, `stat`, `readdir`, `exists` |
+
+A hook only reads. A write it makes through mirage is refused (`EROFS`
+for a file, `EACCES` for a variable), and its reads run no hook again.
 
 ## Shell hooks
 
@@ -35,40 +51,17 @@ These fire when an agent runs a line: `ws.shell`, `session.shell`, the
 
 | Hook | Fires | Reads | May answer | [Explain](/home/policy/explain#what-it-asks) asks it |
 | --- | --- | --- | --- | --- |
-| `pre_command` | before each command | `command`, `argv`, `paths`, `operands`, `program`, `cwd`, `session_id` | Deny, Ask | yes |
-| `pre_execute` | once per line, before it runs | `line`, `commands`, `cwd`, `env`, `session_id` | Deny, Route | yes |
-| `post_execute` | after each line | `producer`, `exit_code` | Limit | no |
-| `pre_session` | before each env write (`export`, `X=1`) | `verb`, `key`, `value`, `session_id` | Deny | no |
+| `pre_execute` | once per line, before any of it runs | `line`, `commands`, `agent_id` | Deny, Ask, Route | yes |
+| `post_execute` | once per line, after it ends | what `pre_execute` read, plus `exit_code`, `output`, `results`, `producer` | Deny, Ask, Limit | no |
+| `pre_command` | before each command or CLI runs | `command`, `argv`, `paths`, `operands`, `program`, `cwd` | Deny, Ask | yes |
+| `post_command` | after each command or CLI, once its output drained | what `pre_command` read, plus `exit_code`, `stderr`, `records` | Deny, Ask | no |
+| `pre_session` | before each env write (`export`, `X=1`, `unset`) | `verb`, `key`, `value` | Deny, Ask | no |
+| `post_session` | after each env write lands | what `pre_session` read, plus `old` | Deny, Ask | no |
 
-Every command on a line passes `pre_command` before any of them runs, so
-a line refused whole never runs halfway.
-
-### pre_command
-
-<CodeGroup>
-
-```python Python
-from mirage.policy import CommandContext, Deny, Policy
-
-class NoForcePush(Policy):
-    async def pre_command(self, ctx: CommandContext) -> Deny | None:
-        if ctx.command == "git" and ctx.argv[:1] == ("push",) and "--force" in ctx.argv:
-            return Deny("force pushes go through an operator")
-        return None
-```
-
-```typescript TypeScript
-const noForcePush: Policy = {
-  preCommand(ctx) {
-    const force = ctx.command === 'git' && ctx.argv[0] === 'push' && ctx.argv.includes('--force')
-    return force ? { kind: 'deny', reason: 'force pushes go through an operator' } : null
-  },
-}
-```
-
-</CodeGroup>
-
-`git push --force origin main` gets `git: Permission denied`, exit 126.
+`pre_command` fires as each command runs, so a Deny on the second command
+of `a; b` leaves `a` run. To refuse a whole line before any of it runs,
+answer at `pre_execute`. `results` is the line's execution tree: a leaf
+per command with its exit code, stderr and op records.
 
 ### pre_execute
 
@@ -123,7 +116,63 @@ const firstHundredLines: Policy = {
 </CodeGroup>
 
 A longer output stops at 100 lines, and stderr says
-`output truncated at limit (100 lines); ...`.
+`output truncated at limit (100 lines); ...`. A Deny here drops the
+output: exit 126 and a refusal record.
+
+### pre_command
+
+<CodeGroup>
+
+```python Python
+from mirage.policy import CommandContext, Deny, Policy
+
+class NoForcePush(Policy):
+    async def pre_command(self, ctx: CommandContext) -> Deny | None:
+        if ctx.command == "git" and ctx.argv[:1] == ("push",) and "--force" in ctx.argv:
+            return Deny("force pushes go through an operator")
+        return None
+```
+
+```typescript TypeScript
+const noForcePush: Policy = {
+  preCommand(ctx) {
+    const force = ctx.command === 'git' && ctx.argv[0] === 'push' && ctx.argv.includes('--force')
+    return force ? { kind: 'deny', reason: 'force pushes go through an operator' } : null
+  },
+}
+```
+
+</CodeGroup>
+
+`git push --force origin main` gets `git: Permission denied`, exit 126.
+
+### post_command
+
+<CodeGroup>
+
+```python Python
+from mirage.policy import CommandResultContext, Deny, Policy
+
+class NoSecretsShown(Policy):
+    async def post_command(self, ctx: CommandResultContext) -> Deny | None:
+        if any(r.get("path", "").startswith("/vault/") for r in ctx.records):
+            return Deny("vault reads need an operator")
+        return None
+```
+
+```typescript TypeScript
+const noSecretsShown: Policy = {
+  postCommand(ctx) {
+    const vault = ctx.records.some((r) => String(r.path ?? '').startsWith('/vault/'))
+    return vault ? { kind: 'deny', reason: 'vault reads need an operator' } : null
+  },
+}
+```
+
+</CodeGroup>
+
+`cat /vault/k && echo next` exits 126 with `cat: Permission denied`, and
+`echo` does not run. Output already sent stays sent.
 
 ### pre_session
 
@@ -151,23 +200,26 @@ const noCredentials: Policy = {
 
 </CodeGroup>
 
-`export AWS_SECRET=x` gets `AWS_SECRET: permission denied`, exit 1.
+`export AWS_SECRET=x` gets `AWS_SECRET: permission denied`, exit 1. A
+Deny at `post_session` gives the same answer and puts the old value back.
 
 ## VFS hooks
 
-These fire on every VFS call: `session.vfs`, the `read`, `write`, `edit`
-and `glob` tools, `mirage vfs`, HTTP `/vfs/<call>`, RPC `vfs/<call>`,
-FUSE, FSKit and SFTP. `pre_vfs` also fires for every file a shell command
-reads or writes.
+These fire on a VFS call made outside a line: `session.vfs`, the `read`,
+`write`, `edit` and `glob` tools, `mirage vfs`, HTTP `/vfs/<call>`, RPC
+`vfs/<call>`, FUSE, FSKit and SFTP. A command's own reads and writes do
+not reach them: the hides, mount modes and the profile's path rules judge
+those.
 
 | Hook | Fires | Reads | May answer | [Explain](/home/policy/explain#what-it-asks) asks it |
 | --- | --- | --- | --- | --- |
-| `pre_vfs` | before each VFS call, and each file a command touches | `op`, `path`, `write`, `create`, `session_id` | Deny, Ask | for a VFS call, not inside a line |
-| `post_vfs` | after each VFS call | `op`, `path`, `result` | Deny, Limit | no |
+| `pre_vfs` | before each VFS call | `call`, `path`, `write` | Deny, Ask | yes |
+| `post_vfs` | after each VFS call | what `pre_vfs` read, plus `result` | Deny, Ask, Limit | no |
 
-`pre_vfs` fires thousands of times under one `grep -r`, so keep it cheap.
-An Ask from it reaches a host only from `session.vfs` or a file tool;
-inside a line it refuses.
+`call` is the function called: its `name`, `effect` (read, write,
+metadata), `target`, and whether it `creates` or reaches the `subtree`.
+Every function a VFS marks fires them, not only the POSIX ones: `find`,
+`du_size`, `search`, `copy` too.
 
 ### pre_vfs
 
@@ -195,16 +247,8 @@ const readOnlyReports: Policy = {
 
 </CodeGroup>
 
-Every command gets its own error, exit 1:
-
-```text
-$ echo x > /reports/q3.md
-/reports/q3.md: Permission denied
-$ cp notes.md /reports/
-cp: cannot create regular file '/reports/notes.md': Permission denied
-```
-
-`session.vfs.write("/reports/q3.md", ...)` raises `EACCES`.
+`session.vfs.write("/reports/q3.md", ...)` raises `EACCES`. To hold a
+command too (`echo x > /reports/q3.md`), give the profile a path rule.
 
 ### post_vfs
 
@@ -216,7 +260,7 @@ from mirage.policy import Policy, VfsResultContext
 
 class SmallReads(Policy):
     async def post_vfs(self, ctx: VfsResultContext) -> Limit | None:
-        if ctx.op == "read":
+        if ctx.call.name == "read":
             return Limit(max_bytes=1_000_000)
         return None
 ```
@@ -224,25 +268,24 @@ class SmallReads(Policy):
 ```typescript TypeScript
 const smallReads: Policy = {
   postVfs(ctx) {
-    return ctx.op === 'read' ? new Limit({ maxBytes: 1_000_000 }) : null
+    return ctx.call.name === 'read' ? new Limit({ maxBytes: 1_000_000 }) : null
   },
 }
 ```
 
 </CodeGroup>
 
-`session.vfs.read` returns at most the first 1 MB. `post_vfs` does not
-see the reads inside a command, so `cat` is not cut; bound a line with
-`post_execute`.
+`session.vfs.read` returns at most the first 1 MB. `cat` is not cut;
+bound a line with `post_execute`.
 
 ## Answers
 
 | Return | The agent gets |
 | --- | --- |
 | `None` | nothing changes |
-| `Deny(reason)` | `rm: Permission denied`, exit 126; from a VFS hook, the command's own error or `EACCES` |
+| `Deny(reason)` | `rm: Permission denied`, exit 126; from a VFS hook, `EACCES`; from `pre_session` or `post_session`, `KEY: permission denied`, exit 1 |
 | `Deny(reason, DenyScope.OPERAND, path=p)` | the command's own error for `p`: `cat: /data/k: Permission denied`, exit 1; the rest of the line still runs |
-| `Ask(reason)` | `cp: Permission denied`, exit 126, until a host answers; see [Asks](/home/permissions#asks) |
+| `Ask(reason)` | refused as a Deny is, until a host answers; the approved retry runs it; see [Asks](/home/permissions#asks) |
 | `Route(runtime)` | the line runs on that runtime |
 | `Limit(max_lines=, max_bytes=)` | the output cut at the bound, with a notice on stderr; with `on_exceed=OnExceed.ERROR`, no output and exit 1 |
 
@@ -268,12 +311,14 @@ their text: `policy denied: <reason>`, or
 - Any Deny beats any Ask, so answering an ask never reopens a refusal.
 - The first Deny speaks. Built-ins come first, then the session's
   profile, then `policies=`, then `add()`.
+- Every Ask is put to the host, and the action runs once all are
+  approved.
 - Limits merge to the tightest value of each field.
 - Two Routes to different runtimes refuse the line.
 
 ## Which entry point enforces what
 
-A line fires every hook; a VFS call fires only the VFS hooks. So a
+A line fires the shell hooks; a VFS call fires the VFS hooks. So a
 [profile](/home/permissions) rule that names a command holds only on a
 line, and a rule that names only paths holds on both.
 `session.tools.names()` lists only the tools the session's profile leaves

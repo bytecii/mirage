@@ -14,7 +14,7 @@
 
 import asyncio
 import dataclasses
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from functools import partial
 from itertools import accumulate
 from typing import Any, TypeVar
@@ -22,6 +22,7 @@ from typing import Any, TypeVar
 from mirage.commands.builtin.utils.limit import guard_io, run_with_timeout
 from mirage.context import (
     RedirectRunner,
+    note_refusal,
     program_invocation,
     redirect_paths_for,
     redirect_runner_for,
@@ -33,7 +34,17 @@ from mirage.context import (
 from mirage.context.session_context import RedirectResult, redirect_syntax_for
 from mirage.io import IOResult
 from mirage.io.types import ByteSource, materialize
-from mirage.policy import PolicyDenied, resolve_limit, resolve_producer
+from mirage.policy import (
+    CommandResultContext,
+    Pending,
+    PolicyDenied,
+    post_command_gate,
+    refusal_of,
+    render_deny,
+    render_pending,
+    resolve_limit,
+    resolve_producer,
+)
 from mirage.policy.policies import reset_op_policies, set_op_policies
 from mirage.policy.types import Claimant, HandOff, SessionContext
 from mirage.runtime.base import Runtime
@@ -576,12 +587,24 @@ async def _run_argv(
         )
 
     admitted: Admitted | None = None
+    # What the last admission was asked about: the redirect layer admits
+    # each target before it opens it, and then the run admits the whole
+    # statement, so the policies are asked again only for a target they
+    # have not seen.
+    asked: tuple[bool | str, ...] | None = None
 
     async def guard(
         paths: tuple[PathSpec, ...], given: ByteSource | None
     ) -> RedirectResult | None:
-        nonlocal admitted
+        nonlocal admitted, asked
+        key: tuple[bool | str, ...] = (
+            given is None,
+            *(p.virtual for p in paths),
+        )
+        if admitted is not None and asked == key:
+            return None
         if name:
+            asked = key
             verdict = await admit(
                 name,
                 list(argv.args),
@@ -654,7 +677,7 @@ async def _run_argv(
                 )
             token = set_admission(admitted)
             try:
-                return await _route_argv(
+                result = await _route_argv(
                     recurse,
                     dispatch,
                     registry,
@@ -676,6 +699,58 @@ async def _run_argv(
                 reset_admission(token)
         finally:
             reset_op_policies(ptoken)
+        # post_command judges the command once its result is final: a
+        # streamed output settles its exit code as it drains, so the hook
+        # is asked when the stream ends or its reader stops, and at once
+        # for output already whole. A refusal leaves what was sent as
+        # sent: exit 126, the refusal line on stderr, the refusal record.
+        if not registry.policies.wants("post_command"):
+            return result
+        stdout, io, node = result
+        ctx = admitted.ctx
+
+        async def judge() -> None:
+            stderr = await materialize(io.stderr)
+            io.stderr = stderr
+            facts = {
+                f.name: getattr(ctx, f.name) for f in dataclasses.fields(ctx)
+            }
+            action = await post_command_gate(
+                registry.policies,
+                CommandResultContext(
+                    **facts,
+                    exit_code=io.exit_code,
+                    stderr=stderr.decode(errors="replace"),
+                    records=tuple(r.to_dict() for r in node.records),
+                ),
+                claimant,
+                cancel,
+            )
+            if action is None:
+                return
+            err, code = (
+                render_pending(ctx.command, action)
+                if isinstance(action, Pending)
+                else render_deny(ctx.command, action)
+            )
+            io.stderr = stderr + err
+            io.exit_code = node.exit_code = code
+            node.stderr = node.stderr + err
+            io.refusal = refusal_of(action)
+            note_refusal(io.refusal)
+
+        if stdout is None or isinstance(stdout, bytes):
+            await judge()
+            return result
+
+        async def drained() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in stdout:
+                    yield chunk
+            finally:
+                await judge()
+
+        return drained(), io, node
 
     if runner is not None:
         return await runner(run_redirected, guard, name, tuple(argv.args))

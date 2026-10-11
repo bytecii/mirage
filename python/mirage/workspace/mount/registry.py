@@ -140,12 +140,8 @@ class MountRegistry:
         # Registry-hosted like runtime_bindings so the executor reaches
         # them without new parameter threading.
         self.policies = Policies(
-            [MountRootPolicy(), OutputCapPolicy(self.limit_override)]
+            [MountRootPolicy(self), OutputCapPolicy(self.limit_override)]
         )
-        # The decision ledger the executor takes an Ask to, hosted here
-        # for the same reason as the policies: the workspace replaces
-        # it with one bound to its session manager and ask handler.
-        self.decisions = Decisions()
 
         # Installed CLIs. Not mount state: CLIs are fully separate from
         # mounts (a CLI exists because it was installed, never because
@@ -626,6 +622,12 @@ class MountRegistry:
     @property
     def root_mount(self) -> MountEntry | None:
         return self._root
+
+    @property
+    def decisions(self) -> Decisions:
+        """The decision ledger an Ask is taken to, which the policies
+        hold (``Policies.decisions``) so a session write reaches it too."""
+        return self.policies.decisions
 
     def anchor_root(self, entry: MountEntry) -> None:
         """Mark `entry` as the root the workspace added, not one mounted.

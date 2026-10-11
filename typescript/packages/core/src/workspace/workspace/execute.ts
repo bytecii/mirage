@@ -55,7 +55,8 @@ import { lineStatusWriter, runWithLineAbort } from '../abort.ts'
 import type { Dispatcher } from '../dispatcher/index.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import type { RouteDecision } from '../../runtime/routing/index.ts'
-import type { Deny, HandOff } from '../../policy/index.ts'
+import { RouteError } from '../../runtime/routing/errors.ts'
+import type { Deny, HandOff, Pending } from '../../policy/index.ts'
 import type { Refusal } from '../../types.ts'
 import { NodeType as NT, type TSNodeLike } from '../../shell/types.ts'
 import { inputSubstitutionRedirect } from '../../shell/helpers.ts'
@@ -91,7 +92,7 @@ import { expandingAliases } from '../executor/builtins/alias/index.ts'
 import type { ResolvedSource } from '../../secrets/types.ts'
 import { cliEnvNames, fillEnv, fillNames, guestBound, lineNodes } from './fill.ts'
 import { admitLine, isPending, isPendingRefusal } from '../node/admission.ts'
-import { evaluatedFrom } from '../node/occurrence.ts'
+import { evaluatedFrom, rootFrame, wholeOccurrence } from '../node/occurrence.ts'
 import { runWholeLine } from './line.ts'
 import type { WorkspaceMeta } from './meta.ts'
 import type { Router } from './routing.ts'
@@ -518,18 +519,47 @@ async function runPreparedLine(
               env.registry.decisions.handUp(effectiveSession.sessionId, handed)
             else await env.registry.decisions.revoke(effectiveSession.sessionId, handed)
           }
-          let placed: RouteDecision<Runtime> | Deny | null
+          let placed: RouteDecision<Runtime> | Deny | Pending | null
           try {
+            // Judged as the session the line runs in, a call's cwd and env
+            // included, as Python binds it before placement; without task
+            // isolation the binding would reach other tasks.
+            const decide = (): ReturnType<typeof env.router.decide> =>
+              env.router.decide(
+                rootNode,
+                command,
+                options,
+                effectiveSession,
+                held,
+                { line: handed, occurrence: wholeOccurrence(rootFrame(rootNode, handed.origin)) },
+                mergeSignals(options.signal, context.frame.abortSignal),
+              )
             placed = await abortable(
-              env.router.decide(rootNode, command, options, targetSession, held),
+              asyncContextIsolatesTasks ? runWithEvaluation(context, decide) : decide(),
               options.signal,
             )
           } catch (err) {
             await sweep()
-            throw err
+            // Invalid routing stays the caller's error; anything else a
+            // policy raised fails the line, as Python folds it.
+            if (err instanceof RouteError || isControlFlowError(err)) throw err
+            const failed = failureResult(err)
+            return await answerLine(
+              env,
+              command,
+              options,
+              targetSession,
+              new ExecuteResult(new Uint8Array(), failed.stderr, failed.exitCode),
+            )
           }
           if (placed !== null && 'kind' in placed) {
-            await sweep()
+            // A question on the line as a whole holds it for its retry
+            // like one on a command.
+            if (placed.kind === 'pending') {
+              env.registry.decisions.release(effectiveSession.sessionId, handed)
+            } else {
+              await sweep()
+            }
             return await answerLine(
               env,
               command,
@@ -615,6 +645,10 @@ async function runPreparedLine(
                     innerContext,
                     null,
                     true,
+                    null,
+                    env.registry.policies.wants('postExecute')
+                      ? env.router.context(substitutionTree, cmd, innerOpts, session)
+                      : null,
                   )
                   io.stdout = stdout
                   recordStatus(session, io.exitCode, true)
@@ -950,11 +984,16 @@ async function runParsedLine(
             () => env.invalidateAllAfterRemote(),
             killed,
             env.registry.commandLimits,
+            { line: handed, occurrence: wholeOccurrence(rootFrame(rootNode, handed.origin)) },
+            env.registry.policies.wants('postExecute')
+              ? env.router.context(rootNode, command, options, effectiveSession)
+              : null,
           ),
         ),
         killed,
       )
       const refusal = result.refusal ?? nested.latest
+      held = isPendingRefusal(refusal)
       recordStatus(targetSession, result.exitCode)
       if (isLine) {
         const lineIo = new IOResult({
@@ -1045,6 +1084,9 @@ async function runParsedLine(
           stdin,
           false,
           options.callStack ?? null,
+          env.registry.policies.wants('postExecute')
+            ? env.router.context(rootNode, command, options, context.session)
+            : null,
         ).finally(release)
         const result = await joinOrAbort(running, killed)
         if (killed?.aborted === true) throw makeAbortError(killed)

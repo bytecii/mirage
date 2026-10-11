@@ -18,6 +18,7 @@ import { seedVar, setAttr } from '../session/state.ts'
 import { TempEnv, VarAttr } from '../../shell/variable.ts'
 import {
   type RedirectRunner,
+  noteRefusal,
   redirectRunnerFor,
   redirectSyntaxFor,
   runWithRedirectPaths,
@@ -54,6 +55,10 @@ import { INTERPRETER_NAMES } from '../lookup/constants.ts'
 import { guardIO, runWithTimeout } from '../../commands/builtin/utils/limit.ts'
 import {
   PolicyDenied,
+  postCommandGate,
+  refusalOf,
+  renderDeny,
+  renderPending,
   resolveLimit,
   resolveProducer,
   type Claimant,
@@ -575,11 +580,19 @@ async function runArgv(
   }
 
   let admitted: Admitted | null = null
+  // What the last admission was asked about: the redirect layer admits
+  // each target before it opens it, and then the run admits the whole
+  // statement, so the policies are asked again only for a target they
+  // have not seen.
+  let asked: string | null = null
   const guard = async (
     paths: readonly PathSpec[],
     given: ByteSource | null,
   ): Promise<Result | null> => {
+    const key = [String(given === null), ...paths.map((p) => p.virtual)].join('\0')
+    if (admitted !== null && asked === key) return null
     if (name !== '') {
+      asked = key
       const verdict = await admit(
         name,
         [...argv.args],
@@ -650,7 +663,53 @@ async function runArgv(
       )
     const gated = admitted
     if (gated === null) return runWithOpPolicies(registry.policies, route)
-    return runWithOpPolicies(registry.policies, () => runWithAdmission(gated, route))
+    const result = await runWithOpPolicies(registry.policies, () => runWithAdmission(gated, route))
+    // postCommand judges the command once its result is final: a streamed
+    // output settles its exit code as it drains, so the hook is asked when
+    // the stream ends or its reader stops, and at once for output already
+    // whole. A refusal leaves what was sent as sent: exit 126, the refusal
+    // line on stderr, the refusal record.
+    if (!registry.policies.wants('postCommand')) return result
+    const [stdout, io, node] = result
+    const ctx = gated.ctx
+    const judge = async (): Promise<void> => {
+      const stderr = await materialize(io.stderr)
+      io.stderr = stderr
+      const action = await postCommandGate(
+        registry.policies,
+        {
+          ...ctx,
+          exitCode: io.exitCode,
+          stderr: new TextDecoder().decode(stderr),
+          records: node.records.map((r) => r.toJSON()),
+        },
+        claimant,
+        signal,
+      )
+      if (action === null) return
+      const [err, code] =
+        action.kind === 'pending'
+          ? renderPending(ctx.command, action)
+          : renderDeny(ctx.command, action)
+      io.stderr = concat([stderr, err])
+      io.exitCode = code
+      node.exitCode = code
+      node.stderr = concat([node.stderr, err])
+      io.refusal = refusalOf(action)
+      noteRefusal(io.refusal)
+    }
+    if (stdout === null || stdout instanceof Uint8Array) {
+      await judge()
+      return result
+    }
+    const drained = async function* (): AsyncIterable<Uint8Array> {
+      try {
+        for await (const chunk of stdout) yield chunk
+      } finally {
+        await judge()
+      }
+    }
+    return [drained(), io, node]
   }
   if (runner !== null) return runner(runRedirected, guard, name, argv.args)
   return runRedirected(stdin, sink, redirects)

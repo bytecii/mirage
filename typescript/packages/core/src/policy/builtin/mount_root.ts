@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Policy } from '../base.ts'
-import type { Action, CommandContext, Deny } from '../types.ts'
+import type { Action, CommandContext, Deny, MountRootQuery } from '../types.ts'
 import { isCreateMode } from '../../commands/builtin/generic/tar/mode.ts'
 import { expandTableLong } from '../../commands/spec/compile.ts'
 import { GNU_LONG_OPTIONS } from '../../commands/spec/long_options.ts'
@@ -195,9 +195,12 @@ function firstRoot(
  * same however the operands span mounts, and before runtime placement so a
  * routed command is refused identically. MountRegistry seeds it as the first
  * policy (mount-root semantics belong to the mount layer), so its exact
- * messages win over user policies by order, not by privilege.
+ * messages win over user policies by order, not by privilege. `registry` is
+ * the mount table it asks.
  */
 export class MountRootPolicy implements Policy {
+  constructor(private readonly registry: MountRootQuery) {}
+
   preCommand(ctx: CommandContext): Action | null {
     if (ctx.paths.length === 0) return null
     // An operand the kernel walk refused (`walkError`) names nothing,
@@ -205,7 +208,7 @@ export class MountRootPolicy implements Policy {
     // working directory, which can be a mount root, and the command
     // reports it ENOENT rather than busy. Mirrors Python's names_root.
     const namesRoot = (p: PathSpec): boolean =>
-      p.walkError === null && ctx.registry.isMountRoot(p.virtual)
+      p.walkError === null && this.registry.isMountRoot(p.virtual)
     const cmd = ctx.command
     const operands = ctx.operands ?? ctx.paths
 

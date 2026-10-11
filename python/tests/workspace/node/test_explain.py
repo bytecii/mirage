@@ -481,18 +481,17 @@ async def coded():
 
 
 @pytest.mark.asyncio
-async def test_a_coded_policy_holds_the_line_without_a_document(coded):
-    # A session with no permissions document still runs under whatever
-    # policies the deployment registered, and one is always registered
-    # (MountRootPolicy). Returning early on `commands is None` held the
-    # line for a document and left a policy with the half-line behavior
-    # the pass exists to remove.
+async def test_a_coded_policy_answers_as_the_command_runs(coded):
+    # The pass that judges a line before it runs asks the profile's
+    # rules alone; a policy written in code answers pre_command once,
+    # as its command runs, so the commands before it have run. A line
+    # it refuses whole is pre_execute's.
     ran = await coded.shell("rm /data/a.txt && cat /data/b.txt")
     assert ran.exit_code != 0
     assert ran.stderr == b"cat: Permission denied\n"
     assert ran.refusal is not None
     assert ran.refusal.reason == "cat is refused by policy"
-    assert "/data/a.txt" in await coded.vfs.readdir("/data")
+    assert "/data/a.txt" not in await coded.vfs.readdir("/data")
 
 
 def _answering(asked: list[str], outcome: Outcome, scope: Scope = Scope.ONCE):

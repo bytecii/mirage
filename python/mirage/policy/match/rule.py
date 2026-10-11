@@ -502,12 +502,12 @@ def op_reach(
         scope (HiddenPaths | None): the rule's classified paths.
         ctx (VfsContext): the op about to run.
     """
-    if rule.commands or scope is None or ctx.op in METADATA_OPS:
+    if rule.commands or scope is None or ctx.call.name in METADATA_OPS:
         return None
     virtual = ctx.path.virtual
     if path_hidden(scope, virtual):
         return hidden_depth(rule, virtual)
-    if ctx.op in SUBTREE_OPS and path_covers(scope, virtual):
+    if ctx.call.name in SUBTREE_OPS and path_covers(scope, virtual):
         return covers_depth(rule, virtual)
     return None
 

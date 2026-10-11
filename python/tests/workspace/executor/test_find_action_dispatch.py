@@ -25,11 +25,11 @@ import re
 import pytest
 
 from mirage.io.stream import SharedStdin
-from mirage.policy import Deny, Policy
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.executor.find_action_dispatch import depth_first_key
+from tests.fixtures.vfs_io import dispatched
 
 
 def _ws() -> Workspace:
@@ -961,31 +961,22 @@ async def test_exec_runs_a_program_a_function_shadows():
         await ws.close()
 
 
-class _NoRmdir(Policy):
-    async def pre_vfs(self, ctx):
-        if ctx.op == "rmdir":
-            return Deny(reason="no rmdir")
-        return None
-
-
 @pytest.mark.asyncio
-async def test_delete_admits_a_directory_as_rmdir():
-    # A rule that refuses rmdir and allows unlink judges `find emptydir
-    # -delete` as it judges `rmdir emptydir`.
-    ws = Workspace(
-        {"/": RAMVFS()}, mode=MountMode.WRITE, policies=[_NoRmdir()]
-    )
+async def test_delete_removes_a_directory_with_rmdir():
+    # `find emptydir -delete` removes the directory as `rmdir emptydir`
+    # does, and a file as `rm file` does, so the dispatcher judges each
+    # as that op.
+    ws = _ws()
+    seen = dispatched(ws)
     try:
         io = await ws.shell(
             "mkdir -p /data/rd/e; touch /data/rd/f; "
-            "find /data/rd/f -delete; echo rc=$?; "
-            "find /data/rd/e -delete; echo rc=$?; test -d /data/rd/e; echo $?"
+            "find /data/rd/f -delete; find /data/rd/e -delete; "
+            "test -d /data/rd/e; echo $?"
         )
-        assert await io.stdout_str() == "rc=0\nrc=1\n0\n"
-        assert "find: cannot delete '/data/rd/e': Permission denied" in (
-            await io.stderr_str()
-        )
-        assert io.refusal is not None and io.refusal.reason == "no rmdir"
+        assert await io.stdout_str() == "1\n"
+        assert ("unlink", "/data/rd/f") in seen
+        assert ("rmdir", "/data/rd/e") in seen
     finally:
         await ws.close()
 

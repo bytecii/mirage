@@ -73,7 +73,11 @@ class RedactReadsPolicy(Policy):
         data = (
             ctx.result if isinstance(ctx.result, (bytes, bytearray)) else None
         )
-        if ctx.op == "read" and data is not None and b"TOPSECRET" in data:
+        if (
+            ctx.call.name == "read"
+            and data is not None
+            and b"TOPSECRET" in data
+        ):
             return Deny("redacted")
         return None
 
@@ -82,7 +86,7 @@ class PinLinksPolicy(Policy):
     """pre_vfs deny: a pinned link never leaves the node table."""
 
     async def pre_vfs(self, ctx: VfsContext) -> Deny | None:
-        if ctx.op == "unlink" and ctx.path.virtual.endswith(".pinned"):
+        if ctx.call.name == "unlink" and ctx.path.virtual.endswith(".pinned"):
             return Deny("pinned")
         return None
 

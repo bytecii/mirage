@@ -39,10 +39,9 @@ function ctx(
   command: string,
   paths: PathSpec[],
   argv: string[] = [],
-  reg: MountRegistry = registry(),
   operands?: PathSpec[],
 ): CommandContext {
-  return { command, paths, operands: operands ?? paths, argv, cwd: '/', registry: reg }
+  return { command, paths, operands: operands ?? paths, argv, cwd: '/' }
 }
 
 describe('MountRootPolicy', () => {
@@ -57,7 +56,7 @@ describe('MountRootPolicy', () => {
     // ln refuses a mount root only as the link NAME, which -T pins;
     // without it a directory operand is the directory to link into.
     const argv = cmd === 'ln' ? ['-T'] : []
-    const deny = new MountRootPolicy().preCommand(ctx(cmd, [path('/data')], argv))
+    const deny = new MountRootPolicy(registry()).preCommand(ctx(cmd, [path('/data')], argv))
     expect(deny).not.toBeNull()
     expect(deny?.kind).toBe('deny')
     expect(deny && 'reason' in deny ? deny.reason : '').toContain(needle)
@@ -70,22 +69,20 @@ describe('MountRootPolicy', () => {
   })
 
   it('treats mkdir -p on a mount root as a no-op', () => {
-    const reg = registry()
-    const policy = new MountRootPolicy()
+    const policy = new MountRootPolicy(registry())
     for (const argv of [['-p'], ['--parents'], ['-pv']]) {
-      expect(policy.preCommand(ctx('mkdir', [path('/data')], argv, reg))).toBeNull()
+      expect(policy.preCommand(ctx('mkdir', [path('/data')], argv))).toBeNull()
     }
     // A long flag containing p is not the shorthand cluster.
-    expect(policy.preCommand(ctx('mkdir', [path('/data')], ['--print'], reg))).not.toBeNull()
+    expect(policy.preCommand(ctx('mkdir', [path('/data')], ['--print']))).not.toBeNull()
   })
 
   it('passes non-root paths and no paths', () => {
-    const reg = registry()
-    const policy = new MountRootPolicy()
+    const policy = new MountRootPolicy(registry())
     for (const cmd of ['rm', 'rmdir', 'mv', 'mkdir', 'touch', 'ln']) {
-      expect(policy.preCommand(ctx(cmd, [path('/data/file.txt')], [], reg))).toBeNull()
+      expect(policy.preCommand(ctx(cmd, [path('/data/file.txt')], []))).toBeNull()
     }
-    expect(policy.preCommand(ctx('rm', [], ['-r'], reg))).toBeNull()
+    expect(policy.preCommand(ctx('rm', [], ['-r']))).toBeNull()
   })
 
   it.each([
@@ -105,12 +102,12 @@ describe('MountRootPolicy', () => {
     [['-r', '--no-pres'], '/', '/', "cannot remove '/': Device or resource busy"],
   ])('rm %j refuses %s in GNU order', (argv, raw, virtual, reason) => {
     const reg = new MountRegistry({ '/': new RAMVFS(), '/data': new RAMVFS() }, MountMode.WRITE, {})
-    const deny = new MountRootPolicy().preCommand(ctx('rm', [path(virtual, raw)], argv, reg))
+    const deny = new MountRootPolicy(reg).preCommand(ctx('rm', [path(virtual, raw)], argv))
     expect(deny && 'reason' in deny ? deny.reason : '').toBe(reason)
   })
 
   it('rm -r on a mount root is refused, never treated as an unmount', () => {
-    const deny = new MountRootPolicy().preCommand(ctx('rm', [path('/data')], ['-rf']))
+    const deny = new MountRootPolicy(registry()).preCommand(ctx('rm', [path('/data')], ['-rf']))
     expect(deny && 'reason' in deny ? deny.reason : '').toContain('Device or resource busy')
   })
 
@@ -119,7 +116,7 @@ describe('MountRootPolicy', () => {
     // plain ln says "link" (pinned by integ guard_root_ln_is_eexist). A
     // mount root is only refused as the link NAME, which -T pins; without
     // it a directory operand is the directory to link into.
-    const policy = new MountRootPolicy()
+    const policy = new MountRootPolicy(registry())
     const symbolic = policy.preCommand(ctx('ln', [path('/data/k.txt'), path('/data')], ['-sT']))
     expect(symbolic && 'reason' in symbolic ? symbolic.reason : '').toBe(
       "failed to create symbolic link '/data': File exists",
@@ -172,13 +169,13 @@ describe('MountRootPolicy: whole-mount archivers', () => {
       cp: [path('/data'), path('/dst')],
     }
     const argv = cmd === 'tar' ? ['-cf', '/out.tar'] : []
-    const deny = new MountRootPolicy().preCommand(ctx(cmd, operands[cmd] ?? [], argv))
+    const deny = new MountRootPolicy(registry()).preCommand(ctx(cmd, operands[cmd] ?? [], argv))
     expect(deny).not.toBeNull()
     expect(new TextDecoder().decode(renderDeny(cmd, deny as Deny)[0])).toBe(needle)
   })
 
   it("names tar's operand as typed and exits 2", () => {
-    const deny = new MountRootPolicy().preCommand(
+    const deny = new MountRootPolicy(registry()).preCommand(
       ctx('tar', [path('/data', '.')], ['-cf', '/out.tar']),
     )
     const [err, code] = renderDeny('tar', deny as Deny)
@@ -200,26 +197,30 @@ describe('MountRootPolicy: whole-mount archivers', () => {
   ])('only tar create reads its operands from the filesystem: %s', (argv, denied) => {
     // Under -t and -x an operand names a member, not a path, so a
     // selector spelling a mount root must not deny the listing.
-    const deny = new MountRootPolicy().preCommand(ctx('tar', [path('/data')], argv))
+    const deny = new MountRootPolicy(registry()).preCommand(ctx('tar', [path('/data')], argv))
     expect(deny !== null).toBe(denied)
   })
 
   it('allows extracting into a mount root', () => {
     // `-C /data` is a path-valued flag, so it reaches paths but never
     // operands; refusing it would block the safe direction.
-    const deny = new MountRootPolicy().preCommand(
-      ctx('tar', [path('/archive.tar'), path('/data')], [], registry(), [path('/archive.tar')]),
+    const deny = new MountRootPolicy(registry()).preCommand(
+      ctx('tar', [path('/archive.tar'), path('/data')], [], [path('/archive.tar')]),
     )
     expect(deny).toBeNull()
   })
 
   it('allows copying into a mount root', () => {
-    const deny = new MountRootPolicy().preCommand(ctx('cp', [path('/src/a.txt'), path('/data')]))
+    const deny = new MountRootPolicy(registry()).preCommand(
+      ctx('cp', [path('/src/a.txt'), path('/data')]),
+    )
     expect(deny).toBeNull()
   })
 
   it("does not read zip's archive slot as a source", () => {
-    const deny = new MountRootPolicy().preCommand(ctx('zip', [path('/data'), path('/src/a.txt')]))
+    const deny = new MountRootPolicy(registry()).preCommand(
+      ctx('zip', [path('/data'), path('/src/a.txt')]),
+    )
     expect(deny).toBeNull()
   })
 })

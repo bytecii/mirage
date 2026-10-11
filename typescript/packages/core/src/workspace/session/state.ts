@@ -13,7 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { SessionView } from '../../view/types.ts'
-import { PolicyDenied, preSessionGate, type Policies } from '../../policy/index.ts'
+import {
+  PolicyDenied,
+  postSessionGate,
+  preSessionGate,
+  type Policies,
+  type SessionContext,
+} from '../../policy/index.ts'
 import { evaluateArith, plainDecimal } from '../../shell/arith.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import {
@@ -802,13 +808,14 @@ async function setVar(
       throw err
     }
   }
-  await preSessionGate(policies, {
+  const written: SessionContext = {
     plane: 'env',
     verb: 'set',
     key: name,
     value: gateRendering(shaped),
     sessionId: session.sessionId,
-  })
+  }
+  await preSessionGate(policies, written)
   if (name === RANDOM && session.randomSeed !== RANDOM_UNSET && typeof shaped === 'string') {
     // A seed that fails or writes a readonly name seeds nothing: its
     // earlier writes land and the error is reported, but the line goes on,
@@ -860,6 +867,15 @@ async function setVar(
     stored = withAttr(stored, VarAttr.Export)
   }
   setSessionEntry(session.vars, name, stored)
+  try {
+    await postSessionGate(policies, {
+      ...written,
+      old: existing == null ? null : gateRendering(existing.value),
+    })
+  } catch (err) {
+    if (err instanceof PolicyDenied) place(session, name, existing ?? null)
+    throw err
+  }
 }
 
 /**
@@ -889,7 +905,29 @@ async function unsetVar(
     sessionId: session.sessionId,
   })
 
+  const old = sessionEntry(session.vars, name) ?? null
+  const frame = shadowingFrame(session, name)
   drop(session, name)
+  try {
+    await postSessionGate(policies, {
+      plane: 'env',
+      verb: 'unset',
+      key: name,
+      value: null,
+      sessionId: session.sessionId,
+      old: old === null ? null : gateRendering(old.value),
+    })
+  } catch (err) {
+    if (err instanceof PolicyDenied) {
+      // The unset revealed what an enclosing scope saved; that value goes
+      // back to the scope before the name's own record returns.
+      if (frame !== undefined && !frame.has(name)) {
+        frame.set(name, sessionEntry(session.vars, name) ?? null)
+      }
+      place(session, name, old)
+    }
+    throw err
+  }
   // bash: unsetting RANDOM strips its special meaning for good.
   if (name === RANDOM) session.randomSeed = RANDOM_UNSET
 }
@@ -1165,7 +1203,21 @@ async function markVar(
     value: null,
     sessionId: session.sessionId,
   })
+  const old = sessionEntry(session.vars, name) ?? null
   setAttr(session, name, attr, on)
+  try {
+    await postSessionGate(policies, {
+      plane: 'env',
+      verb: 'set',
+      key: name,
+      value: null,
+      sessionId: session.sessionId,
+      old: old === null ? null : gateRendering(old.value),
+    })
+  } catch (err) {
+    if (err instanceof PolicyDenied) place(session, name, old)
+    throw err
+  }
 }
 
 export function sessionView(
@@ -1183,6 +1235,7 @@ export function sessionView(
       markVar(session, policies, name, attr, on, followRef),
     isReadonly: (name, followRef = true) => envIsReadonly(session, name, followRef),
     profile: () => session.profile,
+    cwd: () => session.cwd,
   }
 }
 

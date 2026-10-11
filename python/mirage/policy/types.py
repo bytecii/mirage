@@ -15,10 +15,16 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
+from mirage.runtime.routing.types import RouteContext
 from mirage.runtime.types import ScriptSource
 from mirage.types import Limit, MountMode, PathSpec, Producer, Refusal
+from mirage.vfs.types import VfsCall
+from mirage.view.types import NamespaceView, SessionView
+
+if TYPE_CHECKING:
+    from mirage.workspace.files import Files
 
 
 class MountRootQuery(Protocol):
@@ -249,15 +255,17 @@ class Ruling:
 
 @dataclass(frozen=True, slots=True)
 class Ask:
-    """Admit the command only with a host approval.
+    """Go on only with a host approval.
 
-    A pre_command answer: ``PermissionsPolicy`` returns one for a
+    Every hook may answer one. ``PermissionsPolicy`` returns one for a
     ``commands.ask`` rule, a custom policy for a coded condition, and
     both route to the workspace's decision ledger (``Decisions``). A Deny
     from any policy outranks it: the chain keeps looking past an Ask
-    for a Deny, so an approval can never re-open a refusal. A pre_vfs
-    answer too, where the entry point puts it to the ledger when no line is
-    running behind the op and refuses it inside one.
+    for a Deny, so an approval can never re-open a refusal. A later
+    Ask's rules are appended to the first one's ``rules``, so every Ask
+    a hook's chain answers is put to the host. A pre hook holds what it
+    guards until the host says yes; a post hook holds back what came
+    back, and the approved rerun repeats the action.
 
     Args:
         reason (str): why the line needs sign-off, shown to the agent
@@ -269,10 +277,11 @@ class Ask:
         rules (tuple[CommandRule, ...]): every rule the line has to be
             granted, ``rule`` among them and usually alone: a line whose
             operands were each asked about by a different rule carries
-            them all. The entry point asks about them one at a time and runs
-            the line only once each is answered, so a nod given for one
-            operand cannot carry another. Empty for a coded Ask, whose
-            one rule the entry point synthesizes.
+            them all, as does the first Ask of a chain that answered
+            more than one. The entry point asks about them one at a time
+            and runs the line only once each is answered, so a nod given
+            for one operand cannot carry another. Empty for a coded Ask,
+            whose one rule the entry point synthesizes.
         policy (str): the policy that asked, as ``explain`` names it.
     """
 
@@ -642,7 +651,6 @@ class CommandContext:
             hook fires before flag parsing, so shorthand flags are raw
             tokens.
         cwd (str): session working directory.
-        registry (MountRootQuery): mount-root oracle for POSIX rules.
         session_id (str): the session running the line, set by the
             entry point; empty outside a workspace.
         agent_id (str): the agent the workspace attributes the line
@@ -669,13 +677,19 @@ class CommandContext:
             paths is a mount the line works inside: the executor's
             fan-out reruns the traversal in each descendant mount, and
             no admission fires again there.
+        session (SessionView | None): the session, read only: a write
+            through it is refused. Filled when a hook is asked.
+        ns (NamespaceView | None): the session's namespace, as a command
+            gets it in ``opts.ns``. Filled when a hook is asked.
+        vfs (Files | None): the session's files, read only: a write is
+            refused and no hook runs again for a read. Filled when a
+            hook is asked.
     """
 
     command: str
     paths: tuple[PathSpec, ...]
     argv: tuple[str, ...]
     cwd: str
-    registry: MountRootQuery
     operands: tuple[PathSpec, ...] = ()
     session_id: str = ""
     agent_id: str = ""
@@ -683,6 +697,27 @@ class CommandContext:
     program: tuple[str, ...] = ()
     tool: bool = True
     walks: bool = False
+    session: SessionView | None = None
+    ns: NamespaceView | None = None
+    vfs: "Files | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class CommandResultContext(CommandContext):
+    """One command or CLI that ran, as post_command hooks see it: what
+    pre_command saw, plus what came back.
+
+    Args:
+        exit_code (int): the command's exit code, settled once its
+            output drained.
+        stderr (str): what it wrote to stderr.
+        records (tuple[dict[str, Any], ...]): its op records, as
+            ``OpRecord.to_dict`` writes them.
+    """
+
+    exit_code: int = 0
+    stderr: str = ""
+    records: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -690,69 +725,77 @@ class VfsContext:
     """Facts about one VFS op, as pre_vfs hooks see it.
 
     Fires at the dispatcher (the ``ws.vfs`` facade, which also serves
-    FUSE, and the shell's internal dispatcher), before any backend or
-    cache I/O, so it holds however the mount is reached.
+    FUSE), before any backend or cache I/O, so it holds however the
+    mount is reached. A running line's own ops never reach a user hook.
 
     Args:
-        op (str): operation name (read, write, unlink, readdir, ...).
+        call (VfsCall): the function called, as ``vfs_call`` declares
+            it: its name, effect, target, whether it creates and whether
+            it reaches the subtree. A rename's or a copy's destination is
+            judged under the same call with ``creates`` set.
         path (PathSpec): the resolved virtual path.
-        write (bool): whether the op mutates the mount.
+        write (bool): whether the call mutates this path; a copy only
+            reads its source.
         prefix (str): the owning mount's prefix.
         session_id (str): the session the dispatcher serves, set by the entry
             point from the session it already resolves for hides and modes;
             empty for the unbound host view.
         mode (MountMode | None): the owning mount's authorization ceiling,
             None at an entry point that judges the mode itself.
-        create (bool): the op creates this path.
-        subtree (bool): the op mutates the path's descendants too.
+        session (SessionView | None): the session, read only.
+        ns (NamespaceView | None): the session's namespace.
+        vfs (Files | None): the session's files, read only.
     """
 
-    op: str
+    call: VfsCall
     path: PathSpec
     write: bool
     prefix: str
     session_id: str = ""
     mode: MountMode | None = None
-    create: bool = False
-    subtree: bool = False
+    session: SessionView | None = None
+    ns: NamespaceView | None = None
+    vfs: "Files | None" = None
 
 
 @dataclass(frozen=True, slots=True)
-class VfsResultContext:
-    """One completed VFS op, as post_vfs hooks see it.
+class VfsResultContext(VfsContext):
+    """One completed VFS op, as post_vfs hooks see it: what pre_vfs saw,
+    plus what came back.
 
     Args:
-        op (str): operation name.
-        path (PathSpec): the resolved virtual path.
-        write (bool): whether the op mutated the mount.
-        prefix (str): the owning mount's prefix.
         result (Any): the op's raw result (bytes, FileStat, listing,
-            ...); a Deny here suppresses it.
+            ...); a Deny or an Ask here drops it.
     """
 
-    op: str
-    path: PathSpec
-    write: bool
-    prefix: str
-    result: Any
+    result: Any = None
 
 
 @dataclass(frozen=True, slots=True)
-class ExecuteResultContext:
-    """One finished execute() line, as post_execute hooks see it.
+class ExecuteResultContext(RouteContext):
+    """One finished line, as post_execute hooks see it: what
+    pre_execute saw, plus what came back.
 
-    Fires at the workspace boundary before the line's output stream is
-    finalized, so a Limit returned here bounds what the caller sees.
+    Fires at the workspace boundary before the line's output reaches
+    the caller, so a Limit returned here bounds what the caller sees,
+    and a Deny or an Ask drops it.
 
     Args:
         producer (Producer): provenance of the surviving stream (the
             rightmost command, per shell semantics); a Producer with an
             empty command when no dispatch site stamped one.
         exit_code (int): the line's exit code so far.
+        output (bytes): what the line wrote to stdout.
+        results (dict[str, Any]): what each command returned, as the
+            line's execution tree (``ExecutionNode.to_dict``): a leaf
+            per command with its exit code, stderr and op records,
+            under the operators that joined them.
     """
 
-    producer: Producer
-    exit_code: int
+    producer: Producer = Producer(command="")
+    exit_code: int = 0
+    output: bytes = b""
+    results: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -771,6 +814,9 @@ class SessionContext:
         value (str | None): the value being written, None for unset.
         session_id (str): which session is writing, so a policy can
             scope a rule to one agent (deny ``set`` for session X).
+        session (SessionView | None): the session, read only.
+        ns (NamespaceView | None): the session's namespace.
+        vfs (Files | None): the session's files, read only.
     """
 
     plane: str
@@ -778,15 +824,33 @@ class SessionContext:
     key: str
     value: str | None
     session_id: str = ""
+    session: SessionView | None = None
+    ns: NamespaceView | None = None
+    vfs: "Files | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionResultContext(SessionContext):
+    """One session write that landed, as post_session hooks see it: what
+    pre_session saw, plus the value it replaced.
+
+    Args:
+        old (str | None): the value before the write, rendered as
+            ``value`` is; None when the name was unset.
+    """
+
+    old: str | None = None
 
 
 VALIDITY: dict[str, frozenset[str]] = {
     "pre_command": frozenset({Deny.kind, Ask.kind}),
-    "pre_execute": frozenset({Deny.kind, Route.kind}),
+    "post_command": frozenset({Deny.kind, Ask.kind}),
+    "pre_execute": frozenset({Deny.kind, Ask.kind, Route.kind}),
     "pre_vfs": frozenset({Deny.kind, Ask.kind}),
-    "post_vfs": frozenset({Deny.kind, Limit.kind}),
-    "post_execute": frozenset({Limit.kind}),
-    "pre_session": frozenset({Deny.kind}),
+    "post_vfs": frozenset({Deny.kind, Ask.kind, Limit.kind}),
+    "post_execute": frozenset({Deny.kind, Ask.kind, Limit.kind}),
+    "pre_session": frozenset({Deny.kind, Ask.kind}),
+    "post_session": frozenset({Deny.kind, Ask.kind}),
 }
 
 
@@ -927,10 +991,10 @@ class ShellExplanation(Explanation):
     cannot see, a policy refusing one operand) says so on its own node.
 
     Args:
-        answers (tuple[Deny | Route, ...]): every policy's answer to
-            where the line runs (``pre_execute``), the route policy's
-            first; empty when nothing places it or a command refuses it
-            first.
+        answers (tuple[Deny | Ask | Route, ...]): every policy's
+            answer to the line as a whole (``pre_execute``), the route
+            policy's first; empty when no policy answers it or a command
+            refuses it first.
         line (str): the line as given.
         exit_code (int): what the line is refused with, 0 when it runs.
         stderr (str): what the agent would read then, empty when it
@@ -938,7 +1002,7 @@ class ShellExplanation(Explanation):
         node (ShellNode): the parsed line, of type ``line``.
     """
 
-    answers: "tuple[Deny | Route, ...]" = ()
+    answers: "tuple[Deny | Ask | Route, ...]" = ()
     line: str
     exit_code: int = 0
     stderr: str = ""

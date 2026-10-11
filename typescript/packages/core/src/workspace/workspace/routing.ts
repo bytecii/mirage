@@ -21,19 +21,19 @@ import {
   type RouteDecision,
 } from '../../runtime/routing/index.ts'
 import type { ParsedCommand } from '../../runtime/routing/types.ts'
-import type { Deny, Route } from '../../policy/types.ts'
-import { settled } from '../../policy/policies.ts'
+import type { Ask, Claimant, Deny, Pending, Route } from '../../policy/types.ts'
+import { opQuestion } from '../../policy/decisions.ts'
+import { agreed, settled } from '../../policy/policies.ts'
 import type { Runtime } from '../../runtime/base.ts'
-import type { MountResolver } from '../../runtime/resolver.ts'
 import { catchAll, runtimeBindingsFor } from '../../runtime/table.ts'
 import { WorkspaceRuntime } from '../../runtime/workspace.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import { Consumer, lookup } from '../lookup/index.ts'
 import type { SessionState } from '../session/session.ts'
-import { envSnapshot } from '../session/state.ts'
 import type { ExecuteOptions } from './types.ts'
 import type { Runtimes } from './runtimes.ts'
+import { makeAbortError } from '../../utils/abort.ts'
 
 /**
  * The policy ladder for one typed line: runtime argument, the placement
@@ -42,31 +42,29 @@ import type { Runtimes } from './runtimes.ts'
  * `workspace/routing.py`.
  *
  * `decide` returns null when nothing decides (no runtime argument,
- * nothing to consult) so dispatch falls to the static bindings, and the
- * stage's Deny when a placing policy refuses the line; a nested eval
- * inherits the typed line's decision and never re-routes. The runtime
- * argument is the caller's own placement, so a Route is not asked for and
- * the runtime's own `script:` is not consulted (the caller forces it), but
- * a coded policy's Deny still refuses the line. A runtime a policy names
- * must take the line itself (`validated`). Admission comes first: a line `held` reports refused or waiting on a question is left
- * on the static bindings, unplaced, for the gate to answer.
+ * nothing to consult) so dispatch falls to the static bindings, the
+ * stage's Deny when a policy refuses the line, and the ledger's answer to
+ * its Ask when the host refuses the line or has not answered yet; a
+ * nested eval inherits the typed line's decision and never re-routes. The
+ * runtime argument is the caller's own placement, so a Route is not asked
+ * for and the runtime's own `script:` is not consulted (the caller forces
+ * it), but a coded policy's Deny or Ask still holds the line. A runtime a
+ * policy names must take the line itself (`validated`). Admission comes
+ * first: a line `held` reports refused or waiting on a question is left
+ * on the static bindings, unplaced, for the gate to answer. `claimant` is
+ * the line as a whole on its hand-off, so an approval of the line is
+ * claimed there like a command's: kept for the retry of a line still
+ * waiting on another question, spent when the line ends.
  */
 export class Router {
   private readonly registry: MountRegistry
   private readonly runtimes: Runtimes
   private readonly agentId: string | null
-  private readonly resolver: MountResolver
 
-  constructor(
-    registry: MountRegistry,
-    runtimes: Runtimes,
-    agentId: string | null,
-    resolver: MountResolver,
-  ) {
+  constructor(registry: MountRegistry, runtimes: Runtimes, agentId: string | null) {
     this.registry = registry
     this.runtimes = runtimes
     this.agentId = agentId
-    this.resolver = resolver
   }
 
   async decide(
@@ -75,43 +73,52 @@ export class Router {
     options: ExecuteOptions,
     session: SessionState,
     held?: () => Promise<boolean>,
-  ): Promise<RouteDecision<Runtime> | Deny | null> {
+    claimant: Claimant | null = null,
+    signal?: AbortSignal,
+  ): Promise<RouteDecision<Runtime> | Deny | Pending | null> {
     if (options.routingDecision !== undefined) return options.routingDecision
     const policies = this.registry.policies
     const placing = policies.wants('preExecute')
-    if (options.runtime !== undefined) {
-      const placed = this.placed(options.runtime)
-      if (!placing || (held !== undefined && (await held()))) return placed
-      const said = await policies.preExecute(this.context(root, command, options, session), true)
-      return said?.kind === 'deny' ? said : placed
-    }
+    const placed = options.runtime === undefined ? null : this.placed(options.runtime)
+    if (placed !== null && !placing) return placed
     const hasScripts = this.runtimes.entries.some((entry) => entry.script !== undefined)
-    if (!placing && !hasScripts) return null
-    if (held !== undefined && (await held())) return null
+    if (placed === null && !placing && !hasScripts) return null
+    if (held !== undefined && (await held())) return placed
     const ctx = this.context(root, command, options, session)
-    const said = await policies.preExecute(ctx)
-    if (said?.kind === 'deny') return said
-    if (said?.kind === 'route') return this.validated(said.runtime, ctx, session)
+    const [said, route] = await policies.preExecute(ctx, placed !== null)
+    const action =
+      said?.kind === 'ask'
+        ? await this.registry.decisions.resolve(...opQuestion(ctx, said), signal, claimant)
+        : said
+    if (action?.kind === 'abandoned') throw makeAbortError()
+    if (action !== null) return action
+    if (placed !== null) return placed
+    if (route !== null) return this.validated(route.runtime, ctx, session)
     return this.scripted(ctx, session)
   }
 
   /**
-   * Every placement answer for a line and what they decide, without
-   * running it: what `explain` shows. Mirrors Python's
+   * Every `preExecute` answer for a line and what they decide, without
+   * running it: what `explain` shows. An Ask reads the ledger's settled
+   * records alone and records nothing. Mirrors Python's
    * `Router.placement`.
    */
   async placement(
     root: TSNodeLike,
     command: string,
     session: SessionState,
-  ): Promise<[readonly (Deny | Route)[], RouteDecision<Runtime> | Deny | null]> {
+  ): Promise<[readonly (Deny | Ask | Route)[], RouteDecision<Runtime> | Deny | Pending | null]> {
     const policies = this.registry.policies
     const hasScripts = this.runtimes.entries.some((entry) => entry.script !== undefined)
     if (!hasScripts && !policies.wants('preExecute')) return [[], null]
     const ctx = this.context(root, command, {}, session)
-    const said = await policies.answers('preExecute', ctx)
-    const answers = said.filter((a): a is Deny | Route => a.kind !== 'ask')
-    const winner = settled(answers)
+    const answers = await policies.answers('preExecute', ctx)
+    let winner = settled(answers)
+    if (winner?.kind === 'ask') {
+      const standing = await this.registry.decisions.held(...opQuestion(ctx, winner))
+      if (standing !== null) return [answers, standing]
+      winner = agreed(answers.filter((a): a is Route => a.kind === 'route'))
+    }
     if (winner?.kind === 'deny') return [answers, winner]
     if (winner?.kind === 'route') {
       const checked = await this.validated(winner.runtime, ctx, session)
@@ -214,8 +221,12 @@ export class Router {
       .map((parsed) => parsed.command)
   }
 
-  /** The placement stage's payload for one line, the one a route policy has always read. */
-  private context(
+  /**
+   * What `preExecute` sees of one line, and `postExecute` before what came
+   * back: its commands, and the session, its namespace and its files, which
+   * a runtime's entry script reads as plain data too.
+   */
+  context(
     root: TSNodeLike,
     command: string,
     options: ExecuteOptions,
@@ -224,16 +235,15 @@ export class Router {
     const commands = parsedCommands(root, this.registry.clis.names(), (words) =>
       this.registry.matchCommandPrefix(words),
     )
+    const handles = this.registry.policies.views?.(session.sessionId) ?? null
     return {
       line: command,
       commands,
       command: commands[0]?.command ?? '',
       builtin: commands[0]?.builtin ?? false,
-      cwd: options.cwd ?? session.cwd,
-      env: { ...envSnapshot(session), ...(options.env ?? {}) },
       sessionId: session.sessionId,
       agentId: options.agentId ?? this.agentId ?? '',
-      mounts: this.resolver.prefixes(),
+      ...handles,
     }
   }
 }

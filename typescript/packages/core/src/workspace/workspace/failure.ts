@@ -16,8 +16,8 @@ import { CommandTimeoutError } from '../../errors/types.ts'
 import { UsageError } from '../../commands/errors.ts'
 import { ContentDriftError } from '../snapshot/drift.ts'
 import { encodeText } from '../../shell/bytes.ts'
-import { refusalOf, renderDeny } from '../../policy/policies.ts'
-import type { Deny } from '../../policy/types.ts'
+import { refusalOf, renderDeny, renderPending } from '../../policy/policies.ts'
+import type { Deny, Pending } from '../../policy/types.ts'
 import { ExecuteResult } from './types.ts'
 import { commandName } from './utils.ts'
 
@@ -53,14 +53,16 @@ export function failureResult(err: unknown): { stderr: Uint8Array; exitCode: num
 }
 
 /**
- * The line's result when the placement stage refused it. A deny is a
- * policy outcome, not a mistake: it folds into the line's result through
- * the outcome table admission renders with, never a throw. The denied
- * party is the command, so the message carries its name like every
- * per-command error, in bash's voice; the reason rides `refusal`. Mirrors
- * Python's `placement_refused`.
+ * The line's result when `preExecute` held it back: a policy refused it,
+ * or it waits on the host. A deny is a policy outcome, not a mistake: it
+ * folds into the line's result through the outcome table admission
+ * renders with, never a throw. The denied party is the command, so the
+ * message carries its name like every per-command error, in bash's voice;
+ * the reason rides `refusal`. Mirrors Python's `placement_refused`.
  */
-export function placementRefused(deny: Deny, command: string): ExecuteResult {
-  const [stderr, exitCode] = renderDeny(commandName(command) || command, deny)
-  return new ExecuteResult(new Uint8Array(), stderr, exitCode, refusalOf(deny))
+export function placementRefused(action: Deny | Pending, command: string): ExecuteResult {
+  const name = commandName(command) || command
+  const [stderr, exitCode] =
+    action.kind === 'pending' ? renderPending(name, action) : renderDeny(name, action)
+  return new ExecuteResult(new Uint8Array(), stderr, exitCode, refusalOf(action))
 }

@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+from dataclasses import fields
 from functools import partial
 from typing import Any, Callable
 
@@ -21,14 +22,17 @@ from mirage.context import reset_admission, set_admission
 from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.policy import (
+    Claimant,
     ExecuteResultContext,
     HandOff,
+    Pending,
     post_execute_gate,
     refusal_of,
     render_deny,
+    render_pending,
 )
 from mirage.runtime.base import Runtime
-from mirage.runtime.routing import RouteDecision
+from mirage.runtime.routing import RouteContext, RouteDecision
 from mirage.runtime.types import DispatchFn
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.call_stack import CallStack
@@ -45,7 +49,11 @@ from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.node.admission import Refused, admit
 from mirage.workspace.node.execute_node import execute_node
-from mirage.workspace.node.occurrence import claimant_for
+from mirage.workspace.node.occurrence import (
+    claimant_for,
+    root_frame,
+    whole_occurrence,
+)
 from mirage.workspace.session import session_view
 from mirage.workspace.types import ExecutionNode
 
@@ -67,6 +75,7 @@ async def run_command_tree(
     command_substitution: bool = False,
     call_stack: CallStack | None = None,
     execution_scope: ExecutionScope | None = None,
+    route: RouteContext | None = None,
 ) -> tuple[IOResult, ExecutionNode]:
     """Run a parsed command tree and finalize its output stream.
 
@@ -99,6 +108,9 @@ async def run_command_tree(
             using the same expansion, dispatcher and output gates.
         call_stack (CallStack | None): the frames of the caller the tree
             runs in place of (``eval``), None for a line of its own.
+        route (RouteContext | None): what ``pre_execute`` saw of the
+            line, which ``post_execute`` sees with what came back; None
+            when no policy reads ``post_execute``.
 
     Returns:
         tuple[IOResult, ExecutionNode]: the finalized result (with
@@ -199,20 +211,42 @@ async def run_command_tree(
         out, err = screen.drain()
         stdout = out + (await materialize(stdout) or b"")
         io.stderr = err + (await materialize(io.stderr) or b"") or None
-    # The boundary consultation: the envelope's producer facts become
-    # the post_execute context; the built-in cap and any user policies
-    # answer with Limits (tightest merged), enforced by guard_output.
-    ctx = ExecuteResultContext(
-        producer=io.producer or Producer(command=""), exit_code=io.exit_code
-    )
-    deny, bound = await post_execute_gate(registry.policies, ctx)
-    if deny is not None:
+    # The boundary consultation: what pre_execute saw, the envelope's
+    # producer facts, the output and each command's result become the
+    # post_execute context; the built-in cap and any user policies
+    # answer with Limits (tightest merged), enforced by guard_output. A
+    # Deny or an Ask the host has not approved drops the output; an Ask
+    # is claimed on the line's hand-off as a pre_execute one is.
+    refused, bound = None, None
+    producer = io.producer or Producer(command="")
+    if route is not None:
+        stdout = await materialize(stdout)
+        refused, bound = await post_execute_gate(
+            registry.policies,
+            ExecuteResultContext(
+                **{f.name: getattr(route, f.name) for f in fields(route)},
+                producer=producer,
+                exit_code=io.exit_code,
+                output=stdout or b"",
+                results=exec_node.to_dict(),
+            ),
+            Claimant(handed, whole_occurrence(root_frame(ast, handed.origin)))
+            if handed is not None
+            else None,
+            cancel,
+        )
+    if refused is not None:
         existing = await materialize(io.stderr) if io.stderr else b""
-        err, code = render_deny(ctx.producer.command or "line", deny)
+        subject = producer.command or "line"
+        err, code = (
+            render_pending(subject, refused)
+            if isinstance(refused, Pending)
+            else render_deny(subject, refused)
+        )
         io.stderr = existing + err
         io.exit_code = code
         io.stdout = None
-        io.refusal = refusal_of(deny)
+        io.refusal = refusal_of(refused)
         if screen is not None:
             screen.put_back(b"", io.stderr)
             io.stderr = None

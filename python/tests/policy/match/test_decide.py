@@ -24,11 +24,6 @@ from mirage.policy.types import (
 from mirage.types import PathSpec
 
 
-class _Registry:
-    def is_mount_root(self, path: str) -> bool:
-        return False
-
-
 def _path(virtual: str) -> PathSpec:
     return PathSpec(
         virtual=virtual,
@@ -47,7 +42,6 @@ def _ctx(command: str, *paths: str, cwd: str = "/") -> CommandContext:
         operands=specs,
         argv=paths,
         cwd=cwd,
-        registry=_Registry(),
         tokens=(command, *paths),
     )
 

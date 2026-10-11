@@ -615,3 +615,24 @@ export class Files {
     return files
   }
 }
+
+// What a hook reads files through: added to the hook contexts here, where
+// `Files` lives, so the policy and routing types import no workspace
+// module. Read only: a write is refused and no hook runs again for a read.
+declare module '../policy/types.ts' {
+  interface CommandContext {
+    vfs?: Files
+  }
+  interface VfsContext {
+    vfs?: Files
+  }
+  interface SessionContext {
+    vfs?: Files
+  }
+}
+
+declare module '../runtime/routing/types.ts' {
+  interface RouteContext {
+    vfs?: Files
+  }
+}

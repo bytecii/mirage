@@ -26,6 +26,7 @@ from mirage.types import (
     ShownPaths,
 )
 from mirage.utils.hidden import path_hidden, path_visible
+from mirage.workspace.dispatcher.constants import CALLS
 from mirage.workspace.session.resolve import (
     apply_profile,
     compile_commands,
@@ -232,7 +233,7 @@ def test_compile_commands_anchors_a_name_pattern_to_its_mount():
 
 def _read_op(virtual: str) -> VfsContext:
     return VfsContext(
-        op="read",
+        call=CALLS["read"],
         path=PathSpec(
             virtual=virtual,
             directory=virtual.rsplit("/", 1)[0],

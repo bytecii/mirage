@@ -153,34 +153,31 @@ class Admitted:
 
     Args:
         rules (AdmissionRules | None): the session's admission rules.
-        tokens (tuple[str, ...]): the line's tokens, command name first.
+        ctx (CommandContext): what ``pre_command`` judged the command on,
+            which ``post_command`` extends with what came back.
         judged (frozenset[str]): the virtual paths the gate judged.
         granted (tuple[CommandRule, ...]): the ask rules the line runs
             under a grant for: the one the entry point answered for this
             line, and the session's standing ones.
         scoped (bool): whether a path rule in force reads this
-            command's paths, or a pre_vfs policy speaks for its session
-            (``EntryGate.scoped``).
-        ops_judged (bool): whether a coded or scripted pre_vfs policy
-            speaks for the session, which judges every path.
+            command's paths (``EntryGate.scoped``).
     """
 
     rules: AdmissionRules | None
-    tokens: tuple[str, ...]
+    ctx: CommandContext
     judged: frozenset[str]
     granted: tuple[CommandRule, ...]
     scoped: bool
-    ops_judged: bool = False
 
     def scopes(self, virtual: str) -> bool:
         """Whether anything at or under this path could be refused for
-        the running command: a coded or scripted pre_vfs policy judges
-        every path, and a rule in force any path its scope could cover.
+        the running command: a rule in force at any path its scope could
+        cover. No coded pre_vfs policy judges a command's own I/O.
 
         Args:
             virtual (str): absolute virtual path of a walk's start point.
         """
-        return self.ops_judged or io_reach(self.rules, self.tokens, virtual)
+        return io_reach(self.rules, self.ctx.tokens, virtual)
 
     def check(self, virtual: str) -> None:
         """Raise ``PolicyDenied`` when a rule in force refuses this entry
@@ -213,7 +210,7 @@ class Admitted:
         """
         if _norm(virtual) in self.judged:
             return None
-        return io_refusal(self.rules, self.tokens, virtual, self.granted)
+        return io_refusal(self.rules, self.ctx.tokens, virtual, self.granted)
 
 
 def policy_scopes(
@@ -338,6 +335,7 @@ async def gate(
     intrinsic: bool = False,
     unread: frozenset[str] = frozenset(),
     every: bool = False,
+    rules_only: bool = False,
 ) -> (
     Refused | tuple[CommandContext, Deny | Ask | None, tuple[Deny | Ask, ...]]
 ):
@@ -372,6 +370,10 @@ async def gate(
             the real ones and passes none.
         every (bool): ask every policy past a Deny, for ``explain``;
             the gate's own answers end at the first Deny.
+        rules_only (bool): ask the profile's rules alone, for a pass
+            that judges a line before it runs; a policy's own
+            ``pre_command`` is asked once, by the gate that runs the
+            command.
 
     Returns:
         A Refused when the session cannot see the head word, else the
@@ -411,7 +413,6 @@ async def gate(
         ),
         argv=tuple(args),
         cwd=session.cwd,
-        registry=registry,
         session_id=session.session_id,
         agent_id=agent_id,
         tokens=tokens,
@@ -419,7 +420,9 @@ async def gate(
         tool=tool,
         walks=walks_mounts(name, [name, *args]),
     )
-    said = await registry.policies.answers("pre_command", ctx, every)
+    said = await registry.policies.answers(
+        "pre_command", ctx, every, rules_only
+    )
     answers = tuple(a for a in said if isinstance(a, (Deny, Ask)))
     first = answers[0] if answers else None
     return (
@@ -443,6 +446,7 @@ async def admit(
     claimant: Claimant | None = None,
     intrinsic: bool = False,
     unread: frozenset[str] = frozenset(),
+    rules_only: bool = False,
 ) -> Refused | Admitted:
     """The command plane's admission of one command: visibility, then
     the policy chain, then the decision ledger.
@@ -491,6 +495,8 @@ async def admit(
             ledger either way.
         unread (frozenset[str]): paths no policy is shown, as ``gate``
             takes them.
+        rules_only (bool): ask the profile's rules alone, as ``gate``
+            takes it.
     """
     gated = await gate(
         name,
@@ -504,6 +510,7 @@ async def admit(
         redirects,
         intrinsic=intrinsic,
         unread=unread,
+        rules_only=rules_only,
     )
     if isinstance(gated, Refused):
         return gated
@@ -529,18 +536,14 @@ async def admit(
             if r.scope is Scope.SESSION and r.outcome is Outcome.ALLOW
         ]
         if isinstance(asked, Ask):
-            granted.insert(0, ask_rule(ctx, asked))
+            granted[:0] = asked.rules or (ask_rule(ctx, asked),)
         rules = session.commands
-        ops_judged = await registry.policies.wants_for(
-            "pre_vfs", session.session_id
-        )
         return Admitted(
             rules=rules,
-            tokens=ctx.tokens,
+            ctx=ctx,
             judged=frozenset(_norm(p.virtual) for p in ctx.paths),
             granted=tuple(granted),
-            scoped=scopes_paths(rules, name) or ops_judged,
-            ops_judged=ops_judged,
+            scoped=scopes_paths(rules, name),
         )
     err, code = (
         render_pending(name, action)

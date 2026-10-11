@@ -24,6 +24,7 @@ from mirage.policy import (
 from mirage.policy.rule import RulePolicy
 from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
+from mirage.workspace.dispatcher.constants import CALLS
 from mirage.workspace.mount import MountRegistry
 
 
@@ -49,7 +50,6 @@ def _ctx(command: str, paths: list[PathSpec]) -> CommandContext:
         paths=tuple(paths),
         argv=(),
         cwd="/",
-        registry=_registry(),
     )
 
 
@@ -81,7 +81,7 @@ async def test_slashless_glob_matches_any_name_component():
     assert deny == Deny("keys", DenyScope.OPERAND, path="/a/b.key/c")
     assert await policy.pre_command(_ctx("cat", [_path("/a/b.keyx")])) is None
     op = VfsContext(
-        op="read", path=_path("/x/y.key"), write=False, prefix="/x/"
+        call=CALLS["read"], path=_path("/x/y.key"), write=False, prefix="/x/"
     )
     assert await policy.pre_vfs(op) == Deny("keys")
 
@@ -162,13 +162,19 @@ async def test_rule_policy_op_twin_holds_for_path_only_rules():
         CommandRule(reason="frozen", paths=("/data/locked/*",))
     )
     ctx = VfsContext(
-        op="read", path=_path("/data/locked/a"), write=False, prefix="/data/"
+        call=CALLS["read"],
+        path=_path("/data/locked/a"),
+        write=False,
+        prefix="/data/",
     )
     deny = await policy.pre_vfs(ctx)
     assert deny is not None
     assert deny == Deny("frozen")
     open_ctx = VfsContext(
-        op="read", path=_path("/data/open/a"), write=False, prefix="/data/"
+        call=CALLS["read"],
+        path=_path("/data/open/a"),
+        write=False,
+        prefix="/data/",
     )
     assert await policy.pre_vfs(open_ctx) is None
 
@@ -181,6 +187,9 @@ async def test_rule_policy_op_twin_skips_command_scoped_rules():
         CommandRule(reason="no rm", commands=("rm",), paths=("/data/prod/*",))
     )
     ctx = VfsContext(
-        op="unlink", path=_path("/data/prod/x"), write=True, prefix="/data/"
+        call=CALLS["unlink"],
+        path=_path("/data/prod/x"),
+        write=True,
+        prefix="/data/",
     )
     assert await policy.pre_vfs(ctx) is None

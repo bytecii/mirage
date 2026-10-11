@@ -163,7 +163,7 @@ describe('MountCore', () => {
     const ws = new Workspace({ '/data/': vfs }, { mode: MountMode.WRITE })
     await ws.shell("printf 'line1\\n' > /data/log")
     ws.policies.add({
-      preVfs: (ctx) => (ctx.op === 'read' ? { kind: 'deny', reason: 'write-only' } : null),
+      preVfs: (ctx) => (ctx.call.name === 'read' ? { kind: 'deny', reason: 'write-only' } : null),
     })
     const core = new MountCore(ws.vfs)
     const enc = new TextEncoder()

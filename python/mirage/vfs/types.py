@@ -75,10 +75,12 @@ class Target(StrEnum):
     ANY = "any"
 
 
-class Declaration(NamedTuple):
-    """What ``vfs_call`` declares for one function.
+class VfsCall(NamedTuple):
+    """What ``vfs_call`` declares for one function, and what a ``pre_vfs``
+    / ``post_vfs`` hook sees of the call.
 
     Args:
+        name (str): the function's name (``read``, ``search``, ...).
         effect (Effect): what the call does to the mount.
         target (Target): the kind of entry its path names.
         creates (bool): a WRITE that makes a missing file, as open(2)
@@ -87,6 +89,7 @@ class Declaration(NamedTuple):
             a rename, a tree removal or a tree copy does.
     """
 
+    name: str
     effect: Effect
     target: Target
     creates: bool

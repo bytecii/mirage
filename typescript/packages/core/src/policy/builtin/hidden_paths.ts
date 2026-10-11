@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { Effect } from '../../vfs/types.ts'
 import { hiddenRefusal, sessionVisibility } from '../../context/session_context.ts'
 import { pathVisible } from '../../utils/hidden.ts'
 import type { Hide, VfsContext } from '../types.ts'
@@ -28,7 +29,11 @@ export class HiddenPathsPolicy {
     if (pathVisible(vis, ctx.path.virtual)) return Promise.resolve(null)
     return Promise.resolve({
       kind: 'hide',
-      error: hiddenRefusal(vis, ctx.path.virtual, ctx.create === true),
+      error: hiddenRefusal(
+        vis,
+        ctx.path.virtual,
+        ctx.call.creates || ctx.call.effect === Effect.CREATE,
+      ),
     })
   }
 }

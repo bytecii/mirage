@@ -17,7 +17,13 @@ import functools
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 
-from mirage.policy import Policies, PolicyDenied, pre_session_gate
+from mirage.policy import (
+    Policies,
+    PolicyDenied,
+    SessionResultContext,
+    post_session_gate,
+    pre_session_gate,
+)
 from mirage.policy.types import SessionContext
 from mirage.shell.arith import evaluate_arith, plain_decimal
 from mirage.shell.array import (
@@ -1096,16 +1102,14 @@ async def set_var(
             # refusal reports.
             await _land_coercion(session, store, coercion)
             raise
-    await pre_session_gate(
-        policies,
-        SessionContext(
-            plane="env",
-            verb="set",
-            key=name,
-            value=gate_rendering(value),
-            session_id=session.session_id,
-        ),
+    written = SessionContext(
+        plane="env",
+        verb="set",
+        key=name,
+        value=gate_rendering(value),
+        session_id=session.session_id,
     )
+    await pre_session_gate(policies, written)
     if (
         name == RANDOM
         and session._random_seed != RANDOM_UNSET
@@ -1165,6 +1169,23 @@ async def set_var(
     if session.shell_options.get("allexport"):
         stored = with_attr(stored, VarAttr.EXPORT)
     session.vars[name] = stored
+    try:
+        await post_session_gate(
+            policies,
+            SessionResultContext(
+                plane="env",
+                verb="set",
+                key=name,
+                value=written.value,
+                session_id=session.session_id,
+                old=None
+                if existing is None
+                else gate_rendering(existing.value),
+            ),
+        )
+    except PolicyDenied:
+        _place(session, name, existing)
+        raise
 
 
 async def unset_var(
@@ -1209,7 +1230,28 @@ async def unset_var(
             session_id=session.session_id,
         ),
     )
+    old = session.vars.get(name)
+    frame = _shadowing_frame(session, name)
     _drop(session, name)
+    try:
+        await post_session_gate(
+            policies,
+            SessionResultContext(
+                plane="env",
+                verb="unset",
+                key=name,
+                value=None,
+                session_id=session.session_id,
+                old=None if old is None else gate_rendering(old.value),
+            ),
+        )
+    except PolicyDenied:
+        # The unset revealed what an enclosing scope saved; that value
+        # goes back to the scope before the name's own record returns.
+        if frame is not None and name not in frame:
+            frame[name] = session.vars.get(name)
+        _place(session, name, old)
+        raise
     if name == RANDOM:
         # bash: unsetting RANDOM strips its special meaning for good.
         session._random_seed = RANDOM_UNSET
@@ -1568,7 +1610,23 @@ async def mark_var(
             session_id=session.session_id,
         ),
     )
+    old = session.vars.get(name)
     set_attr(session, name, attr, on)
+    try:
+        await post_session_gate(
+            policies,
+            SessionResultContext(
+                plane="env",
+                verb="set",
+                key=name,
+                value=None,
+                session_id=session.session_id,
+                old=None if old is None else gate_rendering(old.value),
+            ),
+        )
+    except PolicyDenied:
+        _place(session, name, old)
+        raise
 
 
 def session_profile(session: SessionState) -> str | None:
@@ -1586,7 +1644,7 @@ def session_view(
     *,
     diagnostics: list[str | bytes] | None = None,
 ) -> SessionView:
-    """The session plane's view: seven facts bound to one session.
+    """The session plane's view: eight facts bound to one session.
 
     The one constructor every tier uses — builtins, the command
     dispatcher, a bare unit test — so the gate cannot be skipped by
@@ -1610,4 +1668,5 @@ def session_view(
         mark=functools.partial(mark_var, session, policies),
         is_readonly=functools.partial(env_is_readonly, session),
         profile=functools.partial(session_profile, session),
+        cwd=lambda: session.cwd,
     )

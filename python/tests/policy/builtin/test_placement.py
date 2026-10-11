@@ -25,11 +25,8 @@ def _line(line: str) -> RouteContext:
         commands=(),
         command=line.split()[0],
         builtin=False,
-        cwd="/",
-        env={},
         session_id="",
         agent_id="",
-        mounts=(),
     )
 
 

@@ -414,6 +414,10 @@ async def _judge_words(
         lost (bool): whether a ``cd`` the walk could not follow ran
             before the command, as ``Walked`` carries it.
         every (bool): ask every policy past a Deny, for ``explain``.
+            Without it the pass judges a line before it runs, which
+            asks the profile's rules alone: a policy's own
+            ``pre_command`` is asked once, by the gate that runs the
+            command.
         stdin (bytes | None): empty when the statement redirects input.
     """
     head = words[0]
@@ -458,6 +462,7 @@ async def _judge_words(
         intrinsic=intrinsic,
         unread=unread,
         every=every,
+        rules_only=not every,
     )
     if isinstance(gated, Refused):
         return [
@@ -991,9 +996,11 @@ async def prejudge_line(
     the limit stated above in another form.
 
     Every command is judged whether or not the session carries a
-    document. Command-scoped coded policies can hold the line without
-    a named rule. Operand-scoped policies, including MountRootPolicy,
-    remain the per-command gate's responsibility.
+    document, by the profile's rules alone: a policy registered in code
+    or a profile's script answers ``pre_command`` once, at the gate that
+    runs the command, and a line it should refuse whole is
+    ``pre_execute``'s to refuse. Operand-scoped refusals, including
+    MountRootPolicy's, remain the per-command gate's responsibility.
 
     A line with one command to judge is left to the per-command gate,
     which is not an optimization but the more faithful answer: there is
@@ -1061,6 +1068,7 @@ async def prejudge_line(
                 claimant=Claimant(handed, one.occurrence),
                 intrinsic=one.intrinsic,
                 unread=one.unread,
+                rules_only=True,
             )
             if isinstance(answered, Refused):
                 return answered
@@ -1072,22 +1080,15 @@ async def prejudge_line(
 
 async def _verdict_refuses(
     judged: Judged,
-    redirects: Sequence[PathSpec],
-    walked: SessionState,
     registry: MountRegistry,
-    namespace: Namespace | None,
-    agent_id: str,
     handed: HandOff,
     cancel: asyncio.Event | None,
-    stdin: bytes | None = None,
 ) -> bool:
     """Whether a verdict's answer refuses the command, putting an
     unanswered ask's question to the host.
 
-    The chain is asked again rather than the explanation re-read,
-    because ``Judgment.outcome`` is the document's answer: a coded
-    policy's ask arrives with whatever the document said, so only the
-    chain's own answer separates a deny from an ask. A deny refuses
+    The rules' own answer the pass recorded is read, the first deny
+    else the first ask, the way the gate picks it. A deny refuses
     outright. An ask's settled record is read without being spent
     (``Decisions.held``), so the gate that then runs the line consumes
     the same answer, in its own voice and behind the line's
@@ -1097,40 +1098,20 @@ async def _verdict_refuses(
 
     Args:
         judged (Judged): the verdict's explanation and its occurrence.
-        redirects (Sequence[PathSpec]): the statement's redirect
-            targets, empty for a command that has none.
-        walked (SessionState): the session the command is judged in.
-        registry (MountRegistry): registry holding the policies and the
-            decision ledger.
-        namespace (Namespace | None): the link table.
-        agent_id (str): the agent the line is attributed to.
+        registry (MountRegistry): registry holding the decision ledger.
         handed (HandOff): the line's hand-off, on which an answer given
             here is claimed for the gate.
         cancel (asyncio.Event | None): the run's kill channel.
-        stdin (bytes | None): empty when the statement redirects input.
     """
-    expl = judged.judgment
-    claimant = Claimant(handed, judged.occurrence)
-    args = list(expl.argv)
-    classified = classified_words(expl.command, args, walked, registry)
-    gated = await gate(
-        expl.command,
-        args,
-        classified[1:],
-        walked,
-        registry,
-        namespace,
-        agent_id,
-        stdin=stdin,
-        redirects=redirects,
-        intrinsic=judged.intrinsic,
-        unread=judged.unread,
-    )
-    if isinstance(gated, Refused):
+    ctx = judged.ctx
+    if ctx is None:
         return True
-    ctx, asked, _ = gated
+    answers = judged.judgment.answers
+    first = answers[0] if answers else None
+    asked = next((a for a in answers if isinstance(a, Deny)), first)
     if not isinstance(asked, Ask):
         return isinstance(asked, Deny)
+    claimant = Claimant(handed, judged.occurrence)
     standing = registry.decisions.held(ctx, asked, claimant)
     if standing is None:
         return False
@@ -1232,27 +1213,13 @@ async def _command_refused(
         stdin=item.stdin,
         lost=item.lost,
     )
-    targets = redirect_paths(item.redirects, registry, walked.cwd)
-    for index, judged in enumerate(explained):
+    for judged in explained:
         # A question about a spelling the runtime completes is the
         # gate's (``_asks_for``); the node is kept, and over-keeping
         # only ever over-fetches.
         if not _is_verdict(judged.judgment) or not _asks_for(judged):
             continue
-        # _judge_words lists the statement's own command first and
-        # the lines it runs after it, so only the first explanation
-        # is the command the redirects belong to.
-        if await _verdict_refuses(
-            judged,
-            targets if index == 0 else (),
-            walked,
-            registry,
-            namespace,
-            agent_id,
-            handed,
-            cancel,
-            item.stdin if index == 0 else None,
-        ):
+        if await _verdict_refuses(judged, registry, handed, cancel):
             return True
     return False
 

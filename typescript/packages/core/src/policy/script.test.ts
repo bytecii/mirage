@@ -17,6 +17,14 @@ import {
   sessionScriptContext,
 } from './script.ts'
 import type { CommandContext, VfsContext, ProfileScript, SessionContext } from './types.ts'
+import { CALLS } from '../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../vfs/types.ts'
+
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 // A policy is a program defining the hook it answers at, the way a
 // coded Policy does, and it answers with return.
@@ -47,7 +55,6 @@ function ctx(command = 'cat', sessionId = 's'): CommandContext {
     operands: [path('/repo/sealed/k')],
     argv: ['/repo/sealed/k'],
     cwd: '/repo',
-    registry: { isMountRoot: () => false },
     sessionId,
     agentId: 'agent-1',
     tokens: [command, '/repo/sealed/k'],
@@ -142,7 +149,7 @@ describe('scriptContext', () => {
         tool: true,
         walks: false,
       },
-      session: { id: 's', agent: 'agent-1', cwd: '/repo' },
+      session: { id: 's', agent: 'agent-1', cwd: '/repo', env: {} },
       mounts: ['/repo/', '/scratch/'],
     })
   })
@@ -282,8 +289,8 @@ describe('ScriptPolicy wiring', () => {
 // A program at the op and session views and nowhere else.
 const GATES = `\
 function preVfs(ctx) {
-  const op = ctx.op
-  return op.write && op.path.startsWith('/scratch/frozen/') ? { deny: 'frozen by ' + ctx.profile } : null
+  const call = ctx.call
+  return call.write && call.path.startsWith('/scratch/frozen/') ? { deny: 'frozen by ' + ctx.profile } : null
 }
 function preSession(ctx) {
   return ctx.write.key.startsWith('AWS_') ? 'deny' : null
@@ -291,7 +298,7 @@ function preSession(ctx) {
 `
 
 function opsCtx(op = 'write', virtual = '/scratch/frozen/f', write = true): VfsContext {
-  return { op, path: path(virtual), write, prefix: '/scratch', sessionId: 's' }
+  return { call: callOf(op), path: path(virtual), write, prefix: '/scratch', sessionId: 's' }
 }
 
 function sessionCtx(key = 'AWS_KEY'): SessionContext {
@@ -328,29 +335,35 @@ describe('opsScriptContext and sessionScriptContext', () => {
   it('are the op and session contexts as data', () => {
     expect(opsScriptContext('release', opsCtx(), ['/scratch/'])).toEqual({
       profile: 'release',
-      op: { name: 'write', path: '/scratch/frozen/f', write: true, prefix: '/scratch' },
-      session: { id: 's' },
+      call: {
+        name: 'write',
+        effect: 'write',
+        target: 'file',
+        creates: true,
+        subtree: false,
+        path: '/scratch/frozen/f',
+        write: true,
+        prefix: '/scratch',
+      },
+      session: { id: 's', cwd: '', env: {} },
       mounts: ['/scratch/'],
     })
     expect(sessionScriptContext('release', sessionCtx(), ['/scratch/'])).toEqual({
       profile: 'release',
       write: { plane: 'env', verb: 'set', key: 'AWS_KEY', value: 'v' },
-      session: { id: 's' },
+      session: { id: 's', cwd: '', env: {} },
       mounts: ['/scratch/'],
     })
   })
 })
 
-describe('scriptAction at the op and session views', () => {
-  it('answers allow or deny at the session view, never ask', () => {
-    // The session view cannot wait on a host, so the vocabulary there is
-    // allow or deny, and an ask is a wrong answer.
-    const hook = 'preSession'
-    expect(scriptAction({ deny: 'frozen' }, hook)).toEqual({ kind: 'deny', reason: 'frozen' })
-    expect(scriptAction('deny', hook)).toEqual({ kind: 'deny', reason: DEFAULT_DENY_REASON })
-    expect(scriptAction(null, hook)).toBeNull()
-    expect(() => scriptAction('ask', hook)).toThrow(/must answer allow or deny/)
-    expect(() => scriptAction({ ask: 'nod' }, hook)).toThrow(/must answer allow or deny/)
+describe('scriptAction at every hook', () => {
+  it('answers in one vocabulary whichever hook gave it', () => {
+    // Every hook may ask, so the answer reads the same whichever hook
+    // gave it.
+    expect(scriptAction({ deny: 'frozen' })).toEqual({ kind: 'deny', reason: 'frozen' })
+    expect(scriptAction({ ask: 'nod' })).toEqual({ kind: 'ask', reason: 'nod' })
+    expect(scriptAction(null)).toBeNull()
   })
 })
 
@@ -462,7 +475,7 @@ def pre_command(ctx):
     return None
 
 def pre_vfs(ctx):
-    return {'deny': 'judged ' + ctx['op']['path']}
+    return {'deny': 'judged ' + ctx['call']['path']}
 `
 
 interface HeldDispatch {

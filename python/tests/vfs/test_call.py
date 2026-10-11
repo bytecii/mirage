@@ -31,7 +31,7 @@ from mirage.types import (
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.call import call_names, declared, declared_calls, vfs_call
 from mirage.vfs.ram import RAMVFS
-from mirage.vfs.types import Declaration, Effect, Target
+from mirage.vfs.types import Effect, Target, VfsCall
 from mirage.workspace.mount import MountEntry
 from mirage.workspace.session import SessionState
 from tests.fixtures.vfs_io import served
@@ -91,11 +91,11 @@ class Shelf(BaseVFS):
 
 
 def test_a_mark_declares_and_an_override_keeps_it():
-    assert declared(Shelf, "search_abc") == Declaration(
-        Effect.READ, Target.ANY, False
+    assert declared(Shelf, "search_abc") == VfsCall(
+        "search_abc", Effect.READ, Target.ANY, False
     )
-    assert declared(Shelf, "shelve") == Declaration(
-        Effect.WRITE, Target.ANY, False
+    assert declared(Shelf, "shelve") == VfsCall(
+        "shelve", Effect.WRITE, Target.ANY, False
     )
     assert declared(Shelf, "read") == declared(BaseVFS, "read")
     assert declared(Shelf, "helper") is None
@@ -148,7 +148,7 @@ BUILT_INS = {
 
 def test_the_built_ins_declare_what_they_do():
     assert declared_calls(BaseVFS) == {
-        name: Declaration(*mark) for name, mark in BUILT_INS.items()
+        name: VfsCall(name, *mark) for name, mark in BUILT_INS.items()
     }
 
 
@@ -235,7 +235,7 @@ class Recorder(Policy):
         self.seen: list[tuple[str, bool, str]] = []
 
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        self.seen.append((ctx.op, ctx.write, ctx.path.virtual))
+        self.seen.append((ctx.call.name, ctx.write, ctx.path.virtual))
         return None
 
 

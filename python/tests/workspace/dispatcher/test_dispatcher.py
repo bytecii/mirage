@@ -55,12 +55,13 @@ from mirage.utils.ranges import slice_window, splice_window
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
+from mirage.vfs.types import VfsCall
 from mirage.workspace import Workspace
 from mirage.workspace.dispatcher.constants import POLICY_WRITE_OPS
 from mirage.workspace.dispatcher.dispatcher import Dispatcher, _MountChannel
 from mirage.workspace.mount.mount import MountEntry
 from mirage.workspace.session import SessionState
-from tests.fixtures.vfs_io import override, render
+from tests.fixtures.vfs_io import dispatched, override, render
 
 
 class DenyLocked(Policy):
@@ -79,19 +80,19 @@ class DenyWrites(Policy):
 
 class DenyRemnantUnlink(Policy):
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        if ctx.op == "unlink" and ctx.path.virtual == "/a/d/sec/k":
+        if ctx.call.name == "unlink" and ctx.path.virtual == "/a/d/sec/k":
             return Deny("protected\n")
         return None
 
 
 class DenyUnlinkAfter(Policy):
     async def post_vfs(self, ctx: VfsResultContext) -> Action | None:
-        return Deny("too late") if ctx.op == "unlink" else None
+        return Deny("too late") if ctx.call.name == "unlink" else None
 
 
 class RefuseMkdirReadOnly(Policy):
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        if ctx.op == "mkdir":
+        if ctx.call.name == "mkdir":
             return Deny("no dirs", error=erofs(ctx.path.virtual))
         return None
 
@@ -101,7 +102,7 @@ class SeenMkdirs(Policy):
         self.done: list[str] = []
 
     async def post_vfs(self, ctx: VfsResultContext) -> Action | None:
-        if ctx.op == "mkdir":
+        if ctx.call.name == "mkdir":
             self.done.append(ctx.path.virtual)
         return None
 
@@ -904,8 +905,10 @@ async def test_the_remnant_channel_invalidates_each_deletion():
     seen: list[str] = []
     admitted: list[tuple[str, str]] = []
 
-    async def admit(op: str, spec: PathSpec, write: bool, **kwargs) -> None:
-        admitted.append((op, spec.virtual))
+    async def admit(
+        call: VfsCall, spec: PathSpec, write: bool, **kwargs
+    ) -> None:
+        admitted.append((call.name, spec.virtual))
 
     async def invalidate(spec: PathSpec) -> None:
         seen.append(spec.virtual)
@@ -2018,15 +2021,6 @@ async def test_a_stream_past_the_drain_budget_keeps_nothing():
         assert tape.reads == 1
 
 
-class SeenReads(Policy):
-    def __init__(self) -> None:
-        self.seen: list[tuple[str, str]] = []
-
-    async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        self.seen.append((ctx.op, ctx.path.virtual))
-        return None
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "line",
@@ -2042,13 +2036,10 @@ class SeenReads(Policy):
     ],
 )
 async def test_a_command_reads_at_the_dispatcher(line):
-    seen = SeenReads()
-    with Workspace(
-        {"/d/": RAMVFS()}, mode=MountMode.WRITE, policies=[seen]
-    ) as ws:
+    with Workspace({"/d/": RAMVFS()}, mode=MountMode.WRITE) as ws:
         await ws.vfs.write("/d/a.txt", b"a\nb\n")
-        seen.seen.clear()
+        seen = dispatched(ws)
         out = await ws.shell(line)
         await out.stdout_str()
         assert out.exit_code == 0
-        assert ("read", "/d/a.txt") in seen.seen
+        assert ("read", "/d/a.txt") in seen

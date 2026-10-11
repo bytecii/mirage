@@ -172,6 +172,7 @@ async function runProgram(
   const allStdout: (ByteSource | null)[] = []
   let mergedIo = new IOResult()
   let lastExec = new ExecutionNode({ command: '', exitCode: 0 })
+  const ran: ExecutionNode[] = []
   const sourceLines = getText(node).split('\n')
   let echoedRow = -1
   const bound = fd0Binding(session)
@@ -229,10 +230,12 @@ async function runProgram(
           exitCode: err.exitCode,
           stderr: err.stderr,
         })
+        ran.push(lastExec)
         break
       }
       const [bgStdout, bgIo, bgExec] = launched
       lastExec = bgExec
+      ran.push(lastExec)
       // Launching a job is itself a statement: bash sets $? to 0
       // (the launch status), so `false; cmd & echo $?` prints 0.
       recordStatus(session, bgIo.exitCode)
@@ -258,6 +261,7 @@ async function runProgram(
       ;[s, io, lastExec] = await recording(session, recorder, () =>
         recurse(child, context, childStdin, callStack, { sink: recorder }),
       )
+      ran.push(lastExec)
       let stdout: ByteSource | null
       try {
         stdout = await materialize(s)
@@ -328,6 +332,7 @@ async function runProgram(
         allStdout,
         mergedIo,
       )
+      ran.push(lastExec)
       if (resumes) {
         i = nextLine(node, children, at)
         continue
@@ -350,6 +355,20 @@ async function runProgram(
     }
   }
 
+  // Statements run in turn are one `;` node, so the line's tree keeps every
+  // command's result; what a caller reads of the program's own node (its
+  // operands, whether it was refused or never opened) stays the last
+  // statement's.
+  if (ran.length > 1) {
+    lastExec = new ExecutionNode({
+      op: ';',
+      exitCode: mergedIo.exitCode,
+      children: ran,
+      paths: lastExec.paths,
+      refused: lastExec.refused,
+      unopened: lastExec.unopened,
+    })
+  }
   const parts = allStdout.filter((part): part is ByteSource => part !== null)
   if (parts.length === 1 && parts[0] !== undefined) {
     return [parts[0], mergedIo, lastExec]

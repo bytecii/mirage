@@ -13,7 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { operandExitCode } from '../commands/spec/usage.ts'
-import { createAsyncContext, type ContextCall } from '../utils/async_context.ts'
+import {
+  asyncContextIsolatesTasks,
+  createAsyncContext,
+  type ContextCall,
+} from '../utils/async_context.ts'
 import { explaining, lineRunning, noteRefusal, runExplaining } from '../context/session_context.ts'
 import { eacces, erofs } from '../errors/fs.ts'
 import { fsErrorLine } from '../errors/render.ts'
@@ -22,17 +26,20 @@ import type { Policy } from './base.ts'
 import { HiddenPathsPolicy } from './builtin/hidden_paths.ts'
 import { MountModePolicy } from './builtin/mount_mode.ts'
 import { OutputCapPolicy } from './builtin/output_cap.ts'
+import { PermissionsPolicy } from './builtin/permissions.ts'
 import { POLICY_DENIED_EXIT } from './constants.ts'
 import { Explained, PolicyDenied, PolicyError } from './errors.ts'
 import { sourceOf } from './match/decide.ts'
 import { isSessionScoped } from './mixin.ts'
-import type { Decisions } from './decisions.ts'
+import { Decisions, askRule, opQuestion, sameRule } from './decisions.ts'
 import {
   DryRun,
   Outcome,
   VALIDITY,
   type Ask,
+  type Claimant,
   type CommandContext,
+  type CommandResultContext,
   type Deny,
   type ExecuteResultContext,
   type Hide,
@@ -41,8 +48,11 @@ import {
   type Pending,
   type Route,
   type SessionContext,
+  type SessionResultContext,
   type VfsExplanation,
 } from './types.ts'
+import { makeAbortError } from '../utils/abort.ts'
+import type { VfsCall } from '../vfs/types.ts'
 import type { RouteContext } from '../runtime/routing/types.ts'
 import { posixPhrase } from '../errors/posix.ts'
 
@@ -164,17 +174,6 @@ export function settled(answers: readonly (Deny | Ask | Route)[]): Deny | Ask | 
 }
 
 /**
- * Narrow a hook's answer where VALIDITY admits no Ask, which the loop
- * already refuses inside; reaching one here is a programming error.
- */
-function denyOnly(hook: Hook, action: Deny | Ask | null): Deny | null {
-  if (action !== null && action.kind === 'ask') {
-    throw new PolicyError(`${hook} cannot answer with an Ask: ${JSON.stringify(action)}`)
-  }
-  return action
-}
-
-/**
  * The error an entry point throws for a policy's Deny, or for a question the host
  * has not answered, its record noted for the line running it. The message
  * says what the terminal would (`Permission denied` unless the entry point words
@@ -208,7 +207,7 @@ async function explainedOp(
   )
   const winner = answers.find((a) => a.kind === 'deny') ?? answers[0] ?? null
   const base: VfsExplanation = {
-    call: ctx.op,
+    call: ctx.call.name,
     paths: [ctx.path.virtual],
     outcome: Outcome.ALLOW,
     reason: '',
@@ -250,7 +249,13 @@ async function explainedOp(
  * or the built-in's own error (ENOENT for a hide, EROFS for a mode).
  * The one seam helper the dispatcher calls, so a refusal is identical
  * however the mount is reached: shell internals, programmatic access,
- * FUSE, and the warm cache all pass through it. `access` carries the
+ * FUSE, and the warm cache all pass through it. An op a running line
+ * makes (a command's, or a program's a runtime runs for it) is the line's
+ * own I/O, which `preCommand` judged: the hides, the profile's path rules
+ * and the mount mode answer for it, and the policies registered in code and
+ * a profile's script answer only for a `ws.vfs` / `session.vfs` call. A
+ * hook's own read (`ctx.vfs`) is judged the same way, so no hook runs again
+ * for it, and a hook's write is refused. `access` carries the
  * owning mount's mode (unset at an entry point that judges it itself), whether
  * the op creates the path or mutates below it, `checkHidden` false only
  * for an entry point that has already answered the hides itself, and the
@@ -268,13 +273,13 @@ async function explainedOp(
  */
 export async function preVfsGate(
   policies: Policies,
-  op: string,
+  call: VfsCall,
   path: PathSpec,
   write: boolean,
   prefix: string,
   sessionId = '',
   issuer?: symbol,
-  access: Pick<VfsContext, 'mode' | 'create' | 'subtree'> & {
+  access: Pick<VfsContext, 'mode'> & {
     checkHidden?: boolean
     decisions?: Decisions | null
     final?: boolean
@@ -282,7 +287,7 @@ export async function preVfsGate(
 ): Promise<void> {
   const { checkHidden = true, decisions = null, final = true, ...context } = access
   const ctx: VfsContext = {
-    op,
+    call,
     path,
     write,
     prefix,
@@ -305,16 +310,18 @@ export async function preVfsGate(
   if (!(policies.wants('preVfs') || checkHidden || (write && context.mode !== undefined))) {
     return
   }
-  let answer: Hide | Deny | Ask | null = await policies.preVfs(ctx, checkHidden)
+  let answer: Hide | Deny | Ask | null = await policies.preVfs(
+    ctx,
+    checkHidden,
+    lineRunning() || deciding,
+  )
   if (answer === null) return
   if (answer.kind === 'hide') throw answer.error
   if (answer.kind === 'ask') {
     if (decisions === null || lineRunning()) {
       throw policyDenied({ kind: 'deny', reason: answer.reason }, path.virtual)
     }
-    const settled = deciding
-      ? await decisions.heldOp(ctx, answer)
-      : await decisions.resolveOp(ctx, answer)
+    const settled = await decisions.resolveOp(ctx, answer)
     if (settled === null) return
     if (settled.kind === 'pending') throw policyDenied(settled, path.virtual)
     answer = settled
@@ -324,61 +331,147 @@ export async function preVfsGate(
 }
 
 /**
- * Fire postVfs at the dispatcher; a Deny suppresses the result. Returns
- * the merged Limit bound (tightest per field across every opining
- * policy) for the entry point to apply to a byte-producing result, or null
- * when no policy bounds this op.
+ * Fire postVfs at the dispatcher; a Deny, or an Ask the host has not
+ * approved, drops the result with EACCES. Returns the merged Limit bound
+ * (tightest per field across every opining policy) for the entry point to
+ * apply to a byte-producing result, or null when no policy bounds this op.
+ * Not fired for an op a running line makes: a command's result is
+ * `postCommand`'s and its output `postExecute`'s, so postVfs sees the
+ * `ws.vfs` / `session.vfs` calls alone, and not for a hook's own read.
+ * The hook sees what `preVfs` saw,
+ * plus the result. An Ask goes to the ledger as a `preVfs` one does: a
+ * host with `onAsk` answers it inline, otherwise the question is
+ * recorded, and the approved retry runs the call again.
  */
 export async function postVfsGate(
   policies: Policies,
-  op: string,
+  call: VfsCall,
   path: PathSpec,
   write: boolean,
   prefix: string,
   result: unknown,
+  sessionId = '',
+  access: Pick<VfsContext, 'mode'> & {
+    decisions?: Decisions | null
+  } = {},
 ): Promise<Limit | null> {
-  if (!policies.wants('postVfs')) return null
-  const [deny, bound] = await policies.postVfs({ op, path, write, prefix, result })
-  if (deny !== null) {
-    if (deny.error !== undefined) throw deny.error
-    throw policyDenied(deny, path.virtual)
+  if (!policies.wants('postVfs') || lineRunning() || explaining() === DryRun.DECIDING) {
+    return null
+  }
+  const { decisions = null, ...context } = access
+  const ctx: VfsResultContext = { call, path, write, prefix, sessionId, ...context, result }
+  const [answer, bound] = await policies.postVfs(ctx)
+  if (answer?.kind === 'ask') {
+    if (decisions === null) {
+      throw policyDenied({ kind: 'deny', reason: answer.reason }, path.virtual)
+    }
+    const settled = await decisions.resolveOp(ctx, answer)
+    if (settled === null) return bound
+    throw policyDenied(settled, path.virtual)
+  }
+  if (answer !== null) {
+    if (answer.error !== undefined) throw answer.error
+    throw policyDenied(answer, path.virtual)
   }
   return bound
 }
 
 /**
- * Fire postExecute at the workspace boundary. Returns the fail-closed
- * Deny (a throwing policy) if any, and the merged Limit bound for the
- * boundary to enforce on the line's output stream.
+ * Fire postExecute at the workspace boundary. Returns what drops the
+ * line's output, if anything: a policy's Deny (or the fail-closed one of
+ * a policy that threw), or the ledger's refusal or open question for an
+ * Ask; and the merged Limit bound for the boundary to enforce on the
+ * output otherwise. The line has run by now, so nothing is undone: the
+ * output is held back, and the approved retry runs the line again.
+ * `claimant` is the line on its hand-off, so an approval is claimed there
+ * like a `preExecute` one. A run killed while the host decides throws the
+ * abort.
  */
 export async function postExecuteGate(
   policies: Policies,
   ctx: ExecuteResultContext,
-): Promise<[Deny | null, Limit | null]> {
+  claimant: Claimant | null = null,
+  signal?: AbortSignal,
+): Promise<[Deny | Pending | null, Limit | null]> {
   if (!policies.wants('postExecute')) return [null, null]
-  return policies.postExecute(ctx)
+  const [answer, bound] = await policies.postExecute(ctx)
+  if (answer?.kind !== 'ask') return [answer, bound]
+  const [asked, keyed] = opQuestion(ctx, answer)
+  const said = await policies.decisions.resolve(asked, keyed, signal, claimant)
+  if (said?.kind === 'abandoned') throw makeAbortError()
+  return [said, said === null ? bound : null]
 }
 
 /**
- * Fire preSession on the session plane; a Deny becomes a PolicyDenied.
- * The one seam helper the session plane's writers call, so a refusal
- * is identical however the state is reached: shell builtin, command
- * view, or a later tier. Null policies (a view constructed outside a
- * workspace) gate nothing.
+ * Fire postCommand once a command or CLI ran and its output drained.
+ * Returns what refuses it after the fact, if anything: a policy's Deny
+ * (or the fail-closed one of a policy that threw), or the ledger's
+ * refusal or open question for an Ask, keyed and claimed as the command's
+ * `preCommand` Ask is. The command ran: what it wrote stays written and
+ * its output stays sent; the caller turns the refusal into exit 126 and a
+ * refusal record. A run killed while the host decides throws the abort.
+ * Mirrors the Python `post_command_gate`.
+ */
+export async function postCommandGate(
+  policies: Policies,
+  ctx: CommandResultContext,
+  claimant: Claimant | null = null,
+  signal?: AbortSignal,
+): Promise<Deny | Pending | null> {
+  if (!policies.wants('postCommand')) return null
+  const answer = await policies.postCommand(ctx)
+  if (answer?.kind !== 'ask') return answer
+  const said = await policies.decisions.resolve(ctx, answer, signal, claimant)
+  if (said?.kind === 'abandoned') throw makeAbortError()
+  return said
+}
+
+/**
+ * Fire postSession once a session write landed; a Deny, or an Ask the
+ * host has not approved, becomes a PolicyDenied, for the writer to put the
+ * old value back before it reports. Mirrors the Python
+ * `post_session_gate`.
+ */
+export async function postSessionGate(
+  policies: Policies | null,
+  ctx: SessionResultContext,
+): Promise<void> {
+  if (!policies?.wants('postSession')) return
+  const answer = await policies.postSession(ctx)
+  const refused = answer?.kind === 'ask' ? await policies.decisions.resolveOp(ctx, answer) : answer
+  if (refused !== null) {
+    throw policyDenied(refused, ctx.key, `${ctx.key}: permission denied`)
+  }
+}
+
+/**
+ * Fire preSession on the session plane; a Deny, or an Ask the host has
+ * not approved, becomes a PolicyDenied. The one seam helper the session
+ * plane's writers call, so a refusal is identical however the state is
+ * reached: shell builtin, command view, or a later tier. Null policies (a
+ * view constructed outside a workspace) gate nothing. An Ask goes to the
+ * workspace's ledger (`Policies.decisions`), inside a running line as
+ * outside one: a host with `onAsk` answers it inline, otherwise the
+ * write is refused and the question recorded, and the approved retry
+ * writes. A write a hook makes while it decides (`ctx.session`) throws
+ * EACCES: it may read the session but not change it.
  */
 export async function preSessionGate(
   policies: Policies | null,
   ctx: SessionContext,
 ): Promise<void> {
+  if (explaining() === DryRun.DECIDING) throw eacces(ctx.key)
   if (!policies?.wants('preSession')) return
-  const deny = await policies.preSession(ctx)
-  if (deny !== null) {
-    throw policyDenied(deny, ctx.key, `${ctx.key}: permission denied`)
+  const answer = await policies.preSession(ctx)
+  const refused = answer?.kind === 'ask' ? await policies.decisions.resolveOp(ctx, answer) : answer
+  if (refused !== null) {
+    throw policyDenied(refused, ctx.key, `${ctx.key}: permission denied`)
   }
 }
 
 /**
- * Ordered policies; on a pre hook the first Deny wins.
+ * Ordered policies; at every hook the first Deny wins, and every Ask is
+ * put to the host.
  *
  * Built-ins are seeded first (MountRegistry registers
  * MountRootPolicy), then the document's deny rules compiled by the
@@ -392,6 +485,19 @@ export async function preSessionGate(
  * whole-command Deny naming the policy. A policy that returns something the hook may
  * not return (VALIDITY) throws PolicyError: that is a programming
  * error, not a refusal.
+ *
+ * The chain holds the workspace's decision ledger too (`decisions`), the
+ * one an Ask is put to, so an entry point that reaches the policies
+ * reaches the ledger: a session write carries the policies alone. The
+ * workspace replaces the in-memory one with one bound to its sessions and
+ * its ask handler.
+ *
+ * Every hook is asked with the session, its namespace and its files on
+ * the context (`session`, `ns`, `vfs`), which `views` makes from the
+ * context's session id; the workspace sets it, and without it, or for a
+ * session it holds none of, the three stay unset. A hook runs as a policy
+ * deciding (`DryRun.DECIDING`): it reads through them, and a write
+ * refuses, where the runtime isolates async tasks.
  */
 export class Policies {
   private readonly policies: Policy[]
@@ -399,6 +505,10 @@ export class Policies {
   private readonly mode: Policy = new MountModePolicy()
   private placement: Policy | null = null
   private wanted: ReadonlySet<Hook> = new Set()
+  decisions: Decisions = new Decisions()
+  views:
+    | ((sessionId: string) => Required<Pick<RouteContext, 'session' | 'ns' | 'vfs'>> | null)
+    | null = null
 
   constructor(policies?: readonly Policy[]) {
     this.policies = [...(policies ?? [])]
@@ -446,10 +556,13 @@ export class Policies {
    * is not one of its. For a seam that pays ahead for a hook rather than
    * gating on it: the secret fill drops its masks under a session-write
    * gate, and a profile's policy at that entry point is one profile's, not
-   * every session's.
+   * every session's. `rulesOnly` counts the profile's rules alone, as
+   * `chain` takes it.
    */
-  async wantsFor(hook: Hook, sessionId: string): Promise<boolean> {
-    for (const policy of [...this.policies]) {
+  async wantsFor(hook: Hook, sessionId: string, rulesOnly = false): Promise<boolean> {
+    for (const policy of this.policies.filter(
+      (p) => p instanceof PermissionsPolicy || !rulesOnly,
+    )) {
       if (policy[hook] === undefined) continue
       if (!isSessionScoped(policy)) return true
       if (await policy.wantsFor(hook, sessionId)) return true
@@ -472,10 +585,13 @@ export class Policies {
    * ones, and the built-in mount mode last at `preVfs`, after every
    * policy that could explain the refusal in its own words. A snapshot,
    * so the order holds if the host edits registrations while a hook
-   * awaits; changes take effect at the next gate.
+   * awaits; changes take effect at the next gate. `rulesOnly` asks the
+   * profile's rules alone (`PermissionsPolicy`), not the policies
+   * registered in code or a profile's script: the line's passes, which
+   * judge a line before it runs, and a command's own I/O.
    */
-  private chain(hook: Hook, placed: boolean): Policy[] {
-    let chain = [...this.policies]
+  private chain(hook: Hook, placed: boolean, rulesOnly = false): Policy[] {
+    let chain = this.policies.filter((p) => p instanceof PermissionsPolicy || !rulesOnly)
     if (hook === 'preExecute' && this.placement !== null && !placed) {
       chain = [this.placement, ...chain]
     }
@@ -510,7 +626,14 @@ export class Policies {
    * answers with a Deny naming it (fail closed), except the built-in
    * placement, which throws to the caller. A kind the hook cannot carry
    * (VALIDITY) throws PolicyError: a programming error, not a refusal, and
-   * as loud in a dry run as at the entry point. Mirrors the Python `_said`.
+   * as loud in a dry run as at the entry point. A later Ask's rules are
+   * appended to the first Ask's, so the first Ask carries every question
+   * the stage raised and the host grants each. The context gets the
+   * session, its namespace and its files before the first hook that is
+   * asked, unless the profile's rules alone are (`rulesOnly`): those read
+   * none of them, and they judge every op a command makes. Each hook runs
+   * as a policy deciding, so what it reads through them runs and a write
+   * refuses. Mirrors the Python `_said`.
    */
   private async said(
     hook: Hook,
@@ -523,24 +646,35 @@ export class Policies {
       | SessionContext,
     every: boolean,
     placed = false,
+    rulesOnly = false,
   ): Promise<[(Deny | Ask | Route)[], Limit[]]> {
     const said: (Deny | Ask | Route)[] = []
     const limits: Limit[] = []
-    for (const policy of this.chain(hook, placed)) {
+    let seen = ctx
+    for (const policy of this.chain(hook, placed, rulesOnly)) {
       const fn = policy[hook]
       if (fn === undefined) continue
       const name = policy.constructor.name || 'policy'
+      const handles =
+        !rulesOnly && this.views !== null && seen.session === undefined
+          ? this.views(seen.sessionId ?? '')
+          : null
+      if (handles !== null) seen = { ...seen, ...handles }
+      const asked = seen
       let action
       try {
-        action = await fn.call(
-          policy,
-          ctx as CommandContext &
-            RouteContext &
-            VfsContext &
-            VfsResultContext &
-            ExecuteResultContext &
-            SessionContext,
-        )
+        const ask = async (): Promise<Awaited<ReturnType<typeof fn>>> =>
+          fn.call(
+            policy,
+            asked as CommandResultContext &
+              RouteContext &
+              VfsResultContext &
+              ExecuteResultContext &
+              SessionResultContext,
+          )
+        // Without task isolation the binding would reach other tasks' ops,
+        // so there a hook runs as it did before: it may write.
+        action = await (asyncContextIsolatesTasks ? runExplaining(DryRun.DECIDING, ask) : ask())
       } catch (err) {
         if (policy === this.placement) throw err
         // The agent reads which policy broke, never what it threw: the
@@ -567,6 +701,18 @@ export class Policies {
       said.push(
         action.policy === undefined || action.policy === '' ? { ...action, policy: name } : action,
       )
+      const first = said.findIndex((a) => a.kind === 'ask')
+      const held = said[first]
+      if (action.kind === 'ask' && held?.kind === 'ask' && first < said.length - 1) {
+        const rules = [
+          ...(held.rules ?? [askRule(seen, held)]),
+          ...(action.rules ?? [askRule(seen, action)]),
+        ]
+        said[first] = {
+          ...held,
+          rules: rules.filter((rule, i) => rules.findIndex((r) => sameRule(r, rule)) === i),
+        }
+      }
       if (action.kind === 'deny' && !every) return [said, []]
     }
     return [said, limits]
@@ -578,8 +724,8 @@ export class Policies {
    * field, and Routes are collected for the caller to reconcile. An Ask is
    * remembered and the loop goes on looking for a Deny, so a later
    * policy's refusal outranks an earlier policy's question and an approval
-   * can never re-open a deny; the first Ask is returned when nothing
-   * refused.
+   * can never re-open a deny; the first Ask is returned, carrying every
+   * Ask's rules, when nothing refused.
    */
   private async fire(
     hook: Hook,
@@ -591,8 +737,9 @@ export class Policies {
       | ExecuteResultContext
       | SessionContext,
     placed = false,
+    rulesOnly = false,
   ): Promise<[Deny | Ask | null, Limit | null, Route[]]> {
-    const [said, limits] = await this.said(hook, ctx, false, placed)
+    const [said, limits] = await this.said(hook, ctx, false, placed, rulesOnly)
     const deny = said.find((a): a is Deny => a.kind === 'deny')
     if (deny !== undefined) return [deny, null, []]
     const asked = said.find((a): a is Ask => a.kind === 'ask') ?? null
@@ -607,7 +754,8 @@ export class Policies {
    * Deny, as the entry point's do. The built-in hides never answer here, since a
    * hide never surfaces; the built-in placement answers first at
    * `preExecute` and the built-in mount mode last at `preVfs`, as they do
-   * at the entry point. Mirrors the Python `answers`.
+   * at the entry point. `rulesOnly` asks the profile's rules alone, as
+   * `chain` takes it. Mirrors the Python `answers`.
    */
   async answers(
     hook: Hook,
@@ -619,8 +767,9 @@ export class Policies {
       | ExecuteResultContext
       | SessionContext,
     every = true,
+    rulesOnly = false,
   ): Promise<(Deny | Ask | Route)[]> {
-    const [said] = await this.said(hook, ctx, every)
+    const [said] = await this.said(hook, ctx, every, false, rulesOnly)
     return said
   }
 
@@ -630,17 +779,26 @@ export class Policies {
     return action
   }
 
+  /** Fire postCommand across the policies; the first Deny wins, else the first Ask. */
+  async postCommand(ctx: CommandResultContext): Promise<Deny | Ask | null> {
+    const [action] = await this.fire('postCommand', ctx)
+    return action
+  }
+
   /**
-   * Fire preExecute: a Deny wins, else the Route every placing policy
-   * agrees on; two placing the line on different runtimes refuse it.
+   * Fire preExecute: a Deny wins, else the first Ask, which holds the
+   * line until the host approves it; and the Route every placing policy
+   * agrees on, two placing the line on different runtimes refusing it.
    * `placed` says the caller placed the line (the runtime argument), so
-   * the built-in placement is not asked and a Route is moot; a Deny still
-   * refuses the line.
+   * the built-in placement is not asked and a Route is moot; a Deny or an
+   * Ask still holds the line.
    */
-  async preExecute(ctx: RouteContext, placed = false): Promise<Deny | Route | null> {
+  async preExecute(ctx: RouteContext, placed = false): Promise<[Deny | Ask | null, Route | null]> {
     const [action, , routes] = await this.fire('preExecute', ctx, placed)
-    if (action?.kind === 'deny') return action
-    return placed ? null : agreed(routes)
+    if (action?.kind === 'deny' || placed) return [action, null]
+    const route = agreed(routes)
+    if (route?.kind === 'deny') return [route, null]
+    return [action, route]
   }
 
   /** Whether the built-in hides answer the op as absent, before any policy is asked. */
@@ -655,33 +813,45 @@ export class Policies {
    * a policy would say, so a refusal never tells a session a hidden name
    * exists; the built-in mount mode answers after them. Both hold
    * whether or not any policy overrides the hook; `checkHidden` false
-   * only for an entry point that has already answered the hides itself.
+   * only for an entry point that has already answered the hides itself,
+   * and `rulesOnly` asks the profile's path rules alone, for an op a
+   * running command makes.
    */
-  async preVfs(ctx: VfsContext, checkHidden = true): Promise<Hide | Deny | Ask | null> {
+  async preVfs(
+    ctx: VfsContext,
+    checkHidden = true,
+    rulesOnly = false,
+  ): Promise<Hide | Deny | Ask | null> {
     if (checkHidden) {
       const hidden = await this.hidden.preVfs(ctx)
       if (hidden !== null) return hidden
     }
-    const [action] = await this.fire('preVfs', ctx)
+    const [action] = await this.fire('preVfs', ctx, false, rulesOnly)
     return action
   }
 
-  /** Fire postVfs; a Deny suppresses the result, Limits merge. */
-  async postVfs(ctx: VfsResultContext): Promise<[Deny | null, Limit | null]> {
+  /** Fire postVfs; a Deny or an Ask holds the result back, Limits merge. */
+  async postVfs(ctx: VfsResultContext): Promise<[Deny | Ask | null, Limit | null]> {
     const [action, limit] = await this.fire('postVfs', ctx)
-    return [denyOnly('postVfs', action), limit]
+    return [action, limit]
   }
 
-  /** Fire postExecute; Limits merge to the boundary bound. */
-  async postExecute(ctx: ExecuteResultContext): Promise<[Deny | null, Limit | null]> {
+  /** Fire postExecute; a Deny or an Ask holds the output back, Limits merge to the boundary bound. */
+  async postExecute(ctx: ExecuteResultContext): Promise<[Deny | Ask | null, Limit | null]> {
     const [action, limit] = await this.fire('postExecute', ctx)
-    return [denyOnly('postExecute', action), limit]
+    return [action, limit]
   }
 
-  /** Fire preSession across the policies; the first Deny wins. */
-  async preSession(ctx: SessionContext): Promise<Deny | null> {
+  /** Fire preSession across the policies; the first Deny wins, else the first Ask. */
+  async preSession(ctx: SessionContext): Promise<Deny | Ask | null> {
     const [action] = await this.fire('preSession', ctx)
-    return denyOnly('preSession', action)
+    return action
+  }
+
+  /** Fire postSession across the policies; the first Deny wins, else the first Ask. */
+  async postSession(ctx: SessionResultContext): Promise<Deny | Ask | null> {
+    const [action] = await this.fire('postSession', ctx)
+    return action
   }
 }
 

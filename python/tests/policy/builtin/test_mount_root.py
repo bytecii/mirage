@@ -50,7 +50,6 @@ def _ctx(
     command: str,
     paths: list[PathSpec],
     argv: list[str] | None = None,
-    registry: MountRegistry | None = None,
     operands: list[PathSpec] | None = None,
 ) -> CommandContext:
     return CommandContext(
@@ -59,7 +58,6 @@ def _ctx(
         operands=tuple(paths if operands is None else operands),
         argv=tuple(argv or []),
         cwd="/",
-        registry=registry or _registry(),
     )
 
 
@@ -79,7 +77,7 @@ async def test_mount_root_refuses(cmd, needle):
     # ln refuses a mount root only as the link NAME, which -T pins;
     # without it a directory operand is the directory to link into.
     argv = ["-T"] if cmd == "ln" else []
-    deny = await MountRootPolicy().pre_command(
+    deny = await MountRootPolicy(_registry()).pre_command(
         _ctx(cmd, [_path("/data")], argv)
     )
     assert deny is not None
@@ -92,36 +90,28 @@ async def test_mount_root_refuses(cmd, needle):
 
 @pytest.mark.asyncio
 async def test_mkdir_dash_p_is_a_no_op_on_a_mount_root():
-    registry = _registry()
-    policy = MountRootPolicy()
+    policy = MountRootPolicy(_registry())
     for argv in (["-p"], ["--parents"], ["-pv"]):
         assert (
-            await policy.pre_command(
-                _ctx("mkdir", [_path("/data")], argv, registry)
-            )
+            await policy.pre_command(_ctx("mkdir", [_path("/data")], argv))
             is None
         )
     # A long flag containing p is not the shorthand cluster.
     assert (
-        await policy.pre_command(
-            _ctx("mkdir", [_path("/data")], ["--print"], registry)
-        )
+        await policy.pre_command(_ctx("mkdir", [_path("/data")], ["--print"]))
         is not None
     )
 
 
 @pytest.mark.asyncio
 async def test_non_root_paths_and_no_paths_pass():
-    registry = _registry()
-    policy = MountRootPolicy()
+    policy = MountRootPolicy(_registry())
     for cmd in ("rm", "rmdir", "mv", "mkdir", "touch", "ln"):
         assert (
-            await policy.pre_command(
-                _ctx(cmd, [_path("/data/file.txt")], registry=registry)
-            )
+            await policy.pre_command(_ctx(cmd, [_path("/data/file.txt")]))
             is None
         )
-    assert await policy.pre_command(_ctx("rm", [], ["-r"], registry)) is None
+    assert await policy.pre_command(_ctx("rm", [], ["-r"])) is None
 
 
 @pytest.mark.parametrize(
@@ -155,8 +145,8 @@ async def test_rm_refuses_a_mount_root_in_gnu_order(
 ):
     registry = _registry()
     registry.mount("/", RAMVFS(), MountMode.WRITE)
-    deny = await MountRootPolicy().pre_command(
-        _ctx("rm", [_path(virtual, raw)], argv, registry)
+    deny = await MountRootPolicy(registry).pre_command(
+        _ctx("rm", [_path(virtual, raw)], argv)
     )
     assert deny is not None
     assert deny.reason == reason
@@ -164,7 +154,7 @@ async def test_rm_refuses_a_mount_root_in_gnu_order(
 
 @pytest.mark.asyncio
 async def test_rm_r_on_a_mount_root_is_refused_never_an_unmount():
-    deny = await MountRootPolicy().pre_command(
+    deny = await MountRootPolicy(_registry()).pre_command(
         _ctx("rm", [_path("/data")], ["-rf"])
     )
     assert deny is not None
@@ -176,7 +166,7 @@ async def test_ln_wording_follows_the_link_kind():
     # GNU words the refusal by link kind: ln -s says "symbolic link",
     # plain ln says "link" (pinned by integ guard_root_ln_is_eexist). A
     # mount root is only refused as the link NAME, which -T pins.
-    policy = MountRootPolicy()
+    policy = MountRootPolicy(_registry())
     deny = await policy.pre_command(
         _ctx("ln", [_path("/data/k.txt"), _path("/data")], ["-sT"])
     )
@@ -234,14 +224,16 @@ async def test_whole_mount_archivers_refused(cmd, needle):
         "cp": [_path("/data"), _path("/dst")],
     }[cmd]
     argv = ["-cf", "/out.tar"] if cmd == "tar" else []
-    deny = await MountRootPolicy().pre_command(_ctx(cmd, operands, argv=argv))
+    deny = await MountRootPolicy(_registry()).pre_command(
+        _ctx(cmd, operands, argv=argv)
+    )
     assert deny is not None
     assert render_deny(cmd, deny)[0] == needle.encode()
 
 
 @pytest.mark.asyncio
 async def test_tar_refusal_names_the_operand_as_typed_and_exits_two():
-    deny = await MountRootPolicy().pre_command(
+    deny = await MountRootPolicy(_registry()).pre_command(
         _ctx("tar", [_path("/data", raw=".")], argv=["-cf", "/out.tar"])
     )
     assert deny is not None
@@ -257,7 +249,7 @@ async def test_tar_refusal_names_the_operand_as_typed_and_exits_two():
 async def test_extracting_into_a_mount_root_is_allowed():
     # `-C /data` is a path-valued flag, so it reaches paths but never
     # operands; refusing it would block the safe direction.
-    deny = await MountRootPolicy().pre_command(
+    deny = await MountRootPolicy(_registry()).pre_command(
         _ctx(
             "tar",
             [_path("/archive.tar"), _path("/data")],
@@ -269,7 +261,7 @@ async def test_extracting_into_a_mount_root_is_allowed():
 
 @pytest.mark.asyncio
 async def test_copying_into_a_mount_root_is_allowed():
-    deny = await MountRootPolicy().pre_command(
+    deny = await MountRootPolicy(_registry()).pre_command(
         _ctx("cp", [_path("/src/a.txt"), _path("/data")])
     )
     assert deny is None
@@ -277,7 +269,7 @@ async def test_copying_into_a_mount_root_is_allowed():
 
 @pytest.mark.asyncio
 async def test_zip_archive_slot_is_not_a_source():
-    deny = await MountRootPolicy().pre_command(
+    deny = await MountRootPolicy(_registry()).pre_command(
         _ctx("zip", [_path("/data"), _path("/src/a.txt")])
     )
     assert deny is None
@@ -304,7 +296,7 @@ async def test_only_tar_create_reads_its_operands_from_the_filesystem(
     A selector that happens to spell a mount root is not a mount, so
     refusing it would deny an ordinary listing or extraction.
     """
-    deny = await MountRootPolicy().pre_command(
+    deny = await MountRootPolicy(_registry()).pre_command(
         _ctx("tar", [_path("/data")], argv=argv)
     )
     assert (deny is not None) is denied

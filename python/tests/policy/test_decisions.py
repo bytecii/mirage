@@ -44,11 +44,6 @@ from mirage.policy.types import (
 RULE = CommandRule(reason="sign-off", commands=("git push",))
 
 
-class _Registry:
-    def is_mount_root(self, path: str) -> bool:
-        return False
-
-
 def _ctx(
     command: str = "git",
     argv: tuple[str, ...] = ("push",),
@@ -62,7 +57,6 @@ def _ctx(
         argv=argv,
         cwd=cwd,
         session_id=session_id,
-        registry=_Registry(),
         tokens=(command, *argv),
     )
 

@@ -53,6 +53,7 @@ from mirage.policy.types import SessionContext
 from mirage.runtime.routing import RouteContext
 from mirage.types import Limit, MountMode, PathSpec, Producer, Refusal
 from mirage.vfs.ram import RAMVFS
+from mirage.workspace.dispatcher.constants import CALLS
 from mirage.workspace.mount import MountRegistry
 
 
@@ -131,14 +132,12 @@ def _path(virtual: str) -> PathSpec:
 def _ctx(
     command: str,
     paths: list[PathSpec] | None = None,
-    registry: MountRegistry | None = None,
 ) -> CommandContext:
     return CommandContext(
         command=command,
         paths=tuple(paths or []),
         argv=(),
         cwd="/",
-        registry=registry or _registry(),
     )
 
 
@@ -150,16 +149,14 @@ async def test_policies_carry_no_rules_by_default():
 @pytest.mark.asyncio
 async def test_registry_seeds_the_mount_root_policy():
     registry = _registry()
-    deny = await registry.policies.pre_command(
-        _ctx("rm", [_path("/data")], registry)
-    )
+    deny = await registry.policies.pre_command(_ctx("rm", [_path("/data")]))
     assert deny is not None
     assert "cannot remove '/data'" in deny.reason
 
 
 @pytest.mark.asyncio
 async def test_builtin_runs_first_then_user_policies_in_order():
-    policies = Policies([MountRootPolicy()])
+    policies = Policies([MountRootPolicy(_registry())])
     policies.add(RulePolicy(CommandRule(reason="user rule", commands=("rm",))))
     # Both match `rm /data`; the built-in GNU message wins by order.
     deny = await policies.pre_command(_ctx("rm", [_path("/data")]))
@@ -225,7 +222,7 @@ async def test_an_illegal_return_raises_policy_error():
 
 class DenyReadOps(Policy):
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        if ctx.op == "read":
+        if ctx.call.name == "read":
             return Deny("no reads")
         return None
 
@@ -245,12 +242,12 @@ async def test_pre_vfs_first_deny_wins_and_wants_gates():
     assert policies.wants("pre_vfs")
     assert not policies.wants("post_vfs")
     ctx = VfsContext(
-        op="read", path=_path("/data/x"), write=False, prefix="/data/"
+        call=CALLS["read"], path=_path("/data/x"), write=False, prefix="/data/"
     )
     deny = await policies.pre_vfs(ctx)
     assert deny == Deny("no reads", policy="DenyReadOps")
     write_ctx = VfsContext(
-        op="write", path=_path("/data/x"), write=True, prefix="/data/"
+        call=CALLS["write"], path=_path("/data/x"), write=True, prefix="/data/"
     )
     assert await policies.pre_vfs(write_ctx) is None
 
@@ -260,12 +257,16 @@ async def test_pre_vfs_gate_raises_eacces():
     policies = Policies()
     policies.add(DenyReadOps())
     with pytest.raises(PermissionError) as excinfo:
-        await pre_vfs_gate(policies, "read", _path("/data/x"), False, "/data/")
+        await pre_vfs_gate(
+            policies, CALLS["read"], _path("/data/x"), False, "/data/"
+        )
     assert excinfo.value.errno == errno.EACCES
     assert excinfo.value.filename == "/data/x"
     assert excinfo.value.refusal and "no reads" in excinfo.value.refusal.reason
     # No opinion on writes: the gate passes silently.
-    await pre_vfs_gate(policies, "write", _path("/data/x"), True, "/data/")
+    await pre_vfs_gate(
+        policies, CALLS["write"], _path("/data/x"), True, "/data/"
+    )
 
 
 @pytest.mark.asyncio
@@ -273,12 +274,12 @@ async def test_post_vfs_gate_suppresses_the_result():
     policies = Policies()
     policies.add(DenyBigResults())
     await post_vfs_gate(
-        policies, "read", _path("/data/x"), False, "/data/", b"tiny"
+        policies, CALLS["read"], _path("/data/x"), False, "/data/", b"tiny"
     )
     with pytest.raises(PermissionError) as excinfo:
         await post_vfs_gate(
             policies,
-            "read",
+            CALLS["read"],
             _path("/data/x"),
             False,
             "/data/",
@@ -312,7 +313,7 @@ class CapLines(Policy):
 
 def _ops_result_ctx() -> VfsResultContext:
     return VfsResultContext(
-        op="read",
+        call=CALLS["read"],
         path=_path("/data/x"),
         write=False,
         prefix="/data/",
@@ -336,7 +337,7 @@ async def test_post_vfs_gate_returns_the_merged_bound():
     policies = Policies()
     policies.add(CapFour())
     bound = await post_vfs_gate(
-        policies, "read", _path("/data/x"), False, "/data/", b"payload"
+        policies, CALLS["read"], _path("/data/x"), False, "/data/", b"payload"
     )
     assert bound is not None
     assert bound.max_bytes == 4
@@ -356,7 +357,15 @@ async def test_post_execute_gate_merges_user_limits():
     policies.add(CapLines())
     deny, bound = await post_execute_gate(
         policies,
-        ExecuteResultContext(producer=Producer(command="echo"), exit_code=0),
+        ExecuteResultContext(
+            line="echo",
+            commands=(),
+            command="echo",
+            builtin=True,
+            session_id="",
+            agent_id="",
+            producer=Producer(command="echo"),
+        ),
     )
     assert deny is None
     assert bound is not None
@@ -373,10 +382,16 @@ async def test_a_deny_anywhere_in_the_chain_outranks_an_ask():
         assert await policies.pre_command(_ctx("rm")) == Deny(
             "no", policy="DenyRm"
         )
-    # With nothing refusing, the first Ask is the answer.
+    # With nothing refusing, every Ask is the answer: the first one's
+    # voice, with each policy's rule for the host to grant.
     policies = Policies([AskRm(), AskAll()])
     assert await policies.pre_command(_ctx("rm")) == Ask(
-        "sign-off", policy="AskRm"
+        "sign-off",
+        policy="AskRm",
+        rules=(
+            CommandRule("sign-off", commands=("rm",)),
+            CommandRule("second opinion", commands=("rm",)),
+        ),
     )
     assert await policies.pre_command(_ctx("ls")) == Ask(
         "second opinion", policy="AskAll"
@@ -389,7 +404,9 @@ async def test_an_op_ask_with_no_ledger_refuses_like_a_deny():
     # the deny voice, with the reason on the record.
     policies = Policies([AskOnOps()])
     with pytest.raises(PolicyDenied) as info:
-        await pre_vfs_gate(policies, "write", _path("/data/x"), True, "/data/")
+        await pre_vfs_gate(
+            policies, CALLS["write"], _path("/data/x"), True, "/data/"
+        )
     assert info.value.errno == errno.EACCES
     assert info.value.refusal is not None
     assert info.value.refusal.kind == "deny"
@@ -406,23 +423,24 @@ class AskToPlace(Policy):
 
 
 @pytest.mark.asyncio
-async def test_pre_execute_routes_agree_and_asks_are_illegal():
+async def test_pre_execute_routes_agree_and_an_ask_holds_the_line():
     line = RouteContext(
         line="python3 x",
         commands=(),
         command="python3",
         builtin=False,
-        cwd="/",
-        env={},
         session_id="",
         agent_id="",
-        mounts=(),
     )
     # Two policies naming one runtime agree; the first names the line.
     agreed = await Policies([OnBeta(), OnBeta()]).pre_execute(line)
-    assert agreed == Route("beta", policy="OnBeta")
-    with pytest.raises(PolicyError, match="AskToPlace"):
-        await Policies([AskToPlace()]).pre_execute(line)
+    assert agreed == (None, Route("beta", policy="OnBeta"))
+    # An Ask comes back beside the Route, for the entry point to put.
+    asked = await Policies([AskToPlace(), OnBeta()]).pre_execute(line)
+    assert asked == (
+        Ask("where?", policy="AskToPlace"),
+        Route("beta", policy="OnBeta"),
+    )
 
 
 def test_render_pending_names_the_approval():

@@ -810,7 +810,7 @@ describe('MirageFS — a policy deny on read surfaces EACCES', () => {
     const redact: Policy = {
       postVfs(ctx: VfsResultContext): Action | null {
         const data = ctx.result instanceof Uint8Array ? new TextDecoder().decode(ctx.result) : null
-        if (ctx.op === 'read' && data?.includes('TOPSECRET') === true) {
+        if (ctx.call.name === 'read' && data?.includes('TOPSECRET') === true) {
           return { kind: 'deny', reason: 'redacted' }
         }
         return null

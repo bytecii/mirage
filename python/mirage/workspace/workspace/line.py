@@ -12,25 +12,32 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import fields
 
 from mirage.commands.builtin.utils.limit import guard_output, run_with_timeout
 from mirage.io import IOResult
 from mirage.io.types import ByteSource, materialize
 from mirage.policy import (
+    Claimant,
     ExecuteResultContext,
+    Pending,
     Policies,
     post_execute_gate,
     refusal_of,
     render_deny,
+    render_pending,
     resolve_limit,
 )
 from mirage.runtime.base import Runtime
 from mirage.runtime.mixin import LineExecutorMixin
+from mirage.runtime.routing import RouteContext
 from mirage.runtime.types import ShellRequest
 from mirage.types import Limit, PathSpec, Producer
 from mirage.workspace.mount import MountEntry
 from mirage.workspace.session import SessionState, env_snapshot
+from mirage.workspace.types import ExecutionNode
 from mirage.workspace.workspace.utils import command_name
 
 
@@ -43,6 +50,9 @@ async def run_whole_line(
     policies: Policies,
     invalidate: Callable[[], Awaitable[None]],
     command_limits: Mapping[str, Limit] | None = None,
+    claimant: Claimant | None = None,
+    cancel: asyncio.Event | None = None,
+    route: RouteContext | None = None,
 ) -> IOResult:
     """Hand the raw line to one runtime instead of walking its tree.
 
@@ -63,6 +73,12 @@ async def run_whole_line(
             caches once the line has run.
         command_limits (Mapping[str, Limit] | None): the workspace
             defaults, keyed by command.
+        claimant (Claimant | None): the line on its hand-off, where a
+            ``post_execute`` approval is claimed.
+        cancel (asyncio.Event | None): the run's kill channel.
+        route (RouteContext | None): what ``pre_execute`` saw of the
+            line, which ``post_execute`` sees with what came back; None
+            when no policy reads ``post_execute``.
     """
     assert isinstance(runtime, Runtime)
     data = await materialize(stdin) if stdin is not None else None
@@ -91,19 +107,38 @@ async def run_whole_line(
         # The line may have written anywhere in the runtime's view of
         # the workspace; local read caches are stale.
         await invalidate()
-    producer = Producer(command=name, prefixes=tuple(m.prefix for m in mounts))
-    deny, bound = await post_execute_gate(
-        policies,
-        ExecuteResultContext(producer=producer, exit_code=result.exit_code),
-    )
-    if deny is not None:
+    refused, bound = None, None
+    if route is not None:
+        refused, bound = await post_execute_gate(
+            policies,
+            ExecuteResultContext(
+                **{f.name: getattr(route, f.name) for f in fields(route)},
+                producer=Producer(
+                    command=name, prefixes=tuple(m.prefix for m in mounts)
+                ),
+                exit_code=result.exit_code,
+                output=result.stdout or b"",
+                results=ExecutionNode(
+                    command=command,
+                    stderr=result.stderr or b"",
+                    exit_code=result.exit_code,
+                ).to_dict(),
+            ),
+            claimant,
+            cancel,
+        )
+    if refused is not None:
         existing = result.stderr or b""
-        err, code = render_deny(name, deny)
+        err, code = (
+            render_pending(name, refused)
+            if isinstance(refused, Pending)
+            else render_deny(name, refused)
+        )
         return IOResult(
             exit_code=code,
             stdout=None,
             stderr=existing + err,
-            refusal=refusal_of(deny),
+            refusal=refusal_of(refused),
         )
     stdout, stderr, exit_code = await guard_output(
         result.stdout or b"",

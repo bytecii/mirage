@@ -271,10 +271,12 @@ export function opReach(
   scope: HiddenPaths | null,
   ctx: VfsContext,
 ): number | null {
-  if ((rule.commands ?? []).length > 0 || scope === null || METADATA_OPS.has(ctx.op)) return null
+  if ((rule.commands ?? []).length > 0 || scope === null || METADATA_OPS.has(ctx.call.name))
+    return null
   const virtual = ctx.path.virtual
   if (pathHidden(scope, virtual)) return hiddenDepth(rule, virtual)
-  if (SUBTREE_OPS.has(ctx.op) && pathCovers(scope, virtual)) return coversDepth(rule, virtual)
+  if (SUBTREE_OPS.has(ctx.call.name) && pathCovers(scope, virtual))
+    return coversDepth(rule, virtual)
   return null
 }
 

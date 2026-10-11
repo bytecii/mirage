@@ -17,13 +17,11 @@ import { describe, expect, it } from 'vitest'
 import type { CommandContext, AdmissionRules } from '../types.ts'
 import { headVisible, lineAllowed, lineTokens, nodeVisible } from './allow.ts'
 
-const registry = { isMountRoot: () => false }
-
 function ctx(
   command: string,
-  extra: Partial<Omit<CommandContext, 'command' | 'registry'>> = {},
+  extra: Partial<Omit<CommandContext, 'command'>> = {},
 ): CommandContext {
-  return { command, paths: [], argv: [], cwd: '/', registry, ...extra }
+  return { command, paths: [], argv: [], cwd: '/', ...extra }
 }
 
 describe('allow lists', () => {

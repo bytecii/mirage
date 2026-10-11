@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { createAsyncContext } from '../utils/async_context.ts'
+import { explaining } from '../context/session_context.ts'
 import { sha256Hex } from '../utils/hash.ts'
 import { Outcome } from './types.ts'
 import type {
@@ -23,28 +24,18 @@ import type {
   CommandRule,
   Decision,
   Deny,
+  ExecuteResultContext,
   HandOff,
   Occurrence,
   VfsContext,
   Pending,
+  SessionContext,
   SessionDecisionsQuery,
 } from './types.ts'
-import { Scope } from './types.ts'
+import { DryRun, Scope } from './types.ts'
+import type { RouteContext } from '../runtime/routing/types.ts'
 
 const ABANDONED: Abandoned = { kind: 'abandoned' }
-
-/**
- * The mount table of an op asked about outside a line, which the ledger
- * never reads: its record names a path, not a command. Mirrors Python's
- * `UNMOUNTED`.
- */
-class Unmounted {
-  isMountRoot(): boolean {
-    return false
-  }
-}
-
-const UNMOUNTED = new Unmounted()
 
 /**
  * Tell the abandonment of a question from a host's answer.
@@ -130,11 +121,18 @@ export async function decisionId(
 
 /**
  * The rule an Ask is keyed on: the document's, or for a coded Ask one
- * synthesized over the program that asked, so a session answer reads
- * "stop asking me about this program".
+ * synthesized over what was asked about (the program, the path, the
+ * line, the variable), so a session answer reads "stop asking me about
+ * this".
  */
-export function askRule(ctx: CommandContext, ask: Ask): CommandRule {
+export function askRule(
+  ctx: CommandContext | RouteContext | VfsContext | ExecuteResultContext | SessionContext,
+  ask: Ask,
+): CommandRule {
   if (ask.rule != null) return ask.rule
+  if ('plane' in ctx) return { reason: ask.reason, commands: [ctx.key] }
+  if ('call' in ctx) return { reason: ask.reason, paths: [ctx.path.virtual] }
+  if ('line' in ctx) return { reason: ask.reason, commands: [ctx.line] }
   const program = (ctx.program ?? [ctx.command]).join(' ')
   return { reason: ask.reason, commands: [program] }
 }
@@ -143,7 +141,7 @@ function sameList(a: readonly string[] = [], b: readonly string[] = []): boolean
   return a.length === b.length && a.every((v, i) => v === b[i])
 }
 
-function sameRule(a: CommandRule, b: CommandRule): boolean {
+export function sameRule(a: CommandRule, b: CommandRule): boolean {
   return (
     a.reason === b.reason &&
     a.mount === b.mount &&
@@ -218,21 +216,38 @@ export function sameOccurrence(a: Occurrence | null, b: Occurrence | null): bool
 }
 
 /**
- * An op's question as the ledger keys it: no command, the path as the one
- * word asked about, and one rule, the document's or for a coded Ask one
- * over the path. Mirrors Python's `op_question`.
+ * A question about no command as the ledger keys it: no command, and the
+ * words of its record are what was asked about: the path of a VFS call,
+ * the variable a session write sets with the value it writes, the line.
+ * Mirrors Python's `op_question`.
  */
-export function opQuestion(ctx: VfsContext, ask: Ask): [CommandContext, Ask] {
+export function opQuestion(
+  ctx: VfsContext | SessionContext | RouteContext | ExecuteResultContext,
+  ask: Ask,
+): [CommandContext, Ask] {
+  const rules = ask.rules ?? [askRule(ctx, ask)]
+  const rule = ask.rule ?? rules[0]
+  const keyed: Ask = { ...ask, ...(rule !== undefined ? { rule } : {}), rules }
+  let words: string[]
+  let paths: CommandContext['paths'] = []
+  let cwd = ''
+  if ('call' in ctx) {
+    words = [ctx.path.virtual]
+    paths = [ctx.path]
+  } else if ('plane' in ctx) {
+    words = ctx.value === null ? [ctx.key] : [ctx.key, ctx.value]
+  } else {
+    words = [ctx.line]
+    cwd = ctx.session?.cwd() ?? ''
+  }
   const asked: CommandContext = {
     command: '',
-    paths: [ctx.path],
-    argv: [ctx.path.virtual],
-    cwd: '',
-    registry: UNMOUNTED,
+    paths,
+    argv: words,
+    cwd,
     sessionId: ctx.sessionId ?? '',
   }
-  const rule = ask.rule ?? { reason: ask.reason, paths: [ctx.path.virtual] }
-  return [asked, { ...ask, rule, rules: [rule] }]
+  return [asked, keyed]
 }
 
 /**
@@ -440,32 +455,36 @@ export class Decisions {
   }
 
   /**
-   * An Ask from the dispatcher where no line is running: a standing answer
-   * settles it, else the question is raised now. The op has no command
-   * behind it, so its record names none: the rule and the path are the
-   * key, the path standing as the one word asked about. A ONCE answer
-   * passes the next call on that path under that rule (every op of it,
-   * `withinCall`; a bare op is a call of its own) and is spent when the
-   * call ends; a SESSION answer passes every one the rule covers, lines
-   * included. Mirrors Python's `resolve_op`.
+   * An Ask about a VFS call or a session write: a standing answer settles
+   * it, else the question is raised now. In a dry run's deciding
+   * (`explain`) the settled records alone answer (`heldOp`) and nothing is
+   * recorded. Neither has a command behind it, so its record names none:
+   * the rule and the subject are the key (`opQuestion`). A ONCE answer passes the next call on that subject under
+   * that rule (every op of it, `withinCall`; a bare op is a call of its
+   * own) and is spent when the call ends; a SESSION answer passes every one
+   * the rule covers, lines included. Mirrors Python's `resolve_op`.
    */
-  async resolveOp(ctx: VfsContext, ask: Ask): Promise<Deny | Pending | null> {
+  async resolveOp(ctx: VfsContext | SessionContext, ask: Ask): Promise<Deny | Pending | null> {
+    if (explaining() === DryRun.DECIDING) return this.heldOp(ctx, ask)
+    const [asked, keyed] = opQuestion(ctx, ask)
     const call = getOpCall(this)
     const claimant: Claimant | null =
       call === null
         ? null
-        : { line: call, occurrence: { parent: null, source: ctx.path.virtual, start: 0, end: 0 } }
-    const [asked, keyed] = opQuestion(ctx, ask)
+        : {
+            line: call,
+            occurrence: { parent: null, source: asked.argv[0] ?? '', start: 0, end: 0 },
+          }
     const said = await this.resolve(asked, keyed, undefined, claimant)
     return said?.kind === 'abandoned' ? { kind: 'deny', reason: ask.reason } : said
   }
 
   /**
-   * What the settled records alone say about an op asked about outside a
-   * line: the read-only half of `resolveOp`, the one `explain` may take.
+   * What the settled records alone say about a VFS call or a session
+   * write: the read-only half of `resolveOp`, the one `explain` may take.
    * Mirrors Python's `held_op`.
    */
-  heldOp(ctx: VfsContext, ask: Ask): Promise<Deny | Pending | null> {
+  heldOp(ctx: VfsContext | SessionContext, ask: Ask): Promise<Deny | Pending | null> {
     const [asked, keyed] = opQuestion(ctx, ask)
     return this.held(asked, keyed)
   }

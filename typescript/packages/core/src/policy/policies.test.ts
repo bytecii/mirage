@@ -39,17 +39,31 @@ import {
 } from './policies.ts'
 import { RulePolicy } from './rule.ts'
 import type { RouteContext } from '../runtime/routing/index.ts'
+import { routeContextPayload } from '../runtime/routing/types.ts'
+import { Outcome } from './types.ts'
 import type {
   Action,
   Ask,
   CommandContext,
+  CommandResultContext,
+  Decision,
   Deny,
   ExecuteResultContext,
   CommandRule,
+  SessionContext,
+  SessionResultContext,
   VfsContext,
   VfsResultContext,
   Route,
 } from './types.ts'
+import { CALLS } from '../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../vfs/types.ts'
+
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 const require = createRequire(import.meta.url)
 const engineWasm = readFileSync(require.resolve('web-tree-sitter/web-tree-sitter.wasm'))
@@ -84,7 +98,7 @@ const silent: Policy = {}
 
 class DenyReadOps implements Policy {
   preVfs(ctx: VfsContext): Action | null {
-    if (ctx.op === 'read') return { kind: 'deny', reason: 'no reads' }
+    if (ctx.call.name === 'read') return { kind: 'deny', reason: 'no reads' }
     return null
   }
 }
@@ -126,16 +140,7 @@ class DenyBigResults implements Policy {
 
 class SuppressCapacity implements Policy {
   postVfs(ctx: VfsResultContext): Action | null {
-    return ctx.op === 'statfs' ? { kind: 'deny', reason: 'no capacity' } : null
-  }
-}
-
-class ReadOnlyProd implements Policy {
-  preVfs(ctx: VfsContext): Action | null {
-    if (ctx.write && ctx.path.virtual.startsWith('/data/prod/')) {
-      return { kind: 'deny', reason: 'prod is frozen' }
-    }
-    return null
+    return ctx.call.name === 'statfs' ? { kind: 'deny', reason: 'no capacity' } : null
   }
 }
 
@@ -163,8 +168,8 @@ function path(virtual: string): PathSpec {
   })
 }
 
-function ctx(command: string, paths: PathSpec[] = [], reg?: MountRegistry): CommandContext {
-  return { command, paths, argv: [], cwd: '/', registry: reg ?? registry() }
+function ctx(command: string, paths: PathSpec[] = []): CommandContext {
+  return { command, paths, argv: [], cwd: '/' }
 }
 
 function executableWorkspace(
@@ -190,12 +195,12 @@ describe('Policies', () => {
 
   it('registry seeds the mount-root policy', async () => {
     const reg = registry()
-    const deny = await reg.policies.preCommand(ctx('rm', [path('/data')], reg))
+    const deny = await reg.policies.preCommand(ctx('rm', [path('/data')]))
     expect(deny?.reason).toContain("cannot remove '/data'")
   })
 
   it('builtin runs first, then user policies in order', async () => {
-    const policies = new Policies([new MountRootPolicy()])
+    const policies = new Policies([new MountRootPolicy(registry())])
     policies.add(new RulePolicy({ reason: 'user rule', commands: ['rm'] }))
     // Both match `rm /data`; the built-in GNU message wins by order.
     let deny = await policies.preCommand(ctx('rm', [path('/data')]))
@@ -251,25 +256,30 @@ describe('Policies', () => {
     expect(policies.wants('preVfs')).toBe(true)
     expect(policies.wants('postVfs')).toBe(false)
     const deny = await policies.preVfs({
-      op: 'read',
+      call: callOf('read'),
       path: path('/data/x'),
       write: false,
       prefix: '/data/',
     })
     expect(deny).toEqual({ kind: 'deny', reason: 'no reads', policy: 'DenyReadOps' })
     expect(
-      await policies.preVfs({ op: 'write', path: path('/data/x'), write: true, prefix: '/data/' }),
+      await policies.preVfs({
+        call: callOf('write'),
+        path: path('/data/x'),
+        write: true,
+        prefix: '/data/',
+      }),
     ).toBeNull()
   })
 
   it('preVfsGate throws PolicyDenied with the EACCES stamp', async () => {
     const policies = new Policies()
     policies.add(new DenyReadOps())
-    await expect(preVfsGate(policies, 'read', path('/data/x'), false, '/data/')).rejects.toThrow(
-      PolicyDenied,
-    )
+    await expect(
+      preVfsGate(policies, callOf('read'), path('/data/x'), false, '/data/'),
+    ).rejects.toThrow(PolicyDenied)
     try {
-      await preVfsGate(policies, 'read', path('/data/x'), false, '/data/')
+      await preVfsGate(policies, callOf('read'), path('/data/x'), false, '/data/')
     } catch (err) {
       expect((err as PolicyDenied).code).toBe('EACCES')
       expect((err as PolicyDenied).virtualPath).toBe('/data/x')
@@ -277,15 +287,15 @@ describe('Policies', () => {
       expect((err as PolicyDenied).refusal?.reason).toBe('no reads')
     }
     // No opinion on writes: the gate passes silently.
-    await preVfsGate(policies, 'write', path('/data/x'), true, '/data/')
+    await preVfsGate(policies, callOf('write'), path('/data/x'), true, '/data/')
   })
 
   it('postVfsGate suppresses the result', async () => {
     const policies = new Policies()
     policies.add(new DenyBigResults())
-    await postVfsGate(policies, 'read', path('/data/x'), false, '/data/', new Uint8Array(4))
+    await postVfsGate(policies, callOf('read'), path('/data/x'), false, '/data/', new Uint8Array(4))
     await expect(
-      postVfsGate(policies, 'read', path('/data/x'), false, '/data/', new Uint8Array(64)),
+      postVfsGate(policies, callOf('read'), path('/data/x'), false, '/data/', new Uint8Array(64)),
     ).rejects.toMatchObject({ refusal: { reason: 'result too large' } })
   })
 
@@ -308,16 +318,15 @@ describe('Policies', () => {
 
 describe('workspace policies', () => {
   it('a postVfs deny suppresses a capacity reply', async () => {
+    // A file call outside a line meets postVfs; a command's own call is
+    // the line's, which postCommand and postExecute judge.
     const ws = executableWorkspace()
     try {
       await ws.shell('touch /data/f')
       ws.policies.add(new SuppressCapacity())
+      await expect(ws.dispatch('statfs', '/data/f')).rejects.toThrow(PolicyDenied)
       const result = await ws.shell('stat -f -c %b /data/f')
-      expect(result.exitCode).toBe(1)
-      expect(new TextDecoder().decode(result.stdout)).toBe('')
-      expect(new TextDecoder().decode(result.stderr)).toBe(
-        "stat: cannot read file system information for '/data/f': Permission denied\n",
-      )
+      expect(result.exitCode).toBe(0)
     } finally {
       await ws.close()
     }
@@ -453,36 +462,21 @@ describe('workspace policies', () => {
     }
   })
 
-  it('a preVfs policy holds on the shell entry point', async () => {
-    // touch routes through the dispatcher, not handleCommand; a
-    // preVfs-only policy must still refuse it with GNU wording.
-    const ws = executableWorkspace()
-    try {
-      ws.policies.add(new ReadOnlyProd())
-      await ws.shell('mkdir -p /data/prod')
-      const refused = await ws.shell('touch /data/prod/x')
-      expect(refused.exitCode).not.toBe(0)
-      expect(new TextDecoder().decode(refused.stderr)).toContain('Permission denied')
-      const ok = await ws.shell('touch /data/free && echo done')
-      expect(new TextDecoder().decode(ok.stdout)).toContain('done')
-    } finally {
-      await ws.close()
-    }
-  })
-
   it('touch on an existing file is a write at the dispatcher', async () => {
     // touch on an existing file mutates via setattr, not create; the
-    // write classification must cover that op too.
-    const ws = executableWorkspace()
+    // write classification must cover that op too, so the mount's mode
+    // refuses it.
+    const ram = new RAMVFS()
+    const seed = new Workspace({ '/data/': ram }, { mode: MountMode.WRITE, shellParser: parser })
+    await seed.shell('mkdir -p /data/prod && echo keep > /data/prod/x.txt')
+    const ws = new Workspace({ '/data/': ram }, { mode: MountMode.READ, shellParser: parser })
     try {
-      await ws.shell('mkdir -p /data/prod')
-      await ws.dispatch('write', '/data/prod/x.txt', [new TextEncoder().encode('keep')])
-      ws.policies.add(new ReadOnlyProd())
       const refused = await ws.shell('touch /data/prod/x.txt')
       expect(refused.exitCode).not.toBe(0)
-      expect(new TextDecoder().decode(refused.stderr)).toContain('Permission denied')
+      expect(new TextDecoder().decode(refused.stderr)).toContain('Read-only file system')
     } finally {
       await ws.close()
+      await seed.close()
     }
   })
 })
@@ -513,7 +507,7 @@ class CapLines implements Policy {
 
 describe('Limit', () => {
   const opsCtx = (): VfsResultContext => ({
-    op: 'read',
+    call: callOf('read'),
     path: path('/data/x'),
     write: false,
     prefix: '/data/',
@@ -532,7 +526,14 @@ describe('Limit', () => {
   it('postVfsGate returns the merged bound', async () => {
     const policies = new Policies()
     policies.add(new CapFour())
-    const bound = await postVfsGate(policies, 'read', path('/data/x'), false, '/data/', null)
+    const bound = await postVfsGate(
+      policies,
+      callOf('read'),
+      path('/data/x'),
+      false,
+      '/data/',
+      null,
+    )
     expect(bound?.maxBytes).toBe(4)
   })
 
@@ -546,8 +547,16 @@ describe('Limit', () => {
     const policies = new Policies()
     policies.add(new CapLines())
     const [deny, bound] = await postExecuteGate(policies, {
+      line: 'echo',
+      commands: [],
+      command: 'echo',
+      builtin: true,
+      sessionId: '',
+      agentId: '',
       producer: { command: 'echo', prefixes: [], declared: null },
       exitCode: 0,
+      output: new Uint8Array(),
+      results: {},
     })
     expect(deny).toBeNull()
     expect(bound?.maxLines).toBe(2)
@@ -600,7 +609,7 @@ class Boom implements Policy {
 
 class DenyReads implements Policy {
   postVfs(ctx: VfsResultContext): Action | null {
-    return ctx.op === 'read' ? { kind: 'deny', reason: 'reads are suppressed' } : null
+    return ctx.call.name === 'read' ? { kind: 'deny', reason: 'reads are suppressed' } : null
   }
 }
 
@@ -771,12 +780,17 @@ describe('Ask in the chain', () => {
         policy: 'DenyRm',
       })
     }
-    // With nothing refusing, the first Ask is the answer.
+    // With nothing refusing, every Ask is the answer: the first one's
+    // voice, with each policy's rule for the host to grant.
     const policies = new Policies([new AskRm(), new AskAll()])
     expect(await policies.preCommand(ctx('rm'))).toEqual({
       kind: 'ask',
       reason: 'sign-off',
       policy: 'AskRm',
+      rules: [
+        { reason: 'sign-off', commands: ['rm'] },
+        { reason: 'second opinion', commands: ['rm'] },
+      ],
     })
     expect(await policies.preCommand(ctx('ls'))).toEqual({
       kind: 'ask',
@@ -789,14 +803,18 @@ describe('Ask in the chain', () => {
     // An entry point that cannot put the question (no ledger) refuses it, in the
     // deny voice, with the reason on the record.
     const policies = new Policies([new AskOnOps()])
-    const refused = await preVfsGate(policies, 'write', path('/data/x'), true, '/data/').catch(
-      (err: unknown) => err,
-    )
+    const refused = await preVfsGate(
+      policies,
+      callOf('write'),
+      path('/data/x'),
+      true,
+      '/data/',
+    ).catch((err: unknown) => err)
     expect(refused).toBeInstanceOf(PolicyDenied)
     expect((refused as PolicyDenied).refusal?.kind).toBe('deny')
   })
 
-  it('preExecute routes agree and an ask is illegal', async () => {
+  it('preExecute routes agree and an ask holds the line', async () => {
     class OnBeta implements Policy {
       preExecute(): Route {
         return { kind: 'route', runtime: 'beta' }
@@ -812,19 +830,19 @@ describe('Ask in the chain', () => {
       commands: [],
       command: 'python3',
       builtin: false,
-      cwd: '/',
-      env: {},
       sessionId: '',
       agentId: '',
-      mounts: [],
     }
     // Two policies naming one runtime agree; the first names the line.
-    expect(await new Policies([new OnBeta(), new OnBeta()]).preExecute(line)).toEqual({
-      kind: 'route',
-      runtime: 'beta',
-      policy: 'OnBeta',
-    })
-    await expect(new Policies([new AskToPlace()]).preExecute(line)).rejects.toThrow(/AskToPlace/)
+    expect(await new Policies([new OnBeta(), new OnBeta()]).preExecute(line)).toEqual([
+      null,
+      { kind: 'route', runtime: 'beta', policy: 'OnBeta' },
+    ])
+    // An Ask comes back beside the Route, for the entry point to put.
+    expect(await new Policies([new AskToPlace(), new OnBeta()]).preExecute(line)).toEqual([
+      { kind: 'ask', reason: 'where?', policy: 'AskToPlace' },
+      { kind: 'route', runtime: 'beta', policy: 'OnBeta' },
+    ])
   })
 
   it('renderPending names the approval', () => {
@@ -966,5 +984,426 @@ describe('the op-policies binding', () => {
       return Promise.resolve()
     })
     expect(getOpPolicies()).toBeNull()
+  })
+})
+
+describe('every hook answers Deny and Ask', () => {
+  class AskTheLine implements Policy {
+    preExecute(ctx: RouteContext): Action | null {
+      return ctx.line.startsWith('rm') ? { kind: 'ask', reason: 'line sign-off' } : null
+    }
+  }
+
+  it('a preExecute ask holds the whole line', async () => {
+    // Nothing of the line runs until the host approves it, and the
+    // approval is the line's once.
+    const ws = executableWorkspace(undefined, [new AskTheLine()])
+    try {
+      await ws.shell('echo x > /data/x')
+      const held = await ws.shell('rm /data/x')
+      expect(held.exitCode).toBe(126)
+      expect(held.stderrText).toBe('rm: Permission denied\n')
+      expect([held.refusal?.kind, held.refusal?.reason]).toEqual(['pending', 'line sign-off'])
+      expect((await ws.shell('cat /data/x')).stdoutText).toBe('x\n')
+      const [record] = ws.decisions.pending()
+      expect(ws.decisions.pending()).toHaveLength(1)
+      expect(record?.argv).toEqual(['rm /data/x'])
+      await ws.decisions.answer(record?.id ?? '', Outcome.ALLOW)
+      expect((await ws.shell('rm /data/x')).exitCode).toBe(0)
+      expect((await ws.shell('rm /data/x')).refusal?.kind).toBe('pending')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class AskSecrets implements Policy {
+    preSession(ctx: SessionContext): Action | null {
+      return ctx.key.startsWith('SECRET') ? { kind: 'ask', reason: 'secret write' } : null
+    }
+  }
+
+  it('a preSession ask refuses the write until approved', async () => {
+    const ws = executableWorkspace(undefined, [new AskSecrets()])
+    try {
+      const held = await ws.shell('export SECRET_A=1')
+      expect(held.exitCode).toBe(1)
+      expect(held.refusal?.kind).toBe('pending')
+      expect((await ws.shell('echo ${SECRET_A:-unset}')).stdoutText).toBe('unset\n')
+      const [record] = ws.decisions.pending()
+      expect(ws.decisions.pending()).toHaveLength(1)
+      expect(record?.argv).toEqual(['SECRET_A', '1'])
+      await ws.decisions.answer(record?.id ?? '', Outcome.ALLOW)
+      expect((await ws.shell('export SECRET_A=1')).exitCode).toBe(0)
+      expect((await ws.shell('echo $SECRET_A')).stdoutText).toBe('1\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a preSession ask a host answers inline writes', async () => {
+    const asked: Decision[] = []
+    const ws = new Workspace(
+      { '/data/': new RAMVFS() },
+      {
+        shellParser: parser,
+        policies: [new AskSecrets()],
+        onAsk: (record: Decision) => {
+          asked.push(record)
+          return Promise.resolve({ ...record, outcome: Outcome.ALLOW })
+        },
+      },
+    )
+    try {
+      expect((await ws.shell('export SECRET_A=1')).exitCode).toBe(0)
+      expect((await ws.shell('echo $SECRET_A')).stdoutText).toBe('1\n')
+      expect(asked.map((r) => r.argv)).toEqual([['SECRET_A', '1']])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class AskReads implements Policy {
+    readonly seen: [VfsContext, VfsResultContext][] = []
+    private readonly pre: VfsContext[] = []
+
+    preVfs(ctx: VfsContext): Action | null {
+      this.pre.push(ctx)
+      return null
+    }
+
+    postVfs(ctx: VfsResultContext): Action | null {
+      const pre = this.pre.at(-1)
+      if (pre !== undefined) this.seen.push([pre, ctx])
+      return ctx.call.name === 'read' ? { kind: 'ask', reason: 'read sign-off' } : null
+    }
+  }
+
+  it('a postVfs ask holds the result back until approved', async () => {
+    // The call ran; what came back waits on the host, and the approved
+    // retry runs it again. The hook saw what preVfs saw.
+    const policy = new AskReads()
+    const ws = executableWorkspace()
+    try {
+      await ws.shell('echo x > /data/x')
+      ws.policies.add(policy)
+      const refused = await ws.vfs.read('/data/x').catch((err: unknown) => err)
+      expect(refused).toBeInstanceOf(PolicyDenied)
+      const refusal = (refused as PolicyDenied).refusal
+      expect(refusal?.kind).toBe('pending')
+      const last = policy.seen.at(-1)
+      expect(last).toBeDefined()
+      const [pre, post] = last ?? []
+      for (const field of ['call', 'path', 'write', 'prefix', 'sessionId', 'mode'] as const) {
+        expect(post?.[field]).toEqual(pre?.[field])
+      }
+      expect(new TextDecoder().decode(post?.result as Uint8Array)).toBe('x\n')
+      await ws.decisions.answer(refusal?.askId ?? '', Outcome.ALLOW)
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/x'))).toBe('x\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class HoldOutput implements Policy {
+    postExecute(ctx: ExecuteResultContext): Action | null {
+      if (ctx.line.includes('secret')) return { kind: 'deny', reason: 'no secrets' }
+      if (ctx.line.includes('review')) return { kind: 'ask', reason: 'output sign-off' }
+      return null
+    }
+  }
+
+  it('a postExecute deny drops the output', async () => {
+    const ws = executableWorkspace(undefined, [new HoldOutput()])
+    try {
+      const out = await ws.shell('echo secret')
+      expect(out.exitCode).toBe(126)
+      expect(out.stdoutText).toBe('')
+      expect(out.stderrText).toBe('echo: Permission denied\n')
+      expect([out.refusal?.kind, out.refusal?.reason]).toEqual(['deny', 'no secrets'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a postExecute ask drops the output until approved', async () => {
+    const ws = executableWorkspace(undefined, [new HoldOutput()])
+    try {
+      const held = await ws.shell('echo review')
+      expect(held.exitCode).toBe(126)
+      expect(held.stdoutText).toBe('')
+      expect(held.refusal?.kind).toBe('pending')
+      await ws.decisions.answer(held.refusal?.askId ?? '', Outcome.ALLOW)
+      const shown = await ws.shell('echo review')
+      expect([shown.exitCode, shown.stdoutText]).toEqual([0, 'review\n'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class AskRemovals implements Policy {
+    preCommand(ctx: CommandContext): Action | null {
+      return ctx.command === 'rm' ? { kind: 'ask', reason: 'removal' } : null
+    }
+  }
+
+  class AskEverything implements Policy {
+    preCommand(): Action | null {
+      return { kind: 'ask', reason: 'anything' }
+    }
+  }
+
+  it('every ask in a chain is put to the host', async () => {
+    // Two policies ask about one command: the host approves each, one
+    // question at a time, and the command runs once both are approved.
+    const ws = executableWorkspace(undefined, [new AskRemovals(), new AskEverything()])
+    try {
+      const reasons: string[] = []
+      for (let i = 0; i < 2; i++) {
+        const held = await ws.shell('rm -f /data/x')
+        expect(held.refusal?.kind).toBe('pending')
+        const pending = ws.decisions.pending()
+        expect(pending).toHaveLength(1)
+        const [record] = pending
+        reasons.push(record?.reason ?? '')
+        await ws.decisions.answer(record?.id ?? '', Outcome.ALLOW)
+      }
+      expect(reasons).toEqual(['removal', 'anything'])
+      expect((await ws.shell('rm -f /data/x')).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('postCommand and postSession', () => {
+  class AfterCommands implements Policy {
+    readonly seen: CommandResultContext[] = []
+
+    postCommand(ctx: CommandResultContext): Action | null {
+      this.seen.push(ctx)
+      if (ctx.command === 'cat' && ctx.argv.includes('secret')) {
+        return { kind: 'deny', reason: 'no secrets' }
+      }
+      if (ctx.command === 'cat' && ctx.argv.includes('review')) {
+        return { kind: 'ask', reason: 'output sign-off' }
+      }
+      return null
+    }
+  }
+
+  it('postCommand sees each command once with its result', async () => {
+    // Once per command, after it ran: the exit code is final even for a
+    // command whose status settles as its output drains (grep).
+    const policy = new AfterCommands()
+    const ws = executableWorkspace()
+    try {
+      await ws.shell('echo hit > /data/x')
+      ws.policies.add(policy)
+      await ws.shell('grep miss /data/x; cat /data/none')
+      expect(policy.seen.map((c) => [c.command, c.exitCode])).toEqual([
+        ['grep', 1],
+        ['cat', 1],
+      ])
+      expect(policy.seen[1]?.stderr).toContain('No such file or directory')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a postCommand deny stops the chain and keeps what was sent', async () => {
+    const ws = executableWorkspace()
+    try {
+      await ws.shell('echo x > /data/secret')
+      ws.policies.add(new AfterCommands())
+      const out = await ws.shell('cd /data && cat secret && echo next')
+      expect(out.exitCode).toBe(126)
+      expect(out.stdoutText).toBe('x\n')
+      expect(out.stderrText).toBe('cat: Permission denied\n')
+      expect([out.refusal?.kind, out.refusal?.reason]).toEqual(['deny', 'no secrets'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a postCommand ask holds the command until approved', async () => {
+    const ws = executableWorkspace()
+    try {
+      await ws.shell('echo x > /data/review')
+      ws.policies.add(new AfterCommands())
+      const held = await ws.shell('cd /data && cat review && echo next')
+      expect(held.exitCode).toBe(126)
+      expect(held.refusal?.kind).toBe('pending')
+      await ws.decisions.answer(held.refusal?.askId ?? '', Outcome.ALLOW)
+      const shown = await ws.shell('cd /data && cat review && echo next')
+      expect([shown.exitCode, shown.stdoutText]).toEqual([0, 'x\nnext\n'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class GuardVars implements Policy {
+    readonly seen: SessionResultContext[] = []
+
+    postSession(ctx: SessionResultContext): Action | null {
+      this.seen.push(ctx)
+      if (ctx.key !== 'A') return null
+      if (ctx.value === '2' || ctx.verb === 'unset') return { kind: 'deny', reason: 'frozen' }
+      if (ctx.value === '3') return { kind: 'ask', reason: 'value sign-off' }
+      return null
+    }
+  }
+
+  it('a postSession deny puts the old value back', async () => {
+    const policy = new GuardVars()
+    const ws = executableWorkspace(undefined, [policy])
+    try {
+      expect((await ws.shell('export A=1')).exitCode).toBe(0)
+      expect(policy.seen.at(-1)?.old).toBeNull()
+      expect((await ws.shell('export A=2')).exitCode).toBe(1)
+      expect(policy.seen.at(-1)?.old).toBe('1')
+      expect((await ws.shell('echo $A')).stdoutText).toBe('1\n')
+      expect((await ws.shell('unset A')).exitCode).toBe(1)
+      expect((await ws.shell('echo $A')).stdoutText).toBe('1\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a postSession ask writes once approved', async () => {
+    const ws = executableWorkspace(undefined, [new GuardVars()])
+    try {
+      await ws.shell('export A=1')
+      const held = await ws.shell('export A=3')
+      expect(held.refusal?.kind).toBe('pending')
+      expect((await ws.shell('echo $A')).stdoutText).toBe('1\n')
+      await ws.decisions.answer(held.refusal?.askId ?? '', Outcome.ALLOW)
+      expect((await ws.shell('export A=3')).exitCode).toBe(0)
+      expect((await ws.shell('echo $A')).stdoutText).toBe('3\n')
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('what a hook sees', () => {
+  class ReadsAround implements Policy {
+    readonly seen: [string, string | null, string, boolean][] = []
+    readonly refused: string[] = []
+
+    async preCommand(ctx: CommandContext): Promise<Action | null> {
+      if (ctx.command !== 'echo') return null
+      const { session, ns, vfs } = ctx
+      if (session === undefined || ns?.mounts === undefined || vfs === undefined) {
+        throw new Error('a hook was asked without its handles')
+      }
+      this.seen.push([
+        session.cwd(),
+        session.get('TEAM'),
+        new TextDecoder().decode(await vfs.read('/data/owner.txt')),
+        ns.mounts.isRoot('/data'),
+      ])
+      for (const write of [
+        () => vfs.write('/data/owner.txt', 'me\n'),
+        () => session.set('TEAM', 'me'),
+      ]) {
+        try {
+          await write()
+        } catch (err) {
+          this.refused.push((err as { code?: string }).code ?? '')
+        }
+      }
+      return null
+    }
+  }
+
+  class OpRecorder implements Policy {
+    readonly asked: string[] = []
+
+    preVfs(ctx: VfsContext): Action | null {
+      this.asked.push(ctx.path.virtual)
+      return null
+    }
+  }
+
+  it('reads the session and its files and writes nothing', async () => {
+    const reader = new ReadsAround()
+    const recorder = new OpRecorder()
+    const ws = executableWorkspace(undefined, [reader, recorder])
+    try {
+      await ws.vfs.write('/data/owner.txt', 'core\n')
+      await ws.shell('cd /data; export TEAM=core')
+      recorder.asked.length = 0
+      expect((await ws.shell('echo hi')).stdoutText).toBe('hi\n')
+      expect(reader.seen).toEqual([['/data', 'core', 'core\n', true]])
+      expect(reader.refused).toEqual(['EROFS', 'EACCES'])
+      // The hook's own read is judged by the rules alone: no user preVfs
+      // runs again for it.
+      expect(recorder.asked).toEqual([])
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/owner.txt'))).toBe('core\n')
+      expect((await ws.shell('echo $TEAM')).stdoutText).toBe('core\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  class SeeLine implements Policy {
+    readonly seen: ExecuteResultContext[] = []
+
+    postExecute(ctx: ExecuteResultContext): Action | null {
+      this.seen.push(ctx)
+      return null
+    }
+  }
+
+  function leaves(node: Record<string, unknown>): [string, number][] {
+    const children = (node.children ?? []) as Record<string, unknown>[]
+    if (children.length === 0) {
+      return [[typeof node.command === 'string' ? node.command : '', Number(node.exitCode)]]
+    }
+    return children.flatMap(leaves)
+  }
+
+  it('postExecute sees the line, its output and each result', async () => {
+    const spy = new SeeLine()
+    const ws = executableWorkspace(undefined, [spy])
+    try {
+      await ws.shell('cd /data; echo hi | cat; false')
+      const ctx = spy.seen.at(-1)
+      expect(ctx?.line).toBe('cd /data; echo hi | cat; false')
+      expect(ctx?.commands.map((c) => c.command)).toEqual(['cd', 'echo', 'cat', 'false'])
+      expect(new TextDecoder().decode(ctx?.output)).toBe('hi\n')
+      expect(ctx?.exitCode).toBe(1)
+      expect(ctx?.session?.cwd()).toBe('/data')
+      const ran = leaves(ctx?.results ?? {})
+      expect(ran.map(([name]) => name.split(' ')[0])).toEqual(['cd', 'echo', 'cat', 'false'])
+      expect(ran.at(-1)?.[1]).toBe(1)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a route policy reads the session as data', async () => {
+    const seen: Record<string, unknown>[] = []
+    const ws = new Workspace(
+      { '/data/': new RAMVFS() },
+      {
+        mode: MountMode.WRITE,
+        shellParser: parser,
+        routePolicy: (ctx: RouteContext) => {
+          seen.push(routeContextPayload(ctx))
+          return null
+        },
+      },
+    )
+    try {
+      await ws.shell('cd /data; export TEAM=core')
+      await ws.shell('echo hi')
+      const payload = seen.at(-1) as { session: { cwd: string; env: Record<string, string> } }
+      expect(payload.session.cwd).toBe('/data')
+      expect(payload.session.env.TEAM).toBe('core')
+      expect(seen.at(-1)?.mounts).toContain('/data')
+    } finally {
+      await ws.close()
+    }
   })
 })

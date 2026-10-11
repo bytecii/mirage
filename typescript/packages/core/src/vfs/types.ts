@@ -57,11 +57,14 @@ export const Target = Object.freeze({
 export type Target = (typeof Target)[keyof typeof Target]
 
 /**
- * What `vfsCall` declares for one function: its effect, the kind of entry
- * its path names, and whether a WRITE makes a missing file, as open(2) with
- * O_CREAT. Mirrors Python's `Declaration`.
+ * What `vfsCall` declares for one function, and what a `preVfs` / `postVfs`
+ * hook sees of the call: its name, its effect, the kind of entry its path
+ * names, and whether a WRITE makes a missing file, as open(2) with O_CREAT.
+ * Mirrors Python's `VfsCall`.
  */
-export interface Declaration {
+export interface VfsCall {
+  /** The function's name (`read`, `search`, ...). */
+  readonly name: string
   readonly effect: Effect
   readonly target: Target
   readonly creates: boolean

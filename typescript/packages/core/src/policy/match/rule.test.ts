@@ -30,8 +30,14 @@ import {
   subjects,
   type Subject,
 } from './rule.ts'
+import { CALLS } from '../../workspace/dispatcher/constants.ts'
+import { Effect, Target, type VfsCall } from '../../vfs/types.ts'
 
-const registry = { isMountRoot: () => false }
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 function path(virtual: string, raw = ''): PathSpec {
   return new PathSpec({
@@ -45,9 +51,9 @@ function path(virtual: string, raw = ''): PathSpec {
 
 function ctx(
   command: string,
-  extra: Partial<Omit<CommandContext, 'command' | 'registry'>> = {},
+  extra: Partial<Omit<CommandContext, 'command'>> = {},
 ): CommandContext {
-  return { command, paths: [], argv: [], cwd: '/', registry, ...extra }
+  return { command, paths: [], argv: [], cwd: '/', ...extra }
 }
 
 function subject(virtual: string): Subject {
@@ -114,7 +120,7 @@ describe('rules', () => {
     const carve: CommandRule = { reason: 'outbox nod', paths: ['/repo/outbox/*'] }
     const rules: AdmissionRules = { allow: null, deny: [broad], ask: [carve] }
     const inside: VfsContext = {
-      op: 'write',
+      call: callOf('write'),
       path: path('/repo/outbox/a'),
       write: true,
       prefix: '/repo/',
@@ -126,7 +132,7 @@ describe('rules', () => {
     // Outside the carve-out the deny is what is left, and a grant for
     // the ask says nothing about it.
     const outside: VfsContext = {
-      op: 'write',
+      call: callOf('write'),
       path: path('/repo/sealed/a'),
       write: true,
       prefix: '/repo/',
@@ -134,7 +140,7 @@ describe('rules', () => {
     expect(opRuling(rules, outside, [carve])).toEqual([broad, false])
     // A metadata op is reached by neither: deny is present and refused.
     const stat: VfsContext = {
-      op: 'stat',
+      call: callOf('stat'),
       path: path('/repo/outbox/a'),
       write: false,
       prefix: '/repo/',
@@ -154,7 +160,7 @@ describe('rules', () => {
     const rule: CommandRule = { reason: 'frozen', paths: ['/data/locked/*'] }
     const scope = classifyPaths(rule.paths ?? [])
     const op: VfsContext = {
-      op: 'write',
+      call: callOf('write'),
       path: path('/data/locked/a'),
       write: true,
       prefix: '/data/',
@@ -162,7 +168,7 @@ describe('rules', () => {
     expect(matchOp(rule, scope, op)).toBe(true)
     expect(
       matchOp(rule, scope, {
-        op: 'write',
+        call: callOf('write'),
         path: path('/data/open/a'),
         write: true,
         prefix: '/data/',
@@ -268,15 +274,20 @@ describe('rules', () => {
       ['rmdir', '/data/locked'],
       ['rm_r', '/data'],
     ] as const) {
-      expect(matchOp(rule, scope, { op, path: path(virtual), write: true, prefix: '/data/' })).toBe(
-        true,
-      )
+      expect(
+        matchOp(rule, scope, {
+          call: callOf(op),
+          path: path(virtual),
+          write: true,
+          prefix: '/data/',
+        }),
+      ).toBe(true)
     }
     // A read or write of the directory itself is not in the scope, and a
     // subtree op beside the scope is not either.
     expect(
       matchOp(rule, scope, {
-        op: 'readdir',
+        call: callOf('readdir'),
         path: path('/data/locked'),
         write: false,
         prefix: '/data/',
@@ -284,7 +295,7 @@ describe('rules', () => {
     ).toBe(false)
     expect(
       matchOp(rule, scope, {
-        op: 'rename',
+        call: callOf('rename'),
         path: path('/data/other'),
         write: true,
         prefix: '/data/',
@@ -295,14 +306,26 @@ describe('rules', () => {
     // Deny is present and refused: the entry stats, the read is refused.
     const rule: CommandRule = { reason: 'frozen', paths: ['/data/locked/*'] }
     const scope = classifyPaths(rule.paths ?? [])
-    for (const op of ['stat', 'exists']) {
+    const exists: VfsCall = {
+      name: 'exists',
+      effect: Effect.METADATA,
+      target: Target.ANY,
+      creates: false,
+      subtree: false,
+    }
+    for (const call of [callOf('stat'), exists]) {
       expect(
-        matchOp(rule, scope, { op, path: path('/data/locked/a'), write: false, prefix: '/data/' }),
+        matchOp(rule, scope, {
+          call,
+          path: path('/data/locked/a'),
+          write: false,
+          prefix: '/data/',
+        }),
       ).toBe(false)
     }
     expect(
       matchOp(rule, scope, {
-        op: 'read',
+        call: callOf('read'),
         path: path('/data/locked/a'),
         write: false,
         prefix: '/data/',

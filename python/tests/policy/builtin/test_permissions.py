@@ -26,11 +26,7 @@ from mirage.policy import (
     VfsContext,
 )
 from mirage.types import PathSpec
-
-
-class _Registry:
-    def is_mount_root(self, path: str) -> bool:
-        return False
+from mirage.workspace.dispatcher.constants import CALLS
 
 
 class _Sessions:
@@ -67,7 +63,6 @@ def _ctx(
         paths=paths,
         argv=tuple(args),
         cwd=cwd,
-        registry=_Registry(),
         session_id=session_id,
         tokens=(command, *args),
         program=program or (command,),
@@ -107,7 +102,9 @@ async def test_no_rules_means_no_opinion():
     assert await policy.pre_command(_ctx("rm", "-rf", "/")) is None
     assert (
         await policy.pre_vfs(
-            VfsContext(op="unlink", path=_path("/x"), write=True, prefix="/")
+            VfsContext(
+                call=CALLS["unlink"], path=_path("/x"), write=True, prefix="/"
+            )
         )
         is None
     )
@@ -344,7 +341,7 @@ async def test_an_ask_rule_speaks_after_every_deny():
 async def test_pre_vfs_holds_the_pure_path_rules():
     policy = _policy()
     locked = VfsContext(
-        op="write",
+        call=CALLS["write"],
         path=_path("/repo/locked/a"),
         write=True,
         prefix="/repo/",
@@ -356,7 +353,7 @@ async def test_pre_vfs_holds_the_pure_path_rules():
     assert (
         await policy.pre_vfs(
             VfsContext(
-                op="unlink",
+                call=CALLS["unlink"],
                 path=_path("/repo/x"),
                 write=True,
                 prefix="/repo/",

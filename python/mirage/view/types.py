@@ -152,7 +152,8 @@ class SessionView:
     Delivered as the ``session_view`` field of ``CommandOpts`` and of
     ``CLIView``; a command opts in by reading it, and one that never
     reads it cannot write the session. The name is not ``env`` because
-    the snapshot has that one.
+    the snapshot has that one. ``cwd`` is the session's working
+    directory, the one an operand resolves against.
     """
 
     get: EnvGet
@@ -162,6 +163,7 @@ class SessionView:
     mark: EnvMark
     is_readonly: EnvIsReadonly
     profile: ProfileName
+    cwd: Callable[[], str]
 
 
 @dataclass(frozen=True)

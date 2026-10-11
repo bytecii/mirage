@@ -12,13 +12,14 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from mirage.policy.policies import settled
-from mirage.policy.types import Deny, Route
+from mirage.policy.decisions import op_question
+from mirage.policy.policies import agreed, settled
+from mirage.policy.types import Abandoned, Ask, Claimant, Deny, Pending, Route
 from mirage.runtime.base import Runtime
-from mirage.runtime.resolver import MountResolver
 from mirage.runtime.routing import (
     ParsedCommand,
     RouteContext,
@@ -30,9 +31,10 @@ from mirage.runtime.routing import (
 )
 from mirage.runtime.table import catch_all, runtime_bindings_for
 from mirage.runtime.workspace import WorkspaceRuntime
+from mirage.utils.abort import MirageAbortError
 from mirage.workspace.lookup import Consumer, lookup
 from mirage.workspace.mount import MountRegistry
-from mirage.workspace.session import SessionState, env_snapshot
+from mirage.workspace.session import SessionState
 from mirage.workspace.workspace.runtimes import Runtimes
 
 
@@ -53,18 +55,15 @@ class Router:
     Args:
         registry (MountRegistry): carries the resolved static bindings.
         runtimes (Runtimes): the ordered runtime entries.
-        resolver (MountResolver): mount prefixes for the policy context.
     """
 
     def __init__(
         self,
         registry: MountRegistry,
         runtimes: Runtimes,
-        resolver: MountResolver,
     ) -> None:
         self._registry = registry
         self._runtimes = runtimes
-        self._resolver = resolver
 
     async def decide(
         self,
@@ -76,19 +75,22 @@ class Router:
         agent_id: str,
         inherited: RouteDecision[Runtime] | None,
         held: Callable[[], Awaitable[bool]] | None = None,
-    ) -> RouteDecision[Runtime] | Deny | None:
+        claimant: Claimant | None = None,
+        cancel: asyncio.Event | None = None,
+    ) -> RouteDecision[Runtime] | Deny | Pending | None:
         """Resolve the routing decision for one typed line.
 
         Returns None when nothing decides (no runtime argument, nothing
-        to consult) so dispatch falls to the static bindings, and the
-        stage's Deny when a placing policy refuses the line. A nested
-        eval passes its typed line's decision as ``inherited`` and keeps
-        it: nested lines never re-route. The runtime argument is the
-        caller's own placement, so a Route is not asked for and the
-        runtime's own ``script:`` is not consulted (the caller forces
-        it), but a coded policy's Deny still refuses the line. A runtime
-        a policy names must take the line itself (``_validated``).
-        Admission comes first: a
+        to consult) so dispatch falls to the static bindings, the stage's
+        Deny when a policy refuses the line, and the ledger's answer to
+        its Ask when the host refuses the line or has not answered yet.
+        A nested eval passes its typed line's decision as ``inherited``
+        and keeps it: nested lines never re-route. The runtime argument
+        is the caller's own placement, so a Route is not asked for and
+        the runtime's own ``script:`` is not consulted (the caller
+        forces it), but a coded policy's Deny or Ask still holds the
+        line. A runtime a policy names must take the line itself
+        (``_validated``). Admission comes first: a
         line ``held`` reports refused or waiting on a question is left
         on the static bindings, unplaced, for the gate to answer.
 
@@ -106,34 +108,51 @@ class Router:
                 admission, whether some command of it is refused or
                 waits on the host; awaited only when there is a
                 placement to consult.
+            claimant (Claimant | None): the line as a whole on its
+                hand-off, so an approval of the line is claimed there
+                like a command's: kept for the retry of a line still
+                waiting on another question, spent when the line ends.
+            cancel (asyncio.Event | None): the run's kill channel.
 
         Raises:
             RouteError: an unknown runtime name or a failing policy.
+            MirageAbortError: the run was killed while the host decided.
         """
         if inherited is not None:
             return inherited
         entries = self._runtimes.entries
         policies = self._registry.policies
         placing = policies.wants("pre_execute")
-        if runtime is not None:
-            placed = self._placed(entries, runtime)
-            if not placing or (held is not None and await held()):
-                return placed
-            said = await policies.pre_execute(
-                self._context(ast, command, session, session_id, agent_id),
-                placed=True,
-            )
-            return said if isinstance(said, Deny) else placed
-        if not placing and not any(e.script is not None for e in entries):
+        placed = None if runtime is None else self._placed(entries, runtime)
+        if placed is not None and not placing:
+            return placed
+        if (
+            placed is None
+            and not placing
+            and not any(e.script is not None for e in entries)
+        ):
             return None
         if held is not None and await held():
-            return None
-        ctx = self._context(ast, command, session, session_id, agent_id)
-        said = await policies.pre_execute(ctx)
-        if isinstance(said, Deny):
-            return said
-        if isinstance(said, Route):
-            return await self._validated(entries, said.runtime, ctx, session)
+            return placed
+        ctx = self.context(ast, command, session_id, agent_id)
+        said, route = await policies.pre_execute(
+            ctx, placed=placed is not None
+        )
+        action = (
+            await self._registry.decisions.resolve(
+                *op_question(ctx, said), cancel, claimant
+            )
+            if isinstance(said, Ask)
+            else said
+        )
+        if isinstance(action, Abandoned):
+            raise MirageAbortError()
+        if action is not None:
+            return action
+        if placed is not None:
+            return placed
+        if route is not None:
+            return await self._validated(entries, route.runtime, ctx, session)
         return await self._scripted(entries, ctx, session)
 
     async def placement(
@@ -143,9 +162,13 @@ class Router:
         session: SessionState,
         session_id: str,
         agent_id: str,
-    ) -> tuple[tuple[Deny | Route, ...], RouteDecision[Runtime] | Deny | None]:
-        """Every placement answer for a line and what they decide,
-        without running it: what ``explain`` shows.
+    ) -> tuple[
+        tuple[Deny | Ask | Route, ...],
+        RouteDecision[Runtime] | Deny | Pending | None,
+    ]:
+        """Every ``pre_execute`` answer for a line and what they decide,
+        without running it: what ``explain`` shows. An Ask reads the
+        ledger's settled records alone and records nothing.
 
         Args:
             ast: the parsed tree-sitter root node.
@@ -163,10 +186,14 @@ class Router:
             e.script is not None for e in entries
         ):
             return (), None
-        ctx = self._context(ast, command, session, session_id, agent_id)
-        said = await policies.answers("pre_execute", ctx)
-        answers = tuple(a for a in said if isinstance(a, (Deny, Route)))
+        ctx = self.context(ast, command, session_id, agent_id)
+        answers = await policies.answers("pre_execute", ctx)
         winner = settled(answers)
+        if isinstance(winner, Ask):
+            standing = self._registry.decisions.held(*op_question(ctx, winner))
+            if standing is not None:
+                return answers, standing
+            winner = agreed([a for a in answers if isinstance(a, Route)])
         if isinstance(winner, Deny):
             return answers, winner
         if isinstance(winner, Route):
@@ -314,21 +341,21 @@ class Router:
             is Consumer.EXTERNAL
         ]
 
-    def _context(
+    def context(
         self,
         ast: Any,
         command: str,
-        session: SessionState,
         session_id: str,
         agent_id: str,
     ) -> RouteContext:
-        """The placement stage's payload for one line, the one a route
-        policy has always read.
+        """What ``pre_execute`` sees of one line, and ``post_execute``
+        before what came back: its commands, and the session, its
+        namespace and its files, which a runtime's entry script reads
+        as plain data too.
 
         Args:
             ast: the parsed tree-sitter root node.
             command (str): the raw command line.
-            session (SessionState): the effective session (cwd, env).
             session_id (str): session hosting the line.
             agent_id (str): agent the line runs as.
         """
@@ -337,14 +364,20 @@ class Router:
             self._registry.clis.names(),
             self._registry.match_command_prefix,
         )
+        views = self._registry.policies.views
+        session, ns, vfs = (views(session_id) if views else None) or (
+            None,
+            None,
+            None,
+        )
         return RouteContext(
             line=command,
             commands=commands,
             command=commands[0].command if commands else "",
             builtin=commands[0].builtin if commands else False,
-            cwd=session.cwd,
-            env=env_snapshot(session),
             session_id=session_id,
             agent_id=agent_id,
-            mounts=tuple(self._resolver.prefixes()),
+            session=session,
+            ns=ns,
+            vfs=vfs,
         )

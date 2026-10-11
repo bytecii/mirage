@@ -31,7 +31,10 @@ class MountModePolicy(Policy):
             return None
         try:
             require_paths_writable(
-                [ctx.path], ctx.prefix or "/", ctx.mode, subtree=ctx.subtree
+                [ctx.path],
+                ctx.prefix or "/",
+                ctx.mode,
+                subtree=ctx.call.subtree,
             )
         except ReadOnlyError as error:
             return Deny(posix_phrase(FsCondition.EROFS), error=error)

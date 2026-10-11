@@ -19,6 +19,14 @@ import type { Policy } from './base.ts'
 import type { VfsContext } from './types.ts'
 import { Limit, MountMode, PathSpec } from '../types.ts'
 import { Boundary } from './boundary.ts'
+import { CALLS } from '../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../vfs/types.ts'
+
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 const sealed: Policy = {
   preVfs: (ctx: VfsContext) =>
@@ -34,25 +42,25 @@ function path(virtual: string): PathSpec {
 describe('Boundary', () => {
   it('admit raises a coded deny as EACCES', async () => {
     const boundary = new Boundary(new Policies([sealed]), '/d/', MountMode.WRITE)
-    await boundary.admit('read', path('/d/pub'), false)
-    const refused = boundary.admit('read', path('/d/sec/k'), false)
+    await boundary.admit(callOf('read'), path('/d/pub'), false)
+    const refused = boundary.admit(callOf('read'), path('/d/sec/k'), false)
     await expect(refused).rejects.toBeInstanceOf(PolicyDenied)
     await expect(refused).rejects.toMatchObject({ code: 'EACCES', virtualPath: '/d/sec/k' })
   })
 
   it('admit holds the mount mode', async () => {
     const boundary = new Boundary(new Policies(), '/ro/', MountMode.READ)
-    await boundary.admit('read', path('/ro/f'), false)
-    await expect(boundary.admit('write', path('/ro/f'), true)).rejects.toThrow(/read-only/)
+    await boundary.admit(callOf('read'), path('/ro/f'), false)
+    await expect(boundary.admit(callOf('write'), path('/ro/f'), true)).rejects.toThrow(/read-only/)
   })
 
   it('complete applies the postVfs limit', async () => {
     const data = new TextEncoder().encode('abcdef')
     const capped3 = new Boundary(new Policies([capped]), '/d/')
-    expect(await capped3.complete('read', path('/d/f'), false, data)).toEqual(
+    expect(await capped3.complete(callOf('read'), path('/d/f'), false, data)).toEqual(
       new TextEncoder().encode('abc'),
     )
     const bare = new Boundary(new Policies(), '/d/')
-    expect(await bare.complete('read', path('/d/f'), false, data)).toEqual(data)
+    expect(await bare.complete(callOf('read'), path('/d/f'), false, data)).toEqual(data)
   })
 })

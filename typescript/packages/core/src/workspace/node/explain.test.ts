@@ -462,12 +462,11 @@ describe('prejudge', () => {
     expect(await w.vfs.readdir('/data')).toContain('/data/a.txt')
   })
 
-  it('holds the line for a coded policy with no document', async () => {
-    // A session with no permissions document still runs under whatever
-    // policies the deployment registered, and one is always registered
-    // (MountRootPolicy). Returning early on `commands === null` held the
-    // line for a document and left a policy with the half-line behavior
-    // the pass exists to remove.
+  it('lets a coded policy answer as the command runs', async () => {
+    // The pass that judges a line before it runs asks the profile's
+    // rules alone; a policy written in code answers preCommand once, as
+    // its command runs, so the commands before it have run. A line it
+    // refuses whole is preExecute's.
     const parser = await getTestParser()
     const w = new Workspace(
       { '/data': new RAMVFS() },
@@ -480,7 +479,7 @@ describe('prejudge', () => {
     expect(ran.exitCode).not.toBe(0)
     expect(DEC.decode(ran.stderr)).toBe('cat: Permission denied\n')
     expect(ran.refusal?.reason).toBe('cat is refused by policy')
-    expect(await w.vfs.readdir('/data')).toContain('/data/a.txt')
+    expect(await w.vfs.readdir('/data')).not.toContain('/data/a.txt')
   })
 
   it('does not end the scan when an ask is answered inline', async () => {

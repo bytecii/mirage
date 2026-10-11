@@ -109,8 +109,8 @@ describe('Files', () => {
     const seen: [string, boolean][] = []
     ws.policies.add({
       preVfs(ctx: VfsContext): Action | null {
-        seen.push([ctx.op, ctx.write])
-        return ctx.op === 'read' ? { kind: 'deny', reason: 'write-only' } : null
+        seen.push([ctx.call.name, ctx.write])
+        return ctx.call.name === 'read' ? { kind: 'deny', reason: 'write-only' } : null
       },
     })
     await ws.vfs.pwrite('/data/f.txt', new TextEncoder().encode('Z'), 1)
@@ -218,7 +218,7 @@ describe('Files policy entry point', () => {
   class RedactReads implements Policy {
     postVfs(ctx: VfsResultContext): Action | null {
       const data = ctx.result instanceof Uint8Array ? ctx.result : null
-      if (ctx.op === 'read' && data !== null && DEC.decode(data).includes('TOPSECRET')) {
+      if (ctx.call.name === 'read' && data !== null && DEC.decode(data).includes('TOPSECRET')) {
         return { kind: 'deny', reason: 'redacted' }
       }
       return null
@@ -227,7 +227,7 @@ describe('Files policy entry point', () => {
 
   class CapReads implements Policy {
     postVfs(ctx: VfsResultContext): Action | null {
-      if (ctx.op === 'read' && ctx.path.virtual.endsWith('.log')) {
+      if (ctx.call.name === 'read' && ctx.path.virtual.endsWith('.log')) {
         return new Limit({ maxBytes: 5 })
       }
       return null
@@ -332,7 +332,7 @@ describe('Files goes through the dispatcher', () => {
   class CountPre implements Policy {
     readonly seen: string[] = []
     preVfs(ctx: VfsContext): Action | null {
-      this.seen.push(`${ctx.op}:${ctx.prefix}`)
+      this.seen.push(`${ctx.call.name}:${ctx.prefix}`)
       return null
     }
   }
@@ -559,28 +559,28 @@ function s3NamedRam(): RAMVFS {
 describe('Files accounting survives the delegation', () => {
   class DenyBigReads implements Policy {
     postVfs(ctx: VfsResultContext): Action | null {
-      if (ctx.op === 'read') return { kind: 'deny', reason: 'too big' }
+      if (ctx.call.name === 'read') return { kind: 'deny', reason: 'too big' }
       return null
     }
   }
 
   class CapReadsTo3 implements Policy {
     postVfs(ctx: VfsResultContext): Action | null {
-      if (ctx.op === 'read') return new Limit({ maxBytes: 3 })
+      if (ctx.call.name === 'read') return new Limit({ maxBytes: 3 })
       return null
     }
   }
 
   class HardCapReadsTo3 implements Policy {
     postVfs(ctx: VfsResultContext): Action | null {
-      if (ctx.op === 'read') return new Limit({ maxBytes: 3, onExceed: OnExceed.ERROR })
+      if (ctx.call.name === 'read') return new Limit({ maxBytes: 3, onExceed: OnExceed.ERROR })
       return null
     }
   }
 
   class SealReads implements Policy {
     preVfs(ctx: VfsContext): Action | null {
-      if (ctx.op === 'read') return { kind: 'deny', reason: 'sealed' }
+      if (ctx.call.name === 'read') return { kind: 'deny', reason: 'sealed' }
       return null
     }
   }
@@ -901,7 +901,7 @@ describe('Files.readlink', () => {
     const noProbe: Policy = {
       preVfs: (ctx: VfsContext) =>
         Promise.resolve(
-          ctx.op === 'stat' || ctx.op === 'readdir'
+          ctx.call.name === 'stat' || ctx.call.name === 'readdir'
             ? { kind: 'deny' as const, reason: 'no probing' }
             : null,
         ),

@@ -146,33 +146,31 @@ export const UNREADABLE_LINES = 'runs lines the gate cannot read'
  * by `ioRefusal` under the same precedence the gate applied to the line,
  * and a refusal is the dispatcher's `PolicyDenied` (EACCES, the path, the
  * reason on its record), which every command renders as GNU's
- * `Permission denied`. `opsJudged` is whether a coded or scripted preVfs
- * policy speaks for the session, which judges every path.
+ * `Permission denied`.
  * `granted` holds the ask rules the line runs under a grant for: the one
  * the entry point answered for this line, and the session's standing ones.
+ * `ctx` is what `preCommand` judged the command on, which `postCommand`
+ * extends with what came back.
  */
 export class Admitted implements EntryGate {
   readonly rules: AdmissionRules | null
-  readonly tokens: readonly string[]
+  readonly ctx: CommandContext
   readonly judged: ReadonlySet<string>
   readonly granted: readonly CommandRule[]
   readonly scoped: boolean
-  readonly opsJudged: boolean
 
   constructor(init: {
     rules: AdmissionRules | null
-    tokens: readonly string[]
+    ctx: CommandContext
     judged: ReadonlySet<string>
     granted: readonly CommandRule[]
     scoped: boolean
-    opsJudged?: boolean
   }) {
     this.rules = init.rules
-    this.tokens = init.tokens
+    this.ctx = init.ctx
     this.judged = init.judged
     this.granted = init.granted
     this.scoped = init.scoped
-    this.opsJudged = init.opsJudged ?? false
   }
 
   // Throw `PolicyDenied` when a rule in force refuses this entry for the
@@ -185,10 +183,10 @@ export class Admitted implements EntryGate {
   }
 
   // Whether anything at or under this path could be refused for the
-  // running command: a coded or scripted preVfs policy judges every path,
-  // and a rule in force any path its scope could cover.
+  // running command: a rule in force at any path its scope could cover.
+  // No coded preVfs policy judges a command's own I/O.
   scopes(virtual: string): boolean {
-    return this.opsJudged || ioReach(this.rules, this.tokens, virtual)
+    return ioReach(this.rules, this.ctx.tokens ?? [], virtual)
   }
 
   // Whether a rule in force refuses this entry for the running command,
@@ -201,7 +199,7 @@ export class Admitted implements EntryGate {
   // admitted on it or nothing refuses it.
   private refusal(virtual: string): string | null {
     if (this.judged.has(norm(virtual))) return null
-    return ioRefusal(this.rules, this.tokens, virtual, this.granted)
+    return ioRefusal(this.rules, this.ctx.tokens ?? [], virtual, this.granted)
   }
 }
 
@@ -365,6 +363,9 @@ export function redirectPaths(
  * could not follow. No policy is shown them; the per-command gate reads
  * the real ones and passes none. `every` asks every policy past a Deny,
  * for `explain`; the gate's own answers end at the first Deny.
+ * `rulesOnly` asks the profile's rules alone, for a pass that judges a line
+ * before it runs; a policy's own `preCommand` is asked once, by the gate
+ * that runs the command.
  */
 export async function gate(
   name: string,
@@ -379,6 +380,7 @@ export async function gate(
   intrinsic = false,
   unread: ReadonlySet<string> = new Set(),
   every = false,
+  rulesOnly = false,
 ): Promise<Refused | [CommandContext, Deny | Ask | null, (Deny | Ask)[]]> {
   const tool = intrinsic || isTool(name, session)
   if (tool && !listed(name, session)) {
@@ -403,7 +405,6 @@ export async function gate(
     operands: seen(session, positionalScopes(name, [...args], session.cwd, [...operands]), unread),
     argv: [...args],
     cwd: session.cwd,
-    registry,
     sessionId: session.sessionId,
     agentId,
     tokens,
@@ -411,7 +412,7 @@ export async function gate(
     tool,
     walks: walksMounts(name, [name, ...args]),
   }
-  const answers = (await registry.policies.answers('preCommand', ctx, every)).filter(
+  const answers = (await registry.policies.answers('preCommand', ctx, every, rulesOnly)).filter(
     (a): a is Deny | Ask => a.kind !== 'route',
   )
   return [ctx, answers.find((a) => a.kind === 'deny') ?? answers[0] ?? null, answers]
@@ -444,15 +445,9 @@ export async function admit(
   intrinsic = false,
   // Paths no policy is shown, as `gate` takes them.
   unread: ReadonlySet<string> = new Set(),
+  // Ask the profile's rules alone, as `gate` takes it.
+  rulesOnly = false,
 ): Promise<Refused | Admitted> {
-  // Asked before the gate so the answer is in by the time the gate's is:
-  // admission takes no extra turns, and background jobs launched in order
-  // still finish in order.
-  const opsJudged = registry.policies.wantsFor('preVfs', session.sessionId)
-  // A refused command never awaits it, so a failure is reported here.
-  opsJudged.catch((err: unknown) => {
-    console.warn(`preVfs policy query failed for ${name}: ${String(err)}`)
-  })
   const gated = await gate(
     name,
     args,
@@ -465,6 +460,8 @@ export async function admit(
     redirects,
     intrinsic,
     unread,
+    false,
+    rulesOnly,
   )
   if (!Array.isArray(gated)) return gated
   const [ctx, asked] = gated
@@ -484,16 +481,15 @@ export async function admit(
     const granted = session.decisions
       .filter((r) => r.scope === Scope.SESSION && r.outcome === Outcome.ALLOW)
       .map((r) => r.rule)
-    if (asked !== null && asked.kind === 'ask') granted.unshift(askRule(ctx, asked))
+    if (asked !== null && asked.kind === 'ask')
+      granted.unshift(...(asked.rules ?? [askRule(ctx, asked)]))
     const rules = session.commands
-    const judged = await opsJudged
     return new Admitted({
       rules,
-      tokens: ctx.tokens ?? [],
+      ctx,
       judged: new Set(ctx.paths.map((p) => norm(p.virtual))),
       granted,
-      scoped: scopesPaths(rules, name) || judged,
-      opsJudged: judged,
+      scoped: scopesPaths(rules, name),
     })
   }
   const [stderr, exitCode] =

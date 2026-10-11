@@ -21,11 +21,6 @@ from mirage.policy.match.allow import (
 from mirage.policy.types import AdmissionRules, CommandContext, CommandRule
 
 
-class _Registry:
-    def is_mount_root(self, path: str) -> bool:
-        return False
-
-
 def _ctx(
     command: str,
     argv: tuple[str, ...] = (),
@@ -37,7 +32,6 @@ def _ctx(
         paths=(),
         argv=argv,
         cwd="/",
-        registry=_Registry(),
         tokens=tokens,
         tool=tool,
     )

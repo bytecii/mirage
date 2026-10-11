@@ -17,7 +17,7 @@ import { materialize } from '../../io/types.ts'
 import { runWithSession } from '../../context/session_context.ts'
 import { revisionFor } from '../../observe/context.ts'
 import { MountEntry } from '../mount/mount.ts'
-import { render } from '../../test-utils.ts'
+import { dispatched, render } from '../../test-utils.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { POLICY_WRITE_OPS } from './constants.ts'
 import { RAMVFS } from '../../vfs/ram/ram.ts'
@@ -612,7 +612,7 @@ describe('the turf mode gates the node table', () => {
     // policy's own read-only refusal stands where the directory exists.
     const refuse: Policy = {
       preVfs: (ctx: VfsContext) =>
-        ctx.op === 'mkdir'
+        ctx.call.name === 'mkdir'
           ? { kind: 'deny', reason: 'no dirs', error: erofs(ctx.path.virtual) }
           : null,
     }
@@ -634,7 +634,7 @@ describe('the turf mode gates the node table', () => {
     const done: string[] = []
     const seen: Policy = {
       postVfs: (ctx: VfsResultContext) => {
-        if (ctx.op === 'mkdir') done.push(ctx.path.virtual)
+        if (ctx.call.name === 'mkdir') done.push(ctx.path.virtual)
         return null
       },
     }
@@ -1875,25 +1875,14 @@ describe('a command reads at the dispatcher', () => {
     'sort /d/a.txt',
     'md5sum /d/a.txt',
   ])('%s', async (line) => {
-    const seen: [string, string][] = []
-    const policy: Policy = {
-      preVfs: (ctx: VfsContext) => {
-        seen.push([ctx.op, ctx.path.virtual])
-        return null
-      },
-    }
     const parser = await getTestParser()
     const ws = new Workspace(
       { '/d': new RAMVFS() },
-      {
-        mode: MountMode.WRITE,
-        policies: [policy],
-        shellParserFactory: () => Promise.resolve(parser),
-      },
+      { mode: MountMode.WRITE, shellParserFactory: () => Promise.resolve(parser) },
     )
     try {
       await ws.vfs.write('/d/a.txt', 'a\nb\n')
-      seen.length = 0
+      const seen = dispatched(ws)
       const out = await ws.shell(line)
       expect(out.exitCode).toBe(0)
       expect(seen).toContainEqual(['read', '/d/a.txt'])

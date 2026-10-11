@@ -31,6 +31,7 @@ from mirage.context import (
     explaining,
     get_current_session,
     hidden_refusal,
+    line_running,
     session_visibility,
 )
 from mirage.context.session_context import effective_path_mode
@@ -44,6 +45,7 @@ from mirage.errors.fs import (
     enoent,
     enotdir,
     enotempty,
+    enotsup,
     erofs,
     exdev,
     no_mount,
@@ -85,12 +87,16 @@ from mirage.utils.key_prefix import mount_key
 from mirage.utils.path import CycleError, norm, norm_dir, owner_prefix, parent
 from mirage.utils.ranges import slice_window
 from mirage.utils.remnants import remove_remnants, visible_below
+from mirage.vfs.call import declared
+from mirage.vfs.constants import WRITE_EFFECTS
+from mirage.vfs.types import Effect, Target, VfsCall
 from mirage.view.namespace_view import (
     merge_readdir,
     namespace_listing,
     namespace_stat,
 )
 from mirage.workspace.dispatcher.constants import (
+    CALLS,
     COPY_OPS,
     DESTINATION_OPS,
     DISPATCH_READ_OPS,
@@ -106,7 +112,6 @@ from mirage.workspace.dispatcher.constants import (
     SERIAL_WRITE_OPS,
     SETATTR_KEYS,
     STAMP_WRITE_OPS,
-    SUBTREE_OPS,
     XATTR_OPS,
 )
 from mirage.workspace.mount import MountEntry
@@ -428,7 +433,9 @@ class _MountChannel:
     async def unlink(self, spec: PathSpec) -> None:
         if self.rule_gate is not None:
             self.rule_gate.check(spec.virtual)
-        await self.boundary.admit("unlink", spec, True, check_hidden=False)
+        await self.boundary.admit(
+            CALLS["unlink"], spec, True, check_hidden=False
+        )
         try:
             await self.mount.call("unlink", spec.virtual)
         finally:
@@ -437,7 +444,9 @@ class _MountChannel:
     async def rmdir(self, spec: PathSpec) -> None:
         if self.rule_gate is not None:
             self.rule_gate.check(spec.virtual)
-        await self.boundary.admit("rmdir", spec, True, check_hidden=False)
+        await self.boundary.admit(
+            CALLS["rmdir"], spec, True, check_hidden=False
+        )
         try:
             await self.mount.call("rmdir", spec.virtual)
         finally:
@@ -677,11 +686,11 @@ class Dispatcher:
         write = name in POLICY_WRITE_OPS
         # A pre gate refuses before the answer exists, so it is not a
         # completed op and stays before the stamp.
-        await boundary.admit(name, path, write)
+        await boundary.admit(CALLS[name], path, write)
         _memory_answered(report)
         if name == "readdir" and isinstance(fallback, list):
             fallback = _visible_entries(fallback, path.virtual)
-        return await boundary.complete(name, path, write, fallback)
+        return await boundary.complete(CALLS[name], path, write, fallback)
 
     async def dispatch(
         self,
@@ -739,6 +748,9 @@ class Dispatcher:
             if call.name == "search":
                 return None, IOResult()
             raise walk_declined(str(mount.vfs.name), call.name, call.path)
+        mark = declared(type(mount.vfs), name) or CALLS.get(name)
+        if mark is None:
+            raise enotsup(str(mount.vfs.name), name, call.path)
         # mkdir(2) looks its name up first, so on a read-only region that
         # lookup answers for the mode, after every other policy has spoken.
         # A dry run never looks, so it explains the mode's refusal.
@@ -750,7 +762,9 @@ class Dispatcher:
             )
             == MountMode.READ
         )
-        boundary = await self._admit(call, mount, judge_mode=not looks_up)
+        boundary = await self._admit(
+            call, mount, mark, judge_mode=not looks_up
+        )
         if looks_up:
             await _mkdir_on_read_only(
                 self._walk_stat,
@@ -759,10 +773,10 @@ class Dispatcher:
                 call.path,
                 bool(call.kwargs.get("parents")),
             )
-            await boundary.complete(name, call.path, call.write, None)
+            await boundary.complete(mark, call.path, call.write, None)
             return None, IOResult()
         await mount.ensure_ready()
-        served = await self._serve_cached(call, mount, boundary)
+        served = await self._serve_cached(call, mount, boundary, mark)
         if served is not None:
             return served, IOResult()
         result = self._filter(
@@ -773,7 +787,7 @@ class Dispatcher:
             or (call.write and name not in POLICY_WRITE_OPS)
         ) and name not in SERIAL_WRITE_OPS:
             await self._settle_write(mount, name, call.path, kwargs)
-        result = await boundary.complete(name, call.path, call.write, result)
+        result = await boundary.complete(mark, call.path, call.write, result)
         return result, IOResult()
 
     async def _prepare(self) -> None:
@@ -983,10 +997,10 @@ class Dispatcher:
         """
         if call.name == "setattr":
             boundary = self._boundary(None)
-            await boundary.admit(call.name, call.path, True)
+            await boundary.admit(CALLS["setattr"], call.path, True)
             applied = await self._overlay_setattr(call.path, call.kwargs)
             _memory_answered(call.report)
-            await boundary.complete(call.name, call.path, True, applied)
+            await boundary.complete(CALLS["setattr"], call.path, True, applied)
             return applied
         fallback = self._namespace_result(call.name, call.path.virtual)
         if fallback is None:
@@ -1032,9 +1046,11 @@ class Dispatcher:
         A backend's find, du, search, tree copy or tree removal answers
         for every entry under its path in one call, past the checks each
         entry would meet on its own. So when a hide, the command's path
-        rules or a coded pre_vfs policy reach below one of its paths, it
-        is declined and the caller walks, entry by entry, through calls
-        that are each judged. A file copy is declined the same way: the
+        rules or, for a ``ws.vfs`` call, a coded pre_vfs policy reach
+        below one of its paths, it is declined and the caller walks,
+        entry by entry, through calls that are each judged. Inside a
+        running line only the profile's path rules judge an entry, so a
+        coded policy declines no walk there. A file copy is declined the same way: the
         bytes it moves never pass through a read. A tree copy is declined
         too when a link stands below its destination: the backend writes
         each child name as it is, where the walk's copies follow the link.
@@ -1056,11 +1072,15 @@ class Dispatcher:
         if call.rule_gate is not None:
             return any(call.rule_gate.scopes(p.virtual) for p in paths)
         return await self._namespace.registry.policies.wants_for(
-            "pre_vfs", _session_id()
+            "pre_vfs", _session_id(), rules_only=line_running()
         )
 
     async def _admit(
-        self, call: _Call, mount: MountEntry, judge_mode: bool = True
+        self,
+        call: _Call,
+        mount: MountEntry,
+        mark: VfsCall,
+        judge_mode: bool = True,
     ) -> Boundary:
         """Run admission for an op on a mounted path.
 
@@ -1076,6 +1096,7 @@ class Dispatcher:
         Args:
             call (_Call): the followed op.
             mount (MountEntry): the mount serving its path.
+            mark (VfsCall): what the mount's VFS declares for the call.
             judge_mode (bool): whether the mount's mode is judged here;
                 False when the op answers for it itself.
 
@@ -1085,25 +1106,22 @@ class Dispatcher:
         # A function the VFS declares a write is judged as one, whatever
         # its name: the POSIX names are known here, a custom one only to
         # the VFS that defines it.
-        call.write = call.write or mount.writes(call.name)
+        call.write = call.write or mark.effect in WRITE_EFFECTS
         boundary = self._boundary(mount)
         if not judge_mode:
             boundary = dataclasses.replace(boundary, mode=None)
-        subtree = call.name in SUBTREE_OPS
         await boundary.admit(
-            call.name,
+            mark,
             call.path,
             call.write and call.name not in COPY_OPS,
-            create=call.name in HIDDEN_CREATE_OPS,
-            subtree=subtree,
             final=call.dst is None,
         )
         if call.dst is not None:
             await self._boundary(
                 self._namespace.try_mount_for(call.dst.virtual)
-            ).admit(call.name, call.dst, True, create=True, subtree=subtree)
+            ).admit(mark._replace(creates=True), call.dst, True)
         for _, other in _operands(call.name, call.kwargs):
-            await boundary.admit(call.name, other, call.write)
+            await boundary.admit(mark, other, call.write)
         if call.name == "rmdir" and any(
             path_visible(call.vis, link)
             for link, _ in self._namespace.link_stats_below(call.path.virtual)
@@ -1112,7 +1130,11 @@ class Dispatcher:
         return boundary
 
     async def _serve_cached(
-        self, call: _Call, mount: MountEntry, boundary: Boundary
+        self,
+        call: _Call,
+        mount: MountEntry,
+        boundary: Boundary,
+        mark: VfsCall,
     ) -> bytes | None:
         """Answer a read from the file cache, or None to read the backend.
 
@@ -1134,6 +1156,7 @@ class Dispatcher:
             call (_Call): the admitted op.
             mount (MountEntry): the mount serving its path.
             boundary (Boundary): the boundary the op completes through.
+            mark (VfsCall): what the mount's VFS declares for the call.
         """
         if (
             call.direct
@@ -1160,9 +1183,7 @@ class Dispatcher:
         # warm read is recorded against the backend and counted as
         # traffic that never happened.
         _memory_answered(call.report, len(served))
-        return await boundary.complete(
-            call.name, call.path, call.write, served
-        )
+        return await boundary.complete(mark, call.path, call.write, served)
 
     def _filler(self, call: _Call, mount: MountEntry) -> CacheManager | None:
         """The cache manager a cold read fills, or None to keep nothing.
@@ -1294,7 +1315,8 @@ class Dispatcher:
         A whole read of stored bytes streams through the VFS's own
         ``read_stream``. A window, a rendering, a VFS with no stream and
         a post_vfs policy that may read the result each get the whole
-        bytes instead, which are a stream of one chunk.
+        bytes instead, which are a stream of one chunk. A read a running
+        line makes reaches no post_vfs policy, so it streams either way.
 
         Args:
             call (_Call): the admitted read.
@@ -1305,7 +1327,10 @@ class Dispatcher:
             and call.window == (0, None)
             and mount.vfs.supports("read_stream")
             and not call.renders_read(mount)
-            and not self._namespace.registry.policies.reads_results()
+            and (
+                line_running()
+                or not self._namespace.registry.policies.reads_results()
+            )
         )
 
     async def _open_stream(
@@ -1803,13 +1828,8 @@ class Dispatcher:
         mount = self._namespace.try_mount_for(path.virtual)
         boundary = self._boundary(mount)
         write = name in POLICY_WRITE_OPS
-        await boundary.admit(
-            name,
-            path,
-            write,
-            create=name in HIDDEN_CREATE_OPS,
-            final=name != "rename",
-        )
+        mark = CALLS[name]
+        await boundary.admit(mark, path, write, final=name != "rename")
         result: str | FileStat | None = None
         if name == "unlink":
             target = self._namespace.readlink(path.virtual) or ""
@@ -1823,7 +1843,9 @@ class Dispatcher:
             # replaces it: any node the table holds at that name (a
             # link, an attr overlay) goes.
             dst_mount = self._namespace.try_mount_for(dst.virtual)
-            await self._boundary(dst_mount).admit(name, dst, True, create=True)
+            await self._boundary(dst_mount).admit(
+                mark._replace(creates=True), dst, True
+            )
             # The name the link moves to must have a directory above it,
             # as for a new link: the table alone would file it under an
             # absent parent and synthesize the directories above it.
@@ -1872,7 +1894,7 @@ class Dispatcher:
             timer,
         )
         _memory_answered(report)
-        return await boundary.complete(name, path, write, result)
+        return await boundary.complete(mark, path, write, result)
 
     async def _readlink_miss(self, path: PathSpec) -> OSError:
         """The error a readlink of something that is not a link answers.
@@ -2084,10 +2106,10 @@ class Dispatcher:
         if not mount.answers_at(name, path.virtual):
             return None
         boundary = self._boundary(mount)
-        await boundary.admit(name, path, False)
+        await boundary.admit(CALLS[name], path, False)
         try:
             result = await mount.call(name, path.virtual)
-            return await boundary.complete(name, path, False, result)
+            return await boundary.complete(CALLS[name], path, False, result)
         except NotADirectoryError:
             # Final on every channel: a plain file above the path means
             # nothing can be at it or under it, and symlink(2) and
@@ -2128,7 +2150,7 @@ class Dispatcher:
         mount = self._namespace.try_mount_for(path.virtual)
         boundary = self._boundary(mount)
         write = name in POLICY_WRITE_OPS
-        await boundary.admit(name, path, write)
+        await boundary.admit(CALLS[name], path, write)
         await self._xattr_target(mount, path)
         stored = self._namespace.xattrs(path.virtual)
         attr = str(kwargs.get("name", ""))
@@ -2161,7 +2183,7 @@ class Dispatcher:
         )
         if report is not None:
             report.served(None, None)
-        return await boundary.complete(name, path, write, result)
+        return await boundary.complete(CALLS[name], path, write, result)
 
     async def _statfs(self, path: PathSpec) -> tuple[str, CapacityResult]:
         """Answer statfs(2) for a path: the type name and the capacity of
@@ -2176,7 +2198,8 @@ class Dispatcher:
         """
         mount = self._namespace.try_mount_for(path.virtual)
         boundary = self._boundary(mount)
-        await boundary.admit("statfs", path, False)
+        statfs = VfsCall("statfs", Effect.METADATA, Target.ANY, False)
+        await boundary.admit(statfs, path, False)
         await self._xattr_target(mount, path)
         answer: tuple[str, CapacityResult]
         if mount is None:
@@ -2186,7 +2209,7 @@ class Dispatcher:
                 answer = mount.vfs.name, await mount.vfs.capacity()
         # A policy may deny the reply as it may any op's; a capacity is
         # no bytes, so a bound has nothing to cap.
-        await boundary.complete("statfs", path, False, answer)
+        await boundary.complete(statfs, path, False, answer)
         return answer
 
     async def _xattr_target(

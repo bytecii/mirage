@@ -33,7 +33,9 @@ export { OutputCapPolicy, resolveProducer, resolveLimit } from './builtin/output
 export { DEFAULT_ASK_REASON, DEFAULT_DENY_REASON, POLICY_DENIED_EXIT } from './constants.ts'
 export {
   Policies,
+  postCommandGate,
   postExecuteGate,
+  postSessionGate,
   postVfsGate,
   preVfsGate,
   preSessionGate,
@@ -48,6 +50,7 @@ export {
   type Action,
   type Ask,
   type CommandContext,
+  type CommandResultContext,
   type AdmissionRules,
   type Deny,
   type DenyScope,
@@ -75,4 +78,5 @@ export {
   type SessionDecisionsQuery,
   type SessionCommandsQuery,
   type SessionContext,
+  type SessionResultContext,
 } from './types.ts'

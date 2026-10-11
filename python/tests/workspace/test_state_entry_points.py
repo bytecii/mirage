@@ -39,6 +39,7 @@ from mirage.workspace.session import (
     set_current_session,
 )
 from mirage.workspace.session.state import seed_var, set_attr
+from tests.fixtures.vfs_io import dispatched
 
 
 class DenyOp(Policy):
@@ -48,7 +49,7 @@ class DenyOp(Policy):
         self._op = op
 
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        if ctx.op == self._op:
+        if ctx.call.name == self._op:
             return Deny(f"{self._op} refused by policy\n")
         return None
 
@@ -92,15 +93,28 @@ def test_fuse_symlink_on_visible_turf_still_works():
     assert ws.namespace.readlink("/a/lk") == "x.txt"
 
 
-def test_ln_fires_the_op_gates():
-    ws = _two_mounts(policies=[DenyOp("symlink")])
+def test_ln_goes_through_the_dispatcher():
+    # The link is written where the hides, path rules and mount mode
+    # judge every op a line makes.
+    ws = _two_mounts()
+    seen = dispatched(ws)
 
     async def run():
         return await ws.shell("ln -s x.txt /a/lk")
 
     io = asyncio.run(run())
-    assert io.exit_code != 0
-    assert b"Permission denied" in (io.stderr or b"")
+    assert io.exit_code == 0
+    assert ("symlink", "/a/lk") in seen
+
+
+def test_a_ws_vfs_symlink_fires_the_op_hooks():
+    ws = _two_mounts(policies=[DenyOp("symlink")])
+
+    async def run():
+        await ws.vfs.symlink("/a/lk", "x.txt")
+
+    with pytest.raises(PermissionError):
+        asyncio.run(run())
     assert not ws.namespace.is_link("/a/lk")
 
 
@@ -231,8 +245,9 @@ def test_scoped_shell_readlink_f_on_hidden_turf_is_refused():
     assert b"y.txt" not in (io.stdout or b"")
 
 
-def test_shell_readlink_fires_the_op_gates():
-    ws = _two_mounts(policies=[DenyOp("readlink")])
+def test_shell_readlink_goes_through_the_dispatcher():
+    ws = _two_mounts()
+    seen = dispatched(ws)
 
     async def run():
         made = await ws.shell("ln -s x.txt /a/lk")
@@ -240,8 +255,8 @@ def test_shell_readlink_fires_the_op_gates():
         return await ws.shell("readlink /a/lk")
 
     io = asyncio.run(run())
-    assert io.exit_code != 0
-    assert b"x.txt" not in (io.stdout or b"")
+    assert io.stdout == b"x.txt\n"
+    assert ("readlink", "/a/lk") in seen
 
 
 def test_readlink_on_a_non_link_raises_einval():
@@ -254,10 +269,11 @@ def test_readlink_on_a_non_link_raises_einval():
         asyncio.run(run())
 
 
-def test_chown_h_on_a_link_fires_the_op_gates():
+def test_chown_h_on_a_link_goes_through_the_dispatcher():
     # chown -h writes the link's own attrs; that overlay write used to
-    # bypass the dispatcher entirely, so no policy could bound it.
-    ws = _two_mounts(policies=[DenyOp("setattr")])
+    # bypass the dispatcher entirely, so no gate could bound it.
+    ws = _two_mounts()
+    seen = dispatched(ws)
 
     async def run():
         made = await ws.shell("ln -s x.txt /a/lk")
@@ -265,31 +281,24 @@ def test_chown_h_on_a_link_fires_the_op_gates():
         return await ws.shell("chown -h alice /a/lk")
 
     io = asyncio.run(run())
-    assert io.exit_code != 0
-    assert b"Permission denied" in (io.stderr or b"")
-    meta = ws.namespace.meta_for("/a/lk")
-    assert meta is None or meta.uid is None
+    assert io.exit_code == 0
+    assert ("setattr", "/a/lk") in seen
 
 
-def test_overlay_setattr_fires_the_op_gates():
+def test_overlay_setattr_goes_through_the_dispatcher():
     # A backend with no native setattr op stores attrs in the namespace
     # overlay; that write must clear the same gates as a native one.
     o = _OverlayRAMVFS()
     o._store.files["/f.txt"] = b"body\n"
-    ws = Workspace(
-        {"/o": (o, MountMode.WRITE)},
-        mode=MountMode.WRITE,
-        policies=[DenyOp("setattr")],
-    )
+    ws = Workspace({"/o": (o, MountMode.WRITE)}, mode=MountMode.WRITE)
+    seen = dispatched(ws)
 
     async def run():
         return await ws.shell("chmod 600 /o/f.txt")
 
     io = asyncio.run(run())
-    assert io.exit_code != 0
-    assert b"Permission denied" in (io.stderr or b"")
-    meta = ws.namespace.meta_for("/o/f.txt")
-    assert meta is None or meta.mode is None
+    assert io.exit_code == 0
+    assert ("setattr", "/o/f.txt") in seen
 
 
 def test_overlay_setattr_still_lands_without_policies():

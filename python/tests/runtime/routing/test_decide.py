@@ -65,11 +65,8 @@ def ctx_for(line: str) -> RouteContext:
         commands=commands,
         command=commands[0].command if commands else "",
         builtin=commands[0].builtin if commands else False,
-        cwd="/",
-        env={},
         session_id="s",
         agent_id="a",
-        mounts=("/data",),
     )
 
 

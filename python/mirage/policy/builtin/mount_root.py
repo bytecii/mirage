@@ -254,14 +254,20 @@ class MountRootPolicy(Policy):
     seeds it as the first policy (mount-root semantics belong to the
     mount layer), so its exact messages win over user policies by order,
     not by privilege.
+
+    Args:
+        registry (MountRootQuery): the mount table it asks.
     """
+
+    def __init__(self, registry: MountRootQuery) -> None:
+        self._registry = registry
 
     async def pre_command(self, ctx: CommandContext) -> Action | None:
         if not ctx.paths:
             return None
         cmd = ctx.command
         if cmd == "rm":
-            root = first_root(ctx.registry, ctx.paths)
+            root = first_root(self._registry, ctx.paths)
             if root is not None:
                 return Deny(
                     rm_root_refusal(root, *rm_options(ctx.argv)),
@@ -269,7 +275,7 @@ class MountRootPolicy(Policy):
                 )
         elif cmd == "rmdir":
             for p in ctx.paths:
-                if names_root(ctx.registry, p):
+                if names_root(self._registry, p):
                     return Deny(
                         f"failed to remove '{p.virtual}': "
                         f"Device or resource busy",
@@ -278,7 +284,7 @@ class MountRootPolicy(Policy):
         elif cmd == "mv":
             # The source is a slot, so it is read off the positionals:
             # `mv -t /mnt f` moves INTO a mount root, which is ordinary.
-            if ctx.operands and names_root(ctx.registry, ctx.operands[0]):
+            if ctx.operands and names_root(self._registry, ctx.operands[0]):
                 dst = ctx.paths[1].virtual if len(ctx.paths) > 1 else "?"
                 return Deny(
                     f"cannot move '{ctx.operands[0].virtual}' to '{dst}': "
@@ -290,7 +296,7 @@ class MountRootPolicy(Policy):
             if has_parents_flag(ctx.argv):
                 return None
             for p in ctx.paths:
-                if names_root(ctx.registry, p):
+                if names_root(self._registry, p):
                     return Deny(
                         f"cannot create directory '{p.virtual}': File exists",
                         DenyScope.OPERAND,
@@ -298,7 +304,7 @@ class MountRootPolicy(Policy):
         elif cmd == "touch":
             # Positionals only: `-r REF` is read, never touched.
             for p in ctx.operands:
-                if names_root(ctx.registry, p):
+                if names_root(self._registry, p):
                     return Deny(
                         f"cannot touch '{p.virtual}': Is a directory",
                         DenyScope.OPERAND,
@@ -308,7 +314,7 @@ class MountRootPolicy(Policy):
             # a directory operand is the directory to link into, GNU's
             # rule, and creating inside a mount is ordinary.
             if has_no_target_flag(ctx.argv) and names_root(
-                ctx.registry, ctx.paths[-1]
+                self._registry, ctx.paths[-1]
             ):
                 kind = (
                     "symbolic link" if has_symlink_flag(ctx.argv) else "link"
@@ -322,7 +328,7 @@ class MountRootPolicy(Policy):
             # Only -c reads the filesystem; -t and -x match their
             # operands against names inside the archive.
             root = (
-                first_root(ctx.registry, ctx.operands)
+                first_root(self._registry, ctx.operands)
                 if is_create_mode(ctx.argv)
                 else None
             )
@@ -336,7 +342,7 @@ class MountRootPolicy(Policy):
         elif cmd == "zip":
             # The first operand is the archive being written, not a
             # source; only what follows it is read.
-            root = first_root(ctx.registry, ctx.operands[1:])
+            root = first_root(self._registry, ctx.operands[1:])
             if root is not None:
                 return Deny(
                     f"cannot read '{root.raw_path}': Device or resource busy",
@@ -345,7 +351,7 @@ class MountRootPolicy(Policy):
         elif cmd == "cp":
             # The last operand is the destination, and copying INTO a
             # mount is ordinary; only the sources are refused.
-            root = first_root(ctx.registry, ctx.operands[:-1])
+            root = first_root(self._registry, ctx.operands[:-1])
             if root is not None:
                 return Deny(
                     f"cannot copy '{root.raw_path}': Device or resource busy",

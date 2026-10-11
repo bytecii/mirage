@@ -30,6 +30,7 @@ import {
   eisdir,
   enotdir,
   enotempty,
+  enotsup,
   erofs,
   isEnoent,
   isEnotdir,
@@ -67,6 +68,9 @@ import { WRITE_FINGERPRINT_OPS } from '../../observe/record.ts'
 import { mergeReaddir, namespaceListing, namespaceStat } from '../../view/namespace_view.ts'
 import { ebusy, isMissingPath } from '../../errors/fs.ts'
 import type { BaseVFS } from '../../vfs/base.ts'
+import { declared } from '../../vfs/call.ts'
+import { WRITE_EFFECTS } from '../../vfs/constants.ts'
+import { Effect, Target, type VfsCall } from '../../vfs/types.ts'
 import {
   type CacheFacts,
   type CapacityResult,
@@ -88,6 +92,7 @@ import { Reconciler } from '../reconcile.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import {
+  CALLS,
   COPY_OPS,
   DESTINATION_OPS,
   DISPATCH_READ_OPS,
@@ -103,7 +108,6 @@ import {
   SERIAL_WRITE_OPS,
   SETATTR_KEYS,
   STAMP_WRITE_OPS,
-  SUBTREE_OPS,
   XATTR_OPS,
 } from './constants.ts'
 import {
@@ -111,6 +115,7 @@ import {
   explaining,
   getCurrentSession,
   hiddenRefusal,
+  lineRunning,
   sessionVisibility,
 } from '../../context/session_context.ts'
 import { hiddenUnder, moveReveals, pathVisible } from '../../utils/hidden.ts'
@@ -550,7 +555,9 @@ export class Dispatcher {
         if (name === 'search') return [null, new IOResult()]
         throw walkDeclined(owner.vfs.name, name, call.path)
       }
-      await this.admit(call, owner, boundary)
+      const mark = declared(owner.vfs.constructor, name) ?? CALLS.get(name) ?? null
+      if (mark === null) throw enotsup(owner.vfs.name, name, call.path)
+      await this.admit(call, owner, boundary, mark)
       if (looksUp) {
         await mkdirOnReadOnly(
           dispatchStat(this.dispatch),
@@ -559,7 +566,7 @@ export class Dispatcher {
           call.path,
           call.kwargs?.parents === true,
         )
-        await boundary.complete(name, call.path, call.write, null)
+        await boundary.complete(mark, call.path, call.write, null)
         return [null, new IOResult()]
       }
     }
@@ -580,8 +587,10 @@ export class Dispatcher {
     ) {
       throw enotempty(call.path.virtual)
     }
+    const mark = declared(vfs.constructor, name) ?? CALLS.get(name) ?? null
+    if (mark === null) throw enotsup(vfs.name, name, call.path)
     await mount.ensureReady()
-    const cached = await this.serveCached(call, mount, vfs, boundary)
+    const cached = await this.serveCached(call, mount, vfs, boundary, mark)
     if (cached !== null) {
       return [cached, new IOResult()]
     }
@@ -596,7 +605,7 @@ export class Dispatcher {
     // The transfer already happened, so a limit changes what the caller
     // receives, not what the backend moved; the report above already
     // carries the moved count.
-    return [await boundary.complete(name, call.path, call.write, result), new IOResult()]
+    return [await boundary.complete(mark, call.path, call.write, result), new IOResult()]
   }
 
   /**
@@ -827,9 +836,11 @@ export class Dispatcher {
    *
    * A backend's find, du, search, tree copy or tree removal answers for
    * every entry under its path in one call, past the checks each entry would
-   * meet on its own. So when a hide, the command's path rules or a coded
-   * preVfs policy reach below one of its paths, it is declined and the
-   * caller walks, entry by entry, through calls that are each judged. A file
+   * meet on its own. So when a hide, the command's path rules or, for a
+   * `ws.vfs` call, a coded preVfs policy reach below one of its paths, it is
+   * declined and the caller walks, entry by entry, through calls that are
+   * each judged. Inside a running line only the profile's path rules judge
+   * an entry, so a coded policy declines no walk there. A file
    * copy is declined the same way: the bytes it moves never pass through a
    * read. A tree copy is declined too when a link stands below its
    * destination: the backend writes each child name as it is, where the
@@ -847,7 +858,7 @@ export class Dispatcher {
     const paths = call.dst === null ? [call.path] : [call.path, call.dst]
     if (paths.some((p) => hiddenUnder(call.vis, p.virtual))) return true
     if (call.ruleGate !== null) return paths.some((p) => call.ruleGate?.scopes(p.virtual) === true)
-    return this.policies.wantsFor('preVfs', sessionId())
+    return this.policies.wantsFor('preVfs', sessionId(), lineRunning())
   }
 
   /**
@@ -864,34 +875,34 @@ export class Dispatcher {
    * of the mount that owns it. A copy only reads its source. Mirrors
    * Python's Dispatcher._admit.
    */
-  private async admit(call: Call, mount: MountEntry, boundary: Boundary): Promise<void> {
+  private async admit(
+    call: Call,
+    mount: MountEntry,
+    boundary: Boundary,
+    mark: VfsCall,
+  ): Promise<void> {
     // A function the VFS declares a write is judged as one, whatever its
     // name: the POSIX names are known here, a custom one only to the VFS
     // that defines it.
-    call.write = call.write || mount.writes(call.name)
-    const subtree = SUBTREE_OPS.has(call.name)
+    call.write = call.write || WRITE_EFFECTS.includes(mark.effect)
     await boundary.admit(
-      call.name,
+      mark,
       call.path,
       call.write && !COPY_OPS.has(call.name),
-      {
-        create: HIDDEN_CREATE_OPS.has(call.name),
-        subtree,
-        final: call.dst === null,
-      },
+      { final: call.dst === null },
       call.issuer,
     )
     if (call.dst !== null) {
       await this.boundary(this.namespace.tryMountFor(call.dst.virtual)).admit(
-        call.name,
+        { ...mark, creates: true },
         call.dst,
         true,
-        { create: true, subtree },
+        {},
         call.issuer,
       )
     }
     for (const [, other] of operands(call.name, call.args, call.kwargs)) {
-      await boundary.admit(call.name, other, call.write, {}, call.issuer)
+      await boundary.admit(mark, other, call.write, {}, call.issuer)
     }
   }
 
@@ -913,11 +924,13 @@ export class Dispatcher {
    */
   private async answerUnmounted(call: Call, err: unknown): Promise<unknown> {
     const bare = this.boundary(null)
+    const mark = CALLS.get(call.name)
+    if (mark === undefined) throw enotsup('namespace', call.name, call.path)
     if (call.name === 'setattr' && isMissingPath(err)) {
-      await bare.admit(call.name, call.path, true, {}, call.issuer)
+      await bare.admit(mark, call.path, true, {}, call.issuer)
       const stored = await this.overlaySetattr(call.path, call.kwargs ?? {})
       memoryAnswered(call.report)
-      await bare.complete(call.name, call.path, true, stored)
+      await bare.complete(mark, call.path, true, stored)
       return stored
     }
     let fallback = isMissingPath(err) ? this.namespaceResult(call.name, call.path.virtual) : null
@@ -925,22 +938,23 @@ export class Dispatcher {
     if (call.name === 'readdir' && Array.isArray(fallback)) {
       fallback = visibleEntries(fallback, call.path.virtual)
     }
-    await bare.admit(call.name, call.path, call.write, {}, call.issuer)
+    await bare.admit(mark, call.path, call.write, {}, call.issuer)
     // A synthetic namespace answer (a directory that exists only because a
     // mount or a link sits below it) contacts nothing, so attributing it to
     // the mount that lexically owns the path would invent a network op
     // against that backend. Stamped before the gate and the cap, so
     // whatever they throw cannot erase it.
     memoryAnswered(call.report)
-    return bare.complete(call.name, call.path, call.write, fallback)
+    return bare.complete(mark, call.path, call.write, fallback)
   }
 
   /**
    * Whether a read is answered as it is pulled. A whole read of stored bytes
    * streams through the VFS's own `readStream`. A window, a rendering, a VFS
    * with no stream and a postVfs policy that may read the result each get the
-   * whole bytes instead, which are a stream of one chunk. Mirrors Python's
-   * Dispatcher._streams.
+   * whole bytes instead, which are a stream of one chunk. A read a running
+   * line makes reaches no postVfs policy, so it streams either way. Mirrors
+   * Python's Dispatcher._streams.
    */
   private streams(call: Call, mount: MountEntry, vfs: BaseVFS): boolean {
     const [offset, size] = readWindow(call.kwargs)
@@ -950,7 +964,7 @@ export class Dispatcher {
       size === null &&
       vfs.supports('readStream') &&
       !this.rendersRead(call, mount) &&
-      !this.policies.readsResults()
+      (lineRunning() || !this.policies.readsResults())
     )
   }
 
@@ -1003,6 +1017,7 @@ export class Dispatcher {
     mount: MountEntry,
     vfs: BaseVFS,
     boundary: Boundary,
+    mark: VfsCall,
   ): Promise<Uint8Array | null> {
     if (call.direct || !vfs.cachesReads || !DISPATCH_READ_OPS.has(call.name)) return null
     const cached = await this.cache.get(call.path.virtual)
@@ -1023,7 +1038,7 @@ export class Dispatcher {
     // recorded against the backend and counted as traffic that never
     // happened.
     memoryAnswered(call.report, window.byteLength)
-    return (await boundary.complete(call.name, call.path, call.write, window)) as Uint8Array
+    return (await boundary.complete(mark, call.path, call.write, window)) as Uint8Array
   }
 
   /**
@@ -1537,9 +1552,10 @@ export class Dispatcher {
     kwargs: OpKwargs = {},
   ): Promise<unknown> {
     const mount = this.namespace.mountFor(spec.virtual)
-    const write = mount.writes(name)
+    const mark = declared(vfs.constructor, name) ?? CALLS.get(name) ?? null
+    const write = mark !== null && WRITE_EFFECTS.includes(mark.effect)
     const boundary = new Boundary(this.policies, mountPrefix, mode, sessionId(), this.decisions)
-    if (write) {
+    if (mark !== null && write) {
       // The same pre-vfs admission a dispatched op answers, with the
       // walk's own child path: the gate that admitted the rmdir judged
       // the directory, not what the cascade found under it, and a
@@ -1548,7 +1564,7 @@ export class Dispatcher {
       // caller folds the denial into its original refusal, so a
       // policy's protection of a hidden path never surfaces as its own
       // denial.
-      await boundary.admit(name, spec, true, { checkHidden: false }, issuer)
+      await boundary.admit(mark, spec, true, { checkHidden: false }, issuer)
     }
     // The fence reruns backend ops outside `dispatch`, so the revision
     // pins have to ride here as on the main path above, or a cascade
@@ -1793,13 +1809,9 @@ export class Dispatcher {
     const mount = this.namespace.tryMountFor(path.virtual)
     const boundary = this.boundary(mount)
     const write = POLICY_WRITE_OPS.has(name)
-    await boundary.admit(
-      name,
-      path,
-      write,
-      { create: HIDDEN_CREATE_OPS.has(name), final: name !== 'rename' },
-      issuer,
-    )
+    const mark = CALLS.get(name)
+    if (mark === undefined) throw enotsup('namespace', name, path)
+    await boundary.admit(mark, path, write, { final: name !== 'rename' }, issuer)
     let target: string
     let result: string | FileStat | null = null
     if (name === 'unlink') {
@@ -1814,7 +1826,7 @@ export class Dispatcher {
       // rename. It is then replaced as rename(2) replaces it: any node
       // the table holds at that name (a link, an attr overlay) goes.
       const dstMount = this.namespace.tryMountFor(dst.virtual)
-      await this.boundary(dstMount).admit(name, dst, true, { create: true }, issuer)
+      await this.boundary(dstMount).admit({ ...mark, creates: true }, dst, true, {}, issuer)
       // The name the link moves to must have a directory above it, as for
       // a new link: the table alone would file it under an absent parent
       // and synthesize the directories above it.
@@ -1853,7 +1865,7 @@ export class Dispatcher {
     }
     record(name, path.virtual, VFSName.RAM, encodeText(target).byteLength, timer)
     memoryAnswered(report)
-    return (await boundary.complete(name, path, write, result)) as string | FileStat | null
+    return (await boundary.complete(mark, path, write, result)) as string | FileStat | null
   }
 
   /**
@@ -2049,11 +2061,13 @@ export class Dispatcher {
     resolved: [BaseVFS, PathSpec, MountMode],
     issuer?: symbol,
   ): Promise<unknown> {
-    const [, scope] = resolved
+    const [vfs, scope] = resolved
     const mount = this.namespace.tryMountFor(scope.virtual)
     if (mount === null) return null
+    const mark = declared(vfs.constructor, name) ?? CALLS.get(name) ?? null
+    if (mark === null) throw enotsup(vfs.name, name, scope)
     const boundary = this.boundary(mount)
-    await boundary.admit(name, scope, false, {}, issuer)
+    await boundary.admit(mark, scope, false, {}, issuer)
     await mount.ensureReady()
     const filetype = getExtension(scope.virtual)
     try {
@@ -2063,7 +2077,7 @@ export class Dispatcher {
           ...(filetype !== null ? { filetype } : {}),
         }),
       )
-      return await boundary.complete(name, scope, false, result)
+      return await boundary.complete(mark, scope, false, result)
     } catch (err) {
       // Final on every channel: a plain file above the path means nothing
       // can be at it or under it, and symlink(2) and readlink(2) answer
@@ -2109,7 +2123,9 @@ export class Dispatcher {
     const mount = this.namespace.tryMountFor(path.virtual)
     const boundary = this.boundary(mount)
     const write = POLICY_WRITE_OPS.has(name)
-    await boundary.admit(name, path, write, {}, issuer)
+    const mark = CALLS.get(name)
+    if (mark === undefined) throw enotsup('namespace', name, path)
+    await boundary.admit(mark, path, write, {}, issuer)
     await this.xattrTarget(mount, path)
     const stored = this.namespace.xattrs(path.virtual)
     const attr = typeof kwargs.name === 'string' ? kwargs.name : ''
@@ -2137,7 +2153,7 @@ export class Dispatcher {
       timer,
     )
     report?.served(null, null)
-    return boundary.complete(name, path, write, result)
+    return boundary.complete(mark, path, write, result)
   }
 
   /**
@@ -2154,7 +2170,14 @@ export class Dispatcher {
   private async statfs(path: PathSpec, issuer?: symbol): Promise<[string, CapacityResult]> {
     const mount = this.namespace.tryMountFor(path.virtual)
     const boundary = this.boundary(mount)
-    await boundary.admit('statfs', path, false, {}, issuer)
+    const statfs: VfsCall = {
+      name: 'statfs',
+      effect: Effect.METADATA,
+      target: Target.ANY,
+      creates: false,
+      subtree: false,
+    }
+    await boundary.admit(statfs, path, false, {}, issuer)
     await this.xattrTarget(mount, path)
     const answer: [string, CapacityResult] =
       mount === null
@@ -2162,7 +2185,7 @@ export class Dispatcher {
         : [mount.vfs.name, await mount.use(() => mount.vfs.capacity())]
     // A policy may deny the reply as it may any op's; a capacity is no bytes,
     // so a bound has nothing to cap.
-    await boundary.complete('statfs', path, false, answer)
+    await boundary.complete(statfs, path, false, answer)
     return answer
   }
 

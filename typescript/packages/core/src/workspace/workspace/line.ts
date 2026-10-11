@@ -20,17 +20,21 @@ import { materialize } from '../../io/types.ts'
 import type { Runtime } from '../../runtime/base.ts'
 import type { LineExecutor } from '../../runtime/mixin.ts'
 import type { RunResult } from '../../runtime/types.ts'
+import type { RouteContext } from '../../runtime/routing/types.ts'
 import {
+  type Claimant,
   type Policies,
   postExecuteGate,
   refusalOf,
   renderDeny,
+  renderPending,
   resolveLimit,
 } from '../../policy/index.ts'
 import type { MountEntry } from '../mount/mount.ts'
 import type { SessionState } from '../session/session.ts'
 import { envSnapshot } from '../session/state.ts'
 import { commandName } from './utils.ts'
+import { ExecutionNode } from '../types.ts'
 import { makeAbortError, mergeSignals } from '../../utils/abort.ts'
 import { isControlFlowError } from './failure.ts'
 import { PathSpec, type Refusal } from '../../types.ts'
@@ -64,6 +68,10 @@ export async function runWholeLine(
   invalidate: () => Promise<void>,
   signal?: AbortSignal,
   commandLimits: Readonly<Record<string, Limit>> = {},
+  claimant: Claimant | null = null,
+  // What `preExecute` saw of the line, which `postExecute` sees with what
+  // came back; null when no policy reads `postExecute`.
+  route: RouteContext | null = null,
 ): Promise<LineResult> {
   const data = stdin !== null ? await materialize(stdin) : null
   const name = commandName(command)
@@ -105,17 +113,33 @@ export async function runWholeLine(
   } finally {
     await invalidate()
   }
-  const [deny, bound] = await postExecuteGate(policies, {
-    producer: { command: name, prefixes: mounts.map((m) => m.prefix), declared: null },
-    exitCode: result.exitCode,
-  })
-  if (deny !== null) {
-    const [denyBytes, exitCode] = renderDeny(name, deny)
+  const [refused, bound] =
+    route === null
+      ? [null, null]
+      : await postExecuteGate(
+          policies,
+          {
+            ...route,
+            producer: { command: name, prefixes: mounts.map((m) => m.prefix), declared: null },
+            exitCode: result.exitCode,
+            output: await materialize(result.stdout),
+            results: new ExecutionNode({
+              command,
+              stderr: await materialize(result.stderr),
+              exitCode: result.exitCode,
+            }).toJSON(),
+          },
+          claimant,
+          signal,
+        )
+  if (refused !== null) {
+    const [denyBytes, exitCode] =
+      refused.kind === 'pending' ? renderPending(name, refused) : renderDeny(name, refused)
     const priorErr = result.stderr !== null ? await materialize(result.stderr) : new Uint8Array()
     const mergedErr = new Uint8Array(priorErr.byteLength + denyBytes.byteLength)
     mergedErr.set(priorErr, 0)
     mergedErr.set(denyBytes, priorErr.byteLength)
-    return { stdout: new Uint8Array(), stderr: mergedErr, exitCode, refusal: refusalOf(deny) }
+    return { stdout: new Uint8Array(), stderr: mergedErr, exitCode, refusal: refusalOf(refused) }
   }
   const [capped, cappedErr, cappedCode] = await guardOutput(
     result.stdout,
