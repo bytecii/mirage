@@ -175,6 +175,11 @@ const LINE_STOP = createAsyncContext<AbortController>()
 // itself are not held behind it.
 const WRITE_HELD = createAsyncContext<boolean>()
 
+// A hook's session write where it cannot run as a policy deciding.
+function refuseWrite(name: string): Promise<void> {
+  return Promise.reject(eacces(name))
+}
+
 export class Workspace {
   readonly io: IOConfig
   private readonly runtimeBinding: WorkspaceBinding
@@ -433,8 +438,7 @@ export class Workspace {
       // Without task isolation a hook cannot run as a policy deciding: its
       // own calls could not be told from the ones it judges. There it gets
       // no `vfs`, and a session that refuses every write.
-      const refuse = (name: string): Promise<void> => Promise.reject(eacces(name))
-      return { session: { ...view, set: refuse, unset: refuse, mark: refuse }, ns }
+      return { session: { ...view, set: refuseWrite, unset: refuseWrite, mark: refuseWrite }, ns }
     }
     // Installed CLIs, fully separate from mounts: a spec name resolves
     // against the named registry and every entry installs through the

@@ -42,6 +42,7 @@ import { encodeText } from '../../shell/bytes.ts'
 import { ArithError, ExitSignal, ReadonlyError } from '../../shell/errors.ts'
 import type { ArithResult, ArithWrite, ElementOps } from '../../shell/types.ts'
 import { varHidden } from '../../utils/hidden.ts'
+import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { ReadonlyVariableError } from './errors.ts'
 import { draw, initialSeed } from './rng.ts'
@@ -1215,15 +1216,18 @@ async function markVar(
 
 /**
  * A session write as one call, so a ONCE answer to its preSession question
- * stands until its postSession one is answered too. Mirrors Python's
- * `_one_call`.
+ * stands until its postSession one is answered too. Without task isolation
+ * a call cannot be told from another task's, so there the write is its
+ * own. Mirrors Python's `_one_call`.
  */
 function oneCall(
   session: SessionState,
   policies: Policies | null,
   write: () => Promise<void>,
 ): Promise<void> {
-  return policies === null ? write() : policies.decisions.withinCall(session.sessionId, write)
+  return policies === null || !asyncContextIsolatesTasks
+    ? write()
+    : policies.decisions.withinCall(session.sessionId, write)
 }
 
 export function sessionView(

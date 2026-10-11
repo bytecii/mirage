@@ -171,6 +171,20 @@ function ctx(command: string, paths: PathSpec[] = []): CommandContext {
   return { command, paths, argv: [], cwd: '/' }
 }
 
+function leaves(node: Record<string, unknown>): [string, number][] {
+  const children = (node.children ?? []) as Record<string, unknown>[]
+  if (children.length === 0) {
+    return [[typeof node.command === 'string' ? node.command : '', Number(node.exitCode)]]
+  }
+  return children.flatMap(leaves)
+}
+
+function recordPaths(node: Record<string, unknown>): unknown[] {
+  const mine = ((node.records ?? []) as Record<string, unknown>[]).map((r) => r.path)
+  const children = (node.children ?? []) as Record<string, unknown>[]
+  return [...mine, ...children.flatMap(recordPaths)]
+}
+
 function executableWorkspace(
   deny?: readonly CommandRule[],
   policies?: readonly Policy[],
@@ -1234,20 +1248,6 @@ describe('what a hook sees', () => {
       this.seen.push(ctx)
       return null
     }
-  }
-
-  function leaves(node: Record<string, unknown>): [string, number][] {
-    const children = (node.children ?? []) as Record<string, unknown>[]
-    if (children.length === 0) {
-      return [[typeof node.command === 'string' ? node.command : '', Number(node.exitCode)]]
-    }
-    return children.flatMap(leaves)
-  }
-
-  function recordPaths(node: Record<string, unknown>): unknown[] {
-    const mine = ((node.records ?? []) as Record<string, unknown>[]).map((r) => r.path)
-    const children = (node.children ?? []) as Record<string, unknown>[]
-    return [...mine, ...children.flatMap(recordPaths)]
   }
 
   it('postExecute sees the line, its output and each result', async () => {

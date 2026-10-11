@@ -463,12 +463,14 @@ export class Decisions {
    * the rule and the subject are the key (`opQuestion`). A ONCE answer passes the next call on that subject under
    * that rule (every op of it, `withinCall`; a bare op is a call of its
    * own) and is spent when the call ends; a SESSION answer passes every one
-   * the rule covers, lines included. Mirrors Python's `resolve_op`.
+   * the rule covers, lines included. Without task isolation the call in
+   * reach may be another task's, so a session write spends its answer at
+   * once. Mirrors Python's `resolve_op`.
    */
   async resolveOp(ctx: VfsContext | SessionContext, ask: Ask): Promise<Deny | Pending | null> {
     if (explaining() === DryRun.DECIDING) return this.heldOp(ctx, ask)
     const [asked, keyed] = opQuestion(ctx, ask)
-    const call = getOpCall(this)
+    const call = asyncContextIsolatesTasks || !('plane' in ctx) ? getOpCall(this) : null
     const claimant: Claimant | null =
       call === null
         ? null
@@ -499,19 +501,17 @@ export class Decisions {
    * retry finds the grants standing, as a held line's does. A call made
    * inside another runs in the outer one; a call another ledger runs (a
    * host callback reaching a second workspace mid-call) is no call of this
-   * one's. Without task isolation a call's frame would reach every other
-   * task's ops, so there a grant is spent where it is used. Mirrors
-   * Python's `within_call`.
+   * one's. Without task isolation a call's claims may be another task's,
+   * so a held call spends them too. Mirrors Python's `within_call`.
    */
   async withinCall<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    if (!asyncContextIsolatesTasks || getOpCall(this) !== null) return run()
+    if (getOpCall(this) !== null) return run()
     const handed: HandOff = { claimed: [], parent: null, origin: null }
     try {
       return await runWithOpCall(this, handed, run)
     } catch (err) {
-      if (err instanceof PolicyDenied && err.refusal?.kind === 'pending') {
-        this.release(sessionId, handed)
-      }
+      const held = err instanceof PolicyDenied && err.refusal?.kind === 'pending'
+      if (held && asyncContextIsolatesTasks) this.release(sessionId, handed)
       throw err
     } finally {
       await this.revoke(sessionId, handed)

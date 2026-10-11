@@ -16,7 +16,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type * as asyncContextModule from '../utils/async_context.ts'
 import { RAMVFS } from '../vfs/ram/ram.ts'
 import { MountMode } from '../types.ts'
-import { Workspace } from '../workspace/workspace/workspace.ts'
+import { Session, Workspace } from '../workspace/workspace/workspace.ts'
 import { getTestParser } from '../workspace/fixtures/workspace_fixture.ts'
 import type { Policy } from './base.ts'
 import { Outcome, type Action, type CommandContext, type Decision } from './types.ts'
@@ -103,6 +103,28 @@ describe('a hook without task isolation', () => {
       expect(askedB).toEqual(['b', 'b'])
       release()
       expect((await a).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it("covers a file tool's own reads with one nod", async () => {
+    // A write tool reads the file back to stamp its version: the nod for
+    // the call covers that read too, and is spent with the call.
+    const ws = new Workspace(
+      { '/data/': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    ws.createSession('agent', {
+      profile: { commands: { ask: [{ reason: 'outbox needs a nod', paths: ['/data/out/*'] }] } },
+    })
+    const tools = new Session(ws, 'agent').tools
+    try {
+      expect((await tools.write('/data/out/a.txt', 'hi')).isError).toBe(true)
+      const [record] = ws.decisions.pending('agent')
+      await ws.decisions.answer(record?.id ?? '', Outcome.ALLOW)
+      expect((await tools.write('/data/out/a.txt', 'hi')).isError).toBeUndefined()
+      expect((await tools.write('/data/out/a.txt', 'again')).isError).toBe(true)
     } finally {
       await ws.close()
     }
