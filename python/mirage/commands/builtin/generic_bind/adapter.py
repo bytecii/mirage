@@ -355,12 +355,12 @@ def command_io(vfs: BaseVFS) -> CommandIO:
             SearchOps(
                 search=_without_accessor(vfs.search),
                 search_many=slot("search_many"),
-                meta=vfs.search_meta,
             )
             if vfs.supports("search")
             else None
         ),
         files_containing=slot("files_containing"),
+        searchable=vfs.searchable,
         lines_containing=slot("lines_containing"),
         before_full_scan=slot("before_full_scan"),
     )

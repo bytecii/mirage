@@ -331,8 +331,10 @@ class ScanReason(StrEnum):
     lines that do not match. EVERY_FILE: rg --files-without-match, or
     rg -c or --count-matches with --include-zero, without -q, lists
     files that do not match, and rg leaves a binary one out. LINKS: rg -L follows
-    links out of the walk. UNANSWERED: ``files_containing`` returned
-    None, or ``lines_containing`` returned None for a file.
+    links out of the walk. BINARY: -a, --binary-files=text, rg -a,
+    --binary or -uuu reads every binary-extension file, which a search
+    that answered does not rule out. UNANSWERED: ``files_containing``
+    returned None, or ``lines_containing`` returned None for a file.
     """
 
     NO_SEARCH = "the mount has no search"
@@ -340,6 +342,7 @@ class ScanReason(StrEnum):
     EVERY_LINE = "the output needs lines that do not match"
     EVERY_FILE = "the output lists files that do not match"
     LINKS = "links are followed"
+    BINARY = "binary files are read"
     UNANSWERED = "the search could not answer"
 
 
@@ -439,18 +442,15 @@ class SearchManyOp(Protocol):
 
 @dataclass(frozen=True, kw_only=True)
 class SearchOps:
-    """Optional resource search with extensible capability metadata.
+    """Optional resource search, what the ``search`` command asks.
 
     Args:
         search (SearchOp): the resource's single-scope search callback.
         search_many (SearchManyOp | None): optional batch ranking.
-        meta (Mapping[str, JsonValue]): static capabilities; consumers
-            validate their own namespace. No grep compatibility is assumed.
     """
 
     search: SearchOp
     search_many: SearchManyOp | None = None
-    meta: Mapping[str, JsonValue] = field(default_factory=dict)
 
 
 @runtime_checkable
