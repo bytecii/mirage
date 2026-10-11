@@ -12,8 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { VfsCall } from '../vfs/types.ts'
+import type { RouteContext } from '../runtime/routing/types.ts'
 import type { ScriptSource } from '../runtime/types.ts'
 import type { Limit, MountMode, PathSpec, Producer, Refusal } from '../types.ts'
+import type { WordKind } from '../commands/spec/types.ts'
+import type { NamespaceView, SessionView } from '../view/types.ts'
 
 /**
  * The one registry question policy hooks may ask. MountRegistry
@@ -21,25 +25,9 @@ import type { Limit, MountMode, PathSpec, Producer, Refusal } from '../types.ts'
  * a leaf (no workspace imports), so the registry can host a Policies
  * instance without a cycle. Mirrors the Python MountRootQuery.
  */
-interface MountRootQuery {
+export interface MountRootQuery {
   isMountRoot(path: string): boolean
 }
-
-/**
- * What a command-plane refusal is about, which picks its voice. `command`
- * refuses the whole line in bash's own words, `<cmd>: Permission denied`,
- * exit 126, and the reason rides the result's `refusal` record instead.
- * `operand` refuses one operand, exit 1, or the command's own fatal code
- * where GNU differs (tar exits 2): with `Deny.path` set it prints the
- * command's own GNU line for that operand and `Permission denied`, the
- * reason riding the record; without it the reason is the diagnostic,
- * `<cmd>: <reason>` (a built-in that words a POSIX error, as
- * `rm: cannot remove 'x': ...` does). The exit code and errno derive
- * from the plane and this scope, never from a number a policy picks, so
- * a document deny and a coded one are indistinguishable. Mirrors the
- * Python DenyScope.
- */
-export type DenyScope = 'command' | 'operand'
 
 /**
  * What the profile's rules say about one line: the document's own three
@@ -59,26 +47,28 @@ export enum Outcome {
 
 /**
  * Refuse the command, op or session write, with a reason. Rendered by
- * the entry point it fires at: the command plane prints it in the scope's voice
- * (DenyScope), the dispatcher throw EACCES with it, the session view
- * EACCES too. `kind` is the wire discriminant shared with Python.
+ * the entry point it fires at. The command plane prints bash's own
+ * `<cmd>: Permission denied` at 126; a Deny about a `path` prints the
+ * command's own line for that path and `Permission denied` at the
+ * command's operand exit code (1, tar 2); a Deny carrying an `error` is
+ * that error, its reason the command's own diagnostic, `<cmd>: <reason>`,
+ * at the same code. The dispatcher throws `error`, else EACCES; the
+ * session view EACCES. `kind` is the wire discriminant shared with
+ * Python.
  */
 export interface Deny {
   kind: 'deny'
   /** Why, without the command name and without a trailing newline; the entry point adds both. */
   reason: string
-  /** Whole command (the default) or one operand; ignored off the command plane. */
-  scope?: DenyScope
   /** The class name of the policy that spoke, stamped by the chain so no policy names itself. */
   policy?: string
   /** True when the chain refused on a policy's behalf because it raised. */
   failed?: boolean
-  /** The error a built-in refusal raises in place of EACCES (EROFS for a
-   * read-only path). */
+  /** The specific error this refusal is (EBUSY on a mount root, EROFS on a
+   * read-only mount); absent for a permission refusal. */
   error?: Error
-  /** The operand an `operand` refusal is about, as typed: the entry point prints
-   * the command's own line for it and `Permission denied`, the reason
-   * riding the record. Absent leaves the reason as the diagnostic. */
+  /** The path the refusal is about, as typed; absent refuses the command
+   * whole. */
   path?: string
   /** The profile rule that refused, as an Ask carries the rule that asked;
    * absent for a coded condition. */
@@ -201,15 +191,18 @@ export interface Ruling {
 }
 
 /**
- * Admit the command only with a host approval. A preCommand answer:
+ * Go on only with a host approval. Every hook may answer one.
  * `PermissionsPolicy` returns one for a `commands.ask` rule, a custom
  * policy for a coded condition, and both route to the workspace's
  * decision ledger (`Decisions`). A Deny from any policy outranks it: the
  * chain keeps looking past an Ask for a Deny, so an approval can never
- * re-open a refusal. Command plane only: the dispatcher cannot wait on a
- * host. `rule` is the document rule that asked, absent for a coded
- * condition, for which the ledger keys a session answer on the program
- * that asked. Mirrors the Python Ask.
+ * re-open a refusal. A later Ask's rules are appended to the first one's
+ * `rules`, so every Ask a hook's chain answers is put to the host. A pre
+ * hook holds what it guards
+ * until the host says yes; a post hook holds back what came back, and
+ * the approved rerun repeats the action. `rule` is the document rule
+ * that asked, absent for a coded condition, for which the ledger keys a
+ * session answer on what was asked about. Mirrors the Python Ask.
  */
 export interface Ask {
   kind: 'ask'
@@ -219,9 +212,10 @@ export interface Ask {
   /**
    * Every rule the line has to be granted, `rule` among them and usually
    * alone: a line whose operands were each asked about by a different
-   * rule carries them all. The entry point asks about them one at a time and
-   * runs the line only once each is answered, so a nod given for one
-   * operand cannot carry another. Absent for a coded Ask, whose one rule
+   * rule carries them all, as does the first Ask of a chain that answered
+   * more than one. The entry point asks about them one at a time and runs
+   * the line only once each is answered, so a nod given for one operand
+   * cannot carry another. Absent for a coded Ask, whose one rule
    * the entry point synthesizes.
    */
   rules?: readonly CommandRule[]
@@ -477,6 +471,35 @@ export interface SessionScriptsQuery {
   scriptOf(sessionId: string): ProfileScript | null
 }
 
+/**
+ * One word of a command line, as the grammar read it: the word as the
+ * command receives it, expanded; what it is (the command name, a CLI verb,
+ * an option, an option's value, an operand or a redirect target); for a
+ * value, the option word that takes it, as typed; and the path it names,
+ * null for a word that names none. Mirrors Python's `CommandWord`.
+ */
+export class CommandWord {
+  constructor(
+    readonly text: string,
+    readonly kind: WordKind,
+    readonly option: string | null = null,
+    readonly path: PathSpec | null = null,
+  ) {}
+
+  /**
+   * The word as plain data: its text, its kind, the option a value belongs
+   * to and the virtual path it names, each null where it has none.
+   */
+  toDict(): Record<string, string | null> {
+    return {
+      text: this.text,
+      kind: this.kind,
+      option: this.option,
+      path: this.path !== null ? this.path.virtual : null,
+    }
+  }
+}
+
 /** Facts about one classified command, as preCommand hooks see it. */
 export interface CommandContext {
   command: string
@@ -486,16 +509,15 @@ export interface CommandContext {
    */
   paths: readonly PathSpec[]
   /**
-   * The positional operands alone. A rule that reads a slot by position
-   * (mv's source, ln's target, tar's files) has to use this: with the flag
-   * values mixed in, `tar -xf a.tar -C /mnt` would read the `-C`
-   * destination as a file being archived.
+   * The command line word by word, the name first and redirect targets
+   * last, each with its kind. A rule that reads a slot (mv's source, ln's
+   * target, tar's files) reads the operands here: `tar -xf a.tar -C /mnt`
+   * names `/mnt` as `-C`'s value, not as a file.
    */
-  operands?: readonly PathSpec[]
+  words?: readonly CommandWord[]
   /** Raw argv after the command name; hooks fire before flag parsing. */
   argv: readonly string[]
   cwd: string
-  registry: MountRootQuery
   /** The session running the line, set by the entry point; empty outside a workspace. */
   sessionId?: string
   /**
@@ -530,6 +552,10 @@ export interface CommandContext {
    * admission fires again there. Absent reads as false.
    */
   walks?: boolean
+  /** The session, read only: a write through it is refused. Filled when a hook is asked. */
+  session?: SessionView
+  /** The session's namespace, as a command gets it in `opts.ns`. Filled when a hook is asked. */
+  ns?: NamespaceView
 }
 
 /** Facts about one VFS op, as preVfs hooks see it. Fires at the
@@ -545,8 +571,11 @@ export interface CommandContext {
  * python marks the same read with a task-local ContextVar, which a
  * browser has no twin of. */
 export interface VfsContext {
-  op: string
+  /** The function called, as `vfsCall` declares it; a rename's or a copy's
+   * destination is judged under the same call with `creates` set. */
+  call: VfsCall
   path: PathSpec
+  /** Whether the call mutates this path; a copy only reads its source. */
   write: boolean
   prefix: string
   sessionId?: string
@@ -554,33 +583,50 @@ export interface VfsContext {
   /** The owning mount's mode, judged by the mount-mode built-in; unset at
    * an entry point that judges it itself. */
   mode?: MountMode
-  /** The op creates the path. */
-  create?: boolean
-  /** The op mutates the path's descendants too. */
-  subtree?: boolean
+  /** The session, read only. */
+  session?: SessionView
+  /** The session's namespace. */
+  ns?: NamespaceView
 }
 
-/** One completed VFS op, as postVfs hooks see it; a Deny suppresses
- * the result. */
-export interface VfsResultContext {
-  op: string
-  path: PathSpec
-  write: boolean
-  prefix: string
+/**
+ * One command or CLI that ran, as postCommand hooks see it: what
+ * preCommand saw, plus what came back. `exitCode` is settled once its
+ * output drained; `records` are its op records as `OpRecord.toJSON`
+ * writes them. Mirrors the Python CommandResultContext.
+ */
+export interface CommandResultContext extends CommandContext {
+  exitCode: number
+  stderr: string
+  records: readonly Record<string, unknown>[]
+}
+
+/** One completed VFS op, as postVfs hooks see it: what preVfs saw,
+ * plus what came back; a Deny or an Ask drops the result. */
+export interface VfsResultContext extends VfsContext {
   result: unknown
 }
 
 /**
- * One finished execute() line, as postExecute hooks see it. Fires at
- * the workspace boundary before the line's output stream is
- * finalized, so a Limit returned here bounds what the caller sees.
- * `producer` is the provenance of the surviving stream (the rightmost
- * command, per shell semantics), with an empty command when no
- * dispatch site stamped one.
+ * One finished line, as postExecute hooks see it: what preExecute saw,
+ * plus what came back. Fires at the workspace boundary before the
+ * line's output reaches the caller, so a Limit returned here bounds
+ * what the caller sees, and a Deny or an Ask drops it. `producer` is
+ * the provenance of the surviving stream (the rightmost command, per
+ * shell semantics), with an empty command when no dispatch site stamped
+ * one. Mirrors the Python ExecuteResultContext.
  */
-export interface ExecuteResultContext {
+export interface ExecuteResultContext extends RouteContext {
   producer: Producer
   exitCode: number
+  /** What the line wrote to stdout. */
+  output: Uint8Array
+  /**
+   * What each command returned, as the line's execution tree
+   * (`ExecutionNode.toJSON`): a leaf per command with its exit code,
+   * stderr and op records, under the operators that joined them.
+   */
+  results: Record<string, unknown>
 }
 
 /**
@@ -598,20 +644,43 @@ export interface SessionContext {
   key: string
   value: string | null
   sessionId: string
+  /** The session, read only. */
+  session?: SessionView
+  /** The session's namespace. */
+  ns?: NamespaceView
+}
+
+/**
+ * One session write that landed, as postSession hooks see it: what
+ * preSession saw, plus the value it replaced (`old`, rendered as `value`
+ * is; null when the name was unset). Mirrors the Python
+ * SessionResultContext.
+ */
+export interface SessionResultContext extends SessionContext {
+  old: string | null
 }
 
 export const VALIDITY: Readonly<
   Record<
-    'preCommand' | 'preExecute' | 'preVfs' | 'postVfs' | 'postExecute' | 'preSession',
+    | 'preCommand'
+    | 'postCommand'
+    | 'preExecute'
+    | 'preVfs'
+    | 'postVfs'
+    | 'postExecute'
+    | 'preSession'
+    | 'postSession',
     ReadonlySet<string>
   >
 > = {
   preCommand: new Set(['deny', 'ask']),
-  preExecute: new Set(['deny', 'route']),
+  postCommand: new Set(['deny', 'ask']),
+  preExecute: new Set(['deny', 'ask', 'route']),
   preVfs: new Set(['deny', 'ask']),
-  postVfs: new Set(['deny', 'limit']),
-  postExecute: new Set(['limit']),
-  preSession: new Set(['deny']),
+  postVfs: new Set(['deny', 'ask', 'limit']),
+  postExecute: new Set(['deny', 'ask', 'limit']),
+  preSession: new Set(['deny', 'ask']),
+  postSession: new Set(['deny', 'ask']),
 }
 
 /** The name of one Policy hook, as the interface spells it. */
@@ -659,21 +728,6 @@ export interface Explanation {
 }
 
 /**
- * One path argument of a command, as the rules read it. A path the
- * session cannot see is listed like any path no rule matches: `path` is
- * resolved from the cwd alone, links unfollowed. Mirrors the Python
- * ShellOperand.
- */
-export interface ShellOperand {
-  /** The argument as typed. */
-  readonly text: string
-  /** The absolute path it names. */
-  readonly path: string
-  /** Whether the deciding rule matched it. */
-  readonly matched: boolean
-}
-
-/**
  * One piece of a line's structure, as the shell parses it: `list` (`;`
  * `&&` `||` `&`), `pipeline`, `subshell`, `group` (braces and the bodies
  * of `if`, `for`, `while`, `case` and functions), `line` (a line a command
@@ -698,16 +752,19 @@ export interface CommandExplanation extends Explanation {
   readonly answers: readonly (Deny | Ask)[]
   /** The program, as the gate read it. */
   readonly command: string
-  /** The words after it. */
-  readonly argv: readonly string[]
+  /**
+   * The command line word by word, each with its kind and the path it
+   * names. A path the session cannot see is listed like any path no rule
+   * matches: it is resolved from the cwd alone, links unfollowed, so it
+   * names nothing the session could not type.
+   */
+  readonly words: readonly CommandWord[]
   /** What the command would exit with where it stands, 0 to run. */
   readonly exitCode: number
   /** What the agent would read from it, empty to run. */
   readonly stderr: string
   /** The runtime entry that would run it, empty when the workspace runs it itself. */
   readonly runtime: string
-  /** Its path arguments, redirect targets included. */
-  readonly operands: readonly ShellOperand[]
   /** The command's source text. */
   readonly text: string
   /** The lines it runs in turn (`$( )` in its words, a `bash -c` string), in source order. */
@@ -723,16 +780,16 @@ export interface CommandExplanation extends Explanation {
  * is the line's, byte-identical to the refusal the run reports. A line
  * that runs exits 0 here, and one an approval lets run carries the ask it
  * covers. A command refused where it stands while the rest of the line
- * runs (a word the session cannot see, a policy refusing one operand)
+ * runs (a word the allow list leaves out, a policy refusing one path)
  * says so on its own node. Mirrors the Python ShellExplanation.
  */
 export interface ShellExplanation extends Explanation {
   /**
-   * Every policy's answer to where the line runs (`preExecute`), the route
-   * policy's first; empty when nothing places it or a command refuses it
-   * first.
+   * Every policy's answer to the line as a whole (`preExecute`), the route
+   * policy's first; empty when no policy answers it or a command refuses
+   * it first.
    */
-  readonly answers: readonly (Deny | Route)[]
+  readonly answers: readonly (Deny | Ask | Route)[]
   /** The line as given. */
   readonly line: string
   /** What the line is refused with, 0 when it runs. */

@@ -25,7 +25,6 @@ from mirage.policy.types import (
     Ask,
     CommandContext,
     Deny,
-    DenyScope,
     SessionCommandsQuery,
     VfsContext,
 )
@@ -76,12 +75,7 @@ class PermissionsPolicy(Policy, SessionScopedMixin):
             return Ask(rule.reason, rule, decision.asks)
         if decision.matched_path is None:
             return Deny(rule.reason, rule=rule)
-        return Deny(
-            rule.reason,
-            DenyScope.OPERAND,
-            path=decision.matched_path,
-            rule=rule,
-        )
+        return Deny(rule.reason, path=decision.matched_path, rule=rule)
 
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
         if redirect_target_judged(ctx.path.virtual):

@@ -17,6 +17,7 @@ import type { Decisions } from './decisions.ts'
 import type { Policies } from './policies.ts'
 import { postVfsGate, preVfsGate } from './policies.ts'
 import type { MountMode, PathSpec } from '../types.ts'
+import type { VfsCall } from '../vfs/types.ts'
 
 /** The POSIX policy boundary for dispatched filesystem operations: the
  * ordered builtin and user policies, the owning mount prefix, its
@@ -33,23 +34,26 @@ export class Boundary {
   ) {}
 
   async admit(
-    op: string,
+    call: VfsCall,
     path: PathSpec,
     write: boolean,
-    access: { create?: boolean; subtree?: boolean; checkHidden?: boolean; final?: boolean } = {},
+    access: { checkHidden?: boolean; final?: boolean } = {},
     issuer?: symbol,
   ): Promise<void> {
-    await preVfsGate(this.policies, op, path, write, this.prefix, this.sessionId, issuer, {
+    await preVfsGate(this.policies, call, path, write, this.prefix, this.sessionId, issuer, {
       ...(this.mode === undefined ? {} : { mode: this.mode }),
       decisions: this.decisions,
       ...access,
     })
   }
 
-  async complete(op: string, path: PathSpec, write: boolean, result: unknown): Promise<unknown> {
+  async complete(call: VfsCall, path: PathSpec, write: boolean, result: unknown): Promise<unknown> {
     return limitResult(
       result,
-      await postVfsGate(this.policies, op, path, write, this.prefix, result),
+      await postVfsGate(this.policies, call, path, write, this.prefix, result, this.sessionId, {
+        ...(this.mode === undefined ? {} : { mode: this.mode }),
+        decisions: this.decisions,
+      }),
     )
   }
 }

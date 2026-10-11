@@ -63,11 +63,21 @@
       },
       "steps": [
         {
-          "command": "echo hi > /ram/locked/f.txt",
+          "facade": {
+            "method": "write",
+            "path": "/ram/locked/f.txt",
+            "data": "hi\n"
+          },
           "expect": {
-            "exit": 1,
-            "stdout": "",
-            "stderr": "/ram/locked/f.txt: Permission denied\n"
+            "errno": "EACCES"
+          }
+        },
+        {
+          "command": "mkdir -p /ram/locked && echo hi > /ram/locked/f.txt && cat /ram/locked/f.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "hi\n",
+            "stderr": ""
           }
         },
         {

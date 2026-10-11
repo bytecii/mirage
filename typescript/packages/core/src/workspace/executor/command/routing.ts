@@ -24,7 +24,8 @@ import {
   STDIN_DASH_COMMANDS,
   STDIN_DASH_LEADING,
 } from '../../../commands/spec/constants.ts'
-import type { CommandSpec } from '../../../commands/spec/types.ts'
+import { type CommandSpec, WordKind } from '../../../commands/spec/types.ts'
+import { CommandWord } from '../../../policy/types.ts'
 import { FlagView } from '../../../commands/spec/flag_view.ts'
 import { parseCommand, parseToKwargs } from '../../../commands/spec/parser.ts'
 import { DeviceInput, type ByteSource } from '../../../io/types.ts'
@@ -267,4 +268,77 @@ export function programTokens(
     }
   }
   return [[name, ...argv], [name]]
+}
+
+/**
+ * Each word's kind as a command's grammar reads it: an option, an option's
+ * value or an operand. A command no spec describes reads a dashed word as an
+ * option and anything else as an operand. `cli` says the spec is an
+ * installed CLI's node, whose undeclared dashed words are the program's own
+ * operands. Mirrors Python's `_parsed_kinds`.
+ */
+function parsedKinds(
+  spec: CommandSpec | undefined,
+  argv: readonly string[],
+  cwd: string,
+  cmdName: string,
+  cli = false,
+): WordKind[] {
+  if (spec === undefined) {
+    return argv.map((w) => (w.startsWith('-') && w !== '-' ? WordKind.OPTION : WordKind.OPERAND))
+  }
+  const parsed = parseCommand(spec, [...argv], cwd, cmdName, undefined, cli)
+  return parsed.wordRoles.map((role) => role ?? WordKind.OPERAND)
+}
+
+/**
+ * The command line word by word, each with its kind and the path it names.
+ * The name comes first and the redirect targets last. An installed CLI's
+ * verbs are read off its tree and its leaf's words off the leaf's grammar;
+ * any other command's words off its own spec. Mirrors Python's
+ * `command_words`.
+ */
+export function commandWords(
+  registry: MountRegistry,
+  name: string,
+  argv: readonly string[],
+  classified: readonly (string | PathSpec)[],
+  redirects: readonly PathSpec[],
+  cwd: string,
+): CommandWord[] {
+  const install = registry.clis.get(name)
+  const result = install !== null ? walk(name, install.cli.spec, argv, cwd) : null
+  let kinds: WordKind[]
+  if (install !== null && result !== null && result.leaf !== null) {
+    const lead = argv.length - result.argv.length
+    kinds = [
+      ...argv
+        .slice(0, lead)
+        .map((word, i) =>
+          result.verbPositions.includes(i)
+            ? WordKind.SUBCOMMAND
+            : word.startsWith('-')
+              ? WordKind.OPTION
+              : WordKind.VALUE,
+        ),
+      ...parsedKinds(result.leaf, argv.slice(lead), cwd, name, true),
+    ]
+  } else {
+    kinds = parsedKinds(SPECS[name], argv, cwd, name)
+  }
+  const words = [new CommandWord(name, WordKind.NAME)]
+  let option: string | null = null
+  argv.forEach((text, index) => {
+    const kind = kinds[index] ?? WordKind.OPERAND
+    const word = classified[index]
+    const path = word instanceof PathSpec ? word : null
+    words.push(new CommandWord(text, kind, kind === WordKind.VALUE ? option : null, path))
+    if (kind === WordKind.OPTION) option = text
+  })
+  for (const p of redirects) {
+    words.push(
+      new CommandWord(p.rawPath !== '' ? p.rawPath : p.virtual, WordKind.REDIRECT, null, p),
+    )
+  }
+  return words
 }

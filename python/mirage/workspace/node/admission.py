@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,7 @@ from mirage.policy import (
     Claimant,
     CommandContext,
     CommandRule,
+    CommandWord,
     Deny,
     HandOff,
     Pending,
@@ -34,7 +36,6 @@ from mirage.policy import (
     policy_denied,
     refusal_of,
     render_deny,
-    render_pending,
 )
 from mirage.policy.builtin.permissions import PermissionsPolicy
 from mirage.policy.match import (
@@ -47,7 +48,6 @@ from mirage.policy.match import (
 )
 from mirage.runtime.routing import command_nodes
 from mirage.shell import parse
-from mirage.shell.bytes import encode_text
 from mirage.shell.helpers import (
     get_parts,
     get_redirects,
@@ -64,9 +64,9 @@ from mirage.workspace.executor.builtins.links.links import follow_paths
 from mirage.workspace.executor.builtins.scope import _to_scope
 from mirage.workspace.executor.command.routing import (
     CWD_DEFAULT_RAW,
+    command_words,
     default_cwd_operand,
     path_flag_scopes,
-    positional_scopes,
     program_tokens,
 )
 from mirage.workspace.expand.classify import classify_parts
@@ -82,7 +82,6 @@ from mirage.workspace.lookup import (
     WordPolicy,
     follows_last_component,
     is_tool,
-    listed,
     lookup,
     reads_subtrees,
     walks_mounts,
@@ -119,12 +118,11 @@ class Refused:
 
     Args:
         stderr (bytes): the message, newline-terminated.
-        exit_code (int): 127 for a word the session cannot see, 126 for
-            a whole-command refusal or an unanswered ask, the operand
-            code (1, tar 2) for an operand-scoped refusal.
+        exit_code (int): 126 for a whole-command refusal or an
+            unanswered ask, the operand code (1, tar 2) for a refusal
+            about a path or carrying an error.
         refusal (Refusal | None): the record the result carries
-            beside stderr; None on the 127 row, which must not say
-            the word names anything.
+            beside stderr; None for the filesystem's own error.
     """
 
     stderr: bytes
@@ -153,34 +151,31 @@ class Admitted:
 
     Args:
         rules (AdmissionRules | None): the session's admission rules.
-        tokens (tuple[str, ...]): the line's tokens, command name first.
+        ctx (CommandContext): what ``pre_command`` judged the command on,
+            which ``post_command`` extends with what came back.
         judged (frozenset[str]): the virtual paths the gate judged.
         granted (tuple[CommandRule, ...]): the ask rules the line runs
             under a grant for: the one the entry point answered for this
             line, and the session's standing ones.
         scoped (bool): whether a path rule in force reads this
-            command's paths, or a pre_vfs policy speaks for its session
-            (``EntryGate.scoped``).
-        ops_judged (bool): whether a coded or scripted pre_vfs policy
-            speaks for the session, which judges every path.
+            command's paths (``EntryGate.scoped``).
     """
 
     rules: AdmissionRules | None
-    tokens: tuple[str, ...]
+    ctx: CommandContext
     judged: frozenset[str]
     granted: tuple[CommandRule, ...]
     scoped: bool
-    ops_judged: bool = False
 
     def scopes(self, virtual: str) -> bool:
         """Whether anything at or under this path could be refused for
-        the running command: a coded or scripted pre_vfs policy judges
-        every path, and a rule in force any path its scope could cover.
+        the running command: a rule in force at any path its scope could
+        cover. No coded pre_vfs policy judges a command's own I/O.
 
         Args:
             virtual (str): absolute virtual path of a walk's start point.
         """
-        return self.ops_judged or io_reach(self.rules, self.tokens, virtual)
+        return io_reach(self.rules, self.ctx.tokens, virtual)
 
     def check(self, virtual: str) -> None:
         """Raise ``PolicyDenied`` when a rule in force refuses this entry
@@ -213,7 +208,7 @@ class Admitted:
         """
         if _norm(virtual) in self.judged:
             return None
-        return io_refusal(self.rules, self.tokens, virtual, self.granted)
+        return io_refusal(self.rules, self.ctx.tokens, virtual, self.granted)
 
 
 def policy_scopes(
@@ -325,6 +320,34 @@ def _seen(
     )
 
 
+def _seen_words(
+    session: SessionState,
+    words: tuple[CommandWord, ...],
+    unread: frozenset[str],
+) -> tuple[CommandWord, ...]:
+    """The words a policy is shown, a path ``_seen`` drops taken off the
+    word that names it, so a policy reads the word and never the path.
+
+    Args:
+        session (SessionState): the session running the line.
+        words (tuple[CommandWord, ...]): the command's words.
+        unread (frozenset[str]): virtual paths the reader cannot vouch
+            for, as ``gate`` takes them.
+    """
+    shown = {
+        p.virtual
+        for p in _seen(
+            session, [w.path for w in words if w.path is not None], unread
+        )
+    }
+    return tuple(
+        w
+        if w.path is None or w.path.virtual in shown
+        else dataclasses.replace(w, path=None)
+        for w in words
+    )
+
+
 async def gate(
     name: str,
     args: list[str],
@@ -338,12 +361,11 @@ async def gate(
     intrinsic: bool = False,
     unread: frozenset[str] = frozenset(),
     every: bool = False,
-) -> (
-    Refused | tuple[CommandContext, Deny | Ask | None, tuple[Deny | Ask, ...]]
-):
+    rules_only: bool = False,
+) -> tuple[CommandContext, Deny | Ask | None, tuple[Deny | Ask, ...]]:
     """Everything the gate decides about one command before anything is
-    spent on it: visibility, the classified context, and the policy
-    chain's answer with the answers it came from.
+    spent on it: the classified context, and the policy chain's answer
+    with the answers it came from.
 
     Split out of :func:`admit` so a dry run can have the answer without
     the consequences. Nothing here records a request, consumes a grant
@@ -372,15 +394,16 @@ async def gate(
             the real ones and passes none.
         every (bool): ask every policy past a Deny, for ``explain``;
             the gate's own answers end at the first Deny.
+        rules_only (bool): ask the profile's rules alone, for a pass
+            that judges a line before it runs; a policy's own
+            ``pre_command`` is asked once, by the gate that runs the
+            command.
 
     Returns:
-        A Refused when the session cannot see the head word, else the
-        context, the chain's answer (the first Deny, else the first
+        The context, the chain's answer (the first Deny, else the first
         Ask) and every answer it came from.
     """
     tool = intrinsic or is_tool(name, session)
-    if tool and not listed(name, session):
-        return Refused(encode_text(f"{name}: command not found\n"), 127)
     tokens, program = program_tokens(registry, name, args, session.cwd)
     implied = (
         default_cwd_operand(
@@ -389,6 +412,15 @@ async def gate(
         if name in CWD_DEFAULT_RAW
         else None
     )
+    # The hooks read the session this command is judged in, which for a
+    # line explain walks is the walked one, not the stored one.
+    views = registry.policies.views
+    handles = (
+        views(session.session_id, session)
+        if views is not None and not rules_only
+        else None
+    )
+    view, ns, vfs = handles or (None, None, None)
     ctx = CommandContext(
         command=name,
         paths=_seen(
@@ -404,22 +436,28 @@ async def gate(
             ),
             unread,
         ),
-        operands=_seen(
+        words=_seen_words(
             session,
-            positional_scopes(name, args, session.cwd, list(operands)),
+            command_words(
+                registry, name, args, operands, redirects, session.cwd
+            ),
             unread,
         ),
         argv=tuple(args),
         cwd=session.cwd,
-        registry=registry,
         session_id=session.session_id,
         agent_id=agent_id,
         tokens=tokens,
         program=program,
         tool=tool,
         walks=walks_mounts(name, [name, *args]),
+        session=view,
+        ns=ns,
+        vfs=vfs,
     )
-    said = await registry.policies.answers("pre_command", ctx, every)
+    said = await registry.policies.answers(
+        "pre_command", ctx, every, rules_only
+    )
     answers = tuple(a for a in said if isinstance(a, (Deny, Ask)))
     first = answers[0] if answers else None
     return (
@@ -443,16 +481,16 @@ async def admit(
     claimant: Claimant | None = None,
     intrinsic: bool = False,
     unread: frozenset[str] = frozenset(),
+    rules_only: bool = False,
 ) -> Refused | Admitted:
-    """The command plane's admission of one command: visibility, then
-    the policy chain, then the decision ledger.
+    """The command plane's admission of one command: the policy chain,
+    then the decision ledger.
 
     The one gate every command class passes through, in the tree
     (``_run_argv``, once the words are expanded) and for a line a
     runtime takes whole (``admit_line``, per parsed command). A word
-    the session's allow lists do not install is bash's "command not
-    found" before any admission hook, so an unlisted tool never leaks
-    a deny reason; a path the session cannot see is dropped before any
+    the session's allow list leaves out is the profile's Deny, like any
+    other rule's; a path the session cannot see is dropped before any
     hook, so a rule never names it and the dispatcher answers ENOENT; a Deny
     renders in the outcome table's voice; an Ask is answered by the
     entry point from the session's grants or the host. A command that gets
@@ -491,6 +529,8 @@ async def admit(
             ledger either way.
         unread (frozenset[str]): paths no policy is shown, as ``gate``
             takes them.
+        rules_only (bool): ask the profile's rules alone, as ``gate``
+            takes it.
     """
     gated = await gate(
         name,
@@ -504,9 +544,8 @@ async def admit(
         redirects,
         intrinsic=intrinsic,
         unread=unread,
+        rules_only=rules_only,
     )
-    if isinstance(gated, Refused):
-        return gated
     ctx, asked, _ = gated
     # An Ask is the chain's answer only after every Deny had its say;
     # the ledger answers it from the session's records or the host, so
@@ -529,24 +568,16 @@ async def admit(
             if r.scope is Scope.SESSION and r.outcome is Outcome.ALLOW
         ]
         if isinstance(asked, Ask):
-            granted.insert(0, ask_rule(ctx, asked))
+            granted[:0] = asked.rules or (ask_rule(ctx, asked),)
         rules = session.commands
-        ops_judged = await registry.policies.wants_for(
-            "pre_vfs", session.session_id
-        )
         return Admitted(
             rules=rules,
-            tokens=ctx.tokens,
+            ctx=ctx,
             judged=frozenset(_norm(p.virtual) for p in ctx.paths),
             granted=tuple(granted),
-            scoped=scopes_paths(rules, name) or ops_judged,
-            ops_judged=ops_judged,
+            scoped=scopes_paths(rules, name),
         )
-    err, code = (
-        render_pending(name, action)
-        if isinstance(action, Pending)
-        else render_deny(name, action)
-    )
+    err, code = render_deny(name, action)
     return Refused(err, code, refusal_of(action))
 
 
@@ -879,6 +910,13 @@ async def admit_line(
         words = [read_word(part, home) for part in parts]
         if not words:
             continue
+        if registry.policies.wants("post_command"):
+            # The runtime runs the commands itself: no command's result
+            # comes back for a post_command policy to judge.
+            return _refuse(
+                words[0].raw,
+                "a post_command policy cannot judge a line a runtime runs whole",
+            )
         refusal = await _admit_words(
             words,
             open_,

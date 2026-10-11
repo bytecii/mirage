@@ -488,7 +488,7 @@ class _CountingPre(Policy):
         self.calls = []
 
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        self.calls.append((ctx.op, ctx.path.virtual))
+        self.calls.append((ctx.call.name, ctx.path.virtual))
         return None
 
 
@@ -497,8 +497,8 @@ class _WriteOnly(Policy):
         self.calls = []
 
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        self.calls.append((ctx.op, ctx.write))
-        return Deny("write-only") if ctx.op == "read" else None
+        self.calls.append((ctx.call.name, ctx.write))
+        return Deny("write-only") if ctx.call.name == "read" else None
 
 
 class _DenyEverything(Policy):

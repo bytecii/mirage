@@ -657,15 +657,6 @@ class MountEntry:
             )
         return dict(sorted(result.items()))
 
-    def writes(self, name: str) -> bool:
-        """Whether the VFS declares the function ``op_name`` a write.
-
-        Args:
-            name (str): the op name.
-        """
-        mark = declared(type(self.vfs), name)
-        return mark is not None and mark.effect in WRITE_EFFECTS
-
     def require_writable(
         self, name: str, path: PathSpec, values: Iterable[Any]
     ) -> None:

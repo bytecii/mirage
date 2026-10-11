@@ -28,7 +28,7 @@ import {
 //
 //   a coded Policy     an object passed as `policies: [...]`. It runs in
 //                      this process, needs no engine, may define any of
-//                      the five hooks, and speaks for every session: the
+//                      the eight hooks, and speaks for every session: the
 //                      operator's own rule.
 //   a profile policy   a program passed as a profile's `policy` block,
 //                      source plus the engine that runs it. It runs
@@ -61,8 +61,8 @@ def pre_command(ctx):
     return None
 
 def pre_vfs(ctx):
-    op = ctx["op"]
-    if op["write"] and op["path"].startswith("/scratch/cold/"):
+    call = ctx["call"]
+    if call["write"] and call["path"].startswith("/scratch/cold/"):
         return {"deny": "the cold store is frozen"}
     return None
 
@@ -84,9 +84,6 @@ const SEED = [
 const LINES: [string, string, string][] = [
   ['reviewer', 'cat /repo/notes.txt', 'pre_command read the file and found no marker'],
   ['reviewer', 'cat /repo/flagged.txt', 'and refuses one that holds it; the reason is for the operator'],
-  ['reviewer', 'cat /scratch/cold/k', 'pre_vfs lets a read through'],
-  ['reviewer', 'echo x > /scratch/cold/f', 'and refuses a write at the dispatcher'],
-  ['reviewer', 'rm /scratch/cold/k', 'whichever command asked for it'],
   ['reviewer', 'export AWS_SECRET=x', 'the coded policy, at the session view'],
   ['reviewer', 'export SAFE=1 && echo $SAFE', 'silence where no hook objects'],
   ['host', 'cat /repo/flagged.txt', 'no profile, so no program'],

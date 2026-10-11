@@ -12,44 +12,24 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Sequence
-
 from mirage.policy.match.pattern import pattern_matches, pattern_reaches
 from mirage.policy.types import AdmissionRules, CommandContext
 
 
-def node_visible(path: Sequence[str], rules: AdmissionRules | None) -> bool:
-    """Whether a session can see one node of a program tree.
+def head_allowed(name: str, rules: AdmissionRules | None) -> bool:
+    """Whether a session's allow list has a pattern for a command name.
 
-    A profile without an allow list hides nothing; a profile with one hides
-    every node no pattern of it reaches. Only a CLI's verbs can be
-    narrowed this way, and only because the walk canonicalizes them
-    (an alias resolved, the global options before the verb dropped)
-    before any pattern is read. A flag has no such normal form, so a
-    pattern never means to speak about one.
-
-    Args:
-        path (Sequence[str]): the node's canonical words, head first.
-        rules (AdmissionRules | None): the session's admission rules.
-    """
-    if rules is None or rules.allow is None:
-        return True
-    return any(pattern_reaches(p, path) for p in rules.allow)
-
-
-def head_visible(name: str, rules: AdmissionRules | None) -> bool:
-    """Whether a session can see a command at all.
-
-    A profile without an allow list hides nothing; a profile with one hides
-    every name none of its patterns start with, builtins included.
-    Shell functions are the caller's exemption, not this one's. The
-    head-word case of :func:`node_visible`.
+    A profile without an allow list allows everything; a profile with
+    one allows the names its patterns start with, builtins included.
+    Shell functions are the caller's exemption, not this one's.
 
     Args:
         name (str): the command name.
         rules (AdmissionRules | None): the session's admission rules.
     """
-    return node_visible((name,), rules)
+    if rules is None or rules.allow is None:
+        return True
+    return any(pattern_reaches(p, (name,)) for p in rules.allow)
 
 
 def line_tokens(ctx: CommandContext) -> tuple[str, ...]:

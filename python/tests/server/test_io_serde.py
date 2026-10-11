@@ -55,7 +55,6 @@ def test_failure_keeps_the_policy_refusal_record():
             "kind": "pending",
             "reason": "sign-off",
             "policy": "",
-            "scope": "command",
             "ask_id": "abc123",
         },
     }
@@ -85,7 +84,6 @@ async def test_a_refused_result_carries_the_record():
         "kind": "pending",
         "reason": "sign-off",
         "policy": "",
-        "scope": "command",
         "ask_id": "abc123",
     }
 

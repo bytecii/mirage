@@ -79,7 +79,7 @@ describe('session.explain.vfs', () => {
     await ws.vfs.write('/data/flag', 'closed')
     const flagged: Policy = {
       async preVfs(ctx: VfsContext): Promise<Deny | null> {
-        if (ctx.op !== 'write' || ctx.path.virtual === '/data/flag') return null
+        if (ctx.call.name !== 'write' || ctx.path.virtual === '/data/flag') return null
         const flag = new TextDecoder().decode(await ws.vfs.read('/data/flag'))
         return flag === 'closed' ? { kind: 'deny', reason: 'closed' } : null
       },
@@ -104,7 +104,7 @@ describe('session.explain.vfs', () => {
     }
     return {
       async preVfs(ctx: VfsContext): Promise<null> {
-        return ctx.op === 'write' && ctx.path.virtual === '/data/new' ? work() : null
+        return ctx.call.name === 'write' && ctx.path.virtual === '/data/new' ? work() : null
       },
       async preCommand(ctx: CommandContext): Promise<null> {
         return ctx.command === 'ls' ? work() : null
@@ -150,11 +150,12 @@ describe('session.explain.vfs', () => {
     await ws.decisions.answer(asked?.id ?? '', Outcome.ALLOW, Scope.SESSION)
     const errors: (string | undefined)[] = []
     ws.policies.add(busy(errors))
-    // Inside a line an ask refuses like a deny, approved or not.
+    // Inside a line an ask refuses like a deny, approved or not, and a
+    // hook writes nothing there either.
     await new Session(ws, 'agent').shell('ls /data/new')
-    expect(new Set(errors)).toEqual(new Set(['EACCES']))
+    expect(new Set(errors)).toEqual(new Set(['EACCES', 'EROFS']))
+    expect(await ws.vfs.exists('/data/stamp')).toBe(false)
     errors.length = 0
-    await ws.vfs.unlink('/data/stamp')
     await new Session(ws, 'agent').explain.shell('ls /data/new')
     expect(errors).toEqual(['EACCES', 'EROFS'])
   })

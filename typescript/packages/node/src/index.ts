@@ -448,7 +448,7 @@ export {
   type SessionContext,
   type ShellExplanation,
   type ShellNode,
-  type ShellOperand,
+  CommandWord,
   type VfsExplanation,
 } from '@struktoai/mirage-core/policy/index'
 export { LanguageRuntime } from '@struktoai/mirage-core/runtime/language'

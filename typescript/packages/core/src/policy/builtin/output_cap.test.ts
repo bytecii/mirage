@@ -21,6 +21,14 @@ import {
   resolveProducer,
   resolveLimit,
 } from './output_cap.ts'
+import { CALLS } from '../../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../../vfs/types.ts'
+
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 describe('Limit', () => {
   it('defaults to no limit + truncate', () => {
@@ -176,7 +184,7 @@ describe('OutputCapPolicy', () => {
       prefix === '/a/' && name === 'read' ? new Limit({ maxBytes: 4 }) : null,
     )
     const capped = policy.postVfs({
-      op: 'read',
+      call: callOf('read'),
       path: new PathSpec({ virtual: '/a/x', directory: '/a', vfsPath: '' }),
       write: false,
       prefix: '/a/',
@@ -184,7 +192,7 @@ describe('OutputCapPolicy', () => {
     })
     expect(capped).toEqual(new Limit({ maxBytes: 4 }))
     const silent = policy.postVfs({
-      op: 'write',
+      call: callOf('write'),
       path: new PathSpec({ virtual: '/a/x', directory: '/a', vfsPath: '' }),
       write: true,
       prefix: '/a/',

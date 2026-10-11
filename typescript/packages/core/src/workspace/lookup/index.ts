@@ -25,16 +25,13 @@ export {
   walksMounts,
 } from './constants.ts'
 export {
-  commandVisible,
   execs,
   isTool,
-  listed,
   lookup,
   lookupAll,
   program,
   programNote,
   programs,
   runtimeRefused,
-  verbVisible,
 } from './lookup.ts'
 export { Consumer, SHELL_CONSUMERS, WordPolicy, wordPolicy } from './types.ts'

@@ -179,7 +179,7 @@ it('virtual programs need only their own permission, including through links', a
       expect(stdoutStr(io)).toBe('two words\n')
     }
     const io = await ws.shell('/usr/bin/cat /work/say', { sessionId: 'narrow' })
-    expect(io.exitCode).toBe(127)
+    expect(io.exitCode).toBe(126)
   } finally {
     await ws.close()
   }

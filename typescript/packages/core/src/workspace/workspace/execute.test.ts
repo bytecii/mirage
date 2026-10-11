@@ -235,7 +235,7 @@ describe('the ambient session is scoped to its workspace', () => {
         mode: MountMode.WRITE,
         shellParser: parser,
         routePolicy: (ctx) => {
-          seen.push(ctx.cwd)
+          seen.push(ctx.session?.cwd() ?? '')
           return null
         },
       },

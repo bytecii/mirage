@@ -89,12 +89,12 @@ HOST_FD_CALLS = frozenset(
 
 class _NoStats(Policy):
     async def pre_vfs(self, ctx):
-        return Deny("no stat") if ctx.op == "stat" else None
+        return Deny("no stat") if ctx.call.name == "stat" else None
 
 
 class _NoReads(Policy):
     async def pre_vfs(self, ctx):
-        return Deny("no read") if ctx.op == "read" else None
+        return Deny("no read") if ctx.call.name == "read" else None
 
 
 def seeded():

@@ -15,7 +15,7 @@
       }
     },
     {
-      "id": "cmd_profile_hides_what_it_does_not_list",
+      "id": "cmd_profile_refuses_what_it_does_not_list",
       "seq": 923010,
       "targets": [
         "ram-commands"
@@ -23,9 +23,9 @@
       "session": "reviewer",
       "command": "python3 -c 1",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "python3: command not found\n"
+        "stderr": "python3: Permission denied\n"
       }
     },
     {
@@ -79,9 +79,9 @@
       "session": "reviewer",
       "command": "echo /scratch/z | xargs rm",
       "expect": {
-        "exit": 127,
+        "exit": 123,
         "stdout": "",
-        "stderr": "xargs: rm: No such file or directory\n"
+        "stderr": "rm: Permission denied\n"
       }
     },
     {
@@ -93,9 +93,9 @@
       "session": "reviewer",
       "command": "eval 'rm /scratch/z'",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "rm: command not found\n"
+        "stderr": "rm: Permission denied\n"
       }
     },
     {
@@ -107,9 +107,9 @@
       "session": "reviewer",
       "command": "f() { rm /scratch/z; }; f",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "rm: command not found\n"
+        "stderr": "rm: Permission denied\n"
       }
     },
     {
@@ -231,9 +231,9 @@
       "session": "speaker",
       "command": "value=$(< /scratch/locked/y)",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "cat: command not found\n"
+        "stderr": "cat: Permission denied\n"
       }
     },
     {
@@ -245,9 +245,9 @@
       "session": "speaker",
       "command": "(cat() { echo bypass; }; value=$(< /scratch/locked/y))",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "cat: command not found\n"
+        "stderr": "cat: Permission denied\n"
       }
     }
   ]

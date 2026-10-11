@@ -12,11 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from mirage.commands.spec.compile import compile_spec
-from mirage.policy.match import head_visible, node_visible
 from mirage.runtime.base import Runtime
 from mirage.runtime.constants import EXTERNAL_COMMANDS
 from mirage.runtime.language import LanguageRuntime
@@ -39,21 +38,6 @@ if TYPE_CHECKING:
     from mirage.workspace.mount import MountRegistry
 
 
-def listed(name: str, session: SessionState) -> bool:
-    """What the session's allow list says about a tool word.
-
-    A profile without a list installs everything; a profile with one installs
-    only the names its patterns start with (``head_visible``). This is
-    the raw answer; ``command_visible`` and ``_layers`` add the words
-    that are never subjects.
-
-    Args:
-        name (str): expanded command name.
-        session (SessionState): the shell session running the line.
-    """
-    return head_visible(name, session.commands)
-
-
 def is_tool(name: str, session: SessionState) -> bool:
     """Whether a command word is a tool the allow lists govern.
 
@@ -62,9 +46,8 @@ def is_tool(name: str, session: SessionState) -> bool:
     word are not, because neither is a name the list could hold: a path
     being executed (its lines are each checked as they run), and the
     agent's own function where the function is what runs, which in this
-    shell means a name no builtin owns (builtins shadow functions), so
-    a function cannot resurrect a hidden builtin, and its body's lines
-    each pass this gate themselves.
+    shell means a name no builtin owns (builtins shadow functions), and
+    its body's lines each pass the gate themselves.
 
     Args:
         name (str): expanded command name.
@@ -73,44 +56,6 @@ def is_tool(name: str, session: SessionState) -> bool:
     if "/" in name:
         return False
     return not (name in session.functions and name not in SHELL_NAMES)
-
-
-def command_visible(name: str, session: SessionState) -> bool:
-    """Whether a session can see a command word at all.
-
-    The profile's allow list (``commands.allow``) decides: a tool name no
-    pattern of it starts with is not installed for the session, so it
-    is 127 at the chokepoint and absent from every enumerator; a word
-    that is not a tool (``is_tool``) is always visible.
-
-    Args:
-        name (str): expanded command name.
-        session (SessionState): the shell session running the line.
-    """
-    return not is_tool(name, session) or listed(name, session)
-
-
-def verb_visible(
-    head: str, path: Sequence[str], session: SessionState
-) -> bool:
-    """Whether a session can see one node of an installed CLI's tree.
-
-    ``command_visible`` answers for a word, which is all dispatch needs:
-    a CLI is routed by its head word and the verbs after it are the
-    program's own operand. Discovery needs the finer answer, because a
-    profile allowed ``linear issue list`` is not allowed ``linear team``,
-    and a manual that lists the second is advertising a line that
-    cannot run. ``is_tool``'s exemptions have nothing to say here:
-    shell grammar and functions are single words, so a verb path only
-    ever belongs to a CLI whose head word already passed.
-
-    Args:
-        head (str): the installed head word, as typed.
-        path (Sequence[str]): canonical verb words after the head,
-            empty for the root.
-        session (SessionState): the shell session running the line.
-    """
-    return node_visible((head, *path), session.commands)
 
 
 def runtime_refused(
@@ -142,19 +87,15 @@ def _layers(
     The one place precedence is written down: ``lookup`` reads the first
     yield and ``lookup_all`` reads all of them. Lazy on purpose, so the
     winner costs exactly what it did before the split (a name an
-    installed CLI answers never reaches the mount lookup). The
-    document's visibility filter lives here too, so ``type``, ``which``,
-    ``command -v`` and dispatch agree on what a session can see: an
-    unlisted word yields nothing, builtins included (only functions are
-    not subjects, and a function named after a hidden builtin is as
-    unreachable as the builtin).
+    installed CLI answers never reaches the mount lookup). A profile's
+    allow list does not narrow it: a word the list leaves out is found,
+    and the policy gate refuses it.
 
     Args:
         name (str): expanded command name.
         session (SessionState): shell session (function table).
         registry (MountRegistry): mount registry (command registration).
     """
-    installed = listed(name, session)
     found = False
     bindings = (
         routing.bindings if routing is not None else registry.runtime_bindings
@@ -166,28 +107,26 @@ def _layers(
     )
     native = isinstance(bound, (LineExecutorMixin, ProcessExecutorMixin))
     refused = runtime_refused(name, session, registry, routing)
-    if name in SHELL_NAMES and installed:
+    if name in SHELL_NAMES:
         found = True
         yield (
             Consumer.EXTERNAL
             if (native or refused) and name in CAPTURABLE_BUILTINS
             else Consumer.SESSION
         )
-    if installed and name in NAMESPACE_COMMANDS:
+    if name in NAMESPACE_COMMANDS:
         found = True
         yield Consumer.NAMESPACE
-    if name in session.functions and (installed or name not in SHELL_NAMES):
+    if name in session.functions:
         found = True
         yield Consumer.FUNCTION
-    if installed and registry.clis.get(name) is not None:
+    if registry.clis.get(name) is not None:
         found = True
         yield Consumer.CLI
-    if installed and (native or refused) and name not in SHELL_NAMES:
+    if (native or refused) and name not in SHELL_NAMES:
         found = True
         yield Consumer.EXTERNAL
-    if installed and (
-        name in ROUTED_COMMANDS or registry.mount_for_command(name) is not None
-    ):
+    if name in ROUTED_COMMANDS or registry.mount_for_command(name) is not None:
         found = True
         yield Consumer.MOUNT
     fallback = (
@@ -199,8 +138,7 @@ def _layers(
         fallback, (LineExecutorMixin, ProcessExecutorMixin)
     )
     if (
-        installed
-        and not found
+        not found
         and name not in bindings
         and name not in registry.runtime_unavailable
         and (fallback_native or refused)

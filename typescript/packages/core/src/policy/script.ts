@@ -26,7 +26,6 @@ import { DEFAULT_ASK_REASON, DEFAULT_DENY_REASON } from './constants.ts'
 import { SESSION_SCOPED, type SessionScoped } from './mixin.ts'
 import { SCRIPT_EVAL_TIMEOUT } from '../runtime/constants.ts'
 import {
-  VALIDITY,
   type Action,
   type Ask,
   type CommandContext,
@@ -61,8 +60,8 @@ const SCRIPT_HOOKS = Object.keys(HOOKS) as readonly ScriptHook[]
  * The same facts on both hosts, JSON-shaped because the script runs
  * inside a sandboxed engine that a live object cannot cross into.
  * Paths are spelled as resolved virtual paths, so a script matches what
- * the command will actually touch, not what was typed; the raw words
- * are in `argv` for a script that wants them.
+ * the command will actually touch, not what was typed; the words, each
+ * with its kind, are in `words`.
  */
 export function scriptContext(
   profile: string,
@@ -73,18 +72,15 @@ export function scriptContext(
     profile,
     command: {
       name: ctx.command,
-      argv: [...ctx.argv],
-      tokens: [...(ctx.tokens ?? [])],
-      program: [...(ctx.program ?? [])],
+      words: (ctx.words ?? []).map((word) => word.toDict()),
       paths: ctx.paths.map((path) => path.virtual),
-      operands: (ctx.operands ?? []).map((path) => path.virtual),
-      tool: ctx.tool ?? true,
       walks: ctx.walks ?? false,
     },
     session: {
       id: ctx.sessionId ?? '',
       agent: ctx.agentId ?? '',
       cwd: ctx.cwd,
+      env: ctx.session?.snapshot() ?? {},
     },
     mounts: [...mounts],
   }
@@ -101,8 +97,21 @@ export function opsScriptContext(
 ): Record<string, EvalValue> {
   return {
     profile,
-    op: { name: ctx.op, path: ctx.path.virtual, write: ctx.write, prefix: ctx.prefix },
-    session: { id: ctx.sessionId ?? '' },
+    call: {
+      name: ctx.call.name,
+      effect: ctx.call.effect,
+      target: ctx.call.target,
+      creates: ctx.call.creates,
+      subtree: ctx.call.subtree,
+      path: ctx.path.virtual,
+      write: ctx.write,
+      prefix: ctx.prefix,
+    },
+    session: {
+      id: ctx.sessionId ?? '',
+      cwd: ctx.session?.cwd() ?? '',
+      env: ctx.session?.snapshot() ?? {},
+    },
     mounts: [...mounts],
   }
 }
@@ -119,7 +128,11 @@ export function sessionScriptContext(
   return {
     profile,
     write: { plane: ctx.plane, verb: ctx.verb, key: ctx.key, value: ctx.value },
-    session: { id: ctx.sessionId },
+    session: {
+      id: ctx.sessionId,
+      cwd: ctx.session?.cwd() ?? '',
+      env: ctx.session?.snapshot() ?? {},
+    },
     mounts: [...mounts],
   }
 }
@@ -130,20 +143,17 @@ export function sessionScriptContext(
  * The vocabulary is the coded hook's own, spelled as data: null or
  * `'allow'` is no opinion (the command runs unless another rule refuses
  * it, and can never override one that does), `'deny'` / `{deny: reason}`
- * refuses, and at `preCommand` and `preVfs` `'ask'` / `{ask: reason}`
- * takes the line (or an op no line is running behind) to the approval
- * ledger, since the session view cannot wait on a host (`VALIDITY`). The
- * bare strings carry the document's default reasons, the same ones a rule
- * stating no reason gets.
+ * refuses, and `'ask'` / `{ask: reason}` takes it to the approval ledger,
+ * as every hook may (`VALIDITY`). The bare strings carry the document's
+ * default reasons, the same ones a rule stating no reason gets.
  *
  * Throws a plain Error whose message is a clause about "script", for
  * the caller to prefix with whose policy it is.
  */
-export function scriptAction(value: EvalValue, hook: ScriptHook = 'preCommand'): Deny | Ask | null {
-  const asks = VALIDITY[hook].has('ask')
+export function scriptAction(value: EvalValue): Deny | Ask | null {
   if (value === null || value === 'allow') return null
   if (value === 'deny') return { kind: 'deny', reason: DEFAULT_DENY_REASON }
-  if (asks && value === 'ask') return { kind: 'ask', reason: DEFAULT_ASK_REASON }
+  if (value === 'ask') return { kind: 'ask', reason: DEFAULT_ASK_REASON }
   if (typeof value === 'object' && !Array.isArray(value) && !(value instanceof Uint8Array)) {
     const entries = Object.entries(value)
     if (entries.length === 1) {
@@ -152,20 +162,14 @@ export function scriptAction(value: EvalValue, hook: ScriptHook = 'preCommand'):
         const [verb, reason] = first
         if (typeof reason === 'string' && reason !== '') {
           if (verb === 'deny') return { kind: 'deny', reason }
-          if (asks && verb === 'ask') return { kind: 'ask', reason }
+          if (verb === 'ask') return { kind: 'ask', reason }
         }
       }
     }
   }
-  if (asks) {
-    throw new Error(
-      `script must answer allow, deny or ask: null or 'allow', 'deny', 'ask', ` +
-        `{deny: reason} or {ask: reason}; got ${JSON.stringify(value)}`,
-    )
-  }
   throw new Error(
-    `script must answer allow or deny: null or 'allow', 'deny' or {deny: reason}; ` +
-      `got ${JSON.stringify(value)}`,
+    `script must answer allow, deny or ask: null or 'allow', 'deny', 'ask', ` +
+      `{deny: reason} or {ask: reason}; got ${JSON.stringify(value)}`,
   )
 }
 
@@ -393,7 +397,7 @@ export class ScriptPolicy implements Policy, SessionScoped {
       return failed(entry, clause(err))
     }
     try {
-      return scriptAction(value, hook)
+      return scriptAction(value)
     } catch (err) {
       return failed(entry, clause(err))
     }

@@ -103,7 +103,7 @@ class SealReadsPolicy implements Policy {
 class RedactReadsPolicy implements Policy {
   postVfs(ctx: VfsResultContext): Action | null {
     const data = ctx.result instanceof Uint8Array ? new TextDecoder().decode(ctx.result) : null
-    if (ctx.op === 'read' && data !== null && data.includes('TOPSECRET')) {
+    if (ctx.call.name === 'read' && data !== null && data.includes('TOPSECRET')) {
       return { kind: 'deny', reason: 'redacted' }
     }
     return null
@@ -151,7 +151,7 @@ async function runPolicyProbe(
 // is a LINK_ENTRY_OPS member so the dispatcher answers a link path itself.
 class PinLinksPolicy implements Policy {
   preVfs(ctx: VfsContext): Action | null {
-    if (ctx.op === 'unlink' && ctx.path.virtual.endsWith('.pinned')) {
+    if (ctx.call.name === 'unlink' && ctx.path.virtual.endsWith('.pinned')) {
       return { kind: 'deny', reason: 'pinned' }
     }
     return null

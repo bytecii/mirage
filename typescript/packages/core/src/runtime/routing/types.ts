@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { EvalValue, RuntimeIdentity, ScriptSource } from '../types.ts'
+import type { NamespaceView, SessionView } from '../../view/types.ts'
 
 /** One command of the line being routed, distilled from the parse. */
 export interface ParsedCommand {
@@ -48,7 +49,7 @@ export interface ParsedCommand {
  * ]
  * ctx.command  === 'python3' // the runtime's first captured stage
  * ctx.builtin  === true
- * ctx.cwd      === '/data'
+ * ctx.session.cwd() === '/data'
  * ```
  *
  * The global policy script sees the same context with
@@ -62,11 +63,12 @@ export interface RouteContext {
   commands: readonly ParsedCommand[]
   command: string
   builtin: boolean
-  cwd: string
-  env: Record<string, string>
   sessionId: string
   agentId: string
-  mounts: readonly string[]
+  /** The session (cwd, env), read only: a write through it is refused. */
+  session?: SessionView
+  /** The session's namespace. */
+  ns?: NamespaceView
 }
 
 /**
@@ -77,10 +79,11 @@ export interface RouteContext {
  * identical in both languages, so a script in any evaluator's
  * language (and any transport, in-process or remote) receives the
  * same structure. Keys: line, commands (command/words/builtin/paths/
- * cli per stage), command, builtin, cwd, env, session_id, agent_id,
- * mounts, plus runtime (name/captures) for per-runtime scripts.
- * routeContextFromPayload is the inverse, so a payload can be stored
- * as JSON and replayed.
+ * cli per stage), command, builtin, session_id, agent_id, session (cwd,
+ * env), mounts (the mount roots under `/` the session may be told
+ * about), plus runtime (name/captures) for per-runtime scripts.
+ * routeContextFromPayload is the inverse for the line's own fields, so a
+ * payload can be stored as JSON and replayed.
  */
 export function routeContextPayload(
   ctx: RouteContext,
@@ -97,11 +100,13 @@ export function routeContextPayload(
     })),
     command: ctx.command,
     builtin: ctx.builtin,
-    cwd: ctx.cwd,
-    env: { ...ctx.env },
     session_id: ctx.sessionId,
     agent_id: ctx.agentId,
-    mounts: [...ctx.mounts],
+    session: {
+      cwd: ctx.session?.cwd() ?? '',
+      env: ctx.session?.snapshot() ?? {},
+    },
+    mounts: ctx.ns?.mounts?.visibleDescendants('/') ?? [],
   }
   if (runtime !== undefined) {
     payload.runtime = { name: runtime.name, captures: [...runtime.captures] }
@@ -111,10 +116,10 @@ export function routeContextPayload(
 
 /**
  * Rebuild a context from its wire-schema payload: the inverse of
- * routeContextPayload for the context's own fields (the payload's
- * `runtime` block is per-consultation decoration and is ignored), so
- * a stored JSON payload replays through scripts and routes in tests
- * or debugging.
+ * routeContextPayload for the line's own fields (the payload's
+ * `session` and `mounts` come from live handles and its `runtime` block
+ * from the consultation, so they are ignored), so a stored JSON payload
+ * replays through scripts and routes in tests or debugging.
  */
 export function routeContextFromPayload(payload: Record<string, unknown>): RouteContext {
   const commands = (payload.commands as Record<string, unknown>[]).map((c) => ({
@@ -129,11 +134,8 @@ export function routeContextFromPayload(payload: Record<string, unknown>): Route
     commands,
     command: String(payload.command),
     builtin: Boolean(payload.builtin),
-    cwd: String(payload.cwd),
-    env: { ...(payload.env as Record<string, string>) },
     sessionId: String(payload.session_id),
     agentId: String(payload.agent_id),
-    mounts: (payload.mounts as string[]).slice(),
   }
 }
 

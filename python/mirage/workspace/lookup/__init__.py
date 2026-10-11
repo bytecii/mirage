@@ -27,17 +27,14 @@ from mirage.workspace.lookup.constants import (
     walks_mounts,
 )
 from mirage.workspace.lookup.lookup import (
-    command_visible,
     execs,
     is_tool,
-    listed,
     lookup,
     lookup_all,
     program,
     program_note,
     programs,
     runtime_refused,
-    verb_visible,
 )
 from mirage.workspace.lookup.types import (
     SHELL_CONSUMERS,
@@ -62,9 +59,7 @@ __all__ = [
     "walks_mounts",
     "WordPolicy",
     "lookup",
-    "command_visible",
     "execs",
-    "listed",
     "SHELL_NAMES",
     "is_tool",
     "lookup_all",
@@ -72,6 +67,5 @@ __all__ = [
     "program_note",
     "programs",
     "runtime_refused",
-    "verb_visible",
     "word_policy",
 ]

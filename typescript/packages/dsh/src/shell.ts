@@ -383,7 +383,7 @@ class MirageShellExecution implements ShellExecution {
     // printed in bash's own words.
     if (result !== null) {
       const before = this.stderrTail.readFrom(0).text
-      const line = refusalLine(before, result.refusal)
+      const line = refusalLine(result.refusal)
       if (line !== '') {
         const lead = before === '' || before.endsWith('\n') ? '' : '\n'
         await this.console.emit(Channel.STDERR, new TextEncoder().encode(lead + line))

@@ -196,7 +196,7 @@ async def test_virtual_program_needs_only_its_own_permission(ws):
         assert io.exit_code == 0
         assert io.stdout == b"two words\n"
     io = await ws.shell("/usr/bin/cat /work/say", session_id="narrow")
-    assert io.exit_code == 127
+    assert io.exit_code == 126
 
 
 @pytest.mark.asyncio

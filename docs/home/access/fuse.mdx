@@ -55,7 +55,7 @@ With the `mirage` CLI the server runs on your machine, so the first way puts the
   </Step>
 </Steps>
 
-The server mounts the folders when it creates the workspace and unmounts them when the workspace is closed or deleted. A folder belongs to no session, so no [profile](/home/permissions) applies: it sees each mount as the mount's mode allows, and a write to a `READ` mount fails with "Read-only file system". On macOS a process holds one FUSE mount at a time, so the server can serve one folder there.
+The server mounts the folders when it creates the workspace and unmounts them when the workspace is closed or deleted. A folder belongs to no session, so no [profile](/home/policy/overview) applies: it sees each mount as the mount's mode allows, and a write to a `READ` mount fails with "Read-only file system". On macOS a process holds one FUSE mount at a time, so the server can serve one folder there.
 
 ## On your machine
 

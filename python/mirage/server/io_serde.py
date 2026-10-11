@@ -137,15 +137,14 @@ def explanation_to_dict(expl: Explanation) -> dict[str, JsonValue]:
             "type": expl.type,
             "text": expl.text,
             "command": expl.command,
-            "argv": list(expl.argv),
+            "words": [
+                {key: value for key, value in word.to_dict().items()}
+                for word in expl.words
+            ],
             **verdict,
             "exit_code": expl.exit_code,
             "stderr": expl.stderr,
             "runtime": expl.runtime,
-            "operands": [
-                {"text": o.text, "path": o.path, "matched": o.matched}
-                for o in expl.operands
-            ],
             "children": [_node_to_dict(c) for c in expl.children],
         }
     return verdict

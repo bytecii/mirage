@@ -14,34 +14,25 @@
 
 import pytest
 
-from mirage.policy import Deny, Policy
-from mirage.policy.types import Action, VfsContext
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
-
-
-class _SealedReads(Policy):
-    async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        if not ctx.write and ctx.path.virtual == "/dev/secret":
-            return Deny("sealed")
-        return None
+from tests.fixtures.vfs_io import dispatched
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["cat", "head -n 1"])
 async def test_a_file_in_dev_is_read_at_the_dispatcher(command):
     # cat and head read /dev in ranges, which /dev/zero answers without
-    # end; each range is a dispatcher read, so a policy refusing the file is
-    # asked before any byte is printed.
-    ws = Workspace(
-        {"/data": RAMVFS()}, mode=MountMode.WRITE, policies=[_SealedReads()]
-    )
+    # end; each range is a dispatcher read, so the gates judge the file
+    # before any byte is printed.
+    ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
     try:
         await ws.shell("echo s > /dev/secret")
-        denied = await ws.shell(f"{command} /dev/secret")
-        assert await denied.stdout_str() == ""
-        assert denied.refusal and denied.refusal.reason == "sealed"
+        seen = dispatched(ws)
+        read = await ws.shell(f"{command} /dev/secret")
+        assert await read.stdout_str() == "s\n"
+        assert ("read", "/dev/secret") in seen
         zero = await ws.shell(f"{command} /dev/zero | head -c 3 | wc -c")
         assert await zero.stdout_str() == "3\n"
     finally:

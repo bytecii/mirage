@@ -194,6 +194,7 @@ export type WalkFlagBag = Record<string, FlagValue>
 export interface WalkResultInit {
   leaf?: CommandSpec | null
   path?: readonly string[]
+  verbPositions?: readonly number[]
   operandBases?: readonly PathSpec[]
   groupFlags?: WalkFlagBag
   argv?: readonly string[]
@@ -213,6 +214,8 @@ export interface WalkResultInit {
 export class WalkResult {
   readonly leaf: CommandSpec | null
   readonly path: readonly string[]
+  /** Where each of `path` stands in the walked argv. */
+  readonly verbPositions: readonly number[]
   readonly operandBases: readonly PathSpec[]
   readonly groupFlags: WalkFlagBag
   readonly argv: readonly string[]
@@ -223,6 +226,7 @@ export class WalkResult {
   constructor(init: WalkResultInit = {}) {
     this.leaf = init.leaf ?? null
     this.path = Object.freeze([...(init.path ?? [])])
+    this.verbPositions = Object.freeze([...(init.verbPositions ?? [])])
     this.groupFlags = init.groupFlags ?? {}
     this.operandBases = init.operandBases ?? []
     this.argv = Object.freeze([...(init.argv ?? [])])

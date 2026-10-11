@@ -14,12 +14,18 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { RAMVFS } from '../vfs/ram/ram.ts'
-import { MountMode, PathSpec } from '../types.ts'
-import { MountRegistry } from '../workspace/mount/registry.ts'
+import { PathSpec } from '../types.ts'
 import { RulePolicy } from './rule.ts'
 import type { VfsContext } from './types.ts'
 import type { CommandContext } from './types.ts'
+import { CALLS } from '../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../vfs/types.ts'
+
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 function path(virtual: string, raw?: string): PathSpec {
   return new PathSpec({
@@ -32,8 +38,7 @@ function path(virtual: string, raw?: string): PathSpec {
 }
 
 function ctx(command: string, paths: PathSpec[]): CommandContext {
-  const registry = new MountRegistry({ '/data': new RAMVFS() }, MountMode.WRITE, {})
-  return { command, paths, argv: [], cwd: '/', registry }
+  return { command, paths, argv: [], cwd: '/' }
 }
 
 describe('RulePolicy grammar', () => {
@@ -53,11 +58,15 @@ describe('RulePolicy grammar', () => {
     expect(policy.preCommand(ctx('cat', [path('/a/b.key/c')]))).toEqual({
       kind: 'deny',
       reason: 'keys',
-      scope: 'operand',
       path: '/a/b.key/c',
     })
     expect(policy.preCommand(ctx('cat', [path('/a/b.keyx')]))).toBeNull()
-    const op: VfsContext = { op: 'read', path: path('/x/y.key'), write: false, prefix: '/x/' }
+    const op: VfsContext = {
+      call: callOf('read'),
+      path: path('/x/y.key'),
+      write: false,
+      prefix: '/x/',
+    }
     expect(policy.preVfs(op)).toEqual({ kind: 'deny', reason: 'keys' })
   })
 
@@ -82,7 +91,6 @@ describe('RulePolicy', () => {
     expect(deny).toEqual({
       kind: 'deny',
       reason: 'prod is protected',
-      scope: 'operand',
       path: 'prod/x.txt',
     })
     expect(policy.preCommand(ctx('rm', [path('/data/dev/x.txt')]))).toBeNull()
@@ -104,7 +112,7 @@ describe('RulePolicy', () => {
 
 describe('RulePolicy preVfs twin', () => {
   function opsCtx(virtual: string): VfsContext {
-    return { op: 'read', path: path(virtual), write: false, prefix: '/data/' }
+    return { call: callOf('read'), path: path(virtual), write: false, prefix: '/data/' }
   }
 
   it('holds for path-only rules', () => {

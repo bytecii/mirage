@@ -122,7 +122,6 @@ describe('the shared vocabulary', () => {
         kind: 'deny',
         reason: 'sealed',
         policy: 'RulePolicy',
-        scope: 'command',
         askId: null,
       })
       expect(classifyErrno(refused)).toBe(EACCES)

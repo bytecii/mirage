@@ -65,10 +65,9 @@
           "command": "ln -s /data/big.txt /r/link"
         },
         {
-          "command": "python3 -c \"from pathlib import Path; print(Path('/r/link').read_text())\"",
+          "read_op": "/r/link",
           "expect": {
-            "exit": 0,
-            "stdout": "01234567\n"
+            "content": "01234567"
           }
         }
       ]

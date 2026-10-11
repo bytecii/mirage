@@ -25,8 +25,8 @@ import { stat as binStat } from '../../core/bin/stat.ts'
 
 /**
  * Read-only view VFS backing the /usr/bin mount. Lists one executable
- * file per program the session can run, rendered from the workspace's
- * command lookup on every call; holds no storage of its own.
+ * file per program, rendered from the workspace's command lookup on every
+ * call; holds no storage of its own.
  */
 export class BinViewVFS extends BaseVFS {
   override readonly name = VFSName.BIN

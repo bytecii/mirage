@@ -264,9 +264,6 @@ describe('mirageOperations.bash and a refusal', () => {
   class NoDeletes implements Policy {
     preCommand(ctx: CommandContext): Action | null {
       if (ctx.command === 'rm') return { kind: 'deny', reason: 'no deletes' }
-      if (ctx.command === 'cat' && ctx.argv.includes('/x')) {
-        return { kind: 'deny', reason: '/x: frozen', scope: 'operand' }
-      }
       return null
     }
   }
@@ -277,14 +274,6 @@ describe('mirageOperations.bash and a refusal', () => {
     const [data, exitCode] = await streamed(ws, 'rm /x')
     expect(exitCode).toBe(126)
     expect(data).toBe('rm: Permission denied\npolicy denied: no deletes\n')
-  })
-
-  it('does not repeat a reason the streamed line already carries', async () => {
-    const ws = mkWs([new NoDeletes()])
-    await ws.vfs.write('/x', 'hush')
-    const [data, exitCode] = await streamed(ws, 'cat /x')
-    expect(exitCode).toBe(1)
-    expect(data).toBe('cat: /x: frozen\n')
   })
 })
 

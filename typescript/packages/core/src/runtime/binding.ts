@@ -109,6 +109,7 @@ export function captureBinding(
           mark: scope.wrap(session.mark.bind(session)),
           isReadonly: scope.wrap(session.isReadonly.bind(session)),
           profile: scope.wrap(session.profile.bind(session)),
+          cwd: scope.wrap(session.cwd.bind(session)),
         }
   return Object.freeze({
     binding,

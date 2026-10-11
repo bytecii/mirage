@@ -148,4 +148,4 @@ class OutputCapPolicy(Policy):
         self._override_for = override_for
 
     async def post_vfs(self, ctx: VfsResultContext) -> Action | None:
-        return self._override_for(ctx.prefix, ctx.op)
+        return self._override_for(ctx.prefix, ctx.call.name)

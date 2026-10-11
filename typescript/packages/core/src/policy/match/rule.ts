@@ -28,6 +28,7 @@ import {
   SUBTREE_OPS,
 } from '../constants.ts'
 import type { CommandContext, CommandRule, AdmissionRules, VfsContext } from '../types.ts'
+import { WordKind } from '../../commands/spec/types.ts'
 import { lineTokens } from './allow.ts'
 import { patternMatches } from './pattern.ts'
 
@@ -99,6 +100,17 @@ export interface Subject {
 }
 
 /**
+ * The paths a command's operands name, in order: what `rm -r` removes or
+ * `mv`, `tar` and `cp` take as sources, never an option's value. Mirrors
+ * Python's `operand_paths`.
+ */
+export function operandPaths(ctx: CommandContext): PathSpec[] {
+  return (ctx.words ?? []).flatMap((w) =>
+    w.kind === WordKind.OPERAND && w.path !== null ? [w.path] : [],
+  )
+}
+
+/**
  * What a line's rules are read against, in the order they are read.
  *
  * Every path the line names first, each asked whether it lies inside a
@@ -111,7 +123,7 @@ export function subjects(ctx: CommandContext): readonly Subject[] {
   if (ctx.paths.length === 0) return [{ path: null, holds: false, ancestors: true }]
   const subs: Subject[] = ctx.paths.map((p) => ({ path: p, holds: false, ancestors: true }))
   if (SUBTREE_COMMANDS.has(ctx.command)) {
-    const operands = [...(ctx.operands ?? [])]
+    const operands = operandPaths(ctx)
     const dst = ctx.command === 'mv' && operands.length > 1 ? operands.pop() : undefined
     for (const p of operands) subs.push({ path: p, holds: true, ancestors: true })
     if (dst !== undefined) subs.push({ path: dst, holds: true, ancestors: false })
@@ -271,10 +283,12 @@ export function opReach(
   scope: HiddenPaths | null,
   ctx: VfsContext,
 ): number | null {
-  if ((rule.commands ?? []).length > 0 || scope === null || METADATA_OPS.has(ctx.op)) return null
+  if ((rule.commands ?? []).length > 0 || scope === null || METADATA_OPS.has(ctx.call.name))
+    return null
   const virtual = ctx.path.virtual
   if (pathHidden(scope, virtual)) return hiddenDepth(rule, virtual)
-  if (SUBTREE_OPS.has(ctx.op) && pathCovers(scope, virtual)) return coversDepth(rule, virtual)
+  if (SUBTREE_OPS.has(ctx.call.name) && pathCovers(scope, virtual))
+    return coversDepth(rule, virtual)
   return null
 }
 

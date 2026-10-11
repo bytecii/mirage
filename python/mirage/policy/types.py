@@ -15,10 +15,17 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
+from mirage.commands.spec.types import WordKind
+from mirage.runtime.routing.types import RouteContext
 from mirage.runtime.types import ScriptSource
 from mirage.types import Limit, MountMode, PathSpec, Producer, Refusal
+from mirage.vfs.types import VfsCall
+from mirage.view.types import NamespaceView, SessionView
+
+if TYPE_CHECKING:
+    from mirage.workspace.files import Files
 
 
 class MountRootQuery(Protocol):
@@ -30,26 +37,6 @@ class MountRootQuery(Protocol):
     """
 
     def is_mount_root(self, path: str) -> bool: ...
-
-
-class DenyScope(StrEnum):
-    """What a command-plane refusal is about, which picks its voice.
-
-    COMMAND refuses the whole line in bash's own words,
-    ``<cmd>: Permission denied``, exit 126, and the reason rides the
-    result's ``refusal`` record instead. OPERAND refuses one operand,
-    exit 1, or the command's own fatal code where GNU differs (tar
-    exits 2): with ``Deny.path`` set it prints the command's own GNU
-    line for that operand and ``Permission denied``, the reason riding
-    the record; without it the reason is the diagnostic,
-    ``<cmd>: <reason>`` (a built-in that words a POSIX error, as
-    ``rm: cannot remove 'x': ...`` does). The exit code and errno
-    derive from the plane and this scope, never from a number a policy
-    picks, so a document deny and a coded one are indistinguishable.
-    """
-
-    COMMAND = "command"
-    OPERAND = "operand"
 
 
 class Outcome(StrEnum):
@@ -72,25 +59,28 @@ class Outcome(StrEnum):
 class Deny:
     """Refuse the command, op or session write, with a reason.
 
-    Rendered by the entry point it fires at: the command plane prints it in
-    the scope's voice (DenyScope), the dispatcher raise EACCES with it,
-    the session view EACCES too.
+    Rendered by the entry point it fires at. The command plane prints
+    bash's own ``<cmd>: Permission denied`` at 126; a Deny about a
+    ``path`` prints the command's own line for that path and
+    ``Permission denied`` at the command's operand exit code (1, tar
+    2); a Deny carrying an ``error`` is that error, its reason the
+    command's own diagnostic, ``<cmd>: <reason>``, at the same code.
+    The dispatcher raises ``error``, else EACCES; the session view
+    EACCES. The reason otherwise rides the result's ``refusal`` record,
+    so a document deny and a coded one print alike.
 
     Args:
         reason (str): why, without the command name and without a
             trailing newline; the entry point adds both.
-        scope (DenyScope): whole command or one operand; ignored off
-            the command plane.
         policy (str): the class name of the policy that spoke,
             stamped by the chain so no policy names itself.
         failed (bool): True when the chain refused on a policy's
             behalf because it raised.
-        error (OSError | None): an op refusal with a specific errno; None
-            uses the normal permission-denied error.
-        path (str | None): the operand an OPERAND refusal is about, as
-            typed: the entry point prints the command's own line for it and
-            ``Permission denied``, the reason riding the record. None
-            leaves the reason as the diagnostic.
+        error (OSError | None): the specific error this refusal is
+            (EBUSY on a mount root, EROFS on a read-only mount); None
+            for a permission refusal.
+        path (str | None): the path the refusal is about, as typed;
+            None refuses the command whole.
         rule (CommandRule | None): the profile rule that refused, as an
             Ask carries the rule that asked; None for a coded condition.
     """
@@ -98,7 +88,6 @@ class Deny:
     kind: ClassVar[str] = "deny"
 
     reason: str
-    scope: DenyScope = DenyScope.COMMAND
     policy: str = ""
     failed: bool = False
     error: OSError | None = None
@@ -249,15 +238,17 @@ class Ruling:
 
 @dataclass(frozen=True, slots=True)
 class Ask:
-    """Admit the command only with a host approval.
+    """Go on only with a host approval.
 
-    A pre_command answer: ``PermissionsPolicy`` returns one for a
+    Every hook may answer one. ``PermissionsPolicy`` returns one for a
     ``commands.ask`` rule, a custom policy for a coded condition, and
     both route to the workspace's decision ledger (``Decisions``). A Deny
     from any policy outranks it: the chain keeps looking past an Ask
-    for a Deny, so an approval can never re-open a refusal. A pre_vfs
-    answer too, where the entry point puts it to the ledger when no line is
-    running behind the op and refuses it inside one.
+    for a Deny, so an approval can never re-open a refusal. A later
+    Ask's rules are appended to the first one's ``rules``, so every Ask
+    a hook's chain answers is put to the host. A pre hook holds what it
+    guards until the host says yes; a post hook holds back what came
+    back, and the approved rerun repeats the action.
 
     Args:
         reason (str): why the line needs sign-off, shown to the agent
@@ -269,10 +260,11 @@ class Ask:
         rules (tuple[CommandRule, ...]): every rule the line has to be
             granted, ``rule`` among them and usually alone: a line whose
             operands were each asked about by a different rule carries
-            them all. The entry point asks about them one at a time and runs
-            the line only once each is answered, so a nod given for one
-            operand cannot carry another. Empty for a coded Ask, whose
-            one rule the entry point synthesizes.
+            them all, as does the first Ask of a chain that answered
+            more than one. The entry point asks about them one at a time
+            and runs the line only once each is answered, so a nod given
+            for one operand cannot carry another. Empty for a coded Ask,
+            whose one rule the entry point synthesizes.
         policy (str): the policy that asked, as ``explain`` names it.
     """
 
@@ -625,6 +617,38 @@ class SessionScriptsQuery(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class CommandWord:
+    """One word of a command line, as the grammar read it.
+
+    Args:
+        text (str): the word as the command receives it, expanded.
+        kind (WordKind): what the word is: the command name, a CLI
+            verb, an option, an option's value, an operand or a
+            redirect target.
+        option (str | None): for a value, the option word that takes
+            it, as typed.
+        path (PathSpec | None): the path the word names, None for a
+            word that names none.
+    """
+
+    text: str
+    kind: WordKind
+    option: str | None = None
+    path: PathSpec | None = None
+
+    def to_dict(self) -> dict[str, str | None]:
+        """The word as plain data: its text, its kind, the option a
+        value belongs to and the virtual path it names, each null where
+        it has none."""
+        return {
+            "text": self.text,
+            "kind": self.kind.value,
+            "option": self.option,
+            "path": self.path.virtual if self.path is not None else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CommandContext:
     """Facts about one classified command, as pre_command hooks see it.
 
@@ -633,16 +657,15 @@ class CommandContext:
         paths (tuple[PathSpec, ...]): every path the line names, the
             positional operands first and then the values of any
             path-valued flags. What a path-pattern guard matches on.
-        operands (tuple[PathSpec, ...]): the positional operands alone.
-            A rule that reads a slot by position (mv's source, ln's
-            target, tar's files) has to use this: with the flag values
-            mixed in, ``tar -xf a.tar -C /mnt`` would read the ``-C``
-            destination as a file being archived.
+        words (tuple[CommandWord, ...]): the command line word by word,
+            the name first and redirect targets last, each with its
+            kind. A rule that reads a slot (mv's source, ln's target,
+            tar's files) reads the operands here: ``tar -xf a.tar -C
+            /mnt`` names ``/mnt`` as ``-C``'s value, not as a file.
         argv (tuple[str, ...]): raw argv after the command name; the
             hook fires before flag parsing, so shorthand flags are raw
             tokens.
         cwd (str): session working directory.
-        registry (MountRootQuery): mount-root oracle for POSIX rules.
         session_id (str): the session running the line, set by the
             entry point; empty outside a workspace.
         agent_id (str): the agent the workspace attributes the line
@@ -669,20 +692,47 @@ class CommandContext:
             paths is a mount the line works inside: the executor's
             fan-out reruns the traversal in each descendant mount, and
             no admission fires again there.
+        session (SessionView | None): the session, read only: a write
+            through it is refused. Filled when a hook is asked.
+        ns (NamespaceView | None): the session's namespace, as a command
+            gets it in ``opts.ns``. Filled when a hook is asked.
+        vfs (Files | None): the session's files, read only: a write is
+            refused and no hook runs again for a read. Filled when a
+            hook is asked.
     """
 
     command: str
     paths: tuple[PathSpec, ...]
     argv: tuple[str, ...]
     cwd: str
-    registry: MountRootQuery
-    operands: tuple[PathSpec, ...] = ()
+    words: tuple[CommandWord, ...] = ()
     session_id: str = ""
     agent_id: str = ""
     tokens: tuple[str, ...] = ()
     program: tuple[str, ...] = ()
     tool: bool = True
     walks: bool = False
+    session: SessionView | None = None
+    ns: NamespaceView | None = None
+    vfs: "Files | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class CommandResultContext(CommandContext):
+    """One command or CLI that ran, as post_command hooks see it: what
+    pre_command saw, plus what came back.
+
+    Args:
+        exit_code (int): the command's exit code, settled once its
+            output drained.
+        stderr (str): what it wrote to stderr.
+        records (tuple[dict[str, Any], ...]): its op records, as
+            ``OpRecord.to_dict`` writes them.
+    """
+
+    exit_code: int = 0
+    stderr: str = ""
+    records: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -690,69 +740,77 @@ class VfsContext:
     """Facts about one VFS op, as pre_vfs hooks see it.
 
     Fires at the dispatcher (the ``ws.vfs`` facade, which also serves
-    FUSE, and the shell's internal dispatcher), before any backend or
-    cache I/O, so it holds however the mount is reached.
+    FUSE), before any backend or cache I/O, so it holds however the
+    mount is reached. A running line's own ops never reach a user hook.
 
     Args:
-        op (str): operation name (read, write, unlink, readdir, ...).
+        call (VfsCall): the function called, as ``vfs_call`` declares
+            it: its name, effect, target, whether it creates and whether
+            it reaches the subtree. A rename's or a copy's destination is
+            judged under the same call with ``creates`` set.
         path (PathSpec): the resolved virtual path.
-        write (bool): whether the op mutates the mount.
+        write (bool): whether the call mutates this path; a copy only
+            reads its source.
         prefix (str): the owning mount's prefix.
         session_id (str): the session the dispatcher serves, set by the entry
             point from the session it already resolves for hides and modes;
             empty for the unbound host view.
         mode (MountMode | None): the owning mount's authorization ceiling,
             None at an entry point that judges the mode itself.
-        create (bool): the op creates this path.
-        subtree (bool): the op mutates the path's descendants too.
+        session (SessionView | None): the session, read only.
+        ns (NamespaceView | None): the session's namespace.
+        vfs (Files | None): the session's files, read only.
     """
 
-    op: str
+    call: VfsCall
     path: PathSpec
     write: bool
     prefix: str
     session_id: str = ""
     mode: MountMode | None = None
-    create: bool = False
-    subtree: bool = False
+    session: SessionView | None = None
+    ns: NamespaceView | None = None
+    vfs: "Files | None" = None
 
 
 @dataclass(frozen=True, slots=True)
-class VfsResultContext:
-    """One completed VFS op, as post_vfs hooks see it.
+class VfsResultContext(VfsContext):
+    """One completed VFS op, as post_vfs hooks see it: what pre_vfs saw,
+    plus what came back.
 
     Args:
-        op (str): operation name.
-        path (PathSpec): the resolved virtual path.
-        write (bool): whether the op mutated the mount.
-        prefix (str): the owning mount's prefix.
         result (Any): the op's raw result (bytes, FileStat, listing,
-            ...); a Deny here suppresses it.
+            ...); a Deny or an Ask here drops it.
     """
 
-    op: str
-    path: PathSpec
-    write: bool
-    prefix: str
-    result: Any
+    result: Any = None
 
 
 @dataclass(frozen=True, slots=True)
-class ExecuteResultContext:
-    """One finished execute() line, as post_execute hooks see it.
+class ExecuteResultContext(RouteContext):
+    """One finished line, as post_execute hooks see it: what
+    pre_execute saw, plus what came back.
 
-    Fires at the workspace boundary before the line's output stream is
-    finalized, so a Limit returned here bounds what the caller sees.
+    Fires at the workspace boundary before the line's output reaches
+    the caller, so a Limit returned here bounds what the caller sees,
+    and a Deny or an Ask drops it.
 
     Args:
         producer (Producer): provenance of the surviving stream (the
             rightmost command, per shell semantics); a Producer with an
             empty command when no dispatch site stamped one.
         exit_code (int): the line's exit code so far.
+        output (bytes): what the line wrote to stdout.
+        results (dict[str, Any]): what each command returned, as the
+            line's execution tree (``ExecutionNode.to_dict``): a leaf
+            per command with its exit code, stderr and op records,
+            under the operators that joined them.
     """
 
-    producer: Producer
-    exit_code: int
+    producer: Producer = Producer(command="")
+    exit_code: int = 0
+    output: bytes = b""
+    results: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -771,6 +829,9 @@ class SessionContext:
         value (str | None): the value being written, None for unset.
         session_id (str): which session is writing, so a policy can
             scope a rule to one agent (deny ``set`` for session X).
+        session (SessionView | None): the session, read only.
+        ns (NamespaceView | None): the session's namespace.
+        vfs (Files | None): the session's files, read only.
     """
 
     plane: str
@@ -778,15 +839,33 @@ class SessionContext:
     key: str
     value: str | None
     session_id: str = ""
+    session: SessionView | None = None
+    ns: NamespaceView | None = None
+    vfs: "Files | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionResultContext(SessionContext):
+    """One session write that landed, as post_session hooks see it: what
+    pre_session saw, plus the value it replaced.
+
+    Args:
+        old (str | None): the value before the write, rendered as
+            ``value`` is; None when the name was unset.
+    """
+
+    old: str | None = None
 
 
 VALIDITY: dict[str, frozenset[str]] = {
     "pre_command": frozenset({Deny.kind, Ask.kind}),
-    "pre_execute": frozenset({Deny.kind, Route.kind}),
+    "post_command": frozenset({Deny.kind, Ask.kind}),
+    "pre_execute": frozenset({Deny.kind, Ask.kind, Route.kind}),
     "pre_vfs": frozenset({Deny.kind, Ask.kind}),
-    "post_vfs": frozenset({Deny.kind, Limit.kind}),
-    "post_execute": frozenset({Limit.kind}),
-    "pre_session": frozenset({Deny.kind}),
+    "post_vfs": frozenset({Deny.kind, Ask.kind, Limit.kind}),
+    "post_execute": frozenset({Deny.kind, Ask.kind, Limit.kind}),
+    "pre_session": frozenset({Deny.kind, Ask.kind}),
+    "post_session": frozenset({Deny.kind, Ask.kind}),
 }
 
 
@@ -838,25 +917,6 @@ class Explanation:
 
 
 @dataclass(frozen=True, slots=True)
-class ShellOperand:
-    """One path argument of a command, as the rules read it.
-
-    A path the session cannot see is listed like any path no rule
-    matches: ``path`` is resolved from the cwd alone, links unfollowed,
-    so it names nothing the session could not type.
-
-    Args:
-        text (str): the argument as typed.
-        path (str): the absolute path it names.
-        matched (bool): whether the deciding rule matched it.
-    """
-
-    text: str
-    path: str
-    matched: bool = False
-
-
-@dataclass(frozen=True, slots=True)
 class ShellNode:
     """One piece of a line's structure, as the shell parses it.
 
@@ -885,14 +945,16 @@ class CommandExplanation(Explanation):
         answers (tuple[Deny | Ask, ...]): every policy's answer to the
             command (``pre_command``).
         command (str): the program, as the gate read it.
-        argv (tuple[str, ...]): the words after it.
+        words (tuple[CommandWord, ...]): the command line word by word,
+            each with its kind and the path it names. A path the session
+            cannot see is listed like any path no rule matches: it is
+            resolved from the cwd alone, links unfollowed, so it names
+            nothing the session could not type.
         exit_code (int): what the command would exit with where it
             stands, 0 to run.
         stderr (str): what the agent would read from it, empty to run.
         runtime (str): the runtime entry that would run it, empty when
             the workspace runs it itself.
-        operands (tuple[ShellOperand, ...]): its path arguments,
-            redirect targets included.
         text (str): the command's source text.
         children (tuple[ShellNode, ...]): the lines it runs in turn
             (``$( )`` in its words, a ``bash -c`` string), in source
@@ -903,11 +965,10 @@ class CommandExplanation(Explanation):
 
     answers: "tuple[Deny | Ask, ...]" = ()
     command: str
-    argv: tuple[str, ...] = ()
+    words: tuple[CommandWord, ...] = ()
     exit_code: int = 0
     stderr: str = ""
     runtime: str = ""
-    operands: tuple[ShellOperand, ...] = ()
     text: str = ""
     children: tuple[ShellNode, ...] = ()
 
@@ -923,14 +984,14 @@ class ShellExplanation(Explanation):
     order the gate reads them is the line's, byte-identical to the
     refusal the run reports. A line that runs exits 0 here, and one an
     approval lets run carries the ask it covers. A command refused
-    where it stands while the rest of the line runs (a word the session
-    cannot see, a policy refusing one operand) says so on its own node.
+    where it stands while the rest of the line runs (a word the allow
+    list leaves out, a policy refusing one path) says so on its own node.
 
     Args:
-        answers (tuple[Deny | Route, ...]): every policy's answer to
-            where the line runs (``pre_execute``), the route policy's
-            first; empty when nothing places it or a command refuses it
-            first.
+        answers (tuple[Deny | Ask | Route, ...]): every policy's
+            answer to the line as a whole (``pre_execute``), the route
+            policy's first; empty when no policy answers it or a command
+            refuses it first.
         line (str): the line as given.
         exit_code (int): what the line is refused with, 0 when it runs.
         stderr (str): what the agent would read then, empty when it
@@ -938,7 +999,7 @@ class ShellExplanation(Explanation):
         node (ShellNode): the parsed line, of type ``line``.
     """
 
-    answers: "tuple[Deny | Route, ...]" = ()
+    answers: "tuple[Deny | Ask | Route, ...]" = ()
     line: str
     exit_code: int = 0
     stderr: str = ""

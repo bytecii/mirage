@@ -17,7 +17,7 @@ import type { Refusal } from '../../types.ts'
 import { ExecuteResult } from '../workspace/workspace.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
 import { eisdir } from '../../errors/fs.ts'
-import { decode, errorText, ioToStr, replaceText, withRefusal } from './io_text.ts'
+import { decode, errorText, ioToStr, replaceText } from './io_text.ts'
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s)
 
@@ -55,14 +55,12 @@ describe('ioToStr with a refusal', () => {
     kind: 'deny',
     reason: 'no deletes',
     policy: 'RulePolicy',
-    scope: 'command',
     askId: null,
   }
   const pending: Refusal = {
     kind: 'pending',
     reason: 'sign-off',
     policy: '',
-    scope: 'command',
     askId: 'a1',
   }
 
@@ -81,77 +79,19 @@ describe('ioToStr with a refusal', () => {
     )
   })
 
-  it('leaves an operand refusal alone', () => {
-    // The command's stderr line already names the reason.
-    const operand: Refusal = {
-      kind: 'deny',
-      reason: "cannot remove 'x': keys",
-      policy: 'RulePolicy',
-      scope: 'operand',
-      askId: null,
-    }
-    expect(
-      ioToStr(new ExecuteResult(enc(''), enc("rm: cannot remove 'x': keys\n"), 1, operand)),
-    ).toBe("rm: cannot remove 'x': keys\n")
-  })
-
-  it('describes an operand refusal whose line was redirected away', () => {
-    // `cat /protected 2>/dev/null`: cat's line is gone, so the record
-    // is the only reason left to hand over.
-    const operand: Refusal = {
-      kind: 'deny',
-      reason: '/protected: frozen',
-      policy: 'Frozen',
-      scope: 'operand',
-      askId: null,
-    }
-    expect(ioToStr(new ExecuteResult(enc(''), enc(''), 1, operand))).toBe(
-      'policy denied: /protected: frozen\n',
-    )
-    expect(withRefusal('', operand)).toBe('policy denied: /protected: frozen\n')
-  })
-
   it('describes a command refusal the output happens to quote', () => {
     // `V=secret; printf 'secrets stay put'; echo "$V" 2>/dev/null`: the
     // bare `Permission denied` was redirected away and the earlier
-    // output carries the reason by coincidence; a command-scoped record
-    // is never already said, so the line is still appended.
+    // output carries the reason by coincidence; a record is never
+    // already said, so the line is still appended.
     const quoted: Refusal = {
       kind: 'deny',
       reason: 'secrets stay put',
       policy: 'DenySecret',
-      scope: 'command',
       askId: null,
     }
     expect(ioToStr(new ExecuteResult(enc('secrets stay put'), enc(''), 126, quoted))).toBe(
       'secrets stay put\npolicy denied: secrets stay put\n',
-    )
-  })
-
-  it('describes an operand refusal the output only quotes', () => {
-    const operand: Refusal = {
-      kind: 'deny',
-      reason: '/protected: frozen',
-      policy: 'Frozen',
-      scope: 'operand',
-      askId: null,
-    }
-    expect(
-      ioToStr(new ExecuteResult(enc('note: /protected: frozen for now\n'), enc(''), 1, operand)),
-    ).toBe('note: /protected: frozen for now\npolicy denied: /protected: frozen\n')
-  })
-
-  it('trusts the reason wherever the line landed', () => {
-    // `2>&1` moved cat's line onto stdout; the text still says why.
-    const operand: Refusal = {
-      kind: 'deny',
-      reason: '/protected: frozen',
-      policy: 'Frozen',
-      scope: 'operand',
-      askId: null,
-    }
-    expect(ioToStr(new ExecuteResult(enc('cat: /protected: frozen\n'), enc(''), 1, operand))).toBe(
-      'cat: /protected: frozen\n',
     )
   })
 })
@@ -181,7 +121,6 @@ describe('errorText', () => {
       kind: 'deny',
       reason: 'sealed',
       policy: '',
-      scope: 'command',
       askId: null,
     }
     expect(errorText(new PolicyDenied('Permission denied', '/data/x', refusal))).toBe(

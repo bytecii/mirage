@@ -40,10 +40,10 @@ describe('checkRules', () => {
     // installed, so nothing ever reaches the rule.
     expect(() => {
       checkRules(rules({ allow: ['ls', 'cat'], deny: [rule({ reason: 'no', commands: ['rm'] })] }))
-    }).toThrow(/never installs/)
+    }).toThrow(/never allows/)
     expect(() => {
       checkRules(rules({ allow: ['ls'], ask: [rule({ reason: 'sign-off', commands: ['rm'] })] }))
-    }).toThrow(/never installs/)
+    }).toThrow(/never allows/)
   })
 
   it('passes a rule on an installed builtin', () => {

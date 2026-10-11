@@ -38,17 +38,22 @@ from mirage.io.types import IOResult
 from mirage.policy import Policy, PolicyDenied
 from mirage.policy.match import Outcome
 from mirage.policy.types import (
+    Action,
     Ask,
     CommandContext,
     CommandExplanation,
+    CommandResultContext,
     Deny,
+    ExecuteResultContext,
     Route,
     Scope,
     SessionContext,
+    SessionResultContext,
     ShellExplanation,
     ShellNode,
     VfsContext,
     VfsExplanation,
+    VfsResultContext,
 )
 from mirage.process.types import SpawnRequest
 from mirage.runtime.routing import RouteContext
@@ -56,7 +61,7 @@ from mirage.runtime.types import ScriptSource
 from mirage.server import io_serde
 from mirage.server.vfs_calls import VFS_CALL_BY_NAME
 from mirage.shell.console import Channel, JobConsole
-from mirage.types import MountMode, PathSpec
+from mirage.types import Limit, MountMode, PathSpec
 from mirage.utils.abort import MirageAbortError
 from mirage.vfs.ram import RAMVFS
 from mirage.vfs.registry import build_vfs, register_vfs
@@ -155,33 +160,53 @@ class TrackedStreamCLI:
 
 
 class RulePolicy(Policy):
-    """A host policy whose command and op refusals are supplied by JSON."""
+    """A host policy whose answers are supplied by JSON: per hook, the
+    answer for a word of the line, a command, a path or a variable."""
 
     def __init__(self, rule: dict[str, Any]) -> None:
         self.rule = rule
 
-    async def pre_command(self, ctx: CommandContext) -> Deny | None:
-        if ctx.command in self.rule.get("commands", []):
-            return Deny(self.rule["reason"])
+    def answer(
+        self, hook: str, subject: str, line: bool = False
+    ) -> Action | None:
+        """The answer the JSON gives at ``hook`` for ``subject``.
+
+        Args:
+            hook (str): the hook in python spelling.
+            subject (str): the line, command name, path or variable.
+            line (bool): match a word the line contains, not the whole.
+        """
+        for key, answer in self.rule.get(hook, {}).items():
+            if key == subject or (line and key in subject):
+                ((kind, value),) = answer.items()
+                if kind == "limit":
+                    return Limit(**value)
+                return {"deny": Deny, "ask": Ask, "route": Route}[kind](value)
         return None
 
-    async def pre_vfs(self, ctx: VfsContext) -> Deny | None:
-        if ctx.path.virtual in self.rule.get("paths", []):
-            return Deny(self.rule["reason"])
-        return None
+    async def pre_execute(self, ctx: RouteContext) -> Action | None:
+        return self.answer("pre_execute", ctx.line, True)
 
-    async def pre_session(self, ctx: SessionContext) -> Deny | None:
-        if ctx.key in self.rule.get("vars", []):
-            return Deny(self.rule["reason"])
-        return None
+    async def post_execute(self, ctx: ExecuteResultContext) -> Action | None:
+        return self.answer("post_execute", ctx.line, True)
 
-    async def pre_execute(self, ctx: RouteContext) -> Deny | Route | None:
-        if any(word in ctx.line for word in self.rule.get("lines", [])):
-            return Deny(self.rule["reason"])
-        for word, runtime in self.rule.get("routes", {}).items():
-            if word in ctx.line:
-                return Route(runtime)
-        return None
+    async def pre_command(self, ctx: CommandContext) -> Action | None:
+        return self.answer("pre_command", ctx.command)
+
+    async def post_command(self, ctx: CommandResultContext) -> Action | None:
+        return self.answer("post_command", ctx.command)
+
+    async def pre_vfs(self, ctx: VfsContext) -> Action | None:
+        return self.answer("pre_vfs", ctx.path.virtual)
+
+    async def post_vfs(self, ctx: VfsResultContext) -> Action | None:
+        return self.answer("post_vfs", ctx.path.virtual)
+
+    async def pre_session(self, ctx: SessionContext) -> Action | None:
+        return self.answer("pre_session", ctx.key)
+
+    async def post_session(self, ctx: SessionResultContext) -> Action | None:
+        return self.answer("post_session", ctx.key)
 
 
 def answered(answers: tuple[Deny | Ask | Route, ...]) -> list[dict[str, Any]]:

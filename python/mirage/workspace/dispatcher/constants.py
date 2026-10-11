@@ -15,24 +15,24 @@
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.call import call_names, declared_calls
 from mirage.vfs.constants import WRITE_EFFECTS
-from mirage.vfs.types import Declaration, Effect, Target
+from mirage.vfs.types import Effect, Target, VfsCall
 
 # The ops the namespace answers itself, declared the way ``vfs_call``
 # declares a VFS function: a link and an extended attribute live on the
 # path's node, never in a backend.
 NAMESPACE_CALLS = {
-    "symlink": Declaration(Effect.CREATE, Target.LINK, False),
-    "readlink": Declaration(Effect.READ, Target.LINK, False),
-    "getxattr": Declaration(Effect.READ, Target.ANY, False),
-    "listxattr": Declaration(Effect.READ, Target.ANY, False),
-    "setxattr": Declaration(Effect.ATTR, Target.ANY, False),
-    "removexattr": Declaration(Effect.ATTR, Target.ANY, False),
+    "symlink": VfsCall("symlink", Effect.CREATE, Target.LINK, False),
+    "readlink": VfsCall("readlink", Effect.READ, Target.LINK, False),
+    "getxattr": VfsCall("getxattr", Effect.READ, Target.ANY, False),
+    "listxattr": VfsCall("listxattr", Effect.READ, Target.ANY, False),
+    "setxattr": VfsCall("setxattr", Effect.ATTR, Target.ANY, False),
+    "removexattr": VfsCall("removexattr", Effect.ATTR, Target.ANY, False),
 }
 
 # The built-in functions every mount answers, as ``BaseVFS`` declares
 # them; every op class below is read off these and the namespace's.
 _VFS_CALLS = declared_calls(BaseVFS)
-_CALLS = {**_VFS_CALLS, **NAMESPACE_CALLS}
+CALLS = {**_VFS_CALLS, **NAMESPACE_CALLS}
 
 # The content reads the warm file cache may answer: a cached whole-file
 # value can serve them (sliced for ranged reads) without touching the
@@ -54,7 +54,7 @@ DISPATCH_WRITE_OPS = call_names(
 # every op that changes the mount, including the attribute changes and
 # the namespace's own writes, which need write admission without joining
 # the post-write invalidation path.
-POLICY_WRITE_OPS = call_names(_CALLS, effects=WRITE_EFFECTS)
+POLICY_WRITE_OPS = call_names(CALLS, effects=WRITE_EFFECTS)
 
 # The extended-attribute ops, which the node table answers: what a caller
 # sets is stored on the path's node beside the overlay's mode and times.
@@ -96,7 +96,7 @@ DESTINATION_OPS = frozenset({"rename"}) | COPY_OPS
 
 # Ops that reach everything below their paths: a read-only region or a
 # path rule anywhere under one is theirs to answer for.
-SUBTREE_OPS = frozenset(name for name, mark in _CALLS.items() if mark.subtree)
+SUBTREE_OPS = frozenset(name for name, mark in CALLS.items() if mark.subtree)
 
 # Ops a backend answers in one call for what a walk does entry by entry.
 # When a hide, the command's path rules or a coded policy reach below
@@ -111,7 +111,7 @@ FILE_CREATE_OPS = call_names(_VFS_CALLS, effects={Effect.WRITE}, creates=True)
 
 # Ops that create the name itself: an existing one answers EEXIST, before
 # a trailing slash on it is judged.
-ENTRY_CREATE_OPS = call_names(_CALLS, effects={Effect.CREATE})
+ENTRY_CREATE_OPS = call_names(CALLS, effects={Effect.CREATE})
 
 # Ops that create the path they name. A hidden target refuses these
 # through `hidden_refusal` with `create` set: EACCES when the directory
@@ -129,8 +129,8 @@ SETATTR_KEYS = ("mode", "uid", "gid", "atime", "mtime")
 # no stat surface (dispatch, the Files facade, FUSE) may rewrite their
 # operand through the symlink table.
 NO_FOLLOW_OPS = call_names(
-    _CALLS, effects={Effect.REMOVE, Effect.RENAME}
-) | call_names(_CALLS, targets={Target.LINK})
+    CALLS, effects={Effect.REMOVE, Effect.RENAME}
+) | call_names(CALLS, targets={Target.LINK})
 
 # Content-writing ops whose completion stamps an observed mtime on the
 # namespace node (removals invalidate but must not stamp).

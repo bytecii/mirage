@@ -31,6 +31,7 @@ import { handleRedirect } from '../executor/redirect.ts'
 import { sessionView } from '../session/state.ts'
 
 import type { TSNodeLike } from '../../shell/types.ts'
+import type { RouteContext } from '../../runtime/routing/types.ts'
 import { ExecutionNode } from '../types.ts'
 import { Admitted, admit } from './admission.ts'
 import { claimantFor } from './occurrence.ts'
@@ -49,6 +50,9 @@ export async function runCommandTree(
   // The frames of the caller the tree runs in place of (`eval`), null for
   // a line of its own.
   callStack: CallStack | null = null,
+  // What `preExecute` saw of the line, which `postExecute` sees with what
+  // came back; null when no policy reads `postExecute`.
+  route: RouteContext | null = null,
 ): Promise<Result> {
   const session = context.session
   const redirect = commandSubstitution ? inputSubstitutionRedirect(node) : null
@@ -145,23 +149,39 @@ export async function runCommandTree(
     const stderr = concat([err, await materialize(io.stderr)])
     io.stderr = stderr.byteLength > 0 ? stderr : null
   }
-  // The boundary consultation: the envelope's producer facts become
-  // the postExecute context; the built-in cap and any user policies
-  // answer with Limits (tightest merged), enforced by guardOutput.
+  // The boundary consultation: what preExecute saw, the envelope's
+  // producer facts, the output and each command's result become the
+  // postExecute context; the built-in cap and any user policies answer
+  // with Limits (tightest merged), enforced by guardOutput. A Deny or an
+  // Ask the host has not approved drops the output; an Ask is claimed on
+  // the line's hand-off as a preExecute one is.
   const producer = io.producer ?? { command: '', prefixes: [], declared: null }
-  const [deny, bound] = await postExecuteGate(deps.registry.policies, {
-    producer,
-    exitCode: io.exitCode,
-  })
-  if (deny !== null) {
+  const handed = deps.handed
+  const [refused, bound] =
+    route === null
+      ? [null, null]
+      : await postExecuteGate(
+          deps.registry.policies,
+          {
+            ...route,
+            producer,
+            exitCode: io.exitCode,
+            output: await materialize(materialized),
+            results: execNode.toJSON(),
+          },
+          claimantFor(node, handed),
+          deps.signal,
+        )
+  if (refused !== null) {
     const existingErr = await materialize(io.stderr)
-    const [denyBytes, exitCode] = renderDeny(producer.command || 'line', deny)
+    const subject = producer.command || 'line'
+    const [denyBytes, exitCode] = renderDeny(subject, refused)
     const mergedErr = new Uint8Array(existingErr.byteLength + denyBytes.byteLength)
     mergedErr.set(existingErr, 0)
     mergedErr.set(denyBytes, existingErr.byteLength)
     io.stderr = mergedErr
     io.exitCode = exitCode
-    io.refusal = refusalOf(deny)
+    io.refusal = refusalOf(refused)
     execNode.exitCode = io.exitCode
     if (screen !== null) {
       screen.putBack(new Uint8Array(), mergedErr)

@@ -390,13 +390,13 @@ describe('sandbox policy', () => {
     )
     expect(denied.exitCode).not.toBe(0)
     expect(denied.stderr.text).toContain('no notes')
-    // A word the profile never installed is still not a command here.
+    // A word the profile never allowed is refused here too.
     const missing = await runOn(
       shell,
       shell.resolve({ command: 'sort /data/notes/a.txt', sandboxPolicy: READ_ONLY }),
     )
-    expect(missing.stderr.text).toContain('command not found')
-    // The twin's view of what is installed is the source's allow list.
+    expect(missing.stderr.text).toContain('sort: Permission denied')
+    // The twin carries the source's allow list.
     expect(ws.getSession('agent::read-only').visibility.commands).toEqual(['cat', 'ls', 'echo'])
   })
 
