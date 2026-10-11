@@ -15,7 +15,7 @@
 import { GzipDataError, gunzipStream } from '../../../utils/compress.ts'
 import { mountPrefixOf, sameMountSpec } from '../../../utils/key_prefix.ts'
 import { mountParentReaddir, mountParentStat } from '../utils/wrap.ts'
-import { IOResult } from '../../../io/types.ts'
+import { IOResult, materialize } from '../../../io/types.ts'
 import type { MountView } from '../../../view/types.ts'
 import { FileStat, FileType, type PathSpec } from '../../../types.ts'
 import { isFsError, isWalkError, walkRefusal } from '../../../errors/fs.ts'
@@ -28,7 +28,9 @@ import { decodeText, encodeText } from '../../../shell/bytes.ts'
 import { NEVER_MATCH, resolvePattern, rustEscape } from '../grep_pattern.ts'
 import { exitCodeFor } from '../grep_scan.ts'
 import { FileTypes, typeListing, type TypeChange, type TypeSelection } from '../rg_filetypes.ts'
-import { Overrides } from '../rg_glob.ts'
+import { Overrides, Verdict } from '../rg_glob.ts'
+import { shellJoin } from '../../../shell/join.ts'
+import type { ShellFn } from '../../../runtime/types.ts'
 import {
   type Haystack,
   WalkFilter,
@@ -51,7 +53,7 @@ import {
 import { STDIN_OPERAND } from '../utils/constants.ts'
 import { type LinkResolver, linkResolver } from '../utils/links.ts'
 import { formatOptionalRecords, formatRecords } from '../utils/output.ts'
-import { isStdin, stdinStream } from '../utils/stream.ts'
+import { isStdin, stdinStream, wrapBytes } from '../utils/stream.ts'
 import { RegexSyntax } from '../types.ts'
 import { PcreError, hostFlags, translatePcre } from '../utils/pcre.ts'
 import { RustRegexError, translateRust, wholeLine, wholeWord } from '../utils/rust_regex.ts'
@@ -64,6 +66,9 @@ export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execu
 // refusal in (14.1.1).
 const GZIP_NAMES = ['.gz', '.tgz']
 const GZIP_RULE = '-'.repeat(79)
+// The status a line answers for a command it cannot find, which ripgrep
+// reports as a --pre command that could not start.
+const COMMAND_NOT_FOUND = 127
 // ripgrep's refusal of a pattern that holds the line terminator outside
 // multiline mode, exit 2 (14.1.1).
 const NEWLINE_REFUSAL =
@@ -505,6 +510,9 @@ export function parseFlags(fl: FlagView): RgFlags {
     multiline: last(fl, 'multiline', 'no_multiline') === 'multiline',
     stats: last(fl, 'stats', 'no_stats') === 'stats',
     searchZip: last(fl, 'search_zip', 'no_search_zip') === 'search_zip',
+    // --pre with no command, or after --no-pre, preprocesses nothing.
+    pre: last(fl, 'pre', 'no_pre') === 'pre' ? fl.asStr('pre') || null : null,
+    preGlobs: fl.asList('pre_glob'),
     json: jsonRecords,
     multilineDotall: last(fl, 'multiline_dotall', 'no_multiline_dotall') === 'multiline_dotall',
     pathSeparator: pathSeparator(fl),
@@ -848,7 +856,8 @@ export async function rgGeneric(
     paths.length === 1 &&
     f.stats !== true &&
     f.json !== true &&
-    f.searchZip !== true
+    f.searchZip !== true &&
+    (f.pre ?? null) === null
   ) {
     const single = await searchSingle(first, pat, f, st, rd, stream, opts.signal)
     if (single !== null) return single
@@ -875,7 +884,18 @@ export async function rgGeneric(
   }
   if (f.listFiles) return listFiles(found, f, warnings)
   if (pat === null) return usage(RG_NO_PATTERN)
-  return searchAll(found, paths, pat, f, stream, first, warnings, implicit, opts.signal)
+  return searchAll(
+    found,
+    paths,
+    pat,
+    f,
+    stream,
+    first,
+    warnings,
+    implicit,
+    opts.signal,
+    opts.shell,
+  )
 }
 
 // eslint-disable-next-line @typescript-eslint/require-await
@@ -1114,6 +1134,34 @@ async function listFiles(
  * goes between files instead. `implicit` says the line named no path, so
  * ripgrep reports a search that found nothing to search.
  */
+/**
+ * What --pre's command prints for one file, or ripgrep's report of why it
+ * failed: it runs `COMMAND PATH` with the file's contents on stdin, here as a
+ * line in the session. Mirrors Python's preprocessed.
+ */
+async function preprocessed(
+  command: string,
+  path: string,
+  name: string,
+  data: Uint8Array,
+  shell?: ShellFn,
+): Promise<[Uint8Array, string | null]> {
+  const shown = [command, path].map((word) => `"${word}"`).join(' ')
+  const head = `rg: ${name}: preprocessor command`
+  const io = shell === undefined ? null : await shell(shellJoin([command, path]), data)
+  if (io === null || io.exitCode === COMMAND_NOT_FOUND)
+    return [
+      new Uint8Array(),
+      `${head} could not start: '${shown}': No such file or directory (os error 2)`,
+    ]
+  if (io.exitCode !== 0) {
+    const err = io.stderr === null ? '' : decodeText(await materialize(io.stderr))
+    const body = err ? `\n${GZIP_RULE}\n${err}${GZIP_RULE}` : '<stderr is empty>'
+    return [new Uint8Array(), `${head} failed: '${shown}': ${body}`]
+  }
+  return [io.stdout === null ? new Uint8Array() : await materialize(io.stdout), null]
+}
+
 async function searchAll(
   found: AsyncIterable<Haystack>,
   paths: readonly PathSpec[],
@@ -1124,9 +1172,12 @@ async function searchAll(
   warnings: string[],
   implicit: boolean,
   signal?: AbortSignal,
+  // Runs --pre's command in the session.
+  shell?: ShellFn,
 ): Promise<CommandFnResult> {
   const multi = paths.length > 1
   const context = printsContext(f)
+  const preGlobs = new Overrides(f.preGlobs ?? [], [], false)
   const out: Uint8Array[] = []
   let printed = false
   let selected = false
@@ -1152,10 +1203,18 @@ async function searchAll(
           ? h.resolver.read(h.virtual)
           : stream(h.spec ?? sameMountSpec(h.virtual, template))
       const pipe = h.spec !== null && isStdin(h.spec)
-      const source =
-        f.searchZip === true && GZIP_NAMES.some((ext) => h.virtual.endsWith(ext)) && !pipe
-          ? gunzipStream(opened)
-          : opened
+      let source = opened
+      const pre = f.pre ?? null
+      if (pre !== null && !pipe && preGlobs.verdict(h.shown, false) !== Verdict.IGNORE) {
+        const [text, refusal] = await preprocessed(pre, h.shown, name, await materialize(opened), shell)
+        if (refusal !== null) {
+          warnings.push(refusal)
+          continue
+        }
+        source = wrapBytes(text)
+      } else if (f.searchZip === true && GZIP_NAMES.some((ext) => h.virtual.endsWith(ext)) && !pipe) {
+        source = gunzipStream(opened)
+      }
       for await (const c of searchHaystack(
         source,
         pat,

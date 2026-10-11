@@ -242,6 +242,10 @@ SPECS: dict[str, CommandSpec] = {
             Argument("-z", "--search-zip", action="store_true"),
             Argument("--no-search-zip", action="store_true"),
             Argument("--no-encoding", action="store_true"),
+            # --pre runs COMMAND PATH for each file, its contents on stdin,
+            # and searches what it prints; --pre-glob picks the files.
+            Argument("--pre"),
+            Argument("--pre-glob", action="append"),
             Argument("--no-pre", action="store_true"),
             Argument("--unicode", action="store_true"),
             Argument("--no-unicode", action="store_true"),

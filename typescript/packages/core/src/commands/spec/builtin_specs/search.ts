@@ -330,6 +330,10 @@ export const SPECS: Record<string, CommandSpec> = {
       new Argument(['-z', '--search-zip'], { action: 'store_true' }),
       new Argument('--no-search-zip', { action: 'store_true' }),
       new Argument('--no-encoding', { action: 'store_true' }),
+      // --pre runs COMMAND PATH for each file, its contents on stdin, and
+      // searches what it prints; --pre-glob picks the files.
+      new Argument('--pre'),
+      new Argument('--pre-glob', { action: 'append' }),
       new Argument('--no-pre', { action: 'store_true' }),
       new Argument('--unicode', { action: 'store_true' }),
       new Argument('--no-unicode', { action: 'store_true' }),

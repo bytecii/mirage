@@ -65,6 +65,8 @@ export interface RgFlags {
   stats?: boolean
   json?: boolean
   searchZip?: boolean
+  pre?: string | null
+  preGlobs?: readonly string[]
   pathSeparator: string | null
   quiet: boolean
   countOnly: boolean

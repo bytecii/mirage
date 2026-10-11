@@ -113,6 +113,8 @@ class RgFlags:
     stats: bool = False
     json: bool = False
     search_zip: bool = False
+    pre: str | None = None
+    pre_globs: tuple[str, ...] = ()
     engine: str = "default"
     threads: int | None = None
     text: bool = False

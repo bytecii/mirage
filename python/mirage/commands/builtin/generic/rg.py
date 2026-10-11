@@ -18,7 +18,7 @@ from mirage.commands.builtin.grep_pattern import (
 )
 from mirage.commands.builtin.grep_scan import exit_code_for
 from mirage.commands.builtin.rg_filetypes import FileTypes, type_listing
-from mirage.commands.builtin.rg_glob import Overrides
+from mirage.commands.builtin.rg_glob import Overrides, Verdict
 from mirage.commands.builtin.rg_scan import (
     Haystack,
     WalkFilter,
@@ -67,8 +67,10 @@ from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.errors.constants import FS_ERRORS, WALK_ERRORS
 from mirage.errors.fs import walk_refusal
-from mirage.io.types import ByteSource, IOResult
+from mirage.io.types import ByteSource, IOResult, materialize
+from mirage.runtime.types import ShellFn
 from mirage.shell.bytes import decode_text, encode_text
+from mirage.shell.join import shell_join
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.compress import GzipDataError, gunzip_stream
@@ -80,6 +82,9 @@ logger = logging.getLogger(__name__)
 # refusal in (14.1.1).
 GZIP_NAMES = (".gz", ".tgz")
 GZIP_RULE = "-" * 79
+# The status a line answers for a command it cannot find, which ripgrep
+# reports as a --pre command that could not start.
+COMMAND_NOT_FOUND = 127
 # ripgrep's refusal of a pattern that holds the line terminator outside
 # multiline mode, exit 2 (14.1.1).
 NEWLINE_REFUSAL = (
@@ -680,6 +685,11 @@ def parse_flags(fl: FlagView) -> RgFlags:
         multiline=_last(fl, "multiline", "no_multiline") == "multiline",
         stats=_last(fl, "stats", "no_stats") == "stats",
         search_zip=_last(fl, "search_zip", "no_search_zip") == "search_zip",
+        # --pre with no command, or after --no-pre, preprocesses nothing.
+        pre=(fl.as_str("pre") or None)
+        if _last(fl, "pre", "no_pre") == "pre"
+        else None,
+        pre_globs=tuple(fl.as_list("pre_glob")),
         json=json_records,
         multiline_dotall=_last(fl, "multiline_dotall", "no_multiline_dotall")
         == "multiline_dotall",
@@ -1149,7 +1159,7 @@ async def rg_generic(
     if (
         pat is not None
         and len(paths) == 1
-        and not (f.stats or f.json or f.search_zip)
+        and not (f.stats or f.json or f.search_zip or f.pre)
     ):
         single = await _search_single(
             paths[0], pat, f, st, rd, rb, read_stream, operand_stream
@@ -1196,6 +1206,7 @@ async def rg_generic(
         operand_stream,
         warnings,
         implicit,
+        opts.shell,
     )
 
 
@@ -1496,6 +1507,35 @@ async def _list_files(
     )
 
 
+async def preprocessed(
+    command: str, path: str, name: str, data: bytes, shell: ShellFn | None
+) -> tuple[bytes, str | None]:
+    """What --pre's command prints for one file, or ripgrep's report of
+    why it failed: it runs ``COMMAND PATH`` with the file's contents on
+    stdin, here as a line in the session.
+
+    Args:
+        command (str): the --pre command.
+        path (str): the file as the line named it.
+        name (str): the file as rg prints it.
+        data (bytes): the file's contents.
+        shell (ShellFn | None): runs a line in the session.
+    """
+    shown = " ".join(f'"{word}"' for word in (command, path))
+    head = f"rg: {name}: preprocessor command"
+    io = await shell(shell_join([command, path]), data) if shell else None
+    if io is None or io.exit_code == COMMAND_NOT_FOUND:
+        return b"", (
+            f"{head} could not start: '{shown}': No such file or directory "
+            "(os error 2)"
+        )
+    if io.exit_code != 0:
+        err = decode_text(await materialize(io.stderr)) if io.stderr else ""
+        body = f"\n{GZIP_RULE}\n{err}{GZIP_RULE}" if err else "<stderr is empty>"
+        return b"", f"{head} failed: '{shown}': {body}"
+    return (await materialize(io.stdout) if io.stdout else b""), None
+
+
 async def _search_all(
     found: AsyncIterator[Haystack],
     paths: list[PathSpec],
@@ -1506,6 +1546,7 @@ async def _search_all(
     operand_stream: Callable[[PathSpec], AsyncIterator[bytes]],
     warnings: list[str],
     implicit: bool,
+    shell: ShellFn | None = None,
 ) -> tuple[bytes, IOResult]:
     """Search every haystack in order and put the output together.
 
@@ -1525,8 +1566,10 @@ async def _search_all(
         warnings (list[str]): collects what could not be read.
         implicit (bool): the line named no path, so ripgrep reports a
             search that found nothing to search.
+        shell (ShellFn | None): runs --pre's command in the session.
     """
     multi = len(paths) > 1
+    pre_globs = Overrides(f.pre_globs, (), False)
     context = prints_context(f)
     out: list[bytes] = []
     printed = False
@@ -1561,11 +1604,20 @@ async def _search_all(
                 source = h.resolver.read(h.virtual)
             else:
                 source = _wrap_bytes(await rb(h.virtual))
+            stdin = h.spec is not None and is_stdin(h.spec)
             if (
-                f.search_zip
-                and h.virtual.endswith(GZIP_NAMES)
-                and not (h.spec is not None and is_stdin(h.spec))
+                f.pre is not None
+                and not stdin
+                and pre_globs.verdict(h.shown, False) is not Verdict.IGNORE
             ):
+                text, refusal = await preprocessed(
+                    f.pre, h.shown, name, await materialize(source), shell
+                )
+                if refusal is not None:
+                    warnings.append(refusal)
+                    continue
+                source = _wrap_bytes(text)
+            elif f.search_zip and h.virtual.endswith(GZIP_NAMES) and not stdin:
                 source = gunzip_stream(source)
             chunks = [
                 c
