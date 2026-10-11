@@ -36,6 +36,7 @@ from mirage.commands.builtin.generic.crossmount.utils import (
 from mirage.commands.builtin.generic.grep import (
     directories_action,
     filename_mode,
+    line_warnings,
     parse_flags,
 )
 from mirage.commands.builtin.generic.rg import (
@@ -61,7 +62,7 @@ from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.errors.render import fs_error_line
 from mirage.io import IOResult
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, materialize
 from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import encode_text
 from mirage.types import FileStat, FileType, PathSpec
@@ -324,7 +325,23 @@ async def run_search(
         quiet,
     )
     body = run_separator(name, flags).join(r.data for r in results if r.data)
-    return body, await merge_operand_ios(results, code)
+    # Each run warns as grep warns once for the line; the line keeps one.
+    noted = (
+        line_warnings(view, grep, pattern_arg(texts, view) or "", False)
+        if grep is not None
+        else b""
+    )
+    if not noted:
+        return body, await merge_operand_ios(results, code)
+    for r in results:
+        if r.io.stderr is not None:
+            err = await materialize(r.io.stderr)
+            r.io.stderr = err.removeprefix(noted) or None
+    io = await merge_operand_ios(results, code)
+    io.stderr = noted + (
+        await materialize(io.stderr) if io.stderr is not None else b""
+    )
+    return body, io
 
 
 def walks_mounts(name: str, flags: dict[str, FlagValue]) -> bool:

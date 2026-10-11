@@ -1,4 +1,7 @@
 import { mergePatternList } from '../grep_pattern.ts'
+import { parseFlags as grepFlags } from './grep.ts'
+import { parseFlags as rgFlags } from './rg.ts'
+import { UsageError } from '../../errors.ts'
 import { osErrorText } from '../rg_scan.ts'
 import { dispatchStat } from '../utils/paths.ts'
 import { isStdin, resolveSource } from '../utils/stream.ts'
@@ -8,7 +11,7 @@ import type { FlagValue } from '../../spec/types.ts'
 import { loadFailure } from '../../../core/jq/index.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
-import { decodeText } from '../../../shell/bytes.ts'
+import { decodeText, encodeText } from '../../../shell/bytes.ts'
 import { FileType, type PathSpec } from '../../../types.ts'
 import { eisdir, fsStrerror, isEisdir, isFsError } from '../../../errors/fs.ts'
 import { fsErrorLine } from '../../../errors/render.ts'
@@ -148,6 +151,25 @@ async function lowerExcludeFrom(
   const lowered: Record<string, FlagValue> = { ...bag, exclude_from: globs }
   flagOccurrences(lowered).push(...flagOccurrences(bag))
   return [lowered, consumed, null]
+}
+
+/**
+ * grep's or rg's refusal of an option value on the line, or null. Both check
+ * every value in their option loop and answer --help and --version only once
+ * it is done (grep 3.11, ripgrep 14.1.1: `grep -D bogus -V` and `rg --sort
+ * bogus --version` are refused). The pattern is not compiled yet, as neither
+ * has by then. Mirrors Python's `value_refusal`.
+ */
+export function valueRefusal(name: string, bag: Record<string, FlagValue>): IOResult | null {
+  const fl = new FlagView(bag, specOf(name))
+  try {
+    if (name === 'grep') grepFlags(fl)
+    else if (name === 'rg') rgFlags(fl)
+  } catch (err) {
+    if (!(err instanceof UsageError)) throw err
+    return new IOResult({ exitCode: err.exitCode, stderr: encodeText(`${err.message}\n`) })
+  }
+  return null
 }
 
 /** Read program files once before input routing or traversal fan-out.

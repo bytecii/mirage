@@ -71,7 +71,7 @@ function binaryMode(fl: FlagView): string {
     else if (name === 'binary_files') {
       mode = fl.asStr('binary_files') ?? 'binary'
       if (!['binary', 'text', 'without-match'].includes(mode))
-        throw new Error('grep: unknown binary-files type')
+        throw new UsageError('grep: unknown binary-files type')
     }
   }
   return mode
@@ -87,7 +87,7 @@ export function directoriesAction(fl: FlagView): string {
   let action = 'read'
   for (const name of fl.typedOrder('recursive', 'dereference_recursive', 'directories')) {
     if (name !== 'directories') {
-      action = 'recurse'
+      if (fl.asBool(name)) action = 'recurse'
       continue
     }
     const word = fl.asStr(name) ?? ''
@@ -135,8 +135,24 @@ function groupSeparator(fl: FlagView): string | null {
 
 /** -i (or -y) unless a later --no-ignore-case turns it off. */
 function ignoresCase(fl: FlagView): boolean {
-  const names = fl.typedOrder('ignore_case', 'no_ignore_case')
+  const names = fl.typedOrder('ignore_case', 'no_ignore_case').filter((name) => fl.asBool(name))
   return names[names.length - 1] === 'ignore_case'
+}
+
+/**
+ * What grep warns once for the line, before it reads a file: an obsolete -u,
+ * then the pattern's compile-time warnings. Mirrors Python's `line_warnings`.
+ */
+export function lineWarnings(
+  fl: FlagView,
+  f: FlagSet,
+  pattern: string,
+  neverMatch: boolean,
+): string {
+  return (
+    (fl.asBool('unix_byte_offsets') ? UNIX_BYTE_OFFSETS : '') +
+    (neverMatch || f.fixedString ? '' : patternWarnings(pattern, f.syntax))
+  )
 }
 
 /** One -A/-B/-C value, refused the way GNU refuses it. */
@@ -294,9 +310,7 @@ export async function grepGeneric(
     if (!(error instanceof UsageError)) throw error
     return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(error.message + '\n') })]
   }
-  const warning =
-    (fl.asBool('unix_byte_offsets') ? UNIX_BYTE_OFFSETS : '') +
-    (resolution.neverMatch || f.fixedString ? '' : patternWarnings(resolution.pattern, f.syntax))
+  const warning = lineWarnings(fl, f, resolution.pattern, resolution.neverMatch)
   const warned = (): IOResult =>
     warning ? new IOResult({ stderr: ENC.encode(warning) }) : new IOResult()
   const io = warned()

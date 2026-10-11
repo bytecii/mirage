@@ -693,3 +693,19 @@ async def test_grep_flushes_binary_notice_on_early_close():
     await output.aclose()
     assert io.exit_code == 0
     assert io.stderr == b"grep: /data/a.txt: binary file matches\n"
+
+
+@pytest.mark.asyncio
+async def test_false_flags_turn_nothing_on():
+    readdir, stat, rb, rs = _make_backend({"/data/a.txt": b"Apple\n"})
+    output, io = await grep_generic(
+        [_spec("/data/a.txt"), _spec("/data")],
+        ["apple"],
+        CommandOpts(flags={"ignore_case": False, "recursive": False}),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert await _drain_async(output) == b""
+    assert await _drain_async(io.stderr) == b"grep: /data: Is a directory\n"

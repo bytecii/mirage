@@ -17,7 +17,7 @@ import { joinRuns } from './fanout/fanout.ts'
 import { ownedScopes } from './scopes.ts'
 import type { CrossResult, OperandRun, RunSingle, OwnedScope } from './types.ts'
 import { mergeOperandIos, runOperands, runSeparator } from './utils.ts'
-import { directoriesAction, filenameMode, parseFlags } from '../grep.ts'
+import { directoriesAction, filenameMode, lineWarnings, parseFlags } from '../grep.ts'
 import {
   labelFlags,
   parseFlags as parseRgFlags,
@@ -36,7 +36,8 @@ import { BINARY_EXTENSIONS, getExtension } from '../../../../utils/filetype.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView, flagOccurrences } from '../../../spec/flag_view.ts'
 import type { FlagValue } from '../../../spec/types.ts'
-import { IOResult, type ByteSource } from '../../../../io/types.ts'
+import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
+import { concat } from '../../../../utils/bytes.ts'
 import type { NamespaceView } from '../../../../view/types.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../../types.ts'
@@ -228,13 +229,27 @@ export async function runSearch(
     results.map((r) => r.io.exitCode !== 0 && r.io.stderr !== null),
     quiet,
   )
-  return [
-    joinRuns(
-      results.map((r) => r.data),
-      runSeparator(name, bag),
-    ),
-    await mergeOperandIos(results, code),
-  ]
+  const body = joinRuns(
+    results.map((r) => r.data),
+    runSeparator(name, bag),
+  )
+  // Each run warns as grep warns once for the line; the line keeps one.
+  const noted = encodeText(
+    grep === null ? '' : lineWarnings(view, grep, patternArg(texts, bag) ?? '', false),
+  )
+  if (noted.length === 0) return [body, await mergeOperandIos(results, code)]
+  for (const r of results) {
+    if (r.io.stderr === null) continue
+    const err = await materialize(r.io.stderr)
+    const kept =
+      err.length >= noted.length && noted.every((byte, i) => err[i] === byte)
+        ? err.subarray(noted.length)
+        : err
+    r.io.stderr = kept.length === 0 ? null : kept
+  }
+  const io = await mergeOperandIos(results, code)
+  io.stderr = concat([noted, io.stderr === null ? new Uint8Array() : await materialize(io.stderr)])
+  return [body, io]
 }
 
 export function walksMounts(name: string, bag: Record<string, FlagValue>): boolean {

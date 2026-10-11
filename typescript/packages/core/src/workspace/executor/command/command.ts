@@ -13,7 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { EvaluationContext } from '../../evaluation.ts'
-import { registeredSpec } from '../../../commands/spec/builtins.ts'
+import { isBuiltinGrammar, registeredSpec } from '../../../commands/spec/builtins.ts'
+import { STANDARD_AFTER_SCAN } from '../../../commands/spec/constants.ts'
 import { spreadOperands } from '../../../commands/spec/flag_view.ts'
 import { SPECS } from '../../../commands/spec/index.ts'
 import { type ByteSource, IOResult, materialize } from '../../../io/types.ts'
@@ -25,6 +26,7 @@ import {
   PROGRAM_FILE_COMMANDS,
   prepareProgram,
   programFiles,
+  valueRefusal,
 } from '../../../commands/builtin/generic/program.ts'
 import { type ParsedCommand, type ExecuteNodeFn, type Result } from './types.ts'
 import { identityFrom } from '../../../commands/builtin/utils/identity.ts'
@@ -344,7 +346,32 @@ export async function handleCommand(
   // the registered wrapper that answers help and MOVED THE FILE instead of
   // printing the page.
   const cmdMount = registry.mountForCommand(cmdName)
-  const standardOut = standardRequest(cmdName, cmdMount?.specFor(cmdName) ?? null, rawArgv)
+  const cmdSpec = cmdMount?.specFor(cmdName) ?? null
+  const standardOut = standardRequest(cmdName, cmdSpec, rawArgv)
+  const builtinSpec = SPECS[cmdName]
+  if (
+    standardOut !== null &&
+    STANDARD_AFTER_SCAN.has(cmdName) &&
+    isBuiltinGrammar(cmdName, cmdSpec) &&
+    builtinSpec !== undefined
+  ) {
+    const refused = valueRefusal(
+      cmdName,
+      parseFlags(parts.slice(1), registeredSpec(cmdName, builtinSpec), cmdName, session.cwd)
+        .flagKwargs,
+    )
+    if (refused !== null) {
+      return [
+        null,
+        refused,
+        new ExecutionNode({
+          command: cmdStr,
+          exitCode: refused.exitCode,
+          stderr: await materialize(refused.stderr),
+        }),
+      ]
+    }
+  }
   if (standardOut !== null) {
     return [standardOut, new IOResult(), new ExecutionNode({ command: cmdStr, exitCode: 0 })]
   }
