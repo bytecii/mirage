@@ -934,7 +934,17 @@ export class RgPrinter {
         const at = offsetOf(i, start)
         add(
           i,
-          this.record(i, f.column ? 1 + at - line.start : null, line.start, line.text, [], true, true, 1, line.cr),
+          this.record(
+            i,
+            f.column ? 1 + at - line.start : null,
+            line.start,
+            line.text,
+            [],
+            true,
+            true,
+            1,
+            line.cr,
+          ),
         )
       }
       return records
@@ -953,8 +963,14 @@ export class RgPrinter {
         for (let j = i; j <= lineIndex(ats, Math.max(start, end - 1)); j++) {
           const line = lines[j]
           if (line === undefined) continue
-          const piece = text.slice(Math.max(start, line.at), Math.min(end, line.at + line.text.length))
-          add(j, this.record(j, shownColumn, at, piece, [[0, piece.length]], true, false, 1, line.cr))
+          const piece = text.slice(
+            Math.max(start, line.at),
+            Math.min(end, line.at + line.text.length),
+          )
+          add(
+            j,
+            this.record(j, shownColumn, at, piece, [[0, piece.length]], true, false, 1, line.cr),
+          )
         }
       }
       return records

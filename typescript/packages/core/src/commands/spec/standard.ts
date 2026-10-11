@@ -108,7 +108,8 @@ export function standardRequest(
   if (hasInjectedHelp(spec)) offered.push('--help')
   if (hasInjectedVersion(spec)) offered.push('--version')
   const shorts = isBuiltinGrammar(name, spec) ? (SHORT_STANDARD[name] ?? {}) : {}
-  for (const [short, long] of Object.entries(shorts)) if (offered.includes(long)) offered.push(short)
+  for (const [short, long] of Object.entries(shorts))
+    if (offered.includes(long)) offered.push(short)
   if (offered.length === 0) return null
   const whole = parse(name, spec, argv)
   let first: { index: number; option: string } | null = null

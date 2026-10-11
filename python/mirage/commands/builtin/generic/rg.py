@@ -294,22 +294,28 @@ def color_refusal(spec: str) -> str | None:
     return color_value_refusal(value)
 
 
+def color_number(code: str) -> bool:
+    """Whether termcolor reads ``code`` as a color number, decimal or 0x
+    hex, from 0 to 255.
+
+    Args:
+        code (str): one number as typed.
+    """
+    if COLOR_NUMBER.fullmatch(code) is None:
+        return False
+    hexed = code.startswith("0x")
+    return int(code[2:] if hexed else code, 16 if hexed else 10) <= 255
+
+
 def color_value_refusal(value: str) -> str | None:
     """Why termcolor refuses a color: a name, 0-255 or an r,g,b triple.
 
     Args:
         value (str): the color as typed.
     """
-
-    def number(code: str) -> bool:
-        if COLOR_NUMBER.fullmatch(code) is None:
-            return False
-        hexed = code.startswith("0x")
-        return int(code[2:] if hexed else code, 16 if hexed else 10) <= 255
-
     codes = value.split(",")
     if value.lower() in COLOR_NAMES or (
-        len(codes) in (1, 3) and all(number(code) for code in codes)
+        len(codes) in (1, 3) and all(color_number(code) for code in codes)
     ):
         return None
     if len(codes) == 1 and all(c in "0123456789abcdefABCDEF" for c in value):

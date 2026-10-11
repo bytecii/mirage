@@ -224,17 +224,19 @@ function colorRefusal(spec: string): string | null {
   return colorValueRefusal(value)
 }
 
+/** Whether termcolor reads `code` as a color number, decimal or 0x hex, from 0 to 255. */
+function colorNumber(code: string): boolean {
+  if (!COLOR_NUMBER.test(code)) return false
+  const hexed = code.startsWith('0x')
+  return parseInt(hexed ? code.slice(2) : code, hexed ? 16 : 10) <= 255
+}
+
 /** Why termcolor refuses a color: a name, 0-255 or an r,g,b triple. */
 function colorValueRefusal(value: string): string | null {
-  const number = (code: string): boolean => {
-    if (!COLOR_NUMBER.test(code)) return false
-    const hexed = code.startsWith('0x')
-    return parseInt(hexed ? code.slice(2) : code, hexed ? 16 : 10) <= 255
-  }
   const codes = value.split(',')
   if (
     COLOR_NAMES.includes(value.toLowerCase()) ||
-    ((codes.length === 1 || codes.length === 3) && codes.every(number))
+    ((codes.length === 1 || codes.length === 3) && codes.every(colorNumber))
   )
     return null
   if (codes.length === 1 && /^[0-9a-fA-F]*$/.test(value))
