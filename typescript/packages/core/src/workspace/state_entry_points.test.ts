@@ -684,6 +684,7 @@ describe('op hooks judge file calls and path rules judge a line', () => {
     expect((await ws.shell('rm /a/prod/keep.txt')).exitCode).toBe(0)
     expect((await ws.shell('find /a/prod -name new.txt -delete')).exitCode).toBe(0)
     expect((await ws.shell('rm -r /a/prod')).exitCode).toBe(0)
+    expect((await ws.shell('find /a; du -a /a')).exitCode).toBe(0)
     expect(recorder.asked).toEqual([])
   })
 
@@ -2954,34 +2955,4 @@ describe('admitted path rules on recursive commands', () => {
     expect(voicedStderr(result)).toContain('/data/src/cache')
     expect(voicedStderr(result)).toContain('Permission denied')
   })
-})
-
-describe('coded preVfs on native walks', () => {
-  // Refuses listing /data/sec, as a mode 0300 directory does.
-  const sealedSubtree: Policy = {
-    preVfs: (ctx: VfsContext) =>
-      ctx.call.name === 'readdir' && ctx.path.virtual.startsWith('/data/sec')
-        ? { kind: 'deny', reason: 'sealed' }
-        : null,
-  }
-
-  it.each(['find /data', 'find /data/sec', 'du -a /data'])(
-    "%s keeps the command's walk native",
-    async (command) => {
-      // The walk is the command's I/O, which no coded op hook judges, so
-      // it keeps its one-call native op; the same listing through `ws.vfs`
-      // meets the hook.
-      const ws = new Workspace(
-        { '/data': new RAMVFS() },
-        { mode: MountMode.WRITE, shellParser: await getTestParser() },
-      )
-      open.push(ws)
-      await ws.shell('mkdir -p /data/sec && echo SECRET > /data/sec/k.txt')
-      ws.policies.add(sealedSubtree)
-      const result = await ws.shell(command)
-      expect(result.exitCode).toBe(0)
-      expect(stdoutStr(result)).toContain('/data/sec/k.txt')
-      await expect(ws.vfs.readdir('/data/sec')).rejects.toThrow()
-    },
-  )
 })

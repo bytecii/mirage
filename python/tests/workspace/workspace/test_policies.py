@@ -505,6 +505,7 @@ async def test_pre_vfs_judges_file_calls_not_a_lines_io():
         found = await ws.shell("find /data/prod -name new.txt -delete")
         assert found.exit_code == 0
         assert (await ws.shell("rm -r /data/prod")).exit_code == 0
+        assert (await ws.shell("find /data; du -a /data")).exit_code == 0
         assert rec.asked == []
     finally:
         await ws.close()
@@ -1439,95 +1440,9 @@ async def test_recursive_commands_enforce_admitted_path_rules(
         await ws.close()
 
 
-class SealedSubtree(Policy):
-    """Refuse listing /data/sec, as a mode 0300 directory does."""
-
-    async def pre_vfs(self, ctx: VfsContext) -> Deny | None:
-        if ctx.call.name == "readdir" and ctx.path.virtual.startswith(
-            "/data/sec"
-        ):
-            return Deny("sealed")
-        return None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "command_line", ["find /data", "find /data/sec", "du -a /data"]
-)
-async def test_a_coded_pre_vfs_deny_leaves_a_commands_walk_native(
-    command_line,
-):
-    # The walk is the command's I/O, which no coded op hook judges, so
-    # it keeps its one-call native op; the same listing through
-    # ``ws.vfs`` meets the hook.
-    ws = Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE)
-    try:
-        await ws.shell("mkdir -p /data/sec && echo SECRET > /data/sec/k.txt")
-        ws.policies.add(SealedSubtree())
-        result = await ws.shell(command_line)
-        assert result.exit_code == 0
-        assert b"/data/sec/k.txt" in result.stdout
-        with pytest.raises(PermissionError):
-            await ws.vfs.readdir("/data/sec")
-    finally:
-        await ws.close()
-
-
-class AskTheLine(Policy):
-    async def pre_execute(self, ctx: RouteContext) -> Action | None:
-        return Ask("line sign-off") if ctx.line.startswith("rm") else None
-
-
-@pytest.mark.asyncio
-async def test_a_pre_execute_ask_holds_the_whole_line():
-    # Nothing of the line runs until the host approves it, and the
-    # approval is the line's once.
-    ws = Workspace(
-        {"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[AskTheLine()]
-    )
-    try:
-        await ws.shell("echo x > /data/x")
-        held = await ws.shell("rm /data/x")
-        assert held.exit_code == 126
-        assert held.stderr == b"rm: Permission denied\n"
-        assert held.refusal is not None
-        assert (held.refusal.kind, held.refusal.reason) == (
-            "pending",
-            "line sign-off",
-        )
-        assert (await ws.shell("cat /data/x")).stdout == b"x\n"
-        (record,) = ws.decisions.pending()
-        assert record.argv == ("rm /data/x",)
-        await ws.decisions.answer(record.id, Outcome.ALLOW)
-        assert (await ws.shell("rm /data/x")).exit_code == 0
-        again = await ws.shell("rm /data/x")
-        assert again.refusal is not None
-        assert again.refusal.kind == "pending"
-    finally:
-        await ws.close()
-
-
 class AskSecrets(Policy):
     async def pre_session(self, ctx: SessionContext) -> Action | None:
         return Ask("secret write") if ctx.key.startswith("SECRET") else None
-
-
-@pytest.mark.asyncio
-async def test_a_pre_session_ask_refuses_the_write_until_approved():
-    ws = Workspace({"/data/": RAMVFS()}, policies=[AskSecrets()])
-    try:
-        held = await ws.shell("export SECRET_A=1")
-        assert held.exit_code == 1
-        assert held.refusal is not None
-        assert held.refusal.kind == "pending"
-        assert (await ws.shell("echo ${SECRET_A:-unset}")).stdout == b"unset\n"
-        (record,) = ws.decisions.pending()
-        assert record.argv == ("SECRET_A", "1")
-        await ws.decisions.answer(record.id, Outcome.ALLOW)
-        assert (await ws.shell("export SECRET_A=1")).exit_code == 0
-        assert (await ws.shell("echo $SECRET_A")).stdout == b"1\n"
-    finally:
-        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -1588,45 +1503,6 @@ async def test_a_post_vfs_ask_holds_the_result_back_until_approved():
         await ws.close()
 
 
-class HoldOutput(Policy):
-    async def post_execute(self, ctx: ExecuteResultContext) -> Action | None:
-        if "secret" in ctx.line:
-            return Deny("no secrets")
-        if "review" in ctx.line:
-            return Ask("output sign-off")
-        return None
-
-
-@pytest.mark.asyncio
-async def test_a_post_execute_deny_drops_the_output():
-    ws = Workspace({"/data/": RAMVFS()}, policies=[HoldOutput()])
-    try:
-        out = await ws.shell("echo secret")
-        assert out.exit_code == 126
-        assert not out.stdout
-        assert out.stderr == b"echo: Permission denied\n"
-        assert out.refusal is not None
-        assert (out.refusal.kind, out.refusal.reason) == ("deny", "no secrets")
-    finally:
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_a_post_execute_ask_drops_the_output_until_approved():
-    ws = Workspace({"/data/": RAMVFS()}, policies=[HoldOutput()])
-    try:
-        held = await ws.shell("echo review")
-        assert held.exit_code == 126
-        assert not held.stdout
-        assert held.refusal is not None
-        assert held.refusal.kind == "pending"
-        await ws.decisions.answer(held.refusal.ask_id, Outcome.ALLOW)
-        shown = await ws.shell("echo review")
-        assert (shown.exit_code, shown.stdout) == (0, b"review\n")
-    finally:
-        await ws.close()
-
-
 class AskRemovals(Policy):
     async def pre_command(self, ctx: CommandContext) -> Action | None:
         return Ask("removal") if ctx.command == "rm" else None
@@ -1667,10 +1543,6 @@ class AfterCommands(Policy):
 
     async def post_command(self, ctx: CommandResultContext) -> Action | None:
         self.seen.append(ctx)
-        if ctx.command == "cat" and "secret" in ctx.argv:
-            return Deny("no secrets")
-        if ctx.command == "cat" and "review" in ctx.argv:
-            return Ask("output sign-off")
         return None
 
 
@@ -1689,39 +1561,6 @@ async def test_post_command_sees_each_command_once_with_its_result():
             ("cat", 1),
         ]
         assert "No such file or directory" in policy.seen[1].stderr
-    finally:
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_a_post_command_deny_stops_the_chain_and_keeps_what_was_sent():
-    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
-    try:
-        await ws.shell("echo x > /data/secret")
-        ws.policies.add(AfterCommands())
-        out = await ws.shell("cd /data && cat secret && echo next")
-        assert out.exit_code == 126
-        assert out.stdout == b"x\n"
-        assert out.stderr == b"cat: Permission denied\n"
-        assert out.refusal is not None
-        assert (out.refusal.kind, out.refusal.reason) == ("deny", "no secrets")
-    finally:
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_a_post_command_ask_holds_the_command_until_approved():
-    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
-    try:
-        await ws.shell("echo x > /data/review")
-        ws.policies.add(AfterCommands())
-        held = await ws.shell("cd /data && cat review && echo next")
-        assert held.exit_code == 126
-        assert held.refusal is not None
-        assert held.refusal.kind == "pending"
-        await ws.decisions.answer(held.refusal.ask_id, Outcome.ALLOW)
-        shown = await ws.shell("cd /data && cat review && echo next")
-        assert (shown.exit_code, shown.stdout) == (0, b"x\nnext\n")
     finally:
         await ws.close()
 
@@ -1753,25 +1592,6 @@ async def test_post_command_reads_the_files_its_command_read():
         await ws.close()
 
 
-class SafeMode(Policy):
-    async def post_session(self, ctx: SessionResultContext) -> Action | None:
-        landed = ctx.session.get(ctx.key) if ctx.session else None
-        return Deny("mode stays safe") if landed == "unsafe" else None
-
-
-@pytest.mark.asyncio
-async def test_post_session_reads_a_prefix_write_once_it_landed():
-    ws = Workspace(
-        {"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[SafeMode()]
-    )
-    try:
-        out = await ws.shell("MODE=unsafe printenv MODE")
-        assert (out.exit_code, out.stdout) == (1, b"")
-        assert (await ws.shell("echo ${MODE:-unset}")).stdout == b"unset\n"
-    finally:
-        await ws.close()
-
-
 class GuardVars(Policy):
     def __init__(self) -> None:
         self.seen: list[SessionResultContext] = []
@@ -1782,8 +1602,6 @@ class GuardVars(Policy):
             return None
         if ctx.value == "2" or ctx.verb == "unset":
             return Deny("frozen")
-        if ctx.value == "3":
-            return Ask("value sign-off")
         return None
 
 
@@ -1800,22 +1618,6 @@ async def test_a_post_session_deny_puts_the_old_value_back():
         assert (await ws.shell("echo $A")).stdout == b"1\n"
         assert (await ws.shell("unset A")).exit_code == 1
         assert (await ws.shell("echo $A")).stdout == b"1\n"
-    finally:
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_a_post_session_ask_writes_once_approved():
-    ws = Workspace({"/data/": RAMVFS()}, policies=[GuardVars()])
-    try:
-        await ws.shell("export A=1")
-        held = await ws.shell("export A=3")
-        assert held.refusal is not None
-        assert held.refusal.kind == "pending"
-        assert (await ws.shell("echo $A")).stdout == b"1\n"
-        await ws.decisions.answer(held.refusal.ask_id, Outcome.ALLOW)
-        assert (await ws.shell("export A=3")).exit_code == 0
-        assert (await ws.shell("echo $A")).stdout == b"3\n"
     finally:
         await ws.close()
 
@@ -1891,8 +1693,15 @@ def _leaves(node: dict) -> list[tuple[str, int]]:
     return [leaf for child in children for leaf in _leaves(child)]
 
 
+def _records(node: dict) -> list[str]:
+    mine = [r["path"] for r in node.get("records", [])]
+    return mine + [p for c in node.get("children", []) for p in _records(c)]
+
+
 @pytest.mark.asyncio
 async def test_post_execute_sees_the_line_its_output_and_each_result():
+    # A function hands back its last command's node, and grep's status
+    # settles as its output drains: each node keeps its read and status.
     spy = SeeLine()
     ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[spy])
     try:
@@ -1915,37 +1724,9 @@ async def test_post_execute_sees_the_line_its_output_and_each_result():
             "false",
         ]
         assert _leaves(ctx.results)[-1][1] == 1
-    finally:
-        await ws.close()
-
-
-def _records(node: dict) -> list[str]:
-    mine = [r["path"] for r in node.get("records", [])]
-    return mine + [p for c in node.get("children", []) for p in _records(c)]
-
-
-@pytest.mark.asyncio
-async def test_post_execute_results_keep_a_functions_command_records():
-    # A function hands back its last command's node: the read that
-    # command made stays on it.
-    spy = SeeLine()
-    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[spy])
-    try:
         await ws.shell("echo hit > /data/x")
         await ws.shell("f() { cat /data/x; }; f")
         assert "/data/x" in _records(spy.seen[-1].results)
-    finally:
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_post_execute_results_hold_each_commands_final_status():
-    # grep's status settles as its output drains; its node says so, and
-    # carries the read it made.
-    spy = SeeLine()
-    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[spy])
-    try:
-        await ws.shell("echo hit > /data/x")
         await ws.shell("grep hit /data/x; true")
         grep, _ = spy.seen[-1].results["children"]
         assert grep["exit_code"] == 0

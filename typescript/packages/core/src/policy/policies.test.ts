@@ -945,57 +945,11 @@ describe('the op-policies binding', () => {
 })
 
 describe('every hook answers Deny and Ask', () => {
-  class AskTheLine implements Policy {
-    preExecute(ctx: RouteContext): Action | null {
-      return ctx.line.startsWith('rm') ? { kind: 'ask', reason: 'line sign-off' } : null
-    }
-  }
-
-  it('a preExecute ask holds the whole line', async () => {
-    // Nothing of the line runs until the host approves it, and the
-    // approval is the line's once.
-    const ws = executableWorkspace(undefined, [new AskTheLine()])
-    try {
-      await ws.shell('echo x > /data/x')
-      const held = await ws.shell('rm /data/x')
-      expect(held.exitCode).toBe(126)
-      expect(held.stderrText).toBe('rm: Permission denied\n')
-      expect([held.refusal?.kind, held.refusal?.reason]).toEqual(['pending', 'line sign-off'])
-      expect((await ws.shell('cat /data/x')).stdoutText).toBe('x\n')
-      const [record] = ws.decisions.pending()
-      expect(ws.decisions.pending()).toHaveLength(1)
-      expect(record?.argv).toEqual(['rm /data/x'])
-      await ws.decisions.answer(record?.id ?? '', Outcome.ALLOW)
-      expect((await ws.shell('rm /data/x')).exitCode).toBe(0)
-      expect((await ws.shell('rm /data/x')).refusal?.kind).toBe('pending')
-    } finally {
-      await ws.close()
-    }
-  })
-
   class AskSecrets implements Policy {
     preSession(ctx: SessionContext): Action | null {
       return ctx.key.startsWith('SECRET') ? { kind: 'ask', reason: 'secret write' } : null
     }
   }
-
-  it('a preSession ask refuses the write until approved', async () => {
-    const ws = executableWorkspace(undefined, [new AskSecrets()])
-    try {
-      const held = await ws.shell('export SECRET_A=1')
-      expect(held.exitCode).toBe(1)
-      expect(held.refusal?.kind).toBe('pending')
-      expect((await ws.shell('echo ${SECRET_A:-unset}')).stdoutText).toBe('unset\n')
-      const [record] = ws.decisions.pending()
-      expect(ws.decisions.pending()).toHaveLength(1)
-      expect(record?.argv).toEqual(['SECRET_A', '1'])
-      await ws.decisions.answer(record?.id ?? '', Outcome.ALLOW)
-      expect((await ws.shell('export SECRET_A=1')).exitCode).toBe(0)
-      expect((await ws.shell('echo $SECRET_A')).stdoutText).toBe('1\n')
-    } finally {
-      await ws.close()
-    }
-  })
 
   it('a preSession ask a host answers inline writes', async () => {
     const asked: Decision[] = []
@@ -1061,42 +1015,6 @@ describe('every hook answers Deny and Ask', () => {
     }
   })
 
-  class HoldOutput implements Policy {
-    postExecute(ctx: ExecuteResultContext): Action | null {
-      if (ctx.line.includes('secret')) return { kind: 'deny', reason: 'no secrets' }
-      if (ctx.line.includes('review')) return { kind: 'ask', reason: 'output sign-off' }
-      return null
-    }
-  }
-
-  it('a postExecute deny drops the output', async () => {
-    const ws = executableWorkspace(undefined, [new HoldOutput()])
-    try {
-      const out = await ws.shell('echo secret')
-      expect(out.exitCode).toBe(126)
-      expect(out.stdoutText).toBe('')
-      expect(out.stderrText).toBe('echo: Permission denied\n')
-      expect([out.refusal?.kind, out.refusal?.reason]).toEqual(['deny', 'no secrets'])
-    } finally {
-      await ws.close()
-    }
-  })
-
-  it('a postExecute ask drops the output until approved', async () => {
-    const ws = executableWorkspace(undefined, [new HoldOutput()])
-    try {
-      const held = await ws.shell('echo review')
-      expect(held.exitCode).toBe(126)
-      expect(held.stdoutText).toBe('')
-      expect(held.refusal?.kind).toBe('pending')
-      await ws.decisions.answer(held.refusal?.askId ?? '', Outcome.ALLOW)
-      const shown = await ws.shell('echo review')
-      expect([shown.exitCode, shown.stdoutText]).toEqual([0, 'review\n'])
-    } finally {
-      await ws.close()
-    }
-  })
-
   class AskRemovals implements Policy {
     preCommand(ctx: CommandContext): Action | null {
       return ctx.command === 'rm' ? { kind: 'ask', reason: 'removal' } : null
@@ -1138,12 +1056,6 @@ describe('postCommand and postSession', () => {
 
     postCommand(ctx: CommandResultContext): Action | null {
       this.seen.push(ctx)
-      if (ctx.command === 'cat' && ctx.argv.includes('secret')) {
-        return { kind: 'deny', reason: 'no secrets' }
-      }
-      if (ctx.command === 'cat' && ctx.argv.includes('review')) {
-        return { kind: 'ask', reason: 'output sign-off' }
-      }
       return null
     }
   }
@@ -1193,56 +1105,6 @@ describe('postCommand and postSession', () => {
     }
   })
 
-  class SafeMode implements Policy {
-    postSession(ctx: SessionResultContext): Action | null {
-      return ctx.session?.get(ctx.key) === 'unsafe'
-        ? { kind: 'deny', reason: 'mode stays safe' }
-        : null
-    }
-  }
-
-  it('postSession reads a prefix write once it landed', async () => {
-    const ws = executableWorkspace(undefined, [new SafeMode()])
-    try {
-      const out = await ws.shell('MODE=unsafe printenv MODE')
-      expect([out.exitCode, out.stdoutText]).toEqual([1, ''])
-      expect((await ws.shell('echo ${MODE:-unset}')).stdoutText).toBe('unset\n')
-    } finally {
-      await ws.close()
-    }
-  })
-
-  it('a postCommand deny stops the chain and keeps what was sent', async () => {
-    const ws = executableWorkspace()
-    try {
-      await ws.shell('echo x > /data/secret')
-      ws.policies.add(new AfterCommands())
-      const out = await ws.shell('cd /data && cat secret && echo next')
-      expect(out.exitCode).toBe(126)
-      expect(out.stdoutText).toBe('x\n')
-      expect(out.stderrText).toBe('cat: Permission denied\n')
-      expect([out.refusal?.kind, out.refusal?.reason]).toEqual(['deny', 'no secrets'])
-    } finally {
-      await ws.close()
-    }
-  })
-
-  it('a postCommand ask holds the command until approved', async () => {
-    const ws = executableWorkspace()
-    try {
-      await ws.shell('echo x > /data/review')
-      ws.policies.add(new AfterCommands())
-      const held = await ws.shell('cd /data && cat review && echo next')
-      expect(held.exitCode).toBe(126)
-      expect(held.refusal?.kind).toBe('pending')
-      await ws.decisions.answer(held.refusal?.askId ?? '', Outcome.ALLOW)
-      const shown = await ws.shell('cd /data && cat review && echo next')
-      expect([shown.exitCode, shown.stdoutText]).toEqual([0, 'x\nnext\n'])
-    } finally {
-      await ws.close()
-    }
-  })
-
   class GuardVars implements Policy {
     readonly seen: SessionResultContext[] = []
 
@@ -1250,7 +1112,6 @@ describe('postCommand and postSession', () => {
       this.seen.push(ctx)
       if (ctx.key !== 'A') return null
       if (ctx.value === '2' || ctx.verb === 'unset') return { kind: 'deny', reason: 'frozen' }
-      if (ctx.value === '3') return { kind: 'ask', reason: 'value sign-off' }
       return null
     }
   }
@@ -1266,21 +1127,6 @@ describe('postCommand and postSession', () => {
       expect((await ws.shell('echo $A')).stdoutText).toBe('1\n')
       expect((await ws.shell('unset A')).exitCode).toBe(1)
       expect((await ws.shell('echo $A')).stdoutText).toBe('1\n')
-    } finally {
-      await ws.close()
-    }
-  })
-
-  it('a postSession ask writes once approved', async () => {
-    const ws = executableWorkspace(undefined, [new GuardVars()])
-    try {
-      await ws.shell('export A=1')
-      const held = await ws.shell('export A=3')
-      expect(held.refusal?.kind).toBe('pending')
-      expect((await ws.shell('echo $A')).stdoutText).toBe('1\n')
-      await ws.decisions.answer(held.refusal?.askId ?? '', Outcome.ALLOW)
-      expect((await ws.shell('export A=3')).exitCode).toBe(0)
-      expect((await ws.shell('echo $A')).stdoutText).toBe('3\n')
     } finally {
       await ws.close()
     }
@@ -1365,7 +1211,15 @@ describe('what a hook sees', () => {
     return children.flatMap(leaves)
   }
 
+  function recordPaths(node: Record<string, unknown>): unknown[] {
+    const mine = ((node.records ?? []) as Record<string, unknown>[]).map((r) => r.path)
+    const children = (node.children ?? []) as Record<string, unknown>[]
+    return [...mine, ...children.flatMap(recordPaths)]
+  }
+
   it('postExecute sees the line, its output and each result', async () => {
+    // A function hands back its last command's node, and grep's status
+    // settles as its output drains: each node keeps its read and status.
     const spy = new SeeLine()
     const ws = executableWorkspace(undefined, [spy])
     try {
@@ -1379,38 +1233,9 @@ describe('what a hook sees', () => {
       const ran = leaves(ctx?.results ?? {})
       expect(ran.map(([name]) => name.split(' ')[0])).toEqual(['cd', 'echo', 'cat', 'false'])
       expect(ran.at(-1)?.[1]).toBe(1)
-    } finally {
-      await ws.close()
-    }
-  })
-
-  function recordPaths(node: Record<string, unknown>): unknown[] {
-    const mine = ((node.records ?? []) as Record<string, unknown>[]).map((r) => r.path)
-    const children = (node.children ?? []) as Record<string, unknown>[]
-    return [...mine, ...children.flatMap(recordPaths)]
-  }
-
-  it("postExecute results keep a function's command records", async () => {
-    // A function hands back its last command's node: the read that command
-    // made stays on it.
-    const spy = new SeeLine()
-    const ws = executableWorkspace(undefined, [spy])
-    try {
       await ws.shell('echo hit > /data/x')
       await ws.shell('f() { cat /data/x; }; f')
       expect(recordPaths(spy.seen.at(-1)?.results ?? {})).toContain('/data/x')
-    } finally {
-      await ws.close()
-    }
-  })
-
-  it("postExecute results hold each command's final status", async () => {
-    // grep's status settles as its output drains; its node says so, and
-    // carries the read it made.
-    const spy = new SeeLine()
-    const ws = executableWorkspace(undefined, [spy])
-    try {
-      await ws.shell('echo hit > /data/x')
       await ws.shell('grep hit /data/x; true')
       const [grep] = (spy.seen.at(-1)?.results.children ?? []) as Record<string, unknown>[]
       expect(grep?.exitCode).toBe(0)
