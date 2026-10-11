@@ -1225,6 +1225,13 @@
           "backend": "onedrive",
           "prefix": "res",
           "fixture": "columnar/v1"
+        },
+        {
+          "path": "/search",
+          "vfs": "onedrive",
+          "backend": "onedrive",
+          "prefix": "search",
+          "fixture": "search/v1"
         }
       ]
     },
@@ -1330,6 +1337,13 @@
           "backend": "sharepoint",
           "drive": "res",
           "fixture": "columnar/v1"
+        },
+        {
+          "path": "/search",
+          "vfs": "sharepoint",
+          "backend": "sharepoint",
+          "drive": "search",
+          "fixture": "search/v1"
         }
       ]
     },
@@ -1424,6 +1438,18 @@
             "schemas": [
               "contract"
             ]
+          }
+        },
+        {
+          "path": "/pg-contract-limited",
+          "vfs": "postgres",
+          "backend": "postgres",
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "contract"
+            ],
+            "max_read_rows": 3
           }
         },
         {
@@ -1826,6 +1852,13 @@
           "backend": "gdrive",
           "root": "res",
           "fixture": "columnar/v1"
+        },
+        {
+          "path": "/search",
+          "vfs": "gdrive",
+          "backend": "gdrive",
+          "root": "search",
+          "fixture": "search/v1"
         }
       ],
       "clis": [

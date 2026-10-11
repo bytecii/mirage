@@ -706,6 +706,9 @@ async function openEmail(target: Target): Promise<Open> {
       password,
       useSsl: false,
       maxMessages: 200,
+      // The fake answers IMAP SEARCH TEXT, so exercise grep/rg narrowing in
+      // the battery.
+      contentSearch: true,
     })
   }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE, ...permissionOptions(target) })
@@ -1087,6 +1090,9 @@ async function openOneDrive(target: Target, options?: OpenOptions): Promise<Open
         accessToken: token,
         graphBaseUrl: base,
         ...(mount.prefix !== undefined ? { keyPrefix: mount.prefix } : {}),
+        // The fake answers search(q=), so exercise grep/rg narrowing in the
+        // battery.
+        contentSearch: true,
       })
     }
     return mounts
@@ -1112,6 +1118,9 @@ async function openSharePoint(target: Target, options?: OpenOptions): Promise<Op
         site: 'Main',
         drive: mount.drive,
         ...(mount.prefix !== undefined ? { keyPrefix: mount.prefix } : {}),
+        // The fake answers search(q=), so exercise grep/rg narrowing in the
+        // battery.
+        contentSearch: true,
       })
     }
     return mounts
@@ -1841,7 +1850,7 @@ function gwsNativeVfs(
   }
   if (vfs === 'gdocs') return new GDocsVFS(config)
   if (vfs === 'gsheets') return new GSheetsVFS(config)
-  if (vfs === 'gmail') return new GmailVFS(config)
+  if (vfs === 'gmail') return new GmailVFS({ ...config, contentSearch: true })
   // today is pinned so the rolling window is the same on both hosts and
   // lands on the seeded events.
   if (vfs === 'gcal')
@@ -1923,6 +1932,9 @@ async function openGws(target: Target, options?: OpenOptions): Promise<Open> {
           refreshToken: GWS_TOKEN,
           apiBase: base,
           folderId: folderIds[m.path] as string,
+          // The fake answers fullText queries, so exercise grep/rg narrowing
+          // in the battery.
+          contentSearch: true,
         })
     }
     return mounts
@@ -1985,6 +1997,7 @@ async function openSlack(target: Target): Promise<Open> {
         token: `xoxb-${workspace}`,
         searchToken: `xoxp-${workspace}`,
         baseUrl: `${base}/api`,
+        contentSearch: true,
       }),
     )
   }

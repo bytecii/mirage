@@ -21,18 +21,15 @@ import { DiscordVFSBase } from '../../vfs/discord/discord.ts'
 import { GCalVFS } from '../../vfs/gcal/gcal.ts'
 import { GDocsVFS } from '../../vfs/gdocs/gdocs.ts'
 import { GitHubVFS } from '../../vfs/github/github.ts'
-import { GmailVFS } from '../../vfs/gmail/gmail.ts'
 import { GSheetsVFS } from '../../vfs/gsheets/gsheets.ts'
 import { GSlidesVFS } from '../../vfs/gslides/gslides.ts'
 import { HistoryViewVFS } from '../../vfs/history/history.ts'
 import { LanceDBVFSBase } from '../../vfs/lancedb/lancedb.ts'
-import { LangfuseVFS } from '../../vfs/langfuse/langfuse.ts'
 import { Mem0VFS } from '../../vfs/mem0/mem0.ts'
 import { MongoDBVFSBase } from '../../vfs/mongodb/mongodb.ts'
 import { PostgresVFSBase } from '../../vfs/postgres/postgres.ts'
 import { QdrantVFS } from '../../vfs/qdrant/qdrant.ts'
 import { S3VFSBase } from '../../vfs/s3/s3.ts'
-import { SlackVFSBase } from '../../vfs/slack/slack.ts'
 import { TrelloVFS } from '../../vfs/trello/trello.ts'
 import { Command } from '../config.ts'
 import { AIRTABLE_COMMANDS } from './airtable/index.ts'
@@ -43,18 +40,15 @@ import { DISCORD_COMMANDS } from './discord/index.ts'
 import { GCAL_COMMANDS } from './gcal/index.ts'
 import { GDOCS_COMMANDS } from './gdocs/index.ts'
 import { GITHUB_COMMANDS } from './github/index.ts'
-import { GMAIL_COMMANDS } from './gmail/index.ts'
 import { GSHEETS_COMMANDS } from './gsheets/index.ts'
 import { GSLIDES_COMMANDS } from './gslides/index.ts'
 import { HISTORY_COMMANDS } from './history/index.ts'
 import { LANCEDB_COMMANDS } from './lancedb/index.ts'
-import { LANGFUSE_COMMANDS } from './langfuse/index.ts'
 import { MEM0_COMMANDS } from './mem0/index.ts'
 import { MONGODB_COMMANDS } from './mongodb/index.ts'
 import { POSTGRES_COMMANDS } from './postgres/index.ts'
 import { QDRANT_COMMANDS } from './qdrant/index.ts'
 import { S3_COMMANDS } from './s3/index.ts'
-import { SLACK_COMMANDS } from './slack/index.ts'
 import { TRELLO_COMMANDS } from './trello/index.ts'
 
 // A VFS class, whatever its constructor's visibility (GitHubVFS builds
@@ -137,16 +131,13 @@ registerBackendCommands(DiscordVFSBase, () => DISCORD_COMMANDS)
 registerBackendCommands(GCalVFS, () => GCAL_COMMANDS)
 registerBackendCommands(GDocsVFS, () => GDOCS_COMMANDS)
 registerBackendCommands(GitHubVFS, () => GITHUB_COMMANDS)
-registerBackendCommands(GmailVFS, () => GMAIL_COMMANDS)
 registerBackendCommands(GSheetsVFS, () => GSHEETS_COMMANDS)
 registerBackendCommands(GSlidesVFS, () => GSLIDES_COMMANDS)
 registerBackendCommands(HistoryViewVFS, () => HISTORY_COMMANDS)
 registerBackendCommands(LanceDBVFSBase, () => LANCEDB_COMMANDS)
-registerBackendCommands(LangfuseVFS, () => LANGFUSE_COMMANDS)
 registerBackendCommands(Mem0VFS, () => MEM0_COMMANDS)
 registerBackendCommands(MongoDBVFSBase, () => MONGODB_COMMANDS)
 registerBackendCommands(PostgresVFSBase, () => POSTGRES_COMMANDS)
 registerBackendCommands(QdrantVFS, () => QDRANT_COMMANDS)
 registerBackendCommands(S3VFSBase, () => S3_COMMANDS.toArray())
-registerBackendCommands(SlackVFSBase, () => SLACK_COMMANDS)
 registerBackendCommands(TrelloVFS, () => TRELLO_COMMANDS)

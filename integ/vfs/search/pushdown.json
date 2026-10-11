@@ -5,7 +5,10 @@
       "seq": 540001,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "grep -rl wombat /search",
       "expect": {
@@ -19,7 +22,10 @@
       "seq": 540002,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "grep -rlw wombat /search; grep -rLw wombat /search; grep -rlw -e wombat -f /search/gamma.txt /search",
       "expect": {
@@ -33,7 +39,10 @@
       "seq": 540003,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "rg -l wombat /search",
       "expect": {
@@ -47,7 +56,10 @@
       "seq": 540004,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "rg -lw wombat /search",
       "expect": {
@@ -61,7 +73,10 @@
       "seq": 540005,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "grep -rw wombat /search",
       "expect": {
@@ -75,7 +90,10 @@
       "seq": 540006,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "grep -rhw wombat /search",
       "expect": {
@@ -89,7 +107,10 @@
       "seq": 540007,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "grep -rlw --include='*.txt' wombat /search",
       "expect": {
@@ -103,7 +124,10 @@
       "seq": 540008,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "grep -rlw --exclude='beta.txt' wombat /search",
       "expect": {
@@ -117,7 +141,10 @@
       "seq": 540009,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "grep -rw -m 1 wombat /search",
       "expect": {
@@ -131,7 +158,10 @@
       "seq": 540010,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "rg -lw --glob '*.txt' wombat /search",
       "expect": {
@@ -145,7 +175,10 @@
       "seq": 540011,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "mkdir -p /search/order && printf 'numbat\\n' > /search/order/$'\\xee\\x80\\x80'.txt && printf 'numbat\\n' > /search/order/\ud83d\ude00.txt && grep -rl numbat /search/order; grep -rlw numbat /search/order; rg -lw numbat /search/order; rm -r /search/order",
       "expect": {
@@ -159,7 +192,10 @@
       "seq": 540226,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "grep -rcw wombat /search; grep -riw WOMBAT /search; grep -rw -e wombat -e sleeps /search; grep -rnw wombat /search; rg -cw wombat /search; rg -iw WOMBAT /search",
       "expect": {
@@ -173,7 +209,10 @@
       "seq": 540227,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "rg -c --include-zero -w wombat /search; rg --files-without-match -w wombat /search; rg -q --files-without-match -w wombat /search; echo $?; rg -q -c --include-zero -w wombat /search; echo $?; rg --files /search",
       "expect": {
@@ -187,7 +226,10 @@
       "seq": 540228,
       "targets": [
         "box",
-        "dropbox"
+        "dropbox",
+        "gdrive",
+        "onedrive",
+        "sharepoint"
       ],
       "command": "mkdir -p /search/edge && printf 'wom\\0bat\\n' > /search/edge/blob.txt && printf '\\xc5\\xbfun rises\\n' > /search/edge/fold.txt && printf 'wombat and the sun\\n' > /search/edge/hit.txt && rg --files-without-match -w wombat /search/edge; rg -c --include-zero -w wombat /search/edge; rg -iw sun /search/edge; grep -riw sun /search/edge; rm -r /search/edge",
       "expect": {

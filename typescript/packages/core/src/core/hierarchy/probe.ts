@@ -18,7 +18,7 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { entryOrWarm } from '../../cache/index/warm.ts'
 import { PathSpec, type StatFn } from '../../types.ts'
 import { enoent, isEnoent } from '../../errors/fs.ts'
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { mountKey, mountPrefixOf, mountedPath } from '../../utils/key_prefix.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
 export type ReaddirFn<A extends Accessor> = (
@@ -153,4 +153,32 @@ export async function ancestorEntry<A extends Accessor>(
   const prefix = mountPrefixOf(path.virtual, path.vfsPath)
   const spec = new PathSpec({ virtual, directory: virtual, vfsPath: mountKey(virtual, prefix) })
   return resolveEntry(readdir, accessor, spec, index)
+}
+
+/**
+ * Every entry below `directory` with its index entry. The walk lists through
+ * the index, so a search that answers by id pays for the listings grep's own
+ * walk reads next. Null when a listed name has no entry. Mirrors Python's
+ * `entries_under`.
+ */
+export async function entriesUnder<A extends Accessor>(
+  readdir: ReaddirFn<A>,
+  accessor: A,
+  directory: PathSpec,
+  index: IndexCacheStore | undefined,
+  isDir: (entry: IndexEntry) => boolean,
+): Promise<[PathSpec, IndexEntry][] | null> {
+  const found: [PathSpec, IndexEntry][] = []
+  const pending = [directory]
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    const base = rstripSlash(current.mountPath)
+    for (const listed of await readdir(accessor, current, index)) {
+      const child = mountedPath(current, `${base}/${basenameOf(listed)}`)
+      const entry = await resolveEntry(readdir, accessor, child, index)
+      if (entry === null) return null
+      found.push([child, entry])
+      if (isDir(entry)) pending.push(child)
+    }
+  }
+  return found
 }

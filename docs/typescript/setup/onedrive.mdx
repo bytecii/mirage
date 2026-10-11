@@ -35,6 +35,7 @@ Use `@struktoai/mirage-browser` for the same API in a browser. An access-token c
 | `userId` | unset | Use another user's drive, by id or UPN (app-only auth). |
 | `graphBaseUrl` | unset | Full service root, for any deployment but the worldwide one. |
 | `keyPrefix` | unset | Mount a folder subtree as the VFS root. |
+| `contentSearch` | `false` | Let `grep -w` and `rg -w` read only the files Graph search names; see [grep and rg](#grep-and-rg). |
 | `tenantHost` | unset | Tenant metadata retained for Graph-compatible configuration. |
 | `timeout` | `30` | Request and copy-monitor timeout in seconds. |
 | `maxRetries` | `5` | Retries for `429`, `503`, and `504`. |
@@ -52,5 +53,9 @@ token minted for one is rejected by the others and a mount pointed at the
 wrong root fails outright. mirage ships no table of their hostnames, having no
 way to verify one; take the root from Microsoft's national cloud
 documentation for your tenant.
+
+## grep and rg
+
+With `contentSearch: true`, `grep -rw` and `rg -w` read only the files Microsoft Graph search names, instead of every file under the directory. It is off by default: Graph searches the text it extracted rather than the bytes `grep` reads, and indexes a write some time after it lands, so a file that holds the word can be left out. The [Python OneDrive docs](/python/vfs/onedrive#grep-and-rg) list the cases.
 
 Reads, writes, resumable uploads, recursive copy, move, delete, directory creation, and version-pinned snapshot reads mirror the [Python OneDrive VFS](/python/vfs/onedrive).

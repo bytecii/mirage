@@ -12,11 +12,34 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-export {
-  normalizeGoogleConfig as normalizeGDriveConfig,
-  redactGoogleConfig as redactGDriveConfig,
-} from '../../core/google/config.ts'
-export type {
-  GoogleConfig as GDriveConfig,
-  GoogleConfigRedacted as GDriveConfigRedacted,
-} from '../../core/google/config.ts'
+import { GoogleConfigSchema } from '../../core/google/config.ts'
+import {
+  parseConfigWithSchema,
+  redactConfigWithSchema,
+  type ConfigOf,
+  type RedactedConfig,
+  z,
+} from '../secrets.ts'
+
+const GDriveConfigSchema = GoogleConfigSchema.extend({
+  // Let grep -w and rg -w read only the files Drive full-text search names
+  // (`filesContaining`). Off by default: Drive indexes a write some time
+  // after it lands, and searches the text it extracted rather than the
+  // bytes grep reads.
+  contentSearch: z.boolean().optional(),
+})
+
+export type GDriveConfig = ConfigOf<typeof GDriveConfigSchema>
+
+export type GDriveConfigRedacted = RedactedConfig<
+  GDriveConfig,
+  'accessToken' | 'clientSecret' | 'refreshToken' | 'refreshFn'
+>
+
+export function redactGDriveConfig(config: GDriveConfig): GDriveConfigRedacted {
+  return redactConfigWithSchema(GDriveConfigSchema, config) as unknown as GDriveConfigRedacted
+}
+
+export function normalizeGDriveConfig(input: Record<string, unknown>): GDriveConfig {
+  return parseConfigWithSchema(GDriveConfigSchema, input)
+}

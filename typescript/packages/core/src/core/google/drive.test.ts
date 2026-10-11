@@ -34,6 +34,7 @@ import {
   listAllFiles,
   listFiles,
   listSharedDrives,
+  searchFiles,
 } from './drive.ts'
 
 const STUB_TOKEN_MANAGER = {
@@ -165,5 +166,23 @@ describe('the Drive field masks carry both content tokens', () => {
     expect(fields).not.toContain('files(')
     expect(fields).toContain('owners')
     expect(fields).toContain('trashed')
+  })
+})
+
+describe('searchFiles', () => {
+  it('asks full text under the parents across every corpus', async () => {
+    vi.mocked(client.googleGet)
+      .mockResolvedValueOnce({ files: [{ id: 'f1', name: '' }], nextPageToken: 'p2' })
+      .mockResolvedValueOnce({ files: [{ id: 'f2', name: '' }], incompleteSearch: true })
+    const out = await searchFiles(STUB_TOKEN_MANAGER, "it's", ['root', 'f9'])
+    expect(out).toEqual({ ids: ['f1', 'f2'], complete: false })
+    const first = vi.mocked(client.googleGet).mock.calls[0]?.[2] as Record<string, unknown>
+    expect(first.q).toBe(
+      "fullText contains 'it\\'s' and trashed=false and ('root' in parents or 'f9' in parents)",
+    )
+    expect(first.corpora).toBe('allDrives')
+    expect(first.orderBy).toBeUndefined()
+    const second = vi.mocked(client.googleGet).mock.calls[1]?.[2] as Record<string, unknown>
+    expect(second.pageToken).toBe('p2')
   })
 })

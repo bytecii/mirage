@@ -17,7 +17,7 @@ import type { IndexCacheStore } from '../cache/index/store.ts'
 import type { Command } from '../commands/config.ts'
 import { enotsup } from '../errors/fs.ts'
 import type { ByteSource } from '../io/types.ts'
-import type { CapacityResult, FileStat, JsonValue, PathSpec, SetAttrFields } from '../types.ts'
+import type { CapacityResult, FileStat, PathSpec, SetAttrFields } from '../types.ts'
 import { CapacityState, ListingVersion } from '../types.ts'
 import { DEFAULT_MAX_GLOB_MATCHES } from '../utils/glob_walk.ts'
 import type { DeltaHook } from '../watch/base.ts'
@@ -253,11 +253,12 @@ export class BaseVFS<A extends Accessor = Accessor> {
   /** How many paths one glob may expand to before it stops. */
   readonly maxGlobMatches: number = DEFAULT_MAX_GLOB_MATCHES
   /**
-   * What `search` supports, read by the consumers that opt in by namespace
-   * (`{grep: {mode: 'literal'}}` lets grep and rg use it). Empty means no
-   * consumer may assume anything.
+   * The files `filesContaining` answers for, as mount-relative globs matched
+   * segment by segment (a glob naming a directory covers what is below it);
+   * null for every file. grep and rg read any other file whatever the
+   * answer, as a full scan would.
    */
-  readonly searchMeta: Readonly<Record<string, JsonValue>> = {}
+  readonly searchable: readonly string[] | null = null
   /**
    * Extensions whose `read` is a rendering rather than the stored bytes,
    * each to the name of the method that renders it, which takes `read`'s
@@ -492,8 +493,8 @@ export class BaseVFS<A extends Accessor = Accessor> {
 
   /**
    * Search the resource under `path`; null declines, [] is none. Results
-   * are text records in the format `searchMeta` declares. Errors and
-   * incomplete results reject, never answered as a miss.
+   * are the text records the `search` command prints, one per line. Errors
+   * and incomplete results reject, never answered as a miss.
    */
   @vfsCall({ effect: Effect.READ, subtree: true })
   search(path: PathSpec, _query: SearchQuery, _index?: IndexCacheStore): Promise<string[] | null> {
@@ -583,7 +584,8 @@ export class BaseVFS<A extends Accessor = Accessor> {
    *   this mount or this path), NO_TEXT (-f, or no plain text every match
    *   holds), EVERY_LINE (-v, rg --passthru), EVERY_FILE (rg
    *   --files-without-match, rg -c with --include-zero, without -q), LINKS
-   *   (rg -L) or UNANSWERED (a search resolved null).
+   *   (rg -L), BINARY (grep -a, rg --binary: a binary file is read) or
+   *   UNANSWERED (a search resolved null).
    * @param index the mount's index.
    */
   beforeFullScan(

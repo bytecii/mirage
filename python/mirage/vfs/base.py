@@ -26,7 +26,6 @@ from mirage.types import (
     CapacityResult,
     CapacityState,
     FileStat,
-    JsonValue,
     ListingVersion,
     PathSpec,
 )
@@ -175,10 +174,11 @@ class BaseVFS:
     # cap.
     max_glob_matches: int | None = DEFAULT_MAX_GLOB_MATCHES
 
-    # What ``search`` supports, read by the consumers that opt in by
-    # namespace (``{"grep": {"mode": "literal"}}`` lets grep and rg use
-    # it). Empty means no consumer may assume anything.
-    search_meta: Mapping[str, JsonValue] = MappingProxyType({})
+    # The files ``files_containing`` answers for, as mount-relative
+    # globs matched segment by segment (a glob naming a directory covers
+    # what is below it); None for every file. grep and rg read any other
+    # file whatever the answer, as a full scan would.
+    searchable: tuple[str, ...] | None = None
 
     # Extensions whose ``read`` is a rendering rather than the stored
     # bytes, each to the name of the method that renders it, which takes
@@ -574,9 +574,9 @@ class BaseVFS:
     ) -> list[str] | None:
         """Search the resource under ``path``; None declines, [] is none.
 
-        Results are text records in the format ``search_meta`` declares.
-        Errors and incomplete results are raised, never answered as a
-        miss.
+        Results are the text records the ``search`` command prints, one
+        per line. Errors and incomplete results are raised, never
+        answered as a miss.
 
         Args:
             path (PathSpec): the scope.
@@ -612,12 +612,13 @@ class BaseVFS:
         """Files under ``under`` whose content may contain ``text``.
 
         grep and rg still walk, filter, order and label every file, and
-        read only the ones answered here, matched on ``vfs_path`` without
-        case, so an extra file costs a read and a missing one is a wrong
-        answer. A search that holds only keys names each one with
-        ``mounted_path(under[0], "/" + key)``. Return None when the answer
-        may be incomplete (an error, a truncated result, an index that
-        lags writes), and every file is read; raise to refuse the
+        of the files ``searchable`` names read only the ones answered
+        here, matched on ``vfs_path`` without case, so an extra file
+        costs a read and a missing one is a wrong answer. A search that
+        holds only keys names each one with
+        ``mounted_path(under[0], "/" + key)``. Return None when the
+        answer may be incomplete (an error, a truncated result, an index
+        that lags writes), and every file is read; raise to refuse the
         command, and the error's message is what it prints.
 
         Args:
@@ -694,8 +695,9 @@ class BaseVFS:
                 NO_TEXT (-f, or no plain text every match holds),
                 EVERY_LINE (-v, rg --passthru), EVERY_FILE (rg
                 --files-without-match, rg -c with --include-zero, without
-                -q), LINKS
-                (rg -L) or UNANSWERED (a search returned None).
+                -q), LINKS (rg -L), BINARY (grep -a, rg --binary: a
+                binary file is read) or UNANSWERED (a search returned
+                None).
             index (IndexCacheStore): the mount's index.
         """
         return None

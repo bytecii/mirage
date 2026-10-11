@@ -179,8 +179,7 @@ export interface SearchQuery {
   readonly options?: Readonly<Record<string, JsonValue>>
 }
 
-/** Text records in the backend's declared format. null declines; [] means no results.
- * Integrations such as grep require an explicit declaration in metadata. */
+/** Text records the `search` command prints. null declines; [] means no results. */
 export type SearchOp<A extends Accessor = Accessor> = (
   accessor: A,
   path: PathSpec,
@@ -196,19 +195,20 @@ export type SearchManyOp<A extends Accessor = Accessor> = (
   index?: IndexCacheStore,
 ) => Promise<string[] | null>
 
-/** Optional resource search. Consumers validate their own metadata namespace. */
 /**
  * Why grep or rg reads every file instead of asking the mount. Mirrors
  * Python's `ScanReason`. NO_SEARCH: no `filesContaining` or
  * `linesContaining` on the mount, or a hide or path rule covers the walk.
  * NO_TEXT: -f, or no plain text of three characters that every match holds
- * (under -i, a word with a non-ASCII letter, or with k or s when case folds by
+ * (under -i, a word with a non-ASCII letter, or with i, k or s when case folds by
  * Unicode, counts as none). EVERY_LINE: -v or rg --passthru prints lines that
  * do not match. EVERY_FILE: rg --files-without-match, or rg -c or
  * --count-matches with --include-zero, without -q, lists files that do not
- * match, and rg leaves a binary one out. LINKS: rg -L follows links out of the walk. UNANSWERED:
- * `filesContaining` resolved null, or `linesContaining` resolved null for a
- * file.
+ * match, and rg leaves a binary one out. LINKS: rg -L follows links out of the walk. BINARY:
+ * -a, --binary-files=text, rg -a, --binary or -uuu reads every
+ * binary-extension file, which a search that answered does not rule out.
+ * UNANSWERED: `filesContaining` resolved null, or `linesContaining` resolved
+ * null for a file.
  */
 export const ScanReason = Object.freeze({
   NO_SEARCH: 'the mount has no search',
@@ -216,6 +216,7 @@ export const ScanReason = Object.freeze({
   EVERY_LINE: 'the output needs lines that do not match',
   EVERY_FILE: 'the output lists files that do not match',
   LINKS: 'links are followed',
+  BINARY: 'binary files are read',
   UNANSWERED: 'the search could not answer',
 } as const)
 
@@ -248,10 +249,10 @@ export type BeforeFullScanOp<A extends Accessor = Accessor> = (
   index?: IndexCacheStore,
 ) => Promise<void>
 
+/** Optional resource search, what the `search` command asks. */
 export interface SearchOps<A extends Accessor = Accessor> {
   search: SearchOp<A>
   searchMany?: SearchManyOp<A>
-  meta?: Readonly<Record<string, JsonValue>>
 }
 
 export interface FindOptions {

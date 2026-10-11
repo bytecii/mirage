@@ -67,8 +67,11 @@ await ws.shell('ls /dropbox/') // lists the contents of /Team/data
 By default a recursive `grep`/`rg` walks the tree and downloads every file. With
 `contentSearch: true` (config dictionaries may spell it `content_search`), both commands
 first ask [`/2/files/search_v2`](https://www.dropbox.com/developers/documentation/http/documentation#files-search)
-which files contain the pattern's literal, then download and scan only those candidates —
-the output stays exactly GNU/ripgrep because the local scan still decides every match.
+which files contain the pattern's literal, then download and scan only those candidates.
+The local scan decides every match in the files it reads, but Dropbox searches the text it
+extracted rather than the bytes `grep` reads, so an office file, PDF or archive whose raw
+bytes hold the word, the end of a large file, or a word Dropbox splits differently
+(`foo.bar`) can be left out.
 Regex patterns narrow on an extracted required literal; flags whose output must see every
 file in scope (`grep -v`, `grep -c`, `rg -v`, `rg --type/--glob`) always take the full
 walk, as do file operands and multi-pattern (`-e`/`-f`) runs. An empty or failed search

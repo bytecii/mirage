@@ -11,6 +11,11 @@ class SharePointConfig(MsGraphConfig):
     site: str | None = None
     drive: str | None = None
     key_prefix: str | None = None
+    # Let grep -w and rg -w read only the files Graph search names
+    # (`files_containing`). Off by default: Graph indexes a write some time
+    # after it lands, and searches the text it extracted rather than the
+    # bytes grep reads.
+    content_search: bool = False
 
     @field_validator("key_prefix")
     @classmethod
