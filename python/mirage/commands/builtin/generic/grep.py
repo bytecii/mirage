@@ -79,6 +79,8 @@ DEVICE_TYPES = frozenset(
 )
 STDIN_LABEL = "(standard input)"
 UNIX_BYTE_OFFSETS = b"grep: warning: --unix-byte-offsets (-u) is obsolete\n"
+# What xstrtoimax takes as -m's count: blanks, a sign, then digits.
+MAX_COUNT = re.compile(r"[ \t\n\v\f\r]*[+-]?[0-9]+")
 
 
 def binary_mode(fl: FlagView) -> str:
@@ -197,6 +199,20 @@ def context_length(fl: FlagView, name: str) -> int | None:
     return value
 
 
+def max_count(fl: FlagView) -> int | None:
+    """-m as GNU reads it (xstrtoimax): leading blanks and a sign are
+    allowed, a negative count is no limit, and anything else is refused.
+
+    Args:
+        fl (FlagView): spec-validated view over the raw flag kwargs.
+    """
+    raw = fl.as_str("max_count")
+    if raw is not None and MAX_COUNT.fullmatch(raw) is None:
+        raise UsageError("grep: invalid max count")
+    count = int(raw) if raw is not None else fl.as_int("max_count")
+    return None if count is None or count < 0 else count
+
+
 def listing_mode(fl: FlagView) -> tuple[bool, bool]:
     """(-l, -L): which file-listing mode wins, the later one on the line.
 
@@ -290,7 +306,7 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
         skip_devices=fl.as_str("devices") == "skip",
         with_filename=filename is True,
         no_filename=filename is False,
-        max_count=fl.as_int("max_count"),
+        max_count=max_count(fl),
         after_context=a_ctx if a_ctx is not None else c_ctx,
         before_context=b_ctx if b_ctx is not None else c_ctx,
         binary_mode=mode,
