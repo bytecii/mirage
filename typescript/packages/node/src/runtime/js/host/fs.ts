@@ -142,7 +142,7 @@ function readArgs(args: unknown[]): [Uint8Array, number, number, number | null, 
 function writeArgs(data: unknown, rest: unknown[]): [Uint8Array, number | null] {
   if (typeof data === 'string') {
     const encoding = (typeof rest[1] === 'string' ? rest[1] : 'utf8') as BufferEncoding
-    return [Buffer.from(data, encoding), positionOf(rest[0] as number | null | undefined)]
+    return [Buffer.from(data, encoding), positionOf(rest[0])]
   }
   const bytes = bytesOf(data, null)
   const options = typeof rest[0] === 'object' ? fieldsOf(rest[0] as Options) : null
@@ -168,11 +168,13 @@ function answer(work: Promise<unknown[]>, done: Fn): void {
   )
 }
 
-/** A position argument as an offset, or null for "at the position". */
-function positionOf(position: number | bigint | null | undefined): number | null {
-  if (position === null || position === undefined) return null
+/** A position argument as an offset, or null for "at the position": node
+ * reads anything but a number there (`fs.write(fd, 'x', 'utf8', cb)`'s
+ * encoding included) and a negative one as the descriptor's position. */
+function positionOf(position: unknown): number | null {
+  if (typeof position !== 'number' && typeof position !== 'bigint') return null
   const at = Number(position)
-  return at < 0 ? null : at
+  return Number.isNaN(at) || at < 0 ? null : at
 }
 
 /**
@@ -679,6 +681,7 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     // truncate(2) names a file that is there; the op creates a missing
     // one, as GNU truncate does without -c.
     await this.files.stat(path)
+    await this.descriptors.landPath(path)
     await this.files.truncate(path, length)
   }
 
@@ -738,8 +741,10 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
   private fdWrite(fd: number, bytes: Uint8Array, position: number | null): Promise<number> {
     return this.descriptors.serial(fd, () => {
       const handle = this.descriptors.file(fd, false, true)
+      // Linux appends a positioned write on an O_APPEND descriptor,
+      // whatever the position, and leaves the position where it was.
       if (position === null) handle.write(bytes.slice())
-      else handle.pwrite(position, bytes.slice())
+      else handle.pwrite(handle.append ? handle.size : position, bytes.slice())
       return Promise.resolve(bytes.byteLength)
     })
   }
@@ -764,7 +769,7 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
       case 'readv':
         return this.descriptors.serial(fd, async () => {
           const buffers = rest[0] as Uint8Array[]
-          let at = positionOf(rest[1] as number | null | undefined)
+          let at = positionOf(rest[1])
           let total = 0
           for (const buffer of buffers) {
             const got = await this.readInto(fd, buffer, 0, buffer.byteLength, at)
@@ -776,7 +781,7 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
         })
       case 'writev': {
         const buffers = rest[0] as Uint8Array[]
-        const position = positionOf(rest[1] as number | null | undefined)
+        const position = positionOf(rest[1])
         const joined = Buffer.concat(buffers.map((b) => bytesOf(b, null)))
         return [await this.fdWrite(fd, joined, position), buffers]
       }
@@ -827,6 +832,9 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     if (flag.includes('x') && (await this.files.statOrNull(path, true)) !== null) {
       throw refusal('EEXIST', 'open', path)
     }
+    // What descriptors on the file still owe lands first, so their older
+    // writes never land over this one.
+    await this.descriptors.landPath(path)
     if (flag.startsWith('a')) await this.files.append(path, bytes)
     else await this.files.write(path, bytes)
   }

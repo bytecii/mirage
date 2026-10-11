@@ -305,6 +305,29 @@
             "exit": 0,
             "stdout": "top\nvia\n"
           }
+        },
+        {
+          "program": {
+            "python": "import errno, os\nwith open('/data/ap.txt', 'w') as f:\n    f.write('abc')\nfd = os.open('/data/ap.txt', os.O_RDWR | os.O_APPEND)\nos.pwrite(fd, b'X', 0)\nos.pwritev(fd, [b'Y'], 0)\nos.close(fd)\nfirst = os.open('/data/tr.txt', os.O_WRONLY | os.O_CREAT)\nos.write(first, b'A')\nsecond = os.open('/data/tr.txt', os.O_WRONLY | os.O_TRUNC)\nos.write(second, b'B')\nos.close(second)\nos.close(first)\nfd = os.open('/data/cut.txt', os.O_WRONLY | os.O_CREAT)\nos.write(fd, b'AAAA')\nos.truncate('/data/cut.txt', 2)\nos.close(fd)\nos.makedirs('/data/kept')\nd = os.open('/data/kept', os.O_RDONLY)\ntry:\n    os.rmdir('', dir_fd=d)\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nos.close(d)\nprint(os.path.isdir('/data/kept'))",
+            "node": "const fs = require('node:fs')\nconst fsp = fs.promises\nconst call = (name, ...args) =>\n  new Promise((resolve, reject) => fs[name](...args, (err, out) => (err ? reject(err) : resolve(out))))\nawait fsp.writeFile('/data/ap.txt', 'abc')\nconst ap = await fsp.open('/data/ap.txt', 'a+')\nawait ap.write('X', 0)\nawait ap.writev([Buffer.from('Y')], 0)\nawait ap.close()\nconst first = await fsp.open('/data/tr.txt', 'w')\nawait first.write('A')\nconst second = await fsp.open('/data/tr.txt', 'w')\nawait second.write('B')\nawait second.close()\nawait first.close()\nconst cut = await fsp.open('/data/cut.txt', 'w')\nawait cut.write('AAAA')\nawait fsp.truncate('/data/cut.txt', 2)\nawait cut.close()\nconst owed = await fsp.open('/data/wf.txt', 'w')\nawait owed.write('AAAA')\nawait fsp.writeFile('/data/wf.txt', 'zz')\nawait owed.close()\nconst fd = await call('open', '/data/w.txt', 'w')\nawait call('write', fd, 'ab')\nawait call('write', fd, 'x', 'utf8')\nawait call('close', fd)\nconsole.log(await fsp.readFile('/data/w.txt', 'utf8'), await fsp.readFile('/data/wf.txt', 'utf8'))"
+          },
+          "expect": {
+            "python": {
+              "exit": 0,
+              "stdout": "ENOENT\nTrue\n"
+            },
+            "node": {
+              "exit": 0,
+              "stdout": "abx zz\n"
+            }
+          }
+        },
+        {
+          "command": "cat /data/ap.txt /data/tr.txt /data/cut.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "abcXYBAA"
+          }
         }
       ]
     }

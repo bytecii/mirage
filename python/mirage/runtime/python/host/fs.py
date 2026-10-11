@@ -1089,6 +1089,7 @@ class HostFs:
         # truncate(2) names a file that is there; the op creates a
         # missing one, as GNU truncate does without -c.
         self._adapter.stat(virtual)
+        self._descriptors.land_path(virtual)
         self._adapter.truncate(virtual, length)
 
     def open(
@@ -1136,7 +1137,9 @@ class HostFs:
         handle = self._descriptors.file(fd, False, True)
         if offset < 0:
             raise fs_error(self._descriptors[fd].path, FsCondition.EINVAL)
-        handle.pwrite(offset, payload)
+        # Linux appends a positioned write on an O_APPEND descriptor,
+        # whatever the offset, and leaves the position where it was.
+        handle.pwrite(handle.size if handle.append else offset, payload)
         return len(payload)
 
     def readv(self, fd: int, buffers: Any) -> int:
@@ -1264,6 +1267,12 @@ def _anchored(router: HostFs, verb: str) -> Callable[..., Any]:
             spelled = _spelled(given[at]) if at < len(given) else None
             if desc is None or spelled is None or posixpath.isabs(spelled):
                 continue
+            # An empty name is no entry in the directory, not the
+            # directory itself.
+            if not spelled:
+                raise FileNotFoundError(
+                    errno.ENOENT, _real_os.strerror(errno.ENOENT), spelled
+                )
             # Joined as spelled: the dispatch resolves the dots, and its
             # walk refuses a missing directory before a `..`, as the
             # kernel's does.

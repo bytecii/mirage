@@ -214,6 +214,10 @@ class Descriptors:
             path (str): the mounted path.
             facts (OpenMode): what the open asked for.
         """
+        # What other descriptors on the file still owe lands first, so
+        # their older writes never land over what this one writes.
+        if facts.writable:
+            self.land_path(path)
         row = apply_open(self._adapter, path, facts)
         desc = Descriptor(self.walked(path), facts)
         desc.handle = FileHandle.opened(

@@ -204,6 +204,9 @@ export class Descriptors {
       throw row === null ? enoent(path) : enotdir(path)
     }
     const desc: Descriptor = { path, mode, handle: null, kept: null }
+    // What other descriptors on the file still owe lands first, so their
+    // older writes never land over what this one writes.
+    if (mode.writable) await this.landPath(path)
     if (row?.isDir !== true || mode.writable || mode.create) {
       const opened = await applyOpen(this.files, path, mode)
       desc.handle = FileHandle.opened(
