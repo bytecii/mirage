@@ -200,7 +200,7 @@ describe('linear verbs', () => {
 
   it('search takes the flag or the operand', async () => {
     GRAPHQL.length = 0
-    RESPONDER = () => ({ searchIssues: { nodes: [{ identifier: 'ENG-1' }] } })
+    RESPONDER = () => ({ searchIssues: { nodes: [{ id: 'i-1', identifier: 'ENG-1' }] } })
     await reads.search({ ...makeInv({ apiKey: 'k' }, {}), texts: ['login bug'] })
     await reads.search(makeInv({ apiKey: 'k' }, { query: 'crash' }))
     expect(GRAPHQL[0]?.variables).toMatchObject({ term: 'login bug' })

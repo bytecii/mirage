@@ -33,7 +33,7 @@ import {
   USER_LOOKUP_QUERY,
 } from './queries.ts'
 
-class LinearApiError extends Error {
+export class LinearApiError extends Error {
   constructor(
     message: string,
     public readonly errors: readonly unknown[] = [],
@@ -378,7 +378,18 @@ export async function searchIssues(
 ): Promise<Record<string, unknown>[]> {
   const data = await transport.graphql(ISSUE_SEARCH_QUERY, { term: query, first: limit })
   const search = data.searchIssues
-  if (search === null || typeof search !== 'object') return []
-  const nodes = (search as Record<string, unknown>).nodes
-  return Array.isArray(nodes) ? (nodes as Record<string, unknown>[]) : []
+  const nodes =
+    search !== null && typeof search === 'object'
+      ? (search as Record<string, unknown>).nodes
+      : undefined
+  const valid =
+    Array.isArray(nodes) &&
+    nodes.every(
+      (node: unknown) =>
+        node !== null &&
+        typeof node === 'object' &&
+        typeof (node as Record<string, unknown>).id === 'string',
+    )
+  if (!valid) throw new LinearApiError('unexpected response from searchIssues')
+  return nodes as Record<string, unknown>[]
 }

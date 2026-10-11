@@ -26,6 +26,10 @@ export const LinearConfigSchema = z.object({
   workspace: z.string().optional(),
   teamIds: z.array(z.string()).readonly().optional(),
   baseUrl: z.string().optional(),
+  // Let grep -w and rg -w read only the issues Linear's search names, and
+  // those whose other fields hold the word (`filesContaining`). Off by
+  // default: Linear indexes a write some time after it lands.
+  contentSearch: z.boolean().optional(),
 })
 
 export type LinearConfig = ConfigOf<typeof LinearConfigSchema>

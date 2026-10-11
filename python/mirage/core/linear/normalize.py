@@ -195,3 +195,23 @@ def normalize_cycle(cycle: dict[str, Any], *, team_id: str) -> dict[str, Any]:
 
 def to_json_bytes(value: dict[str, Any] | list[Any]) -> bytes:
     return json_bytes(value)
+
+
+# The fields of an issue's JSON Linear's issue search reads; every other
+# field is checked against the listing instead (``unsearched_text``).
+SEARCHED_FIELDS = ("title", "description")
+
+
+def unsearched_text(issue: dict[str, Any]) -> str:
+    """What an issue's ``issue.json`` holds beyond what Linear's search
+    reads, lowercased: every other field as the file renders it.
+
+    Args:
+        issue (dict[str, Any]): the issue as the listing fetched it.
+    """
+    rest = {
+        key: value
+        for key, value in normalize_issue(issue).items()
+        if key not in SEARCHED_FIELDS
+    }
+    return to_json_bytes(rest).decode().lower()

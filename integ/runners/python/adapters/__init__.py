@@ -1563,6 +1563,9 @@ class TrelloService:
                     "api_key": "integ-key",
                     "api_token": "integ-token",
                     "base_url": self.base,
+                    # The fake answers /search, so exercise grep/rg
+                    # narrowing in the battery.
+                    "content_search": True,
                     **mount.get("config", {}),
                 }
             )
@@ -1647,7 +1650,13 @@ class LinearService:
 
     def vfs(self, mount: dict) -> LinearVFS:
         return LinearVFS(
-            LinearConfig(api_key="integ-key", base_url=self.graphql)
+            LinearConfig(
+                api_key="integ-key",
+                base_url=self.graphql,
+                # The fake answers searchIssues, so exercise grep/rg
+                # narrowing in the battery.
+                content_search=True,
+            )
         )
 
     def cli_installs(self) -> dict[str, tuple[CLI, dict[str, object]]]:

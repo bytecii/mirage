@@ -26,14 +26,16 @@ export class TrelloAccessor extends Accessor {
   readonly transport: TrelloTransport
   readonly workspaceId: string | null
   readonly boardIds: readonly string[] | null
+  readonly contentSearch: boolean
 
   constructor(
     transport: TrelloTransport,
-    options: { workspaceId?: string; boardIds?: readonly string[] } = {},
+    options: { workspaceId?: string; boardIds?: readonly string[]; contentSearch?: boolean } = {},
   ) {
     super()
     this.transport = transport
     this.workspaceId = options.workspaceId ?? null
     this.boardIds = options.boardIds ?? null
+    this.contentSearch = options.contentSearch === true
   }
 }

@@ -345,3 +345,19 @@ export function buildProjectIssue(issue: Json): NormalizedProjectIssue {
 export function toJsonBytes(value: unknown): Uint8Array {
   return jsonBytes(value)
 }
+
+// The fields of an issue's JSON Linear's issue search reads; every other field
+// is checked against the listing instead (`unsearchedText`).
+export const SEARCHED_FIELDS: ReadonlySet<string> = new Set(['title', 'description'])
+
+/**
+ * What an issue's `issue.json` holds beyond what Linear's search reads,
+ * lowercased: every other field as the file renders it. Mirrors Python's
+ * `unsearched_text`.
+ */
+export function unsearchedText(issue: Json): string {
+  const rest = Object.fromEntries(
+    Object.entries(normalizeIssue(issue)).filter(([key]) => !SEARCHED_FIELDS.has(key)),
+  )
+  return new TextDecoder().decode(toJsonBytes(rest)).toLowerCase()
+}

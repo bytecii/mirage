@@ -35,6 +35,7 @@ from mirage.core.trello.normalize import (
     normalize_member,
     normalize_workspace,
     to_json_bytes,
+    unsearched_text,
 )
 from mirage.core.trello.pathing import (
     board_dirname,
@@ -370,6 +371,11 @@ async def _list_cards(
         dirname = card_dirname(card)
         # card.json's normalizer only uses fields the card listing already
         # carries, so its exact size is free here.
+        extra: dict[str, Any] = {
+            "json_size": len(to_json_bytes(normalize_card(card)))
+        }
+        if accessor.config.content_search:
+            extra["unsearched"] = unsearched_text(card)
         entries.append(
             (
                 dirname,
@@ -379,9 +385,7 @@ async def _list_cards(
                     resource_type="trello/card",
                     remote_time=card.get("dateLastActivity") or "",
                     vfs_name=dirname,
-                    extra={
-                        "json_size": len(to_json_bytes(normalize_card(card))),
-                    },
+                    extra=extra,
                 ),
             )
         )

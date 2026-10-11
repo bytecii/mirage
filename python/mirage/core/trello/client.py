@@ -190,6 +190,38 @@ async def list_list_cards(
     return result if isinstance(result, list) else []
 
 
+async def search_cards(
+    config: TrelloConfig, query: str, limit: int, session: SessionArg = None
+) -> list[dict[str, Any]]:
+    """The cards Trello's search names for ``query``, ids only.
+
+    Args:
+        config (TrelloConfig): the account.
+        query (str): the words searched for.
+        limit (int): the most cards answered.
+        session (SessionArg): the session to reuse.
+    """
+    result = await _get(
+        config,
+        "/search",
+        params={
+            "query": query,
+            "modelTypes": "cards",
+            "card_fields": "id",
+            "cards_limit": limit,
+            "partial": "false",
+        },
+        session=session,
+    )
+    cards = result.get("cards") if isinstance(result, dict) else None
+    if not isinstance(cards, list) or not all(
+        isinstance(card, dict) and isinstance(card.get("id"), str)
+        for card in cards
+    ):
+        raise TrelloAPIError("unexpected response from search")
+    return cards
+
+
 async def get_card(
     config: TrelloConfig, card_id: str, session: SessionArg = None
 ) -> dict[str, Any]:

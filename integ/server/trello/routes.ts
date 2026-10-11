@@ -166,6 +166,29 @@ async function cardActions(ctx: Ctx<C>): Promise<Reply> {
   return { status: 200, body: await commentActions(ctx.db, ctx.tenant, cardId) }
 }
 
+// Trello's search, cards only: the cards whose name or description holds
+// every word of the query, case folded, up to cards_limit.
+async function search(ctx: Ctx<C>): Promise<Reply> {
+  const words = (ctx.query.get('query') ?? '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word !== '')
+  const limit = Number(ctx.query.get('cards_limit') ?? '10')
+  const rows = await ctx.db.trelloCard.findMany({
+    where: tenantOf<Prisma.TrelloCardWhereInput>(ctx),
+    orderBy: { seq: 'asc' },
+  })
+  const cards: JsonValue[] = []
+  for (const row of rows) {
+    if (cards.length >= limit) break
+    const haystack = `${row.name} ${row.desc}`.toLowerCase()
+    if (words.length > 0 && words.every((word) => haystack.includes(word))) {
+      cards.push({ id: row.id })
+    }
+  }
+  return { status: 200, body: { cards } }
+}
+
 async function createCard(ctx: Ctx<C>): Promise<Reply> {
   const listId = ctx.query.get('idList')
   if (listId === null || listId === '') return notFound('list')
@@ -330,6 +353,7 @@ export function trelloRoutes(): KitRoute<C>[] {
     route('GET', '/boards/:board/labels', boardLabels),
     route('GET', '/lists/:list', getList),
     route('GET', '/lists/:list/cards', listCards),
+    route('GET', '/search', search),
     route('POST', '/cards', createCard, { write: true }),
     route('GET', '/cards/:card', getCard),
     route('PUT', '/cards/:card', updateCard, { write: true }),

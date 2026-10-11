@@ -415,5 +415,11 @@ async def search_issues(
         {"term": query, "first": limit},
         session=session,
     )
-    nodes: list[dict[str, Any]] = data.get("searchIssues", {}).get("nodes", [])
+    search = data.get("searchIssues")
+    nodes = search.get("nodes") if isinstance(search, dict) else None
+    if not isinstance(nodes, list) or not all(
+        isinstance(node, dict) and isinstance(node.get("id"), str)
+        for node in nodes
+    ):
+        raise LinearAPIError("unexpected response from searchIssues")
     return nodes

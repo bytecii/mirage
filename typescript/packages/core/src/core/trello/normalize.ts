@@ -202,3 +202,19 @@ export function normalizeComment(comment: Json, cardId: string): NormalizedComme
 export function toJsonBytes(value: unknown): Uint8Array {
   return jsonBytes(value)
 }
+
+// The fields of a card's JSON Trello's search reads; every other field is
+// checked against the listing instead (`unsearchedText`).
+export const SEARCHED_FIELDS: ReadonlySet<string> = new Set(['card_name', 'desc'])
+
+/**
+ * What a card's `card.json` holds beyond what Trello's search reads,
+ * lowercased: every other field as the file renders it. Mirrors Python's
+ * `unsearched_text`.
+ */
+export function unsearchedText(card: Json): string {
+  const rest = Object.fromEntries(
+    Object.entries(normalizeCard(card)).filter(([key]) => !SEARCHED_FIELDS.has(key)),
+  )
+  return new TextDecoder().decode(toJsonBytes(rest)).toLowerCase()
+}
