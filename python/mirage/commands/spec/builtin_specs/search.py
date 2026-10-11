@@ -194,6 +194,9 @@ SPECS: dict[str, CommandSpec] = {
             Argument("--ignore-dot", action="store_true"),
             Argument("--no-ignore-exclude", action="store_true"),
             Argument("--ignore-exclude", action="store_true"),
+            # --ignore-file's gitignore rules apply to the walk; the
+            # negation drops every one of them, wherever it stands.
+            Argument("--ignore-file", type="path", action="append"),
             Argument("--no-ignore-files", action="store_true"),
             Argument("--ignore-files", action="store_true"),
             Argument("--no-ignore-global", action="store_true"),

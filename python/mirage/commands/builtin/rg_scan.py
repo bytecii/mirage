@@ -17,7 +17,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from mirage.commands.builtin.rg_filetypes import FileTypes
-from mirage.commands.builtin.rg_glob import Overrides, Verdict, walk_candidate
+from mirage.commands.builtin.rg_glob import (
+    IgnoreRules,
+    Overrides,
+    Verdict,
+    walk_candidate,
+)
 from mirage.commands.builtin.utils.links import LinkResolver
 from mirage.commands.builtin.utils.types import AsyncReaddirFn, AsyncStatFn
 from mirage.errors.classify import classify
@@ -105,8 +110,9 @@ class WalkFilter:
     """What ripgrep's walker keeps below a directory operand.
 
     The ignore crate's order: a ``-g`` glob decides first and outranks
-    everything after it, then ``-t``/``-T``, and a dot entry is left out
-    unless a glob or a ``-t`` type kept it or ``--hidden`` is on. A file
+    everything after it, then --ignore-file's rules, then ``-t``/``-T``,
+    and a dot entry is left out unless a glob, a rule or a ``-t`` type kept
+    it or ``--hidden`` is on. A file
     is also left out past ``--max-filesize``, and for a binary extension
     unless ``-a``/``--binary`` asked for it. A name on the line is never
     filtered: only walked entries are.
@@ -119,6 +125,7 @@ class WalkFilter:
             operand's own children).
         max_filesize (int | None): --max-filesize, in bytes.
         binary (bool): keep binary-extension files.
+        ignores (IgnoreRules): --ignore-file's rules.
     """
 
     overrides: Overrides
@@ -127,6 +134,7 @@ class WalkFilter:
     max_depth: int | None
     max_filesize: int | None
     binary: bool
+    ignores: IgnoreRules = IgnoreRules()
 
     def admits(self, candidate: str, name: str, is_dir: bool) -> bool:
         """Whether a walked entry is kept (a directory: descended).
@@ -141,11 +149,15 @@ class WalkFilter:
             return False
         if verdict is Verdict.WHITELIST:
             return True
+        ruled = self.ignores.verdict(candidate, is_dir)
+        if ruled is Verdict.IGNORE:
+            return False
         typed = self.types.verdict(name, is_dir)
         if typed is Verdict.IGNORE:
             return False
         return (
             typed is Verdict.WHITELIST
+            or ruled is Verdict.WHITELIST
             or self.hidden
             or not name.startswith(".")
         )

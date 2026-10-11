@@ -283,6 +283,9 @@ export const SPECS: Record<string, CommandSpec> = {
       new Argument('--ignore-dot', { action: 'store_true' }),
       new Argument('--no-ignore-exclude', { action: 'store_true' }),
       new Argument('--ignore-exclude', { action: 'store_true' }),
+      // --ignore-file's gitignore rules apply to the walk; the negation drops
+      // every one of them, wherever it stands.
+      new Argument('--ignore-file', { action: 'append', type: 'path' }),
       new Argument('--no-ignore-files', { action: 'store_true' }),
       new Argument('--ignore-files', { action: 'store_true' }),
       new Argument('--no-ignore-global', { action: 'store_true' }),

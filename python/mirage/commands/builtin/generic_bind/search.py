@@ -133,8 +133,12 @@ def rg_terms(
         or (f.include_zero and (f.count_only or f.count_matches))
     ):
         return ScanReason.EVERY_FILE
+    if f.stats or f.json:
+        return ScanReason.EVERY_FILE
     if f.follow:
         return ScanReason.LINKS
+    if f.search_zip or f.pre is not None:
+        return ScanReason.TRANSFORMED
     if pattern is None or fl.raw("file"):
         return ScanReason.NO_TEXT
     ignore_case = folds_case(pattern, f.fixed_string, f)
@@ -146,7 +150,11 @@ def rg_terms(
         f.line_regexp,
         ignore_case,
     )
-    if found is None:
+    # -U matches across lines, so a text with a line break in it is no
+    # line's to find.
+    if found is None or (
+        f.multiline and any("\n" in text for text in found[0])
+    ):
         return ScanReason.NO_TEXT
     return SearchTerms(
         texts=found[0],
@@ -161,6 +169,7 @@ def rg_terms(
             or f.context_before
             or f.stop_on_nonmatch
             or f.null_data
+            or f.multiline
         ),
         reads_binary=f.binary,
     )

@@ -15,10 +15,10 @@
 import { GzipDataError, gunzipStream } from '../../../utils/compress.ts'
 import { mountPrefixOf, sameMountSpec } from '../../../utils/key_prefix.ts'
 import { mountParentReaddir, mountParentStat } from '../utils/wrap.ts'
-import { IOResult, materialize } from '../../../io/types.ts'
+import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { MountView } from '../../../view/types.ts'
 import { FileStat, FileType, type PathSpec } from '../../../types.ts'
-import { isFsError, isWalkError, walkRefusal } from '../../../errors/fs.ts'
+import { enoent, isFsError, isWalkError, walkRefusal } from '../../../errors/fs.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
 import { specOf } from '../../spec/builtins.ts'
@@ -28,10 +28,11 @@ import { decodeText, encodeText } from '../../../shell/bytes.ts'
 import { NEVER_MATCH, resolvePattern, rustEscape } from '../grep_pattern.ts'
 import { exitCodeFor } from '../grep_scan.ts'
 import { FileTypes, typeListing, type TypeChange, type TypeSelection } from '../rg_filetypes.ts'
-import { Overrides, Verdict } from '../rg_glob.ts'
+import { IgnoreRules, Overrides, Verdict } from '../rg_glob.ts'
 import { shellJoin } from '../../../shell/join.ts'
 import type { ShellFn } from '../../../runtime/types.ts'
 import {
+  osErrorText,
   type Haystack,
   WalkFilter,
   onOtherMount,
@@ -257,7 +258,7 @@ function hyperlinkRefusal(fmt: string): string | null {
   let i = 0
   while (i < fmt.length) {
     if (fmt.startsWith('{{', i) || fmt.startsWith('}}', i)) {
-      if (names.length === 0) head += fmt[i]
+      if (names.length === 0) head += fmt.charAt(i)
       i += 2
     } else if (fmt[i] === '{') {
       const end = fmt.indexOf('}', i)
@@ -273,7 +274,7 @@ function hyperlinkRefusal(fmt: string): string | null {
     } else if (fmt[i] === '}') {
       return "unopened variable: found '}' without a corresponding '{' preceding it"
     } else {
-      if (names.length === 0) head += fmt[i]
+      if (names.length === 0) head += fmt.charAt(i)
       i += 1
     }
   }
@@ -456,6 +457,7 @@ export function parseFlags(fl: FlagView): RgFlags {
   // --json prints its own records: no heading or separators, and line
   // numbers unless -N turned them off.
   const jsonRecords = last(fl, 'json', 'no_json') === 'json'
+  const preCommand = last(fl, 'pre', 'no_pre') === 'pre' ? (fl.asStr('pre') ?? '') : ''
   const unrestricted = fl.asInt('unrestricted') ?? 0
   const binaryMode = binaryModeOf(fl, unrestricted)
   let hidden = false
@@ -511,7 +513,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     stats: last(fl, 'stats', 'no_stats') === 'stats',
     searchZip: last(fl, 'search_zip', 'no_search_zip') === 'search_zip',
     // --pre with no command, or after --no-pre, preprocesses nothing.
-    pre: last(fl, 'pre', 'no_pre') === 'pre' ? fl.asStr('pre') || null : null,
+    pre: preCommand === '' ? null : preCommand,
     preGlobs: fl.asList('pre_glob'),
     json: jsonRecords,
     multilineDotall: last(fl, 'multiline_dotall', 'no_multiline_dotall') === 'multiline_dotall',
@@ -699,7 +701,7 @@ export function rgMatcher(pattern: string, neverMatch: boolean, f: RgFlags): Reg
 
 // What the walk keeps, the globs and types compiled; a glob or a type
 // ripgrep refuses throws its words.
-export function walkFilter(f: RgFlags, types?: FileTypes): WalkFilter {
+export function walkFilter(f: RgFlags, types?: FileTypes, ignores?: IgnoreRules): WalkFilter {
   return new WalkFilter(
     new Overrides(f.globs, f.iglobs, f.globCaseInsensitive),
     types ?? new FileTypes(f.typeChanges, f.typeSelections),
@@ -707,7 +709,30 @@ export function walkFilter(f: RgFlags, types?: FileTypes): WalkFilter {
     f.maxDepth,
     f.maxFilesize,
     f.binary,
+    ignores ?? new IgnoreRules(),
   )
+}
+
+/**
+ * --ignore-file's rules, each file read through the dispatcher. A file
+ * ripgrep cannot read is reported in `notes` and skipped, the search going on
+ * with its exit status untouched (14.1.1); --no-ignore-files drops every one.
+ * Mirrors Python's ignore_rules.
+ */
+async function ignoreRules(fl: FlagView, opts: CommandOpts, notes: string[]): Promise<IgnoreRules> {
+  if (last(fl, 'ignore_files', 'no_ignore_files') === 'no_ignore_files') return new IgnoreRules()
+  const lines: string[] = []
+  for (const path of fl.asPaths('ignore_file')) {
+    try {
+      if (opts.dispatch === undefined) throw enoent(path.rawPath)
+      const [data] = await opts.dispatch('read', path)
+      lines.push(...decodeText(await materialize(data as ByteSource)).split(/\r?\n/))
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      notes.push(`rg: ${path.rawPath}: ${osErrorText(err)}`)
+    }
+  }
+  return new IgnoreRules(lines)
 }
 
 /**
@@ -822,7 +847,8 @@ export async function rgGeneric(
   const f = parseFlags(fl)
   const types = new FileTypes(f.typeChanges, f.typeSelections)
   if (f.typeList) return [formatRecords(typeListing(types.definitions)), new IOResult()]
-  const walk = walkFilter(f, types)
+  const notes: string[] = []
+  const walk = walkFilter(f, types, await ignoreRules(fl, opts, notes))
   let pat: RegExp | null = null
   if (!f.listFiles) {
     const resolution = await resolvePattern(
@@ -882,20 +908,30 @@ export async function rgGeneric(
     for await (const h of found) listed.push(h)
     found = replay(sortHaystacks(listed, f))
   }
-  if (f.listFiles) return listFiles(found, f, warnings)
-  if (pat === null) return usage(RG_NO_PATTERN)
-  return searchAll(
-    found,
-    paths,
-    pat,
-    f,
-    stream,
-    first,
-    warnings,
-    implicit,
-    opts.signal,
-    opts.shell,
-  )
+  let result: CommandFnResult
+  if (f.listFiles) result = await listFiles(found, f, warnings)
+  else if (pat === null) return usage(RG_NO_PATTERN)
+  else
+    result = await searchAll(
+      found,
+      paths,
+      pat,
+      f,
+      stream,
+      first,
+      warnings,
+      implicit,
+      opts.signal,
+      opts.shell,
+    )
+  if (result === null) return result
+  const [out, io] = result
+  if (notes.length > 0 && !f.noMessages)
+    io.stderr = concat([
+      formatRecords(notes),
+      io.stderr === null ? new Uint8Array() : await materialize(io.stderr),
+    ])
+  return [out, io]
 }
 
 // eslint-disable-next-line @typescript-eslint/require-await
@@ -1206,13 +1242,23 @@ async function searchAll(
       let source = opened
       const pre = f.pre ?? null
       if (pre !== null && !pipe && preGlobs.verdict(h.shown, false) !== Verdict.IGNORE) {
-        const [text, refusal] = await preprocessed(pre, h.shown, name, await materialize(opened), shell)
+        const [text, refusal] = await preprocessed(
+          pre,
+          h.shown,
+          name,
+          await materialize(opened),
+          shell,
+        )
         if (refusal !== null) {
           warnings.push(refusal)
           continue
         }
         source = wrapBytes(text)
-      } else if (f.searchZip === true && GZIP_NAMES.some((ext) => h.virtual.endsWith(ext)) && !pipe) {
+      } else if (
+        f.searchZip === true &&
+        GZIP_NAMES.some((ext) => h.virtual.endsWith(ext)) &&
+        !pipe
+      ) {
         source = gunzipStream(opened)
       }
       for await (const c of searchHaystack(
@@ -1231,9 +1277,7 @@ async function searchAll(
     } catch (err) {
       if (err instanceof GzipDataError) {
         // -z runs gzip, whose refusal ripgrep frames in rules.
-        warnings.push(
-          `rg: ${name}: \n${GZIP_RULE}\n${err.render(name).trimStart()}${GZIP_RULE}`,
-        )
+        warnings.push(`rg: ${name}: \n${GZIP_RULE}\n${err.render(name).trimStart()}${GZIP_RULE}`)
         continue
       }
       if (!isFsError(err)) throw err

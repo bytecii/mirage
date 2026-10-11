@@ -251,6 +251,22 @@ EVERY = "a.txt b.txt c.txt sub/d.txt z.txt"
             ScanReason.EVERY_FILE,
         ),
         ("rg -q --files-without-match ada /d", "files", None, "ada", None),
+        (
+            "rg --stats ada /d | head -2",
+            "both",
+            EVERY,
+            "",
+            ScanReason.EVERY_FILE,
+        ),
+        ("rg -z ada /d", "both", EVERY, "", ScanReason.TRANSFORMED),
+        (
+            "rg -U 'ada here\\nnothing' /d",
+            "both",
+            EVERY,
+            "",
+            ScanReason.NO_TEXT,
+        ),
+        ("rg -U ada /d", "lines", "a.txt sub/d.txt", "", None),
         ("rg --files /d", "both", "", "", None),
     ],
 )

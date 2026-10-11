@@ -18,12 +18,13 @@ from mirage.commands.builtin.grep_pattern import (
 )
 from mirage.commands.builtin.grep_scan import exit_code_for
 from mirage.commands.builtin.rg_filetypes import FileTypes, type_listing
-from mirage.commands.builtin.rg_glob import Overrides, Verdict
+from mirage.commands.builtin.rg_glob import IgnoreRules, Overrides, Verdict
 from mirage.commands.builtin.rg_scan import (
     Haystack,
     WalkFilter,
     on_other_mount,
     open_error_line,
+    os_error_text,
     walk_error_line,
     walk_haystacks,
 )
@@ -33,8 +34,8 @@ from mirage.commands.builtin.rg_search import (
     Totals,
     json_line,
     json_text,
-    record_end,
     prints_context,
+    record_end,
     search_haystack,
     smart_case_folds,
 )
@@ -72,8 +73,8 @@ from mirage.runtime.types import ShellFn
 from mirage.shell.bytes import decode_text, encode_text
 from mirage.shell.join import shell_join
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.compress import GzipDataError, gunzip_stream
+from mirage.utils.key_prefix import mount_prefix_of
 from mirage.view.types import MountView
 
 logger = logging.getLogger(__name__)
@@ -935,12 +936,17 @@ def folds_case(pattern: str, fixed: bool, f: RgFlags) -> bool:
     return f.ignore_case or (f.smart_case and smart_case_folds(pattern, fixed))
 
 
-def walk_filter(f: RgFlags, types: FileTypes | None = None) -> WalkFilter:
+def walk_filter(
+    f: RgFlags,
+    types: FileTypes | None = None,
+    ignores: IgnoreRules | None = None,
+) -> WalkFilter:
     """What the walk keeps, the globs and types compiled.
 
     Args:
         f (RgFlags): the parsed flags.
         types (FileTypes | None): the type matcher when already built.
+        ignores (IgnoreRules | None): --ignore-file's rules, once read.
 
     Raises:
         UsageError: a glob or a type ripgrep refuses.
@@ -954,7 +960,36 @@ def walk_filter(f: RgFlags, types: FileTypes | None = None) -> WalkFilter:
         f.max_depth,
         f.max_filesize,
         f.binary,
+        ignores if ignores is not None else IgnoreRules(),
     )
+
+
+async def ignore_rules(
+    fl: FlagView, opts: CommandOpts, notes: list[str]
+) -> IgnoreRules:
+    """--ignore-file's rules, each file read through the dispatcher.
+
+    A file ripgrep cannot read is reported and skipped, the search going
+    on with its exit status untouched (14.1.1); --no-ignore-files drops
+    every one.
+
+    Args:
+        fl (FlagView): the flag view.
+        opts (CommandOpts): the command's options, with the dispatcher.
+        notes (list[str]): collects what could not be read.
+    """
+    if _last(fl, "ignore_files", "no_ignore_files") == "no_ignore_files":
+        return IgnoreRules()
+    lines: list[str] = []
+    for path in fl.as_paths("ignore_file"):
+        try:
+            if opts.dispatch is None:
+                raise FileNotFoundError(path.raw_path)
+            data, _ = await opts.dispatch("read", path)
+            lines.extend(decode_text(await materialize(data)).splitlines())
+        except FS_ERRORS as exc:
+            notes.append(f"rg: {path.raw_path}: {os_error_text(exc)}")
+    return IgnoreRules(lines)
 
 
 def needs_every_file(fl: FlagView, f: RgFlags) -> bool:
@@ -1125,7 +1160,8 @@ async def rg_generic(
     types = FileTypes(f.type_changes, f.type_selections)
     if f.type_list:
         return format_records(type_listing(types.definitions)), IOResult()
-    walk = walk_filter(f, types)
+    notes: list[str] = []
+    walk = walk_filter(f, types, await ignore_rules(fl, opts, notes))
     pat: re.Pattern[str] | None = None
     if not f.list_files:
         pattern, never_match = await resolve_pattern(
@@ -1194,20 +1230,26 @@ async def rg_generic(
         listed = [h async for h in found]
         found = _replay(sort_haystacks(listed, f))
     if f.list_files:
-        return await _list_files(found, f, warnings)
-    assert pat is not None
-    return await _search_all(
-        found,
-        paths,
-        pat,
-        f,
-        rb,
-        read_stream,
-        operand_stream,
-        warnings,
-        implicit,
-        opts.shell,
-    )
+        out, io = await _list_files(found, f, warnings)
+    else:
+        assert pat is not None
+        out, io = await _search_all(
+            found,
+            paths,
+            pat,
+            f,
+            rb,
+            read_stream,
+            operand_stream,
+            warnings,
+            implicit,
+            opts.shell,
+        )
+    if notes and not f.no_messages:
+        io.stderr = format_records(notes) + (
+            await materialize(io.stderr) if io.stderr is not None else b""
+        )
+    return out, io
 
 
 async def _replay(found: list[Haystack]) -> AsyncIterator[Haystack]:
@@ -1531,7 +1573,9 @@ async def preprocessed(
         )
     if io.exit_code != 0:
         err = decode_text(await materialize(io.stderr)) if io.stderr else ""
-        body = f"\n{GZIP_RULE}\n{err}{GZIP_RULE}" if err else "<stderr is empty>"
+        body = (
+            f"\n{GZIP_RULE}\n{err}{GZIP_RULE}" if err else "<stderr is empty>"
+        )
         return b"", f"{head} failed: '{shown}': {body}"
     return (await materialize(io.stdout) if io.stdout else b""), None
 
@@ -1579,7 +1623,10 @@ async def _search_all(
     # --json writes records only for the printing modes; -c and -l print
     # as they do without it.
     records = f.json and not (
-        f.count_only or f.count_matches or f.files_only or f.files_without_match
+        f.count_only
+        or f.count_matches
+        or f.files_only
+        or f.files_without_match
     )
     totals = Totals()
     started = time.perf_counter()
@@ -1654,7 +1701,11 @@ async def _search_all(
                 sent = len(begin) + sum(len(c) for c in chunks)
                 totals.add(tally, sent, elapsed)
                 out.extend(
-                    [begin, *chunks, totals.end_record(name, tally, sent, elapsed)]
+                    [
+                        begin,
+                        *chunks,
+                        totals.end_record(name, tally, sent, elapsed),
+                    ]
                 )
             elif f.quiet and tally.selected:
                 totals.add(tally, 0, elapsed)

@@ -103,7 +103,9 @@ export function rgTerms(
   if (!f.quiet && (f.filesWithoutMatch || (f.includeZero && (f.countOnly || f.countMatches)))) {
     return ScanReason.EVERY_FILE
   }
+  if (f.stats === true || f.json === true) return ScanReason.EVERY_FILE
   if (f.follow) return ScanReason.LINKS
+  if (f.searchZip === true || (f.pre ?? null) !== null) return ScanReason.TRANSFORMED
   if (pattern === null || fl.raw('file') !== undefined) return ScanReason.NO_TEXT
   const ignoreCase = foldsCase(pattern, f.fixedString, f)
   const found = searchTerms(
@@ -114,7 +116,10 @@ export function rgTerms(
     f.lineRegexp,
     ignoreCase,
   )
-  if (found === null) return ScanReason.NO_TEXT
+  // -U matches across lines, so a text with a line break in it is no line's
+  // to find.
+  if (found === null || (f.multiline === true && found[0].some((text) => text.includes('\n'))))
+    return ScanReason.NO_TEXT
   return {
     texts: found[0],
     wholeWord: found[1],
@@ -127,7 +132,8 @@ export function rgTerms(
       f.contextAfter > 0 ||
       f.contextBefore > 0 ||
       f.stopOnNonmatch ||
-      f.nullData
+      f.nullData ||
+      f.multiline === true
     ),
     readsBinary: f.binary,
   }

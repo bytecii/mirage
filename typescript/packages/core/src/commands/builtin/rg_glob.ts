@@ -260,6 +260,31 @@ export class Overrides {
 }
 
 /**
+ * --ignore-file's rules: gitignore lines rooted at the working directory, the
+ * last one that matches a walked path deciding it, a plain one ignoring it and
+ * a `!` one keeping it. Mirrors Python's IgnoreRules.
+ */
+export class IgnoreRules {
+  private readonly globs: readonly OverrideGlob[]
+
+  constructor(lines: readonly string[] = []) {
+    this.globs = lines
+      .map((line) => overrideGlob(line, false))
+      .filter((g): g is OverrideGlob => g !== null)
+  }
+
+  /** What the rules say about one walked path (`walkCandidate`). */
+  verdict(path: string, isDir: boolean): Verdict {
+    for (let i = this.globs.length - 1; i >= 0; i--) {
+      const glob = this.globs[i]
+      if (glob === undefined || (glob.dirOnly && !isDir)) continue
+      if (glob.matcher.test(path)) return glob.keep ? Verdict.IGNORE : Verdict.WHITELIST
+    }
+    return Verdict.NONE
+  }
+}
+
+/**
  * The path ripgrep matches a walked entry's globs against: the walked path
  * as printed, with a leading `./` dropped and the working directory stripped
  * off an absolute one, which is what the ignore crate's `strip` does with
