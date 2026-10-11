@@ -106,13 +106,13 @@ export function programFiles(name: string, bag: Record<string, FlagValue>): Path
  * line to name it; the other then reads nothing.
  */
 function stdinReader(fl: FlagView): string | null {
-  const paths: Record<string, Iterator<PathSpec>> = {
-    file: fl.asPaths('file').values(),
-    exclude_from: fl.asPaths('exclude_from').values(),
-  }
+  const paths = new Map<string, IterableIterator<PathSpec>>([
+    ['file', fl.asPaths('file').values()],
+    ['exclude_from', fl.asPaths('exclude_from').values()],
+  ])
   for (const [name] of fl.occurrences('file', 'exclude_from')) {
-    const path = paths[name]?.next().value
-    if (path !== undefined && isStdin(path)) return name
+    const next = paths.get(name)?.next()
+    if (next !== undefined && next.done !== true && isStdin(next.value)) return name
   }
   return null
 }
