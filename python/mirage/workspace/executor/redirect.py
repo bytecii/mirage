@@ -135,7 +135,6 @@ class JobRoute(JobOutput):
     ) -> None:
         session = context.session
         super().__init__(outer)
-        self.recorder = recorder
         self.owner: StreamOwner = recorder
         self.outputs = outputs
         self.dispatch = dispatch
@@ -580,6 +579,7 @@ async def handle_redirect(
         dispatch,
         context,
     )
+    leave = route.record(recorder)
     session.job_output = route
     enclosing = ENCLOSING.set(recorder)
     unbound = {
@@ -627,7 +627,7 @@ async def handle_redirect(
         for field, value in held.items():
             setattr(session, field, value)
         ENCLOSING.reset(enclosing)
-        route.recorder = None
+        leave()
         session.job_output = job_output
         for file in files:
             file.emit = None
