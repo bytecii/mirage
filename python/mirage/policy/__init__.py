@@ -54,7 +54,6 @@ if TYPE_CHECKING:
         pre_vfs_gate,
         refusal_of,
         render_deny,
-        render_pending,
     )
     from mirage.policy.profile import (
         CommandsBlock,
@@ -143,7 +142,6 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "pre_vfs_gate",
         "refusal_of",
         "render_deny",
-        "render_pending",
     ),
     "mirage.policy.profile": (
         "CommandsBlock",
@@ -255,7 +253,6 @@ __all__ = [
     "policy_denied",
     "refusal_of",
     "render_deny",
-    "render_pending",
     "resolve_limit",
     "resolve_producer",
     "Scope",

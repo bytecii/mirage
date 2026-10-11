@@ -60,7 +60,6 @@ import {
   postCommandGate,
   refusalOf,
   renderDeny,
-  renderPending,
   resolveLimit,
   resolveProducer,
   type Claimant,
@@ -308,14 +307,11 @@ export async function executeCommand(
   const judgeLanded = async (olds: ReadonlyMap<string, ShellVar | null>): Promise<void> => {
     for (const [k, v] of prefixAssignments) {
       const old = olds.get(k) ?? null
-      await postSessionGate(registry.policies, {
-        plane: 'env',
-        verb: 'set',
-        key: k,
-        value: v,
-        sessionId: session.sessionId,
-        old: old === null ? null : gateRendering(old.value),
-      })
+      await postSessionGate(
+        registry.policies,
+        { plane: 'env', verb: 'set', key: k, value: v, sessionId: session.sessionId },
+        old === null ? null : gateRendering(old.value),
+      )
     }
   }
 
@@ -753,10 +749,7 @@ async function runArgv(
         signal,
       )
       if (action === null) return
-      const [err, code] =
-        action.kind === 'pending'
-          ? renderPending(ctx.command, action)
-          : renderDeny(ctx.command, action)
+      const [err, code] = renderDeny(ctx.command, action)
       io.stderr = concat([stderr, err])
       io.exitCode = code
       node.exitCode = code

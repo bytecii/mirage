@@ -17,7 +17,7 @@ import { runWithAdmission } from '../../context/session_context.ts'
 import { CommandTimeoutError } from '../../errors/types.ts'
 import { isControlFlowError } from '../workspace/failure.ts'
 import { guardOutput } from '../../commands/builtin/utils/limit.ts'
-import { postExecuteGate, refusalOf, renderDeny, renderPending } from '../../policy/index.ts'
+import { postExecuteGate, refusalOf, renderDeny } from '../../policy/index.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { IOResult, materialize } from '../../io/types.ts'
 import { applyBarrier, BarrierPolicy } from '../../shell/barrier.ts'
@@ -177,8 +177,7 @@ export async function runCommandTree(
   if (refused !== null) {
     const existingErr = await materialize(io.stderr)
     const subject = producer.command || 'line'
-    const [denyBytes, exitCode] =
-      refused.kind === 'pending' ? renderPending(subject, refused) : renderDeny(subject, refused)
+    const [denyBytes, exitCode] = renderDeny(subject, refused)
     const mergedErr = new Uint8Array(existingErr.byteLength + denyBytes.byteLength)
     mergedErr.set(existingErr, 0)
     mergedErr.set(denyBytes, existingErr.byteLength)

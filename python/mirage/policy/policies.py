@@ -18,7 +18,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from contextvars import ContextVar, Token
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any
 
 from mirage.commands.spec.usage import operand_exit_code
@@ -84,42 +84,31 @@ HookContext = (
 )
 
 
-def render_deny(subject: str, deny: Deny) -> tuple[bytes, int]:
+def render_deny(subject: str, deny: Deny | Pending) -> tuple[bytes, int]:
     """The command plane's rendering of a refusal: stderr and exit code.
 
     The one place the outcome table for that plane is written down, so
     a document rule and a coded policy print alike, and the policy's
-    reason is never mixed into what the terminal says: a Deny is bash's
-    own ``<subject>: Permission denied`` at 126; a Deny about a path is
-    the command's own GNU line for that path and EACCES; both leave the
-    reason on the result's ``refusal`` record. A Deny carrying an error
-    keeps ``<subject>: <reason>``, because there the reason is the
-    diagnostic a built-in worded in POSIX's terms. A path or an error
-    exits at the command's operand-refusal code (1, tar 2).
+    reason is never mixed into what the terminal says: a Deny, or an
+    unanswered ask, is bash's own ``<subject>: Permission denied`` at
+    126, so stderr never tells an agent whether a retry might pass; a
+    Deny about a path is the command's own GNU line for that path and
+    EACCES; each leaves the reason (and an ask's id) on the result's
+    ``refusal`` record. A Deny carrying an error keeps
+    ``<subject>: <reason>``, because there the reason is the diagnostic
+    a built-in worded in POSIX's terms. A path or an error exits at the
+    command's operand-refusal code (1, tar 2).
 
     Args:
         subject (str): the command name (or ``line`` at the boundary).
-        deny (Deny): the action.
+        deny (Deny | Pending): the action, or the ledger's open question.
     """
-    if deny.path is not None:
+    if isinstance(deny, Deny) and deny.path is not None:
         line = fs_error_line(subject, deny.path, eacces(deny.path))
         return line.encode(), operand_exit_code(subject)
-    if deny.error is not None:
+    if isinstance(deny, Deny) and deny.error is not None:
         line = f"{subject}: {deny.reason}\n"
         return line.encode(), operand_exit_code(subject)
-    return f"{subject}: Permission denied\n".encode(), POLICY_DENIED_EXIT
-
-
-def render_pending(subject: str, pending: Pending) -> tuple[bytes, int]:
-    """The command plane's rendering of an unanswered ask: refused for
-    now at 126 in the same words as a deny, so stderr never tells an
-    agent whether a retry might pass; the ask id it should quote rides
-    the ``refusal`` record.
-
-    Args:
-        subject (str): the command name.
-        pending (Pending): the entry point's answer.
-    """
     return f"{subject}: Permission denied\n".encode(), POLICY_DENIED_EXIT
 
 
@@ -448,14 +437,7 @@ async def pre_session_gate(
         raise eacces(ctx.key)
     if policies is None or not policies.wants("pre_session"):
         return
-    answer = await policies.pre_session(ctx)
-    refused = (
-        await policies.decisions.resolve_op(ctx, answer)
-        if isinstance(answer, Ask)
-        else answer
-    )
-    if refused is not None:
-        raise policy_denied(refused, ctx.key, f"{ctx.key}: permission denied")
+    await _session_refused(policies, ctx, await policies.pre_session(ctx))
 
 
 async def post_execute_gate(
@@ -534,7 +516,7 @@ async def post_command_gate(
 
 
 async def post_session_gate(
-    policies: "Policies | None", ctx: SessionResultContext
+    policies: "Policies | None", ctx: SessionContext, old: str | None
 ) -> None:
     """Fire post_session once a session write landed; a Deny, or an Ask
     the host has not approved, becomes EACCES, for the writer to put the
@@ -543,11 +525,22 @@ async def post_session_gate(
     Args:
         policies (Policies | None): the workspace's policies; None gates
             nothing.
-        ctx (SessionResultContext): the write and the value it replaced.
+        ctx (SessionContext): the write, as pre_session saw it.
+        old (str | None): the value it replaced, rendered as ``value``
+            is; None when the name was unset.
     """
     if policies is None or not policies.wants("post_session"):
         return
-    answer = await policies.post_session(ctx)
+    facts = {f.name: getattr(ctx, f.name) for f in fields(ctx)}
+    landed = SessionResultContext(**facts, old=old)
+    await _session_refused(
+        policies, landed, await policies.post_session(landed)
+    )
+
+
+async def _session_refused(
+    policies: "Policies", ctx: SessionContext, answer: Deny | Ask | None
+) -> None:
     refused = (
         await policies.decisions.resolve_op(ctx, answer)
         if isinstance(answer, Ask)

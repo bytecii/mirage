@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { refusalOf, renderDeny, renderPending } from '../../policy/index.ts'
+import { refusalOf, renderDeny } from '../../policy/index.ts'
 import { decide, sourceOf } from '../../policy/match/decide.ts'
 import { hasRules } from '../../policy/match/reads.ts'
 import {
@@ -288,8 +288,7 @@ async function explained(
   const action: Deny | Pending | null =
     asked !== null && asked.kind === 'ask' ? await registry.decisions.held(ctx, asked) : asked
   if (action === null) return base
-  const [stderr, exitCode] =
-    action.kind === 'pending' ? renderPending(ctx.command, action) : renderDeny(ctx.command, action)
+  const [stderr, exitCode] = renderDeny(ctx.command, action)
   return {
     ...base,
     reason: base.reason === '' ? action.reason : base.reason,

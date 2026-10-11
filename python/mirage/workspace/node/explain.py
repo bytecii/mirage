@@ -34,7 +34,6 @@ from mirage.policy import (
     ShellNode,
     refusal_of,
     render_deny,
-    render_pending,
 )
 from mirage.policy.match import Outcome, decide, has_rules
 from mirage.policy.match.decide import source_of
@@ -224,11 +223,7 @@ def _explained(
     )
     if action is None:
         return base
-    err, code = (
-        render_pending(ctx.command, action)
-        if isinstance(action, Pending)
-        else render_deny(ctx.command, action)
-    )
+    err, code = render_deny(ctx.command, action)
     return dataclasses.replace(
         base,
         reason=action.reason if base.reason == "" else base.reason,

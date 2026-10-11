@@ -326,7 +326,7 @@ describe('patchNodeFs — descriptors', () => {
     const fs = requireCjs('fs') as Fs
     await fs.promises.writeFile('/data/f.txt', 'body')
     ws.policies.add({
-      preVfs: (ctx) => (ctx.op === 'read' ? { kind: 'deny', reason: 'write-only' } : null),
+      preVfs: (ctx) => (ctx.call.name === 'read' ? { kind: 'deny', reason: 'write-only' } : null),
     })
     const handle = await fs.promises.open('/data/f.txt', 'w')
     await fs.promises.unlink('/data/f.txt')

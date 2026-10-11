@@ -43,7 +43,6 @@ export {
   policyDenied,
   refusalOf,
   renderDeny,
-  renderPending,
 } from './policies.ts'
 export {
   type Action,

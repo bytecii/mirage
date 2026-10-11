@@ -36,7 +36,6 @@ from mirage.policy import (
     policy_denied,
     refusal_of,
     render_deny,
-    render_pending,
 )
 from mirage.policy.builtin.permissions import PermissionsPolicy
 from mirage.policy.match import (
@@ -566,11 +565,7 @@ async def admit(
             granted=tuple(granted),
             scoped=scopes_paths(rules, name),
         )
-    err, code = (
-        render_pending(name, action)
-        if isinstance(action, Pending)
-        else render_deny(name, action)
-    )
+    err, code = render_deny(name, action)
     return Refused(err, code, refusal_of(action))
 
 

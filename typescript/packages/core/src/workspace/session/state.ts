@@ -869,10 +869,11 @@ async function setVar(
   }
   setSessionEntry(session.vars, name, stored)
   try {
-    await postSessionGate(policies, {
-      ...written,
-      old: existing == null ? null : gateRendering(existing.value),
-    })
+    await postSessionGate(
+      policies,
+      written,
+      existing == null ? null : gateRendering(existing.value),
+    )
   } catch (err) {
     // Whatever stops the check, a refusal or a host that failed to
     // answer, the write does not stand, and neither does a seed.
@@ -901,26 +902,20 @@ async function unsetVar(
   if (envIsReadonly(session, name, false)) {
     throw new ReadonlyVariableError(name)
   }
-  await preSessionGate(policies, {
+  const written: SessionContext = {
     plane: 'env',
     verb: 'unset',
     key: name,
     value: null,
     sessionId: session.sessionId,
-  })
+  }
+  await preSessionGate(policies, written)
 
   const old = sessionEntry(session.vars, name) ?? null
   const frame = shadowingFrame(session, name)
   drop(session, name)
   try {
-    await postSessionGate(policies, {
-      plane: 'env',
-      verb: 'unset',
-      key: name,
-      value: null,
-      sessionId: session.sessionId,
-      old: old === null ? null : gateRendering(old.value),
-    })
+    await postSessionGate(policies, written, old === null ? null : gateRendering(old.value))
   } catch (err) {
     // The unset revealed what an enclosing scope saved; that value goes
     // back to the scope before the name's own record returns.
@@ -1198,25 +1193,19 @@ async function markVar(
   // nameref attribute always belongs to the reference's own record.
   if (followRef && attr !== VarAttr.Nameref) name = deref(session, name) || name
   ensureVarVisible(session, name)
-  await preSessionGate(policies, {
+  const written: SessionContext = {
     plane: 'env',
     verb: 'set',
     key: name,
     value: null,
     sessionId: session.sessionId,
-  })
+  }
+  await preSessionGate(policies, written)
   const old = sessionEntry(session.vars, name) ?? null
   const seed = session.randomSeed
   setAttr(session, name, attr, on)
   try {
-    await postSessionGate(policies, {
-      plane: 'env',
-      verb: 'set',
-      key: name,
-      value: null,
-      sessionId: session.sessionId,
-      old: old === null ? null : gateRendering(old.value),
-    })
+    await postSessionGate(policies, written, old === null ? null : gateRendering(old.value))
   } catch (err) {
     place(session, name, old)
     session.randomSeed = seed

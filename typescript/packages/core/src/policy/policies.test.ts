@@ -34,7 +34,6 @@ import {
   describeRefusal,
   refusalOf,
   renderDeny,
-  renderPending,
   runWithOpPolicies,
 } from './policies.ts'
 import { RulePolicy } from './rule.ts'
@@ -847,8 +846,8 @@ describe('Ask in the chain', () => {
     ])
   })
 
-  it('renderPending names the approval', () => {
-    const [err, code] = renderPending('git', { kind: 'pending', id: 'abc123', reason: 'sign-off' })
+  it('renderDeny words an open question as a deny', () => {
+    const [err, code] = renderDeny('git', { kind: 'pending', id: 'abc123', reason: 'sign-off' })
     expect(new TextDecoder().decode(err)).toBe('git: Permission denied\n')
     expect(code).toBe(126)
   })

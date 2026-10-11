@@ -25,11 +25,9 @@ from mirage.policy import (
     Claimant,
     ExecuteResultContext,
     HandOff,
-    Pending,
     post_execute_gate,
     refusal_of,
     render_deny,
-    render_pending,
 )
 from mirage.runtime.base import Runtime
 from mirage.runtime.routing import RouteContext, RouteDecision
@@ -238,11 +236,7 @@ async def run_command_tree(
     if refused is not None:
         existing = await materialize(io.stderr) if io.stderr else b""
         subject = producer.command or "line"
-        err, code = (
-            render_pending(subject, refused)
-            if isinstance(refused, Pending)
-            else render_deny(subject, refused)
-        )
+        err, code = render_deny(subject, refused)
         io.stderr = existing + err
         io.exit_code = code
         io.stdout = None

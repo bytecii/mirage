@@ -27,7 +27,6 @@ import {
   postExecuteGate,
   refusalOf,
   renderDeny,
-  renderPending,
   resolveLimit,
 } from '../../policy/index.ts'
 import type { MountEntry } from '../mount/mount.ts'
@@ -133,8 +132,7 @@ export async function runWholeLine(
           signal,
         )
   if (refused !== null) {
-    const [denyBytes, exitCode] =
-      refused.kind === 'pending' ? renderPending(name, refused) : renderDeny(name, refused)
+    const [denyBytes, exitCode] = renderDeny(name, refused)
     const priorErr = result.stderr !== null ? await materialize(result.stderr) : new Uint8Array()
     const mergedErr = new Uint8Array(priorErr.byteLength + denyBytes.byteLength)
     mergedErr.set(priorErr, 0)

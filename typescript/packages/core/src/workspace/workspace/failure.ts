@@ -16,7 +16,7 @@ import { CommandTimeoutError } from '../../errors/types.ts'
 import { UsageError } from '../../commands/errors.ts'
 import { ContentDriftError } from '../snapshot/drift.ts'
 import { encodeText } from '../../shell/bytes.ts'
-import { refusalOf, renderDeny, renderPending } from '../../policy/policies.ts'
+import { refusalOf, renderDeny } from '../../policy/policies.ts'
 import type { Deny, Pending } from '../../policy/types.ts'
 import { ExecuteResult } from './types.ts'
 import { commandName } from './utils.ts'
@@ -62,7 +62,6 @@ export function failureResult(err: unknown): { stderr: Uint8Array; exitCode: num
  */
 export function placementRefused(action: Deny | Pending, command: string): ExecuteResult {
   const name = commandName(command) || command
-  const [stderr, exitCode] =
-    action.kind === 'pending' ? renderPending(name, action) : renderDeny(name, action)
+  const [stderr, exitCode] = renderDeny(name, action)
   return new ExecuteResult(new Uint8Array(), stderr, exitCode, refusalOf(action))
 }

@@ -22,12 +22,10 @@ from mirage.io.types import ByteSource, materialize
 from mirage.policy import (
     Claimant,
     ExecuteResultContext,
-    Pending,
     Policies,
     post_execute_gate,
     refusal_of,
     render_deny,
-    render_pending,
     resolve_limit,
 )
 from mirage.runtime.base import Runtime
@@ -129,11 +127,7 @@ async def run_whole_line(
         )
     if refused is not None:
         existing = result.stderr or b""
-        err, code = (
-            render_pending(name, refused)
-            if isinstance(refused, Pending)
-            else render_deny(name, refused)
-        )
+        err, code = render_deny(name, refused)
         return IOResult(
             exit_code=code,
             stdout=None,

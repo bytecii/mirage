@@ -22,7 +22,6 @@ import {
   policyDenied,
   refusalOf,
   renderDeny,
-  renderPending,
 } from '../../policy/index.ts'
 import type {
   Ask,
@@ -507,8 +506,7 @@ export async function admit(
       scoped: scopesPaths(rules, name),
     })
   }
-  const [stderr, exitCode] =
-    action.kind === 'pending' ? renderPending(name, action) : renderDeny(name, action)
+  const [stderr, exitCode] = renderDeny(name, action)
   return { stderr, exitCode, refusal: refusalOf(action) }
 }
 

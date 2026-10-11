@@ -37,22 +37,15 @@ from mirage.io.types import ByteSource, materialize
 from mirage.observe.context import command_records
 from mirage.policy import (
     CommandResultContext,
-    Pending,
     PolicyDenied,
     post_command_gate,
     refusal_of,
     render_deny,
-    render_pending,
     resolve_limit,
     resolve_producer,
 )
 from mirage.policy.policies import reset_op_policies, set_op_policies
-from mirage.policy.types import (
-    Claimant,
-    HandOff,
-    SessionContext,
-    SessionResultContext,
-)
+from mirage.policy.types import Claimant, HandOff, SessionContext
 from mirage.runtime.base import Runtime
 from mirage.runtime.routing import RouteDecision
 from mirage.shell.bytes import decode_text, encode_text
@@ -337,14 +330,14 @@ async def execute_command(
             old = olds.get(k)
             await post_session_gate(
                 registry.policies,
-                SessionResultContext(
+                SessionContext(
                     plane="env",
                     verb="set",
                     key=k,
                     value=v,
                     session_id=session.session_id,
-                    old=None if old is None else gate_rendering(old.value),
                 ),
+                None if old is None else gate_rendering(old.value),
             )
 
     if prefix_assignments and not name:
@@ -772,11 +765,7 @@ async def _run_argv(
             )
             if action is None:
                 return
-            err, code = (
-                render_pending(ctx.command, action)
-                if isinstance(action, Pending)
-                else render_deny(ctx.command, action)
-            )
+            err, code = render_deny(ctx.command, action)
             io.stderr = stderr + err
             node.stderr = node.stderr + err
             io.exit_code = node.exit_code = code

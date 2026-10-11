@@ -62,33 +62,23 @@ type Hook = keyof typeof VALIDITY
  * The command plane's rendering of a refusal: stderr and exit code. The
  * one place the outcome table for that plane is written down, so a
  * document rule and a coded policy print alike, and the policy's reason
- * is never mixed into what the terminal says: a Deny is bash's own
- * `<subject>: Permission denied` at 126; a Deny about a path is the
- * command's own GNU line for that path and EACCES; both leave the reason
- * on the result's `refusal` record. A Deny carrying an error keeps
- * `<subject>: <reason>`, because there the reason is the diagnostic a
- * built-in worded in POSIX's terms. A path or an error exits at the
- * command's operand-refusal code (1, tar 2).
+ * is never mixed into what the terminal says: a Deny, or an unanswered
+ * ask, is bash's own `<subject>: Permission denied` at 126, so stderr
+ * never tells an agent whether a retry might pass; a Deny about a path
+ * is the command's own GNU line for that path and EACCES; each leaves
+ * the reason (and an ask's id) on the result's `refusal` record. A Deny
+ * carrying an error keeps `<subject>: <reason>`, because there the
+ * reason is the diagnostic a built-in worded in POSIX's terms. A path or
+ * an error exits at the command's operand-refusal code (1, tar 2).
  */
-export function renderDeny(subject: string, deny: Deny): [Uint8Array, number] {
-  if (deny.path !== undefined) {
+export function renderDeny(subject: string, deny: Deny | Pending): [Uint8Array, number] {
+  if (deny.kind === 'deny' && deny.path !== undefined) {
     const line = fsErrorLine(subject, deny.path, eacces(deny.path))
     return [new TextEncoder().encode(line), operandExitCode(subject)]
   }
-  if (deny.error !== undefined) {
+  if (deny.kind === 'deny' && deny.error !== undefined) {
     return [new TextEncoder().encode(`${subject}: ${deny.reason}\n`), operandExitCode(subject)]
   }
-  return [new TextEncoder().encode(`${subject}: Permission denied\n`), POLICY_DENIED_EXIT]
-}
-
-/**
- * The command plane's rendering of an unanswered ask: refused for now
- * at 126 in the same words as a deny, so stderr never tells an agent
- * whether a retry might pass; the ask id it should quote rides the
- * `refusal` record.
- */
-export function renderPending(subject: string, pending: Pending): [Uint8Array, number] {
-  void pending
   return [new TextEncoder().encode(`${subject}: Permission denied\n`), POLICY_DENIED_EXIT]
 }
 
@@ -413,10 +403,19 @@ export async function postCommandGate(
  */
 export async function postSessionGate(
   policies: Policies | null,
-  ctx: SessionResultContext,
+  ctx: SessionContext,
+  old: string | null,
 ): Promise<void> {
   if (!policies?.wants('postSession')) return
-  const answer = await policies.postSession(ctx)
+  const landed: SessionResultContext = { ...ctx, old }
+  await sessionRefused(policies, landed, await policies.postSession(landed))
+}
+
+async function sessionRefused(
+  policies: Policies,
+  ctx: SessionContext,
+  answer: Deny | Ask | null,
+): Promise<void> {
   const refused = answer?.kind === 'ask' ? await policies.decisions.resolveOp(ctx, answer) : answer
   if (refused !== null) {
     throw policyDenied(refused, ctx.key, `${ctx.key}: permission denied`)
@@ -441,11 +440,7 @@ export async function preSessionGate(
 ): Promise<void> {
   if (explaining() === DryRun.DECIDING) throw eacces(ctx.key)
   if (!policies?.wants('preSession')) return
-  const answer = await policies.preSession(ctx)
-  const refused = answer?.kind === 'ask' ? await policies.decisions.resolveOp(ctx, answer) : answer
-  if (refused !== null) {
-    throw policyDenied(refused, ctx.key, `${ctx.key}: permission denied`)
-  }
+  await sessionRefused(policies, ctx, await policies.preSession(ctx))
 }
 
 /**

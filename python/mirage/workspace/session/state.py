@@ -20,7 +20,6 @@ from dataclasses import replace
 from mirage.policy import (
     Policies,
     PolicyDenied,
-    SessionResultContext,
     post_session_gate,
     pre_session_gate,
 )
@@ -1177,16 +1176,8 @@ async def set_var(
     try:
         await post_session_gate(
             policies,
-            SessionResultContext(
-                plane="env",
-                verb="set",
-                key=name,
-                value=written.value,
-                session_id=session.session_id,
-                old=None
-                if existing is None
-                else gate_rendering(existing.value),
-            ),
+            written,
+            None if existing is None else gate_rendering(existing.value),
         )
     except BaseException:
         # Whatever stops the check, a refusal or a host that failed to
@@ -1232,30 +1223,22 @@ async def unset_var(
     # branch above has already returned, so the answers match.
     if env_is_readonly(session, name, follow_ref=False):
         raise ReadonlyVariableError(name)
-    await pre_session_gate(
-        policies,
-        SessionContext(
-            plane="env",
-            verb="unset",
-            key=name,
-            value=None,
-            session_id=session.session_id,
-        ),
+    written = SessionContext(
+        plane="env",
+        verb="unset",
+        key=name,
+        value=None,
+        session_id=session.session_id,
     )
+    await pre_session_gate(policies, written)
     old = session.vars.get(name)
     frame = _shadowing_frame(session, name)
     _drop(session, name)
     try:
         await post_session_gate(
             policies,
-            SessionResultContext(
-                plane="env",
-                verb="unset",
-                key=name,
-                value=None,
-                session_id=session.session_id,
-                old=None if old is None else gate_rendering(old.value),
-            ),
+            written,
+            None if old is None else gate_rendering(old.value),
         )
     except BaseException:
         # The unset revealed what an enclosing scope saved; that value
@@ -1612,30 +1595,22 @@ async def mark_var(
     if follow_ref and attr is not VarAttr.NAMEREF:
         name = deref(session, name) or name
     ensure_var_visible(session, name)
-    await pre_session_gate(
-        policies,
-        SessionContext(
-            plane="env",
-            verb="set",
-            key=name,
-            value=None,
-            session_id=session.session_id,
-        ),
+    written = SessionContext(
+        plane="env",
+        verb="set",
+        key=name,
+        value=None,
+        session_id=session.session_id,
     )
+    await pre_session_gate(policies, written)
     old = session.vars.get(name)
     seed = session._random_seed
     set_attr(session, name, attr, on)
     try:
         await post_session_gate(
             policies,
-            SessionResultContext(
-                plane="env",
-                verb="set",
-                key=name,
-                value=None,
-                session_id=session.session_id,
-                old=None if old is None else gate_rendering(old.value),
-            ),
+            written,
+            None if old is None else gate_rendering(old.value),
         )
     except BaseException:
         _place(session, name, old)

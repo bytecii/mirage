@@ -39,7 +39,6 @@ from mirage.policy import (
     pre_vfs_gate,
     refusal_of,
     render_deny,
-    render_pending,
 )
 from mirage.policy.mixin import SessionScopedMixin
 from mirage.policy.policies import (
@@ -448,8 +447,8 @@ async def test_pre_execute_routes_agree_and_an_ask_holds_the_line():
     )
 
 
-def test_render_pending_names_the_approval():
-    err, code = render_pending("git", Pending("abc123", "sign-off"))
+def test_render_deny_words_an_open_question_as_a_deny():
+    err, code = render_deny("git", Pending("abc123", "sign-off"))
     assert err == b"git: Permission denied\n"
     assert code == 126
 

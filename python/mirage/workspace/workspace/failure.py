@@ -21,7 +21,6 @@ from mirage.policy import (
     Pending,
     refusal_of,
     render_deny,
-    render_pending,
 )
 from mirage.shell.bytes import encode_text
 from mirage.workspace.workspace.utils import command_name
@@ -42,11 +41,7 @@ def placement_refused(action: Deny | Pending, command: str) -> IOResult:
         command (str): the raw command line, for the diagnostic name.
     """
     name = command_name(command) or command
-    err, code = (
-        render_pending(name, action)
-        if isinstance(action, Pending)
-        else render_deny(name, action)
-    )
+    err, code = render_deny(name, action)
     return IOResult(exit_code=code, stderr=err, refusal=refusal_of(action))
 
 
