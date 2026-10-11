@@ -132,7 +132,6 @@ describe('PermissionsPolicy', () => {
       {
         kind: 'deny',
         reason: 'no deletes in the repo',
-        scope: 'operand',
         path: 'x',
         rule: FULL.deny[1],
       },
@@ -144,7 +143,6 @@ describe('PermissionsPolicy', () => {
     ).toEqual({
       kind: 'deny',
       reason: 'frozen',
-      scope: 'operand',
       path: '/repo/locked/a',
       rule: FULL.deny[2],
     })
@@ -164,7 +162,6 @@ describe('PermissionsPolicy', () => {
     ).toEqual({
       kind: 'deny',
       reason: 'sealed',
-      scope: 'operand',
       path: '/repo/sealed/y',
       rule: deep,
     })
@@ -209,7 +206,6 @@ describe('PermissionsPolicy', () => {
     ).toEqual({
       kind: 'deny',
       reason: 'private',
-      scope: 'operand',
       path: '/repo/private/x',
       rule: deny,
     })
@@ -274,7 +270,7 @@ describe('PermissionsPolicy', () => {
       reason: 'history is read-only here',
       rule: MOUNT_DENY,
     })
-    // An operand-scoped ask rule asks only when the line names the path.
+    // An ask rule with paths asks only when the line names the path.
     const shared: AdmissionRules = {
       allow: null,
       ask: [{ reason: 'shared', commands: ['rm'], paths: ['/repo/shared/*'] }],

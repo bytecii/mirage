@@ -41,7 +41,7 @@ import { getParts, getRedirects, literalWord, splitEnvPrefix } from '../../shell
 import { NodeType, RedirectKind } from '../../shell/types.ts'
 import type { Redirect, TSNodeLike } from '../../shell/types.ts'
 import { PathSpec, type Refusal } from '../../types.ts'
-import type { EntryGate } from '../../policy/types.ts'
+import { CommandWord, type EntryGate } from '../../policy/types.ts'
 import { isGlob } from '../../utils/hidden.ts'
 import { resolvePath } from '../../utils/path.ts'
 import { makeAbortError } from '../../utils/abort.ts'
@@ -51,7 +51,7 @@ import {
   CWD_DEFAULT_RAW,
   defaultCwdOperand,
   pathFlagScopes,
-  positionalScopes,
+  commandWords,
   programTokens,
 } from '../executor/command/routing.ts'
 import { classifyParts } from '../expand/classify/parts.ts'
@@ -66,7 +66,6 @@ import {
   WordPolicy,
   followsLastComponent,
   isTool,
-  listed,
   readsSubtrees,
   lookup,
   walksMounts,
@@ -84,15 +83,13 @@ import {
   wholeOccurrence,
 } from './occurrence.ts'
 import { rstripSlash } from '../../utils/slash.ts'
-import { encodeText } from '../../shell/bytes.ts'
 
 /**
- * What the command plane prints when a line does not get to run: 127
- * for a word the session cannot see, 126 for a whole-command refusal
- * or an unanswered ask, the operand code (1, tar 2) for an
- * operand-scoped refusal. `refusal` is the record the result carries
- * beside stderr, null on the 127 row, which must not say the word
- * names anything. Mirrors the Python `Refused`.
+ * What the command plane prints when a line does not get to run: 126 for
+ * a whole-command refusal or an unanswered ask, the operand code (1, tar
+ * 2) for a refusal about a path or carrying an error. `refusal` is the
+ * record the result carries beside stderr, null for the filesystem's own
+ * error. Mirrors the Python `Refused`.
  */
 export interface Refused {
   readonly stderr: Uint8Array
@@ -298,13 +295,36 @@ function seen(
 }
 
 /**
- * The command plane's admission of one command: visibility, then the
- * policy chain, then the approval ledger. The one gate every command
- * class passes through, in the tree (`runArgv`, once the words are
- * expanded) and for a line a runtime takes whole (`admitLine`, per
- * parsed command). A word the session's allow lists do not install is
- * bash's "command not found" before any admission hook, so an unlisted
- * tool never leaks a deny reason; a path the session cannot see is
+ * The words a policy is shown, a path `seen` drops taken off the word that
+ * names it, so a policy reads the word and never the path. Mirrors Python's
+ * `_seen_words`.
+ */
+function seenWords(
+  session: SessionState,
+  words: readonly CommandWord[],
+  unread: ReadonlySet<string>,
+): CommandWord[] {
+  const shown = new Set(
+    seen(
+      session,
+      words.flatMap((w) => (w.path !== null ? [w.path] : [])),
+      unread,
+    ).map((p) => p.virtual),
+  )
+  return words.map((w) =>
+    w.path === null || shown.has(w.path.virtual)
+      ? w
+      : new CommandWord(w.text, w.kind, w.option, null),
+  )
+}
+
+/**
+ * The command plane's admission of one command: the policy chain, then
+ * the approval ledger. The one gate every command class passes through,
+ * in the tree (`runArgv`, once the words are expanded) and for a line a
+ * runtime takes whole (`admitLine`, per parsed command). A word the
+ * session's allow list leaves out is the profile's Deny, like any other
+ * rule's; a path the session cannot see is
  * dropped before any hook, so a rule never names it and the dispatcher
  * answers ENOENT; a Deny renders in the outcome table's voice; an Ask
  * is answered by the entry point from the session's grants or the host.
@@ -347,9 +367,8 @@ export function redirectPaths(
 
 /**
  * Everything the gate decides about one command before anything is
- * spent on it: visibility, the classified context, and the policy
- * chain's answer (the first Deny, else the first Ask) with the answers it
- * came from.
+ * spent on it: the classified context, and the policy chain's answer (the
+ * first Deny, else the first Ask) with the answers it came from.
  *
  * Split out of `admit` so a dry run can have the answer without the
  * consequences. Nothing here records a request, consumes a grant or
@@ -381,15 +400,8 @@ export async function gate(
   unread: ReadonlySet<string> = new Set(),
   every = false,
   rulesOnly = false,
-): Promise<Refused | [CommandContext, Deny | Ask | null, (Deny | Ask)[]]> {
+): Promise<[CommandContext, Deny | Ask | null, (Deny | Ask)[]]> {
   const tool = intrinsic || isTool(name, session)
-  if (tool && !listed(name, session)) {
-    return {
-      stderr: encodeText(`${name}: command not found\n`),
-      exitCode: 127,
-      refusal: null,
-    }
-  }
   const [tokens, program] = programTokens(registry, name, [...args], session.cwd)
   const implied =
     name in CWD_DEFAULT_RAW
@@ -402,7 +414,11 @@ export async function gate(
       policyScopes(name, args, operands, namespace, session.cwd, implied, redirects),
       unread,
     ),
-    operands: seen(session, positionalScopes(name, [...args], session.cwd, [...operands]), unread),
+    words: seenWords(
+      session,
+      commandWords(registry, name, args, operands, redirects, session.cwd),
+      unread,
+    ),
     argv: [...args],
     cwd: session.cwd,
     sessionId: session.sessionId,
@@ -463,7 +479,6 @@ export async function admit(
     false,
     rulesOnly,
   )
-  if (!Array.isArray(gated)) return gated
   const [ctx, asked] = gated
   // An Ask is the chain's answer only after every Deny had its say; the
   // entry point answers it from the session's grants or the host, so a grant
@@ -498,7 +513,7 @@ export async function admit(
 }
 
 function refuse(name: string, reason: string): Refused {
-  const deny: Deny = { kind: 'deny', reason, scope: 'command' }
+  const deny: Deny = { kind: 'deny', reason }
   const [stderr, exitCode] = renderDeny(name, deny)
   return { stderr, exitCode, refusal: refusalOf(deny) }
 }

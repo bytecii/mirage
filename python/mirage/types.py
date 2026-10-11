@@ -748,7 +748,6 @@ RefusalKind = Literal["deny", "pending", "failed"]
 # What the kernel walk answers for a path it cannot resolve at all: the
 # empty name (POSIX never resolves a null pathname) or a symlink loop.
 WalkErrno = Literal["ENOENT", "ELOOP"]
-RefusalScope = Literal["command", "operand"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -769,15 +768,12 @@ class Refusal:
         reason (str): the policy's own words, or the ask's.
         policy (str): the class name of the policy that spoke; empty
             for an ask, which belongs to the host rather than a policy.
-        scope (RefusalScope): whether the whole command or one operand
-            was refused.
         ask_id (str | None): the approval id to quote, for ``pending``.
     """
 
     kind: RefusalKind
     reason: str
     policy: str = ""
-    scope: RefusalScope = "command"
     ask_id: str | None = None
 
 

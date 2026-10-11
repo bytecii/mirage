@@ -20,7 +20,6 @@ from mirage.policy import (
     CommandContext,
     CommandRule,
     Deny,
-    DenyScope,
     PermissionsPolicy,
     Policies,
     VfsContext,
@@ -153,15 +152,10 @@ async def test_a_deny_rule_speaks_by_scope_and_by_where_it_was_written():
     assert await policy.pre_command(
         _ctx("git", "push", cwd="/scratch", program=("git", "push"))
     ) == Ask("sign-off", ASK_PUSH, (ASK_PUSH,))
-    # Operand-scoped rule: the operand as typed, in the GNU voice.
+    # A rule with paths: the path as typed, in the GNU voice.
     assert await policy.pre_command(
         _ctx("rm", "x", paths=(_path("/repo/x", raw="x"),), cwd="/repo")
-    ) == Deny(
-        "no deletes in the repo",
-        DenyScope.OPERAND,
-        path="x",
-        rule=FULL.deny[1],
-    )
+    ) == Deny("no deletes in the repo", path="x", rule=FULL.deny[1])
     assert (
         await policy.pre_command(
             _ctx("rm", "/scratch/x", paths=(_path("/scratch/x"),))
@@ -171,9 +165,7 @@ async def test_a_deny_rule_speaks_by_scope_and_by_where_it_was_written():
     # A pure path rule refuses any command that names the path.
     assert await policy.pre_command(
         _ctx("cat", "/repo/locked/a", paths=(_path("/repo/locked/a"),))
-    ) == Deny(
-        "frozen", DenyScope.OPERAND, path="/repo/locked/a", rule=FULL.deny[2]
-    )
+    ) == Deny("frozen", path="/repo/locked/a", rule=FULL.deny[2])
 
 
 @pytest.mark.asyncio
@@ -192,7 +184,7 @@ async def test_the_deeper_anchor_wins_and_deny_breaks_a_tie():
     )
     assert await policy.pre_command(
         _ctx("rm", "/repo/sealed/y", paths=(_path("/repo/sealed/y"),))
-    ) == Deny("sealed", DenyScope.OPERAND, path="/repo/sealed/y", rule=deep)
+    ) == Deny("sealed", path="/repo/sealed/y", rule=deep)
     # Outside the deeper rule's anchor the shallow one is what is left.
     assert await policy.pre_command(
         _ctx("rm", "/repo/x", paths=(_path("/repo/x"),))
@@ -247,7 +239,7 @@ async def test_an_unrelated_entry_does_not_lend_a_rule_its_depth():
     )
     assert await policy.pre_command(
         _ctx("cat", "/repo/private/x", paths=(_path("/repo/private/x"),))
-    ) == Deny("private", DenyScope.OPERAND, path="/repo/private/x", rule=deny)
+    ) == Deny("private", path="/repo/private/x", rule=deny)
     # The unrelated entry still speaks where it does anchor.
     answer = await policy.pre_command(
         _ctx("cat", "/else/very/deep/x", paths=(_path("/else/very/deep/x"),))

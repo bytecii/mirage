@@ -27,7 +27,6 @@ import { CLAP_EXIT, CLI_CONFIG_ENV, GIT_LONG_OPTIONS } from '../../../commands/c
 import type { CLI } from '../../../commands/cli/types.ts'
 import { type CLIInvocation, type CLIView } from '../../../commands/cli/types.ts'
 import { listedNode, nodeHelp, ownsArgv, walk } from '../../../commands/cli/walk.ts'
-import { verbVisible } from '../../lookup/lookup.ts'
 import { type DispatchFn, type RunResult, type ScriptSource } from '../../../runtime/types.ts'
 import type { NamespaceView, SessionView, StatPath } from '../../../view/types.ts'
 import { flagKwargName } from '../../../commands/spec/constants.ts'
@@ -288,14 +287,7 @@ export async function handleCli(
   // The walk takes the same environment the leaf parse below does, so
   // a group-level option declaring `Argument.env` fills at its own
   // level; without it the fetched credential never enters groupFlags.
-  const result = walk(
-    install.name,
-    install.cli.spec,
-    argv,
-    session.cwd,
-    envSnapshot(session),
-    (path) => verbVisible(install.name, path, session),
-  )
+  const result = walk(install.name, install.cli.spec, argv, session.cwd, envSnapshot(session))
   if (result.leaf === null) {
     const stderr = result.stream === 'stderr' ? result.output : new Uint8Array(0)
     const stdout = result.stream === 'stdout' ? result.output : null

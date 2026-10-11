@@ -28,7 +28,7 @@ import {
   type Pending,
   type ShellExplanation,
   type ShellNode,
-  type ShellOperand,
+  type CommandWord,
 } from '../../policy/types.ts'
 import {
   inputSubstitutionRedirect,
@@ -42,6 +42,7 @@ import { NodeType, type TSNodeLike } from '../../shell/types.ts'
 import { PathSpec, type Refusal } from '../../types.ts'
 import { resolvePath } from '../../utils/path.ts'
 import { makeAbortError } from '../../utils/abort.ts'
+import { commandWords } from '../executor/command/routing.ts'
 import { classifyBarePath } from '../expand/classify/path.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import type { Namespace } from '../mount/namespace/namespace.ts'
@@ -113,10 +114,9 @@ const SUBSTITUTIONS: ReadonlySet<string> = new Set([
  * What the gate decides about one command of a line, as the pass reads
  * it: the per-command record `explain` and the admission pass share,
  * which `explainedLine` turns into the public tree. `outcome` is the
- * document's answer and `rule` says who gave it; the two refusals the
- * allow list produces both arrive as `DENY` with no rule, and `exitCode`
- * separates them (127 for a head word the session cannot see, 126 for a
- * visible head no allow entry covers). Mirrors the Python Judgment.
+ * document's answer and `rule` says who gave it; a line the allow list
+ * does not cover arrives as `DENY` with no rule, at 126. Mirrors the
+ * Python Judgment.
  */
 export interface Judgment {
   /** The head word, as the gate read it. */
@@ -143,8 +143,8 @@ export interface Judgment {
   readonly refusal: Refusal | null
   /** Every policy's answer to the command, in the order the chain asks them. */
   readonly answers: readonly (Deny | Ask)[]
-  /** Its path arguments and redirect targets, as typed and as the paths they name. */
-  readonly operands: readonly ShellOperand[]
+  /** The command line word by word, each with its kind and the path it names, redirect targets last. */
+  readonly words: readonly CommandWord[]
 }
 
 /**
@@ -203,22 +203,6 @@ export interface Judged {
 type Walk = Generator<Walked, [SessionState, boolean]>
 
 /**
- * A judgment with its path operands, each as typed and the path it
- * names, marked when the rule that decided matched it. Mirrors the
- * Python `_with_operands`.
- */
-function withOperands(judgment: Judgment, operands: readonly [string, string][]): Judgment {
-  return {
-    ...judgment,
-    operands: operands.map(([text, path]) => ({
-      text,
-      path,
-      matched: text === judgment.matchedPath,
-    })),
-  }
-}
-
-/**
  * The paths a command's words may name that the pass cannot vouch for:
  * what a word only the runtime expands names, and, once a `cd` lost the
  * cwd, the cwd and what every relative word names. Judged as typed in
@@ -249,7 +233,7 @@ function unreadPaths(
 
 /** The explanation of a command the gate refuses outright. */
 function denied(command: string, reason: string): Judgment {
-  const deny: Deny = { kind: 'deny', reason, scope: 'command' }
+  const deny: Deny = { kind: 'deny', reason }
   const [stderr, exitCode] = renderDeny(command, deny)
   return {
     command,
@@ -264,35 +248,7 @@ function denied(command: string, reason: string): Judgment {
     stderr: decodeText(stderr),
     refusal: refusalOf(deny),
     answers: [],
-    operands: [],
-  }
-}
-
-/**
- * The explanation of a head word the session cannot see. `missing` is
- * how the command running the word reports it (`InnerLine.missing`),
- * null for the gate's own words.
- */
-function fromRefusal(
-  name: string,
-  args: readonly string[],
-  refusal: Refused,
-  missing: string | null = null,
-): Judgment {
-  return {
-    command: name,
-    argv: args,
-    outcome: Outcome.DENY,
-    rule: null,
-    reason: '',
-    source: 'commands.allow',
-    matchedPath: null,
-    paths: [],
-    exitCode: refusal.exitCode,
-    stderr: missing ?? decodeText(refusal.stderr),
-    refusal: refusal.refusal,
-    answers: [],
-    operands: [],
+    words: [],
   }
 }
 
@@ -327,7 +283,7 @@ async function explained(
     stderr: '',
     refusal: null,
     answers,
-    operands: [],
+    words: [],
   }
   const action: Deny | Pending | null =
     asked !== null && asked.kind === 'ask' ? await registry.decisions.held(ctx, asked) : asked
@@ -355,11 +311,7 @@ async function explained(
  * nested evaluation will stand when it runs. `stated` is whether the
  * words reach here as the gate will read them; false under a command
  * the runtime completes, since a line built from its words (`eval`) or
- * run on its operands (`xargs`) is completed with them. `missing` is
- * how the command that runs these words reports a name the session
- * cannot see, null for the gate's own words: `xargs` and `timeout` look
- * the name up before the gate reads it, so the run prints theirs.
- * `wholeLine` is whether a runtime takes the line whole: only its gate
+ * run on its operands (`xargs`) is completed with them. `wholeLine` is whether a runtime takes the line whole: only its gate
  * refuses a name the runtime expands, and only under a rule (`admitLine`);
  * the executor judges the expanded name. `lost` is whether a `cd` the
  * walk could not follow ran before the command, as `Walked` carries it.
@@ -378,7 +330,6 @@ async function judgeWords(
   reparse: (line: string) => TSNodeLike,
   redirectWords: readonly Word[] = [],
   stated = true,
-  missing: string | null = null,
   intrinsic = false,
   wholeLine = false,
   lost = false,
@@ -403,11 +354,8 @@ async function judgeWords(
     ...redirectWords.map((w) => classifyBarePath(wordValue(w), registry, session.cwd)),
   ]
   const unread = unreadPaths(readWords, kinds, session.cwd, lost)
-  const operands: [string, string][] = []
-  readWords.forEach((w, i) => {
-    const kind = kinds[i]
-    if (kind instanceof PathSpec) operands.push([kind.rawPath || wordValue(w), kind.virtual])
-  })
+  const redirects = redirectPaths(redirectWords, registry, session.cwd)
+  const wordsRead = commandWords(registry, name, args, classified.slice(1), redirects, session.cwd)
   const gated = await gate(
     name,
     args,
@@ -417,26 +365,16 @@ async function judgeWords(
     namespace,
     agentId,
     stdin,
-    redirectPaths(redirectWords, registry, session.cwd),
+    redirects,
     intrinsic,
     unread,
     every,
     !every,
   )
-  if (!Array.isArray(gated)) {
-    return [
-      {
-        judgment: withOperands(fromRefusal(name, args, gated, missing), operands),
-        occurrence,
-        stated: literal,
-        intrinsic,
-      },
-    ]
-  }
   const [ctx, asked, answers] = gated
   const out: Judged[] = [
     {
-      judgment: withOperands(await explained(ctx, session, registry, asked, answers), operands),
+      judgment: { ...(await explained(ctx, session, registry, asked, answers)), words: wordsRead },
       occurrence,
       stated: literal,
       intrinsic,
@@ -449,7 +387,7 @@ async function judgeWords(
       if (wholeLine && hasRules(session.commands)) {
         return [
           {
-            judgment: withOperands(denied(name, UNREADABLE_LINES), operands),
+            judgment: { ...denied(name, UNREADABLE_LINES), words: wordsRead },
             occurrence,
             stated: literal,
             intrinsic,
@@ -487,7 +425,6 @@ async function judgeWords(
           reparse,
           [],
           literal && !inner.open,
-          inner.missing,
           false,
           wholeLine,
           lost,
@@ -728,7 +665,10 @@ function isVerdict(expl: Judgment): boolean {
   if (expl.exitCode === 0) return false
   if (expl.rule !== null && expl.outcome === Outcome.DENY) return true
   // Filesystem refusals use the live cwd and fail only their command.
-  if (expl.refusal?.scope === 'operand') return false
+  const denied = expl.answers.find((a): a is Deny => a.kind === 'deny')
+  if (denied !== undefined && (denied.path !== undefined || denied.error !== undefined)) {
+    return false
+  }
   return expl.rule !== null || expl.outcome === Outcome.ALLOW
 }
 
@@ -764,7 +704,6 @@ export async function lineJudgments(
         reparse,
         item.redirects,
         true,
-        null,
         item.intrinsic,
         false,
         item.lost,
@@ -789,8 +728,8 @@ export async function lineJudgments(
  *
  * Two things deliberately do not stop the line, and both are the same
  * rule: only a refusal that names a rule is a verdict about the intent.
- * A head word the session cannot see is a routing miss, so it stays
- * bash and a typo cannot cost an agent the work the line already did; a
+ * A word the allow list leaves out is refused where it stands, not with
+ * the line, so a typo cannot cost an agent the work the line already did; a
  * word only the runtime can expand is judged where it is expanded, by
  * the per-command gate, which sees the real path.
  *
@@ -1010,7 +949,6 @@ async function commandRefused(
     reparse,
     item.redirects,
     true,
-    null,
     false,
     false,
     item.lost,
@@ -1100,9 +1038,9 @@ export async function unrefusedNodes(
  * host now, on the line's hand-off, so the gate that later runs the
  * command finds the answer claimed for it and does not ask again; one
  * still waiting holds the line, and a question the gate will ask about
- * other words (`Judged.stated` false) is left to it. A head word the
- * session cannot see fails where it stands while the rest of its line
- * runs, so it does not hold the line. Mirrors the Python `line_held`.
+ * other words (`Judged.stated` false) is left to it. A word the allow
+ * list leaves out fails where it stands while the rest of its line runs,
+ * so it does not hold the line. Mirrors the Python `line_held`.
  */
 export async function lineHeld(
   judged: readonly [Walked, Judged[]][],
@@ -1369,7 +1307,7 @@ function commandOf(
   return {
     type: 'command',
     command: judgment.command,
-    argv: judgment.argv,
+    words: judgment.words,
     exitCode: judgment.exitCode,
     stderr: judgment.stderr,
     outcome,
@@ -1378,7 +1316,6 @@ function commandOf(
     answers: judgment.answers,
     refusal: judgment.refusal,
     runtime: runtimeOf(judgment.command),
-    operands: judgment.operands,
     text,
     children,
   }
@@ -1419,7 +1356,6 @@ async function judgeLine(
         reparse,
         item.redirects,
         stated,
-        null,
         item.intrinsic,
         wholeLine,
         item.lost,

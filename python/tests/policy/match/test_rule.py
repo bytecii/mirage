@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.commands.spec.types import WordKind
 from mirage.policy.match.rule import (
     RuleMatch,
     Subject,
@@ -30,6 +31,7 @@ from mirage.policy.types import (
     AdmissionRules,
     CommandContext,
     CommandRule,
+    CommandWord,
     VfsContext,
 )
 from mirage.types import PathSpec
@@ -218,7 +220,13 @@ def _subtree_ctx(command: str, *operands: str) -> CommandContext:
     return CommandContext(
         command=command,
         paths=paths,
-        operands=paths,
+        words=(
+            CommandWord(command, WordKind.NAME),
+            *(
+                CommandWord(p.raw_path, WordKind.OPERAND, path=p)
+                for p in paths
+            ),
+        ),
         argv=operands,
         cwd="/",
         tokens=(command, *operands),

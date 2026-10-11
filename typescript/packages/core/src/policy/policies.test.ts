@@ -18,10 +18,11 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import { RAMVFS } from '../vfs/ram/ram.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
-import { Limit, MountMode, OnExceed, PathSpec, type Refusal } from '../types.ts'
+import { Limit, MountMode, OnExceed, PathSpec } from '../types.ts'
 import { MountRegistry } from '../workspace/mount/registry.ts'
 import { Workspace } from '../workspace/workspace/workspace.ts'
 import type { Policy } from './base.ts'
+import { ebusy } from '../errors/fs.ts'
 import { MountRootPolicy } from './builtin/mount_root.ts'
 import { PolicyDenied } from './errors.ts'
 import {
@@ -31,7 +32,6 @@ import {
   postVfsGate,
   preVfsGate,
   describeRefusal,
-  saysWhy,
   refusalOf,
   renderDeny,
   renderPending,
@@ -208,15 +208,21 @@ describe('Policies', () => {
     // Only the user rule matches `rm /data/x`.
     deny = await policies.preCommand(ctx('rm', [path('/data/x')]))
     expect(deny).toEqual({ kind: 'deny', reason: 'user rule', policy: 'RulePolicy' })
-    // The command plane renders a whole-command refusal at 126 and an
-    // operand one in the GNU voice at 1, whoever produced it.
+    // The command plane renders a whole-command refusal at 126, one about
+    // a path in the GNU voice at 1, and one carrying an error as the
+    // command's own line, whoever produced it.
     const text = (r: [Uint8Array, number]) => [new TextDecoder().decode(r[0]), r[1]]
     expect(text(renderDeny('rm', deny as Deny))).toEqual(['rm: Permission denied\n', 126])
+    expect(text(renderDeny('cat', { kind: 'deny', reason: 'sealed', path: '/k' }))).toEqual([
+      'cat: /k: Permission denied\n',
+      1,
+    ])
+    const busy = ebusy('/x')
     expect(
-      text(renderDeny('rm', { kind: 'deny', reason: "cannot remove 'x'", scope: 'operand' })),
+      text(renderDeny('rm', { kind: 'deny', reason: "cannot remove 'x'", error: busy })),
     ).toEqual(["rm: cannot remove 'x'\n", 1])
     expect(
-      text(renderDeny('tar', { kind: 'deny', reason: 'x: Cannot open', scope: 'operand' })),
+      text(renderDeny('tar', { kind: 'deny', reason: 'x: Cannot open', error: busy })),
     ).toEqual(['tar: x: Cannot open\n', 2])
   })
 
@@ -237,7 +243,7 @@ describe('Policies', () => {
     policies.add(new Raising())
     const deny = await policies.preCommand(ctx('ls'))
     expect(deny?.kind).toBe('deny')
-    expect(deny).not.toHaveProperty('scope')
+    expect(deny).not.toHaveProperty('path')
     expect(deny?.reason).toBe('Raising failed')
     expect((deny as Deny).policy).toBe('Raising')
     expect((deny as Deny).failed).toBe(true)
@@ -368,7 +374,6 @@ describe('workspace policies', () => {
         kind: 'deny',
         reason: 'interpreters are off',
         policy: 'NoInterpreters',
-        scope: 'command',
         askId: null,
       })
     } finally {
@@ -386,7 +391,6 @@ describe('workspace policies', () => {
         kind: 'deny',
         reason: 'interpreters are off',
         policy: 'NoInterpreters',
-        scope: 'command',
         askId: null,
       })
     } finally {
@@ -410,7 +414,6 @@ describe('workspace policies', () => {
         kind: 'deny',
         reason: 'disabled',
         policy: 'PermissionsPolicy',
-        scope: 'command',
         askId: null,
       })
       const frozen = await ws.shell('touch /data/prod/x')
@@ -737,7 +740,6 @@ describe('Limit end to end', () => {
         kind: 'failed',
         reason: 'Boom failed',
         policy: 'Boom',
-        scope: 'command',
         askId: null,
       })
     } finally {
@@ -851,42 +853,34 @@ describe('Ask in the chain', () => {
     expect(code).toBe(126)
   })
 
-  it('refusalOf records kind, policy, scope and ask', () => {
+  it('refusalOf records kind, policy and ask', () => {
     expect(refusalOf({ kind: 'deny', reason: 'user rule', policy: 'RulePolicy' })).toEqual({
       kind: 'deny',
       reason: 'user rule',
       policy: 'RulePolicy',
-      scope: 'command',
       askId: null,
     })
+    // The filesystem's own error is no policy refusal: nothing recorded.
     expect(
       refusalOf({
         kind: 'deny',
         reason: "cannot remove 'x'",
-        scope: 'operand',
         policy: 'MountRootPolicy',
+        error: ebusy('/x'),
       }),
-    ).toEqual({
-      kind: 'deny',
-      reason: "cannot remove 'x'",
-      policy: 'MountRootPolicy',
-      scope: 'operand',
-      askId: null,
-    })
+    ).toBeNull()
     expect(
       refusalOf({ kind: 'deny', reason: 'Raising failed', policy: 'Raising', failed: true }),
     ).toEqual({
       kind: 'failed',
       reason: 'Raising failed',
       policy: 'Raising',
-      scope: 'command',
       askId: null,
     })
     expect(refusalOf({ kind: 'pending', id: 'abc123', reason: 'sign-off' })).toEqual({
       kind: 'pending',
       reason: 'sign-off',
       policy: '',
-      scope: 'command',
       askId: 'abc123',
     })
   })
@@ -897,7 +891,6 @@ describe('Ask in the chain', () => {
         kind: 'deny',
         reason: 'user rule',
         policy: 'RulePolicy',
-        scope: 'command',
         askId: null,
       }),
     ).toBe('policy denied: user rule')
@@ -906,7 +899,6 @@ describe('Ask in the chain', () => {
         kind: 'pending',
         reason: 'sign-off',
         policy: '',
-        scope: 'command',
         askId: 'abc123',
       }),
     ).toBe('requires approval: sign-off (ask abc123)')
@@ -915,43 +907,9 @@ describe('Ask in the chain', () => {
         kind: 'failed',
         reason: 'Raising failed',
         policy: 'Raising',
-        scope: 'command',
         askId: null,
       }),
     ).toBe('policy Raising failed')
-  })
-
-  it('saysWhy needs the operand diagnostic itself', () => {
-    const operand: Refusal = {
-      kind: 'deny',
-      reason: '/protected: frozen',
-      policy: 'Frozen',
-      scope: 'operand',
-      askId: null,
-    }
-    // The GNU line, wherever a redirect landed it.
-    expect(saysWhy('cat: /protected: frozen\n', operand)).toBe(true)
-    expect(saysWhy('partial\ncat: /protected: frozen\n', operand)).toBe(true)
-    expect(saysWhy('', operand)).toBe(false)
-    // The reason quoted inside other output is not the diagnostic.
-    expect(saysWhy('note: /protected: frozen for now\n', operand)).toBe(false)
-    // A command-scoped refusal's stderr is bash's bare line; output that
-    // happens to carry the reason (or was left when 2>/dev/null took the
-    // line away) has not said why.
-    const denied: Refusal = {
-      kind: 'deny',
-      reason: 'no deletes',
-      policy: 'RulePolicy',
-      scope: 'command',
-      askId: null,
-    }
-    expect(saysWhy('rm: Permission denied\n', denied)).toBe(false)
-    expect(saysWhy('rm: Permission denied\nno deletes\n', denied)).toBe(false)
-    expect(saysWhy('printf: no deletes\n', denied)).toBe(false)
-    // An empty reason says nothing, so no text can already have said it.
-    expect(
-      saysWhy('cat: \n', { kind: 'deny', reason: '', policy: 'P', scope: 'operand', askId: null }),
-    ).toBe(false)
   })
 })
 

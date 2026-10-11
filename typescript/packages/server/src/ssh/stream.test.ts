@@ -17,7 +17,6 @@ import { Channel } from '@struktoai/mirage-core/shell/console/types'
 import { ExecutionScope } from '@struktoai/mirage-core/workspace/execution'
 import { ShellExecution } from '@struktoai/mirage-core/workspace/shell_execution'
 import { ExecuteResult } from '@struktoai/mirage-core/workspace/workspace/types'
-import { REFUSAL_WINDOW } from '@struktoai/mirage-core/policy/constants'
 import type { ServerChannel } from 'ssh2'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -249,37 +248,21 @@ describe('ChannelOutput', () => {
     await delivering
   })
 
-  const W = REFUSAL_WINDOW
-  const said = "rm: cannot remove '/data': Device or resource busy\n"
-  const busy = "cannot remove '/data': Device or resource busy"
-  const more = 'y'.repeat(W * 4)
   it.each([
-    ['appended', '', "rm: cannot remove 'x': Permission denied\n", 'sealed', false],
-    // A mount root's EBUSY lets the rest of the line run, so its
-    // diagnostic can sit at either end of a long output, or end right at
-    // the first window with its newline the next byte.
-    ['end', more, more + said, busy, true],
-    ['start', more, said + more, busy, true],
-    ['window edge', more, 'f'.repeat(W - said.length) + '\n' + said + more, busy, true],
-    // A long line cut right after the reason's words says nothing.
-    ['cut line', 'a'.repeat(W - 8) + ': sealed' + 'z'.repeat(64) + '\n', '', 'sealed', false],
+    ['appended', { kind: 'deny', reason: 'sealed', policy: '', askId: null } as const, true],
+    ['no record', null, false],
   ] as const)(
-    'appends the refusal unless the output says why: %s',
-    async (_case, stdout, stderr, reason, saysWhy) => {
+    'appends the refusal line when there is a record: %s',
+    async (_case, refusal, appended) => {
       const errors: string[] = []
-      const refused = new ExecuteResult(new Uint8Array(0), new Uint8Array(0), 1, {
-        kind: 'deny',
-        reason,
-        policy: '',
-        scope: 'operand',
-        askId: null,
-      })
-      const execution = produced(refused, [Channel.STDOUT, stdout], [Channel.STDERR, stderr])
+      const refused = new ExecuteResult(new Uint8Array(0), new Uint8Array(0), 1, refusal)
+      const busy = "rm: cannot remove '/data': Device or resource busy\n"
+      const execution = produced(refused, [Channel.STDERR, busy])
       await deliver(execution, (data, stderr) => {
         if (stderr) errors.push(new TextDecoder().decode(data))
         return Promise.resolve()
       })
-      expect(errors.at(-1) === `policy denied: ${reason}\n`).toBe(!saysWhy)
+      expect(errors.at(-1)).toBe(appended ? 'policy denied: sealed\n' : busy)
     },
   )
 })

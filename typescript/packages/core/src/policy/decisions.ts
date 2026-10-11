@@ -405,7 +405,7 @@ export class Decisions {
           .map(([, r]) => r)
           .filter((r): r is Decision => r !== null && r.scope === Scope.ONCE),
       )
-      return { kind: 'deny', reason: refused[0].reason, scope: 'command' }
+      return { kind: 'deny', reason: refused[0].reason }
     }
     for (const [rule, record] of answers) {
       if (record !== null) continue
@@ -713,7 +713,7 @@ export class Decisions {
     )
     const refused = answers.find(([, r]) => r !== null && r.outcome === Outcome.DENY)
     if (refused !== undefined) {
-      return { kind: 'deny', reason: refused[0].reason, scope: 'command' }
+      return { kind: 'deny', reason: refused[0].reason }
     }
     const unanswered = answers.find(([, r]) => r === null)
     if (unanswered === undefined) return null
@@ -797,7 +797,7 @@ export class Decisions {
     }
     await this.flush()
     if (said.outcome === Outcome.DENY) {
-      return { kind: 'deny', reason: rule.reason, scope: 'command' }
+      return { kind: 'deny', reason: rule.reason }
     }
     return null
   }

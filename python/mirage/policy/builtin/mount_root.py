@@ -17,12 +17,13 @@ from collections.abc import Sequence
 from mirage.commands.builtin.generic.tar.mode import is_create_mode
 from mirage.commands.spec.compile import expand_table_long
 from mirage.commands.spec.long_options import GNU_LONG_OPTIONS
+from mirage.errors.fs import ebusy, eexist, einval, eisdir
 from mirage.policy.base import Policy
+from mirage.policy.match import operand_paths
 from mirage.policy.types import (
     Action,
     CommandContext,
     Deny,
-    DenyScope,
     MountRootQuery,
 )
 from mirage.types import PathSpec
@@ -168,7 +169,7 @@ def fts_name(raw: str) -> str:
 
 def rm_root_refusal(
     path: PathSpec, recursive: bool, empty_dir: bool, preserve: bool
-) -> str:
+) -> Deny:
     """rm's refusal of a mount root, in GNU rm's order and words.
 
     A recursive ``.`` or ``..`` is skipped before anything is looked
@@ -184,17 +185,25 @@ def rm_root_refusal(
     """
     raw = path.raw_path
     if recursive and raw.rstrip("/").rsplit("/", 1)[-1] in (".", ".."):
-        return f"refusing to remove '.' or '..' directory: skipping '{raw}'"
+        return Deny(
+            f"refusing to remove '.' or '..' directory: skipping '{raw}'",
+            error=einval(path),
+        )
     if not recursive and not empty_dir:
-        return f"cannot remove '{raw}': Is a directory"
+        return Deny(
+            f"cannot remove '{raw}': Is a directory", error=eisdir(path)
+        )
     if recursive and preserve and not path.virtual.strip("/"):
         shown = fts_name(raw)
         named = "'/'" if shown == "/" else f"'{shown}' (same as '/')"
-        return (
+        return Deny(
             f"it is dangerous to operate recursively on {named}\n"
-            "rm: use --no-preserve-root to override this failsafe"
+            "rm: use --no-preserve-root to override this failsafe",
+            error=einval(path),
         )
-    return f"cannot remove '{raw}': Device or resource busy"
+    return Deny(
+        f"cannot remove '{raw}': Device or resource busy", error=ebusy(path)
+    )
 
 
 def names_root(query: MountRootQuery, path: PathSpec) -> bool:
@@ -266,30 +275,28 @@ class MountRootPolicy(Policy):
         if not ctx.paths:
             return None
         cmd = ctx.command
+        operands = operand_paths(ctx)
         if cmd == "rm":
             root = first_root(self._registry, ctx.paths)
             if root is not None:
-                return Deny(
-                    rm_root_refusal(root, *rm_options(ctx.argv)),
-                    DenyScope.OPERAND,
-                )
+                return rm_root_refusal(root, *rm_options(ctx.argv))
         elif cmd == "rmdir":
             for p in ctx.paths:
                 if names_root(self._registry, p):
                     return Deny(
                         f"failed to remove '{p.virtual}': "
                         f"Device or resource busy",
-                        DenyScope.OPERAND,
+                        error=ebusy(p),
                     )
         elif cmd == "mv":
             # The source is a slot, so it is read off the positionals:
             # `mv -t /mnt f` moves INTO a mount root, which is ordinary.
-            if ctx.operands and names_root(self._registry, ctx.operands[0]):
+            if operands and names_root(self._registry, operands[0]):
                 dst = ctx.paths[1].virtual if len(ctx.paths) > 1 else "?"
                 return Deny(
-                    f"cannot move '{ctx.operands[0].virtual}' to '{dst}': "
+                    f"cannot move '{operands[0].virtual}' to '{dst}': "
                     f"Device or resource busy",
-                    DenyScope.OPERAND,
+                    error=ebusy(operands[0]),
                 )
         elif cmd == "mkdir":
             # GNU mkdir -p makes "already exists" a no-op.
@@ -299,15 +306,15 @@ class MountRootPolicy(Policy):
                 if names_root(self._registry, p):
                     return Deny(
                         f"cannot create directory '{p.virtual}': File exists",
-                        DenyScope.OPERAND,
+                        error=eexist(p),
                     )
         elif cmd == "touch":
             # Positionals only: `-r REF` is read, never touched.
-            for p in ctx.operands:
+            for p in operands:
                 if names_root(self._registry, p):
                     return Deny(
                         f"cannot touch '{p.virtual}': Is a directory",
-                        DenyScope.OPERAND,
+                        error=eisdir(p),
                     )
         elif cmd == "ln":
             # A mount root is refused only as the link NAME. Without -T
@@ -322,13 +329,13 @@ class MountRootPolicy(Policy):
                 return Deny(
                     f"failed to create {kind} "
                     f"'{ctx.paths[-1].virtual}': File exists",
-                    DenyScope.OPERAND,
+                    error=eexist(ctx.paths[-1]),
                 )
         elif cmd == "tar":
             # Only -c reads the filesystem; -t and -x match their
             # operands against names inside the archive.
             root = (
-                first_root(self._registry, ctx.operands)
+                first_root(self._registry, operands)
                 if is_create_mode(ctx.argv)
                 else None
             )
@@ -337,24 +344,24 @@ class MountRootPolicy(Policy):
                     f"{root.raw_path}: Cannot open: "
                     f"Device or resource busy\n"
                     f"tar: Error is not recoverable: exiting now",
-                    DenyScope.OPERAND,
+                    error=ebusy(root),
                 )
         elif cmd == "zip":
             # The first operand is the archive being written, not a
             # source; only what follows it is read.
-            root = first_root(self._registry, ctx.operands[1:])
+            root = first_root(self._registry, operands[1:])
             if root is not None:
                 return Deny(
                     f"cannot read '{root.raw_path}': Device or resource busy",
-                    DenyScope.OPERAND,
+                    error=ebusy(root),
                 )
         elif cmd == "cp":
             # The last operand is the destination, and copying INTO a
             # mount is ordinary; only the sources are refused.
-            root = first_root(self._registry, ctx.operands[:-1])
+            root = first_root(self._registry, operands[:-1])
             if root is not None:
                 return Deny(
                     f"cannot copy '{root.raw_path}': Device or resource busy",
-                    DenyScope.OPERAND,
+                    error=ebusy(root),
                 )
         return None

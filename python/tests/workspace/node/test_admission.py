@@ -129,14 +129,14 @@ async def test_admit_line_refuses_the_first_offending_command():
             )
             is None
         )
-        # An unlisted word anywhere in the line is 127 before any hook.
+        # An unlisted word anywhere in the line is the allow list's Deny.
         refusal = await admit_line(
             parse("cat /data/a | sort"), session, registry, namespace
         )
         assert refusal is not None
         assert (refusal.exit_code, refusal.stderr) == (
-            127,
-            b"sort: command not found\n",
+            126,
+            b"sort: Permission denied\n",
         )
         # A rule reads the literal words, path-shaped ones as paths.
         refusal = await admit_line(
@@ -295,8 +295,8 @@ async def test_admit_line_reads_literal_words_and_refuses_the_unreadable():
             "policy denied: runs lines the gate cannot read\n",
         )
         assert await line("sh -c 'rm /data/x'; sh -c 'sort'") == (
-            127,
-            "sort: command not found\n",
+            126,
+            "sort: Permission denied\npolicy denied: sort is not allowed\n",
         )
     finally:
         await ws.close()

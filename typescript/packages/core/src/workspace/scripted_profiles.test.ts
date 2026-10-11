@@ -117,14 +117,14 @@ describe('profile policies', () => {
 
   it('a document may ride beside the script', async () => {
     // Optional, not required: a profile stating both keeps the allow
-    // list's hiding, and the script adds its verdicts beside it.
+    // list, and the script adds its verdicts beside it.
     const profiles = scripted()
     const ws = await build({
       release: { ...profiles.release, commands: { allow: ['ls', 'cat', 'echo'] } },
     })
     try {
       ws.createSession('s', { profile: 'release' })
-      expect((await ws.shell('rm /data/x', { sessionId: 's' })).exitCode).toBe(127)
+      expect((await ws.shell('rm /data/x', { sessionId: 's' })).exitCode).toBe(126)
       const denied = await ws.shell('cat /data/sealed/k', { sessionId: 's' })
       expect(denied.exitCode).toBe(126)
       expect(denied.stderrText).toBe('cat: Permission denied\n')

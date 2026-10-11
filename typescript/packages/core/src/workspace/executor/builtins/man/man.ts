@@ -20,8 +20,6 @@ import { IOResult } from '../../../../io/types.ts'
 import type { CLIInstall } from '../../../cli/types.ts'
 import { DEV_PREFIX } from '../../../mount/registry.ts'
 import type { MountRegistry } from '../../../mount/registry.ts'
-import { commandVisible, verbVisible } from '../../../lookup/lookup.ts'
-import type { SessionState } from '../../../session/session.ts'
 import { ExecutionNode } from '../../../types.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 import type { ManEntry } from './types.ts'
@@ -62,16 +60,13 @@ function builtinEntry(name: string): ManEntry | null {
   return spec !== undefined ? { name, spec } : null
 }
 
-/**
- * One entry per name registered on any mount that the session can see,
- * first registration wins.
- */
-function commandEntries(registry: MountRegistry, session: SessionState): ManEntry[] {
+/** One entry per name registered on any mount, first registration wins. */
+function commandEntries(registry: MountRegistry): ManEntry[] {
   const seen = new Map<string, ManEntry>()
   for (const mount of registry.allMounts()) {
     if (mount.prefix === DEV_PREFIX) continue
     for (const cmd of mount.allCommands()) {
-      if (!seen.has(cmd.name) && commandVisible(cmd.name, session)) {
+      if (!seen.has(cmd.name)) {
         seen.set(cmd.name, { name: cmd.name, spec: cmd.spec })
       }
     }
@@ -79,11 +74,9 @@ function commandEntries(registry: MountRegistry, session: SessionState): ManEntr
   return [...seen.values()]
 }
 
-/** One entry per installed CommandSpec head word the session can see. */
-function cliEntries(registry: MountRegistry, session: SessionState): ManEntry[] {
-  return [...registry.clis.items()]
-    .filter(([name]) => commandVisible(name, session))
-    .map(([name, install]) => ({ name, spec: install.cli.spec }))
+/** One entry per installed CommandSpec head word. */
+function cliEntries(registry: MountRegistry): ManEntry[] {
+  return [...registry.clis.items()].map(([name, install]) => ({ name, spec: install.cli.spec }))
 }
 
 function renderOptionsTable(spec: CommandSpec): string[] {
@@ -119,34 +112,20 @@ function renderSection(title: string, entries: readonly ManEntry[]): string {
 }
 
 /**
- * The page for one node of an installed CommandSpec, null when the verbs miss or
- * the session cannot see the node they name.
+ * The page for one node of an installed CommandSpec, null when the verbs miss.
  *
  * The page is the node's own `--help`, rendered by the one renderer that
  * serves `--help` and the bare-group refusal, so a CommandSpec's manual cannot
  * drift from the program. A tree is a manual with sections: `man linear`
  * lists the verbs and `man linear issue create` is the page for one leaf.
- *
- * The allow list narrows a tree the same way it narrows the bare listing,
- * one level down: a profile holding `linear issue list` reads a manual for
- * that verb and nothing else, because a row it cannot run is an
- * advertisement for a 126.
  */
-function renderCliEntry(
-  head: string,
-  verbs: readonly string[],
-  spec: CommandSpec,
-  session: SessionState,
-): string | null {
+function renderCliEntry(head: string, verbs: readonly string[], spec: CommandSpec): string | null {
   const found = findNode(spec, verbs)
   if (found === null) return null
   const { node, path } = found
-  if (!verbVisible(head, path, session)) return null
   // The root's dialect, so a manual page reads exactly like the --help it
   // renders from.
-  return nodeHelp([head, ...path].join(' '), node, spec.usageStyle, (verb) =>
-    verbVisible(head, [...path, verb], session),
-  )
+  return nodeHelp([head, ...path].join(' '), node, spec.usageStyle)
 }
 
 /**
@@ -156,10 +135,10 @@ function renderCliEntry(
  * register it, and no row says which: the manual documents words, and
  * dispatch by name already picks the mount that serves one.
  */
-function renderManIndex(registry: MountRegistry, session: SessionState): string {
+function renderManIndex(registry: MountRegistry): string {
   const sections = [
-    renderSection('commands', commandEntries(registry, session)),
-    renderSection('clis', cliEntries(registry, session)),
+    renderSection('commands', commandEntries(registry)),
+    renderSection('clis', cliEntries(registry)),
   ]
   const body = sections.filter((s) => s !== '').join('\n\n')
   return body === '' ? '' : body + '\n'
@@ -177,10 +156,9 @@ function cliMan(
   verbs: readonly string[],
   cmdStr: string,
   registry: MountRegistry,
-  session: SessionState,
 ): Result {
   const head = install.name
-  const entry = renderCliEntry(head, verbs, install.cli.spec, session)
+  const entry = renderCliEntry(head, verbs, install.cli.spec)
   if (entry === null) {
     const err = encodeText(`man: no entry for ${[head, ...verbs].join(' ')}\n`)
     return [
@@ -199,11 +177,11 @@ function cliMan(
   ]
 }
 
-export function handleMan(args: string[], registry: MountRegistry, session: SessionState): Result {
+export function handleMan(args: string[], registry: MountRegistry): Result {
   const name = args[0]
   if (name === undefined) {
     return [
-      encodeText(renderManIndex(registry, session)),
+      encodeText(renderManIndex(registry)),
       new IOResult(),
       new ExecutionNode({ command: 'man', exitCode: 0 }),
     ]
@@ -211,11 +189,10 @@ export function handleMan(args: string[], registry: MountRegistry, session: Sess
   const cmdStr = `man ${args.join(' ')}`
   // Only an installed head word reads the words after it: they are its
   // verb path. Everything else keeps man's older shape and documents
-  // args[0]. A word the session cannot see has no page.
-  const visible = commandVisible(name, session)
+  // args[0].
   const install = registry.clis.get(name)
-  if (install !== null && visible) return cliMan(install, args.slice(1), cmdStr, registry, session)
-  const entry = visible ? (commandEntry(name, registry) ?? builtinEntry(name)) : null
+  if (install !== null) return cliMan(install, args.slice(1), cmdStr, registry)
+  const entry = commandEntry(name, registry) ?? builtinEntry(name)
   if (entry === null) {
     const err = encodeText(`man: no entry for ${name}\n`)
     return [
@@ -230,5 +207,5 @@ export function handleMan(args: string[], registry: MountRegistry, session: Sess
 
 /** The `man` arm. */
 export function manBuiltin(call: BuiltinCall): Promise<Result> {
-  return Promise.resolve(handleMan([...call.argv.args], call.registry, call.context.session))
+  return Promise.resolve(handleMan([...call.argv.args], call.registry))
 }

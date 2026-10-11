@@ -2,14 +2,14 @@
  "description": "The policy corpus. Each case builds a workspace, binds sessions to profiles and registers coded policies, then drives lines, VFS calls, tools, asks and explain through the host API, pinning what each refuses, asks or lets through and what explain says it would. Both hosts run it through the lifecycle runner: run.py and run.ts with this file's path.",
  "cases": [
   {
-   "id": "the_allow_list_decides_what_is_a_command",
+   "id": "the_allow_list_refuses_what_it_leaves_out",
    "settings": {"mode": "write", "mounts": {"/data": {"vfs": "ram", "config": {}}}},
    "steps": [
     {"op": "session", "id": "agent", "profile": {"commands": {"allow": ["echo", "cat", "ls"]}}},
     {"op": "exec", "session": "agent", "command": "echo hi", "expect": {"value": {"exit_code": 0, "stdout": "hi\n", "stderr": "", "refusal": null}}},
-    {"op": "exec", "session": "agent", "command": "rm /data/x", "expect": {"value": {"exit_code": 127, "stdout": "", "stderr": "rm: command not found\n", "refusal": null}}},
-    {"op": "exec", "session": "agent", "command": "rm /data/x; echo after", "expect": {"value": {"exit_code": 0, "stdout": "after\n", "stderr": "rm: command not found\n", "refusal": null}}},
-    {"op": "explain", "session": "agent", "command": "rm /data/x; echo after", "expect": {"value": {"outcome": "allow", "reason": "", "answers": [], "refusal": null, "exit_code": 0, "stderr": "", "commands": [{"command": "rm", "outcome": "deny", "answers": [], "runtime": ""}, {"command": "echo", "outcome": "allow", "answers": [], "runtime": ""}]}}},
+    {"op": "exec", "session": "agent", "command": "rm /data/x", "expect": {"value": {"exit_code": 126, "stdout": "", "stderr": "rm: Permission denied\n", "refusal": "rm is not allowed"}}},
+    {"op": "exec", "session": "agent", "command": "rm /data/x; echo after", "expect": {"value": {"exit_code": 0, "stdout": "after\n", "stderr": "rm: Permission denied\n", "refusal": "rm is not allowed"}}},
+    {"op": "explain", "session": "agent", "command": "rm /data/x; echo after", "expect": {"value": {"outcome": "allow", "reason": "", "answers": [], "refusal": null, "exit_code": 0, "stderr": "", "commands": [{"command": "rm", "outcome": "deny", "answers": [{"kind": "deny", "policy": "PermissionsPolicy", "reason": "rm is not allowed"}], "runtime": ""}, {"command": "echo", "outcome": "allow", "answers": [], "runtime": ""}]}}},
     {"op": "tools", "session": "agent", "expect": {"value": ["shell", "read", "write", "edit", "ls", "glob"]}}
    ]
   },

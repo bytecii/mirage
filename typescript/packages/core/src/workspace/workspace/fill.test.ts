@@ -63,7 +63,7 @@ class DenyNamed implements Policy {
 
   preCommand(ctx: CommandContext): Action | null {
     if (ctx.command !== this.name) return null
-    return { kind: 'deny', reason: `${this.name} is off`, scope: 'command' }
+    return { kind: 'deny', reason: `${this.name} is off` }
   }
 }
 
@@ -76,7 +76,7 @@ class DenyLine implements Policy {
 
   preExecute(ctx: RouteContext): Action | null {
     if (!ctx.commands.some((c) => c.command === this.name)) return null
-    return { kind: 'deny', reason: `${this.name} is off`, scope: 'command' }
+    return { kind: 'deny', reason: `${this.name} is off` }
   }
 }
 
@@ -1429,7 +1429,7 @@ describe('fillEnv through execute', () => {
     const gate: Policy = {
       preSession(ctx: SessionContext): Action | null {
         if (ctx.key === 'UNRELATED') {
-          return { kind: 'deny', reason: `no writing ${ctx.key}`, scope: 'command' }
+          return { kind: 'deny', reason: `no writing ${ctx.key}` }
         }
         return null
       },

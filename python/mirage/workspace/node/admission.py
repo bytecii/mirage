@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,7 @@ from mirage.policy import (
     Claimant,
     CommandContext,
     CommandRule,
+    CommandWord,
     Deny,
     HandOff,
     Pending,
@@ -47,7 +49,6 @@ from mirage.policy.match import (
 )
 from mirage.runtime.routing import command_nodes
 from mirage.shell import parse
-from mirage.shell.bytes import encode_text
 from mirage.shell.helpers import (
     get_parts,
     get_redirects,
@@ -64,9 +65,9 @@ from mirage.workspace.executor.builtins.links.links import follow_paths
 from mirage.workspace.executor.builtins.scope import _to_scope
 from mirage.workspace.executor.command.routing import (
     CWD_DEFAULT_RAW,
+    command_words,
     default_cwd_operand,
     path_flag_scopes,
-    positional_scopes,
     program_tokens,
 )
 from mirage.workspace.expand.classify import classify_parts
@@ -82,7 +83,6 @@ from mirage.workspace.lookup import (
     WordPolicy,
     follows_last_component,
     is_tool,
-    listed,
     lookup,
     reads_subtrees,
     walks_mounts,
@@ -119,12 +119,11 @@ class Refused:
 
     Args:
         stderr (bytes): the message, newline-terminated.
-        exit_code (int): 127 for a word the session cannot see, 126 for
-            a whole-command refusal or an unanswered ask, the operand
-            code (1, tar 2) for an operand-scoped refusal.
+        exit_code (int): 126 for a whole-command refusal or an
+            unanswered ask, the operand code (1, tar 2) for a refusal
+            about a path or carrying an error.
         refusal (Refusal | None): the record the result carries
-            beside stderr; None on the 127 row, which must not say
-            the word names anything.
+            beside stderr; None for the filesystem's own error.
     """
 
     stderr: bytes
@@ -322,6 +321,34 @@ def _seen(
     )
 
 
+def _seen_words(
+    session: SessionState,
+    words: tuple[CommandWord, ...],
+    unread: frozenset[str],
+) -> tuple[CommandWord, ...]:
+    """The words a policy is shown, a path ``_seen`` drops taken off the
+    word that names it, so a policy reads the word and never the path.
+
+    Args:
+        session (SessionState): the session running the line.
+        words (tuple[CommandWord, ...]): the command's words.
+        unread (frozenset[str]): virtual paths the reader cannot vouch
+            for, as ``gate`` takes them.
+    """
+    shown = {
+        p.virtual
+        for p in _seen(
+            session, [w.path for w in words if w.path is not None], unread
+        )
+    }
+    return tuple(
+        w
+        if w.path is None or w.path.virtual in shown
+        else dataclasses.replace(w, path=None)
+        for w in words
+    )
+
+
 async def gate(
     name: str,
     args: list[str],
@@ -336,12 +363,10 @@ async def gate(
     unread: frozenset[str] = frozenset(),
     every: bool = False,
     rules_only: bool = False,
-) -> (
-    Refused | tuple[CommandContext, Deny | Ask | None, tuple[Deny | Ask, ...]]
-):
+) -> tuple[CommandContext, Deny | Ask | None, tuple[Deny | Ask, ...]]:
     """Everything the gate decides about one command before anything is
-    spent on it: visibility, the classified context, and the policy
-    chain's answer with the answers it came from.
+    spent on it: the classified context, and the policy chain's answer
+    with the answers it came from.
 
     Split out of :func:`admit` so a dry run can have the answer without
     the consequences. Nothing here records a request, consumes a grant
@@ -376,13 +401,10 @@ async def gate(
             command.
 
     Returns:
-        A Refused when the session cannot see the head word, else the
-        context, the chain's answer (the first Deny, else the first
+        The context, the chain's answer (the first Deny, else the first
         Ask) and every answer it came from.
     """
     tool = intrinsic or is_tool(name, session)
-    if tool and not listed(name, session):
-        return Refused(encode_text(f"{name}: command not found\n"), 127)
     tokens, program = program_tokens(registry, name, args, session.cwd)
     implied = (
         default_cwd_operand(
@@ -406,9 +428,11 @@ async def gate(
             ),
             unread,
         ),
-        operands=_seen(
+        words=_seen_words(
             session,
-            positional_scopes(name, args, session.cwd, list(operands)),
+            command_words(
+                registry, name, args, operands, redirects, session.cwd
+            ),
             unread,
         ),
         argv=tuple(args),
@@ -448,15 +472,14 @@ async def admit(
     unread: frozenset[str] = frozenset(),
     rules_only: bool = False,
 ) -> Refused | Admitted:
-    """The command plane's admission of one command: visibility, then
-    the policy chain, then the decision ledger.
+    """The command plane's admission of one command: the policy chain,
+    then the decision ledger.
 
     The one gate every command class passes through, in the tree
     (``_run_argv``, once the words are expanded) and for a line a
     runtime takes whole (``admit_line``, per parsed command). A word
-    the session's allow lists do not install is bash's "command not
-    found" before any admission hook, so an unlisted tool never leaks
-    a deny reason; a path the session cannot see is dropped before any
+    the session's allow list leaves out is the profile's Deny, like any
+    other rule's; a path the session cannot see is dropped before any
     hook, so a rule never names it and the dispatcher answers ENOENT; a Deny
     renders in the outcome table's voice; an Ask is answered by the
     entry point from the session's grants or the host. A command that gets
@@ -512,8 +535,6 @@ async def admit(
         unread=unread,
         rules_only=rules_only,
     )
-    if isinstance(gated, Refused):
-        return gated
     ctx, asked, _ = gated
     # An Ask is the chain's answer only after every Deny had its say;
     # the ledger answers it from the session's records or the host, so

@@ -14,10 +14,11 @@
 
 import pytest
 
+from mirage.commands.spec.types import WordKind
 from mirage.policy import (
     CommandContext,
-    DenyScope,
     MountRootPolicy,
+    refusal_of,
     render_deny,
 )
 from mirage.policy.builtin.mount_root import (
@@ -25,6 +26,7 @@ from mirage.policy.builtin.mount_root import (
     has_parents_flag,
     has_symlink_flag,
 )
+from mirage.policy.types import CommandWord
 from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace.mount import MountRegistry
@@ -55,7 +57,13 @@ def _ctx(
     return CommandContext(
         command=command,
         paths=tuple(paths),
-        operands=tuple(paths if operands is None else operands),
+        words=(
+            CommandWord(command, WordKind.NAME),
+            *(
+                CommandWord(p.raw_path, WordKind.OPERAND, path=p)
+                for p in (paths if operands is None else operands)
+            ),
+        ),
         argv=tuple(argv or []),
         cwd="/",
     )
@@ -82,10 +90,12 @@ async def test_mount_root_refuses(cmd, needle):
     )
     assert deny is not None
     assert needle in deny.reason
-    # Every mount-root refusal is about one operand and speaks in the
-    # command's own voice; the command plane renders `<cmd>: <reason>`.
-    assert deny.scope is DenyScope.OPERAND
+    # Every mount-root refusal is the filesystem's own error, in the
+    # command's own voice: the command plane renders `<cmd>: <reason>`,
+    # and no policy refusal is recorded.
+    assert deny.error is not None
     assert render_deny(cmd, deny) == (f"{cmd}: {deny.reason}\n".encode(), 1)
+    assert refusal_of(deny) is None
 
 
 @pytest.mark.asyncio

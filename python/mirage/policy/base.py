@@ -70,7 +70,7 @@ class Policy:
         """Admit, hold or refuse one command or CLI, once, as it runs.
 
         A Deny refuses it (``<command>: Permission denied``, exit 126, or
-        the operand's own error for an operand refusal); an Ask holds it
+        the path's own error for a Deny about a path); an Ask holds it
         until the host approves. Its own file I/O meets the hides, the
         mount mode and the profile's path rules, never ``pre_vfs``.
 

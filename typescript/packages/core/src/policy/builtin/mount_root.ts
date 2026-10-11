@@ -13,11 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Policy } from '../base.ts'
+import { operandPaths } from '../match/rule.ts'
 import type { Action, CommandContext, Deny, MountRootQuery } from '../types.ts'
 import { isCreateMode } from '../../commands/builtin/generic/tar/mode.ts'
 import { expandTableLong } from '../../commands/spec/compile.ts'
 import { GNU_LONG_OPTIONS } from '../../commands/spec/long_options.ts'
 import type { PathSpec } from '../../types.ts'
+import { ebusy, eexist, einval, eisdir } from '../../errors/fs.ts'
 
 /**
  * Spot ln's -s/--symbolic by raw token scan. Same reason as
@@ -135,29 +137,31 @@ export function rmRootRefusal(
   recursive: boolean,
   emptyDir: boolean,
   preserve: boolean,
-): string {
+): Deny {
   const raw = path.rawPath
   const last = raw.replace(/\/+$/, '').split('/').at(-1) ?? ''
   if (recursive && (last === '.' || last === '..')) {
-    return `refusing to remove '.' or '..' directory: skipping '${raw}'`
+    return deny(`refusing to remove '.' or '..' directory: skipping '${raw}'`, einval(path))
   }
-  if (!recursive && !emptyDir) return `cannot remove '${raw}': Is a directory`
+  if (!recursive && !emptyDir) return deny(`cannot remove '${raw}': Is a directory`, eisdir(path))
   if (recursive && preserve && path.virtual.replaceAll('/', '') === '') {
     const shown = ftsName(raw)
     const named = shown === '/' ? "'/'" : `'${shown}' (same as '/')`
-    return (
+    return deny(
       `it is dangerous to operate recursively on ${named}\n` +
-      'rm: use --no-preserve-root to override this failsafe'
+        'rm: use --no-preserve-root to override this failsafe',
+      einval(path),
     )
   }
-  return `cannot remove '${raw}': Device or resource busy`
+  return deny(`cannot remove '${raw}': Device or resource busy`, ebusy(path))
 }
 
-// Every mount-root refusal is about one operand and speaks in the
-// command's own voice: the command plane prefixes the command name and picks the
-// exit code from the operand table (1, tar 2).
-function deny(reason: string): Deny {
-  return { kind: 'deny', reason, scope: 'operand' }
+// Every mount-root refusal is the filesystem's own error in the command's
+// own voice: the command plane prefixes the command name and picks the
+// exit code from the operand table (1, tar 2), and no policy refusal is
+// recorded.
+function deny(reason: string, error: Error): Deny {
+  return { kind: 'deny', reason, error }
 }
 
 // The first of these paths that is a mount root, if any.
@@ -210,17 +214,19 @@ export class MountRootPolicy implements Policy {
     const namesRoot = (p: PathSpec): boolean =>
       p.walkError === null && this.registry.isMountRoot(p.virtual)
     const cmd = ctx.command
-    const operands = ctx.operands ?? ctx.paths
+    const operands = operandPaths(ctx)
 
     if (cmd === 'rm') {
       const root = firstRoot(namesRoot, ctx.paths)
       if (root === null) return null
-      return deny(rmRootRefusal(root, ...rmOptions(ctx.argv)))
+      return rmRootRefusal(root, ...rmOptions(ctx.argv))
     }
 
     if (cmd === 'rmdir') {
       for (const p of ctx.paths) {
-        if (namesRoot(p)) return deny(`failed to remove '${p.virtual}': Device or resource busy`)
+        if (namesRoot(p)) {
+          return deny(`failed to remove '${p.virtual}': Device or resource busy`, ebusy(p))
+        }
       }
       return null
     }
@@ -231,7 +237,10 @@ export class MountRootPolicy implements Policy {
       const source = operands[0]
       if (source !== undefined && namesRoot(source)) {
         const dst = ctx.paths[1] !== undefined ? ctx.paths[1].virtual : '?'
-        return deny(`cannot move '${source.virtual}' to '${dst}': Device or resource busy`)
+        return deny(
+          `cannot move '${source.virtual}' to '${dst}': Device or resource busy`,
+          ebusy(source),
+        )
       }
       return null
     }
@@ -241,7 +250,7 @@ export class MountRootPolicy implements Policy {
       if (hasParentsFlag(ctx.argv)) return null
       for (const p of ctx.paths) {
         if (namesRoot(p)) {
-          return deny(`cannot create directory '${p.virtual}': File exists`)
+          return deny(`cannot create directory '${p.virtual}': File exists`, eexist(p))
         }
       }
       return null
@@ -251,7 +260,7 @@ export class MountRootPolicy implements Policy {
       // Positionals only: `-r REF` is read, never touched.
       for (const p of operands) {
         if (namesRoot(p)) {
-          return deny(`cannot touch '${p.virtual}': Is a directory`)
+          return deny(`cannot touch '${p.virtual}': Is a directory`, eisdir(p))
         }
       }
       return null
@@ -264,7 +273,7 @@ export class MountRootPolicy implements Policy {
       const last = ctx.paths[ctx.paths.length - 1]
       if (last !== undefined && hasNoTargetFlag(ctx.argv) && namesRoot(last)) {
         const kind = hasSymlinkFlag(ctx.argv) ? 'symbolic link' : 'link'
-        return deny(`failed to create ${kind} '${last.virtual}': File exists`)
+        return deny(`failed to create ${kind} '${last.virtual}': File exists`, eexist(last))
       }
       return null
     }
@@ -277,6 +286,7 @@ export class MountRootPolicy implements Policy {
         return deny(
           `${root.rawPath}: Cannot open: Device or resource busy\n` +
             `tar: Error is not recoverable: exiting now`,
+          ebusy(root),
         )
       }
       return null
@@ -287,7 +297,7 @@ export class MountRootPolicy implements Policy {
       // only what follows it is read.
       const root = firstRoot(namesRoot, operands.slice(1))
       if (root !== null) {
-        return deny(`cannot read '${root.rawPath}': Device or resource busy`)
+        return deny(`cannot read '${root.rawPath}': Device or resource busy`, ebusy(root))
       }
       return null
     }
@@ -297,7 +307,7 @@ export class MountRootPolicy implements Policy {
       // ordinary; only the sources are refused.
       const root = firstRoot(namesRoot, operands.slice(0, -1))
       if (root !== null) {
-        return deny(`cannot copy '${root.rawPath}': Device or resource busy`)
+        return deny(`cannot copy '${root.rawPath}': Device or resource busy`, ebusy(root))
       }
       return null
     }

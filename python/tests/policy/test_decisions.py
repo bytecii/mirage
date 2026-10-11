@@ -53,7 +53,6 @@ def _ctx(
     return CommandContext(
         command=command,
         paths=(),
-        operands=(),
         argv=argv,
         cwd=cwd,
         session_id=session_id,

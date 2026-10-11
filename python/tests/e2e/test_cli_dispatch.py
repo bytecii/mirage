@@ -159,11 +159,11 @@ async def test_command_tiers_key_on_the_installed_name():
         assert (io.exit_code, out) == (0, b"sent[one] to=x: hi\n")
         io = await ws.shell("h2 message send -t x hi", session_id="s")
         err = await materialize(io.stderr) if io.stderr else b""
-        assert io.exit_code == 127
-        assert b"h2: command not found" in err
+        assert io.exit_code == 126
+        assert err == b"h2: Permission denied\n"
         io = await ws.shell("type -t h1; type -t h2", session_id="s")
         out = await materialize(io.stdout) if io.stdout else b""
-        assert (io.exit_code, out) == (1, b"file\n")
+        assert (io.exit_code, out) == (0, b"file\nfile\n")
         io = await ws.shell("h1 message send -t x hi", session_id="s")
         out = await materialize(io.stdout) if io.stdout else b""
         assert (io.exit_code, out) == (0, b"sent[one] to=x: hi\n")

@@ -74,9 +74,9 @@ def script_context(
     The same facts on both hosts, JSON-shaped because the script runs
     inside a sandboxed engine that a live object cannot cross into.
     Paths are spelled as resolved virtual paths, so a script matches
-    what the command will actually touch, not what was typed; the raw
-    words are in ``argv`` for a script that wants them. The session's
-    environment is in ``session.env``.
+    what the command will actually touch, not what was typed; the
+    words, each with its kind, are in ``words``.
+    The session's environment is in ``session.env``.
 
     Args:
         profile (str): the profile the script speaks for.
@@ -88,12 +88,11 @@ def script_context(
         "profile": profile,
         "command": {
             "name": ctx.command,
-            "argv": list(ctx.argv),
-            "tokens": list(ctx.tokens),
-            "program": list(ctx.program),
+            "words": [
+                {key: value for key, value in word.to_dict().items()}
+                for word in ctx.words
+            ],
             "paths": [path.virtual for path in ctx.paths],
-            "operands": [path.virtual for path in ctx.operands],
-            "tool": ctx.tool,
             "walks": ctx.walks,
         },
         "session": {

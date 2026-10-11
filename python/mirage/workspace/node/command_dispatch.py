@@ -781,7 +781,8 @@ async def _run_argv(
             node.stderr = node.stderr + err
             io.exit_code = node.exit_code = code
             io.refusal = refusal_of(action)
-            note_refusal(io.refusal)
+            if io.refusal is not None:
+                note_refusal(io.refusal)
 
         if stdout is None or isinstance(stdout, bytes):
             await settle()

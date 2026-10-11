@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
+from mirage.commands.spec.types import WordKind
 from mirage.runtime.routing.types import RouteContext
 from mirage.runtime.types import ScriptSource
 from mirage.types import Limit, MountMode, PathSpec, Producer, Refusal
@@ -36,26 +37,6 @@ class MountRootQuery(Protocol):
     """
 
     def is_mount_root(self, path: str) -> bool: ...
-
-
-class DenyScope(StrEnum):
-    """What a command-plane refusal is about, which picks its voice.
-
-    COMMAND refuses the whole line in bash's own words,
-    ``<cmd>: Permission denied``, exit 126, and the reason rides the
-    result's ``refusal`` record instead. OPERAND refuses one operand,
-    exit 1, or the command's own fatal code where GNU differs (tar
-    exits 2): with ``Deny.path`` set it prints the command's own GNU
-    line for that operand and ``Permission denied``, the reason riding
-    the record; without it the reason is the diagnostic,
-    ``<cmd>: <reason>`` (a built-in that words a POSIX error, as
-    ``rm: cannot remove 'x': ...`` does). The exit code and errno
-    derive from the plane and this scope, never from a number a policy
-    picks, so a document deny and a coded one are indistinguishable.
-    """
-
-    COMMAND = "command"
-    OPERAND = "operand"
 
 
 class Outcome(StrEnum):
@@ -78,25 +59,28 @@ class Outcome(StrEnum):
 class Deny:
     """Refuse the command, op or session write, with a reason.
 
-    Rendered by the entry point it fires at: the command plane prints it in
-    the scope's voice (DenyScope), the dispatcher raise EACCES with it,
-    the session view EACCES too.
+    Rendered by the entry point it fires at. The command plane prints
+    bash's own ``<cmd>: Permission denied`` at 126; a Deny about a
+    ``path`` prints the command's own line for that path and
+    ``Permission denied`` at the command's operand exit code (1, tar
+    2); a Deny carrying an ``error`` is that error, its reason the
+    command's own diagnostic, ``<cmd>: <reason>``, at the same code.
+    The dispatcher raises ``error``, else EACCES; the session view
+    EACCES. The reason otherwise rides the result's ``refusal`` record,
+    so a document deny and a coded one print alike.
 
     Args:
         reason (str): why, without the command name and without a
             trailing newline; the entry point adds both.
-        scope (DenyScope): whole command or one operand; ignored off
-            the command plane.
         policy (str): the class name of the policy that spoke,
             stamped by the chain so no policy names itself.
         failed (bool): True when the chain refused on a policy's
             behalf because it raised.
-        error (OSError | None): an op refusal with a specific errno; None
-            uses the normal permission-denied error.
-        path (str | None): the operand an OPERAND refusal is about, as
-            typed: the entry point prints the command's own line for it and
-            ``Permission denied``, the reason riding the record. None
-            leaves the reason as the diagnostic.
+        error (OSError | None): the specific error this refusal is
+            (EBUSY on a mount root, EROFS on a read-only mount); None
+            for a permission refusal.
+        path (str | None): the path the refusal is about, as typed;
+            None refuses the command whole.
         rule (CommandRule | None): the profile rule that refused, as an
             Ask carries the rule that asked; None for a coded condition.
     """
@@ -104,7 +88,6 @@ class Deny:
     kind: ClassVar[str] = "deny"
 
     reason: str
-    scope: DenyScope = DenyScope.COMMAND
     policy: str = ""
     failed: bool = False
     error: OSError | None = None
@@ -634,6 +617,38 @@ class SessionScriptsQuery(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class CommandWord:
+    """One word of a command line, as the grammar read it.
+
+    Args:
+        text (str): the word as the command receives it, expanded.
+        kind (WordKind): what the word is: the command name, a CLI
+            verb, an option, an option's value, an operand or a
+            redirect target.
+        option (str | None): for a value, the option word that takes
+            it, as typed.
+        path (PathSpec | None): the path the word names, None for a
+            word that names none.
+    """
+
+    text: str
+    kind: WordKind
+    option: str | None = None
+    path: PathSpec | None = None
+
+    def to_dict(self) -> dict[str, str | None]:
+        """The word as plain data: its text, its kind, the option a
+        value belongs to and the virtual path it names, each null where
+        it has none."""
+        return {
+            "text": self.text,
+            "kind": self.kind.value,
+            "option": self.option,
+            "path": self.path.virtual if self.path is not None else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CommandContext:
     """Facts about one classified command, as pre_command hooks see it.
 
@@ -642,11 +657,11 @@ class CommandContext:
         paths (tuple[PathSpec, ...]): every path the line names, the
             positional operands first and then the values of any
             path-valued flags. What a path-pattern guard matches on.
-        operands (tuple[PathSpec, ...]): the positional operands alone.
-            A rule that reads a slot by position (mv's source, ln's
-            target, tar's files) has to use this: with the flag values
-            mixed in, ``tar -xf a.tar -C /mnt`` would read the ``-C``
-            destination as a file being archived.
+        words (tuple[CommandWord, ...]): the command line word by word,
+            the name first and redirect targets last, each with its
+            kind. A rule that reads a slot (mv's source, ln's target,
+            tar's files) reads the operands here: ``tar -xf a.tar -C
+            /mnt`` names ``/mnt`` as ``-C``'s value, not as a file.
         argv (tuple[str, ...]): raw argv after the command name; the
             hook fires before flag parsing, so shorthand flags are raw
             tokens.
@@ -690,7 +705,7 @@ class CommandContext:
     paths: tuple[PathSpec, ...]
     argv: tuple[str, ...]
     cwd: str
-    operands: tuple[PathSpec, ...] = ()
+    words: tuple[CommandWord, ...] = ()
     session_id: str = ""
     agent_id: str = ""
     tokens: tuple[str, ...] = ()
@@ -902,25 +917,6 @@ class Explanation:
 
 
 @dataclass(frozen=True, slots=True)
-class ShellOperand:
-    """One path argument of a command, as the rules read it.
-
-    A path the session cannot see is listed like any path no rule
-    matches: ``path`` is resolved from the cwd alone, links unfollowed,
-    so it names nothing the session could not type.
-
-    Args:
-        text (str): the argument as typed.
-        path (str): the absolute path it names.
-        matched (bool): whether the deciding rule matched it.
-    """
-
-    text: str
-    path: str
-    matched: bool = False
-
-
-@dataclass(frozen=True, slots=True)
 class ShellNode:
     """One piece of a line's structure, as the shell parses it.
 
@@ -949,14 +945,16 @@ class CommandExplanation(Explanation):
         answers (tuple[Deny | Ask, ...]): every policy's answer to the
             command (``pre_command``).
         command (str): the program, as the gate read it.
-        argv (tuple[str, ...]): the words after it.
+        words (tuple[CommandWord, ...]): the command line word by word,
+            each with its kind and the path it names. A path the session
+            cannot see is listed like any path no rule matches: it is
+            resolved from the cwd alone, links unfollowed, so it names
+            nothing the session could not type.
         exit_code (int): what the command would exit with where it
             stands, 0 to run.
         stderr (str): what the agent would read from it, empty to run.
         runtime (str): the runtime entry that would run it, empty when
             the workspace runs it itself.
-        operands (tuple[ShellOperand, ...]): its path arguments,
-            redirect targets included.
         text (str): the command's source text.
         children (tuple[ShellNode, ...]): the lines it runs in turn
             (``$( )`` in its words, a ``bash -c`` string), in source
@@ -967,11 +965,10 @@ class CommandExplanation(Explanation):
 
     answers: "tuple[Deny | Ask, ...]" = ()
     command: str
-    argv: tuple[str, ...] = ()
+    words: tuple[CommandWord, ...] = ()
     exit_code: int = 0
     stderr: str = ""
     runtime: str = ""
-    operands: tuple[ShellOperand, ...] = ()
     text: str = ""
     children: tuple[ShellNode, ...] = ()
 
@@ -987,8 +984,8 @@ class ShellExplanation(Explanation):
     order the gate reads them is the line's, byte-identical to the
     refusal the run reports. A line that runs exits 0 here, and one an
     approval lets run carries the ask it covers. A command refused
-    where it stands while the rest of the line runs (a word the session
-    cannot see, a policy refusing one operand) says so on its own node.
+    where it stands while the rest of the line runs (a word the allow
+    list leaves out, a policy refusing one path) says so on its own node.
 
     Args:
         answers (tuple[Deny | Ask | Route, ...]): every policy's

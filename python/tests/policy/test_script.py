@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from mirage.commands.spec.types import WordKind
 from mirage.policy.constants import DEFAULT_ASK_REASON, DEFAULT_DENY_REASON
 from mirage.policy.script import (
     _POLICY_READ,
@@ -19,8 +20,8 @@ from mirage.policy.script import (
 from mirage.policy.types import (
     Ask,
     CommandContext,
+    CommandWord,
     Deny,
-    DenyScope,
     ProfileScript,
     SessionContext,
     VfsContext,
@@ -173,7 +174,14 @@ def _ctx(command: str = "cat", session_id: str = "s") -> CommandContext:
         paths=(_path("/repo/sealed/k"),),
         argv=("/repo/sealed/k",),
         cwd="/repo",
-        operands=(_path("/repo/sealed/k"),),
+        words=(
+            CommandWord(command, WordKind.NAME),
+            CommandWord(
+                "/repo/sealed/k",
+                WordKind.OPERAND,
+                path=_path("/repo/sealed/k"),
+            ),
+        ),
         session_id=session_id,
         agent_id="agent-1",
         tokens=(command, "/repo/sealed/k"),
@@ -228,12 +236,16 @@ def test_script_context_is_the_command_context_as_data():
         "profile": "release",
         "command": {
             "name": "cat",
-            "argv": ["/repo/sealed/k"],
-            "tokens": ["cat", "/repo/sealed/k"],
-            "program": ["cat"],
+            "words": [
+                {"text": "cat", "kind": "name", "option": None, "path": None},
+                {
+                    "text": "/repo/sealed/k",
+                    "kind": "operand",
+                    "option": None,
+                    "path": "/repo/sealed/k",
+                },
+            ],
             "paths": ["/repo/sealed/k"],
-            "operands": ["/repo/sealed/k"],
-            "tool": True,
             "walks": False,
         },
         "session": {
@@ -253,7 +265,7 @@ def test_allow_and_silence_are_no_opinion(value):
 
 def test_a_deny_answer_becomes_a_whole_command_deny():
     action = script_action({"deny": "sealed"})
-    assert action == Deny("sealed", DenyScope.COMMAND)
+    assert action == Deny("sealed")
 
 
 def test_an_ask_answer_goes_to_the_approval_entry_point():

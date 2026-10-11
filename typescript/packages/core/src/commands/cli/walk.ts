@@ -267,20 +267,15 @@ export function nodeHelp(
   name: string,
   node: CommandSpec,
   style: UsageStyle = UsageStyle.ARGPARSE,
-  visible?: (verb: string) => boolean,
 ): string {
   if (style === UsageStyle.ARGPARSE || style === UsageStyle.COBRA)
-    return argparseHelp(name, listedNode(node, style), rowsOf(node, visible))
-  return renderHelp(name, listedNode(node, style), rowsOf(node, visible), style)
+    return argparseHelp(name, listedNode(node, style), rowsOf(node))
+  return renderHelp(name, listedNode(node, style), rowsOf(node), style)
 }
 
-// The node's child rows, as the renderer lists them. `visible` filters on
-// a child's canonical name for the reading session: help, man and
-// generated skills all pass one.
-function rowsOf(node: CommandSpec, visible?: (verb: string) => boolean): [string, string][] {
-  return node.subcommands
-    .filter((child) => visible === undefined || visible(child.name))
-    .map((child) => [verbDisplay(child), child.description ?? ''])
+// The node's child rows, as the renderer lists them.
+function rowsOf(node: CommandSpec): [string, string][] {
+  return node.subcommands.map((child) => [verbDisplay(child), child.description ?? ''])
 }
 
 // The node as the renderer shows it, with `--help` filled in. --help is a
@@ -626,7 +621,6 @@ export function walk(
   argv: readonly string[],
   cwd = '/',
   env: Readonly<Record<string, string>> | null = null,
-  visible?: (path: readonly string[]) => boolean,
 ): WalkResult {
   let node = spec
   // Read once off the root and never off a node: a program answers in one
@@ -636,7 +630,6 @@ export function walk(
   const flags: WalkFlagBag = {}
   const bases: PathSpec[] = []
   let i = 0
-  const shown = (child: string): boolean => visible?.([...path, child]) ?? true
   for (;;) {
     // A script node terminates the walk exactly like an fn leaf: its
     // remaining argv rides the ordinary spec machinery for validation,
@@ -678,7 +671,7 @@ export function walk(
         !cs.dest.has('-h')
       ) {
         return new WalkResult({
-          output: encodeText(nodeHelp(name, node, style, shown)),
+          output: encodeText(nodeHelp(name, node, style)),
         })
       }
       if (!optionsEnded && token === '--') {
@@ -751,7 +744,7 @@ export function walk(
             return usageError(name, node, `error: option '${spelling}' takes no value`, style)
           }
           return new WalkResult({
-            output: encodeText(nodeHelp(name, node, style, shown)),
+            output: encodeText(nodeHelp(name, node, style)),
           })
         } else {
           return usageError(
@@ -838,7 +831,7 @@ export function walk(
     const refused = finishNode(name, node, cs, flags, cwd, style, bases, env)
     if (refused !== null) return refused
     return new WalkResult({
-      output: encodeText(nodeHelp(name, node, style, shown)),
+      output: encodeText(nodeHelp(name, node, style)),
       stream: 'stdout',
       exitCode: 1,
     })

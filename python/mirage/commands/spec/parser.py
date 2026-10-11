@@ -51,6 +51,7 @@ from mirage.commands.spec.types import (
     CommandSpec,
     ParsedFlagValue,
     ValueType,
+    WordKind,
 )
 from mirage.utils.path import resolve_path
 
@@ -121,6 +122,10 @@ class ParsedArgs:
     # moved it, and None when the session cwd still applies. Only a spec
     # declaring operand_base ever fills this.
     word_bases: list[str | None] = field(default_factory=list)
+    # Per-position role, aligned with word_kinds: OPTION for a word the
+    # scan read as an option, VALUE for an option's detached value,
+    # OPERAND for an argument, None for a word the scan never reads.
+    word_roles: list[WordKind | None] = field(default_factory=list)
     # GNU-shaped option errors, reported (never raised) by the parser:
     # undeclared options ('--bogus' or the offending cluster char 'Y'),
     # abbreviated longs matching several options (typed prefix, matched
@@ -606,6 +611,8 @@ def parse_command(
     # positions or one expanded cluster shifts every later kind onto the
     # wrong word.
     word_kinds: list[ValueType | None] = [None] * len(argv)
+    # The positions the scan stood on: an option word or an operand.
+    scanned = [False] * len(argv)
     # The directory the next path operand resolves against, and where it
     # was for each word already read. It only ever moves for a spec that
     # declares operand_base, so every other command records None
@@ -743,6 +750,7 @@ def parse_command(
         # `-o/data/out` as a relative path. Synthesized tar flags mark the
         # original cluster here; values and operands receive their own kinds.
         word_kinds[scan_origins[i]] = "str"
+        scanned[scan_origins[i]] = True
 
         if end_of_flags:
             record_operand(tok)
@@ -1368,6 +1376,17 @@ def parse_command(
         )
         for name, value in flags.occurrences
     ]
+    operand_slots = set(raw_indices)
+    word_roles: list[WordKind | None] = [
+        WordKind.OPERAND
+        if slot in operand_slots
+        else WordKind.OPTION
+        if scanned[slot]
+        else WordKind.VALUE
+        if word_kinds[slot] is not None
+        else None
+        for slot in range(len(argv))
+    ]
     return ParsedArgs(
         flags=flags,
         args=classified,
@@ -1378,6 +1397,7 @@ def parse_command(
         warnings=warnings,
         word_kinds=word_kinds,
         word_bases=word_bases,
+        word_roles=word_roles,
         invalid_options=invalid_options,
         ambiguous_options=ambiguous_options,
         option_error_kinds=option_error_kinds,

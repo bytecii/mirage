@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 from mirage.commands.cli.constants import CLAP_EXIT, GIT_SYNOPSES, USAGE_EXIT
@@ -291,7 +291,6 @@ def node_help(
     name: str,
     node: CommandSpec,
     style: UsageStyle = UsageStyle.ARGPARSE,
-    visible: Callable[[str], bool] | None = None,
 ) -> str:
     """A group node's help: the ordinary command help plus Commands rows.
 
@@ -308,36 +307,26 @@ def node_help(
         style (UsageStyle): the ROOT's dialect, never the node's: a
             program answers in one voice at every level, the same rule
             the leaf refusal follows.
-        visible (Callable[[str], bool] | None): filter on a child's
-            canonical name, None to list every child. Help, man and
-            generated skills use the reading session's visibility.
     """
     if style in (UsageStyle.ARGPARSE, UsageStyle.COBRA):
-        return argparse_help(
-            name, listed_node(node, style), _rows(node, visible)
-        )
+        return argparse_help(name, listed_node(node, style), _rows(node))
     return render_help(
         name,
         listed_node(node, style),
-        subcommands=_rows(node, visible),
+        subcommands=_rows(node),
         style=style,
     )
 
 
-def _rows(
-    node: CommandSpec, visible: Callable[[str], bool] | None = None
-) -> list[tuple[str, str]]:
+def _rows(node: CommandSpec) -> list[tuple[str, str]]:
     """The node's child rows, as the renderer lists them.
 
     Args:
         node (CommandSpec): the group node.
-        visible (Callable[[str], bool] | None): filter on a child's
-            canonical name, None to list every child.
     """
     return [
         (_verb_display(child), child.description or "")
         for child in node.subcommands
-        if visible is None or visible(child.name)
     ]
 
 
@@ -724,7 +713,6 @@ def walk(
     argv: Sequence[str],
     cwd: str = "/",
     env: Mapping[str, str] | None = None,
-    visible: Callable[[tuple[str, ...]], bool] | None = None,
 ) -> WalkResult:
     """Resolve one command line against a CLI tree.
 
@@ -747,8 +735,6 @@ def walk(
         env (Mapping[str, str] | None): session environment, so a group
             option declaring ``Argument.env`` fills at its own level
             exactly as a leaf one does in the flat parser.
-        visible (Callable[[tuple[str, ...]], bool] | None): filter child
-            command paths in generated help for the current session.
     """
     node = spec
     # Read once off the root and never off a node: a program answers in
@@ -758,9 +744,6 @@ def walk(
     flags: WalkFlagBag = WalkFlagBag()
     bases: list[PathSpec] = []
     i = 0
-
-    def shown(child: str) -> bool:
-        return visible is None or visible((*path, child))
 
     while True:
         # A script node terminates the walk exactly like an fn leaf:
@@ -814,7 +797,6 @@ def walk(
                             name,
                             node,
                             style,
-                            visible=shown,
                         )
                     )
                 )
@@ -923,7 +905,6 @@ def walk(
                                 name,
                                 node,
                                 style,
-                                visible=shown,
                             )
                         )
                     )
@@ -1036,7 +1017,6 @@ def walk(
                     name,
                     node,
                     style,
-                    visible=shown,
                 )
             ),
             stream="stdout",

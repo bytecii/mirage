@@ -1457,35 +1457,39 @@ describe('command permissions end to end', () => {
     return [r.exitCode, stdoutStr(r), voicedStderr(r)]
   }
 
-  it('an allow list hides unlisted tools from dispatch and the enumerators', async () => {
+  it('an allow list refuses unlisted tools and hides nothing', async () => {
     const ws = await commandsWs()
     await ws.shell('mkdir -p /repo/d && touch /repo/d/x')
-    // An unlisted tool is not a command for the session: 127 before any
-    // admission hook, and every enumerator agrees.
-    expect(await line(ws, 'sort /repo/d/x')).toEqual([127, '', 'sort: command not found\n'])
-    expect(await line(ws, 'type sort; echo $?')).toEqual([
-      0,
-      '1\n',
-      'bash: type: sort: not found\n',
+    // An unlisted tool is the profile's Deny, in bash's words, with the
+    // reason on the record; every enumerator still finds it.
+    expect(await line(ws, 'sort /repo/d/x')).toEqual([
+      126,
+      '',
+      'sort: Permission denied\npolicy denied: sort is not allowed\n',
     ])
-    expect(await line(ws, 'command -v sort; echo $?')).toEqual([0, '1\n', ''])
-    expect(await line(ws, 'which sort; echo $?')).toEqual([0, '1\n', ''])
+    expect(await line(ws, 'type sort; echo $?')).toEqual([0, 'sort is /usr/bin/sort\n0\n', ''])
+    expect(await line(ws, 'command -v sort; echo $?')).toEqual([0, '/usr/bin/sort\n0\n', ''])
     const [code, out] = await line(ws, 'man')
     expect(code).toBe(0)
     expect(out).toContain('- cat')
-    expect(out).not.toContain('- sort')
-    expect((await line(ws, 'man sort'))[0]).toBe(1)
+    expect(out).toContain('- sort')
+    expect((await line(ws, 'man sort'))[0]).toBe(0)
     // Builtins are subjects like everything else: the listed cd and [
-    // run, the unlisted pwd and history are not commands at all.
-    // Functions are the one exemption, and every line of a body passes
-    // the gate itself.
+    // run, the unlisted pwd and history are refused. Functions are the
+    // one exemption, and every line of a body passes the gate itself.
     expect(await line(ws, 'cd /repo && [ -f d/x ] && echo yes')).toEqual([0, 'yes\n', ''])
     expect(await line(ws, 'f() { echo in-f; }; f')).toEqual([0, 'in-f\n', ''])
     expect((await line(ws, 'cat /repo/d/x'))[0]).toBe(0)
-    expect(await line(ws, 'pwd')).toEqual([127, '', 'pwd: command not found\n'])
-    expect(await line(ws, 'type pwd; echo $?')).toEqual([0, '1\n', 'bash: type: pwd: not found\n'])
-    // `history` is a tool-tier builtin: hidden when unlisted.
-    expect(await line(ws, 'history')).toEqual([127, '', 'history: command not found\n'])
+    expect(await line(ws, 'pwd')).toEqual([
+      126,
+      '',
+      'pwd: Permission denied\npolicy denied: pwd is not allowed\n',
+    ])
+    expect(await line(ws, 'history')).toEqual([
+      126,
+      '',
+      'history: Permission denied\npolicy denied: history is not allowed\n',
+    ])
   })
 
   it("a profile's allow list is the only one a session reads", async () => {
@@ -1493,11 +1497,14 @@ describe('command permissions end to end', () => {
     ws.createSession('rev', { profile: 'reviewer' })
     await ws.shell('mkdir -p /repo/d && touch /repo/d/x')
     // The reviewer profile lists `cat` and not python3, whatever the
-    // default profile lists; it lists `git log`, so `git` is visible but a
-    // `git commit` line is covered by nothing (a refusal that names the
-    // program, not "command not found").
+    // default profile lists; it lists `git log`, so a `git commit` line is
+    // covered by nothing (a refusal that names the program).
     expect((await line(ws, 'cat /repo/d/x', 'rev'))[0]).toBe(0)
-    expect(await line(ws, 'python3 -c 1', 'rev')).toEqual([127, '', 'python3: command not found\n'])
+    expect(await line(ws, 'python3 -c 1', 'rev')).toEqual([
+      126,
+      '',
+      'python3: Permission denied\npolicy denied: python3 is not allowed\n',
+    ])
     expect((await line(ws, 'type git', 'rev'))[0]).toBe(0)
     expect(await line(ws, 'git commit -m x', 'rev')).toEqual([
       126,
@@ -1507,24 +1514,12 @@ describe('command permissions end to end', () => {
     // The verb walk normalizes the line: options before the verb are
     // not the verb, so `git -C /repo status` is `git status`.
     expect((await line(ws, 'git -C /repo status', 'rev'))[2]).not.toContain('not allowed')
-    // Nested runners re-enter the chokepoint: the hidden `rm` stays
-    // hidden inside xargs (which, as GNU's, finds no such program), eval
-    // and a function body.
-    expect(await line(ws, 'echo /repo/d/x | xargs rm', 'rev')).toEqual([
-      127,
-      '',
-      'xargs: rm: No such file or directory\n',
-    ])
-    expect(await line(ws, "eval 'rm /repo/d/x'", 'rev')).toEqual([
-      127,
-      '',
-      'rm: command not found\n',
-    ])
-    expect(await line(ws, 'f() { rm /repo/d/x; }; f', 'rev')).toEqual([
-      127,
-      '',
-      'rm: command not found\n',
-    ])
+    // Nested runners re-enter the chokepoint: the unlisted `rm` is
+    // refused inside xargs, eval and a function body.
+    const refused = 'rm: Permission denied\npolicy denied: rm is not allowed\n'
+    expect(await line(ws, 'echo /repo/d/x | xargs rm', 'rev')).toEqual([123, '', refused])
+    expect(await line(ws, "eval 'rm /repo/d/x'", 'rev')).toEqual([126, '', refused])
+    expect(await line(ws, 'f() { rm /repo/d/x; }; f', 'rev')).toEqual([126, '', refused])
     // An inline document may add rules, never an allow list.
     expect(() =>
       ws.createSession('tight', {
@@ -1742,8 +1737,8 @@ describe('command permissions end to end', () => {
 
   it('a whole-line runtime is gated like the tree', async () => {
     // A runtime that captures the raw line runs it under the same
-    // tiers: every parsed command clears visibility, the policy chain
-    // and the approval ledger before the runtime sees a byte, so a
+    // tiers: every parsed command clears the policy chain and the
+    // approval ledger before the runtime sees a byte, so a
     // captured line cannot run what the tree would refuse.
     const parser = await getTestParser()
     const box = new Box()
@@ -1758,8 +1753,9 @@ describe('command permissions end to end', () => {
     )
     open.push(ws)
     ws.registerCli('git', cliSpecFor('git'))
-    expect(await line(ws, 'sort /repo/x')).toEqual([127, '', 'sort: command not found\n'])
-    expect(await line(ws, 'cat /repo/a | sort')).toEqual([127, '', 'sort: command not found\n'])
+    const refused = 'sort: Permission denied\npolicy denied: sort is not allowed\n'
+    expect(await line(ws, 'sort /repo/x')).toEqual([126, '', refused])
+    expect(await line(ws, 'cat /repo/a | sort')).toEqual([126, '', refused])
     expect(await line(ws, 'rm /repo/x')).toEqual([
       1,
       '',

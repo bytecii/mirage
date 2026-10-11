@@ -18,8 +18,9 @@ import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { MountMode, PathSpec } from '../../types.ts'
 import { MountRegistry } from '../../workspace/mount/registry.ts'
 import { MountRootPolicy, hasParentsFlag, lnFlagPresent } from './mount_root.ts'
-import { renderDeny } from '../policies.ts'
-import type { CommandContext, Deny } from '../types.ts'
+import { refusalOf, renderDeny } from '../policies.ts'
+import { CommandWord, type CommandContext, type Deny } from '../types.ts'
+import { WordKind } from '../../commands/spec/types.ts'
 
 function registry(): MountRegistry {
   return new MountRegistry({ '/data': new RAMVFS() }, MountMode.WRITE, {})
@@ -41,7 +42,11 @@ function ctx(
   argv: string[] = [],
   operands?: PathSpec[],
 ): CommandContext {
-  return { command, paths, operands: operands ?? paths, argv, cwd: '/' }
+  const words = [
+    new CommandWord(command, WordKind.NAME),
+    ...(operands ?? paths).map((p) => new CommandWord(p.rawPath, WordKind.OPERAND, null, p)),
+  ]
+  return { command, paths, words, argv, cwd: '/' }
 }
 
 describe('MountRootPolicy', () => {
@@ -60,12 +65,14 @@ describe('MountRootPolicy', () => {
     expect(deny).not.toBeNull()
     expect(deny?.kind).toBe('deny')
     expect(deny && 'reason' in deny ? deny.reason : '').toContain(needle)
-    // Every mount-root refusal is about one operand and speaks in the
-    // command's own voice; the command plane renders `<cmd>: <reason>`.
-    expect(deny && 'scope' in deny ? deny.scope : '').toBe('operand')
+    // Every mount-root refusal is the filesystem's own error, in the
+    // command's own voice: the command plane renders `<cmd>: <reason>`,
+    // and no policy refusal is recorded.
+    expect((deny as Deny).error).toBeDefined()
     const [err, code] = renderDeny(cmd, deny as Deny)
     expect(new TextDecoder().decode(err)).toBe(`${cmd}: ${(deny as Deny).reason}\n`)
     expect(code).toBe(1)
+    expect(refusalOf(deny as Deny)).toBeNull()
   })
 
   it('treats mkdir -p on a mount root as a no-op', () => {

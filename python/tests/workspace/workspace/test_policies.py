@@ -1055,7 +1055,7 @@ async def test_a_script_only_profile_installs_everything():
 @pytest.mark.asyncio
 async def test_a_document_may_ride_beside_the_script():
     # Optional, not required: a profile stating both keeps the allow
-    # list's hiding, and the script adds its verdicts beside it.
+    # list, and the script adds its verdicts beside it.
     profiles = _scripted()
     profiles["release"]["commands"] = {"allow": ["ls", "cat", "echo"]}
     ws = Workspace(
@@ -1063,8 +1063,8 @@ async def test_a_document_may_ride_beside_the_script():
     )
     try:
         ws.create_session("s", profile="release")
-        hidden = await ws.shell("rm /data/x", session_id="s")
-        assert hidden.exit_code == 127
+        unlisted = await ws.shell("rm /data/x", session_id="s")
+        assert unlisted.exit_code == 126
         denied = await ws.shell("cat /data/sealed/k", session_id="s")
         assert denied.exit_code == 126
         assert denied.stderr == b"cat: Permission denied\n"

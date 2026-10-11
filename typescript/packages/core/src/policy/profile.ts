@@ -55,15 +55,14 @@ export interface VarsBlock {
 
 /**
  * `commands:` at the top level of a profile. `allow` lists the command
- * patterns the profile installs; a name none of them starts with is not a
- * command for the session (127, absent from `type` / `which` / `man`),
- * a line no pattern covers is refused. Shell builtins are subjects like
- * everything else: a list stating only `cat` leaves no `echo` and no
- * `cd`. The agent's own functions are the one exemption, safe because
+ * patterns the profile allows; a line no pattern covers is refused,
+ * `<cmd>: Permission denied` at 126, like any other rule's Deny. Shell
+ * builtins are subjects like everything else: a list stating only `cat`
+ * refuses `echo` and `cd`. The agent's own functions are the one exemption, safe because
  * every line of a body passes the gate itself. `ask` rules are admitted
  * only with a host approval; `deny` rules refuse with a reason. A bare
  * string in either is one command pattern with the default reason.
- * `allow` null or absent (unstated) installs everything.
+ * `allow` null or absent (unstated) allows everything.
  */
 export interface CommandsBlock {
   readonly allow?: readonly string[] | null

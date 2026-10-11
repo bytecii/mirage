@@ -16,7 +16,14 @@ import {
   scriptContext,
   sessionScriptContext,
 } from './script.ts'
-import type { CommandContext, VfsContext, ProfileScript, SessionContext } from './types.ts'
+import {
+  CommandWord,
+  type CommandContext,
+  type VfsContext,
+  type ProfileScript,
+  type SessionContext,
+} from './types.ts'
+import { WordKind } from '../commands/spec/types.ts'
 import { CALLS } from '../workspace/dispatcher/constants.ts'
 import type { VfsCall } from '../vfs/types.ts'
 
@@ -52,7 +59,10 @@ function ctx(command = 'cat', sessionId = 's'): CommandContext {
   return {
     command,
     paths: [path('/repo/sealed/k')],
-    operands: [path('/repo/sealed/k')],
+    words: [
+      new CommandWord(command, WordKind.NAME),
+      new CommandWord('/repo/sealed/k', WordKind.OPERAND, null, path('/repo/sealed/k')),
+    ],
     argv: ['/repo/sealed/k'],
     cwd: '/repo',
     sessionId,
@@ -141,12 +151,11 @@ describe('scriptContext', () => {
       profile: 'release',
       command: {
         name: 'cat',
-        argv: ['/repo/sealed/k'],
-        tokens: ['cat', '/repo/sealed/k'],
-        program: ['cat'],
+        words: [
+          { text: 'cat', kind: 'name', option: null, path: null },
+          { text: '/repo/sealed/k', kind: 'operand', option: null, path: '/repo/sealed/k' },
+        ],
         paths: ['/repo/sealed/k'],
-        operands: ['/repo/sealed/k'],
-        tool: true,
         walks: false,
       },
       session: { id: 's', agent: 'agent-1', cwd: '/repo', env: {} },

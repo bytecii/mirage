@@ -16,6 +16,7 @@ import functools
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
+from mirage.commands.spec.types import WordKind
 from mirage.policy.constants import (
     ASK_SECOND,
     DENY_FIRST,
@@ -118,6 +119,21 @@ class Subject:
     ancestors: bool = True
 
 
+def operand_paths(ctx: CommandContext) -> list[PathSpec]:
+    """The paths a command's operands name, in order: what ``rm -r``
+    removes or ``mv``, ``tar`` and ``cp`` take as sources, never an
+    option's value.
+
+    Args:
+        ctx (CommandContext): the classified command.
+    """
+    return [
+        w.path
+        for w in ctx.words
+        if w.kind is WordKind.OPERAND and w.path is not None
+    ]
+
+
 def subjects(ctx: CommandContext) -> tuple[Subject, ...]:
     """What a line's rules are read against, in the order they are read.
 
@@ -135,7 +151,7 @@ def subjects(ctx: CommandContext) -> tuple[Subject, ...]:
         return (Subject(None),)
     subs = [Subject(p) for p in ctx.paths]
     if ctx.command in SUBTREE_COMMANDS:
-        operands = list(ctx.operands)
+        operands = operand_paths(ctx)
         dst = (
             operands.pop()
             if ctx.command == "mv" and len(operands) > 1

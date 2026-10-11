@@ -54,7 +54,13 @@ import {
 } from './constants.ts'
 import { flagOccurrences } from './flag_view.ts'
 import { expandOldStyle } from './oldstyle.ts'
-import type { CommandSpec, Argument, ValueType, ParsedFlagValue } from './types.ts'
+import {
+  type CommandSpec,
+  type Argument,
+  type ValueType,
+  type ParsedFlagValue,
+  WordKind,
+} from './types.ts'
 
 /**
  * The builtin `Argument` objects whose choices are gnulib ARGMATCH tables.
@@ -123,6 +129,7 @@ export interface ParsedArgsInit {
   warnings?: string[]
   wordKinds?: (ValueType | null)[]
   wordBases?: (string | null)[]
+  wordRoles?: (WordKind | null)[]
   invalidOptions?: string[]
   ambiguousOptions?: [string, readonly string[]][]
   optionErrorKinds?: string[]
@@ -173,6 +180,10 @@ export class ParsedArgs {
   // moved it, and null when the session cwd still applies. Only a spec
   // declaring operandBase ever fills this.
   readonly wordBases: (string | null)[]
+  // Per-position role, aligned with wordKinds: OPTION for a word the scan
+  // read as an option, VALUE for an option's detached value, OPERAND for an
+  // argument, null for a word the scan never reads.
+  readonly wordRoles: (WordKind | null)[]
   // GNU-shaped option errors, reported (never thrown) by the parser:
   // undeclared options ('--bogus' or the offending cluster char 'Y'),
   // abbreviated longs matching several options (typed prefix, matched
@@ -221,6 +232,7 @@ export class ParsedArgs {
     this.warnings = init.warnings ?? []
     this.wordKinds = init.wordKinds ?? []
     this.wordBases = init.wordBases ?? []
+    this.wordRoles = init.wordRoles ?? []
     this.invalidOptions = init.invalidOptions ?? []
     this.ambiguousOptions = init.ambiguousOptions ?? []
     this.optionErrorKinds = init.optionErrorKinds ?? []
@@ -561,6 +573,8 @@ export function parseCommand(
   // only operands); kinds must be written at the original positions or
   // one expanded cluster shifts every later kind onto the wrong word.
   const wordKinds: (ValueType | null)[] = new Array<ValueType | null>(argv.length).fill(null)
+  // The positions the scan stood on: an option word or an operand.
+  const scanned: boolean[] = new Array<boolean>(argv.length).fill(false)
   // The directory the next path operand resolves against, and where it
   // was for each word already read. It only ever moves for a spec that
   // declares operandBase, so every other command records null throughout
@@ -698,6 +712,7 @@ export function parseCommand(
     // `-o/data/out` as a relative path. Synthesized tar flags mark the
     // original cluster here; values and operands receive their own kinds.
     wordKinds[scanOrigins[i] ?? -1] = 'str'
+    scanned[scanOrigins[i] ?? -1] = true
 
     if (!endOfFlags && spec.ignoreTokens.has(tok)) {
       // Expression syntax, never an operand of the declared kind: `find
@@ -1248,6 +1263,16 @@ export function parseCommand(
     )
       occurrence[1] = resolvePath(value, cwd)
   }
+  const operandSlots = new Set(rawIndices)
+  const wordRoles: (WordKind | null)[] = wordKinds.map((kind, slot) =>
+    operandSlots.has(slot)
+      ? WordKind.OPERAND
+      : scanned[slot] === true
+        ? WordKind.OPTION
+        : kind !== null
+          ? WordKind.VALUE
+          : null,
+  )
   return new ParsedArgs({
     flags,
     args: classified,
@@ -1270,6 +1295,7 @@ export function parseCommand(
     oldOptionNeedsValue: old !== null ? old.needsValue : null,
     wordKinds,
     wordBases,
+    wordRoles,
   })
 }
 

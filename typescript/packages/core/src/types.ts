@@ -443,7 +443,6 @@ export interface Producer {
 }
 
 export type RefusalKind = 'deny' | 'pending' | 'failed'
-export type RefusalScope = 'command' | 'operand'
 
 /**
  * Why a line did not run, for the caller that reads the result.
@@ -464,7 +463,6 @@ export interface Refusal {
   readonly kind: RefusalKind
   readonly reason: string
   readonly policy: string
-  readonly scope: RefusalScope
   readonly askId: string | null
 }
 

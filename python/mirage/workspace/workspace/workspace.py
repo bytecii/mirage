@@ -512,8 +512,8 @@ class Workspace:
             ReadSpec(),
             write=WritePolicy.UNCONDITIONAL,
         )
-        # One file per program the session can run, where PATH finds it:
-        # the same lookup which, type and command -v answer from.
+        # One file per program, where PATH finds it: the same lookup
+        # which, type and command -v answer from.
         self._registry.mount(
             BIN_PREFIX,
             BinViewVFS(

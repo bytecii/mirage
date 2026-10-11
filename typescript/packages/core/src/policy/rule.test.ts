@@ -58,7 +58,6 @@ describe('RulePolicy grammar', () => {
     expect(policy.preCommand(ctx('cat', [path('/a/b.key/c')]))).toEqual({
       kind: 'deny',
       reason: 'keys',
-      scope: 'operand',
       path: '/a/b.key/c',
     })
     expect(policy.preCommand(ctx('cat', [path('/a/b.keyx')]))).toBeNull()
@@ -92,7 +91,6 @@ describe('RulePolicy', () => {
     expect(deny).toEqual({
       kind: 'deny',
       reason: 'prod is protected',
-      scope: 'operand',
       path: 'prod/x.txt',
     })
     expect(policy.preCommand(ctx('rm', [path('/data/dev/x.txt')]))).toBeNull()

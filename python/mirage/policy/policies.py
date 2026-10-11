@@ -51,7 +51,6 @@ from mirage.policy.types import (
     CommandContext,
     CommandResultContext,
     Deny,
-    DenyScope,
     DryRun,
     ExecuteResultContext,
     Hide,
@@ -90,25 +89,23 @@ def render_deny(subject: str, deny: Deny) -> tuple[bytes, int]:
 
     The one place the outcome table for that plane is written down, so
     a document rule and a coded policy print alike, and the policy's
-    reason is never mixed into what the terminal says: a whole-command
-    Deny is bash's own ``<subject>: Permission denied`` at 126; an
-    operand Deny about a path is the command's own GNU line for that
-    operand and EACCES; both leave the reason on the result's
-    ``refusal`` record. An operand Deny that names no path keeps
-    ``<subject>: <reason>``, because there the reason is the diagnostic
-    a built-in worded in POSIX's terms. Operand refusals exit at the
-    command's operand-refusal code (1, tar 2).
+    reason is never mixed into what the terminal says: a Deny is bash's
+    own ``<subject>: Permission denied`` at 126; a Deny about a path is
+    the command's own GNU line for that path and EACCES; both leave the
+    reason on the result's ``refusal`` record. A Deny carrying an error
+    keeps ``<subject>: <reason>``, because there the reason is the
+    diagnostic a built-in worded in POSIX's terms. A path or an error
+    exits at the command's operand-refusal code (1, tar 2).
 
     Args:
         subject (str): the command name (or ``line`` at the boundary).
         deny (Deny): the action.
     """
-    if deny.scope is DenyScope.OPERAND:
-        line = (
-            fs_error_line(subject, deny.path, eacces(deny.path))
-            if deny.path is not None
-            else f"{subject}: {deny.reason}\n"
-        )
+    if deny.path is not None:
+        line = fs_error_line(subject, deny.path, eacces(deny.path))
+        return line.encode(), operand_exit_code(subject)
+    if deny.error is not None:
+        line = f"{subject}: {deny.reason}\n"
         return line.encode(), operand_exit_code(subject)
     return f"{subject}: Permission denied\n".encode(), POLICY_DENIED_EXIT
 
@@ -126,19 +123,24 @@ def render_pending(subject: str, pending: Pending) -> tuple[bytes, int]:
     return f"{subject}: Permission denied\n".encode(), POLICY_DENIED_EXIT
 
 
-def refusal_of(action: Deny | Pending) -> Refusal:
+def refusal_of(action: Deny | Pending) -> Refusal | None:
     """The record a refused result carries beside its bash-voiced stderr.
+
+    None for a Deny carrying an error: that is the filesystem's own
+    failure (a busy mount root, a name that exists), whose stderr line
+    already says everything, so no policy refusal is recorded.
 
     Args:
         action (Deny | Pending): what the command plane refused with.
     """
+    if isinstance(action, Deny) and action.error is not None:
+        return None
     if isinstance(action, Pending):
         return Refusal(kind="pending", reason=action.reason, ask_id=action.id)
     return Refusal(
         kind="failed" if action.failed else "deny",
         reason=action.reason,
         policy=action.policy,
-        scope=("operand" if action.scope is DenyScope.OPERAND else "command"),
     )
 
 
@@ -154,31 +156,6 @@ def describe_refusal(refusal: Refusal) -> str:
     if refusal.kind == "failed":
         return f"policy {refusal.policy} failed"
     return f"policy denied: {refusal.reason}"
-
-
-def says_why(text: str, refusal: Refusal) -> bool:
-    """Whether ``text`` already carries the line that says why the
-    command was refused.
-
-    Only an operand-scoped denial that names no path has one: its
-    diagnostic ``<command>: <reason>`` is the reason, wherever a redirect landed
-    it, so a surface that describes the record after the text looks
-    for that line rather than for the scope (``2>/dev/null`` takes the
-    line away and the record is the only reason left, ``2>&1`` moves it
-    onto stdout and nothing needs repeating) and rather than for the
-    reason as a substring, since output that happens to quote the words
-    has refused nothing. A command-scoped refusal's stderr is bash's
-    bare ``Permission denied``, which never says why. An empty reason
-    says nothing, so no text can already have said it.
-
-    Args:
-        text (str): what the surface is about to hand over.
-        refusal (Refusal): the record off the result.
-    """
-    if refusal.scope != "operand" or not refusal.reason:
-        return False
-    tail = f": {refusal.reason}"
-    return any(line.endswith(tail) for line in text.split("\n"))
 
 
 def policy_denied(
@@ -202,7 +179,8 @@ def policy_denied(
             unless the entry point words its own.
     """
     refusal = refusal_of(action)
-    note_refusal(refusal)
+    if refusal is not None:
+        note_refusal(refusal)
     return PolicyDenied(
         posix_errno(FsCondition.EACCES), strerror, filename, refusal=refusal
     )

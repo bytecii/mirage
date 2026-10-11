@@ -251,8 +251,8 @@ describe('admission', () => {
       '/data/run.sh: Permission denied\npolicy denied: runs lines the gate cannot read\n',
     ])
     expect(await line("sh -c 'rm /data/x'; sh -c 'sort'")).toEqual([
-      127,
-      'sort: command not found\n',
+      126,
+      'sort: Permission denied\npolicy denied: sort is not allowed\n',
     ])
   })
 
@@ -277,12 +277,12 @@ describe('admission', () => {
     const line = (text: string) =>
       admitLine(parser.parse(text), session, w.registry, w.namespace, '', (t) => parser.parse(t))
     expect(await line('cat /data/a | head -n 1')).toBeNull()
-    // An unlisted word anywhere in the line is 127 before any hook.
+    // An unlisted word anywhere in the line is the allow list's Deny.
     const unlisted = await line('cat /data/a | sort')
     expect(unlisted).not.toBeNull()
     expect([unlisted?.exitCode, DEC.decode(unlisted?.stderr)]).toEqual([
-      127,
-      'sort: command not found\n',
+      126,
+      'sort: Permission denied\n',
     ])
     // A rule reads the literal words, path-shaped ones as paths.
     const sealed = await line('ls /data && cat /data/secret')

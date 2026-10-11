@@ -15,7 +15,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { CommandContext, AdmissionRules } from '../types.ts'
-import { headVisible, lineAllowed, lineTokens, nodeVisible } from './allow.ts'
+import { headAllowed, lineAllowed, lineTokens } from './allow.ts'
 
 function ctx(
   command: string,
@@ -25,35 +25,16 @@ function ctx(
 }
 
 describe('allow lists', () => {
-  it("headVisible answers the profile's one allow list", () => {
+  it("headAllowed answers the profile's one allow list", () => {
     const rules: AdmissionRules = { allow: ['ls', 'git log'], ask: [], deny: [] }
-    // A name is visible when it starts a pattern of the list.
-    expect(headVisible('ls', rules)).toBe(true)
-    expect(headVisible('git', rules)).toBe(true)
-    expect(headVisible('cat', rules)).toBe(false)
-    expect(headVisible('rm', rules)).toBe(false)
-    // A profile without a list hides nothing, and neither does no profile.
-    expect(headVisible('rm', { allow: null, ask: [], deny: [{ reason: 'x' }] })).toBe(true)
-    expect(headVisible('rm', null)).toBe(true)
-  })
-
-  it('nodeVisible narrows a tree one verb at a time', () => {
-    const rules: AdmissionRules = { allow: ['ls', 'linear issue list'], ask: [], deny: [] }
-    // The head is visible because some line of it is allowed, and so is
-    // every node on the way down to that line.
-    expect(nodeVisible(['linear'], rules)).toBe(true)
-    expect(nodeVisible(['linear', 'issue'], rules)).toBe(true)
-    expect(nodeVisible(['linear', 'issue', 'list'], rules)).toBe(true)
-    // A sibling of that path is not, at either depth.
-    expect(nodeVisible(['linear', 'team'], rules)).toBe(false)
-    expect(nodeVisible(['linear', 'issue', 'create'], rules)).toBe(false)
-    // headVisible is the one-word case, and agrees.
-    expect(headVisible('linear', rules)).toBe(nodeVisible(['linear'], rules))
-    // A profile without a list hides no node of any tree.
-    expect(nodeVisible(['linear', 'team'], null)).toBe(true)
-    expect(nodeVisible(['linear', 'team'], { allow: null, ask: [], deny: [{ reason: 'x' }] })).toBe(
-      true,
-    )
+    // A name is allowed when it starts a pattern of the list.
+    expect(headAllowed('ls', rules)).toBe(true)
+    expect(headAllowed('git', rules)).toBe(true)
+    expect(headAllowed('cat', rules)).toBe(false)
+    expect(headAllowed('rm', rules)).toBe(false)
+    // A profile without a list allows everything, and so does no profile.
+    expect(headAllowed('rm', { allow: null, ask: [], deny: [{ reason: 'x' }] })).toBe(true)
+    expect(headAllowed('rm', null)).toBe(true)
   })
 
   it('lineAllowed reads the whole line and skips non-tools', () => {
@@ -64,7 +45,7 @@ describe('allow lists', () => {
     }
     expect(lineAllowed(ctx('ls', { argv: ['-la'], tokens: ['ls', '-la'] }), rules)).toBe(true)
     expect(lineAllowed(ctx('git', { tokens: ['git', 'log', '-1'] }), rules)).toBe(true)
-    // The head is visible (some git line is allowed) but this line is
+    // The head is allowed (some git line is) but this line is
     // covered by no pattern.
     expect(lineAllowed(ctx('git', { tokens: ['git', 'push'] }), rules)).toBe(false)
     // A word that is not a tool is never refused by an allow list.

@@ -16,7 +16,14 @@ import { describe, expect, it } from 'vitest'
 
 import { PathSpec } from '../../types.ts'
 import { classifyPaths } from '../../utils/hidden.ts'
-import type { CommandContext, CommandRule, AdmissionRules, VfsContext } from '../types.ts'
+import {
+  CommandWord,
+  type CommandContext,
+  type CommandRule,
+  type AdmissionRules,
+  type VfsContext,
+} from '../types.ts'
+import { WordKind } from '../../commands/spec/types.ts'
 import {
   ioReach,
   ioRefusal,
@@ -181,7 +188,11 @@ describe('rules', () => {
 
   function subtreeCtx(command: string, ...operands: string[]): CommandContext {
     const paths = operands.map((o) => path(o, o))
-    return ctx(command, { paths, operands: paths, argv: operands, tokens: [command, ...operands] })
+    const words = [
+      new CommandWord(command, WordKind.NAME),
+      ...paths.map((p) => new CommandWord(p.rawPath, WordKind.OPERAND, null, p)),
+    ]
+    return ctx(command, { paths, words, argv: operands, tokens: [command, ...operands] })
   }
 
   it('a subtree command on the directory holding the scope matches', () => {

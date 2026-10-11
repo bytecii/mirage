@@ -12,12 +12,14 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.commands.spec.types import WordKind
 from mirage.policy.constants import ASK_SECOND, DENY_FIRST
 from mirage.policy.match.decide import decide, outranks, source_of
 from mirage.policy.types import (
     AdmissionRules,
     CommandContext,
     CommandRule,
+    CommandWord,
     Outcome,
     Ruling,
 )
@@ -39,7 +41,10 @@ def _ctx(command: str, *paths: str, cwd: str = "/") -> CommandContext:
     return CommandContext(
         command=command,
         paths=specs,
-        operands=specs,
+        words=(
+            CommandWord(command, WordKind.NAME),
+            *(CommandWord(p.virtual, WordKind.OPERAND, path=p) for p in specs),
+        ),
         argv=paths,
         cwd=cwd,
         tokens=(command, *paths),

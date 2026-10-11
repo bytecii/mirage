@@ -762,7 +762,7 @@ async function runArgv(
       node.exitCode = code
       node.stderr = concat([node.stderr, err])
       io.refusal = refusalOf(action)
-      noteRefusal(io.refusal)
+      if (io.refusal !== null) noteRefusal(io.refusal)
     }
     if (stdout === null || stdout instanceof Uint8Array) {
       await settle()

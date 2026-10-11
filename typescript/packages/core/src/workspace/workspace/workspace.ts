@@ -448,8 +448,8 @@ export class Workspace {
       DEFAULT_READ_SPEC,
       { write: WritePolicy.UNCONDITIONAL },
     )
-    // One file per program the session can run, where PATH finds it: the
-    // same lookup which, type and command -v answer from.
+    // One file per program, where PATH finds it: the same lookup which,
+    // type and command -v answer from.
     this.registry.mount(
       BIN_PREFIX,
       new BinViewVFS(

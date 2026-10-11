@@ -14,33 +14,33 @@
       }
     },
     {
-      "id": "cmd_unlisted_tool_is_not_a_command",
+      "id": "cmd_unlisted_tool_is_refused",
       "seq": 923002,
       "targets": [
         "ram-commands"
       ],
       "command": "sort /scratch/z",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "sort: command not found\n"
+        "stderr": "sort: Permission denied\n"
       }
     },
     {
-      "id": "cmd_unlisted_tool_builtin_is_not_a_command",
+      "id": "cmd_unlisted_tool_builtin_is_refused",
       "seq": 923003,
       "targets": [
         "ram-commands"
       ],
       "command": "history",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "history: command not found\n"
+        "stderr": "history: Permission denied\n"
       }
     },
     {
-      "id": "cmd_enumerators_agree_with_dispatch",
+      "id": "cmd_enumerators_find_an_unlisted_tool",
       "seq": 923004,
       "targets": [
         "ram-commands"
@@ -48,34 +48,34 @@
       "command": "type sort; echo $?; command -v sort; echo $?; which sort; echo $?",
       "expect": {
         "exit": 0,
-        "stdout": "1\n1\n1\n",
-        "stderr": "bash: type: sort: not found\n"
+        "stdout": "sort is /usr/bin/sort\n0\n/usr/bin/sort\n0\n/usr/bin/sort\n0\n",
+        "stderr": ""
       }
     },
     {
-      "id": "cmd_man_lists_only_installed_tools",
+      "id": "cmd_man_lists_every_tool",
       "seq": 923005,
       "targets": [
         "ram-commands"
       ],
       "command": "man | grep -c -e '^- cat '; man | grep -c -e '^- sort '",
       "expect": {
-        "exit": 1,
-        "stdout": "1\n0\n",
+        "exit": 0,
+        "stdout": "1\n1\n",
         "stderr": ""
       }
     },
     {
-      "id": "cmd_man_has_no_page_for_a_hidden_tool",
+      "id": "cmd_man_documents_an_unlisted_tool",
       "seq": 923006,
       "targets": [
         "ram-commands"
       ],
-      "command": "man sort",
+      "command": "man sort | grep -c -e '^# sort$'",
       "expect": {
-        "exit": 1,
-        "stdout": "",
-        "stderr": "man: no entry for sort\n"
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
       }
     },
     {
@@ -93,16 +93,16 @@
       }
     },
     {
-      "id": "cmd_unlisted_grammar_builtin_is_not_a_command",
+      "id": "cmd_unlisted_grammar_builtin_is_refused",
       "seq": 923269,
       "targets": [
         "ram-commands"
       ],
       "command": "pwd",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "pwd: command not found\n"
+        "stderr": "pwd: Permission denied\n"
       }
     },
     {

@@ -62,22 +62,21 @@ type Hook = keyof typeof VALIDITY
  * The command plane's rendering of a refusal: stderr and exit code. The
  * one place the outcome table for that plane is written down, so a
  * document rule and a coded policy print alike, and the policy's reason
- * is never mixed into what the terminal says: a whole-command Deny is
- * bash's own `<subject>: Permission denied` at 126; an operand Deny
- * about a path is the command's own GNU line for that operand and
- * EACCES; both leave the reason on the result's `refusal` record. An
- * operand Deny that names no path keeps `<subject>: <reason>`, because
- * there the reason is the diagnostic a built-in worded in POSIX's
- * terms. Operand refusals exit at the command's operand-refusal code
- * (1, tar 2).
+ * is never mixed into what the terminal says: a Deny is bash's own
+ * `<subject>: Permission denied` at 126; a Deny about a path is the
+ * command's own GNU line for that path and EACCES; both leave the reason
+ * on the result's `refusal` record. A Deny carrying an error keeps
+ * `<subject>: <reason>`, because there the reason is the diagnostic a
+ * built-in worded in POSIX's terms. A path or an error exits at the
+ * command's operand-refusal code (1, tar 2).
  */
 export function renderDeny(subject: string, deny: Deny): [Uint8Array, number] {
-  if (deny.scope === 'operand') {
-    const line =
-      deny.path !== undefined
-        ? fsErrorLine(subject, deny.path, eacces(deny.path))
-        : `${subject}: ${deny.reason}\n`
+  if (deny.path !== undefined) {
+    const line = fsErrorLine(subject, deny.path, eacces(deny.path))
     return [new TextEncoder().encode(line), operandExitCode(subject)]
+  }
+  if (deny.error !== undefined) {
+    return [new TextEncoder().encode(`${subject}: ${deny.reason}\n`), operandExitCode(subject)]
   }
   return [new TextEncoder().encode(`${subject}: Permission denied\n`), POLICY_DENIED_EXIT]
 }
@@ -93,22 +92,21 @@ export function renderPending(subject: string, pending: Pending): [Uint8Array, n
   return [new TextEncoder().encode(`${subject}: Permission denied\n`), POLICY_DENIED_EXIT]
 }
 
-/** The record a refused result carries beside its bash-voiced stderr. */
-export function refusalOf(action: Deny | Pending): Refusal {
+/**
+ * The record a refused result carries beside its bash-voiced stderr. null
+ * for a Deny carrying an error: that is the filesystem's own failure (a
+ * busy mount root, a name that exists), whose stderr line already says
+ * everything, so no policy refusal is recorded.
+ */
+export function refusalOf(action: Deny | Pending): Refusal | null {
   if (action.kind === 'pending') {
-    return {
-      kind: 'pending',
-      reason: action.reason,
-      policy: '',
-      scope: 'command',
-      askId: action.id,
-    }
+    return { kind: 'pending', reason: action.reason, policy: '', askId: action.id }
   }
+  if (action.error !== undefined) return null
   return {
     kind: action.failed === true ? 'failed' : 'deny',
     reason: action.reason,
     policy: action.policy ?? '',
-    scope: action.scope ?? 'command',
     askId: null,
   }
 }
@@ -123,25 +121,6 @@ export function describeRefusal(refusal: Refusal): string {
   }
   if (refusal.kind === 'failed') return `policy ${refusal.policy} failed`
   return `policy denied: ${refusal.reason}`
-}
-
-/**
- * Whether `text` already carries the line that says why the command was
- * refused. Only an operand-scoped denial that names no path has one: its
- * diagnostic `<command>: <reason>` is the reason, wherever a redirect landed it, so
- * a surface that describes the record after the text looks for that
- * line rather than for the scope (`2>/dev/null` takes the line away and
- * the record is the only reason left, `2>&1` moves it onto stdout and
- * nothing needs repeating) and rather than for the reason as a
- * substring, since output that happens to quote the words has refused
- * nothing. A command-scoped refusal's stderr is bash's bare
- * `Permission denied`, which never says why. An empty reason says
- * nothing, so no text can already have said it.
- */
-export function saysWhy(text: string, refusal: Refusal): boolean {
-  if (refusal.scope !== 'operand' || refusal.reason === '') return false
-  const tail = `: ${refusal.reason}`
-  return text.split('\n').some((line) => line.endsWith(tail))
 }
 
 /**
@@ -187,7 +166,7 @@ export function policyDenied(
   message = posixPhrase('EACCES'),
 ): PolicyDenied {
   const refusal = refusalOf(action)
-  noteRefusal(refusal)
+  if (refusal !== null) noteRefusal(refusal)
   return new PolicyDenied(message, filename, refusal)
 }
 

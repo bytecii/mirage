@@ -60,8 +60,8 @@ const SCRIPT_HOOKS = Object.keys(HOOKS) as readonly ScriptHook[]
  * The same facts on both hosts, JSON-shaped because the script runs
  * inside a sandboxed engine that a live object cannot cross into.
  * Paths are spelled as resolved virtual paths, so a script matches what
- * the command will actually touch, not what was typed; the raw words
- * are in `argv` for a script that wants them.
+ * the command will actually touch, not what was typed; the words, each
+ * with its kind, are in `words`.
  */
 export function scriptContext(
   profile: string,
@@ -72,12 +72,8 @@ export function scriptContext(
     profile,
     command: {
       name: ctx.command,
-      argv: [...ctx.argv],
-      tokens: [...(ctx.tokens ?? [])],
-      program: [...(ctx.program ?? [])],
+      words: (ctx.words ?? []).map((word) => word.toDict()),
       paths: ctx.paths.map((path) => path.virtual),
-      operands: (ctx.operands ?? []).map((path) => path.virtual),
-      tool: ctx.tool ?? true,
       walks: ctx.walks ?? false,
     },
     session: {

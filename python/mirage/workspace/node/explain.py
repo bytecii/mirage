@@ -25,13 +25,13 @@ from mirage.policy import (
     CommandContext,
     CommandExplanation,
     CommandRule,
+    CommandWord,
     Deny,
     HandOff,
     Occurrence,
     Pending,
     ShellExplanation,
     ShellNode,
-    ShellOperand,
     refusal_of,
     render_deny,
     render_pending,
@@ -52,6 +52,7 @@ from mirage.shell.types import NodeType
 from mirage.types import PathSpec, Refusal
 from mirage.utils.abort import MirageAbortError
 from mirage.utils.path import resolve_path
+from mirage.workspace.executor.command.routing import command_words
 from mirage.workspace.expand.classify.path import classify_bare_path
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
@@ -121,11 +122,8 @@ class Judgment:
     share, which :func:`explained_line` turns into the public tree.
 
     ``outcome`` is the document's answer and ``rule`` says who gave it.
-    The two refusals the allow list produces both arrive as ``DENY``
-    with no rule, and ``exit_code`` separates them: 127 for a head word
-    the session cannot see, which reads as bash's "command not found"
-    so an unlisted tool never leaks that it exists, and 126 for a line
-    whose head was visible but which no allow entry covers.
+    A line the allow list does not cover arrives as ``DENY`` with no
+    rule, at 126.
 
     Args:
         command (str): the head word, as the gate read it.
@@ -145,8 +143,9 @@ class Judgment:
             carry, None when the line would run.
         answers (tuple[Deny | Ask, ...]): every policy's answer to the
             command, in the order the chain asks them.
-        operands (tuple[ShellOperand, ...]): its path arguments and
-            redirect targets, as typed and as the paths they name.
+        words (tuple[CommandWord, ...]): the command line word by word,
+            each with its kind and the path it names, redirect targets
+            last.
     """
 
     command: str
@@ -161,7 +160,7 @@ class Judgment:
     stderr: str = ""
     refusal: Refusal | None = None
     answers: tuple[Deny | Ask, ...] = ()
-    operands: tuple[ShellOperand, ...] = ()
+    words: tuple[CommandWord, ...] = ()
 
 
 def _denied(command: str, reason: str) -> Judgment:
@@ -180,32 +179,6 @@ def _denied(command: str, reason: str) -> Judgment:
         exit_code=code,
         stderr=decode_text(err),
         refusal=refusal_of(deny),
-    )
-
-
-def _from_refusal(
-    name: str,
-    args: tuple[str, ...],
-    refusal: Refused,
-    missing: str | None = None,
-) -> Judgment:
-    """The explanation of a head word the session cannot see.
-
-    Args:
-        name (str): the head word.
-        args (tuple[str, ...]): the words after it.
-        refusal (Refused): what the gate answered.
-        missing (str | None): how the command running the word reports
-            it (``InnerLine.missing``), None for the gate's own words.
-    """
-    return Judgment(
-        command=name,
-        argv=args,
-        outcome=Outcome.DENY,
-        source="commands.allow",
-        exit_code=refusal.exit_code,
-        stderr=decode_text(refusal.stderr) if missing is None else missing,
-        refusal=refusal.refusal,
     )
 
 
@@ -303,26 +276,6 @@ class Judged:
     ctx: CommandContext | None = None
 
 
-def _with_operands(
-    judgment: Judgment, operands: Sequence[tuple[str, str]]
-) -> Judgment:
-    """A judgment with its path operands, each marked when the rule that
-    decided matched it.
-
-    Args:
-        judgment (Judgment): the command's judgment.
-        operands (Sequence[tuple[str, str]]): each operand as typed and
-            the path it names.
-    """
-    return dataclasses.replace(
-        judgment,
-        operands=tuple(
-            ShellOperand(text, path, text == judgment.matched_path)
-            for text, path in operands
-        ),
-    )
-
-
 def _unread_paths(
     words: Sequence[Word],
     kinds: Sequence[str | PathSpec],
@@ -366,7 +319,6 @@ async def _judge_words(
     agent_id: str = "",
     redirect_words: tuple[Word, ...] = (),
     stated: bool = True,
-    missing: str | None = None,
     intrinsic: bool = False,
     whole_line: bool = False,
     lost: bool = False,
@@ -404,10 +356,6 @@ async def _judge_words(
             since a line built from its words (``eval``) or run on its
             operands (``xargs``) is completed with them.
         intrinsic (bool): keep the shell-provided operation's tool policy.
-        missing (str | None): how the command that runs these words
-            reports a name the session cannot see, None for the gate's
-            own words. ``xargs`` and ``timeout`` look the name up before
-            the gate reads it, so the run prints theirs.
         whole_line (bool): whether a runtime takes the line whole. Only
             its gate refuses a name the runtime expands, and only under a
             rule (``admit_line``); the executor judges the expanded name.
@@ -444,11 +392,10 @@ async def _judge_words(
         ),
     ]
     unread = _unread_paths(read_words, kinds, session.cwd, lost)
-    operands = [
-        (kind.raw_path or w.value, kind.virtual)
-        for w, kind in zip(read_words, kinds, strict=True)
-        if isinstance(kind, PathSpec)
-    ]
+    redirects = redirect_paths(redirect_words, registry, session.cwd)
+    words_read = command_words(
+        registry, name, args, classified[1:], redirects, session.cwd
+    )
     gated = await gate(
         name,
         args,
@@ -458,29 +405,18 @@ async def _judge_words(
         namespace,
         agent_id,
         stdin=stdin,
-        redirects=redirect_paths(redirect_words, registry, session.cwd),
+        redirects=redirects,
         intrinsic=intrinsic,
         unread=unread,
         every=every,
         rules_only=not every,
     )
-    if isinstance(gated, Refused):
-        return [
-            Judged(
-                _with_operands(
-                    _from_refusal(name, tuple(args), gated, missing),
-                    operands,
-                ),
-                occurrence,
-                stated,
-                intrinsic,
-            )
-        ]
     ctx, asked, answers = gated
     out = [
         Judged(
-            _with_operands(
-                _explained(ctx, session, registry, asked, answers), operands
+            dataclasses.replace(
+                _explained(ctx, session, registry, asked, answers),
+                words=words_read,
             ),
             occurrence,
             stated,
@@ -494,8 +430,8 @@ async def _judge_words(
             if whole_line and has_rules(session.commands):
                 return [
                     Judged(
-                        _with_operands(
-                            _denied(name, UNREADABLE_LINES), operands
+                        dataclasses.replace(
+                            _denied(name, UNREADABLE_LINES), words=words_read
                         ),
                         occurrence,
                         stated,
@@ -532,7 +468,6 @@ async def _judge_words(
                     namespace,
                     agent_id,
                     stated=stated and not inner.open,
-                    missing=inner.missing,
                     whole_line=whole_line,
                     lost=lost,
                     every=every,
@@ -545,9 +480,10 @@ def _is_verdict(expl: Judgment) -> bool:
     """Whether an explanation refuses the line's intent, rather than
     just failing one command.
 
-    Explicit deny rules and command-scoped policy refusals hold the line.
-    Operand-scoped filesystem refusals wait for the per-command gate,
-    where earlier commands have established the live cwd and namespace.
+    Explicit deny rules and whole-command policy refusals hold the line.
+    Filesystem refusals, about a path or carrying an error, wait for the
+    per-command gate, where earlier commands have established the live
+    cwd and namespace.
     Rule-less DENY results also wait: an unavailable head word, an
     uncovered command, or words only the runtime can expand fail where
     they occur rather than against the whole line.
@@ -560,7 +496,10 @@ def _is_verdict(expl: Judgment) -> bool:
     if expl.rule is not None and expl.outcome is Outcome.DENY:
         return True
     # Filesystem refusals use the live cwd and fail only their command.
-    if expl.refusal is not None and expl.refusal.scope == "operand":
+    denied = next((a for a in expl.answers if isinstance(a, Deny)), None)
+    if denied is not None and (
+        denied.path is not None or denied.error is not None
+    ):
         return False
     return expl.rule is not None or expl.outcome is Outcome.ALLOW
 
@@ -938,10 +877,10 @@ async def prejudge_line(
     rule: only a refusal that names a rule is a verdict about the
     intent.
 
-    - A head word the session cannot see is a routing miss, not a
-      verdict. It stays bash: the stage fails with "command not found"
-      and the rest of the line does what bash does, so a typo cannot
-      cost an agent the work the line already did.
+    - A word the allow list leaves out is refused where it stands,
+      not with the line: the stage fails with ``Permission denied`` and
+      the rest of the line does what bash does, so a typo cannot cost
+      an agent the work the line already did.
     - A word only the runtime can expand is judged where it is
       expanded, by the per-command gate, which sees the real path.
 
@@ -999,8 +938,9 @@ async def prejudge_line(
     document, by the profile's rules alone: a policy registered in code
     or a profile's script answers ``pre_command`` once, at the gate that
     runs the command, and a line it should refuse whole is
-    ``pre_execute``'s to refuse. Operand-scoped refusals, including
-    MountRootPolicy's, remain the per-command gate's responsibility.
+    ``pre_execute``'s to refuse. Refusals about a path or carrying an
+    error, MountRootPolicy's included, remain the per-command gate's
+    responsibility.
 
     A line with one command to judge is left to the per-command gate,
     which is not an optimization but the more faithful answer: there is
@@ -1364,9 +1304,8 @@ async def line_held(
     that later runs the command finds the answer claimed for it and
     does not ask again; one still waiting holds the line, and a question
     the gate will ask about other words (``Judged.stated`` False) is
-    left to it. A head word the session cannot see fails where it
-    stands while the rest of its line runs, so it does not hold the
-    line.
+    left to it. A word the allow list leaves out fails where it stands
+    while the rest of its line runs, so it does not hold the line.
 
     Args:
         judged (list[tuple[Walked, list[Judged]]]): the line's read-only
@@ -1666,7 +1605,7 @@ def _command_of(
     outcome, reason, source = _verdict_of(judgment)
     return CommandExplanation(
         command=judgment.command,
-        argv=judgment.argv,
+        words=judgment.words,
         exit_code=judgment.exit_code,
         stderr=judgment.stderr,
         outcome=outcome,
@@ -1675,7 +1614,6 @@ def _command_of(
         answers=judgment.answers,
         refusal=judgment.refusal,
         runtime=runtime_of(judgment.command),
-        operands=judgment.operands,
         text=text,
         children=children,
     )

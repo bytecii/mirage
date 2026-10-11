@@ -16,7 +16,14 @@ import { describe, expect, it } from 'vitest'
 
 import { PathSpec } from '../../types.ts'
 import { ASK_SECOND, DENY_FIRST } from '../constants.ts'
-import { Outcome, type CommandContext, type CommandRule, type AdmissionRules } from '../types.ts'
+import {
+  CommandWord,
+  Outcome,
+  type CommandContext,
+  type CommandRule,
+  type AdmissionRules,
+} from '../types.ts'
+import { WordKind } from '../../commands/spec/types.ts'
 import { decide, outranks, sourceOf } from './decide.ts'
 
 function path(virtual: string): PathSpec {
@@ -34,7 +41,10 @@ function ctx(command: string, ...paths: string[]): CommandContext {
   return {
     command,
     paths: specs,
-    operands: specs,
+    words: [
+      new CommandWord(command, WordKind.NAME),
+      ...specs.map((p) => new CommandWord(p.virtual, WordKind.OPERAND, null, p)),
+    ],
     argv: paths,
     cwd: '/',
     tokens: [command, ...paths],
