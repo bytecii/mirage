@@ -36,7 +36,7 @@ import {
   ROUTED_CALLS,
   type RoutedCall,
 } from './constants.ts'
-import { Descriptors, openFlags, readAt, readOn } from './descriptors.ts'
+import { type Descriptor, Descriptors, openFlags, readAt, readOn } from './descriptors.ts'
 
 type FsObject = Record<string, unknown>
 type Fn = (...args: unknown[]) => unknown
@@ -178,7 +178,9 @@ function positionOf(position: number | bigint | null | undefined): number | null
 /**
  * The `FileHandle` `fs.promises.open` answers a mounted path with: node's
  * own methods over a descriptor of the patch's, whose writes land at
- * `close` or `sync`.
+ * `close` or `sync`. It holds the descriptor it opened, not just its
+ * number: once that is closed, here or through `fs.close`, every call is
+ * EBADF, even after a later open takes the number.
  */
 class MountedFileHandle {
   private closed = false
@@ -186,10 +188,19 @@ class MountedFileHandle {
   constructor(
     private readonly host: HostFs,
     readonly fd: number,
+    private readonly desc: Descriptor | undefined,
   ) {}
 
-  /** A descriptor call on this handle's descriptor. */
+  /** Whether the descriptor this handle opened is still open. */
+  live(): boolean {
+    return (
+      !this.closed && this.desc !== undefined && this.host.descriptors.get(this.fd) === this.desc
+    )
+  }
+
+  /** A descriptor call on this handle's descriptor; EBADF once it closed. */
   private call(name: string, ...args: unknown[]): Promise<unknown[]> {
+    if (!this.live()) return Promise.reject(ebadf(String(this.fd)))
     return this.host.descriptorCall(name, [this.fd, ...args])
   }
 
@@ -220,11 +231,11 @@ class MountedFileHandle {
   }
 
   readFile(options?: Options): Promise<unknown> {
-    return this.host.fileCall('readFile', this.fd, [options])
+    return this.host.fileCall('readFile', this, [options])
   }
 
   async writeFile(data: unknown, options?: Options): Promise<void> {
-    await this.host.fileCall('writeFile', this.fd, [data, options])
+    await this.host.fileCall('writeFile', this, [data, options])
   }
 
   appendFile(data: unknown, options?: Options): Promise<void> {
@@ -260,9 +271,9 @@ class MountedFileHandle {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return
+    const live = this.live()
     this.closed = true
-    await this.call('close')
+    if (live) await this.host.descriptorCall('close', [this.fd])
   }
 
   [Symbol.asyncDispose](): Promise<void> {
@@ -272,10 +283,12 @@ class MountedFileHandle {
   // node's streams call back through `fs.read`, `fs.write` and `fs.close`,
   // which the patch answers for this descriptor.
   createReadStream(options?: Options): unknown {
+    if (!this.live()) throw ebadf(String(this.fd))
     return (fs.createReadStream as Fn)(null, { ...fieldsOf(options), fd: this.fd })
   }
 
   createWriteStream(options?: Options): unknown {
+    if (!this.live()) throw ebadf(String(this.fd))
     return (fs.createWriteStream as Fn)(null, { ...fieldsOf(options), fd: this.fd })
   }
 }
@@ -686,6 +699,7 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
   /** readFile, writeFile or appendFile given a mounted descriptor or
    * FileHandle: from and at its position, as node's are on a descriptor. */
   async fileCall(name: string, target: unknown, rest: unknown[]): Promise<unknown> {
+    if (target instanceof MountedFileHandle && !target.live()) throw ebadf(String(target.fd))
     const fd = target instanceof MountedFileHandle ? target.fd : (target as number)
     if (name === 'readFile') {
       const read = () => readOn(this.descriptors.file(fd, true, false), -1)
@@ -699,7 +713,8 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
 
   /** A mounted path's `FileHandle`, as `fs.promises.open` answers. */
   async open(path: string, flags?: unknown): Promise<MountedFileHandle> {
-    return new MountedFileHandle(this, await this.descriptors.open(path, openFlags(flags)))
+    const fd = await this.descriptors.open(path, openFlags(flags))
+    return new MountedFileHandle(this, fd, this.descriptors.get(fd))
   }
 
   /** A read into `buffer` at `offset`, at `position` or, when null, at the

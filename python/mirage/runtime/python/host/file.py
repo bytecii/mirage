@@ -14,8 +14,10 @@
 
 import asyncio
 import codecs
+import errno
 import functools
 import io
+import os
 from collections.abc import Callable
 from typing import IO, TYPE_CHECKING, Any, cast
 
@@ -133,6 +135,8 @@ class HandleRaw(io.RawIOBase):
         writable (bool): whether the mode writes.
         mode (str): the mode ``io.FileIO`` would report.
         land (Callable[[], None]): lands the handle's writes.
+        live (Callable[[], bool] | None): whether the descriptor a
+            stream over one wraps is still open; None for a plain open.
         release (Callable[[], None] | None): what a close gives back
             once its writes landed, the descriptor a stream over one
             owns; None for a plain open.
@@ -147,12 +151,14 @@ class HandleRaw(io.RawIOBase):
         writable: bool,
         mode: str,
         land: Callable[[], None],
+        live: Callable[[], bool] | None = None,
         release: Callable[[], None] | None = None,
         fd: int | None = None,
     ) -> None:
         super().__init__()
         self._handle = handle
         self._land = land
+        self._live = live
         self._readable = readable
         self._writable = writable
         self._release = release
@@ -167,9 +173,9 @@ class HandleRaw(io.RawIOBase):
         return self._writable
 
     def _check(self, reading: bool | None = None) -> None:
-        """Refuse a call on a closed stream, or one its mode does not
-        allow, as ``io.FileIO`` does: an unbuffered open hands this
-        stream out bare.
+        """Refuse a call on a closed stream, on one whose descriptor was
+        closed under it (EBADF), or one its mode does not allow, as
+        ``io.FileIO`` does: an unbuffered open hands this stream out bare.
 
         Args:
             reading (bool | None): the call reads (True) or writes
@@ -177,6 +183,8 @@ class HandleRaw(io.RawIOBase):
         """
         if self.closed:
             raise ValueError("I/O operation on closed file")
+        if self._live is not None and not self._live():
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
         if reading is True and not self._readable:
             raise io.UnsupportedOperation("File not open for reading")
         if reading is False and not self._writable:

@@ -281,7 +281,9 @@ class HostFs:
 
     Two conventions worth stating once. A ``dir_fd`` is ignored for a
     mounted path, which is what openat(2) says for an absolute one, and
-    a mounted path is always absolute. And a mode argument at create
+    a mounted path is always absolute; a relative path under a mounted
+    directory descriptor is resolved against it first (``_anchored``).
+    And a mode argument at create
     time (``mkdir``) is dropped rather than stored: a backend has no
     permission bits of its own, so the overlay is reserved for an
     explicit chmod, where the guest asked for exactly that.
@@ -539,6 +541,8 @@ class HostFs:
         dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> _real_os.stat_result:
+        if self._descriptors.get(path) is not None:
+            return self.fstat(path)
         virtual = self._virtual(path)
         if virtual is None:
             return cast(
@@ -1072,6 +1076,9 @@ class HostFs:
         return self._adapter.readlink(virtual)
 
     def truncate(self, path: Any, length: int) -> None:
+        if self._descriptors.get(path) is not None:
+            self.ftruncate(path, length)
+            return
         virtual = self._virtual(path)
         if virtual is None:
             self._host.truncate(path, length)
@@ -1161,6 +1168,40 @@ class HostFs:
             **kwargs (Any): the same, by name.
         """
         return self._descriptors.stream(fd, *args, **kwargs)
+
+
+# The path argument each ``*dir_fd`` keyword anchors, by position.
+_ANCHORS: tuple[tuple[str, int], ...] = (
+    ("dir_fd", 0),
+    ("src_dir_fd", 0),
+    ("dst_dir_fd", 1),
+)
+
+
+def _anchored(router: HostFs, verb: str) -> Callable[..., Any]:
+    """`verb` through the entry point, a relative path under a mounted
+    directory descriptor first resolved against it, as openat(2) does.
+
+    Args:
+        router (HostFs): the entry point.
+        verb (str): the os name being wrapped.
+    """
+    call = syscall(getattr(router, verb))
+
+    def anchored(*args: Any, **kwargs: Any) -> Any:
+        given = list(args)
+        for key, index in _ANCHORS:
+            # A symlink's dir_fd anchors the link it makes, not its target.
+            at = 1 if verb == "symlink" and key == "dir_fd" else index
+            desc = router.descriptors.get(kwargs.get(key))
+            spelled = _spelled(given[at]) if at < len(given) else None
+            if desc is None or spelled is None or posixpath.isabs(spelled):
+                continue
+            given[at] = posixpath.normpath(posixpath.join(desc.path, spelled))
+            del kwargs[key]
+        return call(*given, **kwargs)
+
+    return anchored
 
 
 def _by_descriptor(router: HostFs, verb: str) -> Callable[..., Any]:
@@ -1275,7 +1316,7 @@ def os_routing(router: HostFs) -> dict[str, Callable[..., Any]]:
     table: dict[str, Callable[..., Any]] = {}
     for verb in ROUTED_CALLS:
         if hasattr(_real_os, verb):
-            table[verb] = syscall(getattr(router, verb))
+            table[verb] = _anchored(router, verb)
     for verb in DESCRIPTOR_CALLS:
         if hasattr(_real_os, verb):
             table[verb] = _by_descriptor(router, verb)

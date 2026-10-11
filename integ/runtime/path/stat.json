@@ -231,6 +231,11 @@
               "exit": 0,
               "stdout": "true true\n1 2 2 4096\n644 755\n"
             }
+          },
+          "expect_on": {
+            "quickjs@python": {
+              "stdout": "true true\n1 2 0\n0 0\n"
+            }
           }
         }
       ]

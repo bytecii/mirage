@@ -218,6 +218,25 @@
             "exit": 0,
             "stdout": "abc XYc\nstreamed gone\n4 abcd\nvia handle\n"
           }
+        },
+        {
+          "program": {
+            "python": "import errno, os\nfd = os.open('/data/first.txt', os.O_RDWR | os.O_CREAT)\nf = os.fdopen(fd, 'wb', 0, closefd=False)\nos.close(fd)\nsecond = os.open('/data/second.txt', os.O_RDWR | os.O_CREAT)\nfor call in (lambda: f.write(b'late'), f.tell):\n    try:\n        call()\n    except OSError as e:\n        print(errno.errorcode[e.errno])\nos.close(second)\nprint(len(open('/data/second.txt').read()))",
+            "node": "const fsp = require('node:fs').promises\nconst first = await fsp.open('/data/first.txt', 'w')\nawait first.close()\nconst second = await fsp.open('/data/second.txt', 'w')\nfor (const call of [() => first.write('late'), () => fsp.readFile(first)]) {\n  try {\n    await call()\n  } catch (e) {\n    console.log(e.code)\n  }\n}\nawait second.close()\nconsole.log((await fsp.readFile('/data/second.txt')).length)"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "EBADF\nEBADF\n0\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import os\nd = os.open('/data', os.O_RDONLY | os.O_DIRECTORY)\nfd = os.open('rel.txt', os.O_RDWR | os.O_CREAT, dir_fd=d)\nos.write(fd, b'abc')\nprint(os.stat(fd).st_size, os.fstat(fd).st_size)\nos.truncate(fd, 2)\nprint(os.fstat(fd).st_size)\nos.close(fd)\nos.mkdir('sub', dir_fd=d)\nos.rename('rel.txt', 'sub/moved.txt', src_dir_fd=d, dst_dir_fd=d)\nprint(open('/data/sub/moved.txt').read(), os.stat('sub/moved.txt', dir_fd=d).st_size)\nos.close(d)"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "3 3\n2\nab 2\n"
+          }
         }
       ]
     }

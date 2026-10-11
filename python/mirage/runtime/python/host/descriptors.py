@@ -327,6 +327,7 @@ class Descriptors:
             facts.writable and desc.facts.writable,
             raw_mode(facts),
             functools.partial(self.land, desc),
+            lambda: self._open.get(fd) is desc,
             functools.partial(self.close, fd) if closefd else None,
             fd,
         )
