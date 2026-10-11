@@ -332,6 +332,60 @@ export class Matcher {
   }
 }
 
+/**
+ * Where the longest or shortest suffix a pattern matches starts, as a
+ * character offset. A suffix of the name is a prefix of the reversed name,
+ * and the reversed pattern matches exactly the reversed strings, so one
+ * forward run finds every suffix that matches instead of one run per offset.
+ */
+export function suffixStart(
+  name: string,
+  pattern: string,
+  longest = true,
+  extglob = false,
+): number | null {
+  const chars = Array.from(name)
+  const matcher = new Matcher(chars.reverse().join(''), reversed(pattern, extglob), false, extglob)
+  const end = matcher.end(0, longest)
+  return end === null ? null : chars.length - end
+}
+
+/**
+ * The pattern matching each string `pattern` matches, reversed. Bracket
+ * expressions stay whole and alternatives keep their branches, so it is the
+ * tokens reversed, each group's `)` turned into its opener and each opener
+ * into `)`. A character literal only where it stands (an unclosed `[`, a
+ * `(`, `)` or `|` outside group syntax) becomes its quote mark.
+ */
+function reversed(pattern: string, extglob: boolean): string {
+  const chars = Array.from(pattern)
+  const [classes, groups] = scan(chars, extglob)
+  const openers = new Map<number, string>()
+  const bars = new Set<number>()
+  for (const [i, { end, branches }] of groups) {
+    openers.set(end - 1, `${chars[i] ?? ''}(`)
+    for (const [, stop] of branches.slice(0, -1)) bars.add(stop)
+  }
+  const marks = new Map(Object.entries(QUOTED_CHARS).map(([mark, ch]) => [ch, mark]))
+  const tokens: string[] = []
+  let i = 0
+  while (i < chars.length) {
+    const close = classes.get(i)
+    if (groups.has(i)) {
+      tokens.push(')')
+      i += 2
+    } else if (close !== undefined) {
+      tokens.push(chars.slice(i, close).join(''))
+      i = close
+    } else {
+      const c = chars[i] ?? ''
+      tokens.push(openers.get(i) ?? (!bars.has(i) && '[()|'.includes(c) ? (marks.get(c) ?? c) : c))
+      i += 1
+    }
+  }
+  return tokens.reverse().join('')
+}
+
 function extendedClassMatches(char: string, pattern: string): boolean {
   const chars = Array.from(pattern)
   const end = chars.length - 1

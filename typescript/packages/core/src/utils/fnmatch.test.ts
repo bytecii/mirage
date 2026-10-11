@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { Matcher, fnmatch, fnmatchcase } from './fnmatch.ts'
+import { Matcher, fnmatch, fnmatchcase, suffixStart } from './fnmatch.ts'
 
 const NAMES = [
   '',
@@ -141,6 +141,11 @@ describe('fnmatch edge semantics', () => {
     expect(fnmatch('a.txt', '[^ab].txt')).toBe(false)
     expect(fnmatch('^', '[a^]')).toBe(true)
     expect(fnmatch('b', '[a^]')).toBe(false)
+    expect(fnmatch('^', '[[^b]')).toBe(true)
+    expect(fnmatch('!', '[[^b]')).toBe(false)
+    expect(fnmatch(']', '[^]a]')).toBe(false)
+    expect(fnmatch('[^ab', '[^ab')).toBe(true)
+    expect(fnmatch('[^]', '[^]')).toBe(true)
   })
 
   it('matches a many-star pattern in linear time', () => {
@@ -295,6 +300,26 @@ it('Matcher.end reads every offset in linear time', () => {
   const blank = new Matcher(' '.repeat(16000), '*b', false, false)
   for (let i = 0; i <= 16000; i++) expect(blank.end(i)).toBeNull()
 })
+
+it.each([
+  ['ab'.repeat(16000), '*a', [null, null]],
+  ['ab'.repeat(16000), 'a*', [31998, 0]],
+  ['xab', '@(b|ab)', [2, 1]],
+  ['ba', '+(@(a|b))', [1, 0]],
+  ['xa)', '!(a)', [3, 0]],
+  ['xa(b)|c', '(b)|c', [2, 2]],
+  ['xa(b)', '@(a(b)|z)', [1, 1]],
+  ['x[a', '[a', [1, 1]],
+  ['x|)', '[)|]', [2, 2]],
+] as [string, string, (number | null)[]][])(
+  'suffixStart runs the reversed pattern once: %#',
+  (name, pattern, expected) => {
+    expect([
+      suffixStart(name, pattern, false, true),
+      suffixStart(name, pattern, true, true),
+    ]).toEqual(expected)
+  },
+)
 
 it.each(['@', '?', '+', '*'])('deep %s groups use an explicit stack', (operator) => {
   const pattern = (operator + '(').repeat(1200) + 'a' + ')'.repeat(1200)

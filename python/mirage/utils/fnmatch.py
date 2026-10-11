@@ -196,6 +196,7 @@ class Matcher:
         if (
             not self.groups
             and "[:" not in self.pattern
+            and "[^" not in self.pattern
             and not QUOTED_RE.search(self.pattern)
         ):
             return fnmatch(self.name, self.pattern, period=self.period)
@@ -335,6 +336,66 @@ class Matcher:
         return _Positions(accepted)
 
 
+def suffix_start(
+    name: str, pattern: str, longest: bool = True, extglob: bool = False
+) -> int | None:
+    """Where the longest or shortest suffix a pattern matches starts.
+
+    A suffix of the name is a prefix of the reversed name, and the
+    reversed pattern matches exactly the reversed strings, so one forward
+    run finds every suffix that matches instead of one run per offset.
+
+    Args:
+        name (str): text to match.
+        pattern (str): glob with quote marks intact.
+        longest (bool): the longest matching suffix rather than the
+            shortest.
+        extglob (bool): recognize extended groups while reading the pattern.
+    """
+    matcher = Matcher(name[::-1], _reversed(pattern, extglob), extglob=extglob)
+    end = matcher.end(0, longest)
+    return None if end is None else len(name) - end
+
+
+def _reversed(pattern: str, extglob: bool) -> str:
+    """The pattern matching each string ``pattern`` matches, reversed.
+
+    Bracket expressions stay whole and alternatives keep their branches,
+    so it is the tokens reversed, each group's ``)`` turned into its
+    opener and each opener into ``)``. A character literal only where it
+    stands (an unclosed ``[``, a ``(``, ``)`` or ``|`` outside group
+    syntax) becomes its quote mark.
+
+    Args:
+        pattern (str): glob with quote marks intact.
+        extglob (bool): whether ``@(`` and its kin open groups.
+    """
+    classes, groups = _scan(pattern, extglob)
+    openers = {end - 1: pattern[i] + "(" for i, (end, _) in groups.items()}
+    bars = {
+        stop for _, branches in groups.values() for _, stop in branches[:-1]
+    }
+    marks = {ch: mark for mark, ch in QUOTED_CHARS.items()}
+    tokens: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if i in groups:
+            tokens.append(")")
+            i += 2
+        elif i in classes:
+            tokens.append(pattern[i : classes[i]])
+            i = classes[i]
+        else:
+            c = pattern[i]
+            if i in openers:
+                c = openers[i]
+            elif i not in bars and c in "[()|":
+                c = marks[c]
+            tokens.append(c)
+            i += 1
+    return "".join(reversed(tokens))
+
+
 def _extended_class_matches(char: str, pattern: str) -> bool:
     end = len(pattern) - 1
     negate = pattern[1:2] in ("!", "^")
@@ -409,35 +470,6 @@ def pattern_parts(pattern: str) -> list[str]:
     return out
 
 
-def _normalize_negation(pattern: str) -> str:
-    """Rewrite ``[^...]`` class openers to stdlib's ``[!...]`` form.
-
-    bash and glibc fnmatch negate a character class on both ``!`` and
-    ``^``; CPython's fnmatch treats a leading ``^`` as a literal class
-    member. Deliberate divergence from CPython: a ``[`` inside a class
-    body followed by ``^`` (e.g. ``[a[^b]``) is also rewritten, which
-    bash would keep literal — patterns that pathological are not worth
-    a full parser.
-
-    Args:
-        pattern (str): shell glob pattern.
-    """
-    if "[^" not in pattern:
-        return pattern
-    out: list[str] = []
-    i = 0
-    n = len(pattern)
-    while i < n:
-        ch = pattern[i]
-        out.append(ch)
-        if ch == "[" and i + 1 < n and pattern[i + 1] == "^":
-            out.append("!")
-            i += 2
-            continue
-        i += 1
-    return "".join(out)
-
-
 def fnmatch(
     name: str, pattern: str, *, extglob: bool = False, period: bool = False
 ) -> bool:
@@ -455,13 +487,14 @@ def fnmatch(
     """
     if (
         "[:" in pattern
+        or "[^" in pattern
         or QUOTED_RE.search(pattern)
         or (extglob and EXTGLOB_RE.search(pattern))
     ):
         return Matcher(name, pattern, period, extglob).matches()
     if period and name.startswith(".") and not pattern.startswith("."):
         return False
-    return _stdlib_fnmatch.fnmatchcase(name, _normalize_negation(pattern))
+    return _stdlib_fnmatch.fnmatchcase(name, pattern)
 
 
 def fnmatchcase(name: str, pattern: str) -> bool:

@@ -57,7 +57,7 @@ import {
 import { homeDir } from '../session/shell_dirs.ts'
 import { decodeAnsiC } from '../../shell/escapes.ts'
 import { sourceParts } from '../../shell/helpers.ts'
-import { Matcher, fnmatch } from '../../utils/fnmatch.ts'
+import { Matcher, fnmatch, suffixStart } from '../../utils/fnmatch.ts'
 import { escapeGlob, markGlobs } from '../../utils/glob_walk.ts'
 import { expandTilde } from '../../utils/path.ts'
 import { OPERAND_DQUOTE_ESCAPES } from './constants.ts'
@@ -662,17 +662,12 @@ function globStrip(
   if (pattern === '') return value
   const cuts = [0]
   for (const char of value) cuts.push((cuts.at(-1) ?? 0) + char.length)
-  const match = new Matcher(value, pattern, false, extglob)
   if (prefix) {
-    const end = match.end(0, greedy)
+    const end = new Matcher(value, pattern, false, extglob).end(0, greedy)
     return end === null ? value : value.slice(cuts[end])
   }
-  const size = cuts.length - 1
-  for (let k = 0; k <= size; k++) {
-    const i = greedy ? k : size - k
-    if (match.end(i) === size) return value.slice(0, cuts[i])
-  }
-  return value
+  const start = suffixStart(value, pattern, greedy, extglob)
+  return start === null ? value : value.slice(0, cuts[start])
 }
 
 // Bash ${var/pat/rep}: pattern is a glob, longest match wins. anchor is
@@ -688,17 +683,15 @@ function globReplace(
   if (pattern === '') return value
   const cuts = [0]
   for (const char of value) cuts.push((cuts.at(-1) ?? 0) + char.length)
+  if (anchor === '%') {
+    const start = suffixStart(value, pattern, true, extglob)
+    return start === null ? value : value.slice(0, cuts[start]) + replacement
+  }
   const match = new Matcher(value, pattern, false, extglob)
   const size = cuts.length - 1
   if (anchor === '#') {
     const end = match.end(0)
     return end === null ? value : replacement + value.slice(cuts[end])
-  }
-  if (anchor === '%') {
-    for (let i = 0; i <= size; i++) {
-      if (match.end(i) === size) return value.slice(0, cuts[i]) + replacement
-    }
-    return value
   }
   if (value === '') return match.end(0) === null ? value : replacement
   const out: string[] = []

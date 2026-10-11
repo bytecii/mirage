@@ -43,7 +43,7 @@ from mirage.shell.helpers import get_text, source_parts
 from mirage.shell.parameter import bad_substitution, scan_parameter
 from mirage.shell.types import ArithWrite, TSNodeLike
 from mirage.shell.types import NodeType as NT
-from mirage.utils.fnmatch import Matcher, fnmatch
+from mirage.utils.fnmatch import Matcher, fnmatch, suffix_start
 from mirage.utils.glob_walk import escape_glob, mark_globs
 from mirage.utils.path import expand_tilde
 from mirage.view.types import SessionView
@@ -875,15 +875,11 @@ def _glob_strip(
 ) -> str:
     if not pattern:
         return value
-    match = Matcher(value, pattern, extglob=extglob)
     if prefix:
-        end = match.end(0, greedy)
+        end = Matcher(value, pattern, extglob=extglob).end(0, greedy)
         return value if end is None else value[end:]
-    size = len(value)
-    for i in range(size + 1) if greedy else range(size, -1, -1):
-        if match.end(i) == size:
-            return value[:i]
-    return value
+    start = suffix_start(value, pattern, greedy, extglob)
+    return value if start is None else value[:start]
 
 
 def _glob_replace(
@@ -905,16 +901,14 @@ def _glob_replace(
     """
     if not pattern:
         return value
+    if anchor == "%":
+        start = suffix_start(value, pattern, extglob=extglob)
+        return value if start is None else value[:start] + replacement
     match = Matcher(value, pattern, extglob=extglob)
     size = len(value)
     if anchor == "#":
         end = match.end(0)
         return value if end is None else replacement + value[end:]
-    if anchor == "%":
-        for i in range(size + 1):
-            if match.end(i) == size:
-                return value[:i] + replacement
-        return value
     if not value:
         return value if match.end(0) is None else replacement
     out: list[str] = []
