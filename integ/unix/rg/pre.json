@@ -69,6 +69,40 @@
       "flags": [
         "pre"
       ]
+    },
+    {
+      "id": "rg_pre_glob_matches_the_path_from_the_cwd",
+      "seq": 14490220,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; printf 'alpha\\nfoo here\\n' > /data/rgfl/sub/q.txt; (cd /data/rgfl && rg --pre rev --pre-glob 'sub/*.txt' oof /data/rgfl/sub/q.txt; rg --pre rev --pre-glob 'sub/*.txt' oof sub/q.txt; rg --pre rev --pre-glob 'q.txt' oof /data/rgfl/sub/q.txt; rg --pre rev --pre-glob '/data/rgfl/sub/*.txt' oof sub/q.txt; echo rc=$?); rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "ereh oof\nereh oof\nereh oof\nrc=1\n",
+        "stderr": ""
+      },
+      "flags": [
+        "pre",
+        "pre_glob"
+      ]
     }
   ]
 }

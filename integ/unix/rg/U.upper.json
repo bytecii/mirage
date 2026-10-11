@@ -150,6 +150,43 @@
         "U",
         "no_multiline"
       ]
+    },
+    {
+      "id": "rg_U_passthru_and_null_data_replacements",
+      "seq": 14490221,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; rg -U --passthru zzz /data/rgfl/b.txt; echo rc=$?; rg -j1 -U --passthru -n zzz /data/rgfl/b.txt /data/rgfl/c.txt; printf 'foo\\nbar\\0baz\\0' > /data/rgfl/n.bin; rg -U --null-data -r X foo /data/rgfl/n.bin | tr '\\0' '@'; echo; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "nothing\nrc=1\n/data/rgfl/b.txt-1-nothing\n/data/rgfl/c.txt-1-x1\n/data/rgfl/c.txt-2-x2\n/data/rgfl/c.txt-3-x3\n/data/rgfl/c.txt-4-x4\n/data/rgfl/c.txt-5-x5\n/data/rgfl/c.txt-6-x6\n/data/rgfl/c.txt-7-x7\n/data/rgfl/c.txt-8-x8\nX\nbar@\n",
+        "stderr": ""
+      },
+      "flags": [
+        "U",
+        "passthru",
+        "n",
+        "null_data",
+        "r"
+      ]
     }
   ]
 }

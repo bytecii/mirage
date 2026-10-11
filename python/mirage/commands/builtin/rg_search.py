@@ -498,6 +498,21 @@ class Totals:
     bytes_searched: int = 0
     elapsed: float = 0.0
 
+    def merge(self, other: "Totals") -> None:
+        """Add another run's totals: a line split over mounts prints one
+        footer for all its runs.
+
+        Args:
+            other (Totals): the run's totals.
+        """
+        self.matches += other.matches
+        self.matched_lines += other.matched_lines
+        self.with_match += other.with_match
+        self.searched += other.searched
+        self.printed += other.printed
+        self.bytes_searched += other.bytes_searched
+        self.elapsed += other.elapsed
+
     def add(self, tally: Tally, printed: int, elapsed: float) -> None:
         """Count one haystack.
 
@@ -584,6 +599,76 @@ class Totals:
             f"{self.elapsed:.6f} seconds spent searching\n"
             f"{total:.6f} seconds\n"
         ).encode()
+
+
+STATS_ROWS = (
+    "matches",
+    "matched lines",
+    "files contained matches",
+    "files searched",
+    "bytes printed",
+    "bytes searched",
+    "seconds spent searching",
+    "seconds",
+)
+
+
+def split_footer(data: bytes, summary: bool) -> tuple[bytes, Totals | None]:
+    """One run's output with the footer it ends with cut off, and the
+    totals that footer printed, read back the way the wc and du combiners
+    read their total rows; the output whole and None when it ends in none.
+
+    Args:
+        data (bytes): the run's output.
+        summary (bool): the footer is --json's summary record, not the
+            --stats block.
+    """
+    if summary:
+        head, _, last = data[:-1].rpartition(b"\n")
+        if not (
+            data.endswith(b"\n")
+            and last.startswith(b'{"data":')
+            and last.endswith(b'"type":"summary"}')
+        ):
+            return data, None
+        stats = json.loads(last)["data"]["stats"]
+        return data[: len(data) - len(last) - 1], Totals(
+            matches=stats["matches"],
+            matched_lines=stats["matched_lines"],
+            with_match=stats["searches_with_match"],
+            searched=stats["searches"],
+            printed=stats["bytes_printed"],
+            bytes_searched=stats["bytes_searched"],
+            elapsed=stats["elapsed"]["secs"]
+            + stats["elapsed"]["nanos"] / 1_000_000_000,
+        )
+    rows = data.rsplit(b"\n", len(STATS_ROWS) + 1)
+    if (
+        len(rows) != len(STATS_ROWS) + 2
+        or rows[-1]
+        or rows[0][-1:]
+        not in (
+            b"",
+            b"\n",
+        )
+    ):
+        return data, None
+    values: list[str] = []
+    for row, label in zip(rows[1:-1], STATS_ROWS, strict=True):
+        value, _, name = row.decode().partition(" ")
+        if name != label:
+            return data, None
+        values.append(value)
+    numbers = [int(v) for v in values[:6]]
+    return rows[0], Totals(
+        matches=numbers[0],
+        matched_lines=numbers[1],
+        with_match=numbers[2],
+        searched=numbers[3],
+        printed=numbers[4],
+        bytes_searched=numbers[5],
+        elapsed=float(values[6]),
+    )
 
 
 RG_BUFFER_BYTES = 64 * 1024
@@ -1023,11 +1108,13 @@ class RgPrinter:
             if f.null_data
             else "\n"
         )
+        # A -U match may take the last line's terminator in.
+        whole = text + ("\r" if cr else "") + end
         submatches: list[JsonValue] = [
             {
                 "match": json_text(matched),
-                "start": _byte_len(text[:begin]),
-                "end": _byte_len(text[:finish]),
+                "start": _byte_len(whole[:begin]),
+                "end": _byte_len(whole[:finish]),
             }
             for begin, finish, matched in spans
         ]
@@ -1036,7 +1123,7 @@ class RgPrinter:
                 "type": kind,
                 "data": {
                     "path": json_text(self._name),
-                    "lines": json_text(text + ("\r" if cr else "") + end),
+                    "lines": json_text(whole),
                     "line_number": index + 1 if f.line_numbers else None,
                     "absolute_offset": start,
                     "submatches": submatches,
@@ -1045,7 +1132,7 @@ class RgPrinter:
         )
 
     def region(
-        self, region: Region, lines: list[Line], text: str
+        self, region: Region, lines: list[Line], text: str, ats: list[int]
     ) -> dict[int, list[bytes]]:
         """The records one -U region prints, by line: every line it spans,
         at the column its first match starts; under -o each match's part
@@ -1056,9 +1143,9 @@ class RgPrinter:
             region (Region): the region.
             lines (list[Line]): the haystack's lines.
             text (str): the decoded haystack.
+            ats (list[int]): each line's index in ``text``.
         """
         f = self._f
-        ats = [line.at for line in lines]
         records: dict[int, list[bytes]] = {}
 
         def offset_of(index: int, at: int) -> int:
@@ -1069,9 +1156,11 @@ class RgPrinter:
             records.setdefault(index, []).append(record)
 
         def replaced(index: int, column: int | None, shown: str) -> None:
-            # A replacement holding a newline prints as one line each,
-            # numbered on from the line it starts.
-            for k, piece in enumerate(shown.split("\n")):
+            # A replacement holding a record terminator prints as one
+            # record each, numbered on from the line it starts.
+            for k, piece in enumerate(
+                shown.split("\0" if f.null_data else "\n")
+            ):
                 at = min(index + k, len(lines) - 1)
                 add(
                     index,
@@ -1415,7 +1504,7 @@ async def _listing(
 ) -> None:
     """Read no further than the first selected line (-q, -l and
     --files-without-match need only that one bit), unless --stats or
-    --json count every one.
+    --json count every one, up to -m.
 
     Args:
         lines (AsyncLineIterator): the haystack's lines.
@@ -1423,6 +1512,7 @@ async def _listing(
         f (RgFlags): the parsed flags.
         tally (Tally): receives the selection.
     """
+    selected = 0
     async for raw, _, _, _ in _records(lines, f, pat):
         text, _ = read_line(raw, f)
         if _selects(pat, text, f.invert):
@@ -1430,6 +1520,9 @@ async def _listing(
             if not (f.stats or f.json):
                 return
             tally_line(tally, pat, text, f)
+            selected += 1
+            if f.max_count is not None and selected >= f.max_count:
+                return
 
 
 async def _count(
@@ -1456,14 +1549,26 @@ async def _count(
         stop.select()
         selected += 1
         tally.selected = True
-        tally_line(tally, pat, text, f)
-        if f.only_matching and f.count_only:
+        # Matches are found only when something counts them; an inverted
+        # selection has none.
+        found = (
+            sum(1 for _ in rust_matches(pat, text))
+            if not f.invert
+            and (f.stats or f.json or f.count_matches or f.only_matching)
+            else 0
+        )
+        if f.stats or f.json:
+            tally.matched_lines += 1
+            tally.matches += found
+        if (
+            f.only_matching
+            and f.count_only
+            or f.count_matches
+            and not f.invert
+        ):
             # -o -c counts matches, which an inverted selection has none
             # of, and still lists the input (ripgrep 14.1.1).
-            if not f.invert:
-                count += sum(1 for _ in rust_matches(pat, text))
-        elif f.count_matches and not f.invert:
-            count += sum(1 for _ in rust_matches(pat, text))
+            count += found
         else:
             count += 1
         if f.max_count is not None and selected >= f.max_count:
@@ -1681,7 +1786,7 @@ async def _multiline(
         for chunk in _counted(count, label, f, tally):
             yield chunk
         return
-    if not kept:
+    if not kept and (not f.passthru or binary.converted):
         return
     if binary.converted:
         tally.binary = True
@@ -1702,13 +1807,14 @@ async def _multiline(
                     printer.selected(r.first, line.start, line.text, line.cr)
                 )
             else:
-                for i, chunk in printer.region(r, lines, text).items():
+                for i, chunk in printer.region(r, lines, text, ats).items():
                     out[i].extend(chunk)
         return out
 
+    ats = [line.at for line in lines]
     picked = records(kept)
     extra = records(units[len(kept) :]) if f.context_after else {}
-    end = kept[-1].last if f.max_count is not None else None
+    end = kept[-1].last if f.max_count is not None and kept else None
     context = prints_context(f)
     held: deque[int] = deque(maxlen=f.context_before if context else 0)
     budget = YieldBudget()

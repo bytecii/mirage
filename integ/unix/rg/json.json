@@ -70,6 +70,40 @@
         "l",
         "U"
       ]
+    },
+    {
+      "id": "rg_json_U_match_keeps_its_terminator",
+      "seq": 14490222,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; printf 'foo\\nbar\\n' | rg -U --json 'foo\\nbar\\n' | head -2 | tail -1; rg -U --json 'foo\\n' /data/rgfl/a.txt | head -2 | tail -1; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"<stdin>\"},\"lines\":{\"text\":\"foo\\nbar\\n\"},\"line_number\":1,\"absolute_offset\":0,\"submatches\":[{\"match\":{\"text\":\"foo\\nbar\\n\"},\"start\":0,\"end\":8}]}}\n{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"/data/rgfl/a.txt\"},\"lines\":{\"text\":\"foo\\n\"},\"line_number\":2,\"absolute_offset\":6,\"submatches\":[{\"match\":{\"text\":\"foo\\n\"},\"start\":0,\"end\":4}]}}\n",
+        "stderr": ""
+      },
+      "flags": [
+        "json",
+        "U"
+      ]
     }
   ]
 }

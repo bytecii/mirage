@@ -436,7 +436,7 @@ function duration(seconds: number, ordered = false): Record<string, JsonValue> {
 export function jsonText(text: string): Record<string, JsonValue> {
   const raw = encodeText(text)
   try {
-    return { text: new TextDecoder('utf-8', { fatal: true }).decode(raw) }
+    return { text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw) }
   } catch (error) {
     if (!(error instanceof TypeError)) throw error
     let binary = ''
@@ -465,6 +465,17 @@ export class Totals {
   printed = 0
   bytesSearched = 0
   elapsed = 0
+
+  /** Add another run's totals: a line split over mounts prints one footer for all its runs. */
+  merge(other: Totals): void {
+    this.matches += other.matches
+    this.matchedLines += other.matchedLines
+    this.withMatch += other.withMatch
+    this.searched += other.searched
+    this.printed += other.printed
+    this.bytesSearched += other.bytesSearched
+    this.elapsed += other.elapsed
+  }
 
   /** Count one haystack: its tally, the bytes printed for it, its seconds. */
   add(tally: Tally, printed: number, elapsed: number): void {
@@ -529,6 +540,80 @@ export class Totals {
         `${total.toFixed(6)} seconds\n`,
     )
   }
+}
+
+const STATS_ROWS = [
+  'matches',
+  'matched lines',
+  'files contained matches',
+  'files searched',
+  'bytes printed',
+  'bytes searched',
+  'seconds spent searching',
+  'seconds',
+]
+
+/**
+ * One run's output with the footer it ends with cut off, and the totals that
+ * footer printed, read back the way the wc and du combiners read their total
+ * rows; the output whole and null when it ends in none. `summary` reads
+ * --json's summary record, not the --stats block. Mirrors Python's
+ * `split_footer`.
+ */
+export function splitFooter(data: Uint8Array, summary: boolean): [Uint8Array, Totals | null] {
+  if (data[data.length - 1] !== 10) return [data, null]
+  // Back from the final newline to the one before the footer's first line.
+  let at = data.length - 1
+  for (let k = 0; k < (summary ? 1 : STATS_ROWS.length); k++) {
+    at = at > 0 ? data.lastIndexOf(10, at - 1) : -1
+    if (at < 0 && (!summary || k > 0)) return [data, null]
+  }
+  const rows = decodeText(data.subarray(at + 1, data.length - 1)).split('\n')
+  const totals = new Totals()
+  if (summary) {
+    const last = rows[0] ?? ''
+    if (!last.startsWith('{"data":') || !last.endsWith('"type":"summary"}')) return [data, null]
+    const { stats } = (
+      JSON.parse(last) as {
+        data: {
+          stats: {
+            matches: number
+            matched_lines: number
+            searches_with_match: number
+            searches: number
+            bytes_printed: number
+            bytes_searched: number
+            elapsed: { secs: number; nanos: number }
+          }
+        }
+      }
+    ).data
+    totals.matches = stats.matches
+    totals.matchedLines = stats.matched_lines
+    totals.withMatch = stats.searches_with_match
+    totals.searched = stats.searches
+    totals.printed = stats.bytes_printed
+    totals.bytesSearched = stats.bytes_searched
+    totals.elapsed = stats.elapsed.secs + stats.elapsed.nanos / 1e9
+    return [data.subarray(0, at + 1), totals]
+  }
+  // The block opens with a blank line.
+  if (at > 0 && data[at - 1] !== 10) return [data, null]
+  const values: string[] = []
+  for (const [k, label] of STATS_ROWS.entries()) {
+    const row = rows[k] ?? ''
+    const space = row.indexOf(' ')
+    if (row.slice(space + 1) !== label || space < 0) return [data, null]
+    values.push(row.slice(0, space))
+  }
+  totals.matches = Number(values[0])
+  totals.matchedLines = Number(values[1])
+  totals.withMatch = Number(values[2])
+  totals.searched = Number(values[3])
+  totals.printed = Number(values[4])
+  totals.bytesSearched = Number(values[5])
+  totals.elapsed = Number(values[6])
+  return [data.subarray(0, at), totals]
 }
 
 const RG_BUFFER_BYTES = 64 * 1024
@@ -799,17 +884,19 @@ export class RgPrinter {
   ): Uint8Array {
     const f = this.f
     const end = (last ?? index) === this.openLine ? '' : f.nullData ? '\0' : '\n'
+    // A -U match may take the last line's terminator in.
+    const whole = text + (cr ? '\r' : '') + end
     return jsonLine({
       type: kind,
       data: {
         path: jsonText(this.name),
-        lines: jsonText(text + (cr ? '\r' : '') + end),
+        lines: jsonText(whole),
         line_number: f.lineNumbers ? index + 1 : null,
         absolute_offset: start,
         submatches: spans.map(([begin, finish, matched]) => ({
           match: jsonText(matched),
-          start: byteLen(text.slice(0, begin)),
-          end: byteLen(text.slice(0, finish)),
+          start: byteLen(whole.slice(0, begin)),
+          end: byteLen(whole.slice(0, finish)),
         })),
       },
     })
@@ -878,9 +965,13 @@ export class RgPrinter {
    * replaced, a replacement holding a newline printing as one line each;
    * under --vimgrep each match on the line it starts.
    */
-  region(region: Region, lines: readonly Line[], text: string): Map<number, Uint8Array[]> {
+  region(
+    region: Region,
+    lines: readonly Line[],
+    text: string,
+    ats: readonly number[],
+  ): Map<number, Uint8Array[]> {
     const f = this.f
-    const ats = lines.map((line) => line.at)
     const records = new Map<number, Uint8Array[]>()
     const offsetOf = (index: number, at: number): number => {
       const line = lines[index]
@@ -892,7 +983,7 @@ export class RgPrinter {
       else list.push(record)
     }
     const replaced = (index: number, column: number | null, shown: string): void => {
-      shown.split('\n').forEach((piece, k) => {
+      shown.split(f.nullData ? '\0' : '\n').forEach((piece, k) => {
         const line = lines[Math.min(index + k, lines.length - 1)]
         add(
           index,
@@ -1183,6 +1274,7 @@ async function listing(
   signal?: AbortSignal,
 ): Promise<void> {
   const needles = recordNeedles(pat, f)
+  let selected = 0
   for (;;) {
     skipRecords(lines, needles, pat, f)
     const record = await readRecord(lines, f, signal)
@@ -1190,9 +1282,11 @@ async function listing(
     const [text] = readLine(record[0], f)
     if (selects(pat, text, f.invert)) {
       tally.selected = true
-      // --stats and --json count every selected line.
+      // --stats and --json count every selected line, up to -m.
       if (f.stats !== true && f.json !== true) return
       tallyLine(tally, pat, text, f)
+      selected += 1
+      if (f.maxCount !== null && selected >= f.maxCount) return
     }
   }
 }
@@ -1222,16 +1316,20 @@ async function count(
     stop.select()
     selected += 1
     tally.selected = true
-    tallyLine(tally, pat, text, f)
-    if (f.onlyMatching && f.countOnly) {
-      // -o -c counts matches, which an inverted selection has none of, and
-      // still lists the input (ripgrep 14.1.1).
-      if (!f.invert) total += [...rustMatches(pat, text)].length
-    } else if (f.countMatches && !f.invert) {
-      total += [...rustMatches(pat, text)].length
-    } else {
-      total += 1
+    // Matches are found only when something counts them; an inverted
+    // selection has none.
+    const found =
+      !f.invert && (f.stats === true || f.json === true || f.countMatches || f.onlyMatching)
+        ? [...rustMatches(pat, text)].length
+        : 0
+    if (f.stats === true || f.json === true) {
+      tally.matchedLines = (tally.matchedLines ?? 0) + 1
+      tally.matches = (tally.matches ?? 0) + found
     }
+    // -o -c counts matches, which an inverted selection has none of, and
+    // still lists the input (ripgrep 14.1.1).
+    if ((f.onlyMatching && f.countOnly) || (f.countMatches && !f.invert)) total += found
+    else total += 1
     if (f.maxCount !== null && selected >= f.maxCount) break
   }
   return total
@@ -1416,7 +1514,7 @@ async function* multiline(
     yield* counted(total, label, f, tally)
     return
   }
-  if (kept.length === 0) return
+  if (kept.length === 0 && (!f.passthru || binary.converted)) return
   if (binary.converted) {
     tally.binary = true
     yield binary.notice(label)
@@ -1433,10 +1531,11 @@ async function* multiline(
         out.set(r.first, [...printer.selected(r.first, line.start, line.text, line.cr)])
         continue
       }
-      for (const [i, chunks] of printer.region(r, lines, text)) out.get(i)?.push(...chunks)
+      for (const [i, chunks] of printer.region(r, lines, text, ats)) out.get(i)?.push(...chunks)
     }
     return out
   }
+  const ats = lines.map((line) => line.at)
   const picked = records(kept)
   const extra = f.contextAfter > 0 ? records(units.slice(kept.length)) : new Map()
   const end = f.maxCount === null ? null : (kept[kept.length - 1]?.last ?? null)

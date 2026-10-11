@@ -18,7 +18,12 @@ from mirage.commands.builtin.grep_pattern import (
 )
 from mirage.commands.builtin.grep_scan import exit_code_for
 from mirage.commands.builtin.rg_filetypes import FileTypes, type_listing
-from mirage.commands.builtin.rg_glob import IgnoreRules, Overrides, Verdict
+from mirage.commands.builtin.rg_glob import (
+    IgnoreRules,
+    Overrides,
+    Verdict,
+    walk_candidate,
+)
 from mirage.commands.builtin.rg_scan import (
     Haystack,
     WalkFilter,
@@ -69,7 +74,7 @@ from mirage.commands.spec.types import FlagValue
 from mirage.errors.constants import FS_ERRORS, WALK_ERRORS
 from mirage.errors.fs import walk_refusal
 from mirage.io.types import ByteSource, IOResult, materialize
-from mirage.runtime.types import ShellFn
+from mirage.runtime.types import DispatchFn, ShellFn
 from mirage.shell.bytes import decode_text, encode_text
 from mirage.shell.join import shell_join
 from mirage.types import FileStat, FileType, PathSpec
@@ -971,7 +976,7 @@ def walk_filter(
 
 
 async def ignore_rules(
-    fl: FlagView, opts: CommandOpts, notes: list[str]
+    fl: FlagView, dispatch: DispatchFn | None, notes: list[str]
 ) -> IgnoreRules:
     """--ignore-file's rules, each file read through the dispatcher.
 
@@ -981,7 +986,7 @@ async def ignore_rules(
 
     Args:
         fl (FlagView): the flag view.
-        opts (CommandOpts): the command's options, with the dispatcher.
+        dispatch (DispatchFn | None): the workspace's dispatcher.
         notes (list[str]): collects what could not be read.
     """
     if _last(fl, "ignore_files", "no_ignore_files") == "no_ignore_files":
@@ -989,9 +994,9 @@ async def ignore_rules(
     lines: list[str] = []
     for path in fl.as_paths("ignore_file"):
         try:
-            if opts.dispatch is None:
+            if dispatch is None:
                 raise FileNotFoundError(path.raw_path)
-            data, _ = await opts.dispatch("read", path)
+            data, _ = await dispatch("read", path)
             lines.extend(decode_text(await materialize(data)).splitlines())
         except FS_ERRORS as exc:
             notes.append(f"rg: {path.raw_path}: {os_error_text(exc)}")
@@ -1167,7 +1172,7 @@ async def rg_generic(
     if f.type_list:
         return format_records(type_listing(types.definitions)), IOResult()
     notes: list[str] = []
-    walk = walk_filter(f, types, await ignore_rules(fl, opts, notes))
+    walk = walk_filter(f, types, await ignore_rules(fl, opts.dispatch, notes))
     pat: re.Pattern[str] | None = None
     if not f.list_files:
         pattern, never_match = await resolve_pattern(
@@ -1207,7 +1212,7 @@ async def rg_generic(
             paths[0], pat, f, st, rd, rb, read_stream, operand_stream
         )
         if single is not None:
-            return single
+            return await _noted(single, notes, f)
 
     warnings: list[str] = []
     cwd = opts.cwd.virtual
@@ -1249,8 +1254,24 @@ async def rg_generic(
             operand_stream,
             warnings,
             implicit,
+            cwd,
             opts.shell,
         )
+    return await _noted((out, io), notes, f)
+
+
+async def _noted(
+    result: tuple[ByteSource | None, IOResult], notes: list[str], f: RgFlags
+) -> tuple[ByteSource | None, IOResult]:
+    """A search's result with --ignore-file's notes ahead of its stderr,
+    as ripgrep prints them before it searches.
+
+    Args:
+        result (tuple[ByteSource | None, IOResult]): the search's result.
+        notes (list[str]): the ignore files that could not be read.
+        f (RgFlags): the parsed flags.
+    """
+    out, io = result
     if notes and not f.no_messages:
         io.stderr = format_records(notes) + (
             await materialize(io.stderr) if io.stderr is not None else b""
@@ -1363,7 +1384,7 @@ async def _settled(
             if (
                 not printed
                 and label is not None
-                and _headed(f)
+                and headed(f)
                 and not tally.binary
             ):
                 yield encode_text(label) + (b"\0" if f.null else record_end(f))
@@ -1384,7 +1405,22 @@ async def _settled(
     io.exit_code = 0 if selected else 1
 
 
-def _headed(f: RgFlags) -> bool:
+def json_summary(f: RgFlags) -> bool:
+    """Whether --json writes its records and the summary: only for the
+    printing modes, -c and -l printing as they do without it.
+
+    Args:
+        f (RgFlags): the parsed flags.
+    """
+    return f.json and not (
+        f.count_only
+        or f.count_matches
+        or f.files_only
+        or f.files_without_match
+    )
+
+
+def headed(f: RgFlags) -> bool:
     """Whether --heading names each file above its lines: only the line
     output has one, never the counts or the listings.
 
@@ -1400,7 +1436,7 @@ def _headed(f: RgFlags) -> bool:
     )
 
 
-def _runs_parallel(f: RgFlags) -> bool:
+def runs_parallel(f: RgFlags) -> bool:
     """Whether ripgrep searches more than one path on its parallel
     searcher: -j1 and a sort hold it to one thread.
 
@@ -1451,7 +1487,7 @@ def between_files(f: RgFlags) -> bytes:
     Args:
         f (RgFlags): the parsed flags.
     """
-    if _headed(f) and not f.no_filename:
+    if headed(f) and not f.no_filename:
         return b"\n"
     if prints_context(f) and f.context_separator is not None:
         return encode_text(f.context_separator) + b"\n"
@@ -1488,7 +1524,7 @@ async def haystacks(
     """
     # ripgrep holds one path that is not a directory to one thread, as it
     # does -j1 and a sort; every other line runs its parallel walker.
-    parallel = _runs_parallel(f)
+    parallel = runs_parallel(f)
     several = parallel and len(paths) > 1
     for p in paths:
         if is_stdin(p):
@@ -1606,6 +1642,7 @@ async def _search_all(
     operand_stream: Callable[[PathSpec], AsyncIterator[bytes]],
     warnings: list[str],
     implicit: bool,
+    cwd: str,
     shell: ShellFn | None = None,
 ) -> tuple[bytes, IOResult]:
     """Search every haystack in order and put the output together.
@@ -1626,6 +1663,8 @@ async def _search_all(
         warnings (list[str]): collects what could not be read.
         implicit (bool): the line named no path, so ripgrep reports a
             search that found nothing to search.
+        cwd (str): the session's working directory, which --pre-glob's
+            globs are rooted at.
         shell (ShellFn | None): runs --pre's command in the session.
     """
     multi = len(paths) > 1
@@ -1637,14 +1676,7 @@ async def _search_all(
     selected = False
     skipped = False
     searched = 0
-    # --json writes records only for the printing modes; -c and -l print
-    # as they do without it.
-    records = f.json and not (
-        f.count_only
-        or f.count_matches
-        or f.files_only
-        or f.files_without_match
-    )
+    records = json_summary(f)
     totals = Totals()
     started = time.perf_counter()
     async for h in found:
@@ -1673,7 +1705,8 @@ async def _search_all(
             if (
                 f.pre is not None
                 and not stdin
-                and pre_globs.verdict(h.shown, False) is not Verdict.IGNORE
+                and pre_globs.verdict(walk_candidate(h.shown, cwd), False)
+                is not Verdict.IGNORE
             ):
                 text, refusal = await preprocessed(
                     f.pre, h.shown, name, await materialize(source), shell
@@ -1737,7 +1770,7 @@ async def _search_all(
                 or f.files_without_match
                 else sum(len(c) for c in chunks)
             )
-            if label is not None and _headed(f):
+            if label is not None and headed(f):
                 if printed:
                     out.append(b"\n")
                 if not tally.binary:
@@ -1753,14 +1786,15 @@ async def _search_all(
             totals.add(tally, sent, elapsed)
         else:
             totals.add(tally, 0, elapsed)
-        if f.quiet and tally.selected:
+        # --stats and --json count every file, -q or not (14.1.1).
+        if f.quiet and tally.selected and not (f.stats or f.json):
             break
     if records:
         out.append(totals.summary_record(time.perf_counter() - started))
     elif f.stats:
         # ripgrep's parallel searcher gives the last --heading group its
         # blank line too; one thread, as for a lone file, does not.
-        if printed and _headed(f) and _runs_parallel(f) and not lone:
+        if printed and headed(f) and runs_parallel(f) and not lone:
             out.append(b"\n")
         out.append(totals.stats_block(time.perf_counter() - started))
     if f.files_without_match and not f.quiet:

@@ -339,6 +339,11 @@ class IgnoreRules:
         parsed = [override_glob(line, False) for line in lines]
         self._globs = tuple(g for g in parsed if g is not None)
 
+    @property
+    def empty(self) -> bool:
+        """Whether the files held no rule."""
+        return not self._globs
+
     def verdict(self, path: str, is_dir: bool) -> Verdict:
         """What the rules say about one walked path.
 

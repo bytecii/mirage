@@ -28,9 +28,9 @@ import { decodeText, encodeText } from '../../../shell/bytes.ts'
 import { NEVER_MATCH, resolvePattern, rustEscape } from '../grep_pattern.ts'
 import { exitCodeFor } from '../grep_scan.ts'
 import { FileTypes, typeListing, type TypeChange, type TypeSelection } from '../rg_filetypes.ts'
-import { IgnoreRules, Overrides, Verdict } from '../rg_glob.ts'
+import { IgnoreRules, Overrides, Verdict, walkCandidate } from '../rg_glob.ts'
 import { shellJoin } from '../../../shell/join.ts'
-import type { ShellFn } from '../../../runtime/types.ts'
+import type { DispatchFn, ShellFn } from '../../../runtime/types.ts'
 import {
   osErrorText,
   type Haystack,
@@ -721,13 +721,17 @@ export function walkFilter(f: RgFlags, types?: FileTypes, ignores?: IgnoreRules)
  * with its exit status untouched (14.1.1); --no-ignore-files drops every one.
  * Mirrors Python's ignore_rules.
  */
-async function ignoreRules(fl: FlagView, opts: CommandOpts, notes: string[]): Promise<IgnoreRules> {
+export async function ignoreRules(
+  fl: FlagView,
+  dispatch: DispatchFn | undefined,
+  notes: string[],
+): Promise<IgnoreRules> {
   if (last(fl, 'ignore_files', 'no_ignore_files') === 'no_ignore_files') return new IgnoreRules()
   const lines: string[] = []
   for (const path of fl.asPaths('ignore_file')) {
     try {
-      if (opts.dispatch === undefined) throw enoent(path.rawPath)
-      const [data] = await opts.dispatch('read', path)
+      if (dispatch === undefined) throw enoent(path.rawPath)
+      const [data] = await dispatch('read', path)
       lines.push(...decodeText(await materialize(data as ByteSource)).split(/\r?\n/))
     } catch (err) {
       if (!isFsError(err)) throw err
@@ -850,7 +854,7 @@ export async function rgGeneric(
   const types = new FileTypes(f.typeChanges, f.typeSelections)
   if (f.typeList) return [formatRecords(typeListing(types.definitions)), new IOResult()]
   const notes: string[] = []
-  const walk = walkFilter(f, types, await ignoreRules(fl, opts, notes))
+  const walk = walkFilter(f, types, await ignoreRules(fl, opts.dispatch, notes))
   let pat: RegExp | null = null
   if (!f.listFiles) {
     const resolution = await resolvePattern(
@@ -888,7 +892,7 @@ export async function rgGeneric(
     (f.pre ?? null) === null
   ) {
     const single = await searchSingle(first, pat, f, st, rd, stream, opts.signal)
-    if (single !== null) return single
+    if (single !== null) return noted(single, notes, f)
   }
   const warnings: string[] = []
   // ripgrep's "nothing searched" speaks for the whole walk, so it waits while
@@ -923,10 +927,21 @@ export async function rgGeneric(
       first,
       warnings,
       implicit,
+      opts.cwd,
       opts.signal,
       opts.shell,
     )
   if (result === null) return result
+  return noted(result, notes, f)
+}
+
+// A search's result with --ignore-file's notes ahead of its stderr, as
+// ripgrep prints them before it searches.
+async function noted(
+  result: [ByteSource | null, IOResult],
+  notes: readonly string[],
+  f: RgFlags,
+): Promise<[ByteSource | null, IOResult]> {
   const [out, io] = result
   if (notes.length > 0 && !f.noMessages)
     io.stderr = concat([
@@ -1026,9 +1041,15 @@ async function* settled(
   io.exitCode = (listed ?? tally.selected) ? 0 : 1
 }
 
+// Whether --json writes its records and the summary: only for the printing
+// modes, -c and -l printing as they do without it.
+export function jsonSummary(f: RgFlags): boolean {
+  return f.json === true && !(f.countOnly || f.countMatches || f.filesOnly || f.filesWithoutMatch)
+}
+
 // Whether --heading names each file above its lines: only the line output
 // has one, never the counts or the listings.
-function headed(f: RgFlags): boolean {
+export function headed(f: RgFlags): boolean {
   return (
     f.heading && !(f.countOnly || f.countMatches || f.filesOnly || f.filesWithoutMatch || f.quiet)
   )
@@ -1036,7 +1057,7 @@ function headed(f: RgFlags): boolean {
 
 // Whether ripgrep searches more than one path on its parallel searcher: -j1
 // and a sort hold it to one thread.
-function runsParallel(f: RgFlags): boolean {
+export function runsParallel(f: RgFlags): boolean {
   return f.threads !== 1 && (f.sort === null || f.sort === 'none')
 }
 
@@ -1215,6 +1236,8 @@ async function searchAll(
   template: PathSpec,
   warnings: string[],
   implicit: boolean,
+  // The session's working directory, which --pre-glob's globs are rooted at.
+  cwd: string,
   signal?: AbortSignal,
   // Runs --pre's command in the session.
   shell?: ShellFn,
@@ -1228,10 +1251,8 @@ async function searchAll(
   let selected = false
   let skipped = false
   let searched = 0
-  // --json writes records only for the printing modes; -c and -l print as
-  // they do without it.
   const listingOrCount = f.countOnly || f.countMatches || f.filesOnly || f.filesWithoutMatch
-  const records = f.json === true && !listingOrCount
+  const records = jsonSummary(f)
   const totals = new Totals()
   const started = performance.now()
   for await (const h of found) {
@@ -1251,7 +1272,11 @@ async function searchAll(
       const pipe = h.spec !== null && isStdin(h.spec)
       let source = opened
       const pre = f.pre ?? null
-      if (pre !== null && !pipe && preGlobs.verdict(h.shown, false) !== Verdict.IGNORE) {
+      if (
+        pre !== null &&
+        !pipe &&
+        preGlobs.verdict(walkCandidate(h.shown, cwd), false) !== Verdict.IGNORE
+      ) {
         const [text, refusal] = await preprocessed(
           pre,
           h.shown,
@@ -1326,7 +1351,8 @@ async function searchAll(
     } else {
       totals.add(tally, 0, elapsed)
     }
-    if (f.quiet && tally.selected) break
+    // --stats and --json count every file, -q or not (14.1.1).
+    if (f.quiet && tally.selected && f.stats !== true && f.json !== true) break
   }
   const total = (performance.now() - started) / 1000
   if (records) out.push(totals.summaryRecord(total))

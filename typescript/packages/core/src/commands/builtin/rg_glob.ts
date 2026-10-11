@@ -273,6 +273,11 @@ export class IgnoreRules {
       .filter((g): g is OverrideGlob => g !== null)
   }
 
+  /** Whether the files held no rule. */
+  get empty(): boolean {
+    return this.globs.length === 0
+  }
+
   /** What the rules say about one walked path (`walkCandidate`). */
   verdict(path: string, isDir: boolean): Verdict {
     for (let i = this.globs.length - 1; i >= 0; i--) {

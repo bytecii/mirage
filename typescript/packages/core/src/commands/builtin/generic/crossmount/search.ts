@@ -26,6 +26,10 @@ import {
   walkFilter,
   filtersFiles,
   haystacks,
+  headed,
+  ignoreRules,
+  jsonSummary,
+  runsParallel,
   sortHaystacks,
 } from '../rg.ts'
 import type { FlagSet } from '../../grep_binary.ts'
@@ -36,11 +40,14 @@ import { BINARY_EXTENSIONS, getExtension } from '../../../../utils/filetype.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView, flagOccurrences } from '../../../spec/flag_view.ts'
 import type { FlagValue } from '../../../spec/types.ts'
-import { IOResult, type ByteSource } from '../../../../io/types.ts'
+import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
 import type { NamespaceView } from '../../../../view/types.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../../types.ts'
 import { walkErrorLine } from '../../rg_scan.ts'
+import { Totals, splitFooter, type RgFlags } from '../../rg_search.ts'
+import { formatRecords } from '../../utils/output.ts'
+import { concat } from '../../../../utils/bytes.ts'
 import { LinkResolver } from '../../utils/links.ts'
 import { fsErrorLine } from '../../../../errors/render.ts'
 import { encodeText } from '../../../../shell/bytes.ts'
@@ -69,16 +76,27 @@ export async function runSearch(
   stdin: ByteSource | null = null,
   signal?: AbortSignal,
 ): Promise<CrossResult> {
+  const started = performance.now()
   const view = new FlagView(bag, specOf(name))
   const grep = name === 'grep' ? parseFlags(view) : null
   const rg = name === 'rg' ? parseRgFlags(view) : null
+  // --ignore-file's rules judge every walked file, the ones a nested mount
+  // turns into operands of their own runs too; each run reads them again, so
+  // a file that could not be read is noted once, here.
+  const notes: string[] = []
+  const ignores = rg === null ? null : await ignoreRules(view, dispatch, notes)
   const nested = paths.some((p) => (ns?.mounts?.descendants(p.virtual).length ?? 0) > 0)
   const linked = paths.some((p) => (ns?.links?.subtree(p.virtual).length ?? 0) > 0)
   const planned =
     rg !== null &&
     (linked ||
       rg.sort !== null ||
-      (nested && (rg.maxDepth !== null || rg.follow || rg.oneFileSystem || filtersFiles(rg))))
+      (nested &&
+        (rg.maxDepth !== null ||
+          rg.follow ||
+          rg.oneFileSystem ||
+          filtersFiles(rg) ||
+          ignores?.empty === false)))
   if (rg?.typeList) return runSingle(name, paths.slice(0, 1), [...texts], bag)
   if (grep !== null) {
     const pattern = patternArg(texts, bag)
@@ -98,11 +116,13 @@ export async function runSearch(
     if (pattern !== null) rgMatcher(pattern, false, rg)
   }
   const quiet = grep?.quiet ?? rg?.quiet ?? false
+  // -q stops at the first match, but --stats and --json count every file.
+  const stops = quiet && !(rg !== null && (rg.stats === true || rg.json === true))
   const input = resolveSource(stdin)
   const execute: RunSingle = (cmd, operands, words, bag) =>
     runSingle(cmd, operands, words, bag, { stdin: operands.some((p) => isStdin(p)) ? input : null })
   const owners = paths.map((p) => ns?.mounts?.rootOf(p.virtual))
-  const walk = rg === null ? null : walkFilter(rg)
+  const walk = rg === null ? null : walkFilter(rg, undefined, ignores ?? undefined)
   const admit = (path: PathSpec, stat: FileStat): boolean => {
     if (grep !== null) return admitGrep(grep, path, stat)
     if (walk === null) throw new Error(`No traversal filter for ${name}`)
@@ -182,6 +202,7 @@ export async function runSearch(
     }
   }
   const results: OperandRun[] = []
+  const walked = new Set<number>()
   for await (const scope of scopes()) {
     signal?.throwIfAborted()
     if (scope.error !== undefined || scope.diagnostic !== undefined) {
@@ -219,8 +240,9 @@ export async function runSearch(
         local.with_filename = true
     }
     const runs = await runOperands(execute, name, [scope.path], [...texts], local)
+    if (scope.stat?.type === FileType.DIRECTORY) walked.add(results.length)
     results.push(...runs)
-    if (quiet && runs.at(-1)?.io.exitCode === 0) break
+    if (stops && runs.at(-1)?.io.exitCode === 0) break
   }
   const code = combinedExit(
     name,
@@ -228,12 +250,61 @@ export async function runSearch(
     results.map((r) => r.io.exitCode !== 0 && r.io.stderr !== null),
     quiet,
   )
+  const [parts, footer] =
+    rg !== null && (rg.stats === true || rg.json === true)
+      ? oneFooter(results, rg, walked, started)
+      : [results.map((r) => r.data), new Uint8Array()]
+  const body = concat([joinRuns(parts, runSeparator(name, bag)), footer])
+  if (rg === null || notes.length === 0 || rg.noMessages) {
+    return [body, await mergeOperandIos(results, code)]
+  }
+  const noted = formatRecords(notes)
+  for (const r of results) {
+    if (r.io.stderr === null) continue
+    const err = await materialize(r.io.stderr)
+    const kept =
+      err.length >= noted.length && noted.every((byte, i) => err[i] === byte)
+        ? err.subarray(noted.length)
+        : err
+    r.io.stderr = kept.length === 0 ? null : kept
+  }
+  const io = await mergeOperandIos(results, code)
+  io.stderr = concat([noted, io.stderr === null ? new Uint8Array() : await materialize(io.stderr)])
+  return [body, io]
+}
+
+/**
+ * The runs' outputs with each --stats block or --json summary cut off, and
+ * the one footer that totals them, as a single rg prints it. A run that walked
+ * a directory on ripgrep's parallel searcher closed its last --heading group
+ * with a blank line too; that line goes with its footer. Mirrors Python's
+ * `_one_footer`.
+ */
+function oneFooter(
+  results: readonly OperandRun[],
+  f: RgFlags,
+  walked: ReadonlySet<number>,
+  started: number,
+): [Uint8Array[], Uint8Array] {
+  const summary = jsonSummary(f)
+  const blank = !summary && headed(f) && runsParallel(f)
+  const parts = results.map((r) => r.data)
+  const totals = new Totals()
+  let found = false
+  for (const [i, data] of parts.entries()) {
+    const [head, part] = splitFooter(data, summary)
+    if (part === null) continue
+    found = true
+    totals.merge(part)
+    parts[i] = blank && head.length > 0 && walked.has(i) ? head.subarray(0, -1) : head
+  }
+  if (!found) return [parts, new Uint8Array()]
+  const total = (performance.now() - started) / 1000
+  if (summary) return [parts, totals.summaryRecord(total)]
+  const printed = parts.some((d) => d.length > 0)
   return [
-    joinRuns(
-      results.map((r) => r.data),
-      runSeparator(name, bag),
-    ),
-    await mergeOperandIos(results, code),
+    parts,
+    concat([blank && printed ? encodeText('\n') : new Uint8Array(), totals.statsBlock(total)]),
   ]
 }
 
