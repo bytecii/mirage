@@ -25,6 +25,7 @@ from mirage.commands.builtin.utils.pcre import (
     match_text,
     user_groups,
 )
+from mirage.concurrency.worker import Worker
 from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.stream import close_quietly, discard_streams
 from mirage.io.yield_budget import YieldBudget
@@ -1495,6 +1496,24 @@ async def _records(
         raw, terminated = await lines.read_until(delimiter)
         if not terminated and not raw:
             return
+        if isinstance(pat, AsyncRegex):
+            await pat.prepare(
+                read_line(raw, f)[0],
+                lambda: (
+                    (
+                        read_line(item, f)[0]
+                        for item in lines.buffered_lines(delimiter)
+                    )
+                    if f.max_count is None
+                    and not (
+                        f.quiet
+                        or f.files_only
+                        or f.files_without_match
+                        or f.stop_on_nonmatch
+                    )
+                    else ()
+                ),
+            )
         yield raw, skipped, size, terminated
 
 
@@ -1847,6 +1866,7 @@ async def _multiline(
                 ):
                     yield encode_text(f.context_separator) + record_end(f)
                 for h in held:
+                    await prepare(pat, lines[h].text)
                     for chunk in printer.context(
                         h, lines[h].start, lines[h].text, lines[h].cr
                     ):
@@ -1881,6 +1901,7 @@ async def search_haystack(
     tally: Tally,
     named: bool = True,
     pipe: bool = False,
+    worker: Worker | None = None,
 ) -> AsyncIterator[bytes]:
     """One haystack's output as ripgrep prints it, read no further than
     the answer needs: -q, -l and --files-without-match stop at the first
@@ -1901,6 +1922,7 @@ async def search_haystack(
             which ripgrep searches past a NUL where a walked file is
             skipped.
         pipe (bool): the haystack is stdin, read as it arrives.
+        worker (Worker | None): shared worker for a multi-file invocation.
     """
     if f.max_count == 0:
         # ripgrep selects no line at all under -m0 and prints nothing,
@@ -1916,7 +1938,15 @@ async def search_haystack(
         if named or f.binary
         else "quit"
     )
-    matcher = AsyncRegex(pat)
+    matcher = AsyncRegex(
+        pat,
+        all_matches=not (
+            (f.quiet or f.files_only or f.files_without_match)
+            and not (f.stats or f.json)
+        ),
+        restart=True,
+        worker=worker,
+    )
     reader = binary.read(source, pipe)
     lines = AsyncLineIterator(reader)
     try:

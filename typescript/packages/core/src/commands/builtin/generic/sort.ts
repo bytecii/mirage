@@ -340,10 +340,6 @@ export async function sortGeneric(
     ]
   }
   const ordered = await runIsolated<string[]>(
-    new URL(
-      import.meta.url.endsWith('.ts') ? '../sort_keys.ts' : '../sort_keys.js',
-      import.meta.url,
-    ),
     parsed.merge ? 'mergeLines' : 'sortLines',
     [parsed.merge ? runs : runs.flat(), cfg],
     opts.signal,

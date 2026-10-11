@@ -514,15 +514,7 @@ export class MainLoop {
    * the main loop reads on past it.
    */
   private evaluate(args: readonly unknown[]): Promise<JqRun<string>> {
-    return this.worker.call(
-      new URL(
-        import.meta.url.endsWith('.ts') ? '../../../core/jq/eval.ts' : '../../../core/jq/eval.js',
-        import.meta.url,
-      ),
-      'jqRunTexts',
-      args,
-      this.signal,
-    )
+    return this.worker.call('jqRunTexts', args, this.signal)
   }
 
   private async run(doc: string, position: string): Promise<[JqRun<string>, string]> {

@@ -1,90 +1,57 @@
 import re
 from bisect import bisect_left
 from collections import OrderedDict
-from collections.abc import Iterator
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Callable, Iterable, Iterator
 
 from mirage.concurrency.worker import Worker
-
-
-@dataclass(frozen=True)
-class Match:
-    re: re.Pattern[str]
-    string: str
-    spans: tuple[tuple[int, int], ...]
-
-    def _index(self, group: int | str) -> int:
-        if isinstance(group, str):
-            try:
-                return self.re.groupindex[group]
-            except KeyError as exc:
-                raise IndexError(group) from exc
-        return group
-
-    def start(self, group: int | str = 0) -> int:
-        return self.spans[self._index(group)][0]
-
-    def end(self, group: int | str = 0) -> int:
-        return self.spans[self._index(group)][1]
-
-    def group(self, group: int | str = 0) -> Any:
-        start, end = self.spans[self._index(group)]
-        return None if start < 0 else self.string[start:end]
-
-
-def scan(
-    pattern: re.Pattern[str], text: str, all_matches: bool = True
-) -> list[Match]:
-    """Copy native matches while the uninterruptible engine stays in a worker.
-
-    Args:
-        pattern (re.Pattern[str]): the compiled host pattern.
-        text (str): one search subject.
-        all_matches (bool): retain every match only when rendering needs them.
-    """
-    first = None if all_matches else pattern.search(text)
-    matches = (
-        pattern.finditer(text)
-        if all_matches
-        else (() if first is None else (first,))
-    )
-    return [
-        Match(
-            pattern,
-            text,
-            tuple(m.span(i) for i in range(pattern.groups + 1)),
-        )
-        for m in matches
-    ]
+from mirage.utils.regex_scan import Match, scan_many
 
 
 class AsyncRegex:
     """Prepare bounded cached subjects off-loop, then render their matches locally."""
 
     def __init__(
-        self, pattern: re.Pattern[str], all_matches: bool = True
+        self,
+        pattern: re.Pattern[str],
+        all_matches: bool = True,
+        restart: bool = False,
+        worker: Worker | None = None,
     ) -> None:
         self.original = pattern
         self._all_matches = all_matches
+        self._restart = restart
         self.pattern = pattern.pattern
         self.flags = pattern.flags
         self.groups = pattern.groups
         self.groupindex = pattern.groupindex
-        self._worker = Worker()
+        self._owns_worker = worker is None
+        self._worker = worker if worker is not None else Worker()
         self._cache: OrderedDict[str, tuple[list[Match], list[int]]] = (
             OrderedDict()
         )
 
-    async def prepare(self, text: str) -> None:
+    async def prepare(
+        self, text: str, following: Callable[[], Iterable[str]] | None = None
+    ) -> None:
         if text in self._cache:
             self._cache.move_to_end(text)
             return
-        matches = await self._worker.call(
-            scan, self.original, text, self._all_matches
+        subjects = list(
+            dict.fromkeys(
+                (text, *(following() if following is not None else ()))
+            )
+        )[:32]
+        missing = [
+            subject for subject in subjects if subject not in self._cache
+        ]
+        results = await self._worker.call(
+            scan_many, self.original, missing, self._all_matches, self._restart
         )
-        self._cache[text] = (matches, [m.start() for m in matches])
-        if len(self._cache) > 32:
+        for subject, matches in zip(missing, results):
+            self._cache[subject] = (matches, [m.start() for m in matches])
+        for subject in subjects:
+            self._cache.move_to_end(subject)
+        while len(self._cache) > 32:
             self._cache.popitem(last=False)
 
     def search(self, text: str, pos: int = 0) -> Match | None:
@@ -96,7 +63,8 @@ class AsyncRegex:
         return iter(self._cache[text][0])
 
     async def close(self) -> None:
-        await self._worker.close()
+        if self._owns_worker:
+            await self._worker.close()
         self._cache.clear()
 
 

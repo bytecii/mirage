@@ -35,6 +35,7 @@ import {
 } from '../grep_pattern.ts'
 import { exitCodeFor } from '../grep_scan.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../../utils/filetype.ts'
+import { Worker } from '../../../concurrency/worker.ts'
 import { grepInput, nameEnd, type FlagSet } from '../grep_binary.ts'
 import { fileAdmitted, dirAdmitted, parseFileGlobs } from '../grep_select.ts'
 import { resolveSource } from '../utils/stream.ts'
@@ -351,6 +352,7 @@ export async function grepGeneric(
       return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(error.message + '\n') })]
     }
   }
+  const worker = new Worker()
   const prefix = mountPrefixOf(first.virtual, first.vfsPath)
   const mounts = opts.ns?.mounts
   const rd = mountParentReaddir((p: string) => readdir(sameMountSpec(p, first)), mounts, prefix)
@@ -436,6 +438,7 @@ export async function grepGeneric(
           opts.signal,
           utf8,
           info.type === FileType.FILE ? (info.size ?? null) : null,
+          worker,
         )) {
           updateStatus(fileIO)
           printed = true
@@ -459,6 +462,7 @@ export async function grepGeneric(
         if (f.quiet && matched) break
       }
     } finally {
+      await worker.close()
       if (notices.length > 0) io.stderr = concat([await materialize(io.stderr), ...notices])
     }
   }

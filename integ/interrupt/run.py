@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -351,6 +352,59 @@ async def malformed(client, port, stream):
             assert b" 400 " in headers, (headers, body)
 
 
+async def input_output(client, port, case):
+    prefix = multipart(case["command"]) + b"x\n"
+    ending = b"\r\n--" + BOUNDARY + b"--\r\n"
+    async with raw_request(port, prefix, len(prefix) + len(ending), True) as (
+        reader,
+        writer,
+    ):
+        headers = await reader.readuntil(b"\r\n\r\n")
+        assert b"transfer-encoding: chunked" in headers.lower(), headers
+        output = b""
+        while not output.endswith(b"\n"):
+            length = int(await reader.readline(), 16)
+            output += await reader.readexactly(length)
+            assert await reader.readexactly(2) == b"\r\n"
+        record = json.loads(output.splitlines()[0])
+        assert record["stream"] == "stdout", record
+        assert base64.b64decode(record["data"]).decode() == case["stdout"], (
+            record
+        )
+        writer.write(ending)
+        await writer.drain()
+        await reader.read()
+    await healthy(client)
+
+
+async def oversized(client, port, stream):
+    command = "sleep 60"
+    prefix = multipart(command)
+    size = 64 * 1024 * 1024 + 1
+    async with raw_request(port, prefix, len(prefix) + size, stream) as (
+        reader,
+        writer,
+    ):
+        job_id = await find_job(client, command)
+        chunk = b"x" * (256 * 1024)
+        for _ in range(size // len(chunk)):
+            writer.write(chunk)
+            await writer.drain()
+        writer.write(b"x")
+        await writer.drain()
+        headers, body = await response_body(reader)
+        if stream:
+            terminal = json.loads(body.splitlines()[-1])
+            assert (
+                terminal["status"] == "failed"
+                and "stdin part too large" in terminal["error"]
+            ), terminal
+        else:
+            assert b" 413 " in headers, (headers, body)
+        await settled(client, job_id)
+        await healthy(client)
+
+
 async def unread(client, port):
     command = "seq inf"
     body = json.dumps({"command": command, "record": False}).encode()
@@ -371,6 +425,10 @@ async def run(hosts, selected):
                 for case in cases["stream"]
             ]
             runs += [
+                (case["id"], input_output, (client, port, case))
+                for case in cases["input"]
+            ]
+            runs += [
                 (case["id"], network, (client, case)) for case in cases["http"]
             ]
             for stream in (False, True):
@@ -386,6 +444,7 @@ async def run(hosts, selected):
                         (client, port, stream, True),
                     ),
                     (f"malformed-{stream}", malformed, (client, port, stream)),
+                    (f"oversized-{stream}", oversized, (client, port, stream)),
                 ]
             runs += [("unread-output", unread, (client, port))]
             for name, fn, args in runs:

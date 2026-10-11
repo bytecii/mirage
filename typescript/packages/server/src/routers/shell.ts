@@ -21,6 +21,7 @@ import type { ExecutionTable } from '../jobs.ts'
 import { ExecutionStatus, type ExecutionRecord } from '@struktoai/mirage-core/execution/types'
 import { explanationToDict, ioResultToDict } from '../io_serde.ts'
 import { MAX_REQUEST_PART, MultipartError, partEvents, type PartEvent } from '../multipart.ts'
+import { MAX_STDIN_BYTES } from '../constants.ts'
 import { UploadStdin } from '../stdin.ts'
 import { ShellOutput, shellResponse } from '../stream.ts'
 import { RouteError, failure, queryFlag, requireEntry, sessionOf } from './vfs.ts'
@@ -115,9 +116,12 @@ async function readShellBody(
       }
       if (background) {
         const chunks: Uint8Array[] = []
+        let received = 0
         await readPart(
           events,
           (data) => {
+            received += data.byteLength
+            if (received > MAX_STDIN_BYTES) throw new MultipartError(413, 'stdin part too large')
             chunks.push(data)
           },
           () => undefined,

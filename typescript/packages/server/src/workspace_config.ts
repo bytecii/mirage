@@ -67,8 +67,10 @@ export function resolveWorkspaceConfig(
 }
 
 export async function buildWorkspaceFromConfig(configPath: string): Promise<Workspace> {
-  const { Workspace, configToWorkspaceArgs, loadWorkspaceConfigFile } =
-    await import('@struktoai/mirage-node')
+  const [{ Workspace }, { configToWorkspaceArgs, loadWorkspaceConfigFile }] = await Promise.all([
+    import('@struktoai/mirage-node/workspace'),
+    import('@struktoai/mirage-node/config'),
+  ])
   const config = loadWorkspaceConfigFile(configPath)
   const args = await configToWorkspaceArgs(config)
   // The Mounts ride through whole. Flattening them to [vfs, mode] here is

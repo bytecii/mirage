@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { Worker } from '../../concurrency/worker.ts'
 import { AsyncRegex, prepare } from '../../utils/regex.ts'
 import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
 import { concat } from '../../utils/bytes.ts'
@@ -1256,14 +1257,27 @@ function skipRecords(
 async function readRecord(
   lines: AsyncLineIterator,
   f: RgFlags,
+  pat: RegExp,
   signal?: AbortSignal,
 ): Promise<[Uint8Array, boolean] | null> {
+  let record: [Uint8Array, boolean]
   if (!f.nullData && f.json !== true) {
     const raw = await lines.readline(signal)
-    return raw === null ? null : [raw, true]
+    if (raw === null) return null
+    record = [raw, true]
+  } else {
+    record = await lines.readUntil(f.nullData ? 0 : 0x0a, signal)
+    if (!record[1] && record[0].length === 0) return null
   }
-  const [raw, terminated] = await lines.readUntil(f.nullData ? 0 : 0x0a, signal)
-  return terminated || raw.length > 0 ? [raw, terminated] : null
+  const [raw] = record
+  if (pat instanceof AsyncRegex) {
+    await pat.prepare(readLine(raw, f)[0], () =>
+      f.maxCount === null && !(f.quiet || f.filesOnly || f.filesWithoutMatch || f.stopOnNonmatch)
+        ? lines.bufferedLines(f.nullData ? 0 : 0x0a).map((item) => readLine(item, f)[0])
+        : [],
+    )
+  }
+  return record
 }
 
 // Read no further than the first selected line (-q, -l and
@@ -1279,7 +1293,7 @@ async function listing(
   let selected = 0
   for (;;) {
     skipRecords(lines, needles, pat, f)
-    const record = await readRecord(lines, f, signal)
+    const record = await readRecord(lines, f, pat, signal)
     if (record === null) break
     const [text] = readLine(record[0], f)
     if (await selects(pat, text, f.invert)) {
@@ -1307,7 +1321,7 @@ async function count(
   const needles = recordNeedles(pat, f)
   for (;;) {
     skipRecords(lines, needles, pat, f)
-    const record = await readRecord(lines, f, signal)
+    const record = await readRecord(lines, f, pat, signal)
     if (record === null) break
     const [text] = readLine(record[0], f)
     if (!(await selects(pat, text, f.invert))) {
@@ -1373,7 +1387,7 @@ async function* printedLines(
     const [skipped, bytes] = skipRecords(lines, needles, pat, f)
     index += skipped
     position += bytes
-    const record = await readRecord(lines, f, signal)
+    const record = await readRecord(lines, f, pat, signal)
     if (record === null) break
     const [raw, terminated] = record
     index += 1
@@ -1629,6 +1643,7 @@ export async function* searchHaystack(
   signal?: AbortSignal,
   named = true,
   pipe = false,
+  worker?: Worker,
 ): AsyncGenerator<Uint8Array> {
   // ripgrep selects no line at all under -m0 and prints nothing, count and
   // listing included.
@@ -1645,7 +1660,12 @@ export async function* searchHaystack(
           ? 'convert'
           : 'quit',
   )
-  const pattern = new AsyncRegex(pat, signal)
+  const pattern = new AsyncRegex(
+    pat,
+    signal,
+    !((f.quiet || f.filesOnly || f.filesWithoutMatch) && !(f.stats === true || f.json === true)),
+    worker,
+  )
   pat = pattern
   const reader = binary.read(source, pipe)
   const lines = new AsyncLineIterator(reader)

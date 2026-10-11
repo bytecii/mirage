@@ -7,6 +7,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from contextlib import aclosing
 from dataclasses import dataclass
 
 from mirage.commands.builtin.constants import (
@@ -47,6 +48,7 @@ from mirage.errors.fs import eacces, eisdir, fs_strerror
 from mirage.errors.posix import posix_phrase
 from mirage.errors.render import fs_error_line
 from mirage.errors.types import FsCondition, StaleWriteError
+from mirage.io.stream import ensure_stream
 from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import (
@@ -296,9 +298,10 @@ async def sed(
             paths, program, machine, access, read_bytes, write_bytes
         )
 
+    stdin_source = ensure_stream(stdin or b"")
     inputs: list[SedInput] = []
     if not paths:
-        inputs.append(SedInput("-", source=stdin or b""))
+        inputs.append(SedInput("-", source=stdin_source))
     # sed owns its exit code rather than letting the executor's
     # chokepoint pick it, because GNU sed splits a failed operand two
     # ways (GNU sed 4.9). An OPEN error (a missing file) is exit 2,
@@ -316,7 +319,7 @@ async def sed(
     look_ahead = looks_ahead(program) and not separate
     for p in paths:
         if is_stdin(p):
-            inputs.append(SedInput("-", source=stdin or b""))
+            inputs.append(SedInput("-", source=stdin_source))
             continue
         if inputs and inputs[-1].fatal and not look_ahead:
             break
@@ -337,12 +340,15 @@ async def sed(
     io = IOResult()
 
     async def output() -> AsyncIterator[bytes]:
-        async for chunk in machine.process(inputs, True):
-            yield from_byte_view(chunk, utf8)
-        write_err = await _flush_write_files(machine, access)
-        stderr = machine.stderr() + write_err
-        io.exit_code = machine.exit_code() if not write_err else 4
-        io.stderr = encode_text(stderr) if stderr else None
+        try:
+            async with aclosing(machine.process(inputs, True)) as chunks:
+                async for chunk in chunks:
+                    yield from_byte_view(chunk, utf8)
+        finally:
+            write_err = await _flush_write_files(machine, access)
+            stderr = machine.stderr() + write_err
+            io.exit_code = machine.exit_code() if not write_err else 4
+            io.stderr = encode_text(stderr) if stderr else None
 
     return output(), io
 

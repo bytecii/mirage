@@ -270,15 +270,9 @@ async function diffPair(
   const aLines = splitLinesKeepends(textA)
   const bLines = splitLinesKeepends(textB)
   let result: string[]
-  const module = new URL(
-    import.meta.url.endsWith('.ts') ? '../diff_format.ts' : '../diff_format.js',
-    import.meta.url,
-  )
-  if (flags.ed)
-    result = await runIsolated<string[]>(module, 'edScript', [aLines, bLines], walk.signal)
+  if (flags.ed) result = await runIsolated<string[]>('edScript', [aLines, bLines], walk.signal)
   else if (flags.unified)
     result = await runIsolated<string[]>(
-      module,
       'unifiedDiff',
       [
         aLines,
@@ -291,7 +285,7 @@ async function diffPair(
       ],
       walk.signal,
     )
-  else result = await runIsolated<string[]>(module, 'normalDiff', [aLines, bLines], walk.signal)
+  else result = await runIsolated<string[]>('normalDiff', [aLines, bLines], walk.signal)
   return ENC.encode(result.join(''))
 }
 

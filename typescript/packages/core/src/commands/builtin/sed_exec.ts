@@ -255,7 +255,14 @@ export class SedMachine {
     this.nextLine = undefined
     this.resetAtNextFile = true
     try {
-      while (!this.stopped() && (await this.readPatternSpace(false))) {
+      while (!this.stopped()) {
+        if (this.appendQueue.length > 0) this.dumpAppendQueue()
+        if (out.chunks.length > 0) {
+          const chunk = out.chunks.join('')
+          out.chunks.length = 0
+          yield chunk
+        }
+        if (!(await this.readPatternSpace(false))) break
         for await (const status of this.executeProgram()) {
           if (status !== -1) this.quitCode = status
           if (out.chunks.length > 0) {
@@ -317,7 +324,6 @@ export class SedMachine {
   }
 
   private async readPatternSpace(append: boolean): Promise<boolean> {
-    if (this.appendQueue.length > 0) this.dumpAppendQueue()
     this.replaced = false
     while (!(await this.more())) {
       if (this.fileIdx >= this.inputs.length) return false
@@ -595,6 +601,8 @@ export class SedMachine {
             throw new SedPanic('sed: INTERNAL ERROR: Bad cmd L\n')
           case 'n':
             if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
+            if (this.appendQueue.length > 0) this.dumpAppendQueue()
+            yield -1
             if ((await this.testEof()) || !(await this.readPatternSpace(false))) {
               yield -1
               return
@@ -602,6 +610,8 @@ export class SedMachine {
             break
           case 'N':
             this.pattern += '\n'
+            if (this.appendQueue.length > 0) this.dumpAppendQueue()
+            yield -1
             if ((await this.testEof()) || !(await this.readPatternSpace(true))) {
               this.pattern = this.pattern.slice(0, -1)
               if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)

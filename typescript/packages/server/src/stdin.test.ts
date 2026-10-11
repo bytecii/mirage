@@ -87,4 +87,17 @@ describe('UploadStdin', () => {
     await upload.discard()
     expect((await waiting).done).toBe(true)
   })
+  it('rejects excess input and keeps receiving after discard', async () => {
+    const upload = new UploadStdin(2, 4)
+    try {
+      await upload.feed(Buffer.from('ab'))
+      await upload.feed(Buffer.from('cd'))
+      await expect(upload.feed(Buffer.from('e'))).rejects.toMatchObject({ statusCode: 413 })
+      await upload.discard()
+      await upload.feed(Buffer.from('ignored'))
+      expect((await upload[Symbol.asyncIterator]().next()).done).toBe(true)
+    } finally {
+      await upload.discard()
+    }
+  })
 })

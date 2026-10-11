@@ -23,6 +23,7 @@ import { dispatchStat } from '../utils/paths.ts'
 import { resolvePath } from '../../../utils/path.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { readFailExitCode } from '../../spec/usage.ts'
+import { ensureStream } from '../../../io/stream.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
 import { FileType, PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
@@ -296,9 +297,10 @@ export async function sedGeneric(
 
   if (inPlace) return runInPlace(paths, program, machine, access, stream, write, utf8, opts.signal)
 
+  const stdinSource = ensureStream(opts.stdin ?? new Uint8Array())
   const inputs: SedInput[] = []
   if (paths.length === 0) {
-    inputs.push({ name: '-', source: opts.stdin ?? new Uint8Array() })
+    inputs.push({ name: '-', source: stdinSource })
   }
   // sed owns its exit code rather than letting the executor's chokepoint
   // pick it, because GNU sed splits a failed operand two ways (GNU sed
@@ -316,7 +318,7 @@ export async function sedGeneric(
   const lookAhead = looksAhead(program) && !parsed.separate
   for (const p of paths) {
     if (isStdin(p)) {
-      inputs.push({ name: '-', source: opts.stdin ?? new Uint8Array() })
+      inputs.push({ name: '-', source: stdinSource })
       continue
     }
     const last = inputs.at(-1)
@@ -336,12 +338,15 @@ export async function sedGeneric(
   }
   const io = new IOResult()
   async function* output(): AsyncGenerator<Uint8Array> {
-    for await (const chunk of machine.process(inputs, true, opts.signal))
-      yield fromByteView(chunk, utf8)
-    const writeErr = await flushWriteFiles(machine, access, utf8)
-    const stderr = machine.stderr() + writeErr
-    io.exitCode = writeErr === '' ? machine.exitCode() : 4
-    io.stderr = stderr === '' ? null : encodeText(stderr)
+    try {
+      for await (const chunk of machine.process(inputs, true, opts.signal))
+        yield fromByteView(chunk, utf8)
+    } finally {
+      const writeErr = await flushWriteFiles(machine, access, utf8)
+      const stderr = machine.stderr() + writeErr
+      io.exitCode = writeErr === '' ? machine.exitCode() : 4
+      io.stderr = stderr === '' ? null : encodeText(stderr)
+    }
   }
   return [output(), io]
 }

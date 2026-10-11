@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { Worker } from '../../../concurrency/worker.ts'
 import { GzipDataError, gunzipStream } from '../../../utils/compress.ts'
 import { mountPrefixOf, sameMountSpec } from '../../../utils/key_prefix.ts'
 import { mountParentReaddir, mountParentStat } from '../utils/wrap.ts'
@@ -926,20 +927,27 @@ export async function rgGeneric(
   let result: CommandFnResult
   if (f.listFiles) result = await listFiles(found, f, warnings)
   else if (pat === null) return usage(RG_NO_PATTERN)
-  else
-    result = await searchAll(
-      found,
-      paths,
-      pat,
-      f,
-      stream,
-      first,
-      warnings,
-      implicit,
-      opts.cwd,
-      opts.signal,
-      opts.shell,
-    )
+  else {
+    const worker = new Worker()
+    try {
+      result = await searchAll(
+        worker,
+        found,
+        paths,
+        pat,
+        f,
+        stream,
+        first,
+        warnings,
+        implicit,
+        opts.cwd,
+        opts.signal,
+        opts.shell,
+      )
+    } finally {
+      await worker.close()
+    }
+  }
   if (result === null) return result
   return noted(result, notes, f)
 }
@@ -1251,6 +1259,7 @@ async function preprocessed(
 }
 
 async function searchAll(
+  worker: Worker,
   found: AsyncIterable<Haystack>,
   paths: readonly PathSpec[],
   pat: RegExp,
@@ -1331,6 +1340,7 @@ async function searchAll(
         signal,
         !walked,
         pipe,
+        worker,
       )) {
         chunks.push(c)
       }

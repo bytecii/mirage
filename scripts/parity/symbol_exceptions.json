@@ -15,6 +15,7 @@
     "main": "Python subprocess entry point reads framed requests synchronously."
    },
    "typescript_only": {
+    "computations": "Literal imports keep browser worker computations in the bundler graph; Python resolves importable functions at runtime.",
     "Request": "Structured-clone message shape; Python uses a tuple on its private pipe.",
     "execute": "Web Worker message callback dispatches a computation asynchronously.",
     "node": "Selects the Node worker port or browser message handler."

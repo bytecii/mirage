@@ -8,12 +8,14 @@ describe('computation worker', () => {
     try {
       expect(
         await Promise.all([
-          worker.call(new URL('node:path'), 'basename', ['/a/b']),
-          worker.call(new URL('node:path'), 'join', ['a', 'b']),
+          worker.call('scan', ['a', '', false, 'abc']),
+          worker.call('scan', ['b', '', false, 'abc']),
         ]),
-      ).toEqual(['b', 'a/b'])
-      await expect(worker.call(new URL('node:path'), 'basename', [1])).rejects.toThrow()
-      expect(await worker.call(new URL('node:path'), 'basename', ['/a/c'])).toBe('c')
+      ).toMatchObject([[{ values: ['a'], index: 0 }], [{ values: ['b'], index: 1 }]])
+      await expect(worker.call('scan', ['[', '', false, 'abc'])).rejects.toThrow()
+      expect(await worker.call('scan', ['c', '', false, 'abc'])).toMatchObject([
+        { values: ['c'], index: 2 },
+      ])
     } finally {
       await worker.close()
     }
@@ -24,14 +26,10 @@ describe('computation worker', () => {
     const worker = new Worker()
     const controller = new AbortController()
     try {
-      await worker.call(new URL('node:path'), 'basename', ['/ready'])
+      await worker.call('scan', ['a', '', false, 'a'])
       const task = worker.call(
-        new URL(
-          'data:text/javascript,' +
-            encodeURIComponent('export function block() { while (true) {} }'),
-        ),
-        'block',
-        [],
+        'scan',
+        ['^(a+)+$', '', false, 'a'.repeat(80) + '!'],
         controller.signal,
       )
       const refused = expect(task).rejects.toMatchObject({ name: 'AbortError' })

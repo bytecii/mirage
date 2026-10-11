@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { Worker } from '../../concurrency/worker.ts'
 import { AsyncRegex } from '../../utils/regex.ts'
 import { YieldBudget } from '../../io/yield_budget.ts'
 import { closeQuietly } from '../../io/stream.ts'
@@ -212,6 +213,7 @@ export async function* grepInput(
   utf8 = false,
   // The input's size, which -T sizes its fields to; null for a pipe.
   size: number | null = null,
+  worker?: Worker,
 ): AsyncIterable<Uint8Array> {
   const budget = new YieldBudget(signal)
   io.exitCode = 1
@@ -253,7 +255,7 @@ export async function* grepInput(
     !f.invert && (!hasContext || f.countOnly || f.quiet || f.filesOnly || f.filesWithoutMatch)
       ? requiredNeedles(pat)
       : null
-  const pattern = new AsyncRegex(pat, signal, f.onlyMatching)
+  const pattern = new AsyncRegex(pat, signal, f.onlyMatching, worker)
   pat = pattern
   const input = binary.read(source)
   const lines = new AsyncLineIterator(input)
@@ -271,7 +273,11 @@ export async function* grepInput(
       const lineStart = bytePos
       bytePos += raw.length + 1
       const line = byteView(raw, utf8)
-      await pattern.prepare(line)
+      await pattern.prepare(line, () =>
+        f.maxCount === null && !(f.quiet || f.filesOnly || f.filesWithoutMatch)
+          ? lines.bufferedLines(eol).map((item) => byteView(item, utf8))
+          : [],
+      )
       let hit = pat.test(line) !== f.invert
       if (f.maxCount !== null && count >= f.maxCount) hit = false
       if (hit) {

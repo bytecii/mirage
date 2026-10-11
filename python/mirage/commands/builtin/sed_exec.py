@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 import re
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from dataclasses import dataclass, field
 
 from mirage.commands.builtin.sed_script import (
@@ -354,7 +354,7 @@ class SedMachine:
 
     async def process(
         self, inputs: list[SedInput], to_stdout: bool
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         """Run the program over ``inputs`` as one stream.
 
         With ``separate`` each file is its own stream. The main output
@@ -372,7 +372,15 @@ class SedMachine:
         self._next_line = None
         self._reset_at_next_file = True
         try:
-            while not self.stopped() and await self._read_pattern_space(False):
+            while not self.stopped():
+                if self._append_queue:
+                    self._dump_append_queue()
+                if out.chunks:
+                    chunk = "".join(out.chunks)
+                    out.chunks.clear()
+                    yield chunk
+                if not await self._read_pattern_space(False):
+                    break
                 async for status in self._execute_program():
                     if status != -1:
                         self.quit_code = status
@@ -433,8 +441,6 @@ class SedMachine:
         return self._next_line is not None
 
     async def _read_pattern_space(self, append: bool) -> bool:
-        if self._append_queue:
-            self._dump_append_queue()
         self._replaced = False
         while not await self._more():
             if self._file_idx >= len(self._inputs):
@@ -708,6 +714,9 @@ class SedMachine:
             elif c == "n":
                 if not self.no_default_output:
                     self._main.line(self._pattern, self._chomped)
+                if self._append_queue:
+                    self._dump_append_queue()
+                yield -1
                 if (
                     await self._test_eof()
                     or not await self._read_pattern_space(False)
@@ -716,6 +725,9 @@ class SedMachine:
                     return
             elif c == "N":
                 self._pattern += "\n"
+                if self._append_queue:
+                    self._dump_append_queue()
+                yield -1
                 if (
                     await self._test_eof()
                     or not await self._read_pattern_space(True)

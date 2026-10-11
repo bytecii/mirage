@@ -78,6 +78,24 @@
       "command": "seq inf | bc | head -n1",
       "stdout": "1\n",
       "exit_code": 0
+    },
+    {
+      "id": "sed-write-close",
+      "command": "printf 'x\\n' | sed 'w /saved' | head -n1; cat /saved",
+      "stdout": "x\nx\n",
+      "exit_code": 0
+    },
+    {
+      "id": "rg-multiline-context",
+      "command": "printf 'before\\nhit\\n' | rg -U -o -B1 hit",
+      "stdout": "before\nhit\n",
+      "exit_code": 0
+    },
+    {
+      "id": "rg-empty-restart",
+      "command": "printf 'bbb\\n' | rg --count-matches 'a*|b+'",
+      "stdout": "4\n",
+      "exit_code": 0
     }
   ],
   "http": [
@@ -88,6 +106,18 @@
     {
       "id": "wget-cancel",
       "command": "wget --timeout=0 -O /download {url}"
+    }
+  ],
+  "input": [
+    {
+      "id": "sed-next-flush",
+      "command": "sed n",
+      "stdout": "x\n"
+    },
+    {
+      "id": "sed-append-flush",
+      "command": "sed -n 'a appended'",
+      "stdout": "appended\n"
     }
   ]
 }

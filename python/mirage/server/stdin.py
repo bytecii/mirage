@@ -17,9 +17,12 @@ import tempfile
 from collections import deque
 from typing import BinaryIO, Protocol
 
+from fastapi import HTTPException
+
 from mirage.concurrency.limiter import run_blocking
 from mirage.io.cooperative import CHUNK_SIZE
 from mirage.io.pipe import CAPACITY
+from mirage.server.constants import MAX_STDIN_BYTES
 
 
 class StdinSource(Protocol):
@@ -65,8 +68,12 @@ class UploadStdin:
     request reader also owns disconnect and malformed-body notification.
     """
 
-    def __init__(self, capacity: int = CAPACITY) -> None:
+    def __init__(
+        self, capacity: int = CAPACITY, limit: int = MAX_STDIN_BYTES
+    ) -> None:
         self._capacity = capacity
+        self._limit = limit
+        self._received = 0
         self._chunks: deque[bytes] = deque()
         self._buffered = 0
         self._file: BinaryIO | None = None
@@ -88,6 +95,11 @@ class UploadStdin:
                 if self._discarding:
                     return
                 chunk = data[offset : offset + CHUNK_SIZE]
+                self._received += len(chunk)
+                if self._received > self._limit:
+                    raise HTTPException(
+                        status_code=413, detail="stdin part too large"
+                    )
                 if (
                     self._file is None
                     and self._buffered + len(chunk) <= self._capacity

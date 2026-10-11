@@ -71,6 +71,7 @@ from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
+from mirage.concurrency.worker import Worker
 from mirage.errors.constants import FS_ERRORS, WALK_ERRORS
 from mirage.errors.fs import walk_refusal
 from mirage.io.types import ByteSource, IOResult, materialize
@@ -1258,19 +1259,24 @@ async def rg_generic(
         out, io = await _list_files(found, f, warnings)
     else:
         assert pat is not None
-        out, io = await _search_all(
-            found,
-            paths,
-            pat,
-            f,
-            rb,
-            read_stream,
-            operand_stream,
-            warnings,
-            implicit,
-            cwd,
-            opts.shell,
-        )
+        worker = Worker()
+        try:
+            out, io = await _search_all(
+                worker,
+                found,
+                paths,
+                pat,
+                f,
+                rb,
+                read_stream,
+                operand_stream,
+                warnings,
+                implicit,
+                cwd,
+                opts.shell,
+            )
+        finally:
+            await worker.close()
     return await _noted((out, io), notes, f)
 
 
@@ -1664,6 +1670,7 @@ async def preprocessed(
 
 
 async def _search_all(
+    worker: Worker,
     found: AsyncIterator[Haystack],
     paths: list[PathSpec],
     pat: re.Pattern[str],
@@ -1684,6 +1691,7 @@ async def _search_all(
     under --heading a blank line goes between files instead.
 
     Args:
+        worker (Worker): one computation process shared by this invocation.
         found (AsyncIterator[Haystack]): the haystacks.
         paths (list[PathSpec]): the operands.
         pat (re.Pattern[str]): the compiled pattern.
@@ -1760,6 +1768,7 @@ async def _search_all(
                 tally,
                 not walked,
                 h.spec is not None and is_stdin(h.spec),
+                worker,
             ):
                 chunks.append(c)
             if faults:

@@ -37,7 +37,8 @@ async function createPort(
       },
     }
   }
-  const worker = new globalThis.Worker(new URL('./worker_entry.js', import.meta.url), {
+  const { Worker } = globalThis
+  const worker = new Worker(new URL('./worker_entry.js', import.meta.url), {
     type: 'module',
   })
   worker.onmessage = (event: MessageEvent<{ ok: boolean; value: unknown }>) => {
@@ -64,17 +65,11 @@ export class Worker {
   private done: ((data: { ok: boolean; value: unknown }) => void) | undefined
   private failed: ((error: Error) => void) | undefined
 
-  async call<T>(
-    module: URL,
-    name: string,
-    args: readonly unknown[],
-    signal?: AbortSignal,
-  ): Promise<T> {
-    return this.lock.withLock('call', () => this.execute<T>(module, name, args, signal))
+  async call<T>(name: string, args: readonly unknown[], signal?: AbortSignal): Promise<T> {
+    return this.lock.withLock('call', () => this.execute<T>(name, args, signal))
   }
 
   private async execute<T>(
-    module: URL,
     name: string,
     args: readonly unknown[],
     signal?: AbortSignal,
@@ -98,7 +93,7 @@ export class Worker {
         }
         this.failed = reject
       })
-      this.port.post({ module: module.href, name, args })
+      this.port.post({ name, args })
       return await abortable(result, signal)
     } catch (error) {
       await this.close()
@@ -117,14 +112,13 @@ export class Worker {
 }
 
 export async function runIsolated<T>(
-  module: URL,
   name: string,
   args: readonly unknown[],
   signal?: AbortSignal,
 ): Promise<T> {
   const worker = new Worker()
   try {
-    return await worker.call<T>(module, name, args, signal)
+    return await worker.call<T>(name, args, signal)
   } finally {
     await worker.close()
   }

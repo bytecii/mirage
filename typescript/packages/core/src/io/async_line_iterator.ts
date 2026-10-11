@@ -63,6 +63,19 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
     return { done: false, value: line }
   }
 
+  /** Peek at complete buffered records without pulling or consuming input. */
+  bufferedLines(eol = NEWLINE, limit = 31): Uint8Array[] {
+    const records: Uint8Array[] = []
+    let start = 0
+    while (records.length < limit) {
+      const end = this.buf.indexOf(eol, start)
+      if (end < 0) break
+      records.push(this.buf.subarray(start, end))
+      start = end + 1
+    }
+    return records
+  }
+
   /** Consume buffered empty lines without pulling more input. */
   skipEmptyLines(limit = Infinity, eol = NEWLINE): number {
     let count = 0

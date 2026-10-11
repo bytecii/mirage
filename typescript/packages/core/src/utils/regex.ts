@@ -1,78 +1,62 @@
 import { Worker } from '../concurrency/worker.ts'
-import { compilePosixRegex, foldsAsciiOnly } from './posix.ts'
-
-interface Match {
-  values: string[]
-  index: number
-  groups: RegExpExecArray['groups']
-  indices: RegExpExecArray['indices']
-}
-
-/** Evaluate the native regexp only inside an invocation-owned worker. */
-export function scan(
-  source: string,
-  flags: string,
-  ascii: boolean,
-  text: string,
-  allMatches = true,
-): Match[] {
-  const global = flags.includes('g') ? flags : flags + 'g'
-  const pattern = ascii ? compilePosixRegex(source, global) : new RegExp(source, global)
-  // Structured clone copies strings by value: sending each match's .input
-  // would turn a dense line into quadratic wire size and memory.
-  const first = allMatches ? null : pattern.exec(text)
-  const matches = allMatches ? text.matchAll(pattern) : first === null ? [] : [first]
-  return Array.from(matches, (match) => ({
-    values: [...match],
-    index: match.index,
-    groups: match.groups,
-    indices: match.indices,
-  }))
-}
+import { foldsAsciiOnly } from './posix.ts'
+import type { Match } from './regex_scan.ts'
 
 /** Prepared match data preserves synchronous rendering without running the engine there. */
 export class AsyncRegex extends RegExp {
-  private readonly worker = new Worker()
+  private readonly worker: Worker
+  private readonly ownsWorker: boolean
   private readonly cache = new Map<string, RegExpExecArray[]>()
   constructor(
     private readonly original: RegExp,
     private readonly signal?: AbortSignal,
     private readonly allMatches = true,
+    worker?: Worker,
   ) {
     super(original.source, original.flags)
+    this.ownsWorker = worker === undefined
+    this.worker = worker ?? new Worker()
   }
 
-  async prepare(text: string): Promise<void> {
+  async prepare(text: string, following?: () => string[]): Promise<void> {
     const cached = this.cache.get(text)
     if (cached !== undefined) {
       this.cache.delete(text)
       this.cache.set(text, cached)
       return
     }
-    const result = await this.worker.call<Match[]>(
-      new URL(import.meta.url),
-      'scan',
+    const subjects = [...new Set([text, ...(following?.() ?? [])])].slice(0, 32)
+    const missing = subjects.filter((subject) => !this.cache.has(subject))
+    const results = await this.worker.call<Match[][]>(
+      'scanMany',
       [
         this.original.source,
         this.original.flags,
         foldsAsciiOnly(this.original),
-        text,
+        missing,
         this.allMatches,
       ],
       this.signal,
     )
-    this.cache.set(
-      text,
-      result.map((match) => {
-        const native = match.values as RegExpExecArray
-        native.index = match.index
-        native.input = text
-        if (match.groups !== undefined) native.groups = match.groups
-        if (match.indices !== undefined) native.indices = match.indices
-        return native
-      }),
-    )
-    if (this.cache.size > 32) this.cache.delete(this.cache.keys().next().value ?? '')
+    for (const [index, subject] of missing.entries()) {
+      this.cache.set(
+        subject,
+        (results[index] ?? []).map((match) => {
+          const native = match.values as RegExpExecArray
+          native.index = match.index
+          native.input = subject
+          if (match.groups !== undefined) native.groups = match.groups
+          if (match.indices !== undefined) native.indices = match.indices
+          return native
+        }),
+      )
+    }
+    for (const subject of subjects) {
+      const matches = this.matches(subject)
+      this.cache.delete(subject)
+      this.cache.set(subject, matches)
+    }
+    while (this.cache.size > 32) this.cache.delete(this.cache.keys().next().value ?? '')
   }
 
   matches(text: string): RegExpExecArray[] {
@@ -101,7 +85,7 @@ export class AsyncRegex extends RegExp {
   }
 
   async close(): Promise<void> {
-    await this.worker.close()
+    if (this.ownsWorker) await this.worker.close()
     this.cache.clear()
   }
 }

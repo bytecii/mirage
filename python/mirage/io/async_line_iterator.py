@@ -79,6 +79,17 @@ class AsyncLineIterator:
         data, found = await self.read_until(eol)
         return data if found or data else None
 
+    def buffered_lines(
+        self, eol: bytes = b"\n", limit: int = 31
+    ) -> list[bytes]:
+        """Peek at complete buffered records without pulling or consuming input.
+
+        Args:
+            eol (bytes): the one-byte record delimiter.
+            limit (int): maximum records to return.
+        """
+        return self._buf.split(eol, limit)[:-1]
+
     def skip_empty_lines(
         self, limit: int | None = None, eol: bytes = b"\n"
     ) -> int:
