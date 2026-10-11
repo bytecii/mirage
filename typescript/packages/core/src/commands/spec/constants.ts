@@ -268,8 +268,12 @@ export const SOLE_ARGUMENT_LONG_OPTIONS: ReadonlySet<string> = new Set(['expr'])
 // `version_etc` or `usage` and exits INSIDE the loop.
 export const STANDARD_AFTER_SCAN: ReadonlySet<string> = new Set(['grep', 'rg'])
 
-// The builtins that answer -V as they answer --version (grep 3.11).
-export const SHORT_VERSION: ReadonlySet<string> = new Set(['grep'])
+// The short options a builtin answers as it answers --help or --version
+// (grep 3.11, ripgrep 14.1.1).
+export const SHORT_STANDARD: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  grep: { '-V': '--version' },
+  rg: { '-h': '--help', '-V': '--version' },
+}
 
 // The programs whose getopt string lists the ten digits as options, the
 // obsolete `-NUM` count spelled one letter at a time: the digits of one word

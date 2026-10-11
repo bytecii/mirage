@@ -37,6 +37,7 @@ import {
   walkHaystacks,
 } from '../rg_scan.ts'
 import {
+  lineEnd,
   printsContext,
   type RgFlags,
   searchHaystack,
@@ -72,6 +73,33 @@ const ENGINES = ['default', 'pcre2', 'auto']
 const SIZE = /^([0-9]+)([KMG]?)$/
 const SIZE_UNIT: Readonly<Record<string, number>> = { '': 1, K: 1 << 10, M: 1 << 20, G: 1 << 30 }
 const U64_MAX = (1n << 64n) - 1n
+// The sizes ripgrep reads as digits and a unit, each named as it is refused.
+const SIZE_SPELLINGS: Readonly<Record<string, string>> = {
+  max_filesize: '--max-filesize',
+  dfa_size_limit: '--dfa-size-limit',
+  regex_size_limit: '--regex-size-limit',
+}
+// What --colors takes (ripgrep 14.1.1 and termcolor): OUT:SPEC[:VALUE].
+const COLOR_OUTPUTS = ['path', 'line', 'column', 'match']
+const COLOR_SPECS = ['fg', 'bg', 'style', 'none']
+const COLOR_NAMES = ['black', 'blue', 'green', 'red', 'cyan', 'magenta', 'yellow', 'white']
+const COLOR_STYLES = ['nobold', 'bold', 'nointense', 'intense', 'nounderline', 'underline']
+const COLOR_NUMBER = /^(0x\+?[0-9A-Fa-f]+|\+?[0-9]+)$/
+// What --hyperlink-format takes: an alias or a URL with variables.
+const HYPERLINK_ALIASES = [
+  'default',
+  'file',
+  'grep+',
+  'kitty',
+  'macvim',
+  'none',
+  'textmate',
+  'vscode',
+  'vscode-insiders',
+  'vscodium',
+]
+const HYPERLINK_VARIABLES = ['path', 'line', 'column', 'host', 'wslprefix']
+const URL_SCHEME = /^[0-9A-Za-z+.-]+:/
 // The numeric options, each named as ripgrep names it in a refusal. The bag
 // keeps no record of which spelling the line typed, so a long one is refused
 // under its short name.
@@ -129,19 +157,137 @@ export function numberFlag(fl: FlagView, dest: string): number | null {
   return Number(digits)
 }
 
-// --max-filesize in bytes, refused in ripgrep's words.
-function filesizeFlag(fl: FlagView): number | null {
-  const value = fl.asStr('max_filesize')
+/**
+ * A size option in bytes (--max-filesize, --dfa-size-limit or
+ * --regex-size-limit), refused in ripgrep's words: digits and an optional K,
+ * M or G that fit in 64 bits.
+ */
+function sizeFlag(fl: FlagView, dest: string): number | null {
+  const value = fl.asStr(dest)
   if (value === undefined) return null
   const size = SIZE.exec(value)
-  if (size === null) {
+  let reason: string | null = null
+  if (size === null)
+    reason =
+      `invalid format for size '${value}', which should be a non-empty sequence of digits ` +
+      "followed by an optional 'K', 'M' or 'G' suffix"
+  else if (BigInt(size[1] ?? '') > U64_MAX)
+    reason = `invalid integer found in size '${value}': number too large to fit in target type`
+  else if (BigInt(size[1] ?? '') * BigInt(SIZE_UNIT[size[2] ?? ''] ?? 1) > U64_MAX)
+    reason = `size too big in '${value}'`
+  if (size === null || reason !== null)
     throw new UsageError(
-      `rg: error parsing flag --max-filesize: invalid size: invalid format for size '${value}', ` +
-        "which should be a non-empty sequence of digits followed by an optional 'K', 'M' or 'G' " +
-        'suffix',
+      `rg: error parsing flag ${SIZE_SPELLINGS[dest] ?? dest}: invalid size: ${reason ?? ''}`,
     )
-  }
   return Number(size[1]) * (SIZE_UNIT[size[2] ?? ''] ?? 1)
+}
+
+/** Why ripgrep refuses one --colors spec, or null. */
+function colorRefusal(spec: string): string | null {
+  const pieces = spec.split(':')
+  const malformed =
+    `invalid color spec format: '${spec}'. Valid format is ` +
+    "'(path|line|column|match):(fg|bg|style):(value)'."
+  if (pieces.length < 2 || pieces.length > 3) return malformed
+  const [out = '', type = '', value] = pieces
+  if (!COLOR_OUTPUTS.includes(out.toLowerCase()))
+    return `unrecognized output type '${out}'. Choose from: ${COLOR_OUTPUTS.join(', ')}.`
+  const kind = type.toLowerCase()
+  if (!COLOR_SPECS.includes(kind))
+    return `unrecognized spec type '${type}'. Choose from: ${COLOR_SPECS.join(', ')}.`
+  if (kind === 'none') return null
+  if (value === undefined) return malformed
+  if (kind === 'style') {
+    if (COLOR_STYLES.includes(value.toLowerCase())) return null
+    return `unrecognized style attribute '${value}'. Choose from: ${COLOR_STYLES.join(', ')}.`
+  }
+  return colorValueRefusal(value)
+}
+
+/** Why termcolor refuses a color: a name, 0-255 or an r,g,b triple. */
+function colorValueRefusal(value: string): string | null {
+  const number = (code: string): boolean => {
+    if (!COLOR_NUMBER.test(code)) return false
+    const hexed = code.startsWith('0x')
+    return parseInt(hexed ? code.slice(2) : code, hexed ? 16 : 10) <= 255
+  }
+  const codes = value.split(',')
+  if (
+    COLOR_NAMES.includes(value.toLowerCase()) ||
+    ((codes.length === 1 || codes.length === 3) && codes.every(number))
+  )
+    return null
+  if (codes.length === 1 && /^[0-9a-fA-F]*$/.test(value))
+    return (
+      "unrecognized ansi256 color number, should be '[0-255]' (or a hex number), " +
+      `but is '${value}'`
+    )
+  if (value.includes(','))
+    return (
+      "unrecognized RGB color triple, should be '[0-255],[0-255],[0-255]' (or a hex triple), " +
+      `but is '${value}'`
+    )
+  return `unrecognized color name '${value}'. Choose from: ${COLOR_NAMES.join(', ')}`
+}
+
+/** Why ripgrep refuses a --hyperlink-format, or null. */
+function hyperlinkRefusal(fmt: string): string | null {
+  if (fmt === '' || HYPERLINK_ALIASES.includes(fmt)) return null
+  const names: string[] = []
+  let head = ''
+  let i = 0
+  while (i < fmt.length) {
+    if (fmt.startsWith('{{', i) || fmt.startsWith('}}', i)) {
+      if (names.length === 0) head += fmt[i]
+      i += 2
+    } else if (fmt[i] === '{') {
+      const end = fmt.indexOf('}', i)
+      if (end < 0) return "unclosed variable: found '{' without a corresponding '}' following it"
+      const name = fmt.slice(i + 1, end)
+      if (!HYPERLINK_VARIABLES.includes(name))
+        return (
+          `invalid hyperlink format variable: '${name}', choose from: ` +
+          HYPERLINK_VARIABLES.join(', ')
+        )
+      names.push(name)
+      i = end + 1
+    } else if (fmt[i] === '}') {
+      return "unopened variable: found '}' without a corresponding '{' preceding it"
+    } else {
+      if (names.length === 0) head += fmt[i]
+      i += 1
+    }
+  }
+  if (names.length === 0)
+    return (
+      'at least a {path} variable is required in a hyperlink format, or otherwise use a valid ' +
+      `alias: ${HYPERLINK_ALIASES.join(', ')}`
+    )
+  if (!names.includes('path')) return 'the {path} variable is required in a hyperlink format'
+  if (names.includes('column') && !names.includes('line'))
+    return 'the hyperlink format contains a {column} variable, but no {line} variable is present'
+  if (!URL_SCHEME.test(head))
+    return 'the hyperlink format must start with a valid URL scheme, i.e., [0-9A-Za-z+-.]+:'
+  return null
+}
+
+/**
+ * Refuse what ripgrep refuses in the options mirage accepts and otherwise
+ * ignores: --colors, --hyperlink-format and the DFA and regex size limits.
+ */
+function checkDisplayFlags(fl: FlagView): void {
+  for (const spec of fl.asList('colors')) {
+    const refusal = colorRefusal(spec)
+    if (refusal !== null) throw new UsageError(`rg: error parsing flag --colors: ${refusal}`)
+  }
+  const fmt = fl.asStr('hyperlink_format')
+  const refusal = fmt === undefined ? null : hyperlinkRefusal(fmt)
+  if (refusal !== null)
+    throw new UsageError(
+      `rg: error parsing flag --hyperlink-format: invalid hyperlink format: ${refusal}`,
+    )
+  sizeFlag(fl, 'dfa_size_limit')
+  sizeFlag(fl, 'regex_size_limit')
 }
 
 // A value from a fixed set, refused in ripgrep's words.
@@ -278,10 +424,12 @@ function pathSeparator(fl: FlagView): string | null {
 export function parseFlags(fl: FlagView): RgFlags {
   const threads = numberFlag(fl, 'threads')
   choice(fl, 'color', '--color', COLOR_CHOICES)
+  checkDisplayFlags(fl)
   const caseMode = last(fl, 'ignore_case', 'case_sensitive', 'smart_case')
   const bounds = last(fl, 'word_regexp', 'line_regexp')
   const listing = last(fl, 'count', 'count_matches', 'files_with_matches', 'files_without_match')
-  const numbers = last(fl, 'line_number', 'no_line_number')
+  // -p turns on --heading and -n, each overridden by a later negation.
+  const numbers = last(fl, 'line_number', 'no_line_number', 'pretty')
   const vimgrep = fl.asBool('vimgrep')
   const columns = last(fl, 'column', 'no_column')
   const column = columns !== null ? columns === 'column' : vimgrep
@@ -324,7 +472,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     wholeWord: bounds === 'word_regexp',
     lineRegexp: bounds === 'line_regexp',
     fixedString: last(fl, 'fixed_strings', 'no_fixed_strings') === 'fixed_strings',
-    lineNumbers: numbers !== null ? numbers === 'line_number' : column || vimgrep,
+    lineNumbers: numbers !== null ? numbers !== 'no_line_number' : column || vimgrep,
     column,
     vimgrep,
     byteOffsets: last(fl, 'byte_offset', 'no_byte_offset') === 'byte_offset',
@@ -336,6 +484,7 @@ export function parseFlags(fl: FlagView): RgFlags {
       last(fl, 'max_columns_preview', 'no_max_columns_preview') === 'max_columns_preview',
     null: fl.asBool('null'),
     nullData: fl.asBool('null_data'),
+    crlf: last(fl, 'crlf', 'no_crlf') === 'crlf' && !fl.asBool('null_data'),
     pathSeparator: pathSeparator(fl),
     quiet: fl.asBool('quiet'),
     countOnly: listing === 'count',
@@ -348,7 +497,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     withFilename: filenameFlag(fl) === 'with_filename',
     noFilename: filenameFlag(fl) === 'no_filename',
     // --vimgrep prints a location per line, so it never heads a group.
-    heading: last(fl, 'heading', 'no_heading') === 'heading' && !vimgrep,
+    heading: ['heading', 'pretty'].includes(last(fl, 'heading', 'no_heading', 'pretty') ?? '') && !vimgrep,
     passthru,
     maxCount: numberFlag(fl, 'max_count'),
     stopOnNonmatch: fl.asBool('stop_on_nonmatch'),
@@ -370,7 +519,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     typeSelections: selections,
     hidden,
     maxDepth: numberFlag(fl, 'max_depth'),
-    maxFilesize: filesizeFlag(fl),
+    maxFilesize: sizeFlag(fl, 'max_filesize'),
     follow: last(fl, 'follow', 'no_follow') === 'follow',
     oneFileSystem: last(fl, 'one_file_system', 'no_one_file_system') === 'one_file_system',
     binary: binaryMode !== 'auto',
@@ -756,7 +905,7 @@ async function* settled(
   try {
     for await (const chunk of chunks) {
       if (!printed && label !== null && headed(f) && tally.binary !== true)
-        yield encodeText(label + (f.null || f.nullData ? '\0' : '\n'))
+        yield encodeText(label + (f.null ? '\0' : lineEnd(f)))
       printed = true
       yield chunk
     }
@@ -974,7 +1123,7 @@ async function searchAll(
       if (label !== null && headed(f)) {
         if (printed) out.push(ENC.encode('\n'))
         if (tally.binary !== true) {
-          out.push(encodeText(label + (f.null || f.nullData ? '\0' : '\n')))
+          out.push(encodeText(label + (f.null ? '\0' : lineEnd(f))))
         }
       } else if (context && printed && f.contextSeparator !== null) {
         out.push(encodeText(f.contextSeparator + '\n'))

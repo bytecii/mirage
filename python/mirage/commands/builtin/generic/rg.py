@@ -29,6 +29,7 @@ from mirage.commands.builtin.rg_scan import (
 from mirage.commands.builtin.rg_search import (
     RgFlags,
     Tally,
+    line_end,
     prints_context,
     search_haystack,
     smart_case_folds,
@@ -91,6 +92,49 @@ ENGINES = ("default", "pcre2", "auto")
 SIZE = re.compile(r"([0-9]+)([KMG]?)")
 SIZE_UNIT = {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30}
 U64_MAX = (1 << 64) - 1
+# The sizes ripgrep reads as digits and a unit, each named as it is refused.
+SIZE_SPELLINGS = {
+    "max_filesize": "--max-filesize",
+    "dfa_size_limit": "--dfa-size-limit",
+    "regex_size_limit": "--regex-size-limit",
+}
+# What --colors takes (ripgrep 14.1.1 and termcolor): OUT:SPEC[:VALUE].
+COLOR_OUTPUTS = ("path", "line", "column", "match")
+COLOR_SPECS = ("fg", "bg", "style", "none")
+COLOR_NAMES = (
+    "black",
+    "blue",
+    "green",
+    "red",
+    "cyan",
+    "magenta",
+    "yellow",
+    "white",
+)
+COLOR_STYLES = (
+    "nobold",
+    "bold",
+    "nointense",
+    "intense",
+    "nounderline",
+    "underline",
+)
+COLOR_NUMBER = re.compile(r"(0x\+?[0-9A-Fa-f]+|\+?[0-9]+)")
+# What --hyperlink-format takes: an alias or a URL with variables.
+HYPERLINK_ALIASES = (
+    "default",
+    "file",
+    "grep+",
+    "kitty",
+    "macvim",
+    "none",
+    "textmate",
+    "vscode",
+    "vscode-insiders",
+    "vscodium",
+)
+HYPERLINK_VARIABLES = ("path", "line", "column", "host", "wslprefix")
+URL_SCHEME = re.compile(r"[0-9A-Za-z+.-]+:")
 # The numeric options, each named as ripgrep names it in a refusal. The
 # bag keeps no record of which spelling the line typed, so a long one
 # is refused under its short name.
@@ -152,27 +196,200 @@ def number_flag(fl: FlagView, dest: str) -> int | None:
     return int(digits)
 
 
-def filesize_flag(fl: FlagView) -> int | None:
-    """--max-filesize in bytes, refused in ripgrep's words.
+def size_flag(fl: FlagView, dest: str) -> int | None:
+    """A size option in bytes, refused in ripgrep's words.
+
+    Args:
+        fl (FlagView): the flag view.
+        dest (str): --max-filesize, --dfa-size-limit or --regex-size-limit.
+
+    Raises:
+        UsageError: the size is not digits and an optional K, M or G, or
+            does not fit in 64 bits.
+    """
+    value = fl.as_str(dest)
+    if value is None:
+        return None
+    size = SIZE.fullmatch(value)
+    reason = None
+    if size is None:
+        reason = (
+            f"invalid format for size '{value}', which should be a "
+            "non-empty sequence of digits followed by an optional 'K', 'M' "
+            "or 'G' suffix"
+        )
+    elif int(size.group(1)) > U64_MAX:
+        reason = (
+            f"invalid integer found in size '{value}': number too large to "
+            "fit in target type"
+        )
+    elif int(size.group(1)) * SIZE_UNIT[size.group(2)] > U64_MAX:
+        reason = f"size too big in '{value}'"
+    if size is None or reason is not None:
+        raise UsageError(
+            f"rg: error parsing flag {SIZE_SPELLINGS[dest]}: invalid size: "
+            f"{reason}"
+        )
+    return int(size.group(1)) * SIZE_UNIT[size.group(2)]
+
+
+def color_refusal(spec: str) -> str | None:
+    """Why ripgrep refuses one --colors spec, or None.
+
+    Args:
+        spec (str): the spec as typed.
+    """
+    pieces = spec.split(":")
+    malformed = (
+        f"invalid color spec format: '{spec}'. Valid format is "
+        "'(path|line|column|match):(fg|bg|style):(value)'."
+    )
+    if not 2 <= len(pieces) <= 3:
+        return malformed
+    if pieces[0].lower() not in COLOR_OUTPUTS:
+        return (
+            f"unrecognized output type '{pieces[0]}'. Choose from: "
+            f"{', '.join(COLOR_OUTPUTS)}."
+        )
+    kind = pieces[1].lower()
+    if kind not in COLOR_SPECS:
+        return (
+            f"unrecognized spec type '{pieces[1]}'. Choose from: "
+            f"{', '.join(COLOR_SPECS)}."
+        )
+    if kind == "none":
+        return None
+    if len(pieces) < 3:
+        return malformed
+    value = pieces[2]
+    if kind == "style":
+        if value.lower() in COLOR_STYLES:
+            return None
+        return (
+            f"unrecognized style attribute '{value}'. Choose from: "
+            f"{', '.join(COLOR_STYLES)}."
+        )
+    return color_value_refusal(value)
+
+
+def color_value_refusal(value: str) -> str | None:
+    """Why termcolor refuses a color: a name, 0-255 or an r,g,b triple.
+
+    Args:
+        value (str): the color as typed.
+    """
+
+    def number(code: str) -> bool:
+        if COLOR_NUMBER.fullmatch(code) is None:
+            return False
+        hexed = code.startswith("0x")
+        return int(code[2:] if hexed else code, 16 if hexed else 10) <= 255
+
+    codes = value.split(",")
+    if value.lower() in COLOR_NAMES or (
+        len(codes) in (1, 3) and all(number(code) for code in codes)
+    ):
+        return None
+    if len(codes) == 1 and all(c in "0123456789abcdefABCDEF" for c in value):
+        return (
+            "unrecognized ansi256 color number, should be '[0-255]' (or a "
+            f"hex number), but is '{value}'"
+        )
+    if "," in value:
+        return (
+            "unrecognized RGB color triple, should be "
+            "'[0-255],[0-255],[0-255]' (or a hex triple), but is "
+            f"'{value}'"
+        )
+    return (
+        f"unrecognized color name '{value}'. Choose from: "
+        f"{', '.join(COLOR_NAMES)}"
+    )
+
+
+def hyperlink_refusal(fmt: str) -> str | None:
+    """Why ripgrep refuses a --hyperlink-format, or None.
+
+    Args:
+        fmt (str): the format as typed.
+    """
+    if not fmt or fmt in HYPERLINK_ALIASES:
+        return None
+    names: list[str] = []
+    head = ""
+    i = 0
+    while i < len(fmt):
+        if fmt.startswith(("{{", "}}"), i):
+            head += "" if names else fmt[i]
+            i += 2
+        elif fmt[i] == "{":
+            end = fmt.find("}", i)
+            if end < 0:
+                return (
+                    "unclosed variable: found '{' without a corresponding "
+                    "'}' following it"
+                )
+            name = fmt[i + 1 : end]
+            if name not in HYPERLINK_VARIABLES:
+                return (
+                    f"invalid hyperlink format variable: '{name}', choose "
+                    f"from: {', '.join(HYPERLINK_VARIABLES)}"
+                )
+            names.append(name)
+            i = end + 1
+        elif fmt[i] == "}":
+            return (
+                "unopened variable: found '}' without a corresponding '{' "
+                "preceding it"
+            )
+        else:
+            head += "" if names else fmt[i]
+            i += 1
+    if not names:
+        return (
+            "at least a {path} variable is required in a hyperlink format, "
+            "or otherwise use a valid alias: "
+            f"{', '.join(HYPERLINK_ALIASES)}"
+        )
+    if "path" not in names:
+        return "the {path} variable is required in a hyperlink format"
+    if "column" in names and "line" not in names:
+        return (
+            "the hyperlink format contains a {column} variable, but no "
+            "{line} variable is present"
+        )
+    if URL_SCHEME.match(head) is None:
+        return (
+            "the hyperlink format must start with a valid URL scheme, i.e., "
+            "[0-9A-Za-z+-.]+:"
+        )
+    return None
+
+
+def check_display_flags(fl: FlagView) -> None:
+    """Refuse what ripgrep refuses in the options mirage accepts and
+    otherwise ignores: --colors, --hyperlink-format and the DFA and regex
+    size limits.
 
     Args:
         fl (FlagView): the flag view.
 
     Raises:
-        UsageError: the size is not digits and an optional K, M or G.
+        UsageError: a value ripgrep refuses, in its words.
     """
-    value = fl.as_str("max_filesize")
-    if value is None:
-        return None
-    size = SIZE.fullmatch(value)
-    if size is None:
+    for spec in fl.as_list("colors"):
+        refusal = color_refusal(spec)
+        if refusal is not None:
+            raise UsageError(f"rg: error parsing flag --colors: {refusal}")
+    fmt = fl.as_str("hyperlink_format")
+    refusal = hyperlink_refusal(fmt) if fmt is not None else None
+    if refusal is not None:
         raise UsageError(
-            "rg: error parsing flag --max-filesize: invalid size: invalid "
-            f"format for size '{value}', which should be a non-empty "
-            "sequence of digits followed by an optional 'K', 'M' or 'G' "
-            "suffix"
+            "rg: error parsing flag --hyperlink-format: invalid hyperlink "
+            f"format: {refusal}"
         )
-    return int(size.group(1)) * SIZE_UNIT[size.group(2)]
+    size_flag(fl, "dfa_size_limit")
+    size_flag(fl, "regex_size_limit")
 
 
 def _choice(
@@ -357,6 +574,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
     """
     threads = number_flag(fl, "threads")
     _choice(fl, "color", "--color", COLOR_CHOICES)
+    check_display_flags(fl)
     case = _last(fl, "ignore_case", "case_sensitive", "smart_case")
     bounds = _last(fl, "word_regexp", "line_regexp")
     listing = _last(
@@ -366,7 +584,8 @@ def parse_flags(fl: FlagView) -> RgFlags:
         "files_with_matches",
         "files_without_match",
     )
-    numbers = _last(fl, "line_number", "no_line_number")
+    # -p turns on --heading and -n, each overridden by a later negation.
+    numbers = _last(fl, "line_number", "no_line_number", "pretty")
     vimgrep = fl.as_bool("vimgrep")
     columns = _last(fl, "column", "no_column")
     column = columns == "column" if columns is not None else vimgrep
@@ -420,7 +639,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         line_regexp=bounds == "line_regexp",
         fixed_string=_last(fl, "fixed_strings", "no_fixed_strings")
         == "fixed_strings",
-        line_numbers=(numbers == "line_number")
+        line_numbers=numbers in ("line_number", "pretty")
         if numbers
         else column or vimgrep,
         column=column,
@@ -437,6 +656,8 @@ def parse_flags(fl: FlagView) -> RgFlags:
         == "max_columns_preview",
         null=fl.as_bool("null"),
         null_data=fl.as_bool("null_data"),
+        crlf=_last(fl, "crlf", "no_crlf") == "crlf"
+        and not fl.as_bool("null_data"),
         path_separator=path_separator(fl),
         quiet=fl.as_bool("quiet"),
         count_only=listing == "count",
@@ -450,7 +671,8 @@ def parse_flags(fl: FlagView) -> RgFlags:
         with_filename=filename_flag(fl) == "with_filename",
         no_filename=filename_flag(fl) == "no_filename",
         # --vimgrep prints a location per line, so it never heads a group.
-        heading=_last(fl, "heading", "no_heading") == "heading"
+        heading=_last(fl, "heading", "no_heading", "pretty")
+        in ("heading", "pretty")
         and not vimgrep,
         passthru=passthru,
         max_count=number_flag(fl, "max_count"),
@@ -480,7 +702,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         type_selections=tuple(selections),
         hidden=hidden,
         max_depth=number_flag(fl, "max_depth"),
-        max_filesize=filesize_flag(fl),
+        max_filesize=size_flag(fl, "max_filesize"),
         follow=_last(fl, "follow", "no_follow") == "follow",
         one_file_system=_last(fl, "one_file_system", "no_one_file_system")
         == "one_file_system",
@@ -1039,9 +1261,7 @@ async def _settled(
                 and _headed(f)
                 and not tally.binary
             ):
-                yield encode_text(label) + (
-                    b"\0" if f.null or f.null_data else b"\n"
-                )
+                yield encode_text(label) + (b"\0" if f.null else line_end(f))
             printed = True
             yield chunk
     except FS_ERRORS as exc:
@@ -1312,8 +1532,7 @@ async def _search_all(
                     out.append(b"\n")
                 if not tally.binary:
                     out.append(
-                        encode_text(label)
-                        + (b"\0" if f.null or f.null_data else b"\n")
+                        encode_text(label) + (b"\0" if f.null else line_end(f))
                     )
             elif context and printed and f.context_separator is not None:
                 out.append(encode_text(f.context_separator) + b"\n")

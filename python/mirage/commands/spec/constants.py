@@ -248,8 +248,12 @@ SOLE_ARGUMENT_LONG_OPTIONS = frozenset({"expr"})
 # `usage` and exits INSIDE the loop.
 STANDARD_AFTER_SCAN = frozenset({"grep", "rg"})
 
-# The builtins that answer -V as they answer --version (grep 3.11).
-SHORT_VERSION = frozenset({"grep"})
+# The short options a builtin answers as it answers --help or --version
+# (grep 3.11, ripgrep 14.1.1).
+SHORT_STANDARD = {
+    "grep": {"-V": "--version"},
+    "rg": {"-h": "--help", "-V": "--version"},
+}
 
 # The programs whose getopt string lists the ten digits as options, the
 # obsolete `-NUM` count spelled one letter at a time: the digits of one

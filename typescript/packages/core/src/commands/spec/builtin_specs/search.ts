@@ -307,6 +307,9 @@ export const SPECS: Record<string, CommandSpec> = {
       new Argument('--no-mmap', { action: 'store_true' }),
       new Argument('--no-follow', { action: 'store_true' }),
       new Argument('--no-stats', { action: 'store_true' }),
+      // A line may end in CR LF: `$` matches before the CR and every line rg
+      // writes ends in CR LF.
+      new Argument('--crlf', { action: 'store_true' }),
       new Argument('--no-crlf', { action: 'store_true' }),
       new Argument('--no-multiline', { action: 'store_true' }),
       new Argument('--no-multiline-dotall', { action: 'store_true' }),
@@ -324,6 +327,22 @@ export const SPECS: Record<string, CommandSpec> = {
       new Argument('--auto-hybrid-regex', { action: 'store_true' }),
       new Argument('--no-auto-hybrid-regex', { action: 'store_true' }),
       new Argument('--color'),
+      // -p is --heading -n plus colors, which mirage never writes.
+      new Argument(['-p', '--pretty'], { action: 'store_true' }),
+      // Accepted no-ops whose values ripgrep checks, refused in its words:
+      // mirage writes no colors or hyperlinks and compiles no DFA, and logs
+      // nothing for --debug and --trace.
+      new Argument('--colors', { action: 'append' }),
+      new Argument('--hyperlink-format'),
+      new Argument('--hostname-bin'),
+      new Argument('--dfa-size-limit'),
+      new Argument('--regex-size-limit'),
+      new Argument('--debug', { action: 'store_true' }),
+      new Argument('--trace', { action: 'store_true' }),
+      // The help page and the version, like the --help and --version the
+      // registration supplies.
+      new Argument('-h', { action: 'store_true' }),
+      new Argument('-V', { action: 'store_true' }),
       new Argument('text', {
         metavar: '',
         nargs: '?',

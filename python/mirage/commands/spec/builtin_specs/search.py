@@ -219,6 +219,9 @@ SPECS: dict[str, CommandSpec] = {
             # -L's negation, the last of the two winning.
             Argument("--no-follow", action="store_true"),
             Argument("--no-stats", action="store_true"),
+            # A line may end in CR LF: `$` matches before the CR and every
+            # line rg writes ends in CR LF.
+            Argument("--crlf", action="store_true"),
             Argument("--no-crlf", action="store_true"),
             Argument("--no-multiline", action="store_true"),
             Argument("--no-multiline-dotall", action="store_true"),
@@ -238,6 +241,22 @@ SPECS: dict[str, CommandSpec] = {
             # Accepted no-op like grep --color (#471), with ripgrep's
             # required value.
             Argument("--color"),
+            # -p is --heading -n plus colors, which mirage never writes.
+            Argument("-p", "--pretty", action="store_true"),
+            # Accepted no-ops whose values ripgrep checks, refused in its
+            # words: mirage writes no colors or hyperlinks and compiles no
+            # DFA, and logs nothing for --debug and --trace.
+            Argument("--colors", action="append"),
+            Argument("--hyperlink-format"),
+            Argument("--hostname-bin"),
+            Argument("--dfa-size-limit"),
+            Argument("--regex-size-limit"),
+            Argument("--debug", action="store_true"),
+            Argument("--trace", action="store_true"),
+            # The help page and the version, like the --help and --version
+            # the registration supplies.
+            Argument("-h", action="store_true"),
+            Argument("-V", action="store_true"),
             # --files and --type-list search nothing, so the first operand is
             # a path rather than the pattern.
             Argument(

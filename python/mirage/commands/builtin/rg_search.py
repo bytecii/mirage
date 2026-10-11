@@ -103,10 +103,33 @@ class RgFlags:
     sort_reverse: bool
     no_messages: bool
     null_data: bool = False
+    crlf: bool = False
     engine: str = "default"
     threads: int | None = None
     text: bool = False
     unicode: bool = True
+
+
+def line_end(f: RgFlags) -> bytes:
+    """What ends a line rg writes itself, as opposed to a line it read:
+    NUL under --null-data, CR LF under --crlf.
+
+    Args:
+        f (RgFlags): the parsed flags.
+    """
+    return b"\0" if f.null_data else b"\r\n" if f.crlf else b"\n"
+
+
+def read_line(raw: bytes, f: RgFlags) -> tuple[str, bool]:
+    """One record's text, and whether --crlf took a CR off its end so
+    that `$`, -x and -w see the line without it.
+
+    Args:
+        raw (bytes): the record, its terminator stripped.
+        f (RgFlags): the parsed flags.
+    """
+    cr = f.crlf and raw.endswith(b"\r")
+    return decode_text(raw[:-1] if cr else raw), cr
 
 
 def prints_context(f: RgFlags) -> bool:
@@ -580,7 +603,9 @@ class RgPrinter:
             f.column or f.vimgrep or f.replace is not None or f.only_matching
         )
 
-    def context(self, index: int, start: int, text: str) -> list[bytes]:
+    def context(
+        self, index: int, start: int, text: str, cr: bool = False
+    ) -> list[bytes]:
         """The records one context line prints: the line, or under -o each
         of its matches (the whole line when it has none).
 
@@ -588,6 +613,7 @@ class RgPrinter:
             index (int): the line's 0-based index.
             start (int): the line's byte offset.
             text (str): the line, from ``decode_text``.
+            cr (bool): --crlf took a CR off the line's end.
         """
         if self._f.only_matching:
             return list(
@@ -597,11 +623,14 @@ class RgPrinter:
                     text,
                     list(rust_matches(self._pat, text)),
                     False,
+                    cr,
                 )
             )
-        return [self._record(index, None, start, text, [], False, True, 0)]
+        return [self._record(index, None, start, text, [], False, True, 0, cr)]
 
-    def selected(self, index: int, start: int, text: str) -> Iterator[bytes]:
+    def selected(
+        self, index: int, start: int, text: str, cr: bool = False
+    ) -> Iterator[bytes]:
         """The records one selected line prints, one per match under -o
         and --vimgrep, produced as they are asked for.
 
@@ -609,6 +638,7 @@ class RgPrinter:
             index (int): the line's 0-based index.
             start (int): the line's byte offset.
             text (str): the line, from ``decode_text``.
+            cr (bool): --crlf took a CR off the line's end.
         """
         f = self._f
         matches = (
@@ -617,7 +647,7 @@ class RgPrinter:
             else list(rust_matches(self._pat, text))
         )
         if f.only_matching:
-            yield from self._pieces(index, start, text, matches, True)
+            yield from self._pieces(index, start, text, matches, True, cr)
             return
         if f.replace is not None and matches:
             shown, spans = replace_all(self._pat, text, f.replace)
@@ -641,13 +671,22 @@ class RgPrinter:
                     True,
                     terminated,
                     len(matches),
+                    cr,
                 )
             return
         column = None
         if f.column and spans:
             column = 1 + byte_offset(shown, spans[0][0])
         yield self._record(
-            index, column, start, shown, spans, True, terminated, len(matches)
+            index,
+            column,
+            start,
+            shown,
+            spans,
+            True,
+            terminated,
+            len(matches),
+            cr,
         )
 
     def _pieces(
@@ -657,6 +696,7 @@ class RgPrinter:
         text: str,
         matches: list[re.Match[str]],
         is_match: bool,
+        cr: bool,
     ) -> Iterator[bytes]:
         """-o's records for one line: every match, an empty one included,
         each at its own offset, or the whole line when nothing in it
@@ -669,10 +709,13 @@ class RgPrinter:
             text (str): the line.
             matches (list[re.Match[str]]): the line's matches.
             is_match (bool): a selected line, not a context line.
+            cr (bool): --crlf took a CR off the line's end.
         """
         f = self._f
         if not matches:
-            yield self._record(index, None, start, text, [], is_match, True, 0)
+            yield self._record(
+                index, None, start, text, [], is_match, True, 0, cr
+            )
             return
         cursor = ByteCursor(text)
         for m in matches:
@@ -702,6 +745,7 @@ class RgPrinter:
         is_match: bool,
         terminated: bool,
         count: int,
+        cr: bool = False,
     ) -> bytes:
         """One printed record.
 
@@ -716,6 +760,9 @@ class RgPrinter:
                 terminator in its length (a plain line does, a replaced
                 line and a -o match do not).
             count (int): the line's match count -M reports.
+            cr (bool): --crlf took a CR off the line's end. A line
+                printed as it was read ends as it did; every other
+                record ends as ``line_end`` says.
         """
         f = self._f
         sep = (
@@ -739,7 +786,9 @@ class RgPrinter:
             _byte_len(body) + int(terminated) > f.max_columns
         ):
             body = self._exceeded(body, spans, is_match, count)
-        return encode_text(f"{head}{body}") + (b"\0" if f.null_data else b"\n")
+            terminated = False
+        end = b"\n" if f.crlf and terminated and not cr else line_end(f)
+        return encode_text(f"{head}{body}") + end
 
     def _exceeded(
         self,
@@ -868,7 +917,7 @@ async def _listing(
         tally (Tally): receives the selection.
     """
     async for raw, _, _ in _records(lines, f, pat):
-        if _selects(pat, decode_text(raw), f.invert):
+        if _selects(pat, read_line(raw, f)[0], f.invert):
             tally.selected = True
             return
 
@@ -888,7 +937,7 @@ async def _count(
     selected = 0
     stop = nonmatch_stop(f)
     async for raw, _, _ in _records(lines, f, pat):
-        text = decode_text(raw)
+        text, _ = read_line(raw, f)
         if not _selects(pat, text, f.invert):
             if stop.armed:
                 break
@@ -943,7 +992,7 @@ async def _printed_lines(
         label (str | None): the path the notice leads with.
     """
     context = prints_context(f)
-    held: deque[tuple[int, int, str]] = deque(
+    held: deque[tuple[int, int, str, bool]] = deque(
         maxlen=f.context_before if context else 0
     )
     budget = YieldBudget()
@@ -959,7 +1008,7 @@ async def _printed_lines(
         index += 1
         start = position
         position += len(raw) + 1
-        text = decode_text(raw)
+        text, cr = read_line(raw, f)
         hit = _selects(pat, text, f.invert)
         if binary.offset is not None:
             if hit:
@@ -972,12 +1021,12 @@ async def _printed_lines(
             # The line that stops the file still prints as the context
             # it is.
             if f.passthru or after_left > 0:
-                for chunk in printer.context(index, start, text):
+                for chunk in printer.context(index, start, text, cr):
                     yield chunk
             return
         if not hit and stop.passes_over():
             if context:
-                held.append((index, start, text))
+                held.append((index, start, text, cr))
             continue
         selecting = f.max_count is None or selected < f.max_count
         records: Iterable[bytes] = ()
@@ -992,31 +1041,29 @@ async def _printed_lines(
                     and first > last_printed + 1
                     and f.context_separator is not None
                 ):
-                    yield encode_text(f.context_separator) + (
-                        b"\0" if f.null_data else b"\n"
-                    )
-                for i, s, t in held:
-                    for chunk in printer.context(i, s, t):
+                    yield encode_text(f.context_separator) + line_end(f)
+                for i, s, t, c in held:
+                    for chunk in printer.context(i, s, t, c):
                         yield chunk
                 held.clear()
                 after_left = f.context_after
-            records = printer.selected(index, start, text)
+            records = printer.selected(index, start, text, cr)
             last_printed = index
         elif f.passthru:
             if not selecting:
                 return
-            records = printer.context(index, start, text)
+            records = printer.context(index, start, text, cr)
             last_printed = index
         elif after_left > 0:
             records = (
-                printer.selected(index, start, text)
+                printer.selected(index, start, text, cr)
                 if hit
-                else printer.context(index, start, text)
+                else printer.context(index, start, text, cr)
             )
             after_left -= 1
             last_printed = index
         elif context:
-            held.append((index, start, text))
+            held.append((index, start, text, cr))
         for chunk in records:
             yield chunk
             await budget.run()
@@ -1082,9 +1129,7 @@ async def search_haystack(
                 tally.skipped = True
                 return
             if not f.quiet and tally.selected == f.files_only:
-                yield encode_text(name) + (
-                    b"\0" if f.null or f.null_data else b"\n"
-                )
+                yield encode_text(name) + (b"\0" if f.null else line_end(f))
             return
         if f.count_only or f.count_matches:
             count = await _count(lines, pat, f, tally)
@@ -1097,7 +1142,7 @@ async def search_haystack(
                 yield (
                     head
                     + str(count).encode()
-                    + (b"\0" if f.null_data else b"\n")
+                    + line_end(f)
                 )
             return
         printer = RgPrinter(f, pat, None if f.heading else label)

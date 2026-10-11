@@ -17,7 +17,7 @@ import { ROOT_CWD } from '../constants.ts'
 import { isBuiltinGrammar, registeredSpec } from './builtins.ts'
 import {
   HELP_OPTION,
-  SHORT_VERSION,
+  SHORT_STANDARD,
   STANDARD_AFTER_SCAN,
   STANDARD_BEFORE_SCAN,
   VERSION_OPTION,
@@ -106,10 +106,9 @@ export function standardRequest(
   if (spec === null) return null
   const offered: string[] = []
   if (hasInjectedHelp(spec)) offered.push('--help')
-  if (hasInjectedVersion(spec)) {
-    offered.push('--version')
-    if (SHORT_VERSION.has(name) && isBuiltinGrammar(name, spec)) offered.push('-V')
-  }
+  if (hasInjectedVersion(spec)) offered.push('--version')
+  const shorts = isBuiltinGrammar(name, spec) ? (SHORT_STANDARD[name] ?? {}) : {}
+  for (const [short, long] of Object.entries(shorts)) if (offered.includes(long)) offered.push(short)
   if (offered.length === 0) return null
   const whole = parse(name, spec, argv)
   let first: { index: number; option: string } | null = null
@@ -124,5 +123,6 @@ export function standardRequest(
     if (hasOptionError(parse(name, spec, argv.slice(0, first.index)))) return null
     if (builtin && STANDARD_AFTER_SCAN.has(name) && hasOptionError(whole)) return null
   }
-  return ENC.encode(first.option === '--help' ? helpPage(name, spec) : versionLine(name))
+  const option = shorts[first.option] ?? first.option
+  return ENC.encode(option === '--help' ? helpPage(name, spec) : versionLine(name))
 }

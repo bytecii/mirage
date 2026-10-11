@@ -58,6 +58,7 @@ export interface RgFlags {
   maxColumnsPreview: boolean
   null: boolean
   nullData: boolean
+  crlf?: boolean
   pathSeparator: string | null
   quiet: boolean
   countOnly: boolean
@@ -544,6 +545,23 @@ function lstripAscii(text: string): string {
  * every record leads with, null when the records carry none (a single
  * unlabelled input, or a --heading that already named the file).
  */
+/**
+ * What ends a line rg writes itself, as opposed to a line it read: NUL under
+ * --null-data, CR LF under --crlf.
+ */
+export function lineEnd(f: RgFlags): string {
+  return f.nullData ? '\0' : f.crlf === true ? '\r\n' : '\n'
+}
+
+/**
+ * One record's text, and whether --crlf took a CR off its end so that `$`,
+ * -x and -w see the line without it.
+ */
+function readLine(raw: Uint8Array, f: RgFlags): [string, boolean] {
+  const cr = f.crlf === true && raw[raw.length - 1] === 0x0d
+  return [decodeText(cr ? raw.subarray(0, raw.length - 1) : raw), cr]
+}
+
 export class RgPrinter {
   // ripgrep tracks each match of a line only when something needs it, and
   // -M words its refusal from whether it did.
@@ -559,20 +577,21 @@ export class RgPrinter {
 
   // The records one context line prints: the line, or under -o each of its
   // matches (the whole line when it has none).
-  context(index: number, start: number, text: string): Uint8Array[] {
+  // `cr` says --crlf took a CR off the line's end.
+  context(index: number, start: number, text: string, cr = false): Uint8Array[] {
     if (this.f.onlyMatching) {
-      return [...this.pieces(index, start, text, [...rustMatches(this.pat, text)], false)]
+      return [...this.pieces(index, start, text, [...rustMatches(this.pat, text)], false, cr)]
     }
-    return [this.record(index, null, start, text, [], false, true, 0)]
+    return [this.record(index, null, start, text, [], false, true, 0, cr)]
   }
 
   // The records one selected line prints, one per match under -o and
   // --vimgrep, produced as they are asked for.
-  *selected(index: number, start: number, text: string): Generator<Uint8Array> {
+  *selected(index: number, start: number, text: string, cr = false): Generator<Uint8Array> {
     const f = this.f
     const matches = f.invert || !this.granular ? [] : [...rustMatches(this.pat, text)]
     if (f.onlyMatching) {
-      yield* this.pieces(index, start, text, matches, true)
+      yield* this.pieces(index, start, text, matches, true, cr)
       return
     }
     let shown: string
@@ -592,13 +611,13 @@ export class RgPrinter {
       const cursor = new ByteCursor(shown)
       for (const [s] of spans) {
         const column = f.column ? 1 + cursor.at(s) : null
-        yield this.record(index, column, start, shown, spans, true, terminated, matches.length)
+        yield this.record(index, column, start, shown, spans, true, terminated, matches.length, cr)
       }
       return
     }
     const first = spans[0]
     const column = f.column && first !== undefined ? 1 + byteOffset(shown, first[0]) : null
-    yield this.record(index, column, start, shown, spans, true, terminated, matches.length)
+    yield this.record(index, column, start, shown, spans, true, terminated, matches.length, cr)
   }
 
   // -o's records for one line: every match, an empty one included, each at
@@ -610,10 +629,11 @@ export class RgPrinter {
     text: string,
     matches: readonly RegExpExecArray[],
     isMatch: boolean,
+    cr: boolean,
   ): Generator<Uint8Array> {
     const f = this.f
     if (matches.length === 0) {
-      yield this.record(index, null, start, text, [], isMatch, true, 0)
+      yield this.record(index, null, start, text, [], isMatch, true, 0, cr)
       return
     }
     const cursor = new ByteCursor(text)
@@ -637,7 +657,9 @@ export class RgPrinter {
 
   // One printed record. `terminated` says whether ripgrep's -M counts the
   // line's terminator in its length (a plain line does, a replaced line and
-  // a -o match do not); `count` is the line's match count -M reports.
+  // a -o match do not); `count` is the line's match count -M reports. A line
+  // printed as it was read ends as it did (`cr`: --crlf took a CR off it);
+  // every other record ends as `lineEnd` says.
   private record(
     index: number,
     column: number | null,
@@ -647,6 +669,7 @@ export class RgPrinter {
     isMatch: boolean,
     terminated: boolean,
     count: number,
+    cr = false,
   ): Uint8Array {
     const f = this.f
     const sep = isMatch ? f.fieldMatchSeparator : f.fieldContextSeparator
@@ -665,9 +688,11 @@ export class RgPrinter {
     if (f.maxColumns !== null && f.maxColumns > 0) {
       if (byteLen(body) + (terminated ? 1 : 0) > f.maxColumns) {
         body = this.exceeded(body, kept, isMatch, count)
+        terminated = false
       }
     }
-    return encodeText(`${head}${body}${f.nullData ? '\0' : '\n'}`)
+    const end = f.crlf === true && terminated && !cr ? '\n' : lineEnd(f)
+    return encodeText(`${head}${body}${end}`)
   }
 
   // What -M prints for a line longer than its limit.
@@ -782,7 +807,7 @@ async function listing(
     skipRecords(lines, needles, pat, f)
     const raw = await readRecord(lines, f, signal)
     if (raw === null) break
-    if (selects(pat, decodeText(raw), f.invert)) {
+    if (selects(pat, readLine(raw, f)[0], f.invert)) {
       tally.selected = true
       return
     }
@@ -805,7 +830,7 @@ async function count(
     skipRecords(lines, needles, pat, f)
     const raw = await readRecord(lines, f, signal)
     if (raw === null) break
-    const text = decodeText(raw)
+    const [text] = readLine(raw, f)
     if (!selects(pat, text, f.invert)) {
       if (stop.armed) break
       stop.passesOver()
@@ -850,7 +875,7 @@ async function* printedLines(
 ): AsyncGenerator<Uint8Array> {
   const context = printsContext(f)
   const keep = context ? f.contextBefore : 0
-  const held: [number, number, string][] = []
+  const held: [number, number, string, boolean][] = []
   const budget = new YieldBudget(signal)
   let index = -1
   let position = 0
@@ -868,7 +893,7 @@ async function* printedLines(
     index += 1
     const start = position
     position += raw.byteLength + 1
-    const text = decodeText(raw)
+    const [text, cr] = readLine(raw, f)
     const hit = selects(pat, text, f.invert)
     if (binary.offset !== null) {
       // A binary file prints its notice at the first selected line and
@@ -881,12 +906,12 @@ async function* printedLines(
     }
     if (!hit && stop.armed) {
       // The line that stops the file still prints as the context it is.
-      if (f.passthru || afterLeft > 0) yield* printer.context(index, start, text)
+      if (f.passthru || afterLeft > 0) yield* printer.context(index, start, text, cr)
       return
     }
     if (!hit && stop.passesOver()) {
       if (keep > 0) {
-        held.push([index, start, text])
+        held.push([index, start, text, cr])
         if (held.length > keep) held.shift()
       }
       continue
@@ -900,24 +925,26 @@ async function* printedLines(
       if (context) {
         const first = held[0]?.[0] ?? index
         if (lastPrinted >= 0 && first > lastPrinted + 1 && f.contextSeparator !== null) {
-          yield encodeText(f.contextSeparator + (f.nullData ? '\0' : '\n'))
+          yield encodeText(f.contextSeparator + lineEnd(f))
         }
-        for (const [i, s, t] of held) yield* printer.context(i, s, t)
+        for (const [i, s, t, c] of held) yield* printer.context(i, s, t, c)
         held.length = 0
         afterLeft = f.contextAfter
       }
-      records = printer.selected(index, start, text)
+      records = printer.selected(index, start, text, cr)
       lastPrinted = index
     } else if (f.passthru) {
       if (!selecting) return
-      records = printer.context(index, start, text)
+      records = printer.context(index, start, text, cr)
       lastPrinted = index
     } else if (afterLeft > 0) {
-      records = hit ? printer.selected(index, start, text) : printer.context(index, start, text)
+      records = hit
+        ? printer.selected(index, start, text, cr)
+        : printer.context(index, start, text, cr)
       afterLeft -= 1
       lastPrinted = index
     } else if (keep > 0) {
-      held.push([index, start, text])
+      held.push([index, start, text, cr])
       if (held.length > keep) held.shift()
     }
     for (const chunk of records) {
@@ -973,7 +1000,7 @@ export async function* searchHaystack(
         return
       }
       if (!f.quiet && tally.selected === f.filesOnly) {
-        yield encodeText(name + (f.null || f.nullData ? '\0' : '\n'))
+        yield encodeText(name + (f.null ? '\0' : lineEnd(f)))
       }
       return
     }
@@ -982,7 +1009,7 @@ export async function* searchHaystack(
       if (binary.skipped) return
       if (tally.selected || f.includeZero) {
         const head = label === null ? '' : label + (f.null ? '\0' : ':')
-        yield encodeText(`${head}${String(total)}${f.nullData ? '\0' : '\n'}`)
+        yield encodeText(`${head}${String(total)}${lineEnd(f)}`)
       }
       return
     }
