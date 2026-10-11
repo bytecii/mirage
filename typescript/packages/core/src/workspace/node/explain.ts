@@ -1154,7 +1154,9 @@ export function holds(judgments: readonly Judgment[]): boolean {
  * The words are read literally, as `admitLine` reads them, so nothing is
  * expanded and no `$( )` runs. `wholeLine` is whether a runtime takes the
  * line whole, which reads it as typed; the executor's gate reads each
- * command once expanded.
+ * command once expanded. `every` asks every policy, as each command's
+ * explanation shows them; false asks the profile's rules alone, as the
+ * run does before any of the line runs, which is what holds it.
  */
 export async function explainLine(
   root: TSNodeLike,
@@ -1164,6 +1166,7 @@ export async function explainLine(
   agentId: string,
   reparse: (line: string) => TSNodeLike,
   wholeLine = false,
+  every = true,
 ): Promise<Judged[]> {
   return judgeLine(
     root,
@@ -1176,18 +1179,20 @@ export async function explainLine(
     true,
     wholeLine,
     false,
-    true,
+    every,
   )
 }
 
 /**
  * A line's public explanation: its verdict and its parse tree, with every
  * command's explanation where the command stands. The verdict is the
- * first command, in the order the gate reads them, whose refusal holds
+ * first command, in the order the gate reads them, whose refusal by the
+ * profile's rules (`verdicts`, the line judged with `every` false) holds
  * the whole line (`holds`), as the run reports it; a line nothing holds
  * runs, carrying the first ask an approval lets through. A command
- * refused only where it stands keeps its refusal to its own node, since
- * the rest of the line still runs. Every scope a command reads its words in (the typed line, a `$( )` body, a
+ * refused only where it stands, a policy's own `preCommand` refusal
+ * included, keeps its refusal to its own node, since the rest of the
+ * line still runs. Every scope a command reads its words in (the typed line, a `$( )` body, a
  * `bash -c` string) is parsed on its own with `reparse`, as the nested
  * line will be; a judgment is placed on the command at its span in that
  * scope, and a nested scope under the command holding it. Mirrors the
@@ -1196,6 +1201,7 @@ export async function explainLine(
 export function explainedLine(
   line: string,
   judged: readonly Judged[],
+  verdicts: readonly Judged[],
   runtimeOf: (command: string) => string,
   reparse: (line: string) => TSNodeLike,
 ): ShellExplanation {
@@ -1211,7 +1217,7 @@ export function explainedLine(
   }
   const root = scopes.find((s) => s.parent === null) ?? { parent: null, source: line, judged: [] }
   const node = scopeNode('line', root, scopes, runtimeOf, reparse)
-  const held = judged.find((one) => one.judgment.exitCode !== 0 && isVerdict(one.judgment))
+  const held = verdicts.find((one) => one.judgment.exitCode !== 0 && isVerdict(one.judgment))
   if (held !== undefined) {
     const judgment = held.judgment
     const [outcome, reason, source] = verdictOf(judgment)
@@ -1227,7 +1233,7 @@ export function explainedLine(
       stderr: judgment.stderr,
     }
   }
-  const asked = judged.find(
+  const asked = verdicts.find(
     (one) => one.judgment.exitCode === 0 && verdictOf(one.judgment)[0] === Outcome.ASK,
   )
   const [outcome, reason, source] =

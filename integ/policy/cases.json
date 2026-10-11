@@ -187,7 +187,7 @@
     {"op": "exec", "command": "cat /data/locked /data/open", "expect": {"value": {"exit_code": 0, "stdout": "x\nopen\n", "stderr": "", "refusal": null}}},
     {"op": "exec", "command": "export MODE=fast", "expect": {"value": {"exit_code": 1, "stdout": "", "stderr": "MODE: permission denied\n", "refusal": "mode is fixed"}}},
     {"op": "exec", "command": "echo blocked", "expect": {"value": {"exit_code": 126, "stdout": "", "stderr": "echo: Permission denied\n", "refusal": "blocked line"}}},
-    {"op": "explain", "command": "touch /data/t", "expect": {"value": {"outcome": "deny", "reason": "no touching", "answers": [], "refusal": "deny", "exit_code": 126, "stderr": "touch: Permission denied\n", "commands": [{"command": "touch", "outcome": "deny", "answers": [{"kind": "deny", "policy": "RulePolicy", "reason": "no touching"}], "runtime": ""}]}}},
+    {"op": "explain", "command": "touch /data/t", "expect": {"value": {"outcome": "allow", "reason": "", "answers": [], "refusal": null, "exit_code": 0, "stderr": "", "commands": [{"command": "touch", "outcome": "deny", "answers": [{"kind": "deny", "policy": "RulePolicy", "reason": "no touching"}], "runtime": ""}]}}},
     {"op": "explain", "command": "echo blocked", "expect": {"value": {"outcome": "deny", "reason": "blocked line", "answers": [{"kind": "deny", "policy": "RulePolicy", "reason": "blocked line"}], "refusal": "deny", "exit_code": 126, "stderr": "echo: Permission denied\n", "commands": [{"command": "echo", "outcome": "allow", "answers": [], "runtime": ""}]}}},
     {"op": "vfs", "call": "read", "args": {"path": "/data/locked"}, "expect": {"errno": "EACCES", "reason": "locked file"}},
     {"op": "unregister_policy", "id": "cmd", "expect": {"value": true}},
@@ -229,7 +229,7 @@
     {"op": "register_policy", "id": "commands", "pre_command": {"touch": {"ask": "touch needs a nod"}}, "post_command": {"cat": {"deny": "cat output judged"}, "wc": {"ask": "wc needs review"}}},
     {"op": "exec", "command": "touch /data/t", "expect": {"value": {"exit_code": 126, "stdout": "", "stderr": "touch: Permission denied\n", "refusal": "touch needs a nod"}}},
     {"op": "asks", "expect": {"value": [{"command": "touch", "paths": ["/data/t"], "reason": "touch needs a nod"}]}},
-    {"op": "explain", "command": "touch /data/t", "expect": {"value": {"outcome": "ask", "reason": "touch needs a nod", "answers": [], "refusal": "pending", "exit_code": 126, "stderr": "touch: Permission denied\n", "commands": [{"command": "touch", "outcome": "ask", "answers": [{"kind": "ask", "policy": "RulePolicy", "reason": "touch needs a nod"}], "runtime": ""}]}}},
+    {"op": "explain", "command": "touch /data/t", "expect": {"value": {"outcome": "allow", "reason": "", "answers": [], "refusal": null, "exit_code": 0, "stderr": "", "commands": [{"command": "touch", "outcome": "ask", "answers": [{"kind": "ask", "policy": "RulePolicy", "reason": "touch needs a nod"}], "runtime": ""}]}}},
     {"op": "answer", "outcome": "allow", "scope": "once"},
     {"op": "exec", "command": "touch /data/t", "expect": {"value": {"exit_code": 0, "stdout": "", "stderr": "", "refusal": null}}},
     {"op": "exec", "command": "cat /data/f && echo next", "expect": {"value": {"exit_code": 126, "stdout": "x\n", "stderr": "cat: Permission denied\n", "refusal": "cat output judged"}}},
@@ -269,7 +269,7 @@
    "settings": {"mode": "write", "mounts": {"/data": {"vfs": "ram", "config": {}}}},
    "steps": [
     {"op": "session", "id": "agent", "profile": {"env": {"KEPT": "old"}}},
-    {"op": "register_policy", "id": "vars", "pre_session": {"HELD": {"ask": "HELD needs a nod"}}, "post_session": {"KEPT": {"deny": "KEPT stays"}, "LATER": {"ask": "LATER needs review"}}},
+    {"op": "register_policy", "id": "vars", "pre_session": {"HELD": {"ask": "HELD needs a nod"}}, "post_session": {"KEPT": {"deny": "KEPT stays"}, "LATER": {"ask": "LATER needs review"}, "RANDOM": {"deny": "RANDOM stays"}}},
     {"op": "exec", "session": "agent", "command": "export KEPT=new; echo $KEPT", "expect": {"value": {"exit_code": 0, "stdout": "old\n", "stderr": "KEPT: permission denied\n", "refusal": "KEPT stays"}}},
     {"op": "exec", "session": "agent", "command": "export HELD=1", "expect": {"value": {"exit_code": 1, "stdout": "", "stderr": "HELD: permission denied\n", "refusal": "HELD needs a nod"}}},
     {"op": "asks", "expect": {"value": [{"command": "", "paths": [], "reason": "HELD needs a nod"}]}},
@@ -278,7 +278,10 @@
     {"op": "exec", "session": "agent", "command": "export LATER=2; echo ${LATER:-unset}", "expect": {"value": {"exit_code": 0, "stdout": "unset\n", "stderr": "LATER: permission denied\n", "refusal": "LATER needs review"}}},
     {"op": "asks", "expect": {"value": [{"command": "", "paths": [], "reason": "LATER needs review"}]}},
     {"op": "answer", "outcome": "allow", "scope": "once"},
-    {"op": "exec", "session": "agent", "command": "export LATER=2; echo ${LATER:-unset}", "expect": {"value": {"exit_code": 0, "stdout": "2\n", "stderr": "", "refusal": null}}}
+    {"op": "exec", "session": "agent", "command": "export LATER=2; echo ${LATER:-unset}", "expect": {"value": {"exit_code": 0, "stdout": "2\n", "stderr": "", "refusal": null}}},
+    {"op": "exec", "session": "agent", "command": "KEPT=new printenv KEPT", "expect": {"value": {"exit_code": 1, "stdout": "", "stderr": "bash: KEPT: permission denied\n", "refusal": "KEPT stays"}}},
+    {"op": "exec", "session": "agent", "command": "RANDOM=(1 2)", "expect": {"value": {"exit_code": 1, "stdout": "", "stderr": "RANDOM: permission denied\n", "refusal": "RANDOM stays"}}},
+    {"op": "exec", "session": "agent", "command": "[ \"$RANDOM\" != \"$RANDOM\" ] && echo draws", "expect": {"value": {"exit_code": 0, "stdout": "draws\n", "stderr": "", "refusal": null}}}
    ]
   },
   {
@@ -311,7 +314,7 @@
     {"op": "exec", "session": "agent", "command": "touch /data/t", "expect": {"value": {"exit_code": 126, "stdout": "", "stderr": "touch: Permission denied\n", "refusal": "script says no"}}},
     {"op": "exec", "session": "agent", "command": "cat /data/s", "expect": {"value": {"exit_code": 0, "stdout": "s\n", "stderr": "", "refusal": null}}},
     {"op": "vfs", "session": "agent", "call": "read", "args": {"path": "/data/s"}, "expect": {"errno": "EACCES", "reason": "script guards s"}},
-    {"op": "explain", "session": "agent", "command": "touch /data/t", "expect": {"value": {"outcome": "deny", "reason": "script says no", "answers": [], "refusal": "deny", "exit_code": 126, "stderr": "touch: Permission denied\n", "commands": [{"command": "touch", "outcome": "deny", "answers": [{"kind": "deny", "policy": "ScriptPolicy", "reason": "script says no"}], "runtime": ""}]}}},
+    {"op": "explain", "session": "agent", "command": "touch /data/t", "expect": {"value": {"outcome": "allow", "reason": "", "answers": [], "refusal": null, "exit_code": 0, "stderr": "", "commands": [{"command": "touch", "outcome": "deny", "answers": [{"kind": "deny", "policy": "ScriptPolicy", "reason": "script says no"}], "runtime": ""}]}}},
     {"op": "vfs", "session": "agent", "call": "read", "args": {"path": "/data/s"}, "explain": true, "expect": {"value": {"call": "read", "outcome": "deny", "reason": "script guards s", "answers": [{"kind": "deny", "policy": "ScriptPolicy", "reason": "script guards s"}], "refusal": "deny", "error": "EACCES"}}},
     {"op": "exec", "command": "echo h > /data/held; touch /data/r", "expect": {"value": {"exit_code": 0, "stdout": "", "stderr": "", "refusal": null}}},
     {"op": "exec", "session": "agent", "command": "mkdir /data/m", "expect": {"value": {"exit_code": 126, "stdout": "", "stderr": "mkdir: Permission denied\n", "refusal": "mkdir needs a nod"}}},

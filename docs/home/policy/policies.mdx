@@ -38,7 +38,7 @@ Besides the facts in the tables below, every hook's `ctx` carries:
 | `session_id` | the session the action runs as |
 | `session` | the session, read only: `get(name)`, `snapshot()`, `cwd()`, `is_readonly(name)`, `profile()` |
 | `ns` | the session's namespace, as commands get it: mounts, links, the stat overlay, hides applied |
-| `vfs` | the session's files, read only: `read`, `stat`, `readdir`, `exists` |
+| `vfs` | the session's files, read only: `read`, `stat`, `readdir`, `exists`; unset on a TypeScript runtime that does not isolate async tasks (the browser fallback) |
 
 A hook only reads. A write it makes through mirage is refused (`EROFS`
 for a file, `EACCES` for a variable), and its reads run no hook again.
@@ -163,7 +163,7 @@ class NoSecretsShown(Policy):
 ```typescript TypeScript
 const noSecretsShown: Policy = {
   postCommand(ctx) {
-    const vault = ctx.records.some((r) => String(r.path ?? '').startsWith('/vault/'))
+    const vault = ctx.records.some((r) => typeof r.path === 'string' && r.path.startsWith('/vault/'))
     return vault ? { kind: 'deny', reason: 'vault reads need an operator' } : null
   },
 }

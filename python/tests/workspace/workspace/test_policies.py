@@ -1726,6 +1726,33 @@ async def test_a_post_command_ask_holds_the_command_until_approved():
         await ws.close()
 
 
+class NoVaultShown(Policy):
+    async def post_command(self, ctx: CommandResultContext) -> Action | None:
+        if any(r["path"].startswith("/data/vault/") for r in ctx.records):
+            return Deny("vault reads need an operator")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_post_command_reads_the_files_its_command_read():
+    # cat reads as its output is pulled, after it returned: the records
+    # are its own all the same, and the command reading them is not
+    # charged with them.
+    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
+    try:
+        await ws.shell("mkdir -p /data/vault && echo k > /data/vault/k")
+        ws.policies.add(NoVaultShown())
+        out = await ws.shell("cat /data/vault/k && echo next")
+        assert (out.exit_code, out.stdout) == (126, b"k\n")
+        piped = await ws.shell("cat /data/vault/k | cat")
+        assert (piped.exit_code, piped.stderr) == (
+            0,
+            b"cat: Permission denied\n",
+        )
+    finally:
+        await ws.close()
+
+
 class GuardVars(Policy):
     def __init__(self) -> None:
         self.seen: list[SessionResultContext] = []
@@ -1869,6 +1896,22 @@ async def test_post_execute_sees_the_line_its_output_and_each_result():
             "false",
         ]
         assert _leaves(ctx.results)[-1][1] == 1
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_post_execute_results_hold_each_commands_final_status():
+    # grep's status settles as its output drains; its node says so, and
+    # carries the read it made.
+    spy = SeeLine()
+    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[spy])
+    try:
+        await ws.shell("echo hit > /data/x")
+        await ws.shell("grep hit /data/x; true")
+        grep, _ = spy.seen[-1].results["children"]
+        assert grep["exit_code"] == 0
+        assert [r["path"] for r in grep["records"]] == ["/data/x"]
     finally:
         await ws.close()
 

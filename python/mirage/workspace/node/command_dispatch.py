@@ -34,6 +34,7 @@ from mirage.context import (
 from mirage.context.session_context import RedirectResult, redirect_syntax_for
 from mirage.io import IOResult
 from mirage.io.types import ByteSource, materialize
+from mirage.observe.context import command_records
 from mirage.policy import (
     CommandResultContext,
     Pending,
@@ -46,7 +47,12 @@ from mirage.policy import (
     resolve_producer,
 )
 from mirage.policy.policies import reset_op_policies, set_op_policies
-from mirage.policy.types import Claimant, HandOff, SessionContext
+from mirage.policy.types import (
+    Claimant,
+    HandOff,
+    SessionContext,
+    SessionResultContext,
+)
 from mirage.runtime.base import Runtime
 from mirage.runtime.routing import RouteDecision
 from mirage.shell.bytes import decode_text, encode_text
@@ -115,6 +121,8 @@ from mirage.workspace.node.admission import Admitted, Refused, admit
 from mirage.workspace.node.occurrence import claimant_for, evaluated_from
 from mirage.workspace.session.state import (
     ensure_var_visible,
+    gate_rendering,
+    post_session_gate,
     pre_session_gate,
     seed_var,
     session_view,
@@ -311,6 +319,21 @@ async def execute_command(
                     key=k,
                     value=v,
                     session_id=session.session_id,
+                ),
+            )
+            # `post_session` judges it too, before the command can read
+            # it: nothing is seeded yet, so a refusal has nothing to put
+            # back.
+            old = session.vars.get(k)
+            await post_session_gate(
+                registry.policies,
+                SessionResultContext(
+                    plane="env",
+                    verb="set",
+                    key=k,
+                    value=v,
+                    session_id=session.session_id,
+                    old=None if old is None else gate_rendering(old.value),
                 ),
             )
         except PolicyDenied as exc:
@@ -654,29 +677,16 @@ async def _run_argv(
         # policies bind in the same window, whether or not a gate judged the
         # line, so the command tier's policy guard can fire pre_vfs for the
         # backend I/O a handler performs.
-        ptoken = set_op_policies(registry.policies)
+        # A post hook reads what the command did: its file records,
+        # gathered as it runs and as its output drains, and its result
+        # node, settled once the output has drained.
+        policies = registry.policies
+        judging = admitted is not None and policies.wants("post_command")
+        watched = judging or policies.wants("post_execute")
+        ptoken = set_op_policies(policies)
+        token = set_admission(admitted) if admitted is not None else None
         try:
-            if admitted is None:
-                return await _route_argv(
-                    recurse,
-                    dispatch,
-                    registry,
-                    namespace,
-                    execute_fn,
-                    argv,
-                    context,
-                    given,
-                    call_stack,
-                    job_table,
-                    cancel,
-                    routing_decision,
-                    row,
-                    agent_id,
-                    claimant.line if claimant is not None else None,
-                    output,
-                )
-            token = set_admission(admitted)
-            try:
+            with command_records(own=True) as mine:
                 result = await _route_argv(
                     recurse,
                     dispatch,
@@ -695,33 +705,44 @@ async def _run_argv(
                     claimant.line if claimant is not None else None,
                     output,
                 )
-            finally:
-                reset_admission(token)
         finally:
+            if token is not None:
+                reset_admission(token)
             reset_op_policies(ptoken)
+        if not watched:
+            return result
+        stdout, io, node = result
+        node.records = mine
+
         # post_command judges the command once its result is final: a
         # streamed output settles its exit code as it drains, so the hook
         # is asked when the stream ends or its reader stops, and at once
         # for output already whole. A refusal leaves what was sent as
         # sent: exit 126, the refusal line on stderr, the refusal record.
-        if not registry.policies.wants("post_command"):
-            return result
-        stdout, io, node = result
-        ctx = admitted.ctx
-
-        async def judge() -> None:
+        async def settle() -> None:
+            # A node with children keeps the stderr they wrote; a leaf's
+            # is the command's own.
+            node.exit_code = io.exit_code
+            if not judging:
+                if not node.children and isinstance(io.stderr, bytes):
+                    node.stderr = io.stderr
+                return
+            assert admitted is not None
+            ctx = admitted.ctx
             stderr = await materialize(io.stderr)
             io.stderr = stderr
+            if not node.children:
+                node.stderr = stderr
             facts = {
                 f.name: getattr(ctx, f.name) for f in dataclasses.fields(ctx)
             }
             action = await post_command_gate(
-                registry.policies,
+                policies,
                 CommandResultContext(
                     **facts,
                     exit_code=io.exit_code,
                     stderr=stderr.decode(errors="replace"),
-                    records=tuple(r.to_dict() for r in node.records),
+                    records=tuple(r.to_dict() for r in mine),
                 ),
                 claimant,
                 cancel,
@@ -734,21 +755,31 @@ async def _run_argv(
                 else render_deny(ctx.command, action)
             )
             io.stderr = stderr + err
-            io.exit_code = node.exit_code = code
             node.stderr = node.stderr + err
+            io.exit_code = node.exit_code = code
             io.refusal = refusal_of(action)
             note_refusal(io.refusal)
 
         if stdout is None or isinstance(stdout, bytes):
-            await judge()
+            await settle()
             return result
+        pulled = aiter(stdout)
 
         async def drained() -> AsyncIterator[bytes]:
             try:
-                async for chunk in stdout:
+                while True:
+                    # Each pull runs the command's lazy reads; they are
+                    # its own, whoever is reading.
+                    with command_records(own=True) as more:
+                        try:
+                            chunk = await anext(pulled, None)
+                        finally:
+                            mine.extend(more)
+                    if chunk is None:
+                        return
                     yield chunk
             finally:
-                await judge()
+                await settle()
 
         return drained(), io, node
 

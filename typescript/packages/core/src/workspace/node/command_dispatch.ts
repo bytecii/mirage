@@ -32,6 +32,8 @@ import type { RouteDecision } from '../../runtime/routing/index.ts'
 import { guardDispatch } from '../abort.ts'
 import { mergeSignals } from '../../utils/abort.ts'
 import { type ByteSource, IOResult, materialize } from '../../io/types.ts'
+import { commandRecords } from '../../observe/context.ts'
+import type { OpRecord } from '../../observe/record.ts'
 import { decodeText, encodeText } from '../../shell/bytes.ts'
 import { CallStack } from '../../shell/call_stack.ts'
 import { getCommandName, getParts, getText, readRow, splitEnvPrefix } from '../../shell/helpers.ts'
@@ -101,8 +103,8 @@ import {
 } from '../lookup/index.ts'
 import { Admitted, admit } from './admission.ts'
 
-import { ensureVarVisible, sessionView } from '../session/state.ts'
-import { preSessionGate } from '../../policy/index.ts'
+import { ensureVarVisible, gateRendering, sessionView } from '../session/state.ts'
+import { postSessionGate, preSessionGate } from '../../policy/index.ts'
 import { ExecutionNode } from '../types.ts'
 import { concat } from '../../utils/bytes.ts'
 
@@ -287,6 +289,17 @@ export async function executeCommand(
         key: k,
         value: v,
         sessionId: session.sessionId,
+      })
+      // `postSession` judges it too, before the command can read it:
+      // nothing is seeded yet, so a refusal has nothing to put back.
+      const old = sessionEntry(session.vars, k)
+      await postSessionGate(registry.policies, {
+        plane: 'env',
+        verb: 'set',
+        key: k,
+        value: v,
+        sessionId: session.sessionId,
+        old: old == null ? null : gateRendering(old.value),
       })
     } catch (err) {
       if (!(err instanceof PolicyDenied)) throw err
@@ -661,27 +674,47 @@ async function runArgv(
         output,
         parser,
       )
+    // A post hook reads what the command did: its file records, gathered
+    // as it runs and as its output drains, and its result node, settled
+    // once the output has drained.
     const gated = admitted
-    if (gated === null) return runWithOpPolicies(registry.policies, route)
-    const result = await runWithOpPolicies(registry.policies, () => runWithAdmission(gated, route))
+    const policies = registry.policies
+    const judging = gated !== null && policies.wants('postCommand')
+    const watched = judging || policies.wants('postExecute')
+    let mine: OpRecord[] = []
+    const result = await runWithOpPolicies(policies, () =>
+      commandRecords((records) => {
+        mine = records
+        return gated === null ? route() : runWithAdmission(gated, route)
+      }, true),
+    )
+    if (!watched) return result
+    const [stdout, io, node] = result
+    node.records = mine
     // postCommand judges the command once its result is final: a streamed
     // output settles its exit code as it drains, so the hook is asked when
     // the stream ends or its reader stops, and at once for output already
     // whole. A refusal leaves what was sent as sent: exit 126, the refusal
     // line on stderr, the refusal record.
-    if (!registry.policies.wants('postCommand')) return result
-    const [stdout, io, node] = result
-    const ctx = gated.ctx
-    const judge = async (): Promise<void> => {
+    const settle = async (): Promise<void> => {
+      // A node with children keeps the stderr they wrote; a leaf's is the
+      // command's own.
+      node.exitCode = io.exitCode
+      if (!judging) {
+        if (node.children.length === 0 && io.stderr instanceof Uint8Array) node.stderr = io.stderr
+        return
+      }
+      const ctx = gated.ctx
       const stderr = await materialize(io.stderr)
       io.stderr = stderr
+      if (node.children.length === 0) node.stderr = stderr
       const action = await postCommandGate(
-        registry.policies,
+        policies,
         {
           ...ctx,
           exitCode: io.exitCode,
           stderr: new TextDecoder().decode(stderr),
-          records: node.records.map((r) => r.toJSON()),
+          records: mine.map((r) => r.toJSON()),
         },
         claimant,
         signal,
@@ -699,14 +732,32 @@ async function runArgv(
       noteRefusal(io.refusal)
     }
     if (stdout === null || stdout instanceof Uint8Array) {
-      await judge()
+      await settle()
       return result
     }
+    const pulled = stdout[Symbol.asyncIterator]()
     const drained = async function* (): AsyncIterable<Uint8Array> {
+      let done = false
       try {
-        for await (const chunk of stdout) yield chunk
+        for (;;) {
+          // Each pull runs the command's lazy reads; they are its own,
+          // whoever is reading.
+          const next = await commandRecords(async (more) => {
+            try {
+              return await pulled.next()
+            } finally {
+              mine.push(...more)
+            }
+          }, true)
+          if (next.done === true) {
+            done = true
+            return
+          }
+          yield next.value
+        }
       } finally {
-        await judge()
+        if (!done) await pulled.return?.()
+        await settle()
       }
     }
     return [drained(), io, node]

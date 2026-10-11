@@ -1110,6 +1110,11 @@ async def set_var(
         session_id=session.session_id,
     )
     await pre_session_gate(policies, written)
+    generator = (
+        session._random_state,
+        session._random_seed,
+        session._random_last,
+    )
     if (
         name == RANDOM
         and session._random_seed != RANDOM_UNSET
@@ -1183,8 +1188,15 @@ async def set_var(
                 else gate_rendering(existing.value),
             ),
         )
-    except PolicyDenied:
+    except BaseException:
+        # Whatever stops the check, a refusal or a host that failed to
+        # answer, the write does not stand, and neither does a seed.
         _place(session, name, existing)
+        (
+            session._random_state,
+            session._random_seed,
+            session._random_last,
+        ) = generator
         raise
 
 
@@ -1245,7 +1257,7 @@ async def unset_var(
                 old=None if old is None else gate_rendering(old.value),
             ),
         )
-    except PolicyDenied:
+    except BaseException:
         # The unset revealed what an enclosing scope saved; that value
         # goes back to the scope before the name's own record returns.
         if frame is not None and name not in frame:
@@ -1611,6 +1623,7 @@ async def mark_var(
         ),
     )
     old = session.vars.get(name)
+    seed = session._random_seed
     set_attr(session, name, attr, on)
     try:
         await post_session_gate(
@@ -1624,8 +1637,9 @@ async def mark_var(
                 old=None if old is None else gate_rendering(old.value),
             ),
         )
-    except PolicyDenied:
+    except BaseException:
         _place(session, name, old)
+        session._random_seed = seed
         raise
 
 

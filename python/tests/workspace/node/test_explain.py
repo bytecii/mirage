@@ -1604,10 +1604,9 @@ async def test_explain_shows_every_policys_answer_in_chain_order():
             Ask("sign-off", policy="_AskRm"),
             Deny("no", policy="_DenyRm"),
         )
-        assert (said.exit_code, said.refusal and said.refusal.reason) == (
-            126,
-            "no",
-        )
+        # A policy's refusal is the command's: the line itself runs.
+        assert (rm.exit_code, rm.refusal and rm.refusal.reason) == (126, "no")
+        assert (said.outcome, said.exit_code) == (Outcome.ALLOW, 0)
         assert await Session(ws, None).explain.shell("rm /data/x") == said
     finally:
         await ws.close()
@@ -1623,13 +1622,9 @@ async def test_a_policy_that_fails_explains_as_a_deny():
         ran = await ws.shell("echo hi")
         [echo] = said.node.children
         assert isinstance(echo, CommandExplanation)
-        assert said.refusal is not None and ran.refusal is not None
-        assert (said.outcome, echo.outcome, said.refusal.kind) == (
-            Outcome.DENY,
-            Outcome.DENY,
-            "failed",
-        )
-        assert (said.exit_code, said.stderr) == (
+        assert echo.refusal is not None and ran.refusal is not None
+        assert (echo.outcome, echo.refusal.kind) == (Outcome.DENY, "failed")
+        assert (echo.exit_code, echo.stderr) == (
             ran.exit_code,
             await ran.stderr_str(),
         )

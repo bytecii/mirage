@@ -1089,6 +1089,7 @@ export class Workspace {
     try {
       const reparse = (text: string): TSNodeLike => parser.parse(text)
       const root = parser.parse(line)
+      const wholeLine = this.runtimeWorld.wholeLineFor(null) !== null
       const judged = await explainLine(
         root,
         session,
@@ -1096,16 +1097,26 @@ export class Workspace {
         this.namespace,
         '',
         reparse,
-        this.runtimeWorld.wholeLineFor(null) !== null,
+        wholeLine,
       )
-      if (holds(judged.map((one) => one.judgment))) {
-        return explainedLine(line, judged, () => '', reparse)
+      const verdicts = await explainLine(
+        root,
+        session,
+        this.registry,
+        this.namespace,
+        '',
+        reparse,
+        wholeLine,
+        false,
+      )
+      if (holds(verdicts.map((one) => one.judgment))) {
+        return explainedLine(line, judged, verdicts, () => '', reparse)
       }
       const [answers, placed] = await this.router.placement(root, line, session)
       if (placed !== null && 'kind' in placed) {
         const refused = placementRefused(placed, line)
         return {
-          ...explainedLine(line, judged, () => '', reparse),
+          ...explainedLine(line, judged, verdicts, () => '', reparse),
           answers,
           outcome: placed.kind === 'pending' ? Outcome.ASK : Outcome.DENY,
           reason: placed.reason,
@@ -1118,6 +1129,7 @@ export class Workspace {
       const said = explainedLine(
         line,
         judged,
+        verdicts,
         (command) => this.router.runtimeFor(command, placed),
         reparse,
       )

@@ -816,6 +816,7 @@ async function setVar(
     sessionId: session.sessionId,
   }
   await preSessionGate(policies, written)
+  const generator = [session.randomState, session.randomSeed, session.randomLast] as const
   if (name === RANDOM && session.randomSeed !== RANDOM_UNSET && typeof shaped === 'string') {
     // A seed that fails or writes a readonly name seeds nothing: its
     // earlier writes land and the error is reported, but the line goes on,
@@ -873,7 +874,10 @@ async function setVar(
       old: existing == null ? null : gateRendering(existing.value),
     })
   } catch (err) {
-    if (err instanceof PolicyDenied) place(session, name, existing ?? null)
+    // Whatever stops the check, a refusal or a host that failed to
+    // answer, the write does not stand, and neither does a seed.
+    place(session, name, existing ?? null)
+    ;[session.randomState, session.randomSeed, session.randomLast] = generator
     throw err
   }
 }
@@ -918,14 +922,12 @@ async function unsetVar(
       old: old === null ? null : gateRendering(old.value),
     })
   } catch (err) {
-    if (err instanceof PolicyDenied) {
-      // The unset revealed what an enclosing scope saved; that value goes
-      // back to the scope before the name's own record returns.
-      if (frame !== undefined && !frame.has(name)) {
-        frame.set(name, sessionEntry(session.vars, name) ?? null)
-      }
-      place(session, name, old)
+    // The unset revealed what an enclosing scope saved; that value goes
+    // back to the scope before the name's own record returns.
+    if (frame !== undefined && !frame.has(name)) {
+      frame.set(name, sessionEntry(session.vars, name) ?? null)
     }
+    place(session, name, old)
     throw err
   }
   // bash: unsetting RANDOM strips its special meaning for good.
@@ -1204,6 +1206,7 @@ async function markVar(
     sessionId: session.sessionId,
   })
   const old = sessionEntry(session.vars, name) ?? null
+  const seed = session.randomSeed
   setAttr(session, name, attr, on)
   try {
     await postSessionGate(policies, {
@@ -1215,7 +1218,8 @@ async function markVar(
       old: old === null ? null : gateRendering(old.value),
     })
   } catch (err) {
-    if (err instanceof PolicyDenied) place(session, name, old)
+    place(session, name, old)
+    session.randomSeed = seed
     throw err
   }
 }

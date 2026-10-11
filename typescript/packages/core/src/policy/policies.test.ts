@@ -1210,6 +1210,32 @@ describe('postCommand and postSession', () => {
     }
   })
 
+  class NoVaultShown implements Policy {
+    postCommand(ctx: CommandResultContext): Action | null {
+      const vault = ctx.records.some(
+        (r) => typeof r.path === 'string' && r.path.startsWith('/data/vault/'),
+      )
+      return vault ? { kind: 'deny', reason: 'vault reads need an operator' } : null
+    }
+  }
+
+  it('postCommand reads the files its command read', async () => {
+    // cat reads as its output is pulled, after it returned: the records are
+    // its own all the same, and the command reading them is not charged
+    // with them.
+    const ws = executableWorkspace()
+    try {
+      await ws.shell('mkdir -p /data/vault && echo k > /data/vault/k')
+      ws.policies.add(new NoVaultShown())
+      const out = await ws.shell('cat /data/vault/k && echo next')
+      expect([out.exitCode, out.stdoutText]).toEqual([126, 'k\n'])
+      const piped = await ws.shell('cat /data/vault/k | cat')
+      expect([piped.exitCode, piped.stderrText]).toEqual([0, 'cat: Permission denied\n'])
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('a postCommand deny stops the chain and keeps what was sent', async () => {
     const ws = executableWorkspace()
     try {
@@ -1377,6 +1403,23 @@ describe('what a hook sees', () => {
       const ran = leaves(ctx?.results ?? {})
       expect(ran.map(([name]) => name.split(' ')[0])).toEqual(['cd', 'echo', 'cat', 'false'])
       expect(ran.at(-1)?.[1]).toBe(1)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it("postExecute results hold each command's final status", async () => {
+    // grep's status settles as its output drains; its node says so, and
+    // carries the read it made.
+    const spy = new SeeLine()
+    const ws = executableWorkspace(undefined, [spy])
+    try {
+      await ws.shell('echo hit > /data/x')
+      await ws.shell('grep hit /data/x; true')
+      const [grep] = (spy.seen.at(-1)?.results.children ?? []) as Record<string, unknown>[]
+      expect(grep?.exitCode).toBe(0)
+      const records = (grep?.records ?? []) as Record<string, unknown>[]
+      expect(records.map((r) => r.path)).toEqual(['/data/x'])
     } finally {
       await ws.close()
     }

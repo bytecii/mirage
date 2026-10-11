@@ -497,7 +497,9 @@ export async function preSessionGate(
  * context's session id; the workspace sets it, and without it, or for a
  * session it holds none of, the three stay unset. A hook runs as a policy
  * deciding (`DryRun.DECIDING`): it reads through them, and a write
- * refuses, where the runtime isolates async tasks.
+ * refuses. A runtime that does not isolate async tasks (the browser
+ * fallback) cannot mark a hook's own reads, which would ask the hooks
+ * again, so there a hook gets no `vfs`.
  */
 export class Policies {
   private readonly policies: Policy[]
@@ -659,7 +661,11 @@ export class Policies {
         !rulesOnly && this.views !== null && seen.session === undefined
           ? this.views(seen.sessionId ?? '')
           : null
-      if (handles !== null) seen = { ...seen, ...handles }
+      if (handles !== null) {
+        seen = asyncContextIsolatesTasks
+          ? { ...seen, ...handles }
+          : { ...seen, session: handles.session, ns: handles.ns }
+      }
       const asked = seen
       let action
       try {

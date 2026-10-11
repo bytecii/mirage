@@ -1375,7 +1375,11 @@ describe('explain answers and the op form', () => {
         { kind: 'ask', reason: 'sign-off', policy: 'AskRm' },
         { kind: 'deny', reason: 'no', policy: 'DenyRm' },
       ])
-      expect([said.exitCode, said.refusal?.reason]).toEqual([126, 'no'])
+      // A policy's refusal is the command's: the line itself runs.
+      expect(
+        rm !== undefined && 'command' in rm ? [rm.exitCode, rm.refusal?.reason] : null,
+      ).toEqual([126, 'no'])
+      expect([said.outcome, said.exitCode]).toEqual([Outcome.ALLOW, 0])
       expect(await new Session(ws, null).explain.shell('rm /data/x')).toEqual(said)
     } finally {
       await ws.close()
@@ -1391,12 +1395,9 @@ describe('explain answers and the op form', () => {
       const said = await ws.explain('echo hi')
       const ran = await ws.shell('echo hi')
       const [echo] = said.node.children
-      expect([
-        said.outcome,
-        echo !== undefined && 'command' in echo ? echo.outcome : null,
-        said.refusal?.kind,
-      ]).toEqual([Outcome.DENY, Outcome.DENY, 'failed'])
-      expect([said.exitCode, said.stderr]).toEqual([ran.exitCode, DEC.decode(ran.stderr)])
+      if (echo === undefined || !('command' in echo)) throw new Error('no command node')
+      expect([echo.outcome, echo.refusal?.kind]).toEqual([Outcome.DENY, 'failed'])
+      expect([echo.exitCode, echo.stderr]).toEqual([ran.exitCode, DEC.decode(ran.stderr)])
     } finally {
       await ws.close()
     }

@@ -43,7 +43,7 @@ const revisionsStorage = createAsyncContext<RevisionsState>()
  * every `runCommand` and dispatcher op, and binding one would flip
  * {@link recordingActive} for an unrecorded command.
  */
-const commandSink = createAsyncContext<OpRecord[]>()
+const commandSink = createAsyncContext<readonly [OpRecord[] | null, OpRecord[]]>()
 
 /** Preserve attribution and revision pins when an operation crosses a worker boundary. */
 export function captureRecordingContext(): ContextCall[] {
@@ -64,11 +64,20 @@ export function captureRecordingContext(): ContextCall[] {
  * task keeps its own, so a pipeline stage never sees a sibling stage's
  * records; the browser's shared frame stack cannot promise that (see
  * `asyncContextIsolatesTasks`). Nothing is collected outside a recording
- * scope. Mirrors python's `command_records`.
+ * scope. Each record also reaches the list of the nearest call made with
+ * `own`: a command's, which the dispatcher calls under it add to too, and
+ * which takes nothing for the call around it, so a command reading
+ * another's output is not charged with that command's reads. Mirrors
+ * python's `command_records`.
  */
-export async function commandRecords<T>(fn: (records: OpRecord[]) => Promise<T>): Promise<T> {
+export async function commandRecords<T>(
+  fn: (records: OpRecord[]) => Promise<T>,
+  own = false,
+): Promise<T> {
   const mine: OpRecord[] = []
-  return commandSink.run(mine, () => fn(mine))
+  const held = commandSink.getStore()
+  const command = own ? mine : (held?.[0] ?? null)
+  return commandSink.run([command, mine], () => fn(mine))
 }
 
 /** One lost path's mark. Mirrors Python's `LostMark`. */
@@ -336,7 +345,11 @@ export function record(
   if (state === undefined) return
   const rec = finishRecord(op, path, source, nbytes, timer, options)
   state.records.push(rec)
-  commandSink.getStore()?.push(rec)
+  const held = commandSink.getStore()
+  if (held !== undefined) {
+    held[1].push(rec)
+    if (held[0] !== null && held[0] !== held[1]) held[0].push(rec)
+  }
 }
 
 /**
@@ -365,7 +378,11 @@ export function recordStream(
     executionId: currentExecutionId(),
   })
   state.records.push(rec)
-  commandSink.getStore()?.push(rec)
+  const held = commandSink.getStore()
+  if (held !== undefined) {
+    held[1].push(rec)
+    if (held[0] !== null && held[0] !== held[1]) held[0].push(rec)
+  }
   return rec
 }
 

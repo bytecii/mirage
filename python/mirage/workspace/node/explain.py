@@ -1414,6 +1414,7 @@ async def explain_line(
     namespace: Namespace | None,
     agent_id: str = "",
     whole_line: bool = False,
+    every: bool = True,
 ) -> list[Judged]:
     """What every command of a line would do, in the order the gate
     reads them, each where it stands, without running any of it
@@ -1439,6 +1440,9 @@ async def explain_line(
         whole_line (bool): whether a runtime takes the line whole, which
             reads it as typed (``admit_line``); the executor's gate reads
             each command once expanded.
+        every (bool): ask every policy, as each command's explanation
+            shows them; False asks the profile's rules alone, as the run
+            does before any of the line runs, which is what holds it.
     """
     return await _judge_line(
         ast,
@@ -1448,21 +1452,26 @@ async def explain_line(
         agent_id,
         root_frame(ast, None),
         whole_line=whole_line,
-        every=True,
+        every=every,
     )
 
 
 def explained_line(
-    line: str, judged: Sequence[Judged], runtime_of: Callable[[str], str]
+    line: str,
+    judged: Sequence[Judged],
+    verdicts: Sequence[Judged],
+    runtime_of: Callable[[str], str],
 ) -> ShellExplanation:
     """A line's public explanation: its verdict and its parse tree, with
     every command's explanation where the command stands.
 
     The verdict is the first command, in the order the gate reads them,
-    whose refusal holds the whole line (:func:`holds`), as the run
-    reports it; a line nothing holds runs, carrying the first ask an
-    approval lets through. A command refused only where it stands keeps
-    its refusal to its own node, since the rest of the line still runs.
+    whose refusal by the profile's rules holds the whole line
+    (:func:`holds`), as the run reports it; a line nothing holds runs,
+    carrying the first ask an approval lets through. A command refused
+    only where it stands, a policy's own ``pre_command`` refusal
+    included, keeps its refusal to its own node, since the rest of the
+    line still runs.
 
     Every scope a command reads its words in (the typed line, a
     ``$( )`` body, a ``bash -c`` string) is parsed on its own, as the
@@ -1472,6 +1481,8 @@ def explained_line(
     Args:
         line (str): the line as given.
         judged (Sequence[Judged]): :func:`explain_line`'s judgments.
+        verdicts (Sequence[Judged]): the same line judged by the
+            profile's rules alone (``every=False``).
         runtime_of (Callable[[str], str]): the runtime that would run a
             command, empty for the workspace.
     """
@@ -1484,7 +1495,7 @@ def explained_line(
     held = next(
         (
             one
-            for one in judged
+            for one in verdicts
             if one.judgment.exit_code and _is_verdict(one.judgment)
         ),
         None,
@@ -1505,7 +1516,7 @@ def explained_line(
     asked = next(
         (
             one
-            for one in judged
+            for one in verdicts
             if not one.judgment.exit_code
             and _verdict_of(one.judgment)[0] is Outcome.ASK
         ),

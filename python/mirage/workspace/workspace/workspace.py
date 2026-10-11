@@ -651,15 +651,24 @@ class Workspace:
         """
         session = self.get_session(session_id or self.default_session_id)
         ast = parse(line)
+        whole_line = self._runtimes.whole_line(None) is not None
         judged = await explain_line(
             ast,
             session,
             self._registry,
             self._namespace,
-            whole_line=self._runtimes.whole_line(None) is not None,
+            whole_line=whole_line,
         )
-        if holds([one.judgment for one in judged]):
-            return explained_line(line, judged, lambda command: "")
+        verdicts = await explain_line(
+            ast,
+            session,
+            self._registry,
+            self._namespace,
+            whole_line=whole_line,
+            every=False,
+        )
+        if holds([one.judgment for one in verdicts]):
+            return explained_line(line, judged, verdicts, lambda command: "")
         answers, placed = await self._router.placement(
             ast,
             line,
@@ -669,7 +678,7 @@ class Workspace:
         )
         if isinstance(placed, (Deny, Pending)):
             refused = placement_refused(placed, line)
-            said = explained_line(line, judged, lambda command: "")
+            said = explained_line(line, judged, verdicts, lambda command: "")
             return dataclasses.replace(
                 said,
                 answers=answers,
@@ -687,6 +696,7 @@ class Workspace:
         said = explained_line(
             line,
             judged,
+            verdicts,
             lambda command: self._router.runtime_for(command, placed),
         )
         return dataclasses.replace(said, answers=answers)
