@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import partial
 
 from mirage.commands.builtin.generic.decompress import decompress_inputs
+from mirage.commands.builtin.generic.grep import max_count
 from mirage.commands.builtin.grep_binary import valid_utf8
 from mirage.commands.builtin.grep_offsets import prefix_of
 from mirage.commands.builtin.grep_pattern import (
@@ -182,7 +183,7 @@ def parse_flags(fl: FlagView, never_match: bool) -> ZgrepFlags:
         quiet=fl.as_bool("quiet"),
         whole_word=fl.as_bool("word_regexp"),
         line_regexp=fl.as_bool("line_regexp"),
-        max_count=fl.as_int("max_count"),
+        max_count=max_count(fl),
     )
 
 

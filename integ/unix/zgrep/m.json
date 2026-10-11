@@ -32,6 +32,39 @@
       "flags": [
         "m"
       ]
+    },
+    {
+      "id": "zgrep_m_reads_counts_as_grep",
+      "seq": 14490066,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; printf 'foo\\nfoo\\n' | gzip -c > /data/gfl/z.gz; zgrep -m 1 foo /data/gfl/z.gz; zgrep -m -1 -c foo /data/gfl/z.gz; zgrep -m nope foo /data/gfl/z.gz; echo rc=$?; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "foo\n2\nrc=2\n",
+        "stderr": "grep: invalid max count\n"
+      },
+      "flags": [
+        "m"
+      ]
     }
   ]
 }

@@ -82,8 +82,9 @@ it('recursive quiet grep visits every file when no match exists', async () => {
 })
 
 it('false flags turn nothing on', async () => {
+  const body = enc.encode('Hit\n')
   async function* stream(): AsyncIterable<Uint8Array> {
-    yield await Promise.resolve(enc.encode('Hit\n'))
+    yield await Promise.resolve(body)
   }
   const result = await grepGeneric(
     'grep',

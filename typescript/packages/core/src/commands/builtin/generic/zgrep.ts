@@ -34,6 +34,7 @@ import { linkResolver } from '../utils/links.ts'
 import { operandLabel } from '../utils/stream.ts'
 import type { StatFn } from './archive/walk.ts'
 import { decompressInputs } from './decompress.ts'
+import { maxCount } from './grep.ts'
 import { validUtf8 } from '../grep_binary.ts'
 import { prefixOf } from '../grep_offsets.ts'
 import { formatRecords } from '../utils/output.ts'
@@ -104,7 +105,7 @@ function parseFlags(fl: FlagView, neverMatch: boolean): ZgrepFlags {
     quiet: fl.asBool('quiet'),
     wholeWord: fl.asBool('word_regexp'),
     lineRegexp: fl.asBool('line_regexp'),
-    maxCount: fl.asInt('max_count') ?? null,
+    maxCount: maxCount(fl),
   }
 }
 

@@ -59,6 +59,8 @@ const DEVICE_TYPES: ReadonlySet<FileType> = new Set([
 ])
 const STDIN_LABEL = '(standard input)'
 const UNIX_BYTE_OFFSETS = 'grep: warning: --unix-byte-offsets (-u) is obsolete\n'
+// What xstrtoimax takes as -m's count: blanks, a sign, then digits.
+const MAX_COUNT = /^[ \t\n\v\f\r]*[+-]?[0-9]+$/
 type Stat = (p: PathSpec) => Promise<FileStat>
 type Readdir = (p: PathSpec) => Promise<string[]>
 type Stream = (p: PathSpec) => AsyncIterable<Uint8Array>
@@ -170,6 +172,17 @@ function contextLength(fl: FlagView, name: string): number | undefined {
   return value
 }
 
+/**
+ * -m as GNU reads it (xstrtoimax): leading blanks and a sign are allowed, a
+ * negative count is no limit, and anything else is refused.
+ */
+export function maxCount(fl: FlagView): number | null {
+  const raw = fl.asStr('max_count')
+  if (raw !== undefined && !MAX_COUNT.test(raw)) throw new UsageError('grep: invalid max count')
+  const count = raw === undefined ? fl.asInt('max_count') : Number(raw.trim())
+  return count === undefined || count < 0 ? null : count
+}
+
 /** The winning filename flag: true for -H, false for -h, null for neither. */
 // [-l, -L]: which file-listing mode wins, the later one on the line. GNU's
 // -l and -L set one variable (`list_files`) so the last typed wins: `grep -l
@@ -244,7 +257,7 @@ export function parseFlags(fl: FlagView): FlagSet {
     // for the default explicitly.
     syntax: matcherSyntax(fl),
     onlyMatching: fl.asBool('only_matching'),
-    maxCount: fl.asInt('max_count') ?? null,
+    maxCount: maxCount(fl),
     quiet: fl.asBool('quiet'),
     noMessages: fl.asBool('no_messages'),
     withFilename: filename === true,
