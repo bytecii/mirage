@@ -470,7 +470,8 @@ export class Decisions {
   async resolveOp(ctx: VfsContext | SessionContext, ask: Ask): Promise<Deny | Pending | null> {
     if (explaining() === DryRun.DECIDING) return this.heldOp(ctx, ask)
     const [asked, keyed] = opQuestion(ctx, ask)
-    const call = asyncContextIsolatesTasks || !('plane' in ctx) ? getOpCall(this) : null
+    const sessionId = ctx.sessionId ?? ''
+    const call = asyncContextIsolatesTasks || !('plane' in ctx) ? getOpCall(this, sessionId) : null
     const claimant: Claimant | null =
       call === null
         ? null
@@ -505,10 +506,10 @@ export class Decisions {
    * so a held call spends them too. Mirrors Python's `within_call`.
    */
   async withinCall<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    if (getOpCall(this) !== null) return run()
+    if (getOpCall(this, sessionId) !== null) return run()
     const handed: HandOff = { claimed: [], parent: null, origin: null }
     try {
-      return await runWithOpCall(this, handed, run)
+      return await runWithOpCall(this, handed, sessionId, run)
     } catch (err) {
       const held = err instanceof PolicyDenied && err.refusal?.kind === 'pending'
       if (held && asyncContextIsolatesTasks) this.release(sessionId, handed)
@@ -878,7 +879,7 @@ export class Decisions {
   }
 }
 
-const opCallStorage = createAsyncContext<readonly [Decisions, HandOff]>()
+const opCallStorage = createAsyncContext<readonly [Decisions, HandOff, string]>()
 
 /**
  * Run one call made outside a line (a file tool's), the unit an op-level
@@ -890,17 +891,20 @@ const opCallStorage = createAsyncContext<readonly [Decisions, HandOff]>()
 export function runWithOpCall<T>(
   owner: Decisions,
   handed: HandOff,
+  sessionId: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return Promise.resolve(opCallStorage.run([owner, handed], fn))
+  return Promise.resolve(opCallStorage.run([owner, handed, sessionId], fn))
 }
 
 /**
  * The call made outside a line running in this context under `owner`'s
- * ledger, null for a bare op or for a call another ledger runs (a host
- * callback reaching a second workspace mid-call).
+ * ledger for `sessionId`, null for a bare op, for a call another ledger
+ * runs (a host callback reaching a second workspace mid-call) or for
+ * another session's call: without task isolation the newest frame may be
+ * another task's.
  */
-export function getOpCall(owner: Decisions): HandOff | null {
+export function getOpCall(owner: Decisions, sessionId: string): HandOff | null {
   const call = opCallStorage.getStore()
-  return call?.[0] === owner ? call[1] : null
+  return call?.[0] === owner && call[2] === sessionId ? call[1] : null
 }

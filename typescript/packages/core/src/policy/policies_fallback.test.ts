@@ -108,6 +108,50 @@ describe('a hook without task isolation', () => {
     }
   })
 
+  it("keeps one session's file nod off another session's call", async () => {
+    // A's read waits on the host while B's is approved: B's nod is spent
+    // with B's call, not claimed on A's.
+    let entered!: () => void
+    let release!: () => void
+    const reached = new Promise<void>((resolve) => (entered = resolve))
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const askedB: string[] = []
+    const ws = new Workspace(
+      { '/data/': new RAMVFS() },
+      {
+        mode: MountMode.WRITE,
+        shellParser: await getTestParser(),
+        onAsk: async (record: Decision) => {
+          if (record.sessionId === 'a') {
+            entered()
+            await held
+          } else {
+            askedB.push(record.sessionId)
+          }
+          return { ...record, outcome: Outcome.ALLOW }
+        },
+      },
+    )
+    const profile = {
+      commands: { ask: [{ reason: 'outbox needs a nod', paths: ['/data/out/*'] }] },
+    }
+    ws.createSession('a', { profile })
+    ws.createSession('b', { profile })
+    await ws.shell('mkdir -p /data/out && echo x > /data/out/f.txt')
+    try {
+      const a = new Session(ws, 'a').tools.read('/data/out/f.txt')
+      await reached
+      const b = new Session(ws, 'b').tools
+      expect((await b.read('/data/out/f.txt')).isError).toBeUndefined()
+      expect((await b.read('/data/out/f.txt')).isError).toBeUndefined()
+      expect(askedB).toEqual(['b', 'b'])
+      release()
+      expect((await a).isError).toBeUndefined()
+    } finally {
+      await ws.close()
+    }
+  })
+
   it("covers a file tool's own reads with one nod", async () => {
     // A write tool reads the file back to stamp its version: the nod for
     // the call covers that read too, and is spent with the call.

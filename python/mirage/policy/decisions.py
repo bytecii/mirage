@@ -512,7 +512,7 @@ class Decisions:
         if explaining() is DryRun.DECIDING:
             return self.held_op(ctx, ask)
         asked, keyed = op_question(ctx, ask)
-        call = get_op_call(self)
+        call = get_op_call(self, ctx.session_id)
         claimant = (
             Claimant(call, Occurrence(None, asked.argv[0], 0, 0))
             if call is not None
@@ -556,10 +556,10 @@ class Decisions:
         Returns:
             T: what the call returned.
         """
-        if get_op_call(self) is not None:
+        if get_op_call(self, session_id) is not None:
             return await run()
         handed = HandOff()
-        token = set_op_call(self, handed)
+        token = set_op_call(self, handed, session_id)
         try:
             return await run()
         except PolicyDenied as exc:
@@ -1023,15 +1023,15 @@ class Decisions:
             await self._sessions.flush()
 
 
-_op_call: ContextVar[tuple[Decisions, HandOff] | None] = ContextVar(
+_op_call: ContextVar[tuple[Decisions, HandOff, str] | None] = ContextVar(
     "mirage_op_call",
     default=None,
 )
 
 
 def set_op_call(
-    owner: Decisions, handed: HandOff
-) -> Token[tuple[Decisions, HandOff] | None]:
+    owner: Decisions, handed: HandOff, session_id: str
+) -> Token[tuple[Decisions, HandOff, str] | None]:
     """Bind one call made outside a line (a file tool's), the unit an
     op-level answer covers: a grant one of its ops is answered by is
     claimed on ``handed`` for the call's other ops on that path.
@@ -1040,22 +1040,29 @@ def set_op_call(
         owner (Decisions): the ledger the call runs under, the only one
             that claims on ``handed`` and spends it.
         handed (HandOff): the call's hand-off, spent when it ends.
+        session_id (str): the session the call runs as.
     """
-    return _op_call.set((owner, handed))
+    return _op_call.set((owner, handed, session_id))
 
 
-def reset_op_call(token: Token[tuple[Decisions, HandOff] | None]) -> None:
+def reset_op_call(
+    token: Token[tuple[Decisions, HandOff, str] | None],
+) -> None:
     """Restore the previous call binding."""
     _op_call.reset(token)
 
 
-def get_op_call(owner: Decisions) -> HandOff | None:
+def get_op_call(owner: Decisions, session_id: str) -> HandOff | None:
     """The call made outside a line running in this context under
-    ``owner``'s ledger, None for a bare op or for a call another ledger
-    runs (a host callback reaching a second workspace mid-call).
+    ``owner``'s ledger for ``session_id``, None for a bare op, for a
+    call another ledger runs (a host callback reaching a second
+    workspace mid-call) or for another session's call.
 
     Args:
         owner (Decisions): the ledger asking.
+        session_id (str): the session asking.
     """
     call = _op_call.get()
-    return call[1] if call is not None and call[0] is owner else None
+    if call is None or call[0] is not owner or call[2] != session_id:
+        return None
+    return call[1]
