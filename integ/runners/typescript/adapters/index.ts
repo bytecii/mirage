@@ -1848,14 +1848,14 @@ function gwsNativeVfs(
     refreshToken: GWS_TOKEN,
     apiBase: base,
   }
-  if (vfs === 'gdocs') return new GDocsVFS(config)
-  if (vfs === 'gsheets') return new GSheetsVFS(config)
+  if (vfs === 'gdocs') return new GDocsVFS({ ...config, contentSearch: true })
+  if (vfs === 'gsheets') return new GSheetsVFS({ ...config, contentSearch: true })
   if (vfs === 'gmail') return new GmailVFS({ ...config, contentSearch: true })
   // today is pinned so the rolling window is the same on both hosts and
   // lands on the seeded events.
   if (vfs === 'gcal')
     return new GCalVFS(normalizeGCalConfig({ ...config, today: '2026-02-11', ...mountConfig }))
-  return new GSlidesVFS(config)
+  return new GSlidesVFS({ ...config, contentSearch: true })
 }
 
 async function openGws(target: Target, options?: OpenOptions): Promise<Open> {

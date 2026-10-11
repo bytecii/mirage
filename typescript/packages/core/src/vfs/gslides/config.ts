@@ -13,10 +13,10 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 export {
-  normalizeGoogleConfig as normalizeGSlidesConfig,
-  redactGoogleConfig as redactGSlidesConfig,
+  normalizeGoogleAppConfig as normalizeGSlidesConfig,
+  redactGoogleAppConfig as redactGSlidesConfig,
 } from '../../core/google/config.ts'
 export type {
-  GoogleConfig as GSlidesConfig,
-  GoogleConfigRedacted as GSlidesConfigRedacted,
+  GoogleAppConfig as GSlidesConfig,
+  GoogleAppConfigRedacted as GSlidesConfigRedacted,
 } from '../../core/google/config.ts'

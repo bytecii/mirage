@@ -12,8 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.core.google.config import GoogleConfig
+from mirage.core.google.config import GoogleAppConfig
 
 
-class GSlidesConfig(GoogleConfig):
+class GSlidesConfig(GoogleAppConfig):
     pass

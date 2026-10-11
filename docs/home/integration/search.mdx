@@ -136,6 +136,7 @@ instead, and grep exits 2.
 | Box | `/search` | `-w` | `content_search` |
 | Dropbox | `/2/files/search_v2` | `-w` | `content_search` |
 | Google Drive | `fullText contains` | `-w` | `content_search` |
+| Google Docs, Sheets, Slides | `fullText contains`, one app's files | `-w`, a word with no digit that is none of the API's names | `content_search` |
 | OneDrive | `search(q=)` | `-w` | `content_search` |
 | SharePoint | `search(q=)` | `-w`, within one document library | `content_search` |
 | Email | IMAP `SEARCH TEXT` | messages (`*/*/*.email.json`) | `content_search` |

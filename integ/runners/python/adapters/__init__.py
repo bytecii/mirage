@@ -795,21 +795,30 @@ class GwsService:
     def gdocs_vfs(self) -> GDocsVFS:
         return GDocsVFS(
             GDocsConfig(
-                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+                client_id="integ",
+                refresh_token=GWS_TOKEN,
+                api_base=self.url,
+                content_search=True,
             )
         )
 
     def gsheets_vfs(self) -> GSheetsVFS:
         return GSheetsVFS(
             GSheetsConfig(
-                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+                client_id="integ",
+                refresh_token=GWS_TOKEN,
+                api_base=self.url,
+                content_search=True,
             )
         )
 
     def gslides_vfs(self) -> GSlidesVFS:
         return GSlidesVFS(
             GSlidesConfig(
-                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+                client_id="integ",
+                refresh_token=GWS_TOKEN,
+                api_base=self.url,
+                content_search=True,
             )
         )
 

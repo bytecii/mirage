@@ -24,6 +24,9 @@ import { redactGDocsConfig, type GDocsConfig, type GDocsConfigRedacted } from '.
 import type { PathSpec, FileStat } from '../../types.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
+import { DOCS_WORDS } from '../../utils/generated/google_vocabulary.ts'
+import { filesContaining as googleFilesContaining } from '../../core/google/search.ts'
+import { MIME } from '../../core/gdocs/constants.ts'
 import { readdir as gdocsReaddir } from '../../core/gdocs/readdir.ts'
 import { read as gdocsRead } from '../../core/gdocs/read.ts'
 import { stat as gdocsStat } from '../../core/gdocs/stat.ts'
@@ -53,6 +56,16 @@ export class GDocsVFS extends BaseVFS {
   }
 
   override readonly renderers: Readonly<Record<string, string>> = { '.gdoc.json': 'readDoc' }
+
+  override filesContaining(
+    text: string,
+    under: PathSpec[],
+    opts: { wholeWord: boolean; ignoreCase: boolean },
+    index?: IndexCacheStore,
+  ): Promise<PathSpec[] | null> {
+    if (!opts.wholeWord || this.config.contentSearch !== true) return Promise.resolve(null)
+    return googleFilesContaining(this.accessor, gdocsReaddir, MIME, DOCS_WORDS, text, under, index)
+  }
 
   override readdir(path: PathSpec, index?: IndexCacheStore): Promise<string[]> {
     return gdocsReaddir(this.accessor, path, index)

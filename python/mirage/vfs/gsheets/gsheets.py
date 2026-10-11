@@ -19,11 +19,14 @@ from typing import Any
 from mirage.accessor.gsheets import GSheetsAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.google.client import TokenManager
+from mirage.core.google.search import files_containing as _files_containing
+from mirage.core.gsheets.constants import MIME
 from mirage.core.gsheets.read import read as _read
 from mirage.core.gsheets.readdir import readdir as _readdir
 from mirage.core.gsheets.stat import stat as _stat
 from mirage.core.gsheets.unlink import unlink as _unlink
 from mirage.types import FileStat, PathSpec, VFSName
+from mirage.utils.generated.google_vocabulary import SHEETS_WORDS
 from mirage.utils.ranges import slice_window
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.gsheets.config import GSheetsConfig
@@ -76,6 +79,21 @@ class GSheetsVFS(BaseVFS):
         """
         data = await _read(self.accessor, path, index)
         return slice_window(data, offset, size)
+
+    async def files_containing(
+        self,
+        text: str,
+        under: list[PathSpec],
+        *,
+        whole_word: bool,
+        ignore_case: bool,
+        index: IndexCacheStore = NULL_INDEX,
+    ) -> list[PathSpec] | None:
+        if not whole_word or not self.config.content_search:
+            return None
+        return await _files_containing(
+            self.accessor, _readdir, MIME, SHEETS_WORDS, text, under, index
+        )
 
     async def stat(
         self, path: PathSpec, index: IndexCacheStore = NULL_INDEX
