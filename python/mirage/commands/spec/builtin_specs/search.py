@@ -223,7 +223,10 @@ SPECS: dict[str, CommandSpec] = {
             # line rg writes ends in CR LF.
             Argument("--crlf", action="store_true"),
             Argument("--no-crlf", action="store_true"),
+            # A match may span lines: the whole file is searched at once.
+            Argument("-U", "--multiline", action="store_true"),
             Argument("--no-multiline", action="store_true"),
+            Argument("--multiline-dotall", action="store_true"),
             Argument("--no-multiline-dotall", action="store_true"),
             Argument("-P", "--pcre2", action="store_true"),
             Argument("--no-pcre2", action="store_true"),

@@ -13,9 +13,10 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import re
+from bisect import bisect_right
 from collections import deque
 from collections.abc import AsyncIterator, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mirage.commands.builtin.grep_prefilter import required_needles
 from mirage.commands.builtin.utils.pcre import (
@@ -104,13 +105,15 @@ class RgFlags:
     no_messages: bool
     null_data: bool = False
     crlf: bool = False
+    multiline: bool = False
+    multiline_dotall: bool = False
     engine: str = "default"
     threads: int | None = None
     text: bool = False
     unicode: bool = True
 
 
-def line_end(f: RgFlags) -> bytes:
+def record_end(f: RgFlags) -> bytes:
     """What ends a line rg writes itself, as opposed to a line it read:
     NUL under --null-data, CR LF under --crlf.
 
@@ -579,6 +582,86 @@ class RgBinary:
         return data.replace(b"\0", b"\n") if self.offset is not None else data
 
 
+@dataclass(frozen=True, slots=True)
+class Line:
+    """One line of a haystack -U searched whole.
+
+    Args:
+        start (int): its byte offset.
+        at (int): its index in the decoded haystack.
+        text (str): the line, its terminator (and under --crlf its CR) off.
+        cr (bool): --crlf took a CR off its end.
+    """
+
+    start: int
+    at: int
+    text: str
+    cr: bool
+
+
+@dataclass(slots=True)
+class Region:
+    """The lines -U selects for one match: every line it spans, a match
+    whose lines overlap the region's joining it (grep-searcher's
+    multi-line search).
+
+    Args:
+        first (int): the region's first line.
+        last (int): its last line.
+        matches (list[re.Match[str]]): the matches it holds.
+    """
+
+    first: int
+    last: int
+    matches: list[re.Match[str]] = field(default_factory=list)
+
+
+def split_lines(text: str, f: RgFlags) -> list[Line]:
+    """A haystack -U searched whole, cut at its line terminators.
+
+    Args:
+        text (str): the decoded haystack.
+        f (RgFlags): the parsed flags.
+    """
+    pieces = text.split("\0" if f.null_data else "\n")
+    if pieces[-1] == "":
+        pieces.pop()
+    lines: list[Line] = []
+    at = start = 0
+    for piece in pieces:
+        cr = f.crlf and piece.endswith("\r")
+        lines.append(Line(start, at, piece[:-1] if cr else piece, cr))
+        at += len(piece) + 1
+        start += _byte_len(piece) + 1
+    return lines
+
+
+def find_regions(
+    pat: re.Pattern[str], text: str, lines: list[Line]
+) -> list[Region]:
+    """The regions -U selects, in order.
+
+    Args:
+        pat (re.Pattern[str]): the compiled pattern.
+        text (str): the decoded haystack.
+        lines (list[Line]): its lines.
+    """
+    ats = [line.at for line in lines]
+    regions: list[Region] = []
+    for m in rust_matches(pat, text):
+        start = match_start(m)
+        if not lines or start >= len(text) and text.endswith(("\n", "\0")):
+            break
+        first = bisect_right(ats, start) - 1
+        last = bisect_right(ats, max(start, m.end() - 1)) - 1
+        if regions and regions[-1].last >= first:
+            regions[-1].last = max(regions[-1].last, last)
+            regions[-1].matches.append(m)
+        else:
+            regions.append(Region(first, last, [m]))
+    return regions
+
+
 class RgPrinter:
     """How one haystack's selected and context lines print (ripgrep's
     standard printer): the fields, -o/--vimgrep/-r, --trim and -M.
@@ -689,6 +772,136 @@ class RgPrinter:
             cr,
         )
 
+    def region(
+        self, region: Region, lines: list[Line], text: str
+    ) -> dict[int, list[bytes]]:
+        """The records one -U region prints, by line: every line it spans,
+        at the column its first match starts; under -o each match's part
+        of each line; under -r the region once, replaced, on its first
+        line; under --vimgrep each match on the line it starts.
+
+        Args:
+            region (Region): the region.
+            lines (list[Line]): the haystack's lines.
+            text (str): the decoded haystack.
+        """
+        f = self._f
+        ats = [line.at for line in lines]
+        records: dict[int, list[bytes]] = {}
+
+        def line_of(at: int) -> int:
+            return bisect_right(ats, at) - 1
+
+        def offset_of(index: int, at: int) -> int:
+            line = lines[index]
+            return line.start + _byte_len(text[line.at : at])
+
+        def add(index: int, record: bytes) -> None:
+            records.setdefault(index, []).append(record)
+
+        def replaced(index: int, column: int | None, shown: str) -> None:
+            # A replacement holding a newline prints as one line each,
+            # numbered on from the line it starts.
+            for k, piece in enumerate(shown.split("\n")):
+                at = min(index + k, len(lines) - 1)
+                add(
+                    index,
+                    self._record(
+                        index + k,
+                        column,
+                        lines[at].start,
+                        piece,
+                        [],
+                        True,
+                        False,
+                        1,
+                        lines[at].cr,
+                    ),
+                )
+
+        first = lines[region.first]
+        head = match_start(region.matches[0])
+        column = 1 + offset_of(region.first, head) - first.start
+        if f.vimgrep and f.replace is None:
+            for m in region.matches:
+                start = match_start(m)
+                i = line_of(start)
+                line = lines[i]
+                at = offset_of(i, start)
+                add(
+                    i,
+                    self._record(
+                        i,
+                        1 + at - line.start if f.column else None,
+                        line.start,
+                        line.text,
+                        [],
+                        True,
+                        True,
+                        1,
+                        line.cr,
+                    ),
+                )
+            return records
+        if f.only_matching or f.vimgrep:
+            # Every line of a match prints at the match's own offset and
+            # column.
+            for m in region.matches:
+                start = match_start(m)
+                i = line_of(start)
+                at = offset_of(i, start)
+                shown_column = 1 + at - lines[i].start if f.column else None
+                if f.replace is not None:
+                    replaced(i, shown_column, expand(f.replace, m))
+                    continue
+                for j in range(i, line_of(max(start, m.end() - 1)) + 1):
+                    line = lines[j]
+                    a = max(start, line.at)
+                    piece = text[a : min(m.end(), line.at + len(line.text))]
+                    add(
+                        j,
+                        self._record(
+                            j,
+                            shown_column,
+                            at,
+                            piece,
+                            [(0, len(piece))],
+                            True,
+                            False,
+                            1,
+                            line.cr,
+                        ),
+                    )
+            return records
+        if f.replace is not None:
+            last = lines[region.last]
+            shown: list[str] = []
+            position = first.at
+            for m in region.matches:
+                shown.append(text[position : match_start(m)])
+                shown.append(expand(f.replace, m))
+                position = max(position, m.end())
+            shown.append(text[position : last.at + len(last.text)])
+            replaced(region.first, column if f.column else None, "".join(shown))
+            return records
+        for i in range(region.first, region.last + 1):
+            line = lines[i]
+            add(
+                i,
+                self._record(
+                    i,
+                    column if f.column else None,
+                    line.start,
+                    line.text,
+                    [],
+                    True,
+                    True,
+                    0,
+                    line.cr,
+                ),
+            )
+        return records
+
     def _pieces(
         self,
         index: int,
@@ -762,7 +975,7 @@ class RgPrinter:
             count (int): the line's match count -M reports.
             cr (bool): --crlf took a CR off the line's end. A line
                 printed as it was read ends as it did; every other
-                record ends as ``line_end`` says.
+                record ends as ``record_end`` says.
         """
         f = self._f
         sep = (
@@ -787,7 +1000,7 @@ class RgPrinter:
         ):
             body = self._exceeded(body, spans, is_match, count)
             terminated = False
-        end = b"\n" if f.crlf and terminated and not cr else line_end(f)
+        end = b"\n" if f.crlf and terminated and not cr else record_end(f)
         return encode_text(f"{head}{body}") + end
 
     def _exceeded(
@@ -1041,7 +1254,7 @@ async def _printed_lines(
                     and first > last_printed + 1
                     and f.context_separator is not None
                 ):
-                    yield encode_text(f.context_separator) + line_end(f)
+                    yield encode_text(f.context_separator) + record_end(f)
                 for i, s, t, c in held:
                     for chunk in printer.context(i, s, t, c):
                         yield chunk
@@ -1074,6 +1287,159 @@ async def _printed_lines(
             and after_left == 0
         ):
             return
+
+
+def _listed(name: str, f: RgFlags, tally: Tally) -> Iterator[bytes]:
+    """The name -l or --files-without-match prints for a haystack, if any.
+
+    Args:
+        name (str): the haystack's path as printed.
+        f (RgFlags): the parsed flags.
+        tally (Tally): what the search selected.
+    """
+    if not f.quiet and tally.selected == f.files_only:
+        yield encode_text(name) + (b"\0" if f.null else record_end(f))
+
+
+def _counted(
+    count: int, label: str | None, f: RgFlags, tally: Tally
+) -> Iterator[bytes]:
+    """The count -c or --count-matches prints for a haystack, if any.
+
+    Args:
+        count (int): the count.
+        label (str | None): the path it leads with, None for none.
+        f (RgFlags): the parsed flags.
+        tally (Tally): what the search selected.
+    """
+    if tally.selected or f.include_zero:
+        head = b""
+        if label is not None:
+            head = encode_text(label) + (b"\0" if f.null else b":")
+        yield head + str(count).encode() + record_end(f)
+
+
+async def _multiline(
+    reader: AsyncIterator[bytes],
+    pat: re.Pattern[str],
+    f: RgFlags,
+    name: str,
+    label: str | None,
+    tally: Tally,
+    binary: RgBinary,
+) -> AsyncIterator[bytes]:
+    """One haystack as -U searches it: read whole and matched across its
+    lines, each region a unit for -c and -m (ripgrep 14.1.1).
+
+    -v selects the lines no region spans; ripgrep counts nothing then.
+    Context and --passthru print around the selected lines as they do
+    line by line, and a line after -m's last unit that would be selected
+    prints as selected, still counted as context.
+
+    Args:
+        reader (AsyncIterator[bytes]): the haystack, binary-checked.
+        pat (re.Pattern[str]): the compiled pattern.
+        f (RgFlags): the parsed flags.
+        name (str): the haystack's path as -l prints it.
+        label (str | None): the path each record leads with.
+        tally (Tally): receives the selection.
+        binary (RgBinary): the haystack's binary detection.
+    """
+    data = b"".join([chunk async for chunk in reader])
+    if binary.skipped:
+        tally.skipped = True
+        return
+    text = decode_text(data)
+    lines = split_lines(text, f)
+    regions = find_regions(pat, text, lines)
+    spanned = {i for r in regions for i in range(r.first, r.last + 1)}
+    units = (
+        [Region(i, i) for i in range(len(lines)) if i not in spanned]
+        if f.invert
+        else regions
+    )
+    kept = units if f.max_count is None else units[: f.max_count]
+    tally.selected = bool(kept)
+    if f.quiet or f.files_only or f.files_without_match:
+        for chunk in _listed(name, f, tally):
+            yield chunk
+        return
+    if f.count_only or f.count_matches:
+        if f.invert:
+            tally.selected = False
+            return
+        matches = f.count_matches or f.only_matching
+        count = sum(len(r.matches) if matches else 1 for r in kept)
+        for chunk in _counted(count, label, f, tally):
+            yield chunk
+        return
+    if not kept:
+        return
+    if binary.offset is not None:
+        tally.binary = True
+        yield binary.notice(label)
+        return
+    printer = RgPrinter(f, pat, None if f.heading else label)
+
+    def records(chosen: list[Region]) -> dict[int, list[bytes]]:
+        out: dict[int, list[bytes]] = {}
+        for r in chosen:
+            for i in range(r.first, r.last + 1):
+                out.setdefault(i, [])
+            if f.invert:
+                line = lines[r.first]
+                out[r.first] = list(
+                    printer.selected(r.first, line.start, line.text, line.cr)
+                )
+            else:
+                for i, chunk in printer.region(r, lines, text).items():
+                    out[i].extend(chunk)
+        return out
+
+    picked = records(kept)
+    extra = records(units[len(kept) :]) if f.context_after else {}
+    end = kept[-1].last if f.max_count is not None else None
+    context = prints_context(f)
+    held: deque[int] = deque(maxlen=f.context_before if context else 0)
+    budget = YieldBudget()
+    last_printed = -1
+    after_left = 0
+    for i, line in enumerate(lines):
+        if end is not None and i > end and (after_left == 0 or f.passthru):
+            return
+        chunks: Iterable[bytes] = ()
+        if i in picked:
+            if context:
+                first = held[0] if held else i
+                if (
+                    last_printed >= 0
+                    and first > last_printed + 1
+                    and f.context_separator is not None
+                ):
+                    yield encode_text(f.context_separator) + record_end(f)
+                for h in held:
+                    for chunk in printer.context(
+                        h, lines[h].start, lines[h].text, lines[h].cr
+                    ):
+                        yield chunk
+                held.clear()
+                after_left = f.context_after
+            chunks = picked[i]
+            last_printed = i
+        elif f.passthru or after_left > 0:
+            # A line after -m's last unit that a later unit would select
+            # prints as selected and then again as context (ripgrep 14.1.1).
+            chunks = [
+                *extra.get(i, []),
+                *printer.context(i, line.start, line.text, line.cr),
+            ]
+            after_left = max(after_left - 1, 0)
+            last_printed = i
+        elif context:
+            held.append(i)
+        for chunk in chunks:
+            yield chunk
+        await budget.run()
 
 
 async def search_haystack(
@@ -1121,6 +1487,12 @@ async def search_haystack(
     reader = binary.read(source, pipe)
     lines = AsyncLineIterator(reader)
     try:
+        if f.multiline:
+            async for chunk in _multiline(
+                reader, pat, f, name, label, tally, binary
+            ):
+                yield chunk
+            return
         if f.quiet or f.files_only or f.files_without_match:
             await _listing(lines, pat, f, tally)
             if binary.skipped:
@@ -1128,22 +1500,15 @@ async def search_haystack(
                 # neither listing.
                 tally.skipped = True
                 return
-            if not f.quiet and tally.selected == f.files_only:
-                yield encode_text(name) + (b"\0" if f.null else line_end(f))
+            for chunk in _listed(name, f, tally):
+                yield chunk
             return
         if f.count_only or f.count_matches:
             count = await _count(lines, pat, f, tally)
             if binary.skipped:
                 return
-            if tally.selected or f.include_zero:
-                head = b""
-                if label is not None:
-                    head = encode_text(label) + (b"\0" if f.null else b":")
-                yield (
-                    head
-                    + str(count).encode()
-                    + line_end(f)
-                )
+            for chunk in _counted(count, label, f, tally):
+                yield chunk
             return
         printer = RgPrinter(f, pat, None if f.heading else label)
         async for chunk in _printed_lines(

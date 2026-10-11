@@ -59,6 +59,8 @@ export interface RgFlags {
   null: boolean
   nullData: boolean
   crlf?: boolean
+  multiline?: boolean
+  multilineDotall?: boolean
   pathSeparator: string | null
   quiet: boolean
   countOnly: boolean
@@ -549,7 +551,7 @@ function lstripAscii(text: string): string {
  * What ends a line rg writes itself, as opposed to a line it read: NUL under
  * --null-data, CR LF under --crlf.
  */
-export function lineEnd(f: RgFlags): string {
+export function recordEnd(f: RgFlags): string {
   return f.nullData ? '\0' : f.crlf === true ? '\r\n' : '\n'
 }
 
@@ -560,6 +562,74 @@ export function lineEnd(f: RgFlags): string {
 function readLine(raw: Uint8Array, f: RgFlags): [string, boolean] {
   const cr = f.crlf === true && raw[raw.length - 1] === 0x0d
   return [decodeText(cr ? raw.subarray(0, raw.length - 1) : raw), cr]
+}
+
+/** One line of a haystack -U searched whole. */
+export interface Line {
+  // Its byte offset, its index in the decoded haystack, the line with its
+  // terminator (and under --crlf its CR) off, and whether --crlf took one.
+  readonly start: number
+  readonly at: number
+  readonly text: string
+  readonly cr: boolean
+}
+
+/**
+ * The lines -U selects for one match: every line it spans, a match whose
+ * lines overlap the region's joining it (grep-searcher's multi-line search).
+ */
+export interface Region {
+  first: number
+  last: number
+  matches: RegExpExecArray[]
+}
+
+// The last index whose value is <= `at` (Python's bisect_right less one).
+function lineIndex(ats: readonly number[], at: number): number {
+  let lo = 0
+  let hi = ats.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if ((ats[mid] ?? 0) <= at) lo = mid + 1
+    else hi = mid
+  }
+  return lo - 1
+}
+
+/** A haystack -U searched whole, cut at its line terminators. */
+export function splitLines(text: string, f: RgFlags): Line[] {
+  const pieces = text.split(f.nullData ? '\0' : '\n')
+  if (pieces[pieces.length - 1] === '') pieces.pop()
+  const lines: Line[] = []
+  let at = 0
+  let start = 0
+  for (const piece of pieces) {
+    const cr = f.crlf === true && piece.endsWith('\r')
+    lines.push({ start, at, text: cr ? piece.slice(0, -1) : piece, cr })
+    at += piece.length + 1
+    start += byteLen(piece) + 1
+  }
+  return lines
+}
+
+/** The regions -U selects, in order. */
+export function findRegions(pat: RegExp, text: string, lines: readonly Line[]): Region[] {
+  const ats = lines.map((line) => line.at)
+  const regions: Region[] = []
+  for (const m of rustMatches(pat, text)) {
+    const start = matchStart(m)
+    if (lines.length === 0 || (start >= text.length && /[\n\0]$/.test(text))) break
+    const first = lineIndex(ats, start)
+    const last = lineIndex(ats, Math.max(start, m.index + m[0].length - 1))
+    const previous = regions[regions.length - 1]
+    if (previous !== undefined && previous.last >= first) {
+      previous.last = Math.max(previous.last, last)
+      previous.matches.push(m)
+    } else {
+      regions.push({ first, last, matches: [m] })
+    }
+  }
+  return regions
 }
 
 export class RgPrinter {
@@ -620,6 +690,93 @@ export class RgPrinter {
     yield this.record(index, column, start, shown, spans, true, terminated, matches.length, cr)
   }
 
+  /**
+   * The records one -U region prints, by line: every line it spans, at the
+   * column its first match starts; under -o each match's part of each line,
+   * at the match's own offset and column; under -r the region once,
+   * replaced, a replacement holding a newline printing as one line each;
+   * under --vimgrep each match on the line it starts.
+   */
+  region(region: Region, lines: readonly Line[], text: string): Map<number, Uint8Array[]> {
+    const f = this.f
+    const ats = lines.map((line) => line.at)
+    const records = new Map<number, Uint8Array[]>()
+    const offsetOf = (index: number, at: number): number => {
+      const line = lines[index]
+      return line === undefined ? 0 : line.start + byteLen(text.slice(line.at, at))
+    }
+    const add = (index: number, record: Uint8Array): void => {
+      const list = records.get(index)
+      if (list === undefined) records.set(index, [record])
+      else list.push(record)
+    }
+    const replaced = (index: number, column: number | null, shown: string): void => {
+      shown.split('\n').forEach((piece, k) => {
+        const line = lines[Math.min(index + k, lines.length - 1)]
+        add(
+          index,
+          this.record(index + k, column, line?.start ?? 0, piece, [], true, false, 1, line?.cr),
+        )
+      })
+    }
+    const first = lines[region.first]
+    const head = region.matches[0]
+    if (first === undefined || head === undefined) return records
+    const column = f.column ? 1 + offsetOf(region.first, matchStart(head)) - first.start : null
+    if (f.vimgrep && f.replace === null) {
+      for (const m of region.matches) {
+        const start = matchStart(m)
+        const i = lineIndex(ats, start)
+        const line = lines[i]
+        if (line === undefined) continue
+        const at = offsetOf(i, start)
+        add(
+          i,
+          this.record(i, f.column ? 1 + at - line.start : null, line.start, line.text, [], true, true, 1, line.cr),
+        )
+      }
+      return records
+    }
+    if (f.onlyMatching || f.vimgrep) {
+      for (const m of region.matches) {
+        const start = matchStart(m)
+        const end = m.index + m[0].length
+        const i = lineIndex(ats, start)
+        const at = offsetOf(i, start)
+        const shownColumn = f.column ? 1 + at - (lines[i]?.start ?? 0) : null
+        if (f.replace !== null) {
+          replaced(i, shownColumn, expand(f.replace, m, this.pat))
+          continue
+        }
+        for (let j = i; j <= lineIndex(ats, Math.max(start, end - 1)); j++) {
+          const line = lines[j]
+          if (line === undefined) continue
+          const piece = text.slice(Math.max(start, line.at), Math.min(end, line.at + line.text.length))
+          add(j, this.record(j, shownColumn, at, piece, [[0, piece.length]], true, false, 1, line.cr))
+        }
+      }
+      return records
+    }
+    if (f.replace !== null) {
+      const last = lines[region.last] ?? first
+      let shown = ''
+      let position = first.at
+      for (const m of region.matches) {
+        shown += text.slice(position, matchStart(m)) + expand(f.replace, m, this.pat)
+        position = Math.max(position, m.index + m[0].length)
+      }
+      shown += text.slice(position, last.at + last.text.length)
+      replaced(region.first, column, shown)
+      return records
+    }
+    for (let i = region.first; i <= region.last; i++) {
+      const line = lines[i]
+      if (line !== undefined)
+        add(i, this.record(i, column, line.start, line.text, [], true, true, 0, line.cr))
+    }
+    return records
+  }
+
   // -o's records for one line: every match, an empty one included, each at
   // its own offset, or the whole line when nothing in it matches, which is how
   // ripgrep 14.1.1 prints an inverted selection and a context line under -o.
@@ -659,7 +816,7 @@ export class RgPrinter {
   // line's terminator in its length (a plain line does, a replaced line and
   // a -o match do not); `count` is the line's match count -M reports. A line
   // printed as it was read ends as it did (`cr`: --crlf took a CR off it);
-  // every other record ends as `lineEnd` says.
+  // every other record ends as `recordEnd` says.
   private record(
     index: number,
     column: number | null,
@@ -691,7 +848,7 @@ export class RgPrinter {
         terminated = false
       }
     }
-    const end = f.crlf === true && terminated && !cr ? '\n' : lineEnd(f)
+    const end = f.crlf === true && terminated && !cr ? '\n' : recordEnd(f)
     return encodeText(`${head}${body}${end}`)
   }
 
@@ -925,7 +1082,7 @@ async function* printedLines(
       if (context) {
         const first = held[0]?.[0] ?? index
         if (lastPrinted >= 0 && first > lastPrinted + 1 && f.contextSeparator !== null) {
-          yield encodeText(f.contextSeparator + lineEnd(f))
+          yield encodeText(f.contextSeparator + recordEnd(f))
         }
         for (const [i, s, t, c] of held) yield* printer.context(i, s, t, c)
         held.length = 0
@@ -953,6 +1110,139 @@ async function* printedLines(
     }
     await budget.run()
     if (f.maxCount !== null && selected >= f.maxCount && afterLeft === 0) return
+  }
+}
+
+/** The name -l or --files-without-match prints for a haystack, if any. */
+function* listed(name: string, f: RgFlags, tally: Tally): Generator<Uint8Array> {
+  if (!f.quiet && tally.selected === f.filesOnly) {
+    yield encodeText(name + (f.null ? '\0' : recordEnd(f)))
+  }
+}
+
+/** The count -c or --count-matches prints for a haystack, if any. */
+function* counted(
+  total: number,
+  label: string | null,
+  f: RgFlags,
+  tally: Tally,
+): Generator<Uint8Array> {
+  if (tally.selected || f.includeZero) {
+    const head = label === null ? '' : label + (f.null ? '\0' : ':')
+    yield encodeText(`${head}${String(total)}${recordEnd(f)}`)
+  }
+}
+
+/**
+ * One haystack as -U searches it: read whole and matched across its lines,
+ * each region a unit for -c and -m (ripgrep 14.1.1). -v selects the lines no
+ * region spans; ripgrep counts nothing then. Context and --passthru print
+ * around the selected lines as they do line by line, and a line after -m's
+ * last unit that a later unit would select prints as selected and then again
+ * as context. Mirrors Python's `_multiline`.
+ */
+async function* multiline(
+  reader: AsyncIterable<Uint8Array>,
+  pat: RegExp,
+  f: RgFlags,
+  name: string,
+  label: string | null,
+  tally: Tally,
+  binary: RgBinary,
+  signal?: AbortSignal,
+): AsyncGenerator<Uint8Array> {
+  const parts: Uint8Array[] = []
+  for await (const chunk of reader) parts.push(chunk)
+  if (binary.skipped) {
+    tally.skipped = true
+    return
+  }
+  const text = decodeText(concat(parts))
+  const lines = splitLines(text, f)
+  const regions = findRegions(pat, text, lines)
+  const spanned = new Set<number>()
+  for (const r of regions) for (let i = r.first; i <= r.last; i++) spanned.add(i)
+  const units: Region[] = f.invert
+    ? lines.flatMap((_, i) => (spanned.has(i) ? [] : [{ first: i, last: i, matches: [] }]))
+    : regions
+  const kept = f.maxCount === null ? units : units.slice(0, f.maxCount)
+  tally.selected = kept.length > 0
+  if (f.quiet || f.filesOnly || f.filesWithoutMatch) {
+    yield* listed(name, f, tally)
+    return
+  }
+  if (f.countOnly || f.countMatches) {
+    if (f.invert) {
+      tally.selected = false
+      return
+    }
+    const matches = f.countMatches || f.onlyMatching
+    const total = kept.reduce((sum, r) => sum + (matches ? r.matches.length : 1), 0)
+    yield* counted(total, label, f, tally)
+    return
+  }
+  if (kept.length === 0) return
+  if (binary.offset !== null) {
+    tally.binary = true
+    yield binary.notice(label)
+    return
+  }
+  const printer = new RgPrinter(f, pat, f.heading ? null : label)
+  const records = (chosen: readonly Region[]): Map<number, Uint8Array[]> => {
+    const out = new Map<number, Uint8Array[]>()
+    for (const r of chosen) {
+      for (let i = r.first; i <= r.last; i++) if (!out.has(i)) out.set(i, [])
+      const line = lines[r.first]
+      if (f.invert && line !== undefined) {
+        out.set(r.first, [...printer.selected(r.first, line.start, line.text, line.cr)])
+        continue
+      }
+      for (const [i, chunks] of printer.region(r, lines, text)) out.get(i)?.push(...chunks)
+    }
+    return out
+  }
+  const picked = records(kept)
+  const extra = f.contextAfter > 0 ? records(units.slice(kept.length)) : new Map()
+  const end = f.maxCount === null ? null : (kept[kept.length - 1]?.last ?? null)
+  const context = printsContext(f)
+  const keep = context ? f.contextBefore : 0
+  const held: number[] = []
+  const budget = new YieldBudget(signal)
+  let lastPrinted = -1
+  let afterLeft = 0
+  for (const [i, line] of lines.entries()) {
+    if (end !== null && i > end && (afterLeft === 0 || f.passthru)) return
+    let chunks: Iterable<Uint8Array> = []
+    const chosen = picked.get(i)
+    if (chosen !== undefined) {
+      if (context) {
+        const first = held[0] ?? i
+        if (lastPrinted >= 0 && first > lastPrinted + 1 && f.contextSeparator !== null) {
+          yield encodeText(f.contextSeparator + recordEnd(f))
+        }
+        for (const h of held) {
+          const hl = lines[h]
+          if (hl !== undefined) yield* printer.context(h, hl.start, hl.text, hl.cr)
+        }
+        held.length = 0
+        afterLeft = f.contextAfter
+      }
+      chunks = chosen
+      lastPrinted = i
+    } else if (f.passthru || afterLeft > 0) {
+      chunks = [
+        ...((extra.get(i) as Uint8Array[] | undefined) ?? []),
+        ...printer.context(i, line.start, line.text, line.cr),
+      ]
+      afterLeft = Math.max(afterLeft - 1, 0)
+      lastPrinted = i
+    } else if (keep > 0) {
+      held.push(i)
+      if (held.length > keep) held.shift()
+    }
+    yield* chunks
+    const pending = budget.run()
+    if (pending !== undefined) await pending
   }
 }
 
@@ -991,6 +1281,10 @@ export async function* searchHaystack(
   const reader = binary.read(source, pipe)
   const lines = new AsyncLineIterator(reader)
   try {
+    if (f.multiline === true) {
+      yield* multiline(reader, pat, f, name, label, tally, binary, signal)
+      return
+    }
     if (f.quiet || f.filesOnly || f.filesWithoutMatch) {
       await listing(lines, pat, f, tally, signal)
       if (binary.skipped) {
@@ -999,18 +1293,13 @@ export async function* searchHaystack(
         tally.skipped = true
         return
       }
-      if (!f.quiet && tally.selected === f.filesOnly) {
-        yield encodeText(name + (f.null ? '\0' : lineEnd(f)))
-      }
+      yield* listed(name, f, tally)
       return
     }
     if (f.countOnly || f.countMatches) {
       const total = await count(lines, pat, f, tally, signal)
       if (binary.skipped) return
-      if (tally.selected || f.includeZero) {
-        const head = label === null ? '' : label + (f.null ? '\0' : ':')
-        yield encodeText(`${head}${String(total)}${lineEnd(f)}`)
-      }
+      yield* counted(total, label, f, tally)
       return
     }
     const printer = new RgPrinter(f, pat, f.heading ? null : label)

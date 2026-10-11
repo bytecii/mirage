@@ -33,7 +33,10 @@ class HostRegex:
             case sensitivity changes inside the pattern, and leaves it to
             the host when the whole pattern is caseless, which keeps the
             source plain enough for the grep prefilter to read.
+        newline (bool): the pattern holds a literal newline, or a class
+            of nothing else, which ripgrep refuses outside multiline mode.
     """
 
     source: str
     ignore_case: bool = False
+    newline: bool = False

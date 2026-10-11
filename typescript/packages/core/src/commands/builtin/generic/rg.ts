@@ -37,7 +37,7 @@ import {
   walkHaystacks,
 } from '../rg_scan.ts'
 import {
-  lineEnd,
+  recordEnd,
   printsContext,
   type RgFlags,
   searchHaystack,
@@ -56,6 +56,12 @@ import { concat } from '../../../utils/bytes.ts'
 const ENC = new TextEncoder()
 // ripgrep's own words for a line with no pattern, exit 2 (14.1.1).
 export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execute a search'
+// ripgrep's refusal of a pattern that holds the line terminator outside
+// multiline mode, exit 2 (14.1.1).
+const NEWLINE_REFUSAL =
+  'rg: the literal "\\n" is not allowed in a regex\n\nConsider enabling multiline mode ' +
+  'with the --multiline flag (or -U for short).\nWhen multiline mode is enabled, new line ' +
+  'characters can be matched.'
 // What ripgrep says when a line that named no path searched nothing, exit 2
 // (14.1.1).
 export const NOTHING_SEARCHED =
@@ -485,6 +491,8 @@ export function parseFlags(fl: FlagView): RgFlags {
     null: fl.asBool('null'),
     nullData: fl.asBool('null_data'),
     crlf: last(fl, 'crlf', 'no_crlf') === 'crlf' && !fl.asBool('null_data'),
+    multiline: last(fl, 'multiline', 'no_multiline') === 'multiline',
+    multilineDotall: last(fl, 'multiline_dotall', 'no_multiline_dotall') === 'multiline_dotall',
     pathSeparator: pathSeparator(fl),
     quiet: fl.asBool('quiet'),
     countOnly: listing === 'count',
@@ -575,15 +583,25 @@ export function engineFlag(fl: FlagView): string {
 
 // The default engine's matcher, or its refusal in ripgrep's words.
 function rustMatcher(patterns: readonly string[], fold: boolean, f: RgFlags): RegExp {
+  const lines = f.nullData || f.multiline === true
+  const crlf = f.multiline === true && f.crlf === true
   let translated
   try {
-    translated = translateRust(patterns, fold, f.nullData, f.unicode)
+    translated = translateRust(
+      patterns,
+      fold,
+      lines,
+      f.unicode,
+      f.multiline === true && f.multilineDotall === true,
+      crlf,
+    )
   } catch (err) {
     if (err instanceof RustRegexError) throw new UsageError(`rg: ${err.message}`)
     throw err
   }
+  if (translated.newline === true && !lines) throw new UsageError(NEWLINE_REFUSAL)
   let source = translated.source
-  if (f.lineRegexp) source = wholeLine(source, f.nullData)
+  if (f.lineRegexp) source = wholeLine(source, lines, crlf)
   else if (f.wholeWord) source = wholeWord(source, f.unicode)
   return new RegExp(source, translated.ignoreCase ? 'iu' : 'u')
 }
@@ -597,7 +615,13 @@ function pcreMatcher(patterns: readonly string[], fold: boolean, f: RgFlags): Re
   else if (f.wholeWord) display = `(?<!\\w)(?:${display})(?!\\w)`
   let translated
   try {
-    translated = translatePcre(display, f.unicode, fold, f.nullData)
+    translated = translatePcre(
+      display,
+      f.unicode,
+      fold,
+      f.nullData || f.multiline === true,
+      f.multiline === true && f.multilineDotall === true,
+    )
   } catch (err) {
     if (err instanceof PcreError) {
       throw new UsageError(
@@ -905,7 +929,7 @@ async function* settled(
   try {
     for await (const chunk of chunks) {
       if (!printed && label !== null && headed(f) && tally.binary !== true)
-        yield encodeText(label + (f.null ? '\0' : lineEnd(f)))
+        yield encodeText(label + (f.null ? '\0' : recordEnd(f)))
       printed = true
       yield chunk
     }
@@ -1123,7 +1147,7 @@ async function searchAll(
       if (label !== null && headed(f)) {
         if (printed) out.push(ENC.encode('\n'))
         if (tally.binary !== true) {
-          out.push(encodeText(label + (f.null ? '\0' : lineEnd(f))))
+          out.push(encodeText(label + (f.null ? '\0' : recordEnd(f))))
         }
       } else if (context && printed && f.contextSeparator !== null) {
         out.push(encodeText(f.contextSeparator + '\n'))

@@ -1381,6 +1381,7 @@ def translate_pcre(
     unicode: bool = False,
     ignore_case: bool = False,
     multi_line: bool = False,
+    dotall: bool = False,
 ) -> HostRegex:
     """Translate a PCRE2 pattern into this host's regex dialect.
 
@@ -1391,6 +1392,7 @@ def translate_pcre(
             ASCII classes.
         ignore_case (bool): -i (PCRE2_CASELESS).
         multi_line (bool): PCRE2_MULTILINE.
+        dotall (bool): PCRE2_DOTALL.
 
     Returns:
         HostRegex: the host source and whether the host folds case.
@@ -1401,10 +1403,10 @@ def translate_pcre(
     """
     if ignore_case and not INLINE_CASE.search(pattern):
         translated = PcreTranslator(
-            pattern, unicode, Flags(m=multi_line)
+            pattern, unicode, Flags(m=multi_line, s=dotall)
         ).translate()
         return HostRegex(translated.source, True)
-    flags = Flags(i=ignore_case, m=multi_line)
+    flags = Flags(i=ignore_case, m=multi_line, s=dotall)
     return PcreTranslator(pattern, unicode, flags).translate()
 
 

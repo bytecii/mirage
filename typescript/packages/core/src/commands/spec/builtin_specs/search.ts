@@ -311,7 +311,10 @@ export const SPECS: Record<string, CommandSpec> = {
       // writes ends in CR LF.
       new Argument('--crlf', { action: 'store_true' }),
       new Argument('--no-crlf', { action: 'store_true' }),
+      // A match may span lines: the whole file is searched at once.
+      new Argument(['-U', '--multiline'], { action: 'store_true' }),
       new Argument('--no-multiline', { action: 'store_true' }),
+      new Argument('--multiline-dotall', { action: 'store_true' }),
       new Argument('--no-multiline-dotall', { action: 'store_true' }),
       new Argument(['-P', '--pcre2'], { action: 'store_true' }),
       new Argument('--no-pcre2', { action: 'store_true' }),

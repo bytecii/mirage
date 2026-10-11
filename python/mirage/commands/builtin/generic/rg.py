@@ -29,7 +29,7 @@ from mirage.commands.builtin.rg_scan import (
 from mirage.commands.builtin.rg_search import (
     RgFlags,
     Tally,
-    line_end,
+    record_end,
     prints_context,
     search_haystack,
     smart_case_folds,
@@ -71,6 +71,13 @@ from mirage.view.types import MountView
 
 logger = logging.getLogger(__name__)
 
+# ripgrep's refusal of a pattern that holds the line terminator outside
+# multiline mode, exit 2 (14.1.1).
+NEWLINE_REFUSAL = (
+    'rg: the literal "\\n" is not allowed in a regex\n\nConsider enabling '
+    "multiline mode with the --multiline flag (or -U for short).\nWhen "
+    "multiline mode is enabled, new line characters can be matched."
+)
 # ripgrep's own words for a line with no pattern, exit 2 (14.1.1).
 RG_NO_PATTERN = "rg: ripgrep requires at least one pattern to execute a search"
 # What ripgrep says when a line that named no path searched nothing,
@@ -658,6 +665,9 @@ def parse_flags(fl: FlagView) -> RgFlags:
         null_data=fl.as_bool("null_data"),
         crlf=_last(fl, "crlf", "no_crlf") == "crlf"
         and not fl.as_bool("null_data"),
+        multiline=_last(fl, "multiline", "no_multiline") == "multiline",
+        multiline_dotall=_last(fl, "multiline_dotall", "no_multiline_dotall")
+        == "multiline_dotall",
         path_separator=path_separator(fl),
         quiet=fl.as_bool("quiet"),
         count_only=listing == "count",
@@ -777,13 +787,23 @@ def rust_matcher(
     Raises:
         UsageError: regex-syntax refuses the pattern.
     """
+    lines = f.null_data or f.multiline
     try:
-        translated = translate_rust(patterns, fold, f.null_data, f.unicode)
+        translated = translate_rust(
+            patterns,
+            fold,
+            lines,
+            f.unicode,
+            f.multiline and f.multiline_dotall,
+            f.multiline and f.crlf,
+        )
     except RustRegexError as exc:
         raise UsageError(f"rg: {exc}") from exc
+    if translated.newline and not lines:
+        raise UsageError(NEWLINE_REFUSAL)
     source = translated.source
     if f.line_regexp:
-        source = whole_line(source, f.null_data)
+        source = whole_line(source, lines, f.multiline and f.crlf)
     elif f.whole_word:
         source = whole_word(source, f.unicode)
     return re.compile(source, re.IGNORECASE if translated.ignore_case else 0)
@@ -811,7 +831,13 @@ def pcre_matcher(
     elif f.whole_word:
         display = f"(?<!\\w)(?:{display})(?!\\w)"
     try:
-        translated = translate_pcre(display, f.unicode, fold, f.null_data)
+        translated = translate_pcre(
+            display,
+            f.unicode,
+            fold,
+            f.null_data or f.multiline,
+            f.multiline and f.multiline_dotall,
+        )
     except PcreError as exc:
         raise UsageError(
             f"rg: PCRE2: error compiling pattern at offset "
@@ -1261,7 +1287,7 @@ async def _settled(
                 and _headed(f)
                 and not tally.binary
             ):
-                yield encode_text(label) + (b"\0" if f.null else line_end(f))
+                yield encode_text(label) + (b"\0" if f.null else record_end(f))
             printed = True
             yield chunk
     except FS_ERRORS as exc:
@@ -1532,7 +1558,7 @@ async def _search_all(
                     out.append(b"\n")
                 if not tally.binary:
                     out.append(
-                        encode_text(label) + (b"\0" if f.null else line_end(f))
+                        encode_text(label) + (b"\0" if f.null else record_end(f))
                     )
             elif context and printed and f.context_separator is not None:
                 out.append(encode_text(f.context_separator) + b"\n")

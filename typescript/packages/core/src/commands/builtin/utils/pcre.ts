@@ -1255,11 +1255,14 @@ export function translatePcre(
   unicode = false,
   ignoreCase = false,
   multiLine = false,
+  // PCRE2_DOTALL.
+  dotall = false,
 ): HostRegex {
   if (ignoreCase && !INLINE_CASE.test(pattern)) {
     const translated = new PcreTranslator(pattern, unicode, {
       ...DEFAULT_FLAGS,
       m: multiLine,
+      s: dotall,
     }).translate()
     return { source: translated.source, ignoreCase: true }
   }
@@ -1267,6 +1270,7 @@ export function translatePcre(
     ...DEFAULT_FLAGS,
     i: ignoreCase,
     m: multiLine,
+    s: dotall,
   }).translate()
 }
 
