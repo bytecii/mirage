@@ -116,10 +116,7 @@ function* layers(
     found = true
     yield Consumer.EXTERNAL
   }
-  if (
-    ROUTED_COMMANDS.has(name) ||
-    registry.mountForCommand(EXEC_WRAPPERS.get(name)?.[0] ?? name) !== null
-  ) {
+  if (ROUTED_COMMANDS.has(name) || registry.mountForCommand(runsAs(name, registry)) !== null) {
     found = true
     yield Consumer.MOUNT
   }
@@ -277,7 +274,7 @@ export function programNote(
   if (consumer === Consumer.CLI) {
     return `${name} is a CLI registered with this workspace.${helpLine}`
   }
-  const runs = EXEC_WRAPPERS.get(name)?.[0] ?? name
+  const runs = runsAs(name, registry)
   const spec =
     consumer === Consumer.MOUNT ? (registry.mountForCommand(runs)?.specFor(runs) ?? null) : null
   if (
@@ -287,6 +284,15 @@ export function programNote(
     return `${name} is built into mirage.${helpLine}`
   }
   return `${name} is built into mirage.`
+}
+
+/**
+ * The program a command word runs: a wrapper no mount registers (`egrep`)
+ * runs the program it names, any other word itself.
+ */
+export function runsAs(name: string, registry: MountRegistry): string {
+  const wrapped = EXEC_WRAPPERS.get(name)
+  return wrapped !== undefined && registry.mountForCommand(name) === null ? wrapped[0] : name
 }
 
 /**

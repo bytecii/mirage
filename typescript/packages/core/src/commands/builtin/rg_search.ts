@@ -1658,7 +1658,9 @@ export async function* transcoded(
       if (text !== '') yield encodeText(text)
     }
   } finally {
-    await closeQuietly(source)
+    // The iterator started here, which an iterable handing out a fresh one
+    // does not close for it.
+    await rest.return?.()
   }
 }
 

@@ -84,10 +84,11 @@ from mirage.workspace.lookup import (
     is_tool,
     lookup,
     reads_subtrees,
+    runs_as,
     walks_mounts,
     word_policy,
 )
-from mirage.workspace.lookup.constants import EXEC_WRAPPERS, INTERPRETER_NAMES
+from mirage.workspace.lookup.constants import INTERPRETER_NAMES
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.node.inner_lines import Word, inner_lines, read_word
@@ -651,7 +652,7 @@ def _word_hints(
     ):
         return None, None
     # A wrapper's words are the program's it runs.
-    runs = EXEC_WRAPPERS.get(joined, (joined,))[0]
+    runs = runs_as(joined, registry)
     spec = spec_for_command(runs, registry, session.cwd)
     if not spec:
         return None, None

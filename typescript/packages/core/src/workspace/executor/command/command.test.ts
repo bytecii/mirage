@@ -298,6 +298,33 @@ describe('a wrapper', () => {
     }
   })
 
+  // Twin of test_a_mounts_own_egrep_runs_ahead_of_the_wrapper: a mount that
+  // registers its own egrep runs it; the wrapper is only the fallback for a
+  // name no mount registers.
+  it('yields to a mount that registers the name itself', async () => {
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    try {
+      const own = (): [Uint8Array, IOResult] => [
+        new TextEncoder().encode('own egrep\n'),
+        new IOResult(),
+      ]
+      ws.mount('/data').registerCommands(
+        command({ name: 'egrep', vfs: 'ram', spec: new CommandSpec(), fn: own }),
+      )
+      await ws.shell('echo x > /data/e.txt')
+      const decoder = new TextDecoder()
+      const io = await ws.shell('egrep x /data/e.txt')
+      expect([io.exitCode, decoder.decode(io.stdout)]).toEqual([0, 'own egrep\n'])
+      const plain = await ws.shell('fgrep x /data/e.txt')
+      expect([plain.exitCode, decoder.decode(plain.stdout)]).toEqual([0, 'x\n'])
+    } finally {
+      await ws.close()
+    }
+  })
+
   // Twin of test_a_recursive_wrapper_meets_a_child_mounts_rule: egrep -r
   // walks as grep -r does, so a child mount's rule on egrep speaks on the
   // ancestor operand.

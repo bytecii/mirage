@@ -21,12 +21,13 @@ import type { CallStack } from '../../shell/call_stack.ts'
 import { PathSpec, wordText } from '../../types.ts'
 import { hasGlob, literalWord, markGlobs, unmarkGlobs } from '../../utils/glob_walk.ts'
 import type { MountRegistry } from '../mount/registry.ts'
-import { EXEC_WRAPPERS, INTERPRETER_NAMES } from '../lookup/constants.ts'
+import { INTERPRETER_NAMES } from '../lookup/constants.ts'
 import {
   Consumer,
   WordPolicy,
   endOptionsAfterProgram,
   lookup,
+  runsAs,
   runtimeRefused,
   wordPolicy,
 } from '../lookup/index.ts'
@@ -159,7 +160,7 @@ export async function expandArgv(
   // for admission.
   if (policy === WordPolicy.MOUNT || consumer === Consumer.EXTERNAL || inProcess) {
     // A wrapper's words are the program's it runs.
-    const runs = EXEC_WRAPPERS.get(name)?.[0] ?? name
+    const runs = runsAs(name, registry)
     spec = specForCommand(runs, registry, session.cwd)
     if (spec !== null) {
       const extra: (ValueType | null)[] = new Array<ValueType | null>(consumed - 1).fill('str')

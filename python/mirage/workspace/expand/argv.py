@@ -45,13 +45,11 @@ from mirage.workspace.lookup import (
     WordPolicy,
     end_options_after_program,
     lookup,
+    runs_as,
     runtime_refused,
     word_policy,
 )
-from mirage.workspace.lookup.constants import (
-    EXEC_WRAPPERS,
-    INTERPRETER_NAMES,
-)
+from mirage.workspace.lookup.constants import INTERPRETER_NAMES
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 
@@ -189,7 +187,7 @@ async def expand_argv(
         or in_process
     ):
         # A wrapper's words are the program's it runs.
-        runs = EXEC_WRAPPERS.get(name, (name,))[0]
+        runs = runs_as(name, registry)
         spec = spec_for_command(runs, registry, session.cwd)
         if spec:
             # Before anything reads the line: an option carrying a

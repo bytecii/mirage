@@ -34,7 +34,7 @@ import type { MountEntry } from '../../mount/mount.ts'
 import type { Namespace } from '../../mount/namespace/namespace.ts'
 import { MountCommandUnsupported, type MountRegistry } from '../../mount/registry.ts'
 import { makeCheckUnlink, makeStorageKey } from '../../mount/storage.ts'
-import { Consumer, JOB_BUILTINS, dereferences, lookup } from '../../lookup/index.ts'
+import { Consumer, JOB_BUILTINS, dereferences, lookup, runsAs } from '../../lookup/index.ts'
 import { EXEC_WRAPPERS } from '../../lookup/constants.ts'
 import { type Runtime } from '../../../runtime/base.ts'
 import type { RouteDecision } from '../../../runtime/routing/index.ts'
@@ -304,7 +304,7 @@ export async function handleCommand(
   // A wrapper execs the program it names, past every function and CLI; the
   // session's allow list judges the name it typed.
   const typed = cmdName
-  const wrapped = EXEC_WRAPPERS.get(cmdName)
+  const wrapped = runsAs(cmdName, registry) !== cmdName ? EXEC_WRAPPERS.get(cmdName) : undefined
   if (wrapped !== undefined) {
     const [runs, option] = wrapped
     cmdName = runs

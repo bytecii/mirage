@@ -58,7 +58,7 @@ import { classifyBarePath } from '../expand/classify/path.ts'
 import { specForCommand, specWordBases, specWordKinds } from '../expand/spec_hints.ts'
 import type { Namespace } from '../mount/namespace/namespace.ts'
 import type { MountRegistry } from '../mount/registry.ts'
-import { EXEC_WRAPPERS, INTERPRETER_NAMES } from '../lookup/constants.ts'
+import { INTERPRETER_NAMES } from '../lookup/constants.ts'
 import {
   Consumer,
   SLASH_KEEPS_LAST,
@@ -67,6 +67,7 @@ import {
   isTool,
   readsSubtrees,
   lookup,
+  runsAs,
   walksMounts,
   wordPolicy,
 } from '../lookup/index.ts'
@@ -560,7 +561,7 @@ function wordHints(
     return [null, null]
   }
   // A wrapper's words are the program's it runs.
-  const runs = EXEC_WRAPPERS.get(joined)?.[0] ?? joined
+  const runs = runsAs(joined, registry)
   const spec = specForCommand(runs, registry, session.cwd)
   if (spec === null) return [null, null]
   const extra: (ValueType | null)[] = new Array<ValueType | null>(consumed - 1).fill('str')

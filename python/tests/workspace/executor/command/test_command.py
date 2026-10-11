@@ -14,6 +14,10 @@
 
 import pytest
 
+from mirage.accessor.base import NOOPAccessor
+from mirage.commands.config import command
+from mirage.commands.spec import SPECS
+from mirage.io.types import IOResult
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
@@ -124,6 +128,29 @@ async def test_an_allowed_wrapper_runs_without_the_program_it_names():
     assert (io.exit_code, io.stdout) == (0, b"a|b\nx\n")
     io = await ws.shell("grep x /data/e.txt", session_id="narrow")
     assert (io.exit_code, io.stderr) == (126, b"grep: Permission denied\n")
+
+
+@command("egrep", vfs="ram", spec=SPECS["grep"])
+async def _own_egrep(accessor=NOOPAccessor(), paths=None, *texts, **_extra):
+    return b"own egrep\n", IOResult()
+
+
+# A mount that registers its own egrep runs it; the wrapper is only the
+# fallback for a name no mount registers.
+@pytest.mark.asyncio
+async def test_a_mounts_own_egrep_runs_ahead_of_the_wrapper():
+    ws = Workspace(
+        {"/data": (RAMVFS(), MountMode.WRITE)}, mode=MountMode.WRITE
+    )
+    try:
+        ws.mount("/data").register_commands([_own_egrep])
+        await ws.shell("echo x > /data/e.txt")
+        io = await ws.shell("egrep x /data/e.txt")
+        assert (io.exit_code, io.stdout) == (0, b"own egrep\n")
+        io = await ws.shell("fgrep x /data/e.txt")
+        assert (io.exit_code, io.stdout) == (0, b"x\n")
+    finally:
+        await ws.close()
 
 
 # egrep -r walks as grep -r does, so a child mount's rule on egrep speaks

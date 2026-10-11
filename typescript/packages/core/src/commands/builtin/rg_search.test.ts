@@ -439,6 +439,11 @@ describe('transcoded', () => {
     expect(DEC.decode((await stream.next()).value as Uint8Array)).toBe('abc')
     await stream.return(undefined)
     expect(closed).toEqual([true])
+    // An iterable that hands out a fresh iterator has that one closed.
+    const fresh = transcoded({ [Symbol.asyncIterator]: () => input() }, 'auto')
+    expect(DEC.decode((await fresh.next()).value as Uint8Array)).toBe('abc')
+    await fresh.return(undefined)
+    expect(closed).toEqual([true, true])
   })
 
   it('feeds the search what -E names', async () => {

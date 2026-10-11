@@ -34,6 +34,7 @@ from mirage.workspace.lookup.lookup import (
     program,
     program_note,
     programs,
+    runs_as,
     runtime_refused,
 )
 from mirage.workspace.lookup.types import (
@@ -66,6 +67,7 @@ __all__ = [
     "program",
     "program_note",
     "programs",
+    "runs_as",
     "runtime_refused",
     "word_policy",
 ]

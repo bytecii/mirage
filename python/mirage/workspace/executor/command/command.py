@@ -106,6 +106,7 @@ from mirage.workspace.lookup import (
     Consumer,
     dereferences,
     lookup,
+    runs_as,
 )
 from mirage.workspace.lookup.constants import EXEC_WRAPPERS
 from mirage.workspace.mount import MountCommandUnsupported, MountRegistry
@@ -325,7 +326,7 @@ async def handle_command(
     # A wrapper execs the program it names, past every function and CLI;
     # the session's allow list judges the name it typed.
     typed = cmd_name
-    if cmd_name in EXEC_WRAPPERS:
+    if runs_as(cmd_name, registry) != cmd_name:
         cmd_name, option = EXEC_WRAPPERS[cmd_name]
         parts = [cmd_name, option, *parts[1:]]
 

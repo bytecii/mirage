@@ -129,8 +129,7 @@ def _layers(
         yield Consumer.EXTERNAL
     if (
         name in ROUTED_COMMANDS
-        or registry.mount_for_command(EXEC_WRAPPERS.get(name, (name,))[0])
-        is not None
+        or registry.mount_for_command(runs_as(name, registry)) is not None
     ):
         found = True
         yield Consumer.MOUNT
@@ -313,7 +312,7 @@ def program_note(
     help_line = f" Help: {shell_quote(name)} --help"
     if consumer is Consumer.CLI:
         return f"{name} is a CLI registered with this workspace.{help_line}"
-    runs = EXEC_WRAPPERS.get(name, (name,))[0]
+    runs = runs_as(name, registry)
     mount = (
         registry.mount_for_command(runs)
         if consumer is Consumer.MOUNT
@@ -325,6 +324,19 @@ def program_note(
     ):
         return f"{name} is built into mirage.{help_line}"
     return f"{name} is built into mirage."
+
+
+def runs_as(name: str, registry: "MountRegistry") -> str:
+    """The program a command word runs: a wrapper no mount registers
+    (``egrep``) runs the program it names, any other word itself.
+
+    Args:
+        name (str): the command word.
+        registry (MountRegistry): mount registry (command registration).
+    """
+    if name in EXEC_WRAPPERS and registry.mount_for_command(name) is None:
+        return EXEC_WRAPPERS[name][0]
+    return name
 
 
 def programs(session: SessionState, registry: "MountRegistry") -> list[str]:
