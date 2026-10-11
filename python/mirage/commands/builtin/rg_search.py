@@ -786,6 +786,16 @@ def split_lines(text: str, f: RgFlags) -> list[Line]:
     return lines
 
 
+def line_index(ats: list[int], at: int) -> int:
+    """The last index whose value is at most ``at``.
+
+    Args:
+        ats (list[int]): ascending offsets.
+        at (int): the offset to place.
+    """
+    return bisect_right(ats, at) - 1
+
+
 def find_regions(
     pat: re.Pattern[str], text: str, lines: list[Line]
 ) -> list[Region]:
@@ -802,8 +812,8 @@ def find_regions(
         start = match_start(m)
         if not lines or start >= len(text) and text.endswith(("\n", "\0")):
             break
-        first = bisect_right(ats, start) - 1
-        last = bisect_right(ats, max(start, m.end() - 1)) - 1
+        first = line_index(ats, start)
+        last = line_index(ats, max(start, m.end() - 1))
         if regions and regions[-1].last >= first:
             regions[-1].last = max(regions[-1].last, last)
             regions[-1].matches.append(m)
@@ -838,7 +848,9 @@ def json_line(message: JsonValue) -> bytes:
     )
 
 
-def tally_line(tally: Tally, pat: re.Pattern[str], text: str, f: RgFlags) -> None:
+def tally_line(
+    tally: Tally, pat: re.Pattern[str], text: str, f: RgFlags
+) -> None:
     """Count one selected line for --stats and --json.
 
     Args:
@@ -1007,7 +1019,9 @@ class RgPrinter:
         end = (
             ""
             if (index if last is None else last) == self.open_line
-            else "\0" if f.null_data else "\n"
+            else "\0"
+            if f.null_data
+            else "\n"
         )
         submatches: list[JsonValue] = [
             {
@@ -1046,9 +1060,6 @@ class RgPrinter:
         f = self._f
         ats = [line.at for line in lines]
         records: dict[int, list[bytes]] = {}
-
-        def line_of(at: int) -> int:
-            return bisect_right(ats, at) - 1
 
         def offset_of(index: int, at: int) -> int:
             line = lines[index]
@@ -1103,7 +1114,7 @@ class RgPrinter:
         if f.vimgrep and f.replace is None:
             for m in region.matches:
                 start = match_start(m)
-                i = line_of(start)
+                i = line_index(ats, start)
                 line = lines[i]
                 at = offset_of(i, start)
                 add(
@@ -1126,13 +1137,15 @@ class RgPrinter:
             # column.
             for m in region.matches:
                 start = match_start(m)
-                i = line_of(start)
+                i = line_index(ats, start)
                 at = offset_of(i, start)
                 shown_column = 1 + at - lines[i].start if f.column else None
                 if f.replace is not None:
                     replaced(i, shown_column, expand(f.replace, m))
                     continue
-                for j in range(i, line_of(max(start, m.end() - 1)) + 1):
+                for j in range(
+                    i, line_index(ats, max(start, m.end() - 1)) + 1
+                ):
                     line = lines[j]
                     a = max(start, line.at)
                     piece = text[a : min(m.end(), line.at + len(line.text))]
@@ -1160,7 +1173,9 @@ class RgPrinter:
                 shown.append(expand(f.replace, m))
                 position = max(position, m.end())
             shown.append(text[position : last.at + len(last.text)])
-            replaced(region.first, column if f.column else None, "".join(shown))
+            replaced(
+                region.first, column if f.column else None, "".join(shown)
+            )
             return records
         for i in range(region.first, region.last + 1):
             line = lines[i]

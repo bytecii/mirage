@@ -1,0 +1,42 @@
+{
+  "cases": [
+    {
+      "id": "rg_crlf_ends_a_line_before_its_cr",
+      "seq": 14490204,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; printf 'one\\r\\ntwo\\r\\n' > /data/rgfl/crlf.txt; rg -n 'two$' /data/rgfl/crlf.txt; echo rc=$?; rg -n --crlf 'two$' /data/rgfl/crlf.txt | tr '\\r' '@'; rg --crlf -o 'o$' /data/rgfl/crlf.txt | tr '\\r' '@'; rg --crlf -U -n 'one\\r?\\ntwo' /data/rgfl/crlf.txt | tr '\\r' '@'; rg --crlf --no-crlf -c 'one$' /data/rgfl/crlf.txt; echo rc=$?; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\n2:two@\no@\n1:one@\n2:two@\nrc=1\n",
+        "stderr": ""
+      },
+      "flags": [
+        "crlf",
+        "no_crlf",
+        "n",
+        "o",
+        "U",
+        "c"
+      ]
+    }
+  ]
+}

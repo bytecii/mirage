@@ -1032,6 +1032,12 @@ function headed(f: RgFlags): boolean {
   )
 }
 
+// Whether ripgrep searches more than one path on its parallel searcher: -j1
+// and a sort hold it to one thread.
+function runsParallel(f: RgFlags): boolean {
+  return f.threads !== 1 && (f.sort === null || f.sort === 'none')
+}
+
 // A path as ripgrep prints it, every `/` spelled as --path-separator asks.
 export function printedPath(path: string, f: RgFlags): string {
   return f.pathSeparator === null ? path : path.replaceAll('/', f.pathSeparator)
@@ -1079,7 +1085,7 @@ export async function* haystacks(
 ): AsyncGenerator<Haystack> {
   // ripgrep holds one path that is not a directory to one thread, as it
   // does -j1 and a sort; every other line runs its parallel walker.
-  const parallel = f.threads !== 1 && f.sort === null
+  const parallel = runsParallel(f)
   const several = parallel && paths.length > 1
   for (const p of paths) {
     if (isStdin(p)) {
@@ -1212,6 +1218,7 @@ async function searchAll(
   shell?: ShellFn,
 ): Promise<CommandFnResult> {
   const multi = paths.length > 1
+  let lone = !multi
   const context = printsContext(f)
   const preGlobs = new Overrides(f.preGlobs ?? [], [], false)
   const out: Uint8Array[] = []
@@ -1228,6 +1235,7 @@ async function searchAll(
   for await (const h of found) {
     searched += 1
     const walked = h.spec === null
+    lone = lone && !walked
     const name = printedPath(h.shown, f)
     const label = !f.noFilename && (walked || multi || f.withFilename || f.vimgrep) ? name : null
     const tally: Tally = { selected: false }
@@ -1321,8 +1329,9 @@ async function searchAll(
   const total = (performance.now() - started) / 1000
   if (records) out.push(totals.summaryRecord(total))
   else if (f.stats === true) {
-    // Under --heading the last group gets its blank line too.
-    if (printed && headed(f)) out.push(ENC.encode('\n'))
+    // ripgrep's parallel searcher gives the last --heading group its blank
+    // line too; one thread, as for a lone file, does not.
+    if (printed && headed(f) && runsParallel(f) && !lone) out.push(ENC.encode('\n'))
     out.push(totals.statsBlock(total))
   }
   // ripgrep's status under --files-without-match follows the listing, not

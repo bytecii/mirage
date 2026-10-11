@@ -50,6 +50,82 @@
         "no_mmap",
         "n"
       ]
+    },
+    {
+      "id": "rg_tuning_values_change_nothing",
+      "seq": 14490216,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; rg --dfa-size-limit 10M --regex-size-limit 1G -c foo /data/rgfl/a.txt; rg --regex-size-limit 1 -c foo /data/rgfl/a.txt; rg --hyperlink-format default -c foo /data/rgfl/a.txt; rg --hyperlink-format none --hostname-bin /bin/false -c foo /data/rgfl/a.txt; rg --colors 'match:fg:red' --colors 'path:style:bold' -c foo /data/rgfl/a.txt; rg --debug -c foo /data/rgfl/a.txt 2>/dev/null; rg --trace -c foo /data/rgfl/a.txt 2>/dev/null; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n2\n2\n2\n2\n2\n2\n",
+        "stderr": ""
+      },
+      "flags": [
+        "dfa_size_limit",
+        "regex_size_limit",
+        "hyperlink_format",
+        "hostname_bin",
+        "colors",
+        "debug",
+        "trace",
+        "c"
+      ]
+    },
+    {
+      "id": "rg_tuning_values_are_checked",
+      "seq": 14490217,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; rg --dfa-size-limit 10X foo /data/rgfl/a.txt; echo rc=$?; rg --regex-size-limit abc foo /data/rgfl/a.txt; echo rc=$?; rg --hyperlink-format 'bogus{x}' foo /data/rgfl/a.txt; echo rc=$?; rg --colors bogus foo /data/rgfl/a.txt; echo rc=$?; rg --colors 'match:fg:nope' foo /data/rgfl/a.txt; echo rc=$?; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=2\nrc=2\nrc=2\nrc=2\nrc=2\n",
+        "stderr": "rg: error parsing flag --dfa-size-limit: invalid size: invalid format for size '10X', which should be a non-empty sequence of digits followed by an optional 'K', 'M' or 'G' suffix\nrg: error parsing flag --regex-size-limit: invalid size: invalid format for size 'abc', which should be a non-empty sequence of digits followed by an optional 'K', 'M' or 'G' suffix\nrg: error parsing flag --hyperlink-format: invalid hyperlink format: invalid hyperlink format variable: 'x', choose from: path, line, column, host, wslprefix\nrg: error parsing flag --colors: invalid color spec format: 'bogus'. Valid format is '(path|line|column|match):(fg|bg|style):(value)'.\nrg: error parsing flag --colors: unrecognized color name 'nope'. Choose from: black, blue, green, red, cyan, magenta, yellow, white\n"
+      },
+      "flags": [
+        "dfa_size_limit",
+        "regex_size_limit",
+        "hyperlink_format",
+        "colors"
+      ]
     }
   ]
 }

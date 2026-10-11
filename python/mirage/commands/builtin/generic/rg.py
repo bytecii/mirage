@@ -1394,6 +1394,16 @@ def _headed(f: RgFlags) -> bool:
     )
 
 
+def _runs_parallel(f: RgFlags) -> bool:
+    """Whether ripgrep searches more than one path on its parallel
+    searcher: -j1 and a sort hold it to one thread.
+
+    Args:
+        f (RgFlags): the parsed flags.
+    """
+    return f.threads != 1 and f.sort in (None, "none")
+
+
 def printed_path(path: str, f: RgFlags) -> str:
     """A path as ripgrep prints it, every ``/`` spelled as
     --path-separator asks.
@@ -1472,7 +1482,7 @@ async def haystacks(
     """
     # ripgrep holds one path that is not a directory to one thread, as it
     # does -j1 and a sort; every other line runs its parallel walker.
-    parallel = f.threads != 1 and f.sort is None
+    parallel = _runs_parallel(f)
     several = parallel and len(paths) > 1
     for p in paths:
         if is_stdin(p):
@@ -1613,6 +1623,7 @@ async def _search_all(
         shell (ShellFn | None): runs --pre's command in the session.
     """
     multi = len(paths) > 1
+    lone = not multi
     pre_globs = Overrides(f.pre_globs, (), False)
     context = prints_context(f)
     out: list[bytes] = []
@@ -1633,6 +1644,7 @@ async def _search_all(
     async for h in found:
         searched += 1
         walked = h.spec is None
+        lone = lone and not walked
         name = printed_path(h.shown, f)
         label = (
             name
@@ -1740,8 +1752,9 @@ async def _search_all(
     if records:
         out.append(totals.summary_record(time.perf_counter() - started))
     elif f.stats:
-        # Under --heading the last group gets its blank line too.
-        if printed and _headed(f):
+        # ripgrep's parallel searcher gives the last --heading group its
+        # blank line too; one thread, as for a lone file, does not.
+        if printed and _headed(f) and _runs_parallel(f) and not lone:
             out.append(b"\n")
         out.append(totals.stats_block(time.perf_counter() - started))
     if f.files_without_match and not f.quiet:
