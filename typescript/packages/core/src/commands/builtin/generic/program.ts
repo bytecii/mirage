@@ -101,6 +101,22 @@ export function programFiles(name: string, bag: Record<string, FlagValue>): Path
  * Returns the flags, whether stdin was read, and the refusal. Mirrors
  * Python's lower_exclude_from.
  */
+/**
+ * Which of grep's -f and --exclude-from reads stdin: the first of them on the
+ * line to name it; the other then reads nothing.
+ */
+function stdinReader(fl: FlagView): string | null {
+  const paths: Record<string, Iterator<PathSpec>> = {
+    file: fl.asPaths('file').values(),
+    exclude_from: fl.asPaths('exclude_from').values(),
+  }
+  for (const [name] of fl.occurrences('file', 'exclude_from')) {
+    const path = paths[name]?.next().value
+    if (path !== undefined && isStdin(path)) return name
+  }
+  return null
+}
+
 async function lowerExcludeFrom(
   fl: FlagView,
   bag: Record<string, FlagValue>,
@@ -109,12 +125,13 @@ async function lowerExcludeFrom(
 ): Promise<[Record<string, FlagValue>, boolean, IOResult | null]> {
   const globs: string[] = []
   let consumed = false
+  const reader = stdinReader(fl)
   for (const path of fl.asPaths('exclude_from')) {
     let data: Uint8Array
     try {
       if (isStdin(path)) {
-        data = await materialize(source)
-        consumed = true
+        data = reader === 'file' ? new Uint8Array() : await materialize(source)
+        consumed = reader !== 'file'
       } else {
         data = await readProgramFile('grep', path, dispatch)
       }

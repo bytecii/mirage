@@ -120,6 +120,23 @@ def program_files(name: str, flags: dict[str, FlagValue]) -> list[PathSpec]:
     return [*files, *fl.as_paths("exclude_from")] if name == "grep" else files
 
 
+def stdin_reader(fl: FlagView) -> str | None:
+    """Which of grep's -f and --exclude-from reads stdin: the first of
+    them on the line to name it; the other then reads nothing.
+
+    Args:
+        fl (FlagView): grep's flag view.
+    """
+    paths = {
+        name: iter(fl.as_paths(name)) for name in ("file", "exclude_from")
+    }
+    for name, _ in fl.occurrences("file", "exclude_from"):
+        path = next(paths[name], None)
+        if path is not None and is_stdin(path):
+            return name
+    return None
+
+
 async def lower_exclude_from(
     fl: FlagView,
     flags: dict[str, FlagValue],
@@ -146,11 +163,12 @@ async def lower_exclude_from(
     """
     globs: list[str] = []
     consumed = False
+    reader = stdin_reader(fl)
     for path in fl.as_paths("exclude_from"):
         try:
             if is_stdin(path):
-                data = await materialize(source)
-                consumed = True
+                data = b"" if reader == "file" else await materialize(source)
+                consumed = reader != "file"
             else:
                 data = await read_program_file("grep", path, dispatch)
         except FS_ERRORS as exc:
