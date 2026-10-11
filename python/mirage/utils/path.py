@@ -15,7 +15,7 @@
 import errno
 import os
 import posixpath
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 
 from mirage.utils.fnmatch import fnmatch
 
@@ -214,6 +214,32 @@ def dot_prefixes(
             continue
         current = current.rstrip("/") + "/" + part
     return found
+
+
+def dot_lookups(
+    dotted: str, follow: Callable[[str], str] | None = None
+) -> Iterator[str]:
+    """The names a walk of ``dotted`` looks up in front of a dot, in walk
+    order, each as the walk reached it and before a link there is
+    followed: the simplified path no longer names them, so a hide has
+    to answer for them here. A caller that stops at one never follows it.
+
+    Args:
+        dotted (str): an absolute spelling from :func:`dotted_spelling`.
+        follow (Callable[[str], str] | None): the namespace's link
+            resolution, None while it holds no link.
+    """
+    current = "/"
+    for part in (p for p in dotted.split("/") if p):
+        if part in _DOTS:
+            if current != "/":
+                yield current
+            if follow is not None:
+                current = follow(current)
+            if part == "..":
+                current = parent(current)
+            continue
+        current = current.rstrip("/") + "/" + part
 
 
 def walk_nodes(

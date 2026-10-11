@@ -289,6 +289,66 @@ describe('patchNodeFs — routed calls', () => {
   })
 })
 
+describe('patchNodeFs — descriptors', () => {
+  it('lands a write made while a sync is out', async () => {
+    const ws = new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.WRITE })
+    restore = patchNodeFs(ws)
+    const fs = requireCjs('fs') as Fs
+    const handle = await fs.promises.open('/data/f.txt', 'w')
+    await handle.write('a')
+    const syncing = handle.sync()
+    await handle.write('b')
+    await syncing
+    await handle.close()
+    expect(await fs.promises.readFile('/data/f.txt', 'utf-8')).toBe('ab')
+    await ws.close()
+  })
+
+  it('leaves the position where it was across positioned reads', async () => {
+    const ws = new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.WRITE })
+    restore = patchNodeFs(ws)
+    const fs = requireCjs('fs') as Fs
+    await fs.promises.writeFile('/data/f.txt', 'abcdefgh')
+    const handle = await fs.promises.open('/data/f.txt', 'r')
+    await Promise.all([
+      handle.read(Buffer.alloc(2), 0, 2, 3),
+      handle.read(Buffer.alloc(2), 0, 2, 6),
+    ])
+    const { bytesRead, buffer } = await handle.read(Buffer.alloc(2), 0, 2, null)
+    expect(buffer.toString('utf8', 0, bytesRead)).toBe('ab')
+    await handle.close()
+    await ws.close()
+  })
+
+  it('lets an open file go under a policy that refuses reads', async () => {
+    const ws = new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.WRITE })
+    restore = patchNodeFs(ws)
+    const fs = requireCjs('fs') as Fs
+    await fs.promises.writeFile('/data/f.txt', 'body')
+    ws.policies.add({
+      preVfs: (ctx) => (ctx.op === 'read' ? { kind: 'deny', reason: 'write-only' } : null),
+    })
+    const handle = await fs.promises.open('/data/f.txt', 'w')
+    await fs.promises.unlink('/data/f.txt')
+    await handle.close()
+    expect(await ws.vfs.exists('/data/f.txt')).toBe(false)
+    await ws.close()
+  })
+
+  it('keeps a handle through a rename onto its own name', async () => {
+    const ws = new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.WRITE })
+    restore = patchNodeFs(ws)
+    const fs = requireCjs('fs') as Fs
+    await fs.promises.writeFile('/data/a.txt', 'hello')
+    const handle = await fs.promises.open('/data/a.txt', 'r+')
+    await handle.write('J', 0)
+    await fs.promises.rename('/data/a.txt', '/data/a.txt')
+    await handle.close()
+    expect(await fs.promises.readFile('/data/a.txt', 'utf-8')).toBe('Jello')
+    await ws.close()
+  })
+})
+
 describe('patchNodeFs — ledger', () => {
   it('records each call on ws.vfs.records', async () => {
     const ws = new Workspace({ '/data': new RAMVFS() }, { mode: MountMode.WRITE })
@@ -342,7 +402,6 @@ describe('patchNodeFs — what a mount cannot serve', () => {
       (fs: Fs) => fs.promises.rename('/data/f.txt', join(scratch, 'x')),
     ],
     ['a hard link', 'EPERM', (fs: Fs) => fs.promises.link('/data/f.txt', '/data/g.txt')],
-    ['a descriptor', 'ENOTSUP', (fs: Fs) => fs.promises.open('/data/f.txt')],
     [
       'an exclusive create of a name that is there',
       'EEXIST',

@@ -31,8 +31,13 @@ from mirage.runtime.handles.types import FlushStep
         ),
         pytest.param(
             {"runs": [(3, b"XYZ")], "size": 6},
+            [FlushStep("pwrite", data=b"XYZ", offset=3)],
+            id="a-range-at-the-end-keeps-its-offset",
+        ),
+        pytest.param(
+            {"runs": [(3, b"XYZ")], "size": 6, "appending": True},
             [FlushStep("append", data=b"XYZ")],
-            id="a-range-at-the-end-goes-as-an-append",
+            id="an-append-mode-handle-appends",
         ),
         pytest.param(
             {"base_len": 0, "runs": [(0, b"x")], "size": 1, "appending": True},

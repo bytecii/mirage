@@ -35,8 +35,13 @@ describe('planFlush', () => {
       ],
     ],
     [
-      'sends a range at the end as an append',
+      'keeps a range at the end at its offset',
       { runs: [[3, enc.encode('XYZ')]], size: 6 },
+      [{ kind: 'pwrite', data: enc.encode('XYZ'), offset: 3 }],
+    ],
+    [
+      'appends for an append-mode handle',
+      { runs: [[3, enc.encode('XYZ')]], size: 6, appending: true },
       [{ kind: 'append', data: enc.encode('XYZ') }],
     ],
     [
