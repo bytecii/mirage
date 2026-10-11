@@ -34,6 +34,36 @@
         "F",
         "c"
       ]
+    },
+    {
+      "id": "zegrep_and_zfgrep_have_zgreps_manual",
+      "seq": 14490245,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "[ \"$(man zegrep | sed 1d)\" = \"$(man zgrep | sed 1d)\" ] && echo same; man zfgrep | head -1; man | grep -cE '^- (zegrep|zfgrep) '",
+      "expect": {
+        "exit": 0,
+        "stdout": "same\n# zfgrep\n2\n",
+        "stderr": ""
+      }
     }
   ]
 }
