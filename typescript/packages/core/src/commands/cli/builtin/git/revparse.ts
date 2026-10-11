@@ -24,7 +24,7 @@ import {
   PathNotInRevisionError,
 } from './errors.ts'
 import { readIndex } from './index_file.ts'
-import { exists } from './io.ts'
+import { exists, readOptional } from './io.ts'
 
 import { isEnotdir } from '../../../../errors/fs.ts'
 import type { CommitFacts } from './format.ts'
@@ -489,9 +489,9 @@ export async function rangeCommits(
  *
  * git's paint walk: each side paints what it reaches, newest first and first
  * queued on a tie, and a commit wearing both colours is a base whose own
- * ancestry goes stale. Stale work can stop only when at most one candidate
- * remains; otherwise it may still eliminate a redundant base. The bases come
- * out in the order git lists them (pinned against
+ * ancestry goes stale. A separate ancestry pass removes redundant candidates
+ * without relying on commit timestamps. History shared by every candidate
+ * cannot remove any of them. Bases retain the order git lists them (pinned against
  * `git merge-base --all` 2.50).
  *
  * @param repo repository holding the commits
@@ -505,6 +505,13 @@ export async function mergeBases(
   other: CommitFacts,
   others: readonly CommitFacts[] = [],
 ): Promise<CommitFacts[]> {
+  const data = await readOptional(repo.dispatch, repo.location.commondir.join('shallow'))
+  const shallow = new Set(
+    new TextDecoder()
+      .decode(data ?? new Uint8Array())
+      .trim()
+      .split(/\s+/),
+  )
   const paint = new Map<string, number>([[one.oid, LEFT]])
   const queue = [one]
   for (const commit of [other, ...others]) {
@@ -512,12 +519,7 @@ export async function mergeBases(
     paint.set(commit.oid, (paint.get(commit.oid) ?? 0) | RIGHT)
   }
   const bases: CommitFacts[] = []
-  while (queue.length > 0) {
-    if (
-      queue.every((commit) => (paint.get(commit.oid) ?? 0) & STALE) &&
-      bases.filter((commit) => !((paint.get(commit.oid) ?? 0) & STALE)).length <= 1
-    )
-      break
+  while (queue.some((commit) => !((paint.get(commit.oid) ?? 0) & STALE))) {
     queue.sort((a, b) => b.committerTime - a.committerTime)
     const commit = queue.shift()
     if (commit === undefined) break
@@ -529,15 +531,35 @@ export async function mergeBases(
       }
       flags |= STALE
     }
-    for (const parent of commit.parents) {
+    for (const parent of shallow.has(commit.oid) ? [] : commit.parents) {
       const had = paint.get(parent) ?? 0
       if ((had & flags) === flags) continue
       paint.set(parent, had | flags)
       queue.push(await commitFacts(repo, parent))
     }
   }
-  // Clock skew can discover an older common ancestor before its child.
-  return bases.filter((commit) => !((paint.get(commit.oid) ?? 0) & STALE))
+  const candidates = bases.filter((commit) => !((paint.get(commit.oid) ?? 0) & STALE))
+  if (candidates.length <= 1) return candidates
+  const origins = new Map(candidates.map((commit, i) => [commit.oid, 1n << BigInt(i)]))
+  const reached = new Map(origins)
+  const pending = [...origins.keys()]
+  const redundant = new Set<string>()
+  const allOrigins = (1n << BigInt(candidates.length)) - 1n
+  while (pending.length > 0) {
+    const oid = pending.shift()
+    if (oid === undefined) break
+    const flags = reached.get(oid) ?? 0n
+    if (origins.has(oid) && flags !== origins.get(oid)) redundant.add(oid)
+    if (flags === allOrigins || shallow.has(oid)) continue
+    for (const parent of (await commitFacts(repo, oid)).parents) {
+      const had = reached.get(parent) ?? 0n
+      if ((had | flags) !== had) {
+        reached.set(parent, had | flags)
+        pending.push(parent)
+      }
+    }
+  }
+  return candidates.filter((commit) => !redundant.has(commit.oid))
 }
 
 /**

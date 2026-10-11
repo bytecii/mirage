@@ -27,3 +27,13 @@ child=$(commit skew-child 1000000001 -p "$parent")
 commit skew-left 1000000200 -p "$ancestor" -p "$child" >/dev/null
 commit skew-right 1000000300 -p "$ancestor" -p "$child" >/dev/null
 git tag -a tagged -m tag x
+hidden=$(commit shallow-hidden 1000000400)
+boundary=$(commit shallow-boundary 1000000401 -p "$hidden")
+other=$(commit shallow-other 1000000402 -p "$hidden")
+a=$(commit shallow-a 1000000403 -p "$boundary")
+b=$(commit shallow-b 1000000404 -p "$boundary")
+commit shallow-left 1000000405 -p "$a" -p "$b" >/dev/null
+commit shallow-right 1000000406 -p "$b" -p "$a" >/dev/null
+printf '%s\n' "$boundary" "$other" > .git/shallow
+git update-ref -d refs/heads/shallow-hidden
+rm ".git/objects/${hidden:0:2}/${hidden:2}"

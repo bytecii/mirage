@@ -91,7 +91,8 @@ it.each(['name', 'flags', 'method', 'crc', 'size', 'local-extra', 'central-extra
     const raw = data(kind === 'local-zip64' ? 'local-zip64' : 'original')
     const view = new DataView(raw.buffer)
     const central = Buffer.from(raw).indexOf('PK\x01\x02', 0, 'binary')
-    const offset = { name: 30, flags: 6, method: 8, crc: 14 }[kind]
+    const offsets: Record<string, number> = { name: 30, flags: 6, method: 8, crc: 14 }
+    const offset = offsets[kind]
     if (offset !== undefined) view.setUint8(offset, view.getUint8(offset) ^ 1)
     else if (kind === 'size') view.setUint32(22, 0xffffffff, true)
     else if (kind === 'local-extra') view.setUint16(38, 1, true)
