@@ -32,7 +32,7 @@ from mirage.commands.cli.builtin.git.errors import (
     PathNotInRevisionError,
 )
 from mirage.commands.cli.builtin.git.index_file import read_index
-from mirage.commands.cli.builtin.git.io import exists
+from mirage.commands.cli.builtin.git.io import exists, read_optional
 from mirage.commands.cli.builtin.git.refs import TAG_PREFIX
 from mirage.commands.cli.builtin.git.repo import Repo
 from mirage.commands.cli.builtin.git.types import AncestryStep, PeelStep, RevOp
@@ -59,6 +59,7 @@ NEGATION = "^"
 LEFT = 1
 RIGHT = 2
 STALE = 4
+RESULT = 8
 
 
 def split_operators(revision: str) -> tuple[str, tuple[RevOp, ...]]:
@@ -258,38 +259,77 @@ def range_commits(
         raise AmbiguousArgumentError(revision) from exc
 
 
-def merge_bases(repo: BaseRepo, one: Commit, other: Commit) -> list[Commit]:
+def merge_bases(
+    repo: BaseRepo, one: Commit, other: Commit, *others: Commit
+) -> list[Commit]:
     """The common ancestors of two commits that nothing shared descends from.
 
     git's paint walk: each side paints what it reaches, newest first
     and first queued on a tie, and a commit wearing both colours is a
-    base whose own ancestry goes stale. The walk ends once every queued
-    commit is stale, and the bases come out in the order git lists them
+    base whose own ancestry goes stale. A separate ancestry pass removes
+    redundant candidates without relying on commit timestamps. History
+    shared by every candidate cannot remove any of them. Bases retain
+    the order git lists them
     (pinned against ``git merge-base --all`` 2.50).
 
     Args:
         repo (BaseRepo): repository whose store holds the commits.
         one (Commit): one side.
         other (Commit): the other side.
+        others (Commit): further tips of the hypothetical merged side.
     """
+    if isinstance(repo, Repo):
+        data = run_async_from_sync(
+            read_optional(
+                repo.dispatch, repo.location.commondir.join("shallow")
+            ),
+            repo.loop,
+        )
+        shallow = set((data or b"").split())
+    else:
+        shallow = set(repo.get_shallow())
     paint = {one.id: LEFT}
-    paint[other.id] = paint.get(other.id, 0) | RIGHT
-    queue = [one] if one.id == other.id else [one, other]
+    queue = [one]
+    for commit in (other, *others):
+        if commit.id not in paint:
+            queue.append(commit)
+        paint[commit.id] = paint.get(commit.id, 0) | RIGHT
     bases: list[Commit] = []
     while any(not paint[commit.id] & STALE for commit in queue):
         queue.sort(key=lambda commit: -commit.commit_time)
         commit = queue.pop(0)
-        flags = paint[commit.id]
+        flags = paint[commit.id] & (LEFT | RIGHT | STALE)
         if flags == LEFT | RIGHT:
-            bases.append(commit)
+            if not paint[commit.id] & RESULT:
+                bases.append(commit)
+                paint[commit.id] |= RESULT
             flags |= STALE
-            paint[commit.id] = flags
-        for parent_id in commit.parents:
+        for parent_id in () if commit.id in shallow else commit.parents:
             if paint.get(parent_id, 0) & flags == flags:
                 continue
             paint[parent_id] = paint.get(parent_id, 0) | flags
             queue.append(_commit_at(repo, parent_id, parent_id.decode()))
-    return bases
+    bases = [commit for commit in bases if not paint[commit.id] & STALE]
+    if len(bases) <= 1:
+        return bases
+    origins = {commit.id: 1 << i for i, commit in enumerate(bases)}
+    reached = dict(origins)
+    pending = list(origins)
+    redundant: set[ObjectID] = set()
+    all_origins = (1 << len(bases)) - 1
+    while pending:
+        oid = pending.pop(0)
+        flags = reached[oid]
+        if oid in origins and flags != origins[oid]:
+            redundant.add(oid)
+        if flags == all_origins or oid in shallow:
+            continue
+        for parent in _commit_at(repo, oid, oid.decode()).parents:
+            had = reached.get(parent, 0)
+            if had | flags != had:
+                reached[parent] = had | flags
+                pending.append(parent)
+    return [commit for commit in bases if commit.id not in redundant]
 
 
 def split_revisions(

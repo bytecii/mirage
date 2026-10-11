@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "id": "zip_update_crossmount_preserves_members",
+      "seq": 10000005,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "(mkdir -p /data/zip-cross; echo one > /data/zip-cross/a; echo two > /data/zip-cross/b; cd /data/zip-cross; zip -q /data2/update.zip a b; echo changed > a; zip -X -q /data2/update.zip a; unzip -p /data2/update.zip a b)",
+      "expect": {
+        "exit": 0,
+        "stdout": "changed\ntwo\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

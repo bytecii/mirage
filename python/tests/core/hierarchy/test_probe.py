@@ -16,14 +16,18 @@ import asyncio
 
 import pytest
 
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.hierarchy.probe import (
     assert_listed,
+    entries_under,
     listed_size,
     resolve_entry,
 )
 from mirage.core.hierarchy.readdir import make_readdir
+from mirage.types import PathSpec
 from tests.core.hierarchy.conftest import (
+    FakeAccessor,
     detect_scope,
     list_notes,
     list_rooms,
@@ -89,3 +93,45 @@ def test_resolve_entry_answers_none_for_an_absent_child(accessor):
         resolve_entry(READDIR, accessor, spec("/rooms/red/nope.json"), index)
     )
     assert entry is None
+
+
+def test_entries_under_walks_every_level_through_the_index(accessor):
+    index = RAMIndexCacheStore()
+    walked = asyncio.run(
+        entries_under(
+            READDIR,
+            accessor,
+            spec("/rooms"),
+            index,
+            lambda entry: entry.resource_type == "fake/room",
+        )
+    )
+    assert walked is not None
+    assert sorted((p.virtual, e.id) for p, e in walked) == [
+        ("/h/rooms/blue", "blue"),
+        ("/h/rooms/red", "red"),
+        ("/h/rooms/red/a.json", "a.json"),
+        ("/h/rooms/red/b.json", "b.json"),
+    ]
+    assert sorted(accessor.calls) == ["notes:blue", "notes:red", "rooms"]
+
+
+async def _unfiled(
+    accessor: FakeAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+) -> list[str]:
+    return [path_spec.virtual.rstrip("/") + "/ghost"]
+
+
+def test_entries_under_answers_none_for_a_name_with_no_entry(accessor):
+    walked = asyncio.run(
+        entries_under(
+            _unfiled,
+            accessor,
+            spec("/rooms"),
+            RAMIndexCacheStore(),
+            lambda entry: False,
+        )
+    )
+    assert walked is None

@@ -25,8 +25,14 @@ import { dropboxPathOf } from './paths.ts'
  * kept inside each scope on `path_lower` (Dropbox paths are case-insensitive)
  * and keyed from `path_display`. Null whenever the answer may miss a match:
  * an API failure, the 10,000-match ceiling, or no hit at all, since Dropbox
- * indexes a write some time after it lands. Mirrors Python's
- * `files_containing`.
+ * indexes a write some time after it lands.
+ *
+ * Dropbox searches the text it extracted, not the bytes grep reads, so the
+ * answer can leave out a file that holds the text: an office file, PDF or
+ * archive, the end of a large file, a word Dropbox splits differently
+ * (`foo.bar`), or a recent write.
+ *
+ * Mirrors Python's `files_containing`.
  */
 export async function filesContaining(
   accessor: DropboxAccessor,

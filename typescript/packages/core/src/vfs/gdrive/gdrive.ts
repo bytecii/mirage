@@ -42,6 +42,7 @@ import { rmR as gdriveRmR } from '../../core/gdrive/rm.ts'
 import { rename as gdriveRename } from '../../core/gdrive/rename.ts'
 import { copy as gdriveCopy } from '../../core/gdrive/copy.ts'
 import { truncate as gdriveTruncate } from '../../core/gdrive/truncate.ts'
+import { filesContaining as gdriveFilesContaining } from '../../core/gdrive/search.ts'
 
 export interface GDriveVFSState {
   type: string
@@ -139,6 +140,16 @@ export class GDriveVFS extends BaseVFS {
 
   override truncate(path: PathSpec, length: number, noCreate = false): Promise<void> {
     return gdriveTruncate(this.accessor, path, length, noCreate)
+  }
+
+  override filesContaining(
+    text: string,
+    under: PathSpec[],
+    opts: { wholeWord: boolean; ignoreCase: boolean },
+    index?: IndexCacheStore,
+  ): Promise<PathSpec[] | null> {
+    if (!opts.wholeWord || this.config.contentSearch !== true) return Promise.resolve(null)
+    return gdriveFilesContaining(this.accessor, text, under, index)
   }
 
   override deltaHook(): DeltaHook {

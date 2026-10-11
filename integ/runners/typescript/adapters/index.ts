@@ -1090,6 +1090,9 @@ async function openOneDrive(target: Target, options?: OpenOptions): Promise<Open
         accessToken: token,
         graphBaseUrl: base,
         ...(mount.prefix !== undefined ? { keyPrefix: mount.prefix } : {}),
+        // The fake answers search(q=), so exercise grep/rg narrowing in the
+        // battery.
+        contentSearch: true,
       })
     }
     return mounts
@@ -1115,6 +1118,9 @@ async function openSharePoint(target: Target, options?: OpenOptions): Promise<Op
         site: 'Main',
         drive: mount.drive,
         ...(mount.prefix !== undefined ? { keyPrefix: mount.prefix } : {}),
+        // The fake answers search(q=), so exercise grep/rg narrowing in the
+        // battery.
+        contentSearch: true,
       })
     }
     return mounts
@@ -1926,6 +1932,9 @@ async function openGws(target: Target, options?: OpenOptions): Promise<Open> {
           refreshToken: GWS_TOKEN,
           apiBase: base,
           folderId: folderIds[m.path] as string,
+          // The fake answers fullText queries, so exercise grep/rg narrowing
+          // in the battery.
+          contentSearch: true,
         })
     }
     return mounts

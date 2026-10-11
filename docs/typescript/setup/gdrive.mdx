@@ -56,11 +56,16 @@ The browser examples in `examples/typescript/browser/src/gdrive_pkce.ts` show a 
 | `refreshToken` | required | User's refresh token. Redacted in snapshots. |
 | `refreshFn` | built-in | Optional override for the access-token refresh callback. |
 | `folderId` | unset | Mount a single folder as the root instead of the whole Drive. The folder may live in My Drive or inside a Shared Drive (drive scope resolves automatically); other shared drives are not surfaced on scoped mounts. |
+| `contentSearch` | `false` | Let `grep -w` and `rg -w` read only the files Drive full-text search names; see [grep and rg](#grep-and-rg). |
 
 ## Mount mode
 
 `read` and `write`. Under write mode the standard write commands (`tee`, `cp`, `mv`, `rm`, `mkdir`, `sed -i`, ...) work on regular files and folders; Google-native files (`.gdoc.json`, `.gsheet.json`, `.gslide.json`) are mutated through the `gws` commands instead.
 
 A Shared Drive is writable on the same terms as My Drive: every Drive call carries `supportsAllDrives`, so what you may change is decided by your role on that drive rather than by the mount, and a role that forbids the change fails with `EACCES` on that operand.
+
+## grep and rg
+
+With `contentSearch: true`, `grep -rw` and `rg -w` read only the files Drive full-text search names, instead of every file under the directory. It is off by default: Drive searches the text it extracted rather than the bytes `grep` reads, and indexes a write some time after it lands, so a file that holds the word can be left out. The [Python Drive docs](/python/vfs/gdrive#grep-and-rg) list the cases.
 
 For the mounted layout, the `gws` command reference, and snapshot behavior see the [Python Drive docs](/python/vfs/gdrive).

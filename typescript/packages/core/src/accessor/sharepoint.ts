@@ -33,6 +33,11 @@ export interface SharePointConfig extends MsGraphConfig {
   site?: string
   drive?: string
   keyPrefix?: string
+  // Let grep -w and rg -w read only the files Graph search names
+  // (`filesContaining`). Off by default: Graph indexes a write some time
+  // after it lands, and searches the text it extracted rather than the
+  // bytes grep reads.
+  contentSearch?: boolean
 }
 
 const SharePointConfigSchema = z.object({
@@ -41,6 +46,7 @@ const SharePointConfigSchema = z.object({
   site: z.string().optional(),
   drive: z.string().optional(),
   keyPrefix: z.string().optional(),
+  contentSearch: z.boolean().optional(),
 })
 
 export type SharePointConfigRedacted = RedactedConfig<

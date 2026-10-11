@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Protocol, TypeVar
 
@@ -21,7 +21,11 @@ from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.cache.index.warm import entry_or_warm
 from mirage.errors.fs import enoent
 from mirage.types import PathSpec, StatFn
-from mirage.utils.key_prefix import mount_key, mount_prefix_of
+from mirage.utils.key_prefix import (
+    mount_key,
+    mount_prefix_of,
+    mounted_path,
+)
 
 A = TypeVar("A", bound=Accessor)
 A_contra = TypeVar("A_contra", bound=Accessor, contravariant=True)
@@ -32,6 +36,7 @@ class ReaddirFn(Protocol[A_contra]):
         self,
         accessor: A_contra,
         path_spec: PathSpec,
+        /,
         index: IndexCacheStore = ...,
     ) -> Awaitable[list[str]]: ...
 
@@ -179,3 +184,41 @@ async def ancestor_entry(
         virtual=virtual, directory=virtual, vfs_path=mount_key(virtual, prefix)
     )
     return await resolve_entry(readdir, accessor, spec, index)
+
+
+async def entries_under(
+    readdir: ReaddirFn[A],
+    accessor: A,
+    directory: PathSpec,
+    index: IndexCacheStore,
+    is_dir: Callable[[IndexEntry], bool],
+) -> list[tuple[PathSpec, IndexEntry]] | None:
+    """Every entry below ``directory`` with its index entry.
+
+    The walk lists through the index, so a search that answers by id
+    pays for the listings grep's own walk reads next. None when a listed
+    name has no entry.
+
+    Args:
+        readdir (ReaddirFn): the backend's readdir.
+        accessor (Accessor): backend accessor.
+        directory (PathSpec): the directory walked.
+        index (IndexCacheStore): index cache.
+        is_dir (Callable[[IndexEntry], bool]): whether an entry is a
+            directory to walk into.
+    """
+    found: list[tuple[PathSpec, IndexEntry]] = []
+    pending = [directory]
+    while pending:
+        current = pending.pop()
+        base = current.mount_path.rstrip("/")
+        for listed in await readdir(accessor, current, index):
+            name = listed.rstrip("/").rsplit("/", 1)[-1]
+            child = mounted_path(current, f"{base}/{name}")
+            entry = await resolve_entry(readdir, accessor, child, index)
+            if entry is None:
+                return None
+            found.append((child, entry))
+            if is_dir(entry):
+                pending.append(child)
+    return found

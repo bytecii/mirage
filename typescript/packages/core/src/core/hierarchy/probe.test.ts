@@ -19,7 +19,7 @@ import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { ContentType, PathSpec } from '../../types.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import { JSON_NAME } from './codec.ts'
-import { assertListed, listedSize, resolveEntry } from './probe.ts'
+import { assertListed, entriesUnder, listedSize, resolveEntry } from './probe.ts'
 import { makeReaddir, type Lister } from './readdir.ts'
 import { Slot, Scope, makeDetectScope } from './scope.ts'
 
@@ -125,5 +125,36 @@ describe('hierarchy probe', () => {
       await resolveEntry(READDIR, new FakeAccessor(), spec('/rooms/red/nope.json'), index),
     ).toBeNull()
     expect(await resolveEntry(READDIR, new FakeAccessor(), spec('/rooms/red/a.json'))).toBeNull()
+  })
+
+  it('entriesUnder walks every level through the index', async () => {
+    const accessor = new FakeAccessor()
+    const walked = await entriesUnder(
+      READDIR,
+      accessor,
+      spec('/rooms'),
+      new RAMIndexCacheStore(),
+      (entry) => entry.resourceType === 'fake/room',
+    )
+    expect(walked?.map(([p, e]) => [p.virtual, e.id]).sort()).toEqual([
+      ['/h/rooms/blue', 'blue'],
+      ['/h/rooms/red', 'red'],
+      ['/h/rooms/red/a.json', 'a.json'],
+      ['/h/rooms/red/b.json', 'b.json'],
+    ])
+    expect([...accessor.calls].sort()).toEqual(['notes:blue', 'notes:red', 'rooms'])
+  })
+
+  it('entriesUnder answers null for a name with no entry', async () => {
+    const unfiled = (_accessor: FakeAccessor, path: PathSpec): Promise<string[]> =>
+      Promise.resolve([`${path.virtual.replace(/\/+$/, '')}/ghost`])
+    const walked = await entriesUnder(
+      unfiled,
+      new FakeAccessor(),
+      spec('/rooms'),
+      new RAMIndexCacheStore(),
+      () => false,
+    )
+    expect(walked).toBeNull()
   })
 })

@@ -843,6 +843,8 @@ async def readdir_items(
                 size_bytes=child.get("size"),
                 child_count=folder_child_count(child),
             )
+        else:
+            extra["id"] = child.get("id")
         index_entries.append(
             (
                 cname,
@@ -858,6 +860,7 @@ async def readdir_items(
         )
     names = sorted(names)
     virtual_entries = sorted((prefix + e if prefix else e) for e in names)
+    index_entries.sort(key=lambda named: named[0])
     await index.set_dir(virtual_key, index_entries)
     return virtual_entries
 

@@ -131,10 +131,16 @@ class SearchRAM extends RAMVFS {
   }
 }
 
-async function run(vfs: RAMVFS, line: string, hide?: string[]): Promise<[string, string, number]> {
+async function run(
+  vfs: RAMVFS,
+  line: string,
+  hide?: string[],
+  pins: Record<string, string> = {},
+): Promise<[string, string, number]> {
   for (const dir of ['/d', '/d/sub']) vfs.store.dirs.add(dir)
   for (const [key, data] of Object.entries(TREE)) vfs.store.files.set(key, ENC.encode(data))
   const ws = new Workspace({ '/': vfs }, { shellParser: await getTestParser() })
+  for (const [path, rev] of Object.entries(pins)) ws.mount('/').revisions.set(path, rev)
   try {
     if (hide !== undefined) {
       ws.createSession('agent', { profile: parseSessionProfile({ paths: { hide } }) })
@@ -241,6 +247,17 @@ it.each([
   const line = 'grep -r ada /d'
   expect(await run(vfs, line)).toEqual(await run(new RAMVFS(), line))
   expect([...vfs.reads].sort()).toEqual(reads)
+})
+
+// Twin of test_a_path_pinned_to_a_revision_is_always_read: a search sees the
+// current content, so a pinned file is read whatever it answers.
+it('always reads a path pinned to a revision', async () => {
+  const vfs = new SearchRAM({ lines: null })
+  const line = 'grep -r ada /d'
+  expect(await run(vfs, line, undefined, { '/d/c.txt': 'r1' })).toEqual(
+    await run(new RAMVFS(), line),
+  )
+  expect([...vfs.reads].sort()).toEqual(['d/a.txt', 'd/c.txt', 'd/sub/d.txt'])
 })
 
 // Twin of test_a_hidden_path_is_walked_without_the_search.

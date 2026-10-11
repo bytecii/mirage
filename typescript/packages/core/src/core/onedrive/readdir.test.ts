@@ -78,4 +78,30 @@ describe('OneDrive readdir', () => {
     const path = PathSpec.fromStrPath(`/od/${key}`, key)
     await expect(readdir(accessor, path, new RAMIndexCacheStore())).rejects.toMatchObject({ code })
   })
+
+  it('keeps the cold order in a cached listing', async () => {
+    // Graph may answer in UTF-16 order, which puts an astral name before a
+    // private-use one; the index must hand back the code-point order the
+    // cold listing returned, or a second walk reorders grep's output.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            value: [
+              { id: '1', name: '\u{1F600}.txt', size: 1, file: {} },
+              { id: '2', name: '\uE000.txt', size: 1, file: {} },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    )
+    const accessor = new OneDriveAccessor({ accessToken: 'token' })
+    const index = new RAMIndexCacheStore()
+    const root = PathSpec.fromStrPath('/od', '')
+    const cold = await readdir(accessor, root, index)
+    expect(cold).toEqual(['/od/\uE000.txt', '/od/\u{1F600}.txt'])
+    expect(await readdir(accessor, root, index)).toEqual(cold)
+  })
 })

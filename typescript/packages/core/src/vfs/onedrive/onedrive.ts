@@ -30,6 +30,8 @@ import { rmR } from '../../core/onedrive/rm.ts'
 import { rename } from '../../core/onedrive/rename.ts'
 import { copy } from '../../core/onedrive/copy.ts'
 import { truncate } from '../../core/onedrive/truncate.ts'
+import { filesContaining } from '../../core/msgraph/search.ts'
+import { driveLoc } from '../../core/onedrive/client.ts'
 
 const du = makeWalkedDu(stat, readdir)
 
@@ -138,6 +140,18 @@ export class OneDriveVFS extends BaseVFS {
 
   override truncate(path: PathSpec, length: number, noCreate = false): Promise<void> {
     return truncate(this.accessor, path, length, noCreate)
+  }
+
+  override filesContaining(
+    text: string,
+    under: PathSpec[],
+    opts: { wholeWord: boolean; ignoreCase: boolean },
+    index?: IndexCacheStore,
+  ): Promise<PathSpec[] | null> {
+    if (!opts.wholeWord || this.config.contentSearch !== true) return Promise.resolve(null)
+    const config = this.accessor.config
+    const scopes = under.map((d) => [d, driveLoc(config, d.vfsPath)] as const)
+    return filesContaining(config, readdir, this.accessor, scopes, text, index)
   }
 
   override deltaHook(): DeltaHook {

@@ -250,6 +250,58 @@ async def list_all_files(
     return files, complete
 
 
+async def search_files(
+    token_manager: TokenManager,
+    text: str,
+    parent_ids: list[str],
+    page_size: int = 1000,
+) -> tuple[list[str], bool]:
+    """Ids of the files in ``parent_ids`` Drive full-text search names.
+
+    Drive sorts no ``fullText`` query, so none is asked for.
+
+    Args:
+        token_manager (TokenManager): OAuth2 token manager.
+        text (str): the text searched for.
+        parent_ids (list[str]): the folders whose children are searched.
+        page_size (int): results per page.
+
+    Returns:
+        tuple[list[str], bool]: the file ids, and whether Drive searched
+        every corpus it was asked for.
+    """
+    parents = " or ".join(
+        f"'{escape_query_value(p)}' in parents" for p in parent_ids
+    )
+    q = (
+        f"fullText contains '{escape_query_value(text)}'"
+        f" and trashed=false and ({parents})"
+    )
+    ids: list[str] = []
+    complete = True
+    page_token: str | None = None
+    while True:
+        params: dict[str, str | int] = {
+            "q": q,
+            "fields": "nextPageToken,incompleteSearch,files(id)",
+            "pageSize": page_size,
+            "corpora": "allDrives",
+            "includeItemsFromAllDrives": "true",
+            "supportsAllDrives": "true",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        url = f"{drive_base(token_manager)}/files"
+        data = await google_get(token_manager, url, params=params)
+        ids.extend(f["id"] for f in data.get("files", []))
+        if data.get("incompleteSearch"):
+            complete = False
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return ids, complete
+
+
 async def delete_file(
     token_manager: TokenManager,
     file_id: str,
