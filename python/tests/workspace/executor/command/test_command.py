@@ -124,3 +124,78 @@ async def test_an_allowed_wrapper_runs_without_the_program_it_names():
     assert (io.exit_code, io.stdout) == (0, b"a|b\nx\n")
     io = await ws.shell("grep x /data/e.txt", session_id="narrow")
     assert (io.exit_code, io.stderr) == (126, b"grep: Permission denied\n")
+
+
+# egrep -r walks as grep -r does, so a child mount's rule on egrep speaks
+# on the ancestor operand.
+@pytest.mark.asyncio
+async def test_a_recursive_wrapper_meets_a_child_mounts_rule():
+    ws = Workspace(
+        {
+            "/scratch/": (RAMVFS(), MountMode.WRITE),
+            "/scratch/child/": (RAMVFS(), MountMode.WRITE),
+        },
+        mode=MountMode.WRITE,
+        profiles={
+            "default": {
+                "mounts": {
+                    "/scratch/child": {
+                        "commands": {
+                            "deny": [
+                                {"reason": "boxed", "commands": ["egrep"]}
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+    )
+    try:
+        await ws.shell("echo x > /scratch/a && echo x > /scratch/child/c")
+        io = await ws.shell("egrep -r x /scratch")
+        assert (io.exit_code, io.stdout, io.stderr) == (
+            126,
+            b"",
+            b"egrep: Permission denied\n",
+        )
+    finally:
+        await ws.close()
+
+
+# The whole-line gate reads fgrep's words with grep's spec, so its pattern
+# is no path, while a file operand still is.
+@pytest.mark.asyncio
+async def test_a_wrappers_pattern_is_no_path_to_a_path_rule():
+    ws = Workspace(
+        {
+            "/private/": (RAMVFS(), MountMode.WRITE),
+            "/public/": (RAMVFS(), MountMode.WRITE),
+        },
+        mode=MountMode.WRITE,
+        profiles={
+            "default": {
+                "commands": {
+                    "deny": [
+                        {
+                            "reason": "sealed",
+                            "commands": {"fgrep": ["/private/*"]},
+                        }
+                    ]
+                }
+            }
+        },
+    )
+    try:
+        await ws.shell(
+            "echo /private/token > /public/log && echo s > /private/token"
+        )
+        io = await ws.shell("fgrep '/private/token' /public/log; echo done")
+        assert (io.exit_code, io.stdout) == (0, b"/private/token\ndone\n")
+        io = await ws.shell("fgrep s /private/token; echo done")
+        assert (io.exit_code, io.stdout, io.stderr) == (
+            1,
+            b"",
+            b"fgrep: /private/token: Permission denied\n",
+        )
+    finally:
+        await ws.close()

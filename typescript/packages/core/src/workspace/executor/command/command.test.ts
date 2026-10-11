@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 import { command } from '../../../commands/config.ts'
 import { CommandSpec, type FlagValue, Argument } from '../../../commands/spec/types.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
+import { parseSessionProfile } from '../../../policy/profile.ts'
 import { JobTable } from '../../../shell/job_table/index.ts'
 import { BaseVFS } from '../../../vfs/base.ts'
 import { MountMode, PathSpec } from '../../../types.ts'
@@ -292,6 +293,74 @@ describe('a wrapper', () => {
         126,
         'grep: Permission denied\n',
       ])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  // Twin of test_a_recursive_wrapper_meets_a_child_mounts_rule: egrep -r
+  // walks as grep -r does, so a child mount's rule on egrep speaks on the
+  // ancestor operand.
+  it('walks into a child mount whose rule it meets', async () => {
+    const ws = new Workspace(
+      { '/scratch': new RAMVFS(), '/scratch/child': new RAMVFS() },
+      {
+        mode: MountMode.WRITE,
+        shellParser: await getTestParser(),
+        profiles: {
+          default: parseSessionProfile({
+            mounts: {
+              '/scratch/child': {
+                commands: { deny: [{ reason: 'boxed', commands: ['egrep'] }] },
+              },
+            },
+          }),
+        },
+      },
+    )
+    try {
+      await ws.shell('echo x > /scratch/a && echo x > /scratch/child/c')
+      const io = await ws.shell('egrep -r x /scratch')
+      const decoder = new TextDecoder()
+      expect([io.exitCode, decoder.decode(io.stdout), decoder.decode(io.stderr)]).toEqual([
+        126,
+        '',
+        'egrep: Permission denied\n',
+      ])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  // Twin of test_a_wrappers_pattern_is_no_path_to_a_path_rule: the
+  // whole-line gate reads fgrep's words with grep's spec, so its pattern is
+  // no path, while a file operand still is.
+  it('keeps its pattern from a path rule', async () => {
+    const ws = new Workspace(
+      { '/private': new RAMVFS(), '/public': new RAMVFS() },
+      {
+        mode: MountMode.WRITE,
+        shellParser: await getTestParser(),
+        profiles: {
+          default: parseSessionProfile({
+            commands: {
+              deny: [{ reason: 'sealed', commands: { fgrep: ['/private/*'] } }],
+            },
+          }),
+        },
+      },
+    )
+    try {
+      await ws.shell('echo /private/token > /public/log && echo s > /private/token')
+      const decoder = new TextDecoder()
+      const io = await ws.shell("fgrep '/private/token' /public/log; echo done")
+      expect([io.exitCode, decoder.decode(io.stdout)]).toEqual([0, '/private/token\ndone\n'])
+      const refused = await ws.shell('fgrep s /private/token; echo done')
+      expect([
+        refused.exitCode,
+        decoder.decode(refused.stdout),
+        decoder.decode(refused.stderr),
+      ]).toEqual([1, '', 'fgrep: /private/token: Permission denied\n'])
     } finally {
       await ws.close()
     }

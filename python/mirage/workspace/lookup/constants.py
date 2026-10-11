@@ -407,16 +407,18 @@ SUBTREE_READ_FLAGS = {
 
 
 def walks_mounts(name: str, words: Sequence[str | PathSpec]) -> bool:
-    """Whether a command's traversal enters descendant mounts.
+    """Whether a command's traversal enters descendant mounts; a
+    wrapper walks as the program it runs.
 
     Args:
         name (str): command name.
         words (Sequence[str | PathSpec]): the command's raw words,
             name first.
     """
-    if name in WALK_COMMANDS:
+    runs = EXEC_WRAPPERS.get(name, (name,))[0]
+    if runs in WALK_COMMANDS:
         return True
-    spec = WALK_FLAGS.get(name)
+    spec = WALK_FLAGS.get(runs)
     return spec is not None and _has_option(words, spec[0], spec[1])
 
 

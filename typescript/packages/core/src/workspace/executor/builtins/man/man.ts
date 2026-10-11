@@ -18,6 +18,7 @@ import { BUILTIN_SPECS } from '../../../../commands/spec/builtins.ts'
 import type { CommandSpec } from '../../../../commands/spec/types.ts'
 import { IOResult } from '../../../../io/types.ts'
 import type { CLIInstall } from '../../../cli/types.ts'
+import { EXEC_WRAPPERS } from '../../../lookup/constants.ts'
 import { DEV_PREFIX } from '../../../mount/registry.ts'
 import type { MountRegistry } from '../../../mount/registry.ts'
 import { ExecutionNode } from '../../../types.ts'
@@ -42,7 +43,8 @@ function described(text: string | null | undefined): string {
  *
  * A name has one spec however many mounts register it (spec parity holds
  * every registration of a name to one spec), so the first registration
- * found is the page.
+ * found is the page. A wrapper no mount registers (`egrep`) has the page of
+ * the program it runs, as Debian links one to the other.
  */
 function commandEntry(name: string, registry: MountRegistry): ManEntry | null {
   for (const mount of registry.allMounts()) {
@@ -50,7 +52,9 @@ function commandEntry(name: string, registry: MountRegistry): ManEntry | null {
     const cmd = mount.resolveCommand(name)
     if (cmd !== null) return { name, spec: cmd.spec }
   }
-  return null
+  const wrapped = EXEC_WRAPPERS.get(name)
+  const runs = wrapped !== undefined ? commandEntry(wrapped[0], registry) : null
+  return runs !== null ? { name, spec: runs.spec } : null
 }
 
 /** The entry for a shell builtin the manual documents, else null. */
@@ -60,7 +64,10 @@ function builtinEntry(name: string): ManEntry | null {
   return spec !== undefined ? { name, spec } : null
 }
 
-/** One entry per name registered on any mount, first registration wins. */
+/**
+ * One entry per name registered on any mount, first registration wins, and
+ * one per wrapper of a listed program.
+ */
 function commandEntries(registry: MountRegistry): ManEntry[] {
   const seen = new Map<string, ManEntry>()
   for (const mount of registry.allMounts()) {
@@ -69,6 +76,12 @@ function commandEntries(registry: MountRegistry): ManEntry[] {
       if (!seen.has(cmd.name)) {
         seen.set(cmd.name, { name: cmd.name, spec: cmd.spec })
       }
+    }
+  }
+  for (const [wrapper, [runs]] of EXEC_WRAPPERS) {
+    const target = seen.get(runs)
+    if (!seen.has(wrapper) && target !== undefined) {
+      seen.set(wrapper, { name: wrapper, spec: target.spec })
     }
   }
   return [...seen.values()]

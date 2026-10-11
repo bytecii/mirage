@@ -33,7 +33,7 @@ import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
 
 import { directoriesAction, parseFlags as parseGrepFlags } from '../generic/grep.ts'
-import { foldsCase, parseFlags as parseRgFlags, rgMatcher } from '../generic/rg.ts'
+import { encodingFlag, foldsCase, parseFlags as parseRgFlags, rgMatcher } from '../generic/rg.ts'
 import { searchTerms } from '../grep_pushdown.ts'
 import { compilePattern, patternArg } from '../grep_pattern.ts'
 import type { SearchTerms } from '../types.ts'
@@ -169,7 +169,8 @@ export function candidateReads(
 /**
  * rg's `linesContaining` answer as it stands, or null, so the file is read,
  * when it starts with a byte-order mark: rg drops a mark only where the file
- * starts, which an answer cannot say it does. Mirrors Python's `_unmarked`.
+ * starts, which an answer cannot say it does. Under `-E none` rg keeps the
+ * mark, so its answer is not asked here. Mirrors Python's `_unmarked`.
  */
 async function unmarked(found: ByteSource): Promise<ByteSource | null> {
   if (found instanceof Uint8Array) return bomOf(found) === null ? found : null
@@ -300,6 +301,7 @@ export async function searchReads<A extends Accessor>(
     return stream
   }
   const asked = terms
+  const dropsMark = name === 'rg' && encodingFlag(fl) !== 'none'
   let hits: Set<string> | null = null
   if (files !== undefined && dirs.length > 0) {
     const answers = await Promise.all(
@@ -351,7 +353,7 @@ export async function searchReads<A extends Accessor>(
     const [only] = asked.texts
     if (asked.lineOutput && asked.texts.length === 1 && only !== undefined) {
       const found = await lines(accessor, path, only, ignoreCase, index)
-      const answer = found !== null && name === 'rg' ? await unmarked(found) : found
+      const answer = found !== null && dropsMark ? await unmarked(found) : found
       if (answer === null) await readUnanswered()
       return answer
     }

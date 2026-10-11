@@ -221,6 +221,16 @@ def test_rg_reads_a_file_whose_line_answer_starts_with_a_mark(lines):
     assert vfs.scans == [ScanReason.UNANSWERED]
 
 
+# Under -E none rg keeps the mark, so the answer stands and nothing is read.
+@pytest.mark.parametrize("lines", ["bytes", "stream"])
+def test_rg_keeps_a_marked_line_answer_under_no_encoding(lines):
+    line = "rg -E none ada /m"
+    vfs = SearchRAM(files=False, lines=lines)
+    searched = _run(_marked(vfs), line)
+    assert searched == _run(_marked(RAMVFS()), line)
+    assert (vfs.reads, vfs.scans) == ([], [])
+
+
 EVERY = "a.txt b.txt c.txt sub/d.txt z.txt"
 
 

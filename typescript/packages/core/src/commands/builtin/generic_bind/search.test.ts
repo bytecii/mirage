@@ -33,7 +33,7 @@ const TREE: Record<string, string> = {
   '/d/z.txt': '\0noise\n',
 }
 const ENC = new TextEncoder()
-const DEC = new TextDecoder()
+const DEC = new TextDecoder('utf-8', { ignoreBOM: true })
 
 function holds(data: string, text: string, ignoreCase: boolean): boolean {
   return ignoreCase ? data.toLowerCase().includes(text.toLowerCase()) : data.includes(text)
@@ -223,6 +223,18 @@ it.each(['bytes', 'stream'] as const)(
     expect(searched).toEqual(await run(marked(new RAMVFS()), 'rg -x ada /m'))
     expect(searched[0]).toBe('/m/top.txt:ada\n')
     expect(vfs.scans).toEqual([ScanReason.UNANSWERED])
+  },
+)
+
+// Under -E none rg keeps the mark, so the answer stands and nothing is read.
+// Twin of test_rg_keeps_a_marked_line_answer_under_no_encoding.
+it.each(['bytes', 'stream'] as const)(
+  'keeps a marked rg line answer under -E none (%s)',
+  async (lines) => {
+    const vfs = new SearchRAM({ files: false, lines })
+    const searched = await run(marked(vfs), 'rg -E none ada /m')
+    expect(searched).toEqual(await run(marked(new RAMVFS()), 'rg -E none ada /m'))
+    expect([vfs.reads, vfs.scans]).toEqual([[], []])
   },
 )
 

@@ -228,6 +228,8 @@ describe('walkers and subtree readers', () => {
     expect(walksMounts('grep', ['grep', '-rn', 'x', '/data'])).toBe(true)
     expect(walksMounts('grep', ['grep', '--recursive', 'x'])).toBe(true)
     expect(walksMounts('grep', ['grep', '--', '-r'])).toBe(false)
+    expect(walksMounts('egrep', ['egrep', '-r', 'x'])).toBe(true)
+    expect(walksMounts('fgrep', ['fgrep', 'x', '/data'])).toBe(false)
     expect(walksMounts('ls', ['ls', '-R', '/data'])).toBe(true)
     expect(walksMounts('ls', ['ls', '-l', '/data'])).toBe(false)
     expect(walksMounts('cat', ['cat', '/data/x'])).toBe(false)

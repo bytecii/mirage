@@ -25,6 +25,7 @@ from mirage.commands.builtin.generic.grep import (
     parse_flags as parse_grep_flags,
 )
 from mirage.commands.builtin.generic.rg import (
+    encoding_flag,
     folds_case,
     rg_matcher,
 )
@@ -227,7 +228,8 @@ def candidate_reads(
 async def _unmarked(found: ByteSource) -> ByteSource | None:
     """rg's ``lines_containing`` answer as it stands, or None, so the file
     is read, when it starts with a byte-order mark: rg drops a mark only
-    where the file starts, which an answer cannot say it does.
+    where the file starts, which an answer cannot say it does. Under
+    ``-E none`` rg keeps the mark, so its answer is not asked here.
 
     Args:
         found (ByteSource): the answer.
@@ -360,6 +362,7 @@ async def search_reads(
     if isinstance(terms, ScanReason):
         await _full_scan(io, name, accessor, dirs, terms, index)
         return read_bytes, read_stream
+    drops_mark = name == "rg" and encoding_flag(fl) != "none"
     hits: set[str] | None = None
     if files is not None and dirs:
         answers = await asyncio.gather(
@@ -440,7 +443,7 @@ async def search_reads(
                 ignore_case=terms.ignore_case,
                 index=index,
             )
-            if found is not None and name == "rg":
+            if found is not None and drops_mark:
                 found = await _unmarked(found)
             if found is None:
                 await read_unanswered()
