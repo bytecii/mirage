@@ -69,6 +69,17 @@ def test_append_mode_starts_at_the_end_and_always_writes_there():
     assert h.flush_plan() == [FlushStep("append", data=b"XY")]
 
 
+def test_a_settled_handle_owes_only_what_it_wrote_since():
+    h = _handle(b"abc", append=True)
+    h.write(b"DE")
+    assert h.flush_plan() == [FlushStep("append", data=b"DE")]
+    h.settle(_over(b"abcDE"))
+    assert h.flush_plan() == []
+    h.write(b"F")
+    assert h.flush_plan() == [FlushStep("append", data=b"F")]
+    assert h.pread(0, 9) == b"abcDEF"
+
+
 def test_an_edit_owes_only_its_range():
     h = _handle(b"0123456789")
     h.seek(5, 0)
@@ -94,11 +105,13 @@ def test_a_write_past_the_end_reads_its_gap_as_zeros():
     assert h.flush_plan() == [FlushStep("pwrite", data=b"Z", offset=4)]
 
 
-def test_extending_the_end_goes_as_an_append():
+def test_extending_the_end_keeps_its_offset():
+    # Another writer may have moved the end since the open; an append
+    # would land after its bytes.
     h = _handle(b"abc")
     h.seek(0, 2)
     h.write(b"de")
-    assert h.flush_plan() == [FlushStep("append", data=b"de")]
+    assert h.flush_plan() == [FlushStep("pwrite", data=b"de", offset=3)]
 
 
 def test_a_created_file_sends_only_its_ranges():

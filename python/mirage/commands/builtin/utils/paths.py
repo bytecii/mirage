@@ -25,6 +25,7 @@ from mirage.types import LINK_TARGET_KEY, FileStat, FileType, PathSpec, StatFn
 from mirage.utils.key_prefix import rekey
 from mirage.utils.path import (
     CycleError,
+    dot_lookups,
     dot_prefixes,
     norm,
     parent,
@@ -282,6 +283,43 @@ def walk_spelling(path: PathSpec, follow: Callable[[str], str] | None) -> str:
     if dotted is not None and _spells(dotted, path.virtual, follow):
         return dotted.rstrip("/") or "/"
     return path.virtual
+
+
+def hidden_walk(
+    path: PathSpec,
+    follow: Callable[[str], str] | None,
+    visible: Callable[[str], bool],
+) -> OSError | None:
+    """ENOENT when the walk of a path's dots looks up a name the session
+    cannot see, None when it sees every one.
+
+    ``virtual`` simplified the dots away, so a hidden name in front of
+    one (``secret/../f``, a hidden link's ``lnk/../f``) is gone from the
+    path the hides judge, while the walk still has to find it. It
+    answers as a missing name does, and before ``dot_refusal`` proves
+    anything a directory, so the refusal cannot tell a hide from an
+    absence. The walk stops at the hidden name, so a link there is
+    never followed.
+
+    Args:
+        path (PathSpec): the operand, ``dotted`` set by the classifier.
+        follow (Callable[[str], str] | None): the namespace's link
+            resolution, None while it holds no link.
+        visible (Callable[[str], bool]): whether the session sees a path.
+    """
+    dotted = path.dotted
+    if dotted is None or not _spells(
+        dotted, resolve_path(path.virtual, "/"), follow
+    ):
+        return None
+    name = path.raw_path or path.virtual
+    try:
+        for looked in dot_lookups(dotted, follow):
+            if not visible(looked):
+                return dot_walk_error(name, FsCondition.ENOENT)
+    except CycleError:
+        return eloop(name)
+    return None
 
 
 async def dot_refusal(

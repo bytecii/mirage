@@ -19,7 +19,12 @@ import type { FileCache } from '../../cache/file/mixin.ts'
 import { KeyLock } from '../../cache/lock.ts'
 import { CacheManager } from '../../cache/manager.ts'
 import { runWithTimeout } from '../../commands/builtin/utils/limit.ts'
-import { dispatchStat, dotRefusal, walkSpelling } from '../../commands/builtin/utils/paths.ts'
+import {
+  dispatchStat,
+  dotRefusal,
+  hiddenWalk,
+  walkSpelling,
+} from '../../commands/builtin/utils/paths.ts'
 import { getExtension } from '../../utils/filetype.ts'
 import { IOResult, type OpReport } from '../../io/types.ts'
 import {
@@ -517,6 +522,7 @@ export class Dispatcher {
     call.stream = name === 'read' && stream === true
     call.direct = name === 'read' && direct === true
     await this.refuseRename(call)
+    if (report) report.path = call.path.virtual
     if (this.tableAnswers(name, call.path.virtual, call.kwargs)) {
       return [
         await this.tableCall(name, call.path, call.args ?? [], call.kwargs ?? {}, report, issuer),
@@ -524,6 +530,7 @@ export class Dispatcher {
       ]
     }
     this.follow(call)
+    if (report) report.path = call.path.virtual
     await this.walkOperands(call)
     if (XATTR_OPS.has(name)) {
       return [
@@ -674,7 +681,10 @@ export class Dispatcher {
     if (path.dotted !== null || (renamed !== null && renamed.dotted !== null)) {
       const walkStat = dispatchStat(this.dispatch)
       const follow = (virtual: string): string => this.namespace.follow(virtual)
+      const visible = (virtual: string): boolean => pathVisible(vis, virtual)
       const refusal =
+        hiddenWalk(path, follow, visible) ??
+        (renamed !== null ? hiddenWalk(renamed, follow, visible) : null) ??
         (await dotRefusal(walkStat, path, follow, ENTRY_CREATE_OPS.has(name))) ??
         (renamed !== null ? await dotRefusal(walkStat, renamed, follow) : null)
       if (refusal !== null) throw refusal

@@ -1,0 +1,61 @@
+{
+  "cases": [
+    {
+      "id": "fsync_lands_the_writes_before_the_close",
+      "note": "The second open reads the mount, so it sees the bytes only once the sync landed them; a pyodide file shares one in-memory node, which shows them either way.",
+      "runtimes": [
+        "monty",
+        "wasi",
+        "pyodide",
+        "host"
+      ],
+      "backends": [
+        "ram",
+        "disk",
+        "ssh",
+        "s3",
+        "redis"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "import os\nfd = os.open('/data/s.txt', os.O_WRONLY | os.O_CREAT | os.O_TRUNC)\nos.write(fd, b'synced')\nos.fsync(fd)\nprint(open('/data/s.txt').read())\nos.write(fd, b'!')\nos.fdatasync(fd) if hasattr(os, 'fdatasync') else os.fsync(fd)\nprint(open('/data/s.txt').read())\nos.close(fd)",
+            "node": "const fsp = require('node:fs').promises\nconst h = await fsp.open('/data/s.txt', 'w')\nawait h.write('synced')\nawait h.sync()\nconsole.log(await fsp.readFile('/data/s.txt', 'utf8'))\nawait h.write('!')\nawait h.datasync()\nconsole.log(await fsp.readFile('/data/s.txt', 'utf8'))\nawait h.close()"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "synced\nsynced!\n"
+          },
+          "expect_on": {
+            "monty": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "'module' object has no attribute 'O_WRONLY'"
+            }
+          }
+        },
+        {
+          "command": "cat /data/s.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "synced!"
+          },
+          "expect_on": {
+            "monty": {
+              "exit": 1,
+              "stdout": ""
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
