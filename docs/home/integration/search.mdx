@@ -95,9 +95,9 @@ always read; `None` (`null`), the default, covers every file.
 
 | Method | Commands | Used when |
 | --- | --- | --- |
-| `files_containing` | `grep -r`, `grep -R`, `rg` | the walk reads any file, unless a flag below scans |
-| `lines_containing` | `grep`, `rg` | in place of the file with no `-n`, `-b`, `-A`, `-B`, `-C` (rg also no `--column`, `--vimgrep`, `--stop-on-nonmatch`, `--null-data`) and one pattern; otherwise to decide whether the file is read |
-| `before_full_scan` | `grep -r`, `grep -R`, `rg` | once, before the first file no search answered is read |
+| `files_containing` | `grep -r`, `-R` or `-d recurse`, `rg` | the walk reads any file, unless a flag below scans |
+| `lines_containing` | `grep`, `rg` | in place of the file with no `-n`, `-b`, `-A`, `-B`, `-C` (grep also no `-NUM` or `-z`; rg also no `--column`, `--vimgrep`, `--stop-on-nonmatch`, `--null-data`) and one pattern; otherwise to decide whether the file is read |
+| `before_full_scan` | `grep -r`, `-R` or `-d recurse`, `rg` | once, before the first file no search answered is read |
 
 | Argument | Set by |
 | --- | --- |

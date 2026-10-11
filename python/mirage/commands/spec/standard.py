@@ -16,6 +16,7 @@ from mirage.commands.constants import ROOT_CWD
 from mirage.commands.spec.builtins import is_builtin_grammar, registered_spec
 from mirage.commands.spec.constants import (
     HELP_OPTION,
+    SHORT_VERSION,
     STANDARD_AFTER_SCAN,
     STANDARD_BEFORE_SCAN,
     VERSION_OPTION,
@@ -98,7 +99,7 @@ def _position(
         name (str): The command name as invoked.
         spec (CommandSpec): The registered spec.
         argv (list[str]): The words after the command name.
-        option (str): ``--help`` or ``--version``.
+        option (str): ``--help``, ``--version`` or ``-V``.
     """
     for index in range(len(argv)):
         if option in _parse(name, spec, argv[: index + 1]).typed_dests:
@@ -142,6 +143,8 @@ def standard_request(
         offered.append("--help")
     if has_injected_version(spec):
         offered.append("--version")
+        if name in SHORT_VERSION and is_builtin_grammar(name, spec):
+            offered.append("-V")
     if not offered:
         return None
     whole = _parse(name, spec, argv)

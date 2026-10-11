@@ -47,16 +47,59 @@ export interface FlagSet {
   noMessages: boolean
   withFilename: boolean
   noFilename: boolean
-  afterContext: number
-  beforeContext: number
+  afterContext: number | null
+  beforeContext: number | null
+  skipDirectories?: boolean
+  skipDevices?: boolean
+  nullData?: boolean
+  null?: boolean
+  initialTab?: boolean
+  groupSeparator?: string | null
+  label?: string
 }
 
 // GNU grep's INITIAL_BUFSIZE: the window it examines before printing from it.
 export const PROBE_BLOCK_BYTES = 96 * 1024
+// The digits of INTMAX_MAX, the width -T pads to when the input's size is
+// unknown (a pipe).
+const UNKNOWN_SIZE_WIDTH = 19
+
+/**
+ * The line grep prints between two context groups, or nothing. GNU separates
+ * groups once -A, -B or -C is given, zero included and under -o too (grep
+ * 3.11: `grep -A0` prints `--` between two lines that are not neighbours);
+ * -c, -l, -L and -q print no lines.
+ */
+export function groupLine(f: FlagSet): string {
+  if (f.countOnly || f.filesOnly || f.filesWithoutMatch || f.quiet) return ''
+  const separator = f.groupSeparator === undefined ? '--' : f.groupSeparator
+  if (separator === null || (f.afterContext === null && f.beforeContext === null)) return ''
+  return separator + '\n'
+}
+
+/** What follows a file name -l or -L prints: NUL under -Z. */
+export function nameEnd(f: FlagSet): string {
+  return f.null === true ? '\0' : '\n'
+}
+
+/**
+ * The width -T pads line numbers and byte offsets to. GNU sizes the field to
+ * the digits of the file's size, plus one under -n, and to INTMAX_MAX's
+ * digits when the size is unknown (grep.c).
+ */
+function offsetWidth(f: FlagSet, size: number | null): number {
+  if (f.initialTab !== true) return 0
+  if (size === null) return UNKNOWN_SIZE_WIDTH
+  return String(size + (f.lineNumbers ? 1 : 0)).length
+}
 
 export class BinaryInput {
   nul = false
-  constructor(readonly mode: string) {}
+  // Under -z a NUL ends a line, so it is no sign of a binary file.
+  constructor(
+    readonly mode: string,
+    readonly nulEndsLine = false,
+  ) {}
 
   /**
    * Probe the input for NUL a block at a time, then pass it on. GNU examines
@@ -80,7 +123,7 @@ export class BinaryInput {
   // Note a NUL in data, which all belongs to the block being probed; true
   // when without-match must stop reading.
   private stops(data: Uint8Array): boolean {
-    if (this.mode !== 'text' && !this.nul && data.includes(0)) this.nul = true
+    if (this.mode !== 'text' && !this.nulEndsLine && !this.nul && data.includes(0)) this.nul = true
     return this.nul && this.mode === 'without-match'
   }
 
@@ -116,7 +159,9 @@ export function validUtf8(data: Uint8Array): boolean {
 /**
  * One output line, prefix fields in GNU's fixed order: filename, then line
  * number, then byte offset, whatever order the flags were given in. `offset`
- * is the line's own start, or the match itself under -o.
+ * is the line's own start, or the match itself under -o. -Z puts a NUL after
+ * the name in place of its separator, -T pads the numbers to `width` and puts
+ * a tab before a nonempty line, and -z ends the line with a NUL.
  */
 function outputLine(
   raw: Uint8Array,
@@ -126,16 +171,22 @@ function outputLine(
   showFilename: boolean,
   f: FlagSet,
   offset = 0,
+  width = 0,
 ): Uint8Array {
   const separator = selected ? ':' : '-'
-  const prefix = ENC.encode(
-    (showFilename ? path + separator : '') +
-      prefixOf(f.lineNumbers ? number : null, f.byteOffsets ? offset : null, selected),
+  const name = showFilename ? path + (f.null === true ? '\0' : separator) : ''
+  const fields = prefixOf(
+    f.lineNumbers ? number : null,
+    f.byteOffsets ? offset : null,
+    selected,
+    width,
   )
+  const tab = f.initialTab === true && (name || fields) && raw.length > 0 ? '\t' : ''
+  const prefix = ENC.encode(name + fields + tab)
   const out = new Uint8Array(prefix.length + raw.length + 1)
   out.set(prefix)
   out.set(raw, prefix.length)
-  out[out.length - 1] = 10
+  out[out.length - 1] = f.nullData === true ? 0 : 10
   return out
 }
 
@@ -159,16 +210,25 @@ export async function* grepInput(
   afterOutput = false,
   signal?: AbortSignal,
   utf8 = false,
+  // The input's size, which -T sizes its fields to; null for a pipe.
+  size: number | null = null,
 ): AsyncIterable<Uint8Array> {
   const budget = new YieldBudget(signal)
   io.exitCode = 1
-  const binary = new BinaryInput(f.binaryMode)
+  const eol = f.nullData === true ? 0 : 10
+  const width = offsetWidth(f, size)
+  const binary = new BinaryInput(f.binaryMode, f.nullData === true)
   let count = 0
   let notified = false
+  const after = f.afterContext ?? 0
+  const before = f.beforeContext ?? 0
   const previous: [number, Uint8Array, number][] = []
+  const separator = groupLine(f)
   let lastPrinted = 0
   let afterUntil = 0
-  const hasContext = (f.afterContext > 0 || f.beforeContext > 0) && !f.onlyMatching
+  // Context lines are tracked under -o too, which prints none of them but
+  // still separates the groups they belong to.
+  const hasContext = after > 0 || before > 0
   if (f.maxCount === 0) {
     // GNU selects no line at all and the whole command goes quiet:
     // `grep -m0 -c a f` prints NOTHING and exits 1, and so does
@@ -180,7 +240,7 @@ export async function* grepInput(
     // -L is the one flag that still speaks: nothing selected means the
     // file is listed (`grep -m0 -L a f` prints f, exit 1).
     await closeQuietly(source)
-    if (f.filesWithoutMatch && !f.quiet) yield ENC.encode(path + '\n')
+    if (f.filesWithoutMatch && !f.quiet) yield ENC.encode(path + nameEnd(f))
     return
   }
   let number = 0
@@ -198,11 +258,11 @@ export async function* grepInput(
   try {
     for (;;) {
       if (needles !== null) {
-        const [skipped, bytes] = lines.skipNonmatchingLines(needles, pat.ignoreCase)
+        const [skipped, bytes] = lines.skipNonmatchingLines(needles, pat.ignoreCase, eol)
         number += skipped
         bytePos += bytes
       }
-      const raw = await lines.readline(signal)
+      const raw = await lines.readline(signal, eol)
       if (raw === null) break
       if (binary.nul && f.binaryMode === 'without-match') break
       number += 1
@@ -216,7 +276,7 @@ export async function* grepInput(
         io.exitCode = 0
         if (f.quiet) return
         if (f.filesOnly) {
-          yield ENC.encode(path + '\n')
+          yield ENC.encode(path + nameEnd(f))
           return
         }
         // A selected line is all -L needs to know: the file is not listed,
@@ -227,7 +287,7 @@ export async function* grepInput(
       // current buffer when no per-line output or context must be retained.
       if (raw.length === 0 && (f.countOnly || (!hit && !hasContext))) {
         const limit = hit && f.maxCount !== null ? f.maxCount - count : Infinity
-        const skipped = lines.skipEmptyLines(limit)
+        const skipped = lines.skipEmptyLines(limit, eol)
         number += skipped
         bytePos += skipped
         if (hit) count += skipped
@@ -238,6 +298,18 @@ export async function* grepInput(
       }
       const chunks: Uint8Array[] = []
       if (hit) {
+        const pending = previous.filter(([n]) => n > lastPrinted)
+        const first = pending[0]?.[0] ?? number
+        if (
+          separator &&
+          ((lastPrinted && first > lastPrinted + 1) || (!lastPrinted && afterOutput))
+        )
+          chunks.push(ENC.encode(separator))
+        if (!f.onlyMatching)
+          for (const [n, data, at] of pending)
+            chunks.push(outputLine(data, n, false, path, showFilename, f, at, width))
+        lastPrinted = number
+        afterUntil = number + after
         if (f.onlyMatching) {
           if (!f.invert) {
             const re = compilePosixRegex(
@@ -259,25 +331,17 @@ export async function* grepInput(
                     showFilename,
                     f,
                     lineStart + (utf8 ? encodeText(line.slice(0, start)).length : start),
+                    width,
                   ),
                 )
             }
           }
         } else {
-          if (hasContext) {
-            const pending = previous.filter(([n]) => n > lastPrinted)
-            const first = pending[0]?.[0] ?? number
-            if ((lastPrinted && first > lastPrinted + 1) || (!lastPrinted && afterOutput))
-              chunks.push(ENC.encode('--\n'))
-            for (const [n, data, at] of pending)
-              chunks.push(outputLine(data, n, false, path, showFilename, f, at))
-          }
-          chunks.push(outputLine(raw, number, true, path, showFilename, f, lineStart))
-          lastPrinted = number
-          afterUntil = number + f.afterContext
+          chunks.push(outputLine(raw, number, true, path, showFilename, f, lineStart, width))
         }
-      } else if (hasContext && number <= afterUntil) {
-        chunks.push(outputLine(raw, number, false, path, showFilename, f, lineStart))
+      } else if (number <= afterUntil) {
+        if (!f.onlyMatching)
+          chunks.push(outputLine(raw, number, false, path, showFilename, f, lineStart, width))
         lastPrinted = number
       }
       // A selected line with nothing to print (-o on a zero-width match)
@@ -298,7 +362,7 @@ export async function* grepInput(
       }
       if (binary.nul && count && f.binaryMode === 'binary') return
       previous.push([number, raw, lineStart])
-      if (previous.length > f.beforeContext) previous.shift()
+      if (previous.length > before) previous.shift()
       if (f.maxCount !== null && count >= f.maxCount && number >= afterUntil) break
     }
   } finally {
@@ -315,9 +379,11 @@ export async function* grepInput(
   // -L lists the file once it is known to hold no selected line, and
   // outranks -c (GNU 3.11: `grep -L -c hello m o` prints only `o`).
   if (f.filesWithoutMatch && !f.quiet) {
-    yield ENC.encode(path + '\n')
+    yield ENC.encode(path + nameEnd(f))
     return
   }
-  if (f.countOnly && !(f.quiet || f.filesOnly))
-    yield ENC.encode((showFilename ? path + ':' : '') + String(count) + '\n')
+  if (f.countOnly && !(f.quiet || f.filesOnly)) {
+    const label = path + (f.null === true ? '\0' : ':')
+    yield ENC.encode((showFilename ? label : '') + String(count) + '\n')
+  }
 }

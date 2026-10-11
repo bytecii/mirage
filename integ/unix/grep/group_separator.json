@@ -1,0 +1,123 @@
+{
+  "cases": [
+    {
+      "id": "grep_group_separator_words",
+      "seq": 14490023,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; grep -A0 --group-separator=XX foo /data/gfl/a.txt; grep -A0 --group-separator= foo /data/gfl/a.txt; grep -A0 --no-group-separator foo /data/gfl/a.txt; grep -A0 --no-group-separator --group-separator=YY foo /data/gfl/a.txt; grep --group-separator=XX foo /data/gfl/a.txt; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "foo one\nXX\nfoo two\nfoo one\n\nfoo two\nfoo one\nfoo two\nfoo one\nYY\nfoo two\nfoo one\nfoo two\n",
+        "stderr": ""
+      },
+      "flags": [
+        "group-separator",
+        "no-group-separator",
+        "A"
+      ]
+    },
+    {
+      "id": "grep_zero_context_still_separates",
+      "seq": 14490024,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; grep -A0 foo /data/gfl/a.txt /data/gfl/b.txt; grep -B0 foo /data/gfl/a.txt; grep -C0 -n foo /data/gfl/a.txt; grep -o -A1 foo /data/gfl/a.txt; grep -v -A0 foo /data/gfl/a.txt; grep -c -A0 foo /data/gfl/a.txt; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/gfl/a.txt:foo one\n--\n/data/gfl/a.txt:foo two\n--\n/data/gfl/b.txt:foo\tbar\nfoo one\n--\nfoo two\n3:foo one\n--\n6:foo two\nfoo\n--\nfoo\nalpha\nbeta\n--\ngamma\ndelta\n--\nepsilon\n2\n",
+        "stderr": ""
+      },
+      "flags": [
+        "A",
+        "B",
+        "C",
+        "o",
+        "v"
+      ]
+    },
+    {
+      "id": "grep_group_separator_under_null_data",
+      "seq": 14490025,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; printf 'foo\\0x\\0y\\0foo\\0' > /data/gfl/z.bin; grep -z -A0 foo /data/gfl/z.bin | tr '\\0' '@'; grep -z -A0 --group-separator=SEP foo /data/gfl/z.bin | tr '\\0' '@'; echo; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "foo@--\nfoo@foo@SEP\nfoo@\n",
+        "stderr": ""
+      },
+      "flags": [
+        "z",
+        "A",
+        "group-separator"
+      ]
+    }
+  ]
+}

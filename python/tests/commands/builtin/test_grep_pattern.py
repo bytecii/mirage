@@ -148,10 +148,10 @@ def test_word_class_stays_ascii_in_an_extended_expression():
     "flags,syntax",
     [
         ({}, RegexSyntax.BASIC),
-        ({"G": True}, RegexSyntax.BASIC),
-        ({"E": True}, RegexSyntax.EXTENDED),
+        ({"basic_regexp": True}, RegexSyntax.BASIC),
+        ({"extended_regexp": True}, RegexSyntax.EXTENDED),
         ({"perl_regexp": True}, RegexSyntax.PERL),
-        ({"F": True}, RegexSyntax.BASIC),
+        ({"fixed_strings": True}, RegexSyntax.BASIC),
     ],
 )
 def test_matcher_syntax(flags, syntax):
@@ -161,10 +161,10 @@ def test_matcher_syntax(flags, syntax):
 @pytest.mark.parametrize(
     "flags",
     [
-        {"E": True, "perl_regexp": True},
-        {"F": True, "perl_regexp": True},
-        {"G": True, "perl_regexp": True},
-        {"E": True, "F": True},
+        {"extended_regexp": True, "perl_regexp": True},
+        {"fixed_strings": True, "perl_regexp": True},
+        {"basic_regexp": True, "perl_regexp": True},
+        {"extended_regexp": True, "fixed_strings": True},
     ],
 )
 def test_two_matchers_conflict(flags):

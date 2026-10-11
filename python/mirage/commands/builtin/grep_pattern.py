@@ -45,27 +45,21 @@ CONFLICTING_MATCHERS = "conflicting matchers specified"
 PERL_SINGLE = "the -P option only supports a single pattern"
 # GNU grep 3.11's -P wrapping for -w (pcresearch.c).
 PERL_WORD = ("(?<!\\w)(?:", ")(?!\\w)")
-# The dest -e fills in each search command's spec: rg spells its options
-# by their long names.
-PATTERN_KEYS = {"grep": "e", "zgrep": "e", "rg": "regexp"}
 
 
-def pattern_arg(
-    texts: Sequence[str], flags: FlagView, pattern_key: str = "e"
-) -> str | None:
+def pattern_arg(texts: Sequence[str], flags: FlagView) -> str | None:
     """Resolve the pattern-list argument from -e values or the positional.
 
     Args:
         texts (Sequence[str]): positional TEXT operands.
         flags (FlagView): typed view over raw flag kwargs.
-        pattern_key (str): the dest -e fills (rg's is ``regexp``).
 
     Returns:
         str | None: POSIX newline-joined pattern list (each -e value may
             itself be a newline-separated list), or None when neither -e nor
             a positional pattern was supplied.
     """
-    e_values = flags.as_list(pattern_key)
+    e_values = flags.as_list("regexp")
     if e_values:
         return "\n".join(e_values)
     if texts:
@@ -78,8 +72,6 @@ async def resolve_pattern(
     flags: FlagView,
     read_bytes: Callable[[PathSpec], Awaitable[bytes]],
     usage: str,
-    file_key: str = "f",
-    pattern_key: str = "e",
 ) -> tuple[str, bool]:
     """Resolve the search pattern from -e/positional/-f flag arguments.
 
@@ -89,17 +81,15 @@ async def resolve_pattern(
         read_bytes (Callable[[PathSpec], Awaitable[bytes]]): bound
             whole-file reader used for -f pattern files.
         usage (str): usage error message when no pattern was supplied.
-        file_key (str): canonical option key for pattern files.
-        pattern_key (str): canonical option key for -e patterns.
 
     Returns:
         tuple[str, bool]: (newline-separated pattern list, never_match) where
             never_match is True when -f supplied zero patterns (GNU: match
             nothing; -F escaping must be skipped for the sentinel).
     """
-    pattern = pattern_arg(texts, flags, pattern_key)
+    pattern = pattern_arg(texts, flags)
 
-    pattern_file = flags.raw(file_key)
+    pattern_file = flags.raw("file")
     if isinstance(pattern_file, (PathSpec, list)):
         raw = (
             pattern_file if isinstance(pattern_file, list) else [pattern_file]
@@ -186,9 +176,7 @@ def ere_source(part: str) -> str:
         raise UsageError(f"grep: {exc}") from exc
 
 
-def matcher_syntax(
-    fl: FlagView, prog: str = "grep", perl: str = "perl_regexp"
-) -> RegexSyntax:
+def matcher_syntax(fl: FlagView, prog: str = "grep") -> RegexSyntax:
     """The dialect grep's matcher options pick, refusing a mixture.
 
     GNU grep 3.11 keeps one matcher: -G, -E, -F and -P each name one,
@@ -199,15 +187,16 @@ def matcher_syntax(
     Args:
         fl (FlagView): the grep (or zgrep) flag view.
         prog (str): the name the refusal carries.
-        perl (str): the dest -P fills in this spec (grep's has a long
-            spelling, zgrep's does not).
 
     Raises:
         UsageError: two different matchers were given.
     """
-    dests = {"G": "G", "E": "E", "F": "F", perl: "P"}
-    if perl == "perl_regexp":
-        dests.update(basic_regexp="G", extended_regexp="E")
+    dests = {
+        "basic_regexp": "G",
+        "extended_regexp": "E",
+        "fixed_strings": "F",
+        "perl_regexp": "P",
+    }
     chosen = {matcher for dest, matcher in dests.items() if fl.as_bool(dest)}
     if len(chosen) > 1:
         raise UsageError(f"{prog}: {CONFLICTING_MATCHERS}")
@@ -397,7 +386,9 @@ def compile_pattern(
         if line_regexp:
             source = whole_line(source, False)
         return compile_posix_regex(source, re.IGNORECASE if fold else 0, utf8)
-    flags = re.IGNORECASE if ignore_case else 0
+    # A basic or extended `.` matches every character a line holds, which
+    # under -z includes a newline; PCRE's does not.
+    flags = (re.IGNORECASE if ignore_case else 0) | re.DOTALL
     source = build_pattern_str(pattern, fixed_string, whole_word, syntax)
     if line_regexp:
         source = whole_line(source, False)

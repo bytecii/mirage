@@ -61,7 +61,7 @@ async def test_grep_recursive_matches_content():
         [p],
         ["bananas"],
         CommandOpts(
-            index=ops(res).index, io=command_io(res), flags={"r": True}
+            index=ops(res).index, io=command_io(res), flags={"recursive": True}
         ),
     )
     out = await _bytes(source)

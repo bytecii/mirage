@@ -70,20 +70,27 @@ class AsyncLineIterator:
             raise StopAsyncIteration
         return line
 
-    async def readline(self) -> bytes | None:
-        """Return next line (without trailing newline), or None at EOF."""
-        data, found = await self.read_until(b"\n")
+    async def readline(self, eol: bytes = b"\n") -> bytes | None:
+        """Return next line (without its terminator), or None at EOF.
+
+        Args:
+            eol (bytes): the one-byte line terminator.
+        """
+        data, found = await self.read_until(eol)
         return data if found or data else None
 
-    def skip_empty_lines(self, limit: int | None = None) -> int:
+    def skip_empty_lines(
+        self, limit: int | None = None, eol: bytes = b"\n"
+    ) -> int:
         """Consume buffered empty lines without pulling more input.
 
         Args:
             limit (int | None): maximum lines to consume, or all buffered.
+            eol (bytes): the one-byte line terminator.
         """
         end = len(self._buf) if limit is None else min(limit, len(self._buf))
         count = 0
-        while count < end and self._buf[count] == 10:
+        while count < end and self._buf[count] == eol[0]:
             count += 1
         self._buf = self._buf[count:]
         return count

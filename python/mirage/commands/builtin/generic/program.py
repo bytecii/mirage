@@ -1,7 +1,6 @@
 from collections.abc import Sequence
 
 from mirage.commands.builtin.grep_pattern import (
-    PATTERN_KEYS,
     merge_pattern_list,
 )
 from mirage.commands.builtin.rg_scan import os_error_text
@@ -28,7 +27,7 @@ PROGRAM_FILE_COMMANDS = frozenset({"grep", "rg", "zgrep", "sed", "awk"})
 FILE_KEYS = {
     "grep": "file",
     "rg": "file",
-    "zgrep": "f",
+    "zgrep": "file",
     "sed": "f",
     "awk": "f",
     "jq": "from_file",
@@ -109,11 +108,58 @@ async def read_program_file(
 def program_files(name: str, flags: dict[str, FlagValue]) -> list[PathSpec]:
     """The invocation's program files, or an empty list for inline programs.
 
+    grep's --exclude-from files count: they are read the same way, once,
+    before routing.
+
     Args:
         name (str): a PROGRAM_FILE_COMMANDS member.
         flags (dict[str, FlagValue]): spec-bound flags with PATH values.
     """
-    return FlagView(flags, spec=SPECS[name]).as_paths(FILE_KEYS[name])
+    fl = FlagView(flags, spec=SPECS[name])
+    files = fl.as_paths(FILE_KEYS[name])
+    return [*files, *fl.as_paths("exclude_from")] if name == "grep" else files
+
+
+async def lower_exclude_from(
+    fl: FlagView, flags: dict[str, FlagValue], dispatch: DispatchFn
+) -> tuple[dict[str, FlagValue], IOResult | None]:
+    """grep's --exclude-from files as --exclude globs, in line order.
+
+    gnulib's add_exclude_file takes one glob per line, trailing blanks
+    dropped and blank lines skipped. A file grep cannot read stops it
+    before it searches anything, exit 2.
+
+    Args:
+        fl (FlagView): grep's flag view.
+        flags (dict[str, FlagValue]): grep's spec-bound flags.
+        dispatch (DispatchFn): the policy-gated workspace reader.
+    """
+    files = iter(fl.as_paths("exclude_from"))
+    typed = iter(fl.as_list("exclude"))
+    globs: list[str] = []
+    for kind, _ in fl.occurrences("exclude", "exclude_from"):
+        if kind == "exclude":
+            globs.append(next(typed))
+            continue
+        path = next(files)
+        try:
+            data = await read_program_file("grep", path, dispatch)
+        except FS_ERRORS as exc:
+            line = fs_error_line("grep", path, exc)
+            return flags, IOResult(exit_code=2, stderr=line.encode())
+        for line in decode_text(data).split("\n"):
+            glob = line.rstrip(" \t\n\v\f\r")
+            if glob:
+                globs.append(glob)
+    out: dict[str, FlagValue] = {}
+    for key, value in flags.items():
+        if key == "exclude" or (
+            key == "exclude_from" and "exclude" not in flags
+        ):
+            out["exclude"] = globs
+        elif key != "exclude_from":
+            out[key] = value
+    return out, None
 
 
 async def prepare_program(
@@ -144,8 +190,13 @@ async def prepare_program(
             checks for a `-` once `-f -` has read stdin.
     """
     fl = FlagView(flags, spec=SPECS[name])
+    if name == "grep":
+        flags, refusal = await lower_exclude_from(fl, flags, dispatch)
+        if refusal is not None:
+            return texts, flags, stdin, refusal
+        fl = FlagView(flags, spec=SPECS[name])
     key = FILE_KEYS[name]
-    files = program_files(name, flags)
+    files = fl.as_paths(key)
     if not files:
         return texts, flags, stdin, None
     source = resolve_source(stdin)
@@ -192,13 +243,13 @@ async def prepare_program(
     out = dict(flags)
     out.pop(key)
     if name in ("grep", "rg", "zgrep"):
-        inline = fl.as_list(PATTERN_KEYS[name])
+        inline = fl.as_list("regexp")
         pattern = "\n".join(inline) if inline else None
         for data in pieces:
             pattern = merge_pattern_list(pattern, data)
         # An empty pattern-file list preserves grep's zero-pattern sentinel.
         out[key] = []
-        out[PATTERN_KEYS[name]] = [] if pattern is None else [pattern]
+        out["regexp"] = [] if pattern is None else [pattern]
     elif name == "sed":
         expressions = iter(fl.as_list("e"))
         scripts = iter(decode_text(data) for data in pieces)

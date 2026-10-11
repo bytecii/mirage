@@ -248,14 +248,18 @@ SOLE_ARGUMENT_LONG_OPTIONS = frozenset({"expr"})
 # `usage` and exits INSIDE the loop.
 STANDARD_AFTER_SCAN = frozenset({"grep", "rg"})
 
+# The builtins that answer -V as they answer --version (grep 3.11).
+SHORT_VERSION = frozenset({"grep"})
+
 # The programs whose getopt string lists the ten digits as options, the
 # obsolete `-NUM` count spelled one letter at a time: the digits of one
 # word build a number and a later word replaces it, wherever they sit in
 # a cluster. Measured on coreutils 9.7: `split -d10` is `-d` and ten
 # lines, as are `-10d` and `-dx10`, and `split -12 -5` is five. head and
 # tail list the digits too but refuse one past the first word, so they
-# keep only the whole-word `-NUM` that numeric_shorthand reads.
-DIGIT_OPTIONS = frozenset({"split"})
+# keep only the whole-word `-NUM` that numeric_shorthand reads. grep
+# 3.11 reads them the same way into its -C (`grep -1n` and `-n1`).
+DIGIT_OPTIONS = frozenset({"grep", "split"})
 
 # The long spellings that are one option under two names, keyed by
 # (program, synonym) to the spelling it duplicates: glibc's several

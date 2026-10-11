@@ -1,0 +1,79 @@
+{
+  "cases": [
+    {
+      "id": "grep_digits_set_context",
+      "seq": 14490028,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; grep -1 one /data/gfl/a.txt; grep -1n one /data/gfl/a.txt; grep -n1 two /data/gfl/a.txt; grep -12 -c foo /data/gfl/a.txt; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "beta\nfoo one\ngamma\n2-beta\n3:foo one\n4-gamma\n5-delta\n6:foo two\n7-epsilon\n2\n",
+        "stderr": ""
+      },
+      "flags": [
+        "C"
+      ]
+    },
+    {
+      "id": "grep_digits_and_context_last_wins",
+      "seq": 14490029,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; grep -2 -C0 one /data/gfl/a.txt; grep -C0 -2 one /data/gfl/a.txt; grep -1 -A0 foo /data/gfl/a.txt; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "foo one\nalpha\nbeta\nfoo one\ngamma\ndelta\nbeta\nfoo one\n--\ndelta\nfoo two\n",
+        "stderr": ""
+      },
+      "flags": [
+        "C",
+        "A"
+      ]
+    }
+  ]
+}

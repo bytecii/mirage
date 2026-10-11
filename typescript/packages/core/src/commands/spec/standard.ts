@@ -17,6 +17,7 @@ import { ROOT_CWD } from '../constants.ts'
 import { isBuiltinGrammar, registeredSpec } from './builtins.ts'
 import {
   HELP_OPTION,
+  SHORT_VERSION,
   STANDARD_AFTER_SCAN,
   STANDARD_BEFORE_SCAN,
   VERSION_OPTION,
@@ -105,7 +106,10 @@ export function standardRequest(
   if (spec === null) return null
   const offered: string[] = []
   if (hasInjectedHelp(spec)) offered.push('--help')
-  if (hasInjectedVersion(spec)) offered.push('--version')
+  if (hasInjectedVersion(spec)) {
+    offered.push('--version')
+    if (SHORT_VERSION.has(name) && isBuiltinGrammar(name, spec)) offered.push('-V')
+  }
   if (offered.length === 0) return null
   const whole = parse(name, spec, argv)
   let first: { index: number; option: string } | null = null

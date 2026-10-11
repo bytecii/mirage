@@ -16,6 +16,7 @@ import dataclasses
 from collections.abc import Sequence
 
 from mirage.commands.builtin.find_parse import find_expr_tail
+from mirage.commands.builtin.generic.grep import directories_action
 from mirage.commands.builtin.generic.program import FILE_KEYS
 from mirage.commands.cli.walk import walk
 from mirage.commands.spec import SPECS, parse_command, parse_to_kwargs
@@ -108,8 +109,8 @@ def default_cwd_operand(
         # --type-list reads no path, so there is no cwd to walk.
         return None
     if cmd_name == "grep":
-        kwargs = parse_to_kwargs(parsed)
-        if kwargs.get("r") is not True and kwargs.get("R") is not True:
+        fl = FlagView(parse_to_kwargs(parsed), spec=spec)
+        if directories_action(fl) != "recurse":
             return None
     elif (
         cmd_name == "rg"

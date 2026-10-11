@@ -105,12 +105,18 @@ export class MatchOffsets {
  *
  * GNU prints FILENAME, then LINE NUMBER, then BYTE OFFSET, whatever order the
  * flags were given in, and picks the separator once per line: a context line
- * renders every field with `-` where a selected line uses `:`.
+ * renders every field with `-` where a selected line uses `:`. `width` is the
+ * width grep -T pads each number to.
  */
-export function prefixOf(number: number | null, offset: number | null, selected = true): string {
+export function prefixOf(
+  number: number | null,
+  offset: number | null,
+  selected = true,
+  width = 0,
+): string {
   const separator = selected ? ':' : '-'
   let fields = ''
-  if (number !== null) fields += String(number) + separator
-  if (offset !== null) fields += String(offset) + separator
+  if (number !== null) fields += String(number).padStart(width) + separator
+  if (offset !== null) fields += String(offset).padStart(width) + separator
   return fields
 }

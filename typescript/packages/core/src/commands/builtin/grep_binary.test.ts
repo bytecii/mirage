@@ -28,7 +28,9 @@ describe.each([1, 2, 7, 1024, PROBE_BLOCK_BYTES])(
           await Promise.resolve()
           for (let at = 0; at < data.length; at += size) yield data.subarray(at, at + size)
         }
-        const f = parseFlags(new FlagView({ binary_files: mode, n: true }, specOf('grep')))
+        const f = parseFlags(
+          new FlagView({ binary_files: mode, line_number: true }, specOf('grep')),
+        )
         const io = new IOResult({ exitCode: 1 })
         const out = await materialize(
           grepInput(source(), /needle/, f, '/remote/data.pdf', false, io),
@@ -55,7 +57,7 @@ describe.each([1, 2, 7, 1024, PROBE_BLOCK_BYTES])(
   },
 )
 
-it.each([{ args_I: true }, { q: true }, {}])('bounds remote reads for %j', async (flags) => {
+it.each([{ args_I: true }, { quiet: true }, {}])('bounds remote reads for %j', async (flags) => {
   const block = new Uint8Array(PROBE_BLOCK_BYTES).fill(120)
   block.set(ENC.encode('needle\0'))
   let closed = false
@@ -87,7 +89,7 @@ it('does not read past the probe block for max-count', async () => {
       closed = true
     }
   }
-  const f = parseFlags(new FlagView({ m: 1 }, specOf('grep')))
+  const f = parseFlags(new FlagView({ max_count: 1 }, specOf('grep')))
   const io = new IOResult()
   expect(
     await materialize(grepInput(source(), /needle/, f, '/remote/rows.jsonl', false, io)),
@@ -97,23 +99,26 @@ it('does not read past the probe block for max-count', async () => {
 })
 
 it.each([
-  [{ B: '-1' }, '-1'],
-  [{ A: '-1' }, '-1'],
-  [{ C: '-1' }, '-1'],
-  [{ A: 'x' }, 'x'],
-  [{ B: '1.5' }, '1.5'],
-  [{ B: -1 }, '-1'],
-  [{ B: '-1', A: 'x' }, '-1'],
-  [{ A: 'x', B: '-1' }, 'x'],
+  [{ before_context: '-1' }, '-1'],
+  [{ after_context: '-1' }, '-1'],
+  [{ context: '-1' }, '-1'],
+  [{ after_context: 'x' }, 'x'],
+  [{ before_context: '1.5' }, '1.5'],
+  [{ before_context: -1 }, '-1'],
+  [{ before_context: '-1', after_context: 'x' }, '-1'],
+  [{ after_context: 'x', before_context: '-1' }, 'x'],
 ])('rejects an invalid context length %j', (flags, shown) => {
   expect(() => parseFlags(new FlagView(flags, specOf('grep')))).toThrow(
     new UsageError(`grep: ${shown}: invalid context length argument`),
   )
 })
 
-it.each([{ B: '-0' }, { A: '0' }, { C: 2 }])('accepts context length %j', (flags) => {
-  expect(() => parseFlags(new FlagView(flags, specOf('grep')))).not.toThrow()
-})
+it.each([{ before_context: '-0' }, { after_context: '0' }, { context: 2 }])(
+  'accepts context length %j',
+  (flags) => {
+    expect(() => parseFlags(new FlagView(flags, specOf('grep')))).not.toThrow()
+  },
+)
 
 it.each(['', 'bogus'])('rejects invalid binary mode %j', (value) => {
   expect(() => parseFlags(new FlagView({ binary_files: value }, specOf('grep')))).toThrow(
@@ -145,7 +150,7 @@ describe.each([1024, PROBE_BLOCK_BYTES, 2 * PROBE_BLOCK_BYTES])(
                 closed = true
               }
             }
-            const f = parseFlags(new FlagView({ ...binaryFlag, c: countOnly }, specOf('grep')))
+            const f = parseFlags(new FlagView({ ...binaryFlag, count: countOnly }, specOf('grep')))
             const io = new IOResult()
             const out = await materialize(
               grepInput(source(), /needle/, f, '/remote/late.txt', true, io),
@@ -165,9 +170,9 @@ describe.each([1024, PROBE_BLOCK_BYTES, 2 * PROBE_BLOCK_BYTES])(
 )
 
 it.each([
-  [{ m: 1, c: true }, '1\n'],
-  [{ q: true }, ''],
-  [{ args_l: true }, '/remote/rows.jsonl\n'],
+  [{ max_count: 1, count: true }, '1\n'],
+  [{ quiet: true }, ''],
+  [{ files_with_matches: true }, '/remote/rows.jsonl\n'],
 ] as const)('does not read ahead after without-match early stop %j', async (flags, expected) => {
   let closed = false
   async function* source(): AsyncIterable<Uint8Array> {
@@ -194,11 +199,14 @@ async function* lines(text: string): AsyncIterable<Uint8Array> {
 }
 
 it.each([
-  [{ A: 1 }, true, '--\nf:a\nf-b\n'],
-  [{ A: 1 }, false, 'f:a\nf-b\n'],
-  [{ B: 1 }, true, '--\nf:a\n'],
-  [{ c: true, A: 1 }, true, 'f:1\n'],
-  [{ o: true, A: 1 }, true, 'f:a\n'],
+  [{ after_context: 1 }, true, '--\nf:a\nf-b\n'],
+  [{ after_context: 1 }, false, 'f:a\nf-b\n'],
+  [{ before_context: 1 }, true, '--\nf:a\n'],
+  [{ count: true, after_context: 1 }, true, 'f:1\n'],
+  [{ only_matching: true, after_context: 1 }, true, '--\nf:a\n'],
+  [{ after_context: 0 }, true, '--\nf:a\n'],
+  [{ after_context: 0, no_group_separator: true }, true, 'f:a\n'],
+  [{ context: 0, group_separator: '::' }, true, '::\nf:a\n'],
   [{}, true, 'f:a\n'],
 ])(
   'opens a context group after earlier output with the separator %j %s',
@@ -250,7 +258,7 @@ it.each([
     await Promise.resolve()
     yield bytes
   }
-  const f = parseFlags(new FlagView({ o: true }, specOf('grep')))
+  const f = parseFlags(new FlagView({ only_matching: true }, specOf('grep')))
   const io = new IOResult({ exitCode: 1 })
   const out = await materialize(grepInput(source(), pattern, f, '/data/z', false, io))
   expect(DEC.decode(out)).toBe('')
@@ -267,13 +275,13 @@ it.each([
 // (`grep -c a g` is `0\n`, exit 1), so the two cases have to stay
 // distinguishable.
 it.each([
-  [{ m: 0 }],
-  [{ m: 0, c: true }],
-  [{ m: 0, v: true }],
-  [{ m: 0, l: true }],
-  [{ m: 0, o: true }],
-  [{ m: 0, A: '1' }],
-  [{ m: 0, c: true, n: true, b: true }],
+  [{ max_count: 0 }],
+  [{ max_count: 0, count: true }],
+  [{ max_count: 0, invert_match: true }],
+  [{ max_count: 0, files_with_matches: true }],
+  [{ max_count: 0, only_matching: true }],
+  [{ max_count: 0, after_context: '1' }],
+  [{ max_count: 0, count: true, line_number: true, b: true }],
 ])('prints nothing and closes the unread source under -m0 with %j', async (flags) => {
   // A source whose mounts are already held before the first read.
   let closed = false
@@ -298,7 +306,7 @@ it.each([
 it('still prints a genuine zero count', async () => {
   // The mirror of the -m0 rows above: without -m0, `grep -c` on a file
   // holding no match prints `0` and exits 1 (GNU grep 3.11).
-  const f = parseFlags(new FlagView({ c: true }, specOf('grep')))
+  const f = parseFlags(new FlagView({ count: true }, specOf('grep')))
   const io = new IOResult({ exitCode: 1 })
   const out = await materialize(grepInput(lines('a\nb\n'), /needle/, f, '/data/z', false, io))
   expect(DEC.decode(out)).toBe('0\n')
@@ -337,32 +345,38 @@ describe('grep -b / --byte-offset', () => {
     [F1, { byte_offset: true }, false, '0:abc\n4:defabc\n11:abc abc\n', 0],
     // With -o it is the offset of the match, and a line with two matches
     // prints both.
-    [F1, { byte_offset: true, o: true }, false, '0:abc\n7:abc\n11:abc\n15:abc\n', 0],
+    [F1, { byte_offset: true, only_matching: true }, false, '0:abc\n7:abc\n11:abc\n15:abc\n', 0],
     // Field order is FILENAME, LINE NUMBER, BYTE OFFSET, fixed by the
     // renderer rather than by the order the flags were given in.
-    [F1, { byte_offset: true, n: true }, false, '1:0:abc\n2:4:defabc\n3:11:abc abc\n', 0],
-    [F1, { byte_offset: true, H: true }, true, 'f:0:abc\nf:4:defabc\nf:11:abc abc\n', 0],
+    [F1, { byte_offset: true, line_number: true }, false, '1:0:abc\n2:4:defabc\n3:11:abc abc\n', 0],
     [
       F1,
-      { byte_offset: true, n: true, H: true, o: true },
+      { byte_offset: true, with_filename: true },
+      true,
+      'f:0:abc\nf:4:defabc\nf:11:abc abc\n',
+      0,
+    ],
+    [
+      F1,
+      { byte_offset: true, line_number: true, with_filename: true, only_matching: true },
       true,
       'f:1:0:abc\nf:2:7:abc\nf:3:11:abc\nf:3:15:abc\n',
       0,
     ],
     // -b does not reach a count, a file list or -q.
-    [F1, { byte_offset: true, c: true }, false, '3\n', 0],
-    [F3, { byte_offset: true, c: true }, false, '2\n', 0],
-    [F1, { byte_offset: true, c: true, H: true }, true, 'f:3\n', 0],
-    [F1, { byte_offset: true, args_l: true }, false, 'f\n', 0],
-    [F1, { byte_offset: true, q: true }, false, '', 0],
+    [F1, { byte_offset: true, count: true }, false, '3\n', 0],
+    [F3, { byte_offset: true, count: true }, false, '2\n', 0],
+    [F1, { byte_offset: true, count: true, with_filename: true }, true, 'f:3\n', 0],
+    [F1, { byte_offset: true, files_with_matches: true }, false, 'f\n', 0],
+    [F1, { byte_offset: true, quiet: true }, false, '', 0],
     // -v prints the line-start offsets of the lines it did not select.
-    [F3, { byte_offset: true, v: true }, false, '0:one\n12:three\n27:five\n', 0],
-    [F1, { byte_offset: true, v: true }, false, '', 1],
-    [F3, { byte_offset: true, m: '1' }, false, '4:two abc\n', 0],
+    [F3, { byte_offset: true, invert_match: true }, false, '0:one\n12:three\n27:five\n', 0],
+    [F1, { byte_offset: true, invert_match: true }, false, '', 1],
+    [F3, { byte_offset: true, max_count: '1' }, false, '4:two abc\n', 0],
     // A missing final newline does not shift an offset, and must not be
     // counted twice.
     [F6, { byte_offset: true }, false, '0:no-newline-abc\n', 0],
-    [F6, { byte_offset: true, o: true }, false, '11:abc\n', 0],
+    [F6, { byte_offset: true, only_matching: true }, false, '11:abc\n', 0],
   ] as const)(
     'prints the line start or the match for %j',
     async (text, flags, show, want, code) => {
@@ -374,32 +388,38 @@ describe('grep -b / --byte-offset', () => {
     [
       F3,
       /abc/,
-      { byte_offset: true, A: '1' },
+      { byte_offset: true, after_context: '1' },
       false,
       '4:two abc\n12-three\n18:four abc\n27-five\n',
     ],
-    [F3, /abc/, { byte_offset: true, B: '1' }, false, '0-one\n4:two abc\n12-three\n18:four abc\n'],
     [
       F3,
       /abc/,
-      { byte_offset: true, C: '1' },
+      { byte_offset: true, before_context: '1' },
+      false,
+      '0-one\n4:two abc\n12-three\n18:four abc\n',
+    ],
+    [
+      F3,
+      /abc/,
+      { byte_offset: true, context: '1' },
       false,
       '0-one\n4:two abc\n12-three\n18:four abc\n27-five\n',
     ],
-    [F3, /three/, { byte_offset: true, A: '1' }, false, '12:three\n18-four abc\n'],
+    [F3, /three/, { byte_offset: true, after_context: '1' }, false, '12:three\n18-four abc\n'],
     // Every field on a context line takes `-`, the separator being chosen
     // once per line rather than per field.
     [
       F3,
       /abc/,
-      { byte_offset: true, n: true, C: '1' },
+      { byte_offset: true, line_number: true, context: '1' },
       false,
       '1-0-one\n2:4:two abc\n3-12-three\n4:18:four abc\n5-27-five\n',
     ],
     [
       F3,
       /abc/,
-      { byte_offset: true, n: true, H: true, C: '1' },
+      { byte_offset: true, line_number: true, with_filename: true, context: '1' },
       true,
       'f-1-0-one\nf:2:4:two abc\nf-3-12-three\nf:4:18:four abc\nf-5-27-five\n',
     ],
@@ -407,12 +427,12 @@ describe('grep -b / --byte-offset', () => {
     [
       F4,
       /HIT/,
-      { byte_offset: true, n: true, C: '1' },
+      { byte_offset: true, line_number: true, context: '1' },
       false,
       '2-2-b\n3:4:HIT\n4-8-c\n--\n7-14-f\n8:16:HIT\n9-20-g\n',
     ],
     // -o beats -C entirely: only matches, no context and no separator.
-    [F3, /abc/, { byte_offset: true, o: true, C: '1' }, false, '8:abc\n23:abc\n'],
+    [F3, /abc/, { byte_offset: true, only_matching: true, context: '1' }, false, '8:abc\n23:abc\n'],
   ] as const)(
     'gives a context line the dash separator for %j',
     async (text, pattern, flags, show, want) => {
@@ -423,10 +443,10 @@ describe('grep -b / --byte-offset', () => {
   it.each([
     // An empty match prints nothing under -ob, exactly as under -o, and
     // the line is still selected.
-    ['ab\n', /[0-9]*/, { byte_offset: true, o: true }, ''],
-    ['ab\n', new RegExp(''), { byte_offset: true, o: true }, ''],
-    ['a1b\n', /[0-9]*/, { byte_offset: true, o: true }, '1:1\n'],
-    ['a1b\nc2d\n', /[0-9]*/, { byte_offset: true, o: true }, '1:1\n5:2\n'],
+    ['ab\n', /[0-9]*/, { byte_offset: true, only_matching: true }, ''],
+    ['ab\n', new RegExp(''), { byte_offset: true, only_matching: true }, ''],
+    ['a1b\n', /[0-9]*/, { byte_offset: true, only_matching: true }, '1:1\n'],
+    ['a1b\nc2d\n', /[0-9]*/, { byte_offset: true, only_matching: true }, '1:1\n5:2\n'],
     ['ab\ncd\n', /[0-9]*/, { byte_offset: true }, '0:ab\n3:cd\n'],
   ] as const)(
     'treats an empty match under -ob as under -o for %j',
@@ -440,8 +460,8 @@ describe('grep -b / --byte-offset', () => {
     // at byte 6 and not at the code-unit index 5; line two starts at 10 and
     // its match is at 15, not 13. GNU reports the same numbers under C and
     // C.utf8.
-    [{ byte_offset: true, o: true }, '6:abc\n15:abc\n'],
-    [{ byte_offset: true, o: true, n: true }, '1:6:abc\n2:15:abc\n'],
+    [{ byte_offset: true, only_matching: true }, '6:abc\n15:abc\n'],
+    [{ byte_offset: true, only_matching: true, line_number: true }, '1:6:abc\n2:15:abc\n'],
     [{ byte_offset: true }, '0:café abc\n10:xéy abc\n'],
   ] as const)('counts bytes rather than characters for %j', async (flags, want) => {
     expect(await runB(F5, flags, /abc/, false)).toEqual([want, 0])
@@ -474,22 +494,30 @@ describe('grep -L / --files-without-match', () => {
   })
 
   it('outranks -c and lists the file under -m0', async () => {
-    expect(await runB('foo\n', { files_without_match: true, c: true }, /hello/, false)).toEqual([
-      'f\n',
-      1,
-    ])
-    expect(await runB('hello\n', { files_without_match: true, m: '0' }, /hello/, false)).toEqual([
-      'f\n',
-      1,
-    ])
+    expect(await runB('foo\n', { files_without_match: true, count: true }, /hello/, false)).toEqual(
+      ['f\n', 1],
+    )
+    expect(
+      await runB('hello\n', { files_without_match: true, max_count: '0' }, /hello/, false),
+    ).toEqual(['f\n', 1])
   })
 
   it('is one mode with -l, the later one winning', async () => {
     expect(
-      await runB('hello\n', { args_l: true, files_without_match: true }, /hello/, false),
+      await runB(
+        'hello\n',
+        { files_with_matches: true, files_without_match: true },
+        /hello/,
+        false,
+      ),
     ).toEqual(['', 0])
     expect(
-      await runB('hello\n', { files_without_match: true, args_l: true }, /hello/, false),
+      await runB(
+        'hello\n',
+        { files_without_match: true, files_with_matches: true },
+        /hello/,
+        false,
+      ),
     ).toEqual(['f\n', 0])
   })
 })
@@ -504,7 +532,9 @@ it.each([false, true])(
       await Promise.resolve()
       yield data
     }
-    const f = parseFlags(new FlagView({ o: true, byte_offset: byteOffsets }, specOf('grep')))
+    const f = parseFlags(
+      new FlagView({ only_matching: true, byte_offset: byteOffsets }, specOf('grep')),
+    )
     const io = new IOResult()
     const out = await materialize(grepInput(source(), /needle/, f, 'large.json', false, io))
     const stride = ENC.encode(row).length
@@ -535,7 +565,7 @@ it('allows timer cancellation while collecting matches from one line', async () 
     }
   }
   try {
-    const f = parseFlags(new FlagView({ o: true, byte_offset: true }, specOf('grep')))
+    const f = parseFlags(new FlagView({ only_matching: true, byte_offset: true }, specOf('grep')))
     await expect(
       materialize(
         grepInput(
@@ -557,11 +587,11 @@ it('allows timer cancellation while collecting matches from one line', async () 
 })
 
 it.each([
-  [{ c: true }, /needle/, '0\n', 1],
-  [{ c: true, v: true }, /needle/, '100003\n', 0],
-  [{ c: true }, /^$/, '100003\n', 0],
-  [{ c: true, m: 17000 }, /^$/, '17000\n', 0],
-  [{ c: true, B: 2, A: 2 }, /^$/, '100003\n', 0],
+  [{ count: true }, /needle/, '0\n', 1],
+  [{ count: true, invert_match: true }, /needle/, '100003\n', 0],
+  [{ count: true }, /^$/, '100003\n', 0],
+  [{ count: true, max_count: 17000 }, /^$/, '17000\n', 0],
+  [{ count: true, before_context: 2, after_context: 2 }, /^$/, '100003\n', 0],
   [{ files_without_match: true }, /needle/, 'binary.so\n', 1],
   [{}, /needle/, '', 1],
 ] as const)('batches NUL runs without changing selection: %j', async (flags, pat, stdout, code) => {
@@ -584,7 +614,7 @@ it.each([
   }
 })
 
-it.each([{}, { B: 2 }, { o: true }])(
+it.each([{}, { before_context: 2 }, { only_matching: true }])(
   'preserves offsets and context after empty lines: %j',
   async (flags) => {
     const data = ENC.encode('\n'.repeat(17003) + 'é needle\n')
@@ -592,13 +622,16 @@ it.each([{}, { B: 2 }, { o: true }])(
       await Promise.resolve()
       yield data
     }
-    const f = parseFlags(new FlagView({ ...flags, n: true, byte_offset: true }, specOf('grep')))
+    const f = parseFlags(
+      new FlagView({ ...flags, line_number: true, byte_offset: true }, specOf('grep')),
+    )
     const io = new IOResult()
     const out = await materialize(grepInput(source(), /needle/, f, 'text', false, io))
     const expected =
-      'o' in flags
+      'only_matching' in flags
         ? '17004:17006:needle\n'
-        : ('B' in flags ? '17002-17001-\n17003-17002-\n' : '') + '17004:17003:é needle\n'
+        : ('before_context' in flags ? '17002-17001-\n17003-17002-\n' : '') +
+          '17004:17003:é needle\n'
     expect(DEC.decode(out)).toBe(expected)
     expect(io.exitCode).toBe(0)
   },
@@ -626,7 +659,7 @@ describe.each([
       }
       const reads = vi.spyOn(AsyncLineIterator.prototype, 'readline')
       try {
-        const f = parseFlags(new FlagView({ c: true }, specOf('grep')))
+        const f = parseFlags(new FlagView({ count: true }, specOf('grep')))
         const io = new IOResult()
         expect(DEC.decode(await materialize(grepInput(source(), pat, f, 'f', false, io)))).toBe(
           '0\n',
@@ -654,16 +687,16 @@ describe.each([
 ] as const)('prefilter at chunk size %i for %s', (size, pat) => {
   it.each([
     {},
-    { c: true },
-    { q: true },
-    { args_l: true },
+    { count: true },
+    { quiet: true },
+    { files_with_matches: true },
     { files_without_match: true },
-    { m: 1 },
-    { c: true, m: 1 },
-    { n: true, byte_offset: true },
-    { n: true, byte_offset: true, o: true },
-    { c: true, v: true },
-    { B: 2, A: 1, n: true, byte_offset: true },
+    { max_count: 1 },
+    { count: true, max_count: 1 },
+    { line_number: true, byte_offset: true },
+    { line_number: true, byte_offset: true, only_matching: true },
+    { count: true, invert_match: true },
+    { before_context: 2, after_context: 1, line_number: true, byte_offset: true },
   ])('preserves the unfiltered scanner results for %j', async (flags) => {
     const data = Buffer.concat([
       Buffer.from('abcdefg\n'.repeat(2100)),
@@ -737,7 +770,7 @@ it.each([
     await Promise.resolve()
     yield data
   }
-  const f = parseFlags(new FlagView({ n: true, byte_offset: true }, specOf('grep')))
+  const f = parseFlags(new FlagView({ line_number: true, byte_offset: true }, specOf('grep')))
   const fast = new IOResult()
   const slow = new IOResult()
   const skip = vi.spyOn(AsyncLineIterator.prototype, 'skipNonmatchingLines').mockReturnValue([0, 0])
@@ -766,7 +799,7 @@ it('allows timer cancellation while skipping nonmatching buffers', async () => {
     }
   }
   try {
-    const f = parseFlags(new FlagView({ c: true }, specOf('grep')))
+    const f = parseFlags(new FlagView({ count: true }, specOf('grep')))
     await expect(
       materialize(
         grepInput(source(), /needle/, f, 'f', false, new IOResult(), false, controller.signal),
@@ -782,8 +815,8 @@ it.each([
   [{}, 'a', [...ENC.encode('a1\néa2\n')], 'grep: f: binary file matches\n'],
   [{ args_I: true }, 'a', [...ENC.encode('a1\néa2\n')], ''],
   [{ text: true }, 'a', [...ENC.encode('a1\na'), 0xff, ...ENC.encode('\néa2\n')], ''],
-  [{ c: true }, 'a.', [...ENC.encode('2\n')], ''],
-  [{ o: true, byte_offset: true }, '2', [...ENC.encode('9:2\n')], ''],
+  [{ count: true }, 'a.', [...ENC.encode('2\n')], ''],
+  [{ only_matching: true, byte_offset: true }, '2', [...ENC.encode('9:2\n')], ''],
 ] as const)(
   'a UTF-8 scan leaves out a line no character owns: %j %s',
   async (flags, pattern, stdout, stderr) => {

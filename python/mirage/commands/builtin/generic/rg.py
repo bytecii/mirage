@@ -859,8 +859,6 @@ async def rg_generic(
             fl,
             read_bytes,
             RG_NO_PATTERN,
-            pattern_key="regexp",
-            file_key="file",
         )
         pat = rg_matcher(pattern, never_match, f)
 

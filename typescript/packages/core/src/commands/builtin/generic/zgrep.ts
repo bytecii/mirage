@@ -82,29 +82,29 @@ interface ZgrepFlags {
 function parseFlags(fl: FlagView, neverMatch: boolean): ZgrepFlags {
   // -l and -L set one mode in grep, so the later one on the line wins.
   let listing: string | null = null
-  for (const name of fl.typedOrder('args_l', 'files_without_match')) {
+  for (const name of fl.typedOrder('files_with_matches', 'files_without_match')) {
     if (fl.asBool(name)) listing = name
   }
   return {
-    ignoreCase: fl.asBool('i'),
-    invert: fl.asBool('v'),
-    count: fl.asBool('c'),
-    filesOnly: listing === 'args_l',
+    ignoreCase: fl.asBool('ignore_case'),
+    invert: fl.asBool('invert_match'),
+    count: fl.asBool('count'),
+    filesOnly: listing === 'files_with_matches',
     filesWithoutMatch: listing === 'files_without_match',
-    lineNumbers: fl.asBool('n'),
+    lineNumbers: fl.asBool('line_number'),
     byteOffsets: fl.asBool('byte_offset'),
-    fixed: fl.asBool('F') && !neverMatch,
+    fixed: fl.asBool('fixed_strings') && !neverMatch,
     // zgrep is grep over decompressed bytes, so it reads a basic expression
     // unless -E or -P says otherwise, and refuses two matchers as grep does;
     // -G asks for the default explicitly.
-    syntax: matcherSyntax(fl, 'grep', 'P'),
-    forceFilename: fl.asBool('H'),
-    suppressFilename: fl.asBool('h'),
-    onlyMatching: fl.asBool('o'),
-    quiet: fl.asBool('q'),
-    wholeWord: fl.asBool('w'),
+    syntax: matcherSyntax(fl),
+    forceFilename: fl.asBool('with_filename'),
+    suppressFilename: fl.asBool('no_filename'),
+    onlyMatching: fl.asBool('only_matching'),
+    quiet: fl.asBool('quiet'),
+    wholeWord: fl.asBool('word_regexp'),
     lineRegexp: fl.asBool('line_regexp'),
-    maxCount: fl.asInt('m') ?? null,
+    maxCount: fl.asInt('max_count') ?? null,
   }
 }
 

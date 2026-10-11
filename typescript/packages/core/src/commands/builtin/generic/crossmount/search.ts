@@ -17,7 +17,7 @@ import { joinRuns } from './fanout/fanout.ts'
 import { ownedScopes } from './scopes.ts'
 import type { CrossResult, OperandRun, RunSingle, OwnedScope } from './types.ts'
 import { mergeOperandIos, runOperands, runSeparator } from './utils.ts'
-import { filenameMode, parseFlags } from '../grep.ts'
+import { directoriesAction, filenameMode, parseFlags } from '../grep.ts'
 import {
   labelFlags,
   parseFlags as parseRgFlags,
@@ -94,7 +94,7 @@ export async function runSearch(
       )
   }
   if (rg !== null && !rg.listFiles) {
-    const pattern = patternArg(texts, bag, 'regexp')
+    const pattern = patternArg(texts, bag)
     if (pattern !== null) rgMatcher(pattern, false, rg)
   }
   const quiet = grep?.quiet ?? rg?.quiet ?? false
@@ -216,7 +216,7 @@ export async function runSearch(
         repeated ||
         (scope.walked && !ns?.mounts?.isRoot(scope.path.virtual))
       )
-        local.H = true
+        local.with_filename = true
     }
     const runs = await runOperands(execute, name, [scope.path], [...texts], local)
     results.push(...runs)
@@ -240,8 +240,7 @@ export async function runSearch(
 export function walksMounts(name: string, bag: Record<string, FlagValue>): boolean {
   if (name === 'rg') return walksDescendantMounts(bag)
   if (name === 'grep') {
-    const view = new FlagView(bag, specOf(name))
-    return view.asBool('r') || view.asBool('R')
+    return directoriesAction(new FlagView(bag, specOf(name))) === 'recurse'
   }
   return false
 }

@@ -34,7 +34,7 @@ it.each([
   ['ls', {}, false],
   ['ls', { recursive: true }, true],
   ['grep', {}, false],
-  ['grep', { r: true }, true],
+  ['grep', { recursive: true }, true],
   ['cat', {}, false],
 ] as [string, Record<string, FlagValue>, boolean][])(
   'a walk fans out over a nested mount: %s %j',

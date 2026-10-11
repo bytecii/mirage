@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { findExprTail } from '../../../commands/builtin/find_parse.ts'
+import { directoriesAction } from '../../../commands/builtin/generic/grep.ts'
 import { FILE_KEYS } from '../../../commands/builtin/generic/program.ts'
 import { walk } from '../../../commands/cli/walk.ts'
 import { SPECS } from '../../../commands/spec/index.ts'
@@ -90,8 +91,7 @@ export function defaultCwdOperand(
     return null
   }
   if (cmdName === 'grep') {
-    const kwargs = parseToKwargs(parsed)
-    if (kwargs.r !== true && kwargs.R !== true) return null
+    if (directoriesAction(new FlagView(parseToKwargs(parsed), spec)) !== 'recurse') return null
   } else if (cmdName === 'rg' && stdin !== null && !(stdin instanceof DeviceInput)) {
     const fl = new FlagView(parseToKwargs(parsed), spec)
     // `-f -` reads the attached stdin for patterns first, and --files lists

@@ -19,6 +19,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from mirage.accessor.base import Accessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.grep import (
+    directories_action,
+)
+from mirage.commands.builtin.generic.grep import (
     parse_flags as parse_grep_flags,
 )
 from mirage.commands.builtin.generic.rg import (
@@ -28,7 +31,6 @@ from mirage.commands.builtin.generic.rg import (
 from mirage.commands.builtin.generic.rg import parse_flags as parse_rg_flags
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_pattern import (
-    PATTERN_KEYS,
     compile_pattern,
     pattern_arg,
 )
@@ -67,7 +69,7 @@ def grep_terms(
         UsageError: a flag or pattern grep refuses.
     """
     f = parse_grep_flags(fl, False)
-    pattern = pattern_arg(texts, fl, PATTERN_KEYS["grep"])
+    pattern = pattern_arg(texts, fl)
     if f.invert:
         return ScanReason.EVERY_LINE
     if pattern is None or fl.raw("file"):
@@ -98,8 +100,9 @@ def grep_terms(
         line_output=not (
             f.line_numbers
             or f.byte_offsets
-            or f.after_context
-            or f.before_context
+            or f.after_context is not None
+            or f.before_context is not None
+            or f.null_data
         ),
         reads_binary=f.filters.text,
     )
@@ -122,7 +125,7 @@ def rg_terms(
     f = parse_rg_flags(fl)
     if f.list_files or f.type_list:
         return None
-    pattern = pattern_arg(texts, fl, PATTERN_KEYS["rg"])
+    pattern = pattern_arg(texts, fl)
     if f.invert or f.passthru:
         return ScanReason.EVERY_LINE
     if not f.quiet and (
@@ -309,7 +312,7 @@ async def search_reads(
         return read_bytes, read_stream
     if terms is None:
         return read_bytes, read_stream
-    walked = name == "rg" or fl.as_bool("r") or fl.as_bool("R")
+    walked = name == "rg" or directories_action(fl) == "recurse"
     dirs = await _directories(io, accessor, index, paths) if walked else []
     if isinstance(terms, ScanReason):
         await _full_scan(io, name, accessor, dirs, terms, index)

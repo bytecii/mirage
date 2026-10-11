@@ -1,4 +1,4 @@
-import { PATTERN_KEYS, mergePatternList } from '../grep_pattern.ts'
+import { mergePatternList } from '../grep_pattern.ts'
 import { osErrorText } from '../rg_scan.ts'
 import { dispatchStat } from '../utils/paths.ts'
 import { isStdin, resolveSource } from '../utils/stream.ts'
@@ -29,7 +29,7 @@ const RG_STDIN_SEARCHED =
 export const FILE_KEYS: Readonly<Record<string, string>> = {
   grep: 'file',
   rg: 'file',
-  zgrep: 'f',
+  zgrep: 'file',
   sed: 'f',
   awk: 'f',
   jq: 'from_file',
@@ -81,9 +81,57 @@ export async function readProgramFile(
   return materialize(data as ByteSource)
 }
 
-/** The invocation's program files, or an empty list for inline programs. */
+/**
+ * The invocation's program files, or an empty list for inline programs.
+ * grep's --exclude-from files count: they are read the same way, once, before
+ * routing.
+ */
 export function programFiles(name: string, bag: Record<string, FlagValue>): PathSpec[] {
-  return new FlagView(bag, specOf(name)).asPaths(FILE_KEYS[name] ?? 'f')
+  const fl = new FlagView(bag, specOf(name))
+  const files = fl.asPaths(FILE_KEYS[name] ?? 'f')
+  return name === 'grep' ? [...files, ...fl.asPaths('exclude_from')] : files
+}
+
+/**
+ * grep's --exclude-from files as --exclude globs, in line order. gnulib's
+ * add_exclude_file takes one glob per line, trailing blanks dropped and blank
+ * lines skipped. A file grep cannot read stops it before it searches anything,
+ * exit 2. Mirrors Python's lower_exclude_from.
+ */
+async function lowerExcludeFrom(
+  fl: FlagView,
+  bag: Record<string, FlagValue>,
+  dispatch: DispatchFn,
+): Promise<[Record<string, FlagValue>, IOResult | null]> {
+  const files = fl.asPaths('exclude_from').values()
+  const typed = fl.asList('exclude').values()
+  const globs: string[] = []
+  for (const [kind] of fl.occurrences('exclude', 'exclude_from')) {
+    if (kind === 'exclude') {
+      globs.push(typed.next().value ?? '')
+      continue
+    }
+    const path = files.next().value
+    if (path === undefined) continue
+    let data: Uint8Array
+    try {
+      data = await readProgramFile('grep', path, dispatch)
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      const line = fsErrorLine('grep', path, err)
+      return [bag, new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(line) })]
+    }
+    for (const line of decodeText(data).split('\n')) {
+      const glob = line.replace(/[ \t\n\v\f\r]+$/, '')
+      if (glob) globs.push(glob)
+    }
+  }
+  const out: Record<string, FlagValue> = {}
+  for (const [key, value] of Object.entries(bag)) {
+    if (key === 'exclude' || (key === 'exclude_from' && !('exclude' in bag))) out.exclude = globs
+    else if (key !== 'exclude_from') out[key] = value
+  }
+  return [out, null]
 }
 
 /** Read program files once before input routing or traversal fan-out.
@@ -101,9 +149,15 @@ export async function prepareProgram(
   dispatch: DispatchFn,
   operands: readonly PathSpec[] = [],
 ): Promise<[string[], Record<string, FlagValue>, ByteSource | null, IOResult | null]> {
-  const fl = new FlagView(bag, specOf(name))
+  let fl = new FlagView(bag, specOf(name))
+  if (name === 'grep') {
+    const [lowered, refusal] = await lowerExcludeFrom(fl, bag, dispatch)
+    if (refusal !== null) return [texts, bag, stdin, refusal]
+    bag = lowered
+    fl = new FlagView(bag, specOf(name))
+  }
   const key = FILE_KEYS[name] ?? 'f'
-  const files = programFiles(name, bag)
+  const files = fl.asPaths(key)
   if (files.length === 0) return [texts, bag, stdin, null]
   const source = resolveSource(stdin)
   let consumed = false
@@ -148,13 +202,12 @@ export async function prepareProgram(
   }
   const out = Object.fromEntries(Object.entries(bag).filter(([name]) => name !== key))
   if (name === 'grep' || name === 'rg' || name === 'zgrep') {
-    const patternKey = PATTERN_KEYS[name] ?? 'e'
-    const expressions = fl.asList(patternKey)
+    const expressions = fl.asList('regexp')
     let pattern = expressions.length > 0 ? expressions.join('\n') : null
     for (const data of pieces) pattern = mergePatternList(pattern, data)
     // An empty pattern-file list preserves grep's zero-pattern sentinel.
     out[key] = []
-    out[patternKey] = pattern === null ? [] : [pattern]
+    out.regexp = pattern === null ? [] : [pattern]
   } else if (name === 'sed') {
     const expressions = fl.asList('e').values()
     const scripts = pieces.map((data) => decodeText(data)).values()

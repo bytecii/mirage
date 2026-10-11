@@ -33,7 +33,11 @@ from mirage.commands.builtin.generic.crossmount.utils import (
     run_operands,
     run_separator,
 )
-from mirage.commands.builtin.generic.grep import filename_mode, parse_flags
+from mirage.commands.builtin.generic.grep import (
+    directories_action,
+    filename_mode,
+    parse_flags,
+)
 from mirage.commands.builtin.generic.rg import (
     filters_files,
     haystacks,
@@ -146,7 +150,7 @@ async def run_search(
                 line_regexp=grep.line_regexp,
             )
     if rg is not None and not rg.list_files:
-        pattern = pattern_arg(texts, view, "regexp")
+        pattern = pattern_arg(texts, view)
         if pattern is not None:
             rg_matcher(pattern, False, rg)
     quiet = grep.quiet if grep is not None else bool(rg and rg.quiet)
@@ -308,7 +312,7 @@ async def run_search(
                     )
                 )
             ):
-                local["H"] = True
+                local["with_filename"] = True
         runs = await run_operands(execute, name, [scope.path], texts, local)
         results.extend(runs)
         if quiet and runs[-1].io.exit_code == 0:
@@ -333,6 +337,7 @@ def walks_mounts(name: str, flags: dict[str, FlagValue]) -> bool:
     if name == "rg":
         return walks_descendant_mounts(flags)
     if name == "grep":
-        view = FlagView(flags, spec=SPECS[name])
-        return view.as_bool("r") or view.as_bool("R")
+        return (
+            directories_action(FlagView(flags, spec=SPECS[name])) == "recurse"
+        )
     return False

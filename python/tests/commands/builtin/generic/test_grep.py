@@ -203,7 +203,7 @@ async def test_grep_recursive_files_only_mount_prefix():
     output, _ = await grep_generic(
         [p],
         ["apple"],
-        CommandOpts(flags={"r": True, "args_l": True}),
+        CommandOpts(flags={"recursive": True, "files_with_matches": True}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
@@ -243,7 +243,7 @@ async def test_grep_recursive_not_a_directory_operand_keeps_the_others():
     output, io = await grep_generic(
         [_spec("/a.txt/x"), _spec("/real")],
         ["foo"],
-        CommandOpts(flags={"r": True, "args_l": True}),
+        CommandOpts(flags={"recursive": True, "files_with_matches": True}),
         readdir=readdir_enotdir,
         stat=stat_enoent,
         read_bytes=rb,
@@ -282,7 +282,9 @@ async def test_grep_reads_the_mount_boundaries_off_the_bag():
     output, io = await grep_generic(
         [_spec("/ghost")],
         ["x"],
-        CommandOpts(flags={"r": True}, ns=_mount_parent_ns("/ghost/deep")),
+        CommandOpts(
+            flags={"recursive": True}, ns=_mount_parent_ns("/ghost/deep")
+        ),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
@@ -300,7 +302,9 @@ async def test_grep_still_reports_a_path_with_no_mount_below_it():
     out, io = await grep_generic(
         [_spec("/nope")],
         ["x"],
-        CommandOpts(flags={"r": True}, ns=_mount_parent_ns("/ghost/deep")),
+        CommandOpts(
+            flags={"recursive": True}, ns=_mount_parent_ns("/ghost/deep")
+        ),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
@@ -314,10 +318,19 @@ async def test_grep_still_reports_a_path_with_no_mount_below_it():
 @pytest.mark.parametrize(
     "flags, expected",
     [
-        ({"r": True}, {"r": True, "H": True}),
-        ({"r": True, "h": True}, {"r": True, "h": True}),
-        ({"H": True, "h": True}, {"H": True, "h": True}),
-        ({"h": True, "H": True}, {"h": True, "H": True}),
+        ({"recursive": True}, {"recursive": True, "with_filename": True}),
+        (
+            {"recursive": True, "no_filename": True},
+            {"recursive": True, "no_filename": True},
+        ),
+        (
+            {"with_filename": True, "no_filename": True},
+            {"with_filename": True, "no_filename": True},
+        ),
+        (
+            {"no_filename": True, "with_filename": True},
+            {"no_filename": True, "with_filename": True},
+        ),
     ],
 )
 def test_labelled_asks_for_filenames_only_when_the_line_did_not_decide(
@@ -343,7 +356,7 @@ async def test_excluded_entry_that_fails_stat_does_not_stop_the_walk():
     output, io = await grep_generic(
         [_spec("/data")],
         ["apple"],
-        CommandOpts(flags={"r": True, "exclude_dir": ["0ghost"]}),
+        CommandOpts(flags={"recursive": True, "exclude_dir": ["0ghost"]}),
         readdir=listing,
         stat=stat,
         read_bytes=rb,
@@ -367,7 +380,7 @@ async def test_grep_recursive_separates_context_groups_between_files():
     output, io = await grep_generic(
         [_spec("/d")],
         ["a"],
-        CommandOpts(flags={"r": True, "A": "1"}),
+        CommandOpts(flags={"recursive": True, "after_context": "1"}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
@@ -403,7 +416,7 @@ async def test_recursive_grep_stops_reading_and_closes_stream(quiet):
     output, io = await grep_generic(
         [_spec("/d"), _spec("/later")],
         ["hit"],
-        CommandOpts(flags={"r": True, "q": quiet}),
+        CommandOpts(flags={"recursive": True, "quiet": quiet}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
@@ -432,7 +445,7 @@ async def test_recursive_quiet_no_match_visits_every_file():
     output, io = await grep_generic(
         [_spec("/d")],
         ["hit"],
-        CommandOpts(flags={"r": True, "q": True}),
+        CommandOpts(flags={"recursive": True, "quiet": True}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
@@ -451,8 +464,8 @@ async def test_recursive_quiet_no_match_visits_every_file():
         (["/data"], {}, b"", 2),
         (["/data/bad.txt"], {}, b"", 2),
         (["/missing", "/data/a.txt"], {}, b"/data/a.txt:alice\n", 2),
-        (["/missing", "/data/a.txt"], {"q": True}, b"", 0),
-        (["/data"], {"r": True}, b"/data/a.txt:alice\n", 2),
+        (["/missing", "/data/a.txt"], {"quiet": True}, b"", 0),
+        (["/data"], {"recursive": True}, b"/data/a.txt:alice\n", 2),
     ],
 )
 @pytest.mark.parametrize("streamed", [False, True])
@@ -528,7 +541,9 @@ async def test_grep_propagates_non_filesystem_read_failures(
     output, _ = await grep_generic(
         [_spec(path) for path in paths],
         ["alice"],
-        CommandOpts(flags={"no_messages": no_messages, "r": recursive}),
+        CommandOpts(
+            flags={"no_messages": no_messages, "recursive": recursive}
+        ),
         readdir=readdir,
         stat=stat,
         read_bytes=read_bytes,
@@ -545,7 +560,7 @@ async def test_grep_propagates_non_filesystem_read_failures(
     [
         (["/data/a.txt"], {}),
         (["/data/a.txt", "/data/b.txt"], {}),
-        (["/data"], {"r": True}),
+        (["/data"], {"recursive": True}),
     ],
 )
 @pytest.mark.parametrize("missing", [False, True])
@@ -618,7 +633,7 @@ async def test_grep_preserves_stderr_added_before_drain():
     output, io = await grep_generic(
         [_spec("/missing"), _spec("/data/a.txt")],
         ["*alice"],
-        CommandOpts(flags={"E": True}),
+        CommandOpts(flags={"extended_regexp": True}),
         readdir=readdir,
         stat=stat,
         read_bytes=rb,
