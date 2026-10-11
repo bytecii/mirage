@@ -1,0 +1,98 @@
+{
+  "cases": [
+    {
+      "id": "writev_writes_its_buffers_in_order",
+      "runtimes": [
+        "monty",
+        "wasi",
+        "pyodide",
+        "host"
+      ],
+      "backends": [
+        "ram",
+        "disk",
+        "ssh",
+        "s3",
+        "redis"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "import os\nfd = os.open('/data/v.txt', os.O_WRONLY | os.O_CREAT | os.O_TRUNC)\nprint(os.writev(fd, [b'ab', b'cd']))\nos.close(fd)",
+            "node": "const h = await require('node:fs').promises.open('/data/v.txt', 'w')\nconst { bytesWritten } = await h.writev([Buffer.from('ab'), Buffer.from('cd')])\nconsole.log(bytesWritten)\nawait h.close()"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "4\n"
+          },
+          "expect_on": {
+            "monty": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "'module' object has no attribute 'O_WRONLY'"
+            }
+          }
+        },
+        {
+          "command": "cat /data/v.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "abcd"
+          },
+          "expect_on": {
+            "monty": {
+              "exit": 1,
+              "stdout": ""
+            }
+          }
+        },
+        {
+          "program": {
+            "python": "import os\nfd = os.open('/data/v.txt', os.O_WRONLY)\nprint(os.pwritev(fd, [b'X', b'Y'], 1))\nos.close(fd)",
+            "node": "const h = await require('node:fs').promises.open('/data/v.txt', 'r+')\nconst { bytesWritten } = await h.writev([Buffer.from('X'), Buffer.from('Y')], 1)\nconsole.log(bytesWritten)\nawait h.close()"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "2\n"
+          },
+          "expect_on": {
+            "monty": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "'module' object has no attribute 'O_WRONLY'"
+            },
+            "pyodide": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "has no attribute 'pwritev'"
+            }
+          }
+        },
+        {
+          "command": "cat /data/v.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "aXYd"
+          },
+          "expect_on": {
+            "monty": {
+              "exit": 1,
+              "stdout": ""
+            },
+            "pyodide": {
+              "stdout": "abcd"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
