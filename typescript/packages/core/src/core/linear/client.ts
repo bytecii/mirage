@@ -33,7 +33,7 @@ import {
   USER_LOOKUP_QUERY,
 } from './queries.ts'
 
-class LinearApiError extends Error {
+export class LinearApiError extends Error {
   constructor(
     message: string,
     public readonly errors: readonly unknown[] = [],

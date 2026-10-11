@@ -2178,6 +2178,8 @@ async function openTrello(target: Target): Promise<Open> {
         apiKey: 'integ-key',
         apiToken: 'integ-token',
         baseUrl: endpoint,
+        // The fake answers /search, so exercise grep/rg narrowing.
+        contentSearch: true,
         ...m.config,
       }),
     )
@@ -2244,6 +2246,8 @@ async function openLinear(target: Target): Promise<Open> {
     mounts[m.path] = new LinearVFS({
       apiKey: 'integ-key',
       baseUrl: graphql,
+      // The fake answers searchIssues, so exercise grep/rg narrowing.
+      contentSearch: true,
     })
   }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE })

@@ -15,7 +15,7 @@
 import { apiRequest } from '../api/client.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 
-class TrelloApiError extends Error {
+export class TrelloApiError extends Error {
   constructor(
     public readonly endpoint: string,
     public readonly status: number,
@@ -148,6 +148,22 @@ export async function listListCards(
     member_fields: 'id,username,fullName',
   })
   return asArray(result) as Record<string, unknown>[]
+}
+
+/** The cards Trello's search names for `query`, ids only. */
+export async function searchCards(
+  transport: TrelloTransport,
+  query: string,
+  limit: number,
+): Promise<Record<string, unknown>[]> {
+  const result = await transport.call('GET', '/search', {
+    query,
+    modelTypes: 'cards',
+    card_fields: 'id',
+    cards_limit: String(limit),
+    partial: 'false',
+  })
+  return asArray(asObject(result, '/search').cards) as Record<string, unknown>[]
 }
 
 export async function getCard(

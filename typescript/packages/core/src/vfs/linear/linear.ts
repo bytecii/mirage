@@ -15,6 +15,7 @@
 import { BaseVFS } from '../base.ts'
 import { LinearAccessor } from '../../accessor/linear.ts'
 
+import { filesContaining as linearFilesContaining } from '../../core/linear/search.ts'
 import { HttpLinearTransport } from '../../core/linear/client.ts'
 import { redactLinearConfig } from '../../core/linear/config.ts'
 import type { LinearConfig, LinearConfigRedacted } from '../../core/linear/config.ts'
@@ -44,6 +45,9 @@ export class LinearVFS extends BaseVFS {
   override readonly writePrompt: string = WRITE_PROMPT
   readonly config: LinearConfig
   override readonly accessor: LinearAccessor
+  // Linear's search answers for issues; comments and the team's other files
+  // are always read.
+  override readonly searchable: readonly string[] = ['teams/*/issues/*/issue.json']
 
   constructor(config: LinearConfig) {
     super()
@@ -53,6 +57,16 @@ export class LinearVFS extends BaseVFS {
     const accessorOpts: { teamIds?: readonly string[] } = {}
     if (config.teamIds !== undefined) accessorOpts.teamIds = config.teamIds
     this.accessor = new LinearAccessor(new HttpLinearTransport(transportOpts), accessorOpts)
+  }
+
+  override filesContaining(
+    text: string,
+    under: PathSpec[],
+    opts: { wholeWord: boolean; ignoreCase: boolean },
+    index?: IndexCacheStore,
+  ): Promise<PathSpec[] | null> {
+    if (!opts.wholeWord || this.config.contentSearch !== true) return Promise.resolve(null)
+    return linearFilesContaining(this.accessor, text, under, index)
   }
 
   override readdir(path: PathSpec, index?: IndexCacheStore): Promise<string[]> {

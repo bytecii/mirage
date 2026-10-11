@@ -1,0 +1,111 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { describe, expect, it } from 'vitest'
+import { LinearAccessor } from '../../accessor/linear.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import { PathSpec } from '../../types.ts'
+import type { LinearTransport } from './client.ts'
+import { unsearchedText } from './normalize.ts'
+import { SEARCH_LIMIT, filesContaining } from './search.ts'
+
+const TEAM = { id: 'T1', key: 'ENG', name: 'Engineering' }
+
+function issue(id: string, title: string, state: string): Record<string, unknown> {
+  return {
+    id,
+    identifier: `ENG-${id.slice(-1)}`,
+    title,
+    description: '',
+    team: TEAM,
+    state: { id: 'S', name: state },
+  }
+}
+
+const ISSUES = [
+  issue('I1', 'Fix the login page', 'Todo'),
+  issue('I2', 'Write release notes', 'Blocked'),
+]
+
+// Answers the team listing, the issue listing and the issue search, recording
+// each searched term.
+class FakeTransport implements LinearTransport {
+  readonly searched: string[] = []
+  constructor(private readonly named: string[]) {}
+  graphql(
+    query: string,
+    variables: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    const page = { hasNextPage: false, endCursor: null }
+    if (query.includes('searchIssues')) {
+      this.searched.push(String(variables.term))
+      return Promise.resolve({ searchIssues: { nodes: this.named.map((id) => ({ id })) } })
+    }
+    if (query.includes('issues(')) {
+      return Promise.resolve({ team: { issues: { nodes: ISSUES, pageInfo: page } } })
+    }
+    return Promise.resolve({ teams: { nodes: [TEAM], pageInfo: page } })
+  }
+}
+
+function scope(vfsPath = ''): PathSpec {
+  const virtual = vfsPath === '' ? '/linear' : `/linear/${vfsPath}`
+  return new PathSpec({ virtual, directory: virtual, vfsPath })
+}
+
+async function ask(
+  text: string,
+  named: string[],
+  under = scope(),
+): Promise<[PathSpec[] | null, string[]]> {
+  const transport = new FakeTransport(named)
+  const out = await filesContaining(
+    new LinearAccessor(transport),
+    text,
+    [under],
+    new RAMIndexCacheStore(),
+  )
+  return [out, transport.searched]
+}
+
+// Twin of python/tests/core/linear/test_search.py.
+describe('linear filesContaining', () => {
+  it('leaves the title and description out of the unsearched text', () => {
+    const kept = unsearchedText(ISSUES[0] ?? {})
+    expect(kept).toContain('todo')
+    expect(kept).toContain('engineering')
+    expect(kept).not.toContain('login')
+  })
+
+  // Linear names the issue whose title holds the word; the other is named by
+  // its state, which Linear's search does not read.
+  it('answers what Linear names and what the listing kept', async () => {
+    const [out, searched] = await ask('Blocked', ['I1'])
+    expect(out?.map((p) => p.vfsPath.split('/').at(-2)).sort()).toEqual(['ENG-1__I1', 'ENG-2__I2'])
+    expect(out?.every((p) => p.vfsPath.endsWith('/issue.json'))).toBe(true)
+    expect(searched).toEqual(['Blocked', 'locked'])
+  })
+
+  it.each<[string, string[], string]>([
+    ['title', ['I1'], ''],
+    ['true', ['I1'], ''],
+    ['q4', ['I1'], ''],
+    ['login', [], ''],
+    ['login', Array.from({ length: SEARCH_LIMIT }, (_, i) => `X${String(i)}`), ''],
+    ['login', ['I1'], 'teams/ENG__Engineering__T1/issues/ENG-1__I1'],
+  ])('reads every file for %j when unsure', async (text, named, under) => {
+    const [out] = await ask(text, named, scope(under))
+    expect(out).toBeNull()
+  })
+})

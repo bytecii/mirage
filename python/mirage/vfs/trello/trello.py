@@ -18,6 +18,7 @@ from mirage.accessor.trello import TrelloAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.trello.read import read as _read
 from mirage.core.trello.readdir import readdir as _readdir
+from mirage.core.trello.search import files_containing as _files_containing
 from mirage.core.trello.stat import stat as _stat
 from mirage.types import FileStat, PathSpec, VFSName
 from mirage.utils.ranges import slice_window
@@ -32,11 +33,27 @@ class TrelloVFS(BaseVFS):
     caches_reads: bool = True
     prompt: str = PROMPT
     write_prompt: str = WRITE_PROMPT
+    # Trello's search answers for cards; comments and the board's other
+    # files are always read.
+    searchable = ("workspaces/*/boards/*/lists/*/cards/*/card.json",)
 
     def __init__(self, config: TrelloConfig) -> None:
         super().__init__()
         self.config = config
         self.accessor = TrelloAccessor(self.config)
+
+    async def files_containing(
+        self,
+        text: str,
+        under: list[PathSpec],
+        *,
+        whole_word: bool,
+        ignore_case: bool,
+        index: IndexCacheStore = NULL_INDEX,
+    ) -> list[PathSpec] | None:
+        if not whole_word or not self.config.content_search:
+            return None
+        return await _files_containing(self.accessor, text, under, index)
 
     async def readdir(
         self, path: PathSpec, index: IndexCacheStore = NULL_INDEX

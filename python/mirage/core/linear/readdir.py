@@ -37,6 +37,7 @@ from mirage.core.linear.normalize import (
     normalize_user,
     project_issue_rows,
     to_json_bytes,
+    unsearched_text,
 )
 from mirage.core.linear.pathing import (
     cycle_filename,
@@ -185,6 +186,7 @@ async def _list_issues(
                         "json_size": len(
                             to_json_bytes(normalize_issue(issue))
                         ),
+                        "unsearched": unsearched_text(issue),
                     },
                 ),
             )

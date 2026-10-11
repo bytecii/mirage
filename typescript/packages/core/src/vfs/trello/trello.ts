@@ -27,6 +27,7 @@ import { sliceWindow } from '../../utils/ranges.ts'
 import { readdir as trelloReaddir } from '../../core/trello/readdir.ts'
 import { read as trelloRead } from '../../core/trello/read.ts'
 import { stat as trelloStat } from '../../core/trello/stat.ts'
+import { filesContaining as trelloFilesContaining } from '../../core/trello/search.ts'
 
 export interface TrelloVFSState {
   type: string
@@ -40,6 +41,11 @@ export class TrelloVFS extends BaseVFS {
   override readonly writePrompt: string = WRITE_PROMPT
   readonly config: TrelloConfig
   override readonly accessor: TrelloAccessor
+  // Trello's search answers for cards; comments and the board's other files
+  // are always read.
+  override readonly searchable: readonly string[] = [
+    'workspaces/*/boards/*/lists/*/cards/*/card.json',
+  ]
 
   constructor(config: TrelloConfig) {
     super()
@@ -53,6 +59,16 @@ export class TrelloVFS extends BaseVFS {
     if (config.workspaceId !== undefined) accessorOpts.workspaceId = config.workspaceId
     if (config.boardIds !== undefined) accessorOpts.boardIds = config.boardIds
     this.accessor = new TrelloAccessor(new HttpTrelloTransport(transportOpts), accessorOpts)
+  }
+
+  override filesContaining(
+    text: string,
+    under: PathSpec[],
+    opts: { wholeWord: boolean; ignoreCase: boolean },
+    index?: IndexCacheStore,
+  ): Promise<PathSpec[] | null> {
+    if (!opts.wholeWord || this.config.contentSearch !== true) return Promise.resolve(null)
+    return trelloFilesContaining(this.accessor, text, under, index)
   }
 
   override readdir(path: PathSpec, index?: IndexCacheStore): Promise<string[]> {

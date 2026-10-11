@@ -143,6 +143,19 @@ Each team has a `documents/` folder with one JSON file per Linear document:
 Document JSON includes the title, markdown content, the linked project, and
 the creator.
 
+## grep and rg
+
+With `content_search=True` (YAML `content_search: true`), `grep -rw` and
+`rg -w` read only the issues Linear's issue search names, and those whose other
+fields (team, project, cycle, state, people, labels, dates, link) hold the
+word, which the listing keeps. Comments, members, projects, cycles and
+documents are always read.
+
+Every issue is read when the word is a key of the issue JSON (`title`,
+`priority`) or a JSON literal, has a digit or only the letters a to f, which an
+id can hold, and when a search fails, returns 250 issues or finds nothing. It
+is off by default: Linear indexes a write some time after it lands.
+
 ## Cache
 
 The Linear VFS uses `IndexCacheStore` (same as Discord and other

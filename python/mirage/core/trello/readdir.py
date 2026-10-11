@@ -35,6 +35,7 @@ from mirage.core.trello.normalize import (
     normalize_member,
     normalize_workspace,
     to_json_bytes,
+    unsearched_text,
 )
 from mirage.core.trello.pathing import (
     board_dirname,
@@ -381,6 +382,7 @@ async def _list_cards(
                     vfs_name=dirname,
                     extra={
                         "json_size": len(to_json_bytes(normalize_card(card))),
+                        "unsearched": unsearched_text(card),
                     },
                 ),
             )
