@@ -288,7 +288,10 @@ describe('a wrapper', () => {
       const io = await ws.shell("egrep 'a|x' /data/e.txt", { sessionId: 'narrow' })
       expect([io.exitCode, new TextDecoder().decode(io.stdout)]).toEqual([0, 'a|b\nx\n'])
       const plain = await ws.shell('grep x /data/e.txt', { sessionId: 'narrow' })
-      expect(plain.exitCode).toBe(127)
+      expect([plain.exitCode, new TextDecoder().decode(plain.stderr)]).toEqual([
+        126,
+        'grep: Permission denied\n',
+      ])
     } finally {
       await ws.close()
     }

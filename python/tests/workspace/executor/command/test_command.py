@@ -123,4 +123,4 @@ async def test_an_allowed_wrapper_runs_without_the_program_it_names():
     io = await ws.shell("egrep 'a|x' /data/e.txt", session_id="narrow")
     assert (io.exit_code, io.stdout) == (0, b"a|b\nx\n")
     io = await ws.shell("grep x /data/e.txt", session_id="narrow")
-    assert io.exit_code == 127
+    assert (io.exit_code, io.stderr) == (126, b"grep: Permission denied\n")
