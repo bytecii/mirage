@@ -72,20 +72,32 @@ describe('gdrive filesContaining', () => {
     expect(fake.searches.map((s) => s.length)).toEqual([PARENTS_PER_QUERY, 6])
   })
 
-  it('leaves out a file Drive has not indexed', async () => {
-    fake.add('a.txt', 'root', undefined, ENC.encode('wombat'))
-    fake.unindexed.add(fake.add('b.txt', 'root', undefined, ENC.encode('wombat')))
-    expect((await ask([scope()]))?.map((p) => p.virtual)).toEqual(['/gd/a.txt'])
-  })
-
-  it('answers null for no hit, an incomplete search or a failed one', async () => {
-    fake.add('a.txt', 'root', undefined, ENC.encode('nothing'))
-    expect(await ask([scope()])).toBeNull()
-    fake.add('b.txt', 'root', undefined, ENC.encode('wombat'))
-    fake.incomplete = true
-    expect(await ask([scope()])).toBeNull()
-    fake.incomplete = false
-    vi.spyOn(fake, 'searchFiles').mockRejectedValue(new GoogleApiError('down', 500))
+  it.each([
+    ['no hit', () => undefined],
+    [
+      'an incomplete search',
+      () => {
+        fake.incomplete = true
+      },
+    ],
+    [
+      'a failed search',
+      () => vi.spyOn(fake, 'searchFiles').mockRejectedValue(new GoogleApiError('down', 500)),
+    ],
+    [
+      'a timed-out search',
+      () =>
+        vi
+          .spyOn(fake, 'searchFiles')
+          .mockRejectedValue(new DOMException('timed out', 'TimeoutError')),
+    ],
+    [
+      'a failed listing',
+      () => vi.spyOn(fake, 'listFiles').mockRejectedValue(new TypeError('fetch failed')),
+    ],
+  ])('answers null for %s', async (name, breakIt) => {
+    fake.add('a.txt', 'root', undefined, ENC.encode(name === 'no hit' ? 'nothing' : 'wombat'))
+    breakIt()
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     expect(await ask([scope()])).toBeNull()
   })

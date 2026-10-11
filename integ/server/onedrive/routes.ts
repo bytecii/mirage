@@ -302,9 +302,14 @@ async function versionContent(
 
 const DEC = new TextDecoder()
 
-// Graph's driveItem search over a folder's subtree: an item whose name or
-// content holds the text, case-insensitively. A substring is a superset of
-// the vendor's word match, which is all a caller narrowing a scan may assume.
+function wholeWordHit(query: string, text: string): boolean {
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`).test(text)
+}
+
+// Graph's driveItem search over a folder's subtree: an item whose name holds
+// the text, or whose content holds it as a whole word, case-insensitively, as
+// the Box and Dropbox fakes match.
 async function searchItems(
   ctx: Ctx<C>,
   drive: string,
@@ -317,13 +322,15 @@ async function searchItems(
   if (quoted === undefined) {
     return { status: 400, body: { error: { code: 'invalidRequest', message: 'bad search' } } }
   }
-  const text = decodeURIComponent(quoted).replaceAll("''", "'").toLowerCase()
+  const text = quoted.replaceAll("''", "'").toLowerCase()
   const rows = await ctx.db.graphFile.findMany({ where: { tenant: ctx.tenant, drive } })
   const value: JsonValue[] = []
   for (const row of rows) {
     if (p !== '' && !row.path.startsWith(`${p}/`)) continue
-    const body = `${baseName(row.path)}\n${DEC.decode(row.content)}`.toLowerCase()
-    if (body.includes(text)) value.push({ id: row.ctag, name: baseName(row.path), file: {} })
+    const name = baseName(row.path)
+    const hit =
+      name.toLowerCase().includes(text) || wholeWordHit(text, DEC.decode(row.content).toLowerCase())
+    if (hit) value.push({ id: row.ctag, name, file: {} })
   }
   return { status: 200, body: { value } }
 }

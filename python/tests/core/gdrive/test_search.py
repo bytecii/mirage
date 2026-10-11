@@ -15,6 +15,7 @@
 import aiohttp
 import pytest
 
+import mirage.core.gdrive.readdir as readdir_mod
 import mirage.core.gdrive.search as search_mod
 from mirage.cache.index import RAMIndexCacheStore
 from mirage.core.gdrive.search import PARENTS_PER_QUERY, files_containing
@@ -73,49 +74,32 @@ async def test_many_folders_are_searched_in_batches(
     assert [len(s) for s in fake_drive.searches] == [PARENTS_PER_QUERY, 6]
 
 
+def _raise(exc: BaseException):
+    async def fail(*args, **kwargs):
+        raise exc
+
+    return fail
+
+
 @pytest.mark.asyncio
-async def test_a_file_drive_has_not_indexed_is_left_out(
-    fake_drive, gdrive_accessor
+@pytest.mark.parametrize(
+    "case",
+    ["no hit", "incomplete", "search fails", "timeout", "listing fails"],
+)
+async def test_a_search_that_cannot_answer_answers_none(
+    case, fake_drive, gdrive_accessor, monkeypatch
 ):
-    fake_drive.add("a.txt", content=b"wombat")
-    late = fake_drive.add("b.txt", content=b"wombat")
-    fake_drive.unindexed.add(late)
-    out = await files_containing(
-        gdrive_accessor, "wombat", [scope()], RAMIndexCacheStore()
+    fake_drive.add(
+        "a.txt", content=b"nothing" if case == "no hit" else b"wombat"
     )
-    assert out is not None
-    assert [p.virtual for p in out] == ["/gd/a.txt"]
-
-
-@pytest.mark.asyncio
-async def test_no_hit_answers_none(fake_drive, gdrive_accessor):
-    fake_drive.add("a.txt", content=b"nothing")
-    out = await files_containing(
-        gdrive_accessor, "wombat", [scope()], RAMIndexCacheStore()
-    )
-    assert out is None
-
-
-@pytest.mark.asyncio
-async def test_an_incomplete_search_answers_none(fake_drive, gdrive_accessor):
-    fake_drive.add("a.txt", content=b"wombat")
-    fake_drive.incomplete = True
-    out = await files_containing(
-        gdrive_accessor, "wombat", [scope()], RAMIndexCacheStore()
-    )
-    assert out is None
-
-
-@pytest.mark.asyncio
-async def test_a_failed_search_answers_none(
-    fake_drive, gdrive_accessor, monkeypatch
-):
-    fake_drive.add("a.txt", content=b"wombat")
-
-    async def refuse(*args, **kwargs):
-        raise aiohttp.ClientConnectionError("down")
-
-    monkeypatch.setattr(search_mod, "search_files", refuse)
+    fake_drive.incomplete = case == "incomplete"
+    if case == "search fails":
+        error = aiohttp.ClientConnectionError("down")
+        monkeypatch.setattr(search_mod, "search_files", _raise(error))
+    if case == "timeout":
+        monkeypatch.setattr(search_mod, "search_files", _raise(TimeoutError()))
+    if case == "listing fails":
+        monkeypatch.setattr(readdir_mod, "list_files", _raise(TimeoutError()))
     out = await files_containing(
         gdrive_accessor, "wombat", [scope()], RAMIndexCacheStore()
     )

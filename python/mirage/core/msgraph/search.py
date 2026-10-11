@@ -36,16 +36,6 @@ def _is_folder(entry: IndexEntry) -> bool:
     return entry.resource_type == ResourceType.FOLDER
 
 
-def search_action(text: str) -> str:
-    """The Graph ``search`` function segment for ``text``.
-
-    Args:
-        text (str): the text searched for, quoted as an OData string.
-    """
-    quoted = quote(text.replace("'", "''"), safe="!*'()")
-    return f"/search(q='{quoted}')"
-
-
 async def files_containing(
     config: MsGraphConfig,
     readdir: ReaddirFn[A],
@@ -57,21 +47,15 @@ async def files_containing(
 ) -> list[PathSpec] | None:
     """The files under each scope Graph search names.
 
-    Each scope is walked through the index, the listings grep's own walk
-    reads next, and searched from its folder; a hit is kept when its id
-    is a file the walk found. None when the search fails, a listed file
-    carries no id, or nothing is found, since Graph indexes a write some
-    time after it lands.
+    Each scope is walked through the index (the listings grep reads
+    next) and searched from its folder; a hit counts when its id is a
+    walked file. None when a listing or the search fails or times out,
+    nothing is found, or a walked file has no id.
 
-    Graph searches the text it indexed, not the bytes grep reads, so the
-    answer can leave out a file that holds the text:
-
-    - an office file, PDF, image or archive, whose raw bytes hold names
-      and compressed runs its extracted text does not;
-    - a large file, past the part Graph indexes;
-    - a file whose text Graph splits into words differently than grep
-      does (``foo.bar``, ``foo_bar``);
-    - a file changed since Graph last indexed it.
+    Graph searches the text it extracted, not the bytes grep reads, so
+    the answer can leave out a file that holds the text: an office file,
+    PDF or archive, the end of a large file, a word Graph splits
+    differently (``foo.bar``), or a recent write.
 
     Args:
         config (MsGraphConfig): Graph config.
@@ -83,31 +67,31 @@ async def files_containing(
         index (IndexCacheStore): the mount's index.
         session (SessionArg): pool or live session to ride.
     """
+    quoted = quote(text.replace("'", "''"), safe="!*'()")
     found: list[PathSpec] = []
-    for directory, loc in scopes:
-        walked = await entries_under(
-            readdir, accessor, directory, index, _is_folder
-        )
-        if walked is None:
-            return None
-        files: dict[str, list[PathSpec]] = {}
-        for path, entry in walked:
-            if _is_folder(entry):
-                continue
-            item_id = entry.extra.get("id")
-            if not item_id:
+    try:
+        for directory, loc in scopes:
+            walked = await entries_under(
+                readdir, accessor, directory, index, _is_folder
+            )
+            if walked is None:
                 return None
-            files.setdefault(item_id, []).append(path)
-        try:
+            files: dict[str, list[PathSpec]] = {}
+            for path, entry in walked:
+                if _is_folder(entry):
+                    continue
+                if not entry.extra.get("id"):
+                    return None
+                files.setdefault(entry.extra["id"], []).append(path)
             items = await graph_list(
                 config,
-                loc.item(search_action(text)),
+                loc.item(f"/search(q='{quoted}')"),
                 params={"$select": "id"},
                 session=session,
             )
-        except (GraphError, aiohttp.ClientError) as exc:
-            logger.warning("graph search failed (%s); reading every file", exc)
-            return None
-        for item in items:
-            found.extend(files.get(item.get("id", ""), []))
+            for item in items:
+                found.extend(files.get(item.get("id", ""), []))
+    except (OSError, aiohttp.ClientError, GraphError) as exc:
+        logger.warning("graph search failed (%s); reading every file", exc)
+        return None
     return found or None

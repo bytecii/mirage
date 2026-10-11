@@ -258,9 +258,7 @@ async def search_files(
 ) -> tuple[list[str], bool]:
     """Ids of the files in ``parent_ids`` Drive full-text search names.
 
-    ``fullText`` matches whole tokens of the name, description and the
-    text Drive indexed from the content. Drive does not sort a
-    ``fullText`` query, so no ``orderBy`` is sent.
+    Drive sorts no ``fullText`` query, so none is asked for.
 
     Args:
         token_manager (TokenManager): OAuth2 token manager.

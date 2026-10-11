@@ -230,9 +230,8 @@ export async function listAllFiles(
 
 /**
  * Ids of the files in `parentIds` Drive full-text search names, and whether
- * Drive searched every corpus it was asked for. `fullText` matches whole
- * tokens of the name, description and the text Drive indexed from the
- * content. Drive does not sort a `fullText` query, so no `orderBy` is sent.
+ * Drive searched every corpus it was asked for. Drive sorts no `fullText`
+ * query, so none is asked for.
  */
 export async function searchFiles(
   tm: TokenManager,

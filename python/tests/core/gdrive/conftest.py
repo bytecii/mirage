@@ -49,10 +49,9 @@ class FakeDrive:
         # caps the page, not the walk, so a small page turns a listing of
         # a large folder into more requests rather than fewer.
         self.list_limits: list[int | None] = []
-        # The parent ids of every full-text search, the files the index
-        # has not caught up with, and whether Drive gave up on a corpus.
+        # The parent ids of every full-text search, and whether Drive
+        # gave up on a corpus.
         self.searches: list[list[str]] = []
-        self.unindexed: set[str] = set()
         self.incomplete = False
 
     def add(
@@ -133,7 +132,6 @@ class FakeDrive:
             item["id"]
             for item in self.items.values()
             if set(item["parents"]) & set(parent_ids)
-            and item["id"] not in self.unindexed
             and text.lower() in item["content"].decode().lower()
         ]
         return ids, not self.incomplete

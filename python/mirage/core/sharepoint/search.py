@@ -27,12 +27,10 @@ async def files_containing(
     under: list[PathSpec],
     index: IndexCacheStore,
 ) -> list[PathSpec] | None:
-    """The files under ``under`` SharePoint search names.
+    """The files under ``under`` Graph search names, within one library.
 
-    Search runs within one document library, so a scope above one (the
-    sites, or a site's libraries) answers None. See
-    ``mirage.core.msgraph.search.files_containing`` for the files the
-    answer can leave out.
+    Search runs inside one document library, so a scope above one (the
+    sites, or a site's libraries) answers None.
 
     Args:
         accessor (SharePointAccessor): backend handle.

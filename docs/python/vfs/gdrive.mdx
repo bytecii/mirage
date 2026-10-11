@@ -286,24 +286,12 @@ Standard commands available on the mounted Google Drive tree:
 ## grep and rg
 
 With `content_search=True` (YAML `content_search: true`), `grep -rw` and
-`rg -w` read only the files Drive full-text search names, instead of every
-file under the directory. The listings are still walked; a file is skipped
-only when the search leaves it out. Every file is read when the search fails
-or finds nothing. It is off by default.
-
-Drive searches the text it extracted from each file, not the bytes `grep` reads,
-so a file that holds the word can be left out:
-
-- a Docs, Sheets or Slides file, whose `.gdoc.json`, `.gsheet.json` or
-  `.gslide.json` holds keys, style names and ids Drive does not index;
-- an office file, PDF, image or archive, whose raw bytes hold names and
-  compressed runs its extracted text does not;
-- a large file, past the part Drive indexes;
-- a file whose text Drive splits into words differently than `grep` does
-  (`foo.bar`, `foo_bar`);
-- a file changed since Drive last indexed it.
-
-Leave it off when a missed file matters more than the reads it saves.
+`rg -w` read only the files Drive full-text search names; every file is read
+when the search fails or finds nothing. It is off by default: Drive searches
+the text it extracted, not the bytes `grep` reads, and indexes a write some
+time after it lands, so a file that holds the word can be left out: a Docs,
+Sheets or Slides file (its JSON keys and ids), an office file, PDF or archive,
+the end of a large file, or a word Drive splits differently (`foo.bar`).
 
 ## Acting on Drive
 

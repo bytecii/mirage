@@ -15,6 +15,7 @@
 import type { Accessor } from '../../accessor/base.ts'
 import { ResourceType, type IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
+import { isFsError } from '../../errors/fs.ts'
 import type { PathSpec } from '../../types.ts'
 import { entriesUnder, type ReaddirFn } from '../hierarchy/probe.ts'
 import { GraphError, graphList } from './client.ts'
@@ -25,29 +26,16 @@ function isFolder(entry: IndexEntry): boolean {
   return entry.resourceType === ResourceType.FOLDER
 }
 
-/** The Graph `search` function segment for `text`, quoted as an OData string. */
-export function searchAction(text: string): string {
-  return `/search(q='${encodeURIComponent(text.replaceAll("'", "''"))}')`
-}
-
 /**
  * The files under each scope Graph search names. Each scope is walked through
- * the index, the listings grep's own walk reads next, and searched from its
- * folder; a hit is kept when its id is a file the walk found. Null when the
- * search fails, a listed file carries no id, or nothing is found, since Graph
- * indexes a write some time after it lands.
+ * the index (the listings grep reads next) and searched from its folder; a hit
+ * counts when its id is a walked file. Null when a listing or the search fails
+ * or times out, nothing is found, or a walked file has no id.
  *
- * Graph searches the text it indexed, not the bytes grep reads, so the answer
- * can leave out a file that holds the text:
- *
- * - an office file, PDF, image or archive, whose raw bytes hold names and
- *   compressed runs its extracted text does not;
- * - a large file, past the part Graph indexes;
- * - a file whose text Graph splits into words differently than grep does
- *   (`foo.bar`, `foo_bar`);
- * - a file changed since Graph last indexed it.
- *
- * Mirrors Python's `files_containing`.
+ * Graph searches the text it extracted, not the bytes grep reads, so the
+ * answer can leave out a file that holds the text: an office file, PDF or
+ * archive, the end of a large file, a word Graph splits differently
+ * (`foo.bar`), or a recent write. Mirrors Python's `files_containing`.
  */
 export async function filesContaining<A extends Accessor>(
   config: MsGraphConfigResolved,
@@ -57,32 +45,35 @@ export async function filesContaining<A extends Accessor>(
   text: string,
   index?: IndexCacheStore,
 ): Promise<PathSpec[] | null> {
+  const quoted = encodeURIComponent(text.replaceAll("'", "''"))
   const found: PathSpec[] = []
-  for (const [directory, loc] of scopes) {
-    const walked = await entriesUnder(readdir, accessor, directory, index, isFolder)
-    if (walked === null) return null
-    const files = new Map<string, PathSpec[]>()
-    for (const [path, entry] of walked) {
-      if (isFolder(entry)) continue
-      const id = entry.extra.id
-      if (typeof id !== 'string' || id === '') return null
-      files.set(id, [...(files.get(id) ?? []), path])
-    }
-    let items: Record<string, unknown>[]
-    try {
-      items = await graphList(config, loc.item(searchAction(text)), { $select: 'id' })
-    } catch (err) {
-      // fetch rejects with a TypeError when the connection fails and a
-      // DOMException when its timeout aborts it
-      if (!(err instanceof GraphError || err instanceof TypeError || err instanceof DOMException)) {
-        throw err
+  try {
+    for (const [directory, loc] of scopes) {
+      const walked = await entriesUnder(readdir, accessor, directory, index, isFolder)
+      if (walked === null) return null
+      const files = new Map<string, PathSpec[]>()
+      for (const [path, entry] of walked) {
+        if (isFolder(entry)) continue
+        const id = entry.extra.id
+        if (typeof id !== 'string' || id === '') return null
+        files.set(id, [...(files.get(id) ?? []), path])
       }
-      console.warn(`graph search failed (${String(err)}); reading every file`)
-      return null
+      const items = await graphList(config, loc.item(`/search(q='${quoted}')`), { $select: 'id' })
+      for (const item of items) {
+        if (typeof item.id === 'string') found.push(...(files.get(item.id) ?? []))
+      }
     }
-    for (const item of items) {
-      if (typeof item.id === 'string') found.push(...(files.get(item.id) ?? []))
-    }
+  } catch (err) {
+    // fetch rejects with a TypeError when the connection fails and a
+    // DOMException when its timeout aborts it
+    const failed =
+      isFsError(err) ||
+      err instanceof GraphError ||
+      err instanceof TypeError ||
+      err instanceof DOMException
+    if (!failed) throw err
+    console.warn(`graph search failed (${String(err)}); reading every file`)
+    return null
   }
   return found.length > 0 ? found : null
 }

@@ -47,10 +47,9 @@ export class FakeDrive {
   // the walk, so a small page turns a listing of a large folder into more
   // requests rather than fewer.
   listLimits: (number | null | undefined)[] = []
-  // The parent ids of every full-text search, the files the index has not
-  // caught up with, and whether Drive gave up on a corpus.
+  // The parent ids of every full-text search, and whether Drive gave up on
+  // a corpus.
   searches: string[][] = []
-  unindexed = new Set<string>()
   incomplete = false
   private counter = 0
 
@@ -134,7 +133,6 @@ export class FakeDrive {
     const ids: string[] = []
     for (const item of this.items.values()) {
       if (!item.parents.some((p) => parentIds.includes(p))) continue
-      if (this.unindexed.has(item.id)) continue
       if (new TextDecoder().decode(item.content).toLowerCase().includes(needle)) ids.push(item.id)
     }
     return Promise.resolve({ ids, complete: !this.incomplete })

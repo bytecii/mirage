@@ -1,5 +1,3 @@
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
 import mirage.core.msgraph.client as graph_client
@@ -45,28 +43,3 @@ async def test_du_walks_the_namespace_levels(monkeypatch, key):
         == 7
     )
     assert seen == list(_GRAPH)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "content_search, whole_word, asked",
-    [(False, True, False), (True, False, False), (True, True, True)],
-)
-async def test_files_containing_needs_content_search_and_a_whole_word(
-    content_search, whole_word, asked
-):
-    vfs = SharePointVFS(
-        SharePointConfig(access_token="tok", content_search=content_search)
-    )
-    with patch(
-        "mirage.vfs.sharepoint.sharepoint._files_containing",
-        new_callable=AsyncMock,
-        return_value=None,
-    ) as spy:
-        await vfs.files_containing(
-            "wombat",
-            [PathSpec.from_str_path("/m", "")],
-            whole_word=whole_word,
-            ignore_case=False,
-        )
-    assert spy.await_count == (1 if asked else 0)

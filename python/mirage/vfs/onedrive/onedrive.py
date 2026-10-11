@@ -18,6 +18,8 @@ from typing import Any
 from mirage.accessor.onedrive import OneDriveAccessor, OneDriveConfig
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.generic.du import make_walked_du
+from mirage.core.msgraph.search import files_containing as _files_containing
+from mirage.core.onedrive.client import drive_loc
 from mirage.core.onedrive.copy import copy as _copy
 from mirage.core.onedrive.create import create as _create
 from mirage.core.onedrive.exists import exists as _exists
@@ -28,9 +30,6 @@ from mirage.core.onedrive.readdir import readdir as _readdir
 from mirage.core.onedrive.rename import rename as _rename
 from mirage.core.onedrive.rm import rm_r as _rm_r
 from mirage.core.onedrive.rmdir import rmdir as _rmdir
-from mirage.core.onedrive.search import (
-    files_containing as _files_containing,
-)
 from mirage.core.onedrive.stat import stat as _stat
 from mirage.core.onedrive.stream import read_stream as _read_stream
 from mirage.core.onedrive.truncate import truncate as _truncate
@@ -164,7 +163,16 @@ class OneDriveVFS(BaseVFS):
     ) -> list[PathSpec] | None:
         if not whole_word or not self.config.content_search:
             return None
-        return await _files_containing(self.accessor, text, under, index)
+        config = self.accessor.config
+        return await _files_containing(
+            config,
+            _readdir,
+            self.accessor,
+            [(d, drive_loc(config, d.vfs_path)) for d in under],
+            text,
+            index,
+            session=self.accessor.pool,
+        )
 
     def delta_hook(self) -> DeltaHook:
         return build_delta_hook(self.accessor)

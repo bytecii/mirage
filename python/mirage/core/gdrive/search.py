@@ -54,24 +54,16 @@ async def files_containing(
 ) -> list[PathSpec] | None:
     """The files under ``under`` Drive full-text search names.
 
-    Each scope is walked through the index, the listings grep's own walk
-    reads next, and Drive is asked which children of the walked folders
-    hold the text. None when the search fails, Drive reports it did not
-    search every corpus, a scope does not resolve to a folder, or
-    nothing is found, since Drive indexes a write some time after it
-    lands.
+    Each scope is walked through the index (the listings grep reads
+    next) and Drive is asked which files in the walked folders hold the
+    text. None when a listing or the search fails or times out, nothing
+    is found, Drive skips a corpus, or a scope is not a folder.
 
-    Drive searches the text it indexed, not the bytes grep reads, so the
-    answer can leave out a file that holds the text:
-
-    - a Docs, Sheets or Slides file, whose JSON carries keys, style
-      names and ids Drive does not index;
-    - an office file, PDF, image or archive, whose raw bytes hold names
-      and compressed runs its extracted text does not;
-    - a large file, past the part Drive indexes;
-    - a file whose text Drive splits into words differently than grep
-      does (``foo.bar``, ``foo_bar``);
-    - a file changed since Drive last indexed it.
+    Drive searches the text it extracted, not the bytes grep reads, so
+    the answer can leave out a file that holds the text: a Docs, Sheets
+    or Slides file (its JSON keys and ids), an office file, PDF or
+    archive, the end of a large file, a word Drive splits differently
+    (``foo.bar``), or a recent write.
 
     Args:
         accessor (GDriveAccessor): backend handle.
@@ -80,34 +72,31 @@ async def files_containing(
         index (IndexCacheStore): the mount's index.
     """
     found: list[PathSpec] = []
-    for directory in under:
-        folder_id = await _folder_id(accessor, directory, index)
-        walked = await entries_under(
-            readdir, accessor, directory, index, _is_folder
-        )
-        if folder_id is None or walked is None:
-            return None
-        folders = [folder_id]
-        files: dict[str, list[PathSpec]] = {}
-        for path, entry in walked:
-            if _is_folder(entry):
-                folders.append(entry.id)
-            else:
-                files.setdefault(entry.id, []).append(path)
-        for start in range(0, len(folders), PARENTS_PER_QUERY):
-            try:
+    try:
+        for directory in under:
+            root = await _folder_id(accessor, directory, index)
+            walked = await entries_under(
+                readdir, accessor, directory, index, _is_folder
+            )
+            if root is None or walked is None:
+                return None
+            folders = [root]
+            files: dict[str, list[PathSpec]] = {}
+            for path, entry in walked:
+                if _is_folder(entry):
+                    folders.append(entry.id)
+                else:
+                    files.setdefault(entry.id, []).append(path)
+            for start in range(0, len(folders), PARENTS_PER_QUERY):
+                parents = folders[start : start + PARENTS_PER_QUERY]
                 ids, complete = await search_files(
-                    accessor.token_manager,
-                    text,
-                    folders[start : start + PARENTS_PER_QUERY],
+                    accessor.token_manager, text, parents
                 )
-            except aiohttp.ClientError as exc:
-                logger.warning(
-                    "drive search failed (%s); reading every file", exc
-                )
-                return None
-            if not complete:
-                return None
-            for file_id in ids:
-                found.extend(files.get(file_id, []))
+                if not complete:
+                    return None
+                for file_id in ids:
+                    found.extend(files.get(file_id, []))
+    except (OSError, aiohttp.ClientError) as exc:
+        logger.warning("drive search failed (%s); reading every file", exc)
+        return None
     return found or None

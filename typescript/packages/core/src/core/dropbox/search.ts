@@ -27,15 +27,10 @@ import { dropboxPathOf } from './paths.ts'
  * an API failure, the 10,000-match ceiling, or no hit at all, since Dropbox
  * indexes a write some time after it lands.
  *
- * Dropbox searches the text it indexed, not the bytes grep reads, so the
- * answer can leave out a file that holds the text:
- *
- * - an office file, PDF, image or archive, whose raw bytes hold names and
- *   compressed runs its extracted text does not;
- * - a large file, past the part Dropbox indexes;
- * - a file whose text Dropbox splits into words differently than grep does
- *   (`foo.bar`, `foo_bar`);
- * - a file changed since Dropbox last indexed it.
+ * Dropbox searches the text it extracted, not the bytes grep reads, so the
+ * answer can leave out a file that holds the text: an office file, PDF or
+ * archive, the end of a large file, a word Dropbox splits differently
+ * (`foo.bar`), or a recent write.
  *
  * Mirrors Python's `files_containing`.
  */

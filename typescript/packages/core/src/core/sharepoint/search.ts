@@ -21,10 +21,9 @@ import { readdir } from './readdir.ts'
 import { driveLoc, resolve } from './resolve.ts'
 
 /**
- * The files under `under` SharePoint search names. Search runs within one
- * document library, so a scope above one (the sites, or a site's libraries)
- * answers null. See the msgraph `filesContaining` for the files the answer
- * can leave out. Mirrors Python's `files_containing`.
+ * The files under `under` Graph search names, within one library. Search runs
+ * inside one document library, so a scope above one (the sites, or a site's
+ * libraries) answers null. Mirrors Python's `files_containing`.
  */
 export async function filesContaining(
   accessor: SharePointAccessor,

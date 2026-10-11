@@ -23,6 +23,7 @@ import { byteView, utf8Locale } from '../../../shell/bytes.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../../utils/filetype.ts'
 import { globPrefixMatch } from '../../../utils/path.ts'
 import { isFsError } from '../../../errors/fs.ts'
+import { revisionFor } from '../../../observe/context.ts'
 import { FileType, type FileStat, type PathSpec } from '../../../types.ts'
 import type { CommandOpts, CommandIO } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
@@ -197,7 +198,8 @@ async function fullScan<A extends Accessor>(
  * mount's `searchable` names, and `linesContaining` hands a file's matching
  * lines in its place when the output shows nothing else, or tells whether it
  * is worth reading. An operand
- * named on the line is never ruled out by a search asked about directories.
+ * named on the line is never ruled out by a search asked about directories,
+ * nor is a path pinned to a revision, since a search sees the current content.
  * Neither is asked when a hide, a path rule or a preVfs policy judges a path,
  * since a search sees the raw tree.
  * When neither can stand in for a walk, `beforeFullScan` may refuse it.
@@ -282,6 +284,7 @@ export async function searchReads<A extends Accessor>(
     if (
       found !== null &&
       !named.has(path.virtual) &&
+      revisionFor(path.virtual) === null &&
       !(asked.readsBinary && BINARY_EXTENSIONS.has(getExtension(path.virtual) ?? '')) &&
       !found.has(path.vfsPath.toLowerCase()) &&
       (searchable === null || searchable.some((glob) => globPrefixMatch(path.vfsPath, glob)))

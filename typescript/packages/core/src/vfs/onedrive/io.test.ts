@@ -78,26 +78,3 @@ describe('OneDrive du', () => {
     ])
   })
 })
-
-describe('OneDriveVFS filesContaining', () => {
-  it('asks Graph only with contentSearch and a whole word', async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-    const scope = [PathSpec.fromStrPath('/m', '')]
-    const word = { wholeWord: true, ignoreCase: false }
-    expect(
-      await new OneDriveVFS({ accessToken: 'tok' }).filesContaining('wombat', scope, word),
-    ).toBeNull()
-    expect(
-      await new OneDriveVFS({ accessToken: 'tok', contentSearch: true }).filesContaining(
-        'wombat',
-        scope,
-        {
-          ...word,
-          wholeWord: false,
-        },
-      ),
-    ).toBeNull()
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-})

@@ -15,6 +15,7 @@
 import type { GDriveAccessor } from '../../accessor/gdrive.ts'
 import type { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
+import { isFsError } from '../../errors/fs.ts'
 import type { PathSpec } from '../../types.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import { GoogleApiError } from '../google/client.ts'
@@ -41,24 +42,15 @@ async function folderId(
 
 /**
  * The files under `under` Drive full-text search names. Each scope is walked
- * through the index, the listings grep's own walk reads next, and Drive is
- * asked which children of the walked folders hold the text. Null when the
- * search fails, Drive reports it did not search every corpus, a scope does
- * not resolve to a folder, or nothing is found, since Drive indexes a write
- * some time after it lands.
+ * through the index (the listings grep reads next) and Drive is asked which
+ * files in the walked folders hold the text. Null when a listing or the search
+ * fails or times out, nothing is found, Drive skips a corpus, or a scope is
+ * not a folder.
  *
- * Drive searches the text it indexed, not the bytes grep reads, so the answer
- * can leave out a file that holds the text:
- *
- * - a Docs, Sheets or Slides file, whose JSON carries keys, style names and
- *   ids Drive does not index;
- * - an office file, PDF, image or archive, whose raw bytes hold names and
- *   compressed runs its extracted text does not;
- * - a large file, past the part Drive indexes;
- * - a file whose text Drive splits into words differently than grep does
- *   (`foo.bar`, `foo_bar`);
- * - a file changed since Drive last indexed it.
- *
+ * Drive searches the text it extracted, not the bytes grep reads, so the
+ * answer can leave out a file that holds the text: a Docs, Sheets or Slides
+ * file (its JSON keys and ids), an office file, PDF or archive, the end of a
+ * large file, a word Drive splits differently (`foo.bar`), or a recent write.
  * Mirrors Python's `files_containing`.
  */
 export async function filesContaining(
@@ -68,42 +60,35 @@ export async function filesContaining(
   index?: IndexCacheStore,
 ): Promise<PathSpec[] | null> {
   const found: PathSpec[] = []
-  for (const directory of under) {
-    const root = await folderId(accessor, directory, index)
-    const walked = await entriesUnder(readdir, accessor, directory, index, isFolder)
-    if (root === null || walked === null) return null
-    const folders = [root]
-    const files = new Map<string, PathSpec[]>()
-    for (const [path, entry] of walked) {
-      if (isFolder(entry)) folders.push(entry.id)
-      else files.set(entry.id, [...(files.get(entry.id) ?? []), path])
-    }
-    for (let start = 0; start < folders.length; start += PARENTS_PER_QUERY) {
-      let answer: { ids: string[]; complete: boolean }
-      try {
-        answer = await searchFiles(
-          accessor.tokenManager,
-          text,
-          folders.slice(start, start + PARENTS_PER_QUERY),
-        )
-      } catch (err) {
-        // fetch rejects with a TypeError when the connection fails and a
-        // DOMException when its timeout aborts it
-        if (
-          !(
-            err instanceof GoogleApiError ||
-            err instanceof TypeError ||
-            err instanceof DOMException
-          )
-        ) {
-          throw err
-        }
-        console.warn(`drive search failed (${String(err)}); reading every file`)
-        return null
+  try {
+    for (const directory of under) {
+      const root = await folderId(accessor, directory, index)
+      const walked = await entriesUnder(readdir, accessor, directory, index, isFolder)
+      if (root === null || walked === null) return null
+      const folders = [root]
+      const files = new Map<string, PathSpec[]>()
+      for (const [path, entry] of walked) {
+        if (isFolder(entry)) folders.push(entry.id)
+        else files.set(entry.id, [...(files.get(entry.id) ?? []), path])
       }
-      if (!answer.complete) return null
-      for (const id of answer.ids) found.push(...(files.get(id) ?? []))
+      for (let start = 0; start < folders.length; start += PARENTS_PER_QUERY) {
+        const parents = folders.slice(start, start + PARENTS_PER_QUERY)
+        const answer = await searchFiles(accessor.tokenManager, text, parents)
+        if (!answer.complete) return null
+        for (const id of answer.ids) found.push(...(files.get(id) ?? []))
+      }
     }
+  } catch (err) {
+    // fetch rejects with a TypeError when the connection fails and a
+    // DOMException when its timeout aborts it
+    const failed =
+      isFsError(err) ||
+      err instanceof GoogleApiError ||
+      err instanceof TypeError ||
+      err instanceof DOMException
+    if (!failed) throw err
+    console.warn(`drive search failed (${String(err)}); reading every file`)
+    return null
   }
   return found.length > 0 ? found : null
 }
