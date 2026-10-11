@@ -114,6 +114,29 @@ export function dotPrefixes(
 }
 
 /**
+ * The names a walk of `dotted` looks up in front of a dot, in walk order,
+ * each as the walk reached it and before a link there is followed: the
+ * simplified path no longer names them, so a hide has to answer for them
+ * here. A caller that stops at one never follows it. Mirrors Python's
+ * dot_lookups.
+ */
+export function* dotLookups(
+  dotted: string,
+  follow: ((path: string) => string) | null = null,
+): Generator<string> {
+  let current = '/'
+  for (const part of dotted.split('/').filter((p) => p !== '')) {
+    if (DOTS.has(part)) {
+      if (current !== '/') yield current
+      if (follow !== null) current = follow(current)
+      if (part === '..') current = parent(current)
+      continue
+    }
+    current = `${rstripSlash(current)}/${part}`
+  }
+}
+
+/**
  * The names a walk of `dotted` enters, each with its spelling in `raw`.
  *
  * What `mkdir -p` creates on the way and names when it cannot: GNU makes each

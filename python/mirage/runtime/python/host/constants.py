@@ -109,23 +109,24 @@ DESCRIPTOR_CALLS: frozenset[str] = frozenset(
     }
 )
 
-# The descriptor calls a mounted descriptor refuses, by how many leading
-# arguments are descriptors: a mount has no kernel file to duplicate,
-# copy between in the kernel, lock, preallocate or advise on, so these
-# answer ENOTSUP for one of the routed `open`'s numbers rather than reach
-# the pipe that holds it, and leave every other number to the host.
-REFUSED_DESCRIPTOR_CALLS: Mapping[str, int] = {
-    "copy_file_range": 2,
-    "dup": 1,
-    "dup2": 2,
-    "fchdir": 1,
-    "fpathconf": 1,
-    "fstatvfs": 1,
-    "lockf": 1,
-    "posix_fadvise": 1,
-    "posix_fallocate": 1,
-    "sendfile": 2,
-    "splice": 2,
+# The descriptor calls a mounted descriptor refuses, by the names of the
+# parameters that take a descriptor, in order: a mount has no kernel
+# file to duplicate, copy between in the kernel, lock, preallocate or
+# advise on, so these answer ENOTSUP for one of the routed `open`'s
+# numbers, passed by position or by name, rather than reach the pipe
+# that holds it, and leave every other number to the host.
+REFUSED_DESCRIPTOR_CALLS: Mapping[str, tuple[str, ...]] = {
+    "copy_file_range": ("src", "dst"),
+    "dup": ("fd",),
+    "dup2": ("fd", "fd2"),
+    "fchdir": ("fd",),
+    "fpathconf": ("fd",),
+    "fstatvfs": ("fd",),
+    "lockf": ("fd",),
+    "posix_fadvise": ("fd",),
+    "posix_fallocate": ("fd",),
+    "sendfile": ("out_fd", "in_fd"),
+    "splice": ("src", "dst"),
 }
 
 # setxattr(2)'s flags as linux numbers them, the one platform whose os

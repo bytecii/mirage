@@ -183,6 +183,66 @@
           }
         }
       ]
+    },
+    {
+      "id": "a_hidden_link_is_no_road_past_its_dots",
+      "runtimes": [
+        "host"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {
+              "f.txt": "top\n",
+              "public/f.txt": "public\n",
+              "public/sub/keep.txt": ""
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "ln -s /data/public/sub /data/secretlink",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "profile": {
+            "paths": {
+              "hide": [
+                "/data/secretlink"
+              ]
+            }
+          }
+        },
+        {
+          "command": "cat /data/secretlink/../f.txt",
+          "expect": {
+            "exit": 1,
+            "stdout": "",
+            "stderr": "cat: /data/secretlink/../f.txt: No such file or directory\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import errno, os\ncalls = (\n    lambda: open('/data/secretlink/../f.txt').read(),\n    lambda: os.stat('/data/secretlink/../f.txt'),\n)\nfor call in calls:\n    try:\n        call()\n        print('reached')\n    except OSError as e:\n        print(errno.errorcode[e.errno])",
+            "node": "const fsp = require('node:fs').promises\nconst calls = [\n  () => fsp.readFile('/data/secretlink/../f.txt', 'utf8'),\n  () => fsp.stat('/data/secretlink/../f.txt'),\n]\nfor (const call of calls) {\n  try {\n    await call()\n    console.log('reached')\n  } catch (e) {\n    console.log(e.code)\n  }\n}"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "ENOENT\nENOENT\n"
+          }
+        },
+        {
+          "command": "cat /data/f.txt /data/public/f.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "top\npublic\n"
+          }
+        }
+      ]
     }
   ]
 }

@@ -38,6 +38,11 @@
               "exit": 1,
               "stdout": "",
               "stderr_contains": "'module' object has no attribute 'O_WRONLY'"
+            },
+            "wasi": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "has no attribute 'writev'"
             }
           }
         },
@@ -50,6 +55,9 @@
           "expect_on": {
             "monty": {
               "exit": 1,
+              "stdout": ""
+            },
+            "wasi": {
               "stdout": ""
             }
           }
@@ -73,6 +81,11 @@
               "exit": 1,
               "stdout": "",
               "stderr_contains": "has no attribute 'pwritev'"
+            },
+            "wasi": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "has no attribute 'pwritev'"
             }
           }
         },
@@ -89,6 +102,9 @@
             },
             "pyodide": {
               "stdout": "abcd"
+            },
+            "wasi": {
+              "stdout": ""
             }
           }
         }

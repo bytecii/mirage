@@ -53,7 +53,7 @@ from mirage.runtime.python.host.syscall import as_raised, host_files, syscall
 from mirage.runtime.stat import posix_stat
 from mirage.runtime.types import VFSStat
 from mirage.utils.dates import timestamp_iso
-from mirage.utils.path import owner_prefix, resolve_path
+from mirage.utils.path import owner_prefix
 from mirage.utils.remnants import entry_name
 from mirage.utils.stat_view import LINK_MODE
 from mirage.workspace.files import Files
@@ -316,7 +316,7 @@ class HostFs:
         # there; mirrors mount/core.py.
         self._uid = _real_os.getuid() if hasattr(_real_os, "getuid") else 0
         self._gid = _real_os.getgid() if hasattr(_real_os, "getgid") else 0
-        self._descriptors = Descriptors(self._adapter, self._host)
+        self._descriptors = Descriptors(self._adapter, self._host, files.links)
 
     @property
     def files(self) -> Files:
@@ -826,7 +826,7 @@ class HostFs:
             access = stamp = time.time()
         # Writes a descriptor still owes land first, or landing them at
         # its close would stamp over the times set here.
-        self._descriptors.land_path(virtual)
+        self._descriptors.land_path(virtual, follow_symlinks)
         self._adapter.setattr(
             virtual,
             atime=timestamp_iso(access),
@@ -1000,7 +1000,8 @@ class HostFs:
             )
         # A rename onto its own name changes nothing, its descriptors
         # included.
-        same = resolve_path(dest, "/") == resolve_path(source, "/")
+        walked = self._descriptors.walked
+        same = walked(dest, False) == walked(source, False)
         held = [] if same else self._descriptors.hold(dest)
         self._adapter.rename(source, dest)
         self._descriptors.keep(held)
@@ -1125,11 +1126,17 @@ class HostFs:
         return len(payload)
 
     def pread(self, fd: int, n: int, offset: int) -> bytes:
-        return self._descriptors.file(fd, True, False).pread(offset, n)
+        handle = self._descriptors.file(fd, True, False)
+        if offset < 0:
+            raise fs_error(self._descriptors[fd].path, FsCondition.EINVAL)
+        return handle.pread(offset, n)
 
     def pwrite(self, fd: int, data: Any, offset: int) -> int:
         payload = bytes(data)
-        self._descriptors.file(fd, False, True).pwrite(offset, payload)
+        handle = self._descriptors.file(fd, False, True)
+        if offset < 0:
+            raise fs_error(self._descriptors[fd].path, FsCondition.EINVAL)
+        handle.pwrite(offset, payload)
         return len(payload)
 
     def readv(self, fd: int, buffers: Any) -> int:
@@ -1139,8 +1146,22 @@ class HostFs:
     def preadv(
         self, fd: int, buffers: Any, offset: int, flags: int = 0
     ) -> int:
+        """Read into ``buffers`` at ``offset``; -1 reads at the
+        descriptor's position and moves it, as Linux's preadv does.
+
+        Args:
+            fd (int): the descriptor.
+            buffers (Any): the writable buffers to fill, in order.
+            offset (int): where the read starts, or -1.
+            flags (int): the ``RWF_*`` flags, none of which a mount
+                answers, so any refuses rather than being dropped.
+        """
+        self._no_flags(fd, flags)
         views = _views(buffers)
-        return _scatter(self.pread(fd, sum(map(len, views)), offset), views)
+        size = sum(map(len, views))
+        if offset == -1:
+            return _scatter(self.read(fd, size), views)
+        return _scatter(self.pread(fd, size, offset), views)
 
     def writev(self, fd: int, buffers: Any) -> int:
         return self.write(fd, b"".join(map(bytes, buffers)))
@@ -1148,7 +1169,33 @@ class HostFs:
     def pwritev(
         self, fd: int, buffers: Any, offset: int, flags: int = 0
     ) -> int:
-        return self.pwrite(fd, b"".join(map(bytes, buffers)), offset)
+        """Write ``buffers`` at ``offset``; -1 writes at the descriptor's
+        position and moves it, as Linux's pwritev does.
+
+        Args:
+            fd (int): the descriptor.
+            buffers (Any): the buffers to write, in order.
+            offset (int): where the write starts, or -1.
+            flags (int): the ``RWF_*`` flags, none of which a mount
+                answers (``RWF_APPEND`` included), so any refuses rather
+                than being dropped.
+        """
+        self._no_flags(fd, flags)
+        payload = b"".join(map(bytes, buffers))
+        if offset == -1:
+            return self.write(fd, payload)
+        return self.pwrite(fd, payload, offset)
+
+    def _no_flags(self, fd: int, flags: int) -> None:
+        """Refuse a vectored call's flags, ENOTSUP as Linux answers one it
+        does not support.
+
+        Args:
+            fd (int): the descriptor.
+            flags (int): the ``RWF_*`` flags.
+        """
+        if flags:
+            raise fs_error(self._descriptors[fd].path, FsCondition.ENOTSUP)
 
     def lseek(self, fd: int, pos: int, how: int) -> int:
         desc = self._descriptors[fd]
@@ -1252,20 +1299,23 @@ def _scatter(data: bytes, views: list[memoryview]) -> int:
 
 
 def _descriptor_refusal(
-    router: HostFs, verb: str, fds: int
+    router: HostFs, verb: str, params: tuple[str, ...]
 ) -> Callable[..., Any]:
-    """`verb` refusing ENOTSUP when one of its first ``fds`` arguments is
-    a descriptor the routed ``open`` handed out, and the host's otherwise.
+    """`verb` refusing ENOTSUP when a descriptor it takes, by position or
+    by name, is one the routed ``open`` handed out, and the host's
+    otherwise.
 
     Args:
         router (HostFs): the entry point whose descriptors refuse.
         verb (str): the os name being wrapped.
-        fds (int): how many leading arguments are descriptors.
+        params (tuple[str, ...]): the names of its descriptor
+            parameters, in order, which lead its signature.
     """
     real = getattr(router._host, verb)
 
     def refuse(*args: Any, **kwargs: Any) -> Any:
-        for fd in args[:fds]:
+        for at, param in enumerate(params):
+            fd = args[at] if at < len(args) else kwargs.get(param)
             desc = router.descriptors.get(fd)
             if desc is not None:
                 raise fs_error(desc.path, FsCondition.ENOTSUP)
@@ -1394,9 +1444,9 @@ def os_routing(router: HostFs) -> dict[str, Callable[..., Any]]:
     for verb, condition in REFUSED_CALLS.items():
         if hasattr(_real_os, verb):
             table[verb] = syscall(_refusal(router, verb, condition))
-    for verb, fds in REFUSED_DESCRIPTOR_CALLS.items():
+    for verb, params in REFUSED_DESCRIPTOR_CALLS.items():
         if hasattr(_real_os, verb):
-            table[verb] = syscall(_descriptor_refusal(router, verb, fds))
+            table[verb] = syscall(_descriptor_refusal(router, verb, params))
     return table
 
 

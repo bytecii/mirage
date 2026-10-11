@@ -14,13 +14,16 @@
 
 import { constants } from 'node:fs'
 import { devNull } from 'node:os'
+import { walkSpelling } from '@struktoai/mirage-core/commands/builtin/utils/paths'
 import { ebadf, eisdir, eloop, enoent, enotdir } from '@struktoai/mirage-core/errors/fs'
 import type { RuntimeFiles } from '@struktoai/mirage-core/runtime/files'
 import { FileHandle } from '@struktoai/mirage-core/runtime/handles/file_handle'
 import type { OpenMode } from '@struktoai/mirage-core/runtime/handles/mode'
 import type { FileFetch } from '@struktoai/mirage-core/runtime/handles/types'
 import { applyOpen } from '@struktoai/mirage-core/runtime/open'
-import { resolvePath } from '@struktoai/mirage-core/utils/path'
+import { PathSpec } from '@struktoai/mirage-core/types'
+import { CycleError, resolvePath } from '@struktoai/mirage-core/utils/path'
+import type { NamespaceLinks } from '@struktoai/mirage-core/view/types'
 
 const { O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND } = constants
 const { O_NOFOLLOW, O_DIRECTORY } = constants
@@ -142,7 +145,35 @@ export class Descriptors {
   constructor(
     private readonly files: RuntimeFiles,
     private readonly native: Record<string, unknown>,
+    // The namespace's links, which a walk follows; null while it keeps none.
+    private readonly links: NamespaceLinks | null,
   ) {}
+
+  /** The path an op on `path` lands on, as the dispatcher walks it: a link
+   * in front of a dot followed before the climb, the dots resolved, and the
+   * final link followed too when `follow` (a rename or a removal acts on
+   * the name itself). One file reads as one path whichever spelling reached
+   * it, which is how a rename or an unlink finds the descriptors open on
+   * it. Mirrors python's Descriptors.walked. */
+  walked(path: string, follow = true): string {
+    const spec = PathSpec.fromStrPath(path, undefined, '/')
+    const links = this.links
+    if (links === null) return spec.virtual
+    const resolve = (virtual: string): string => links.follow(virtual)
+    try {
+      const spelled = walkSpelling(spec, resolve)
+      const cut = spelled.lastIndexOf('/')
+      const name = spelled.slice(cut + 1)
+      if (follow || name === '' || name === '.' || name === '..') {
+        return resolvePath(resolve(spelled), '/')
+      }
+      const above = resolvePath(resolve(spelled.slice(0, cut) || '/'), '/')
+      return `${above.replace(/\/+$/, '')}/${name}`
+    } catch (err) {
+      if (err instanceof CycleError) throw eloop(path)
+      throw err
+    }
+  }
 
   /** The mounted descriptor `fd` is, else undefined. */
   get(fd: unknown): Descriptor | undefined {
@@ -172,7 +203,7 @@ export class Descriptors {
     if ((flags & O_DIRECTORY) !== 0 && row?.isDir !== true) {
       throw row === null ? enoent(path) : enotdir(path)
     }
-    const desc: Descriptor = { path: resolvePath(path, '/'), mode, handle: null, kept: null }
+    const desc: Descriptor = { path, mode, handle: null, kept: null }
     if (row?.isDir !== true || mode.writable || mode.create) {
       const opened = await applyOpen(this.files, path, mode)
       desc.handle = FileHandle.opened(
@@ -181,6 +212,7 @@ export class Descriptors {
         { size: opened?.size ?? 0, writable: mode.writable, append: mode.append },
       )
     }
+    desc.path = this.walked(path)
     const fd = (this.native.openSync as (p: string, f: string) => number)(devNull, 'r')
     this.table.set(fd, desc)
     return fd
@@ -211,7 +243,7 @@ export class Descriptors {
   /** Land the writes of every descriptor open on `path`, which a change of
    * its times must come after. */
   async landPath(path: string): Promise<void> {
-    const named = resolvePath(path, '/')
+    const named = this.walked(path)
     for (const [fd, desc] of this.table) {
       if (desc.path === named) await this.serial(fd, () => this.land(desc))
     }
@@ -220,8 +252,8 @@ export class Descriptors {
   /** Follow a rename: a descriptor on `old` or under it names the same
    * file at `next` now. */
   moved(old: string, next: string): void {
-    const from = resolvePath(old, '/')
-    const to = resolvePath(next, '/')
+    const from = this.walked(old, false)
+    const to = this.walked(next, false)
     const under = `${from.replace(/\/+$/, '')}/`
     for (const desc of this.table.values()) {
       if (desc.kept === null && (desc.path === from || desc.path.startsWith(under))) {
@@ -233,7 +265,7 @@ export class Descriptors {
   /** Read what the descriptors open on `path` need before its name is
    * removed or replaced; `keep` them once it has gone. */
   async hold(path: string): Promise<[Descriptor, Uint8Array][]> {
-    const named = resolvePath(path, '/')
+    const named = this.walked(path, false)
     const held: [Descriptor, Uint8Array][] = []
     for (const desc of this.table.values()) {
       if (desc.path !== named || desc.kept !== null || desc.handle === null) continue

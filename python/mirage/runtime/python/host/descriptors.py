@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 from typing import IO, Any, cast
 
+from mirage.commands.builtin.utils.paths import walk_spelling
 from mirage.errors.fs import fs_error
 from mirage.errors.types import FsCondition
 from mirage.runtime.files import RuntimeFiles
@@ -32,7 +33,9 @@ from mirage.runtime.python.host.file import (
     text_encoding,
 )
 from mirage.runtime.python.host.syscall import syscall
-from mirage.utils.path import resolve_path
+from mirage.types import PathSpec
+from mirage.utils.path import CycleError, resolve_path
+from mirage.view.types import NamespaceLinks
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +88,9 @@ class Descriptor:
     """One mounted file ``os.open`` or ``open`` has open.
 
     Args:
-        path (str): the mounted path it names now, dots resolved; a
-            rename through the same entry point moves it.
+        path (str): the mounted path it names now, as the open's walk
+            reached it (``Descriptors.walked``); a rename through the
+            same entry point moves it.
         facts (OpenMode): what its flags or mode asked for.
         handle (FileHandle | None): the file it reads and writes; None
             for a directory, which a descriptor may name but not read.
@@ -118,11 +122,16 @@ class Descriptors:
     Args:
         adapter (RuntimeFiles): the file adapter files land through.
         host (Any): the host ``os`` functions the router snapshotted.
+        links (NamespaceLinks | None): the namespace's links, which a
+            walk follows; None while the workspace keeps none.
     """
 
-    def __init__(self, adapter: RuntimeFiles, host: Any) -> None:
+    def __init__(
+        self, adapter: RuntimeFiles, host: Any, links: NamespaceLinks | None
+    ) -> None:
         self._adapter = adapter
         self._host = host
+        self._links = links
         self._open: dict[int, Descriptor] = {}
         self._unnumbered: dict[int, Descriptor] = {}
 
@@ -146,6 +155,31 @@ class Descriptors:
         if desc is None:
             raise OSError(errno.EBADF, os.strerror(errno.EBADF))
         return desc
+
+    def walked(self, path: str, follow: bool = True) -> str:
+        """The path an op on ``path`` lands on, as the dispatcher walks
+        it: a link in front of a dot followed before the climb, the dots
+        resolved, and the final link followed too when ``follow``. One
+        file reads as one path whichever spelling reached it, which is
+        how a rename or an unlink finds the files open on it.
+
+        Args:
+            path (str): the mounted path as the caller spelled it.
+            follow (bool): follow the final name too; a rename or a
+                removal acts on the name itself.
+        """
+        spec = PathSpec.from_str_path(path, cwd="/")
+        if self._links is None:
+            return spec.virtual
+        try:
+            spelled = walk_spelling(spec, self._links.follow)
+            head, _, name = spelled.rpartition("/")
+            if follow or name in ("", ".", ".."):
+                return resolve_path(self._links.follow(spelled), "/")
+            above = resolve_path(self._links.follow(head or "/"), "/")
+        except CycleError:
+            raise fs_error(path, FsCondition.ELOOP) from None
+        return above.rstrip("/") + "/" + name
 
     def _every(self) -> list[Descriptor]:
         """Every open file, numbered or not."""
@@ -180,8 +214,8 @@ class Descriptors:
             path (str): the mounted path.
             facts (OpenMode): what the open asked for.
         """
-        desc = Descriptor(resolve_path(path, "/"), facts)
         row = apply_open(self._adapter, path, facts)
+        desc = Descriptor(self.walked(path), facts)
         desc.handle = FileHandle.opened(
             path,
             None
@@ -214,7 +248,7 @@ class Descriptors:
             )
         directory = row is not None and row.is_dir
         if directory and not (facts.writable or facts.create):
-            desc = Descriptor(resolve_path(path, "/"), facts)
+            desc = Descriptor(self.walked(path), facts)
         else:
             desc = self._opened(path, facts)
         fd, write_end = cast(tuple[int, int], self._host.pipe())
@@ -284,14 +318,15 @@ class Descriptors:
         syscall(self._adapter.flush)(desc.path, steps)
         handle.settle(functools.partial(self._fetch, desc, True))
 
-    def land_path(self, path: str) -> None:
+    def land_path(self, path: str, follow: bool = True) -> None:
         """Land the writes of every file open on ``path``, which a change
         of its times must come after.
 
         Args:
             path (str): the mounted path.
+            follow (bool): the change follows a link at ``path``.
         """
-        path = resolve_path(path, "/")
+        path = self.walked(path, follow)
         for desc in self._every():
             if desc.path == path:
                 self.land(desc)
@@ -304,7 +339,7 @@ class Descriptors:
             old (str): the path the rename took.
             new (str): the path it gave.
         """
-        old, new = resolve_path(old, "/"), resolve_path(new, "/")
+        old, new = self.walked(old, False), self.walked(new, False)
         under = old.rstrip("/") + "/"
         for desc in self._every():
             if desc.kept is None and (
@@ -319,7 +354,7 @@ class Descriptors:
         Args:
             path (str): the path about to go.
         """
-        path = resolve_path(path, "/")
+        path = self.walked(path, False)
         held: list[tuple[Descriptor, bytes]] = []
         for desc in self._every():
             if desc.path != path or desc.kept is not None:

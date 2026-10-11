@@ -20,7 +20,14 @@ import { dotWalkError, eexist, enoent, isMissingPath } from '../../../errors/fs.
 import { operandSpelling } from '../../../errors/render.ts'
 import { type FsError } from '../../../errors/types.ts'
 import { mountKey, rekey, respelled } from '../../../utils/key_prefix.ts'
-import { CycleError, dotPrefixes, norm, parent, resolvePath } from '../../../utils/path.ts'
+import {
+  CycleError,
+  dotLookups,
+  dotPrefixes,
+  norm,
+  parent,
+  resolvePath,
+} from '../../../utils/path.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import type { FsCondition } from '../../../errors/types.ts'
 
@@ -170,6 +177,35 @@ export function walkSpelling(path: PathSpec, follow: ((path: string) => string) 
   const dotted = path.dotted
   if (dotted !== null && spells(dotted, path.virtual, follow)) return rstripSlash(dotted) || '/'
   return path.virtual
+}
+
+/**
+ * ENOENT when the walk of a path's dots looks up a name the session cannot
+ * see, null when it sees every one.
+ *
+ * `virtual` simplified the dots away, so a hidden name in front of one
+ * (`secret/../f`, a hidden link's `lnk/../f`) is gone from the path the
+ * hides judge, while the walk still has to find it. It answers as a missing
+ * name does, and before `dotRefusal` proves anything a directory, so the
+ * refusal cannot tell a hide from an absence. The walk stops at the hidden
+ * name, so a link there is never followed. Mirrors Python's hidden_walk.
+ */
+export function hiddenWalk(
+  path: PathSpec,
+  follow: ((path: string) => string) | null,
+  visible: (path: string) => boolean,
+): FsError | null {
+  const dotted = path.dotted
+  if (dotted === null || !spells(dotted, resolvePath(path.virtual, '/'), follow)) return null
+  try {
+    for (const looked of dotLookups(dotted, follow)) {
+      if (!visible(looked)) return dotWalkError(path, 'ENOENT')
+    }
+  } catch (err) {
+    if (err instanceof CycleError) return dotWalkError(path, 'ELOOP')
+    throw err
+  }
+  return null
 }
 
 /**

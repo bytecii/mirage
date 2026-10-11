@@ -163,6 +163,16 @@ class TestTableInstall:
                 continue
             assert sum(name in table for table in tables) == 1, name
 
+    def test_refused_descriptor_params_are_the_os_names(self):
+        # A descriptor passed by name is found by these names, so one
+        # that drifted from os's own would let that spelling reach the
+        # pipe a mounted descriptor holds.
+        for verb, params in REFUSED_DESCRIPTOR_CALLS.items():
+            if not hasattr(os, verb):
+                continue
+            names = list(inspect.signature(getattr(os, verb)).parameters)
+            assert names[: len(params)] == list(params), verb
+
 
 class TestStatShape:
     def test_stat_is_a_real_stat_result(self):
