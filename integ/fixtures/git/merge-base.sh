@@ -22,7 +22,8 @@ commit x 1000000003 -p "$a" -p "$b" >/dev/null
 commit y 1000000004 -p "$b" -p "$a" >/dev/null
 commit isolated 1000000005 >/dev/null
 ancestor=$(commit skew-root 1000000100)
-child=$(commit skew-child 1000000001 -p "$ancestor")
+parent=$(commit skew-parent 1000000000 -p "$ancestor")
+child=$(commit skew-child 1000000001 -p "$parent")
 commit skew-left 1000000200 -p "$ancestor" -p "$child" >/dev/null
 commit skew-right 1000000300 -p "$ancestor" -p "$child" >/dev/null
 git tag -a tagged -m tag x

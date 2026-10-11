@@ -8,6 +8,18 @@ const CP437 =
   '└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀' +
   'αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ '
 
+function checkExtra(data: Uint8Array): void {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  let pos = 0
+  while (pos < data.length) {
+    if (pos + 4 > data.length) throw new ZipUpdateError('truncated extra field')
+    const tag = view.getUint16(pos, true)
+    pos += 4 + view.getUint16(pos + 2, true)
+    if (tag === 1 || pos > data.length)
+      throw new ZipUpdateError('unsupported or truncated extra field')
+  }
+}
+
 /** Read opaque records; updates need no decompressor or password. */
 export function readArchive(data: Uint8Array): ZipArchive {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
@@ -45,11 +57,12 @@ export function readArchive(data: Uint8Array): ZipArchive {
     if (u16(pos + 34) || Math.max(csize, usize, local) === 0xffffffff || next > end)
       throw new ZipUpdateError('unsupported or truncated entry')
     const rawName = data.subarray(pos + 46, pos + 46 + nameLen)
+    checkExtra(data.subarray(pos + 46 + nameLen, next - noteLen))
     let name: string
     try {
       name =
         flags & 0x800
-          ? new TextDecoder('utf-8', { fatal: true }).decode(rawName)
+          ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(rawName)
           : Array.from(rawName, (b) =>
               b < 128 ? String.fromCharCode(b) : CP437.charAt(b - 128),
             ).join('')
@@ -71,6 +84,30 @@ export function readArchive(data: Uint8Array): ZipArchive {
       throw new ZipUpdateError('invalid local record')
     if (entry.local + 30 + u16(entry.local + 26) + u16(entry.local + 28) + entry.csize > limit)
       throw new ZipUpdateError('truncated local record')
+    const local = entry.local
+    const nameLen = u16(local + 26)
+    const extraLen = u16(local + 28)
+    const central = new DataView(
+      entry.central.buffer,
+      entry.central.byteOffset,
+      entry.central.length,
+    )
+    if (
+      nameLen !== central.getUint16(28, true) ||
+      !data
+        .subarray(local + 30, local + 30 + nameLen)
+        .every((b, i) => b === entry.central[46 + i]) ||
+      u32(local + 6) !== central.getUint32(8, true)
+    )
+      throw new ZipUpdateError('inconsistent local record')
+    if (u32(local + 18) === 0xffffffff || u32(local + 22) === 0xffffffff)
+      throw new ZipUpdateError('ZIP64 local record')
+    if (
+      !(central.getUint16(8, true) & 8) &&
+      !data.subarray(local + 14, local + 26).every((b, i) => b === entry.central[16 + i])
+    )
+      throw new ZipUpdateError('inconsistent local sizes or CRC')
+    checkExtra(data.subarray(local + 30 + nameLen, local + 30 + nameLen + extraLen))
     return { name: entry.name, central: entry.central, local: data.subarray(entry.local, limit) }
   })
   return {

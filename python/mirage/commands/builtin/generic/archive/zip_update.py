@@ -7,6 +7,17 @@ from mirage.commands.builtin.generic.archive.types import ZipArchive, ZipRecord
 CP437 = "cp437"
 
 
+def _check_extra(data: bytes) -> None:
+    pos = 0
+    while pos < len(data):
+        if pos + 4 > len(data):
+            raise ZipUpdateError("truncated extra field")
+        tag, size = struct.unpack_from("<2H", data, pos)
+        pos += 4 + size
+        if tag == 1 or pos > len(data):
+            raise ZipUpdateError("unsupported or truncated extra field")
+
+
 def read_archive(data: bytes) -> ZipArchive:
     """Read opaque ZIP records so updates need no decompressor or password.
 
@@ -49,6 +60,7 @@ def read_archive(data: bytes) -> ZipArchive:
         if disk or max(csize, usize, local) == 0xFFFFFFFF or next_pos > end:
             raise ZipUpdateError("unsupported or truncated entry")
         raw_name = data[pos + 46 : pos + 46 + name_len]
+        _check_extra(data[pos + 46 + name_len : next_pos - note_len])
         try:
             name = raw_name.decode("utf-8" if flags & 0x800 else CP437)
         except UnicodeDecodeError as exc:
@@ -77,6 +89,21 @@ def read_archive(data: bytes) -> ZipArchive:
         name_len, extra_len = struct.unpack_from("<2H", data, local + 26)
         if local + 30 + name_len + extra_len + csize > limit:
             raise ZipUpdateError("truncated local record")
+        central_name_len = struct.unpack_from("<H", central, 28)[0]
+        if (
+            data[local + 30 : local + 30 + name_len]
+            != central[46 : 46 + central_name_len]
+            or data[local + 6 : local + 10] != central[8:12]
+        ):
+            raise ZipUpdateError("inconsistent local record")
+        if 0xFFFFFFFF in struct.unpack_from("<2I", data, local + 18):
+            raise ZipUpdateError("ZIP64 local record")
+        if not struct.unpack_from("<H", central, 8)[0] & 8:
+            if data[local + 14 : local + 26] != central[16:28]:
+                raise ZipUpdateError("inconsistent local sizes or CRC")
+        _check_extra(
+            data[local + 30 + name_len : local + 30 + name_len + extra_len]
+        )
         records.append(ZipRecord(name, data[local:limit], central))
     return ZipArchive(
         tuple(records),

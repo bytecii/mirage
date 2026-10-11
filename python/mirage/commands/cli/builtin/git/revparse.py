@@ -266,8 +266,9 @@ def merge_bases(
 
     git's paint walk: each side paints what it reaches, newest first
     and first queued on a tie, and a commit wearing both colours is a
-    base whose own ancestry goes stale. The walk ends once every queued
-    commit is stale, and the bases come out in the order git lists them
+    base whose own ancestry goes stale. Stale work can stop only when
+    at most one candidate remains; otherwise it may still eliminate a
+    redundant base. The bases come out in the order git lists them
     (pinned against ``git merge-base --all`` 2.50).
 
     Args:
@@ -283,7 +284,12 @@ def merge_bases(
             queue.append(commit)
         paint[commit.id] = paint.get(commit.id, 0) | RIGHT
     bases: list[Commit] = []
-    while any(not paint[commit.id] & STALE for commit in queue):
+    while queue:
+        if (
+            all(paint[commit.id] & STALE for commit in queue)
+            and sum(not paint[commit.id] & STALE for commit in bases) <= 1
+        ):
+            break
         queue.sort(key=lambda commit: -commit.commit_time)
         commit = queue.pop(0)
         flags = paint[commit.id] & (LEFT | RIGHT | STALE)

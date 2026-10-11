@@ -72,3 +72,30 @@ it.each(['truncated', 'bad-local', 'bad-central', 'bad-offset'])(
     expect(() => readArchive(raw)).toThrow(ZipUpdateError)
   },
 )
+
+it('preserves leading BOM in member names', () => {
+  const original = readArchive(data('bom'))
+  const result = readArchive(updateArchive(original, readArchive(data('additions')).records))
+  expect(result.records.find((r) => r.name === '\ufefftarget.xml')?.local).toEqual(
+    original.records[0]?.local,
+  )
+  expect(result.records.filter((r) => r.name === 'target.xml')).toHaveLength(1)
+  expect(result.records.find((r) => r.name === 'target.xml')?.local).toEqual(
+    readArchive(data('additions')).records.find((r) => r.name === 'target.xml')?.local,
+  )
+})
+
+it.each(['name', 'flags', 'method', 'crc', 'size', 'local-extra', 'central-extra', 'local-zip64'])(
+  'refuses inconsistent or ZIP64 local records: %s',
+  (kind) => {
+    const raw = data(kind === 'local-zip64' ? 'local-zip64' : 'original')
+    const view = new DataView(raw.buffer)
+    const central = Buffer.from(raw).indexOf('PK\x01\x02', 0, 'binary')
+    const offset = { name: 30, flags: 6, method: 8, crc: 14 }[kind]
+    if (offset !== undefined) view.setUint8(offset, view.getUint8(offset) ^ 1)
+    else if (kind === 'size') view.setUint32(22, 0xffffffff, true)
+    else if (kind === 'local-extra') view.setUint16(38, 1, true)
+    else if (kind === 'central-extra') view.setUint16(central + 54, 1, true)
+    expect(() => readArchive(raw)).toThrow(ZipUpdateError)
+  },
+)

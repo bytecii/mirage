@@ -15,7 +15,7 @@
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
-import { fsStrerror, isFsError, isEnoent } from '../../../errors/fs.ts'
+import { fsStrerror, isFsError, isEnoent, isEisdir } from '../../../errors/fs.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { crc32, deflateRaw } from '../../../utils/compress.ts'
@@ -314,6 +314,14 @@ function invalidArchive(path: PathSpec): CommandFnResult {
   ]
 }
 
+function createError(path: PathSpec, reason: string, warnings = ''): CommandFnResult {
+  const message =
+    warnings +
+    `zip I/O error: ${reason}\n` +
+    `zip error: Could not create output file (${path.rawPath})\n`
+  return [null, new IOResult({ exitCode: CREATE_EXIT, stderr: ENC.encode(message) })]
+}
+
 export async function zipGeneric(
   paths: PathSpec[],
   opts: CommandOpts,
@@ -335,9 +343,12 @@ export async function zipGeneric(
   try {
     original = readArchive(await materialize(deps.stream(archivePath)))
   } catch (err) {
-    if (err instanceof ZipUpdateError) return invalidArchive(archivePath)
+    if (err instanceof ZipUpdateError || isEisdir(err)) return invalidArchive(archivePath)
     // Only absence means create; a refused or broken read must not overwrite.
-    if (!isEnoent(err)) throw err
+    if (!isEnoent(err)) {
+      if (!isFsError(err)) throw err
+      return createError(archivePath, String(fsStrerror(err)))
+    }
   }
   const quiet = parsed.quiet
   const plan = await planZip(paths.slice(1), archivePath, deps, opts, parsed)
@@ -396,11 +407,7 @@ export async function zipGeneric(
     await deps.write(archivePath, archive)
   } catch (err) {
     if (!isFsError(err)) throw err
-    const message =
-      warningText(plan.warnings, quiet) +
-      `zip I/O error: ${String(fsStrerror(err))}\n` +
-      `zip error: Could not create output file (${archivePath.rawPath})\n`
-    return [null, new IOResult({ exitCode: CREATE_EXIT, stderr: ENC.encode(message) })]
+    return createError(archivePath, String(fsStrerror(err)), warningText(plan.warnings, quiet))
   }
   const stdout: ByteSource | null =
     !quiet && outputLines.length > 0 ? ENC.encode(outputLines.join('\n') + '\n') : null

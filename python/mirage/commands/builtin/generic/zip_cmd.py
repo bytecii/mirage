@@ -320,6 +320,15 @@ def _invalid_archive(path: PathSpec) -> tuple[None, IOResult]:
     )
 
 
+def _create_error(
+    path: PathSpec, reason: str | None, warnings: bytes = b""
+) -> tuple[None, IOResult]:
+    return None, IOResult(
+        exit_code=CREATE_EXIT,
+        stderr=warnings + CREATE_ERROR.format(reason, path.raw_path).encode(),
+    )
+
+
 async def zip_cmd(
     paths: list[PathSpec],
     *,
@@ -343,6 +352,10 @@ async def zip_cmd(
     except FileNotFoundError:
         # Only absence means create; a refused or broken read must not overwrite.
         original = None
+    except IsADirectoryError:
+        return _invalid_archive(archive_path)
+    except FS_ERRORS as exc:
+        return _create_error(archive_path, fs_strerror(exc))
     else:
         try:
             original = read_archive(existing)
@@ -413,12 +426,8 @@ async def zip_cmd(
     try:
         await write_bytes(archive_path, archive)
     except FS_ERRORS as exc:
-        return None, IOResult(
-            exit_code=CREATE_EXIT,
-            stderr=_stderr(plan.warnings, q)
-            + CREATE_ERROR.format(
-                fs_strerror(exc), archive_path.raw_path
-            ).encode(),
+        return _create_error(
+            archive_path, fs_strerror(exc), _stderr(plan.warnings, q)
         )
     stdout = ("\n".join(output_lines) + "\n").encode() if not q else None
     return stdout, IOResult(stderr=_stderr(plan.warnings, q))

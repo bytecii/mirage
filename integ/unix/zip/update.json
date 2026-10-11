@@ -27,7 +27,7 @@
     {
       "id": "zip_update_preserves_document_parts",
       "seq": 10000001,
-      "command": "(mkdir -p /data/zip-update/word; cd /data/zip-update; echo types > types.xml; echo old > word/document.xml; zip -q report.docx types.xml word/document.xml; echo updated > word/document.xml; echo added > extra.xml; zip -X report.docx extra.xml word/document.xml; unzip -Z1 report.docx; unzip -p report.docx types.xml word/document.xml extra.xml)",
+      "command": "(mkdir -p /data/zip-update/word; echo types > /data/zip-update/types.xml; echo old > /data/zip-update/word/document.xml; cd /data/zip-update; zip -q report.docx types.xml word/document.xml; echo updated > word/document.xml; echo added > extra.xml; zip -X report.docx extra.xml word/document.xml; unzip -Z1 report.docx; unzip -p report.docx types.xml word/document.xml extra.xml)",
       "expect": {
         "exit": 0,
         "stdout": "updating: word/document.xml\n  adding: extra.xml\ntypes.xml\nword/document.xml\nextra.xml\ntypes\nupdated\nadded\n",
@@ -57,11 +57,21 @@
     {
       "id": "zip_update_missing_keeps_archive",
       "seq": 10000004,
-      "command": "(cd /data/zip-update; cp report.docx before.zip; zip -q report.docx missing; echo rc=$?; cmp report.docx before.zip)",
+      "command": "(cd /data/zip-update; before=$(sha256sum report.docx); zip -q report.docx missing; echo rc=$?; after=$(sha256sum report.docx); test \"$before\" = \"$after\")",
       "expect": {
         "exit": 0,
         "stdout": "rc=12\n",
         "stderr": "\nzip error: Nothing to do! (report.docx)\n"
+      }
+    },
+    {
+      "id": "zip_directory_destination",
+      "seq": 10000006,
+      "command": "(mkdir -p /data/zip-directory.zip; echo keep > /data/zip-directory.zip/keep; zip -q /data/zip-directory.zip /data/zip-directory.zip/keep; echo rc=$?; cat /data/zip-directory.zip/keep)",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=3\nkeep\n",
+        "stderr": "\nzip error: Zip file structure invalid (/data/zip-directory.zip)\n"
       }
     }
   ]

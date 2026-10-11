@@ -23,9 +23,11 @@
         "box",
         "databricks",
         "databricks-prefix",
-        "sharepoint-prefix"
+        "sharepoint-prefix",
+        "hf",
+        "hf-prefix"
       ],
-      "command": "(mkdir -p /data/fcA_zx/sub && cd /data/fcA_zx && printf 'alpha\\n' > a.txt && printf 'beta\\n' > sub/b.txt && zip -q -r d.zip ././a.txt sub/. ./sub/b.txt -x ./sub/b.txt && unzip -Z1 d.zip && zip -q -r x1.zip sub -x b.txt && unzip -Z1 x1.zip && zip -q -r x2.zip sub a.txt -x '*.txt' && unzip -Z1 x2.zip; cd / && rm -r /data/fcA_zx)",
+      "command": "(mkdir -p /data/fcA_zx/sub && printf 'alpha\\n' > /data/fcA_zx/a.txt && printf 'beta\\n' > /data/fcA_zx/sub/b.txt && cd /data/fcA_zx && zip -q -r d.zip ././a.txt sub/. ./sub/b.txt -x ./sub/b.txt && unzip -Z1 d.zip && zip -q -r x1.zip sub -x b.txt && unzip -Z1 x1.zip && zip -q -r x2.zip sub a.txt -x '*.txt' && unzip -Z1 x2.zip; cd / && rm -r /data/fcA_zx)",
       "expect": {
         "exit": 0,
         "stdout": "a.txt\nsub/./\nsub/./b.txt\nsub/\nsub/b.txt\nsub/\n",

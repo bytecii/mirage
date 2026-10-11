@@ -102,3 +102,51 @@ def test_refuses_corrupt_archives(kind):
         struct.pack_into("<I", data, central + 42, central)
     with pytest.raises(ZipUpdateError):
         read_archive(bytes(data))
+
+
+def test_preserves_leading_bom_in_member_names():
+    original = read_archive(base64.b64decode(FIXTURE["bom"]))
+    result = update_archive(
+        original, read_archive(base64.b64decode(FIXTURE["additions"])).records
+    )
+    with zipfile.ZipFile(io.BytesIO(result)) as archive:
+        assert archive.read("\ufefftarget.xml") == b"keep BOM"
+        assert archive.read("target.xml") == b"updated"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "name",
+        "flags",
+        "method",
+        "crc",
+        "size",
+        "local-extra",
+        "central-extra",
+        "local-zip64",
+    ],
+)
+def test_refuses_inconsistent_or_zip64_local_records(kind):
+    data = bytearray(
+        base64.b64decode(
+            FIXTURE["local-zip64" if kind == "local-zip64" else "original"]
+        )
+    )
+    central = data.index(b"PK\x01\x02")
+    if kind == "name":
+        data[30] ^= 1
+    elif kind == "flags":
+        data[6] ^= 1
+    elif kind == "method":
+        data[8] ^= 1
+    elif kind == "crc":
+        data[14] ^= 1
+    elif kind == "size":
+        struct.pack_into("<I", data, 22, 0xFFFFFFFF)
+    elif kind == "local-extra":
+        struct.pack_into("<H", data, 38, 1)
+    elif kind == "central-extra":
+        struct.pack_into("<H", data, central + 54, 1)
+    with pytest.raises(ZipUpdateError):
+        read_archive(bytes(data))

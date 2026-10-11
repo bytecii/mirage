@@ -489,8 +489,9 @@ export async function rangeCommits(
  *
  * git's paint walk: each side paints what it reaches, newest first and first
  * queued on a tie, and a commit wearing both colours is a base whose own
- * ancestry goes stale. The walk ends once every queued commit is stale, and the
- * bases come out in the order git lists them (pinned against
+ * ancestry goes stale. Stale work can stop only when at most one candidate
+ * remains; otherwise it may still eliminate a redundant base. The bases come
+ * out in the order git lists them (pinned against
  * `git merge-base --all` 2.50).
  *
  * @param repo repository holding the commits
@@ -511,7 +512,12 @@ export async function mergeBases(
     paint.set(commit.oid, (paint.get(commit.oid) ?? 0) | RIGHT)
   }
   const bases: CommitFacts[] = []
-  while (queue.some((commit) => !((paint.get(commit.oid) ?? 0) & STALE))) {
+  while (queue.length > 0) {
+    if (
+      queue.every((commit) => (paint.get(commit.oid) ?? 0) & STALE) &&
+      bases.filter((commit) => !((paint.get(commit.oid) ?? 0) & STALE)).length <= 1
+    )
+      break
     queue.sort((a, b) => b.committerTime - a.committerTime)
     const commit = queue.shift()
     if (commit === undefined) break
