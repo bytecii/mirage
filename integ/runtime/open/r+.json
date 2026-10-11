@@ -183,6 +183,51 @@
           }
         }
       ]
+    },
+    {
+      "id": "a_write_at_the_old_end_keeps_its_offset",
+      "runtimes": [
+        "wasi",
+        "pyodide",
+        "quickjs",
+        "host"
+      ],
+      "backends": [
+        "ram",
+        "disk",
+        "ssh",
+        "s3",
+        "redis"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {
+              "f.txt": "abc"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "a = open('/data/f.txt', 'r+')\nb = open('/data/f.txt', 'r+')\nb.seek(3)\nb.write('Y')\nb.close()\na.seek(3)\na.write('Z')\na.close()",
+            "js": "const a = std.open('/data/f.txt', 'r+')\nconst b = std.open('/data/f.txt', 'r+')\nb.seek(3, 0)\nb.puts('Y')\nb.close()\na.seek(3, 0)\na.puts('Z')\na.close()",
+            "node": "const fsp = require('node:fs').promises\nconst a = await fsp.open('/data/f.txt', 'r+')\nconst b = await fsp.open('/data/f.txt', 'r+')\nawait b.write('Y', 3)\nawait b.close()\nawait a.write('Z', 3)\nawait a.close()"
+          },
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "cat /data/f.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "abcZ"
+          }
+        }
+      ]
     }
   ]
 }

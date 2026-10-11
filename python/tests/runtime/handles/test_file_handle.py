@@ -105,11 +105,13 @@ def test_a_write_past_the_end_reads_its_gap_as_zeros():
     assert h.flush_plan() == [FlushStep("pwrite", data=b"Z", offset=4)]
 
 
-def test_extending_the_end_goes_as_an_append():
+def test_extending_the_end_keeps_its_offset():
+    # Another writer may have moved the end since the open; an append
+    # would land after its bytes.
     h = _handle(b"abc")
     h.seek(0, 2)
     h.write(b"de")
-    assert h.flush_plan() == [FlushStep("append", data=b"de")]
+    assert h.flush_plan() == [FlushStep("pwrite", data=b"de", offset=3)]
 
 
 def test_a_created_file_sends_only_its_ranges():

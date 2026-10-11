@@ -20,10 +20,10 @@ import type { FlushStep } from './types.ts'
  * A handle keeps what it wrote as byte ranges, so it owes the mount those
  * ranges and nothing it only read: another writer's bytes between them
  * stay, a file the open created or emptied included. A cut goes first,
- * then the ranges, then any growth past them; a lone range that starts
- * where the file ended, or anything an append-mode handle wrote, goes as
- * an append, which lands at the mount's own end. Mirrors Python's
- * `plan_flush`.
+ * then the ranges, then any growth past them. What an append-mode handle
+ * wrote goes as an append, which lands at the mount's own end; any other
+ * range keeps its offset, since another writer may have moved the end
+ * since this handle last saw it. Mirrors Python's `plan_flush`.
  *
  * Args:
  *   baseLen: the file's length when the handle opened it.
@@ -48,7 +48,7 @@ export function planFlush(facts: {
     end = cut
   }
   const only = runs.length === 1 ? runs[0] : undefined
-  if (only?.[0] === end && (end > 0 || appending)) {
+  if (appending && only?.[0] === end) {
     steps.push({ kind: 'append', data: only[1] })
     end += only[1].length
   } else {
