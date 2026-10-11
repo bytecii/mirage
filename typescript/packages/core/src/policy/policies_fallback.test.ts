@@ -152,6 +152,42 @@ describe('a hook without task isolation', () => {
     }
   })
 
+  it("finds a session's own call under another session's", async () => {
+    // B's call stays open on the host while A's write runs: A's ops find
+    // A's call, so its read-back rides the nod its write was given.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const askedA: string[] = []
+    const ws = new Workspace(
+      { '/data/': new RAMVFS() },
+      {
+        mode: MountMode.WRITE,
+        shellParser: await getTestParser(),
+        onAsk: async (record: Decision) => {
+          if (record.sessionId === 'b') await held
+          else askedA.push(record.sessionId)
+          return { ...record, outcome: Outcome.ALLOW }
+        },
+      },
+    )
+    const profile = {
+      commands: { ask: [{ reason: 'outbox needs a nod', paths: ['/data/out/*'] }] },
+    }
+    ws.createSession('a', { profile })
+    ws.createSession('b', { profile })
+    await ws.shell('mkdir -p /data/out && echo x > /data/out/f.txt')
+    try {
+      const a = new Session(ws, 'a').tools.write('/data/out/a.txt', 'hi')
+      const b = new Session(ws, 'b').tools.read('/data/out/f.txt')
+      expect((await a).isError).toBeUndefined()
+      expect(askedA).toEqual(['a'])
+      release()
+      expect((await b).isError).toBeUndefined()
+    } finally {
+      await ws.close()
+    }
+  })
+
   it("covers a file tool's own reads with one nod", async () => {
     // A write tool reads the file back to stamp its version: the nod for
     // the call covers that read too, and is spent with the call.

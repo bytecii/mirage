@@ -901,10 +901,12 @@ export function runWithOpCall<T>(
  * The call made outside a line running in this context under `owner`'s
  * ledger for `sessionId`, null for a bare op, for a call another ledger
  * runs (a host callback reaching a second workspace mid-call) or for
- * another session's call: without task isolation the newest frame may be
- * another task's.
+ * another session's call. Without task isolation every live call is in
+ * reach, so the newest of this ledger's and session's is taken.
  */
 export function getOpCall(owner: Decisions, sessionId: string): HandOff | null {
-  const call = opCallStorage.getStore()
-  return call?.[0] === owner && call[2] === sessionId ? call[1] : null
+  const call = [...opCallStorage.liveStores()]
+    .reverse()
+    .find(([ledger, , session]) => ledger === owner && session === sessionId)
+  return call?.[1] ?? null
 }
