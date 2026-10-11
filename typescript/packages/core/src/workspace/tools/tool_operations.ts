@@ -21,7 +21,7 @@ import { MOUNT_MODE_RANK, MountMode } from '../../types.ts'
 import { isEacces } from '../../errors/fs.ts'
 import { pathVisible } from '../../utils/hidden.ts'
 import { gnuDirname } from '../../utils/path.ts'
-import { commandVisible } from '../lookup/lookup.ts'
+import { headAllowed } from '../../policy/match/allow.ts'
 import type { MountEntry } from '../mount/mount.ts'
 import { DEV_PREFIX } from '../mount/registry.ts'
 import type { SessionState } from '../session/session.ts'
@@ -116,12 +116,12 @@ async function missing(vfs: Files, path: string): Promise<boolean> {
 export const TOOL_NAMES = ['shell', 'read', 'write', 'edit', 'ls', 'grep', 'glob'] as const
 
 /**
- * Whether a session can run a command at all: its allow list installs the
+ * Whether a session can run a command at all: its allow list allows the
  * name and no rule refuses the bare command whole. Mirrors Python's `runs`.
  */
 export function runs(name: string, session: SessionState): boolean {
-  if (!commandVisible(name, session)) return false
   const rules = session.commands
+  if (!headAllowed(name, rules)) return false
   if (rules === null) return true
   return !rules.deny.some(
     (rule) =>

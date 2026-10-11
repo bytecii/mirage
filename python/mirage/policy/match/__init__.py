@@ -13,10 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.policy.match.allow import (
-    head_visible,
+    head_allowed,
     line_allowed,
     line_tokens,
-    node_visible,
 )
 from mirage.policy.match.decide import decide, outranks, rule_at, source_of
 from mirage.policy.match.pattern import (
@@ -40,6 +39,7 @@ from mirage.policy.match.rule import (
     matched_operand,
     op_reach,
     op_ruling,
+    operand_paths,
     posix_level,
     rule_applies,
     rule_reach,
@@ -61,7 +61,7 @@ __all__ = [
     "decide",
     "has_rules",
     "hidden_depth",
-    "head_visible",
+    "head_allowed",
     "io_reach",
     "io_refusal",
     "line_allowed",
@@ -70,11 +70,11 @@ __all__ = [
     "match_op",
     "match_rule",
     "matched_operand",
-    "node_visible",
     "op_reach",
     "posix_level",
     "skipped_at_dispatch",
     "op_ruling",
+    "operand_paths",
     "outranks",
     "pattern_matches",
     "pattern_names",

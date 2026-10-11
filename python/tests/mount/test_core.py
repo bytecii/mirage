@@ -385,7 +385,7 @@ async def test_read_still_renders_after_a_partial_write():
 
 class _NoReads(Policy):
     async def pre_vfs(self, ctx):
-        return Deny("write-only") if ctx.op == "read" else None
+        return Deny("write-only") if ctx.call.name == "read" else None
 
 
 @pytest.mark.asyncio
@@ -900,7 +900,7 @@ async def test_a_create_keeps_its_mode_over_the_stores_own_umask():
 
 class _NoStats(Policy):
     async def pre_vfs(self, ctx):
-        return Deny("no stat") if ctx.op == "stat" else None
+        return Deny("no stat") if ctx.call.name == "stat" else None
 
 
 @pytest.mark.asyncio

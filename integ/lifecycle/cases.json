@@ -1142,13 +1142,16 @@
         {
           "op": "register_policy",
           "id": "first",
-          "commands": [
-            "echo"
-          ],
-          "paths": [
-            "/work/data"
-          ],
-          "reason": "first gate"
+          "pre_command": {
+            "echo": {
+              "deny": "first gate"
+            }
+          },
+          "pre_vfs": {
+            "/work/data": {
+              "deny": "first gate"
+            }
+          }
         },
         {
           "op": "exec",
@@ -1172,10 +1175,11 @@
         {
           "op": "register_policy",
           "id": "second",
-          "commands": [
-            "echo"
-          ],
-          "reason": "second gate"
+          "pre_command": {
+            "echo": {
+              "deny": "second gate"
+            }
+          }
         },
         {
           "op": "exec",
@@ -1261,10 +1265,11 @@
         {
           "op": "register_policy",
           "id": "first",
-          "commands": [
-            "echo"
-          ],
-          "reason": "replacement gate"
+          "pre_command": {
+            "echo": {
+              "deny": "replacement gate"
+            }
+          }
         },
         {
           "op": "exec",
@@ -1449,7 +1454,7 @@
           "profile": {
             "policy": {
               "script": {
-                "source": "def pre_vfs(ctx):\n    if ctx['op']['path'] == '/work/data':\n        return {'deny': 'op gate'}\n",
+                "source": "def pre_vfs(ctx):\n    if ctx['call']['path'] == '/work/data':\n        return {'deny': 'op gate'}\n",
                 "language": "python"
               },
               "runtime": "monty"
@@ -2526,10 +2531,11 @@
         {
           "op": "register_policy",
           "id": "gate",
-          "vars": [
-            "SECRET"
-          ],
-          "reason": "no secrets in the shell"
+          "pre_session": {
+            "SECRET": {
+              "deny": "no secrets in the shell"
+            }
+          }
         },
         {
           "op": "checkout",

@@ -87,6 +87,23 @@ class CommandName(StrEnum):
     XXD = "xxd"
 
 
+class WordKind(StrEnum):
+    """What one word of a command line is.
+
+    ``NAME`` is the command word, ``SUBCOMMAND`` a CLI verb after it.
+    ``OPTION`` is a dashed word, ``VALUE`` the detached value an option
+    takes, ``OPERAND`` any other argument. ``REDIRECT`` is a redirect
+    target the shell opens for the command.
+    """
+
+    NAME = "name"
+    SUBCOMMAND = "subcommand"
+    OPTION = "option"
+    VALUE = "value"
+    OPERAND = "operand"
+    REDIRECT = "redirect"
+
+
 # Argument value types plus the scanner's internal zero-token shape, "bool".
 # Public boolean flags declare action="store_true" or action="count".
 # Numeric values are validated; path values enter virtual path resolution.

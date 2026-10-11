@@ -19,8 +19,10 @@ from typing import Any
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic_bind.adapter import command_io
 from mirage.commands.config import CommandIO
+from mirage.io import IOResult
 from mirage.types import PathSpec
 from mirage.vfs.base import BaseVFS
+from mirage.workspace import Workspace
 from mirage.workspace.mount import MountEntry
 
 
@@ -194,3 +196,23 @@ def install(mount: MountEntry, fns: list[Callable[..., Any]]) -> MountEntry:
     if commands:
         mount.register_commands(commands)
     return mount
+
+
+def dispatched(ws: Workspace) -> list[tuple[str, str]]:
+    """Record every call the workspace's dispatcher serves from now on,
+    by op name and virtual path: where a line's own I/O is judged.
+
+    Args:
+        ws (Workspace): the workspace whose dispatcher is watched.
+    """
+    seen: list[tuple[str, str]] = []
+    real = ws._dispatcher._dispatch
+
+    async def recording(
+        name: str, path: PathSpec, /, **kwargs: Any
+    ) -> tuple[Any, IOResult]:
+        seen.append((name, path.virtual))
+        return await real(name, path, **kwargs)
+
+    ws._dispatcher._dispatch = recording
+    return seen

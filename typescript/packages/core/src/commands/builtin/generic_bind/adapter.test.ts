@@ -425,7 +425,7 @@ class SealedRead implements Policy {
     this.sealed = sealed
   }
   preVfs(ctx: VfsContext): Action | null {
-    this.asked.push([ctx.op, ctx.path.virtual, ctx.write])
+    this.asked.push([ctx.call.name, ctx.path.virtual, ctx.write])
     if (!ctx.write && ctx.path.virtual === this.sealed) {
       return { kind: 'deny', reason: 'sealed' }
     }

@@ -66,11 +66,8 @@ def sample_ctx() -> RouteContext:
         ),
         command="slack",
         builtin=False,
-        cwd="/data",
-        env={"K": "V"},
         session_id="s1",
         agent_id="a1",
-        mounts=("/data",),
     )
 
 

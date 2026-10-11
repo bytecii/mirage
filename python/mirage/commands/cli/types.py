@@ -239,6 +239,8 @@ class WalkResult:
     Args:
         leaf (CommandSpec | None): resolved grammar; None for rendered output.
         path (tuple[str, ...]): canonical subcommand names below the head.
+        verb_positions (tuple[int, ...]): where each of ``path`` stands
+            in the walked argv.
         group_flags (WalkFlagBag): group flags keyed by canonical spelling.
         operand_bases (tuple[PathSpec, ...]): ordered directory changes.
         argv (tuple[str, ...]): remaining words for the leaf parser.
@@ -249,6 +251,7 @@ class WalkResult:
 
     leaf: "CommandSpec | None" = None
     path: tuple[str, ...] = ()
+    verb_positions: tuple[int, ...] = ()
     group_flags: WalkFlagBag = field(default_factory=FlagBag)
     operand_bases: tuple[PathSpec, ...] = ()
     argv: tuple[str, ...] = ()

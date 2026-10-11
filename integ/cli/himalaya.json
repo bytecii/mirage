@@ -1101,7 +1101,7 @@
       }
     },
     {
-      "id": "hm_duo_allow_installs_one_name",
+      "id": "hm_duo_allow_refuses_the_unlisted_name",
       "seq": 562130,
       "targets": [
         "cli-himalaya"
@@ -1109,13 +1109,13 @@
       "session": "solo",
       "command": "h2 envelope list",
       "expect": {
-        "exit": 127,
+        "exit": 126,
         "stdout": "",
-        "stderr": "h2: command not found\n"
+        "stderr": "h2: Permission denied\n"
       }
     },
     {
-      "id": "hm_duo_the_unlisted_twin_is_invisible",
+      "id": "hm_duo_the_unlisted_twin_is_found",
       "seq": 562131,
       "targets": [
         "cli-himalaya"
@@ -1123,8 +1123,8 @@
       "session": "solo",
       "command": "type -t h1; type -t h2",
       "expect": {
-        "exit": 1,
-        "stdout": "file\n",
+        "exit": 0,
+        "stdout": "file\nfile\n",
         "stderr": ""
       }
     },

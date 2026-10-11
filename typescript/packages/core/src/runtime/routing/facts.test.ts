@@ -66,11 +66,8 @@ describe('policy context wire schema', () => {
       ],
       command: 'slack',
       builtin: false,
-      cwd: '/data',
-      env: { K: 'V' },
       sessionId: 's1',
       agentId: 'a1',
-      mounts: ['/data'],
     }
     const replayed = routeContextFromPayload(
       JSON.parse(JSON.stringify(routeContextPayload(ctx))) as Record<string, unknown>,

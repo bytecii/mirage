@@ -29,7 +29,7 @@ import type {
 } from '../policy/index.ts'
 import { Outcome, Scope, type AskHandler } from '../policy/index.ts'
 import { RAMVFS } from '../vfs/ram/ram.ts'
-import { ops } from '../test-utils.ts'
+import { dispatched, ops } from '../test-utils.ts'
 import { Runtime } from '../runtime/base.ts'
 import { LINE_EXECUTOR, type LineExecutor } from '../runtime/mixin.ts'
 import type { RunResult } from '../runtime/types.ts'
@@ -40,6 +40,7 @@ import { getTestParser, stderrStr, stdoutStr, voicedStderr } from './fixtures/wo
 import { Workspace } from './workspace/workspace.ts'
 
 const ENC = new TextEncoder()
+const DEC = new TextDecoder()
 
 /** Refuse one op name outright, whatever path asked. */
 class DenyOp implements Policy {
@@ -48,7 +49,7 @@ class DenyOp implements Policy {
     this.op = op
   }
   preVfs(ctx: VfsContext): Action | null {
-    if (ctx.op === this.op) return { kind: 'deny', reason: `${this.op} refused by policy` }
+    if (ctx.call.name === this.op) return { kind: 'deny', reason: `${this.op} refused by policy` }
     return null
   }
 }
@@ -86,11 +87,19 @@ afterEach(async () => {
 })
 
 describe('name-plane writes go through the dispatcher', () => {
-  it('ln fires the op gates', async () => {
-    const ws = await makeWs([new DenyOp('symlink')])
+  it('ln goes through the dispatcher', async () => {
+    // The link is written where the hides, path rules and mount mode judge
+    // every op a line makes.
+    const ws = await makeWs()
+    const seen = dispatched(ws)
     const io = await ws.shell('ln -s x.txt /a/lk')
-    expect(io.exitCode).not.toBe(0)
-    expect(voicedStderr(io)).toContain('Permission denied')
+    expect(io.exitCode).toBe(0)
+    expect(seen).toContainEqual(['symlink', '/a/lk'])
+  })
+
+  it('a ws.vfs symlink fires the op hooks', async () => {
+    const ws = await makeWs([new DenyOp('symlink')])
+    await expect(ws.vfs.symlink('/a/lk', 'x.txt')).rejects.toThrow()
     expect(ws.namespace.isLink('/a/lk')).toBe(false)
   })
 
@@ -188,13 +197,14 @@ describe('name-plane writes go through the dispatcher', () => {
     expect(stdoutStr(io)).not.toContain('y.txt')
   })
 
-  it('shell readlink fires the op gates', async () => {
-    const ws = await makeWs([new DenyOp('readlink')])
+  it('shell readlink goes through the dispatcher', async () => {
+    const ws = await makeWs()
+    const seen = dispatched(ws)
     const made = await ws.shell('ln -s x.txt /a/lk')
     expect(made.exitCode).toBe(0)
     const io = await ws.shell('readlink /a/lk')
-    expect(io.exitCode).not.toBe(0)
-    expect(stdoutStr(io)).not.toContain('x.txt')
+    expect(stdoutStr(io)).toBe('x.txt\n')
+    expect(seen).toContainEqual(['readlink', '/a/lk'])
   })
 
   it("facade symlink respects the session's view", async () => {
@@ -211,37 +221,30 @@ describe('name-plane writes go through the dispatcher', () => {
     expect(ws.namespace.isLink('/b/lk')).toBe(false)
   })
 
-  it('chown -h on a link fires the op gates', async () => {
+  it('chown -h on a link goes through the dispatcher', async () => {
     // chown -h writes the link's own attrs; that overlay write used to
-    // bypass the dispatcher entirely, so no policy could bound it.
-    const ws = await makeWs([new DenyOp('setattr')])
+    // bypass the dispatcher entirely, so no gate could bound it.
+    const ws = await makeWs()
+    const seen = dispatched(ws)
     const made = await ws.shell('ln -s x.txt /a/lk')
     expect(made.exitCode).toBe(0)
     const io = await ws.shell('chown -h alice /a/lk')
-    expect(io.exitCode).not.toBe(0)
-    expect(voicedStderr(io)).toContain('refused by policy')
-    expect(ws.namespace.metaFor('/a/lk')?.uid).toBeUndefined()
+    expect(io.exitCode).toBe(0)
+    expect(seen).toContainEqual(['setattr', '/a/lk'])
   })
 
-  it('overlay setattr fires the op gates', async () => {
+  it('overlay setattr goes through the dispatcher', async () => {
     // A backend with no native setattr op stores attrs in the namespace
     // overlay; that write must clear the same gates as a native one.
     const parser = await getTestParser()
     const vfs = new OverlayRAMVFS()
     vfs.store.files.set('/f.txt', ENC.encode('body\n'))
-    const ws = new Workspace(
-      { '/o': vfs },
-      {
-        mode: MountMode.WRITE,
-        shellParser: parser,
-        policies: [new DenyOp('setattr')],
-      },
-    )
+    const ws = new Workspace({ '/o': vfs }, { mode: MountMode.WRITE, shellParser: parser })
     open.push(ws)
+    const seen = dispatched(ws)
     const io = await ws.shell('chmod 600 /o/f.txt')
-    expect(io.exitCode).not.toBe(0)
-    expect(voicedStderr(io)).toContain('refused by policy')
-    expect(ws.namespace.metaFor('/o/f.txt')?.mode).toBeUndefined()
+    expect(io.exitCode).toBe(0)
+    expect(seen).toContainEqual(['setattr', '/o/f.txt'])
   })
 
   it('overlay setattr still lands without policies', async () => {
@@ -627,7 +630,7 @@ class SealedPaths implements Policy {
 class OpRecorder implements Policy {
   readonly asked: [string, string, boolean][] = []
   preVfs(ctx: VfsContext): Action | null {
-    this.asked.push([ctx.op, ctx.path.virtual, ctx.write])
+    this.asked.push([ctx.call.name, ctx.path.virtual, ctx.write])
     return null
   }
 }
@@ -636,7 +639,7 @@ class OpRecorder implements Policy {
 class IdentityRecorder implements Policy {
   readonly asked: [string, string, string, string][] = []
   preVfs(ctx: VfsContext): Action | null {
-    this.asked.push([ctx.op, ctx.path.virtual, ctx.prefix, ctx.sessionId ?? ''])
+    this.asked.push([ctx.call.name, ctx.path.virtual, ctx.prefix, ctx.sessionId ?? ''])
     return null
   }
 }
@@ -657,53 +660,53 @@ async function makeSealedWs(policies: Policy[]): Promise<Workspace> {
   return ws
 }
 
-describe('op hooks bind at the dispatcher and the command tier', () => {
-  it('preVfs refuses the entry points and handler I/O alike', async () => {
-    // The documented boundary (Policy.preVfs): coded op hooks fire at
-    // the dispatcher AND for the backend I/O inside a mount command's
-    // handler (withCommandGuards). Both tiers are pinned so a move of
-    // the boundary is loud.
-    const ws = await makeSealedWs([new SealedPaths()])
+// The profile rule that refuses every op on the one sealed file, at the
+// dispatcher too.
+const SEALED_SECRET = { commands: { deny: [{ reason: 'sealed', paths: ['/a/secret.txt'] }] } }
 
-    // The entry points hold: `ws.vfs`, and a dispatcher-routed redirect
-    // write.
+describe('op hooks judge file calls and path rules judge a line', () => {
+  it("preVfs judges file calls, not a line's I/O", async () => {
+    // The boundary (Policy.preVfs): a coded op hook judges the `ws.vfs` /
+    // `session.vfs` calls, and a line's commands are preCommand's, so
+    // neither a command's own I/O nor its redirects reach it. Pinned so a
+    // move of the boundary is loud.
+    const recorder = new OpRecorder()
+    const ws = await makeSealedWs([recorder, new SealedPaths()])
     await expect(ws.vfs.read('/a/secret.txt')).rejects.toMatchObject({
       refusal: { reason: 'secret is sealed' },
     })
-    const redirect = await ws.shell('echo hi > /a/prod/new.txt')
-    expect(redirect.exitCode).not.toBe(0)
+    await expect(ws.vfs.write('/a/prod/new.txt', ENC.encode('hi\n'))).rejects.toThrow()
+    recorder.asked.length = 0
 
-    // The command tier consults the same hooks: the read refuses in
-    // the command's own voice and the deletion never lands.
-    const leak = await ws.shell('cat /a/secret.txt')
-    expect(leak.exitCode).not.toBe(0)
-    expect(stdoutStr(leak)).toBe('')
-    expect(voicedStderr(leak)).toContain('cat: /a/secret.txt: Permission denied')
-    const removed = await ws.shell('rm /a/prod/keep.txt')
-    expect(removed.exitCode).not.toBe(0)
-    const kept = await ws.shell('cat /a/prod/keep.txt')
-    expect(kept.exitCode).toBe(0)
-    expect(stdoutStr(kept)).toBe('keep\n')
+    expect((await ws.shell('echo hi > /a/prod/new.txt')).exitCode).toBe(0)
+    expect(stdoutStr(await ws.shell('cat /a/secret.txt'))).toBe('sealed\n')
+    expect(stdoutStr(await ws.shell('head -c 3 /a/secret.txt'))).toBe('sea')
+    expect((await ws.shell('rm /a/prod/keep.txt')).exitCode).toBe(0)
+    expect((await ws.shell('find /a/prod -name new.txt -delete')).exitCode).toBe(0)
+    expect((await ws.shell('rm -r /a/prod')).exitCode).toBe(0)
+    expect((await ws.shell('find /a; du -a /a')).exitCode).toBe(0)
+    expect(recorder.asked).toEqual([])
   })
 
-  it('preVfs holds walks and lazy readers', async () => {
+  it('path rules hold walks and lazy readers', async () => {
     // A walk is held per entry (GNU's unreadable-file shape: the other
     // entries still serve, stderr names the refused one), and a reader
     // the output pipeline drains after dispatch (head binds a lazy
-    // stream) still answers through the wrap-time capture.
-    const ws = await makeSealedWs([new SealedPaths()])
-    const walked = await ws.shell('grep -r sealed /a')
+    // stream) is refused as it is admitted.
+    const ws = await makeSealedWs([])
+    ws.createSession('sealed', { profile: SEALED_SECRET })
+    const walked = await ws.shell('grep -r sealed /a', { sessionId: 'sealed' })
     expect(walked.exitCode).toBe(2)
     expect(stdoutStr(walked)).toContain('/a/ok.txt:has sealed word')
     expect(stdoutStr(walked)).not.toContain('sealed\n')
     expect(voicedStderr(walked)).toContain('grep: /a/secret.txt: Permission denied')
 
-    const lazy = await ws.shell('head -c 3 /a/secret.txt')
+    const lazy = await ws.shell('head -c 3 /a/secret.txt', { sessionId: 'sealed' })
     expect(lazy.exitCode).not.toBe(0)
     expect(voicedStderr(lazy)).toContain(
       "head: cannot open '/a/secret.txt' for reading: Permission denied",
     )
-    const fine = await ws.shell('head -c 3 /a/ok.txt')
+    const fine = await ws.shell('head -c 3 /a/ok.txt', { sessionId: 'sealed' })
     expect(fine.exitCode).toBe(0)
     expect(stdoutStr(fine)).toBe('has')
   })
@@ -712,18 +715,19 @@ describe('op hooks bind at the dispatcher and the command tier', () => {
     // Presence facts stay unguarded on the command tier (mode-000
     // shape): a read-denied entry lists and stats, the read of it is
     // what fails.
-    const ws = await makeSealedWs([new SealedPaths()])
-    const listing = await ws.shell('ls -l /a')
+    const ws = await makeSealedWs([])
+    ws.createSession('sealed', { profile: SEALED_SECRET })
+    const listing = await ws.shell('ls -l /a', { sessionId: 'sealed' })
     expect(listing.exitCode).toBe(0)
     expect(stdoutStr(listing)).toContain('secret.txt')
-    const found = await ws.shell('find /a -type f')
+    const found = await ws.shell('find /a -type f', { sessionId: 'sealed' })
     expect(found.exitCode).toBe(0)
     expect(stdoutStr(found)).toContain('/a/secret.txt')
   })
 
-  it('preVfs holds warm reads', async () => {
+  it('path rules hold warm reads', async () => {
     // The read cache is shared by every session, so a copy an earlier
-    // read warmed is still the policy's to admit: each command that reads
+    // read warmed is still the rule's to admit: each command that reads
     // through the cache answers as it would cold.
     const parser = await getTestParser()
     const vfs = new RAMVFS()
@@ -734,95 +738,39 @@ describe('op hooks bind at the dispatcher and the command tier', () => {
     open.push(ws)
     for (const line of ['cat /a/secret.txt', 'cat /a/ok.txt'])
       expect((await ws.shell(line)).exitCode).toBe(0)
-    ws.policies.add(new SealedPaths())
+    ws.createSession('sealed', { profile: SEALED_SECRET })
     for (const line of [
       'grep sealed /a/secret.txt',
       'rg sealed /a/secret.txt',
       'head -c 3 /a/secret.txt',
       'tail -c 3 /a/secret.txt',
       'wc -c /a/secret.txt',
+      'grep -r sealed /a',
     ]) {
-      const io = await ws.shell(line)
-      expect([line, stdoutStr(io), io.exitCode !== 0]).toEqual([line, '', true])
+      const io = await ws.shell(line, { sessionId: 'sealed' })
+      expect([line, stdoutStr(io).includes('sealed\n'), io.exitCode !== 0]).toEqual([
+        line,
+        false,
+        true,
+      ])
     }
-    const fine = await ws.shell('grep sealed /a/ok.txt')
+    const fine = await ws.shell('grep sealed /a/ok.txt', { sessionId: 'sealed' })
     expect(stdoutStr(fine)).toBe('has sealed word\n')
   })
 
-  it('shell rm -r admits through preVfs', async () => {
-    // The cascade asymmetry closed: a `ws.vfs` rmdir cascade always
-    // admitted per deletion while a shell rm -r admitted nothing. Under a
-    // coded preVfs policy the one-call rm_r is declined, so the tree goes
-    // entry by entry, each removal admitted, and a write-deny refuses it.
-    const recorder = new OpRecorder()
-    const ws = await makeSealedWs([recorder])
-    const removed = await ws.shell('rm -r /a/prod')
-    expect(removed.exitCode).toBe(0)
-    const writes = recorder.asked.filter(([, , write]) => write)
-    expect(writes).toContainEqual(['unlink', '/a/prod/keep.txt', true])
-    expect(writes).toContainEqual(['rmdir', '/a/prod', true])
-    expect(writes.some(([op]) => op === 'rm_r')).toBe(false)
-
-    const sealed = await makeSealedWs([new SealedPaths()])
-    const refused = await sealed.shell('rm -r /a/prod')
-    expect(refused.exitCode).not.toBe(0)
-    const survives = await sealed.shell('cat /a/prod/keep.txt')
-    expect(survives.exitCode).toBe(0)
-  })
-
-  it('shell rm -rv removes what a sealed listing allows', async () => {
-    // -v lists the tree before it goes in one call; a listing a policy
-    // refuses sends the removal entry by entry, as without -v.
-    const sealedListing: Policy = {
-      preVfs: (ctx) =>
-        ctx.op === 'readdir' && ctx.path.virtual === '/a/prod/sub'
-          ? { kind: 'deny', reason: 'sub is sealed' }
-          : null,
-    }
-    const ws = new Workspace(
-      { '/a': new RAMVFS() },
-      { mode: MountMode.WRITE, shellParser: await getTestParser() },
-    )
-    open.push(ws)
-    await ws.shell('mkdir -p /a/prod/sub')
-    await ws.vfs.write('/a/prod/a.txt', ENC.encode('a\n'))
-    await ws.vfs.write('/a/prod/sub/b.txt', ENC.encode('b\n'))
-    ws.policies.add(sealedListing)
-    const io = await ws.shell('rm -rv /a/prod')
-    expect(io.exitCode).toBe(1)
-    expect(stdoutStr(io)).toBe("removed '/a/prod/a.txt'\n")
-    expect(stderrStr(io)).toBe("rm: cannot remove '/a/prod/sub': Permission denied\n")
-    expect(await ws.vfs.exists('/a/prod/a.txt')).toBe(false)
-  })
-
-  it('find -delete admits each deletion exactly once', async () => {
-    // find's -delete admits the removal itself (in find's own refusal
-    // voice) and suspends the delegated rm's slots, so a counting or
-    // budget policy sees one deletion once, not twice.
-    const recorder = new OpRecorder()
-    const ws = await makeSealedWs([recorder])
-    const removed = await ws.shell('find /a/prod -name keep.txt -delete')
-    expect(removed.exitCode).toBe(0)
-    const gone = await ws.shell('cat /a/prod/keep.txt')
-    expect(gone.exitCode).not.toBe(0)
-    const writes = recorder.asked.filter(([, path, write]) => path === '/a/prod/keep.txt' && write)
-    expect(writes).toEqual([['unlink', '/a/prod/keep.txt', true]])
-  })
-
-  it('preVfs sees the session and prefix on lazy drains', async () => {
-    // VfsContext.prefix and .sessionId name the command's identity at the
-    // dispatcher, including for a reader the pipeline drains after the gate
-    // scopes return (head binds a lazy stream).
+  it('preVfs sees the session and prefix of a file call', async () => {
+    // VfsContext.prefix and .sessionId name the call's identity, so a
+    // session-scoped policy holds on a session's own file calls.
     const recorder = new IdentityRecorder()
     const ws = await makeSealedWs([recorder])
-    expect((await ws.shell('cat /a/ok.txt')).exitCode).toBe(0)
-    expect((await ws.shell('head -c 3 /a/ok.txt')).exitCode).toBe(0)
+    ws.createSession('agent')
+    expect(DEC.decode(await ws.vfs.read('/a/ok.txt', {}, 'agent'))).toBe('has sealed word\n')
+    expect(DEC.decode(await ws.vfs.read('/a/ok.txt'))).toBe('has sealed word\n')
     const reads = recorder.asked.filter(([, path]) => path === '/a/ok.txt')
-    expect(reads.length).toBeGreaterThan(0)
-    for (const [, , prefix, sessionId] of reads) {
-      expect(prefix).toBe('/a/')
-      expect(sessionId).toBe(ws.defaultSessionId)
-    }
+    expect(reads.map(([, , prefix, sessionId]) => [prefix, sessionId])).toEqual([
+      ['/a/', 'agent'],
+      ['/a/', ws.defaultSessionId],
+    ])
   })
 })
 
@@ -1510,35 +1458,39 @@ describe('command permissions end to end', () => {
     return [r.exitCode, stdoutStr(r), voicedStderr(r)]
   }
 
-  it('an allow list hides unlisted tools from dispatch and the enumerators', async () => {
+  it('an allow list refuses unlisted tools and hides nothing', async () => {
     const ws = await commandsWs()
     await ws.shell('mkdir -p /repo/d && touch /repo/d/x')
-    // An unlisted tool is not a command for the session: 127 before any
-    // admission hook, and every enumerator agrees.
-    expect(await line(ws, 'sort /repo/d/x')).toEqual([127, '', 'sort: command not found\n'])
-    expect(await line(ws, 'type sort; echo $?')).toEqual([
-      0,
-      '1\n',
-      'bash: type: sort: not found\n',
+    // An unlisted tool is the profile's Deny, in bash's words, with the
+    // reason on the record; every enumerator still finds it.
+    expect(await line(ws, 'sort /repo/d/x')).toEqual([
+      126,
+      '',
+      'sort: Permission denied\npolicy denied: sort is not allowed\n',
     ])
-    expect(await line(ws, 'command -v sort; echo $?')).toEqual([0, '1\n', ''])
-    expect(await line(ws, 'which sort; echo $?')).toEqual([0, '1\n', ''])
+    expect(await line(ws, 'type sort; echo $?')).toEqual([0, 'sort is /usr/bin/sort\n0\n', ''])
+    expect(await line(ws, 'command -v sort; echo $?')).toEqual([0, '/usr/bin/sort\n0\n', ''])
     const [code, out] = await line(ws, 'man')
     expect(code).toBe(0)
     expect(out).toContain('- cat')
-    expect(out).not.toContain('- sort')
-    expect((await line(ws, 'man sort'))[0]).toBe(1)
+    expect(out).toContain('- sort')
+    expect((await line(ws, 'man sort'))[0]).toBe(0)
     // Builtins are subjects like everything else: the listed cd and [
-    // run, the unlisted pwd and history are not commands at all.
-    // Functions are the one exemption, and every line of a body passes
-    // the gate itself.
+    // run, the unlisted pwd and history are refused. Functions are the
+    // one exemption, and every line of a body passes the gate itself.
     expect(await line(ws, 'cd /repo && [ -f d/x ] && echo yes')).toEqual([0, 'yes\n', ''])
     expect(await line(ws, 'f() { echo in-f; }; f')).toEqual([0, 'in-f\n', ''])
     expect((await line(ws, 'cat /repo/d/x'))[0]).toBe(0)
-    expect(await line(ws, 'pwd')).toEqual([127, '', 'pwd: command not found\n'])
-    expect(await line(ws, 'type pwd; echo $?')).toEqual([0, '1\n', 'bash: type: pwd: not found\n'])
-    // `history` is a tool-tier builtin: hidden when unlisted.
-    expect(await line(ws, 'history')).toEqual([127, '', 'history: command not found\n'])
+    expect(await line(ws, 'pwd')).toEqual([
+      126,
+      '',
+      'pwd: Permission denied\npolicy denied: pwd is not allowed\n',
+    ])
+    expect(await line(ws, 'history')).toEqual([
+      126,
+      '',
+      'history: Permission denied\npolicy denied: history is not allowed\n',
+    ])
   })
 
   it("a profile's allow list is the only one a session reads", async () => {
@@ -1546,11 +1498,14 @@ describe('command permissions end to end', () => {
     ws.createSession('rev', { profile: 'reviewer' })
     await ws.shell('mkdir -p /repo/d && touch /repo/d/x')
     // The reviewer profile lists `cat` and not python3, whatever the
-    // default profile lists; it lists `git log`, so `git` is visible but a
-    // `git commit` line is covered by nothing (a refusal that names the
-    // program, not "command not found").
+    // default profile lists; it lists `git log`, so a `git commit` line is
+    // covered by nothing (a refusal that names the program).
     expect((await line(ws, 'cat /repo/d/x', 'rev'))[0]).toBe(0)
-    expect(await line(ws, 'python3 -c 1', 'rev')).toEqual([127, '', 'python3: command not found\n'])
+    expect(await line(ws, 'python3 -c 1', 'rev')).toEqual([
+      126,
+      '',
+      'python3: Permission denied\npolicy denied: python3 is not allowed\n',
+    ])
     expect((await line(ws, 'type git', 'rev'))[0]).toBe(0)
     expect(await line(ws, 'git commit -m x', 'rev')).toEqual([
       126,
@@ -1560,24 +1515,12 @@ describe('command permissions end to end', () => {
     // The verb walk normalizes the line: options before the verb are
     // not the verb, so `git -C /repo status` is `git status`.
     expect((await line(ws, 'git -C /repo status', 'rev'))[2]).not.toContain('not allowed')
-    // Nested runners re-enter the chokepoint: the hidden `rm` stays
-    // hidden inside xargs (which, as GNU's, finds no such program), eval
-    // and a function body.
-    expect(await line(ws, 'echo /repo/d/x | xargs rm', 'rev')).toEqual([
-      127,
-      '',
-      'xargs: rm: No such file or directory\n',
-    ])
-    expect(await line(ws, "eval 'rm /repo/d/x'", 'rev')).toEqual([
-      127,
-      '',
-      'rm: command not found\n',
-    ])
-    expect(await line(ws, 'f() { rm /repo/d/x; }; f', 'rev')).toEqual([
-      127,
-      '',
-      'rm: command not found\n',
-    ])
+    // Nested runners re-enter the chokepoint: the unlisted `rm` is
+    // refused inside xargs, eval and a function body.
+    const refused = 'rm: Permission denied\npolicy denied: rm is not allowed\n'
+    expect(await line(ws, 'echo /repo/d/x | xargs rm', 'rev')).toEqual([123, '', refused])
+    expect(await line(ws, "eval 'rm /repo/d/x'", 'rev')).toEqual([126, '', refused])
+    expect(await line(ws, 'f() { rm /repo/d/x; }; f', 'rev')).toEqual([126, '', refused])
     // An inline document may add rules, never an allow list.
     expect(() =>
       ws.createSession('tight', {
@@ -1795,8 +1738,8 @@ describe('command permissions end to end', () => {
 
   it('a whole-line runtime is gated like the tree', async () => {
     // A runtime that captures the raw line runs it under the same
-    // tiers: every parsed command clears visibility, the policy chain
-    // and the approval ledger before the runtime sees a byte, so a
+    // tiers: every parsed command clears the policy chain and the
+    // approval ledger before the runtime sees a byte, so a
     // captured line cannot run what the tree would refuse.
     const parser = await getTestParser()
     const box = new Box()
@@ -1811,8 +1754,9 @@ describe('command permissions end to end', () => {
     )
     open.push(ws)
     ws.registerCli('git', cliSpecFor('git'))
-    expect(await line(ws, 'sort /repo/x')).toEqual([127, '', 'sort: command not found\n'])
-    expect(await line(ws, 'cat /repo/a | sort')).toEqual([127, '', 'sort: command not found\n'])
+    const refused = 'sort: Permission denied\npolicy denied: sort is not allowed\n'
+    expect(await line(ws, 'sort /repo/x')).toEqual([126, '', refused])
+    expect(await line(ws, 'cat /repo/a | sort')).toEqual([126, '', refused])
     expect(await line(ws, 'rm /repo/x')).toEqual([
       1,
       '',
@@ -1832,6 +1776,15 @@ describe('command permissions end to end', () => {
       'git: Permission denied\npolicy denied: git add is not allowed\n',
     ])
     expect((await line(ws, 'git status', 'rev'))[0]).toBe(0)
+    expect(box.lines).toEqual(['cat /repo/a | wc -l', 'git status'])
+    // No command's result comes back from the runtime, so a postCommand
+    // policy refuses the line it could not judge.
+    ws.policies.add({ postCommand: () => null })
+    expect(await line(ws, 'cat /repo/a')).toEqual([
+      126,
+      '',
+      'cat: Permission denied\npolicy denied: a post_command policy cannot judge a line a runtime runs whole\n',
+    ])
     expect(box.lines).toEqual(['cat /repo/a | wc -l', 'git status'])
   })
 
@@ -3010,34 +2963,5 @@ describe('admitted path rules on recursive commands', () => {
     expect(stdoutStr(result)).not.toContain('PRIVATE_SENTINEL')
     expect(voicedStderr(result)).toContain('/data/src/cache')
     expect(voicedStderr(result)).toContain('Permission denied')
-  })
-})
-
-describe('coded preVfs on native walks', () => {
-  // Refuses listing /data/sec, as a mode 0300 directory does.
-  const sealedSubtree: Policy = {
-    preVfs: (ctx: VfsContext) =>
-      ctx.op === 'readdir' && ctx.path.virtual.startsWith('/data/sec')
-        ? { kind: 'deny', reason: 'sealed' }
-        : null,
-  }
-
-  it.each([
-    ['find /data', "find: '/data/sec': Permission denied\n"],
-    ['find /data/sec', "find: '/data/sec': Permission denied\n"],
-    ['du -a /data', "du: cannot read directory '/data/sec': Permission denied\n"],
-    ['du -a /data/sec', "du: cannot read directory '/data/sec': Permission denied\n"],
-  ])('%s walks through the deny', async (command, refusal) => {
-    const ws = new Workspace(
-      { '/data': new RAMVFS() },
-      { mode: MountMode.WRITE, shellParser: await getTestParser() },
-    )
-    open.push(ws)
-    await ws.shell('mkdir -p /data/sec && echo SECRET > /data/sec/k.txt')
-    ws.policies.add(sealedSubtree)
-    const result = await ws.shell(command)
-    expect(result.exitCode).toBe(1)
-    expect(stdoutStr(result)).not.toContain('/data/sec/k.txt')
-    expect(stderrStr(result)).toBe(refusal)
   })
 })

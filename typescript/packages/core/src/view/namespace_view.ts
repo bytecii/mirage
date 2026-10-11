@@ -185,9 +185,9 @@ export function namespaceStat(
 }
 
 /**
- * Whether a hide, a path rule or a preVfs policy judges anything a
- * command's operands reach, so a native walk that classifies the raw
- * tree gives way to the checked one.
+ * Whether a hide or a path rule judges anything a command's operands
+ * reach, so a native walk that classifies the raw tree gives way to the
+ * checked one.
  *
  * Per operand, not per session: a hidden `.env` under `/repo` must not
  * force `find` on `/s3` off its native op. `ns` is the command's

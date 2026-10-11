@@ -183,49 +183,42 @@ async def test_explain_answers_each_verb_and_names_the_rule(ws):
 
 
 @pytest.mark.asyncio
-async def test_a_word_the_session_cannot_see_is_deny_at_127(ws):
-    # Both refusals the allow list produces are DENY with no rule; the
-    # exit code is what separates a head word the session cannot see
-    # from a line no allow entry covers.
+async def test_a_word_the_allow_list_leaves_out_is_a_deny_at_126(ws):
+    # The allow list is the profile's policy: a word it leaves out is a
+    # DENY with no rule, refused in bash's words like any other.
     (missing,) = await _judged(ws, "gerp x", "s")
     assert missing.outcome is Outcome.DENY
     assert missing.rule is None
     assert missing.source == "commands.allow"
-    assert missing.exit_code == 127
-    assert missing.stderr == "gerp: command not found\n"
+    assert missing.exit_code == 126
+    assert missing.stderr == "gerp: Permission denied\n"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "line, said",
-    [
-        ("echo x | xargs gerp", "xargs: gerp: No such file or directory\n"),
-        (
-            "timeout 5 gerp x",
-            "timeout: failed to run command 'gerp': No such file or directory\n",
-        ),
-    ],
+    "line", ["timeout 5 sort /data/a.txt", "eval sort /data/a.txt"]
 )
-async def test_a_hidden_word_a_builtin_runs_is_reported_in_its_words(
-    line, said
+async def test_a_word_the_allow_list_leaves_out_is_refused_where_it_runs(
+    line,
 ):
-    # xargs and timeout look the name up before they run it, as GNU's
-    # exec does, so the run reports a word the session cannot see in
-    # their words, and the dry run must say what the run says.
+    # A builtin that runs a word hands it to the gate, which refuses it
+    # there, and the dry run says what the run says.
     workspace = Workspace(
         {"/data/": RAMVFS()},
         mode=MountMode.WRITE,
-        profiles={"r": {"commands": {"allow": ["echo", "xargs", "timeout"]}}},
+        profiles={"r": {"commands": {"allow": ["timeout", "eval"]}}},
     )
+    await workspace.vfs.write("/data/a.txt", b"a\n")
     workspace.create_session("s", profile="r")
     try:
         ran = await workspace.shell(line, session_id="s")
         missing = (await _judged(workspace, line, "s"))[-1]
     finally:
         await workspace.close()
-    assert (ran.exit_code, ran.stderr) == (127, said.encode())
-    assert (missing.exit_code, missing.stderr) == (127, said)
-    assert (missing.command, missing.source) == ("gerp", "commands.allow")
+    said = "sort: Permission denied\n"
+    assert (ran.exit_code, ran.stderr) == (126, said.encode())
+    assert (missing.exit_code, missing.stderr) == (126, said)
+    assert (missing.command, missing.source) == ("sort", "commands.allow")
 
 
 @pytest.mark.asyncio
@@ -248,9 +241,9 @@ async def test_explain_says_exactly_what_the_run_would_say(ws):
 
 @pytest.mark.asyncio
 async def test_only_a_verdict_refuses_the_whole_line(ws):
-    # A word the session cannot see fails where it stands and the rest
-    # of the line runs; a rule's refusal holds the whole line, whatever
-    # failed before it.
+    # A word the allow list leaves out fails where it stands and the
+    # rest of the line runs; a rule's refusal holds the whole line,
+    # whatever failed before it.
     said = await ws.explain("gerp x; echo ok", "s")
     ran = await ws.shell("gerp x; echo ok", session_id="s")
     assert (ran.exit_code, said.outcome, said.exit_code) == (
@@ -262,8 +255,8 @@ async def test_only_a_verdict_refuses_the_whole_line(ws):
     assert isinstance(gerp, CommandExplanation)
     assert (gerp.outcome, gerp.exit_code, gerp.stderr, gerp.source) == (
         Outcome.DENY,
-        127,
-        "gerp: command not found\n",
+        126,
+        "gerp: Permission denied\n",
         "commands.allow",
     )
     line = "gerp x; rm /data/prod/x.txt"
@@ -311,14 +304,13 @@ async def test_a_denied_command_stops_the_whole_line(ws):
 
 
 @pytest.mark.asyncio
-async def test_a_word_the_session_cannot_see_leaves_the_line_alone(ws):
-    # A head word the session cannot see is a routing miss, not a
-    # verdict, so it stays bash: the stage fails and the rest of the
-    # line does what bash does. A typo must not cost an agent the work
-    # the line already did.
+async def test_a_word_the_allow_list_leaves_out_leaves_the_line_alone(ws):
+    # The allow list refuses a word where it stands, not the line: the
+    # stage fails and the rest of the line does what bash does. A typo
+    # must not cost an agent the work the line already did.
     ran = await ws.shell("rm /data/a.txt && gerp x", session_id="s")
-    assert ran.exit_code == 127
-    assert ran.stderr == b"gerp: command not found\n"
+    assert ran.exit_code == 126
+    assert ran.stderr == b"gerp: Permission denied\n"
     assert "/data/a.txt" not in await ws.vfs.readdir("/data")
 
 
@@ -481,18 +473,17 @@ async def coded():
 
 
 @pytest.mark.asyncio
-async def test_a_coded_policy_holds_the_line_without_a_document(coded):
-    # A session with no permissions document still runs under whatever
-    # policies the deployment registered, and one is always registered
-    # (MountRootPolicy). Returning early on `commands is None` held the
-    # line for a document and left a policy with the half-line behavior
-    # the pass exists to remove.
+async def test_a_coded_policy_answers_as_the_command_runs(coded):
+    # The pass that judges a line before it runs asks the profile's
+    # rules alone; a policy written in code answers pre_command once,
+    # as its command runs, so the commands before it have run. A line
+    # it refuses whole is pre_execute's.
     ran = await coded.shell("rm /data/a.txt && cat /data/b.txt")
     assert ran.exit_code != 0
     assert ran.stderr == b"cat: Permission denied\n"
     assert ran.refusal is not None
     assert ran.refusal.reason == "cat is refused by policy"
-    assert "/data/a.txt" in await coded.vfs.readdir("/data")
+    assert "/data/a.txt" not in await coded.vfs.readdir("/data")
 
 
 def _answering(asked: list[str], outcome: Outcome, scope: Scope = Scope.ONCE):
@@ -1605,10 +1596,9 @@ async def test_explain_shows_every_policys_answer_in_chain_order():
             Ask("sign-off", policy="_AskRm"),
             Deny("no", policy="_DenyRm"),
         )
-        assert (said.exit_code, said.refusal and said.refusal.reason) == (
-            126,
-            "no",
-        )
+        # A policy's refusal is the command's: the line itself runs.
+        assert (rm.exit_code, rm.refusal and rm.refusal.reason) == (126, "no")
+        assert (said.outcome, said.exit_code) == (Outcome.ALLOW, 0)
         assert await Session(ws, None).explain.shell("rm /data/x") == said
     finally:
         await ws.close()
@@ -1624,13 +1614,9 @@ async def test_a_policy_that_fails_explains_as_a_deny():
         ran = await ws.shell("echo hi")
         [echo] = said.node.children
         assert isinstance(echo, CommandExplanation)
-        assert said.refusal is not None and ran.refusal is not None
-        assert (said.outcome, echo.outcome, said.refusal.kind) == (
-            Outcome.DENY,
-            Outcome.DENY,
-            "failed",
-        )
-        assert (said.exit_code, said.stderr) == (
+        assert echo.refusal is not None and ran.refusal is not None
+        assert (echo.outcome, echo.refusal.kind) == (Outcome.DENY, "failed")
+        assert (echo.exit_code, echo.stderr) == (
             ran.exit_code,
             await ran.stderr_str(),
         )

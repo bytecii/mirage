@@ -294,13 +294,11 @@ export async function recording<T>(
   recorder: Recorder,
   run: () => Promise<T>,
 ): Promise<T> {
-  const jobs = session.jobOutput ?? session.tty.jobs
-  const held = jobs.recorder
-  jobs.recorder = recorder
+  const leave = (session.jobOutput ?? session.tty.jobs).record(recorder)
   try {
     return await ENCLOSING.run(recorder, run)
   } finally {
-    jobs.recorder = held
+    leave()
   }
 }
 

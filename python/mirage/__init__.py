@@ -62,7 +62,6 @@ if TYPE_CHECKING:
         SessionProfile,
         ShellExplanation,
         ShellNode,
-        ShellOperand,
         VfsExplanation,
     )
     from mirage.policy.types import VfsContext
@@ -185,7 +184,6 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "CommandExplanation",
         "ShellExplanation",
         "ShellNode",
-        "ShellOperand",
         "VfsExplanation",
         "Outcome",
         "PolicyDenied",
@@ -311,7 +309,6 @@ __all__ = [
     "CommandExplanation",
     "ShellExplanation",
     "ShellNode",
-    "ShellOperand",
     "VfsExplanation",
     "FileType",
     "FlagView",

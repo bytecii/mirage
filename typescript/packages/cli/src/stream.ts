@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import type { Writable } from 'node:stream'
 import type { Refusal } from '@struktoai/mirage-core/types'
-import { SaidWindow } from '@struktoai/mirage-core/workspace/tools/io_text'
+import { refusalLine } from '@struktoai/mirage-core/workspace/tools/io_text'
 import type { DaemonClient } from './client.ts'
 import { exitCodeFromResponse, handleResponse } from './output.ts'
 
@@ -85,7 +85,6 @@ function refusalOf(result: Record<string, unknown> | null): Refusal | null {
         kind: Refusal['kind']
         reason: string
         policy: string
-        scope: Refusal['scope']
         ask_id: string | null
       }
     | null
@@ -95,7 +94,6 @@ function refusalOf(result: Record<string, unknown> | null): Refusal | null {
     kind: raw.kind,
     reason: raw.reason,
     policy: raw.policy,
-    scope: raw.scope,
     askId: raw.ask_id,
   }
 }
@@ -143,7 +141,6 @@ export async function streamShell(
     if (response.body === null) throw new Error('daemon stream ended without a completion record')
     const capturedStdout: Uint8Array[] = []
     const capturedStderr: Uint8Array[] = []
-    const said = new SaidWindow()
     const terminal = await consumeStream(
       response.body,
       (data) => {
@@ -151,7 +148,6 @@ export async function streamShell(
           capturedStdout.push(data)
           return Promise.resolve()
         }
-        said.add(data, false)
         return write(process.stdout, data, stop.signal)
       },
       (data) => {
@@ -159,13 +155,12 @@ export async function streamShell(
           capturedStderr.push(data)
           return Promise.resolve()
         }
-        said.add(data, true)
         return write(process.stderr, data, stop.signal)
       },
     )
     if (terminal.status === 'failed') throw new Error(`shell failed: ${String(terminal.error)}`)
     if (terminal.status === 'canceled') return 130
-    const line = jsonOutput ? '' : said.refusalLine(refusalOf(terminal.result))
+    const line = jsonOutput ? '' : refusalLine(refusalOf(terminal.result))
     if (line !== '') await write(process.stderr, Buffer.from(line), stop.signal)
     if (jsonOutput) {
       const result = {

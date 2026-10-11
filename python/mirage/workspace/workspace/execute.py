@@ -31,7 +31,7 @@ from mirage.io.types import ByteSource
 from mirage.observe.context import RecordingScope, active_records
 from mirage.observe.observer import Observer
 from mirage.observe.record import OpRecord
-from mirage.policy import Deny, HandOff
+from mirage.policy import Deny, HandOff, Pending
 from mirage.process.supervisor import ProcessSupervisor
 from mirage.runtime.base import Runtime
 from mirage.runtime.routing import RouteDecision, RouteError
@@ -78,7 +78,10 @@ from mirage.workspace.node.explain import (
     prejudge_line,
     unrefused_nodes,
 )
-from mirage.workspace.node.occurrence import evaluated_from
+from mirage.workspace.node.occurrence import (
+    claimant_for,
+    evaluated_from,
+)
 from mirage.workspace.node.run_tree import run_command_tree
 from mirage.workspace.session import (
     SessionState,
@@ -290,6 +293,11 @@ async def recurse(
                     handed=inner,
                     command_substitution=True,
                     execution_scope=execution_scope,
+                    route=ws.router.context(
+                        tree, cmd, session.session_id, agent_id or ""
+                    )
+                    if ws.registry.policies.wants("post_execute")
+                    else None,
                 )
                 record_status(session, io.exit_code, transparent=True)
                 if io.refusal is not None:
@@ -786,8 +794,13 @@ async def run_prepared_line(
                 agent or "",
                 routing_decision,
                 admission_holds,
+                claimant_for(ast, line_handed),
+                cancel,
             )
-            if isinstance(placed, Deny):
+            if isinstance(placed, (Deny, Pending)):
+                # A question on the line as a whole holds it for its
+                # retry like one on a command.
+                held = isinstance(placed, Pending)
                 io = placement_refused(placed, command)
                 record_status(session, io.exit_code)
                 return io
@@ -865,9 +878,15 @@ async def run_prepared_line(
                     ws.registry.policies,
                     ws.dispatcher.invalidate_all_after_remote,
                     ws.registry.command_limits,
+                    claimant_for(ast, handed),
+                    cancel,
+                    ws.router.context(ast, command, session_id, agent or "")
+                    if ws.registry.policies.wants("post_execute")
+                    else None,
                 )
                 if io.refusal is None:
                     io.refusal = nested.latest
+                held = is_pending_refusal(io.refusal)
                 record_status(session, io.exit_code)
                 return io
             # The line is the unit a rule judges, so every command in it is
@@ -992,6 +1011,9 @@ async def run_prepared_line(
                 sink=sink,
                 call_stack=call_stack,
                 execution_scope=execution_scope,
+                route=ws.router.context(ast, command, session_id, agent or "")
+                if ws.registry.policies.wants("post_execute")
+                else None,
             )
             # A record a nested line earned is the line's to report when
             # its own tree earned none (see NestedRefusal).

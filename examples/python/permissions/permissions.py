@@ -26,8 +26,8 @@ from mirage.vfs.ram import RAMVFS
 # the point of the example is that they are different orderings:
 #
 #   the command axis   a rule naming no path is read by verb alone,
-#                      deny before ask, and the allow list decides
-#                      whether the word is a command at all.
+#                      deny before ask, and a word the allow list
+#                      leaves out is refused.
 #   the path axis      a rule carrying paths is read by anchor depth,
 #                      the number of literal components before its
 #                      first wildcard. /runbook/frozen/* is 2 and
@@ -42,15 +42,14 @@ from mirage.vfs.ram import RAMVFS
 # The third role, the commander, states no allow list, which is how a
 # role says "every tool". That is the opposite of a deny list and worth
 # seeing beside one: the list is not a filter over some default set, it
-# IS the set, so omitting it installs everything and an empty one
-# installs nothing. Its rules still run.
+# IS the set, so omitting it allows everything and an empty one
+# allows nothing. Its rules still run.
 
 PROFILES = {
     "oncall": {
         "commands": {
-            # The allow list installs the tools. A word missing from it
-            # is not a command at all: `sort` is `command not found`,
-            # not `permission denied`.
+            # The allow list names the tools this role may run. A word
+            # missing from it is refused: `sort: Permission denied`.
             "allow": ["ls", "cat", "grep", "rm", "cp"],
             "ask": [
                 {
@@ -108,10 +107,10 @@ PROFILES = {
     },
     "commander": {
         "commands": {
-            # No allow list, which installs every command mirage ships,
+            # No allow list, which allows every command mirage ships,
             # this role's own `sort` and `wc` included. ``allow: ["*"]``
             # says the same thing out loud; ``allow: []`` says the
-            # opposite and installs nothing. What it does not say is
+            # opposite and allows nothing. What it does not say is
             # "unrestricted": the deny below still runs, and so would an
             # ask.
             "deny": [
@@ -138,11 +137,11 @@ SEED = [
 ]
 
 LINES = [
-    ("oncall", "cat /repo/service.py", "the allow list installed cat"),
+    ("oncall", "cat /repo/service.py", "the allow list names cat"),
     (
         "oncall",
         "sort /repo/service.py",
-        "unlisted: not a command, not a refusal",
+        "unlisted, so the allow list refuses it",
     ),
     ("oncall", "ls /repo", "the hide takes .env out of the listing"),
     ("oncall", "cat /repo/.env", "and answers absence, not refusal"),
@@ -175,7 +174,7 @@ LINES = [
     (
         "commander",
         "sort /repo/service.py",
-        "no allow list, so every tool is installed",
+        "no allow list, so every tool runs",
     ),
     (
         "commander",

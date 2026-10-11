@@ -14,8 +14,7 @@
 
 from mirage.errors.fs import error_path, fs_strerror
 from mirage.io.types import IOResult
-from mirage.policy import PolicyDenied, describe_refusal, says_why
-from mirage.policy.constants import REFUSAL_WINDOW
+from mirage.policy import PolicyDenied, describe_refusal
 from mirage.types import Refusal
 
 
@@ -25,90 +24,18 @@ def decode(value: bytes | None) -> str:
     return value.decode("utf-8", errors="replace")
 
 
-def refusal_line(text: str, refusal: Refusal | None) -> str:
+def refusal_line(refusal: Refusal | None) -> str:
     """The one line a text surface appends for a refusal, newline
-    included, or the empty string when there is nothing to add: no
-    record, or a text that already says why (an operand-scoped
-    denial's own line, wherever a redirect landed it). A command-scoped
-    refusal's stderr is bash's bare ``Permission denied``, which never
-    does.
+    included, or the empty string when there is no record. The
+    refusal's stderr is the bare ``Permission denied`` or the path's own
+    error, which never says why.
 
     Args:
-        text (str): what the surface is about to hand over.
         refusal (Refusal | None): the record off the result.
     """
-    if refusal is None or says_why(text, refusal):
+    if refusal is None:
         return ""
     return describe_refusal(refusal) + "\n"
-
-
-def head_window(prefix: bytes, total: int) -> bytes:
-    """A stream's first ``REFUSAL_WINDOW`` bytes, then on to the end of
-    the line that window cuts (at most a window more), whole lines only
-    unless the stream ends inside them.
-
-    Args:
-        prefix (bytes): the stream's first ``2 * REFUSAL_WINDOW`` bytes.
-        total (int): the stream's whole length.
-    """
-    if total <= REFUSAL_WINDOW:
-        return prefix
-    end = prefix.find(b"\n", REFUSAL_WINDOW - 1)
-    if end != -1:
-        return prefix[: end + 1]
-    if total <= 2 * REFUSAL_WINDOW:
-        return prefix
-    return prefix[: prefix.rfind(b"\n", 0, REFUSAL_WINDOW) + 1]
-
-
-class SaidWindow:
-    """What a streamed line said, as far as its refusal's line needs.
-
-    Each stream keeps its first and last ``REFUSAL_WINDOW`` bytes. The
-    first runs on to the end of the line it cuts and keeps whole lines
-    only, so a line split at a cut can neither pose as the diagnostic
-    nor hide one. A diagnostic deep inside a long output may be missed,
-    which repeats the reason and never drops it.
-    """
-
-    def __init__(self) -> None:
-        self._prefix = [b"", b""]
-        self._tail = [b"", b""]
-        self._total = [0, 0]
-
-    def add(self, data: bytes, stderr: bool) -> None:
-        """Note bytes a stream sent.
-
-        Args:
-            data (bytes): the bytes.
-            stderr (bool): whether they went to stderr.
-        """
-        stream = int(stderr)
-        self._total[stream] += len(data)
-        prefix = self._prefix[stream]
-        if len(prefix) < 2 * REFUSAL_WINDOW:
-            self._prefix[stream] = (
-                prefix + data[: 2 * REFUSAL_WINDOW - len(prefix)]
-            )
-        self._tail[stream] = (self._tail[stream] + data[-REFUSAL_WINDOW:])[
-            -REFUSAL_WINDOW:
-        ]
-
-    def refusal_line(self, refusal: Refusal | None) -> str:
-        """The line to append after the output, as ``refusal_line``.
-
-        Args:
-            refusal (Refusal | None): the record off the result.
-        """
-        said = [
-            part
-            for stream in (0, 1)
-            for part in (
-                head_window(self._prefix[stream], self._total[stream]),
-                self._tail[stream],
-            )
-        ]
-        return refusal_line(decode(b"\n".join(said)), refusal)
 
 
 def with_refusal(text: str, refusal: Refusal | None) -> str:
@@ -120,7 +47,7 @@ def with_refusal(text: str, refusal: Refusal | None) -> str:
         refusal (Refusal | None): the record off the result; None
             returns the text unchanged.
     """
-    line = refusal_line(text, refusal)
+    line = refusal_line(refusal)
     if not line or not text:
         return text or line
     return text + line if text.endswith("\n") else f"{text}\n{line}"
@@ -135,7 +62,7 @@ def with_refusal_bytes(data: bytes, refusal: Refusal | None) -> bytes:
         refusal (Refusal | None): the record off the result; None
             returns the bytes unchanged.
     """
-    line = refusal_line(decode(data), refusal).encode("utf-8")
+    line = refusal_line(refusal).encode("utf-8")
     if not line or not data:
         return data or line
     return data + line if data.endswith(b"\n") else data + b"\n" + line

@@ -20,8 +20,7 @@
 // pair), so returning to the last * on a mismatch is enough, and a match
 // costs at most name length times pattern length. Deliberate divergences
 // from CPython: always case-sensitive (no normcase, so this equals Python
-// fnmatchcase), an invalid class range like [z-a] never matches instead of
-// raising, and a leading ^ negates a class like ! does (bash/glibc
+// fnmatchcase), and a leading ^ negates a class like ! does (bash/glibc
 // semantics; CPython keeps ^ literal, as `fnmatchcase` below does). Mirrors
 // the Python mirage.utils.fnmatch wrapper.
 import { POSIX_CLASSES } from './posix.ts'
@@ -155,7 +154,7 @@ function scan(
  * some tails and not others there: `[[ a == *!(a) ]]` and
  * `[[ '' == *@(|b) ]]` fail, and `[[ '' == *!(a)x ]]` succeeds.
  */
-class Matcher {
+export class Matcher {
   private readonly name: readonly string[]
   private readonly pattern: readonly string[]
   private readonly classes: Map<number, number>
@@ -165,10 +164,15 @@ class Matcher {
   private readonly transitions = new Map<number, readonly number[]>()
   private readonly period: boolean
 
-  constructor(name: string, pattern: string, period = false, extglob = true) {
-    this.period = period && name.startsWith('.')
-    this.name = Array.from(name)
-    this.pattern = Array.from(pattern)
+  constructor(
+    name: string | readonly string[],
+    pattern: string | readonly string[],
+    period = false,
+    extglob = true,
+  ) {
+    this.name = typeof name === 'string' ? Array.from(name) : name
+    this.pattern = typeof pattern === 'string' ? Array.from(pattern) : pattern
+    this.period = period && this.name[0] === '.'
     const [classes, groups] = scan(this.pattern, extglob)
     this.classes = classes
     this.groups = groups
@@ -191,6 +195,19 @@ class Matcher {
       return fnmatch(this.name.join(''), pattern, false, this.period)
     }
     return this.ends(0, this.pattern.length, 0).contains(this.name.length)
+  }
+
+  /**
+   * Where the farthest or nearest match from a character offset ends, or
+   * null. Every end comes out of one forward run, and runs from later
+   * offsets share their tails with earlier ones, so asking for each offset
+   * of a subject in turn stays linear for a wildcard pattern.
+   */
+  end(start: number, longest = true): number | null {
+    const spans = this.ends(0, this.pattern.length, start).spans
+    const span = longest ? spans.at(-1) : spans[0]
+    if (!span) return null
+    return longest ? span[1] - 1 : span[0]
   }
 
   private ends(lo: number, hi: number, start: number): Positions {
@@ -318,6 +335,61 @@ class Matcher {
     }
     return new Positions(accepted)
   }
+}
+
+/**
+ * Where the longest or shortest suffix a pattern matches starts, as a
+ * character offset. A suffix of the name is a prefix of the reversed name,
+ * and the reversed pattern matches exactly the reversed strings, so one
+ * forward run finds every suffix that matches instead of one run per offset.
+ */
+export function suffixStart(
+  name: string,
+  pattern: string,
+  longest = true,
+  extglob = false,
+): number | null {
+  // Reversed characters stay an array: joined, a lone low surrogate and the
+  // lone high one after it would read back as one character.
+  const chars = Array.from(name).reverse()
+  const end = new Matcher(chars, reversed(pattern, extglob), false, extglob).end(0, longest)
+  return end === null ? null : chars.length - end
+}
+
+/**
+ * The pattern matching each string `pattern` matches, reversed. Bracket
+ * expressions stay whole and alternatives keep their branches, so it is the
+ * tokens reversed, each group's `)` turned into its opener and each opener
+ * into `)`. A character literal only where it stands (an unclosed `[`, a
+ * `(`, `)` or `|` outside group syntax) becomes its quote mark.
+ */
+function reversed(pattern: string, extglob: boolean): string[] {
+  const chars = Array.from(pattern)
+  const [classes, groups] = scan(chars, extglob)
+  const openers = new Map<number, string[]>()
+  const bars = new Set<number>()
+  for (const [i, { end, branches }] of groups) {
+    openers.set(end - 1, [chars[i] ?? '', '('])
+    for (const [, stop] of branches.slice(0, -1)) bars.add(stop)
+  }
+  const marks = new Map(Object.entries(QUOTED_CHARS).map(([mark, ch]) => [ch, mark]))
+  const tokens: string[][] = []
+  let i = 0
+  while (i < chars.length) {
+    const close = classes.get(i)
+    if (groups.has(i)) {
+      tokens.push([')'])
+      i += 2
+    } else if (close !== undefined) {
+      tokens.push(chars.slice(i, close))
+      i = close
+    } else {
+      const c = chars[i] ?? ''
+      tokens.push(openers.get(i) ?? [!bars.has(i) && '[()|'.includes(c) ? (marks.get(c) ?? c) : c])
+      i += 1
+    }
+  }
+  return tokens.reverse().flat()
 }
 
 function extendedClassMatches(char: string, pattern: string): boolean {
@@ -481,8 +553,8 @@ function classEnd(pattern: Characters, open: number, caret: boolean, posix = fal
 
 // Whether one character is in a class body. Members are literal (a
 // backslash is a member too), a-z is a range over code points, a - at
-// either end is literal, and a class holding a range whose ends are out of
-// order matches nothing. A body of just its negation matches any character.
+// either end is literal, and a range whose ends are out of order holds
+// nothing. A body of just its negation matches any character.
 function classMatches(body: Characters, ch: string, caret: boolean): boolean {
   const negate = negates(body[0], caret)
   const members = negate ? body.slice(1) : body
@@ -494,7 +566,6 @@ function classMatches(body: Characters, ch: string, caret: boolean): boolean {
     if (members[i + 1] === '-' && i + 2 < members.length) {
       const low = lo.codePointAt(0) ?? 0
       const high = (members[i + 2] ?? '').codePointAt(0) ?? 0
-      if (low > high) return false
       if (low <= code && code <= high) found = true
       i += 3
     } else {

@@ -109,7 +109,7 @@ import { pathVisible } from '../../utils/hidden.ts'
 import { namespaceViewOf } from '../mount/namespace/view.ts'
 import { asyncContextIsolatesTasks, createAsyncContext } from '../../utils/async_context.ts'
 import { makeVar, VarAttr } from '../../shell/variable.ts'
-import { enoent } from '../../errors/fs.ts'
+import { eacces, enoent } from '../../errors/fs.ts'
 import { sessionView, envSnapshot } from '../session/state.ts'
 import type { BridgeDispatchFn, EvalResult } from '../../runtime/types.ts'
 import { MontyUnavailableError } from '../../runtime/python/monty/index.ts'
@@ -174,6 +174,11 @@ const LINE_STOP = createAsyncContext<AbortController>()
 // Set inside a write the capture gate let through, so the ops it runs
 // itself are not held behind it.
 const WRITE_HELD = createAsyncContext<boolean>()
+
+// A hook's session write where it cannot run as a policy deciding.
+function refuseWrite(name: string): Promise<void> {
+  return Promise.reject(eacces(name))
+}
 
 export class Workspace {
   readonly io: IOConfig
@@ -410,7 +415,31 @@ export class Workspace {
     // The approval ledger an Ask is taken to (design 3.9): grants live on
     // the sessions, the host answers through `onAsk` (or just records
     // the question when none is wired) and reads `ws.decisions`.
-    this.registry.decisions = new Decisions(this.sessionManager, options.onAsk ?? null)
+    this.registry.policies.decisions = new Decisions(this.sessionManager, options.onAsk ?? null)
+    // What every hook sees of its session: the one its context was built
+    // from when given (a line explain walks, a call's cwd and env), else
+    // the one the call is made under when the hook's is it, else the
+    // session the id names, the default for none; nothing for an id this
+    // workspace holds no session for.
+    this.registry.policies.views = (sessionId, given) => {
+      let session =
+        given ??
+        (asyncContextIsolatesTasks ? getCurrentSessionUnlessForeign(this.sessionManager) : null)
+      if (session === null || (sessionId !== '' && session.sessionId !== sessionId)) {
+        const wanted = sessionId === '' ? this.sessionManager.defaultId : sessionId
+        session = this.sessionManager.list().find((s) => s.sessionId === wanted) ?? null
+      }
+      if (session === null) return null
+      const view = sessionView(session, this.policies)
+      const ns = namespaceViewOf(this.registry, this.namespace, this.dispatcher.dispatch, session)
+      if (asyncContextIsolatesTasks) {
+        return { session: view, ns, vfs: this.vfs.forSession(session.sessionId) }
+      }
+      // Without task isolation a hook cannot run as a policy deciding: its
+      // own calls could not be told from the ones it judges. There it gets
+      // no `vfs`, and a session that refuses every write.
+      return { session: { ...view, set: refuseWrite, unset: refuseWrite, mark: refuseWrite }, ns }
+    }
     // Installed CLIs, fully separate from mounts: a spec name resolves
     // against the named registry and every entry installs through the
     // same fail-loud path as registerCli.
@@ -429,8 +458,8 @@ export class Workspace {
       DEFAULT_READ_SPEC,
       { write: WritePolicy.UNCONDITIONAL },
     )
-    // One file per program the session can run, where PATH finds it: the
-    // same lookup which, type and command -v answer from.
+    // One file per program, where PATH finds it: the same lookup which,
+    // type and command -v answer from.
     this.registry.mount(
       BIN_PREFIX,
       new BinViewVFS(
@@ -525,7 +554,7 @@ export class Workspace {
       binding: this.runtimeBinding,
     })
     this.closers.push(() => this.runtimeWorld.close())
-    this.router = new Router(this.registry, this.runtimeWorld, this.agentId, sandboxResolver)
+    this.router = new Router(this.registry, this.runtimeWorld, this.agentId)
     if (options.routePolicy !== undefined) {
       this.registry.policies.place(
         new PlacementPolicy(options.routePolicy, () => this.runtimeWorld.entries),
@@ -1070,6 +1099,7 @@ export class Workspace {
     try {
       const reparse = (text: string): TSNodeLike => parser.parse(text)
       const root = parser.parse(line)
+      const wholeLine = this.runtimeWorld.wholeLineFor(null) !== null
       const judged = await explainLine(
         root,
         session,
@@ -1077,18 +1107,28 @@ export class Workspace {
         this.namespace,
         '',
         reparse,
-        this.runtimeWorld.wholeLineFor(null) !== null,
+        wholeLine,
       )
-      if (holds(judged.map((one) => one.judgment))) {
-        return explainedLine(line, judged, () => '', reparse)
+      const verdicts = await explainLine(
+        root,
+        session,
+        this.registry,
+        this.namespace,
+        '',
+        reparse,
+        wholeLine,
+        false,
+      )
+      if (holds(verdicts.map((one) => one.judgment))) {
+        return explainedLine(line, judged, verdicts, () => '', reparse)
       }
       const [answers, placed] = await this.router.placement(root, line, session)
       if (placed !== null && 'kind' in placed) {
         const refused = placementRefused(placed, line)
         return {
-          ...explainedLine(line, judged, () => '', reparse),
+          ...explainedLine(line, judged, verdicts, () => '', reparse),
           answers,
-          outcome: Outcome.DENY,
+          outcome: placed.kind === 'pending' ? Outcome.ASK : Outcome.DENY,
           reason: placed.reason,
           source: '',
           refusal: refused.refusal,
@@ -1099,6 +1139,7 @@ export class Workspace {
       const said = explainedLine(
         line,
         judged,
+        verdicts,
         (command) => this.router.runtimeFor(command, placed),
         reparse,
       )

@@ -23,6 +23,7 @@ from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.executor.command import routing
 from mirage.workspace.executor.command.routing import (
+    command_words,
     default_cwd_operand,
     merge_scopes,
     path_flag_scopes,
@@ -192,6 +193,15 @@ def test_program_tokens_walks_a_cli_verb_path_and_keeps_the_rest_raw():
             ("rm", "-rf", "/x"),
             ("rm",),
         )
+        # A group option's value is never read as a verb, even one
+        # that spells one (`-C status`, a directory named status).
+        words = command_words(reg, "git", ["-C", "status", "log"], [], [], "/")
+        assert [(w.text, w.kind.value, w.option) for w in words] == [
+            ("git", "name", None),
+            ("-C", "option", None),
+            ("status", "value", "-C"),
+            ("log", "subcommand", None),
+        ]
     finally:
         import asyncio
 

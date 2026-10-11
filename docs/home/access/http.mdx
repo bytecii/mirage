@@ -196,7 +196,7 @@ Upload the tar as `multipart/form-data`: a `request` part holding the JSON field
 <Badge color="green">POST</Badge> `/v1/workspaces/{id}/sessions`
 
 <ParamField body="session_id" type="string">The session id. A fresh one when absent.</ParamField>
-<ParamField body="profile" type="string">A [profile](/home/permissions) from the workspace's `profiles`.</ParamField>
+<ParamField body="profile" type="string">A [profile](/home/policy/overview) from the workspace's `profiles`.</ParamField>
 <ParamField body="mounts" type="object">Prefix to mode (`read`, `write`, `exec`) to narrow those mounts, such as `{"/data": "read"}`.</ParamField>
 
 ### List sessions
@@ -225,7 +225,7 @@ Kills the session's background jobs and the processes its runtimes started, and 
 
 <Badge color="orange">PATCH</Badge> `/v1/workspaces/{id}/sessions/{session_id}`
 
-<ParamField body="profile" type="string | null" required>A [profile](/home/permissions) from the workspace's `profiles`; `null` for the workspace default.</ParamField>
+<ParamField body="profile" type="string | null" required>A [profile](/home/policy/overview) from the workspace's `profiles`; `null` for the workspace default.</ParamField>
 
 Replaces the session's modes, hides and rules. Its cwd, env and history stay.
 

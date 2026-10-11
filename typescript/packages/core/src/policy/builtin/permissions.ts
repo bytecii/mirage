@@ -71,13 +71,7 @@ export class PermissionsPolicy implements Policy, SessionScoped {
       return { kind: 'ask', reason: rule.reason, rule, rules: decision.asks }
     }
     if (decision.matchedPath === null) return { kind: 'deny', reason: rule.reason, rule }
-    return {
-      kind: 'deny',
-      reason: rule.reason,
-      scope: 'operand',
-      path: decision.matchedPath,
-      rule,
-    }
+    return { kind: 'deny', reason: rule.reason, path: decision.matchedPath, rule }
   }
 
   preVfs(ctx: VfsContext): Action | null {

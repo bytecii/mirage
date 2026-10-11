@@ -214,13 +214,13 @@ def active_records() -> list[OpRecord] | None:
     return rec.sink if rec is not None else None
 
 
-_command_sink: ContextVar[list[OpRecord] | None] = ContextVar(
-    "_command_sink", default=None
-)
+_command_sink: ContextVar[
+    tuple[list[OpRecord] | None, list[OpRecord]] | None
+] = ContextVar("_command_sink", default=None)
 
 
 @contextmanager
-def command_records() -> Iterator[list[OpRecord]]:
+def command_records(own: bool = False) -> Iterator[list[OpRecord]]:
     """Collect the records the running command itself emits.
 
     Yields a fresh list that :func:`record` and :func:`record_stream`
@@ -228,13 +228,23 @@ def command_records() -> Iterator[list[OpRecord]]:
     block opens its own list, and a concurrent task keeps the list its
     context was copied with, so a pipeline stage never sees a sibling
     stage's records. Nothing is collected outside a recording scope.
+    Each record also reaches the list of the nearest block opened with
+    ``own``, which gathers everything the calls under it record.
+
+    Args:
+        own (bool): open a command's list: the dispatcher calls under
+            it add to it too, and it takes nothing for the block around
+            it, so a command reading another's output is not charged
+            with that command's reads.
 
     Yields:
         list[OpRecord]: the command's own records, shared with the
         line's sink.
     """
     mine: list[OpRecord] = []
-    token = _command_sink.set(mine)
+    held = _command_sink.get()
+    command = mine if own else held[0] if held is not None else None
+    token = _command_sink.set((command, mine))
     try:
         yield mine
     finally:
@@ -425,6 +435,15 @@ def finish_record(
     )
 
 
+def _charge(op_rec: OpRecord) -> None:
+    held = _command_sink.get()
+    if held is not None:
+        command, mine = held
+        mine.append(op_rec)
+        if command is not None and command is not mine:
+            command.append(op_rec)
+
+
 def record(
     op: str,
     path: str,
@@ -462,9 +481,7 @@ def record(
         revision=revision,
     )
     rec.sink.append(op_rec)
-    mine = _command_sink.get()
-    if mine is not None:
-        mine.append(op_rec)
+    _charge(op_rec)
 
 
 def record_stream(
@@ -513,9 +530,7 @@ def record_stream(
         execution_id=current_execution_id(),
     )
     rec.sink.append(op_rec)
-    mine = _command_sink.get()
-    if mine is not None:
-        mine.append(op_rec)
+    _charge(op_rec)
     return op_rec
 
 

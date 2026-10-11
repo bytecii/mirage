@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { fnmatch, fnmatchcase } from './fnmatch.ts'
+import { Matcher, fnmatch, fnmatchcase, suffixStart } from './fnmatch.ts'
 
 const NAMES = [
   '',
@@ -126,11 +126,6 @@ describe('fnmatch edge semantics', () => {
     expect(fnmatch('a\nb', 'a*b')).toBe(true)
   })
 
-  it('invalid range [z-a] never matches and never throws', () => {
-    expect(fnmatch('z', '[z-a]')).toBe(false)
-    expect(fnmatch('-', '[z-a]')).toBe(false)
-  })
-
   it('lone [ is a literal', () => {
     expect(fnmatch('[ab', '[ab')).toBe(true)
     expect(fnmatch('a', '[ab')).toBe(false)
@@ -146,6 +141,11 @@ describe('fnmatch edge semantics', () => {
     expect(fnmatch('a.txt', '[^ab].txt')).toBe(false)
     expect(fnmatch('^', '[a^]')).toBe(true)
     expect(fnmatch('b', '[a^]')).toBe(false)
+    expect(fnmatch('^', '[[^b]')).toBe(true)
+    expect(fnmatch('!', '[[^b]')).toBe(false)
+    expect(fnmatch(']', '[^]a]')).toBe(false)
+    expect(fnmatch('[^ab', '[^ab')).toBe(true)
+    expect(fnmatch('[^]', '[^]')).toBe(true)
   })
 
   it('matches a many-star pattern in linear time', () => {
@@ -156,9 +156,12 @@ describe('fnmatch edge semantics', () => {
     expect(performance.now() - started).toBeLessThan(1000)
   })
 
-  it('never matches a class with an out-of-order range', () => {
-    expect(fnmatch('b', '[z-a]')).toBe(false)
-    expect(fnmatch('b', '[!z-a]')).toBe(false)
+  it('an out-of-order range holds nothing and never throws', () => {
+    expect(fnmatch('z', '[z-a]')).toBe(false)
+    expect(fnmatch('-', '[z-a]')).toBe(false)
+    expect(fnmatch('b', '[z-ab]')).toBe(true)
+    expect(fnmatch('b', '[!z-a]')).toBe(true)
+    expect(fnmatchcase('b', '[!z-a]')).toBe(true)
     expect(fnmatch('-', '[a-]')).toBe(true)
   })
 })
@@ -287,6 +290,37 @@ it.each([
   'long subjects match in linear time: %s',
   (pattern, tail, expected) => {
     expect(fnmatch('a'.repeat(16000) + tail, pattern, true)).toBe(expected)
+  },
+)
+
+it('Matcher.end reads every offset in linear time', () => {
+  const match = new Matcher('abcab', '*b', false, false)
+  expect([match.end(0), match.end(0, false)]).toEqual([5, 2])
+  expect([match.end(2), match.end(5)]).toEqual([5, null])
+  const blank = new Matcher(' '.repeat(16000), '*b', false, false)
+  for (let i = 0; i <= 16000; i++) expect(blank.end(i)).toBeNull()
+})
+
+it.each([
+  ['ab'.repeat(16000), '*a', [null, null]],
+  ['ab'.repeat(16000), 'a*', [31998, 0]],
+  ['xab', '@(b|ab)', [2, 1]],
+  ['ba', '+(@(a|b))', [1, 0]],
+  ['xa)', '!(a)', [3, 0]],
+  ['xa(b)|c', '(b)|c', [2, 2]],
+  ['xa(b)', '@(a(b)|z)', [1, 1]],
+  ['x[a', '[a', [1, 1]],
+  ['x|)', '[)|]', [2, 2]],
+  ['\udcff\ud83d', '*', [2, 0]],
+  ['\udcff\ud83d', '\ud83d', [1, 1]],
+  ['x\udcff\ud83d', '\udcff\ud83d', [1, 1]],
+] as [string, string, (number | null)[]][])(
+  'suffixStart runs the reversed pattern once: %#',
+  (name, pattern, expected) => {
+    expect([
+      suffixStart(name, pattern, false, true),
+      suffixStart(name, pattern, true, true),
+    ]).toEqual(expected)
   },
 )
 

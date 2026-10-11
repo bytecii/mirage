@@ -48,7 +48,6 @@ describe('failureToDict', () => {
       kind: 'pending',
       reason: 'sign-off',
       policy: '',
-      scope: 'command',
       askId: 'abc123',
     })
     expect(failureToDict(err)).toEqual({
@@ -58,7 +57,6 @@ describe('failureToDict', () => {
         kind: 'pending',
         reason: 'sign-off',
         policy: '',
-        scope: 'command',
         ask_id: 'abc123',
       },
     })
@@ -81,7 +79,6 @@ describe('ioResultToDict', () => {
       kind: 'pending',
       reason: 'sign-off',
       policy: '',
-      scope: 'command',
       askId: 'abc123',
     })
     expect(ioResultToDict(refused)).toEqual({
@@ -93,7 +90,6 @@ describe('ioResultToDict', () => {
         kind: 'pending',
         reason: 'sign-off',
         policy: '',
-        scope: 'command',
         ask_id: 'abc123',
       },
     })

@@ -15,21 +15,15 @@
 import { describe, expect, it } from 'vitest'
 import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { MountMode } from '../../types.ts'
-import type { Action, VfsContext, Policy } from '../../policy/index.ts'
 import { getTestParser } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace.ts'
 import { SharedStdin } from '../../io/stream.ts'
+import { dispatched } from '../../test-utils.ts'
 
-class NoRmdir implements Policy {
-  preVfs(ctx: VfsContext): Action | null {
-    return ctx.op === 'rmdir' ? { kind: 'deny', reason: 'no rmdir' } : null
-  }
-}
-
-async function shellWs(policies: Policy[] = []): Promise<Workspace> {
+async function shellWs(): Promise<Workspace> {
   const parser = await getTestParser()
   const root = new RAMVFS()
-  const ws = new Workspace({ '/': root }, { mode: MountMode.WRITE, shellParser: parser, policies })
+  const ws = new Workspace({ '/': root }, { mode: MountMode.WRITE, shellParser: parser })
   ws.createSession('s')
   return ws
 }
@@ -86,18 +80,20 @@ describe('find actions', () => {
     }
   })
 
-  it('admits a directory deletion as rmdir', async () => {
-    // A rule that refuses rmdir and allows unlink judges `find emptydir
-    // -delete` as it judges `rmdir emptydir`.
-    const ws = await shellWs([new NoRmdir()])
+  it('removes a directory with rmdir', async () => {
+    // `find emptydir -delete` removes the directory as `rmdir emptydir`
+    // does, and a file as `rm file` does, so the dispatcher judges each as
+    // that op.
+    const ws = await shellWs()
+    const seen = dispatched(ws)
     try {
       const r = await ws.shell(
-        'mkdir -p /data/rd/e; touch /data/rd/f; find /data/rd/f -delete; echo rc=$?; find /data/rd/e -delete; echo rc=$?; test -d /data/rd/e; echo $?',
+        'mkdir -p /data/rd/e; touch /data/rd/f; find /data/rd/f -delete; find /data/rd/e -delete; test -d /data/rd/e; echo $?',
         { sessionId: 's' },
       )
-      expect(r.stdoutText).toBe('rc=0\nrc=1\n0\n')
-      expect(r.stderrText).toContain("find: cannot delete '/data/rd/e': Permission denied")
-      expect(r.refusal?.reason).toBe('no rmdir')
+      expect(r.stdoutText).toBe('1\n')
+      expect(seen).toContainEqual(['unlink', '/data/rd/f'])
+      expect(seen).toContainEqual(['rmdir', '/data/rd/e'])
     } finally {
       await ws.close()
     }

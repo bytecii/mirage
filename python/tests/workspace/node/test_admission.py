@@ -18,7 +18,7 @@ import pytest
 
 from mirage.policy import PolicyDenied
 from mirage.policy.profile import PathsBlock, SessionProfile
-from mirage.policy.types import AdmissionRules, CommandRule
+from mirage.policy.types import AdmissionRules, CommandContext, CommandRule
 from mirage.shell import parse
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
@@ -129,14 +129,14 @@ async def test_admit_line_refuses_the_first_offending_command():
             )
             is None
         )
-        # An unlisted word anywhere in the line is 127 before any hook.
+        # An unlisted word anywhere in the line is the allow list's Deny.
         refusal = await admit_line(
             parse("cat /data/a | sort"), session, registry, namespace
         )
         assert refusal is not None
         assert (refusal.exit_code, refusal.stderr) == (
-            127,
-            b"sort: command not found\n",
+            126,
+            b"sort: Permission denied\n",
         )
         # A rule reads the literal words, path-shaped ones as paths.
         refusal = await admit_line(
@@ -295,8 +295,8 @@ async def test_admit_line_reads_literal_words_and_refuses_the_unreadable():
             "policy denied: runs lines the gate cannot read\n",
         )
         assert await line("sh -c 'rm /data/x'; sh -c 'sort'") == (
-            127,
-            "sort: command not found\n",
+            126,
+            "sort: Permission denied\npolicy denied: sort is not allowed\n",
         )
     finally:
         await ws.close()
@@ -600,6 +600,16 @@ async def test_admit_line_without_rules_admits_the_words_as_typed():
         await ws.close()
 
 
+def _gate_ctx(tokens: tuple[str, ...]) -> CommandContext:
+    return CommandContext(
+        command=tokens[0],
+        paths=(),
+        argv=tokens[1:],
+        cwd="/",
+        tokens=tokens,
+    )
+
+
 def test_the_admitted_gate_judges_what_the_line_did_not_name():
     deny = CommandRule(reason="sealed", paths=("/data/sealed",))
     ask = CommandRule(
@@ -608,7 +618,7 @@ def test_the_admitted_gate_judges_what_the_line_did_not_name():
     rules = AdmissionRules(ask=(ask,), deny=(deny,))
     gate = Admitted(
         rules=rules,
-        tokens=("grep", "-r", "x", "/data"),
+        ctx=_gate_ctx(("grep", "-r", "x", "/data")),
         judged=frozenset({"/data"}),
         granted=(),
         scoped=True,
@@ -630,7 +640,7 @@ def test_the_admitted_gate_judges_what_the_line_did_not_name():
     # opens its scope to the walk.
     judged = Admitted(
         rules=rules,
-        tokens=("grep", "x", "/data/asked/a"),
+        ctx=_gate_ctx(("grep", "x", "/data/asked/a")),
         judged=frozenset({"/data/asked/a"}),
         granted=(),
         scoped=True,
@@ -638,7 +648,7 @@ def test_the_admitted_gate_judges_what_the_line_did_not_name():
     judged.check("/data/asked/a")
     granted = Admitted(
         rules=rules,
-        tokens=("grep", "-r", "x", "/data/asked"),
+        ctx=_gate_ctx(("grep", "-r", "x", "/data/asked")),
         judged=frozenset({"/data/asked"}),
         granted=(ask,),
         scoped=True,
@@ -661,7 +671,7 @@ def test_the_admitted_gate_scopes_each_start_point_on_its_own():
     )
     gate = Admitted(
         rules=rules,
-        tokens=("find", "/data", "/other"),
+        ctx=_gate_ctx(("find", "/data", "/other")),
         judged=frozenset({"/data", "/other"}),
         granted=(),
         scoped=True,
@@ -669,16 +679,6 @@ def test_the_admitted_gate_scopes_each_start_point_on_its_own():
     assert gate.scopes("/data")
     assert gate.scopes("/data/sealed/s")
     assert not gate.scopes("/other")
-    # A pre_vfs policy judges every op, so every walk is the guard's.
-    judged = Admitted(
-        rules=rules,
-        tokens=("find", "/other"),
-        judged=frozenset({"/other"}),
-        granted=(),
-        scoped=True,
-        ops_judged=True,
-    )
-    assert judged.scopes("/other")
 
 
 @pytest.mark.asyncio
@@ -692,7 +692,7 @@ async def test_admit_reports_the_grant_the_line_runs_under_and_its_scope():
             "rm", ["/data/x"], words[1:], session, registry, namespace
         )
         assert isinstance(verdict, Admitted)
-        assert verdict.tokens == ("rm", "/data/x")
+        assert verdict.ctx.tokens == ("rm", "/data/x")
         assert verdict.judged == frozenset({"/data/x"})
         assert verdict.granted == ()
         # `rm` is under no path rule in this document; `cat` is.

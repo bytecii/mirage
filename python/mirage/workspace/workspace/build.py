@@ -101,4 +101,4 @@ def wire_runtime_world(
     """
     runtimes = Runtimes(registry, binding)
     runtimes.resolve(entries)
-    return runtimes, Router(registry, runtimes, binding.resolver)
+    return runtimes, Router(registry, runtimes)

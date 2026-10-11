@@ -24,7 +24,15 @@ from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec.types import CommandSpec
 from mirage.context import reset_current_session, set_current_session
 from mirage.io.types import IOResult
-from mirage.policy import Action, Ask, CommandContext, Decision, Policy, Scope
+from mirage.policy import (
+    Action,
+    Ask,
+    CommandContext,
+    CommandResultContext,
+    Decision,
+    Policy,
+    Scope,
+)
 from mirage.policy.constants import DEFAULT_ASK_REASON, DEFAULT_DENY_REASON
 from mirage.policy.errors import PolicyError
 from mirage.policy.match import Outcome
@@ -930,31 +938,34 @@ async def _line(ws: Workspace, line: str, sid: str | None = None):
 
 
 @pytest.mark.asyncio
-async def test_allow_list_hides_unlisted_tools_from_dispatch_and_enumerators():
+async def test_allow_list_refuses_unlisted_tools_and_hides_nothing():
     ws = _commands_ws()
     try:
         await ws.shell("mkdir -p /repo/d && touch /repo/d/x")
-        # An unlisted tool is not a command for the session: 127 before
-        # any admission hook, and every enumerator agrees.
+        # An unlisted tool is the profile's Deny, in bash's words, with
+        # the reason on the record; every enumerator still finds it.
         assert await _line(ws, "sort /repo/d/x") == (
-            127,
+            126,
             "",
-            "sort: command not found\n",
+            "sort: Permission denied\npolicy denied: sort is not allowed\n",
         )
         assert await _line(ws, "type sort; echo $?") == (
             0,
-            "1\n",
-            "bash: type: sort: not found\n",
+            "sort is /usr/bin/sort\n0\n",
+            "",
         )
-        assert await _line(ws, "command -v sort; echo $?") == (0, "1\n", "")
-        assert await _line(ws, "which sort; echo $?") == (0, "1\n", "")
+        assert await _line(ws, "command -v sort; echo $?") == (
+            0,
+            "/usr/bin/sort\n0\n",
+            "",
+        )
         code, out, _ = await _line(ws, "man")
-        assert code == 0 and "- cat" in out and "- sort" not in out
-        assert (await _line(ws, "man sort"))[0] == 1
+        assert code == 0 and "- cat" in out and "- sort" in out
+        assert (await _line(ws, "man sort"))[0] == 0
         # Builtins are subjects like everything else: the listed cd and
-        # [ run, the unlisted pwd and history are not commands at all.
-        # Functions are the one exemption, and every line of a body
-        # passes the gate itself.
+        # [ run, the unlisted pwd and history are refused. Functions are
+        # the one exemption, and every line of a body passes the gate
+        # itself.
         assert await _line(ws, "cd /repo && [ -f d/x ] && echo yes") == (
             0,
             "yes\n",
@@ -962,16 +973,16 @@ async def test_allow_list_hides_unlisted_tools_from_dispatch_and_enumerators():
         )
         assert await _line(ws, "f() { echo in-f; }; f") == (0, "in-f\n", "")
         assert (await _line(ws, "cat /repo/d/x"))[0] == 0
-        assert await _line(ws, "pwd") == (127, "", "pwd: command not found\n")
-        assert await _line(ws, "type pwd; echo $?") == (
-            0,
-            "1\n",
-            "bash: type: pwd: not found\n",
+        assert await _line(ws, "pwd") == (
+            126,
+            "",
+            "pwd: Permission denied\npolicy denied: pwd is not allowed\n",
         )
         assert await _line(ws, "history") == (
-            127,
+            126,
             "",
-            "history: command not found\n",
+            "history: Permission denied\n"
+            "policy denied: history is not allowed\n",
         )
     finally:
         await ws.close()
@@ -984,14 +995,14 @@ async def test_a_profiles_allow_list_is_the_only_one_a_session_reads():
     try:
         await ws.shell("mkdir -p /repo/d && touch /repo/d/x")
         # The reviewer profile lists `cat` and not python3, whatever the
-        # default profile lists; it lists `git log`, so `git` is visible but
-        # a `git commit` line is covered by nothing (a refusal that names
-        # the program, not "command not found").
+        # default profile lists; it lists `git log`, so a `git commit`
+        # line is covered by nothing (a refusal that names the program).
         assert (await _line(ws, "cat /repo/d/x", "rev"))[0] == 0
         assert await _line(ws, "python3 -c 1", "rev") == (
-            127,
+            126,
             "",
-            "python3: command not found\n",
+            "python3: Permission denied\n"
+            "policy denied: python3 is not allowed\n",
         )
         assert (await _line(ws, "type git", "rev"))[0] == 0
         assert await _line(ws, "git commit -m x", "rev") == (
@@ -1004,23 +1015,23 @@ async def test_a_profiles_allow_list_is_the_only_one_a_session_reads():
         # not the verb, so `git -C /repo status` is `git status`.
         code, _, err = await _line(ws, "git -C /repo status", "rev")
         assert "not allowed" not in err
-        # Nested runners re-enter the chokepoint: the hidden `rm` stays
-        # hidden inside xargs (which, as GNU's, finds no such program),
-        # eval and a function body.
+        # Nested runners re-enter the chokepoint: the unlisted `rm` is
+        # refused inside xargs, eval and a function body.
+        refused = "rm: Permission denied\npolicy denied: rm is not allowed\n"
         assert await _line(ws, "echo /repo/d/x | xargs rm", "rev") == (
-            127,
+            123,
             "",
-            "xargs: rm: No such file or directory\n",
+            refused,
         )
         assert await _line(ws, "eval 'rm /repo/d/x'", "rev") == (
-            127,
+            126,
             "",
-            "rm: command not found\n",
+            refused,
         )
         assert await _line(ws, "f() { rm /repo/d/x; }; f", "rev") == (
-            127,
+            126,
             "",
-            "rm: command not found\n",
+            refused,
         )
         # An inline document restricts what is left: it cannot shorten
         # the allow list, but a deny rule of its own still speaks.
@@ -1284,6 +1295,11 @@ async def test_a_mount_rule_speaks_on_a_walk_from_above():
         await ws.close()
 
 
+class _AfterEach(Policy):
+    async def post_command(self, ctx: CommandResultContext) -> Action | None:
+        return None
+
+
 class _Box(Runtime, LineExecutorMixin):
     """A runtime that takes every line raw, recording what reached it."""
 
@@ -1305,8 +1321,8 @@ class _Box(Runtime, LineExecutorMixin):
 @pytest.mark.asyncio
 async def test_a_whole_line_runtime_is_gated_like_the_tree():
     # A runtime that captures the raw line runs it under the same
-    # rules: every parsed command clears visibility, the policy chain
-    # and the approval ledger before the runtime sees a byte, so a
+    # rules: every parsed command clears the policy chain and the
+    # approval ledger before the runtime sees a byte, so a
     # captured line cannot run what the tree would refuse.
     box = _Box()
     ws = Workspace(
@@ -1317,16 +1333,11 @@ async def test_a_whole_line_runtime_is_gated_like_the_tree():
     )
     ws.register_cli("git", cli_spec_for("git"))
     try:
-        assert await _line(ws, "sort /repo/x") == (
-            127,
-            "",
-            "sort: command not found\n",
+        refused = (
+            "sort: Permission denied\npolicy denied: sort is not allowed\n"
         )
-        assert await _line(ws, "cat /repo/a | sort") == (
-            127,
-            "",
-            "sort: command not found\n",
-        )
+        assert await _line(ws, "sort /repo/x") == (126, "", refused)
+        assert await _line(ws, "cat /repo/a | sort") == (126, "", refused)
         assert await _line(ws, "rm /repo/x") == (
             1,
             "",
@@ -1352,6 +1363,16 @@ async def test_a_whole_line_runtime_is_gated_like_the_tree():
             "git: Permission denied\npolicy denied: git add is not allowed\n",
         )
         assert (await _line(ws, "git status", "rev"))[0] == 0
+        assert box.lines == ["cat /repo/a | wc -l", "git status"]
+        # No command's result comes back from the runtime, so a
+        # post_command policy refuses the line it could not judge.
+        ws.policies.add(_AfterEach())
+        assert await _line(ws, "cat /repo/a") == (
+            126,
+            "",
+            "cat: Permission denied\npolicy denied: a post_command policy "
+            "cannot judge a line a runtime runs whole\n",
+        )
         assert box.lines == ["cat /repo/a | wc -l", "git status"]
     finally:
         await ws.close()
@@ -2795,7 +2816,7 @@ async def test_every_permissions_entry_point_accepts_the_plain_document():
             "cat: /box/top: Permission denied\npolicy denied: boxed\n",
         )
         ws.create_session("i", profile={"commands": {"allow": ["echo"]}})
-        assert (await _line(ws, "ls /data", "i"))[0] == 127
+        assert (await _line(ws, "ls /data", "i"))[0] == 126
         ws.create_session(
             "d",
             permissions={

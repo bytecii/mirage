@@ -14,10 +14,14 @@
 
 from collections.abc import Awaitable, Callable, Container, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from mirage.runtime.constants import EXTERNAL_COMMANDS
 from mirage.runtime.types import RuntimeIdentity, ScriptSource
+from mirage.view.types import NamespaceView, SessionView
+
+if TYPE_CHECKING:
+    from mirage.workspace.files import Files
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +67,7 @@ class RouteContext:
         )
         ctx.command   == "python3"  # monty's first captured stage
         ctx.builtin   == True
-        ctx.cwd       == "/data"
+        ctx.session.cwd() == "/data"
 
     The global policy script sees the same context with
     ``ctx.command == "cat"``, the line's first stage. A monty-source
@@ -79,22 +83,23 @@ class RouteContext:
             for_runtime), the global policy sees the line's first
             command. "" when unparsable.
         builtin (bool): whether ``command`` has a builtin spec.
-        cwd (str): session working directory.
-        env (dict[str, str]): session environment.
         session_id (str): session hosting the line.
         agent_id (str): agent executing the line.
-        mounts (tuple[str, ...]): workspace mount prefixes.
+        session (SessionView | None): the session (cwd, env), read
+            only: a write through it is refused.
+        ns (NamespaceView | None): the session's namespace.
+        vfs (Files | None): the session's files, read only.
     """
 
     line: str
     commands: tuple[ParsedCommand, ...]
     command: str
     builtin: bool
-    cwd: str
-    env: dict[str, str]
     session_id: str
     agent_id: str
-    mounts: tuple[str, ...]
+    session: SessionView | None = None
+    ns: NamespaceView | None = None
+    vfs: "Files | None" = None
 
     def for_runtime(
         self, runtime: RuntimeIdentity, external_commands: Container[str] = ()
@@ -133,9 +138,11 @@ class RouteContext:
         identical in both languages, so a script in any evaluator's
         language (and any transport, in-process or remote) receives
         the same structure. Keys: line, commands (command/words/
-        builtin/paths/cli per stage), command, builtin, cwd, env,
-        session_id, agent_id, mounts, plus runtime (name/captures)
-        for per-runtime scripts. from_dict is the inverse, so a
+        builtin/paths/cli per stage), command, builtin, session_id,
+        agent_id, session (cwd, env), mounts (the mount roots under
+        ``/`` the session may be told about), plus runtime
+        (name/captures) for per-runtime scripts.
+        from_dict is the inverse for the line's own fields, so a
         payload can be stored as JSON and replayed.
 
         Args:
@@ -156,11 +163,17 @@ class RouteContext:
             ],
             "command": self.command,
             "builtin": self.builtin,
-            "cwd": self.cwd,
-            "env": dict(self.env),
             "session_id": self.session_id,
             "agent_id": self.agent_id,
-            "mounts": list(self.mounts),
+            "session": {
+                "cwd": self.session.cwd() if self.session else "",
+                "env": self.session.snapshot() if self.session else {},
+            },
+            "mounts": (
+                self.ns.mounts.visible_descendants("/")
+                if self.ns and self.ns.mounts
+                else []
+            ),
         }
         if runtime is not None:
             payload["runtime"] = {
@@ -173,10 +186,11 @@ class RouteContext:
     def from_dict(cls, payload: dict[str, Any]) -> "RouteContext":
         """Rebuild a context from its wire-schema payload.
 
-        The inverse of to_dict for the context's own fields (the
-        payload's ``runtime`` block is per-consultation decoration and
-        is ignored), so a stored JSON payload replays through scripts
-        and routes in tests or debugging.
+        The inverse of to_dict for the line's own fields (the payload's
+        ``session`` and ``mounts`` come from live handles and its
+        ``runtime`` block from the consultation, so they are ignored),
+        so a stored JSON payload replays through scripts and routes in
+        tests or debugging.
 
         Args:
             payload (dict[str, Any]): a to_dict-shaped payload.
@@ -195,11 +209,8 @@ class RouteContext:
             ),
             command=str(payload["command"]),
             builtin=bool(payload["builtin"]),
-            cwd=str(payload["cwd"]),
-            env=dict(payload["env"]),
             session_id=str(payload["session_id"]),
             agent_id=str(payload["agent_id"]),
-            mounts=tuple(payload["mounts"]),
         )
 
 

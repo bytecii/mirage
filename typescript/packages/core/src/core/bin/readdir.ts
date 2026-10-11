@@ -17,7 +17,7 @@ import type { PathSpec } from '../../types.ts'
 import { enoent, enotdir } from '../../errors/fs.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
-/** List one file per program the session can run, as sorted virtual paths. */
+/** List one file per program, as sorted virtual paths. */
 export function readdir(accessor: BinAccessor, path: PathSpec): Promise<string[]> {
   const key = stripSlash(path.mountPath)
   if (key !== '') {

@@ -28,9 +28,10 @@ from mirage.commands.spec.constants import (
     STDIN_DASH_LEADING,
 )
 from mirage.commands.spec.flag_view import FlagView
-from mirage.commands.spec.types import CommandSpec
+from mirage.commands.spec.types import CommandSpec, WordKind
 from mirage.core.awk.builtins import split_assignment
 from mirage.io.types import ByteSource, DeviceInput
+from mirage.policy.types import CommandWord
 from mirage.types import PathSpec
 from mirage.workspace.expand.classify.path import classify_bare_path
 from mirage.workspace.mount import MountRegistry
@@ -318,3 +319,100 @@ def program_tokens(
             program = (name, *result.path)
             return (*program, *result.argv), program
     return (name, *argv), (name,)
+
+
+def _parsed_kinds(
+    spec: CommandSpec | None,
+    argv: Sequence[str],
+    cwd: str,
+    cmd_name: str,
+    cli: bool = False,
+) -> list[WordKind]:
+    """Each word's kind as a command's grammar reads it: an option, an
+    option's value or an operand. A command no spec describes reads a
+    dashed word as an option and anything else as an operand.
+
+    Args:
+        spec (CommandSpec | None): the command's grammar.
+        argv (Sequence[str]): the words after the command name.
+        cwd (str): working directory the line was typed under.
+        cmd_name (str): command name.
+        cli (bool): whether the spec is an installed CLI's node, whose
+            undeclared dashed words are the program's own operands.
+    """
+    if spec is None:
+        return [
+            WordKind.OPTION
+            if w.startswith("-") and w != "-"
+            else WordKind.OPERAND
+            for w in argv
+        ]
+    parsed = parse_command(
+        spec, list(argv), cwd, cmd_name, unknown_is_operand=cli
+    )
+    return [role or WordKind.OPERAND for role in parsed.word_roles]
+
+
+def command_words(
+    registry: MountRegistry,
+    name: str,
+    argv: Sequence[str],
+    classified: Sequence[str | PathSpec],
+    redirects: Sequence[PathSpec],
+    cwd: str,
+) -> tuple[CommandWord, ...]:
+    """The command line word by word, each with its kind and the path
+    it names.
+
+    The name comes first and the redirect targets last. An installed
+    CLI's verbs are read off its tree and its leaf's words off the
+    leaf's grammar; any other command's words off its own spec.
+
+    Args:
+        registry (MountRegistry): registry holding the CLI installs.
+        name (str): expanded command name.
+        argv (Sequence[str]): the words after it, expanded.
+        classified (Sequence[str | PathSpec]): the same words,
+            classified.
+        redirects (Sequence[PathSpec]): the statement's redirect
+            targets.
+        cwd (str): working directory the line was typed under.
+    """
+    install = registry.clis.get(name)
+    result = (
+        walk(name, install.cli.spec, argv, cwd)
+        if install is not None
+        else None
+    )
+    if install is not None and result is not None and result.leaf is not None:
+        lead = len(argv) - len(result.argv)
+        kinds = [
+            *(
+                WordKind.SUBCOMMAND
+                if i in result.verb_positions
+                else WordKind.OPTION
+                if word.startswith("-")
+                else WordKind.VALUE
+                for i, word in enumerate(argv[:lead])
+            ),
+            *_parsed_kinds(result.leaf, argv[lead:], cwd, name, cli=True),
+        ]
+    else:
+        kinds = _parsed_kinds(SPECS.get(name), argv, cwd, name)
+    words = [CommandWord(name, WordKind.NAME)]
+    option: str | None = None
+    for index, (text, kind) in enumerate(zip(argv, kinds, strict=True)):
+        word = classified[index] if index < len(classified) else text
+        path = word if isinstance(word, PathSpec) else None
+        words.append(
+            CommandWord(
+                text, kind, option if kind is WordKind.VALUE else None, path
+            )
+        )
+        if kind is WordKind.OPTION:
+            option = text
+    words.extend(
+        CommandWord(p.raw_path or p.virtual, WordKind.REDIRECT, path=p)
+        for p in redirects
+    )
+    return tuple(words)
