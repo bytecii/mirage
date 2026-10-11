@@ -59,6 +59,7 @@ async function wget(
   let resp
   try {
     resp = await httpGet(url, {
+      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
       timeoutMs: timeout === undefined ? 30_000 : timeout === 0 ? null : timeout * 1000,
     })
   } catch (err) {

@@ -42,3 +42,27 @@ async def chunks(
         if close is not None:
             await close()
         raise
+
+
+async def read_prefix(
+    source: bytes | AsyncIterator[bytes], count: int
+) -> bytes:
+    """Read at most count bytes, closing the source when the limit is reached.
+
+    Args:
+        source (bytes | AsyncIterator[bytes]): the input stream.
+        count (int): maximum byte count.
+    """
+    if count <= 0:
+        return b""
+    parts: list[bytes] = []
+    stream = chunks(source)
+    try:
+        async for part in stream:
+            parts.append(part[:count])
+            count -= len(part)
+            if count <= 0:
+                break
+        return b"".join(parts)
+    finally:
+        await stream.aclose()

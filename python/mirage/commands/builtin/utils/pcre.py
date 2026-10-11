@@ -11,7 +11,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-
 import re
 from dataclasses import dataclass, field, replace
 from functools import cache, lru_cache
@@ -36,6 +35,7 @@ from mirage.commands.builtin.utils.unicode_tables import (
     pcre_word,
     unicode_property,
 )
+from mirage.utils.regex import Pattern, RegexMatch
 
 # PCRE2's compile error texts (pcre2_error.c, 10.43 and 10.46 agree on
 # every one used here), which grep prints after `grep: ` and ripgrep
@@ -1427,22 +1427,22 @@ def translate_pcre(
 
 
 @lru_cache(maxsize=256)
-def keep_names(pattern: re.Pattern[str]) -> tuple[str, ...]:
+def keep_names(pattern: Pattern) -> tuple[str, ...]:
     """The ``\\K`` marker groups of a compiled pattern.
 
     Args:
-        pattern (re.Pattern[str]): the compiled pattern.
+        pattern (Pattern): the compiled pattern.
     """
     return tuple(
         name for name in pattern.groupindex if name.startswith(KEEP_PREFIX)
     )
 
 
-def match_start(m: re.Match[str]) -> int:
+def match_start(m: RegexMatch) -> int:
     """Where a match starts as PCRE2 reports it: past its last ``\\K``.
 
     Args:
-        m (re.Match[str]): the host match.
+        m (RegexMatch): the host match.
     """
     names = keep_names(m.re)
     if not names:
@@ -1451,18 +1451,18 @@ def match_start(m: re.Match[str]) -> int:
     return max(starts, default=m.start())
 
 
-def match_text(m: re.Match[str]) -> str:
+def match_text(m: RegexMatch) -> str:
     """The text a match reports: from ``match_start`` to its end.
 
     Args:
-        m (re.Match[str]): the host match.
+        m (RegexMatch): the host match.
     """
     start = match_start(m)
     return m.group() if start == m.start() else m.string[start : m.end()]
 
 
 @lru_cache(maxsize=256)
-def user_groups(pattern: re.Pattern[str]) -> tuple[int, ...]:
+def user_groups(pattern: Pattern) -> tuple[int, ...]:
     """The host group number of each group the user's pattern numbers.
 
     Synthetic groups (``\\K`` markers, emulated atomic groups) take host
@@ -1470,7 +1470,7 @@ def user_groups(pattern: re.Pattern[str]) -> tuple[int, ...]:
     group that is not one of them.
 
     Args:
-        pattern (re.Pattern[str]): the compiled pattern.
+        pattern (Pattern): the compiled pattern.
     """
     synthetic = {
         number

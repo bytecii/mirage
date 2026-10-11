@@ -265,7 +265,7 @@ async def _finish_upload(
     upload: asyncio.Task[None], part: UploadStdin | None
 ) -> None:
     if part is not None:
-        part.discard()
+        await part.discard()
     try:
         await upload
     except HTTPException:
@@ -335,7 +335,7 @@ async def _read_shell_body(
                 await stdin.close()
     except Exception as exc:
         if started.done():
-            stdin.discard()
+            await stdin.discard()
             raise
         started.set_exception(exc)
         return

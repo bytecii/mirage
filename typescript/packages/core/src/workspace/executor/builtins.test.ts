@@ -64,7 +64,7 @@ import {
   handleTimeout,
   handleUnset,
   handleWhoami,
-  handleXargs,
+  handleXargs as streamXargs,
 } from './builtins/index.ts'
 import { parseDuration, parseSignal, signalName } from './builtins/timeout/timeout.ts'
 import { ExitSignal, ReturnSignal } from '../../shell/errors.ts'
@@ -96,6 +96,13 @@ function decode(b: Uint8Array | null): string {
 }
 
 const MAN_SESSION = new SessionState({ sessionId: 'man' })
+
+async function handleXargs(
+  ...args: Parameters<typeof streamXargs>
+): ReturnType<typeof streamXargs> {
+  const [out, io, node] = await streamXargs(...args)
+  return [await materialize(out), io, node]
+}
 
 describe('handleExport / handleUnset / handlePrintenv', () => {
   it('export KEY=VAL sets session env', async () => {

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { Worker } from '../../../concurrency/worker.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { OPERAND, REFUSED } from '../../spec/constants.ts'
 import { FlagView } from '../../spec/flag_view.ts'
@@ -29,7 +30,6 @@ import {
   haltReport,
   jqCheck,
   jqOptions,
-  jqRunTexts,
   loadFailure,
   printable,
   readTexts,
@@ -449,6 +449,7 @@ export function parseReport(failure: JqParseError, opts: JqOptions): string {
  * answered. `sources` are the inputs, in order, not yet opened.
  */
 export class MainLoop {
+  private readonly worker = new Worker()
   private readonly statuses: number[] = []
   private readonly reports: string[] = []
   private readonly reader: InputReader
@@ -460,6 +461,7 @@ export class MainLoop {
     private readonly reads: StreamReads,
     private readonly args: string | null,
     private readonly io: IOResult,
+    private readonly signal?: AbortSignal,
   ) {
     this.reader = new InputReader(sources, opts, (line) => this.reports.push(line))
   }
@@ -489,6 +491,7 @@ export class MainLoop {
       this.io.exitCode =
         this.reader.failures() > 0 ? ERROR_SYSTEM : exitCode(this.statuses, this.opts)
       if (this.reports.length > 0) this.io.stderr = ENC.encode(this.reports.join(''))
+      await this.worker.close()
       await this.reader.close()
     }
   }
@@ -510,10 +513,22 @@ export class MainLoop {
    * reading: the run raises it where `input` or `inputs` would reach it, and
    * the main loop reads on past it.
    */
+  private evaluate(args: readonly unknown[]): Promise<JqRun<string>> {
+    return this.worker.call(
+      new URL(
+        import.meta.url.endsWith('.ts') ? '../../../core/jq/eval.ts' : '../../../core/jq/eval.js',
+        import.meta.url,
+      ),
+      'jqRunTexts',
+      args,
+      this.signal,
+    )
+  }
+
   private async run(doc: string, position: string): Promise<[JqRun<string>, string]> {
     const reads = this.reads
     if (!reads.input && !reads.inputs) {
-      const run = await jqRunTexts(doc, this.expr, this.opts.namedArgs, null, this.args)
+      const run = await this.evaluate([doc, this.expr, this.opts.namedArgs, null, this.args])
       return [printable(run, this.opts), position]
     }
     const docs: string[] = []
@@ -530,14 +545,14 @@ export class MainLoop {
       docs.push(item)
       if (!reads.inputs) break
     }
-    const run = await jqRunTexts(
+    const run = await this.evaluate([
       doc,
       this.expr,
       this.opts.namedArgs,
       docs,
       this.args,
       failure === null ? null : failure.message,
-    )
+    ])
     return [printable(run, this.opts), at]
   }
 
@@ -666,6 +681,6 @@ export async function jqGeneric(
     }
   }
   const io = new IOResult()
-  const loop = new MainLoop(sources, expr, jq, reads, args, io)
+  const loop = new MainLoop(sources, expr, jq, reads, args, io, opts.signal)
   return [loop.outputs(), io]
 }

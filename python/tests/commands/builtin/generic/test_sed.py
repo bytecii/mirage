@@ -1,6 +1,7 @@
 import pytest
 
 from mirage.commands.builtin.generic.sed import sed
+from mirage.io.types import materialize
 from mirage.types import PathSpec
 
 
@@ -55,7 +56,7 @@ async def test_sed_scripts_over_stdin(script, stdin, out):
     output, _ = await sed(
         [], script, read_bytes=rb, write_bytes=wb, stdin=stdin
     )
-    assert output == out
+    assert await materialize(output) == out
 
 
 @pytest.mark.asyncio
@@ -123,6 +124,6 @@ async def test_sed_reads_nothing_after_a_directory(script, separate, out):
         suppress=True,
         separate=separate,
     )
-    assert output == out
+    assert await materialize(output) == out
     assert io.exit_code == 4
     assert reads == ["/f", "/d"]

@@ -302,6 +302,7 @@ export async function awkGeneric(
     Object.fromEntries(
       Object.entries(opts.env ?? {}).map(([name, value]) => [byteView(name), byteView(value)]),
     ),
+    opts.signal,
   )
   if (f.fieldSeparator !== null) interp.setVar('FS', text(unescape(byteView(f.fieldSeparator))))
 

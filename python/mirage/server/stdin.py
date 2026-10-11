@@ -13,10 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-from typing import Protocol
+import tempfile
+from collections import deque
+from typing import BinaryIO, Protocol
 
-from mirage.io.errors import PipeClosed
-from mirage.io.pipe import CAPACITY, BytePipe
+from mirage.concurrency.limiter import run_blocking
+from mirage.io.cooperative import CHUNK_SIZE
+from mirage.io.pipe import CAPACITY
 
 
 class StdinSource(Protocol):
@@ -56,36 +59,91 @@ class LoopStdin:
 
 
 class UploadStdin:
-    """An upload backed by the same bounded byte pipe as process stdin."""
+    """Stream an upload with bounded memory and spill unread bytes to disk.
+
+    Receiving must continue even when a command does not read stdin: the
+    request reader also owns disconnect and malformed-body notification.
+    """
 
     def __init__(self, capacity: int = CAPACITY) -> None:
-        self._pipe = BytePipe(capacity)
-        self._reader = self._pipe.stream()
+        self._capacity = capacity
+        self._chunks: deque[bytes] = deque()
+        self._buffered = 0
+        self._file: BinaryIO | None = None
+        self._written = 0
+        self._read = 0
+        self._ended = False
         self._discarding = False
+        self._changed = asyncio.Event()
+        self._lock = asyncio.Lock()
 
     async def feed(self, data: bytes) -> None:
-        """Accept an upload chunk, waiting for byte capacity.
+        """Accept bytes without waiting for the command to consume stdin.
 
         Args:
-            data (bytes): received bytes; empty chunks are skipped.
+            data (bytes): the next uploaded chunk.
         """
-        if self._discarding:
-            return
-        try:
-            await self._pipe.write(data)
-        except PipeClosed:
-            if not self._discarding:
-                raise
+        for offset in range(0, len(data), CHUNK_SIZE):
+            async with self._lock:
+                if self._discarding:
+                    return
+                chunk = data[offset : offset + CHUNK_SIZE]
+                if (
+                    self._file is None
+                    and self._buffered + len(chunk) <= self._capacity
+                ):
+                    self._chunks.append(chunk)
+                    self._buffered += len(chunk)
+                else:
+                    await run_blocking(self._append, chunk)
+                self._changed.set()
+
+    def _append(self, data: bytes) -> None:
+        if self._file is None:
+            self._file = tempfile.TemporaryFile()
+        self._file.seek(self._written)
+        self._file.write(data)
+        self._written += len(data)
+
+    def _pull(self) -> bytes:
+        assert self._file is not None
+        self._file.seek(self._read)
+        data = self._file.read(min(CHUNK_SIZE, self._written - self._read))
+        self._read += len(data)
+        if self._read == self._written:
+            self._file.truncate(0)
+            self._read = self._written = 0
+        return data
 
     async def close(self) -> None:
-        """Mark the end of the upload."""
-        self._pipe.end()
+        """Mark upload EOF, preserving any unread bytes."""
+        self._ended = True
+        self._changed.set()
 
-    def discard(self) -> None:
-        """Release readers and feeders, dropping unread bytes."""
+    async def discard(self) -> None:
+        """Drop unread bytes and join temporary-file cleanup."""
         self._discarding = True
-        self._pipe.close_reader()
+        self._changed.set()
+        async with self._lock:
+            self._chunks.clear()
+            self._buffered = 0
+            if self._file is not None:
+                await run_blocking(self._file.close)
+                self._file = None
 
     async def read(self) -> bytes:
-        """Return the next chunk, or empty bytes once the upload ends."""
-        return await anext(self._reader, b"")
+        """Return buffered input, waiting only when the upload has no data."""
+        while not self._discarding:
+            async with self._lock:
+                if self._chunks:
+                    data = self._chunks.popleft()
+                    self._buffered -= len(data)
+                    return data
+                if self._read < self._written:
+                    return await run_blocking(self._pull)
+                if self._ended:
+                    break
+                self._changed.clear()
+            await self._changed.wait()
+        await self.discard()
+        return b""

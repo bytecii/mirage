@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+import { concat } from '../utils/bytes.ts'
 import { abortable } from '../utils/abort.ts'
 import { YieldBudget } from './yield_budget.ts'
 
@@ -70,4 +71,20 @@ export async function* chunks(
       }
     }
   }
+}
+
+/** Read at most count bytes, closing the source when the limit is reached. */
+export async function readPrefix(
+  source: Uint8Array | AsyncIterable<Uint8Array>,
+  count: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  if (count <= 0) return new Uint8Array()
+  const parts: Uint8Array[] = []
+  for await (const part of chunks(source, signal)) {
+    parts.push(part.subarray(0, count))
+    count -= part.length
+    if (count <= 0) break
+  }
+  return concat(parts)
 }

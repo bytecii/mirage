@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { makeAbortError, mergeSignals } from '../../../utils/abort.ts'
 // This layer reports what the server said and never decides whether that is an
 // error: curl treats a 404 as a successful transfer (exit 0, body on stdout)
 // while wget treats it as exit 8, so the status has to reach the command. An
@@ -102,6 +103,8 @@ export function registerInsecureFetch(fn: typeof fetch | null): void {
 }
 
 export interface HttpRequestOptions {
+  signal?: AbortSignal
+
   method?: string
   headers?: Record<string, string>
   body?: Uint8Array
@@ -146,7 +149,7 @@ async function doFetch(url: string, options: HttpRequestOptions): Promise<HttpRe
       const init: RequestInit = {
         method,
         headers,
-        signal: controller.signal,
+        signal: mergeSignals(controller.signal, options.signal) ?? controller.signal,
         redirect: 'manual',
       }
       if (body !== undefined) {
@@ -171,6 +174,7 @@ async function doFetch(url: string, options: HttpRequestOptions): Promise<HttpRe
         // A transport failure carries no status. The only abort here is the
         // deadline above, which curl answers with its own code (28), so it
         // is told apart from a connection that never opened.
+        if (options.signal?.aborted === true) throw makeAbortError(options.signal)
         const { host, port } = endpoint(current)
         if (err instanceof DOMException && err.name === 'AbortError') {
           throw new HttpTimeoutError(host, port, Date.now() - started)
@@ -220,6 +224,7 @@ export function httpFormRequest(
     timeoutMs?: number | null
     followRedirects?: boolean
     verify?: boolean
+    signal?: AbortSignal
   } = {},
 ): Promise<HttpResponse> {
   const method = opts.method ?? 'POST'
@@ -238,14 +243,18 @@ export function httpFormRequest(
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(opts.followRedirects !== undefined ? { followRedirects: opts.followRedirects } : {}),
     ...(opts.verify !== undefined ? { verify: opts.verify } : {}),
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
   })
 }
 
 export function httpGet(
   url: string,
-  opts: { headers?: Record<string, string>; timeoutMs?: number | null } = {},
+  opts: { headers?: Record<string, string>; timeoutMs?: number | null; signal?: AbortSignal } = {},
 ): Promise<HttpResponse> {
-  const options: HttpRequestOptions = { method: 'GET' }
+  const options: HttpRequestOptions = {
+    method: 'GET',
+    ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+  }
   if (opts.headers !== undefined) options.headers = opts.headers
   if (opts.timeoutMs !== undefined) options.timeoutMs = opts.timeoutMs
   return httpRequest(url, options)

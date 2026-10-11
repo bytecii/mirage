@@ -11,7 +11,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-
 import base64
 import json
 import re
@@ -32,6 +31,7 @@ from mirage.io.yield_budget import YieldBudget
 from mirage.shell.bytes import decode_text, encode_text
 from mirage.shell.helpers import byte_offset
 from mirage.types import JsonValue
+from mirage.utils.regex import AsyncRegex, Pattern, RegexMatch, prepare
 
 # ripgrep's words for a line -M will not print whole (ripgrep 14.1.1).
 OMITTED_MATCHING = "[Omitted long matching line]"
@@ -166,7 +166,7 @@ def prints_context(f: RgFlags) -> bool:
     return bool(f.context_before or f.context_after)
 
 
-def rust_matches(pat: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
+def rust_matches(pat: Pattern, text: str) -> Iterator[RegexMatch]:
     """Every match on a line in the order Rust's regex iterates them.
 
     After an empty match the search resumes one character on, and an
@@ -175,7 +175,7 @@ def rust_matches(pat: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
     empty match right after ``b``.
 
     Args:
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         text (str): the line.
     """
     pos = 0
@@ -211,11 +211,11 @@ def _capture_ref(rest: str) -> tuple[str | None, int]:
     return name.group(0), name.end()
 
 
-def _capture(m: re.Match[str], ref: str) -> str:
+def _capture(m: RegexMatch, ref: str) -> str:
     """One group's text for a replacement, empty when there is none.
 
     Args:
-        m (re.Match[str]): the match.
+        m (RegexMatch): the match.
         ref (str): a group number or name.
     """
     if ref.isascii() and ref.isdigit():
@@ -232,7 +232,7 @@ def _capture(m: re.Match[str], ref: str) -> str:
         return ""
 
 
-def expand(template: str, m: re.Match[str]) -> str:
+def expand(template: str, m: RegexMatch) -> str:
     """One match's -r replacement, expanded as Rust's ``Captures::expand``.
 
     ``$1``, ``${1}``, ``$name`` and ``${name}`` name a group, a name
@@ -242,7 +242,7 @@ def expand(template: str, m: re.Match[str]) -> str:
 
     Args:
         template (str): the replacement as typed.
-        m (re.Match[str]): the match to expand it for.
+        m (RegexMatch): the match to expand it for.
     """
     out: list[str] = []
     i = 0
@@ -267,14 +267,14 @@ def expand(template: str, m: re.Match[str]) -> str:
 
 
 def replace_all(
-    pat: re.Pattern[str], text: str, template: str
+    pat: Pattern, text: str, template: str
 ) -> tuple[str, list[tuple[int, int]]]:
     """The line with every match replaced, and where each replacement
     landed in it (character spans), which --vimgrep's columns and -M's
     preview count read.
 
     Args:
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         text (str): the line.
         template (str): -r's replacement.
     """
@@ -843,12 +843,12 @@ class Region:
     Args:
         first (int): the region's first line.
         last (int): its last line.
-        matches (list[re.Match[str]]): the matches it holds.
+        matches (list[RegexMatch]): the matches it holds.
     """
 
     first: int
     last: int
-    matches: list[re.Match[str]] = field(default_factory=list)
+    matches: list[RegexMatch] = field(default_factory=list)
 
 
 def split_lines(text: str, f: RgFlags) -> list[Line]:
@@ -881,13 +881,11 @@ def line_index(ats: list[int], at: int) -> int:
     return bisect_right(ats, at) - 1
 
 
-def find_regions(
-    pat: re.Pattern[str], text: str, lines: list[Line]
-) -> list[Region]:
+def find_regions(pat: Pattern, text: str, lines: list[Line]) -> list[Region]:
     """The regions -U selects, in order.
 
     Args:
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         text (str): the decoded haystack.
         lines (list[Line]): its lines.
     """
@@ -933,14 +931,12 @@ def json_line(message: JsonValue) -> bytes:
     )
 
 
-def tally_line(
-    tally: Tally, pat: re.Pattern[str], text: str, f: RgFlags
-) -> None:
+def tally_line(tally: Tally, pat: Pattern, text: str, f: RgFlags) -> None:
     """Count one selected line for --stats and --json.
 
     Args:
         tally (Tally): the haystack's tally.
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         text (str): the line.
         f (RgFlags): the parsed flags.
     """
@@ -956,7 +952,7 @@ class RgPrinter:
 
     Args:
         f (RgFlags): the parsed flags.
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         label (str | None): the path every record leads with, None when
             the records carry none (a single unlabelled input, or a
             --heading that already named the file).
@@ -966,7 +962,7 @@ class RgPrinter:
     def __init__(
         self,
         f: RgFlags,
-        pat: re.Pattern[str],
+        pat: Pattern,
         label: str | None,
         name: str = "",
     ) -> None:
@@ -1289,7 +1285,7 @@ class RgPrinter:
         index: int,
         start: int,
         text: str,
-        matches: list[re.Match[str]],
+        matches: list[RegexMatch],
         is_match: bool,
         cr: bool,
     ) -> Iterator[bytes]:
@@ -1302,7 +1298,7 @@ class RgPrinter:
             index (int): the line's 0-based index.
             start (int): the line's byte offset.
             text (str): the line.
-            matches (list[re.Match[str]]): the line's matches.
+            matches (list[RegexMatch]): the line's matches.
             is_match (bool): a selected line, not a context line.
             cr (bool): --crlf took a CR off the line's end.
         """
@@ -1415,7 +1411,8 @@ class RgPrinter:
         return f"[Omitted long line with {count} matches]"
 
 
-def _selects(pat: re.Pattern[str], text: str, invert: bool) -> bool:
+async def _selects(pat: Pattern, text: str, invert: bool) -> bool:
+    await prepare(pat, text)
     return bool(pat.search(text)) != invert
 
 
@@ -1466,7 +1463,7 @@ def nonmatch_stop(f: RgFlags) -> NonmatchStop:
 
 
 async def _records(
-    lines: AsyncLineIterator, f: RgFlags, pat: re.Pattern[str]
+    lines: AsyncLineIterator, f: RgFlags, pat: Pattern
 ) -> AsyncIterator[tuple[bytes, int, int, bool]]:
     """Read records through the delimiter selected by rg, each with the
     records and bytes skipped before it.
@@ -1478,12 +1475,14 @@ async def _records(
     Args:
         lines (AsyncLineIterator): The input cursor.
         f (RgFlags): The parsed flags.
-        pat (re.Pattern[str]): The compiled line matcher.
+        pat (Pattern): The compiled line matcher.
     """
     needles = (
         None
         if f.invert or f.stop_on_nonmatch or f.passthru or prints_context(f)
-        else required_needles(pat)
+        else required_needles(
+            pat.original if isinstance(pat, AsyncRegex) else pat
+        )
     )
     fold = bool(pat.flags & re.IGNORECASE)
     delimiter = b"\0" if f.null_data else b"\n"
@@ -1500,7 +1499,7 @@ async def _records(
 
 
 async def _listing(
-    lines: AsyncLineIterator, pat: re.Pattern[str], f: RgFlags, tally: Tally
+    lines: AsyncLineIterator, pat: Pattern, f: RgFlags, tally: Tally
 ) -> None:
     """Read no further than the first selected line (-q, -l and
     --files-without-match need only that one bit), unless --stats or
@@ -1508,14 +1507,14 @@ async def _listing(
 
     Args:
         lines (AsyncLineIterator): the haystack's lines.
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         f (RgFlags): the parsed flags.
         tally (Tally): receives the selection.
     """
     selected = 0
     async for raw, _, _, _ in _records(lines, f, pat):
         text, _ = read_line(raw, f)
-        if _selects(pat, text, f.invert):
+        if await _selects(pat, text, f.invert):
             tally.selected = True
             if not (f.stats or f.json):
                 return
@@ -1526,13 +1525,13 @@ async def _listing(
 
 
 async def _count(
-    lines: AsyncLineIterator, pat: re.Pattern[str], f: RgFlags, tally: Tally
+    lines: AsyncLineIterator, pat: Pattern, f: RgFlags, tally: Tally
 ) -> int:
     """-c's selected lines, or --count-matches' matches, up to -m.
 
     Args:
         lines (AsyncLineIterator): the haystack's lines.
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         f (RgFlags): the parsed flags.
         tally (Tally): receives the selection.
     """
@@ -1541,7 +1540,7 @@ async def _count(
     stop = nonmatch_stop(f)
     async for raw, _, _, _ in _records(lines, f, pat):
         text, _ = read_line(raw, f)
-        if not _selects(pat, text, f.invert):
+        if not await _selects(pat, text, f.invert):
             if stop.armed:
                 break
             stop.passes_over()
@@ -1579,7 +1578,7 @@ async def _count(
 async def _printed_lines(
     lines: AsyncLineIterator,
     printer: RgPrinter,
-    pat: re.Pattern[str],
+    pat: Pattern,
     f: RgFlags,
     tally: Tally,
     binary: RgBinary,
@@ -1599,7 +1598,7 @@ async def _printed_lines(
     Args:
         lines (AsyncLineIterator): the haystack's lines.
         printer (RgPrinter): how records print.
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         f (RgFlags): the parsed flags.
         tally (Tally): receives the selection.
         binary (RgBinary): the haystack's binary detection; a binary
@@ -1628,7 +1627,7 @@ async def _printed_lines(
         text, cr = read_line(raw, f)
         if not terminated:
             printer.open_line = index
-        hit = _selects(pat, text, f.invert)
+        hit = await _selects(pat, text, f.invert)
         if binary.converted:
             if hit:
                 tally.selected = True
@@ -1666,10 +1665,12 @@ async def _printed_lines(
                 ):
                     yield encode_text(f.context_separator) + record_end(f)
                 for i, s, t, c in held:
+                    await prepare(pat, t)
                     for chunk in printer.context(i, s, t, c):
                         yield chunk
                 held.clear()
                 after_left = f.context_after
+            await prepare(pat, text)
             records = printer.selected(index, start, text, cr)
             last_printed = index
         elif f.passthru:
@@ -1731,7 +1732,7 @@ def _counted(
 
 async def _multiline(
     reader: AsyncIterator[bytes],
-    pat: re.Pattern[str],
+    pat: Pattern,
     f: RgFlags,
     name: str,
     label: str | None,
@@ -1748,7 +1749,7 @@ async def _multiline(
 
     Args:
         reader (AsyncIterator[bytes]): the haystack, binary-checked.
-        pat (re.Pattern[str]): the compiled pattern.
+        pat (Pattern): the compiled pattern.
         f (RgFlags): the parsed flags.
         name (str): the haystack's path as -l prints it.
         label (str | None): the path each record leads with.
@@ -1762,6 +1763,7 @@ async def _multiline(
         return
     text = decode_text(data)
     lines = split_lines(text, f)
+    await prepare(pat, text)
     regions = find_regions(pat, text, lines)
     spanned = {i for r in regions for i in range(r.first, r.last + 1)}
     units = (
@@ -1854,6 +1856,7 @@ async def _multiline(
             chunks = picked[i]
             last_printed = i
         elif f.passthru or after_left > 0:
+            await prepare(pat, line.text)
             # A line after -m's last unit that a later unit would select
             # prints as selected and then again as context (ripgrep 14.1.1).
             chunks = [
@@ -1913,17 +1916,18 @@ async def search_haystack(
         if named or f.binary
         else "quit"
     )
+    matcher = AsyncRegex(pat)
     reader = binary.read(source, pipe)
     lines = AsyncLineIterator(reader)
     try:
         if f.multiline:
             async for chunk in _multiline(
-                reader, pat, f, name, label, tally, binary
+                reader, matcher, f, name, label, tally, binary
             ):
                 yield chunk
             return
         if f.quiet or f.files_only or f.files_without_match:
-            await _listing(lines, pat, f, tally)
+            await _listing(lines, matcher, f, tally)
             if binary.skipped:
                 # A walked binary file was never searched, so it is in
                 # neither listing.
@@ -1933,15 +1937,15 @@ async def search_haystack(
                 yield chunk
             return
         if f.count_only or f.count_matches:
-            count = await _count(lines, pat, f, tally)
+            count = await _count(lines, matcher, f, tally)
             if binary.skipped:
                 return
             for chunk in _counted(count, label, f, tally):
                 yield chunk
             return
-        printer = RgPrinter(f, pat, None if f.heading else label, name)
+        printer = RgPrinter(f, matcher, None if f.heading else label, name)
         async for chunk in _printed_lines(
-            lines, printer, pat, f, tally, binary, label
+            lines, printer, matcher, f, tally, binary, label
         ):
             yield chunk
     except BaseException as exc:
@@ -1949,6 +1953,7 @@ async def search_haystack(
             await discard_streams(source)
         raise
     finally:
+        await matcher.close()
         tally.nul = binary.offset
         if not f.multiline:
             # ripgrep counts the bytes it read up to where it stopped, and

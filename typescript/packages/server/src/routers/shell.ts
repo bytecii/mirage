@@ -138,8 +138,8 @@ async function readShellBody(
         },
       ).then(
         () => undefined,
-        (error: unknown) => {
-          stdin.discard()
+        async (error: unknown) => {
+          await stdin.discard()
           return error
         },
       )
@@ -148,7 +148,7 @@ async function readShellBody(
         stdin,
         failed,
         finish: async () => {
-          stdin.discard()
+          await stdin.discard()
           const error = await failed
           if (error instanceof MultipartError) throw error
           if (error !== undefined) req.log.debug({ err: error }, 'shell upload ended early')
@@ -309,7 +309,8 @@ export function registerShellRoutes(app: FastifyInstance, deps: ShellRoutesDeps)
             return ioResultToDict(await entry.runner.ws.shell(body.command, options))
           const execution = await entry.runner.ws.shell(body.command, { ...options, stream: true })
           try {
-            for await (const chunk of execution.events) await output.emit(chunk.stream, chunk.data)
+            for await (const chunk of execution.events)
+              await output.emit(chunk.stream, chunk.data, signal)
             return ioResultToDict(await execution.wait())
           } finally {
             await execution.close()

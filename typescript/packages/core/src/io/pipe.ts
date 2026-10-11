@@ -1,3 +1,4 @@
+import { makeAbortError } from '../utils/abort.ts'
 import { CHUNK_SIZE } from './cooperative.ts'
 import { PipeClosed } from './errors.ts'
 
@@ -31,16 +32,31 @@ export class BytePipe {
     for (const resolve of this.wake.splice(0)) resolve()
   }
 
-  private changed(): Promise<void> {
-    return new Promise((resolve) => this.wake.push(resolve))
+  private changed(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    return new Promise((resolve, reject) => {
+      const changed = (): void => {
+        signal?.removeEventListener('abort', aborted)
+        resolve()
+      }
+      const aborted = (): void => {
+        this.wake = this.wake.filter((wake) => wake !== changed)
+        signal?.removeEventListener('abort', aborted)
+        reject(makeAbortError(signal))
+      }
+      this.wake.push(changed)
+      signal?.addEventListener('abort', aborted, { once: true })
+    })
   }
 
   /** Accept bytes in bounded chunks, waiting for available capacity. */
-  async write(data: Uint8Array): Promise<void> {
+  async write(data: Uint8Array, signal?: AbortSignal): Promise<void> {
     for (let start = 0; start < data.byteLength; start += CHUNK_SIZE) {
+      signal?.throwIfAborted()
       const length = Math.min(CHUNK_SIZE, data.byteLength - start)
       while (this.bytes + length > this.capacity && !this.readerClosed && !this.ended)
-        await this.changed()
+        await this.changed(signal)
+      if (signal?.aborted === true) throw makeAbortError(signal)
       if (this.readerClosed || this.ended) throw new PipeClosed()
       const chunk = new Uint8Array(data.subarray(start, start + length))
       this.chunks.push(chunk)

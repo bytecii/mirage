@@ -77,3 +77,17 @@ describe('BytePipe', () => {
     expect((await pipe.stream().next()).value).toEqual(new Uint8Array([1, 2, 3]))
   })
 })
+
+it('cancels a blocked write without discarding accepted output', async () => {
+  const pipe = new BytePipe(CHUNK_SIZE)
+  await pipe.write(new Uint8Array(CHUNK_SIZE).fill(65))
+  const abort = new AbortController()
+  const blocked = pipe.write(new Uint8Array([66]), abort.signal)
+  const refused = expect(blocked).rejects.toMatchObject({ name: 'AbortError' })
+  abort.abort()
+  await refused
+  pipe.end()
+  const got: Uint8Array[] = []
+  for await (const chunk of pipe.stream()) got.push(chunk)
+  expect(concat(got)).toEqual(new Uint8Array(CHUNK_SIZE).fill(65))
+})

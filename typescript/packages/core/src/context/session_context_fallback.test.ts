@@ -38,7 +38,7 @@ import {
 } from './session_context.ts'
 import { CLI } from '../commands/cli/types.ts'
 import { IOResult, materialize } from '../io/types.ts'
-import { handleXargs } from '../workspace/executor/builtins/xargs/xargs.ts'
+import { handleXargs as streamXargs } from '../workspace/executor/builtins/xargs/xargs.ts'
 import { seedVar, sessionView } from '../workspace/session/state.ts'
 import { MountMode, PathSpec } from '../types.ts'
 import type { CommandRule, EntryGate } from '../policy/types.ts'
@@ -79,6 +79,13 @@ function gate(): [Promise<void>, () => void] {
     release = resolve
   })
   return [held, release]
+}
+
+async function handleXargs(
+  ...args: Parameters<typeof streamXargs>
+): ReturnType<typeof streamXargs> {
+  const [out, io, node] = await streamXargs(...args)
+  return [await materialize(out), io, node]
 }
 
 describe('the bound evaluation on the fallback storage', () => {

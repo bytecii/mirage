@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { YieldBudget } from '../../io/yield_budget.ts'
 import { fromByteView } from '../../shell/bytes.ts'
 import { GetlineKind, RedirKind } from './nodes.ts'
 
@@ -175,6 +176,7 @@ export class Interpreter {
   private randState = 0
   private seed = 0
   exitCode = 0
+  private readonly budget: YieldBudget
 
   constructor(
     program: Program,
@@ -182,7 +184,9 @@ export class Interpreter {
     argv: readonly string[] = [],
     assignments: Readonly<Record<string, string>> = {},
     environ: Readonly<Record<string, string>> = {},
+    signal?: AbortSignal,
   ) {
+    this.budget = new YieldBudget(signal)
     this.program = program
     this.host = host
     for (const [name, value] of Object.entries(SCALAR_DEFAULTS)) this.globals.set(name, text(value))
@@ -931,6 +935,7 @@ export class Interpreter {
   }
 
   private async execStmt(node: Stmt): Promise<void> {
+    await this.budget.run()
     switch (node.type) {
       case 'Block':
         for (const inner of node.body) await this.execStmt(inner)

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { runIsolated } from '../../../concurrency/worker.ts'
 import { stdinStream } from '../utils/stream.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
@@ -25,9 +26,7 @@ import { SortKeyError } from '../errors.ts'
 import {
   buildConfig,
   compareLines,
-  mergeLines,
   parseKeydef,
-  sortLines,
   type KeyMods,
   type SortConfig,
   type SortGlobals,
@@ -340,7 +339,15 @@ export async function sortGeneric(
       }),
     ]
   }
-  const ordered = parsed.merge ? mergeLines(runs, cfg) : sortLines(runs.flat(), cfg)
+  const ordered = await runIsolated<string[]>(
+    new URL(
+      import.meta.url.endsWith('.ts') ? '../sort_keys.ts' : '../sort_keys.js',
+      import.meta.url,
+    ),
+    parsed.merge ? 'mergeLines' : 'sortLines',
+    [parsed.merge ? runs : runs.flat(), cfg],
+    opts.signal,
+  )
   const separator = parsed.zeroTerminated ? '\0' : '\n'
   const output: Uint8Array =
     ordered.length === 0 ? new Uint8Array() : ENC.encode(ordered.join(separator) + separator)

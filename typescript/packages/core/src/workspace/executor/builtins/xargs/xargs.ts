@@ -12,6 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { mergeSignals } from '../../../../utils/abort.ts'
+import { chunks } from '../../../../io/cooperative.ts'
+import { boundedMapStream } from '../../../../concurrency/limiter.ts'
 import type { EvaluationContext } from '../../../evaluation.ts'
 
 import { versionLine } from '../../../../commands/spec/standard.ts'
@@ -28,7 +31,7 @@ import {
 } from '../../../../commands/spec/usage.ts'
 import { IOResult, materialize } from '../../../../io/types.ts'
 import type { ByteSource } from '../../../../io/types.ts'
-import { SharedStdin, asyncChain, yieldBytes } from '../../../../io/stream.ts'
+import { SharedStdin, yieldBytes } from '../../../../io/stream.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
 import { decodeText, encodeText } from '../../../../shell/bytes.ts'
 import { shellJoin } from '../../../../shell/join.ts'
@@ -248,7 +251,7 @@ interface BuilderOptions {
  */
 class Builder {
   readonly events: XargsEvent[] = []
-  private pos = 0
+  pos = 0
   private args: Uint8Array[] = []
   private chars = 0
   private initialChars = 0
@@ -262,21 +265,21 @@ class Builder {
   private readonly exitIfExceeded: boolean
 
   constructor(
-    private readonly data: Uint8Array,
+    public data: Uint8Array,
     private readonly command: Uint8Array[],
     private readonly opts: BuilderOptions,
   ) {
     this.exitIfExceeded = opts.exitIfExceeded || opts.replace !== null || opts.maxLines > 0
   }
 
-  /** Read the whole input into `events`; throws `Fatal`. */
-  build(): void {
+  /** Yield events or null to request another chunk; throws `Fatal`. */
+  *build(): Generator<XargsEvent | null, void> {
     if (this.opts.replace === null) {
       for (const word of this.command) this.push(word, word.length + 1)
       this.initial = false
       this.initialArgc = this.args.length
       this.initialChars = this.chars
-      while (this.read() !== -1) {
+      while ((yield* this.read()) !== -1) {
         if (this.opts.maxLines > 0 && this.lineno >= this.opts.maxLines) {
           this.exec()
           this.lineno = 0
@@ -288,7 +291,7 @@ class Builder {
       return
     }
     const [head = new Uint8Array(), ...rest] = this.command
-    for (let length = this.read(); length !== -1; length = this.read()) {
+    for (let length = yield* this.read(); length !== -1; length = yield* this.read()) {
       const line = cString(this.line)
       this.args = []
       this.chars = 0
@@ -299,8 +302,8 @@ class Builder {
     }
   }
 
-  private read(): number {
-    return this.opts.delim === null ? this.readLine() : this.readItem()
+  private *read(): Generator<XargsEvent | null, number> {
+    return yield* this.opts.delim === null ? this.readLine() : this.readItem()
   }
 
   private take(word: Uint8Array): number {
@@ -313,8 +316,21 @@ class Builder {
     return this.opts.eof !== null && sameBytes(cString(word), this.opts.eof)
   }
 
-  private readLine(): number {
+  private *readChar(): Generator<XargsEvent | null, number> {
     if (this.eof) return -1
+    while (this.events.length > 0) {
+      const event = this.events.shift()
+      if (event !== undefined) yield event
+    }
+    if (this.pos >= this.data.length) yield null
+    if (this.pos >= this.data.length) {
+      this.eof = true
+      return -1
+    }
+    return this.data[this.pos++] ?? 0
+  }
+
+  private *readLine(): Generator<XargsEvent | null, number> {
     let state = ReadState.SPACE
     let quote = 0
     let c = -1
@@ -324,8 +340,8 @@ class Builder {
     const room = this.opts.argMax - this.initialChars - 1
     for (;;) {
       const prev = c
-      if (this.pos >= this.data.length) {
-        this.eof = true
+      c = yield* this.readChar()
+      if (c === -1) {
         if (buf.length === 0) return -1
         if (state === ReadState.QUOTE) {
           this.execIfPossible()
@@ -334,8 +350,6 @@ class Builder {
         if (first && this.isEof(Uint8Array.from(buf))) return -1
         return this.take(Uint8Array.from(buf))
       }
-      c = this.data[this.pos] ?? 0
-      this.pos += 1
       if (state === ReadState.SPACE) {
         if (SPACES.has(c)) continue
         state = ReadState.NORM
@@ -401,17 +415,14 @@ class Builder {
     }
   }
 
-  private readItem(): number {
-    if (this.eof) return -1
+  private *readItem(): Generator<XargsEvent | null, number> {
     const buf: number[] = []
     const room = this.opts.argMax - this.initialChars - 1
     for (;;) {
-      if (this.pos >= this.data.length) {
-        this.eof = true
+      const c = yield* this.readChar()
+      if (c === -1) {
         return buf.length > 0 ? this.take(Uint8Array.from(buf)) : -1
       }
-      const c = this.data[this.pos] ?? 0
-      this.pos += 1
       if (c === this.opts.delim) {
         this.lineno += 1
         return this.take(Uint8Array.from(buf))
@@ -538,31 +549,27 @@ interface RunOptions {
  * each in its own fork. The results come back in input order, which is the
  * order their output is written in.
  */
-async function runLines(
+async function* runLines(
   executeFn: ExecuteStringFn,
-  events: readonly XargsEvent[],
+  events: (signal: AbortSignal) => AsyncGenerator<XargsEvent>,
   context: EvaluationContext,
   procs: number,
   opts: RunOptions = {},
-): Promise<[IOResult[], number | null]> {
+): AsyncGenerator<[IOResult[], number | null]> {
   const session = context.session
-  const results: IOResult[][] = events.map(() => [])
   const slotVar = opts.slotVar ?? null
   const registry = opts.registry ?? null
-  let next = 0
   let stop: number | null = null
-  // Read through a call: another worker may stop the run during an await.
+  const stopping = new AbortController()
   const stopped = (): boolean => stop !== null
   const forked = procs !== 1 || slotVar !== null
   const taken = new Set<number>()
   const stdin = opts.stdin == null ? new Uint8Array() : new SharedStdin(opts.stdin)
-  // xargs execs its command, so a builtin that is also a program answers
-  // as the program.
-  const run = async (words: string[]): Promise<IOResult> => {
+  const run = async (words: string[], signal: AbortSignal): Promise<IOResult> => {
     const line = shellJoin(words)
     if (!forked) {
       const io = await runAsProgram(session, () =>
-        executeFn(line, { sessionId: session.sessionId, context, stdin }),
+        executeFn(line, { sessionId: session.sessionId, context, stdin, signal }),
       )
       await io.materializeStdout()
       await io.materializeStderr()
@@ -584,6 +591,7 @@ async function runLines(
             context: childEvaluation,
             session: child,
             stdin,
+            signal,
           }),
         )
         await io.materializeStdout()
@@ -594,48 +602,61 @@ async function runLines(
       taken.delete(slot)
     }
   }
-  const worker = async (): Promise<void> => {
-    while (stop === null && next < events.length) {
-      const index = next
-      next += 1
-      const event = events[index] ?? ''
-      const slot = results[index] ?? []
-      if (typeof event === 'string') {
-        slot.push(new IOResult({ stderr: encodeText(event) }))
-        continue
+  const invoke = async (event: XargsEvent, signal: AbortSignal): Promise<IOResult[]> => {
+    const slot: IOResult[] = []
+    if (typeof event === 'string') return [new IOResult({ stderr: encodeText(event) })]
+    const words = event.map(decodeText)
+    const name = words[0] ?? ''
+    if (opts.trace === true) slot.push(new IOResult({ stderr: encodeText(trace(event)) }))
+    if (registry !== null && !execs(name, session, registry)) {
+      slot.push(new IOResult({ stderr: encodeText(xargsMissing(name)), exitCode: 127 }))
+      stop = 127
+      stopping.abort()
+      return slot
+    }
+    let io: IOResult
+    try {
+      io = await run(words, signal)
+    } catch (err) {
+      stop ??= 1
+      throw err
+    }
+    slot.push(io)
+    if (io.exitCode === 255 && !stopped()) {
+      slot.push(
+        new IOResult({
+          stderr: encodeText(`xargs: ${name}: exited with status 255; aborting\n`),
+          exitCode: 255,
+        }),
+      )
+      stop = 124
+      stopping.abort()
+    }
+    return slot
+  }
+  async function* admitted(signal: AbortSignal): AsyncGenerator<XargsEvent> {
+    const source = events(mergeSignals(signal, stopping.signal) ?? signal)
+    try {
+      while (!stopped()) {
+        const next = await source.next()
+        if (next.done === true) return
+        if (!stopped()) yield next.value
       }
-      const words = event.map(decodeText)
-      const name = words[0] ?? ''
-      if (opts.trace === true) slot.push(new IOResult({ stderr: encodeText(trace(event)) }))
-      if (registry !== null && !execs(name, session, registry)) {
-        slot.push(new IOResult({ stderr: encodeText(xargsMissing(name)), exitCode: 127 }))
-        stop = 127
-        return
-      }
-      let io: IOResult
-      try {
-        io = await run(words)
-      } catch (err) {
-        stop ??= 1
-        throw err
-      }
-      slot.push(io)
-      if (io.exitCode === 255 && !stopped()) {
-        slot.push(
-          new IOResult({
-            stderr: encodeText(`xargs: ${name}: exited with status 255; aborting\n`),
-            exitCode: 255,
-          }),
-        )
-        stop = 124
-      }
+    } catch (error) {
+      if (!stopped()) throw error
+    } finally {
+      await source.return(undefined)
     }
   }
-  const runs = events.filter((event) => typeof event !== 'string').length
-  const parallel = procs !== 1 && asyncContextIsolatesTasks
-  const width = parallel ? (procs === 0 ? runs : Math.min(procs, runs)) : 1
-  await Promise.all(Array.from({ length: Math.max(width, 1) }, worker))
-  return [results.flat(), stop]
+  const width = procs !== 1 && asyncContextIsolatesTasks ? procs : 1
+  for await (const results of boundedMapStream(
+    admitted,
+    invoke,
+    width,
+    context.frame.abortSignal ?? undefined,
+  )) {
+    yield [results, stop]
+  }
 }
 
 export interface XargsOptions {
@@ -783,10 +804,10 @@ export async function handleXargs(
   }
   if (oversized) return refuse(`${warnings}xargs: environment is too large for exec\n`)
 
-  let data: Uint8Array
+  let data: ByteSource
   let childStdin: ByteSource | null = null
   if (argFile === '-') {
-    data = await materialize(stdin)
+    data = stdin ?? new Uint8Array()
   } else {
     try {
       if (options.dispatch === undefined || options.dispatch === null) {
@@ -806,7 +827,7 @@ export async function handleXargs(
 
   const command = parse.operands.length > 0 ? parse.operands : ['echo']
   const builder = new Builder(
-    data,
+    new Uint8Array(),
     command.map((word) => encodeText(word)),
     {
       delim,
@@ -823,37 +844,62 @@ export async function handleXargs(
     },
   )
   let fatal: Fatal | null = null
-  try {
-    builder.build()
-  } catch (err) {
-    if (!(err instanceof Fatal)) throw err
-    fatal = err
+  async function* events(signal: AbortSignal): AsyncGenerator<XargsEvent> {
+    const source = chunks(data, signal)
+    const steps = builder.build()
+    try {
+      for (;;) {
+        let step: IteratorResult<XargsEvent | null>
+        try {
+          step = steps.next()
+        } catch (error) {
+          if (!(error instanceof Fatal)) throw error
+          fatal = error
+          break
+        }
+        if (step.done === true) break
+        if (step.value === null) {
+          const part = await source.next()
+          builder.data = part.done === true ? new Uint8Array() : part.value
+          builder.pos = 0
+        } else {
+          yield step.value
+        }
+      }
+      yield* builder.events
+      builder.events.length = 0
+    } finally {
+      steps.return()
+      await source.return?.(undefined)
+    }
   }
-
-  const [ios, stop] = await runLines(executeFn, builder.events, context, procs, {
-    trace: toggles.has('t'),
-    slotVar,
-    registry: options.registry ?? null,
-    stdin: childStdin,
-  })
-  const stdouts: ByteSource[] = []
-  let merged = new IOResult(warnings === '' ? {} : { stderr: encodeText(warnings) })
-  for (const io of ios) {
-    if (io.stdout !== null) stdouts.push(io.stdout)
-    merged = await merged.merge(io)
+  const merged = new IOResult(warnings === '' ? {} : { stderr: encodeText(warnings) })
+  const node = new ExecutionNode({ command: 'xargs' })
+  async function* output(): AsyncGenerator<Uint8Array> {
+    let stopped: number | null = null
+    let failed = false
+    for await (const [ios, stop] of runLines(executeFn, events, context, procs, {
+      trace: toggles.has('t'),
+      slotVar,
+      registry: options.registry ?? null,
+      stdin: childStdin,
+    })) {
+      stopped = stop
+      for (const io of ios) {
+        failed ||= io.exitCode !== 0
+        merged.stderr = (await merged.merge(new IOResult({ stderr: io.stderr }))).stderr
+        const raw = await materialize(io.stdout)
+        if (raw.length > 0) yield raw
+      }
+    }
+    if (stopped !== null) merged.exitCode = stopped
+    else if (fatal !== null) {
+      merged.stderr = (await merged.merge(new IOResult({ stderr: encodeText(fatal.text) }))).stderr
+      merged.exitCode = fatal.code
+    } else merged.exitCode = failed ? 123 : 0
+    node.exitCode = merged.exitCode
   }
-  let exitCode: number
-  if (stop !== null) {
-    exitCode = stop
-  } else if (fatal !== null) {
-    merged = await merged.merge(new IOResult({ stderr: encodeText(fatal.text) }))
-    exitCode = fatal.code
-  } else {
-    exitCode = ios.some((io) => io.exitCode !== 0) ? 123 : 0
-  }
-  merged.exitCode = exitCode
-  const out = stdouts.length > 0 ? asyncChain(stdouts) : null
-  return [out, merged, new ExecutionNode({ command: 'xargs', exitCode })]
+  return [output(), merged, node]
 }
 
 /** The `xargs` arm. */

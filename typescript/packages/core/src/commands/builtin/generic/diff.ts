@@ -11,6 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { runIsolated } from '../../../concurrency/worker.ts'
 import type { Argument } from '../../spec/types.ts'
 import { compileSpec } from '../../spec/compile.ts'
 import { specOf } from '../../spec/builtins.ts'
@@ -25,7 +27,6 @@ import type { CommandOpts } from '../../config.ts'
 import type { StatPath } from '../../../view/types.ts'
 import { formatFsError } from '../../../errors/render.ts'
 import { isEnoent, isFsError } from '../../../errors/fs.ts'
-import { edScript, normalDiff, unifiedDiff } from '../diff_format.ts'
 import { extraOperandError, missingOperandError } from '../../spec/usage.ts'
 import { isStdin, stdinStat, stdinStream } from '../utils/stream.ts'
 import { splitLinesKeepends } from '../utils/lines.ts'
@@ -99,6 +100,7 @@ function parseFlags(bag: Record<string, FlagValue>): DiffFlags {
 }
 
 interface Walk {
+  readonly signal: AbortSignal | undefined
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>
   readdir: Readdir
   stat: Stat
@@ -268,18 +270,28 @@ async function diffPair(
   const aLines = splitLinesKeepends(textA)
   const bLines = splitLinesKeepends(textB)
   let result: string[]
-  if (flags.ed) result = edScript(aLines, bLines)
+  const module = new URL(
+    import.meta.url.endsWith('.ts') ? '../diff_format.ts' : '../diff_format.js',
+    import.meta.url,
+  )
+  if (flags.ed)
+    result = await runIsolated<string[]>(module, 'edScript', [aLines, bLines], walk.signal)
   else if (flags.unified)
-    result = unifiedDiff(
-      aLines,
-      bLines,
-      cEscape(path1.rawPath),
-      cEscape(path2.rawPath),
-      flags.context,
-      await headerTime(walk, path1, absent[0]),
-      await headerTime(walk, path2, absent[1]),
+    result = await runIsolated<string[]>(
+      module,
+      'unifiedDiff',
+      [
+        aLines,
+        bLines,
+        cEscape(path1.rawPath),
+        cEscape(path2.rawPath),
+        flags.context,
+        await headerTime(walk, path1, absent[0]),
+        await headerTime(walk, path2, absent[1]),
+      ],
+      walk.signal,
     )
-  else result = normalDiff(aLines, bLines)
+  else result = await runIsolated<string[]>(module, 'normalDiff', [aLines, bLines], walk.signal)
   return ENC.encode(result.join(''))
 }
 
@@ -417,6 +429,7 @@ export async function diffGeneric(
   let differ = false
   try {
     const walk: Walk = {
+      signal: opts.signal,
       stream,
       readdir,
       stat,

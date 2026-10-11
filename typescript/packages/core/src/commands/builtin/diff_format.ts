@@ -74,6 +74,10 @@ function getMatchingBlocks(a: readonly string[], b: readonly string[]): Match[] 
     arr.push(j)
     b2j.set(key, arr)
   }
+  if (b.length >= 200) {
+    const popular = Math.floor(b.length / 100) + 1
+    for (const [line, indices] of b2j) if (indices.length > popular) b2j.delete(line)
+  }
   const matches: Match[] = []
   const queue: [number, number, number, number][] = [[0, a.length, 0, b.length]]
   while (queue.length > 0) {

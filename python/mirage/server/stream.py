@@ -105,7 +105,7 @@ class ShellResponse(Response):
                 await asyncio.shield(self._upload)
             except Exception:
                 logger.debug("streamed shell upload failed", exc_info=True)
-                return
+                self._jobs.cancel(self._job.id)
         while (await self._request.receive())["type"] != "http.disconnect":
             pass
 
@@ -128,16 +128,25 @@ class ShellResponse(Response):
                 }
             )
         job = await asyncio.shield(completed)
+        upload_error: Exception | None = None
         if self._upload is not None:
             if self._part is not None:
-                self._part.discard()
-            await asyncio.wait({self._upload})
+                await self._part.discard()
+            try:
+                await asyncio.shield(self._upload)
+            except Exception as exc:
+                logger.debug("streamed shell upload failed", exc_info=True)
+                upload_error = exc
         terminal = (
             json.dumps(
                 {
-                    "status": job.status.value,
-                    "result": job.result,
-                    "error": job.error,
+                    "status": job.status.value
+                    if upload_error is None
+                    else "failed",
+                    "result": job.result if upload_error is None else None,
+                    "error": job.error
+                    if upload_error is None
+                    else str(upload_error),
                 },
                 separators=(",", ":"),
             ).encode()
@@ -178,7 +187,7 @@ class ShellResponse(Response):
     ) -> None:
         self._output.pipe.close_reader()
         if self._part is not None:
-            self._part.discard()
+            await self._part.discard()
         sender.cancel()
         disconnected.cancel()
         if self._upload is not None:

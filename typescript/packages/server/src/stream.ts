@@ -1,3 +1,4 @@
+import { abortable } from '@struktoai/mirage-core/utils/abort'
 import { Buffer } from 'node:buffer'
 import { Readable } from 'node:stream'
 import type { FastifyReply } from 'fastify'
@@ -22,14 +23,14 @@ export class ShellOutput {
     this.pipe = new BytePipe(capacity)
   }
 
-  async emit(stream: StreamName, data: Uint8Array): Promise<void> {
+  async emit(stream: StreamName, data: Uint8Array, signal?: AbortSignal): Promise<void> {
     const previous = this.writing
     let release!: () => void
     this.writing = new Promise((resolve) => {
       release = resolve
     })
-    await previous
     try {
+      await abortable(previous, signal)
       for (let offset = 0; offset < data.byteLength; offset += PAYLOAD_SIZE) {
         await this.pipe.write(
           Buffer.from(
@@ -38,6 +39,7 @@ export class ShellOutput {
               data: Buffer.from(data.subarray(offset, offset + PAYLOAD_SIZE)).toString('base64'),
             }) + '\n',
           ),
+          signal,
         )
       }
     } finally {
@@ -72,7 +74,10 @@ export function shellResponse(
   })
   const disconnected = (): void => {
     output.pipe.closeReader()
-    if (stdin instanceof UploadStdin) stdin.discard()
+    if (stdin instanceof UploadStdin)
+      void stdin.discard().catch((error: unknown) => {
+        reply.log.error(error, 'stdin cleanup failed')
+      })
     jobs.cancel(job.id)
   }
   reply.raw.once('close', disconnected)
@@ -86,18 +91,23 @@ export function shellResponse(
     try {
       yield* output.pipe.stream()
       const result = await completed
-      if (stdin instanceof UploadStdin) stdin.discard()
-      await failed
+      if (stdin instanceof UploadStdin) await stdin.discard()
+      const uploadError = await failed
       yield Buffer.from(
         JSON.stringify({
-          status: result.status,
-          result: result.result,
-          error: result.error,
+          status: uploadError === undefined ? result.status : 'failed',
+          result: uploadError === undefined ? result.result : null,
+          error:
+            uploadError === undefined
+              ? result.error
+              : uploadError instanceof Error
+                ? uploadError.message
+                : 'Upload failed',
         }) + '\n',
       )
     } finally {
       output.pipe.closeReader()
-      if (stdin instanceof UploadStdin) stdin.discard()
+      if (stdin instanceof UploadStdin) await stdin.discard()
       jobs.cancel(job.id)
       try {
         await jobs.drain(job.id)

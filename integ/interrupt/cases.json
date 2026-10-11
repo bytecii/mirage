@@ -1,0 +1,93 @@
+{
+  "cpu": [
+    {
+      "id": "awk-loop",
+      "command": "awk 'BEGIN { while (1) {} }'",
+      "canceled": true
+    },
+    {
+      "id": "sed-loop",
+      "command": "printf 'x\\n' | sed ':a;ba'",
+      "canceled": true
+    },
+    {
+      "id": "jq-loop",
+      "command": "jq -n 'until(false; .)'",
+      "canceled": true
+    },
+    {
+      "id": "grep-regex",
+      "command": "printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | grep -E '^(a+)+$'",
+      "canceled": true
+    },
+    {
+      "id": "rg-regex",
+      "command": "printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | rg '^(a+)+$'",
+      "canceled": true
+    },
+    {
+      "id": "diff-repeated",
+      "command": "diff /left /right > /difference",
+      "canceled": false
+    },
+    {
+      "id": "sort-numeric",
+      "command": "sort -n /numbers > /sorted",
+      "canceled": false
+    }
+  ],
+  "stream": [
+    {
+      "id": "sed-first",
+      "command": "seq inf | sed 1q",
+      "stdout": "1\n",
+      "exit_code": 0
+    },
+    {
+      "id": "sed-loop-output",
+      "command": "printf 'x\\n' | sed ':a;p;ba' | head -n1",
+      "stdout": "x\n",
+      "exit_code": 0
+    },
+    {
+      "id": "xargs-first",
+      "command": "seq inf | xargs -n1 echo | head -n1",
+      "stdout": "1\n",
+      "exit_code": 0
+    },
+    {
+      "id": "xargs-parallel",
+      "command": "seq inf | xargs -P2 -n1 echo | head -n1",
+      "stdout": "1\n",
+      "exit_code": 0
+    },
+    {
+      "id": "cmp-prefix",
+      "command": "printf 1 > /one; seq inf | cmp -n 1 - /one",
+      "stdout": "",
+      "exit_code": 0
+    },
+    {
+      "id": "bc-quit",
+      "command": "{ printf 'quit\\n'; seq inf; } | bc",
+      "stdout": "",
+      "exit_code": 0
+    },
+    {
+      "id": "bc-output",
+      "command": "seq inf | bc | head -n1",
+      "stdout": "1\n",
+      "exit_code": 0
+    }
+  ],
+  "http": [
+    {
+      "id": "curl-cancel",
+      "command": "curl --max-time 0 -o /download {url}"
+    },
+    {
+      "id": "wget-cancel",
+      "command": "wget --timeout=0 -O /download {url}"
+    }
+  ]
+}

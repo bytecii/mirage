@@ -15,6 +15,7 @@ from mirage.io.stream import close_quietly
 from mirage.io.types import IOResult, materialize
 from mirage.io.yield_budget import YieldBudget
 from mirage.shell.bytes import byte_view, encode_text, from_byte_view
+from mirage.utils.regex import AsyncRegex
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,6 +302,7 @@ async def grep_input(
         else None
     )
     fold = bool(pat.flags & re.IGNORECASE)
+    matcher = AsyncRegex(pat, all_matches=f.only_matching)
     input_stream = binary.read(source)
     lines = AsyncLineIterator(input_stream)
     try:
@@ -320,7 +322,8 @@ async def grep_input(
             line_start = byte_pos
             byte_pos += len(raw) + 1
             line = byte_view(raw, utf8)
-            hit = bool(pat.search(line)) != f.invert
+            await matcher.prepare(line)
+            hit = bool(matcher.search(line)) != f.invert
             if f.max_count is not None and count >= f.max_count:
                 hit = False
             if hit:
@@ -376,7 +379,7 @@ async def grep_input(
                 after_until = number + after
                 if f.only_matching:
                     if not f.invert:
-                        for m in pat.finditer(line):
+                        for m in matcher.finditer(line):
                             await budget.run()
                             text = match_text(m)
                             start = match_start(m)
@@ -455,6 +458,7 @@ async def grep_input(
             ):
                 break
     finally:
+        await matcher.close()
         await close_quietly(input_stream)
         await close_quietly(source)
 

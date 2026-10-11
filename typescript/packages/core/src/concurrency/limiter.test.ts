@@ -12,8 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { abortable } from '../utils/abort.ts'
 import { describe, expect, it } from 'vitest'
-import { ConcurrencyLimiter, boundedMap } from './limiter.ts'
+import { ConcurrencyLimiter, boundedMap, boundedMapStream } from './limiter.ts'
 
 interface ConcurrencyState {
   active: number
@@ -146,4 +147,20 @@ it('boundedMap keeps order, and a failure stops admission and joins active work'
   await expect(run).rejects.toThrow('download failed')
   expect(admitted).toEqual([0, 1])
   expect(await boundedMap([3, 1, 2], (x) => Promise.resolve(x * 2), 2)).toEqual([6, 2, 4])
+})
+
+it('yields a mapped result while the next input is pending and closes the source', async () => {
+  let closed = false
+  async function* input(signal: AbortSignal): AsyncGenerator<number> {
+    try {
+      yield 1
+      await abortable(new Promise<void>(() => undefined), signal)
+    } finally {
+      closed = true
+    }
+  }
+  const mapped = boundedMapStream(input, (value) => Promise.resolve(value + 1), 2)
+  expect((await mapped.next()).value).toBe(2)
+  await mapped.return(undefined)
+  expect(closed).toBe(true)
 })

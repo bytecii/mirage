@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { readStdinAsync, stdinStream } from '../utils/stream.ts'
+import { isStdin, stdinStream } from '../utils/stream.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
@@ -294,12 +294,11 @@ export async function sedGeneric(
     utf8,
   })
 
-  if (inPlace) return runInPlace(paths, program, machine, access, stream, write, utf8)
+  if (inPlace) return runInPlace(paths, program, machine, access, stream, write, utf8, opts.signal)
 
   const inputs: SedInput[] = []
   if (paths.length === 0) {
-    const raw = (await readStdinAsync(opts.stdin)) ?? new Uint8Array(0)
-    inputs.push({ name: '-', text: byteView(raw, utf8) })
+    inputs.push({ name: '-', source: opts.stdin ?? new Uint8Array() })
   }
   // sed owns its exit code rather than letting the executor's chokepoint
   // pick it, because GNU sed splits a failed operand two ways (GNU sed
@@ -316,6 +315,10 @@ export async function sedGeneric(
   // file, so otherwise nothing past the directory is read.
   const lookAhead = looksAhead(program) && !parsed.separate
   for (const p of paths) {
+    if (isStdin(p)) {
+      inputs.push({ name: '-', source: opts.stdin ?? new Uint8Array() })
+      continue
+    }
     const last = inputs.at(-1)
     if (last !== undefined && 'fatal' in last && last.fatal && !lookAhead) break
     try {
@@ -331,16 +334,16 @@ export async function sedGeneric(
       })
     }
   }
-  machine.process(inputs, true)
-  const writeErr = await flushWriteFiles(machine, access, utf8)
-  const stderr = machine.stderr() + writeErr
-  return [
-    fromByteView(machine.stdout.chunks.join(''), utf8),
-    new IOResult({
-      exitCode: writeErr === '' ? machine.exitCode() : 4,
-      stderr: stderr === '' ? null : encodeText(stderr),
-    }),
-  ]
+  const io = new IOResult()
+  async function* output(): AsyncGenerator<Uint8Array> {
+    for await (const chunk of machine.process(inputs, true, opts.signal))
+      yield fromByteView(chunk, utf8)
+    const writeErr = await flushWriteFiles(machine, access, utf8)
+    const stderr = machine.stderr() + writeErr
+    io.exitCode = writeErr === '' ? machine.exitCode() : 4
+    io.stderr = stderr === '' ? null : encodeText(stderr)
+  }
+  return [output(), io]
 }
 
 // GNU -i: each file is its own run (line numbers, `$`, the hold space
@@ -356,6 +359,7 @@ async function runInPlace(
   stream: Stream,
   write: Write,
   utf8: boolean,
+  signal?: AbortSignal,
 ): Promise<CommandFnResult> {
   if (paths.length === 0) return failed(`${SED_NO_INPUT_FILES}\n`, SED_NO_INPUT_EXIT)
   const editedVirtual = new Set<string>()
@@ -376,7 +380,13 @@ async function runInPlace(
     // An `r` file edited by an earlier file of this command reads new.
     if (editedVirtual.size > 0)
       machine.setFiles(await readScriptFiles(program.rfiles, access, utf8))
-    const out = machine.process([{ name: p.rawPath, text: byteView(data, utf8) }], false)
+    let out = ''
+    for await (const chunk of machine.process(
+      [{ name: p.rawPath, text: byteView(data, utf8) }],
+      false,
+      signal,
+    ))
+      out += chunk
     if (machine.panicCode !== null) break
     const newData = fromByteView(out, utf8)
     try {
