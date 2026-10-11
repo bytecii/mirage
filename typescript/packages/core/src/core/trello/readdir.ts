@@ -353,7 +353,7 @@ async function listCards(
         vfsName: dirname,
         extra: {
           json_size: toJsonBytes(normalizeCard(card)).byteLength,
-          unsearched: unsearchedText(card),
+          ...(accessor.contentSearch ? { unsearched: unsearchedText(card) } : {}),
         },
       }),
     ]

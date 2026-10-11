@@ -163,7 +163,17 @@ export async function searchCards(
     cards_limit: String(limit),
     partial: 'false',
   })
-  return asArray(asObject(result, '/search').cards) as Record<string, unknown>[]
+  const cards = asObject(result, '/search').cards
+  const valid =
+    Array.isArray(cards) &&
+    cards.every(
+      (card: unknown) =>
+        card !== null &&
+        typeof card === 'object' &&
+        typeof (card as Record<string, unknown>).id === 'string',
+    )
+  if (!valid) throw new TrelloApiError('/search', 0, 'unexpected response shape')
+  return cards as Record<string, unknown>[]
 }
 
 export async function getCard(

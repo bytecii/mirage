@@ -128,7 +128,7 @@ async def files_containing(
                 for issue_id, path in dirs.items()
                 if issue_id in named or issue_id in held
             )
-    except (OSError, aiohttp.ClientError, RuntimeError) as exc:
+    except (OSError, aiohttp.ClientError, RuntimeError, ValueError) as exc:
         logger.warning("linear search failed (%s); reading every file", exc)
         return None
     return found or None

@@ -42,7 +42,10 @@ const ISSUES = [
 // each searched term.
 class FakeTransport implements LinearTransport {
   readonly searched: string[] = []
-  constructor(private readonly named: string[]) {}
+  constructor(
+    private readonly named: string[],
+    private readonly reply?: Record<string, unknown> | Error,
+  ) {}
   graphql(
     query: string,
     variables: Record<string, unknown> = {},
@@ -50,6 +53,8 @@ class FakeTransport implements LinearTransport {
     const page = { hasNextPage: false, endCursor: null }
     if (query.includes('searchIssues')) {
       this.searched.push(String(variables.term))
+      if (this.reply instanceof Error) return Promise.reject(this.reply)
+      if (this.reply !== undefined) return Promise.resolve(this.reply)
       return Promise.resolve({ searchIssues: { nodes: this.named.map((id) => ({ id })) } })
     }
     if (query.includes('issues(')) {
@@ -68,10 +73,11 @@ async function ask(
   text: string,
   named: string[],
   under = scope(),
+  reply?: Record<string, unknown> | Error,
 ): Promise<[PathSpec[] | null, string[]]> {
-  const transport = new FakeTransport(named)
+  const transport = new FakeTransport(named, reply)
   const out = await filesContaining(
-    new LinearAccessor(transport),
+    new LinearAccessor(transport, { contentSearch: true }),
     text,
     [under],
     new RAMIndexCacheStore(),
@@ -106,6 +112,18 @@ describe('linear filesContaining', () => {
     ['login', ['I1'], 'teams/ENG__Engineering__T1/issues/ENG-1__I1'],
   ])('reads every file for %j when unsure', async (text, named, under) => {
     const [out] = await ask(text, named, scope(under))
+    expect(out).toBeNull()
+  })
+
+  // A reply that is not a list of issues, or not JSON, is a failed search:
+  // I2's state holds "Blocked", but Linear may have named I1 too.
+  it.each<[Record<string, unknown> | Error]>([
+    [{ searchIssues: { nodes: {} } }],
+    [{ searchIssues: null }],
+    [{ searchIssues: { nodes: [{ title: 'Fix the login page' }] } }],
+    [new SyntaxError('Unexpected token < in JSON')],
+  ])('reads every file for the garbled reply %#', async (reply) => {
+    const [out] = await ask('Blocked', [], scope(), reply)
     expect(out).toBeNull()
   })
 })

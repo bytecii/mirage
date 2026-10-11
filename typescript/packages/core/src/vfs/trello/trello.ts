@@ -55,9 +55,14 @@ export class TrelloVFS extends BaseVFS {
       apiToken: config.apiToken,
     }
     if (config.baseUrl !== undefined) transportOpts.baseUrl = config.baseUrl
-    const accessorOpts: { workspaceId?: string; boardIds?: readonly string[] } = {}
+    const accessorOpts: {
+      workspaceId?: string
+      boardIds?: readonly string[]
+      contentSearch?: boolean
+    } = {}
     if (config.workspaceId !== undefined) accessorOpts.workspaceId = config.workspaceId
     if (config.boardIds !== undefined) accessorOpts.boardIds = config.boardIds
+    if (config.contentSearch !== undefined) accessorOpts.contentSearch = config.contentSearch
     this.accessor = new TrelloAccessor(new HttpTrelloTransport(transportOpts), accessorOpts)
   }
 

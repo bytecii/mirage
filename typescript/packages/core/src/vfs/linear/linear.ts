@@ -54,8 +54,9 @@ export class LinearVFS extends BaseVFS {
     this.config = config
     const transportOpts: { apiKey: string; baseUrl?: string } = { apiKey: config.apiKey }
     if (config.baseUrl !== undefined) transportOpts.baseUrl = config.baseUrl
-    const accessorOpts: { teamIds?: readonly string[] } = {}
+    const accessorOpts: { teamIds?: readonly string[]; contentSearch?: boolean } = {}
     if (config.teamIds !== undefined) accessorOpts.teamIds = config.teamIds
+    if (config.contentSearch !== undefined) accessorOpts.contentSearch = config.contentSearch
     this.accessor = new LinearAccessor(new HttpLinearTransport(transportOpts), accessorOpts)
   }
 

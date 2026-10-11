@@ -214,7 +214,12 @@ async def search_cards(
         session=session,
     )
     cards = result.get("cards") if isinstance(result, dict) else None
-    return cards if isinstance(cards, list) else []
+    if not isinstance(cards, list) or not all(
+        isinstance(card, dict) and isinstance(card.get("id"), str)
+        for card in cards
+    ):
+        raise TrelloAPIError("unexpected response from search")
+    return cards
 
 
 async def get_card(

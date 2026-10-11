@@ -122,12 +122,14 @@ export async function filesContaining(
     }
   } catch (err) {
     // fetch rejects with a TypeError when the connection fails and a
-    // DOMException when its timeout aborts it
+    // DOMException when its timeout aborts it; a body that is not JSON
+    // rejects with a SyntaxError
     const failed =
       isFsError(err) ||
       err instanceof LinearApiError ||
       err instanceof TypeError ||
-      err instanceof DOMException
+      err instanceof DOMException ||
+      err instanceof SyntaxError
     if (!failed) throw err
     console.warn(`linear search failed (${String(err)}); reading every file`)
     return null

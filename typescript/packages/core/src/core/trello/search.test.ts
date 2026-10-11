@@ -45,10 +45,15 @@ const LIST = 'workspaces/Engineering__ws1/boards/Roadmap__b1/lists/Doing__l1'
 // searched query.
 class FakeTransport implements TrelloTransport {
   readonly searched: string[] = []
-  constructor(private readonly named: string[]) {}
+  constructor(
+    private readonly named: string[],
+    private readonly reply?: Record<string, unknown> | Error,
+  ) {}
   call(_method: string, path: string, params: Record<string, string> = {}): Promise<unknown> {
     if (path === '/search') {
       this.searched.push(params.query ?? '')
+      if (this.reply instanceof Error) return Promise.reject(this.reply)
+      if (this.reply !== undefined) return Promise.resolve(this.reply)
       return Promise.resolve({ cards: this.named.map((id) => ({ id })) })
     }
     if (path === '/members/me/organizations') {
@@ -71,10 +76,11 @@ async function ask(
   text: string,
   named: string[],
   under = scope(),
+  reply?: Record<string, unknown> | Error,
 ): Promise<[PathSpec[] | null, string[]]> {
-  const transport = new FakeTransport(named)
+  const transport = new FakeTransport(named, reply)
   const out = await filesContaining(
-    new TrelloAccessor(transport),
+    new TrelloAccessor(transport, { contentSearch: true }),
     text,
     [under],
     new RAMIndexCacheStore(),
@@ -116,6 +122,18 @@ describe('trello filesContaining', () => {
     ['login', Array.from({ length: SEARCH_LIMIT }, (_, i) => `x${String(i)}`)],
   ])('reads every file for %j', async (text, named) => {
     const [out] = await ask(text, named)
+    expect(out).toBeNull()
+  })
+
+  // A reply that is not a list of cards, or not JSON, is a failed search:
+  // c2's link holds "ship", but Trello may have named c1 too.
+  it.each<[Record<string, unknown> | Error]>([
+    [{ cards: {} }],
+    [{}],
+    [{ cards: [{ name: 'Fix login' }] }],
+    [new SyntaxError('Unexpected token < in JSON')],
+  ])('reads every file for the garbled reply %#', async (reply) => {
+    const [out] = await ask('ship', [], scope(), reply)
     expect(out).toBeNull()
   })
 })

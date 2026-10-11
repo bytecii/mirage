@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,7 +21,7 @@ from mirage.accessor.trello import TrelloAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.trello.normalize import unsearched_text
 from mirage.core.trello.search import SEARCH_LIMIT, files_containing
-from mirage.types import PathSpec
+from mirage.types import JsonValue, PathSpec
 from mirage.vfs.trello.config import TrelloConfig
 
 CARDS = [
@@ -51,12 +52,19 @@ def _scope(vfs_path: str = "") -> PathSpec:
 
 
 async def _ask(
-    text: str, named: list[str], under: list[PathSpec] | None = None
+    text: str,
+    named: list[str],
+    under: list[PathSpec] | None = None,
+    reply: "JsonValue | Exception" = None,
 ):
     accessor = TrelloAccessor(
         TrelloConfig(api_key="k", api_token="t", content_search=True)
     )
-    found = AsyncMock(return_value=[{"id": i} for i in named])
+    found = (
+        AsyncMock(return_value={"cards": [{"id": i} for i in named]})
+        if reply is None
+        else AsyncMock(side_effect=[reply])
+    )
     readdir = "mirage.core.trello.readdir"
     with (
         patch(
@@ -78,12 +86,14 @@ async def _ask(
             AsyncMock(return_value=[{"id": "l1", "name": "Doing"}]),
         ),
         patch(f"{readdir}.list_list_cards", AsyncMock(return_value=CARDS)),
-        patch("mirage.core.trello.search.search_cards", found),
+        patch("mirage.core.trello.client._get", found),
     ):
         out = await files_containing(
             accessor, text, under or [_scope()], RAMIndexCacheStore()
         )
-    return out, [call.args[1] for call in found.await_args_list]
+    return out, [
+        call.kwargs["params"]["query"] for call in found.await_args_list
+    ]
 
 
 def test_unsearched_text_leaves_out_name_and_description():
@@ -129,4 +139,21 @@ async def test_a_card_scope_names_its_own_card_json():
 )
 async def test_an_unsure_answer_reads_every_file(text, named):
     out, _ = await _ask(text, named)
+    assert out is None
+
+
+# A reply that is not a list of cards, or not JSON, is a failed search:
+# c2's link holds "ship", but Trello may have named c1 too.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"cards": {}},
+        {},
+        {"cards": [{"name": "Fix login"}]},
+        json.JSONDecodeError("Expecting value", "<html>", 0),
+    ],
+)
+async def test_a_garbled_reply_reads_every_file(reply):
+    out, _ = await _ask("ship", [], reply=reply)
     assert out is None

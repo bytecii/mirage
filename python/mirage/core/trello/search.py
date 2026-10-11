@@ -118,7 +118,7 @@ async def files_containing(
                 if entry.id in named
                 or text.lower() in entry.extra["unsearched"]
             )
-    except (OSError, aiohttp.ClientError, RuntimeError) as exc:
+    except (OSError, aiohttp.ClientError, RuntimeError, ValueError) as exc:
         logger.warning("trello search failed (%s); reading every file", exc)
         return None
     return found or None

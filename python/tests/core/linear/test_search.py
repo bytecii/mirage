@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,7 +22,7 @@ from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.linear.config import LinearConfig
 from mirage.core.linear.normalize import unsearched_text
 from mirage.core.linear.search import SEARCH_LIMIT, files_containing
-from mirage.types import PathSpec
+from mirage.types import JsonValue, PathSpec
 
 TEAM = {"id": "T1", "key": "ENG", "name": "Engineering"}
 
@@ -49,10 +50,21 @@ def _scope(vfs_path: str = "") -> PathSpec:
 
 
 async def _ask(
-    text: str, named: list[str], under: list[PathSpec] | None = None
+    text: str,
+    named: list[str],
+    under: list[PathSpec] | None = None,
+    reply: "JsonValue | Exception" = None,
 ):
     accessor = LinearAccessor(LinearConfig(api_key="k", content_search=True))
-    found = AsyncMock(return_value=[{"id": i} for i in named])
+    found = (
+        AsyncMock(
+            return_value={
+                "searchIssues": {"nodes": [{"id": i} for i in named]}
+            }
+        )
+        if reply is None
+        else AsyncMock(side_effect=[reply])
+    )
     with (
         patch(
             "mirage.core.linear.readdir.list_teams",
@@ -62,12 +74,12 @@ async def _ask(
             "mirage.core.linear.readdir.list_team_issues",
             AsyncMock(return_value=ISSUES),
         ),
-        patch("mirage.core.linear.search.search_issues", found),
+        patch("mirage.core.linear.client.graphql_request", found),
     ):
         out = await files_containing(
             accessor, text, under or [_scope()], RAMIndexCacheStore()
         )
-    return out, [call.args[1] for call in found.await_args_list]
+    return out, [call.args[2]["term"] for call in found.await_args_list]
 
 
 def test_unsearched_text_leaves_out_title_and_description():
@@ -104,4 +116,21 @@ async def test_hits_are_what_linear_names_and_what_the_listing_kept():
 )
 async def test_an_unsure_answer_reads_every_file(text, named, under):
     out, _ = await _ask(text, named, [_scope(under)])
+    assert out is None
+
+
+# A reply that is not a list of issues, or not JSON, is a failed search:
+# I2's state holds "Blocked", but Linear may have named I1 too.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"searchIssues": {"nodes": {}}},
+        {"searchIssues": None},
+        {"searchIssues": {"nodes": [{"title": "Fix the login page"}]}},
+        json.JSONDecodeError("Expecting value", "<html>", 0),
+    ],
+)
+async def test_a_garbled_reply_reads_every_file(reply):
+    out, _ = await _ask("Blocked", [], reply=reply)
     assert out is None
