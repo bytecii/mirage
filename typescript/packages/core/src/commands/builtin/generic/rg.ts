@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { GzipDataError, gunzipStream } from '../../../utils/compress.ts'
 import { mountPrefixOf, sameMountSpec } from '../../../utils/key_prefix.ts'
 import { mountParentReaddir, mountParentStat } from '../utils/wrap.ts'
 import { IOResult } from '../../../io/types.ts'
@@ -59,6 +60,10 @@ import { concat } from '../../../utils/bytes.ts'
 const ENC = new TextEncoder()
 // ripgrep's own words for a line with no pattern, exit 2 (14.1.1).
 export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execute a search'
+// The names -z searches decompressed, and the rule ripgrep frames gzip's
+// refusal in (14.1.1).
+const GZIP_NAMES = ['.gz', '.tgz']
+const GZIP_RULE = '-'.repeat(79)
 // ripgrep's refusal of a pattern that holds the line terminator outside
 // multiline mode, exit 2 (14.1.1).
 const NEWLINE_REFUSAL =
@@ -499,6 +504,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     crlf: last(fl, 'crlf', 'no_crlf') === 'crlf' && !fl.asBool('null_data'),
     multiline: last(fl, 'multiline', 'no_multiline') === 'multiline',
     stats: last(fl, 'stats', 'no_stats') === 'stats',
+    searchZip: last(fl, 'search_zip', 'no_search_zip') === 'search_zip',
     json: jsonRecords,
     multilineDotall: last(fl, 'multiline_dotall', 'no_multiline_dotall') === 'multiline_dotall',
     pathSeparator: pathSeparator(fl),
@@ -837,7 +843,13 @@ export async function rgGeneric(
   const home = mountPrefixOf(first.virtual, first.vfsPath)
   const rd = mountParentReaddir((p: string) => readdir(sameMountSpec(p, first)), mounts, home)
   const st = mountParentStat((p: string) => stat(sameMountSpec(p, first)), mounts)
-  if (pat !== null && paths.length === 1 && f.stats !== true && f.json !== true) {
+  if (
+    pat !== null &&
+    paths.length === 1 &&
+    f.stats !== true &&
+    f.json !== true &&
+    f.searchZip !== true
+  ) {
     const single = await searchSingle(first, pat, f, st, rd, stream, opts.signal)
     if (single !== null) return single
   }
@@ -1135,11 +1147,15 @@ async function searchAll(
     const chunks: Uint8Array[] = []
     const began = performance.now()
     try {
-      const source =
+      const opened =
         h.spec === null && h.resolver !== null
           ? h.resolver.read(h.virtual)
           : stream(h.spec ?? sameMountSpec(h.virtual, template))
       const pipe = h.spec !== null && isStdin(h.spec)
+      const source =
+        f.searchZip === true && GZIP_NAMES.some((ext) => h.virtual.endsWith(ext)) && !pipe
+          ? gunzipStream(opened)
+          : opened
       for await (const c of searchHaystack(
         source,
         pat,
@@ -1154,6 +1170,13 @@ async function searchAll(
         chunks.push(c)
       }
     } catch (err) {
+      if (err instanceof GzipDataError) {
+        // -z runs gzip, whose refusal ripgrep frames in rules.
+        warnings.push(
+          `rg: ${name}: \n${GZIP_RULE}\n${err.render(name).trimStart()}${GZIP_RULE}`,
+        )
+        continue
+      }
       if (!isFsError(err)) throw err
       // ripgrep reports the failed input and keeps searching the rest.
       warnings.push(openErrorLine(h.shown, err))

@@ -71,10 +71,15 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.shell.bytes import decode_text, encode_text
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.compress import GzipDataError, gunzip_stream
 from mirage.view.types import MountView
 
 logger = logging.getLogger(__name__)
 
+# The names -z searches decompressed, and the rule ripgrep frames gzip's
+# refusal in (14.1.1).
+GZIP_NAMES = (".gz", ".tgz")
+GZIP_RULE = "-" * 79
 # ripgrep's refusal of a pattern that holds the line terminator outside
 # multiline mode, exit 2 (14.1.1).
 NEWLINE_REFUSAL = (
@@ -674,6 +679,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         and not fl.as_bool("null_data"),
         multiline=_last(fl, "multiline", "no_multiline") == "multiline",
         stats=_last(fl, "stats", "no_stats") == "stats",
+        search_zip=_last(fl, "search_zip", "no_search_zip") == "search_zip",
         json=json_records,
         multiline_dotall=_last(fl, "multiline_dotall", "no_multiline_dotall")
         == "multiline_dotall",
@@ -1140,7 +1146,11 @@ async def rg_generic(
     )
     rb = partial(call_read_bytes, read_bytes, prefix=mount_prefix)
 
-    if pat is not None and len(paths) == 1 and not (f.stats or f.json):
+    if (
+        pat is not None
+        and len(paths) == 1
+        and not (f.stats or f.json or f.search_zip)
+    ):
         single = await _search_single(
             paths[0], pat, f, st, rd, rb, read_stream, operand_stream
         )
@@ -1551,6 +1561,12 @@ async def _search_all(
                 source = h.resolver.read(h.virtual)
             else:
                 source = _wrap_bytes(await rb(h.virtual))
+            if (
+                f.search_zip
+                and h.virtual.endswith(GZIP_NAMES)
+                and not (h.spec is not None and is_stdin(h.spec))
+            ):
+                source = gunzip_stream(source)
             chunks = [
                 c
                 async for c in search_haystack(
@@ -1567,6 +1583,13 @@ async def _search_all(
         except FS_ERRORS as exc:
             # ripgrep reports the failed input and keeps searching the rest.
             warnings.append(open_error_line(h.shown, exc))
+            continue
+        except GzipDataError as exc:
+            # -z runs gzip, whose refusal ripgrep frames in rules.
+            warnings.append(
+                f"rg: {name}: \n{GZIP_RULE}\n"
+                f"{exc.render(name).lstrip()}{GZIP_RULE}"
+            )
             continue
         elapsed = time.perf_counter() - began
         selected = selected or tally.selected

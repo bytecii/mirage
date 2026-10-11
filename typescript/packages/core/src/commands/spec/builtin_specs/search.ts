@@ -324,6 +324,10 @@ export const SPECS: Record<string, CommandSpec> = {
       new Argument('--no-pcre2', { action: 'store_true' }),
       new Argument('--engine'),
       new Argument('--no-json', { action: 'store_true' }),
+      // A .gz or .tgz file is searched decompressed; mirage has gzip and no
+      // other decompressor, which ripgrep leaves raw too when their programs
+      // are missing.
+      new Argument(['-z', '--search-zip'], { action: 'store_true' }),
       new Argument('--no-search-zip', { action: 'store_true' }),
       new Argument('--no-encoding', { action: 'store_true' }),
       new Argument('--no-pre', { action: 'store_true' }),

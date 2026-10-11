@@ -64,6 +64,7 @@ export interface RgFlags {
   multilineDotall?: boolean
   stats?: boolean
   json?: boolean
+  searchZip?: boolean
   pathSeparator: string | null
   quiet: boolean
   countOnly: boolean

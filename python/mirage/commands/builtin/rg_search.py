@@ -112,6 +112,7 @@ class RgFlags:
     multiline_dotall: bool = False
     stats: bool = False
     json: bool = False
+    search_zip: bool = False
     engine: str = "default"
     threads: int | None = None
     text: bool = False
