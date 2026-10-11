@@ -46,7 +46,7 @@ vi.mock('../../core/gdrive/versions.ts', async () => {
 
 import type { FakeDrive } from '../../core/gdrive/_test_util.ts'
 import { resetFakeDrive } from '../../core/gdrive/_test_util.ts'
-import { MountMode, ReadPolicy } from '../../types.ts'
+import { MountMode, PathSpec, ReadPolicy } from '../../types.ts'
 import { md5Hex } from '../../utils/hash.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { getTestParser } from '../../workspace/fixtures/workspace_fixture.ts'
@@ -237,5 +237,24 @@ describe('GDriveVFS snapshot capture on a written path', () => {
     } finally {
       await ws.close()
     }
+  })
+})
+
+describe('GDriveVFS filesContaining', () => {
+  it('asks Drive only with contentSearch and a whole word', async () => {
+    fake.add('a.txt', 'root', undefined, ENC.encode('wombat'))
+    const scope = [PathSpec.fromStrPath('/gd', '')]
+    const off = new GDriveVFS({ clientId: 'cid', refreshToken: 'rt' })
+    const on = new GDriveVFS({ clientId: 'cid', refreshToken: 'rt', contentSearch: true })
+    const word = { wholeWord: true, ignoreCase: false }
+    const index = new RAMIndexCacheStore()
+    expect(await off.filesContaining('wombat', scope, word, index)).toBeNull()
+    expect(
+      await on.filesContaining('wombat', scope, { ...word, wholeWord: false }, index),
+    ).toBeNull()
+    expect(fake.searches).toEqual([])
+    expect((await on.filesContaining('wombat', scope, word, index))?.map((p) => p.virtual)).toEqual(
+      ['/gd/a.txt'],
+    )
   })
 })

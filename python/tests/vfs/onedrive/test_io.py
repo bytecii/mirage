@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 import mirage.core.msgraph.client as graph_client
@@ -59,3 +61,28 @@ async def test_du_walks_one_list_per_folder_with_file_sizes_only(seen):
         _BASE + "/root/children",
         _BASE + "/root:/sub:/children",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content_search, whole_word, asked",
+    [(False, True, False), (True, False, False), (True, True, True)],
+)
+async def test_files_containing_needs_content_search_and_a_whole_word(
+    content_search, whole_word, asked
+):
+    vfs = OneDriveVFS(
+        OneDriveConfig(access_token="tok", content_search=content_search)
+    )
+    with patch(
+        "mirage.vfs.onedrive.onedrive._files_containing",
+        new_callable=AsyncMock,
+        return_value=None,
+    ) as spy:
+        await vfs.files_containing(
+            "wombat",
+            [PathSpec.from_str_path("/m", "")],
+            whole_word=whole_word,
+            ignore_case=False,
+        )
+    assert spy.await_count == (1 if asked else 0)

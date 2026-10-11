@@ -134,6 +134,9 @@ instead, and grep exits 2.
 | GitHub | code search | `-w`, on the default branch, over 100 files | always |
 | Box | `/search` | `-w` | `content_search` |
 | Dropbox | `/2/files/search_v2` | `-w` | `content_search` |
+| Google Drive | `fullText contains` | `-w` | `content_search` |
+| OneDrive | `search(q=)` | `-w` | `content_search` |
+| SharePoint | `search(q=)` | `-w`, within one document library | `content_search` |
 | Email | IMAP `SEARCH TEXT` | messages (`*/*/*.email.json`) | `content_search` |
 | Slack | `search.messages`, `search.files` | `-w`, channel days (`channels/*/*/chat.jsonl`) | `content_search` |
 | Gmail | messages search | `-w`, messages (`*/*/*.gmail.json`) | `content_search` |
@@ -141,6 +144,10 @@ instead, and grep exits 2.
 
 A word a backend's search is known not to see reads every file: a key of the
 rendered JSON, a fixed word such as a file type, a user's name on Slack. Each
-backend's page lists what its search covers. Discord reads every file, since a
+backend's page lists what its search covers. Box, Dropbox, Google Drive,
+OneDrive and SharePoint search the text they extract from a file, not its
+bytes, so their answer can leave out an office file, PDF or archive whose raw
+bytes hold the word, the end of a large file, or a Docs, Sheets or Slides
+file's JSON; their pages list the cases. Discord reads every file, since a
 reply carries the message it answers, which its search does not tie to the
 reply.

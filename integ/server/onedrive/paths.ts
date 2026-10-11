@@ -55,6 +55,7 @@ export function parseItemPath(path: string): { item: string; action: string } {
   let rest = path.slice(idx + '/root'.length)
   if (rest === '' || rest === '/') return { item: '', action: '' }
   if (rest === '/children') return { item: '', action: 'children' }
+  if (rest.startsWith('/search(')) return { item: '', action: rest.slice(1) }
   if (rest.startsWith(':')) rest = rest.slice(1)
   const cut = rest.indexOf(':/')
   if (cut < 0) return { item: norm(rest), action: '' }

@@ -28,6 +28,7 @@ from mirage.core.gdrive.readdir import readdir as _readdir
 from mirage.core.gdrive.rename import rename as _rename
 from mirage.core.gdrive.rm import rm_r as _rm_r
 from mirage.core.gdrive.rmdir import rmdir as _rmdir
+from mirage.core.gdrive.search import files_containing as _files_containing
 from mirage.core.gdrive.stat import stat as _stat
 from mirage.core.gdrive.truncate import truncate as _truncate
 from mirage.core.gdrive.unlink import unlink as _unlink
@@ -137,6 +138,19 @@ class GoogleDriveVFS(BaseVFS):
         self, path: PathSpec, length: int, no_create: bool = False
     ) -> None:
         await _truncate(self.accessor, path, length, no_create)
+
+    async def files_containing(
+        self,
+        text: str,
+        under: list[PathSpec],
+        *,
+        whole_word: bool,
+        ignore_case: bool,
+        index: IndexCacheStore = NULL_INDEX,
+    ) -> list[PathSpec] | None:
+        if not whole_word or not self.config.content_search:
+            return None
+        return await _files_containing(self.accessor, text, under, index)
 
     async def close(self) -> None:
         """Drain the token manager's connection pool with the VFS."""

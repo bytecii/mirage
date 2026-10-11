@@ -37,6 +37,11 @@ export interface OneDriveConfig extends MsGraphConfig {
   groupId?: string
   userId?: string
   keyPrefix?: string
+  // Let grep -w and rg -w read only the files Graph search names
+  // (`filesContaining`). Off by default: Graph indexes a write some time
+  // after it lands, and searches the text it extracted rather than the
+  // bytes grep reads.
+  contentSearch?: boolean
 }
 
 const DRIVE_TARGETS = ['driveId', 'siteId', 'groupId', 'userId'] as const
@@ -59,6 +64,7 @@ const OneDriveConfigSchema = z
     groupId: z.string().optional(),
     userId: z.string().optional(),
     keyPrefix: z.string().optional(),
+    contentSearch: z.boolean().optional(),
   })
   // With four fields and a fixed precedence, setting two would make the
   // mount silently address whichever won, which is the kind of

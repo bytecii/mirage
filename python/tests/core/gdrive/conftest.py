@@ -24,6 +24,7 @@ import mirage.core.gdrive.rename as rename_mod
 import mirage.core.gdrive.resolve as resolve_mod
 import mirage.core.gdrive.rm as rm_mod
 import mirage.core.gdrive.rmdir as rmdir_mod
+import mirage.core.gdrive.search as search_mod
 import mirage.core.gdrive.stat as stat_mod
 import mirage.core.gdrive.tree as tree_mod
 import mirage.core.gdrive.truncate as truncate_mod
@@ -48,6 +49,11 @@ class FakeDrive:
         # caps the page, not the walk, so a small page turns a listing of
         # a large folder into more requests rather than fewer.
         self.list_limits: list[int | None] = []
+        # The parent ids of every full-text search, the files the index
+        # has not caught up with, and whether Drive gave up on a corpus.
+        self.searches: list[list[str]] = []
+        self.unindexed: set[str] = set()
+        self.incomplete = False
 
     def add(
         self,
@@ -114,6 +120,23 @@ class FakeDrive:
             if limit is not None and len(out) >= limit:
                 break
         return out
+
+    async def search_files(
+        self,
+        token_manager,
+        text: str,
+        parent_ids: list[str],
+        page_size: int = 1000,
+    ) -> tuple[list[str], bool]:
+        self.searches.append(list(parent_ids))
+        ids = [
+            item["id"]
+            for item in self.items.values()
+            if set(item["parents"]) & set(parent_ids)
+            and item["id"] not in self.unindexed
+            and text.lower() in item["content"].decode().lower()
+        ]
+        return ids, not self.incomplete
 
     async def list_shared_drives(
         self, token_manager, page_size: int = 100
@@ -212,6 +235,7 @@ _PATCH_TARGETS = {
     stat_mod: ("get_file",),
     copy_mod: ("copy_file", "create_folder", "delete_file", "list_files"),
     truncate_mod: ("download_file",),
+    search_mod: ("search_files",),
 }
 
 

@@ -25,7 +25,19 @@ import { mountRelativeKey, pathParts, resolveItem } from './resolve.ts'
  * keyed from its `path_collection`. Null whenever the answer may miss a
  * match: an API failure, the 10,000-match ceiling, a scope that no longer
  * resolves to a folder, or no hit at all, since Box indexes a write some time
- * after it lands. Mirrors Python's `files_containing`.
+ * after it lands.
+ *
+ * Box searches the text it indexed, not the bytes grep reads, so the answer
+ * can leave out a file that holds the text:
+ *
+ * - an office file, PDF, image or archive, whose raw bytes hold names and
+ *   compressed runs its extracted text does not;
+ * - a large file, past the part Box indexes;
+ * - a file whose text Box splits into words differently than grep does
+ *   (`foo.bar`, `foo_bar`);
+ * - a file changed since Box last indexed it.
+ *
+ * Mirrors Python's `files_containing`.
  */
 export async function filesContaining(
   accessor: BoxAccessor,

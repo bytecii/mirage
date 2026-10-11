@@ -47,6 +47,11 @@ export class FakeDrive {
   // the walk, so a small page turns a listing of a large folder into more
   // requests rather than fewer.
   listLimits: (number | null | undefined)[] = []
+  // The parent ids of every full-text search, the files the index has not
+  // caught up with, and whether Drive gave up on a corpus.
+  searches: string[][] = []
+  unindexed = new Set<string>()
+  incomplete = false
   private counter = 0
 
   add(
@@ -117,6 +122,22 @@ export class FakeDrive {
       if (opts.limit != null && out.length >= opts.limit) break
     }
     return Promise.resolve(out)
+  }
+
+  searchFiles(
+    _tm: TokenManager,
+    text: string,
+    parentIds: readonly string[],
+  ): Promise<{ ids: string[]; complete: boolean }> {
+    this.searches.push([...parentIds])
+    const needle = text.toLowerCase()
+    const ids: string[] = []
+    for (const item of this.items.values()) {
+      if (!item.parents.some((p) => parentIds.includes(p))) continue
+      if (this.unindexed.has(item.id)) continue
+      if (new TextDecoder().decode(item.content).toLowerCase().includes(needle)) ids.push(item.id)
+    }
+    return Promise.resolve({ ids, complete: !this.incomplete })
   }
 
   listSharedDrives(): Promise<never[]> {
@@ -204,6 +225,12 @@ export function driveModuleMock(actual: object): object {
     listFiles: (...args: unknown[]) =>
       currentFakeDrive.listFiles(args[0] as TokenManager, args[1] as never),
     listSharedDrives: () => currentFakeDrive.listSharedDrives(),
+    searchFiles: (...args: unknown[]) =>
+      currentFakeDrive.searchFiles(
+        args[0] as TokenManager,
+        args[1] as string,
+        args[2] as readonly string[],
+      ),
     createFolder: (...args: unknown[]) =>
       currentFakeDrive.createFolder(args[0] as TokenManager, args[1] as string, args[2] as string),
     uploadFile: (...args: unknown[]) =>

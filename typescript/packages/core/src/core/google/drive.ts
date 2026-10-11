@@ -228,6 +228,43 @@ export async function listAllFiles(
   return { files, complete }
 }
 
+/**
+ * Ids of the files in `parentIds` Drive full-text search names, and whether
+ * Drive searched every corpus it was asked for. `fullText` matches whole
+ * tokens of the name, description and the text Drive indexed from the
+ * content. Drive does not sort a `fullText` query, so no `orderBy` is sent.
+ */
+export async function searchFiles(
+  tm: TokenManager,
+  text: string,
+  parentIds: readonly string[],
+  pageSize = 1000,
+): Promise<{ ids: string[]; complete: boolean }> {
+  const parents = parentIds.map((p) => `'${escapeQueryValue(p)}' in parents`).join(' or ')
+  const q = `fullText contains '${escapeQueryValue(text)}' and trashed=false and (${parents})`
+  const ids: string[] = []
+  let complete = true
+  let pageToken: string | null = null
+  for (;;) {
+    const params: Record<string, string | number> = {
+      q,
+      fields: 'nextPageToken,incompleteSearch,files(id)',
+      pageSize,
+      corpora: 'allDrives',
+      includeItemsFromAllDrives: 'true',
+      supportsAllDrives: 'true',
+    }
+    if (pageToken !== null) params.pageToken = pageToken
+    const url = `${driveBase(tm)}/files`
+    const data = (await googleGet(tm, url, params)) as ListResponse
+    for (const f of data.files ?? []) ids.push(f.id)
+    if (data.incompleteSearch === true) complete = false
+    pageToken = data.nextPageToken ?? null
+    if (pageToken === null) break
+  }
+  return { ids, complete }
+}
+
 export async function downloadFile(
   tm: TokenManager,
   fileId: string,

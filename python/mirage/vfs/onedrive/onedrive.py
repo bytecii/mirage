@@ -28,6 +28,9 @@ from mirage.core.onedrive.readdir import readdir as _readdir
 from mirage.core.onedrive.rename import rename as _rename
 from mirage.core.onedrive.rm import rm_r as _rm_r
 from mirage.core.onedrive.rmdir import rmdir as _rmdir
+from mirage.core.onedrive.search import (
+    files_containing as _files_containing,
+)
 from mirage.core.onedrive.stat import stat as _stat
 from mirage.core.onedrive.stream import read_stream as _read_stream
 from mirage.core.onedrive.truncate import truncate as _truncate
@@ -149,6 +152,19 @@ class OneDriveVFS(BaseVFS):
         self, path: PathSpec, length: int, no_create: bool = False
     ) -> None:
         await _truncate(self.accessor, path, length, no_create)
+
+    async def files_containing(
+        self,
+        text: str,
+        under: list[PathSpec],
+        *,
+        whole_word: bool,
+        ignore_case: bool,
+        index: IndexCacheStore = NULL_INDEX,
+    ) -> list[PathSpec] | None:
+        if not whole_word or not self.config.content_search:
+            return None
+        return await _files_containing(self.accessor, text, under, index)
 
     def delta_hook(self) -> DeltaHook:
         return build_delta_hook(self.accessor)

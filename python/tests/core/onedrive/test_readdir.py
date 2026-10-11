@@ -184,3 +184,30 @@ async def test_readdir_stores_remote_time_for_folders():
     assert lookup.entry.size is None
     assert lookup.entry.extra["size_bytes"] == 5000
     assert lookup.entry.extra["child_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_cached_listing_keeps_the_cold_order():
+    # Graph may answer in UTF-16 order, which puts an astral name before a
+    # private-use one; the index must hand back the code-point order the
+    # cold listing returned, or a second walk reorders grep's output.
+    index = RAMIndexCacheStore()
+    with aioresponses() as m:
+        m.get(
+            _BASE + "/root/children",
+            payload={
+                "value": [
+                    {
+                        "id": "1",
+                        "name": "\U0001f600.txt",
+                        "size": 1,
+                        "file": {},
+                    },
+                    {"id": "2", "name": ".txt", "size": 1, "file": {}},
+                ]
+            },
+        )
+        cold = await readdir(_accessor(), PathSpec.from_str_path("/"), index)
+    warm = await readdir(_accessor(), PathSpec.from_str_path("/"), index)
+    assert cold == ["/.txt", "/\U0001f600.txt"]
+    assert warm == cold

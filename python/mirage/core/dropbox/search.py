@@ -34,6 +34,16 @@ async def files_containing(
     answer may miss a match: an API failure, the 10,000-match ceiling, or
     no hit at all, since Dropbox indexes a write some time after it lands.
 
+    Dropbox searches the text it indexed, not the bytes grep reads, so the
+    answer can leave out a file that holds the text:
+
+    - an office file, PDF, image or archive, whose raw bytes hold names
+      and compressed runs its extracted text does not;
+    - a large file, past the part Dropbox indexes;
+    - a file whose text Dropbox splits into words differently than grep
+      does (``foo.bar``, ``foo_bar``);
+    - a file changed since Dropbox last indexed it.
+
     Args:
         accessor (DropboxAccessor): backend handle carrying the root path.
         text (str): the whole word searched for.

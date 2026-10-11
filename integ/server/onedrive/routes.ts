@@ -300,6 +300,34 @@ async function versionContent(
   return rangeReply(ctx.headers, row.content)
 }
 
+const DEC = new TextDecoder()
+
+// Graph's driveItem search over a folder's subtree: an item whose name or
+// content holds the text, case-insensitively. A substring is a superset of
+// the vendor's word match, which is all a caller narrowing a scan may assume.
+async function searchItems(
+  ctx: Ctx<C>,
+  drive: string,
+  item: string,
+  action: string,
+): Promise<Reply> {
+  const p = norm(item)
+  if (p !== '' && !(await dirAt(ctx.db, ctx.tenant, drive, p))) return notFound()
+  const quoted = /^search\(q='(.*)'\)$/s.exec(action)?.[1]
+  if (quoted === undefined) {
+    return { status: 400, body: { error: { code: 'invalidRequest', message: 'bad search' } } }
+  }
+  const text = decodeURIComponent(quoted).replaceAll("''", "'").toLowerCase()
+  const rows = await ctx.db.graphFile.findMany({ where: { tenant: ctx.tenant, drive } })
+  const value: JsonValue[] = []
+  for (const row of rows) {
+    if (p !== '' && !row.path.startsWith(`${p}/`)) continue
+    const body = `${baseName(row.path)}\n${DEC.decode(row.content)}`.toLowerCase()
+    if (body.includes(text)) value.push({ id: row.ctag, name: baseName(row.path), file: {} })
+  }
+  return { status: 200, body: { value } }
+}
+
 // One dispatcher for every drive URL shape. Graph reaches the same items
 // through /me/drive, /sites/{id}/drive and /drives/{key}, so the shapes differ
 // only in which drive they name and are resolved to (drive, rest) before this.
@@ -318,6 +346,7 @@ async function driveOp(ctx: Ctx<C>, method: string, drive: string, rest: string)
     if (row === null) return notFound()
     return rangeReply(ctx.headers, row.content)
   }
+  if (action.startsWith('search(')) return searchItems(ctx, drive, item, action)
   if (action === 'createUploadSession') return createUpload(ctx, drive, item)
   if (action === 'copy') return copyItem(ctx, drive, item)
   if (action.startsWith('versions/') && action.endsWith('/content')) {

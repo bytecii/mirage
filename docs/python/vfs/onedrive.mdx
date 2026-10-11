@@ -54,6 +54,7 @@ modes are supported.
 | `user_id`        | No       | Another user's drive, by id or UPN (app-only auth)                     |
 | `graph_base_url` | No       | Full service root, for any deployment but the worldwide one            |
 | `key_prefix`     | No       | Mount a sub-folder of the drive as the root                            |
+| `content_search` | No       | Let `grep -w` and `rg -w` read only the files Graph search names (default `False`; see [grep and rg](#grep-and-rg)) |
 | `timeout`        | No       | Request timeout in seconds (default `30`)                              |
 
 ### Naming the drive
@@ -223,6 +224,26 @@ range reads to avoid downloading entire items.
 - **Versioned document workflows**: Snapshot and replay exact file states over time
 - **Sandboxed access**: Restrict agent operations to a specific drive and sub-folder via `key_prefix`
 - **FUSE mounting**: Expose a OneDrive through a virtual FUSE mount for external tools
+
+## grep and rg
+
+With `content_search=True` (YAML `content_search: true`), `grep -rw` and
+`rg -w` read only the files Microsoft Graph search names, instead of every
+file under the directory. The listings are still walked; a file is skipped
+only when the search leaves it out. Every file is read when the search fails
+or finds nothing. It is off by default.
+
+Graph searches the text it extracted from each file, not the bytes `grep` reads,
+so a file that holds the word can be left out:
+
+- an office file, PDF, image or archive, whose raw bytes hold names and
+  compressed runs its extracted text does not;
+- a large file, past the part Graph indexes;
+- a file whose text Graph splits into words differently than `grep` does
+  (`foo.bar`, `foo_bar`);
+- a file changed since Graph last indexed it.
+
+Leave it off when a missed file matters more than the reads it saves.
 
 ## Scoping a VFS to a folder
 

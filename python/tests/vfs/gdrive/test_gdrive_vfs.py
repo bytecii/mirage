@@ -20,6 +20,7 @@ import pytest
 from mirage import MountMode, Workspace
 from mirage.cache.index import IndexCacheStore
 from mirage.cache.index.config import IndexEntry
+from mirage.types import PathSpec
 from mirage.vfs.gdrive import GoogleDriveConfig, GoogleDriveVFS
 from mirage.workspace.files import Files
 
@@ -118,3 +119,30 @@ async def test_readdir():
     )
     result = await ops.readdir("/gdrive/docs")
     assert "/gdrive/docs/report.gdoc.json" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content_search, whole_word, asked",
+    [(False, True, False), (True, False, False), (True, True, True)],
+)
+async def test_files_containing_needs_content_search_and_a_whole_word(
+    content_search, whole_word, asked
+):
+    vfs = GoogleDriveVFS(
+        config=GoogleDriveConfig(
+            client_id="x", refresh_token="y", content_search=content_search
+        )
+    )
+    with patch(
+        "mirage.vfs.gdrive.gdrive._files_containing",
+        new_callable=AsyncMock,
+        return_value=None,
+    ) as spy:
+        await vfs.files_containing(
+            "wombat",
+            [PathSpec.from_str_path("/gd", "")],
+            whole_word=whole_word,
+            ignore_case=False,
+        )
+    assert spy.await_count == (1 if asked else 0)

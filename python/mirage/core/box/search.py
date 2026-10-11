@@ -40,6 +40,16 @@ async def files_containing(
     scope that no longer resolves to a folder, or no hit at all, since
     Box indexes a write some time after it lands.
 
+    Box searches the text it indexed, not the bytes grep reads, so the
+    answer can leave out a file that holds the text:
+
+    - an office file, PDF, image or archive, whose raw bytes hold names
+      and compressed runs its extracted text does not;
+    - a large file, past the part Box indexes;
+    - a file whose text Box splits into words differently than grep
+      does (``foo.bar``, ``foo_bar``);
+    - a file changed since Box last indexed it.
+
     Args:
         accessor (BoxAccessor): backend handle.
         text (str): the whole word searched for.
