@@ -311,6 +311,9 @@ it.each([
   ['xa(b)', '@(a(b)|z)', [1, 1]],
   ['x[a', '[a', [1, 1]],
   ['x|)', '[)|]', [2, 2]],
+  ['\udcff\ud83d', '*', [2, 0]],
+  ['\udcff\ud83d', '\ud83d', [1, 1]],
+  ['x\udcff\ud83d', '\udcff\ud83d', [1, 1]],
 ] as [string, string, (number | null)[]][])(
   'suffixStart runs the reversed pattern once: %#',
   (name, pattern, expected) => {

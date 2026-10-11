@@ -273,6 +273,9 @@ def test_matcher_end_reads_every_offset_in_linear_time():
         ("xa(b)", "@(a(b)|z)", (1, 1)),
         ("x[a", "[a", (1, 1)),
         ("x|)", "[)|]", (2, 2)),
+        ("\udcff\ud83d", "*", (2, 0)),
+        ("\udcff\ud83d", "\ud83d", (1, 1)),
+        ("x\udcff\ud83d", "\udcff\ud83d", (1, 1)),
     ],
 )
 def test_suffix_start_runs_the_reversed_pattern_once(name, pattern, expected):

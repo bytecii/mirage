@@ -164,10 +164,15 @@ export class Matcher {
   private readonly transitions = new Map<number, readonly number[]>()
   private readonly period: boolean
 
-  constructor(name: string, pattern: string, period = false, extglob = true) {
-    this.period = period && name.startsWith('.')
-    this.name = Array.from(name)
-    this.pattern = Array.from(pattern)
+  constructor(
+    name: string | readonly string[],
+    pattern: string | readonly string[],
+    period = false,
+    extglob = true,
+  ) {
+    this.name = typeof name === 'string' ? Array.from(name) : name
+    this.pattern = typeof pattern === 'string' ? Array.from(pattern) : pattern
+    this.period = period && this.name[0] === '.'
     const [classes, groups] = scan(this.pattern, extglob)
     this.classes = classes
     this.groups = groups
@@ -344,9 +349,10 @@ export function suffixStart(
   longest = true,
   extglob = false,
 ): number | null {
-  const chars = Array.from(name)
-  const matcher = new Matcher(chars.reverse().join(''), reversed(pattern, extglob), false, extglob)
-  const end = matcher.end(0, longest)
+  // Reversed characters stay an array: joined, a lone low surrogate and the
+  // lone high one after it would read back as one character.
+  const chars = Array.from(name).reverse()
+  const end = new Matcher(chars, reversed(pattern, extglob), false, extglob).end(0, longest)
   return end === null ? null : chars.length - end
 }
 
@@ -357,33 +363,33 @@ export function suffixStart(
  * into `)`. A character literal only where it stands (an unclosed `[`, a
  * `(`, `)` or `|` outside group syntax) becomes its quote mark.
  */
-function reversed(pattern: string, extglob: boolean): string {
+function reversed(pattern: string, extglob: boolean): string[] {
   const chars = Array.from(pattern)
   const [classes, groups] = scan(chars, extglob)
-  const openers = new Map<number, string>()
+  const openers = new Map<number, string[]>()
   const bars = new Set<number>()
   for (const [i, { end, branches }] of groups) {
-    openers.set(end - 1, `${chars[i] ?? ''}(`)
+    openers.set(end - 1, [chars[i] ?? '', '('])
     for (const [, stop] of branches.slice(0, -1)) bars.add(stop)
   }
   const marks = new Map(Object.entries(QUOTED_CHARS).map(([mark, ch]) => [ch, mark]))
-  const tokens: string[] = []
+  const tokens: string[][] = []
   let i = 0
   while (i < chars.length) {
     const close = classes.get(i)
     if (groups.has(i)) {
-      tokens.push(')')
+      tokens.push([')'])
       i += 2
     } else if (close !== undefined) {
-      tokens.push(chars.slice(i, close).join(''))
+      tokens.push(chars.slice(i, close))
       i = close
     } else {
       const c = chars[i] ?? ''
-      tokens.push(openers.get(i) ?? (!bars.has(i) && '[()|'.includes(c) ? (marks.get(c) ?? c) : c))
+      tokens.push(openers.get(i) ?? [!bars.has(i) && '[()|'.includes(c) ? (marks.get(c) ?? c) : c])
       i += 1
     }
   }
-  return tokens.reverse().join('')
+  return tokens.reverse().flat()
 }
 
 function extendedClassMatches(char: string, pattern: string): boolean {
