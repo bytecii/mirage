@@ -20,7 +20,7 @@ import pytest
 
 from mirage import MountMode, Workspace
 from mirage.runtime.handles.constants import READ_CHUNK
-from mirage.runtime.python.host.file import open_file
+from mirage.runtime.python.host.open import make_open
 from mirage.types import PathSpec
 from mirage.vfs.ram import RAMVFS
 from tests.fixtures.vfs_io import render
@@ -40,48 +40,48 @@ class TestOpenFile:
     def test_read_text(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.txt", b"hello")
-        f = open_file(ops, "/data/dir/f.txt", "r")
+        f = make_open(ops)("/data/dir/f.txt", "r")
         assert f.read() == "hello"
         f.close()
 
     def test_read_binary(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.bin", b"\x00\x01\x02")
-        f = open_file(ops, "/data/dir/f.bin", "rb")
+        f = make_open(ops)("/data/dir/f.bin", "rb")
         assert f.read() == b"\x00\x01\x02"
         f.close()
 
     def test_write_text(self):
         ops, _ = make_ops_with_dir()
-        f = open_file(ops, "/data/dir/out.txt", "w")
+        f = make_open(ops)("/data/dir/out.txt", "w")
         f.write("written")
         f.close()
         assert _read(ops, "/data/dir/out.txt") == b"written"
 
     def test_write_binary(self):
         ops, _ = make_ops_with_dir()
-        f = open_file(ops, "/data/dir/out.bin", "wb")
+        f = make_open(ops)("/data/dir/out.bin", "wb")
         f.write(b"\xff\xfe")
         f.close()
         assert _read(ops, "/data/dir/out.bin") == b"\xff\xfe"
 
     def test_context_manager(self):
         ops, _ = make_ops_with_dir()
-        with open_file(ops, "/data/dir/ctx.txt", "w") as f:
+        with make_open(ops)("/data/dir/ctx.txt", "w") as f:
             f.write("ctx")
         assert _read(ops, "/data/dir/ctx.txt") == b"ctx"
 
     def test_append(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/app.txt", b"hello")
-        with open_file(ops, "/data/dir/app.txt", "a") as f:
+        with make_open(ops)("/data/dir/app.txt", "a") as f:
             f.write(" world")
         assert _read(ops, "/data/dir/app.txt") == b"hello world"
 
     def test_readline(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/lines.txt", b"line1\nline2\nline3")
-        f = open_file(ops, "/data/dir/lines.txt", "r")
+        f = make_open(ops)("/data/dir/lines.txt", "r")
         assert f.readline() == "line1\n"
         assert f.readline() == "line2\n"
         f.close()
@@ -89,7 +89,7 @@ class TestOpenFile:
     def test_iter(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/iter.txt", b"a\nb\nc")
-        f = open_file(ops, "/data/dir/iter.txt", "r")
+        f = make_open(ops)("/data/dir/iter.txt", "r")
         lines = list(f)
         assert lines == ["a\n", "b\n", "c"]
         f.close()
@@ -97,7 +97,7 @@ class TestOpenFile:
     def test_seek_tell(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/seek.txt", b"abcdef")
-        f = open_file(ops, "/data/dir/seek.txt", "rb")
+        f = make_open(ops)("/data/dir/seek.txt", "rb")
         f.seek(3)
         assert f.tell() == 3
         assert f.read() == b"def"
@@ -106,7 +106,7 @@ class TestOpenFile:
     def test_properties(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/p.txt", b"data")
-        f = open_file(ops, "/data/dir/p.txt", "r")
+        f = make_open(ops)("/data/dir/p.txt", "r")
         assert f.name == "/data/dir/p.txt"
         assert f.mode == "r"
         assert f.readable() is True
@@ -118,7 +118,7 @@ class TestOpenFile:
     def test_write_rejects_read_only_mode(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.txt", b"original")
-        f = open_file(ops, "/data/dir/f.txt", "r")
+        f = make_open(ops)("/data/dir/f.txt", "r")
         with pytest.raises(io.UnsupportedOperation, match="not writable"):
             f.write("replacement")
         f.close()
@@ -126,14 +126,14 @@ class TestOpenFile:
 
     def test_read_rejects_write_only_mode(self):
         ops, _ = make_ops_with_dir()
-        f = open_file(ops, "/data/dir/f.txt", "w")
+        f = make_open(ops)("/data/dir/f.txt", "w")
         with pytest.raises(io.UnsupportedOperation, match="not readable"):
             f.read()
         f.close()
 
     def test_operations_reject_closed_file(self):
         ops, _ = make_ops_with_dir()
-        f = open_file(ops, "/data/dir/f.txt", "w")
+        f = make_open(ops)("/data/dir/f.txt", "w")
         f.close()
         with pytest.raises(ValueError, match="closed file"):
             f.write("late")
@@ -142,26 +142,26 @@ class TestOpenFile:
     def test_invalid_mode_is_rejected(self, mode):
         ops, _ = make_ops_with_dir()
         with pytest.raises(ValueError, match="invalid mode"):
-            open_file(ops, "/data/dir/f.txt", mode)
+            make_open(ops)("/data/dir/f.txt", mode)
 
     def test_write_mode_truncates_when_opened(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.txt", b"original")
-        f = open_file(ops, "/data/dir/f.txt", "w")
+        f = make_open(ops)("/data/dir/f.txt", "w")
         assert _read(ops, "/data/dir/f.txt") == b""
         f.close()
 
     def test_update_mode_persists_writes(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.txt", b"original")
-        with open_file(ops, "/data/dir/f.txt", "r+") as f:
+        with make_open(ops)("/data/dir/f.txt", "r+") as f:
             f.write("changed")
         assert _read(ops, "/data/dir/f.txt") == b"changedl"
 
     def test_w_plus_truncates_at_open_and_reads_back_its_writes(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.txt", b"original")
-        with open_file(ops, "/data/dir/f.txt", "w+") as f:
+        with make_open(ops)("/data/dir/f.txt", "w+") as f:
             assert _read(ops, "/data/dir/f.txt") == b""
             f.write("fresh")
             f.seek(0)
@@ -171,7 +171,7 @@ class TestOpenFile:
     def test_a_plus_writes_at_the_end_after_a_seek(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.txt", b"one\n")
-        with open_file(ops, "/data/dir/f.txt", "a+") as f:
+        with make_open(ops)("/data/dir/f.txt", "a+") as f:
             f.seek(0)
             assert f.read() == "one\n"
             f.seek(0)
@@ -182,7 +182,7 @@ class TestOpenFile:
 
     def test_flush_persists_before_close(self):
         ops, _ = make_ops_with_dir()
-        f = open_file(ops, "/data/dir/f.txt", "w")
+        f = make_open(ops)("/data/dir/f.txt", "w")
         f.write("visible")
         f.flush()
         assert _read(ops, "/data/dir/f.txt") == b"visible"
@@ -191,11 +191,11 @@ class TestOpenFile:
     def test_exclusive_mode_creates_once(self):
         mode = "x"
         ops, _ = make_ops_with_dir()
-        with open_file(ops, "/data/dir/f.txt", mode) as f:
+        with make_open(ops)("/data/dir/f.txt", mode) as f:
             f.write("new")
         assert _read(ops, "/data/dir/f.txt") == b"new"
         with pytest.raises(FileExistsError):
-            open_file(ops, "/data/dir/f.txt", mode)
+            make_open(ops)("/data/dir/f.txt", mode)
         assert _read(ops, "/data/dir/f.txt") == b"new"
 
     def test_exclusive_mode_refuses_a_dangling_link(self):
@@ -205,41 +205,41 @@ class TestOpenFile:
         ops, _ = make_ops_with_dir()
         asyncio.run(ops.symlink("/data/dir/lnk", "/data/dir/gone"))
         with pytest.raises(FileExistsError):
-            open_file(ops, "/data/dir/lnk", "x")
+            make_open(ops)("/data/dir/lnk", "x")
         with pytest.raises(FileNotFoundError):
             _read(ops, "/data/dir/gone")
 
     def test_a_write_mode_refuses_a_directory(self):
         ops, _ = make_ops_with_dir()
         with pytest.raises(IsADirectoryError):
-            open_file(ops, "/data/dir", "w")
+            make_open(ops)("/data/dir", "w")
         assert asyncio.run(ops.is_dir("/data/dir"))
 
     def test_a_read_of_a_missing_file_fails_at_open(self):
         # CPython raises at open, not at the first read.
         ops, _ = make_ops_with_dir()
         with pytest.raises(FileNotFoundError):
-            open_file(ops, "/data/dir/nope.txt", "r")
+            make_open(ops)("/data/dir/nope.txt", "r")
 
     def test_a_create_under_a_missing_directory_carries_its_errno(self):
         # The backend raises a bare FileNotFoundError; the entry point numbers
         # it as open(2) would, so `except OSError as e: e.errno` holds.
         ops, _ = make_ops_with_dir()
         with pytest.raises(FileNotFoundError) as caught:
-            open_file(ops, "/data/dir/nope/f.txt", "w")
+            make_open(ops)("/data/dir/nope/f.txt", "w")
         assert caught.value.errno == errno.ENOENT
 
     def test_append_mode_creates_missing_file_on_open(self):
         ops, _ = make_ops_with_dir()
-        f = open_file(ops, "/data/dir/f.txt", "a")
+        f = make_open(ops)("/data/dir/f.txt", "a")
         assert _read(ops, "/data/dir/f.txt") == b""
         f.close()
 
     def test_text_encoding_and_error_policy_are_honored(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.txt", b"caf\xe9")
-        with open_file(
-            ops, "/data/dir/f.txt", encoding="ascii", errors="replace"
+        with make_open(ops)(
+            "/data/dir/f.txt", encoding="ascii", errors="replace"
         ) as f:
             assert f.read() == "caf�"
 
@@ -249,12 +249,12 @@ class TestOpenFile:
         # and looking it up as a codec raises LookupError.
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.txt", "caf\u00e9".encode())
-        with open_file(ops, "/data/dir/f.txt", encoding="locale") as f:
+        with make_open(ops)("/data/dir/f.txt", encoding="locale") as f:
             assert f.read() == "caf\u00e9"
 
     def test_the_locale_sentinel_writes_the_same_bytes_as_the_default(self):
         ops, _ = make_ops_with_dir()
-        with open_file(ops, "/data/dir/f.txt", "w", encoding="locale") as f:
+        with make_open(ops)("/data/dir/f.txt", "w", encoding="locale") as f:
             f.write("caf\u00e9")
         assert _read(ops, "/data/dir/f.txt") == "caf\u00e9".encode()
 
@@ -262,12 +262,12 @@ class TestOpenFile:
     def test_binary_mode_rejects_text_arguments(self, argument):
         ops, _ = make_ops_with_dir()
         with pytest.raises(ValueError, match="binary mode"):
-            open_file(ops, "/data/dir/f.txt", "rb", **{argument: "utf-8"})
+            make_open(ops)("/data/dir/f.txt", "rb", **{argument: "utf-8"})
 
     def test_an_unbuffered_stream_refuses_what_its_mode_and_state_refuse(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.bin", b"body")
-        f = open_file(ops, "/data/dir/f.bin", "rb", buffering=0)
+        f = make_open(ops)("/data/dir/f.bin", "rb", buffering=0)
         with pytest.raises(io.UnsupportedOperation):
             f.write(b"X")
         f.close()
@@ -286,7 +286,7 @@ class TestChunks:
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/big.txt", b"x" * (3 * READ_CHUNK))
         before = len(ops.records)
-        with open_file(ops, "/data/dir/big.txt", "r") as f:
+        with make_open(ops)("/data/dir/big.txt", "r") as f:
             assert f.read(5) == "xxxxx"
         moved = [r.bytes for r in ops.records[before:] if r.op == "read"]
         assert moved == [READ_CHUNK]
@@ -295,9 +295,9 @@ class TestChunks:
         ops, _ = make_ops_with_dir()
         body = b"".join(b"line %d\n" % i for i in range(300_000))
         _write(ops, "/data/dir/lines.txt", body)
-        with open_file(ops, "/data/dir/lines.txt", "r") as f:
+        with make_open(ops)("/data/dir/lines.txt", "r") as f:
             assert list(f) == body.decode().splitlines(keepends=True)
-        with open_file(ops, "/data/dir/lines.txt", "rb") as f:
+        with make_open(ops)("/data/dir/lines.txt", "rb") as f:
             f.seek(-7, 2)
             assert f.read() == b"299999\n"[-7:]
 
@@ -309,9 +309,9 @@ class TestChunks:
             mode=MountMode.WRITE,
         )
         _write(ws.vfs, "/data/books.tally", b"STORED")
-        with open_file(ws.vfs, "/data/books.tally", "r") as f:
+        with make_open(ws.vfs)("/data/books.tally", "r") as f:
             assert f.read() == "RENDERED"
-        with open_file(ws.vfs, "/data/books.tally", "a") as f:
+        with make_open(ws.vfs)("/data/books.tally", "a") as f:
             f.write("+")
         assert asyncio.run(ws.vfs.read("/data/books.tally", raw=True)) == (
             b"STORED+"

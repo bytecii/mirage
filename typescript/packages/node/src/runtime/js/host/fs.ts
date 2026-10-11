@@ -27,6 +27,7 @@ import { posixStat } from '@struktoai/mirage-core/runtime/stat'
 import { PrefixResolver } from '@struktoai/mirage-core/runtime/resolver'
 import type { VFSEntry, VFSStat } from '@struktoai/mirage-core/runtime/types'
 import { MountMode, type SetAttrFields } from '@struktoai/mirage-core/types'
+import { resolvePath } from '@struktoai/mirage-core/utils/path'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import {
   DESCRIPTOR_CALLS,
@@ -567,7 +568,8 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     // for two filesystems and the errno a mover retries as copy + delete.
     if (!this.mounted(src) || !this.mounted(dst)) throw refusal('EXDEV', 'rename', src)
     // A rename onto its own name changes nothing, its descriptors included.
-    const held = dst === src ? [] : await this.descriptors.hold(dst)
+    const same = resolvePath(dst, '/') === resolvePath(src, '/')
+    const held = same ? [] : await this.descriptors.hold(dst)
     await this.files.rename(src, dst)
     this.descriptors.keep(held)
     this.descriptors.moved(src, dst)

@@ -12,10 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import asyncio
 import codecs
 import errno
-import functools
 import io
 import os
 from collections.abc import Callable
@@ -23,13 +21,8 @@ from typing import IO, TYPE_CHECKING, Any, cast
 
 from mirage.errors.posix import posix_errno, posix_phrase
 from mirage.errors.types import FsCondition
-from mirage.runtime.files import RuntimeFiles
 from mirage.runtime.handles import FileHandle
-from mirage.runtime.handles.mode import OpenMode, parse_mode
-from mirage.runtime.handles.types import FileFetch
-from mirage.runtime.open import apply_open
-from mirage.runtime.python.host.syscall import host_files, syscall
-from mirage.workspace.files import Files
+from mirage.runtime.handles.mode import OpenMode
 
 if TYPE_CHECKING:
     from _typeshed import ReadableBuffer, WriteableBuffer
@@ -40,69 +33,6 @@ if TYPE_CHECKING:
 # the caller's word up as a codec raised LookupError on the ordinary
 # path the moment `io.open` was patched.
 LOCALE_ENCODING = "locale"
-
-
-def read_range(
-    adapter: RuntimeFiles,
-    path: str,
-    raw: bool,
-    offset: int,
-    size: int | None,
-) -> bytes:
-    """Read a range of a mounted file for a handle.
-
-    A handle that writes reads the stored bytes, since its writes land on
-    them; a read-only one sees the rendering.
-
-    Args:
-        adapter (RuntimeFiles): the file adapter.
-        path (str): the mounted path.
-        raw (bool): read the stored bytes rather than the rendering.
-        offset (int): where the range starts.
-        size (int | None): how many bytes; None reads to the end.
-    """
-    return syscall(adapter.read)(path, offset=offset, size=size, raw=raw)
-
-
-def open_handle(
-    adapter: RuntimeFiles, path: str, facts: OpenMode, fetch: FileFetch
-) -> FileHandle:
-    """Land an open's effect and make the handle it reads and writes
-    through. Nothing is read at open: the handle fetches what a read
-    lands in, and keeps what was written until it lands.
-
-    Args:
-        adapter (RuntimeFiles): the file adapter.
-        path (str): the mounted path.
-        facts (OpenMode): what the open asked for.
-        fetch (FileFetch): the handle's ranged read of its file.
-    """
-    row = apply_open(adapter, path, facts)
-    return FileHandle.opened(
-        path,
-        None if row is None else fetch,
-        size=0 if row is None else row.size,
-        writable=facts.writable,
-        append=facts.append,
-    )
-
-
-def land_writes(
-    adapter: RuntimeFiles, path: str, handle: FileHandle, fetch: FileFetch
-) -> None:
-    """Land a handle's writes on ``path``; ``fetch`` reads what landed.
-
-    Args:
-        adapter (RuntimeFiles): the file adapter.
-        path (str): the mounted path the writes land on.
-        handle (FileHandle): the handle that holds them.
-        fetch (FileFetch): the handle's ranged read of the stored bytes.
-    """
-    steps = handle.flush_plan()
-    if not steps:
-        return
-    syscall(adapter.flush)(path, steps)
-    handle.settle(fetch)
 
 
 def raw_mode(facts: OpenMode) -> str:
@@ -345,53 +275,3 @@ def layered(
     )
     cast(Any, text).mode = mode
     return text
-
-
-def open_file(
-    files: Files,
-    path: str,
-    mode: str = "r",
-    loop: asyncio.AbstractEventLoop | None = None,
-    encoding: str | None = None,
-    errors: str | None = None,
-    newline: str | None = None,
-    buffering: int = -1,
-) -> IO[bytes] | IO[str]:
-    """Open a mounted file as ``open`` does a real one.
-
-    The result is CPython's own buffered or text stream over a raw one
-    on the mount, so everything a file object offers (``seekable``,
-    ``readline(size)``, ``readinto``, zipfile, a ``TextIOWrapper`` over a
-    binary open) behaves as on disk. Writes land on a flush or a close.
-
-    Args:
-        files (Files): the workspace's ``ws.vfs``.
-        path (str): the mounted path.
-        mode (str): the open mode.
-        loop (asyncio.AbstractEventLoop | None): the block's loop.
-        encoding (str | None): the text encoding; the ``locale``
-            sentinel and None take utf-8.
-        errors (str | None): the text error policy.
-        newline (str | None): the newline translation.
-        buffering (int): ``io.open``'s buffering; 0 is unbuffered.
-    """
-    adapter = host_files(files, loop)
-    facts = parse_mode(mode)
-    encoding = text_encoding(facts, encoding, errors, newline, buffering)
-    handle = open_handle(
-        adapter,
-        path,
-        facts,
-        functools.partial(read_range, adapter, path, facts.writable),
-    )
-    land = functools.partial(
-        land_writes,
-        adapter,
-        path,
-        handle,
-        functools.partial(read_range, adapter, path, True),
-    )
-    raw = HandleRaw(
-        handle, facts.readable, facts.writable, raw_mode(facts), land
-    )
-    return layered(raw, facts, mode, encoding, errors, newline, buffering)

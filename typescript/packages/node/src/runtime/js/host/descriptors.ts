@@ -20,6 +20,7 @@ import { FileHandle } from '@struktoai/mirage-core/runtime/handles/file_handle'
 import type { OpenMode } from '@struktoai/mirage-core/runtime/handles/mode'
 import type { FileFetch } from '@struktoai/mirage-core/runtime/handles/types'
 import { applyOpen } from '@struktoai/mirage-core/runtime/open'
+import { resolvePath } from '@struktoai/mirage-core/utils/path'
 
 const { O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND } = constants
 const { O_NOFOLLOW, O_DIRECTORY } = constants
@@ -171,7 +172,7 @@ export class Descriptors {
     if ((flags & O_DIRECTORY) !== 0 && row?.isDir !== true) {
       throw row === null ? enoent(path) : enotdir(path)
     }
-    const desc: Descriptor = { path, mode, handle: null, kept: null }
+    const desc: Descriptor = { path: resolvePath(path, '/'), mode, handle: null, kept: null }
     if (row?.isDir !== true || mode.writable || mode.create) {
       const opened = await applyOpen(this.files, path, mode)
       desc.handle = FileHandle.opened(
@@ -210,30 +211,32 @@ export class Descriptors {
   /** Land the writes of every descriptor open on `path`, which a change of
    * its times must come after. */
   async landPath(path: string): Promise<void> {
+    const named = resolvePath(path, '/')
     for (const [fd, desc] of this.table) {
-      if (desc.path === path) await this.serial(fd, () => this.land(desc))
+      if (desc.path === named) await this.serial(fd, () => this.land(desc))
     }
   }
 
   /** Follow a rename: a descriptor on `old` or under it names the same
    * file at `next` now. */
   moved(old: string, next: string): void {
-    const under = `${old.replace(/\/+$/, '')}/`
+    const from = resolvePath(old, '/')
+    const to = resolvePath(next, '/')
+    const under = `${from.replace(/\/+$/, '')}/`
     for (const desc of this.table.values()) {
-      if (desc.kept === null && (desc.path === old || desc.path.startsWith(under))) {
-        desc.path = next + desc.path.slice(old.length)
+      if (desc.kept === null && (desc.path === from || desc.path.startsWith(under))) {
+        desc.path = to + desc.path.slice(from.length)
       }
     }
   }
 
-  /** Read what the descriptors open on `path` (or under it) need before
-   * its name is removed or replaced; `keep` them once it has gone. */
-  async hold(path: string, under = false): Promise<[Descriptor, Uint8Array][]> {
-    const prefix = `${path.replace(/\/+$/, '')}/`
+  /** Read what the descriptors open on `path` need before its name is
+   * removed or replaced; `keep` them once it has gone. */
+  async hold(path: string): Promise<[Descriptor, Uint8Array][]> {
+    const named = resolvePath(path, '/')
     const held: [Descriptor, Uint8Array][] = []
     for (const desc of this.table.values()) {
-      const named = desc.path === path || (under && desc.path.startsWith(prefix))
-      if (!named || desc.kept !== null || desc.handle === null) continue
+      if (desc.path !== named || desc.kept !== null || desc.handle === null) continue
       // A descriptor that cannot read needs nothing kept, and a read a
       // policy refuses must not refuse the removal it allows.
       let data: Uint8Array = new Uint8Array()

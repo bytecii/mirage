@@ -19,7 +19,6 @@ import { finishRecord, type OpTimer, startOp } from '../observe/context.ts'
 import type { FileStat, SetAttrFields } from '../types.ts'
 import { FileType, PathSpec } from '../types.ts'
 import { isEnotdir, isMissingPath } from '../errors/fs.ts'
-import { dottedSpelling } from '../utils/path.ts'
 import type { DispatchFn } from '../runtime/types.ts'
 import { getCurrentSession } from '../context/session_context.ts'
 import type { NamespaceLinks, OpKwargs, SessionBind } from '../view/types.ts'
@@ -224,13 +223,9 @@ export class Files {
     let seen: string | null = null
     const run = (): Promise<[unknown, IOResult]> => {
       seen = getCurrentSession()?.sessionId ?? null
-      const spec = PathSpec.fromStrPath(path)
-      const typed = new PathSpec({
-        virtual: spec.virtual,
-        directory: spec.directory,
-        vfsPath: spec.vfsPath,
-        dotted: dottedSpelling(path),
-      })
+      // Resolved against the root: the dots simplified away for the op,
+      // the typed spelling kept for the walk that proves them.
+      const typed = PathSpec.fromStrPath(path, undefined, '/')
       return this.dispatchFn(op, typed, args, kwargs, report)
     }
     let result: unknown
@@ -585,7 +580,7 @@ export class Files {
    * path. Mirrors Python's Files.rename.
    */
   async rename(src: string, dst: string, sessionId?: string): Promise<void> {
-    await this.through('rename', src, [PathSpec.fromStrPath(dst)], {}, sessionId)
+    await this.through('rename', src, [PathSpec.fromStrPath(dst, undefined, '/')], {}, sessionId)
   }
 
   async cat(path: string, sessionId?: string): Promise<string> {

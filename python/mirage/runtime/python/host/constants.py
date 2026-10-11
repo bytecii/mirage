@@ -99,11 +99,34 @@ DESCRIPTOR_CALLS: frozenset[str] = frozenset(
         "ftruncate",
         "lseek",
         "pread",
+        "preadv",
         "pwrite",
+        "pwritev",
         "read",
+        "readv",
         "write",
+        "writev",
     }
 )
+
+# The descriptor calls a mounted descriptor refuses, by how many leading
+# arguments are descriptors: a mount has no kernel file to duplicate,
+# copy between in the kernel, lock, preallocate or advise on, so these
+# answer ENOTSUP for one of the routed `open`'s numbers rather than reach
+# the pipe that holds it, and leave every other number to the host.
+REFUSED_DESCRIPTOR_CALLS: Mapping[str, int] = {
+    "copy_file_range": 2,
+    "dup": 1,
+    "dup2": 2,
+    "fchdir": 1,
+    "fpathconf": 1,
+    "fstatvfs": 1,
+    "lockf": 1,
+    "posix_fadvise": 1,
+    "posix_fallocate": 1,
+    "sendfile": 2,
+    "splice": 2,
+}
 
 # setxattr(2)'s flags as linux numbers them, the one platform whose os
 # module has the xattr family for this router to install.

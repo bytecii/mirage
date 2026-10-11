@@ -35,6 +35,7 @@ from mirage.runtime.files import stat_row
 from mirage.runtime.python.host.constants import (
     DESCRIPTOR_CALLS,
     REFUSED_CALLS,
+    REFUSED_DESCRIPTOR_CALLS,
     ROUTED_CALLS,
     XATTR_CREATE,
     XATTR_REPLACE,
@@ -52,7 +53,7 @@ from mirage.runtime.python.host.syscall import as_raised, host_files, syscall
 from mirage.runtime.stat import posix_stat
 from mirage.runtime.types import VFSStat
 from mirage.utils.dates import timestamp_iso
-from mirage.utils.path import owner_prefix
+from mirage.utils.path import owner_prefix, resolve_path
 from mirage.utils.remnants import entry_name
 from mirage.utils.stat_view import LINK_MODE
 from mirage.workspace.files import Files
@@ -999,7 +1000,8 @@ class HostFs:
             )
         # A rename onto its own name changes nothing, its descriptors
         # included.
-        held = self._descriptors.hold(dest) if dest != source else []
+        same = resolve_path(dest, "/") == resolve_path(source, "/")
+        held = [] if same else self._descriptors.hold(dest)
         self._adapter.rename(source, dest)
         self._descriptors.keep(held)
         self._descriptors.moved(source, dest)
@@ -1130,6 +1132,24 @@ class HostFs:
         self._descriptors.file(fd, False, True).pwrite(offset, payload)
         return len(payload)
 
+    def readv(self, fd: int, buffers: Any) -> int:
+        views = _views(buffers)
+        return _scatter(self.read(fd, sum(map(len, views))), views)
+
+    def preadv(
+        self, fd: int, buffers: Any, offset: int, flags: int = 0
+    ) -> int:
+        views = _views(buffers)
+        return _scatter(self.pread(fd, sum(map(len, views)), offset), views)
+
+    def writev(self, fd: int, buffers: Any) -> int:
+        return self.write(fd, b"".join(map(bytes, buffers)))
+
+    def pwritev(
+        self, fd: int, buffers: Any, offset: int, flags: int = 0
+    ) -> int:
+        return self.pwrite(fd, b"".join(map(bytes, buffers)), offset)
+
     def lseek(self, fd: int, pos: int, how: int) -> int:
         desc = self._descriptors[fd]
         if desc.handle is None:
@@ -1197,15 +1217,61 @@ def _anchored(router: HostFs, verb: str) -> Callable[..., Any]:
             spelled = _spelled(given[at]) if at < len(given) else None
             if desc is None or spelled is None or posixpath.isabs(spelled):
                 continue
-            # A `.` names the directory it is in, so it goes; a `..` stays
-            # for the walk, which follows links and refuses a missing
-            # directory before it, as the kernel's does.
-            rest = "/".join(part for part in spelled.split("/") if part != ".")
-            given[at] = posixpath.join(desc.path, rest)
+            # Joined as spelled: the dispatch resolves the dots, and its
+            # walk refuses a missing directory before a `..`, as the
+            # kernel's does.
+            given[at] = posixpath.join(desc.path, spelled)
             del kwargs[key]
         return call(*given, **kwargs)
 
     return anchored
+
+
+def _views(buffers: Any) -> list[memoryview]:
+    """The byte views of the buffers a vectored read fills.
+
+    Args:
+        buffers (Any): the caller's writable buffers.
+    """
+    return [memoryview(buffer).cast("B") for buffer in buffers]
+
+
+def _scatter(data: bytes, views: list[memoryview]) -> int:
+    """Copy ``data`` across ``views`` in order, as readv(2) fills them.
+
+    Args:
+        data (bytes): what the read returned.
+        views (list[memoryview]): the buffers to fill.
+    """
+    at = 0
+    for view in views:
+        chunk = data[at : at + len(view)]
+        view[: len(chunk)] = chunk
+        at += len(chunk)
+    return at
+
+
+def _descriptor_refusal(
+    router: HostFs, verb: str, fds: int
+) -> Callable[..., Any]:
+    """`verb` refusing ENOTSUP when one of its first ``fds`` arguments is
+    a descriptor the routed ``open`` handed out, and the host's otherwise.
+
+    Args:
+        router (HostFs): the entry point whose descriptors refuse.
+        verb (str): the os name being wrapped.
+        fds (int): how many leading arguments are descriptors.
+    """
+    real = getattr(router._host, verb)
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        for fd in args[:fds]:
+            desc = router.descriptors.get(fd)
+            if desc is not None:
+                raise fs_error(desc.path, FsCondition.ENOTSUP)
+        return real(*args, **kwargs)
+
+    return refuse
 
 
 def _by_descriptor(router: HostFs, verb: str) -> Callable[..., Any]:
@@ -1308,7 +1374,8 @@ def os_routing(router: HostFs) -> dict[str, Callable[..., Any]]:
     of the module answering about paths it has never had.
 
     The descriptor calls answer for the numbers the routed ``open``
-    hands out, and pass every other number to the host.
+    hands out, or refuse them where a mount has nothing to answer with,
+    and pass every other number to the host.
 
     Args:
         router (HostFs): the entry point the names answer through, whose
@@ -1327,6 +1394,9 @@ def os_routing(router: HostFs) -> dict[str, Callable[..., Any]]:
     for verb, condition in REFUSED_CALLS.items():
         if hasattr(_real_os, verb):
             table[verb] = syscall(_refusal(router, verb, condition))
+    for verb, fds in REFUSED_DESCRIPTOR_CALLS.items():
+        if hasattr(_real_os, verb):
+            table[verb] = syscall(_descriptor_refusal(router, verb, fds))
     return table
 
 

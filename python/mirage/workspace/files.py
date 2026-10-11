@@ -14,7 +14,6 @@
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
-from dataclasses import replace
 from typing import Any
 
 from mirage.context import get_current_session
@@ -25,7 +24,7 @@ from mirage.observe import OpRecord
 from mirage.observe.context import OpTimer, finish_record, start_op
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, MountMode, PathSpec
-from mirage.utils.path import dotted_spelling, owner_prefix
+from mirage.utils.path import owner_prefix
 from mirage.view.types import NamespaceLinks, SessionBind
 from mirage.workspace.types import MountRow
 
@@ -321,10 +320,11 @@ class Files:
             sess = get_current_session()
             if sess is not None:
                 seen.append(sess.session_id)
-            spec = PathSpec.from_str_path(path)
+            # Resolved against the root: the dots simplified away for the
+            # op, the typed spelling kept for the walk that proves them.
             return await self._dispatch(
                 op,
-                replace(spec, dotted=dotted_spelling(path)),
+                PathSpec.from_str_path(path, cwd="/"),
                 report=report,
                 **kwargs,
             )
@@ -679,7 +679,7 @@ class Files:
                 mounts, ENOENT when a parent directory is missing.
         """
         await self._call(
-            "rename", src, session_id, dst=PathSpec.from_str_path(dst)
+            "rename", src, session_id, dst=PathSpec.from_str_path(dst, cwd="/")
         )
 
     async def create(

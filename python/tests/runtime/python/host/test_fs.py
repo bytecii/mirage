@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import errno
+import inspect
 import os
 import shutil
 import stat as stat_mod
@@ -28,6 +29,7 @@ from mirage.policy import Deny, Policy
 from mirage.runtime.python.host.constants import (
     DESCRIPTOR_CALLS,
     REFUSED_CALLS,
+    REFUSED_DESCRIPTOR_CALLS,
     ROUTED_CALLS,
 )
 from mirage.runtime.python.host.fs import HostFs, make_os_module, os_routing
@@ -43,6 +45,46 @@ from .conftest import make_ops_with_dir, run
 async def _shell(ws, line):
     result = await ws.shell(line)
     return result.exit_code, await result.stdout_str()
+
+
+INSTALLED_CALLS = (
+    *ROUTED_CALLS,
+    *REFUSED_CALLS,
+    *DESCRIPTOR_CALLS,
+    *REFUSED_DESCRIPTOR_CALLS,
+)
+
+# The parameter names os gives a descriptor argument.
+FD_PARAMS = frozenset({"fd", "fd2", "fd_low", "in_fd", "out_fd", "src", "dst"})
+
+# The descriptor calls a mounted descriptor leaves to the host: the pipe
+# it holds answers them truly (no terminal, its own flags), and none of
+# them reads or writes a file.
+HOST_FD_CALLS = frozenset(
+    {
+        "closerange",
+        "device_encoding",
+        "eventfd_read",
+        "eventfd_write",
+        "get_blocking",
+        "get_inheritable",
+        "grantpt",
+        "isatty",
+        "login_tty",
+        "ptsname",
+        "set_blocking",
+        "set_inheritable",
+        "setns",
+        "tcgetpgrp",
+        "tcsetpgrp",
+        "timerfd_gettime",
+        "timerfd_gettime_ns",
+        "timerfd_settime",
+        "timerfd_settime_ns",
+        "ttyname",
+        "unlockpt",
+    }
+)
 
 
 class _NoStats(Policy):
@@ -81,7 +123,7 @@ class TestTableInstall:
 
     def test_every_other_name_keeps_the_host_function(self):
         ops, patched = seeded()
-        installed = {*ROUTED_CALLS, *REFUSED_CALLS, *DESCRIPTOR_CALLS, "path"}
+        installed = {*INSTALLED_CALLS, "path"}
         for name, value in vars(os).items():
             if name not in installed:
                 assert getattr(patched, name) is value, name
@@ -90,18 +132,36 @@ class TestTableInstall:
         # hasattr(os, ...) has to keep answering what it did, or code
         # that probes for a platform feature gets an OSError instead.
         ops, patched = seeded()
-        for verb in (*ROUTED_CALLS, *REFUSED_CALLS, *DESCRIPTOR_CALLS):
+        for verb in INSTALLED_CALLS:
             assert hasattr(patched, verb) is hasattr(os, verb), verb
 
     def test_routing_covers_the_tables(self):
         ops, _ = seeded()
         routed = os_routing(HostFs(ops, None))
-        expected = {
-            verb
-            for verb in (*ROUTED_CALLS, *REFUSED_CALLS, *DESCRIPTOR_CALLS)
-            if hasattr(os, verb)
-        }
+        expected = {verb for verb in INSTALLED_CALLS if hasattr(os, verb)}
         assert set(routed) == expected
+
+    def test_every_descriptor_call_is_classified(self):
+        # A call that takes a descriptor and sits in no table reaches the
+        # pipe a mounted one holds, so a Python release that adds one
+        # fails here first; node's call tables have the same test.
+        tables = (
+            DESCRIPTOR_CALLS,
+            set(REFUSED_DESCRIPTOR_CALLS),
+            HOST_FD_CALLS,
+        )
+        for name, value in vars(os).items():
+            if name in ROUTED_CALLS or name in REFUSED_CALLS:
+                continue
+            if not callable(value) or isinstance(value, type):
+                continue
+            try:
+                params = inspect.signature(value).parameters
+            except (TypeError, ValueError):
+                continue
+            if FD_PARAMS.isdisjoint(params):
+                continue
+            assert sum(name in table for table in tables) == 1, name
 
 
 class TestStatShape:

@@ -20,7 +20,7 @@ from typing import IO, TypeAlias, cast
 
 from mirage.runtime.handles.mode import parse_mode
 from mirage.runtime.python.host.descriptors import open_flags
-from mirage.runtime.python.host.file import open_file, text_encoding
+from mirage.runtime.python.host.file import text_encoding
 from mirage.runtime.python.host.fs import HostFs
 from mirage.runtime.python.host.host_io import in_host_io
 from mirage.runtime.python.host.syscall import syscall
@@ -35,17 +35,13 @@ class MountedOpen:
     ``os.open`` handed out, to the workspace, and the rest to the host.
 
     Args:
-        router (HostFs): the entry point whose descriptors ``os.open``
-            hands out.
-        loop (asyncio.AbstractEventLoop | None): the block's loop.
+        router (HostFs): the entry point whose descriptors ``open`` and
+            ``os.open`` share.
     """
 
-    def __init__(
-        self, router: HostFs, loop: asyncio.AbstractEventLoop | None = None
-    ) -> None:
+    def __init__(self, router: HostFs) -> None:
         self._files = router.files
         self._descriptors = router.descriptors
-        self._loop = loop
         self._original = builtins.open
 
     def __call__(
@@ -85,15 +81,8 @@ class MountedOpen:
                 return self._opened(
                     path, mode, buffering, encoding, errors, newline, opener
                 )
-            return syscall(open_file)(
-                self._files,
-                path,
-                mode,
-                loop=self._loop,
-                encoding=encoding,
-                errors=errors,
-                newline=newline,
-                buffering=buffering,
+            return syscall(self._descriptors.open_file)(
+                path, mode, buffering, encoding, errors, newline
             )
         return cast(
             IO[str] | IO[bytes],
@@ -166,4 +155,4 @@ def make_open(
     Returns:
         Callable: A patched open function.
     """
-    return MountedOpen(HostFs(files, loop) if router is None else router, loop)
+    return MountedOpen(HostFs(files, loop) if router is None else router)
