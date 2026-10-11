@@ -7,7 +7,7 @@ from mirage.commands.builtin.rg_scan import os_error_text
 from mirage.commands.builtin.utils.paths import dispatch_stat
 from mirage.commands.builtin.utils.stream import is_stdin, resolve_source
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.core.jq import load_failure
 from mirage.errors.constants import FS_ERRORS
@@ -149,7 +149,8 @@ async def lower_exclude_from(
     dropped and blank lines skipped, and ``-`` is stdin. The globs stay
     under ``exclude_from``, where the option stood among --include and
     --exclude. A file grep cannot read stops it before it searches
-    anything, exit 2.
+    anything, exit 2. The occurrence tape is kept, so every -d and -D
+    is still checked.
 
     Args:
         fl (FlagView): grep's flag view.
@@ -178,7 +179,9 @@ async def lower_exclude_from(
             glob = line.rstrip(" \t\n\v\f\r")
             if glob:
                 globs.append(glob)
-    return {**flags, "exclude_from": globs}, consumed, None
+    lowered = FlagBag(flags)
+    lowered["exclude_from"] = globs
+    return lowered, consumed, None
 
 
 async def prepare_program(

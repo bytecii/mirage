@@ -3,7 +3,7 @@ import { osErrorText } from '../rg_scan.ts'
 import { dispatchStat } from '../utils/paths.ts'
 import { isStdin, resolveSource } from '../utils/stream.ts'
 import { specOf } from '../../spec/index.ts'
-import { FlagView } from '../../spec/flag_view.ts'
+import { FlagView, flagOccurrences } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
 import { loadFailure } from '../../../core/jq/index.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
@@ -145,7 +145,9 @@ async function lowerExcludeFrom(
       if (glob) globs.push(glob)
     }
   }
-  return [{ ...bag, exclude_from: globs }, consumed, null]
+  const lowered: Record<string, FlagValue> = { ...bag, exclude_from: globs }
+  flagOccurrences(lowered).push(...flagOccurrences(bag))
+  return [lowered, consumed, null]
 }
 
 /** Read program files once before input routing or traversal fan-out.
