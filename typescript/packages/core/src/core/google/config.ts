@@ -100,3 +100,26 @@ export function redactGoogleConfig(config: GoogleConfig): GoogleConfigRedacted {
 export function normalizeGoogleConfig(input: Record<string, unknown>): GoogleConfig {
   return parseConfigWithSchema(GoogleConfigSchema, input)
 }
+
+export const GoogleAppConfigSchema = GoogleConfigSchema.extend({
+  // Let grep -w and rg -w read only the files Drive full-text search names
+  // (`filesContaining`). Off by default: Drive indexes a write some time
+  // after it lands, and searches a file's text rather than the JSON the
+  // mount renders it as.
+  contentSearch: z.boolean().optional(),
+})
+
+export type GoogleAppConfig = ConfigOf<typeof GoogleAppConfigSchema>
+
+export type GoogleAppConfigRedacted = RedactedConfig<
+  GoogleAppConfig,
+  'accessToken' | 'clientSecret' | 'refreshToken' | 'refreshFn'
+>
+
+export function redactGoogleAppConfig(config: GoogleAppConfig): GoogleAppConfigRedacted {
+  return redactConfigWithSchema(GoogleAppConfigSchema, config) as unknown as GoogleAppConfigRedacted
+}
+
+export function normalizeGoogleAppConfig(input: Record<string, unknown>): GoogleAppConfig {
+  return parseConfigWithSchema(GoogleAppConfigSchema, input)
+}

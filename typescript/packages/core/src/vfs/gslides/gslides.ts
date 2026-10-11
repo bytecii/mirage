@@ -24,6 +24,9 @@ import { redactGSlidesConfig, type GSlidesConfig, type GSlidesConfigRedacted } f
 import type { PathSpec, FileStat } from '../../types.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { sliceWindow } from '../../utils/ranges.ts'
+import { SLIDES_WORDS } from '../../utils/generated/google_vocabulary.ts'
+import { filesContaining as googleFilesContaining } from '../../core/google/search.ts'
+import { MIME } from '../../core/gslides/constants.ts'
 import { readdir as gslidesReaddir } from '../../core/gslides/readdir.ts'
 import { read as gslidesRead } from '../../core/gslides/read.ts'
 import { stat as gslidesStat } from '../../core/gslides/stat.ts'
@@ -53,6 +56,24 @@ export class GSlidesVFS extends BaseVFS {
   }
 
   override readonly renderers: Readonly<Record<string, string>> = { '.gslide.json': 'readDeck' }
+
+  override filesContaining(
+    text: string,
+    under: PathSpec[],
+    opts: { wholeWord: boolean; ignoreCase: boolean },
+    index?: IndexCacheStore,
+  ): Promise<PathSpec[] | null> {
+    if (!opts.wholeWord || this.config.contentSearch !== true) return Promise.resolve(null)
+    return googleFilesContaining(
+      this.accessor,
+      gslidesReaddir,
+      MIME,
+      SLIDES_WORDS,
+      text,
+      under,
+      index,
+    )
+  }
 
   override readdir(path: PathSpec, index?: IndexCacheStore): Promise<string[]> {
     return gslidesReaddir(this.accessor, path, index)

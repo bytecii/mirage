@@ -175,5 +175,18 @@ Standard commands available on the mounted Google Sheets tree:
 | `basename` / `dirname` / `realpath` | Path utilities                 |
 | `nl`                                | Number lines                   |
 
+
+## grep and rg
+
+With `content_search=True` (YAML `content_search: true`), `grep -rw` and
+`rg -w` read only the spreadsheets Drive full-text search names; every one is
+read when the search fails or finds nothing. A word the rendered JSON may hold
+whatever the text says is never asked: one with a digit, a property name or
+enum value of the Sheets API (`formattedValue`, `NUMBER`), or a word every
+rendering carries (`https`, `arial`). It is off by default: Drive indexes a
+write some time after it lands and searches the file's text, so one whose JSON
+holds the word only in another value (a formula, the time zone, a sheet title,
+a link or an id) can be left out.
+
 Acting on spreadsheets (read/write/append ranges, raw API calls)
 goes through the [gws CLI](/python/cli/gws) when installed.
