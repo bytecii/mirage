@@ -188,94 +188,95 @@ class MountedFileHandle {
     readonly fd: number,
   ) {}
 
-  async read(...args: unknown[]): Promise<{ bytesRead: number; buffer: unknown }> {
-    const [buffer, offset, length, position, original] = readArgs(args)
-    const bytesRead = await this.host.fdRead(this.fd, buffer, offset, length, position)
-    return { bytesRead, buffer: original }
+  /** A descriptor call on this handle's descriptor. */
+  private call(name: string, ...args: unknown[]): Promise<unknown[]> {
+    return this.host.descriptorCall(name, [this.fd, ...args])
   }
 
-  async readFile(options?: Options): Promise<Buffer | string> {
-    const bytes = Buffer.from(await this.host.fdReadAll(this.fd))
-    const encoding = encodingOf(options)
-    return encoding === undefined ? bytes : bytes.toString(encoding)
+  async read(...args: unknown[]): Promise<{ bytesRead: number; buffer: unknown }> {
+    const [bytesRead, buffer] = await this.call('read', ...args)
+    return { bytesRead: bytesRead as number, buffer }
   }
 
   async readv(
     buffers: Uint8Array[],
     position?: number | null,
   ): Promise<{ bytesRead: number; buffers: Uint8Array[] }> {
-    const [bytesRead] = await this.host.descriptorCall('readv', [this.fd, buffers, position])
+    const [bytesRead] = await this.call('readv', buffers, position)
     return { bytesRead: bytesRead as number, buffers }
   }
 
-  async write(
-    data: unknown,
-    ...rest: unknown[]
-  ): Promise<{ bytesWritten: number; buffer: unknown }> {
-    const [bytes, position] = writeArgs(data, rest)
-    return { bytesWritten: await this.host.fdWrite(this.fd, bytes, position), buffer: data }
+  async write(...args: unknown[]): Promise<{ bytesWritten: number; buffer: unknown }> {
+    const [bytesWritten, buffer] = await this.call('write', ...args)
+    return { bytesWritten: bytesWritten as number, buffer }
   }
 
   async writev(
     buffers: Uint8Array[],
     position?: number | null,
   ): Promise<{ bytesWritten: number; buffers: Uint8Array[] }> {
-    const [bytesWritten] = await this.host.descriptorCall('writev', [this.fd, buffers, position])
+    const [bytesWritten] = await this.call('writev', buffers, position)
     return { bytesWritten: bytesWritten as number, buffers }
   }
 
+  readFile(options?: Options): Promise<unknown> {
+    return this.host.fileCall('readFile', this.fd, [options])
+  }
+
   async writeFile(data: unknown, options?: Options): Promise<void> {
-    await this.host.fdWrite(this.fd, bytesOf(data, options), null)
+    await this.host.fileCall('writeFile', this.fd, [data, options])
   }
 
   appendFile(data: unknown, options?: Options): Promise<void> {
     return this.writeFile(data, options)
   }
 
-  stat(options?: Options): Promise<unknown> {
-    return this.host.fdStat(this.fd, options)
+  async stat(options?: Options): Promise<unknown> {
+    return (await this.call('fstat', options))[0]
   }
 
-  truncate(len = 0): Promise<void> {
-    return this.host.fdTruncate(this.fd, len)
+  async truncate(len = 0): Promise<void> {
+    await this.call('ftruncate', len)
   }
 
-  sync(): Promise<void> {
-    return this.host.fdSync(this.fd)
+  async sync(): Promise<void> {
+    await this.call('fsync')
   }
 
-  datasync(): Promise<void> {
-    return this.host.fdSync(this.fd)
+  async datasync(): Promise<void> {
+    await this.call('fdatasync')
   }
 
-  chmod(mode: number | string): Promise<void> {
-    return this.host.fdPath(this.fd).then((path) => this.host.chmod(path, mode))
+  async chmod(mode: number | string): Promise<void> {
+    await this.call('fchmod', mode)
   }
 
-  chown(uid: number, gid: number): Promise<void> {
-    return this.host.fdPath(this.fd).then((path) => this.host.chown(path, uid, gid))
+  async chown(uid: number, gid: number): Promise<void> {
+    await this.call('fchown', uid, gid)
   }
 
-  utimes(atime: unknown, mtime: unknown): Promise<void> {
-    return this.host.fdPath(this.fd).then((path) => this.host.utimes(path, atime, mtime))
+  async utimes(atime: unknown, mtime: unknown): Promise<void> {
+    await this.call('futimes', atime, mtime)
   }
 
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
-    await this.host.descriptors.close(this.fd)
+    await this.call('close')
   }
 
   [Symbol.asyncDispose](): Promise<void> {
     return this.close()
   }
 
+  // node's streams call back through `fs.read`, `fs.write` and `fs.close`,
+  // which the patch answers for this descriptor.
   createReadStream(options?: Options): unknown {
-    return this.host.stream('createReadStream', null, { ...fieldsOf(options), fd: this.fd })
+    return (fs.createReadStream as Fn)(null, { ...fieldsOf(options), fd: this.fd })
   }
 
   createWriteStream(options?: Options): unknown {
-    return this.host.stream('createWriteStream', null, { ...fieldsOf(options), fd: this.fd })
+    return (fs.createWriteStream as Fn)(null, { ...fieldsOf(options), fd: this.fd })
   }
 }
 
@@ -687,7 +688,8 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
   async fileCall(name: string, target: unknown, rest: unknown[]): Promise<unknown> {
     const fd = target instanceof MountedFileHandle ? target.fd : (target as number)
     if (name === 'readFile') {
-      const bytes = Buffer.from(await this.fdReadAll(fd))
+      const read = () => readOn(this.descriptors.file(fd, true, false), -1)
+      const bytes = Buffer.from(await this.descriptors.serial(fd, read))
       const encoding = encodingOf(rest[0] as Options)
       return encoding === undefined ? bytes : bytes.toString(encoding)
     }
@@ -700,40 +702,8 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     return new MountedFileHandle(this, await this.descriptors.open(path, openFlags(flags)))
   }
 
-  /** The path a mounted descriptor opened. */
-  fdPath(fd: number): Promise<string> {
-    const desc = this.descriptors.get(fd)
-    return desc === undefined ? Promise.reject(ebadf(String(fd))) : Promise.resolve(desc.path)
-  }
-
-  /** A read through a mounted descriptor, in its turn on the descriptor. */
-  fdRead(
-    fd: number,
-    buffer: Uint8Array,
-    offset: number,
-    length: number,
-    position: number | null,
-  ): Promise<number> {
-    return this.descriptors.serial(fd, () => this.readInto(fd, buffer, offset, length, position))
-  }
-
-  /** A write through a mounted descriptor, in its turn on the descriptor. */
-  fdWrite(fd: number, bytes: Uint8Array, position: number | null): Promise<number> {
-    return this.descriptors.serial(fd, () => Promise.resolve(this.writeFrom(fd, bytes, position)))
-  }
-
-  /** The rest of a mounted descriptor's file from its position. */
-  fdReadAll(fd: number): Promise<Uint8Array> {
-    return this.descriptors.serial(fd, () => readOn(this.descriptors.file(fd, true, false), -1))
-  }
-
-  fdTruncate(fd: number, length: number): Promise<void> {
-    return this.descriptors.serial(fd, () => {
-      this.descriptors.file(fd, false, true).truncate(length)
-      return Promise.resolve()
-    })
-  }
-
+  /** A read into `buffer` at `offset`, at `position` or, when null, at the
+   * descriptor's own position, advancing it. The caller holds its queue. */
   private async readInto(
     fd: number,
     buffer: Uint8Array,
@@ -748,24 +718,14 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     return bytes.byteLength
   }
 
-  private writeFrom(fd: number, bytes: Uint8Array, position: number | null): number {
-    const handle = this.descriptors.file(fd, false, true)
-    if (position === null) handle.write(bytes.slice())
-    else handle.pwrite(position, bytes.slice())
-    return bytes.byteLength
-  }
-
-  async fdStat(fd: number, options?: Options): Promise<unknown> {
-    const desc = this.descriptors.get(fd)
-    if (desc === undefined) throw ebadf(String(fd))
-    const st = await this.files.stat(desc.path)
-    return this.statsOf(desc.path, { ...st, size: desc.handle?.size ?? st.size }, options)
-  }
-
-  fdSync(fd: number): Promise<void> {
-    const desc = this.descriptors.get(fd)
-    if (desc === undefined) return Promise.reject(ebadf(String(fd)))
-    return this.descriptors.serial(fd, () => this.descriptors.land(desc))
+  /** A write through a mounted descriptor, in its turn on the descriptor. */
+  private fdWrite(fd: number, bytes: Uint8Array, position: number | null): Promise<number> {
+    return this.descriptors.serial(fd, () => {
+      const handle = this.descriptors.file(fd, false, true)
+      if (position === null) handle.write(bytes.slice())
+      else handle.pwrite(position, bytes.slice())
+      return Promise.resolve(bytes.byteLength)
+    })
   }
 
   /** A descriptor call on a mounted descriptor, answered with what node's
@@ -773,10 +733,13 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
   async descriptorCall(name: string, args: unknown[]): Promise<unknown[]> {
     const fd = args[0] as number
     const rest = args.slice(1)
+    const desc = this.descriptors.get(fd)
+    if (desc === undefined) throw ebadf(String(fd))
     switch (name) {
       case 'read': {
         const [buffer, offset, length, position, original] = readArgs(rest)
-        return [await this.fdRead(fd, buffer, offset, length, position), original]
+        const read = () => this.readInto(fd, buffer, offset, length, position)
+        return [await this.descriptors.serial(fd, read), original]
       }
       case 'write': {
         const [bytes, position] = writeArgs(rest[0], rest.slice(1))
@@ -801,82 +764,36 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
         const joined = Buffer.concat(buffers.map((b) => bytesOf(b, null)))
         return [await this.fdWrite(fd, joined, position), buffers]
       }
-      case 'fstat':
-        return [await this.fdStat(fd, rest[0] as Options)]
+      case 'fstat': {
+        const st = await this.files.stat(desc.path)
+        const size = desc.handle?.size ?? st.size
+        return [this.statsOf(desc.path, { ...st, size }, rest[0] as Options)]
+      }
       case 'ftruncate':
-        await this.fdTruncate(fd, Number(rest[0] ?? 0))
+        await this.descriptors.serial(fd, () => {
+          this.descriptors.file(fd, false, true).truncate(Number(rest[0] ?? 0))
+          return Promise.resolve()
+        })
         return []
       case 'fsync':
       case 'fdatasync':
-        await this.fdSync(fd)
+        await this.descriptors.serial(fd, () => this.descriptors.land(desc))
         return []
       case 'close':
         await this.descriptors.close(fd)
         return []
       case 'fchmod':
-        await this.chmod(await this.fdPath(fd), rest[0] as number)
+        await this.chmod(desc.path, rest[0] as number)
         return []
       case 'fchown':
-        await this.chown(await this.fdPath(fd), rest[0] as number, rest[1] as number)
+        await this.chown(desc.path, rest[0] as number, rest[1] as number)
         return []
       case 'futimes':
-        await this.utimes(await this.fdPath(fd), rest[0], rest[1])
+        await this.utimes(desc.path, rest[0], rest[1])
         return []
       default:
         throw new TypeError(`mirage.patchNodeFs: ${name} is not a descriptor call`)
     }
-  }
-
-  /** node's own read or write stream over a mounted path or descriptor,
-   * its descriptor calls answered here through the `fs` option. */
-  stream(
-    name: 'createReadStream' | 'createWriteStream',
-    path: string | null,
-    options: Record<string, unknown>,
-  ): unknown {
-    const fs = {
-      open: (target: string, flags: unknown, _mode: unknown, done: Fn): void => {
-        answer(
-          this.descriptors.open(target, openFlags(flags)).then((fd) => [fd]),
-          done,
-        )
-      },
-      read: (
-        fd: number,
-        buffer: Uint8Array,
-        offset: number,
-        length: number,
-        position: number | bigint | null,
-        done: Fn,
-      ): void => {
-        answer(
-          this.fdRead(fd, buffer, offset, length, positionOf(position)).then((n) => [n, buffer]),
-          done,
-        )
-      },
-      write: (
-        fd: number,
-        buffer: Uint8Array,
-        offset: number,
-        length: number,
-        position: number | null,
-        done: Fn,
-      ): void => {
-        answer(
-          this.fdWrite(fd, buffer.subarray(offset, offset + length), positionOf(position)).then(
-            (n) => [n, buffer],
-          ),
-          done,
-        )
-      },
-      close: (fd: number, done: Fn): void => {
-        answer(
-          this.descriptors.close(fd).then(() => []),
-          done,
-        )
-      },
-    }
-    return (this.native[name] as Fn)(path, { ...options, fs })
   }
 
   /** writeFile and appendFile, which differ only in the flag they default
@@ -1027,15 +944,6 @@ export function patchNodeFs(ws: Workspace): () => void {
     if (path !== null) throw syncRefusal('openSync', path)
     return original(...args)
   })
-  for (const name of ['createReadStream', 'createWriteStream'] as const) {
-    swap(fs, name, (original) => (...args) => {
-      const path = mountedIn(name, args)
-      if (path === null) return original(...args)
-      const given = args[1] as Options
-      const options = typeof given === 'string' ? { encoding: given } : fieldsOf(given)
-      return host.stream(name, path, options)
-    })
-  }
 
   for (const name of DESCRIPTOR_CALLS) {
     swap(fs, name, (original) => (...args) => {

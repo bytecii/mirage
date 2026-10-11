@@ -24,10 +24,11 @@ from mirage.errors.types import FsCondition
 from mirage.runtime.files import RuntimeFiles
 from mirage.runtime.handles import FileHandle
 from mirage.runtime.handles.mode import OpenMode, parse_mode
-from mirage.runtime.open import apply_open
 from mirage.runtime.python.host.file import (
     HandleRaw,
+    land_writes,
     layered,
+    open_handle,
     raw_mode,
     read_range,
     text_encoding,
@@ -134,6 +135,17 @@ class Descriptors:
             return None
         return self._open.get(fd)
 
+    def __getitem__(self, fd: int) -> Descriptor:
+        """The mounted descriptor ``fd`` is; EBADF for any other number.
+
+        Args:
+            fd (int): a descriptor.
+        """
+        desc = self._open.get(fd)
+        if desc is None:
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+        return desc
+
     def _fetch(
         self, desc: Descriptor, raw: bool, offset: int, size: int | None
     ) -> bytes:
@@ -176,15 +188,11 @@ class Descriptors:
             and row.is_dir
             and not (facts.writable or facts.create)
         ):
-            opened = apply_open(self._adapter, path, facts)
-            desc.handle = FileHandle.opened(
+            desc.handle = open_handle(
+                self._adapter,
                 path,
-                None
-                if opened is None
-                else functools.partial(self._fetch, desc, facts.writable),
-                size=0 if opened is None else opened.size,
-                writable=facts.writable,
-                append=facts.append,
+                facts,
+                functools.partial(self._fetch, desc, facts.writable),
             )
         fd, write_end = cast(tuple[int, int], self._host.pipe())
         self._host.close(write_end)
@@ -198,14 +206,14 @@ class Descriptors:
         Args:
             desc (Descriptor): the descriptor.
         """
-        handle = desc.handle
-        if handle is None or desc.kept is not None:
+        if desc.handle is None or desc.kept is not None:
             return
-        steps = handle.flush_plan()
-        if not steps:
-            return
-        syscall(self._adapter.flush)(desc.path, steps)
-        handle.settle(functools.partial(self._fetch, desc, True))
+        land_writes(
+            self._adapter,
+            desc.path,
+            desc.handle,
+            functools.partial(self._fetch, desc, True),
+        )
 
     def land_path(self, path: str) -> None:
         """Land the writes of every descriptor open on ``path``, which a
@@ -241,7 +249,6 @@ class Descriptors:
             path (str): the path about to go.
         """
         held: list[tuple[Descriptor, bytes]] = []
-        views: dict[bool, bytes] = {}
         for desc in self._open.values():
             if desc.path != path or desc.kept is not None:
                 continue
@@ -249,18 +256,17 @@ class Descriptors:
                 continue
             # A descriptor that cannot read needs nothing kept, and a read
             # a policy refuses must not refuse the removal it allows.
-            raw = desc.facts.writable
-            if desc.facts.readable and raw not in views:
+            data = b""
+            if desc.facts.readable:
                 try:
-                    views[raw] = read_range(self._adapter, path, raw, 0, None)
+                    data = read_range(
+                        self._adapter, path, desc.facts.writable, 0, None
+                    )
                 except OSError as err:
                     logger.warning(
                         "host: keeping %s before it goes failed: %r", path, err
                     )
-                    views[raw] = b""
-            held.append(
-                (desc, views.get(raw, b"") if desc.facts.readable else b"")
-            )
+            held.append((desc, data))
         return held
 
     @staticmethod
@@ -310,22 +316,20 @@ class Descriptors:
             newline (str | None): the newline translation.
             closefd (bool): close the descriptor with the file object.
         """
-        desc = self._open[fd]
+        desc = self[fd]
         if desc.handle is None:
             raise fs_error(desc.path, FsCondition.EISDIR)
         facts = parse_mode(mode)
         encoding = text_encoding(facts, encoding, errors, newline, buffering)
         raw = HandleRaw(
-            self._adapter,
             desc.handle,
             facts.readable and desc.facts.readable,
             facts.writable and desc.facts.writable,
             raw_mode(facts),
+            functools.partial(self.land, desc),
             functools.partial(self.close, fd) if closefd else None,
             fd,
         )
-        if facts.binary:
-            return layered(raw, facts, mode, buffering=buffering)
         return layered(raw, facts, mode, encoding, errors, newline, buffering)
 
     def file(self, fd: int, want_read: bool, want_write: bool) -> FileHandle:
@@ -336,7 +340,7 @@ class Descriptors:
             want_read (bool): the call reads.
             want_write (bool): the call writes.
         """
-        desc = self._open[fd]
+        desc = self[fd]
         if desc.handle is None:
             raise fs_error(desc.path, FsCondition.EISDIR)
         if (want_read and not desc.facts.readable) or (

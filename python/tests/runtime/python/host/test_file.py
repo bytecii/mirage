@@ -265,18 +265,6 @@ class TestOpenFile:
         with pytest.raises(ValueError, match="binary mode"):
             open_file(ops, "/data/dir/f.txt", "rb", **{argument: "utf-8"})
 
-    def test_a_mounted_file_is_a_whole_file_object(self):
-        ops, _ = make_ops_with_dir()
-        _write(ops, "/data/dir/lines.txt", b"alpha\nbeta\n")
-        with open_file(ops, "/data/dir/lines.txt", "r") as f:
-            assert f.seekable()
-            assert f.readline(3) == "alp"
-            assert f.readlines(1) == ["ha\n"]
-        with open_file(ops, "/data/dir/lines.txt", "rb") as f:
-            assert (
-                io.TextIOWrapper(f, encoding="utf-8").read() == "alpha\nbeta\n"
-            )
-
     def test_an_unbuffered_stream_refuses_what_its_mode_and_state_refuse(self):
         ops, _ = make_ops_with_dir()
         _write(ops, "/data/dir/f.bin", b"body")
@@ -287,20 +275,6 @@ class TestOpenFile:
         with pytest.raises(ValueError):
             f.read()
         assert _read(ops, "/data/dir/f.bin") == b"body"
-
-    def test_zipfile_writes_and_reads_a_mounted_archive(self):
-        ops, _ = make_ops_with_dir()
-        with (
-            open_file(ops, "/data/dir/a.zip", "wb") as f,
-            zipfile.ZipFile(f, "w") as z,
-        ):
-            z.writestr("inner.txt", "zipped")
-        with (
-            open_file(ops, "/data/dir/a.zip", "rb") as f,
-            zipfile.ZipFile(f) as z,
-        ):
-            assert z.read("inner.txt") == b"zipped"
-
 
 async def _read_tally(accessor, path: PathSpec, **kwargs) -> bytes:
     return b"RENDERED"

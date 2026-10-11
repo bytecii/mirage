@@ -532,94 +532,6 @@ def _extra_args(verb):
 
 
 class TestDescriptors:
-    def test_writes_through_a_descriptor_land_at_close(self):
-        ops, patched = seeded()
-        fd = patched.open(
-            "/data/dir/new.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-        )
-        assert patched.write(fd, b"hello") == 5
-        assert patched.fstat(fd).st_size == 5
-        patched.close(fd)
-        assert run(ops.read("/data/dir/new.txt")) == b"hello"
-
-    def test_a_descriptor_reads_seeks_and_syncs(self):
-        ops, patched = seeded()
-        fd = patched.open("/data/dir/a.txt", os.O_RDWR)
-        assert patched.read(fd, 2) == b"he"
-        assert patched.lseek(fd, 0, os.SEEK_END) == 5
-        patched.write(fd, b"!")
-        patched.fsync(fd)
-        assert run(ops.read("/data/dir/a.txt")) == b"hello!"
-        assert patched.pread(fd, 3, 1) == b"ell"
-        patched.close(fd)
-
-    def test_a_read_only_descriptor_refuses_a_write(self):
-        _, patched = seeded()
-        fd = patched.open("/data/dir/a.txt", os.O_RDONLY)
-        with pytest.raises(OSError) as caught:
-            patched.write(fd, b"x")
-        assert caught.value.errno == errno.EBADF
-        patched.close(fd)
-
-    def test_fdopen_wraps_a_mounted_descriptor(self):
-        ops, patched = seeded()
-        fd = patched.open("/data/dir/b.txt", os.O_RDWR | os.O_CREAT)
-        with patched.fdopen(fd, "w") as f:
-            f.write("via fdopen")
-        assert run(ops.read("/data/dir/b.txt")) == b"via fdopen"
-        with pytest.raises(OSError) as caught:
-            patched.close(fd)
-        assert caught.value.errno == errno.EBADF
-
-    def test_a_descriptor_in_a_path_slot_names_its_file(self):
-        _, patched = seeded()
-        fd = patched.open("/data/dir/a.txt", os.O_RDONLY)
-        patched.fchmod(fd, 0o600)
-        assert (
-            stat_mod.S_IMODE(patched.stat("/data/dir/a.txt").st_mode) == 0o600
-        )
-        patched.utime(fd, (981173106, 981173107))
-        assert int(patched.stat(fd).st_mtime) == 981173107
-        patched.close(fd)
-
-    def test_a_descriptor_follows_its_file_through_a_rename(self):
-        ops, patched = seeded()
-        fd = patched.open("/data/dir/a.txt", os.O_RDWR)
-        patched.rename("/data/dir/a.txt", "/data/dir/b.txt")
-        run(ops.write("/data/dir/a.txt", b"new file"))
-        patched.write(fd, b"HE")
-        patched.close(fd)
-        assert run(ops.read("/data/dir/b.txt")) == b"HEllo"
-        assert run(ops.read("/data/dir/a.txt")) == b"new file"
-
-    def test_a_removed_name_leaves_the_descriptor_its_bytes(self):
-        ops, patched = seeded()
-        fd = patched.open("/data/dir/a.txt", os.O_RDWR)
-        patched.unlink("/data/dir/a.txt")
-        run(ops.write("/data/dir/a.txt", b"other"))
-        assert patched.read(fd, 10) == b"hello"
-        patched.write(fd, b"!")
-        patched.close(fd)
-        assert run(ops.read("/data/dir/a.txt")) == b"other"
-
-    def test_times_set_through_a_descriptor_come_after_its_writes(self):
-        ops, patched = seeded()
-        fd = patched.open("/data/dir/a.txt", os.O_RDWR)
-        patched.write(fd, b"J")
-        patched.utime(fd, (981173106, 981173107))
-        patched.close(fd)
-        assert run(ops.read("/data/dir/a.txt")) == b"Jello"
-        assert int(patched.stat("/data/dir/a.txt").st_mtime) == 981173107
-
-    def test_fdopen_answers_its_fileno_and_honors_unbuffered(self):
-        ops, patched = seeded()
-        fd = patched.open("/data/dir/raw.bin", os.O_RDWR | os.O_CREAT)
-        f = patched.fdopen(fd, "wb", 0)
-        assert f.fileno() == fd
-        f.write(b"raw")
-        patched.fsync(fd)
-        assert run(ops.read("/data/dir/raw.bin")) == b"raw"
-        f.close()
 
     def test_a_policy_that_refuses_reads_still_lets_an_open_file_go(self):
         ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
@@ -798,20 +710,6 @@ class TestProcessPatch:
             assert os.listdir(str(tmp_path)) == ["host.txt"]
             assert isinstance(os.stat(str(tmp_path)), os.stat_result)
             assert os.path.exists(str(tmp_path / "host.txt")) is True
-
-    def test_touch_mkstemp_and_a_named_temporary_file_reach_the_mount(self):
-        ws = Workspace({"/mem/": RAMVFS()}, mode=MountMode.WRITE)
-        with ws:
-            Path("/mem/touched").touch()
-            fd, name = tempfile.mkstemp(dir="/mem")
-            os.write(fd, b"stemp")
-            os.close(fd)
-            with tempfile.NamedTemporaryFile(dir="/mem", delete=False) as f:
-                f.write(b"named")
-            assert Path("/mem/touched").exists()
-            assert Path(name).read_bytes() == b"stemp"
-            assert Path(f.name).read_bytes() == b"named"
-
 
 class TestRmtree:
     @staticmethod

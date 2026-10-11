@@ -145,6 +145,81 @@
           }
         }
       ]
+    },
+    {
+      "id": "descriptors_reach_the_mount",
+      "runtimes": [
+        "host"
+      ],
+      "backends": [
+        "ram",
+        "disk",
+        "ssh",
+        "s3",
+        "redis"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "import errno, os\nfd = os.open('/data/new.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\nprint(os.write(fd, b'hello'), os.fstat(fd).st_size)\nos.fsync(fd)\nprint(open('/data/new.txt').read())\nos.close(fd)\nfd = os.open('/data/new.txt', os.O_RDONLY)\ntry:\n    os.write(fd, b'x')\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nprint(os.read(fd, 9).decode())\nos.close(fd)",
+            "node": "const fsp = require('node:fs').promises\nlet h = await fsp.open('/data/new.txt', 'wx')\nconst { bytesWritten } = await h.write('hello')\nconsole.log(bytesWritten, (await h.stat()).size)\nawait h.sync()\nconsole.log(await fsp.readFile('/data/new.txt', 'utf8'))\nawait h.close()\nh = await fsp.open('/data/new.txt', 'r')\ntry {\n  await h.write('x')\n} catch (e) {\n  console.log(e.code)\n}\nconst { bytesRead, buffer } = await h.read(Buffer.alloc(9), 0, 9, null)\nconsole.log(buffer.toString('utf8', 0, bytesRead))\nawait h.close()"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "5 5\nhello\nEBADF\nhello\n"
+          }
+        },
+        {
+          "command": "cat /data/new.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "hello"
+          }
+        },
+        {
+          "program": {
+            "python": "import os, stat\nfor name, body in (('a', 'hello'), ('c', 'kept')):\n    with open(f'/data/{name}.txt', 'w') as f:\n        f.write(body)\nmoving = os.open('/data/a.txt', os.O_RDWR)\nremoved = os.open('/data/c.txt', os.O_RDONLY)\nos.rename('/data/a.txt', '/data/b.txt')\nwith open('/data/a.txt', 'w') as f:\n    f.write('new file')\nos.unlink('/data/c.txt')\nwith open('/data/c.txt', 'w') as f:\n    f.write('other')\nos.pwrite(moving, b'HE', 0)\nos.fchmod(moving, 0o600)\nos.utime(moving, (981173106, 981173107))\nos.close(moving)\nprint(os.read(removed, 9).decode())\nos.close(removed)\nfor name in 'abc':\n    print(name, open(f'/data/{name}.txt').read())",
+            "node": "const fsp = require('node:fs').promises\nawait fsp.writeFile('/data/a.txt', 'hello')\nawait fsp.writeFile('/data/c.txt', 'kept')\nconst moving = await fsp.open('/data/a.txt', 'r+')\nconst removed = await fsp.open('/data/c.txt', 'r')\nawait fsp.rename('/data/a.txt', '/data/b.txt')\nawait fsp.writeFile('/data/a.txt', 'new file')\nawait fsp.unlink('/data/c.txt')\nawait fsp.writeFile('/data/c.txt', 'other')\nawait moving.write('HE', 0)\nawait moving.chmod(0o600)\nawait moving.utimes(981173106, 981173107)\nawait moving.close()\nconsole.log(await removed.readFile('utf8'))\nawait removed.close()\nfor (const name of 'abc') console.log(name, await fsp.readFile(`/data/${name}.txt`, 'utf8'))"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "kept\na new file\nb HEllo\nc other\n"
+          }
+        },
+        {
+          "command": "stat -c '%a %Y' /data/b.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "600 981173107\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import errno, io, os, tempfile, zipfile\nfrom pathlib import Path\nfd = os.open('/data/z.zip', os.O_RDWR | os.O_CREAT)\nos.rename('/data/z.zip', '/data/archive.zip')\nwith os.fdopen(fd, 'wb') as f, zipfile.ZipFile(f, 'w') as z:\n    z.writestr('inner.txt', 'zipped')\ntry:\n    os.close(fd)\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nwith open('/data/archive.zip', 'rb') as f, zipfile.ZipFile(f) as z:\n    print(z.read('inner.txt').decode(), os.path.exists('/data/z.zip'))\nfd = os.open('/data/raw.bin', os.O_RDWR | os.O_CREAT)\nf = os.fdopen(fd, 'wb', 0)\nf.write(b'raw')\nos.fsync(fd)\nprint(f.fileno() == fd, open('/data/raw.bin', 'rb').read())\nf.close()\nwith open('/data/lines.txt', 'w') as f:\n    f.write('alpha\\nbeta\\n')\nwith open('/data/lines.txt') as f:\n    print(repr(f.readline(3)), f.readlines(1))\nwith open('/data/lines.txt', 'rb') as f:\n    print(repr(io.TextIOWrapper(f, encoding='utf-8').read()))\nPath('/data/touched').touch()\nfd, name = tempfile.mkstemp(dir='/data')\nos.write(fd, b'stemp')\nos.close(fd)\nwith tempfile.NamedTemporaryFile(dir='/data', delete=False) as f:\n    f.write(b'named')\nprint(Path('/data/touched').exists(), Path(name).read_text(), Path(f.name).read_text())"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "EBADF\nzipped False\nTrue b'raw'\n'alp' ['ha\\n']\n'alpha\\nbeta\\n'\nTrue stemp named\n"
+          }
+        },
+        {
+          "program": {
+            "node": "const fs = require('node:fs')\nconst fsp = fs.promises\nconst call = (name, ...args) =>\n  new Promise((resolve, reject) => {\n    fs[name](...args, (err, value) => (err ? reject(err) : resolve(value)))\n  })\nawait fsp.writeFile('/data/f.txt', 'abc')\nconst fd = await call('open', '/data/f.txt', 'r+')\nconst buffer = Buffer.alloc(3)\nconst n = await call('read', fd, buffer, 0, 3, 0)\nawait call('write', fd, 'XY', 0)\nawait call('fsync', fd)\nconsole.log(buffer.toString('utf8', 0, n), await call('readFile', fd, 'utf8'))\nawait call('close', fd)\nconst h = await fsp.open('/data/s.txt', 'w')\nawait fsp.rename('/data/s.txt', '/data/streamed.txt')\nawait new Promise((resolve, reject) => {\n  h.createWriteStream().on('error', reject).on('close', resolve).end('streamed')\n})\nconst chunks = []\nawait new Promise((resolve, reject) => {\n  fs.createReadStream('/data/streamed.txt')\n    .on('data', (chunk) => chunks.push(chunk))\n    .on('error', reject)\n    .on('close', resolve)\n})\nconst old = await fsp.access('/data/s.txt').then(() => 'there', () => 'gone')\nconsole.log(Buffer.concat(chunks).toString(), old)\nconst v = await fsp.open('/data/v.txt', 'w+')\nawait v.writev([Buffer.from('ab'), Buffer.from('cd')], 0)\nconst parts = [Buffer.alloc(1), Buffer.alloc(3)]\nconst { bytesRead } = await v.readv(parts, 0)\nawait v.close()\nconsole.log(bytesRead, Buffer.concat(parts).toString())\nconst w = await fsp.open('/data/w.txt', 'w')\nawait fsp.writeFile(w, 'via handle')\nawait w.close()\nconsole.log(await fsp.readFile('/data/w.txt', 'utf8'))"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "abc XYc\nstreamed gone\n4 abcd\nvia handle\n"
+          }
+        }
+      ]
     }
   ]
 }

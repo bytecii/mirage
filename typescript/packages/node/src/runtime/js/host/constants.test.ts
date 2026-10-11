@@ -26,8 +26,14 @@ const fs = createRequire(import.meta.url)('node:fs') as Record<string, unknown> 
   promises: Record<string, unknown>
 }
 
-// unwatchFile undoes a watch that could not have started on a mount.
-const PASSTHROUGH_CALLS: ReadonlySet<string> = new Set(['_toUnixTimestamp', 'unwatchFile'])
+// unwatchFile undoes a watch that could not have started on a mount, and
+// node's streams open, read and write through the patched `fs`.
+const PASSTHROUGH_CALLS: ReadonlySet<string> = new Set([
+  '_toUnixTimestamp',
+  'createReadStream',
+  'createWriteStream',
+  'unwatchFile',
+])
 
 function functions(target: Record<string, unknown>): string[] {
   return Object.keys(target).filter(

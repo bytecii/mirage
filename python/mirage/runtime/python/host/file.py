@@ -24,6 +24,7 @@ from mirage.errors.types import FsCondition
 from mirage.runtime.files import RuntimeFiles
 from mirage.runtime.handles import FileHandle
 from mirage.runtime.handles.mode import OpenMode, parse_mode
+from mirage.runtime.handles.types import FileFetch
 from mirage.runtime.open import apply_open
 from mirage.runtime.python.host.syscall import host_files, syscall
 from mirage.workspace.files import Files
@@ -61,6 +62,47 @@ def read_range(
     return syscall(adapter.read)(path, offset=offset, size=size, raw=raw)
 
 
+def open_handle(
+    adapter: RuntimeFiles, path: str, facts: OpenMode, fetch: FileFetch
+) -> FileHandle:
+    """Land an open's effect and make the handle it reads and writes
+    through. Nothing is read at open: the handle fetches what a read
+    lands in, and keeps what was written until it lands.
+
+    Args:
+        adapter (RuntimeFiles): the file adapter.
+        path (str): the mounted path.
+        facts (OpenMode): what the open asked for.
+        fetch (FileFetch): the handle's ranged read of its file.
+    """
+    row = apply_open(adapter, path, facts)
+    return FileHandle.opened(
+        path,
+        None if row is None else fetch,
+        size=0 if row is None else row.size,
+        writable=facts.writable,
+        append=facts.append,
+    )
+
+
+def land_writes(
+    adapter: RuntimeFiles, path: str, handle: FileHandle, fetch: FileFetch
+) -> None:
+    """Land a handle's writes on ``path``; ``fetch`` reads what landed.
+
+    Args:
+        adapter (RuntimeFiles): the file adapter.
+        path (str): the mounted path the writes land on.
+        handle (FileHandle): the handle that holds them.
+        fetch (FileFetch): the handle's ranged read of the stored bytes.
+    """
+    steps = handle.flush_plan()
+    if not steps:
+        return
+    syscall(adapter.flush)(path, steps)
+    handle.settle(fetch)
+
+
 def raw_mode(facts: OpenMode) -> str:
     """The mode ``io.FileIO`` reports for these facts.
 
@@ -86,11 +128,11 @@ class HandleRaw(io.RawIOBase):
     a flush through the layers above, comes down to.
 
     Args:
-        adapter (RuntimeFiles): the file adapter writes land through.
         handle (FileHandle): the handle it reads and writes through.
         readable (bool): whether the mode reads.
         writable (bool): whether the mode writes.
         mode (str): the mode ``io.FileIO`` would report.
+        land (Callable[[], None]): lands the handle's writes.
         release (Callable[[], None] | None): what a close gives back
             once its writes landed, the descriptor a stream over one
             owns; None for a plain open.
@@ -100,17 +142,17 @@ class HandleRaw(io.RawIOBase):
 
     def __init__(
         self,
-        adapter: RuntimeFiles,
         handle: FileHandle,
         readable: bool,
         writable: bool,
         mode: str,
+        land: Callable[[], None],
         release: Callable[[], None] | None = None,
         fd: int | None = None,
     ) -> None:
         super().__init__()
-        self._adapter = adapter
         self._handle = handle
+        self._land = land
         self._readable = readable
         self._writable = writable
         self._release = release
@@ -183,13 +225,7 @@ class HandleRaw(io.RawIOBase):
 
     def flush(self) -> None:
         super().flush()
-        steps = self._handle.flush_plan()
-        if not steps:
-            return
-        syscall(self._adapter.flush)(self.name, steps)
-        self._handle.settle(
-            functools.partial(read_range, self._adapter, self.name, True)
-        )
+        self._land()
 
     def close(self) -> None:
         if self.closed:
@@ -334,23 +370,20 @@ def open_file(
     adapter = host_files(files, loop)
     facts = parse_mode(mode)
     encoding = text_encoding(facts, encoding, errors, newline, buffering)
-    # The open's effect lands now, by the rule every entry point shares; a
-    # refusal leaves nothing open, so nothing flushes behind it.
-    row = apply_open(adapter, path, facts)
-    # Nothing is read at open: the handle fetches what a read lands
-    # in, and keeps what was written until a flush.
-    handle = FileHandle.opened(
+    handle = open_handle(
+        adapter,
         path,
-        None
-        if row is None
-        else functools.partial(read_range, adapter, path, facts.writable),
-        size=0 if row is None else row.size,
-        writable=facts.writable,
-        append=facts.append,
+        facts,
+        functools.partial(read_range, adapter, path, facts.writable),
+    )
+    land = functools.partial(
+        land_writes,
+        adapter,
+        path,
+        handle,
+        functools.partial(read_range, adapter, path, True),
     )
     raw = HandleRaw(
-        adapter, handle, facts.readable, facts.writable, raw_mode(facts)
+        handle, facts.readable, facts.writable, raw_mode(facts), land
     )
-    if facts.binary:
-        return layered(raw, facts, mode, buffering=buffering)
     return layered(raw, facts, mode, encoding, errors, newline, buffering)

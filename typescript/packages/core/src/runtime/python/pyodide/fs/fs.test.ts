@@ -639,20 +639,6 @@ _einval = errno.EINVAL
     expect(py.globals.get('_errno')).toBe(py.globals.get('_einval'))
   })
 
-  it('reports a new file and directory with the umask taken off', async () => {
-    const p = prefix()
-    await mountPrefix(p)
-    await py.runPythonAsync(`
-import os, stat
-open('${p}new.txt', 'w').close()
-os.mkdir('${p}newdir')
-_file = stat.S_IMODE(os.stat('${p}new.txt').st_mode)
-_dir = stat.S_IMODE(os.stat('${p}newdir').st_mode)
-`)
-    expect(py.globals.get('_file')).toBe(0o644)
-    expect(py.globals.get('_dir')).toBe(0o755)
-  })
-
   it('reports the owner and access time the mount gives, in 512-byte blocks', async () => {
     const p = prefix()
     const row = {

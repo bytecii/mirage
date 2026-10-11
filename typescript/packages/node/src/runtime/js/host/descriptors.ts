@@ -82,8 +82,6 @@ export function openMode(flags: number): OpenMode {
   }
 }
 
-/** One descriptor `open` handed out for a mounted path; `handle` is null
- * for a directory, which a descriptor may name but not read. */
 /**
  * One descriptor `open` handed out for a mounted path. `path` is the path
  * it names now (a rename through the patch moves it); `handle` is null for

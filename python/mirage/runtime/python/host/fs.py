@@ -1105,39 +1105,26 @@ class HostFs:
         return self._descriptors.open(virtual, flags)
 
     def close(self, fd: int) -> None:
-        if self._descriptors.get(fd) is None:
-            self._host.close(fd)
-            return
         self._descriptors.close(fd)
 
     def read(self, fd: int, n: int) -> bytes:
-        if self._descriptors.get(fd) is None:
-            return cast(bytes, self._host.read(fd, n))
         return self._descriptors.file(fd, True, False).read(n)
 
     def write(self, fd: int, data: Any) -> int:
-        if self._descriptors.get(fd) is None:
-            return cast(int, self._host.write(fd, data))
         payload = bytes(data)
         self._descriptors.file(fd, False, True).write(payload)
         return len(payload)
 
     def pread(self, fd: int, n: int, offset: int) -> bytes:
-        if self._descriptors.get(fd) is None:
-            return cast(bytes, self._host.pread(fd, n, offset))
         return self._descriptors.file(fd, True, False).pread(offset, n)
 
     def pwrite(self, fd: int, data: Any, offset: int) -> int:
-        if self._descriptors.get(fd) is None:
-            return cast(int, self._host.pwrite(fd, data, offset))
         payload = bytes(data)
         self._descriptors.file(fd, False, True).pwrite(offset, payload)
         return len(payload)
 
     def lseek(self, fd: int, pos: int, how: int) -> int:
-        desc = self._descriptors.get(fd)
-        if desc is None:
-            return cast(int, self._host.lseek(fd, pos, how))
+        desc = self._descriptors[fd]
         if desc.handle is None:
             return 0
         moved = desc.handle.seek(pos, how)
@@ -1146,67 +1133,53 @@ class HostFs:
         return moved
 
     def fstat(self, fd: int) -> _real_os.stat_result:
-        desc = self._descriptors.get(fd)
-        if desc is None:
-            return cast(_real_os.stat_result, self._host.fstat(fd))
+        desc = self._descriptors[fd]
         st = self._adapter.stat(desc.path)
         if desc.handle is not None:
             st = dataclasses.replace(st, size=desc.handle.size)
         return self._stat_of(desc.path, st)
 
     def fsync(self, fd: int) -> None:
-        desc = self._descriptors.get(fd)
-        if desc is None:
-            self._host.fsync(fd)
-            return
-        self._descriptors.land(desc)
-
-    def fdatasync(self, fd: int) -> None:
-        desc = self._descriptors.get(fd)
-        if desc is None:
-            self._host.fdatasync(fd)
-            return
-        self._descriptors.land(desc)
-
-    def fchmod(self, fd: int, mode: int) -> None:
-        if self._descriptors.get(fd) is None:
-            self._host.fchmod(fd, mode)
-            return
-        self.chmod(fd, mode)
-
-    def fchown(self, fd: int, uid: int, gid: int) -> None:
-        if self._descriptors.get(fd) is None:
-            self._host.fchown(fd, uid, gid)
-            return
-        self.chown(fd, uid, gid)
+        self._descriptors.land(self._descriptors[fd])
 
     def ftruncate(self, fd: int, length: int) -> None:
-        if self._descriptors.get(fd) is None:
-            self._host.ftruncate(fd, length)
-            return
         self._descriptors.file(fd, False, True).truncate(length)
 
-    def fdopen(
-        self,
-        fd: int,
-        mode: str = "r",
-        buffering: int = -1,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        """A file object over a descriptor; a mounted one's reads and
-        writes go through the handle its ``open`` made.
+    # A descriptor in a path slot names its file, so these are the path
+    # calls; a mount keeps no metadata apart from the data a sync lands.
+    fchmod = chmod
+    fchown = chown
+    fdatasync = fsync
+
+    def fdopen(self, fd: int, *args: Any, **kwargs: Any) -> Any:
+        """A file object over a mounted descriptor, whose reads and writes
+        go through the handle its ``open`` made.
 
         Args:
             fd (int): the descriptor.
-            mode (str): the file object's mode.
-            buffering (int): the host's buffering, for a host descriptor.
             *args (Any): the rest of ``io.open``'s arguments.
             **kwargs (Any): the same, by name.
         """
-        if self._descriptors.get(fd) is None:
-            return self._host.fdopen(fd, mode, buffering, *args, **kwargs)
-        return self._descriptors.stream(fd, mode, buffering, *args, **kwargs)
+        return self._descriptors.stream(fd, *args, **kwargs)
+
+
+def _by_descriptor(router: HostFs, verb: str) -> Callable[..., Any]:
+    """`verb` answering for a descriptor the routed ``open`` handed out,
+    and leaving every other number to the host.
+
+    Args:
+        router (HostFs): the entry point whose descriptors answer.
+        verb (str): the os name being wrapped.
+    """
+    mounted = syscall(getattr(router, verb))
+    real = getattr(router._host, verb)
+
+    def call(fd: Any, *args: Any, **kwargs: Any) -> Any:
+        if router.descriptors.get(fd) is None:
+            return real(fd, *args, **kwargs)
+        return mounted(fd, *args, **kwargs)
+
+    return call
 
 
 def _refusal(
@@ -1300,9 +1273,12 @@ def os_routing(router: HostFs) -> dict[str, Callable[..., Any]]:
         dict[str, Callable[..., Any]]: os name to replacement function.
     """
     table: dict[str, Callable[..., Any]] = {}
-    for verb in (*ROUTED_CALLS, *DESCRIPTOR_CALLS):
+    for verb in ROUTED_CALLS:
         if hasattr(_real_os, verb):
             table[verb] = syscall(getattr(router, verb))
+    for verb in DESCRIPTOR_CALLS:
+        if hasattr(_real_os, verb):
+            table[verb] = _by_descriptor(router, verb)
     for verb, condition in REFUSED_CALLS.items():
         if hasattr(_real_os, verb):
             table[verb] = syscall(_refusal(router, verb, condition))
