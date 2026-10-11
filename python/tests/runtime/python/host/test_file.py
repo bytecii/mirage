@@ -15,7 +15,6 @@
 import asyncio
 import errno
 import io
-import zipfile
 
 import pytest
 
@@ -275,6 +274,7 @@ class TestOpenFile:
         with pytest.raises(ValueError):
             f.read()
         assert _read(ops, "/data/dir/f.bin") == b"body"
+
 
 async def _read_tally(accessor, path: PathSpec, **kwargs) -> bytes:
     return b"RENDERED"

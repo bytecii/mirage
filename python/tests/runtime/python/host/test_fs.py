@@ -17,7 +17,6 @@ import os
 import shutil
 import stat as stat_mod
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -532,7 +531,6 @@ def _extra_args(verb):
 
 
 class TestDescriptors:
-
     def test_a_policy_that_refuses_reads_still_lets_an_open_file_go(self):
         ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
         run(ws.vfs.write("/data/f.txt", b"body"))
@@ -710,6 +708,7 @@ class TestProcessPatch:
             assert os.listdir(str(tmp_path)) == ["host.txt"]
             assert isinstance(os.stat(str(tmp_path)), os.stat_result)
             assert os.path.exists(str(tmp_path / "host.txt")) is True
+
 
 class TestRmtree:
     @staticmethod
