@@ -36,6 +36,7 @@ import {
   normalizeUser,
   toJsonBytes,
   type NormalizedProjectIssue,
+  unsearchedText,
 } from './normalize.ts'
 import {
   cycleFilename,
@@ -184,6 +185,7 @@ async function listIssues(
         extra: {
           issue_key: pickString(issue, 'identifier'),
           json_size: toJsonBytes(normalizeIssue(issue)).length,
+          ...(accessor.contentSearch ? { unsearched: unsearchedText(issue) } : {}),
         },
       }),
     ]

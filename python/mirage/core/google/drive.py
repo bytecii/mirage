@@ -254,6 +254,7 @@ async def search_files(
     token_manager: TokenManager,
     text: str,
     parent_ids: list[str],
+    mime_type: str | None = None,
     page_size: int = 1000,
 ) -> tuple[list[str], bool]:
     """Ids of the files in ``parent_ids`` Drive full-text search names.
@@ -263,20 +264,27 @@ async def search_files(
     Args:
         token_manager (TokenManager): OAuth2 token manager.
         text (str): the text searched for.
-        parent_ids (list[str]): the folders whose children are searched.
+        parent_ids (list[str]): the folders whose children are searched,
+            or none for every folder.
+        mime_type (str | None): the one MIME type searched.
         page_size (int): results per page.
 
     Returns:
         tuple[list[str], bool]: the file ids, and whether Drive searched
         every corpus it was asked for.
     """
-    parents = " or ".join(
-        f"'{escape_query_value(p)}' in parents" for p in parent_ids
-    )
-    q = (
-        f"fullText contains '{escape_query_value(text)}'"
-        f" and trashed=false and ({parents})"
-    )
+    parts = [
+        f"fullText contains '{escape_query_value(text)}'",
+        "trashed=false",
+    ]
+    if parent_ids:
+        parents = " or ".join(
+            f"'{escape_query_value(p)}' in parents" for p in parent_ids
+        )
+        parts.append(f"({parents})")
+    if mime_type:
+        parts.append(f"mimeType='{mime_type}'")
+    q = " and ".join(parts)
     ids: list[str] = []
     complete = True
     page_token: str | None = None

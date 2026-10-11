@@ -25,10 +25,15 @@ import type { LinearTransport } from '../core/linear/client.ts'
 export class LinearAccessor extends Accessor {
   readonly transport: LinearTransport
   readonly teamIds: readonly string[] | null
+  readonly contentSearch: boolean
 
-  constructor(transport: LinearTransport, options: { teamIds?: readonly string[] } = {}) {
+  constructor(
+    transport: LinearTransport,
+    options: { teamIds?: readonly string[]; contentSearch?: boolean } = {},
+  ) {
     super()
     this.transport = transport
     this.teamIds = options.teamIds ?? null
+    this.contentSearch = options.contentSearch === true
   }
 }

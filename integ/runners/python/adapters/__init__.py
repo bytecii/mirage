@@ -795,21 +795,30 @@ class GwsService:
     def gdocs_vfs(self) -> GDocsVFS:
         return GDocsVFS(
             GDocsConfig(
-                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+                client_id="integ",
+                refresh_token=GWS_TOKEN,
+                api_base=self.url,
+                content_search=True,
             )
         )
 
     def gsheets_vfs(self) -> GSheetsVFS:
         return GSheetsVFS(
             GSheetsConfig(
-                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+                client_id="integ",
+                refresh_token=GWS_TOKEN,
+                api_base=self.url,
+                content_search=True,
             )
         )
 
     def gslides_vfs(self) -> GSlidesVFS:
         return GSlidesVFS(
             GSlidesConfig(
-                client_id="integ", refresh_token=GWS_TOKEN, api_base=self.url
+                client_id="integ",
+                refresh_token=GWS_TOKEN,
+                api_base=self.url,
+                content_search=True,
             )
         )
 
@@ -1554,6 +1563,9 @@ class TrelloService:
                     "api_key": "integ-key",
                     "api_token": "integ-token",
                     "base_url": self.base,
+                    # The fake answers /search, so exercise grep/rg
+                    # narrowing in the battery.
+                    "content_search": True,
                     **mount.get("config", {}),
                 }
             )
@@ -1638,7 +1650,13 @@ class LinearService:
 
     def vfs(self, mount: dict) -> LinearVFS:
         return LinearVFS(
-            LinearConfig(api_key="integ-key", base_url=self.graphql)
+            LinearConfig(
+                api_key="integ-key",
+                base_url=self.graphql,
+                # The fake answers searchIssues, so exercise grep/rg
+                # narrowing in the battery.
+                content_search=True,
+            )
         )
 
     def cli_installs(self) -> dict[str, tuple[CLI, dict[str, object]]]:

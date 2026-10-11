@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {
+      "id": "linear_search_reads_what_linear_names",
+      "seq": 944000,
+      "targets": [
+        "cli-linear"
+      ],
+      "command": "grep -rlw GraphQL /issues; grep -rlw nowhere /issues; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "/issues/teams/PLAT__Platform__team_plat/issues/PLAT-1__iss_plat_1/issue.json\nrc=1\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

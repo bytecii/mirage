@@ -37,6 +37,7 @@ from mirage.core.linear.normalize import (
     normalize_user,
     project_issue_rows,
     to_json_bytes,
+    unsearched_text,
 )
 from mirage.core.linear.pathing import (
     cycle_filename,
@@ -171,6 +172,12 @@ async def _list_issues(
     entries = []
     for issue in issues:
         dirname = issue_dirname(issue)
+        extra: dict[str, Any] = {
+            "issue_key": issue.get("identifier"),
+            "json_size": len(to_json_bytes(normalize_issue(issue))),
+        }
+        if accessor.config.content_search:
+            extra["unsearched"] = unsearched_text(issue)
         entries.append(
             (
                 dirname,
@@ -180,12 +187,7 @@ async def _list_issues(
                     resource_type="linear/issue",
                     remote_time=issue.get("updatedAt") or "",
                     vfs_name=dirname,
-                    extra={
-                        "issue_key": issue.get("identifier"),
-                        "json_size": len(
-                            to_json_bytes(normalize_issue(issue))
-                        ),
-                    },
+                    extra=extra,
                 ),
             )
         )

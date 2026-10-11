@@ -23,3 +23,7 @@ class TrelloConfig(BaseModel):
     workspace_id: str | None = None
     board_ids: list[str] | None = None
     base_url: str = "https://api.trello.com/1"
+    # Let grep -w and rg -w read only the cards Trello's search names, and
+    # those whose other fields hold the word (`files_containing`). Off by
+    # default: Trello indexes a write some time after it lands.
+    content_search: bool = False

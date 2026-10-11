@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {
+      "id": "trello_search_reads_what_trello_names",
+      "seq": 944100,
+      "targets": [
+        "trello"
+      ],
+      "command": "grep -rlw Safari /board; grep -rlw trello /board | grep -c card.json; grep -rlw nowhere /board; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "/board/workspaces/Strukto__org_strukto/boards/Roadmap_Q3__brd_roadmap/lists/In_Progress__lst_doing/cards/Fix_login_redirect_loop__crd_login/card.json\n/board/workspaces/Strukto__org_strukto/boards/Roadmap_Q3__brd_roadmap/lists/In_Progress__lst_doing/cards/Fix_login_redirect_loop__crd_login/comments.jsonl\n6\nrc=1\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

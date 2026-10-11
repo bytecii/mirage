@@ -19,6 +19,7 @@ from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.linear.config import LinearConfig
 from mirage.core.linear.read import read as _read
 from mirage.core.linear.readdir import readdir as _readdir
+from mirage.core.linear.search import files_containing as _files_containing
 from mirage.core.linear.stat import stat as _stat
 from mirage.types import FileStat, PathSpec, VFSName
 from mirage.utils.ranges import slice_window
@@ -36,11 +37,27 @@ class LinearVFS(BaseVFS):
     sizes_always_known: bool = True
     prompt: str = PROMPT
     write_prompt: str = WRITE_PROMPT
+    # Linear's search answers for issues; comments and the team's other
+    # files are always read.
+    searchable = ("teams/*/issues/*/issue.json",)
 
     def __init__(self, config: LinearConfig) -> None:
         super().__init__()
         self.config = config
         self.accessor = LinearAccessor(self.config)
+
+    async def files_containing(
+        self,
+        text: str,
+        under: list[PathSpec],
+        *,
+        whole_word: bool,
+        ignore_case: bool,
+        index: IndexCacheStore = NULL_INDEX,
+    ) -> list[PathSpec] | None:
+        if not whole_word or not self.config.content_search:
+            return None
+        return await _files_containing(self.accessor, text, under, index)
 
     async def readdir(
         self, path: PathSpec, index: IndexCacheStore = NULL_INDEX

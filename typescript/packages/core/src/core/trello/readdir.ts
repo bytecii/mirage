@@ -33,6 +33,7 @@ import {
   normalizeMember,
   normalizeWorkspace,
   toJsonBytes,
+  unsearchedText,
 } from './normalize.ts'
 import {
   boardDirname,
@@ -350,7 +351,10 @@ async function listCards(
         resourceType: 'trello/card',
         remoteTime: pickString(card, 'dateLastActivity'),
         vfsName: dirname,
-        extra: { json_size: toJsonBytes(normalizeCard(card)).byteLength },
+        extra: {
+          json_size: toJsonBytes(normalizeCard(card)).byteLength,
+          ...(accessor.contentSearch ? { unsearched: unsearchedText(card) } : {}),
+        },
       }),
     ]
   })

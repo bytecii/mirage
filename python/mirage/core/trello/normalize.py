@@ -97,3 +97,23 @@ def normalize_comment(
 
 def to_json_bytes(value: dict[str, Any] | list[Any]) -> bytes:
     return json_bytes(value)
+
+
+# The fields of a card's JSON Trello's search reads; every other field is
+# checked against the listing instead (``unsearched_text``).
+SEARCHED_FIELDS = ("card_name", "desc")
+
+
+def unsearched_text(card: dict[str, Any]) -> str:
+    """What a card's ``card.json`` holds beyond what Trello's search reads,
+    lowercased: every other field as the file renders it.
+
+    Args:
+        card (dict[str, Any]): the card as the listing fetched it.
+    """
+    rest = {
+        key: value
+        for key, value in normalize_card(card).items()
+        if key not in SEARCHED_FIELDS
+    }
+    return to_json_bytes(rest).decode().lower()

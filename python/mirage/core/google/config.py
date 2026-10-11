@@ -68,3 +68,11 @@ class GoogleConfig(BaseModel):
             "GoogleConfig needs either access_token (a token or a provider "
             "callable) or both client_id and refresh_token"
         )
+
+
+class GoogleAppConfig(GoogleConfig):
+    # Let grep -w and rg -w read only the files Drive full-text search
+    # names (`files_containing`). Off by default: Drive indexes a write
+    # some time after it lands, and searches a file's text rather than
+    # the JSON the mount renders it as.
+    content_search: bool = False
