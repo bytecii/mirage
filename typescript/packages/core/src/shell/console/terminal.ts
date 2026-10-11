@@ -172,9 +172,27 @@ export class JobSide extends JobConsole {
  */
 export class JobOutput extends JobConsole {
   recorder: JobConsole | null = null
+  private readonly taken: JobConsole[] = []
 
   constructor(public target: JobConsole) {
     super()
+  }
+
+  /**
+   * Send what jobs write into `recorder` until the returned call puts back
+   * what was there before. That call also ends every recording begun
+   * inside this one: a run its caller abandoned (timeout's) can end after
+   * the caller has, and then has nothing left to put back.
+   */
+  record(recorder: JobConsole): () => void {
+    const held = this.recorder
+    const depth = this.taken.push(recorder) - 1
+    this.recorder = recorder
+    return () => {
+      if (this.taken[depth] !== recorder) return
+      this.taken.length = depth
+      this.recorder = held
+    }
   }
 
   /** Write what a job wrote where it belongs now. */

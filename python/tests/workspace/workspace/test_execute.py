@@ -299,7 +299,7 @@ async def test_policy_reads_the_ambient_sessions_cwd():
     seen: list[str] = []
 
     def policy(ctx):
-        seen.append(ctx.cwd)
+        seen.append(ctx.session.cwd())
         return None
 
     vfs = RAMVFS()

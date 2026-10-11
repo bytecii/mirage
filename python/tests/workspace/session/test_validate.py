@@ -30,16 +30,16 @@ def _rules(allow=None, ask=(), deny=()) -> AdmissionRules:
 
 def test_a_rule_on_a_builtin_the_allow_list_omits_is_refused():
     # The whole point of the check: `rm` reads as guarded in the
-    # document and is not guarded at all, because it was never
-    # installed, so nothing ever reaches the rule.
-    with pytest.raises(PolicyError, match="never installs"):
+    # document and is not guarded at all, because the allow list
+    # refuses it first, so nothing ever reaches the rule.
+    with pytest.raises(PolicyError, match="never allows"):
         check_rules(
             _rules(
                 allow=("ls", "cat"),
                 deny=(CommandRule(reason="no", commands=("rm",)),),
             )
         )
-    with pytest.raises(PolicyError, match="never installs"):
+    with pytest.raises(PolicyError, match="never allows"):
         check_rules(
             _rules(
                 allow=("ls",),

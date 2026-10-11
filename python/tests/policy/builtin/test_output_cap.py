@@ -23,6 +23,7 @@ from mirage.policy.builtin.output_cap import (
 )
 from mirage.policy.types import VfsResultContext
 from mirage.types import Limit, OnExceed, PathSpec, Producer
+from mirage.workspace.dispatcher.constants import CALLS
 
 
 def test_defaults():
@@ -158,7 +159,7 @@ async def test_output_cap_policy_answers_post_vfs_from_the_op_table():
     )
     capped = await policy.post_vfs(
         VfsResultContext(
-            op="read",
+            call=CALLS["read"],
             path=PathSpec.from_str_path("/a/x"),
             write=False,
             prefix="/a/",
@@ -169,7 +170,7 @@ async def test_output_cap_policy_answers_post_vfs_from_the_op_table():
     assert capped.max_bytes == 4
     silent = await policy.post_vfs(
         VfsResultContext(
-            op="write",
+            call=CALLS["write"],
             path=PathSpec.from_str_path("/a/x"),
             write=True,
             prefix="/a/",

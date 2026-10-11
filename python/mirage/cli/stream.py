@@ -13,7 +13,7 @@ from mirage.cli.client import DaemonClient
 from mirage.cli.output import exit_code_from_response
 from mirage.io.cooperative import CHUNK_SIZE
 from mirage.types import Refusal
-from mirage.workspace.tools.io_text import SaidWindow
+from mirage.workspace.tools.io_text import refusal_line
 
 MAX_RECORD_BYTES = 1024 * 1024
 
@@ -190,20 +190,17 @@ async def stream_shell(
 
     captured_stdout = bytearray()
     captured_stderr = bytearray()
-    said = SaidWindow()
 
     async def stdout(data: bytes) -> None:
         if json_output:
             captured_stdout.extend(data)
         else:
-            said.add(data, False)
             await _write(stdout_fd, data)
 
     async def stderr(data: bytes) -> None:
         if json_output:
             captured_stderr.extend(data)
         else:
-            said.add(data, True)
             await _write(stderr_fd, data)
 
     try:
@@ -232,11 +229,7 @@ async def stream_shell(
         raise RuntimeError(f"shell failed: {terminal['error']}")
     if terminal["status"] == "canceled":
         return 130
-    line = (
-        ""
-        if json_output
-        else said.refusal_line(refusal_of(terminal["result"]))
-    )
+    line = "" if json_output else refusal_line(refusal_of(terminal["result"]))
     if line:
         await _write(stderr_fd, line.encode())
     if json_output:

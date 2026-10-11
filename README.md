@@ -127,7 +127,7 @@ command on the line can be redirected to a configured runtime, so Python might
 run in-process with [Monty](https://pydantic.dev/articles/pydantic-monty) while
 another command, say `kubectl`, is sent to a remote machine over SSH. Which runtime
 serves a given line can be decided by a
-[scripted runtime router](https://docs.mirage.strukto.ai/home/route-policy).
+[scripted runtime router](https://docs.mirage.strukto.ai/home/policy/route-policy).
 
 |                | Runtimes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -143,9 +143,9 @@ hidden file is not merely unreadable but absent from the filesystem the agent se
 For anything those rules cannot express, a profile can name a policy script that runs
 at the gate on every command and answers allow, deny or ask itself, though like every
 rule it can only restrict and never grant. Separately, a host can register its own
-policies on the [policy engine](https://docs.mirage.strukto.ai/home/policy-engine), an
+policies on the [policy engine](https://docs.mirage.strukto.ai/home/policy/policies), an
 ordered stack the workspace consults on every command, VFS op and session write. See
-the [permissions docs](https://docs.mirage.strukto.ai/home/permissions).
+the [policy docs](https://docs.mirage.strukto.ai/home/policy/overview).
 
 ## Authentication
 

@@ -106,7 +106,6 @@ export class JobRoute extends JobOutput {
     readonly session: SessionState,
   ) {
     super(outer)
-    this.recorder = recorder
     this.owner = recorder.owner
   }
 
@@ -444,6 +443,7 @@ export async function handleRedirect(
   session.terminalOutput = terminalOutput && outputs.get(1) === TO_STDOUT
   const jobOutput = session.jobOutput
   const route = new JobRoute(recorder, outputs, jobOutput ?? session.tty.jobs, dispatch, session)
+  const leave = route.record(recorder)
   session.jobOutput = route
   const unbound = {
     ...(claimed.has(1) ? EXEC_STREAM_UNBOUND[1] : {}),
@@ -488,7 +488,7 @@ export async function handleRedirect(
     }
   } finally {
     Object.assign(session, held)
-    route.recorder = null
+    leave()
     session.jobOutput = jobOutput
     for (const file of files) file.emit = null
     session.terminalOutput = terminalOutput

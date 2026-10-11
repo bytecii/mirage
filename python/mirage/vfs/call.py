@@ -15,7 +15,7 @@
 from collections.abc import Callable, Collection, Mapping
 from typing import Any, TypeVar
 
-from mirage.vfs.types import Declaration, Effect, Target
+from mirage.vfs.types import Effect, Target, VfsCall
 
 Fn = TypeVar("Fn", bound=Callable[..., Any])
 
@@ -72,13 +72,15 @@ def vfs_call(
                 f"{fn.__name__}: only {', '.join(names)} may declare"
                 f" {effect.name}"
             )
-        setattr(fn, _MARK, Declaration(effect, target, creates, subtree))
+        setattr(
+            fn, _MARK, VfsCall(fn.__name__, effect, target, creates, subtree)
+        )
         return fn
 
     return mark
 
 
-def declared(cls: type, name: str) -> Declaration | None:
+def declared(cls: type, name: str) -> VfsCall | None:
     """What ``cls`` declares for ``name``, None when not dispatchable.
 
     The first class in the method resolution order that marks ``name``
@@ -90,12 +92,12 @@ def declared(cls: type, name: str) -> Declaration | None:
     """
     for klass in cls.__mro__:
         mark = getattr(klass.__dict__.get(name), _MARK, None)
-        if isinstance(mark, Declaration):
+        if isinstance(mark, VfsCall):
             return mark
     return None
 
 
-def declared_calls(cls: type) -> dict[str, Declaration]:
+def declared_calls(cls: type) -> dict[str, VfsCall]:
     """Every name ``cls`` marks dispatchable, to what it declares.
 
     Args:
@@ -107,7 +109,7 @@ def declared_calls(cls: type) -> dict[str, Declaration]:
 
 
 def call_names(
-    calls: Mapping[str, Declaration],
+    calls: Mapping[str, VfsCall],
     *,
     effects: Collection[Effect] = tuple(Effect),
     targets: Collection[Target] = tuple(Target),
@@ -116,7 +118,7 @@ def call_names(
     """The names in ``calls`` whose declaration matches every filter.
 
     Args:
-        calls (Mapping[str, Declaration]): names to what they declare.
+        calls (Mapping[str, VfsCall]): names to what they declare.
         effects (Collection[Effect]): the effects to keep.
         targets (Collection[Target]): the targets to keep.
         creates (bool | None): keep only creating (True) or only

@@ -50,17 +50,18 @@ The script reads one global, `ctx`:
   ],
   "command": "python3",
   "builtin": true,
-  "cwd": "/",
-  "env": {},
   "session_id": "019fb2fc-19a3-77cf-bbbe-c76069eed523",
   "agent_id": "",
-  "mounts": ["/.bash_history/", "/data/", "/dev/", "/"]
+  "session": {"cwd": "/", "env": {}},
+  "mounts": ["/.bash_history", "/data", "/dev", "/usr/bin"]
 }
 ```
 
 `commands` has one entry per pipeline stage; `command` and `builtin`
-mirror the first. It round-trips through JSON (`RouteContext.from_dict`)
-for tests.
+mirror the first. `session` is the session's cwd and environment, and
+`mounts` the mount roots the session can see. A coded policy reads the
+same through `ctx.session` and `ctx.ns`. The line's own fields
+round-trip through JSON (`RouteContext.from_dict`) for tests.
 
 ## Output: the verdict
 
@@ -92,7 +93,7 @@ argument skips the scripts.
 ## Admit, then route
 
 The route policy is the built-in answer to the
-[policy's](/home/policy/policies#shell-hooks) `pre_execute` hook, asked before
+[policy's](/home/policy/policies#lifecycle) `pre_execute` method, asked before
 any coded policy. A coded policy places a line the same way:
 
 ```python

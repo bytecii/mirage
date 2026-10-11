@@ -206,40 +206,40 @@ describe('explain', () => {
     expect(asked?.reason).toBe('pushes need sign-off')
   })
 
-  it('reports a word the session cannot see as deny at 127', async () => {
-    // Both refusals the allow list produces are DENY with no rule; the
-    // exit code is what separates a head word the session cannot see
-    // from a line no allow entry covers.
+  it('reports a word the allow list leaves out as a deny at 126', async () => {
+    // The allow list is the profile's policy: a word it leaves out is a
+    // DENY with no rule, refused in bash's words like any other.
     const w = await ws()
     const [missing] = await judged(w, 'gerp x', 's')
     expect(missing?.outcome).toBe(Outcome.DENY)
     expect(missing?.rule).toBeNull()
     expect(missing?.source).toBe('commands.allow')
-    expect(missing?.exitCode).toBe(127)
-    expect(missing?.stderr).toBe('gerp: command not found\n')
+    expect(missing?.exitCode).toBe(126)
+    expect(missing?.stderr).toBe('gerp: Permission denied\n')
   })
 
-  it.each([
-    ['echo x | xargs gerp', 'xargs: gerp: No such file or directory\n'],
-    ['timeout 5 gerp x', "timeout: failed to run command 'gerp': No such file or directory\n"],
-  ])('reports a hidden word a builtin runs in its words: %s', async (line, said) => {
-    // xargs and timeout look the name up before they run it, as GNU's
-    // exec does, so the run reports a word the session cannot see in
-    // their words, and the dry run must say what the run says.
-    const parser = await getTestParser()
-    const profile = parseSessionProfile({ commands: { allow: ['echo', 'xargs', 'timeout'] } })
-    const w = new Workspace(
-      { '/data': new RAMVFS() },
-      { mode: MountMode.WRITE, shellParser: parser, profiles: { r: profile } },
-    )
-    open.push(w)
-    w.createSession('s', { profile: 'r' })
-    const ran = await w.shell(line, { sessionId: 's' })
-    const missing = (await judged(w, line, 's')).at(-1)
-    expect([ran.exitCode, DEC.decode(ran.stderr)]).toEqual([127, said])
-    expect([missing?.exitCode, missing?.stderr]).toEqual([127, said])
-    expect([missing?.command, missing?.source]).toEqual(['gerp', 'commands.allow'])
-  })
+  it.each(['timeout 5 sort /data/a.txt', 'eval sort /data/a.txt'])(
+    'refuses a word the allow list leaves out where it runs: %s',
+    async (line) => {
+      // A builtin that runs a word hands it to the gate, which refuses it
+      // there, and the dry run says what the run says.
+      const parser = await getTestParser()
+      const profile = parseSessionProfile({ commands: { allow: ['timeout', 'eval'] } })
+      const w = new Workspace(
+        { '/data': new RAMVFS() },
+        { mode: MountMode.WRITE, shellParser: parser, profiles: { r: profile } },
+      )
+      open.push(w)
+      await w.vfs.write('/data/a.txt', 'a\n')
+      w.createSession('s', { profile: 'r' })
+      const ran = await w.shell(line, { sessionId: 's' })
+      const missing = (await judged(w, line, 's')).at(-1)
+      const said = 'sort: Permission denied\n'
+      expect([ran.exitCode, DEC.decode(ran.stderr)]).toEqual([126, said])
+      expect([missing?.exitCode, missing?.stderr]).toEqual([126, said])
+      expect([missing?.command, missing?.source]).toEqual(['sort', 'commands.allow'])
+    },
+  )
 
   it('reads every command of a line', async () => {
     const w = await ws()
@@ -259,8 +259,8 @@ describe('explain', () => {
   })
 
   it('refuses the whole line only for a verdict', async () => {
-    // A word the session cannot see fails where it stands and the rest of
-    // the line runs; a rule's refusal holds the whole line, whatever
+    // A word the allow list leaves out fails where it stands and the rest
+    // of the line runs; a rule's refusal holds the whole line, whatever
     // failed before it.
     const w = await ws()
     let said = await w.explain('gerp x; echo ok', 's')
@@ -271,7 +271,7 @@ describe('explain', () => {
       gerp !== undefined && 'command' in gerp
         ? [gerp.outcome, gerp.exitCode, gerp.stderr, gerp.source]
         : null,
-    ).toEqual([Outcome.DENY, 127, 'gerp: command not found\n', 'commands.allow'])
+    ).toEqual([Outcome.DENY, 126, 'gerp: Permission denied\n', 'commands.allow'])
     const line = 'gerp x; rm /data/prod/x.txt'
     said = await w.explain(line, 's')
     ran = await w.shell(line, { sessionId: 's' })
@@ -310,14 +310,13 @@ describe('explain', () => {
     expect(await w.vfs.readdir('/data')).toContain('/data/a.txt')
   })
 
-  it('leaves a line alone when a word is simply not installed', async () => {
-    // A head word the session cannot see is a routing miss, not a
-    // verdict, so it stays bash. A typo must not cost an agent the work
-    // the line already did.
+  it('leaves a line alone when the allow list leaves a word out', async () => {
+    // The allow list refuses a word where it stands, not the line. A typo
+    // must not cost an agent the work the line already did.
     const w = await ws()
     const ran = await w.shell('rm /data/a.txt && gerp x', { sessionId: 's' })
-    expect(ran.exitCode).toBe(127)
-    expect(DEC.decode(ran.stderr)).toBe('gerp: command not found\n')
+    expect(ran.exitCode).toBe(126)
+    expect(DEC.decode(ran.stderr)).toBe('gerp: Permission denied\n')
     expect(await w.vfs.readdir('/data')).not.toContain('/data/a.txt')
   })
 
@@ -435,7 +434,7 @@ async function sealedWs(): Promise<Workspace> {
 class NoCat implements Policy {
   preCommand(ctx: CommandContext): Action | null {
     if (ctx.command !== 'cat') return null
-    return { kind: 'deny', reason: 'cat is refused by policy', scope: 'command' }
+    return { kind: 'deny', reason: 'cat is refused by policy' }
   }
 }
 
@@ -462,12 +461,11 @@ describe('prejudge', () => {
     expect(await w.vfs.readdir('/data')).toContain('/data/a.txt')
   })
 
-  it('holds the line for a coded policy with no document', async () => {
-    // A session with no permissions document still runs under whatever
-    // policies the deployment registered, and one is always registered
-    // (MountRootPolicy). Returning early on `commands === null` held the
-    // line for a document and left a policy with the half-line behavior
-    // the pass exists to remove.
+  it('lets a coded policy answer as the command runs', async () => {
+    // The pass that judges a line before it runs asks the profile's
+    // rules alone; a policy written in code answers preCommand once, as
+    // its command runs, so the commands before it have run. A line it
+    // refuses whole is preExecute's.
     const parser = await getTestParser()
     const w = new Workspace(
       { '/data': new RAMVFS() },
@@ -480,7 +478,7 @@ describe('prejudge', () => {
     expect(ran.exitCode).not.toBe(0)
     expect(DEC.decode(ran.stderr)).toBe('cat: Permission denied\n')
     expect(ran.refusal?.reason).toBe('cat is refused by policy')
-    expect(await w.vfs.readdir('/data')).toContain('/data/a.txt')
+    expect(await w.vfs.readdir('/data')).not.toContain('/data/a.txt')
   })
 
   it('does not end the scan when an ask is answered inline', async () => {
@@ -1376,7 +1374,11 @@ describe('explain answers and the op form', () => {
         { kind: 'ask', reason: 'sign-off', policy: 'AskRm' },
         { kind: 'deny', reason: 'no', policy: 'DenyRm' },
       ])
-      expect([said.exitCode, said.refusal?.reason]).toEqual([126, 'no'])
+      // A policy's refusal is the command's: the line itself runs.
+      expect(
+        rm !== undefined && 'command' in rm ? [rm.exitCode, rm.refusal?.reason] : null,
+      ).toEqual([126, 'no'])
+      expect([said.outcome, said.exitCode]).toEqual([Outcome.ALLOW, 0])
       expect(await new Session(ws, null).explain.shell('rm /data/x')).toEqual(said)
     } finally {
       await ws.close()
@@ -1392,12 +1394,9 @@ describe('explain answers and the op form', () => {
       const said = await ws.explain('echo hi')
       const ran = await ws.shell('echo hi')
       const [echo] = said.node.children
-      expect([
-        said.outcome,
-        echo !== undefined && 'command' in echo ? echo.outcome : null,
-        said.refusal?.kind,
-      ]).toEqual([Outcome.DENY, Outcome.DENY, 'failed'])
-      expect([said.exitCode, said.stderr]).toEqual([ran.exitCode, DEC.decode(ran.stderr)])
+      if (echo === undefined || !('command' in echo)) throw new Error('no command node')
+      expect([echo.outcome, echo.refusal?.kind]).toEqual([Outcome.DENY, 'failed'])
+      expect([echo.exitCode, echo.stderr]).toEqual([ran.exitCode, DEC.decode(ran.stderr)])
     } finally {
       await ws.close()
     }

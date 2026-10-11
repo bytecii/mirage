@@ -1,32 +1,38 @@
 ---
 title: Policy
 sidebarTitle: Overview
-description: Control everything an agent does in the virtual terminal, in code or in scripts, with the whole context in hand.
+description: Decide what an agent may run, read, write and set in the virtual terminal.
 icon: /images/policy-icon.svg
 ---
 
-A policy controls everything an agent does in the virtual terminal: every
-line, every command, every file it touches and every env write. It can
-refuse, ask a host, move a line to another runtime, or bound what comes
-back.
+Policy decides what an agent may do in the virtual terminal: the commands
+it runs, the files it reads and writes, and the variables it sets. A
+policy is a class with a pair of methods for each thing an agent does:
 
-Each hook gets the whole context: the line and its commands, the words
-after expansion, the paths, cwd, session, env and mounts, and after a call
-its result. A policy can even read the files a command names before it
-decides. The hook returns an answer, or `None` to stay out of it.
+| The agent | Methods |
+| --- | --- |
+| runs a line | `pre_execute`, `post_execute` |
+| runs a command or CLI | `pre_command`, `post_command` |
+| calls the VFS: a file tool, `session.vfs`, FUSE, SFTP | `pre_vfs`, `post_vfs` |
+| sets a variable: `export`, `X=1`, `unset` | `pre_session`, `post_session` |
 
-Write a policy as a class in Python or TypeScript, or as a script a
-[profile](/home/permissions#cwd-env-policy) loads from YAML, in Python or
-JavaScript. Add it to the workspace and every session goes through it.
+A `pre_` method answers before the action runs, a `post_` method after,
+with what came back. An answer can refuse, hold the action until a host approves
+it, bound the output, or choose the underlying runtime. No policy grants what another
+refuses.
 
-## Why not a harness hook
+Policies are asked in order: the built-ins first (mount modes, hides, the
+[route policy](/home/policy/route-policy)), then the session's profile, then the
+workspace's own, in the order they were added.
 
-A harness hook, such as Claude Code's `PreToolUse` or an SDK's
+## Why not a tool-call check
+
+A harness's tool-call check, such as Claude Code's `PreToolUse` or an SDK's
 `can_use_tool`, sees one tool call: a tool name and a string such as
 `cat $(ls /data | head -1)`. A Mirage policy runs inside the shell and the
 filesystem, so it sees what that string only implies.
 
-| | Harness hook | Mirage policy |
+| | Tool-call check | Mirage policy |
 | --- | --- | --- |
 | Commands | the raw string; `$( )`, `xargs`, `find -exec`, `eval` and variables hide what runs | every command after expansion, nested ones included |
 | Files | the paths written in the string | every file a command reads or writes, such as each one `grep -r`, `tar` or `cp -r` reaches |
@@ -34,13 +40,9 @@ filesystem, so it sees what that string only implies.
 
 ## In this section
 
-- [Policies](/home/policy/policies): write one. The hooks, what each can
-  answer, and what the agent gets back.
-- [Explain](/home/policy/explain): ask what a line or a VFS call would
-  do, without running it.
-
-Related:
-
-- [Permissions](/home/permissions): allow lists, path rules, hides and
-  asks, written in YAML with no code.
-- [Route policy](/home/route-policy): which runtime runs a line.
+- [Policies](/home/policy/policies): write one: its methods, what each can
+  answer, and asks.
+- [Explain](/home/policy/explain): what the agent sees of policy, and how
+  it asks what a line would do before running it.
+- [Route policy](/home/policy/route-policy): choose the runtime for a
+  line, from a script.

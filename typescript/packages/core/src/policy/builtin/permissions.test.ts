@@ -18,8 +18,14 @@ import { PathSpec } from '../../types.ts'
 import { Policies } from '../policies.ts'
 import type { CommandContext, AdmissionRules, CommandRule, VfsContext } from '../types.ts'
 import { PermissionsPolicy } from './permissions.ts'
+import { CALLS } from '../../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../../vfs/types.ts'
 
-const registry = { isMountRoot: () => false }
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 // A SessionCommandsQuery: one compiled document per session id.
 class Sessions {
@@ -43,14 +49,13 @@ function path(virtual: string, raw = ''): PathSpec {
 function ctx(
   command: string,
   args: string[] = [],
-  extra: Partial<Omit<CommandContext, 'command' | 'registry'>> = {},
+  extra: Partial<Omit<CommandContext, 'command'>> = {},
 ): CommandContext {
   return {
     command,
     paths: [],
     argv: args,
     cwd: '/',
-    registry,
     sessionId: 's',
     tokens: [command, ...args],
     program: [command],
@@ -87,7 +92,9 @@ describe('PermissionsPolicy', () => {
   it('no rules means no opinion', () => {
     const p = new PermissionsPolicy(new Sessions({}))
     expect(p.preCommand(ctx('rm', ['-rf', '/']))).toBeNull()
-    expect(p.preVfs({ op: 'unlink', path: path('/x'), write: true, prefix: '/' })).toBeNull()
+    expect(
+      p.preVfs({ call: callOf('unlink'), path: path('/x'), write: true, prefix: '/' }),
+    ).toBeNull()
   })
 
   it('the allow list refuses a visible head it does not cover', () => {
@@ -125,7 +132,6 @@ describe('PermissionsPolicy', () => {
       {
         kind: 'deny',
         reason: 'no deletes in the repo',
-        scope: 'operand',
         path: 'x',
         rule: FULL.deny[1],
       },
@@ -137,7 +143,6 @@ describe('PermissionsPolicy', () => {
     ).toEqual({
       kind: 'deny',
       reason: 'frozen',
-      scope: 'operand',
       path: '/repo/locked/a',
       rule: FULL.deny[2],
     })
@@ -157,7 +162,6 @@ describe('PermissionsPolicy', () => {
     ).toEqual({
       kind: 'deny',
       reason: 'sealed',
-      scope: 'operand',
       path: '/repo/sealed/y',
       rule: deep,
     })
@@ -202,7 +206,6 @@ describe('PermissionsPolicy', () => {
     ).toEqual({
       kind: 'deny',
       reason: 'private',
-      scope: 'operand',
       path: '/repo/private/x',
       rule: deny,
     })
@@ -267,7 +270,7 @@ describe('PermissionsPolicy', () => {
       reason: 'history is read-only here',
       rule: MOUNT_DENY,
     })
-    // An operand-scoped ask rule asks only when the line names the path.
+    // An ask rule with paths asks only when the line names the path.
     const shared: AdmissionRules = {
       allow: null,
       ask: [{ reason: 'shared', commands: ['rm'], paths: ['/repo/shared/*'] }],
@@ -283,7 +286,7 @@ describe('PermissionsPolicy', () => {
   it('preVfs holds the pure path rules', () => {
     const p = policy()
     const locked: VfsContext = {
-      op: 'write',
+      call: callOf('write'),
       path: path('/repo/locked/a'),
       write: true,
       prefix: '/repo/',
@@ -294,7 +297,7 @@ describe('PermissionsPolicy', () => {
     // know which command issued it.
     expect(
       p.preVfs({
-        op: 'unlink',
+        call: callOf('unlink'),
         path: path('/repo/x'),
         write: true,
         prefix: '/repo/',

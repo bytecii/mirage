@@ -43,7 +43,7 @@ from mirage.shell.helpers import get_text, source_parts
 from mirage.shell.parameter import bad_substitution, scan_parameter
 from mirage.shell.types import ArithWrite, TSNodeLike
 from mirage.shell.types import NodeType as NT
-from mirage.utils.fnmatch import fnmatch
+from mirage.utils.fnmatch import Matcher, fnmatch, suffix_start
 from mirage.utils.glob_walk import escape_glob, mark_globs
 from mirage.utils.path import expand_tilde
 from mirage.view.types import SessionView
@@ -875,16 +875,11 @@ def _glob_strip(
 ) -> str:
     if not pattern:
         return value
-    indices = (
-        range(len(value), -1, -1)
-        if greedy == prefix
-        else range(len(value) + 1)
-    )
-    for i in indices:
-        candidate = value[:i] if prefix else value[i:]
-        if fnmatch(candidate, pattern, extglob=extglob):
-            return value[i:] if prefix else value[:i]
-    return value
+    if prefix:
+        end = Matcher(value, pattern, extglob=extglob).end(0, greedy)
+        return value if end is None else value[end:]
+    start = suffix_start(value, pattern, greedy, extglob)
+    return value if start is None else value[:start]
 
 
 def _glob_replace(
@@ -906,34 +901,27 @@ def _glob_replace(
     """
     if not pattern:
         return value
-    if anchor == "#":
-        for j in range(len(value), -1, -1):
-            if fnmatch(value[:j], pattern, extglob=extglob):
-                return replacement + value[j:]
-        return value
     if anchor == "%":
-        for i in range(len(value) + 1):
-            if fnmatch(value[i:], pattern, extglob=extglob):
-                return value[:i] + replacement
-        return value
+        start = suffix_start(value, pattern, extglob=extglob)
+        return value if start is None else value[:start] + replacement
+    match = Matcher(value, pattern, extglob=extglob)
+    size = len(value)
+    if anchor == "#":
+        end = match.end(0)
+        return value if end is None else replacement + value[end:]
     if not value:
-        return replacement if fnmatch("", pattern, extglob=extglob) else value
+        return value if match.end(0) is None else replacement
     out: list[str] = []
     i = 0
-    n = len(value)
-    while i < n:
-        match_end = -1
-        for j in range(n, i - 1, -1):
-            if fnmatch(value[i:j], pattern, extglob=extglob):
-                match_end = j
-                break
-        if match_end <= i:
+    while i < size:
+        end = match.end(i)
+        if end is None or end == i:
             # No match here (or an empty one, which bash skips over).
             out.append(value[i])
             i += 1
             continue
         out.append(replacement)
-        i = match_end
+        i = end
         if not replace_all:
             out.append(value[i:])
             return "".join(out)

@@ -15,6 +15,7 @@
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.spec.types import CommandSpec
 from mirage.io import IOResult
+from mirage.policy.match.allow import head_allowed
 from mirage.policy.types import AdmissionRules
 from mirage.runtime.base import Runtime
 from mirage.runtime.constants import EXTERNAL_COMMANDS
@@ -26,14 +27,12 @@ from mirage.workspace import Workspace
 from mirage.workspace.lookup import (
     SHELL_CONSUMERS,
     Consumer,
-    command_visible,
     execs,
     lookup,
     lookup_all,
     program,
     program_note,
     programs,
-    verb_visible,
 )
 from mirage.workspace.session import SessionState
 
@@ -166,69 +165,24 @@ def test_route_agrees_with_the_first_layer_route_all_reports():
         assert lookup(name, session, ws._registry) is winner
 
 
-def test_verb_visible_answers_below_the_head_word_command_visible_answers():
+def test_an_allow_list_does_not_narrow_lookup():
+    # The allow list is a policy: a word it leaves out is still found in
+    # its layer, and the gate refuses it when it runs.
     session, ws = _fixture()
     ws.register_cli("prog", _cli_tree())
-    session.commands = AdmissionRules(allow=("prog run",))
-    # Dispatch routes by the head word, which stays visible: one line of
-    # the tree runs.
-    assert command_visible("prog", session)
-    assert lookup("prog", session, ws._registry) is Consumer.CLI
-    assert verb_visible("prog", (), session)
-    assert verb_visible("prog", ("run",), session)
-    # A verb the list does not reach is not this session's to discover,
-    # though the head word it hangs off is.
-    assert not verb_visible("prog", ("stop",), session)
-    # No list: every verb of every tree.
-    session.commands = None
-    assert verb_visible("prog", ("stop",), session)
-
-
-def test_allow_lists_filter_every_layer_and_spare_only_functions():
-    session, ws = _fixture()
-    ws.register_cli("prog", _cli_tree())
-    session.commands = AdmissionRules(allow=("cat", "prog", "ln"))
+    session.commands = AdmissionRules(allow=("cat",))
     reg = ws._registry
-    # Listed: visible in its layer, whichever layer that is.
     assert lookup("cat", session, reg) is Consumer.MOUNT
     assert lookup("prog", session, reg) is Consumer.CLI
     assert lookup("ln", session, reg) is Consumer.NAMESPACE
-    # Unlisted: not a command for the session (sleep is a tool-tier
-    # builtin, rm a mount command).
-    assert lookup("sleep", session, reg) is Consumer.UNKNOWN
-    assert lookup("rm", session, reg) is Consumer.UNKNOWN
-    assert lookup_all("rm", session, reg) == []
-    assert not command_visible("rm", session)
-    # Builtins are subjects like everything else: an allow list stating
-    # cat leaves no cd and no echo.
-    assert lookup("cd", session, reg) is Consumer.UNKNOWN
-    assert lookup("echo", session, reg) is Consumer.UNKNOWN
-    assert not command_visible("cd", session)
-    session.commands = AdmissionRules(allow=("cat", "prog", "ln", "cd"))
+    assert lookup("rm", session, reg) is Consumer.MOUNT
     assert lookup("cd", session, reg) is Consumer.SESSION
-    assert command_visible("cd", session)
-    session.commands = AdmissionRules(allow=("cat", "prog", "ln"))
-    # A function is the session's own state, visible where it is what
-    # runs; named after a hidden builtin it is as unreachable as the
-    # builtin, since builtins shadow functions here.
-    session.functions["deploy"] = "deploy() { :; }"
-    assert lookup("deploy", session, reg) is Consumer.FUNCTION
-    assert command_visible("deploy", session)
-    session.functions["sleep"] = "sleep() { :; }"
-    assert lookup("sleep", session, reg) is Consumer.UNKNOWN
-    assert not command_visible("sleep", session)
-    # A function shadowing a hidden CLI or mount command runs, and the
-    # hidden layer stays out of `type -a`.
+    # A function shadows a command as it does with no list.
     session.functions["rm"] = "rm() { :; }"
-    assert lookup_all("rm", session, reg) == [Consumer.FUNCTION]
-    # No allow list at all: nothing filtered (the function still
-    # shadows).
-    session.commands = None
     assert lookup_all("rm", session, reg) == [
         Consumer.FUNCTION,
         Consumer.MOUNT,
     ]
-    assert lookup("sleep", session, reg) is Consumer.SESSION
 
 
 def test_program_is_what_a_real_system_ships_as_a_file():
@@ -273,16 +227,16 @@ def test_programs_lists_every_program_the_session_can_run():
     assert not {"cd", "export", "[["} & set(names)
 
 
-def test_programs_follows_the_allow_list():
-    _, ws = _fixture()
+def test_programs_lists_every_program_whatever_the_allow_list():
+    session, ws = _fixture()
     narrow = SessionState(
         session_id="n", commands=AdmissionRules(allow=("cat",))
     )
-    assert programs(narrow, ws._registry) == ["cat"]
+    assert programs(narrow, ws._registry) == programs(session, ws._registry)
 
 
 # Debian's egrep is `exec grep -E "$@"`, so it is a program wherever grep
-# is one, and a session that may not run egrep finds none.
+# is one, and an allow list naming only grep refuses it when it runs.
 def test_a_wrapper_is_a_program_where_what_it_runs_is():
     session, ws = _fixture()
     registry = ws._registry
@@ -295,7 +249,8 @@ def test_a_wrapper_is_a_program_where_what_it_runs_is():
     narrow = SessionState(
         session_id="n", commands=AdmissionRules(allow=("grep",))
     )
-    assert lookup("egrep", narrow, registry) is Consumer.UNKNOWN
+    assert lookup("egrep", narrow, registry) is Consumer.MOUNT
+    assert not head_allowed("egrep", narrow.commands)
 
 
 # An interpreter is a program only where a language runtime runs it; a

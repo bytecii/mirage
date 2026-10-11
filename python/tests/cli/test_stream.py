@@ -291,7 +291,6 @@ async def _refused_shell(request):
                         "kind": "deny",
                         "reason": "no deletes",
                         "policy": "Guard",
-                        "scope": "command",
                         "ask_id": None,
                     },
                 },

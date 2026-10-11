@@ -28,7 +28,7 @@ import { GENERIC_COMMANDS } from '../../commands/builtin/generic_bind/factory.ts
 import type { BaseVFS } from '../../vfs/base.ts'
 import { DocumentVFS } from '../../vfs/document/document.ts'
 import { DevIndex, DevVFS } from '../../vfs/dev/dev.ts'
-import { Decisions, MountRootPolicy, OutputCapPolicy, Policies } from '../../policy/index.ts'
+import { type Decisions, MountRootPolicy, OutputCapPolicy, Policies } from '../../policy/index.ts'
 import {
   type Limit,
   type ReadSpec,
@@ -131,13 +131,14 @@ export class MountRegistry {
   // like workspaceRuntime so the
   // executor reaches them without new threading.
   readonly policies = new Policies([
-    new MountRootPolicy(),
+    new MountRootPolicy(this),
     new OutputCapPolicy((prefix, name) => this.limitOverride(prefix, name)),
   ])
-  // The approval ledger the executor takes an Ask to, hosted here for the
-  // same reason as the policies: the workspace replaces it with one
-  // bound to its session manager and ask handler.
-  decisions = new Decisions()
+  /** The approval ledger an Ask is taken to, which the policies hold
+   * (`Policies.decisions`) so a session write reaches it too. */
+  get decisions(): Decisions {
+    return this.policies.decisions
+  }
   // Installed CLIs. Not mount state: CLIs are fully separate from
   // mounts (a CLI exists because it was installed, never because
   // storage was mounted). The registry object is just the vehicle that

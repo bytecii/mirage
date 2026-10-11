@@ -14,7 +14,7 @@
 
 import asyncio
 import dataclasses
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from functools import partial
 from itertools import accumulate
 from typing import Any, TypeVar
@@ -22,6 +22,7 @@ from typing import Any, TypeVar
 from mirage.commands.builtin.utils.limit import guard_io, run_with_timeout
 from mirage.context import (
     RedirectRunner,
+    note_refusal,
     program_invocation,
     redirect_paths_for,
     redirect_runner_for,
@@ -33,7 +34,16 @@ from mirage.context import (
 from mirage.context.session_context import RedirectResult, redirect_syntax_for
 from mirage.io import IOResult
 from mirage.io.types import ByteSource, materialize
-from mirage.policy import PolicyDenied, resolve_limit, resolve_producer
+from mirage.observe.context import command_records
+from mirage.policy import (
+    CommandResultContext,
+    PolicyDenied,
+    post_command_gate,
+    refusal_of,
+    render_deny,
+    resolve_limit,
+    resolve_producer,
+)
 from mirage.policy.policies import reset_op_policies, set_op_policies
 from mirage.policy.types import Claimant, HandOff, SessionContext
 from mirage.runtime.base import Runtime
@@ -104,6 +114,8 @@ from mirage.workspace.node.admission import Admitted, Refused, admit
 from mirage.workspace.node.occurrence import claimant_for, evaluated_from
 from mirage.workspace.session.state import (
     ensure_var_visible,
+    gate_rendering,
+    post_session_gate,
     pre_session_gate,
     seed_var,
     session_view,
@@ -303,18 +315,42 @@ async def execute_command(
                 ),
             )
         except PolicyDenied as exc:
-            err = encode_text(f"bash: {exc.strerror}\n")
-            return (
-                None,
-                IOResult(exit_code=1, stderr=err),
-                ExecutionNode(command=name or k, exit_code=1, stderr=err),
-            )
+            return _write_refused(exc, name or k)
         if k in session.readonly_vars:
             raise DiscardSignal(encode_text(f"bash: {k}: readonly variable\n"))
 
+    async def judge_landed(olds: Mapping[str, Any]) -> None:
+        # `post_session` asks about each prefix write once it landed.
+        for k, v in prefix_assignments:
+            old = olds.get(k)
+            await post_session_gate(
+                registry.policies,
+                SessionContext(
+                    plane="env",
+                    verb="set",
+                    key=k,
+                    value=v,
+                    session_id=session.session_id,
+                ),
+                None if old is None else gate_rendering(old.value),
+            )
+
+    def restore(saved: Mapping[str, Any]) -> None:
+        for k, prev in saved.items():
+            if prev is None:
+                session.vars.pop(k, None)
+            else:
+                session.vars[k] = prev
+
     if prefix_assignments and not name:
+        olds = {k: session.vars.get(k) for k, _ in prefix_assignments}
         for k, v in prefix_assignments:
             seed_var(session, k, v)
+        try:
+            await judge_landed(olds)
+        except PolicyDenied as exc:
+            restore(olds)
+            return _write_refused(exc, name)
         return (
             None,
             IOResult(),
@@ -326,7 +362,7 @@ async def execute_command(
 
     saved_env_overrides = TempEnv()
 
-    def seed_prefix(command: str) -> None:
+    async def seed_prefix(command: str) -> None:
         # Seeded once the command's words are expanded, since bash
         # expands them with the values from before the assignment:
         # `x=new echo $x` prints the old x and `IFS=, cmd $v` splits on
@@ -348,6 +384,9 @@ async def execute_command(
             # environment, a scope under its own locals: `unset` inside
             # reveals the caller's value and `export` keeps the name.
             session._local_frames.append(saved_env_overrides)
+        # Judged before the command reads them; on a refusal the
+        # restore below puts the old values back.
+        await judge_landed(saved_env_overrides)
 
     if refused and sink is not None:
         await sink.emit(Channel.STDERR, refused)
@@ -380,11 +419,24 @@ async def execute_command(
         frames = session._local_frames
         if frames and frames[-1] is saved_env_overrides:
             frames.pop()
-        for k, prev in saved_env_overrides.items():
-            if prev is None:
-                session.vars.pop(k, None)
-            else:
-                session.vars[k] = prev
+        restore(saved_env_overrides)
+
+
+def _write_refused(
+    exc: PolicyDenied, command: str
+) -> tuple[None, IOResult, ExecutionNode]:
+    """A prefix assignment a session policy refused: bash's line, exit 1.
+
+    Args:
+        exc (PolicyDenied): the refusal.
+        command (str): the command the assignment prefixed.
+    """
+    err = encode_text(f"bash: {exc.strerror}\n")
+    return (
+        None,
+        IOResult(exit_code=1, stderr=err),
+        ExecutionNode(command=command, exit_code=1, stderr=err),
+    )
 
 
 async def _dispatch_command_body(
@@ -400,7 +452,7 @@ async def _dispatch_command_body(
     stdin,
     call_stack,
     job_table,
-    seed_prefix: Callable[[str], None],
+    seed_prefix: Callable[[str], Awaitable[None]],
     cancel: asyncio.Event | None = None,
     routing_decision: RouteDecision[Runtime] | None = None,
     agent_id: str = "",
@@ -526,7 +578,7 @@ async def _run_argv(
     agent_id: str = "",
     redirects: tuple[PathSpec, ...] = (),
     runner: RedirectRunner | None = None,
-    seed_prefix: Callable[[str], None] | None = None,
+    seed_prefix: Callable[[str], Awaitable[None]] | None = None,
     claimant: Claimant | None = None,
     sink: JobConsole | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
@@ -576,12 +628,24 @@ async def _run_argv(
         )
 
     admitted: Admitted | None = None
+    # What the last admission was asked about: the redirect layer admits
+    # each target before it opens it, and then the run admits the whole
+    # statement, so the policies are asked again only for a target they
+    # have not seen.
+    asked: tuple[bool | str, ...] | None = None
 
     async def guard(
         paths: tuple[PathSpec, ...], given: ByteSource | None
     ) -> RedirectResult | None:
-        nonlocal admitted
+        nonlocal admitted, asked
+        key: tuple[bool | str, ...] = (
+            given is None,
+            *(p.virtual for p in paths),
+        )
+        if admitted is not None and asked == key:
+            return None
         if name:
+            asked = key
             verdict = await admit(
                 name,
                 list(argv.args),
@@ -620,7 +684,10 @@ async def _run_argv(
         paths: tuple[PathSpec, ...],
     ) -> RedirectResult:
         if seed_prefix is not None:
-            seed_prefix(name)
+            try:
+                await seed_prefix(name)
+            except PolicyDenied as exc:
+                return _write_refused(exc, name)
         refusal = await guard(paths, given)
         if refusal is not None:
             return refusal
@@ -631,10 +698,17 @@ async def _run_argv(
         # policies bind in the same window, whether or not a gate judged the
         # line, so the command tier's policy guard can fire pre_vfs for the
         # backend I/O a handler performs.
-        ptoken = set_op_policies(registry.policies)
+        # A post hook reads what the command did: its file records,
+        # gathered as it runs and as its output drains, and its result
+        # node, settled once the output has drained.
+        policies = registry.policies
+        judging = admitted is not None and policies.wants("post_command")
+        watched = judging or policies.wants("post_execute")
+        ptoken = set_op_policies(policies)
+        token = set_admission(admitted) if admitted is not None else None
         try:
-            if admitted is None:
-                return await _route_argv(
+            with command_records(own=True) as mine:
+                result = await _route_argv(
                     recurse,
                     dispatch,
                     registry,
@@ -652,30 +726,82 @@ async def _run_argv(
                     claimant.line if claimant is not None else None,
                     output,
                 )
-            token = set_admission(admitted)
-            try:
-                return await _route_argv(
-                    recurse,
-                    dispatch,
-                    registry,
-                    namespace,
-                    execute_fn,
-                    argv,
-                    context,
-                    given,
-                    call_stack,
-                    job_table,
-                    cancel,
-                    routing_decision,
-                    row,
-                    agent_id,
-                    claimant.line if claimant is not None else None,
-                    output,
-                )
-            finally:
-                reset_admission(token)
         finally:
+            if token is not None:
+                reset_admission(token)
             reset_op_policies(ptoken)
+        if not watched:
+            return result
+        stdout, io, node = result
+
+        # post_command judges the command once its result is final: a
+        # streamed output settles its exit code as it drains, so the hook
+        # is asked when the stream ends or its reader stops, and at once
+        # for output already whole. A refusal leaves what was sent as
+        # sent: exit 126, the refusal line on stderr, the refusal record.
+        async def settle() -> None:
+            # A function hands back its last command's node, which keeps
+            # the records that command made.
+            node.exit_code = io.exit_code
+            node.records.extend(mine)
+            if not judging:
+                return
+            assert admitted is not None
+            ctx = admitted.ctx
+            stderr = await materialize(io.stderr)
+            io.stderr = stderr
+            facts = {
+                f.name: getattr(ctx, f.name) for f in dataclasses.fields(ctx)
+            }
+            action = await post_command_gate(
+                policies,
+                CommandResultContext(
+                    **facts,
+                    exit_code=io.exit_code,
+                    stderr=stderr.decode(errors="replace"),
+                    records=tuple(r.to_dict() for r in mine),
+                ),
+                claimant,
+                cancel,
+            )
+            if action is None:
+                return
+            err, code = render_deny(ctx.command, action)
+            io.stderr = stderr + err
+            node.stderr = node.stderr + err
+            io.exit_code = node.exit_code = code
+            io.refusal = refusal_of(action)
+            if io.refusal is not None:
+                note_refusal(io.refusal)
+
+        if stdout is None or isinstance(stdout, bytes):
+            await settle()
+            return result
+        pulled = aiter(stdout)
+
+        async def drained() -> AsyncIterator[bytes]:
+            done = False
+            try:
+                while True:
+                    # Each pull runs the command's lazy reads; they are
+                    # its own, whoever is reading.
+                    with command_records(own=True) as more:
+                        try:
+                            chunk = await anext(pulled, None)
+                        finally:
+                            mine.extend(more)
+                    if chunk is None:
+                        done = True
+                        return
+                    yield chunk
+            finally:
+                # A reader that stops early closes the producer too.
+                close = getattr(pulled, "aclose", None)
+                if not done and close is not None:
+                    await close()
+                await settle()
+
+        return drained(), io, node
 
     if runner is not None:
         return await runner(run_redirected, guard, name, tuple(argv.args))

@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.commands.spec.types import WordKind
 from mirage.policy.match.rule import (
     RuleMatch,
     Subject,
@@ -30,15 +31,13 @@ from mirage.policy.types import (
     AdmissionRules,
     CommandContext,
     CommandRule,
+    CommandWord,
     VfsContext,
 )
 from mirage.types import PathSpec
 from mirage.utils.hidden import classify_paths
-
-
-class _Registry:
-    def is_mount_root(self, path: str) -> bool:
-        return False
+from mirage.vfs.types import Effect, Target, VfsCall
+from mirage.workspace.dispatcher.constants import CALLS
 
 
 def _path(virtual: str, raw: str = "") -> PathSpec:
@@ -63,7 +62,6 @@ def _ctx(
         paths=paths,
         argv=(),
         cwd=cwd,
-        registry=_Registry(),
         tokens=tokens,
         walks=walks,
     )
@@ -157,14 +155,20 @@ def test_match_op_only_for_pure_path_rules():
     rule = CommandRule(reason="frozen", paths=("/data/locked/*",))
     scope = classify_paths(rule.paths)
     op = VfsContext(
-        op="write", path=_path("/data/locked/a"), write=True, prefix="/data/"
+        call=CALLS["write"],
+        path=_path("/data/locked/a"),
+        write=True,
+        prefix="/data/",
     )
     assert match_op(rule, scope, op)
     assert not match_op(
         rule,
         scope,
         VfsContext(
-            op="write", path=_path("/data/open/a"), write=True, prefix="/data/"
+            call=CALLS["write"],
+            path=_path("/data/open/a"),
+            write=True,
+            prefix="/data/",
         ),
     )
     named = CommandRule(reason="x", commands=("rm",), paths=("/data/*",))
@@ -177,7 +181,10 @@ def test_op_ruling_reads_depth_before_verb_and_honours_a_grant():
     carve = CommandRule(reason="outbox nod", paths=("/repo/outbox/*",))
     rules = AdmissionRules(deny=(broad,), ask=(carve,))
     inside = VfsContext(
-        op="write", path=_path("/repo/outbox/a"), write=True, prefix="/repo/"
+        call=CALLS["write"],
+        path=_path("/repo/outbox/a"),
+        write=True,
+        prefix="/repo/",
     )
     # The deeper ask wins where both reach, exactly as command admission
     # ranks them, so a broad deny cannot overrule an approved carve-out.
@@ -186,12 +193,18 @@ def test_op_ruling_reads_depth_before_verb_and_honours_a_grant():
     # Outside the carve-out the deny is what is left, and a grant for
     # the ask says nothing about it.
     outside = VfsContext(
-        op="write", path=_path("/repo/sealed/a"), write=True, prefix="/repo/"
+        call=CALLS["write"],
+        path=_path("/repo/sealed/a"),
+        write=True,
+        prefix="/repo/",
     )
     assert op_ruling(rules, outside, (carve,)) == (broad, False)
     # A metadata op is reached by neither: deny is present and refused.
     stat = VfsContext(
-        op="stat", path=_path("/repo/outbox/a"), write=False, prefix="/repo/"
+        call=CALLS["stat"],
+        path=_path("/repo/outbox/a"),
+        write=False,
+        prefix="/repo/",
     )
     assert op_ruling(rules, stat, ()) is None
     # No rules at all, and a rule naming a command, are both silent.
@@ -207,10 +220,15 @@ def _subtree_ctx(command: str, *operands: str) -> CommandContext:
     return CommandContext(
         command=command,
         paths=paths,
-        operands=paths,
+        words=(
+            CommandWord(command, WordKind.NAME),
+            *(
+                CommandWord(p.raw_path, WordKind.OPERAND, path=p)
+                for p in paths
+            ),
+        ),
         argv=operands,
         cwd="/",
-        registry=_Registry(),
         tokens=(command, *operands),
     )
 
@@ -312,7 +330,10 @@ def test_match_op_refuses_a_subtree_op_on_the_directory_holding_the_scope():
             rule,
             scope,
             VfsContext(
-                op=op, path=_path(virtual), write=True, prefix="/data/"
+                call=CALLS[op],
+                path=_path(virtual),
+                write=True,
+                prefix="/data/",
             ),
         )
     # A read or write of the directory itself is not in the scope, and a
@@ -321,7 +342,7 @@ def test_match_op_refuses_a_subtree_op_on_the_directory_holding_the_scope():
         rule,
         scope,
         VfsContext(
-            op="readdir",
+            call=CALLS["readdir"],
             path=_path("/data/locked"),
             write=False,
             prefix="/data/",
@@ -331,7 +352,10 @@ def test_match_op_refuses_a_subtree_op_on_the_directory_holding_the_scope():
         rule,
         scope,
         VfsContext(
-            op="rename", path=_path("/data/other"), write=True, prefix="/data/"
+            call=CALLS["rename"],
+            path=_path("/data/other"),
+            write=True,
+            prefix="/data/",
         ),
     )
 
@@ -340,12 +364,13 @@ def test_match_op_lets_a_metadata_op_through():
     # Deny is present and refused: the entry stats, the read is refused.
     rule = CommandRule(reason="frozen", paths=("/data/locked/*",))
     scope = classify_paths(rule.paths)
-    for op in ("stat", "exists"):
+    exists = VfsCall("exists", Effect.METADATA, Target.ANY, False)
+    for call in (CALLS["stat"], exists):
         assert not match_op(
             rule,
             scope,
             VfsContext(
-                op=op,
+                call=call,
                 path=_path("/data/locked/a"),
                 write=False,
                 prefix="/data/",
@@ -355,7 +380,7 @@ def test_match_op_lets_a_metadata_op_through():
         rule,
         scope,
         VfsContext(
-            op="read",
+            call=CALLS["read"],
             path=_path("/data/locked/a"),
             write=False,
             prefix="/data/",

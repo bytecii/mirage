@@ -23,6 +23,7 @@ from mirage.policy.boundary import Boundary
 from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from mirage.workspace.dispatcher.constants import CALLS
 from mirage.workspace.mount.mount import MountEntry
 
 
@@ -42,7 +43,7 @@ async def _admit(mount: MountEntry | None, path: PathSpec) -> None:
         mount.prefix if mount is not None else "",
         mount.mode if mount is not None else MountMode.WRITE,
     )
-    await boundary.admit("symlink", path, True, create=True)
+    await boundary.admit(CALLS["symlink"], path, True)
 
 
 @pytest.mark.asyncio

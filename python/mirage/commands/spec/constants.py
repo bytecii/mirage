@@ -755,10 +755,11 @@ READ_FAIL_EXIT_ISDIR = {
 }
 
 # The exit code of a command refused on one operand before it ran (an
-# admission policy's operand-scoped Deny): 1 for the GNU tools, which
-# report an operand they cannot act on and exit 1, and tar's own fatal
-# code, since tar reports an operand it cannot open and exits 2 (GNU
-# tar 1.35, `Exiting with failure status due to previous errors`).
+# admission policy's Deny about a path or carrying an error): 1 for the
+# GNU tools, which report an operand they cannot act on and exit 1, and
+# tar's own fatal code, since tar reports an operand it cannot open and
+# exits 2 (GNU tar 1.35, `Exiting with failure status due to previous
+# errors`).
 # Plain strings for the same no-cycle reason as USAGE_EXIT.
 OPERAND_EXIT = {
     "tar": 2,

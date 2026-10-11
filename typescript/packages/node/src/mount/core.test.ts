@@ -163,7 +163,7 @@ describe('MountCore', () => {
     const ws = new Workspace({ '/data/': vfs }, { mode: MountMode.WRITE })
     await ws.shell("printf 'line1\\n' > /data/log")
     ws.policies.add({
-      preVfs: (ctx) => (ctx.op === 'read' ? { kind: 'deny', reason: 'write-only' } : null),
+      preVfs: (ctx) => (ctx.call.name === 'read' ? { kind: 'deny', reason: 'write-only' } : null),
     })
     const core = new MountCore(ws.vfs)
     const enc = new TextEncoder()
@@ -884,7 +884,7 @@ it('lands a create a policy refuses to stat', async () => {
   const vfs = new RAMVFS()
   const noStats: Policy = {
     preVfs: (ctx: VfsContext): Action | null =>
-      ctx.op === 'stat' ? { kind: 'deny', reason: 'no stat' } : null,
+      ctx.call.name === 'stat' ? { kind: 'deny', reason: 'no stat' } : null,
   }
   const ws = new Workspace({ '/data/': vfs }, { mode: MountMode.WRITE, policies: [noStats] })
   const core = new MountCore(ws.vfs)

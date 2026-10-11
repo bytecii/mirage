@@ -65,7 +65,6 @@ from mirage.workspace.executor.command.run import (
     admission_denial,
     exec_node,
 )
-from mirage.workspace.lookup.lookup import verb_visible
 from mirage.workspace.mount.namespace.probe import miss_condition
 from mirage.workspace.session import SessionState, env_snapshot
 from mirage.workspace.types import ExecutionNode
@@ -377,7 +376,6 @@ async def handle_cli(
         argv,
         session.cwd,
         env_snapshot(session),
-        visible=lambda path: verb_visible(install.name, path, session),
     )
     if result.leaf is None:
         stderr = result.output if result.stream == "stderr" else b""

@@ -376,7 +376,7 @@ class _SealedRead(Policy):
         self.asked: list[tuple[str, str, bool]] = []
 
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        self.asked.append((ctx.op, ctx.path.virtual, ctx.write))
+        self.asked.append((ctx.call.name, ctx.path.virtual, ctx.write))
         if not ctx.write and ctx.path.virtual == self.sealed:
             return Deny("sealed")
         return None

@@ -129,6 +129,7 @@ def capture_binding(
             mark=scope.wrap_async(session_view.mark),
             is_readonly=scope.wrap(session_view.is_readonly),
             profile=scope.wrap(session_view.profile),
+            cwd=scope.wrap(session_view.cwd),
         )
     resolver = ScopedResolver(binding.resolver, scope)
     return RuntimeContext(

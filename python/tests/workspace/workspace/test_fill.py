@@ -24,11 +24,11 @@ from mirage import Action, CommandContext, Deny, MountMode, Policy, Workspace
 from mirage.commands.cli.types import CLI, CLIHandler
 from mirage.commands.spec.types import Argument, CommandSpec, FlagValue
 from mirage.io import IOResult
-from mirage.policy import Ask
 from mirage.policy.match import Outcome
 from mirage.policy.types import Decision, Scope
 from mirage.runtime.base import Runtime
 from mirage.runtime.mixin import LineExecutorMixin
+from mirage.runtime.routing.types import RouteContext
 from mirage.runtime.types import RunResult, ScriptSource
 from mirage.secrets import registry
 from mirage.secrets.errors import SecretsError
@@ -981,6 +981,20 @@ async def test_prior_line_nameref_fetches_its_target():
         await ws.close()
 
 
+def _ruled(verb: str, name: str, reason: str) -> dict[str, Any]:
+    return {"commands": {verb: [{"reason": reason, "commands": [name]}]}}
+
+
+def _policed_ws(deny: str, env) -> Workspace:
+    return Workspace(
+        {"/": RAMVFS()},
+        mode=MountMode.WRITE,
+        env=env,
+        profiles={"p": _ruled("deny", deny, f"{deny} is off")},
+        profile="p",
+    )
+
+
 class DenyNamed(Policy):
     def __init__(self, name: str) -> None:
         self.name = name
@@ -991,13 +1005,57 @@ class DenyNamed(Policy):
         return None
 
 
-def _policed_ws(deny: str, env) -> Workspace:
-    return Workspace(
+class DenyLine(Policy):
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    async def pre_execute(self, ctx: RouteContext) -> Action | None:
+        if any(c.command == self.name for c in ctx.commands):
+            return Deny(f"{self.name} is off")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_coded_line_deny_never_fetches():
+    # A policy written in code answers pre_command once, as the command
+    # runs, which is after the line's fetch; the line it refuses whole
+    # is pre_execute's, which answers before anything is fetched.
+    calls, fetch = counting_source({"TOKEN": "t0"})
+    register_secrets("fake", FakeConfig, fetch)
+    ws = Workspace(
         {"/": RAMVFS()},
         mode=MountMode.WRITE,
-        env=env,
-        policies=[DenyNamed(deny)],
+        env={"TOKEN": {"from": "fake", "ref": "r"}},
+        policies=[DenyLine("printenv")],
     )
+    try:
+        io = await ws.shell("printenv TOKEN")
+        assert io.exit_code == 126
+        assert io.refusal is not None
+        assert "printenv is off" in io.refusal.reason
+        assert calls == []
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_coded_command_deny_answers_after_the_fetch():
+    calls, fetch = counting_source({"TOKEN": "t0"})
+    register_secrets("fake", FakeConfig, fetch)
+    ws = Workspace(
+        {"/": RAMVFS()},
+        mode=MountMode.WRITE,
+        env={"TOKEN": {"from": "fake", "ref": "r"}},
+        policies=[DenyNamed("printenv")],
+    )
+    try:
+        io = await ws.shell("printenv TOKEN")
+        assert io.exit_code == 126
+        assert io.refusal is not None
+        assert "printenv is off" in io.refusal.reason
+        assert calls == ["r"]
+    finally:
+        await ws.close()
 
 
 @pytest.mark.asyncio
@@ -1037,22 +1095,13 @@ async def test_dynamic_word_deny_fetches_before_the_value_gate():
         await ws.close()
 
 
-class AskNamed(Policy):
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    async def pre_command(self, ctx: CommandContext) -> Action | None:
-        if ctx.command == self.name:
-            return Ask(f"{self.name} needs sign-off")
-        return None
-
-
 def _asking_ws(name: str, env, on_ask=None) -> Workspace:
     return Workspace(
         {"/": RAMVFS()},
         mode=MountMode.WRITE,
         env=env,
-        policies=[AskNamed(name)],
+        profiles={"p": _ruled("ask", name, f"{name} needs sign-off")},
+        profile="p",
         on_ask=on_ask,
     )
 
@@ -1858,7 +1907,8 @@ async def test_a_denied_line_never_resolves_the_block():
     ws = Workspace(
         {"/": RAMVFS()},
         mode=MountMode.WRITE,
-        policies=[DenyNamed("printenv")],
+        profiles={"p": _ruled("deny", "printenv", "printenv is off")},
+        profile="p",
         secrets={
             "prod": {
                 "source": "acct-denied",

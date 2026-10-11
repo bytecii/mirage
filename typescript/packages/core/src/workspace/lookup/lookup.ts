@@ -18,7 +18,6 @@ import { EXTERNAL_COMMANDS } from '../../runtime/constants.ts'
 import { LanguageRuntime } from '../../runtime/language.ts'
 import { isLineExecutor, isProcessExecutor } from '../../runtime/mixin.ts'
 import type { RouteDecision } from '../../runtime/routing/types.ts'
-import { headVisible, nodeVisible } from '../../policy/match/allow.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import type { SessionState } from '../session/session.ts'
 import {
@@ -36,56 +35,18 @@ import { shellQuote } from '../../utils/quote.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 
 /**
- * What the session's allow list says about a tool word. A profile without a
- * list installs everything; a profile with one installs only the names its
- * patterns start with (`headVisible`). This is the raw answer;
- * `commandVisible` and `layers` add the words that are never subjects.
- */
-export function listed(name: string, session: SessionState): boolean {
-  return headVisible(name, session.commands)
-}
-
-/**
  * Whether a command word is a tool the allow lists govern. Every named
  * command is a subject, shell builtins included: an allow list stating
  * `cat` leaves no `echo` and no `cd`. Two kinds of word are not,
  * because neither is a name the list could hold: a path being executed
  * (its lines are each checked as they run), and the agent's own
  * function where the function is what runs, which in this shell means
- * a name no builtin owns (builtins shadow functions), so a function
- * cannot resurrect a hidden builtin, and its body's lines each pass
- * this gate themselves.
+ * a name no builtin owns (builtins shadow functions), and its body's
+ * lines each pass the gate themselves.
  */
 export function isTool(name: string, session: SessionState): boolean {
   if (name.includes('/')) return false
   return !(name in session.functions && !SHELL_NAMES.has(name))
-}
-
-/**
- * Whether a session can see a command word at all. The profile's allow list
- * (`commands.allow`) decides: a tool name no pattern of it starts with
- * is not installed for the session, so it is 127 at the chokepoint and
- * absent from every enumerator; a word that is not a tool (`isTool`) is
- * always visible.
- */
-export function commandVisible(name: string, session: SessionState): boolean {
-  return !isTool(name, session) || listed(name, session)
-}
-
-/**
- * Whether a session can see one node of an installed CLI's tree.
- *
- * `commandVisible` answers for a word, which is all dispatch needs: a CLI
- * is routed by its head word and the verbs after it are the program's own
- * operand. Discovery needs the finer answer, because a profile allowed
- * `linear issue list` is not allowed `linear team`, and a manual that
- * lists the second is advertising a line that cannot run. `isTool`'s
- * exemptions have nothing to say here: shell grammar and functions are
- * single words, so a verb path only ever belongs to a CLI whose head word
- * already passed.
- */
-export function verbVisible(head: string, path: readonly string[], session: SessionState): boolean {
-  return nodeVisible([head, ...path], session.commands)
 }
 
 /** Whether routing explicitly refused the external runtime for `name`. */
@@ -115,11 +76,9 @@ function runtimeFor(name: string, registry: MountRegistry): Runtime | undefined 
  * The one place precedence is written down: `lookup` reads the first
  * yield and `lookupAll` reads all of them. Lazy on purpose, so the winner
  * costs exactly what it did before the split (a name an installed CLI
- * answers never reaches the mount lookup). The document's visibility
- * filter lives here too, so `type`, `which`, `command -v` and dispatch
- * agree on what a session can see: an unlisted word yields nothing,
- * builtins included (only functions are not subjects, and a function
- * named after a hidden builtin is as unreachable as the builtin).
+ * answers never reaches the mount lookup). A profile's allow list does
+ * not narrow it: a word the list leaves out is found, and the policy gate
+ * refuses it.
  */
 function* layers(
   name: string,
@@ -127,7 +86,6 @@ function* layers(
   registry: MountRegistry,
   routing?: RouteDecision<Runtime>,
 ): Generator<Consumer> {
-  const installed = listed(name, session)
   let found = false
   const declared = runtimeFor(name, registry)
   const bound =
@@ -136,32 +94,31 @@ function* layers(
       : declared
   const native = bound != null && (isLineExecutor(bound) || isProcessExecutor(bound))
   const refused = runtimeRefused(name, session, registry, routing)
-  if (SHELL_NAMES.has(name) && installed) {
+  if (SHELL_NAMES.has(name)) {
     found = true
     yield (native || refused) && CAPTURABLE_BUILTINS.has(name)
       ? Consumer.EXTERNAL
       : Consumer.SESSION
   }
-  if (installed && NAMESPACE_COMMANDS.has(name)) {
+  if (NAMESPACE_COMMANDS.has(name)) {
     found = true
     yield Consumer.NAMESPACE
   }
-  if (Object.hasOwn(session.functions, name) && (installed || !SHELL_NAMES.has(name))) {
+  if (Object.hasOwn(session.functions, name)) {
     found = true
     yield Consumer.FUNCTION
   }
-  if (installed && registry.clis.get(name) !== null) {
+  if (registry.clis.get(name) !== null) {
     found = true
     yield Consumer.CLI
   }
-  if (installed && (native || refused) && !SHELL_NAMES.has(name)) {
+  if ((native || refused) && !SHELL_NAMES.has(name)) {
     found = true
     yield Consumer.EXTERNAL
   }
   if (
-    installed &&
-    (ROUTED_COMMANDS.has(name) ||
-      registry.mountForCommand(EXEC_WRAPPERS.get(name)?.[0] ?? name) !== null)
+    ROUTED_COMMANDS.has(name) ||
+    registry.mountForCommand(EXEC_WRAPPERS.get(name)?.[0] ?? name) !== null
   ) {
     found = true
     yield Consumer.MOUNT
@@ -175,7 +132,6 @@ function* layers(
     fallback !== undefined &&
     (isLineExecutor(fallback) || isProcessExecutor(fallback))
   if (
-    installed &&
     !found &&
     declared === undefined &&
     (routing === undefined || !Object.hasOwn(routing.bindings, name)) &&

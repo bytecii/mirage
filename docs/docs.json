@@ -88,7 +88,8 @@
             "pages": [
               "home/policy/overview",
               "home/policy/policies",
-              "home/policy/explain"
+              "home/policy/explain",
+              "home/policy/route-policy"
             ]
           },
           {
@@ -101,9 +102,7 @@
               "home/cache",
               "home/yaml",
               "home/snapshot",
-              "home/observer",
-              "home/permissions",
-              "home/route-policy"
+              "home/observer"
             ]
           },
           {
@@ -678,14 +677,6 @@
     ]
   },
   "redirects": [
-    {
-      "source": "/home/policy-engine",
-      "destination": "/home/policy/policies"
-    },
-    {
-      "source": "/home/explain",
-      "destination": "/home/policy/explain"
-    },
     {
       "source": "/home/auth",
       "destination": "/home/access/http"

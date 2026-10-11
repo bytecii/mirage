@@ -69,6 +69,7 @@ from mirage.policy import (
     Deny,
     HandOff,
     Outcome,
+    Pending,
     PermissionsPolicy,
     Policies,
     Policy,
@@ -125,6 +126,7 @@ from mirage.vfs.base import BaseVFS
 from mirage.vfs.bin import BinViewVFS
 from mirage.vfs.history import HISTORY_PREFIX, HistoryViewVFS
 from mirage.vfs.s3.config import S3Config
+from mirage.view.types import NamespaceView, SessionView
 from mirage.workspace.cli import CLIInstall
 from mirage.workspace.dispatcher.dispatcher import Dispatcher
 from mirage.workspace.documentation.documents import Documents
@@ -412,7 +414,41 @@ class Workspace:
         # the sessions, the host answers through `on_ask` (or just
         # records the question when none is wired) and reads
         # `ws.decisions`.
-        self._registry.decisions = Decisions(self._session_mgr, on_ask)
+        self._registry.policies.decisions = Decisions(
+            self._session_mgr, on_ask
+        )
+
+        # What every hook sees of its session: the one its context was
+        # built from when given (a line explain walks), else the one the
+        # call is made under when the hook's is it (a call's cwd and env
+        # included), else the session the id names, the default for none;
+        # nothing for an id this workspace holds no session for.
+        def views(
+            session_id: str, session: SessionState | None = None
+        ) -> tuple[SessionView, NamespaceView, Files] | None:
+            if session is None:
+                session = get_current_session_unless_foreign(self._session_mgr)
+            if session is None or session_id not in ("", session.session_id):
+                wanted = session_id or self._session_mgr.default_id
+                session = next(
+                    (
+                        s
+                        for s in self._session_mgr.list()
+                        if s.session_id == wanted
+                    ),
+                    None,
+                )
+            if session is None:
+                return None
+            return (
+                session_view(session, self.policies),
+                namespace_view_of(
+                    self._registry, self._namespace, self.dispatch, session
+                ),
+                self.vfs._for_session(session.session_id),
+            )
+
+        self._registry.policies.views = views
         self._meta = WorkspaceMeta(
             self._workspace_id,
             self._state_store,
@@ -478,8 +514,8 @@ class Workspace:
             ReadSpec(),
             write=WritePolicy.UNCONDITIONAL,
         )
-        # One file per program the session can run, where PATH finds it:
-        # the same lookup which, type and command -v answer from.
+        # One file per program, where PATH finds it: the same lookup
+        # which, type and command -v answer from.
         self._registry.mount(
             BIN_PREFIX,
             BinViewVFS(
@@ -617,15 +653,24 @@ class Workspace:
         """
         session = self.get_session(session_id or self.default_session_id)
         ast = parse(line)
+        whole_line = self._runtimes.whole_line(None) is not None
         judged = await explain_line(
             ast,
             session,
             self._registry,
             self._namespace,
-            whole_line=self._runtimes.whole_line(None) is not None,
+            whole_line=whole_line,
         )
-        if holds([one.judgment for one in judged]):
-            return explained_line(line, judged, lambda command: "")
+        verdicts = await explain_line(
+            ast,
+            session,
+            self._registry,
+            self._namespace,
+            whole_line=whole_line,
+            every=False,
+        )
+        if holds([one.judgment for one in verdicts]):
+            return explained_line(line, judged, verdicts, lambda command: "")
         answers, placed = await self._router.placement(
             ast,
             line,
@@ -633,13 +678,17 @@ class Workspace:
             session.session_id,
             self._default_agent_id or "",
         )
-        if isinstance(placed, Deny):
+        if isinstance(placed, (Deny, Pending)):
             refused = placement_refused(placed, line)
-            said = explained_line(line, judged, lambda command: "")
+            said = explained_line(line, judged, verdicts, lambda command: "")
             return dataclasses.replace(
                 said,
                 answers=answers,
-                outcome=Outcome.DENY,
+                outcome=(
+                    Outcome.ASK
+                    if isinstance(placed, Pending)
+                    else Outcome.DENY
+                ),
                 reason=placed.reason,
                 source="",
                 refusal=refused.refusal,
@@ -649,6 +698,7 @@ class Workspace:
         said = explained_line(
             line,
             judged,
+            verdicts,
             lambda command: self._router.runtime_for(command, placed),
         )
         return dataclasses.replace(said, answers=answers)

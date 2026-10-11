@@ -99,12 +99,11 @@ describe('IOResult.merge', () => {
   })
 
   it('keeps the latest refusal', async () => {
-    const early: Refusal = { kind: 'deny', reason: 'a', policy: 'P', scope: 'command', askId: null }
+    const early: Refusal = { kind: 'deny', reason: 'a', policy: 'P', askId: null }
     const late: Refusal = {
       kind: 'pending',
       reason: 'b',
       policy: '',
-      scope: 'command',
       askId: 'x1',
     }
     expect((await new IOResult({ refusal: early }).merge(new IOResult())).refusal).toEqual(early)

@@ -67,22 +67,6 @@ def test_io_to_str_starts_a_line_for_the_refusal_when_needed():
     )
 
 
-def test_io_to_str_leaves_an_operand_refusal_alone():
-    # An operand-scoped refusal already carries its reason on the
-    # command's stderr line; repeating it would say nothing new.
-    io = IOResult(
-        stderr=b"rm: cannot remove 'x': keys\n",
-        exit_code=1,
-        refusal=Refusal(
-            kind="deny",
-            reason="cannot remove 'x': keys",
-            policy="RulePolicy",
-            scope="operand",
-        ),
-    )
-    assert io_to_str(io) == "rm: cannot remove 'x': keys\n"
-
-
 def test_with_refusal_bytes_appends_after_stderr():
     denied = Refusal(kind="deny", reason="no deletes", policy="RulePolicy")
     assert (
@@ -104,45 +88,15 @@ def test_with_refusal_bytes_starts_a_line_when_needed():
 
 
 def test_with_refusal_bytes_leaves_the_bytes_alone_otherwise():
-    # No record, or an operand-scoped one whose line already names the
-    # reason: the bytes pass through untouched, invalid UTF-8 included.
+    # No record: the bytes pass through untouched, invalid UTF-8 included.
     assert with_refusal_bytes(b"\xff raw", None) == b"\xff raw"
-    operand = Refusal(
-        kind="deny",
-        reason="cannot remove 'x': keys",
-        policy="RulePolicy",
-        scope="operand",
-    )
-    assert (
-        with_refusal_bytes(b"rm: cannot remove 'x': keys\n", operand)
-        == b"rm: cannot remove 'x': keys\n"
-    )
-
-
-def test_with_refusal_describes_an_operand_refusal_whose_line_is_gone():
-    # `cat /protected 2>/dev/null`: cat's line was redirected away, so
-    # the record is the only reason left to hand over.
-    operand = Refusal(
-        kind="deny",
-        reason="/protected: frozen",
-        policy="Frozen",
-        scope="operand",
-    )
-    assert (
-        io_to_str(IOResult(exit_code=1, refusal=operand))
-        == "policy denied: /protected: frozen\n"
-    )
-    assert (
-        with_refusal_bytes(b"", operand)
-        == b"policy denied: /protected: frozen\n"
-    )
 
 
 def test_with_refusal_describes_a_command_refusal_the_output_quotes():
     # `V=secret; printf 'secrets stay put'; echo "$V" 2>/dev/null`: the
     # bare `Permission denied` was redirected away and the earlier
-    # output carries the reason by coincidence; a command-scoped record
-    # is never already said, so the line is still appended.
+    # output carries the reason by coincidence; a record is never
+    # already said, so the line is still appended.
     denied = Refusal(
         kind="deny", reason="secrets stay put", policy="DenySecret"
     )
@@ -152,38 +106,6 @@ def test_with_refusal_describes_a_command_refusal_the_output_quotes():
         )
         == "secrets stay put\npolicy denied: secrets stay put\n"
     )
-
-
-def test_with_refusal_describes_an_operand_refusal_the_output_only_quotes():
-    operand = Refusal(
-        kind="deny",
-        reason="/protected: frozen",
-        policy="Frozen",
-        scope="operand",
-    )
-    io = IOResult(
-        stdout=b"note: /protected: frozen for now\n",
-        exit_code=1,
-        refusal=operand,
-    )
-    assert io_to_str(io) == (
-        "note: /protected: frozen for now\npolicy denied: /protected: frozen\n"
-    )
-
-
-def test_with_refusal_trusts_the_reason_wherever_the_line_landed():
-    # `2>&1` moved cat's line onto stdout; the text still says why,
-    # so nothing is repeated.
-    operand = Refusal(
-        kind="deny",
-        reason="/protected: frozen",
-        policy="Frozen",
-        scope="operand",
-    )
-    io = IOResult(
-        stdout=b"cat: /protected: frozen\n", exit_code=1, refusal=operand
-    )
-    assert io_to_str(io) == "cat: /protected: frozen\n"
 
 
 def test_replace_text_first_occurrence_counts_every_one():

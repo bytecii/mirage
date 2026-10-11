@@ -56,10 +56,14 @@ from mirage.utils.filetype import get_extension
 from mirage.utils.hidden import move_reveals, path_visible
 from mirage.utils.path import norm, parent
 from mirage.vfs.base import BaseVFS
+from mirage.vfs.call import declared
 from mirage.vfs.types import (
     DuOps,
+    Effect,
     OperationFn,
     SearchOps,
+    Target,
+    VfsCall,
 )
 from mirage.view.types import (
     StatOverlay,
@@ -1359,19 +1363,24 @@ async def _policy_admit(
         policies (Policies): the bound admission policies.
         prefix (str): the executing mount's prefix, "" outside one.
         session_id (str): the session the command runs under.
-        op (str): the slot name, which is the op name policies see.
+        op (str): the slot name, which names the call policies see: the
+            built-in call of that name, or one of that name with a read
+            or write effect for a slot that is no call.
         write (bool): whether the op mutates its paths.
         first_source (bool): whether the leading PathSpec is a
             read-only source (the copy slots).
         args: the call's positionals, PathSpecs among them.
     """
+    call = declared(BaseVFS, op) or VfsCall(
+        op, Effect.WRITE if write else Effect.READ, Target.ANY, False
+    )
     first = True
     for arg in args:
         if isinstance(arg, PathSpec):
             mutates = write and not (first and first_source)
             await pre_vfs_gate(
                 policies,
-                op,
+                call,
                 arg,
                 mutates,
                 prefix,
@@ -1429,14 +1438,14 @@ async def _policy_readdir(
     policies, prefix, session_id = _live_policy_scope(scope)
     if policies is not None:
         parent_spec = next(a for a in args if isinstance(a, PathSpec))
-        await pre_vfs_gate(
+        await _policy_admit(
             policies,
-            "readdir",
-            parent_spec,
-            False,
             prefix,
             session_id,
-            check_hidden=False,
+            "readdir",
+            False,
+            False,
+            (parent_spec,),
         )
     entries: list[str] = await fn(*args, **kwargs)
     return entries

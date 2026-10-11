@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { compareCodePoints } from '../utils/sort.ts'
-import { type Declaration, Effect, Target } from './types.ts'
+import { Effect, Target, type VfsCall } from './types.ts'
 
 const MARK = Symbol.for('mirage.vfsCall')
 
@@ -45,7 +45,7 @@ const NAMED: Partial<Record<Effect, readonly string[]>> = {
 }
 
 interface Marked {
-  [MARK]?: Declaration
+  [MARK]?: VfsCall
 }
 
 /**
@@ -77,7 +77,7 @@ export function vfsCall(options: {
   creates?: boolean
   subtree?: boolean
 }) {
-  const mark: Declaration = {
+  const mark: Omit<VfsCall, 'name'> = {
     effect: options.effect,
     target: options.target ?? Target.ANY,
     creates: options.creates ?? false,
@@ -94,7 +94,7 @@ export function vfsCall(options: {
         `${name}: only ${names.join(', ')} may declare ${mark.effect.toUpperCase()}`,
       )
     }
-    ;(method as Marked)[MARK] = mark
+    ;(method as Marked)[MARK] = { name, ...mark }
   }
 }
 
@@ -103,7 +103,7 @@ export function vfsCall(options: {
  * up the prototype chain that marks `name` answers, so an unmarked override
  * inherits its base's mark. Mirrors Python's `declared`.
  */
-export function declared(cls: { readonly prototype: unknown }, name: string): Declaration | null {
+export function declared(cls: { readonly prototype: unknown }, name: string): VfsCall | null {
   const method = methodName(name)
   let proto: unknown = cls.prototype
   while (typeof proto === 'object' && proto !== null) {
@@ -116,14 +116,14 @@ export function declared(cls: { readonly prototype: unknown }, name: string): De
 }
 
 /** Every name `cls` marks dispatchable, to what it declares. Mirrors Python's `declared_calls`. */
-export function declaredCalls(cls: { readonly prototype: unknown }): Map<string, Declaration> {
+export function declaredCalls(cls: { readonly prototype: unknown }): Map<string, VfsCall> {
   const names = new Set<string>()
   let proto: unknown = cls.prototype
   while (typeof proto === 'object' && proto !== null) {
     for (const name of Object.getOwnPropertyNames(proto)) names.add(name)
     proto = Object.getPrototypeOf(proto)
   }
-  const calls = new Map<string, Declaration>()
+  const calls = new Map<string, VfsCall>()
   const dispatched = [...names].map((name) => DISPATCH_NAMES.get(name) ?? name)
   for (const name of dispatched.sort(compareCodePoints)) {
     const mark = declared(cls, name)
@@ -139,7 +139,7 @@ export function declaredCalls(cls: { readonly prototype: unknown }): Map<string,
  * `call_names`.
  */
 export function callNames(
-  calls: ReadonlyMap<string, Declaration>,
+  calls: ReadonlyMap<string, VfsCall>,
   filter: {
     effects?: readonly Effect[]
     targets?: readonly Target[]

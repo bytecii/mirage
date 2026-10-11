@@ -23,16 +23,16 @@ from mirage.policy.types import Action, Hide, VfsContext
 from mirage.types import HiddenPaths, MountMode, PathSpec, Visibility
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from mirage.workspace.dispatcher.constants import CALLS
 from mirage.workspace.session import SessionState
 
 
 def _ctx(virtual: str, create: bool = False) -> VfsContext:
     return VfsContext(
-        op="write" if create else "read",
+        call=CALLS["write" if create else "read"],
         path=PathSpec.from_str_path(virtual),
         write=create,
         prefix="/w/",
-        create=create,
     )
 
 
@@ -78,13 +78,12 @@ async def test_a_hide_answers_before_any_policy_and_leaves_no_record():
         ws.create_session(
             "veiled", profile={"paths": {"hide": ["/data/secret"]}}
         )
-        hidden = await ws.shell("cat /data/secret", session_id="veiled")
-        assert hidden.exit_code == 1
-        assert await hidden.stderr_str() == (
-            "cat: /data/secret: No such file or directory\n"
-        )
-        assert hidden.refusal is None
-        denied = await ws.shell("cat /data/secret")
-        assert denied.refusal and denied.refusal.reason == "sealed"
+        with pytest.raises(FileNotFoundError) as hidden:
+            await ws.vfs.read("/data/secret", session_id="veiled")
+        assert getattr(hidden.value, "refusal", None) is None
+        with pytest.raises(PermissionError) as denied:
+            await ws.vfs.read("/data/secret")
+        refusal = getattr(denied.value, "refusal", None)
+        assert refusal is not None and refusal.reason == "sealed"
     finally:
         await ws.close()

@@ -19,6 +19,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextvars import ContextVar, Token
 from typing import TypeVar
 
+from mirage.context import explaining
+from mirage.policy.errors import PolicyDenied
 from mirage.policy.match import Outcome
 from mirage.policy.types import (
     Abandoned,
@@ -29,13 +31,18 @@ from mirage.policy.types import (
     CommandRule,
     Decision,
     Deny,
+    DryRun,
+    ExecuteResultContext,
     HandOff,
     Occurrence,
     Pending,
     Scope,
+    SessionContext,
     SessionDecisionsQuery,
     VfsContext,
 )
+from mirage.runtime.routing.types import RouteContext
+from mirage.types import PathSpec
 
 # A host that answers an Ask inside the line.
 #
@@ -119,19 +126,34 @@ def decision_id(session_id: str, cwd: str, argv: tuple[str, ...]) -> str:
     return digest.hexdigest()[:12]
 
 
-def ask_rule(ctx: CommandContext, ask: Ask) -> CommandRule:
+def ask_rule(
+    ctx: CommandContext
+    | RouteContext
+    | VfsContext
+    | ExecuteResultContext
+    | SessionContext,
+    ask: Ask,
+) -> CommandRule:
     """The rule an Ask is keyed on: the document's, or for a coded Ask
-    one synthesized over the program that asked, so a session answer
-    reads "stop asking me about this program".
+    one synthesized over what was asked about (the program, the path,
+    the line, the variable), so a session answer reads "stop asking me
+    about this".
 
     Args:
-        ctx (CommandContext): the asked line.
+        ctx (CommandContext | RouteContext | VfsContext |
+            ExecuteResultContext | SessionContext): what the hook saw.
         ask (Ask): the policy's answer.
     """
     if ask.rule is not None:
         return ask.rule
-    program = " ".join(ctx.program or (ctx.command,))
-    return CommandRule(reason=ask.reason, commands=(program,))
+    if isinstance(ctx, CommandContext):
+        program = " ".join(ctx.program or (ctx.command,))
+        return CommandRule(reason=ask.reason, commands=(program,))
+    if isinstance(ctx, VfsContext):
+        return CommandRule(reason=ask.reason, paths=(ctx.path.virtual,))
+    if isinstance(ctx, SessionContext):
+        return CommandRule(reason=ask.reason, commands=(ctx.key,))
+    return CommandRule(reason=ask.reason, commands=(ctx.line,))
 
 
 def covers(
@@ -189,36 +211,40 @@ def encloses(scope: Occurrence, occurrence: Occurrence) -> bool:
     return False
 
 
-class Unmounted:
-    """The mount table of an op asked about outside a line, which the
-    ledger never reads: its record names a path, not a command."""
-
-    def is_mount_root(self, path: str) -> bool:
-        return False
-
-
-UNMOUNTED = Unmounted()
-
-
-def op_question(ctx: VfsContext, ask: Ask) -> tuple[CommandContext, Ask]:
-    """An op's question as the ledger keys it: no command, the path as
-    the one word asked about, and one rule, the document's or for a
-    coded Ask one over the path.
+def op_question(
+    ctx: VfsContext | SessionContext | RouteContext | ExecuteResultContext,
+    ask: Ask,
+) -> tuple[CommandContext, Ask]:
+    """A question about no command as the ledger keys it: no command,
+    and the words of its record are what was asked about: the path of a
+    VFS call, the variable a session write sets with the value it
+    writes, the line.
 
     Args:
-        ctx (VfsContext): the op asked about.
+        ctx (VfsContext | SessionContext | RouteContext |
+            ExecuteResultContext): what the hook saw.
         ask (Ask): the chain's answer.
     """
+    rules = ask.rules or (ask_rule(ctx, ask),)
+    keyed = dataclasses.replace(ask, rule=ask.rule or rules[0], rules=rules)
+    paths: tuple[PathSpec, ...] = ()
+    cwd = ""
+    if isinstance(ctx, VfsContext):
+        words: tuple[str, ...] = (ctx.path.virtual,)
+        paths = (ctx.path,)
+    elif isinstance(ctx, SessionContext):
+        words = (ctx.key,) if ctx.value is None else (ctx.key, ctx.value)
+    else:
+        words = (ctx.line,)
+        cwd = ctx.session.cwd() if ctx.session is not None else ""
     asked = CommandContext(
         command="",
-        paths=(ctx.path,),
-        argv=(ctx.path.virtual,),
-        cwd="",
-        registry=UNMOUNTED,
+        paths=paths,
+        argv=words,
+        cwd=cwd,
         session_id=ctx.session_id,
     )
-    rule = ask.rule or CommandRule(ask.reason, paths=(ctx.path.virtual,))
-    return asked, dataclasses.replace(ask, rule=rule, rules=(rule,))
+    return asked, keyed
 
 
 class Decisions:
@@ -461,42 +487,49 @@ class Decisions:
         return None
 
     async def resolve_op(
-        self, ctx: VfsContext, ask: Ask
+        self, ctx: VfsContext | SessionContext, ask: Ask
     ) -> Deny | Pending | None:
-        """An Ask from the dispatcher where no line is running: a standing
-        answer settles it, else the question is raised now.
+        """An Ask about a VFS call or a session write: a standing answer
+        settles it, else the question is raised now. In a dry run's
+        deciding (``explain``) the settled records alone answer
+        (:meth:`held_op`) and nothing is recorded.
 
-        The op has no command behind it, so its record names none: the
-        rule and the path are the key, the path standing as the one word
-        asked about. A ONCE answer passes the next call on that path under
-        that rule (every op of it, :meth:`within_call`; a bare op is a
-        call of its own) and is spent when the call ends; a SESSION answer
-        passes every one the rule covers, lines included.
+        Neither has a command behind it, so its record names none: the
+        rule and the subject are the key (:func:`op_question`). A ONCE
+        answer passes the next call on that subject under that rule
+        (every op of it, :meth:`within_call`; a bare op is a call of its
+        own) and is spent when the call ends; a SESSION answer passes
+        every one the rule covers, lines included.
 
         Args:
-            ctx (VfsContext): the op asked about.
+            ctx (VfsContext | SessionContext): what was asked about.
             ask (Ask): the chain's answer.
 
         Returns:
-            None to run the op, a Deny to refuse it, a Pending when the
-            host has not decided.
+            None to go on, a Deny to refuse, a Pending when the host has
+            not decided.
         """
-        call = get_op_call(self)
+        if explaining() is DryRun.DECIDING:
+            return self.held_op(ctx, ask)
+        asked, keyed = op_question(ctx, ask)
+        call = get_op_call(self, ctx.session_id)
         claimant = (
-            Claimant(call, Occurrence(None, ctx.path.virtual, 0, 0))
+            Claimant(call, Occurrence(None, asked.argv[0], 0, 0))
             if call is not None
             else None
         )
-        said = await self.resolve(*op_question(ctx, ask), claimant=claimant)
+        said = await self.resolve(asked, keyed, claimant=claimant)
         return Deny(ask.reason) if isinstance(said, Abandoned) else said
 
-    def held_op(self, ctx: VfsContext, ask: Ask) -> Deny | Pending | None:
-        """What the settled records alone say about an op asked about
-        outside a line: the read-only half of :meth:`resolve_op`, the one
+    def held_op(
+        self, ctx: VfsContext | SessionContext, ask: Ask
+    ) -> Deny | Pending | None:
+        """What the settled records alone say about a VFS call or a
+        session write: the read-only half of :meth:`resolve_op`, the one
         ``explain`` may take.
 
         Args:
-            ctx (VfsContext): the op asked about.
+            ctx (VfsContext | SessionContext): what was asked about.
             ask (Ask): the chain's answer.
         """
         return self.held(*op_question(ctx, ask))
@@ -504,13 +537,15 @@ class Decisions:
     async def within_call(
         self, session_id: str, run: Callable[[], Awaitable[T]]
     ) -> T:
-        """Run one call made outside a line (a file tool's) as the unit an
+        """Run one call (a file tool's, a session write) as the unit an
         op-level answer covers.
 
         A ONCE grant one of its ops is answered by is claimed for the
         call, so every op of the call on that path runs on it (a write
         tool reads the file back to stamp its version), and the call's
-        end spends it. A call made inside another runs in the outer one;
+        end spends it, unless the call is held on a question still
+        waiting: its retry finds the grants standing, as a held line's
+        does. A call made inside another runs in the outer one;
         a call another ledger runs (a host callback reaching a second
         workspace mid-call) is no call of this one's.
 
@@ -521,12 +556,16 @@ class Decisions:
         Returns:
             T: what the call returned.
         """
-        if get_op_call(self) is not None:
+        if get_op_call(self, session_id) is not None:
             return await run()
         handed = HandOff()
-        token = set_op_call(self, handed)
+        token = set_op_call(self, handed, session_id)
         try:
             return await run()
+        except PolicyDenied as exc:
+            if exc.refusal is not None and exc.refusal.kind == "pending":
+                self.release(session_id, handed)
+            raise
         finally:
             reset_op_call(token)
             await self.revoke(session_id, handed)
@@ -984,15 +1023,15 @@ class Decisions:
             await self._sessions.flush()
 
 
-_op_call: ContextVar[tuple[Decisions, HandOff] | None] = ContextVar(
+_op_call: ContextVar[tuple[Decisions, HandOff, str] | None] = ContextVar(
     "mirage_op_call",
     default=None,
 )
 
 
 def set_op_call(
-    owner: Decisions, handed: HandOff
-) -> Token[tuple[Decisions, HandOff] | None]:
+    owner: Decisions, handed: HandOff, session_id: str
+) -> Token[tuple[Decisions, HandOff, str] | None]:
     """Bind one call made outside a line (a file tool's), the unit an
     op-level answer covers: a grant one of its ops is answered by is
     claimed on ``handed`` for the call's other ops on that path.
@@ -1001,22 +1040,29 @@ def set_op_call(
         owner (Decisions): the ledger the call runs under, the only one
             that claims on ``handed`` and spends it.
         handed (HandOff): the call's hand-off, spent when it ends.
+        session_id (str): the session the call runs as.
     """
-    return _op_call.set((owner, handed))
+    return _op_call.set((owner, handed, session_id))
 
 
-def reset_op_call(token: Token[tuple[Decisions, HandOff] | None]) -> None:
+def reset_op_call(
+    token: Token[tuple[Decisions, HandOff, str] | None],
+) -> None:
     """Restore the previous call binding."""
     _op_call.reset(token)
 
 
-def get_op_call(owner: Decisions) -> HandOff | None:
+def get_op_call(owner: Decisions, session_id: str) -> HandOff | None:
     """The call made outside a line running in this context under
-    ``owner``'s ledger, None for a bare op or for a call another ledger
-    runs (a host callback reaching a second workspace mid-call).
+    ``owner``'s ledger for ``session_id``, None for a bare op, for a
+    call another ledger runs (a host callback reaching a second
+    workspace mid-call) or for another session's call.
 
     Args:
         owner (Decisions): the ledger asking.
+        session_id (str): the session asking.
     """
     call = _op_call.get()
-    return call[1] if call is not None and call[0] is owner else None
+    if call is None or call[0] is not owner or call[2] != session_id:
+        return None
+    return call[1]

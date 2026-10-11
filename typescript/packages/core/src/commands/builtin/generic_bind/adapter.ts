@@ -12,14 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type {
-  DuEntries,
-  ReadBytesOp,
-  ResolveGlobOp,
-  ScanReason,
-  SearchQuery,
+import {
+  Effect,
+  Target,
+  type DuEntries,
+  type ReadBytesOp,
+  type ResolveGlobOp,
+  type ScanReason,
+  type SearchQuery,
 } from '../../../vfs/types.ts'
-import type { BaseVFS } from '../../../vfs/base.ts'
+import { BaseVFS } from '../../../vfs/base.ts'
+import { declared } from '../../../vfs/call.ts'
 import type { FindOptions } from '../../../vfs/types.ts'
 import { getExtension } from '../../../utils/filetype.ts'
 import { streamFromBytes } from '../utils/wrap.ts'
@@ -1186,9 +1189,11 @@ function livePolicyScope(scope: OpPolicyScope | null): OpPolicyScope | null {
   return scope ?? opPolicyScope(null)
 }
 
-/** Fire preVfs for one PathSpec of one slot call; the op is the slot
- * name in its shared snake spelling, so a policy portable across the
- * languages and tiers sees one vocabulary. The hides are not judged
+/** Fire preVfs for one PathSpec of one slot call; the call is the built-in
+ * one the slot is named for, or one of that name with a read or write
+ * effect for a slot that is no call, in its shared snake spelling, so a
+ * policy portable across the languages and tiers sees one vocabulary.
+ * The hides are not judged
  * here: the command guards wrapped around this one answer them first,
  * and the remnant cascade reaches below them on purpose to remove what
  * the session cannot see. */
@@ -1201,7 +1206,14 @@ async function policyAdmit(
   const owner = scope.prefix ?? mountGateFor(path.virtual)?.[0] ?? null
   // The mount prefix as the dispatcher reports it, with its slash.
   const prefix = owner === null ? '' : `${rstripSlash(owner)}/`
-  await preVfsGate(scope.policies, op, path, write, prefix, scope.sessionId, undefined, {
+  const call = declared(BaseVFS, op) ?? {
+    name: op,
+    effect: write ? Effect.WRITE : Effect.READ,
+    target: Target.ANY,
+    creates: false,
+    subtree: false,
+  }
+  await preVfsGate(scope.policies, call, path, write, prefix, scope.sessionId, undefined, {
     checkHidden: false,
   })
 }

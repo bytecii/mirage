@@ -20,7 +20,7 @@ import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { createShellParser, type ShellParser } from '../../shell/parse/index.ts'
 import { type CacheFacts, MountMode, type Refusal } from '../../types.ts'
 import { Workspace } from '../workspace/workspace.ts'
-import { describeRefusal, saysWhy } from '../../policy/index.ts'
+import { describeRefusal } from '../../policy/index.ts'
 
 const require = createRequire(import.meta.url)
 const engineWasm = readFileSync(require.resolve('web-tree-sitter/web-tree-sitter.wasm'))
@@ -129,13 +129,12 @@ export function stderrStr(io: { stderr: Uint8Array }): string {
 }
 
 /**
- * stderr as bash prints it, then the refusal record as one more line,
- * unless the text already says why (an operand-scoped refusal's own GNU
- * line): what a text surface hands an agent.
+ * stderr as bash prints it, then the refusal record as one more line: what
+ * a text surface hands an agent.
  */
 export function voicedStderr(io: { stderr: Uint8Array; refusal: Refusal | null }): string {
   const text = DEC.decode(io.stderr)
-  if (io.refusal === null || saysWhy(text, io.refusal)) return text
+  if (io.refusal === null) return text
   return `${text}${describeRefusal(io.refusal)}\n`
 }
 

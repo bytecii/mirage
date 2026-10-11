@@ -534,11 +534,6 @@ export class MountEntry {
   }
 
   /** Whether the VFS declares the function `name` a write. */
-  writes(name: string): boolean {
-    const effect = declared(this.vfs.constructor, name)?.effect
-    return effect !== undefined && WRITE_EFFECTS.includes(effect)
-  }
-
   /**
    * Refuse a write the mount's mode no longer grants at any path. Admission
    * judged the mode before the call waited for the mount and for its write

@@ -117,14 +117,14 @@ describe('profile policies', () => {
 
   it('a document may ride beside the script', async () => {
     // Optional, not required: a profile stating both keeps the allow
-    // list's hiding, and the script adds its verdicts beside it.
+    // list, and the script adds its verdicts beside it.
     const profiles = scripted()
     const ws = await build({
       release: { ...profiles.release, commands: { allow: ['ls', 'cat', 'echo'] } },
     })
     try {
       ws.createSession('s', { profile: 'release' })
-      expect((await ws.shell('rm /data/x', { sessionId: 's' })).exitCode).toBe(127)
+      expect((await ws.shell('rm /data/x', { sessionId: 's' })).exitCode).toBe(126)
       const denied = await ws.shell('cat /data/sealed/k', { sessionId: 's' })
       expect(denied.exitCode).toBe(126)
       expect(denied.stderrText).toBe('cat: Permission denied\n')
@@ -281,8 +281,8 @@ describe('profile policies', () => {
 // /data/frozen and AWS_* variables are refused, and no command is judged.
 const GATES = `\
 function preVfs(ctx) {
-  const op = ctx.op
-  return op.write && op.path.startsWith('/data/frozen/') ? { deny: 'frozen by ' + ctx.profile } : null
+  const call = ctx.call
+  return call.write && call.path.startsWith('/data/frozen/') ? { deny: 'frozen by ' + ctx.profile } : null
 }
 function preSession(ctx) {
   return ctx.write.key.startsWith('AWS_') ? { deny: 'credentials are set by the operator' } : null
@@ -293,32 +293,28 @@ function preSession(ctx) {
 // pass the dispatcher its pre_vfs guards.
 const READER_AND_GATE_PY = `${READER_PY}
 def pre_vfs(ctx):
-    op = ctx['op']
+    op = ctx['call']
     if op['write'] and op['path'].startswith('/data/frozen/'):
         return {'deny': 'frozen'}
     return None
 `
 
 describe('profile policies at the op and session views', () => {
-  it('judges the dispatcher with the facts of the op', async () => {
+  it("judges its session's file calls with the facts of the op", async () => {
     const ws = await build(scripted(GATES))
     try {
       await ws.shell('mkdir -p /data/frozen && echo keep > /data/frozen/k')
       ws.createSession('s', { profile: 'release' })
-      // No command hook, so a command is silence; a read is not a write.
-      expect((await ws.shell('echo hi', { sessionId: 's' })).exitCode).toBe(0)
-      const read = await ws.shell('cat /data/frozen/k', { sessionId: 's' })
-      expect(read.exitCode).toBe(0)
-      expect(read.stdoutText).toBe('keep\n')
-      const refused = await ws.shell('echo x > /data/frozen/f', { sessionId: 's' })
-      expect(refused.exitCode).toBe(1)
-      expect(refused.stderrText).toContain('Permission denied')
-      const removed = await ws.shell('rm /data/frozen/k', { sessionId: 's' })
-      expect(removed.exitCode).toBe(1)
-      expect(removed.stderrText).toContain('Permission denied')
+      // A read is not a write.
+      expect(new TextDecoder().decode(await ws.vfs.read('/data/frozen/k', {}, 's'))).toBe('keep\n')
+      await expect(ws.vfs.write('/data/frozen/f', 'x\n', 's')).rejects.toThrow()
+      await expect(ws.vfs.unlink('/data/frozen/k', 's')).rejects.toThrow()
       expect((await ws.shell('cat /data/frozen/k')).stdoutText).toBe('keep\n')
+      // A line's I/O is its commands', which preCommand judges, and this
+      // script has no command hook.
+      expect((await ws.shell('echo x > /data/frozen/f', { sessionId: 's' })).exitCode).toBe(0)
       // Another session is not judged by it.
-      expect((await ws.shell('echo x > /data/frozen/f')).exitCode).toBe(0)
+      await ws.vfs.write('/data/frozen/g', 'x\n')
     } finally {
       await ws.close()
     }
@@ -355,9 +351,7 @@ describe('profile policies at the op and session views', () => {
       expect(held.exitCode).toBe(126)
       expect(held.refusal).toMatchObject({ kind: 'pending', reason: 'sign-off on payload' })
       expect((await ws.shell('cat /data/in/note.txt', { sessionId: 's' })).exitCode).toBe(0)
-      const refused = await ws.shell('echo x > /data/frozen/f', { sessionId: 's' })
-      expect(refused.exitCode).toBe(1)
-      expect(refused.stderrText).toContain('Permission denied')
+      await expect(ws.vfs.write('/data/frozen/f', 'x\n', 's')).rejects.toThrow()
     } finally {
       await ws.close()
     }

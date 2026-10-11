@@ -14,7 +14,12 @@
 
 import pytest
 
-from mirage.utils.fnmatch import _normalize_negation, fnmatch, fnmatchcase
+from mirage.utils.fnmatch import (
+    Matcher,
+    fnmatch,
+    fnmatchcase,
+    suffix_start,
+)
 
 
 @pytest.mark.parametrize(
@@ -53,16 +58,22 @@ def test_fnmatchcase_keeps_a_leading_caret_literal(name, pattern, expected):
     assert fnmatchcase(name, pattern) is expected
 
 
-def test_normalize_negation_rewrites_class_openers():
-    assert _normalize_negation("[^ab]*") == "[!ab]*"
-    assert _normalize_negation("x[^y]") == "x[!y]"
-    assert _normalize_negation("[!ab]") == "[!ab]"
-    assert _normalize_negation("plain") == "plain"
-
-
-def test_caret_not_first_in_class_stays_literal():
-    assert fnmatch("^", "[a^]") is True
-    assert fnmatch("b", "[a^]") is False
+@pytest.mark.parametrize(
+    "name,pattern,expected",
+    [
+        ("c", "[^ab]*", True),
+        ("a", "[^ab]*", False),
+        ("^", "[a^]", True),
+        ("b", "[a^]", False),
+        ("^", "[[^b]", True),
+        ("!", "[[^b]", False),
+        ("]", "[^]a]", False),
+        ("[^ab", "[^ab", True),
+        ("[^]", "[^]", True),
+    ],
+)
+def test_caret_negates_only_where_a_class_opens(name, pattern, expected):
+    assert fnmatch(name, pattern) is expected
 
 
 EXTGLOB_NAMES = [
@@ -240,6 +251,36 @@ def test_a_star_hands_a_group_every_tail():
 )
 def test_long_subjects_match_in_linear_time(pattern, tail, expected):
     assert fnmatch("a" * 16000 + tail, pattern, extglob=True) is expected
+
+
+def test_matcher_end_reads_every_offset_in_linear_time():
+    match = Matcher("abcab", "*b", extglob=False)
+    assert (match.end(0), match.end(0, longest=False)) == (5, 2)
+    assert (match.end(2), match.end(5)) == (5, None)
+    blank = Matcher(" " * 16000, "*b", extglob=False)
+    assert all(blank.end(i) is None for i in range(16001))
+
+
+@pytest.mark.parametrize(
+    "name,pattern,expected",
+    [
+        ("ab" * 16000, "*a", (None, None)),
+        ("ab" * 16000, "a*", (31998, 0)),
+        ("xab", "@(b|ab)", (2, 1)),
+        ("ba", "+(@(a|b))", (1, 0)),
+        ("xa)", "!(a)", (3, 0)),
+        ("xa(b)|c", "(b)|c", (2, 2)),
+        ("xa(b)", "@(a(b)|z)", (1, 1)),
+        ("x[a", "[a", (1, 1)),
+        ("x|)", "[)|]", (2, 2)),
+        ("\udcff\ud83d", "*", (2, 0)),
+        ("\udcff\ud83d", "\ud83d", (1, 1)),
+        ("x\udcff\ud83d", "\udcff\ud83d", (1, 1)),
+    ],
+)
+def test_suffix_start_runs_the_reversed_pattern_once(name, pattern, expected):
+    shortest = suffix_start(name, pattern, longest=False, extglob=True)
+    assert (shortest, suffix_start(name, pattern, extglob=True)) == expected
 
 
 @pytest.mark.parametrize("operator", ["@", "?", "+", "*"])

@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from mirage.commands.spec.types import WordKind
 from mirage.policy.constants import DEFAULT_ASK_REASON, DEFAULT_DENY_REASON
 from mirage.policy.script import (
     _POLICY_READ,
@@ -19,8 +20,8 @@ from mirage.policy.script import (
 from mirage.policy.types import (
     Ask,
     CommandContext,
+    CommandWord,
     Deny,
-    DenyScope,
     ProfileScript,
     SessionContext,
     VfsContext,
@@ -39,15 +40,9 @@ from mirage.runtime.types import (
     ScriptSource,
 )
 from mirage.types import PathSpec
+from mirage.workspace.dispatcher.constants import CALLS
 
 DENY_ANSWER = {"deny": "sealed"}
-
-
-class FakeRegistry:
-    """The one registry question a CommandContext carries."""
-
-    def is_mount_root(self, path: str) -> bool:
-        return False
 
 
 class FakeEngine(EvaluatorMixin):
@@ -179,8 +174,14 @@ def _ctx(command: str = "cat", session_id: str = "s") -> CommandContext:
         paths=(_path("/repo/sealed/k"),),
         argv=("/repo/sealed/k",),
         cwd="/repo",
-        registry=FakeRegistry(),
-        operands=(_path("/repo/sealed/k"),),
+        words=(
+            CommandWord(command, WordKind.NAME),
+            CommandWord(
+                "/repo/sealed/k",
+                WordKind.OPERAND,
+                path=_path("/repo/sealed/k"),
+            ),
+        ),
         session_id=session_id,
         agent_id="agent-1",
         tokens=(command, "/repo/sealed/k"),
@@ -213,7 +214,7 @@ def _ops_ctx(
     session_id: str = "s",
 ) -> VfsContext:
     return VfsContext(
-        op=op,
+        call=CALLS[op],
         path=_path(path),
         write=write,
         prefix="/scratch",
@@ -235,18 +236,23 @@ def test_script_context_is_the_command_context_as_data():
         "profile": "release",
         "command": {
             "name": "cat",
-            "argv": ["/repo/sealed/k"],
-            "tokens": ["cat", "/repo/sealed/k"],
-            "program": ["cat"],
+            "words": [
+                {"text": "cat", "kind": "name", "option": None, "path": None},
+                {
+                    "text": "/repo/sealed/k",
+                    "kind": "operand",
+                    "option": None,
+                    "path": "/repo/sealed/k",
+                },
+            ],
             "paths": ["/repo/sealed/k"],
-            "operands": ["/repo/sealed/k"],
-            "tool": True,
             "walks": False,
         },
         "session": {
             "id": "s",
             "agent": "agent-1",
             "cwd": "/repo",
+            "env": {},
         },
         "mounts": ["/repo/", "/scratch/"],
     }
@@ -259,7 +265,7 @@ def test_allow_and_silence_are_no_opinion(value):
 
 def test_a_deny_answer_becomes_a_whole_command_deny():
     action = script_action({"deny": "sealed"})
-    assert action == Deny("sealed", DenyScope.COMMAND)
+    assert action == Deny("sealed")
 
 
 def test_an_ask_answer_goes_to_the_approval_entry_point():
@@ -459,13 +465,17 @@ def test_dispatch_and_resolver_travel_together():
 def test_ops_script_context_is_the_op_context_as_data():
     assert ops_script_context("release", _ops_ctx(), _mounts()) == {
         "profile": "release",
-        "op": {
+        "call": {
             "name": "write",
+            "effect": "write",
+            "target": "file",
+            "creates": True,
+            "subtree": False,
             "path": "/scratch/frozen/f",
             "write": True,
             "prefix": "/scratch",
         },
-        "session": {"id": "s"},
+        "session": {"id": "s", "cwd": "", "env": {}},
         "mounts": ["/repo/", "/scratch/"],
     }
 
@@ -479,7 +489,7 @@ def test_session_script_context_is_the_session_context_as_data():
             "key": "AWS_KEY",
             "value": "v",
         },
-        "session": {"id": "s"},
+        "session": {"id": "s", "cwd": "", "env": {}},
         "mounts": ["/repo/", "/scratch/"],
     }
 
@@ -508,16 +518,12 @@ def test_defined_hooks_refuses_anything_else(value):
         defined_hooks(ScriptSource("x"), value)
 
 
-def test_a_session_hook_may_not_ask():
-    # The session view cannot wait on a host, so the vocabulary there is
-    # allow or deny, and an ask is a wrong answer.
-    hook = "pre_session"
-    assert script_action({"deny": "frozen"}, hook) == Deny("frozen")
-    assert script_action("deny", hook) == Deny(DEFAULT_DENY_REASON)
-    assert script_action(None, hook) is None
-    for value in ("ask", {"ask": "nod"}):
-        with pytest.raises(ValueError, match="must answer allow or deny"):
-            script_action(value, hook)
+def test_every_hook_answers_in_one_vocabulary():
+    # Every hook may ask, so the answer reads the same whichever hook
+    # gave it.
+    assert script_action({"deny": "frozen"}) == Deny("frozen")
+    assert script_action({"ask": "nod"}) == Ask("nod")
+    assert script_action(None) is None
 
 
 @pytest.mark.asyncio

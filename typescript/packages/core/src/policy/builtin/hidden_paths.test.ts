@@ -22,14 +22,21 @@ import { SessionState } from '../../workspace/session/session.ts'
 import type { Policy } from '../base.ts'
 import type { Action, VfsContext } from '../types.ts'
 import { HiddenPathsPolicy } from './hidden_paths.ts'
+import { CALLS } from '../../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../../vfs/types.ts'
+
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 function ctx(virtual: string, create = false): VfsContext {
   return {
-    op: create ? 'write' : 'read',
+    call: callOf(create ? 'write' : 'read'),
     path: PathSpec.fromStrPath(virtual),
     write: create,
     prefix: '/w/',
-    create,
   }
 }
 
@@ -67,12 +74,13 @@ describe('HiddenPathsPolicy', () => {
     try {
       await ws.shell('echo s > /data/secret')
       ws.createSession('veiled', { profile: { paths: { hide: ['/data/secret'] } } })
-      const hidden = await ws.shell('cat /data/secret', { sessionId: 'veiled' })
-      expect(hidden.exitCode).toBe(1)
-      expect(hidden.stderrText).toBe('cat: /data/secret: No such file or directory\n')
-      expect(hidden.refusal).toBeNull()
-      const denied = await ws.shell('cat /data/secret')
-      expect(denied.refusal?.reason).toBe('sealed')
+      const hidden: unknown = await ws.vfs
+        .read('/data/secret', {}, 'veiled')
+        .catch((e: unknown) => e)
+      expect((hidden as { code?: string }).code).toBe('ENOENT')
+      expect((hidden as { refusal?: unknown }).refusal ?? null).toBeNull()
+      const denied: unknown = await ws.vfs.read('/data/secret').catch((e: unknown) => e)
+      expect((denied as { refusal?: { reason: string } }).refusal?.reason).toBe('sealed')
     } finally {
       await ws.close()
     }

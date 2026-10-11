@@ -29,6 +29,8 @@ import { VarAttr } from '../../shell/variable.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { MountMode } from '../../types.ts'
 import type { Action, CommandContext, Policy } from '../../policy/index.ts'
+import { parseSessionProfile, type SessionProfile } from '../../policy/profile.ts'
+import type { RouteContext } from '../../runtime/routing/types.ts'
 import type { AskHandler } from '../../policy/decisions.ts'
 import { Outcome, Scope, type Decision, type SessionContext } from '../../policy/types.ts'
 import { getTestParser, stderrStr, stdoutStr } from '../fixtures/workspace_fixture.ts'
@@ -61,26 +63,33 @@ class DenyNamed implements Policy {
 
   preCommand(ctx: CommandContext): Action | null {
     if (ctx.command !== this.name) return null
-    return { kind: 'deny', reason: `${this.name} is off`, scope: 'command' }
+    return { kind: 'deny', reason: `${this.name} is off` }
   }
 }
 
-class AskNamed implements Policy {
+class DenyLine implements Policy {
   private readonly name: string
 
   constructor(name: string) {
     this.name = name
   }
 
-  preCommand(ctx: CommandContext): Action | null {
-    if (ctx.command !== this.name) return null
-    return { kind: 'ask', reason: `${this.name} needs sign-off` }
+  preExecute(ctx: RouteContext): Action | null {
+    if (!ctx.commands.some((c) => c.command === this.name)) return null
+    return { kind: 'deny', reason: `${this.name} is off` }
   }
+}
+
+// A profile rule refusing or asking about one command. The profile's
+// rules judge a line before it runs, so they keep a refused line's
+// secrets unfetched.
+function ruled(verb: 'deny' | 'ask', name: string, reason: string): SessionProfile {
+  return parseSessionProfile({ commands: { [verb]: [{ reason, commands: [name] }] } })
 }
 
 async function makeWs(
   env: EnvEntries | undefined,
-  policies?: Policy[],
+  guard?: Policy[] | SessionProfile,
   onAsk?: AskHandler,
   secrets?: SecretEntries,
 ): Promise<Workspace> {
@@ -91,7 +100,10 @@ async function makeWs(
       mode: MountMode.WRITE,
       shellParser: parser,
       ...(env !== undefined ? { env } : {}),
-      ...(policies !== undefined ? { policies } : {}),
+      ...(Array.isArray(guard) ? { policies: guard } : {}),
+      ...(guard !== undefined && !Array.isArray(guard)
+        ? { profiles: { p: guard }, profile: 'p' }
+        : {}),
       ...(onAsk !== undefined ? { onAsk } : {}),
       ...(secrets !== undefined ? { secrets } : {}),
     },
@@ -945,15 +957,51 @@ describe('fillEnv through execute', () => {
   it('a denied literal line never fetches', async () => {
     const { calls, fetch } = countingSource({ TOKEN: 't0' })
     registerSecrets('fake-denied', FakeConfig, fetch)
-    const ws = await makeWs({ TOKEN: { from: 'fake-denied', ref: 'r' } }, [
-      new DenyNamed('printenv'),
-    ])
+    const ws = await makeWs(
+      { TOKEN: { from: 'fake-denied', ref: 'r' } },
+      ruled('deny', 'printenv', 'printenv is off'),
+    )
     try {
       const io = await ws.shell('printenv TOKEN')
       expect(io.exitCode).toBe(126)
       expect(io.refusal?.reason).toContain('printenv is off')
       expect(calls).toEqual([])
       expect(stdoutStr(await ws.shell('echo $TOKEN'))).toBe('t0\n')
+      expect(calls).toEqual(['r'])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a coded line deny never fetches', async () => {
+    // A policy written in code answers preCommand once, as the command
+    // runs, which is after the line's fetch; the line it refuses whole is
+    // preExecute's, which answers before anything is fetched.
+    const { calls, fetch } = countingSource({ TOKEN: 't0' })
+    registerSecrets('fake-line-deny', FakeConfig, fetch)
+    const ws = await makeWs({ TOKEN: { from: 'fake-line-deny', ref: 'r' } }, [
+      new DenyLine('printenv'),
+    ])
+    try {
+      const io = await ws.shell('printenv TOKEN')
+      expect(io.exitCode).toBe(126)
+      expect(io.refusal?.reason).toContain('printenv is off')
+      expect(calls).toEqual([])
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('a coded command deny answers after the fetch', async () => {
+    const { calls, fetch } = countingSource({ TOKEN: 't0' })
+    registerSecrets('fake-command-deny', FakeConfig, fetch)
+    const ws = await makeWs({ TOKEN: { from: 'fake-command-deny', ref: 'r' } }, [
+      new DenyNamed('printenv'),
+    ])
+    try {
+      const io = await ws.shell('printenv TOKEN')
+      expect(io.exitCode).toBe(126)
+      expect(io.refusal?.reason).toContain('printenv is off')
       expect(calls).toEqual(['r'])
     } finally {
       await ws.close()
@@ -968,7 +1016,10 @@ describe('fillEnv through execute', () => {
     // line's earlier commands would already have run.
     const { calls, fetch } = countingSource({ TOKEN: 't0' })
     registerSecrets('fake-dynamic', FakeConfig, fetch)
-    const ws = await makeWs({ TOKEN: { from: 'fake-dynamic', ref: 'r' } }, [new DenyNamed('echo')])
+    const ws = await makeWs(
+      { TOKEN: { from: 'fake-dynamic', ref: 'r' } },
+      ruled('deny', 'echo', 'echo is off'),
+    )
     try {
       const io = await ws.shell('echo $TOKEN')
       expect(io.exitCode).toBe(126)
@@ -991,7 +1042,7 @@ describe('fillEnv through execute', () => {
     }
     const ws = await makeWs(
       { TOKEN: { from: 'fake-ask-allow', ref: 'r' } },
-      [new AskNamed('printenv')],
+      ruled('ask', 'printenv', 'printenv needs sign-off'),
       approve,
     )
     try {
@@ -1015,7 +1066,7 @@ describe('fillEnv through execute', () => {
     }
     const ws = await makeWs(
       { TOKEN: { from: 'fake-ask-deny', ref: 'r' } },
-      [new AskNamed('printenv')],
+      ruled('ask', 'printenv', 'printenv needs sign-off'),
       refuse,
     )
     try {
@@ -1033,9 +1084,10 @@ describe('fillEnv through execute', () => {
     // is skipped; the answered replay fetches and runs.
     const { calls, fetch } = countingSource({ TOKEN: 't0' })
     registerSecrets('fake-ask-pending', FakeConfig, fetch)
-    const ws = await makeWs({ TOKEN: { from: 'fake-ask-pending', ref: 'r' } }, [
-      new AskNamed('printenv'),
-    ])
+    const ws = await makeWs(
+      { TOKEN: { from: 'fake-ask-pending', ref: 'r' } },
+      ruled('ask', 'printenv', 'printenv needs sign-off'),
+    )
     try {
       const io = await ws.shell('printenv TOKEN')
       expect(io.exitCode).toBe(126)
@@ -1060,9 +1112,10 @@ describe('fillEnv through execute', () => {
     // stays live for an allowed line.
     const { calls, fetch } = countingSource({ TOKEN: 't0' })
     registerSecrets('fake-body-deny', FakeConfig, fetch)
-    const ws = await makeWs({ TOKEN: { from: 'fake-body-deny', ref: 'r' } }, [
-      new DenyNamed('printenv'),
-    ])
+    const ws = await makeWs(
+      { TOKEN: { from: 'fake-body-deny', ref: 'r' } },
+      ruled('deny', 'printenv', 'printenv is off'),
+    )
     try {
       expect((await ws.shell('f() { printenv TOKEN; }')).exitCode).toBe(0)
       const io = await ws.shell('f')
@@ -1079,9 +1132,10 @@ describe('fillEnv through execute', () => {
   it('a denied transitive body never fetches', async () => {
     const { calls, fetch } = countingSource({ TOKEN: 't0' })
     registerSecrets('fake-body-trans', FakeConfig, fetch)
-    const ws = await makeWs({ TOKEN: { from: 'fake-body-trans', ref: 'r' } }, [
-      new DenyNamed('printenv'),
-    ])
+    const ws = await makeWs(
+      { TOKEN: { from: 'fake-body-trans', ref: 'r' } },
+      ruled('deny', 'printenv', 'printenv is off'),
+    )
     try {
       await ws.shell('inner() { printenv TOKEN; }')
       await ws.shell('outer() { inner; }')
@@ -1101,9 +1155,10 @@ describe('fillEnv through execute', () => {
     // function can predate it (per-session profiles).
     const { calls, fetch } = countingSource({ TOKEN: 't0' })
     registerSecrets('fake-body-mixed', FakeConfig, fetch)
-    const ws = await makeWs({ TOKEN: { from: 'fake-body-mixed', ref: 'r' } }, [
-      new DenyNamed('printenv'),
-    ])
+    const ws = await makeWs(
+      { TOKEN: { from: 'fake-body-mixed', ref: 'r' } },
+      ruled('deny', 'printenv', 'printenv is off'),
+    )
     try {
       const session = ws.getSession(ws.defaultSessionId)
       session.functions.f = 'f() { printenv TOKEN; echo "e:$TOKEN"; }'
@@ -1121,7 +1176,10 @@ describe('fillEnv through execute', () => {
     // runs when its invocation is refused, so nothing fetches.
     const { calls, fetch } = countingSource({ TOKEN: 't0' })
     registerSecrets('fake-inv-deny', FakeConfig, fetch)
-    const ws = await makeWs({ TOKEN: { from: 'fake-inv-deny', ref: 'r' } }, [new DenyNamed('f')])
+    const ws = await makeWs(
+      { TOKEN: { from: 'fake-inv-deny', ref: 'r' } },
+      ruled('deny', 'f', 'f is off'),
+    )
     try {
       await ws.shell('f() { printenv TOKEN; }')
       const io = await ws.shell('f')
@@ -1143,7 +1201,7 @@ describe('fillEnv through execute', () => {
         TOKEN: { from: 'fake-def-eager', ref: 'r' },
         EAGER: { from: 'fake-def-eager', ref: 're', key: 'E', fetch: 'eager' },
       },
-      [new DenyNamed('printenv')],
+      ruled('deny', 'printenv', 'printenv is off'),
     )
     try {
       const io = await ws.shell('g() { printenv TOKEN; }')
@@ -1163,7 +1221,7 @@ describe('fillEnv through execute', () => {
     }
     const ws = await makeWs(
       { TOKEN: { from: 'fake-body-ask', ref: 'r' } },
-      [new AskNamed('printenv')],
+      ruled('ask', 'printenv', 'printenv needs sign-off'),
       approve,
     )
     try {
@@ -1189,7 +1247,7 @@ describe('fillEnv through execute', () => {
     }
     const ws = await makeWs(
       { TOKEN: { from: 'fake-two-defs', ref: 'r' } },
-      [new AskNamed('printenv')],
+      ruled('ask', 'printenv', 'printenv needs sign-off'),
       approve,
     )
     try {
@@ -1210,7 +1268,7 @@ describe('fillEnv through execute', () => {
     }
     const ws = await makeWs(
       { TOKEN: { from: 'fake-body-ask-deny', ref: 'r' } },
-      [new AskNamed('printenv')],
+      ruled('ask', 'printenv', 'printenv needs sign-off'),
       refuse,
     )
     try {
@@ -1371,7 +1429,7 @@ describe('fillEnv through execute', () => {
     const gate: Policy = {
       preSession(ctx: SessionContext): Action | null {
         if (ctx.key === 'UNRELATED') {
-          return { kind: 'deny', reason: `no writing ${ctx.key}`, scope: 'command' }
+          return { kind: 'deny', reason: `no writing ${ctx.key}` }
         }
         return null
       },
@@ -1720,7 +1778,7 @@ describe('declared source instances', () => {
     registerSecrets('acct-denied', AccountConfig, accountSource())
     const ws = await makeWs(
       { TOKEN: { from: 'prod', ref: 'r', key: 'credential' } },
-      [new DenyNamed('printenv')],
+      ruled('deny', 'printenv', 'printenv is off'),
       undefined,
       { prod: { source: 'acct-denied', config: { token: { from: 'env', key: 'TOKEN' } } } },
     )

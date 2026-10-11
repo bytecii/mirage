@@ -171,6 +171,7 @@ async def _run_program(
     all_stdout: list[Any] = []
     merged_io = IOResult()
     last_exec = ExecutionNode(command="", exit_code=0)
+    ran: list[ExecutionNode] = []
     source_lines = get_text(node).split("\n")
     echoed_row = -1
     bound = fd0_binding(session)
@@ -226,7 +227,9 @@ async def _run_program(
                     exit_code=sig.exit_code,
                     stderr=sig.stderr,
                 )
+                ran.append(last_exec)
                 break
+            ran.append(last_exec)
             # Launching a job is itself a statement: bash sets $? to 0
             # (the launch status), so `false; cmd & echo $?` prints 0.
             record_status(session, io.exit_code)
@@ -254,6 +257,7 @@ async def _run_program(
                     call_stack,
                     sink=recorder,
                 )
+            ran.append(last_exec)
             try:
                 stdout = await materialize(stdout)
             except OSError as exc:
@@ -319,6 +323,7 @@ async def _run_program(
                 all_stdout,
                 merged_io,
             )
+            ran.append(last_exec)
             if resumes:
                 i = _next_line(node, children, at)
                 continue
@@ -336,6 +341,19 @@ async def _run_program(
                 )
             break
 
+    # Statements run in turn are one ``;`` node, so the line's tree keeps
+    # every command's result; what a caller reads of the program's own
+    # node (its operands, whether it was refused or never opened) stays
+    # the last statement's.
+    if len(ran) > 1:
+        last_exec = ExecutionNode(
+            op=";",
+            exit_code=merged_io.exit_code,
+            children=ran,
+            paths=last_exec.paths,
+            refused=last_exec.refused,
+            unopened=last_exec.unopened,
+        )
     if len(all_stdout) == 1:
         return all_stdout[0], merged_io, last_exec
     combined = async_chain(all_stdout) if all_stdout else None

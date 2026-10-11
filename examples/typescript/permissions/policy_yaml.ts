@@ -30,7 +30,6 @@ import {
 const CONFIG = new URL('../../python/permissions/workspace.yaml', import.meta.url).pathname
 
 const SEED = [
-  'mkdir -p /scratch/cold && echo keep > /scratch/cold/k',
   'echo marker > /repo/flagged.txt',
   'echo hello > /repo/notes.txt',
 ]
@@ -40,7 +39,6 @@ const SEED = [
 const LINES: [string, string, string][] = [
   ['reviewer', 'cat /repo/notes.txt', 'pre_command read the file and found no marker'],
   ['reviewer', 'cat /repo/flagged.txt', 'and refuses one that holds it'],
-  ['reviewer', 'echo x > /scratch/cold/f', 'pre_vfs refuses a write at the dispatcher'],
   ['reviewer', 'export AWS_SECRET=x', 'pre_session refuses a credential'],
   ['reviewer', 'export SAFE=1 && echo $SAFE', 'silence where no hook objects'],
   ['host', 'cat /repo/flagged.txt', 'no profile, so no program'],

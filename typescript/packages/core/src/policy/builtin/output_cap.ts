@@ -132,7 +132,7 @@ export class OutputCapPolicy implements Policy {
   }
 
   postVfs(ctx: VfsResultContext): Action | null {
-    return this.overrideFor(ctx.prefix, ctx.op)
+    return this.overrideFor(ctx.prefix, ctx.call.name)
   }
 }
 

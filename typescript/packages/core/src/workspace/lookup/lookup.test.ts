@@ -21,12 +21,12 @@ import { Runtime } from '../../runtime/base.ts'
 import { EXTERNAL_COMMANDS } from '../../runtime/constants.ts'
 import { PROCESS_EXECUTOR, type ProcessExecutor } from '../../runtime/mixin.ts'
 import type { RunResult } from '../../runtime/types.ts'
+import { headAllowed } from '../../policy/match/allow.ts'
 import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { MountMode } from '../../types.ts'
 import {
   Consumer,
   SHELL_CONSUMERS,
-  commandVisible,
   dereferences,
   execs,
   readsSubtrees,
@@ -36,7 +36,6 @@ import {
   program,
   programNote,
   programs,
-  verbVisible,
   walksMounts,
 } from './index.ts'
 import { SessionState } from '../session/session.ts'
@@ -248,66 +247,21 @@ describe('walkers and subtree readers', () => {
 })
 
 describe('allow lists', () => {
-  it('verbVisible answers below the head word commandVisible answers', () => {
+  it('do not narrow lookup', () => {
+    // The allow list is a policy: a word it leaves out is still found in
+    // its layer, and the gate refuses it when it runs.
     const { session, ws } = fixture()
     ws.registerCli('prog', cliTree())
-    session.commands = { allow: ['prog run'], ask: [], deny: [] }
-    // Dispatch routes by the head word, which stays visible: one line
-    // of the tree runs.
-    expect(commandVisible('prog', session)).toBe(true)
-    expect(lookup('prog', session, ws.registry)).toBe(Consumer.CLI)
-    expect(verbVisible('prog', [], session)).toBe(true)
-    expect(verbVisible('prog', ['run'], session)).toBe(true)
-    // A verb the list does not reach is not this session's to discover,
-    // though the head word it hangs off is.
-    expect(verbVisible('prog', ['stop'], session)).toBe(false)
-    // No list: every verb of every tree.
-    session.commands = null
-    expect(verbVisible('prog', ['stop'], session)).toBe(true)
-  })
-
-  it('filter every layer and spare only functions', () => {
-    const { session, ws } = fixture()
-    ws.registerCli('prog', cliTree())
-    session.commands = { allow: ['cat', 'prog', 'ln'], ask: [], deny: [] }
+    session.commands = { allow: ['cat'], ask: [], deny: [] }
     const reg = ws.registry
-    // Listed: visible in its layer, whichever layer that is.
     expect(lookup('cat', session, reg)).toBe(Consumer.MOUNT)
     expect(lookup('prog', session, reg)).toBe(Consumer.CLI)
     expect(lookup('ln', session, reg)).toBe(Consumer.NAMESPACE)
-    // Unlisted: not a command for the session (sleep is a tool-tier
-    // builtin, rm a mount command).
-    expect(lookup('sleep', session, reg)).toBe(Consumer.UNKNOWN)
-    expect(lookup('rm', session, reg)).toBe(Consumer.UNKNOWN)
-    expect(lookupAll('rm', session, reg)).toEqual([])
-    expect(commandVisible('rm', session)).toBe(false)
-    // Builtins are subjects like everything else: an allow list stating
-    // cat leaves no cd and no echo.
-    expect(lookup('cd', session, reg)).toBe(Consumer.UNKNOWN)
-    expect(lookup('echo', session, reg)).toBe(Consumer.UNKNOWN)
-    expect(commandVisible('cd', session)).toBe(false)
-    session.commands = { allow: ['cat', 'prog', 'ln', 'cd'], ask: [], deny: [] }
+    expect(lookup('rm', session, reg)).toBe(Consumer.MOUNT)
     expect(lookup('cd', session, reg)).toBe(Consumer.SESSION)
-    expect(commandVisible('cd', session)).toBe(true)
-    session.commands = { allow: ['cat', 'prog', 'ln'], ask: [], deny: [] }
-    // A function is the session's own state, visible where it is what
-    // runs; named after a hidden builtin it is as unreachable as the
-    // builtin, since builtins shadow functions here.
-    session.functions.deploy = 'deploy() { :; }'
-    expect(lookup('deploy', session, reg)).toBe(Consumer.FUNCTION)
-    expect(commandVisible('deploy', session)).toBe(true)
-    session.functions.sleep = 'sleep() { :; }'
-    expect(lookup('sleep', session, reg)).toBe(Consumer.UNKNOWN)
-    expect(commandVisible('sleep', session)).toBe(false)
-    // A function shadowing a hidden CLI or mount command runs, and the
-    // hidden layer stays out of `type -a`.
+    // A function shadows a command as it does with no list.
     session.functions.rm = 'rm() { :; }'
-    expect(lookupAll('rm', session, reg)).toEqual([Consumer.FUNCTION])
-    // No allow list at all: nothing filtered (the function still
-    // shadows).
-    session.commands = null
     expect(lookupAll('rm', session, reg)).toEqual([Consumer.FUNCTION, Consumer.MOUNT])
-    expect(lookup('sleep', session, reg)).toBe(Consumer.SESSION)
   })
 })
 
@@ -355,17 +309,17 @@ describe('program', () => {
     for (const name of ['cd', 'export', '[[']) expect(names).not.toContain(name)
   })
 
-  it('programs follows the allow list', () => {
-    const { ws } = fixture()
+  it('programs lists every program whatever the allow list', () => {
+    const { session, ws } = fixture()
     const narrow = new SessionState({
       sessionId: 'n',
       commands: { allow: ['cat'], ask: [], deny: [] },
     })
-    expect(programs(narrow, ws.registry)).toEqual(['cat'])
+    expect(programs(narrow, ws.registry)).toEqual(programs(session, ws.registry))
   })
 
   // Debian's egrep is `exec grep -E "$@"`, so it is a program wherever grep is
-  // one, and a session that may not run egrep finds none.
+  // one, and an allow list naming only grep refuses it when it runs.
   it('makes a wrapper a program where what it runs is', () => {
     const { session, ws } = fixture()
     for (const name of ['egrep', 'fgrep', 'zegrep', 'zfgrep']) {
@@ -379,7 +333,8 @@ describe('program', () => {
       sessionId: 'n',
       commands: { allow: ['grep'], ask: [], deny: [] },
     })
-    expect(lookup('egrep', narrow, ws.registry)).toBe(Consumer.UNKNOWN)
+    expect(lookup('egrep', narrow, ws.registry)).toBe(Consumer.MOUNT)
+    expect(headAllowed('egrep', narrow.commands)).toBe(false)
   })
 
   // An interpreter is a program only where a language runtime runs it; a

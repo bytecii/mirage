@@ -218,9 +218,9 @@ def namespace_stat(
 def paths_scoped(
     ns: NamespaceView | None, paths: Sequence[PathSpec], prefix: str = ""
 ) -> bool:
-    """Whether a hide, a path rule or a pre_vfs policy judges anything a
-    command's operands reach, so a native walk that classifies the raw
-    tree gives way to the checked one.
+    """Whether a hide or a path rule judges anything a command's
+    operands reach, so a native walk that classifies the raw tree gives
+    way to the checked one.
 
     Per operand, not per session: a hidden ``.env`` under ``/repo`` must
     not force ``find`` on ``/s3`` off its native op.
