@@ -1197,7 +1197,11 @@ def _anchored(router: HostFs, verb: str) -> Callable[..., Any]:
             spelled = _spelled(given[at]) if at < len(given) else None
             if desc is None or spelled is None or posixpath.isabs(spelled):
                 continue
-            given[at] = posixpath.normpath(posixpath.join(desc.path, spelled))
+            # A `.` names the directory it is in, so it goes; a `..` stays
+            # for the walk, which follows links and refuses a missing
+            # directory before it, as the kernel's does.
+            rest = "/".join(part for part in spelled.split("/") if part != ".")
+            given[at] = posixpath.join(desc.path, rest)
             del kwargs[key]
         return call(*given, **kwargs)
 

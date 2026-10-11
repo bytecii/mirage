@@ -231,11 +231,11 @@
         },
         {
           "program": {
-            "python": "import os\nd = os.open('/data', os.O_RDONLY | os.O_DIRECTORY)\nfd = os.open('rel.txt', os.O_RDWR | os.O_CREAT, dir_fd=d)\nos.write(fd, b'abc')\nprint(os.stat(fd).st_size, os.fstat(fd).st_size)\nos.truncate(fd, 2)\nprint(os.fstat(fd).st_size)\nos.close(fd)\nos.mkdir('sub', dir_fd=d)\nos.rename('rel.txt', 'sub/moved.txt', src_dir_fd=d, dst_dir_fd=d)\nprint(open('/data/sub/moved.txt').read(), os.stat('sub/moved.txt', dir_fd=d).st_size)\nos.close(d)"
+            "python": "import errno, os\nd = os.open('/data', os.O_RDONLY | os.O_DIRECTORY)\nfd = os.open('rel.txt', os.O_RDWR | os.O_CREAT, dir_fd=d)\nos.write(fd, b'abc')\nprint(os.stat(fd).st_size, os.fstat(fd).st_size)\nos.truncate(fd, 2)\nprint(os.fstat(fd).st_size)\nos.close(fd)\nos.mkdir('sub', dir_fd=d)\nos.rename('rel.txt', 'sub/moved.txt', src_dir_fd=d, dst_dir_fd=d)\nprint(open('/data/sub/moved.txt').read(), os.stat('sub/moved.txt', dir_fd=d).st_size)\ntry:\n    os.unlink('missing/../sub/moved.txt', dir_fd=d)\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nprint(os.stat('./sub/moved.txt', dir_fd=d).st_size)\nos.close(d)"
           },
           "expect": {
             "exit": 0,
-            "stdout": "3 3\n2\nab 2\n"
+            "stdout": "3 3\n2\nab 2\nENOENT\n2\n"
           }
         }
       ]
