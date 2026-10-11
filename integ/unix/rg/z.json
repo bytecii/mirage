@@ -70,6 +70,41 @@
       "flags": [
         "z"
       ]
+    },
+    {
+      "id": "rg_z_keeps_the_lines_before_the_damage",
+      "seq": 14490225,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; printf 'foo\\nbar\\nfoo\\n' | gzip -c > /data/rgfl/s.gz; n=$(wc -c < /data/rgfl/s.gz); head -c $((n-4)) /data/rgfl/s.gz > /data/rgfl/cut.gz; rg -z foo /data/rgfl/cut.gz; echo rc=$?; rg -z -c foo /data/rgfl/cut.gz; echo rc=$?; rg -z -v foo /data/rgfl/cut.gz; echo rc=$?; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "foo\nfoo\nrc=2\nrc=2\nbar\nrc=2\n",
+        "stderr": "rg: /data/rgfl/cut.gz: \n-------------------------------------------------------------------------------\ngzip: /data/rgfl/cut.gz: unexpected end of file\n-------------------------------------------------------------------------------\nrg: /data/rgfl/cut.gz: \n-------------------------------------------------------------------------------\ngzip: /data/rgfl/cut.gz: unexpected end of file\n-------------------------------------------------------------------------------\nrg: /data/rgfl/cut.gz: \n-------------------------------------------------------------------------------\ngzip: /data/rgfl/cut.gz: unexpected end of file\n-------------------------------------------------------------------------------\n"
+      },
+      "flags": [
+        "z",
+        "c",
+        "v"
+      ]
     }
   ]
 }

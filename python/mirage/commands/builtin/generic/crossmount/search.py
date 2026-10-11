@@ -37,6 +37,7 @@ from mirage.commands.builtin.generic.crossmount.utils import (
 from mirage.commands.builtin.generic.grep import (
     directories_action,
     filename_mode,
+    line_warnings,
     parse_flags,
 )
 from mirage.commands.builtin.generic.rg import (
@@ -350,9 +351,17 @@ async def run_search(
         else ([r.data for r in results], b"")
     )
     body = run_separator(name, flags).join(p for p in parts if p) + footer
-    if rg is None or not notes or rg.no_messages:
+    # Each run says what the line says once, grep's warnings or rg's notes
+    # of the ignore files it could not read; the line keeps one.
+    noted = (
+        line_warnings(view, grep, pattern_arg(texts, view) or "", False)
+        if grep is not None
+        else format_records(notes)
+        if rg is not None and notes and not rg.no_messages
+        else b""
+    )
+    if not noted:
         return body, await merge_operand_ios(results, code)
-    noted = format_records(notes)
     for r in results:
         if r.io.stderr is not None:
             err = await materialize(r.io.stderr)

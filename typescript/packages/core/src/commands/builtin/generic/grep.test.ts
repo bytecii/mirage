@@ -80,3 +80,22 @@ it('recursive quiet grep visits every file when no match exists', async () => {
   expect(io.exitCode).toBe(1)
   expect(opened).toEqual(['/d/a/first', '/d/a/later', '/d/later'])
 })
+
+it('false flags turn nothing on', async () => {
+  async function* stream(): AsyncIterable<Uint8Array> {
+    yield await Promise.resolve(enc.encode('Hit\n'))
+  }
+  const result = await grepGeneric(
+    'grep',
+    [PathSpec.fromStrPath('/d/a/first'), PathSpec.fromStrPath('/d')],
+    ['hit'],
+    { flags: { ignore_case: false, recursive: false }, stdin: null, cwd: '/' },
+    stat,
+    readdir,
+    stream,
+  )
+  if (result === null) throw new Error('missing grep result')
+  const [output, io] = result
+  expect(await materialize(output)).toEqual(new Uint8Array())
+  expect(dec.decode(await materialize(io.stderr))).toBe('grep: /d: Is a directory\n')
+})

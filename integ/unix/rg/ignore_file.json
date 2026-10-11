@@ -102,6 +102,40 @@
       "flags": [
         "ignore_file"
       ]
+    },
+    {
+      "id": "rg_ignore_file_case_insensitive_leaves_ignore_files",
+      "seq": 14490229,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; mkdir -p /data/rgfl/w && printf 'foo w\\n' > /data/rgfl/w/x.txt && printf '*.TXT\\n' > /data/rgfl/rules && (cd /data/rgfl && rg --ignore-file rules --ignore-file-case-insensitive 'foo w' w; rg --ignore-file rules 'foo w' w); rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "w/x.txt:foo w\nw/x.txt:foo w\n",
+        "stderr": ""
+      },
+      "flags": [
+        "ignore_file",
+        "ignore_file_case_insensitive"
+      ]
     }
   ]
 }

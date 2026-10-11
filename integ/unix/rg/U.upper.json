@@ -187,6 +187,45 @@
         "null_data",
         "r"
       ]
+    },
+    {
+      "id": "rg_U_stop_on_nonmatch",
+      "seq": 14490228,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; printf 'a1\\na2\\nb\\na3\\n' > /data/rgfl/s.txt; rg -U --stop-on-nonmatch a /data/rgfl/s.txt; rg -U --stop-on-nonmatch -c a /data/rgfl/s.txt; rg -U --stop-on-nonmatch -n -A1 a /data/rgfl/s.txt; rg -U --stop-on-nonmatch -v b /data/rgfl/s.txt; rg -U --stop-on-nonmatch -B1 a3 /data/rgfl/s.txt; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "a1\na2\n2\n1:a1\n2:a2\n3-b\na1\na2\na3\nb\na3\n",
+        "stderr": ""
+      },
+      "flags": [
+        "U",
+        "stop_on_nonmatch",
+        "c",
+        "n",
+        "A",
+        "B",
+        "v"
+      ]
     }
   ]
 }

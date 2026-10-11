@@ -37,6 +37,43 @@
         "U",
         "c"
       ]
+    },
+    {
+      "id": "rg_crlf_U_P_anchors_before_the_cr",
+      "seq": 14490227,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; printf 'foo\\r\\nbar\\r\\n' > /data/rgfl/crlf.txt; rg -UP --crlf -x foo /data/rgfl/crlf.txt | tr '\\r' '@'; rg -UP --crlf -n '^bar' /data/rgfl/crlf.txt | tr '\\r' '@'; rg -UP -x foo /data/rgfl/crlf.txt; echo rc=$?; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "foo@\n2:bar@\nrc=1\n",
+        "stderr": ""
+      },
+      "flags": [
+        "crlf",
+        "U",
+        "P",
+        "x",
+        "n"
+      ]
     }
   ]
 }

@@ -112,7 +112,8 @@ def directories_action(fl: FlagView) -> str:
         "recursive", "dereference_recursive", "directories"
     ):
         if name != "directories":
-            action = "recurse"
+            if fl.as_bool(name):
+                action = "recurse"
             continue
         word = fl.as_str(name) or ""
         match = argmatch(word, DIRECTORIES)
@@ -168,7 +169,11 @@ def ignores_case(fl: FlagView) -> bool:
     Args:
         fl (FlagView): spec-validated view over the raw flag kwargs.
     """
-    names = fl.typed_order("ignore_case", "no_ignore_case")
+    names = [
+        name
+        for name in fl.typed_order("ignore_case", "no_ignore_case")
+        if fl.as_bool(name)
+    ]
     return bool(names) and names[-1] == "ignore_case"
 
 
@@ -302,6 +307,28 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
     )
 
 
+def line_warnings(
+    fl: FlagView, f: GrepFlags, pattern: str, never_match: bool
+) -> bytes:
+    """What grep warns once for the line, before it reads a file: an
+    obsolete -u, then the pattern's compile-time warnings.
+
+    Args:
+        fl (FlagView): spec-validated view over the raw flag kwargs.
+        f (GrepFlags): the parsed flags.
+        pattern (str): the pattern list.
+        never_match (bool): the pattern list matches nothing.
+    """
+    warning = (
+        b""
+        if never_match or f.fixed_string
+        else pattern_warnings(pattern, f.syntax)
+    )
+    if fl.as_bool("unix_byte_offsets"):
+        warning = UNIX_BYTE_OFFSETS + warning
+    return warning
+
+
 async def grep_generic(
     paths: list[PathSpec],
     texts: Sequence[str],
@@ -339,13 +366,7 @@ async def grep_generic(
             f.line_regexp,
         )
     )
-    warning = (
-        b""
-        if never_match or f.fixed_string
-        else pattern_warnings(pattern, f.syntax)
-    )
-    if fl.as_bool("unix_byte_offsets"):
-        warning = UNIX_BYTE_OFFSETS + warning
+    warning = line_warnings(fl, f, pattern, never_match)
     io = IOResult(exit_code=1, stderr=warning or None)
     if not paths:
         source = resolve_source(stdin)

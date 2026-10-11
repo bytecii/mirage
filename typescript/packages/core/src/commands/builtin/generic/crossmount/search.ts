@@ -17,7 +17,7 @@ import { joinRuns } from './fanout/fanout.ts'
 import { ownedScopes } from './scopes.ts'
 import type { CrossResult, OperandRun, RunSingle, OwnedScope } from './types.ts'
 import { mergeOperandIos, runOperands, runSeparator } from './utils.ts'
-import { directoriesAction, filenameMode, parseFlags } from '../grep.ts'
+import { directoriesAction, filenameMode, lineWarnings, parseFlags } from '../grep.ts'
 import {
   labelFlags,
   parseFlags as parseRgFlags,
@@ -255,10 +255,15 @@ export async function runSearch(
       ? oneFooter(results, rg, walked, started)
       : [results.map((r) => r.data), new Uint8Array()]
   const body = concat([joinRuns(parts, runSeparator(name, bag)), footer])
-  if (rg === null || notes.length === 0 || rg.noMessages) {
-    return [body, await mergeOperandIos(results, code)]
-  }
-  const noted = formatRecords(notes)
+  // Each run says what the line says once, grep's warnings or rg's notes of
+  // the ignore files it could not read; the line keeps one.
+  const noted =
+    grep !== null
+      ? encodeText(lineWarnings(view, grep, patternArg(texts, bag) ?? '', false))
+      : rg !== null && notes.length > 0 && !rg.noMessages
+        ? formatRecords(notes)
+        : new Uint8Array()
+  if (noted.length === 0) return [body, await mergeOperandIos(results, code)]
   for (const r of results) {
     if (r.io.stderr === null) continue
     const err = await materialize(r.io.stderr)

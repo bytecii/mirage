@@ -1,11 +1,14 @@
 from collections.abc import Sequence
 
+from mirage.commands.builtin.generic.grep import parse_flags as grep_flags
+from mirage.commands.builtin.generic.rg import parse_flags as rg_flags
 from mirage.commands.builtin.grep_pattern import (
     merge_pattern_list,
 )
 from mirage.commands.builtin.rg_scan import os_error_text
 from mirage.commands.builtin.utils.paths import dispatch_stat
 from mirage.commands.builtin.utils.stream import is_stdin, resolve_source
+from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
@@ -15,7 +18,7 @@ from mirage.errors.fs import eisdir, fs_strerror
 from mirage.errors.render import fs_error_line
 from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.runtime.types import DispatchFn
-from mirage.shell.bytes import decode_text
+from mirage.shell.bytes import decode_text, encode_text
 from mirage.types import FileType, PathSpec
 
 # The commands whose program files the executor reads before routing and
@@ -182,6 +185,31 @@ async def lower_exclude_from(
     lowered = FlagBag(flags)
     lowered["exclude_from"] = globs
     return lowered, consumed, None
+
+
+def value_refusal(name: str, flags: dict[str, FlagValue]) -> IOResult | None:
+    """grep's or rg's refusal of an option value on the line, or None.
+
+    Both check every value in their option loop and answer --help and
+    --version only once it is done (grep 3.11, ripgrep 14.1.1: `grep -D
+    bogus -V` and `rg --sort bogus --version` are refused). The pattern is
+    not compiled yet, as neither has by then.
+
+    Args:
+        name (str): grep or rg.
+        flags (dict[str, FlagValue]): the line's spec-bound flags.
+    """
+    fl = FlagView(flags, spec=SPECS[name])
+    try:
+        if name == "grep":
+            grep_flags(fl, never_match=False)
+        elif name == "rg":
+            rg_flags(fl)
+    except UsageError as exc:
+        return IOResult(
+            exit_code=exc.exit_code, stderr=encode_text(f"{exc}\n")
+        )
+    return None
 
 
 async def prepare_program(
