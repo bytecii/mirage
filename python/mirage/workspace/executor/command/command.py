@@ -30,6 +30,7 @@ from mirage.commands.builtin.generic.program import (
     PROGRAM_FILE_COMMANDS,
     prepare_program,
     program_files,
+    value_refusal,
 )
 from mirage.commands.builtin.generic_bind.adapter import (
     with_dispatch_rule_guard,
@@ -38,7 +39,8 @@ from mirage.commands.builtin.utils.identity import identity_from
 from mirage.commands.builtin.utils.limit import maybe_with_timeout
 from mirage.commands.errors import FindParseError
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.builtins import registered_spec
+from mirage.commands.spec.builtins import is_builtin_grammar, registered_spec
+from mirage.commands.spec.constants import STANDARD_AFTER_SCAN
 from mirage.commands.spec.flag_view import spread_operands
 from mirage.commands.spec.standard import standard_request
 from mirage.io import IOResult
@@ -363,9 +365,24 @@ async def handle_command(
     # relay, which bypasses the registered wrapper that answers help and
     # MOVED THE FILE instead of printing the page.
     cmd_mount = registry.mount_for_command(cmd_name)
-    standard_out = standard_request(
-        cmd_name, cmd_mount.spec_for(cmd_name) if cmd_mount else None, raw_argv
-    )
+    cmd_spec = cmd_mount.spec_for(cmd_name) if cmd_mount else None
+    standard_out = standard_request(cmd_name, cmd_spec, raw_argv)
+    if (
+        standard_out is not None
+        and cmd_name in STANDARD_AFTER_SCAN
+        and is_builtin_grammar(cmd_name, cmd_spec)
+    ):
+        refused = value_refusal(
+            cmd_name,
+            parse_flags(
+                parts[1:],
+                registered_spec(cmd_name, SPECS[cmd_name]),
+                cmd_name,
+                session.cwd,
+            ).flag_kwargs,
+        )
+        if refused is not None:
+            return (None, refused, await exec_node(cmd_str, refused, []))
     if standard_out is not None:
         return (
             standard_out,

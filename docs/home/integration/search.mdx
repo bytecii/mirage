@@ -95,9 +95,9 @@ always read; `None` (`null`), the default, covers every file.
 
 | Method | Commands | Used when |
 | --- | --- | --- |
-| `files_containing` | `grep -r`, `grep -R`, `rg` | the walk reads any file, unless a flag below scans |
-| `lines_containing` | `grep`, `rg` | in place of the file with no `-n`, `-b`, `-A`, `-B`, `-C` (rg also no `--column`, `--vimgrep`, `--stop-on-nonmatch`, `--null-data`) and one pattern; otherwise to decide whether the file is read |
-| `before_full_scan` | `grep -r`, `grep -R`, `rg` | once, before the first file no search answered is read |
+| `files_containing` | `grep -r`, `-R` or `-d recurse`, `rg` | the walk reads any file, unless a flag below scans |
+| `lines_containing` | `grep`, `rg` | in place of the file with no `-n`, `-b`, `-A`, `-B`, `-C` (grep also no `-NUM` or `-z`; rg also no `--column`, `--vimgrep`, `--stop-on-nonmatch`, `--null-data`, `-U`) and one pattern; otherwise to decide whether the file is read |
+| `before_full_scan` | `grep -r`, `-R` or `-d recurse`, `rg` | once, before the first file no search answered is read |
 
 | Argument | Set by |
 | --- | --- |
@@ -111,10 +111,11 @@ These flags scan every file and call `before_full_scan` with the reason:
 | Flags | `ScanReason` |
 | --- | --- |
 | `-v`; `rg --passthru` | `EVERY_LINE` |
-| `rg --files-without-match`; `rg -c` or `--count-matches` with `--include-zero`; not under `-q` | `EVERY_FILE` |
-| `-f`; no plain text of three characters in the pattern; under `-i`, a word with a non-ASCII letter, or with i, k or s under Unicode folding | `NO_TEXT` |
+| `rg --files-without-match`; `rg -c` or `--count-matches` with `--include-zero`; not under `-q`; `rg --stats`, `--json` | `EVERY_FILE` |
+| `-f`; no plain text of three characters in the pattern; under `-i`, a word with a non-ASCII letter, or with i, k or s under Unicode folding; under `rg -U`, a text with a line break | `NO_TEXT` |
 | `rg -L` | `LINKS` |
 | `grep -a`, `--binary-files=text`, `rg -a`, `--binary` or `-uuu`, after a search answered | `BINARY` |
+| `rg -z`, `--pre` | `TRANSFORMED` |
 | no search method, or a hide or path rule on the path | `NO_SEARCH` |
 | a search answered `None` | `UNANSWERED` |
 

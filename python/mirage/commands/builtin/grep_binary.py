@@ -39,20 +39,77 @@ class GrepFlags:
     with_filename: bool
     no_filename: bool
     max_count: int | None
-    after_context: int
-    before_context: int
+    after_context: int | None
+    before_context: int | None
     binary_mode: str
     filters: WalkFilters
+    skip_directories: bool = False
+    skip_devices: bool = False
+    null_data: bool = False
+    null: bool = False
+    initial_tab: bool = False
+    group_separator: bytes | None = b"--"
+    label: str = "(standard input)"
 
 
 # GNU grep's INITIAL_BUFSIZE: the window it examines before printing from it.
 PROBE_BLOCK_BYTES = 96 * 1024
+# The digits of INTMAX_MAX, the width -T pads to when the input's size is
+# unknown (a pipe).
+UNKNOWN_SIZE_WIDTH = 19
+
+
+def group_line(f: GrepFlags) -> bytes:
+    """The line grep prints between two context groups, or nothing.
+
+    GNU separates groups once -A, -B or -C is given, zero included and
+    under -o too (grep 3.11: `grep -A0` prints `--` between two lines
+    that are not neighbours); -c, -l, -L and -q print no lines.
+
+    Args:
+        f (GrepFlags): parsed flags.
+    """
+    if f.count_only or f.files_only or f.files_without_match or f.quiet:
+        return b""
+    if f.group_separator is None or (
+        f.after_context is None and f.before_context is None
+    ):
+        return b""
+    return f.group_separator + b"\n"
+
+
+def name_end(f: GrepFlags) -> bytes:
+    """What follows a file name -l or -L prints: NUL under -Z.
+
+    Args:
+        f (GrepFlags): parsed flags.
+    """
+    return b"\0" if f.null else b"\n"
+
+
+def offset_width(f: GrepFlags, size: int | None) -> int:
+    """The width -T pads line numbers and byte offsets to.
+
+    GNU sizes the field to the digits of the file's size, plus one under
+    -n, and to INTMAX_MAX's digits when the size is unknown (grep.c).
+
+    Args:
+        f (GrepFlags): parsed flags.
+        size (int | None): the input's size, None for a pipe.
+    """
+    if not f.initial_tab:
+        return 0
+    if size is None:
+        return UNKNOWN_SIZE_WIDTH
+    return len(str(size + (1 if f.line_numbers else 0)))
 
 
 class BinaryInput:
-    def __init__(self, mode: str) -> None:
+    def __init__(self, mode: str, nul_ends_line: bool = False) -> None:
         self.mode = mode
         self.nul = False
+        # Under -z a NUL ends a line, so it is no sign of a binary file.
+        self.nul_ends_line = nul_ends_line
 
     async def read(self, source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
         """Probe the input for NUL a block at a time, then pass it on.
@@ -80,7 +137,12 @@ class BinaryInput:
         Args:
             data (bytes): bytes that all belong to the block being probed.
         """
-        if self.mode != "text" and not self.nul and b"\0" in data:
+        if (
+            self.mode != "text"
+            and not self.nul_ends_line
+            and not self.nul
+            and b"\0" in data
+        ):
             self.nul = True
         return self.nul and self.mode == "without-match"
 
@@ -121,8 +183,13 @@ def output_line(
     show_filename: bool,
     f: GrepFlags,
     offset: int = 0,
+    width: int = 0,
 ) -> bytes:
     """One output line, prefix fields in GNU's fixed order.
+
+    -Z puts a NUL after the name in place of its separator, -T pads the
+    numbers and puts a tab before a nonempty line, and -z ends the line
+    with a NUL.
 
     Args:
         raw (bytes): the text to print, without a terminator.
@@ -134,15 +201,22 @@ def output_line(
         f (GrepFlags): parsed flags.
         offset (int): the byte offset printed under -b -- of the line's
             own start, or of the match itself under -o.
+        width (int): the field width -T pads the numbers to.
     """
     separator = b":" if selected else b"-"
-    prefix = path.encode() + separator if show_filename else b""
+    prefix = (
+        path.encode() + (b"\0" if f.null else separator)
+        if show_filename
+        else b""
+    )
     fields = prefix_of(
         number if f.line_numbers else None,
         offset if f.byte_offsets else None,
         selected,
-    )
-    return prefix + fields.encode() + raw + b"\n"
+        width,
+    ).encode()
+    tab = b"\t" if f.initial_tab and (prefix or fields) and raw else b""
+    return prefix + fields + tab + raw + (b"\0" if f.null_data else b"\n")
 
 
 async def grep_input(
@@ -154,6 +228,7 @@ async def grep_input(
     io: IOResult,
     after_output: bool = False,
     utf8: bool = False,
+    size: int | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Scan one input, yielding grep's output for it.
 
@@ -173,18 +248,26 @@ async def grep_input(
             lines; GNU then opens this input's first context group with
             the separator, as it does between groups within one input.
         utf8 (bool): match characters rather than bytes.
+        size (int | None): the input's size, which -T sizes its fields
+            to; None for a pipe.
     """
     budget = YieldBudget()
     io.exit_code = 1
-    binary = BinaryInput(f.binary_mode)
+    eol = b"\0" if f.null_data else b"\n"
+    width = offset_width(f, size)
+    binary = BinaryInput(f.binary_mode, f.null_data)
     count = 0
     notified = False
-    previous: deque[tuple[int, bytes, int]] = deque(maxlen=f.before_context)
+    after = f.after_context or 0
+    previous: deque[tuple[int, bytes, int]] = deque(
+        maxlen=f.before_context or 0
+    )
+    separator = group_line(f)
     last_printed = 0
     after_until = 0
-    has_context = (
-        bool(f.after_context or f.before_context) and not f.only_matching
-    )
+    # Context lines are tracked under -o too, which prints none of them
+    # but still separates the groups they belong to.
+    has_context = bool(after or f.before_context)
     if f.max_count == 0:
         # GNU selects no line at all and the whole command goes quiet:
         # `grep -m0 -c a f` prints NOTHING and exits 1, and so does
@@ -197,7 +280,7 @@ async def grep_input(
         # Nothing is read, but the backend already opened the source.
         await close_quietly(source)
         if f.files_without_match and not f.quiet:
-            yield path.encode() + b"\n"
+            yield path.encode() + name_end(f)
         return
     number = 0
     # GNU counts BYTES from the start of the input and keeps counting
@@ -223,10 +306,12 @@ async def grep_input(
     try:
         while True:
             if needles is not None:
-                skipped, size = lines.skip_nonmatching_lines(needles, fold)
+                skipped, length = lines.skip_nonmatching_lines(
+                    needles, fold, eol
+                )
                 number += skipped
-                byte_pos += size
-            raw = await lines.readline()
+                byte_pos += length
+            raw = await lines.readline(eol)
             if raw is None:
                 break
             if binary.nul and f.binary_mode == "without-match":
@@ -244,7 +329,7 @@ async def grep_input(
                 if f.quiet:
                     return
                 if f.files_only:
-                    yield path.encode() + b"\n"
+                    yield path.encode() + name_end(f)
                     return
                 if f.files_without_match:
                     # A selected line is all -L needs to know: the file
@@ -258,7 +343,7 @@ async def grep_input(
                     if hit and f.max_count is not None
                     else None
                 )
-                skipped = lines.skip_empty_lines(limit)
+                skipped = lines.skip_empty_lines(limit, eol)
                 number += skipped
                 byte_pos += skipped
                 if hit:
@@ -269,6 +354,26 @@ async def grep_input(
                 continue
             chunks: list[bytes] = []
             if hit:
+                pending = [
+                    (n, data, at)
+                    for n, data, at in previous
+                    if n > last_printed
+                ]
+                first = pending[0][0] if pending else number
+                if separator and (
+                    (last_printed and first > last_printed + 1)
+                    or (not last_printed and after_output)
+                ):
+                    chunks.append(separator)
+                if not f.only_matching:
+                    chunks.extend(
+                        output_line(
+                            data, n, False, path, show_filename, f, at, width
+                        )
+                        for n, data, at in pending
+                    )
+                last_printed = number
+                after_until = number + after
                 if f.only_matching:
                     if not f.invert:
                         for m in pat.finditer(line):
@@ -290,26 +395,10 @@ async def grep_input(
                                             if utf8
                                             else start
                                         ),
+                                        width,
                                     )
                                 )
                 else:
-                    if has_context:
-                        pending = [
-                            (n, data, at)
-                            for n, data, at in previous
-                            if n > last_printed
-                        ]
-                        first = pending[0][0] if pending else number
-                        if (last_printed and first > last_printed + 1) or (
-                            not last_printed and after_output
-                        ):
-                            chunks.append(b"--\n")
-                        chunks.extend(
-                            output_line(
-                                data, n, False, path, show_filename, f, at
-                            )
-                            for n, data, at in pending
-                        )
                     chunks.append(
                         output_line(
                             raw,
@@ -319,16 +408,23 @@ async def grep_input(
                             show_filename,
                             f,
                             line_start,
+                            width,
                         )
                     )
-                    last_printed = number
-                    after_until = number + f.after_context
-            elif has_context and number <= after_until:
-                chunks.append(
-                    output_line(
-                        raw, number, False, path, show_filename, f, line_start
+            elif number <= after_until:
+                if not f.only_matching:
+                    chunks.append(
+                        output_line(
+                            raw,
+                            number,
+                            False,
+                            path,
+                            show_filename,
+                            f,
+                            line_start,
+                            width,
+                        )
                     )
-                )
                 last_printed = number
             # A selected line with nothing to print (-o on a zero-width
             # match) still earns the notice.
@@ -370,9 +466,8 @@ async def grep_input(
     # -L lists the file once it is known to hold no selected line, and
     # outranks -c (GNU 3.11: `grep -L -c hello m o` prints only `o`).
     if f.files_without_match and not f.quiet:
-        yield path.encode() + b"\n"
+        yield path.encode() + name_end(f)
         return
     if f.count_only and not (f.quiet or f.files_only):
-        yield (
-            f"{path}:" if show_filename else ""
-        ).encode() + f"{count}\n".encode()
+        label = path.encode() + (b"\0" if f.null else b":")
+        yield (label if show_filename else b"") + f"{count}\n".encode()

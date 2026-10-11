@@ -1,0 +1,37 @@
+{
+  "cases": [
+    {
+      "id": "rg_short_help",
+      "seq": 14490219,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "rg -h | grep -c '^Usage: rg '; rg -h foo /nonexistent | grep -c '^Usage: rg '",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n1\n",
+        "stderr": ""
+      },
+      "flags": [
+        "h"
+      ]
+    }
+  ]
+}

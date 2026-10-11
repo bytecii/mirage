@@ -42,15 +42,6 @@ const CONFLICTING_MATCHERS = 'conflicting matchers specified'
 const PERL_SINGLE = 'the -P option only supports a single pattern'
 // GNU grep 3.11's -P wrapping for -w (pcresearch.c).
 const PERL_WORD: readonly [string, string] = ['(?<!\\w)(?:', ')(?!\\w)']
-// The dest -e fills in each search command's spec: rg spells its options by
-// their long names.
-export const PATTERN_KEYS: Readonly<Record<string, string>> = {
-  grep: 'e',
-  zgrep: 'e',
-  rg: 'regexp',
-}
-// The dest -f fills: grep's and rg's name the long spelling, zgrep has none.
-const FILE_KEYS: Readonly<Record<string, string>> = { grep: 'file', zgrep: 'f', rg: 'file' }
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -62,13 +53,11 @@ function escapeRegex(s: string): string {
 export function patternArg(
   texts: readonly string[],
   bag: Record<string, FlagValue>,
-  patternKey = 'e',
 ): string | null {
   // Spec-less, as the shared push-down helpers are: `-e` and `-f` are
   // declared by the grep, rg and zgrep specs alike, and this helper is
-  // reached from all three; `patternKey` is the dest -e fills (rg's is
-  // `regexp`).
-  const e = new FlagView(bag).asList(patternKey)
+  // reached from all three.
+  const e = new FlagView(bag).asList('regexp')
   if (e.length > 0) return e.join('\n')
   if (texts.length > 0 && texts[0] !== undefined) return texts[0]
   return null
@@ -92,12 +81,12 @@ export async function resolvePattern(
   mountPrefix: string | null | undefined,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<PatternResolution> {
-  let pattern = patternArg(texts, bag, PATTERN_KEYS[name] ?? 'e')
+  let pattern = patternArg(texts, bag)
   let neverMatch = false
   // `raw` rather than `asList`, mirroring Python's `flags.raw(file_key)`: an
   // empty -f list still means "-f was supplied", which is what turns on the
   // NEVER_MATCH sentinel below.
-  const patternFiles = new FlagView(bag).raw(FILE_KEYS[name] ?? 'f')
+  const patternFiles = new FlagView(bag).raw('file')
   if (Array.isArray(patternFiles)) {
     const first = paths[0]
     const prefix =
@@ -173,12 +162,15 @@ export function ereSource(part: string): string {
  * keeps one matcher: -G, -E, -F and -P each name one, repeating the same is
  * harmless, and any two different ones are `conflicting matchers specified`
  * (exit 2) in either order. -F is carried as `fixedString`, so it only takes
- * part in the check. `perl` is the dest -P fills in this spec (grep's has a
- * long spelling, zgrep's does not).
+ * part in the check.
  */
-export function matcherSyntax(fl: FlagView, prog = 'grep', perl = 'perl_regexp'): RegexSyntax {
-  const dests: Record<string, string> = { G: 'G', E: 'E', F: 'F', [perl]: 'P' }
-  if (perl === 'perl_regexp') Object.assign(dests, { basic_regexp: 'G', extended_regexp: 'E' })
+export function matcherSyntax(fl: FlagView, prog = 'grep'): RegexSyntax {
+  const dests: Record<string, string> = {
+    basic_regexp: 'G',
+    extended_regexp: 'E',
+    fixed_strings: 'F',
+    perl_regexp: 'P',
+  }
   const chosen = new Set<string>()
   for (const [dest, matcher] of Object.entries(dests)) if (fl.asBool(dest)) chosen.add(matcher)
   if (chosen.size > 1) throw new UsageError(`${prog}: ${CONFLICTING_MATCHERS}`)
@@ -311,7 +303,9 @@ export function compilePattern(
   let source = buildPatternStr(pattern, fixedString, wholeWord, syntax)
   if (lineRegexp) source = wholeLine(source, false)
   try {
-    return compilePosixRegex(source, ignoreCase ? 'i' : '', utf8)
+    // A basic or extended `.` matches every character a line holds: a CR, and
+    // under -z a newline; PCRE's does not.
+    return compilePosixRegex(source, ignoreCase ? 'is' : 's', utf8)
   } catch (err) {
     if (!(err instanceof SyntaxError)) throw err
     throw new UsageError('grep: Invalid regular expression')

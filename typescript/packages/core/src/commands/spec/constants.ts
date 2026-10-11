@@ -268,14 +268,22 @@ export const SOLE_ARGUMENT_LONG_OPTIONS: ReadonlySet<string> = new Set(['expr'])
 // `version_etc` or `usage` and exits INSIDE the loop.
 export const STANDARD_AFTER_SCAN: ReadonlySet<string> = new Set(['grep', 'rg'])
 
+// The short options a builtin answers as it answers --help or --version
+// (grep 3.11, ripgrep 14.1.1).
+export const SHORT_STANDARD: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  grep: { '-V': '--version' },
+  rg: { '-h': '--help', '-V': '--version' },
+}
+
 // The programs whose getopt string lists the ten digits as options, the
 // obsolete `-NUM` count spelled one letter at a time: the digits of one word
 // build a number and a later word replaces it, wherever they sit in a
 // cluster. Measured on coreutils 9.7: `split -d10` is `-d` and ten lines, as
 // are `-10d` and `-dx10`, and `split -12 -5` is five. head and tail list the
 // digits too but refuse one past the first word, so they keep only the
-// whole-word `-NUM` that numericShorthand reads.
-export const DIGIT_OPTIONS: ReadonlySet<string> = new Set(['split'])
+// whole-word `-NUM` that numericShorthand reads. grep 3.11 reads them the
+// same way into its -C (`grep -1n` and `-n1`).
+export const DIGIT_OPTIONS: ReadonlySet<string> = new Set(['grep', 'split'])
 
 // The long spellings that are one option under two names, keyed by
 // "<program> <synonym>" to the spelling it duplicates: glibc's several

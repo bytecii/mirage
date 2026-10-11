@@ -20,7 +20,7 @@ import { posixErrno } from '../../errors/posix.ts'
 import { gnuBasename, respellOne } from '../../utils/path.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../utils/filetype.ts'
 import type { FileTypes } from './rg_filetypes.ts'
-import { type Overrides, Verdict, walkCandidate } from './rg_glob.ts'
+import { IgnoreRules, type Overrides, Verdict, walkCandidate } from './rg_glob.ts'
 import type { LinkResolver } from './utils/links.ts'
 import type { AsyncReaddirFn, AsyncStatFn } from './utils/types.ts'
 import { rstripSlash } from '../../utils/slash.ts'
@@ -42,6 +42,8 @@ export class WalkFilter {
     readonly maxDepth: number | null,
     readonly maxFilesize: number | null,
     readonly binary: boolean,
+    // --ignore-file's rules, applied after the -g globs and before -t types.
+    readonly ignores: IgnoreRules = new IgnoreRules(),
   ) {}
 
   // Whether a walked entry is kept (a directory: descended). `candidate`
@@ -50,9 +52,16 @@ export class WalkFilter {
     const verdict = this.overrides.verdict(candidate, isDir)
     if (verdict === Verdict.IGNORE) return false
     if (verdict === Verdict.WHITELIST) return true
+    const ruled = this.ignores.verdict(candidate, isDir)
+    if (ruled === Verdict.IGNORE) return false
     const typed = this.types.verdict(name, isDir)
     if (typed === Verdict.IGNORE) return false
-    return typed === Verdict.WHITELIST || this.hidden || !name.startsWith('.')
+    return (
+      typed === Verdict.WHITELIST ||
+      ruled === Verdict.WHITELIST ||
+      this.hidden ||
+      !name.startsWith('.')
+    )
   }
 
   // Whether a walked file is searched, its stat read when the walk has one.

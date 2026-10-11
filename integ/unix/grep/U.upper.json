@@ -1,0 +1,44 @@
+{
+  "cases": [
+    {
+      "id": "grep_binary_and_unix_byte_offsets",
+      "seq": 14490031,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; grep -U foo /data/gfl/a.txt; grep --binary -c foo /data/gfl/a.txt; grep -u -b foo /data/gfl/a.txt; grep --unix-byte-offsets -c foo /data/gfl/a.txt; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "foo one\nfoo two\n2\n11:foo one\n31:foo two\n2\n",
+        "stderr": "grep: warning: --unix-byte-offsets (-u) is obsolete\ngrep: warning: --unix-byte-offsets (-u) is obsolete\n"
+      },
+      "flags": [
+        "U",
+        "binary",
+        "u",
+        "b"
+      ]
+    }
+  ]
+}

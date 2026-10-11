@@ -146,7 +146,9 @@ async def test_grep_max_count_stops_early():
         [],
         ["match"],
         CommandOpts(
-            io=command_io(RAMVFS()), stdin=_counting(), flags={"m": "3"}
+            io=command_io(RAMVFS()),
+            stdin=_counting(),
+            flags={"max_count": "3"},
         ),
     )
     collected = b"".join([chunk async for chunk in stdout])
@@ -172,7 +174,9 @@ async def test_grep_ignore_case():
         _NOOP,
         [],
         ["ap"],
-        CommandOpts(io=command_io(RAMVFS()), stdin=source, flags={"i": True}),
+        CommandOpts(
+            io=command_io(RAMVFS()), stdin=source, flags={"ignore_case": True}
+        ),
     )
     collected = b"".join([chunk async for chunk in stdout])
     assert b"Apple" in collected
@@ -187,7 +191,9 @@ async def test_grep_invert():
         _NOOP,
         [],
         ["banana"],
-        CommandOpts(io=command_io(RAMVFS()), stdin=source, flags={"v": True}),
+        CommandOpts(
+            io=command_io(RAMVFS()), stdin=source, flags={"invert_match": True}
+        ),
     )
     collected = b"".join([chunk async for chunk in stdout])
     assert b"apple" in collected
@@ -202,7 +208,9 @@ async def test_grep_count_only():
         _NOOP,
         [],
         ["ap"],
-        CommandOpts(io=command_io(RAMVFS()), stdin=source, flags={"c": True}),
+        CommandOpts(
+            io=command_io(RAMVFS()), stdin=source, flags={"count": True}
+        ),
     )
     collected = b"".join([chunk async for chunk in stdout])
     assert collected.strip() == b"2"

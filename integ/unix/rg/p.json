@@ -1,0 +1,39 @@
+{
+  "cases": [
+    {
+      "id": "rg_pretty_groups_with_line_numbers",
+      "seq": 14490215,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; printf 'foo\\n' > /data/rgfl/f.txt; rg -j1 -p foo /data/rgfl/a.txt /data/rgfl/f.txt; rg --pretty foo /data/rgfl/a.txt; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/rgfl/a.txt\n2:foo\n5:foo\n\n/data/rgfl/f.txt\n1:foo\n2:foo\n5:foo\n",
+        "stderr": ""
+      },
+      "flags": [
+        "p",
+        "pretty",
+        "j"
+      ]
+    }
+  ]
+}

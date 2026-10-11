@@ -64,9 +64,9 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
   }
 
   /** Consume buffered empty lines without pulling more input. */
-  skipEmptyLines(limit = Infinity): number {
+  skipEmptyLines(limit = Infinity, eol = NEWLINE): number {
     let count = 0
-    while (count < limit && this.buf[count] === NEWLINE) count++
+    while (count < limit && this.buf[count] === eol) count++
     this.buf = this.buf.subarray(count)
     return count
   }
@@ -126,7 +126,7 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
     return [count, size]
   }
 
-  async readline(signal?: AbortSignal): Promise<Uint8Array | null> {
+  async readline(signal?: AbortSignal, eol = NEWLINE): Promise<Uint8Array | null> {
     try {
       // A buffered line is handed out without a pull, so the signal is
       // checked here as well, on both sides of the yield.
@@ -140,7 +140,7 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
           signal?.throwIfAborted()
         }
       }
-      const idx = this.buf.indexOf(NEWLINE)
+      const idx = this.buf.indexOf(eol)
       if (idx >= 0) {
         const line = this.buf.subarray(0, idx)
         this.buf = this.buf.subarray(idx + 1)
@@ -150,7 +150,7 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
       await this.close()
       throw error
     }
-    const [line, found] = await this.readDelimited(NEWLINE, signal)
+    const [line, found] = await this.readDelimited(eol, signal)
     return found || line.byteLength > 0 ? line : null
   }
 

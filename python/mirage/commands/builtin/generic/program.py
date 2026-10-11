@@ -1,14 +1,16 @@
 from collections.abc import Sequence
 
+from mirage.commands.builtin.generic.grep import parse_flags as grep_flags
+from mirage.commands.builtin.generic.rg import parse_flags as rg_flags
 from mirage.commands.builtin.grep_pattern import (
-    PATTERN_KEYS,
     merge_pattern_list,
 )
 from mirage.commands.builtin.rg_scan import os_error_text
 from mirage.commands.builtin.utils.paths import dispatch_stat
 from mirage.commands.builtin.utils.stream import is_stdin, resolve_source
+from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.core.jq import load_failure
 from mirage.errors.constants import FS_ERRORS
@@ -16,7 +18,7 @@ from mirage.errors.fs import eisdir, fs_strerror
 from mirage.errors.render import fs_error_line
 from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.runtime.types import DispatchFn
-from mirage.shell.bytes import decode_text
+from mirage.shell.bytes import decode_text, encode_text
 from mirage.types import FileType, PathSpec
 
 # The commands whose program files the executor reads before routing and
@@ -28,7 +30,7 @@ PROGRAM_FILE_COMMANDS = frozenset({"grep", "rg", "zgrep", "sed", "awk"})
 FILE_KEYS = {
     "grep": "file",
     "rg": "file",
-    "zgrep": "f",
+    "zgrep": "file",
     "sed": "f",
     "awk": "f",
     "jq": "from_file",
@@ -109,11 +111,105 @@ async def read_program_file(
 def program_files(name: str, flags: dict[str, FlagValue]) -> list[PathSpec]:
     """The invocation's program files, or an empty list for inline programs.
 
+    grep's --exclude-from files count: they are read the same way, once,
+    before routing.
+
     Args:
         name (str): a PROGRAM_FILE_COMMANDS member.
         flags (dict[str, FlagValue]): spec-bound flags with PATH values.
     """
-    return FlagView(flags, spec=SPECS[name]).as_paths(FILE_KEYS[name])
+    fl = FlagView(flags, spec=SPECS[name])
+    files = fl.as_paths(FILE_KEYS[name])
+    return [*files, *fl.as_paths("exclude_from")] if name == "grep" else files
+
+
+def stdin_reader(fl: FlagView) -> str | None:
+    """Which of grep's -f and --exclude-from reads stdin: the first of
+    them on the line to name it; the other then reads nothing.
+
+    Args:
+        fl (FlagView): grep's flag view.
+    """
+    paths = {
+        name: iter(fl.as_paths(name)) for name in ("file", "exclude_from")
+    }
+    for name, _ in fl.occurrences("file", "exclude_from"):
+        path = next(paths[name], None)
+        if path is not None and is_stdin(path):
+            return name
+    return None
+
+
+async def lower_exclude_from(
+    fl: FlagView,
+    flags: dict[str, FlagValue],
+    source: ByteSource,
+    dispatch: DispatchFn,
+) -> tuple[dict[str, FlagValue], bool, IOResult | None]:
+    """grep's --exclude-from files read into the globs they hold.
+
+    gnulib's add_exclude_file takes one glob per line, trailing blanks
+    dropped and blank lines skipped, and ``-`` is stdin. The globs stay
+    under ``exclude_from``, where the option stood among --include and
+    --exclude. A file grep cannot read stops it before it searches
+    anything, exit 2. The occurrence tape is kept, so every -d and -D
+    is still checked.
+
+    Args:
+        fl (FlagView): grep's flag view.
+        flags (dict[str, FlagValue]): grep's spec-bound flags.
+        source (ByteSource): the invocation's stdin, shared with -f.
+        dispatch (DispatchFn): the policy-gated workspace reader.
+
+    Returns:
+        tuple[dict[str, FlagValue], bool, IOResult | None]: the flags,
+            whether stdin was read, and the refusal if a file failed.
+    """
+    globs: list[str] = []
+    consumed = False
+    reader = stdin_reader(fl)
+    for path in fl.as_paths("exclude_from"):
+        try:
+            if is_stdin(path):
+                data = b"" if reader == "file" else await materialize(source)
+                consumed = reader != "file"
+            else:
+                data = await read_program_file("grep", path, dispatch)
+        except FS_ERRORS as exc:
+            line = fs_error_line("grep", path, exc)
+            return flags, consumed, IOResult(exit_code=2, stderr=line.encode())
+        for line in decode_text(data).split("\n"):
+            glob = line.rstrip(" \t\n\v\f\r")
+            if glob:
+                globs.append(glob)
+    lowered = FlagBag(flags)
+    lowered["exclude_from"] = globs
+    return lowered, consumed, None
+
+
+def value_refusal(name: str, flags: dict[str, FlagValue]) -> IOResult | None:
+    """grep's or rg's refusal of an option value on the line, or None.
+
+    Both check every value in their option loop and answer --help and
+    --version only once it is done (grep 3.11, ripgrep 14.1.1: `grep -D
+    bogus -V` and `rg --sort bogus --version` are refused). The pattern is
+    not compiled yet, as neither has by then.
+
+    Args:
+        name (str): grep or rg.
+        flags (dict[str, FlagValue]): the line's spec-bound flags.
+    """
+    fl = FlagView(flags, spec=SPECS[name])
+    try:
+        if name == "grep":
+            grep_flags(fl, never_match=False)
+        elif name == "rg":
+            rg_flags(fl)
+    except UsageError as exc:
+        return IOResult(
+            exit_code=exc.exit_code, stderr=encode_text(f"{exc}\n")
+        )
+    return None
 
 
 async def prepare_program(
@@ -144,12 +240,19 @@ async def prepare_program(
             checks for a `-` once `-f -` has read stdin.
     """
     fl = FlagView(flags, spec=SPECS[name])
-    key = FILE_KEYS[name]
-    files = program_files(name, flags)
-    if not files:
-        return texts, flags, stdin, None
     source = resolve_source(stdin)
     consumed = False
+    if name == "grep" and fl.as_paths("exclude_from"):
+        flags, consumed, refusal = await lower_exclude_from(
+            fl, flags, source, dispatch
+        )
+        if refusal is not None:
+            return texts, flags, stdin, refusal
+        fl = FlagView(flags, spec=SPECS[name])
+    key = FILE_KEYS[name]
+    files = fl.as_paths(key)
+    if not files:
+        return texts, flags, source if consumed else stdin, None
     # Only a literal `-` takes stdin in ripgrep's sense: `-f /dev/stdin`
     # reads the same bytes as a file, so neither refusal follows from it.
     taken = False
@@ -192,13 +295,13 @@ async def prepare_program(
     out = dict(flags)
     out.pop(key)
     if name in ("grep", "rg", "zgrep"):
-        inline = fl.as_list(PATTERN_KEYS[name])
+        inline = fl.as_list("regexp")
         pattern = "\n".join(inline) if inline else None
         for data in pieces:
             pattern = merge_pattern_list(pattern, data)
         # An empty pattern-file list preserves grep's zero-pattern sentinel.
         out[key] = []
-        out[PATTERN_KEYS[name]] = [] if pattern is None else [pattern]
+        out["regexp"] = [] if pattern is None else [pattern]
     elif name == "sed":
         expressions = iter(fl.as_list("e"))
         scripts = iter(decode_text(data) for data in pieces)

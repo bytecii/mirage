@@ -93,10 +93,10 @@ describe('FlagView', () => {
   // The whole point of passing a spec: a missing key is otherwise
   // indistinguishable from "flag not passed", so a typo reads as false.
   it('rejects names the spec does not declare', () => {
-    const fl = new FlagView({ i: true }, specOf('grep'))
-    expect(fl.asBool('i')).toBe(true)
+    const fl = new FlagView({ ignore_case: true }, specOf('grep'))
+    expect(fl.asBool('ignore_case')).toBe(true)
     expect(() => fl.asBool('ignorecase')).toThrow(/ignorecase/)
-    expect(() => fl.asInt('max_count')).toThrow()
+    expect(() => fl.asInt('max_depth')).toThrow()
     expect(() => fl.asList('patterns')).toThrow()
   })
 

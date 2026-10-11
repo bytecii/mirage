@@ -30,14 +30,12 @@ from mirage.commands.builtin.generic.crossmount.types import (
 from mirage.commands.builtin.generic.grep import (
     parse_flags as parse_grep_flags,
 )
-from mirage.commands.builtin.generic.grep import (
-    prints_context as grep_prints_context,
-)
 from mirage.commands.builtin.generic.rg import (
     between_files as rg_between_files,
 )
 from mirage.commands.builtin.generic.rg import parse_flags as parse_rg_flags
 from mirage.commands.builtin.generic_bind.adapter import dispatched_call
+from mirage.commands.builtin.grep_binary import group_line
 from mirage.commands.builtin.utils.stream import is_stdin
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -174,8 +172,7 @@ def run_separator(cmd_name: str, flags: dict[str, FlagValue]) -> bytes:
         return rg_between_files(parse_rg_flags(fl))
     if cmd_name == Cmd.GREP:
         fl = FlagView(flags, spec=SPECS[Cmd.GREP])
-        if grep_prints_context(parse_grep_flags(fl, never_match=False)):
-            return b"--\n"
+        return group_line(parse_grep_flags(fl, never_match=False))
     return b""
 
 

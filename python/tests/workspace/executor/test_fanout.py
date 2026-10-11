@@ -38,7 +38,7 @@ def _nested() -> Workspace:
         ("ls", {}, False),
         ("ls", {"recursive": True}, True),
         ("grep", {}, False),
-        ("grep", {"r": True}, True),
+        ("grep", {"recursive": True}, True),
         ("cat", {}, False),
     ],
 )

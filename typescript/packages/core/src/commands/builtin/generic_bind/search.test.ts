@@ -222,6 +222,10 @@ it.each<[string, string, string | null, string, ScanReason | null]>([
   ['rg -L ada /d', 'both', null, '', ScanReason.LINKS],
   ['rg --files-without-match ada /d', 'both', null, '', ScanReason.EVERY_FILE],
   ['rg -c --include-zero ada /d', 'both', null, '', ScanReason.EVERY_FILE],
+  ['rg --stats ada /d | head -2', 'both', EVERY, '', ScanReason.EVERY_FILE],
+  ['rg -z ada /d', 'both', EVERY, '', ScanReason.TRANSFORMED],
+  ["rg -U 'ada here\\nnothing' /d", 'both', EVERY, '', ScanReason.NO_TEXT],
+  ['rg -U ada /d', 'lines', 'a.txt sub/d.txt', '', null],
   ['rg -q --files-without-match ada /d', 'files', null, 'ada', null],
   ['rg --files /d', 'both', '', '', null],
 ])('%s (%s) reads, asks and scans what it should', async (line, mount, reads, asked, scan) => {

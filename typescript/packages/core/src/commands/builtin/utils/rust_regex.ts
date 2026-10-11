@@ -121,6 +121,9 @@ export interface Flags {
 }
 
 const DEFAULT_FLAGS: Flags = { i: false, m: false, s: false, U: false, u: true, x: false, R: false }
+// The line terminator, which a pattern may not hold outside multiline mode.
+const NEWLINE_CP = 0x0a
+const NEWLINE = CharSet.chars(NEWLINE_CP)
 
 // `\w` in one mode.
 function wordClass(unicode: boolean): CharSet {
@@ -157,19 +160,23 @@ export function boundary(kind: string, unicode: boolean): string {
   return table[kind] ?? ''
 }
 
-// `^` as the host reads it, also just after a `\n` under multi-line.
-export function lineStart(multiLine: boolean): string {
-  return multiLine ? '(?:^|(?<=\\n))' : '^'
+// `^` as the host reads it, also just after a `\n` under multi-line. In
+// CRLF mode a `\r` ends a line too, but `^` never falls between `\r` and `\n`.
+export function lineStart(multiLine: boolean, crlf = false): string {
+  if (!multiLine) return '^'
+  return crlf ? '(?:^|(?<=\\n)|(?<=\\r)(?!\\n))' : '(?:^|(?<=\\n))'
 }
 
-// `$` as the host reads it, also just before a `\n` under multi-line.
-export function lineEnd(multiLine: boolean): string {
-  return multiLine ? '(?=\\n|$)' : '$'
+// `$` as the host reads it, also just before a `\n` under multi-line. In CRLF
+// mode `$` matches before a `\r` too, but never between `\r` and `\n`.
+export function lineEnd(multiLine: boolean, crlf = false): string {
+  if (!multiLine) return '$'
+  return crlf ? '(?:(?=\\r)|(?<!\\r)(?=\\n)|$)' : '(?=\\n|$)'
 }
 
 // ripgrep's -x: the pattern spans a whole line.
-export function wholeLine(source: string, multiLine: boolean): string {
-  return `${lineStart(multiLine)}(?:${source})${lineEnd(multiLine)}`
+export function wholeLine(source: string, multiLine: boolean, crlf = false): string {
+  return `${lineStart(multiLine, crlf)}(?:${source})${lineEnd(multiLine, crlf)}`
 }
 
 // ripgrep's -w: `\b{start-half}(?:...)\b{end-half}`, over Unicode word
@@ -211,6 +218,8 @@ class RustTranslator {
   private atomAssertion = false
   private stack: Frame[] = []
   private names = new Map<string, Span>()
+  // The pattern held a literal newline, or a class of nothing else.
+  newline = false
 
   constructor(
     private readonly display: string,
@@ -280,7 +289,9 @@ class RustTranslator {
       this.out.push('|')
       this.atomStart = null
     } else if (ch === '[') {
-      this.atom(hostClass(this.parseClass()))
+      const cs = this.parseClass()
+      this.newline ||= cs.equals(NEWLINE)
+      this.atom(hostClass(cs))
     } else if (ch === '*' || ch === '+' || ch === '?') {
       this.repetition(ch)
     } else if (ch === '{') {
@@ -293,10 +304,10 @@ class RustTranslator {
       this.atom(hostClass(this.flags.s ? ALL : ALL.minus(excluded)))
     } else if (ch === '^') {
       this.pos += 1
-      this.assertion(lineStart(this.flags.m))
+      this.assertion(lineStart(this.flags.m, this.flags.R))
     } else if (ch === '$') {
       this.pos += 1
-      this.assertion(lineEnd(this.flags.m))
+      this.assertion(lineEnd(this.flags.m, this.flags.R))
     } else {
       this.pos += 1
       this.literal(ch.codePointAt(0) ?? 0)
@@ -318,12 +329,14 @@ class RustTranslator {
 
   // Emit one literal code point, folded under `i`.
   private literal(cp: number): void {
+    this.newline ||= cp === NEWLINE_CP
     if (this.flags.i) this.atom(hostClass(fold(CharSet.chars(cp), !this.flags.u)))
     else this.atom(hostChar(cp))
   }
 
   // Emit a class-valued escape, folded under `i`.
   private setAtom(cs: CharSet): void {
+    this.newline ||= cs.equals(NEWLINE)
     this.atom(hostClass(this.flags.i ? fold(cs, !this.flags.u) : cs))
   }
 
@@ -756,18 +769,23 @@ export function translateRust(
   ignoreCase = false,
   multiLine = false,
   unicode = true,
+  // `.` matches `\n` (--multiline-dotall), and CRLF mode (--crlf with
+  // --multiline).
+  dotall = false,
+  crlf = false,
 ): HostRegex {
   const display = displayOf(patterns)
   // The host folds Unicode letters, so only a Unicode pattern hands it the
   // folding; without Unicode the translator folds ASCII alone.
-  if (ignoreCase && unicode && !INLINE_CASE.test(display)) {
-    const source = new RustTranslator(display, {
-      ...DEFAULT_FLAGS,
-      m: multiLine,
-      u: unicode,
-    }).translate()
-    return { source, ignoreCase: true }
-  }
-  const flags = { ...DEFAULT_FLAGS, i: ignoreCase, m: multiLine, u: unicode }
-  return { source: new RustTranslator(display, flags).translate(), ignoreCase: false }
+  const folded = ignoreCase && unicode && !INLINE_CASE.test(display)
+  const translator = new RustTranslator(display, {
+    ...DEFAULT_FLAGS,
+    i: ignoreCase && !folded,
+    m: multiLine,
+    s: dotall,
+    u: unicode,
+    R: crlf,
+  })
+  const source = translator.translate()
+  return { source, ignoreCase: folded, newline: translator.newline }
 }

@@ -140,19 +140,19 @@ describe('ASCII semantics for word boundaries and case folding', () => {
 describe('matcherSyntax', () => {
   it.each([
     [{}, RegexSyntax.BASIC],
-    [{ G: true }, RegexSyntax.BASIC],
-    [{ E: true }, RegexSyntax.EXTENDED],
+    [{ basic_regexp: true }, RegexSyntax.BASIC],
+    [{ extended_regexp: true }, RegexSyntax.EXTENDED],
     [{ perl_regexp: true }, RegexSyntax.PERL],
-    [{ F: true }, RegexSyntax.BASIC],
+    [{ fixed_strings: true }, RegexSyntax.BASIC],
   ] as [Record<string, FlagValue>, RegexSyntax][])('%j reads %s', (flags, syntax) => {
     expect(matcherSyntax(new FlagView(flags, specOf('grep')))).toBe(syntax)
   })
 
   it.each([
-    { E: true, perl_regexp: true },
-    { F: true, perl_regexp: true },
-    { G: true, perl_regexp: true },
-    { E: true, F: true },
+    { extended_regexp: true, perl_regexp: true },
+    { fixed_strings: true, perl_regexp: true },
+    { basic_regexp: true, perl_regexp: true },
+    { extended_regexp: true, fixed_strings: true },
   ] as Record<string, FlagValue>[])('refuses %j', (flags) => {
     expect(() => matcherSyntax(new FlagView(flags, specOf('grep')))).toThrow(
       new UsageError('grep: conflicting matchers specified'),

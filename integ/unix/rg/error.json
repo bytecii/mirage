@@ -572,6 +572,45 @@
         "stdout": "/data/b.txt:1\nrc=2\n/data/b.txt:1\nrc=2\nrc=2\n/data/b.txt:1\nrc=2\n",
         "stderr": "rg: /data/nosuch: No such file or directory (os error 2)\nrg: /data/nosuch: IO error for operation on /data/nosuch: No such file or directory (os error 2)\nrg: /data/nosuch: No such file or directory (os error 2)\nrg: /data/nope: No such file or directory (os error 2)\nrg: /data/nosuch: IO error for operation on /data/nosuch: No such file or directory (os error 2)\n"
       }
+    },
+    {
+      "id": "rg_version_after_a_bad_value",
+      "seq": 14490063,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "rg --sort bogus --version; echo rc=$?; rg --version --max-filesize bogus; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=2\nrc=2\n",
+        "stderr": "rg: error parsing flag --sort: choice 'bogus' is unrecognized\nrg: error parsing flag --max-filesize: invalid size: invalid format for size 'bogus', which should be a non-empty sequence of digits followed by an optional 'K', 'M' or 'G' suffix\n"
+      },
+      "flags": [
+        "version",
+        "sort",
+        "max_filesize"
+      ]
     }
   ]
 }

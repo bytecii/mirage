@@ -103,6 +103,7 @@ describe('pathFlagScopes', () => {
   })
 
   it.each([
+    ['grep', ['--exclude-from', '/other/skip.lst', 'foo', '/data/in']],
     ['curl', ['-o', '/other/body', '-D', '/data/h', 'http://x.test/']],
     ['curl', ['--dump-header', '-', '--output', '/other/body', 'http://x.test/']],
     ['jq', ['--slurpfile', 's', '/other/s.json', '--rawfile', 'r', '/dev/fd/63', '.']],

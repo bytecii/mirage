@@ -36,7 +36,10 @@ async def test_binary_result_is_independent_of_backend_chunks(
             yield data[offset : offset + chunk_size]
 
     flags = parse_flags(
-        FlagView({"binary_files": mode, "n": True}, spec=SPECS["grep"]), False
+        FlagView(
+            {"binary_files": mode, "line_number": True}, spec=SPECS["grep"]
+        ),
+        False,
     )
     io = IOResult(exit_code=1)
     out = await materialize(
@@ -81,7 +84,7 @@ async def test_multibyte_text_survives_split_reads(chunk_size):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flags", [{"args_I": True}, {"q": True}, {}])
+@pytest.mark.parametrize("flags", [{"args_I": True}, {"quiet": True}, {}])
 async def test_binary_scan_stops_after_bounded_probe(flags):
     block = b"needle\0" + b"x" * (PROBE_BLOCK_BYTES - 7)
 
@@ -125,7 +128,7 @@ async def test_max_count_does_not_read_past_the_probe_block():
         finally:
             closed = True
 
-    f = parse_flags(FlagView({"m": 1}, spec=SPECS["grep"]), False)
+    f = parse_flags(FlagView({"max_count": 1}, spec=SPECS["grep"]), False)
     io = IOResult()
     assert (
         await materialize(
@@ -147,14 +150,14 @@ async def test_max_count_does_not_read_past_the_probe_block():
 @pytest.mark.parametrize(
     "flags, shown",
     [
-        ({"B": "-1"}, "-1"),
-        ({"A": "-1"}, "-1"),
-        ({"C": "-1"}, "-1"),
-        ({"A": "x"}, "x"),
-        ({"B": "1.5"}, "1.5"),
-        ({"B": -1}, "-1"),
-        ({"B": "-1", "A": "x"}, "-1"),
-        ({"A": "x", "B": "-1"}, "x"),
+        ({"before_context": "-1"}, "-1"),
+        ({"after_context": "-1"}, "-1"),
+        ({"context": "-1"}, "-1"),
+        ({"after_context": "x"}, "x"),
+        ({"before_context": "1.5"}, "1.5"),
+        ({"before_context": -1}, "-1"),
+        ({"before_context": "-1", "after_context": "x"}, "-1"),
+        ({"after_context": "x", "before_context": "-1"}, "x"),
     ],
 )
 def test_invalid_context_length(flags, shown):
@@ -164,7 +167,9 @@ def test_invalid_context_length(flags, shown):
         parse_flags(FlagView(flags, spec=SPECS["grep"]), False)
 
 
-@pytest.mark.parametrize("flags", [{"B": "-0"}, {"A": "0"}, {"C": 2}])
+@pytest.mark.parametrize(
+    "flags", [{"before_context": "-0"}, {"after_context": "0"}, {"context": 2}]
+)
 def test_valid_context_length(flags):
     parse_flags(FlagView(flags, spec=SPECS["grep"]), False)
 
@@ -207,7 +212,8 @@ async def test_late_nul_discards_earlier_matches(
             closed = True
 
     f = parse_flags(
-        FlagView({**binary_flag, "c": count_only}, spec=SPECS["grep"]), False
+        FlagView({**binary_flag, "count": count_only}, spec=SPECS["grep"]),
+        False,
     )
     io = IOResult()
     out = await materialize(
@@ -227,9 +233,9 @@ async def test_late_nul_discards_earlier_matches(
 @pytest.mark.parametrize(
     "flags,expected",
     [
-        ({"m": 1, "c": True}, b"1\n"),
-        ({"q": True}, b""),
-        ({"args_l": True}, b"/remote/rows.jsonl\n"),
+        ({"max_count": 1, "count": True}, b"1\n"),
+        ({"quiet": True}, b""),
+        ({"files_with_matches": True}, b"/remote/rows.jsonl\n"),
     ],
 )
 async def test_without_match_early_stop_does_not_read_ahead(flags, expected):
@@ -265,11 +271,14 @@ async def _lines(*rows: bytes):
 @pytest.mark.parametrize(
     "flags, after_output, expected",
     [
-        ({"A": 1}, True, b"--\nf:a\nf-b\n"),
-        ({"A": 1}, False, b"f:a\nf-b\n"),
-        ({"B": 1}, True, b"--\nf:a\n"),
-        ({"c": True, "A": 1}, True, b"f:1\n"),
-        ({"o": True, "A": 1}, True, b"f:a\n"),
+        ({"after_context": 1}, True, b"--\nf:a\nf-b\n"),
+        ({"after_context": 1}, False, b"f:a\nf-b\n"),
+        ({"before_context": 1}, True, b"--\nf:a\n"),
+        ({"count": True, "after_context": 1}, True, b"f:1\n"),
+        ({"only_matching": True, "after_context": 1}, True, b"--\nf:a\n"),
+        ({"after_context": 0}, True, b"--\nf:a\n"),
+        ({"after_context": 0, "no_group_separator": True}, True, b"f:a\n"),
+        ({"context": 0, "group_separator": "::"}, True, b"::\nf:a\n"),
         ({}, True, b"f:a\n"),
     ],
 )
@@ -336,7 +345,9 @@ async def test_nul_in_a_later_chunk_is_gnu_pipe_behavior(
 async def test_zero_width_only_matching_still_notices_a_nul(
     data, pattern, stderr
 ):
-    f = parse_flags(FlagView({"o": True}, spec=SPECS["grep"]), False)
+    f = parse_flags(
+        FlagView({"only_matching": True}, spec=SPECS["grep"]), False
+    )
     io = IOResult(exit_code=1)
     out = await materialize(
         grep_input(_lines(data), re.compile(pattern), f, "/data/z", False, io)
@@ -356,13 +367,13 @@ async def test_zero_width_only_matching_still_notices_a_nul(
 @pytest.mark.parametrize(
     "flags",
     [
-        {"m": 0},
-        {"m": 0, "c": True},
-        {"m": 0, "v": True},
-        {"m": 0, "l": True},
-        {"m": 0, "o": True},
-        {"m": 0, "A": "1"},
-        {"m": 0, "c": True, "n": True, "b": True},
+        {"max_count": 0},
+        {"max_count": 0, "count": True},
+        {"max_count": 0, "invert_match": True},
+        {"max_count": 0, "files_with_matches": True},
+        {"max_count": 0, "only_matching": True},
+        {"max_count": 0, "after_context": "1"},
+        {"max_count": 0, "count": True, "line_number": True, "b": True},
     ],
 )
 async def test_max_count_zero_prints_nothing_and_closes_the_unread_source(
@@ -384,7 +395,7 @@ async def test_max_count_zero_prints_nothing_and_closes_the_unread_source(
 async def test_a_genuine_zero_count_still_prints_zero():
     # The mirror of the -m0 rows above: without -m0, `grep -c` on a file
     # holding no match prints `0` and exits 1 (GNU grep 3.11).
-    f = parse_flags(FlagView({"c": True}, spec=SPECS["grep"]), False)
+    f = parse_flags(FlagView({"count": True}, spec=SPECS["grep"]), False)
     io = IOResult(exit_code=1)
     out = await materialize(
         grep_input(
@@ -436,7 +447,7 @@ _F6 = b"no-newline-abc"
         # prints both.
         (
             _F1,
-            {"byte_offset": True, "o": True},
+            {"byte_offset": True, "only_matching": True},
             False,
             b"0:abc\n7:abc\n11:abc\n15:abc\n",
             0,
@@ -445,45 +456,74 @@ _F6 = b"no-newline-abc"
         # renderer rather than by the order the flags were given in.
         (
             _F1,
-            {"byte_offset": True, "n": True},
+            {"byte_offset": True, "line_number": True},
             False,
             b"1:0:abc\n2:4:defabc\n3:11:abc abc\n",
             0,
         ),
         (
             _F1,
-            {"byte_offset": True, "H": True},
+            {"byte_offset": True, "with_filename": True},
             True,
             b"f:0:abc\nf:4:defabc\nf:11:abc abc\n",
             0,
         ),
         (
             _F1,
-            {"byte_offset": True, "n": True, "H": True, "o": True},
+            {
+                "byte_offset": True,
+                "line_number": True,
+                "with_filename": True,
+                "only_matching": True,
+            },
             True,
             b"f:1:0:abc\nf:2:7:abc\nf:3:11:abc\nf:3:15:abc\n",
             0,
         ),
         # -b does not reach a count, a file list or -q.
-        (_F1, {"byte_offset": True, "c": True}, False, b"3\n", 0),
-        (_F3, {"byte_offset": True, "c": True}, False, b"2\n", 0),
-        (_F1, {"byte_offset": True, "c": True, "H": True}, True, b"f:3\n", 0),
-        (_F1, {"byte_offset": True, "args_l": True}, False, b"f\n", 0),
-        (_F1, {"byte_offset": True, "q": True}, False, b"", 0),
+        (_F1, {"byte_offset": True, "count": True}, False, b"3\n", 0),
+        (_F3, {"byte_offset": True, "count": True}, False, b"2\n", 0),
+        (
+            _F1,
+            {"byte_offset": True, "count": True, "with_filename": True},
+            True,
+            b"f:3\n",
+            0,
+        ),
+        (
+            _F1,
+            {"byte_offset": True, "files_with_matches": True},
+            False,
+            b"f\n",
+            0,
+        ),
+        (_F1, {"byte_offset": True, "quiet": True}, False, b"", 0),
         # -v prints the line-start offsets of the lines it did not select.
         (
             _F3,
-            {"byte_offset": True, "v": True},
+            {"byte_offset": True, "invert_match": True},
             False,
             b"0:one\n12:three\n27:five\n",
             0,
         ),
-        (_F1, {"byte_offset": True, "v": True}, False, b"", 1),
-        (_F3, {"byte_offset": True, "m": "1"}, False, b"4:two abc\n", 0),
+        (_F1, {"byte_offset": True, "invert_match": True}, False, b"", 1),
+        (
+            _F3,
+            {"byte_offset": True, "max_count": "1"},
+            False,
+            b"4:two abc\n",
+            0,
+        ),
         # A missing final newline does not shift an offset, and must not be
         # counted twice.
         (_F6, {"byte_offset": True}, False, b"0:no-newline-abc\n", 0),
-        (_F6, {"byte_offset": True, "o": True}, False, b"11:abc\n", 0),
+        (
+            _F6,
+            {"byte_offset": True, "only_matching": True},
+            False,
+            b"11:abc\n",
+            0,
+        ),
     ],
 )
 async def test_byte_offset_is_the_line_start_or_the_match(
@@ -504,28 +544,28 @@ async def test_byte_offset_is_the_line_start_or_the_match(
         (
             _F3,
             "abc",
-            {"byte_offset": True, "A": "1"},
+            {"byte_offset": True, "after_context": "1"},
             False,
             b"4:two abc\n12-three\n18:four abc\n27-five\n",
         ),
         (
             _F3,
             "abc",
-            {"byte_offset": True, "B": "1"},
+            {"byte_offset": True, "before_context": "1"},
             False,
             b"0-one\n4:two abc\n12-three\n18:four abc\n",
         ),
         (
             _F3,
             "abc",
-            {"byte_offset": True, "C": "1"},
+            {"byte_offset": True, "context": "1"},
             False,
             b"0-one\n4:two abc\n12-three\n18:four abc\n27-five\n",
         ),
         (
             _F3,
             "three",
-            {"byte_offset": True, "A": "1"},
+            {"byte_offset": True, "after_context": "1"},
             False,
             b"12:three\n18-four abc\n",
         ),
@@ -534,14 +574,19 @@ async def test_byte_offset_is_the_line_start_or_the_match(
         (
             _F3,
             "abc",
-            {"byte_offset": True, "n": True, "C": "1"},
+            {"byte_offset": True, "line_number": True, "context": "1"},
             False,
             b"1-0-one\n2:4:two abc\n3-12-three\n4:18:four abc\n5-27-five\n",
         ),
         (
             _F3,
             "abc",
-            {"byte_offset": True, "n": True, "H": True, "C": "1"},
+            {
+                "byte_offset": True,
+                "line_number": True,
+                "with_filename": True,
+                "context": "1",
+            },
             True,
             b"f-1-0-one\nf:2:4:two abc\nf-3-12-three\n"
             b"f:4:18:four abc\nf-5-27-five\n",
@@ -550,7 +595,7 @@ async def test_byte_offset_is_the_line_start_or_the_match(
         (
             _F4,
             "HIT",
-            {"byte_offset": True, "n": True, "C": "1"},
+            {"byte_offset": True, "line_number": True, "context": "1"},
             False,
             b"2-2-b\n3:4:HIT\n4-8-c\n--\n7-14-f\n8:16:HIT\n9-20-g\n",
         ),
@@ -558,7 +603,7 @@ async def test_byte_offset_is_the_line_start_or_the_match(
         (
             _F3,
             "abc",
-            {"byte_offset": True, "o": True, "C": "1"},
+            {"byte_offset": True, "only_matching": True, "context": "1"},
             False,
             b"8:abc\n23:abc\n",
         ),
@@ -581,13 +626,18 @@ async def test_byte_offset_on_a_context_line_uses_the_dash_separator(
     [
         # An empty match prints nothing under -ob, exactly as under -o, and
         # the line is still selected.
-        (b"ab\n", "[0-9]*", {"byte_offset": True, "o": True}, b""),
-        (b"ab\n", "", {"byte_offset": True, "o": True}, b""),
-        (b"a1b\n", "[0-9]*", {"byte_offset": True, "o": True}, b"1:1\n"),
+        (b"ab\n", "[0-9]*", {"byte_offset": True, "only_matching": True}, b""),
+        (b"ab\n", "", {"byte_offset": True, "only_matching": True}, b""),
+        (
+            b"a1b\n",
+            "[0-9]*",
+            {"byte_offset": True, "only_matching": True},
+            b"1:1\n",
+        ),
         (
             b"a1b\nc2d\n",
             "[0-9]*",
-            {"byte_offset": True, "o": True},
+            {"byte_offset": True, "only_matching": True},
             b"1:1\n5:2\n",
         ),
         (b"ab\ncd\n", "[0-9]*", {"byte_offset": True}, b"0:ab\n3:cd\n"),
@@ -612,8 +662,11 @@ async def test_empty_matches_under_ob_behave_as_under_o(
         # at byte 6 and not at character index 5; line two starts at 10 and
         # its match is at 15, not 13. GNU reports the same numbers under C and
         # C.utf8.
-        ({"byte_offset": True, "o": True}, b"6:abc\n15:abc\n"),
-        ({"byte_offset": True, "o": True, "n": True}, b"1:6:abc\n2:15:abc\n"),
+        ({"byte_offset": True, "only_matching": True}, b"6:abc\n15:abc\n"),
+        (
+            {"byte_offset": True, "only_matching": True, "line_number": True},
+            b"1:6:abc\n2:15:abc\n",
+        ),
         ({"byte_offset": True}, b"0:caf\xc3\xa9 abc\n10:x\xc3\xa9y abc\n"),
     ],
 )
@@ -657,7 +710,10 @@ async def test_only_matching_offsets_count_bytes_along_one_long_line(
         yield data
 
     flags = parse_flags(
-        FlagView({"o": True, "byte_offset": byte_offsets}, spec=SPECS["grep"]),
+        FlagView(
+            {"only_matching": True, "byte_offset": byte_offsets},
+            spec=SPECS["grep"],
+        ),
         False,
     )
     io = IOResult()
@@ -691,7 +747,10 @@ async def test_cancellation_during_single_line_matches():
             closed = True
 
     flags = parse_flags(
-        FlagView({"o": True, "byte_offset": True}, spec=SPECS["grep"]), False
+        FlagView(
+            {"only_matching": True, "byte_offset": True}, spec=SPECS["grep"]
+        ),
+        False,
     )
     scanned = grep_input(
         source(), re.compile("needle"), flags, "large.json", False, IOResult()
@@ -706,11 +765,16 @@ async def test_cancellation_during_single_line_matches():
 @pytest.mark.parametrize(
     "flags,pattern,stdout,code",
     [
-        ({"c": True}, "needle", b"0\n", 1),
-        ({"c": True, "v": True}, "needle", b"100003\n", 0),
-        ({"c": True}, "^$", b"100003\n", 0),
-        ({"c": True, "m": 17000}, "^$", b"17000\n", 0),
-        ({"c": True, "B": 2, "A": 2}, "^$", b"100003\n", 0),
+        ({"count": True}, "needle", b"0\n", 1),
+        ({"count": True, "invert_match": True}, "needle", b"100003\n", 0),
+        ({"count": True}, "^$", b"100003\n", 0),
+        ({"count": True, "max_count": 17000}, "^$", b"17000\n", 0),
+        (
+            {"count": True, "before_context": 2, "after_context": 2},
+            "^$",
+            b"100003\n",
+            0,
+        ),
         ({"files_without_match": True}, "needle", b"binary.so\n", 1),
         ({}, "needle", b"", 1),
     ],
@@ -722,10 +786,10 @@ async def test_batch_nul_runs_preserves_selection(
     reads = 0
     readline = AsyncLineIterator.readline
 
-    async def counted_readline(self):
+    async def counted_readline(self, eol=b"\n"):
         nonlocal reads
         reads += 1
-        return await readline(self)
+        return await readline(self, eol)
 
     monkeypatch.setattr(AsyncLineIterator, "readline", counted_readline)
 
@@ -743,7 +807,9 @@ async def test_batch_nul_runs_preserves_selection(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flags", [{}, {"B": 2}, {"o": True}])
+@pytest.mark.parametrize(
+    "flags", [{}, {"before_context": 2}, {"only_matching": True}]
+)
 async def test_offsets_and_context_after_empty_lines(flags):
     data = b"\n" * 17003 + "é needle\n".encode()
 
@@ -752,7 +818,8 @@ async def test_offsets_and_context_after_empty_lines(flags):
 
     f = parse_flags(
         FlagView(
-            {**flags, "n": True, "byte_offset": True}, spec=SPECS["grep"]
+            {**flags, "line_number": True, "byte_offset": True},
+            spec=SPECS["grep"],
         ),
         False,
     )
@@ -762,8 +829,10 @@ async def test_offsets_and_context_after_empty_lines(flags):
     )
     expected = (
         "17004:17006:needle\n"
-        if "o" in flags
-        else ("17002-17001-\n17003-17002-\n" if "B" in flags else "")
+        if "only_matching" in flags
+        else (
+            "17002-17001-\n17003-17002-\n" if "before_context" in flags else ""
+        )
         + "17004:17003:é needle\n"
     )
     assert out == expected.encode()
@@ -794,17 +863,17 @@ async def test_reject_short_records_by_buffer(
     reads = 0
     readline = AsyncLineIterator.readline
 
-    async def counted_readline(self):
+    async def counted_readline(self, eol=b"\n"):
         nonlocal reads
         reads += 1
-        return await readline(self)
+        return await readline(self, eol)
 
     monkeypatch.setattr(AsyncLineIterator, "readline", counted_readline)
 
     async def source():
         yield data
 
-    f = parse_flags(FlagView({"c": True}, spec=SPECS["grep"]), False)
+    f = parse_flags(FlagView({"count": True}, spec=SPECS["grep"]), False)
     io = IOResult()
     out = await materialize(
         grep_input(source(), re.compile(pattern, flags), f, "f", False, io)
@@ -831,16 +900,21 @@ async def test_reject_short_records_by_buffer(
     "flags",
     [
         {},
-        {"c": True},
-        {"q": True},
-        {"args_l": True},
+        {"count": True},
+        {"quiet": True},
+        {"files_with_matches": True},
         {"files_without_match": True},
-        {"m": 1},
-        {"c": True, "m": 1},
-        {"n": True, "byte_offset": True},
-        {"n": True, "byte_offset": True, "o": True},
-        {"c": True, "v": True},
-        {"B": 2, "A": 1, "n": True, "byte_offset": True},
+        {"max_count": 1},
+        {"count": True, "max_count": 1},
+        {"line_number": True, "byte_offset": True},
+        {"line_number": True, "byte_offset": True, "only_matching": True},
+        {"count": True, "invert_match": True},
+        {
+            "before_context": 2,
+            "after_context": 1,
+            "line_number": True,
+            "byte_offset": True,
+        },
     ],
 )
 async def test_literal_prefilter_preserves_unfiltered_results(
@@ -934,7 +1008,10 @@ async def test_prefilter_preserves_regex_and_unicode(pattern, flags):
         yield data
 
     f = parse_flags(
-        FlagView({"n": True, "byte_offset": True}, spec=SPECS["grep"]), False
+        FlagView(
+            {"line_number": True, "byte_offset": True}, spec=SPECS["grep"]
+        ),
+        False,
     )
     fast = IOResult()
     slow = IOResult()
@@ -972,7 +1049,7 @@ async def test_cancellation_while_skipping_nonmatching_buffers():
         finally:
             closed = True
 
-    f = parse_flags(FlagView({"c": True}, spec=SPECS["grep"]), False)
+    f = parse_flags(FlagView({"count": True}, spec=SPECS["grep"]), False)
     with pytest.raises(asyncio.CancelledError):
         await materialize(
             grep_input(
@@ -989,8 +1066,8 @@ async def test_cancellation_while_skipping_nonmatching_buffers():
         ({}, "a", "a1\néa2\n", b"grep: f: binary file matches\n"),
         ({"args_I": True}, "a", "a1\néa2\n", b""),
         ({"text": True}, "a", "a1\na\udcff\néa2\n", b""),
-        ({"c": True}, "a.", "2\n", b""),
-        ({"o": True, "byte_offset": True}, "2", "9:2\n", b""),
+        ({"count": True}, "a.", "2\n", b""),
+        ({"only_matching": True, "byte_offset": True}, "2", "9:2\n", b""),
     ],
 )
 async def test_a_utf8_scan_leaves_out_a_line_no_character_owns(
