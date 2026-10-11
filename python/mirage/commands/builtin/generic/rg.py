@@ -224,7 +224,8 @@ def number_flag(fl: FlagView, dest: str) -> int | None:
 
 
 def size_flag(fl: FlagView, dest: str) -> int | None:
-    """A size option in bytes, refused in ripgrep's words.
+    """A size option in bytes, refused in ripgrep's words. ripgrep parses
+    every occurrence as it reads it, so an earlier bad one is refused too.
 
     Args:
         fl (FlagView): the flag view.
@@ -234,9 +235,21 @@ def size_flag(fl: FlagView, dest: str) -> int | None:
         UsageError: the size is not digits and an optional K, M or G, or
             does not fit in 64 bits.
     """
-    value = fl.as_str(dest)
-    if value is None:
-        return None
+    sizes = [size_bytes(str(value), dest) for _, value in fl.occurrences(dest)]
+    return sizes[-1] if sizes else None
+
+
+def size_bytes(value: str, dest: str) -> int:
+    """One size option's value in bytes, refused in ripgrep's words.
+
+    Args:
+        value (str): the value as typed.
+        dest (str): the option it was given to.
+
+    Raises:
+        UsageError: the size is not digits and an optional K, M or G, or
+            does not fit in 64 bits.
+    """
     size = SIZE.fullmatch(value)
     reason = None
     if size is None:
@@ -414,13 +427,13 @@ def check_display_flags(fl: FlagView) -> None:
         refusal = color_refusal(spec)
         if refusal is not None:
             raise UsageError(f"rg: error parsing flag --colors: {refusal}")
-    fmt = fl.as_str("hyperlink_format")
-    refusal = hyperlink_refusal(fmt) if fmt is not None else None
-    if refusal is not None:
-        raise UsageError(
-            "rg: error parsing flag --hyperlink-format: invalid hyperlink "
-            f"format: {refusal}"
-        )
+    for _, fmt in fl.occurrences("hyperlink_format"):
+        refusal = hyperlink_refusal(str(fmt))
+        if refusal is not None:
+            raise UsageError(
+                "rg: error parsing flag --hyperlink-format: invalid "
+                f"hyperlink format: {refusal}"
+            )
     size_flag(fl, "dfa_size_limit")
     size_flag(fl, "regex_size_limit")
 
@@ -875,6 +888,7 @@ def pcre_matcher(
             fold,
             f.null_data or f.multiline,
             f.multiline and f.multiline_dotall,
+            f.crlf and f.multiline,
         )
     except PcreError as exc:
         raise UsageError(
@@ -1277,6 +1291,23 @@ async def _noted(
             await materialize(io.stderr) if io.stderr is not None else b""
         )
     return out, io
+
+
+async def _up_to_damage(
+    source: AsyncIterator[bytes], faults: list[GzipDataError]
+) -> AsyncIterator[bytes]:
+    """gzip's output up to where its input is damaged, the damage kept in
+    ``faults``: ripgrep searches what gzip wrote before it failed.
+
+    Args:
+        source (AsyncIterator[bytes]): the decoded stream.
+        faults (list[GzipDataError]): receives the damage.
+    """
+    try:
+        async for chunk in source:
+            yield chunk
+    except GzipDataError as exc:
+        faults.append(exc)
 
 
 async def _replay(found: list[Haystack]) -> AsyncIterator[Haystack]:
@@ -1692,6 +1723,9 @@ async def _search_all(
         )
         tally = Tally()
         began = time.perf_counter()
+        chunks: list[bytes] = []
+        damaged = False
+        faults: list[GzipDataError] = []
         try:
             if h.spec is not None and is_stdin(h.spec):
                 source = operand_stream(h.spec)
@@ -1716,20 +1750,20 @@ async def _search_all(
                     continue
                 source = _wrap_bytes(text)
             elif f.search_zip and h.virtual.endswith(GZIP_NAMES) and not stdin:
-                source = gunzip_stream(source)
-            chunks = [
-                c
-                async for c in search_haystack(
-                    source,
-                    pat,
-                    f,
-                    name,
-                    label,
-                    tally,
-                    not walked,
-                    h.spec is not None and is_stdin(h.spec),
-                )
-            ]
+                source = _up_to_damage(gunzip_stream(source), faults)
+            async for c in search_haystack(
+                source,
+                pat,
+                f,
+                name,
+                label,
+                tally,
+                not walked,
+                h.spec is not None and is_stdin(h.spec),
+            ):
+                chunks.append(c)
+            if faults:
+                raise faults[0]
         except FS_ERRORS as exc:
             # ripgrep reports the failed input and keeps searching the rest.
             warnings.append(open_error_line(h.shown, exc))
@@ -1740,7 +1774,13 @@ async def _search_all(
                 f"rg: {name}: \n{GZIP_RULE}\n"
                 f"{exc.render(name).lstrip()}{GZIP_RULE}"
             )
-            continue
+            # gzip's output streams into the search, so the lines it decoded
+            # before the damage still print, but not what ripgrep writes
+            # once the file is done (a count, --files-without-match), and
+            # the file adds to no total.
+            damaged = True
+            if f.count_only or f.count_matches or f.files_without_match:
+                chunks.clear()
         elapsed = time.perf_counter() - began
         selected = selected or tally.selected
         skipped = skipped or tally.skipped
@@ -1750,15 +1790,11 @@ async def _search_all(
                     {"type": "begin", "data": {"path": json_text(name)}}
                 )
                 sent = len(begin) + sum(len(c) for c in chunks)
-                totals.add(tally, sent, elapsed)
-                out.extend(
-                    [
-                        begin,
-                        *chunks,
-                        totals.end_record(name, tally, sent, elapsed),
-                    ]
-                )
-            elif f.quiet and tally.selected:
+                out.extend([begin, *chunks])
+                if not damaged:
+                    totals.add(tally, sent, elapsed)
+                    out.append(totals.end_record(name, tally, sent, elapsed))
+            elif f.quiet and tally.selected and not damaged:
                 totals.add(tally, 0, elapsed)
         elif chunks:
             # -c and -l counts and names are not what --stats counts.
@@ -1783,8 +1819,9 @@ async def _search_all(
                 out.append(encode_text(f.context_separator) + b"\n")
             out.extend(chunks)
             printed = True
-            totals.add(tally, sent, elapsed)
-        else:
+            if not damaged:
+                totals.add(tally, sent, elapsed)
+        elif not damaged:
             totals.add(tally, 0, elapsed)
         # --stats and --json count every file, -q or not (14.1.1).
         if f.quiet and tally.selected and not (f.stats or f.json):

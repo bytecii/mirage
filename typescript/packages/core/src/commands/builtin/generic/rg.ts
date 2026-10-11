@@ -179,12 +179,19 @@ export function numberFlag(fl: FlagView, dest: string): number | null {
 
 /**
  * A size option in bytes (--max-filesize, --dfa-size-limit or
- * --regex-size-limit), refused in ripgrep's words: digits and an optional K,
- * M or G that fit in 64 bits.
+ * --regex-size-limit), refused in ripgrep's words. ripgrep parses every
+ * occurrence as it reads it, so an earlier bad one is refused too.
  */
 function sizeFlag(fl: FlagView, dest: string): number | null {
-  const value = fl.asStr(dest)
-  if (value === undefined) return null
+  const sizes = fl.occurrences(dest).map(([, value]) => sizeBytes(String(value), dest))
+  return sizes.at(-1) ?? null
+}
+
+/**
+ * One size option's value in bytes, refused in ripgrep's words: digits and an
+ * optional K, M or G that fit in 64 bits.
+ */
+function sizeBytes(value: string, dest: string): number {
   const size = SIZE.exec(value)
   let reason: string | null = null
   if (size === null)
@@ -302,12 +309,13 @@ function checkDisplayFlags(fl: FlagView): void {
     const refusal = colorRefusal(spec)
     if (refusal !== null) throw new UsageError(`rg: error parsing flag --colors: ${refusal}`)
   }
-  const fmt = fl.asStr('hyperlink_format')
-  const refusal = fmt === undefined ? null : hyperlinkRefusal(fmt)
-  if (refusal !== null)
-    throw new UsageError(
-      `rg: error parsing flag --hyperlink-format: invalid hyperlink format: ${refusal}`,
-    )
+  for (const [, fmt] of fl.occurrences('hyperlink_format')) {
+    const refusal = hyperlinkRefusal(String(fmt))
+    if (refusal !== null)
+      throw new UsageError(
+        `rg: error parsing flag --hyperlink-format: invalid hyperlink format: ${refusal}`,
+      )
+  }
   sizeFlag(fl, 'dfa_size_limit')
   sizeFlag(fl, 'regex_size_limit')
 }
@@ -650,6 +658,7 @@ function pcreMatcher(patterns: readonly string[], fold: boolean, f: RgFlags): Re
       fold,
       f.nullData || f.multiline === true,
       f.multiline === true && f.multilineDotall === true,
+      f.crlf === true && f.multiline === true,
     )
   } catch (err) {
     if (err instanceof PcreError) {
@@ -949,6 +958,20 @@ async function noted(
       io.stderr === null ? new Uint8Array() : await materialize(io.stderr),
     ])
   return [out, io]
+}
+
+// gzip's output up to where its input is damaged, the damage kept in
+// `faults`: ripgrep searches what gzip wrote before it failed.
+async function* upToDamage(
+  source: AsyncIterable<Uint8Array>,
+  faults: GzipDataError[],
+): AsyncGenerator<Uint8Array> {
+  try {
+    for await (const chunk of source) yield chunk
+  } catch (err) {
+    if (!(err instanceof GzipDataError)) throw err
+    faults.push(err)
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/require-await
@@ -1263,6 +1286,8 @@ async function searchAll(
     const label = !f.noFilename && (walked || multi || f.withFilename || f.vimgrep) ? name : null
     const tally: Tally = { selected: false }
     const chunks: Uint8Array[] = []
+    let damaged = false
+    const faults: GzipDataError[] = []
     const began = performance.now()
     try {
       const opened =
@@ -1294,7 +1319,7 @@ async function searchAll(
         GZIP_NAMES.some((ext) => h.virtual.endsWith(ext)) &&
         !pipe
       ) {
-        source = gunzipStream(opened)
+        source = upToDamage(gunzipStream(opened), faults)
       }
       for await (const c of searchHaystack(
         source,
@@ -1309,16 +1334,23 @@ async function searchAll(
       )) {
         chunks.push(c)
       }
+      const [fault] = faults
+      if (fault !== undefined) throw fault
     } catch (err) {
       if (err instanceof GzipDataError) {
-        // -z runs gzip, whose refusal ripgrep frames in rules.
+        // -z runs gzip, whose refusal ripgrep frames in rules. gzip's output
+        // streams into the search, so the lines it decoded before the damage
+        // still print, but not what ripgrep writes once the file is done (a
+        // count, --files-without-match), and the file adds to no total.
         warnings.push(`rg: ${name}: \n${GZIP_RULE}\n${err.render(name).trimStart()}${GZIP_RULE}`)
+        damaged = true
+        if (f.countOnly || f.countMatches || f.filesWithoutMatch) chunks.length = 0
+      } else {
+        if (!isFsError(err)) throw err
+        // ripgrep reports the failed input and keeps searching the rest.
+        warnings.push(openErrorLine(h.shown, err))
         continue
       }
-      if (!isFsError(err)) throw err
-      // ripgrep reports the failed input and keeps searching the rest.
-      warnings.push(openErrorLine(h.shown, err))
-      continue
     }
     const elapsed = (performance.now() - began) / 1000
     selected ||= tally.selected
@@ -1327,9 +1359,12 @@ async function searchAll(
       if (chunks.length > 0) {
         const begin = jsonLine({ type: 'begin', data: { path: jsonText(name) } })
         const sent = begin.length + chunks.reduce((sum, c) => sum + c.length, 0)
-        totals.add(tally, sent, elapsed)
-        out.push(begin, ...chunks, totals.endRecord(name, tally, sent, elapsed))
-      } else if (f.quiet && tally.selected) {
+        out.push(begin, ...chunks)
+        if (!damaged) {
+          totals.add(tally, sent, elapsed)
+          out.push(totals.endRecord(name, tally, sent, elapsed))
+        }
+      } else if (f.quiet && tally.selected && !damaged) {
         totals.add(tally, 0, elapsed)
       }
     } else if (chunks.length > 0) {
@@ -1347,8 +1382,8 @@ async function searchAll(
       }
       out.push(...chunks)
       printed = true
-      totals.add(tally, sent, elapsed)
-    } else {
+      if (!damaged) totals.add(tally, sent, elapsed)
+    } else if (!damaged) {
       totals.add(tally, 0, elapsed)
     }
     // --stats and --json count every file, -q or not (14.1.1).

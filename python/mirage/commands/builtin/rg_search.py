@@ -1769,6 +1769,15 @@ async def _multiline(
         if f.invert
         else regions
     )
+    # --stop-on-nonmatch ends the file at the first line no region holds
+    # once one was selected; ripgrep 14.1.1 lets -v run on.
+    stop: int | None = None
+    if f.stop_on_nonmatch and not f.invert:
+        for k in range(1, len(units)):
+            if units[k].first > units[k - 1].last + 1:
+                stop = units[k - 1].last + 1
+                units = units[:k]
+                break
     kept = units if f.max_count is None else units[: f.max_count]
     tally.selected = bool(kept)
     tally.matched_lines = sum(r.last - r.first + 1 for r in kept)
@@ -1822,6 +1831,8 @@ async def _multiline(
     after_left = 0
     for i, line in enumerate(lines):
         if end is not None and i > end and (after_left == 0 or f.passthru):
+            return
+        if stop is not None and i > stop:
             return
         chunks: Iterable[bytes] = ()
         if i in picked:

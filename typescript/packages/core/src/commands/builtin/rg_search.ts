@@ -1493,9 +1493,23 @@ async function* multiline(
   const regions = findRegions(pat, text, lines)
   const spanned = new Set<number>()
   for (const r of regions) for (let i = r.first; i <= r.last; i++) spanned.add(i)
-  const units: Region[] = f.invert
+  let units: Region[] = f.invert
     ? lines.flatMap((_, i) => (spanned.has(i) ? [] : [{ first: i, last: i, matches: [] }]))
     : regions
+  // --stop-on-nonmatch ends the file at the first line no region holds once
+  // one was selected; ripgrep 14.1.1 lets -v run on.
+  let stop: number | null = null
+  if (f.stopOnNonmatch && !f.invert) {
+    for (let k = 1; k < units.length; k++) {
+      const prev = units[k - 1]
+      const unit = units[k]
+      if (prev !== undefined && unit !== undefined && unit.first > prev.last + 1) {
+        stop = prev.last + 1
+        units = units.slice(0, k)
+        break
+      }
+    }
+  }
   const kept = f.maxCount === null ? units : units.slice(0, f.maxCount)
   tally.selected = kept.length > 0
   tally.matchedLines = kept.reduce((sum, r) => sum + r.last - r.first + 1, 0)
@@ -1547,6 +1561,7 @@ async function* multiline(
   let afterLeft = 0
   for (const [i, line] of lines.entries()) {
     if (end !== null && i > end && (afterLeft === 0 || f.passthru)) return
+    if (stop !== null && i > stop) return
     let chunks: Iterable<Uint8Array> = []
     const chosen = picked.get(i)
     if (chosen !== undefined) {

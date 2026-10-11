@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { ALL, CharSet, hostChar, hostClass } from './charset.ts'
+import { lineEnd, lineStart } from './rust_regex.ts'
 import type { HostRegex } from './types.ts'
 import {
   ASCII_CLASSES,
@@ -240,6 +241,9 @@ class PcreTranslator {
     pattern: string,
     private readonly unicode: boolean,
     flags: Flags,
+    // PCRE2_NEWLINE_ANYCRLF (ripgrep's --crlf): `\r` ends a line too, for the
+    // anchors and for `.`.
+    private readonly crlf = false,
   ) {
     this.src = Array.from(pattern)
     this.text = this.src.join('')
@@ -339,13 +343,16 @@ class PcreTranslator {
       this.escape()
     } else if (ch === '.') {
       this.pos += 1
-      this.atom(hostClass(this.flags.s ? ALL : ALL.minus(CharSet.chars(0x0a))), [1, 1])
+      const ends = this.crlf ? CharSet.chars(0x0a, 0x0d) : CharSet.chars(0x0a)
+      this.atom(hostClass(this.flags.s ? ALL : ALL.minus(ends)), [1, 1])
     } else if (ch === '^') {
       this.pos += 1
-      this.assertion(this.flags.m ? '(?:^|(?<=\\n))' : '^')
+      this.assertion(this.flags.m ? lineStart(true, this.crlf) : '^')
     } else if (ch === '$') {
       this.pos += 1
-      this.assertion(this.flags.m ? '(?=\\n|$)' : '(?=\\n?$)')
+      this.assertion(
+        this.flags.m ? lineEnd(true, this.crlf) : this.crlf ? '(?=(?:\\r\\n?|\\n)?$)' : '(?=\\n?$)',
+      )
     } else {
       this.pos += 1
       this.literal(ch.codePointAt(0) ?? 0)
@@ -1257,21 +1264,24 @@ export function translatePcre(
   multiLine = false,
   // PCRE2_DOTALL.
   dotall = false,
+  // PCRE2_NEWLINE_ANYCRLF (--crlf with --multiline).
+  crlf = false,
 ): HostRegex {
   if (ignoreCase && !INLINE_CASE.test(pattern)) {
-    const translated = new PcreTranslator(pattern, unicode, {
-      ...DEFAULT_FLAGS,
-      m: multiLine,
-      s: dotall,
-    }).translate()
+    const translated = new PcreTranslator(
+      pattern,
+      unicode,
+      { ...DEFAULT_FLAGS, m: multiLine, s: dotall },
+      crlf,
+    ).translate()
     return { source: translated.source, ignoreCase: true }
   }
-  return new PcreTranslator(pattern, unicode, {
-    ...DEFAULT_FLAGS,
-    i: ignoreCase,
-    m: multiLine,
-    s: dotall,
-  }).translate()
+  return new PcreTranslator(
+    pattern,
+    unicode,
+    { ...DEFAULT_FLAGS, i: ignoreCase, m: multiLine, s: dotall },
+    crlf,
+  ).translate()
 }
 
 // The `u` (and, with a `\K`, `d`) flags a translated source compiles with.

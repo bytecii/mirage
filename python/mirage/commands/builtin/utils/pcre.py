@@ -22,6 +22,7 @@ from mirage.commands.builtin.utils.charset import (
     host_char,
     host_class,
 )
+from mirage.commands.builtin.utils.rust_regex import line_end, line_start
 from mirage.commands.builtin.utils.types import HostRegex
 from mirage.commands.builtin.utils.unicode_tables import (
     ASCII_CLASSES,
@@ -244,11 +245,16 @@ class PcreTranslator:
             ``\\N{U+...}`` is refused. Either way mirage matches code
             points, not bytes: ``\\x{00a0}`` is the no-break space.
         flags (Flags): the options in force at the start.
+        crlf (bool): PCRE2_NEWLINE_ANYCRLF (ripgrep's --crlf): ``\\r``
+            ends a line too, for the anchors and for ``.``.
     """
 
-    def __init__(self, pattern: str, unicode: bool, flags: Flags) -> None:
+    def __init__(
+        self, pattern: str, unicode: bool, flags: Flags, crlf: bool = False
+    ) -> None:
         self.src = pattern
         self.unicode = unicode
+        self.crlf = crlf
         self.pos = 0
         self.flags = flags
         self.out: list[str] = []
@@ -352,18 +358,26 @@ class PcreTranslator:
             self.escape()
         elif ch == ".":
             self.pos += 1
+            ends = (
+                CharSet.chars(0x0A, 0x0D) if self.crlf else CharSet.chars(0x0A)
+            )
             self.atom(
-                host_class(
-                    ALL if self.flags.s else ALL.minus(CharSet.chars(0x0A))
-                ),
-                (1, 1),
+                host_class(ALL if self.flags.s else ALL.minus(ends)), (1, 1)
             )
         elif ch == "^":
             self.pos += 1
-            self.assertion("(?:^|(?<=\\n))" if self.flags.m else "^")
+            self.assertion(
+                line_start(True, self.crlf) if self.flags.m else "^"
+            )
         elif ch == "$":
             self.pos += 1
-            self.assertion("(?=\\n|\\Z)" if self.flags.m else "(?=\\n?\\Z)")
+            self.assertion(
+                line_end(True, self.crlf)
+                if self.flags.m
+                else "(?=(?:\\r\\n?|\\n)?\\Z)"
+                if self.crlf
+                else "(?=\\n?\\Z)"
+            )
         else:
             self.pos += 1
             self.literal(ord(ch))
@@ -1382,6 +1396,7 @@ def translate_pcre(
     ignore_case: bool = False,
     multi_line: bool = False,
     dotall: bool = False,
+    crlf: bool = False,
 ) -> HostRegex:
     """Translate a PCRE2 pattern into this host's regex dialect.
 
@@ -1393,6 +1408,7 @@ def translate_pcre(
         ignore_case (bool): -i (PCRE2_CASELESS).
         multi_line (bool): PCRE2_MULTILINE.
         dotall (bool): PCRE2_DOTALL.
+        crlf (bool): PCRE2_NEWLINE_ANYCRLF (--crlf with --multiline).
 
     Returns:
         HostRegex: the host source and whether the host folds case.
@@ -1403,11 +1419,11 @@ def translate_pcre(
     """
     if ignore_case and not INLINE_CASE.search(pattern):
         translated = PcreTranslator(
-            pattern, unicode, Flags(m=multi_line, s=dotall)
+            pattern, unicode, Flags(m=multi_line, s=dotall), crlf
         ).translate()
         return HostRegex(translated.source, True)
     flags = Flags(i=ignore_case, m=multi_line, s=dotall)
-    return PcreTranslator(pattern, unicode, flags).translate()
+    return PcreTranslator(pattern, unicode, flags, crlf).translate()
 
 
 @lru_cache(maxsize=256)
