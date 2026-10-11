@@ -218,7 +218,11 @@ SPECS: dict[str, CommandSpec] = {
             Argument("--no-mmap", action="store_true"),
             # -L's negation, the last of the two winning.
             Argument("--no-follow", action="store_true"),
+            # --stats ends the output with ripgrep's counts and timings;
+            # --json prints JSON Lines (begin, match, context, end, summary).
+            Argument("--stats", action="store_true"),
             Argument("--no-stats", action="store_true"),
+            Argument("--json", action="store_true"),
             # A line may end in CR LF: `$` matches before the CR and every
             # line rg writes ends in CR LF.
             Argument("--crlf", action="store_true"),

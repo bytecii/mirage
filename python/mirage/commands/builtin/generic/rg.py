@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -29,6 +30,9 @@ from mirage.commands.builtin.rg_scan import (
 from mirage.commands.builtin.rg_search import (
     RgFlags,
     Tally,
+    Totals,
+    json_line,
+    json_text,
     record_end,
     prints_context,
     search_haystack,
@@ -597,6 +601,9 @@ def parse_flags(fl: FlagView) -> RgFlags:
     columns = _last(fl, "column", "no_column")
     column = columns == "column" if columns is not None else vimgrep
     passthru, context_before, context_after = _context_of(fl)
+    # --json prints its own records: no heading or separators, and line
+    # numbers unless -N turned them off.
+    json_records = _last(fl, "json", "no_json") == "json"
     unrestricted = fl.as_int("unrestricted") or 0
     binary_mode = _binary_mode_of(fl, unrestricted)
     hidden = False
@@ -648,7 +655,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         == "fixed_strings",
         line_numbers=numbers in ("line_number", "pretty")
         if numbers
-        else column or vimgrep,
+        else column or vimgrep or json_records,
         column=column,
         vimgrep=vimgrep,
         byte_offsets=_last(fl, "byte_offset", "no_byte_offset")
@@ -666,6 +673,8 @@ def parse_flags(fl: FlagView) -> RgFlags:
         crlf=_last(fl, "crlf", "no_crlf") == "crlf"
         and not fl.as_bool("null_data"),
         multiline=_last(fl, "multiline", "no_multiline") == "multiline",
+        stats=_last(fl, "stats", "no_stats") == "stats",
+        json=json_records,
         multiline_dotall=_last(fl, "multiline_dotall", "no_multiline_dotall")
         == "multiline_dotall",
         path_separator=path_separator(fl),
@@ -683,7 +692,8 @@ def parse_flags(fl: FlagView) -> RgFlags:
         # --vimgrep prints a location per line, so it never heads a group.
         heading=_last(fl, "heading", "no_heading", "pretty")
         in ("heading", "pretty")
-        and not vimgrep,
+        and not vimgrep
+        and not json_records,
         passthru=passthru,
         max_count=number_flag(fl, "max_count"),
         stop_on_nonmatch=fl.as_bool("stop_on_nonmatch"),
@@ -691,7 +701,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         context_before=context_before,
         context_separator=(
             None
-            if separator == "no_context_separator"
+            if separator == "no_context_separator" or json_records
             else unescape(typed_separator)
             if typed_separator is not None
             else "--"
@@ -1130,7 +1140,7 @@ async def rg_generic(
     )
     rb = partial(call_read_bytes, read_bytes, prefix=mount_prefix)
 
-    if pat is not None and len(paths) == 1:
+    if pat is not None and len(paths) == 1 and not (f.stats or f.json):
         single = await _search_single(
             paths[0], pat, f, st, rd, rb, read_stream, operand_stream
         )
@@ -1513,6 +1523,13 @@ async def _search_all(
     selected = False
     skipped = False
     searched = 0
+    # --json writes records only for the printing modes; -c and -l print
+    # as they do without it.
+    records = f.json and not (
+        f.count_only or f.count_matches or f.files_only or f.files_without_match
+    )
+    totals = Totals()
+    started = time.perf_counter()
     async for h in found:
         searched += 1
         walked = h.spec is None
@@ -1524,6 +1541,7 @@ async def _search_all(
             else None
         )
         tally = Tally()
+        began = time.perf_counter()
         try:
             if h.spec is not None and is_stdin(h.spec):
                 source = operand_stream(h.spec)
@@ -1550,22 +1568,56 @@ async def _search_all(
             # ripgrep reports the failed input and keeps searching the rest.
             warnings.append(open_error_line(h.shown, exc))
             continue
+        elapsed = time.perf_counter() - began
         selected = selected or tally.selected
         skipped = skipped or tally.skipped
-        if chunks:
+        if records:
+            if chunks:
+                begin = json_line(
+                    {"type": "begin", "data": {"path": json_text(name)}}
+                )
+                sent = len(begin) + sum(len(c) for c in chunks)
+                totals.add(tally, sent, elapsed)
+                out.extend(
+                    [begin, *chunks, totals.end_record(name, tally, sent, elapsed)]
+                )
+            elif f.quiet and tally.selected:
+                totals.add(tally, 0, elapsed)
+        elif chunks:
+            # -c and -l counts and names are not what --stats counts.
+            sent = (
+                0
+                if f.count_only
+                or f.count_matches
+                or f.files_only
+                or f.files_without_match
+                else sum(len(c) for c in chunks)
+            )
             if label is not None and _headed(f):
                 if printed:
                     out.append(b"\n")
                 if not tally.binary:
-                    out.append(
-                        encode_text(label) + (b"\0" if f.null else record_end(f))
+                    heading = encode_text(label) + (
+                        b"\0" if f.null else record_end(f)
                     )
+                    out.append(heading)
+                    sent += len(heading)
             elif context and printed and f.context_separator is not None:
                 out.append(encode_text(f.context_separator) + b"\n")
             out.extend(chunks)
             printed = True
+            totals.add(tally, sent, elapsed)
+        else:
+            totals.add(tally, 0, elapsed)
         if f.quiet and tally.selected:
             break
+    if records:
+        out.append(totals.summary_record(time.perf_counter() - started))
+    elif f.stats:
+        # Under --heading the last group gets its blank line too.
+        if printed and _headed(f):
+            out.append(b"\n")
+        out.append(totals.stats_block(time.perf_counter() - started))
     if f.files_without_match and not f.quiet:
         # ripgrep's status under --files-without-match follows the
         # listing, not the matching: 0 when a file was listed, 1 when

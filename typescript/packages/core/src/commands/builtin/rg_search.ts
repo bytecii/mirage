@@ -21,6 +21,7 @@ import { byteOffset } from '../../shell/helpers.ts'
 import { requiredNeedles } from './grep_prefilter.ts'
 import { matchStart, matchText, userGroups } from './utils/pcre.ts'
 import type { TypeChange, TypeSelection } from './rg_filetypes.ts'
+import type { JsonValue } from '../../types.ts'
 
 // ripgrep's words for a line -M will not print whole (ripgrep 14.1.1).
 export const OMITTED_MATCHING = '[Omitted long matching line]'
@@ -61,6 +62,8 @@ export interface RgFlags {
   crlf?: boolean
   multiline?: boolean
   multilineDotall?: boolean
+  stats?: boolean
+  json?: boolean
   pathSeparator: string | null
   quiet: boolean
   countOnly: boolean
@@ -403,10 +406,126 @@ export class ByteCursor {
  * binary file went unsearched, which no listing names but
  * --files-without-match's status counts.
  */
+// What one haystack's search selected, beside what it printed. The counts
+// are kept for --stats and --json: the matches in the selected lines, the
+// selected lines, the bytes read before the search stopped, and a binary
+// file's first NUL.
 export interface Tally {
   selected: boolean
   binary?: boolean
   skipped?: boolean
+  matches?: number
+  matchedLines?: number
+  searched?: number
+  nul?: number | null
+}
+
+/** A span of time as ripgrep's JSON writes it, keys sorted for the summary. */
+function duration(seconds: number, ordered = false): Record<string, JsonValue> {
+  const total = Math.floor(seconds * 1e9)
+  const secs = Math.floor(total / 1e9)
+  const nanos = total % 1e9
+  const human = `${seconds.toFixed(6)}s`
+  return ordered ? { human, nanos, secs } : { secs, nanos, human }
+}
+
+/** ripgrep's JSON for some text: `text` when it is UTF-8, else base64 bytes. */
+export function jsonText(text: string): Record<string, JsonValue> {
+  const raw = encodeText(text)
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(raw) }
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error
+    let binary = ''
+    for (const byte of raw) binary += String.fromCharCode(byte)
+    return { bytes: btoa(binary) }
+  }
+}
+
+/** One JSON Lines record as ripgrep writes it. */
+export function jsonLine(message: JsonValue): Uint8Array {
+  return encodeText(JSON.stringify(message) + '\n')
+}
+
+/** Count one selected line for --stats and --json. */
+function tallyLine(tally: Tally, pat: RegExp, text: string, f: RgFlags): void {
+  tally.matchedLines = (tally.matchedLines ?? 0) + 1
+  if (!f.invert) tally.matches = (tally.matches ?? 0) + [...rustMatches(pat, text)].length
+}
+
+/** What --stats and the --json summary add up over the haystacks. */
+export class Totals {
+  matches = 0
+  matchedLines = 0
+  withMatch = 0
+  searched = 0
+  printed = 0
+  bytesSearched = 0
+  elapsed = 0
+
+  /** Count one haystack: its tally, the bytes printed for it, its seconds. */
+  add(tally: Tally, printed: number, elapsed: number): void {
+    this.matches += tally.matches ?? 0
+    this.matchedLines += tally.matchedLines ?? 0
+    this.withMatch += tally.selected ? 1 : 0
+    this.searched += 1
+    this.printed += printed
+    this.bytesSearched += tally.searched ?? 0
+    this.elapsed += elapsed
+  }
+
+  /** The --json record that closes one haystack's records. */
+  endRecord(name: string, tally: Tally, printed: number, elapsed: number): Uint8Array {
+    return jsonLine({
+      type: 'end',
+      data: {
+        path: jsonText(name),
+        binary_offset: tally.nul ?? null,
+        stats: {
+          elapsed: duration(elapsed),
+          searches: 1,
+          searches_with_match: tally.selected ? 1 : 0,
+          bytes_searched: tally.searched ?? 0,
+          bytes_printed: printed,
+          matched_lines: tally.matchedLines ?? 0,
+          matches: tally.matches ?? 0,
+        },
+      },
+    })
+  }
+
+  /** The --json record that ends the output. */
+  summaryRecord(total: number): Uint8Array {
+    return jsonLine({
+      data: {
+        elapsed_total: duration(total, true),
+        stats: {
+          bytes_printed: this.printed,
+          bytes_searched: this.bytesSearched,
+          elapsed: duration(this.elapsed, true),
+          matched_lines: this.matchedLines,
+          matches: this.matches,
+          searches: this.searched,
+          searches_with_match: this.withMatch,
+        },
+      },
+      type: 'summary',
+    })
+  }
+
+  /** What --stats prints after the output. */
+  statsBlock(total: number): Uint8Array {
+    return encodeText(
+      `\n${String(this.matches)} matches\n` +
+        `${String(this.matchedLines)} matched lines\n` +
+        `${String(this.withMatch)} files contained matches\n` +
+        `${String(this.searched)} files searched\n` +
+        `${String(this.printed)} bytes printed\n` +
+        `${String(this.bytesSearched)} bytes searched\n` +
+        `${this.elapsed.toFixed(6)} seconds spent searching\n` +
+        `${total.toFixed(6)} seconds\n`,
+    )
+  }
 }
 
 const RG_BUFFER_BYTES = 64 * 1024
@@ -421,12 +540,22 @@ const RG_BUFFER_BYTES = 64 * 1024
  * the first 64 KiB (all a memory map checks) makes the file binary, its
  * NULs read as line terminators, and a printed match gives way to one
  * notice naming the first NUL's offset. `text`, under -a or --null-data:
- * nothing is looked at. Mirrors Python's RgBinary.
+ * nothing is looked at. `note`, a named file under --json: the first NUL's
+ * offset is kept for the end record, and the file is searched as it is.
+ * Mirrors Python's RgBinary.
  */
 export class RgBinary {
   offset: number | null = null
 
-  constructor(readonly mode: 'quit' | 'convert' | 'text') {}
+  constructor(readonly mode: 'quit' | 'convert' | 'note' | 'text') {}
+
+  /**
+   * Whether the file is binary and reads its NULs as terminators, a printed
+   * match giving way to the notice.
+   */
+  get converted(): boolean {
+    return this.mode === 'convert' && this.offset !== null
+  }
 
   /**
    * The haystack's bytes, read the way the mode reads them. ripgrep checks
@@ -448,7 +577,7 @@ export class RgBinary {
       }
       if (at >= 0 && position === 0) this.offset = at
       position += block.length
-      yield this.converted(block)
+      yield this.convertBlock(block)
     }
   }
 
@@ -529,8 +658,8 @@ export class RgBinary {
     )
   }
 
-  private converted(data: Uint8Array): Uint8Array {
-    if (this.offset === null) return data
+  private convertBlock(data: Uint8Array): Uint8Array {
+    if (!this.converted) return data
     return data.map((byte) => (byte === 0 ? 0x0a : byte))
   }
 }
@@ -636,19 +765,58 @@ export class RgPrinter {
   // ripgrep tracks each match of a line only when something needs it, and
   // -M words its refusal from whether it did.
   private readonly granular: boolean
+  // The line the haystack ends on without a terminator, which a --json
+  // record shows as it is.
+  openLine: number | null = null
 
+  // `name` is the path a --json record names.
   constructor(
     private readonly f: RgFlags,
     private readonly pat: RegExp,
     private readonly label: string | null,
+    private readonly name = '',
   ) {
     this.granular = f.column || f.vimgrep || f.replace !== null || f.onlyMatching
+  }
+
+  /**
+   * One --json match or context record: the lines as they were read, the
+   * first one's number and offset, each match's byte span (`spans` are
+   * start, end and matched text in `text`). `last` is a -U region's last
+   * line.
+   */
+  jsonRecord(
+    kind: string,
+    index: number,
+    start: number,
+    text: string,
+    cr: boolean,
+    spans: readonly (readonly [number, number, string])[],
+    last: number | null = null,
+  ): Uint8Array {
+    const f = this.f
+    const end = (last ?? index) === this.openLine ? '' : f.nullData ? '\0' : '\n'
+    return jsonLine({
+      type: kind,
+      data: {
+        path: jsonText(this.name),
+        lines: jsonText(text + (cr ? '\r' : '') + end),
+        line_number: f.lineNumbers ? index + 1 : null,
+        absolute_offset: start,
+        submatches: spans.map(([begin, finish, matched]) => ({
+          match: jsonText(matched),
+          start: byteLen(text.slice(0, begin)),
+          end: byteLen(text.slice(0, finish)),
+        })),
+      },
+    })
   }
 
   // The records one context line prints: the line, or under -o each of its
   // matches (the whole line when it has none).
   // `cr` says --crlf took a CR off the line's end.
   context(index: number, start: number, text: string, cr = false): Uint8Array[] {
+    if (this.f.json === true) return [this.jsonRecord('context', index, start, text, cr, [])]
     if (this.f.onlyMatching) {
       return [...this.pieces(index, start, text, [...rustMatches(this.pat, text)], false, cr)]
     }
@@ -659,6 +827,16 @@ export class RgPrinter {
   // --vimgrep, produced as they are asked for.
   *selected(index: number, start: number, text: string, cr = false): Generator<Uint8Array> {
     const f = this.f
+    if (f.json === true) {
+      const found = f.invert ? [] : [...rustMatches(this.pat, text)]
+      const hits = found.map((m): [number, number, string] => [
+        matchStart(m),
+        m.index + m[0].length,
+        matchText(m),
+      ])
+      yield this.jsonRecord('match', index, start, text, cr, hits)
+      return
+    }
     const matches = f.invert || !this.granular ? [] : [...rustMatches(this.pat, text)]
     if (f.onlyMatching) {
       yield* this.pieces(index, start, text, matches, true, cr)
@@ -723,6 +901,27 @@ export class RgPrinter {
     const head = region.matches[0]
     if (first === undefined || head === undefined) return records
     const column = f.column ? 1 + offsetOf(region.first, matchStart(head)) - first.start : null
+    if (f.json === true) {
+      const last = lines[region.last] ?? first
+      const moved = region.matches.map((m): [number, number, string] => [
+        matchStart(m) - first.at,
+        m.index + m[0].length - first.at,
+        matchText(m),
+      ])
+      add(
+        region.first,
+        this.jsonRecord(
+          'match',
+          region.first,
+          first.start,
+          text.slice(first.at, last.at + last.text.length),
+          last.cr,
+          moved,
+          region.last,
+        ),
+      )
+      return records
+    }
     if (f.vimgrep && f.replace === null) {
       for (const m of region.matches) {
         const start = matchStart(m)
@@ -940,14 +1139,19 @@ function skipRecords(
   return lines.skipNonmatchingLines(needles, pat.ignoreCase, f.nullData ? 0 : 0x0a)
 }
 
+// The next record and whether a terminator ended it, which only --json
+// prints, so the line reader's quicker path serves the rest.
 async function readRecord(
   lines: AsyncLineIterator,
   f: RgFlags,
   signal?: AbortSignal,
-): Promise<Uint8Array | null> {
-  if (!f.nullData) return lines.readline(signal)
-  const [raw, terminated] = await lines.readUntil(0, signal)
-  return terminated || raw.length > 0 ? raw : null
+): Promise<[Uint8Array, boolean] | null> {
+  if (!f.nullData && f.json !== true) {
+    const raw = await lines.readline(signal)
+    return raw === null ? null : [raw, true]
+  }
+  const [raw, terminated] = await lines.readUntil(f.nullData ? 0 : 0x0a, signal)
+  return terminated || raw.length > 0 ? [raw, terminated] : null
 }
 
 // Read no further than the first selected line (-q, -l and
@@ -962,11 +1166,14 @@ async function listing(
   const needles = recordNeedles(pat, f)
   for (;;) {
     skipRecords(lines, needles, pat, f)
-    const raw = await readRecord(lines, f, signal)
-    if (raw === null) break
-    if (selects(pat, readLine(raw, f)[0], f.invert)) {
+    const record = await readRecord(lines, f, signal)
+    if (record === null) break
+    const [text] = readLine(record[0], f)
+    if (selects(pat, text, f.invert)) {
       tally.selected = true
-      return
+      // --stats and --json count every selected line.
+      if (f.stats !== true && f.json !== true) return
+      tallyLine(tally, pat, text, f)
     }
   }
 }
@@ -985,9 +1192,9 @@ async function count(
   const needles = recordNeedles(pat, f)
   for (;;) {
     skipRecords(lines, needles, pat, f)
-    const raw = await readRecord(lines, f, signal)
-    if (raw === null) break
-    const [text] = readLine(raw, f)
+    const record = await readRecord(lines, f, signal)
+    if (record === null) break
+    const [text] = readLine(record[0], f)
     if (!selects(pat, text, f.invert)) {
       if (stop.armed) break
       stop.passesOver()
@@ -996,6 +1203,7 @@ async function count(
     stop.select()
     selected += 1
     tally.selected = true
+    tallyLine(tally, pat, text, f)
     if (f.onlyMatching && f.countOnly) {
       // -o -c counts matches, which an inverted selection has none of, and
       // still lists the input (ripgrep 14.1.1).
@@ -1041,23 +1249,27 @@ async function* printedLines(
   let afterLeft = 0
   const stop = nonmatchStop(f)
   const needles = recordNeedles(pat, f)
+  const counts = f.stats === true || f.json === true
   for (;;) {
     const [skipped, bytes] = skipRecords(lines, needles, pat, f)
     index += skipped
     position += bytes
-    const raw = await readRecord(lines, f, signal)
-    if (raw === null) break
+    const record = await readRecord(lines, f, signal)
+    if (record === null) break
+    const [raw, terminated] = record
     index += 1
     const start = position
     position += raw.byteLength + 1
     const [text, cr] = readLine(raw, f)
+    if (!terminated) printer.openLine = index
     const hit = selects(pat, text, f.invert)
-    if (binary.offset !== null) {
+    if (binary.converted) {
       // A binary file prints its notice at the first selected line and
       // nothing else.
       if (!hit) continue
       tally.selected = true
       tally.binary = true
+      if (counts) tallyLine(tally, pat, text, f)
       yield binary.notice(label)
       return
     }
@@ -1079,6 +1291,7 @@ async function* printedLines(
       stop.select()
       selected += 1
       tally.selected = true
+      if (counts) tallyLine(tally, pat, text, f)
       if (context) {
         const first = held[0]?.[0] ?? index
         if (lastPrinted >= 0 && first > lastPrinted + 1 && f.contextSeparator !== null) {
@@ -1153,6 +1366,7 @@ async function* multiline(
 ): AsyncGenerator<Uint8Array> {
   const parts: Uint8Array[] = []
   for await (const chunk of reader) parts.push(chunk)
+  tally.searched = parts.reduce((sum, part) => sum + part.length, 0)
   if (binary.skipped) {
     tally.skipped = true
     return
@@ -1167,6 +1381,8 @@ async function* multiline(
     : regions
   const kept = f.maxCount === null ? units : units.slice(0, f.maxCount)
   tally.selected = kept.length > 0
+  tally.matchedLines = kept.reduce((sum, r) => sum + r.last - r.first + 1, 0)
+  tally.matches = kept.reduce((sum, r) => sum + r.matches.length, 0)
   if (f.quiet || f.filesOnly || f.filesWithoutMatch) {
     yield* listed(name, f, tally)
     return
@@ -1182,12 +1398,13 @@ async function* multiline(
     return
   }
   if (kept.length === 0) return
-  if (binary.offset !== null) {
+  if (binary.converted) {
     tally.binary = true
     yield binary.notice(label)
     return
   }
-  const printer = new RgPrinter(f, pat, f.heading ? null : label)
+  const printer = new RgPrinter(f, pat, f.heading ? null : label, name)
+  if (text !== '' && !text.endsWith(f.nullData ? '\0' : '\n')) printer.openLine = lines.length - 1
   const records = (chosen: readonly Region[]): Map<number, Uint8Array[]> => {
     const out = new Map<number, Uint8Array[]>()
     for (const r of chosen) {
@@ -1276,7 +1493,13 @@ export async function* searchHaystack(
     return
   }
   const binary = new RgBinary(
-    f.text || f.nullData ? 'text' : named || f.binary ? 'convert' : 'quit',
+    f.text || f.nullData
+      ? 'text'
+      : f.json === true && (named || f.binary)
+        ? 'note'
+        : named || f.binary
+          ? 'convert'
+          : 'quit',
   )
   const reader = binary.read(source, pipe)
   const lines = new AsyncLineIterator(reader)
@@ -1302,12 +1525,16 @@ export async function* searchHaystack(
       yield* counted(total, label, f, tally)
       return
     }
-    const printer = new RgPrinter(f, pat, f.heading ? null : label)
+    const printer = new RgPrinter(f, pat, f.heading ? null : label, name)
     yield* printedLines(lines, printer, pat, f, tally, binary, label, signal)
   } catch (error) {
     await discardStreams(source)
     throw error
   } finally {
+    tally.nul = binary.offset
+    // ripgrep counts the bytes it read up to where it stopped, and a binary
+    // file up to its first NUL.
+    if (f.multiline !== true) tally.searched = binary.offset ?? lines.position
     await closeQuietly(reader)
     await closeQuietly(source)
   }

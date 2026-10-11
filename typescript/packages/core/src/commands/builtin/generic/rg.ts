@@ -37,6 +37,9 @@ import {
   walkHaystacks,
 } from '../rg_scan.ts'
 import {
+  jsonLine,
+  jsonText,
+  Totals,
   recordEnd,
   printsContext,
   type RgFlags,
@@ -440,6 +443,9 @@ export function parseFlags(fl: FlagView): RgFlags {
   const columns = last(fl, 'column', 'no_column')
   const column = columns !== null ? columns === 'column' : vimgrep
   const [passthru, contextBefore, contextAfter] = contextOf(fl)
+  // --json prints its own records: no heading or separators, and line
+  // numbers unless -N turned them off.
+  const jsonRecords = last(fl, 'json', 'no_json') === 'json'
   const unrestricted = fl.asInt('unrestricted') ?? 0
   const binaryMode = binaryModeOf(fl, unrestricted)
   let hidden = false
@@ -478,7 +484,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     wholeWord: bounds === 'word_regexp',
     lineRegexp: bounds === 'line_regexp',
     fixedString: last(fl, 'fixed_strings', 'no_fixed_strings') === 'fixed_strings',
-    lineNumbers: numbers !== null ? numbers !== 'no_line_number' : column || vimgrep,
+    lineNumbers: numbers !== null ? numbers !== 'no_line_number' : column || vimgrep || jsonRecords,
     column,
     vimgrep,
     byteOffsets: last(fl, 'byte_offset', 'no_byte_offset') === 'byte_offset',
@@ -492,6 +498,8 @@ export function parseFlags(fl: FlagView): RgFlags {
     nullData: fl.asBool('null_data'),
     crlf: last(fl, 'crlf', 'no_crlf') === 'crlf' && !fl.asBool('null_data'),
     multiline: last(fl, 'multiline', 'no_multiline') === 'multiline',
+    stats: last(fl, 'stats', 'no_stats') === 'stats',
+    json: jsonRecords,
     multilineDotall: last(fl, 'multiline_dotall', 'no_multiline_dotall') === 'multiline_dotall',
     pathSeparator: pathSeparator(fl),
     quiet: fl.asBool('quiet'),
@@ -505,14 +513,17 @@ export function parseFlags(fl: FlagView): RgFlags {
     withFilename: filenameFlag(fl) === 'with_filename',
     noFilename: filenameFlag(fl) === 'no_filename',
     // --vimgrep prints a location per line, so it never heads a group.
-    heading: ['heading', 'pretty'].includes(last(fl, 'heading', 'no_heading', 'pretty') ?? '') && !vimgrep,
+    heading:
+      ['heading', 'pretty'].includes(last(fl, 'heading', 'no_heading', 'pretty') ?? '') &&
+      !vimgrep &&
+      !jsonRecords,
     passthru,
     maxCount: numberFlag(fl, 'max_count'),
     stopOnNonmatch: fl.asBool('stop_on_nonmatch'),
     contextAfter,
     contextBefore,
     contextSeparator:
-      separator === 'no_context_separator'
+      separator === 'no_context_separator' || jsonRecords
         ? null
         : typedSeparator !== undefined
           ? unescape(typedSeparator)
@@ -826,7 +837,7 @@ export async function rgGeneric(
   const home = mountPrefixOf(first.virtual, first.vfsPath)
   const rd = mountParentReaddir((p: string) => readdir(sameMountSpec(p, first)), mounts, home)
   const st = mountParentStat((p: string) => stat(sameMountSpec(p, first)), mounts)
-  if (pat !== null && paths.length === 1) {
+  if (pat !== null && paths.length === 1 && f.stats !== true && f.json !== true) {
     const single = await searchSingle(first, pat, f, st, rd, stream, opts.signal)
     if (single !== null) return single
   }
@@ -1109,6 +1120,12 @@ async function searchAll(
   let selected = false
   let skipped = false
   let searched = 0
+  // --json writes records only for the printing modes; -c and -l print as
+  // they do without it.
+  const listingOrCount = f.countOnly || f.countMatches || f.filesOnly || f.filesWithoutMatch
+  const records = f.json === true && !listingOrCount
+  const totals = new Totals()
+  const started = performance.now()
   for await (const h of found) {
     searched += 1
     const walked = h.spec === null
@@ -1116,6 +1133,7 @@ async function searchAll(
     const label = !f.noFilename && (walked || multi || f.withFilename || f.vimgrep) ? name : null
     const tally: Tally = { selected: false }
     const chunks: Uint8Array[] = []
+    const began = performance.now()
     try {
       const source =
         h.spec === null && h.resolver !== null
@@ -1141,21 +1159,45 @@ async function searchAll(
       warnings.push(openErrorLine(h.shown, err))
       continue
     }
+    const elapsed = (performance.now() - began) / 1000
     selected ||= tally.selected
     skipped ||= tally.skipped === true
-    if (chunks.length > 0) {
+    if (records) {
+      if (chunks.length > 0) {
+        const begin = jsonLine({ type: 'begin', data: { path: jsonText(name) } })
+        const sent = begin.length + chunks.reduce((sum, c) => sum + c.length, 0)
+        totals.add(tally, sent, elapsed)
+        out.push(begin, ...chunks, totals.endRecord(name, tally, sent, elapsed))
+      } else if (f.quiet && tally.selected) {
+        totals.add(tally, 0, elapsed)
+      }
+    } else if (chunks.length > 0) {
+      // -c and -l counts and names are not what --stats counts.
+      let sent = listingOrCount ? 0 : chunks.reduce((sum, c) => sum + c.length, 0)
       if (label !== null && headed(f)) {
         if (printed) out.push(ENC.encode('\n'))
         if (tally.binary !== true) {
-          out.push(encodeText(label + (f.null ? '\0' : recordEnd(f))))
+          const heading = encodeText(label + (f.null ? '\0' : recordEnd(f)))
+          out.push(heading)
+          sent += heading.length
         }
       } else if (context && printed && f.contextSeparator !== null) {
         out.push(encodeText(f.contextSeparator + '\n'))
       }
       out.push(...chunks)
       printed = true
+      totals.add(tally, sent, elapsed)
+    } else {
+      totals.add(tally, 0, elapsed)
     }
     if (f.quiet && tally.selected) break
+  }
+  const total = (performance.now() - started) / 1000
+  if (records) out.push(totals.summaryRecord(total))
+  else if (f.stats === true) {
+    // Under --heading the last group gets its blank line too.
+    if (printed && headed(f)) out.push(ENC.encode('\n'))
+    out.push(totals.statsBlock(total))
   }
   // ripgrep's status under --files-without-match follows the listing, not
   // the matching: 0 when a file was listed, 1 when every file matched

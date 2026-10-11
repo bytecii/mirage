@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import base64
+import json
 import re
 from bisect import bisect_right
 from collections import deque
@@ -29,6 +31,7 @@ from mirage.io.stream import close_quietly, discard_streams
 from mirage.io.yield_budget import YieldBudget
 from mirage.shell.bytes import decode_text, encode_text
 from mirage.shell.helpers import byte_offset
+from mirage.types import JsonValue
 
 # ripgrep's words for a line -M will not print whole (ripgrep 14.1.1).
 OMITTED_MATCHING = "[Omitted long matching line]"
@@ -107,6 +110,8 @@ class RgFlags:
     crlf: bool = False
     multiline: bool = False
     multiline_dotall: bool = False
+    stats: bool = False
+    json: bool = False
     engine: str = "default"
     threads: int | None = None
     text: bool = False
@@ -437,11 +442,145 @@ class Tally:
         binary (bool): a binary-file notice stood in for the lines.
         skipped (bool): a walked binary file went unsearched, which no
             listing names but --files-without-match's status counts.
+        matches (int): the matches in the selected lines, counted for
+            --stats and --json.
+        matched_lines (int): the selected lines, counted for them.
+        searched (int): the bytes read before the search stopped.
+        nul (int | None): the first NUL's offset, a binary file's.
     """
 
     selected: bool = False
     binary: bool = False
     skipped: bool = False
+    matches: int = 0
+    matched_lines: int = 0
+    searched: int = 0
+    nul: int | None = None
+
+
+def duration(seconds: float, ordered: bool = False) -> JsonValue:
+    """A span of time as ripgrep's JSON writes it.
+
+    Args:
+        seconds (float): the span.
+        ordered (bool): keys sorted, as the summary record has them.
+    """
+    total = int(seconds * 1_000_000_000)
+    secs, nanos = divmod(total, 1_000_000_000)
+    human = f"{seconds:.6f}s"
+    if ordered:
+        return {"human": human, "nanos": nanos, "secs": secs}
+    return {"secs": secs, "nanos": nanos, "human": human}
+
+
+@dataclass(slots=True)
+class Totals:
+    """What --stats and the --json summary add up over the haystacks.
+
+    Args:
+        matches (int): matches in the selected lines.
+        matched_lines (int): selected lines.
+        with_match (int): haystacks a line was selected in.
+        searched (int): haystacks searched.
+        printed (int): bytes printed for them.
+        bytes_searched (int): bytes read from them.
+        elapsed (float): seconds spent searching them.
+    """
+
+    matches: int = 0
+    matched_lines: int = 0
+    with_match: int = 0
+    searched: int = 0
+    printed: int = 0
+    bytes_searched: int = 0
+    elapsed: float = 0.0
+
+    def add(self, tally: Tally, printed: int, elapsed: float) -> None:
+        """Count one haystack.
+
+        Args:
+            tally (Tally): its tally.
+            printed (int): the bytes printed for it.
+            elapsed (float): the seconds its search took.
+        """
+        self.matches += tally.matches
+        self.matched_lines += tally.matched_lines
+        self.with_match += int(tally.selected)
+        self.searched += 1
+        self.printed += printed
+        self.bytes_searched += tally.searched
+        self.elapsed += elapsed
+
+    def end_record(
+        self, name: str, tally: Tally, printed: int, elapsed: float
+    ) -> bytes:
+        """The --json record that closes one haystack's records.
+
+        Args:
+            name (str): its path as printed.
+            tally (Tally): its tally.
+            printed (int): the bytes printed for it.
+            elapsed (float): the seconds its search took.
+        """
+        return json_line(
+            {
+                "type": "end",
+                "data": {
+                    "path": json_text(name),
+                    "binary_offset": tally.nul,
+                    "stats": {
+                        "elapsed": duration(elapsed),
+                        "searches": 1,
+                        "searches_with_match": int(tally.selected),
+                        "bytes_searched": tally.searched,
+                        "bytes_printed": printed,
+                        "matched_lines": tally.matched_lines,
+                        "matches": tally.matches,
+                    },
+                },
+            }
+        )
+
+    def summary_record(self, total: float) -> bytes:
+        """The --json record that ends the output.
+
+        Args:
+            total (float): the seconds the whole search took.
+        """
+        return json_line(
+            {
+                "data": {
+                    "elapsed_total": duration(total, True),
+                    "stats": {
+                        "bytes_printed": self.printed,
+                        "bytes_searched": self.bytes_searched,
+                        "elapsed": duration(self.elapsed, True),
+                        "matched_lines": self.matched_lines,
+                        "matches": self.matches,
+                        "searches": self.searched,
+                        "searches_with_match": self.with_match,
+                    },
+                },
+                "type": "summary",
+            }
+        )
+
+    def stats_block(self, total: float) -> bytes:
+        """What --stats prints after the output.
+
+        Args:
+            total (float): the seconds the whole search took.
+        """
+        return (
+            f"\n{self.matches} matches\n"
+            f"{self.matched_lines} matched lines\n"
+            f"{self.with_match} files contained matches\n"
+            f"{self.searched} files searched\n"
+            f"{self.printed} bytes printed\n"
+            f"{self.bytes_searched} bytes searched\n"
+            f"{self.elapsed:.6f} seconds spent searching\n"
+            f"{total:.6f} seconds\n"
+        ).encode()
 
 
 RG_BUFFER_BYTES = 64 * 1024
@@ -457,10 +596,12 @@ class RgBinary:
     ``--binary``: a NUL in the first 64 KiB (all a memory map checks)
     makes the file binary, its NULs read as line terminators, and a
     printed match gives way to one notice naming the first NUL's offset.
-    ``text``, under -a or --null-data: nothing is looked at.
+    ``text``, under -a or --null-data: nothing is looked at. ``note``, a
+    named file under --json: the first NUL's offset is kept for the end
+    record, and the file is searched as it is.
 
     Args:
-        mode (str): ``quit``, ``convert`` or ``text``.
+        mode (str): ``quit``, ``convert``, ``note`` or ``text``.
     """
 
     def __init__(self, mode: str) -> None:
@@ -578,8 +719,14 @@ class RgBinary:
         searched none of it."""
         return self.mode == "quit" and self.offset is not None
 
+    @property
+    def converted(self) -> bool:
+        """Whether the file is binary and reads its NULs as terminators,
+        a printed match giving way to the notice."""
+        return self.mode == "convert" and self.offset is not None
+
     def _converted(self, data: bytes) -> bytes:
-        return data.replace(b"\0", b"\n") if self.offset is not None else data
+        return data.replace(b"\0", b"\n") if self.converted else data
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,9 +809,50 @@ def find_regions(
     return regions
 
 
+def json_text(text: str) -> JsonValue:
+    """ripgrep's JSON for some text: ``text`` when it is UTF-8, else its
+    bytes in base64.
+
+    Args:
+        text (str): the text, from ``decode_text``.
+    """
+    raw = encode_text(text)
+    try:
+        return {"text": raw.decode("utf-8")}
+    except UnicodeDecodeError:
+        return {"bytes": base64.b64encode(raw).decode("ascii")}
+
+
+def json_line(message: JsonValue) -> bytes:
+    """One JSON Lines record as ripgrep writes it.
+
+    Args:
+        message (JsonValue): the record.
+    """
+    return (
+        json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode()
+        + b"\n"
+    )
+
+
+def tally_line(tally: Tally, pat: re.Pattern[str], text: str, f: RgFlags) -> None:
+    """Count one selected line for --stats and --json.
+
+    Args:
+        tally (Tally): the haystack's tally.
+        pat (re.Pattern[str]): the compiled pattern.
+        text (str): the line.
+        f (RgFlags): the parsed flags.
+    """
+    tally.matched_lines += 1
+    if not f.invert:
+        tally.matches += sum(1 for _ in rust_matches(pat, text))
+
+
 class RgPrinter:
     """How one haystack's selected and context lines print (ripgrep's
-    standard printer): the fields, -o/--vimgrep/-r, --trim and -M.
+    standard printer): the fields, -o/--vimgrep/-r, --trim and -M; under
+    --json, one match or context record per line.
 
     Args:
         f (RgFlags): the parsed flags.
@@ -672,14 +860,23 @@ class RgPrinter:
         label (str | None): the path every record leads with, None when
             the records carry none (a single unlabelled input, or a
             --heading that already named the file).
+        name (str): the path a --json record names.
     """
 
     def __init__(
-        self, f: RgFlags, pat: re.Pattern[str], label: str | None
+        self,
+        f: RgFlags,
+        pat: re.Pattern[str],
+        label: str | None,
+        name: str = "",
     ) -> None:
         self._f = f
         self._pat = pat
         self._label = label
+        self._name = name
+        # The line the haystack ends on without a terminator, which a
+        # --json record shows as it is.
+        self.open_line: int | None = None
         # ripgrep tracks each match of a line only when something needs
         # it, and -M words its refusal from whether it did.
         self._granular = (
@@ -698,6 +895,8 @@ class RgPrinter:
             text (str): the line, from ``decode_text``.
             cr (bool): --crlf took a CR off the line's end.
         """
+        if self._f.json:
+            return [self.json_record("context", index, start, text, cr, [])]
         if self._f.only_matching:
             return list(
                 self._pieces(
@@ -724,6 +923,11 @@ class RgPrinter:
             cr (bool): --crlf took a CR off the line's end.
         """
         f = self._f
+        if f.json:
+            found = [] if f.invert else list(rust_matches(self._pat, text))
+            hits = [(match_start(m), m.end(), match_text(m)) for m in found]
+            yield self.json_record("match", index, start, text, cr, hits)
+            return
         matches = (
             []
             if f.invert or not self._granular
@@ -770,6 +974,57 @@ class RgPrinter:
             terminated,
             len(matches),
             cr,
+        )
+
+    def json_record(
+        self,
+        kind: str,
+        index: int,
+        start: int,
+        text: str,
+        cr: bool,
+        spans: list[tuple[int, int, str]],
+        last: int | None = None,
+    ) -> bytes:
+        """One --json match or context record: the lines as they were
+        read, the first one's number and offset, each match's byte span.
+
+        Args:
+            kind (str): ``match`` or ``context``.
+            index (int): the first line's 0-based index.
+            start (int): its byte offset.
+            text (str): the lines, terminators between them kept and the
+                last one's (and a --crlf CR) off.
+            cr (bool): --crlf took a CR off the last line.
+            spans (list[tuple[int, int, str]]): each match's start and
+                end in ``text``, and the text it matched.
+            last (int | None): the last line's index, for -U's regions.
+        """
+        f = self._f
+        end = (
+            ""
+            if (index if last is None else last) == self.open_line
+            else "\0" if f.null_data else "\n"
+        )
+        submatches: list[JsonValue] = [
+            {
+                "match": json_text(matched),
+                "start": _byte_len(text[:begin]),
+                "end": _byte_len(text[:finish]),
+            }
+            for begin, finish, matched in spans
+        ]
+        return json_line(
+            {
+                "type": kind,
+                "data": {
+                    "path": json_text(self._name),
+                    "lines": json_text(text + ("\r" if cr else "") + end),
+                    "line_number": index + 1 if f.line_numbers else None,
+                    "absolute_offset": start,
+                    "submatches": submatches,
+                },
+            }
         )
 
     def region(
@@ -822,6 +1077,26 @@ class RgPrinter:
         first = lines[region.first]
         head = match_start(region.matches[0])
         column = 1 + offset_of(region.first, head) - first.start
+        if f.json:
+            last = lines[region.last]
+            spanned = text[first.at : last.at + len(last.text)]
+            moved = [
+                (match_start(m) - first.at, m.end() - first.at, match_text(m))
+                for m in region.matches
+            ]
+            add(
+                region.first,
+                self.json_record(
+                    "match",
+                    region.first,
+                    first.start,
+                    spanned,
+                    last.cr,
+                    moved,
+                    region.last,
+                ),
+            )
+            return records
         if f.vimgrep and f.replace is None:
             for m in region.matches:
                 start = match_start(m)
@@ -1085,7 +1360,7 @@ def nonmatch_stop(f: RgFlags) -> NonmatchStop:
 
 async def _records(
     lines: AsyncLineIterator, f: RgFlags, pat: re.Pattern[str]
-) -> AsyncIterator[tuple[bytes, int, int]]:
+) -> AsyncIterator[tuple[bytes, int, int, bool]]:
     """Read records through the delimiter selected by rg, each with the
     records and bytes skipped before it.
 
@@ -1114,14 +1389,15 @@ async def _records(
         raw, terminated = await lines.read_until(delimiter)
         if not terminated and not raw:
             return
-        yield raw, skipped, size
+        yield raw, skipped, size, terminated
 
 
 async def _listing(
     lines: AsyncLineIterator, pat: re.Pattern[str], f: RgFlags, tally: Tally
 ) -> None:
     """Read no further than the first selected line (-q, -l and
-    --files-without-match need only that one bit).
+    --files-without-match need only that one bit), unless --stats or
+    --json count every one.
 
     Args:
         lines (AsyncLineIterator): the haystack's lines.
@@ -1129,10 +1405,13 @@ async def _listing(
         f (RgFlags): the parsed flags.
         tally (Tally): receives the selection.
     """
-    async for raw, _, _ in _records(lines, f, pat):
-        if _selects(pat, read_line(raw, f)[0], f.invert):
+    async for raw, _, _, _ in _records(lines, f, pat):
+        text, _ = read_line(raw, f)
+        if _selects(pat, text, f.invert):
             tally.selected = True
-            return
+            if not (f.stats or f.json):
+                return
+            tally_line(tally, pat, text, f)
 
 
 async def _count(
@@ -1149,7 +1428,7 @@ async def _count(
     count = 0
     selected = 0
     stop = nonmatch_stop(f)
-    async for raw, _, _ in _records(lines, f, pat):
+    async for raw, _, _, _ in _records(lines, f, pat):
         text, _ = read_line(raw, f)
         if not _selects(pat, text, f.invert):
             if stop.armed:
@@ -1159,6 +1438,7 @@ async def _count(
         stop.select()
         selected += 1
         tally.selected = True
+        tally_line(tally, pat, text, f)
         if f.only_matching and f.count_only:
             # -o -c counts matches, which an inverted selection has none
             # of, and still lists the input (ripgrep 14.1.1).
@@ -1215,18 +1495,23 @@ async def _printed_lines(
     last_printed = -1
     after_left = 0
     stop = nonmatch_stop(f)
-    async for raw, skipped, size in _records(lines, f, pat):
+    counts = f.stats or f.json
+    async for raw, skipped, size, terminated in _records(lines, f, pat):
         index += skipped
         position += size
         index += 1
         start = position
         position += len(raw) + 1
         text, cr = read_line(raw, f)
+        if not terminated:
+            printer.open_line = index
         hit = _selects(pat, text, f.invert)
-        if binary.offset is not None:
+        if binary.converted:
             if hit:
                 tally.selected = True
                 tally.binary = True
+                if counts:
+                    tally_line(tally, pat, text, f)
                 yield binary.notice(label)
                 return
             continue
@@ -1247,6 +1532,8 @@ async def _printed_lines(
             stop.select()
             selected += 1
             tally.selected = True
+            if counts:
+                tally_line(tally, pat, text, f)
             if context:
                 first = held[0][0] if held else index
                 if (
@@ -1346,6 +1633,7 @@ async def _multiline(
         binary (RgBinary): the haystack's binary detection.
     """
     data = b"".join([chunk async for chunk in reader])
+    tally.searched = len(data)
     if binary.skipped:
         tally.skipped = True
         return
@@ -1360,6 +1648,8 @@ async def _multiline(
     )
     kept = units if f.max_count is None else units[: f.max_count]
     tally.selected = bool(kept)
+    tally.matched_lines = sum(r.last - r.first + 1 for r in kept)
+    tally.matches = sum(len(r.matches) for r in kept)
     if f.quiet or f.files_only or f.files_without_match:
         for chunk in _listed(name, f, tally):
             yield chunk
@@ -1375,11 +1665,13 @@ async def _multiline(
         return
     if not kept:
         return
-    if binary.offset is not None:
+    if binary.converted:
         tally.binary = True
         yield binary.notice(label)
         return
-    printer = RgPrinter(f, pat, None if f.heading else label)
+    printer = RgPrinter(f, pat, None if f.heading else label, name)
+    if text and not text.endswith("\0" if f.null_data else "\n"):
+        printer.open_line = len(lines) - 1
 
     def records(chosen: list[Region]) -> dict[int, list[bytes]]:
         out: dict[int, list[bytes]] = {}
@@ -1480,6 +1772,8 @@ async def search_haystack(
     binary = RgBinary(
         "text"
         if f.text or f.null_data
+        else "note"
+        if f.json and (named or f.binary)
         else "convert"
         if named or f.binary
         else "quit"
@@ -1510,7 +1804,7 @@ async def search_haystack(
             for chunk in _counted(count, label, f, tally):
                 yield chunk
             return
-        printer = RgPrinter(f, pat, None if f.heading else label)
+        printer = RgPrinter(f, pat, None if f.heading else label, name)
         async for chunk in _printed_lines(
             lines, printer, pat, f, tally, binary, label
         ):
@@ -1520,5 +1814,12 @@ async def search_haystack(
             await discard_streams(source)
         raise
     finally:
+        tally.nul = binary.offset
+        if not f.multiline:
+            # ripgrep counts the bytes it read up to where it stopped, and
+            # a binary file up to its first NUL.
+            tally.searched = (
+                binary.offset if binary.offset is not None else lines.position
+            )
         await close_quietly(reader)
         await close_quietly(source)

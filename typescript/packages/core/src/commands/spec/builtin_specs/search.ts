@@ -306,7 +306,11 @@ export const SPECS: Record<string, CommandSpec> = {
       new Argument('--mmap', { action: 'store_true' }),
       new Argument('--no-mmap', { action: 'store_true' }),
       new Argument('--no-follow', { action: 'store_true' }),
+      // --stats ends the output with ripgrep's counts and timings; --json
+      // prints JSON Lines (begin, match, context, end, summary).
+      new Argument('--stats', { action: 'store_true' }),
       new Argument('--no-stats', { action: 'store_true' }),
+      new Argument('--json', { action: 'store_true' }),
       // A line may end in CR LF: `$` matches before the CR and every line rg
       // writes ends in CR LF.
       new Argument('--crlf', { action: 'store_true' }),
