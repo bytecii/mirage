@@ -115,14 +115,17 @@ These flags scan every file and call `before_full_scan` with the reason:
 | `-f`; no plain text of three characters in the pattern; under `-i`, a word with a non-ASCII letter, or with i, k or s under Unicode folding; under `rg -U`, a text with a line break | `NO_TEXT` |
 | `rg -L` | `LINKS` |
 | `grep -a`, `--binary-files=text`, `rg -a`, `--binary` or `-uuu`, after a search answered | `BINARY` |
-| `rg -z`, `--pre` | `TRANSFORMED` |
+| `rg -z`, `--pre`, `-E` naming an encoding | `TRANSFORMED` |
 | no search method, or a hide or path rule on the path | `NO_SEARCH` |
 | a search answered `None` | `UNANSWERED` |
 
 Every other flag is applied by the walk as usual. `rg --files` and
 `rg --type-list` read no content and ask nothing. `files_containing` never
 rules out a file named on the command line, or a binary-extension file under
-`grep -a`, `--binary-files=text`, `rg -a`, `--binary` or `-uuu`.
+`grep -a`, `--binary-files=text`, `rg -a`, `--binary` or `-uuu`. `rg`
+decodes a file that starts with a UTF-16 byte-order mark before searching it,
+so a `files_containing` that searches the stored bytes can rule out a file
+`rg` would match.
 
 Raise from `before_full_scan` to refuse: the command prints `grep: <message>`
 and exits 1. A filesystem error raised at a file is that file's read error

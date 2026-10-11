@@ -48,7 +48,10 @@ from mirage.workspace.lookup import (
     runtime_refused,
     word_policy,
 )
-from mirage.workspace.lookup.constants import INTERPRETER_NAMES
+from mirage.workspace.lookup.constants import (
+    EXEC_WRAPPERS,
+    INTERPRETER_NAMES,
+)
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 
@@ -185,14 +188,16 @@ async def expand_argv(
         or consumer is Consumer.EXTERNAL
         or in_process
     ):
-        spec = spec_for_command(name, registry, session.cwd)
+        # A wrapper's words are the program's it runs.
+        runs = EXEC_WRAPPERS.get(name, (name,))[0]
+        spec = spec_for_command(runs, registry, session.cwd)
         if spec:
             # Before anything reads the line: an option carrying a
             # program hands the words after it to that program, and
             # POSIX's own `--` is how that is said.
             extra: list[ValueType | None] = ["str"] * (consumed - 1)
             word_kinds = extra + spec_word_kinds(
-                spec, expanded[consumed:], name
+                spec, expanded[consumed:], runs
             )
             bases = spec_word_bases(spec, expanded[consumed:], session.cwd)
             if bases is not None:

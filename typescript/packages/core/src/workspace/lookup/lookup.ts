@@ -23,6 +23,7 @@ import type { MountRegistry } from '../mount/registry.ts'
 import type { SessionState } from '../session/session.ts'
 import {
   CAPTURABLE_BUILTINS,
+  EXEC_WRAPPERS,
   INTERPRETER_NAMES,
   KEYWORDS,
   NAMESPACE_COMMANDS,
@@ -157,7 +158,11 @@ function* layers(
     found = true
     yield Consumer.EXTERNAL
   }
-  if (installed && (ROUTED_COMMANDS.has(name) || registry.mountForCommand(name) !== null)) {
+  if (
+    installed &&
+    (ROUTED_COMMANDS.has(name) ||
+      registry.mountForCommand(EXEC_WRAPPERS.get(name)?.[0] ?? name) !== null)
+  ) {
     found = true
     yield Consumer.MOUNT
   }
@@ -316,8 +321,9 @@ export function programNote(
   if (consumer === Consumer.CLI) {
     return `${name} is a CLI registered with this workspace.${helpLine}`
   }
+  const runs = EXEC_WRAPPERS.get(name)?.[0] ?? name
   const spec =
-    consumer === Consumer.MOUNT ? (registry.mountForCommand(name)?.specFor(name) ?? null) : null
+    consumer === Consumer.MOUNT ? (registry.mountForCommand(runs)?.specFor(runs) ?? null) : null
   if (
     spec !== null &&
     compileSpec(spec).options.some((option) => option.names.includes('--help'))
@@ -340,6 +346,7 @@ export function programs(session: SessionState, registry: MountRegistry): string
     ...SHELL_NAMES,
     ...NAMESPACE_COMMANDS,
     ...ROUTED_COMMANDS,
+    ...EXEC_WRAPPERS.keys(),
     ...registry.clis.names(),
   ])
   for (const entry of registry.runtimeEntries) {

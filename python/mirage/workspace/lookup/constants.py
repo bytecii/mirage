@@ -41,6 +41,17 @@ NAMESPACE_COMMANDS = frozenset({"getfattr", "ln", "readlink", "setfattr"})
 # for `type`, `command -v` and the /usr/bin listing.
 ROUTED_COMMANDS = frozenset({"chgrp", "chmod", "chown", "df", "mount"})
 
+# The programs Debian ships as a script that runs another one with an option
+# put first: egrep is `exec grep -E "$@"`, so grep is what parses the line
+# and answers it, its refusals and --help included (grep 3.11, gzip 1.13).
+# Each is a program wherever the one it runs is a mount command.
+EXEC_WRAPPERS = {
+    "egrep": ("grep", "-E"),
+    "fgrep": ("grep", "-F"),
+    "zegrep": ("zgrep", "-E"),
+    "zfgrep": ("zgrep", "-F"),
+}
+
 # bash reserved words that mirage's grammar implements. The parser, not
 # the executor, consumes them, so they never reach route; `type` reports
 # them and the CLI registry refuses them as head words. `coproc` is omitted

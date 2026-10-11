@@ -48,6 +48,17 @@ export const ROUTED_COMMANDS: ReadonlySet<string> = new Set([
   'mount',
 ])
 
+// The programs Debian ships as a script that runs another one with an option
+// put first: egrep is `exec grep -E "$@"`, so grep is what parses the line and
+// answers it, its refusals and --help included (grep 3.11, gzip 1.13). Each
+// is a program wherever the one it runs is a mount command.
+export const EXEC_WRAPPERS: ReadonlyMap<string, readonly [string, string]> = new Map([
+  ['egrep', ['grep', '-E']],
+  ['fgrep', ['grep', '-F']],
+  ['zegrep', ['zgrep', '-E']],
+  ['zfgrep', ['zgrep', '-F']],
+])
+
 // Interpreter names select runtime adapters; session builtins stay in Mirage.
 export const INTERPRETER_NAMES: ReadonlySet<string> = new Set(
   [...BUILTIN_GROUP]

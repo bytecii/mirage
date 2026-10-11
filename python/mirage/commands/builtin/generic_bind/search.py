@@ -137,7 +137,7 @@ def rg_terms(
         return ScanReason.EVERY_FILE
     if f.follow:
         return ScanReason.LINKS
-    if f.search_zip or f.pre is not None:
+    if f.search_zip or f.pre is not None or f.encoding not in ("auto", "none"):
         return ScanReason.TRANSFORMED
     if pattern is None or fl.raw("file"):
         return ScanReason.NO_TEXT

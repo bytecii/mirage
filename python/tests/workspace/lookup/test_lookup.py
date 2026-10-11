@@ -281,6 +281,23 @@ def test_programs_follows_the_allow_list():
     assert programs(narrow, ws._registry) == ["cat"]
 
 
+# Debian's egrep is `exec grep -E "$@"`, so it is a program wherever grep
+# is one, and a session that may not run egrep finds none.
+def test_a_wrapper_is_a_program_where_what_it_runs_is():
+    session, ws = _fixture()
+    registry = ws._registry
+    for name in ("egrep", "fgrep", "zegrep", "zfgrep"):
+        assert lookup(name, session, registry) is Consumer.MOUNT
+        assert name in programs(session, registry)
+    assert program_note("egrep", session, registry) == (
+        "egrep is built into mirage. Help: egrep --help"
+    )
+    narrow = SessionState(
+        session_id="n", commands=AdmissionRules(allow=("grep",))
+    )
+    assert lookup("egrep", narrow, registry) is Consumer.UNKNOWN
+
+
 # An interpreter is a program only where a language runtime runs it; a
 # workspace without one answers `python3: command not found`, as a system
 # that never installed it does, so neither `which` nor `ls /usr/bin`

@@ -16,14 +16,17 @@ import { VERSION } from '../../version.ts'
 import { ROOT_CWD } from '../constants.ts'
 import { isBuiltinGrammar, registeredSpec } from './builtins.ts'
 import {
+  EXTRA_STANDARD,
   HELP_OPTION,
   SHORT_STANDARD,
   STANDARD_AFTER_SCAN,
   STANDARD_BEFORE_SCAN,
+  STANDARD_LAST_WINS,
   VERSION_OPTION,
 } from './constants.ts'
+import { FlagView } from './flag_view.ts'
 import { renderHelp } from './help.ts'
-import { type ParsedArgs, parseCommand } from './parser.ts'
+import { type ParsedArgs, parseCommand, parseToKwargs } from './parser.ts'
 import { SYNOPSES } from './synopsis.ts'
 import { type CommandSpec, UsageStyle } from './types.ts'
 
@@ -32,6 +35,11 @@ const ENC = new TextEncoder()
 /** The `--version` answer of a command. */
 export function versionLine(name: string): string {
   return `${name} (Mirage) ${VERSION}\n`
+}
+
+/** The `--pcre2-version` answer: mirage translates PCRE2 patterns and has no JIT. */
+export function pcre2Line(): string {
+  return `PCRE2 (Mirage) ${VERSION} is available (JIT is unavailable)\n`
 }
 
 /**
@@ -62,6 +70,37 @@ function parse(name: string, spec: CommandSpec, words: string[]): ParsedArgs {
 
 function hasOptionError(parsed: ParsedArgs): boolean {
   return parsed.optionErrorKinds.length > 0 || parsed.oldOptionNeedsValue !== null
+}
+
+function answer(name: string, spec: CommandSpec, option: string): Uint8Array {
+  if (option === '--help') return ENC.encode(helpPage(name, spec))
+  return ENC.encode(option === '--pcre2-version' ? pcre2Line() : versionLine(name))
+}
+
+/**
+ * The standard option a STANDARD_AFTER_SCAN program answers once its loop is
+ * done: the last one read, or the version over the help page. Mirrors
+ * Python's `_loop_answer`.
+ */
+function loopAnswer(
+  name: string,
+  spec: CommandSpec,
+  whole: ParsedArgs,
+  offered: string[],
+  shorts: Readonly<Record<string, string>>,
+): string | null {
+  const keys = new Map(
+    offered.map((option) => [option.replace(/^-+/, '').replaceAll('-', '_'), option]),
+  )
+  const fl = new FlagView(parseToKwargs(whole), spec)
+  const typed: string[] = []
+  for (const [key, value] of fl.occurrences(...keys.keys())) {
+    const option = keys.get(key)
+    if (option !== undefined && value === true) typed.push(shorts[option] ?? option)
+  }
+  if (typed.length === 0) return null
+  if (STANDARD_LAST_WINS.has(name)) return typed.at(-1) ?? null
+  return typed.includes('--version') ? '--version' : (typed[0] ?? null)
 }
 
 /**
@@ -96,7 +135,9 @@ function position(name: string, spec: CommandSpec, argv: string[], option: strin
  *   `grep -e --version` searches for `--version`.
  *
  * Builtins in STANDARD_BEFORE_SCAN answer ahead of every option, and those in
- * STANDARD_AFTER_SCAN only when the whole line parses.
+ * STANDARD_AFTER_SCAN only when the whole line parses, with the option
+ * `loopAnswer` picks. ripgrep's --pcre2-version is one of its standard
+ * options (EXTRA_STANDARD).
  */
 export function standardRequest(
   name: string,
@@ -107,11 +148,18 @@ export function standardRequest(
   const offered: string[] = []
   if (hasInjectedHelp(spec)) offered.push('--help')
   if (hasInjectedVersion(spec)) offered.push('--version')
-  const shorts = isBuiltinGrammar(name, spec) ? (SHORT_STANDARD[name] ?? {}) : {}
+  const builtin = isBuiltinGrammar(name, spec)
+  const shorts = builtin ? (SHORT_STANDARD[name] ?? {}) : {}
   for (const [short, long] of Object.entries(shorts))
     if (offered.includes(long)) offered.push(short)
+  if (builtin) offered.push(...(EXTRA_STANDARD[name] ?? []))
   if (offered.length === 0) return null
   const whole = parse(name, spec, argv)
+  if (builtin && STANDARD_AFTER_SCAN.has(name)) {
+    if (hasOptionError(whole)) return null
+    const option = loopAnswer(name, spec, whole, offered, shorts)
+    return option === null ? null : answer(name, spec, option)
+  }
   let first: { index: number; option: string } | null = null
   for (const option of offered) {
     if (!whole.typedDests.includes(option)) continue
@@ -119,11 +167,11 @@ export function standardRequest(
     if (index !== null && (first === null || index < first.index)) first = { index, option }
   }
   if (first === null) return null
-  const builtin = isBuiltinGrammar(name, spec)
-  if (!(builtin && STANDARD_BEFORE_SCAN.has(name))) {
-    if (hasOptionError(parse(name, spec, argv.slice(0, first.index)))) return null
-    if (builtin && STANDARD_AFTER_SCAN.has(name) && hasOptionError(whole)) return null
+  if (
+    !(builtin && STANDARD_BEFORE_SCAN.has(name)) &&
+    hasOptionError(parse(name, spec, argv.slice(0, first.index)))
+  ) {
+    return null
   }
-  const option = shorts[first.option] ?? first.option
-  return ENC.encode(option === '--help' ? helpPage(name, spec) : versionLine(name))
+  return answer(name, spec, shorts[first.option] ?? first.option)
 }

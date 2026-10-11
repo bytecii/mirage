@@ -107,6 +107,7 @@ from mirage.workspace.lookup import (
     dereferences,
     lookup,
 )
+from mirage.workspace.lookup.constants import EXEC_WRAPPERS
 from mirage.workspace.mount import MountCommandUnsupported, MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.mount.namespace.probe import path_stat
@@ -320,6 +321,11 @@ async def handle_command(
                 else None
             ),
         )
+
+    # A wrapper execs the program it names, past every function and CLI.
+    if cmd_name in EXEC_WRAPPERS:
+        cmd_name, option = EXEC_WRAPPERS[cmd_name]
+        parts = [cmd_name, option, *parts[1:]]
 
     # Every op the command issues from here carries its gate to the entry
     # point.

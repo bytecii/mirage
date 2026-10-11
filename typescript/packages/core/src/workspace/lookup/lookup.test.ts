@@ -364,6 +364,24 @@ describe('program', () => {
     expect(programs(narrow, ws.registry)).toEqual(['cat'])
   })
 
+  // Debian's egrep is `exec grep -E "$@"`, so it is a program wherever grep is
+  // one, and a session that may not run egrep finds none.
+  it('makes a wrapper a program where what it runs is', () => {
+    const { session, ws } = fixture()
+    for (const name of ['egrep', 'fgrep', 'zegrep', 'zfgrep']) {
+      expect(lookup(name, session, ws.registry)).toBe(Consumer.MOUNT)
+      expect(programs(session, ws.registry)).toContain(name)
+    }
+    expect(programNote('egrep', session, ws.registry)).toBe(
+      'egrep is built into mirage. Help: egrep --help',
+    )
+    const narrow = new SessionState({
+      sessionId: 'n',
+      commands: { allow: ['grep'], ask: [], deny: [] },
+    })
+    expect(lookup('egrep', narrow, ws.registry)).toBe(Consumer.UNKNOWN)
+  })
+
   // An interpreter is a program only where a language runtime runs it; a
   // workspace without one answers `python3: command not found`, as a system
   // that never installed it does, so neither `which` nor `ls /usr/bin` finds it.

@@ -568,6 +568,11 @@
     "workspaceBridge": "The TypeScript guest bridge takes fixed op names, string paths and positional payloads, so one converter maps it onto a workspace-shaped dispatch for the workspace and for patchNodeFs; Python's RuntimeFiles passes keyword arguments straight to DispatchFn, so there is nothing to convert."
    }
   },
+  "utils/encoding": {
+   "python_only": {
+    "DECODERS": "Python's codecs go by their own names and a few differ from the standard's (GBK decodes as gb18030); TextDecoder takes the WHATWG name itself."
+   }
+  },
   "utils/stat_view": {
    "python_only": {
     "atime_ns": "Nanoseconds in python and milliseconds in TypeScript, as mtime_ns and mtimeMs: epoch nanoseconds are past 2**53, so a JS number cannot hold them exactly, while a python int can and preview1 asks in them."

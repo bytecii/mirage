@@ -334,9 +334,10 @@ class ScanReason(StrEnum):
     and --json count them. LINKS: rg -L follows
     links out of the walk. BINARY: -a, --binary-files=text, rg -a,
     --binary or -uuu reads every binary-extension file, which a search
-    that answered does not rule out. TRANSFORMED: rg -z or --pre searches
-    bytes the mount does not store. UNANSWERED: ``files_containing``
-    returned None, or ``lines_containing`` returned None for a file.
+    that answered does not rule out. TRANSFORMED: rg -z, --pre or -E
+    naming an encoding searches bytes the mount does not store.
+    UNANSWERED: ``files_containing`` returned None, or
+    ``lines_containing`` returned None for a file.
     """
 
     NO_SEARCH = "the mount has no search"

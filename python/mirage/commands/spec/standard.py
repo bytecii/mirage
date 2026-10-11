@@ -15,14 +15,21 @@
 from mirage.commands.constants import ROOT_CWD
 from mirage.commands.spec.builtins import is_builtin_grammar, registered_spec
 from mirage.commands.spec.constants import (
+    EXTRA_STANDARD,
     HELP_OPTION,
     SHORT_STANDARD,
     STANDARD_AFTER_SCAN,
     STANDARD_BEFORE_SCAN,
+    STANDARD_LAST_WINS,
     VERSION_OPTION,
 )
+from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.help import render_help
-from mirage.commands.spec.parser import ParsedArgs, parse_command
+from mirage.commands.spec.parser import (
+    ParsedArgs,
+    parse_command,
+    parse_to_kwargs,
+)
 from mirage.commands.spec.synopsis import SYNOPSES
 from mirage.commands.spec.types import CommandSpec
 from mirage.version import __version__
@@ -35,6 +42,12 @@ def version_line(name: str) -> bytes:
         name (str): The command name as invoked.
     """
     return f"{name} (Mirage) {__version__}\n".encode()
+
+
+def pcre2_line() -> bytes:
+    """The ``--pcre2-version`` answer: mirage translates PCRE2 patterns
+    and has no JIT."""
+    return f"PCRE2 (Mirage) {__version__} is available (JIT is unavailable)\n".encode()
 
 
 def help_page(name: str, spec: CommandSpec) -> bytes:
@@ -85,6 +98,43 @@ def _has_option_error(parsed: ParsedArgs) -> bool:
     )
 
 
+def _answer(name: str, spec: CommandSpec, option: str) -> bytes:
+    if option == "--help":
+        return help_page(name, spec)
+    return pcre2_line() if option == "--pcre2-version" else version_line(name)
+
+
+def _loop_answer(
+    name: str,
+    spec: CommandSpec,
+    whole: ParsedArgs,
+    offered: list[str],
+    shorts: dict[str, str],
+) -> str | None:
+    """The standard option a STANDARD_AFTER_SCAN program answers once its
+    loop is done: the last one read, or the version over the help page.
+
+    Args:
+        name (str): The command name as invoked.
+        spec (CommandSpec): The registered spec.
+        whole (ParsedArgs): The whole line, parsed.
+        offered (list[str]): The standard spellings the spec answers.
+        shorts (dict[str, str]): Each short spelling's long one.
+    """
+    keys = {option.lstrip("-").replace("-", "_"): option for option in offered}
+    fl = FlagView(parse_to_kwargs(whole), spec=spec)
+    typed = [
+        shorts.get(keys[key], keys[key])
+        for key, value in fl.occurrences(*keys)
+        if value is True
+    ]
+    if not typed:
+        return None
+    if name in STANDARD_LAST_WINS:
+        return typed[-1]
+    return "--version" if "--version" in typed else typed[0]
+
+
 def _position(
     name: str, spec: CommandSpec, argv: list[str], option: str
 ) -> int | None:
@@ -127,7 +177,9 @@ def standard_request(
       ``grep -e --version`` searches for ``--version``.
 
     Builtins in STANDARD_BEFORE_SCAN answer ahead of every option, and
-    those in STANDARD_AFTER_SCAN only when the whole line parses.
+    those in STANDARD_AFTER_SCAN only when the whole line parses, with
+    the option ``_loop_answer`` picks. ripgrep's --pcre2-version is one
+    of its standard options (EXTRA_STANDARD).
 
     Args:
         name (str): The command name as invoked.
@@ -144,13 +196,19 @@ def standard_request(
         offered.append("--help")
     if has_injected_version(spec):
         offered.append("--version")
-    shorts = (
-        SHORT_STANDARD.get(name, {}) if is_builtin_grammar(name, spec) else {}
-    )
+    builtin = is_builtin_grammar(name, spec)
+    shorts = SHORT_STANDARD.get(name, {}) if builtin else {}
     offered.extend(short for short, long in shorts.items() if long in offered)
+    if builtin:
+        offered.extend(EXTRA_STANDARD.get(name, ()))
     if not offered:
         return None
     whole = _parse(name, spec, argv)
+    if builtin and name in STANDARD_AFTER_SCAN:
+        if _has_option_error(whole):
+            return None
+        answer = _loop_answer(name, spec, whole, offered, shorts)
+        return None if answer is None else _answer(name, spec, answer)
     reached: list[tuple[int, str]] = []
     for option in offered:
         if option not in whole.typed_dests:
@@ -161,24 +219,18 @@ def standard_request(
     if not reached:
         return None
     position, option = min(reached)
-    builtin = is_builtin_grammar(name, spec)
-    if not (builtin and name in STANDARD_BEFORE_SCAN):
-        if _has_option_error(_parse(name, spec, argv[:position])):
-            return None
-        if (
-            builtin
-            and name in STANDARD_AFTER_SCAN
-            and _has_option_error(whole)
-        ):
-            return None
-    option = shorts.get(option, option)
-    return help_page(name, spec) if option == "--help" else version_line(name)
+    if not (builtin and name in STANDARD_BEFORE_SCAN) and _has_option_error(
+        _parse(name, spec, argv[:position])
+    ):
+        return None
+    return _answer(name, spec, shorts.get(option, option))
 
 
 __all__ = [
     "has_injected_help",
     "has_injected_version",
     "help_page",
+    "pcre2_line",
     "standard_request",
     "version_line",
 ]

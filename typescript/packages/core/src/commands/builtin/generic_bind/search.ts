@@ -105,7 +105,13 @@ export function rgTerms(
   }
   if (f.stats === true || f.json === true) return ScanReason.EVERY_FILE
   if (f.follow) return ScanReason.LINKS
-  if (f.searchZip === true || (f.pre ?? null) !== null) return ScanReason.TRANSFORMED
+  if (
+    f.searchZip === true ||
+    (f.pre ?? null) !== null ||
+    !['auto', 'none'].includes(f.encoding ?? 'auto')
+  ) {
+    return ScanReason.TRANSFORMED
+  }
   if (pattern === null || fl.raw('file') !== undefined) return ScanReason.NO_TEXT
   const ignoreCase = foldsCase(pattern, f.fixedString, f)
   const found = searchTerms(

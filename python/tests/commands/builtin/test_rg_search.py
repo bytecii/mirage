@@ -29,6 +29,7 @@ from mirage.commands.builtin.rg_search import (
     rust_matches,
     search_haystack,
     smart_case_folds,
+    transcoded,
 )
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
@@ -429,3 +430,78 @@ async def test_a_files_first_read_joins_the_served_chunks_once():
     binary = RgBinary("quit")
     assert await _read_all(binary, source()) == [b"y" * 163840 + b"\nz\n"]
     assert binary.offset is None
+
+
+async def _parts(*parts: bytes):
+    for part in parts:
+        yield part
+
+
+# encoding_rs_io as ripgrep 14.1.1 runs it: a mark is dropped wherever the
+# chunks split it, a UTF-16 mark overrides -E and a UTF-8 one does not,
+# and only a decoder drops a second mark of its own.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "encoding, parts, want",
+    [
+        ("auto", (b"\xef", b"\xbb\xbfcaf\xe9"), b"caf\xe9"),
+        ("auto", (b"\xff\xfeh\x00", b"i\x00"), b"hi"),
+        ("windows-1252", (b"\xef\xbb\xbfcaf\xe9",), "café".encode()),
+        ("UTF-16LE", (b"\xfe\xff\x00h",), b"h"),
+        ("UTF-8", (b"\xef\xbb\xbf\xef\xbb\xbfhi",), b"hi"),
+        ("auto", (b"\xef\xbb\xbf\xef\xbb\xbfhi",), b"\xef\xbb\xbfhi"),
+        ("UTF-8", (b"caf\xe9",), "caf\ufffd".encode()),
+        ("auto", (), b""),
+    ],
+)
+async def test_transcoded_reads_marks_as_ripgrep(encoding, parts, want):
+    got = [c async for c in transcoded(_parts(*parts), encoding)]
+    assert b"".join(got) == want
+
+
+@pytest.mark.asyncio
+async def test_transcoded_closes_its_source():
+    closed = []
+
+    async def source():
+        try:
+            yield b"abc"
+            yield b"def"
+        finally:
+            closed.append(True)
+
+    stream = transcoded(source(), "auto")
+    assert await anext(stream) == b"abc"
+    await stream.aclose()
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_search_decodes_what_E_names():
+    assert await _search(b"\xff\xfeh\x00i\x00\n\x00", "hi") == ("hi\n", True)
+    assert await _search(b"caf\xe9\n", "café", encoding="latin1") == (
+        "café\n",
+        True,
+    )
+    assert await _search(b"\xef\xbb\xbfhi\n", "^hi", encoding="none") == (
+        "",
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    "flags, want",
+    [
+        ({}, "auto"),
+        ({"encoding": "latin1"}, "windows-1252"),
+        ({"encoding": "none"}, "none"),
+        ({"encoding": "latin1", "no_encoding": True}, "auto"),
+    ],
+)
+def test_E_resolves_to_an_encoding(flags, want):
+    assert _flags(**flags).encoding == want
+
+
+def test_E_refuses_a_label_naming_no_encoding():
+    with pytest.raises(UsageError, match="unknown encoding: utf16le$"):
+        _flags(encoding="utf16le")

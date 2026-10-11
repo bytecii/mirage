@@ -21,7 +21,7 @@ import type { CallStack } from '../../shell/call_stack.ts'
 import { PathSpec, wordText } from '../../types.ts'
 import { hasGlob, literalWord, markGlobs, unmarkGlobs } from '../../utils/glob_walk.ts'
 import type { MountRegistry } from '../mount/registry.ts'
-import { INTERPRETER_NAMES } from '../lookup/constants.ts'
+import { EXEC_WRAPPERS, INTERPRETER_NAMES } from '../lookup/constants.ts'
 import {
   Consumer,
   WordPolicy,
@@ -158,10 +158,12 @@ export async function expandArgv(
   // Native captures and interpreters still need the spec's path roles
   // for admission.
   if (policy === WordPolicy.MOUNT || consumer === Consumer.EXTERNAL || inProcess) {
-    spec = specForCommand(name, registry, session.cwd)
+    // A wrapper's words are the program's it runs.
+    const runs = EXEC_WRAPPERS.get(name)?.[0] ?? name
+    spec = specForCommand(runs, registry, session.cwd)
     if (spec !== null) {
       const extra: (ValueType | null)[] = new Array<ValueType | null>(consumed - 1).fill('str')
-      wordKinds = [...extra, ...specWordKinds(spec, lineWords.slice(consumed), name)]
+      wordKinds = [...extra, ...specWordKinds(spec, lineWords.slice(consumed), runs)]
       const bases = specWordBases(spec, lineWords.slice(consumed), session.cwd)
       if (bases !== null) {
         wordBases = [...new Array<string | null>(consumed - 1).fill(null), ...bases]

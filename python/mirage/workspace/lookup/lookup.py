@@ -25,6 +25,7 @@ from mirage.runtime.routing.types import RouteDecision
 from mirage.utils.quote import shell_quote
 from mirage.workspace.lookup.constants import (
     CAPTURABLE_BUILTINS,
+    EXEC_WRAPPERS,
     INTERPRETER_NAMES,
     KEYWORDS,
     NAMESPACE_COMMANDS,
@@ -186,7 +187,9 @@ def _layers(
         found = True
         yield Consumer.EXTERNAL
     if installed and (
-        name in ROUTED_COMMANDS or registry.mount_for_command(name) is not None
+        name in ROUTED_COMMANDS
+        or registry.mount_for_command(EXEC_WRAPPERS.get(name, (name,))[0])
+        is not None
     ):
         found = True
         yield Consumer.MOUNT
@@ -370,12 +373,13 @@ def program_note(
     help_line = f" Help: {shell_quote(name)} --help"
     if consumer is Consumer.CLI:
         return f"{name} is a CLI registered with this workspace.{help_line}"
+    runs = EXEC_WRAPPERS.get(name, (name,))[0]
     mount = (
-        registry.mount_for_command(name)
+        registry.mount_for_command(runs)
         if consumer is Consumer.MOUNT
         else None
     )
-    spec = mount.spec_for(name) if mount is not None else None
+    spec = mount.spec_for(runs) if mount is not None else None
     if spec is not None and any(
         "--help" in o.names for o in compile_spec(spec).options
     ):
@@ -399,7 +403,7 @@ def programs(session: SessionState, registry: "MountRegistry") -> list[str]:
         registry (MountRegistry): mount registry (command registration).
     """
     names = set(SHELL_NAMES) | NAMESPACE_COMMANDS | set(registry.clis.names())
-    names |= ROUTED_COMMANDS
+    names |= ROUTED_COMMANDS | set(EXEC_WRAPPERS)
     names |= {n for n in registry.runtime_bindings if n != EXTERNAL_COMMANDS}
     for mount in registry.mounts():
         names |= {cmd.name.split()[0] for cmd in mount.all_commands()}

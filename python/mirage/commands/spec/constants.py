@@ -255,6 +255,17 @@ SHORT_STANDARD = {
     "rg": {"-h": "--help", "-V": "--version"},
 }
 
+# The options a builtin answers like --version with a line of its own:
+# ripgrep's --pcre2-version, the line its --version ends with (14.1.1).
+EXTRA_STANDARD = {"rg": ("--pcre2-version",)}
+
+# The STANDARD_AFTER_SCAN programs that answer the standard option they read
+# last: ripgrep keeps one special mode and each one replaces the last, so
+# `rg --version --help` prints the help page and `rg -hV` the version. grep
+# tests show_version before show_help, so `grep --help -V` prints the
+# version (grep 3.11, ripgrep 14.1.1).
+STANDARD_LAST_WINS = frozenset({"rg"})
+
 # The programs whose getopt string lists the ten digits as options, the
 # obsolete `-NUM` count spelled one letter at a time: the digits of one
 # word build a number and a later word replaces it, wherever they sit in

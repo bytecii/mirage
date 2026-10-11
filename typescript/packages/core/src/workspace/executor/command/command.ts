@@ -35,6 +35,7 @@ import type { Namespace } from '../../mount/namespace/namespace.ts'
 import { MountCommandUnsupported, type MountRegistry } from '../../mount/registry.ts'
 import { makeCheckUnlink, makeStorageKey } from '../../mount/storage.ts'
 import { Consumer, JOB_BUILTINS, dereferences, lookup } from '../../lookup/index.ts'
+import { EXEC_WRAPPERS } from '../../lookup/constants.ts'
 import { type Runtime } from '../../../runtime/base.ts'
 import type { RouteDecision } from '../../../runtime/routing/index.ts'
 import type { SessionState } from '../../session/session.ts'
@@ -203,7 +204,7 @@ export async function handleCommand(
   if (head === undefined) {
     return [null, new IOResult(), new ExecutionNode({ command: '', exitCode: 0 })]
   }
-  const cmdName = typeof head === 'string' ? head : head.virtual
+  let cmdName = typeof head === 'string' ? head : head.virtual
   const cmdStr = parts.map((p) => (typeof p === 'string' ? p : p.virtual)).join(' ')
 
   if (JOB_BUILTINS.has(cmdName) && jobTable !== null) {
@@ -298,6 +299,14 @@ export async function handleCommand(
       ),
       mergeSignals(signal, context.frame.abortSignal),
     )
+  }
+
+  // A wrapper execs the program it names, past every function and CLI.
+  const wrapped = EXEC_WRAPPERS.get(cmdName)
+  if (wrapped !== undefined) {
+    const [runs, option] = wrapped
+    cmdName = runs
+    parts = [runs, option, ...parts.slice(1)]
   }
 
   // Every op the command issues from here carries its gate to the dispatcher.
