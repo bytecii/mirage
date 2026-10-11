@@ -17,7 +17,7 @@ import { pathsScoped } from '../../../view/namespace_view.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
 
 import { ScanReason } from '../../../vfs/types.ts'
-import { asyncChain, closeQuietly, ensureStream } from '../../../io/stream.ts'
+import { closeQuietly, ensureStream } from '../../../io/stream.ts'
 import type { ByteSource } from '../../../io/types.ts'
 import { byteView, utf8Locale } from '../../../shell/bytes.ts'
 import { concat } from '../../../utils/bytes.ts'
@@ -184,7 +184,21 @@ async function unmarked(found: ByteSource): Promise<ByteSource | null> {
     await closeQuietly(found)
     return null
   }
-  return asyncChain([head, { [Symbol.asyncIterator]: () => rest }])
+  return replayed(head, rest)
+}
+
+async function* replayed(
+  head: Uint8Array,
+  rest: AsyncIterator<Uint8Array>,
+): AsyncGenerator<Uint8Array> {
+  try {
+    if (head.length > 0) yield head
+    for (let step = await rest.next(); step.done !== true; step = await rest.next()) {
+      yield step.value
+    }
+  } finally {
+    await rest.return?.()
+  }
 }
 
 // Whether a `linesContaining` answer holds a line; a stream is pulled to its
@@ -336,12 +350,10 @@ export async function searchReads<A extends Accessor>(
     const ignoreCase = { ignoreCase: asked.ignoreCase }
     const [only] = asked.texts
     if (asked.lineOutput && asked.texts.length === 1 && only !== undefined) {
-      const answer = await lines(accessor, path, only, ignoreCase, index)
-      if (answer === null) {
-        await readUnanswered()
-        return null
-      }
-      return name === 'rg' ? unmarked(answer) : answer
+      const found = await lines(accessor, path, only, ignoreCase, index)
+      const answer = found !== null && name === 'rg' ? await unmarked(found) : found
+      if (answer === null) await readUnanswered()
+      return answer
     }
     for (const text of asked.texts) {
       const answer = await lines(accessor, path, text, ignoreCase, index)

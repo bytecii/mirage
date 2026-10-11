@@ -42,7 +42,7 @@ from mirage.commands.config import CommandIO, CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
-from mirage.io.stream import async_chain, close_quietly, ensure_stream
+from mirage.io.stream import close_quietly, ensure_stream
 from mirage.io.types import ByteSource, materialize
 from mirage.observe.context import revision_for
 from mirage.shell.bytes import byte_view, utf8_locale
@@ -242,7 +242,19 @@ async def _unmarked(found: ByteSource) -> ByteSource | None:
     if bom_of(head) is not None:
         await close_quietly(found)
         return None
-    return async_chain([head, found])
+    return _replayed(head, found)
+
+
+async def _replayed(
+    head: bytes, rest: AsyncIterator[bytes]
+) -> AsyncIterator[bytes]:
+    try:
+        if head:
+            yield head
+        async for chunk in rest:
+            yield chunk
+    finally:
+        await close_quietly(rest)
 
 
 async def _holds_line(found: ByteSource) -> bool:
@@ -428,10 +440,11 @@ async def search_reads(
                 ignore_case=terms.ignore_case,
                 index=index,
             )
+            if found is not None and name == "rg":
+                found = await _unmarked(found)
             if found is None:
                 await read_unanswered()
-                return None
-            return await _unmarked(found) if name == "rg" else found
+            return found
         for text in terms.texts:
             found = await lines(
                 accessor,

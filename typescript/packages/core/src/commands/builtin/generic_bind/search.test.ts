@@ -201,7 +201,8 @@ it.each(LINES.flatMap((line) => Object.keys(MOUNTS).map((mount) => [line, mount]
 )
 
 // rg drops a byte-order mark only where a file starts, which a line answer
-// cannot say it does, so an answer that starts with one is not used. Twin of
+// cannot say it does, so an answer that starts with one is not used, and the
+// file is read as one no search answered. Twin of
 // test_rg_reads_a_file_whose_line_answer_starts_with_a_mark.
 const MARKED: Record<string, number[]> = {
   '/m/mid.txt': [...ENC.encode('skip\n'), 0xef, 0xbb, 0xbf, ...ENC.encode('ada\n')],
@@ -217,9 +218,11 @@ function marked(vfs: RAMVFS): RAMVFS {
 it.each(['bytes', 'stream'] as const)(
   'reads a file whose rg line answer starts with a mark (%s)',
   async (lines) => {
-    const searched = await run(marked(new SearchRAM({ files: false, lines })), 'rg -x ada /m')
+    const vfs = new SearchRAM({ files: false, lines })
+    const searched = await run(marked(vfs), 'rg -x ada /m')
     expect(searched).toEqual(await run(marked(new RAMVFS()), 'rg -x ada /m'))
     expect(searched[0]).toBe('/m/top.txt:ada\n')
+    expect(vfs.scans).toEqual([ScanReason.UNANSWERED])
   },
 )
 
@@ -301,10 +304,22 @@ it.each([
   ['grep -rin ada /d', false],
   ['grep -ril ada /d', false],
   ['grep -riq ada /d', false],
+  ['rg -i ada /d', true],
+  ['rg -iq ada /d', false],
 ] as const)('pulls a streamed answer as far as %s needs', async (line, pullsEveryLine) => {
   const vfs = new SearchRAM(MOUNTS.stream)
   await run(vfs, line)
   expect([vfs.pulled.includes('ada lovelace\n'), vfs.open]).toEqual([pullsEveryLine, 0])
+})
+
+// Twin of test_rg_closes_a_streamed_answer_it_stops_inside: rg -q stops on a
+// long first line of a streamed answer, which it closes all the same.
+it('closes a streamed answer rg stops inside', async () => {
+  const vfs = new SearchRAM(MOUNTS.stream)
+  vfs.store.dirs.add('/big')
+  vfs.store.files.set('/big/x.txt', ENC.encode('ada'.repeat(50_000) + '\nada'.repeat(9) + '\n'))
+  await run(vfs, 'rg -q ada /big/x.txt')
+  expect([vfs.pulled.length, vfs.open]).toEqual([1, 0])
 })
 
 const refused = (reason: ScanReason): string => `grep: ${reason}; narrow the path\n`
