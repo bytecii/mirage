@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { GzipDataError, gunzipStream } from '../../../utils/compress.ts'
 import { mountPrefixOf, sameMountSpec } from '../../../utils/key_prefix.ts'
 import { mountParentReaddir, mountParentStat } from '../utils/wrap.ts'
-import { IOResult } from '../../../io/types.ts'
+import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { MountView } from '../../../view/types.ts'
 import { FileStat, FileType, type PathSpec } from '../../../types.ts'
-import { isFsError, isWalkError, walkRefusal } from '../../../errors/fs.ts'
+import { enoent, isFsError, isWalkError, walkRefusal } from '../../../errors/fs.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
 import { specOf } from '../../spec/builtins.ts'
@@ -27,8 +28,11 @@ import { decodeText, encodeText } from '../../../shell/bytes.ts'
 import { NEVER_MATCH, resolvePattern, rustEscape } from '../grep_pattern.ts'
 import { exitCodeFor } from '../grep_scan.ts'
 import { FileTypes, typeListing, type TypeChange, type TypeSelection } from '../rg_filetypes.ts'
-import { Overrides } from '../rg_glob.ts'
+import { IgnoreRules, Overrides, Verdict, walkCandidate } from '../rg_glob.ts'
+import { shellJoin } from '../../../shell/join.ts'
+import type { DispatchFn, ShellFn } from '../../../runtime/types.ts'
 import {
+  osErrorText,
   type Haystack,
   WalkFilter,
   onOtherMount,
@@ -37,6 +41,10 @@ import {
   walkHaystacks,
 } from '../rg_scan.ts'
 import {
+  jsonLine,
+  jsonText,
+  Totals,
+  recordEnd,
   printsContext,
   type RgFlags,
   searchHaystack,
@@ -46,7 +54,7 @@ import {
 import { STDIN_OPERAND } from '../utils/constants.ts'
 import { type LinkResolver, linkResolver } from '../utils/links.ts'
 import { formatOptionalRecords, formatRecords } from '../utils/output.ts'
-import { isStdin, stdinStream } from '../utils/stream.ts'
+import { isStdin, stdinStream, wrapBytes } from '../utils/stream.ts'
 import { RegexSyntax } from '../types.ts'
 import { PcreError, hostFlags, translatePcre } from '../utils/pcre.ts'
 import { RustRegexError, translateRust, wholeLine, wholeWord } from '../utils/rust_regex.ts'
@@ -55,6 +63,19 @@ import { concat } from '../../../utils/bytes.ts'
 const ENC = new TextEncoder()
 // ripgrep's own words for a line with no pattern, exit 2 (14.1.1).
 export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execute a search'
+// The names -z searches decompressed, and the rule ripgrep frames gzip's
+// refusal in (14.1.1).
+const GZIP_NAMES = ['.gz', '.tgz']
+const GZIP_RULE = '-'.repeat(79)
+// The status a line answers for a command it cannot find, which ripgrep
+// reports as a --pre command that could not start.
+const COMMAND_NOT_FOUND = 127
+// ripgrep's refusal of a pattern that holds the line terminator outside
+// multiline mode, exit 2 (14.1.1).
+const NEWLINE_REFUSAL =
+  'rg: the literal "\\n" is not allowed in a regex\n\nConsider enabling multiline mode ' +
+  'with the --multiline flag (or -U for short).\nWhen multiline mode is enabled, new line ' +
+  'characters can be matched.'
 // What ripgrep says when a line that named no path searched nothing, exit 2
 // (14.1.1).
 export const NOTHING_SEARCHED =
@@ -72,6 +93,33 @@ const ENGINES = ['default', 'pcre2', 'auto']
 const SIZE = /^([0-9]+)([KMG]?)$/
 const SIZE_UNIT: Readonly<Record<string, number>> = { '': 1, K: 1 << 10, M: 1 << 20, G: 1 << 30 }
 const U64_MAX = (1n << 64n) - 1n
+// The sizes ripgrep reads as digits and a unit, each named as it is refused.
+const SIZE_SPELLINGS: Readonly<Record<string, string>> = {
+  max_filesize: '--max-filesize',
+  dfa_size_limit: '--dfa-size-limit',
+  regex_size_limit: '--regex-size-limit',
+}
+// What --colors takes (ripgrep 14.1.1 and termcolor): OUT:SPEC[:VALUE].
+const COLOR_OUTPUTS = ['path', 'line', 'column', 'match']
+const COLOR_SPECS = ['fg', 'bg', 'style', 'none']
+const COLOR_NAMES = ['black', 'blue', 'green', 'red', 'cyan', 'magenta', 'yellow', 'white']
+const COLOR_STYLES = ['nobold', 'bold', 'nointense', 'intense', 'nounderline', 'underline']
+const COLOR_NUMBER = /^(0x\+?[0-9A-Fa-f]+|\+?[0-9]+)$/
+// What --hyperlink-format takes: an alias or a URL with variables.
+const HYPERLINK_ALIASES = [
+  'default',
+  'file',
+  'grep+',
+  'kitty',
+  'macvim',
+  'none',
+  'textmate',
+  'vscode',
+  'vscode-insiders',
+  'vscodium',
+]
+const HYPERLINK_VARIABLES = ['path', 'line', 'column', 'host', 'wslprefix']
+const URL_SCHEME = /^[0-9A-Za-z+.-]+:/
 // The numeric options, each named as ripgrep names it in a refusal. The bag
 // keeps no record of which spelling the line typed, so a long one is refused
 // under its short name.
@@ -129,19 +177,147 @@ export function numberFlag(fl: FlagView, dest: string): number | null {
   return Number(digits)
 }
 
-// --max-filesize in bytes, refused in ripgrep's words.
-function filesizeFlag(fl: FlagView): number | null {
-  const value = fl.asStr('max_filesize')
-  if (value === undefined) return null
+/**
+ * A size option in bytes (--max-filesize, --dfa-size-limit or
+ * --regex-size-limit), refused in ripgrep's words. ripgrep parses every
+ * occurrence as it reads it, so an earlier bad one is refused too.
+ */
+function sizeFlag(fl: FlagView, dest: string): number | null {
+  const sizes = fl.occurrences(dest).map(([, value]) => sizeBytes(String(value), dest))
+  return sizes.at(-1) ?? null
+}
+
+/**
+ * One size option's value in bytes, refused in ripgrep's words: digits and an
+ * optional K, M or G that fit in 64 bits.
+ */
+function sizeBytes(value: string, dest: string): number {
   const size = SIZE.exec(value)
-  if (size === null) {
+  let reason: string | null = null
+  if (size === null)
+    reason =
+      `invalid format for size '${value}', which should be a non-empty sequence of digits ` +
+      "followed by an optional 'K', 'M' or 'G' suffix"
+  else if (BigInt(size[1] ?? '') > U64_MAX)
+    reason = `invalid integer found in size '${value}': number too large to fit in target type`
+  else if (BigInt(size[1] ?? '') * BigInt(SIZE_UNIT[size[2] ?? ''] ?? 1) > U64_MAX)
+    reason = `size too big in '${value}'`
+  if (size === null || reason !== null)
     throw new UsageError(
-      `rg: error parsing flag --max-filesize: invalid size: invalid format for size '${value}', ` +
-        "which should be a non-empty sequence of digits followed by an optional 'K', 'M' or 'G' " +
-        'suffix',
+      `rg: error parsing flag ${SIZE_SPELLINGS[dest] ?? dest}: invalid size: ${reason ?? ''}`,
     )
-  }
   return Number(size[1]) * (SIZE_UNIT[size[2] ?? ''] ?? 1)
+}
+
+/** Why ripgrep refuses one --colors spec, or null. */
+function colorRefusal(spec: string): string | null {
+  const pieces = spec.split(':')
+  const malformed =
+    `invalid color spec format: '${spec}'. Valid format is ` +
+    "'(path|line|column|match):(fg|bg|style):(value)'."
+  if (pieces.length < 2 || pieces.length > 3) return malformed
+  const [out = '', type = '', value] = pieces
+  if (!COLOR_OUTPUTS.includes(out.toLowerCase()))
+    return `unrecognized output type '${out}'. Choose from: ${COLOR_OUTPUTS.join(', ')}.`
+  const kind = type.toLowerCase()
+  if (!COLOR_SPECS.includes(kind))
+    return `unrecognized spec type '${type}'. Choose from: ${COLOR_SPECS.join(', ')}.`
+  if (kind === 'none') return null
+  if (value === undefined) return malformed
+  if (kind === 'style') {
+    if (COLOR_STYLES.includes(value.toLowerCase())) return null
+    return `unrecognized style attribute '${value}'. Choose from: ${COLOR_STYLES.join(', ')}.`
+  }
+  return colorValueRefusal(value)
+}
+
+/** Whether termcolor reads `code` as a color number, decimal or 0x hex, from 0 to 255. */
+function colorNumber(code: string): boolean {
+  if (!COLOR_NUMBER.test(code)) return false
+  const hexed = code.startsWith('0x')
+  return parseInt(hexed ? code.slice(2) : code, hexed ? 16 : 10) <= 255
+}
+
+/** Why termcolor refuses a color: a name, 0-255 or an r,g,b triple. */
+function colorValueRefusal(value: string): string | null {
+  const codes = value.split(',')
+  if (
+    COLOR_NAMES.includes(value.toLowerCase()) ||
+    ((codes.length === 1 || codes.length === 3) && codes.every(colorNumber))
+  )
+    return null
+  if (codes.length === 1 && /^[0-9a-fA-F]*$/.test(value))
+    return (
+      "unrecognized ansi256 color number, should be '[0-255]' (or a hex number), " +
+      `but is '${value}'`
+    )
+  if (value.includes(','))
+    return (
+      "unrecognized RGB color triple, should be '[0-255],[0-255],[0-255]' (or a hex triple), " +
+      `but is '${value}'`
+    )
+  return `unrecognized color name '${value}'. Choose from: ${COLOR_NAMES.join(', ')}`
+}
+
+/** Why ripgrep refuses a --hyperlink-format, or null. */
+function hyperlinkRefusal(fmt: string): string | null {
+  if (fmt === '' || HYPERLINK_ALIASES.includes(fmt)) return null
+  const names: string[] = []
+  let head = ''
+  let i = 0
+  while (i < fmt.length) {
+    if (fmt.startsWith('{{', i) || fmt.startsWith('}}', i)) {
+      if (names.length === 0) head += fmt.charAt(i)
+      i += 2
+    } else if (fmt[i] === '{') {
+      const end = fmt.indexOf('}', i)
+      if (end < 0) return "unclosed variable: found '{' without a corresponding '}' following it"
+      const name = fmt.slice(i + 1, end)
+      if (!HYPERLINK_VARIABLES.includes(name))
+        return (
+          `invalid hyperlink format variable: '${name}', choose from: ` +
+          HYPERLINK_VARIABLES.join(', ')
+        )
+      names.push(name)
+      i = end + 1
+    } else if (fmt[i] === '}') {
+      return "unopened variable: found '}' without a corresponding '{' preceding it"
+    } else {
+      if (names.length === 0) head += fmt.charAt(i)
+      i += 1
+    }
+  }
+  if (names.length === 0)
+    return (
+      'at least a {path} variable is required in a hyperlink format, or otherwise use a valid ' +
+      `alias: ${HYPERLINK_ALIASES.join(', ')}`
+    )
+  if (!names.includes('path')) return 'the {path} variable is required in a hyperlink format'
+  if (names.includes('column') && !names.includes('line'))
+    return 'the hyperlink format contains a {column} variable, but no {line} variable is present'
+  if (!URL_SCHEME.test(head))
+    return 'the hyperlink format must start with a valid URL scheme, i.e., [0-9A-Za-z+-.]+:'
+  return null
+}
+
+/**
+ * Refuse what ripgrep refuses in the options mirage accepts and otherwise
+ * ignores: --colors, --hyperlink-format and the DFA and regex size limits.
+ */
+function checkDisplayFlags(fl: FlagView): void {
+  for (const spec of fl.asList('colors')) {
+    const refusal = colorRefusal(spec)
+    if (refusal !== null) throw new UsageError(`rg: error parsing flag --colors: ${refusal}`)
+  }
+  for (const [, fmt] of fl.occurrences('hyperlink_format')) {
+    const refusal = hyperlinkRefusal(String(fmt))
+    if (refusal !== null)
+      throw new UsageError(
+        `rg: error parsing flag --hyperlink-format: invalid hyperlink format: ${refusal}`,
+      )
+  }
+  sizeFlag(fl, 'dfa_size_limit')
+  sizeFlag(fl, 'regex_size_limit')
 }
 
 // A value from a fixed set, refused in ripgrep's words.
@@ -278,14 +454,20 @@ function pathSeparator(fl: FlagView): string | null {
 export function parseFlags(fl: FlagView): RgFlags {
   const threads = numberFlag(fl, 'threads')
   choice(fl, 'color', '--color', COLOR_CHOICES)
+  checkDisplayFlags(fl)
   const caseMode = last(fl, 'ignore_case', 'case_sensitive', 'smart_case')
   const bounds = last(fl, 'word_regexp', 'line_regexp')
   const listing = last(fl, 'count', 'count_matches', 'files_with_matches', 'files_without_match')
-  const numbers = last(fl, 'line_number', 'no_line_number')
+  // -p turns on --heading and -n, each overridden by a later negation.
+  const numbers = last(fl, 'line_number', 'no_line_number', 'pretty')
   const vimgrep = fl.asBool('vimgrep')
   const columns = last(fl, 'column', 'no_column')
   const column = columns !== null ? columns === 'column' : vimgrep
   const [passthru, contextBefore, contextAfter] = contextOf(fl)
+  // --json prints its own records: no heading or separators, and line
+  // numbers unless -N turned them off.
+  const jsonRecords = last(fl, 'json', 'no_json') === 'json'
+  const preCommand = last(fl, 'pre', 'no_pre') === 'pre' ? (fl.asStr('pre') ?? '') : ''
   const unrestricted = fl.asInt('unrestricted') ?? 0
   const binaryMode = binaryModeOf(fl, unrestricted)
   let hidden = false
@@ -324,7 +506,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     wholeWord: bounds === 'word_regexp',
     lineRegexp: bounds === 'line_regexp',
     fixedString: last(fl, 'fixed_strings', 'no_fixed_strings') === 'fixed_strings',
-    lineNumbers: numbers !== null ? numbers === 'line_number' : column || vimgrep,
+    lineNumbers: numbers !== null ? numbers !== 'no_line_number' : column || vimgrep || jsonRecords,
     column,
     vimgrep,
     byteOffsets: last(fl, 'byte_offset', 'no_byte_offset') === 'byte_offset',
@@ -336,6 +518,15 @@ export function parseFlags(fl: FlagView): RgFlags {
       last(fl, 'max_columns_preview', 'no_max_columns_preview') === 'max_columns_preview',
     null: fl.asBool('null'),
     nullData: fl.asBool('null_data'),
+    crlf: last(fl, 'crlf', 'no_crlf') === 'crlf' && !fl.asBool('null_data'),
+    multiline: last(fl, 'multiline', 'no_multiline') === 'multiline',
+    stats: last(fl, 'stats', 'no_stats') === 'stats',
+    searchZip: last(fl, 'search_zip', 'no_search_zip') === 'search_zip',
+    // --pre with no command, or after --no-pre, preprocesses nothing.
+    pre: preCommand === '' ? null : preCommand,
+    preGlobs: fl.asList('pre_glob'),
+    json: jsonRecords,
+    multilineDotall: last(fl, 'multiline_dotall', 'no_multiline_dotall') === 'multiline_dotall',
     pathSeparator: pathSeparator(fl),
     quiet: fl.asBool('quiet'),
     countOnly: listing === 'count',
@@ -348,14 +539,17 @@ export function parseFlags(fl: FlagView): RgFlags {
     withFilename: filenameFlag(fl) === 'with_filename',
     noFilename: filenameFlag(fl) === 'no_filename',
     // --vimgrep prints a location per line, so it never heads a group.
-    heading: last(fl, 'heading', 'no_heading') === 'heading' && !vimgrep,
+    heading:
+      ['heading', 'pretty'].includes(last(fl, 'heading', 'no_heading', 'pretty') ?? '') &&
+      !vimgrep &&
+      !jsonRecords,
     passthru,
     maxCount: numberFlag(fl, 'max_count'),
     stopOnNonmatch: fl.asBool('stop_on_nonmatch'),
     contextAfter,
     contextBefore,
     contextSeparator:
-      separator === 'no_context_separator'
+      separator === 'no_context_separator' || jsonRecords
         ? null
         : typedSeparator !== undefined
           ? unescape(typedSeparator)
@@ -370,7 +564,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     typeSelections: selections,
     hidden,
     maxDepth: numberFlag(fl, 'max_depth'),
-    maxFilesize: filesizeFlag(fl),
+    maxFilesize: sizeFlag(fl, 'max_filesize'),
     follow: last(fl, 'follow', 'no_follow') === 'follow',
     oneFileSystem: last(fl, 'one_file_system', 'no_one_file_system') === 'one_file_system',
     binary: binaryMode !== 'auto',
@@ -426,15 +620,25 @@ export function engineFlag(fl: FlagView): string {
 
 // The default engine's matcher, or its refusal in ripgrep's words.
 function rustMatcher(patterns: readonly string[], fold: boolean, f: RgFlags): RegExp {
+  const lines = f.nullData || f.multiline === true
+  const crlf = f.multiline === true && f.crlf === true
   let translated
   try {
-    translated = translateRust(patterns, fold, f.nullData, f.unicode)
+    translated = translateRust(
+      patterns,
+      fold,
+      lines,
+      f.unicode,
+      f.multiline === true && f.multilineDotall === true,
+      crlf,
+    )
   } catch (err) {
     if (err instanceof RustRegexError) throw new UsageError(`rg: ${err.message}`)
     throw err
   }
+  if (translated.newline === true && !lines) throw new UsageError(NEWLINE_REFUSAL)
   let source = translated.source
-  if (f.lineRegexp) source = wholeLine(source, f.nullData)
+  if (f.lineRegexp) source = wholeLine(source, lines, crlf)
   else if (f.wholeWord) source = wholeWord(source, f.unicode)
   return new RegExp(source, translated.ignoreCase ? 'iu' : 'u')
 }
@@ -448,7 +652,14 @@ function pcreMatcher(patterns: readonly string[], fold: boolean, f: RgFlags): Re
   else if (f.wholeWord) display = `(?<!\\w)(?:${display})(?!\\w)`
   let translated
   try {
-    translated = translatePcre(display, f.unicode, fold, f.nullData)
+    translated = translatePcre(
+      display,
+      f.unicode,
+      fold,
+      f.nullData || f.multiline === true,
+      f.multiline === true && f.multilineDotall === true,
+      f.crlf === true && f.multiline === true,
+    )
   } catch (err) {
     if (err instanceof PcreError) {
       throw new UsageError(
@@ -501,7 +712,7 @@ export function rgMatcher(pattern: string, neverMatch: boolean, f: RgFlags): Reg
 
 // What the walk keeps, the globs and types compiled; a glob or a type
 // ripgrep refuses throws its words.
-export function walkFilter(f: RgFlags, types?: FileTypes): WalkFilter {
+export function walkFilter(f: RgFlags, types?: FileTypes, ignores?: IgnoreRules): WalkFilter {
   return new WalkFilter(
     new Overrides(f.globs, f.iglobs, f.globCaseInsensitive),
     types ?? new FileTypes(f.typeChanges, f.typeSelections),
@@ -509,7 +720,34 @@ export function walkFilter(f: RgFlags, types?: FileTypes): WalkFilter {
     f.maxDepth,
     f.maxFilesize,
     f.binary,
+    ignores ?? new IgnoreRules(),
   )
+}
+
+/**
+ * --ignore-file's rules, each file read through the dispatcher. A file
+ * ripgrep cannot read is reported in `notes` and skipped, the search going on
+ * with its exit status untouched (14.1.1); --no-ignore-files drops every one.
+ * Mirrors Python's ignore_rules.
+ */
+export async function ignoreRules(
+  fl: FlagView,
+  dispatch: DispatchFn | undefined,
+  notes: string[],
+): Promise<IgnoreRules> {
+  if (last(fl, 'ignore_files', 'no_ignore_files') === 'no_ignore_files') return new IgnoreRules()
+  const lines: string[] = []
+  for (const path of fl.asPaths('ignore_file')) {
+    try {
+      if (dispatch === undefined) throw enoent(path.rawPath)
+      const [data] = await dispatch('read', path)
+      lines.push(...decodeText(await materialize(data as ByteSource)).split(/\r?\n/))
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      notes.push(`rg: ${path.rawPath}: ${osErrorText(err)}`)
+    }
+  }
+  return new IgnoreRules(lines)
 }
 
 /**
@@ -624,7 +862,8 @@ export async function rgGeneric(
   const f = parseFlags(fl)
   const types = new FileTypes(f.typeChanges, f.typeSelections)
   if (f.typeList) return [formatRecords(typeListing(types.definitions)), new IOResult()]
-  const walk = walkFilter(f, types)
+  const notes: string[] = []
+  const walk = walkFilter(f, types, await ignoreRules(fl, opts.dispatch, notes))
   let pat: RegExp | null = null
   if (!f.listFiles) {
     const resolution = await resolvePattern(
@@ -653,9 +892,16 @@ export async function rgGeneric(
   const home = mountPrefixOf(first.virtual, first.vfsPath)
   const rd = mountParentReaddir((p: string) => readdir(sameMountSpec(p, first)), mounts, home)
   const st = mountParentStat((p: string) => stat(sameMountSpec(p, first)), mounts)
-  if (pat !== null && paths.length === 1) {
+  if (
+    pat !== null &&
+    paths.length === 1 &&
+    f.stats !== true &&
+    f.json !== true &&
+    f.searchZip !== true &&
+    (f.pre ?? null) === null
+  ) {
     const single = await searchSingle(first, pat, f, st, rd, stream, opts.signal)
-    if (single !== null) return single
+    if (single !== null) return noted(single, notes, f)
   }
   const warnings: string[] = []
   // ripgrep's "nothing searched" speaks for the whole walk, so it waits while
@@ -677,9 +923,55 @@ export async function rgGeneric(
     for await (const h of found) listed.push(h)
     found = replay(sortHaystacks(listed, f))
   }
-  if (f.listFiles) return listFiles(found, f, warnings)
-  if (pat === null) return usage(RG_NO_PATTERN)
-  return searchAll(found, paths, pat, f, stream, first, warnings, implicit, opts.signal)
+  let result: CommandFnResult
+  if (f.listFiles) result = await listFiles(found, f, warnings)
+  else if (pat === null) return usage(RG_NO_PATTERN)
+  else
+    result = await searchAll(
+      found,
+      paths,
+      pat,
+      f,
+      stream,
+      first,
+      warnings,
+      implicit,
+      opts.cwd,
+      opts.signal,
+      opts.shell,
+    )
+  if (result === null) return result
+  return noted(result, notes, f)
+}
+
+// A search's result with --ignore-file's notes ahead of its stderr, as
+// ripgrep prints them before it searches.
+async function noted(
+  result: [ByteSource | null, IOResult],
+  notes: readonly string[],
+  f: RgFlags,
+): Promise<[ByteSource | null, IOResult]> {
+  const [out, io] = result
+  if (notes.length > 0 && !f.noMessages)
+    io.stderr = concat([
+      formatRecords(notes),
+      io.stderr === null ? new Uint8Array() : await materialize(io.stderr),
+    ])
+  return [out, io]
+}
+
+// gzip's output up to where its input is damaged, the damage kept in
+// `faults`: ripgrep searches what gzip wrote before it failed.
+async function* upToDamage(
+  source: AsyncIterable<Uint8Array>,
+  faults: GzipDataError[],
+): AsyncGenerator<Uint8Array> {
+  try {
+    for await (const chunk of source) yield chunk
+  } catch (err) {
+    if (!(err instanceof GzipDataError)) throw err
+    faults.push(err)
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/require-await
@@ -756,7 +1048,7 @@ async function* settled(
   try {
     for await (const chunk of chunks) {
       if (!printed && label !== null && headed(f) && tally.binary !== true)
-        yield encodeText(label + (f.null || f.nullData ? '\0' : '\n'))
+        yield encodeText(label + (f.null ? '\0' : recordEnd(f)))
       printed = true
       yield chunk
     }
@@ -772,12 +1064,24 @@ async function* settled(
   io.exitCode = (listed ?? tally.selected) ? 0 : 1
 }
 
+// Whether --json writes its records and the summary: only for the printing
+// modes, -c and -l printing as they do without it.
+export function jsonSummary(f: RgFlags): boolean {
+  return f.json === true && !(f.countOnly || f.countMatches || f.filesOnly || f.filesWithoutMatch)
+}
+
 // Whether --heading names each file above its lines: only the line output
 // has one, never the counts or the listings.
-function headed(f: RgFlags): boolean {
+export function headed(f: RgFlags): boolean {
   return (
     f.heading && !(f.countOnly || f.countMatches || f.filesOnly || f.filesWithoutMatch || f.quiet)
   )
+}
+
+// Whether ripgrep searches more than one path on its parallel searcher: -j1
+// and a sort hold it to one thread.
+export function runsParallel(f: RgFlags): boolean {
+  return f.threads !== 1 && (f.sort === null || f.sort === 'none')
 }
 
 // A path as ripgrep prints it, every `/` spelled as --path-separator asks.
@@ -827,7 +1131,7 @@ export async function* haystacks(
 ): AsyncGenerator<Haystack> {
   // ripgrep holds one path that is not a directory to one thread, as it
   // does -j1 and a sort; every other line runs its parallel walker.
-  const parallel = f.threads !== 1 && f.sort === null
+  const parallel = runsParallel(f)
   const several = parallel && paths.length > 1
   for (const p of paths) {
     if (isStdin(p)) {
@@ -918,6 +1222,34 @@ async function listFiles(
  * goes between files instead. `implicit` says the line named no path, so
  * ripgrep reports a search that found nothing to search.
  */
+/**
+ * What --pre's command prints for one file, or ripgrep's report of why it
+ * failed: it runs `COMMAND PATH` with the file's contents on stdin, here as a
+ * line in the session. Mirrors Python's preprocessed.
+ */
+async function preprocessed(
+  command: string,
+  path: string,
+  name: string,
+  data: Uint8Array,
+  shell?: ShellFn,
+): Promise<[Uint8Array, string | null]> {
+  const shown = [command, path].map((word) => `"${word}"`).join(' ')
+  const head = `rg: ${name}: preprocessor command`
+  const io = shell === undefined ? null : await shell(shellJoin([command, path]), data)
+  if (io === null || io.exitCode === COMMAND_NOT_FOUND)
+    return [
+      new Uint8Array(),
+      `${head} could not start: '${shown}': No such file or directory (os error 2)`,
+    ]
+  if (io.exitCode !== 0) {
+    const err = io.stderr === null ? '' : decodeText(await materialize(io.stderr))
+    const body = err ? `\n${GZIP_RULE}\n${err}${GZIP_RULE}` : '<stderr is empty>'
+    return [new Uint8Array(), `${head} failed: '${shown}': ${body}`]
+  }
+  return [io.stdout === null ? new Uint8Array() : await materialize(io.stdout), null]
+}
+
 async function searchAll(
   found: AsyncIterable<Haystack>,
   paths: readonly PathSpec[],
@@ -927,28 +1259,68 @@ async function searchAll(
   template: PathSpec,
   warnings: string[],
   implicit: boolean,
+  // The session's working directory, which --pre-glob's globs are rooted at.
+  cwd: string,
   signal?: AbortSignal,
+  // Runs --pre's command in the session.
+  shell?: ShellFn,
 ): Promise<CommandFnResult> {
   const multi = paths.length > 1
+  let lone = !multi
   const context = printsContext(f)
+  const preGlobs = new Overrides(f.preGlobs ?? [], [], false)
   const out: Uint8Array[] = []
   let printed = false
   let selected = false
   let skipped = false
   let searched = 0
+  const listingOrCount = f.countOnly || f.countMatches || f.filesOnly || f.filesWithoutMatch
+  const records = jsonSummary(f)
+  const totals = new Totals()
+  const started = performance.now()
   for await (const h of found) {
     searched += 1
     const walked = h.spec === null
+    lone = lone && !walked
     const name = printedPath(h.shown, f)
     const label = !f.noFilename && (walked || multi || f.withFilename || f.vimgrep) ? name : null
     const tally: Tally = { selected: false }
     const chunks: Uint8Array[] = []
+    let damaged = false
+    const faults: GzipDataError[] = []
+    const began = performance.now()
     try {
-      const source =
+      const opened =
         h.spec === null && h.resolver !== null
           ? h.resolver.read(h.virtual)
           : stream(h.spec ?? sameMountSpec(h.virtual, template))
       const pipe = h.spec !== null && isStdin(h.spec)
+      let source = opened
+      const pre = f.pre ?? null
+      if (
+        pre !== null &&
+        !pipe &&
+        preGlobs.verdict(walkCandidate(h.shown, cwd), false) !== Verdict.IGNORE
+      ) {
+        const [text, refusal] = await preprocessed(
+          pre,
+          h.shown,
+          name,
+          await materialize(opened),
+          shell,
+        )
+        if (refusal !== null) {
+          warnings.push(refusal)
+          continue
+        }
+        source = wrapBytes(text)
+      } else if (
+        f.searchZip === true &&
+        GZIP_NAMES.some((ext) => h.virtual.endsWith(ext)) &&
+        !pipe
+      ) {
+        source = upToDamage(gunzipStream(opened), faults)
+      }
       for await (const c of searchHaystack(
         source,
         pat,
@@ -962,27 +1334,68 @@ async function searchAll(
       )) {
         chunks.push(c)
       }
+      const [fault] = faults
+      if (fault !== undefined) throw fault
     } catch (err) {
-      if (!isFsError(err)) throw err
-      // ripgrep reports the failed input and keeps searching the rest.
-      warnings.push(openErrorLine(h.shown, err))
-      continue
+      if (err instanceof GzipDataError) {
+        // -z runs gzip, whose refusal ripgrep frames in rules. gzip's output
+        // streams into the search, so the lines it decoded before the damage
+        // still print, but not what ripgrep writes once the file is done (a
+        // count, --files-without-match), and the file adds to no total.
+        warnings.push(`rg: ${name}: \n${GZIP_RULE}\n${err.render(name).trimStart()}${GZIP_RULE}`)
+        damaged = true
+        if (f.countOnly || f.countMatches || f.filesWithoutMatch) chunks.length = 0
+      } else {
+        if (!isFsError(err)) throw err
+        // ripgrep reports the failed input and keeps searching the rest.
+        warnings.push(openErrorLine(h.shown, err))
+        continue
+      }
     }
+    const elapsed = (performance.now() - began) / 1000
     selected ||= tally.selected
     skipped ||= tally.skipped === true
-    if (chunks.length > 0) {
+    if (records) {
+      if (chunks.length > 0) {
+        const begin = jsonLine({ type: 'begin', data: { path: jsonText(name) } })
+        const sent = begin.length + chunks.reduce((sum, c) => sum + c.length, 0)
+        out.push(begin, ...chunks)
+        if (!damaged) {
+          totals.add(tally, sent, elapsed)
+          out.push(totals.endRecord(name, tally, sent, elapsed))
+        }
+      } else if (f.quiet && tally.selected && !damaged) {
+        totals.add(tally, 0, elapsed)
+      }
+    } else if (chunks.length > 0) {
+      // -c and -l counts and names are not what --stats counts.
+      let sent = listingOrCount ? 0 : chunks.reduce((sum, c) => sum + c.length, 0)
       if (label !== null && headed(f)) {
         if (printed) out.push(ENC.encode('\n'))
         if (tally.binary !== true) {
-          out.push(encodeText(label + (f.null || f.nullData ? '\0' : '\n')))
+          const heading = encodeText(label + (f.null ? '\0' : recordEnd(f)))
+          out.push(heading)
+          sent += heading.length
         }
       } else if (context && printed && f.contextSeparator !== null) {
         out.push(encodeText(f.contextSeparator + '\n'))
       }
       out.push(...chunks)
       printed = true
+      if (!damaged) totals.add(tally, sent, elapsed)
+    } else if (!damaged) {
+      totals.add(tally, 0, elapsed)
     }
-    if (f.quiet && tally.selected) break
+    // --stats and --json count every file, -q or not (14.1.1).
+    if (f.quiet && tally.selected && f.stats !== true && f.json !== true) break
+  }
+  const total = (performance.now() - started) / 1000
+  if (records) out.push(totals.summaryRecord(total))
+  else if (f.stats === true) {
+    // ripgrep's parallel searcher gives the last --heading group its blank
+    // line too; one thread, as for a lone file, does not.
+    if (printed && headed(f) && runsParallel(f) && !lone) out.push(ENC.encode('\n'))
+    out.push(totals.statsBlock(total))
   }
   // ripgrep's status under --files-without-match follows the listing, not
   // the matching: 0 when a file was listed, 1 when every file matched

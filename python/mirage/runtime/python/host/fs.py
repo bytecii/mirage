@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import dataclasses
 import errno
 import functools
 import genericpath
@@ -26,17 +27,20 @@ from collections.abc import Callable, Iterator
 from typing import Any, TypeVar, cast
 
 from mirage.bridge.sync import run_async_from_sync
-from mirage.errors import FsCondition, classify
+from mirage.errors import FsCondition
 from mirage.errors.fs import ebusy, eexist, fs_error
 from mirage.errors.posix import posix_errno, posix_phrase
-from mirage.io import IOResult
-from mirage.runtime.files import RuntimeFiles, stat_row
+from mirage.runtime.constants import ABSENT_PATH
+from mirage.runtime.files import stat_row
 from mirage.runtime.python.host.constants import (
+    DESCRIPTOR_CALLS,
     REFUSED_CALLS,
+    REFUSED_DESCRIPTOR_CALLS,
     ROUTED_CALLS,
     XATTR_CREATE,
     XATTR_REPLACE,
 )
+from mirage.runtime.python.host.descriptors import Descriptors
 from mirage.runtime.python.host.host_io import in_host_io
 from mirage.runtime.python.host.list import (
     MountDirEntry,
@@ -45,8 +49,9 @@ from mirage.runtime.python.host.list import (
     entry_is_link,
 )
 from mirage.runtime.python.host.stat import stat_result
+from mirage.runtime.python.host.syscall import as_raised, host_files, syscall
+from mirage.runtime.stat import posix_stat
 from mirage.runtime.types import VFSStat
-from mirage.types import PathSpec
 from mirage.utils.dates import timestamp_iso
 from mirage.utils.path import owner_prefix
 from mirage.utils.remnants import entry_name
@@ -73,74 +78,6 @@ def _spelled(path: Any) -> str | None:
     except TypeError:
         return None
     return spelled if isinstance(spelled, str) else None
-
-
-def host_files(
-    files: Files, loop: asyncio.AbstractEventLoop | None
-) -> RuntimeFiles:
-    """The file adapter ``open`` and ``os`` call inside ``with ws:``.
-
-    A workspace op that fails with no errno (an upstream 502 a REST
-    mount raises as it came) answers what ``classify`` names for it, and
-    EIO when it names nothing, the kernel's word for a device that
-    failed: a guest's file adapter answers the same, and a caller of ``os`` can
-    only ``except OSError``. The original rides along as the cause.
-
-    Args:
-        files (Files): the workspace's ``ws.vfs``.
-        loop (asyncio.AbstractEventLoop | None): the block's loop.
-    """
-
-    async def dispatch(
-        name: str, path: PathSpec, /, **kwargs: Any
-    ) -> tuple[Any, IOResult]:
-        try:
-            return await files.dispatch(name, path, **kwargs)
-        except OSError:
-            raise
-        except Exception as exc:
-            condition = classify(exc) or FsCondition.EIO
-            raise fs_error(path, condition) from exc
-
-    return RuntimeFiles(dispatch, loop)
-
-
-def as_raised(exc: OSError) -> OSError:
-    """`exc` as a syscall raises it: CPython's own class for its errno.
-
-    A refusal leaves the workspace as one of mirage's subclasses
-    (``ReadOnlyError`` is a ``PermissionError`` stamped EROFS), where a
-    real filesystem gives the class CPython builds from the errno: plain
-    ``OSError`` for EROFS, ``FileNotFoundError`` for ENOENT. The errno,
-    message and paths carry over; an error with no errno is left as it
-    is, since no class follows from it.
-
-    Args:
-        exc (OSError): what the entry point raised.
-    """
-    if exc.errno is None or type(exc).__module__ == "builtins":
-        return exc
-    return OSError(exc.errno, exc.strerror, exc.filename, None, exc.filename2)
-
-
-def syscall(fn: Callable[..., T]) -> Callable[..., T]:
-    """`fn` raising what ``as_raised`` makes of its errors.
-
-    Args:
-        fn (Callable[..., T]): one entry point function.
-    """
-
-    @functools.wraps(fn)
-    def call(*args: Any, **kwargs: Any) -> T:
-        try:
-            return fn(*args, **kwargs)
-        except OSError as exc:
-            raised = as_raised(exc)
-            if raised is exc:
-                raise
-            raise raised from exc
-
-    return call
 
 
 ErrorHandler = Callable[[Callable[..., Any], str, OSError], None]
@@ -345,7 +282,9 @@ class HostFs:
 
     Two conventions worth stating once. A ``dir_fd`` is ignored for a
     mounted path, which is what openat(2) says for an absolute one, and
-    a mounted path is always absolute. And a mode argument at create
+    a mounted path is always absolute; a relative path under a mounted
+    directory descriptor is resolved against it first (``_anchored``).
+    And a mode argument at create
     time (``mkdir``) is dropped rather than stored: a backend has no
     permission bits of its own, so the overlay is reserved for an
     explicit chmod, where the guest asked for exactly that.
@@ -377,9 +316,23 @@ class HostFs:
         # there; mirrors mount/core.py.
         self._uid = _real_os.getuid() if hasattr(_real_os, "getuid") else 0
         self._gid = _real_os.getgid() if hasattr(_real_os, "getgid") else 0
+        self._descriptors = Descriptors(self._adapter, self._host, files.links)
+
+    @property
+    def files(self) -> Files:
+        """The workspace's file API this entry point answers through."""
+        return self._files
+
+    @property
+    def descriptors(self) -> Descriptors:
+        """The descriptors ``open`` handed out for mounted paths."""
+        return self._descriptors
 
     def _virtual(self, path: Any) -> str | None:
-        """The mounted virtual path this argument names, else None.
+        """The mounted virtual path this argument names, else None. A
+        descriptor ``open`` handed out names the path it opened, so the
+        calls that take one in the path slot (``stat``, ``chmod``,
+        ``utime``) reach the mount.
 
         A backend serving an op is answered None whatever it spelled:
         the path it is reaching for is a physical one, and on a disk
@@ -390,8 +343,13 @@ class HostFs:
         Args:
             path (Any): whatever the caller passed in the path slot.
         """
+        if in_host_io():
+            return None
+        desc = self._descriptors.get(path)
+        if desc is not None:
+            return desc.path
         spelled = _spelled(path)
-        if spelled is None or in_host_io():
+        if spelled is None:
             return None
         return spelled if self._files.is_mounted(spelled) else None
 
@@ -413,53 +371,23 @@ class HostFs:
             prefix == owner for prefix, _ in self._files.writable_mounts()
         )
 
-    def _result(
-        self,
-        virtual: str,
-        mode: int,
-        size: int,
-        nlink: int,
-        uid: int | None,
-        gid: int | None,
-        atime_ns: int | None,
-        mtime_ns: int | None,
-    ) -> _real_os.stat_result:
-        """One `os.stat_result` from the fields a stat row carries.
+    def _stat_of(self, virtual: str, st: VFSStat) -> _real_os.stat_result:
+        """One `os.stat_result` for a row, by the rule every runtime
+        shares; an owner the row lacks is the host process's own.
 
         Args:
             virtual (str): the path being statted (the inode's name).
-            mode (int): st_mode, type bits included.
-            size (int): st_size.
-            nlink (int): st_nlink.
-            uid (int | None): owner from the overlay; None falls back to
-                the host's own uid.
-            gid (int | None): group, read the same way.
-            atime_ns (int | None): access time, None for unknown.
-            mtime_ns (int | None): modification time, None for unknown.
+            st (VFSStat): the mount's row for it.
         """
-        stamp = self._now if mtime_ns is None else mtime_ns / 1_000_000_000
         return stat_result(
-            virtual,
-            owner_prefix(self._files.mount_prefixes(), virtual) or "/",
-            mode,
-            size,
-            nlink,
-            self._uid if uid is None else uid,
-            self._gid if gid is None else gid,
-            stamp if atime_ns is None else atime_ns / 1_000_000_000,
-            stamp,
-        )
-
-    def _stat_of(self, virtual: str, st: VFSStat) -> _real_os.stat_result:
-        return self._result(
-            virtual,
-            st.mode,
-            st.size,
-            2 if st.is_dir else 1,
-            st.uid,
-            st.gid,
-            st.atime_ns,
-            st.mtime_ns,
+            posix_stat(
+                st,
+                virtual,
+                owner_prefix(self._files.mount_prefixes(), virtual) or "/",
+                uid=self._uid,
+                gid=self._gid,
+                unknown_ns=int(self._now * 1_000_000_000),
+            )
         )
 
     def _link_target(self, virtual: str) -> str | None:
@@ -480,16 +408,27 @@ class HostFs:
             raise
 
     def _exists(self, virtual: str) -> bool:
+        """Whether ``virtual`` is there. Only an absence answers no: a
+        refused or failed stat propagates rather than read as missing.
+
+        Args:
+            virtual (str): the mounted path.
+        """
         try:
             self._adapter.stat(virtual)
             return True
-        except (OSError, ValueError):
+        except ABSENT_PATH:
             return False
 
     def _isdir(self, virtual: str) -> bool:
+        """Whether ``virtual`` is a directory, absence reading as no.
+
+        Args:
+            virtual (str): the mounted path.
+        """
         try:
             return self._adapter.stat(virtual).is_dir
-        except (OSError, ValueError):
+        except ABSENT_PATH:
             return False
 
     def listdir(self, path: Any = None) -> list[str] | list[bytes]:
@@ -603,6 +542,8 @@ class HostFs:
         dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> _real_os.stat_result:
+        if self._descriptors.get(path) is not None:
+            return self.fstat(path)
         virtual = self._virtual(path)
         if virtual is None:
             return cast(
@@ -646,15 +587,14 @@ class HostFs:
         if row is None:
             # A facade built without a link table: the target string is
             # the only fact there is.
-            return self._result(
+            return self._stat_of(
                 virtual,
-                LINK_MODE,
-                len(target.encode()),
-                1,
-                None,
-                None,
-                None,
-                None,
+                VFSStat(
+                    size=len(target.encode()),
+                    is_dir=False,
+                    mode=LINK_MODE,
+                    is_link=True,
+                ),
             )
         return self._stat_of(virtual, stat_row(row))
 
@@ -884,6 +824,9 @@ class HostFs:
             access, stamp = (float(value) for value in times)
         else:
             access = stamp = time.time()
+        # Writes a descriptor still owes land first, or landing them at
+        # its close would stamp over the times set here.
+        self._descriptors.land_path(virtual, follow_symlinks)
         self._adapter.setattr(
             virtual,
             atime=timestamp_iso(access),
@@ -942,7 +885,13 @@ class HostFs:
                 return
             raise eexist(virtual)
         for path in reversed(missing):
-            self._adapter.mkdir(path)
+            try:
+                self._adapter.mkdir(path)
+            except FileExistsError:
+                # Another creator got there first, which an ancestor
+                # shrugs off as CPython's makedirs does.
+                if path == missing[0] and not (exist_ok and self._isdir(path)):
+                    raise
 
     def rmdir(self, path: Any, *, dir_fd: int | None = None) -> None:
         virtual = self._virtual(path)
@@ -984,7 +933,9 @@ class HostFs:
         if virtual is None:
             self._host.remove(path, dir_fd=dir_fd)
             return
+        held = self._descriptors.hold(virtual)
         self._adapter.unlink(virtual)
+        self._descriptors.keep(held)
 
     def unlink(self, path: Any, *, dir_fd: int | None = None) -> None:
         self.remove(path, dir_fd=dir_fd)
@@ -1047,7 +998,14 @@ class HostFs:
                 None,
                 _spelled(dst),
             )
+        # A rename onto its own name changes nothing, its descriptors
+        # included.
+        walked = self._descriptors.walked
+        same = walked(dest, False) == walked(source, False)
+        held = [] if same else self._descriptors.hold(dest)
         self._adapter.rename(source, dest)
+        self._descriptors.keep(held)
+        self._descriptors.moved(source, dest)
 
     def renames(self, old: Any, new: Any) -> None:
         """Rename, creating the destination's parents and pruning the
@@ -1121,6 +1079,9 @@ class HostFs:
         return self._adapter.readlink(virtual)
 
     def truncate(self, path: Any, length: int) -> None:
+        if self._descriptors.get(path) is not None:
+            self.ftruncate(path, length)
+            return
         virtual = self._virtual(path)
         if virtual is None:
             self._host.truncate(path, length)
@@ -1128,7 +1089,267 @@ class HostFs:
         # truncate(2) names a file that is there; the op creates a
         # missing one, as GNU truncate does without -c.
         self._adapter.stat(virtual)
+        self._descriptors.land_path(virtual)
         self._adapter.truncate(virtual, length)
+
+    def open(
+        self,
+        path: Any,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        """Open a path by open(2) flags; a mounted one gets a descriptor
+        of this router's, which the descriptor calls answer for. ``mode``
+        is dropped on a mount, as for mkdir.
+
+        Args:
+            path (Any): the path to open.
+            flags (int): the ``os.O_*`` flags.
+            mode (int): permission bits for a create.
+            dir_fd (int | None): honored only off a mount.
+        """
+        virtual = self._virtual(path)
+        if virtual is None:
+            return cast(int, self._host.open(path, flags, mode, dir_fd=dir_fd))
+        return self._descriptors.open(virtual, flags)
+
+    def close(self, fd: int) -> None:
+        self._descriptors.close(fd)
+
+    def read(self, fd: int, n: int) -> bytes:
+        return self._descriptors.file(fd, True, False).read(n)
+
+    def write(self, fd: int, data: Any) -> int:
+        payload = bytes(data)
+        self._descriptors.file(fd, False, True).write(payload)
+        return len(payload)
+
+    def pread(self, fd: int, n: int, offset: int) -> bytes:
+        handle = self._descriptors.file(fd, True, False)
+        if offset < 0:
+            raise fs_error(self._descriptors[fd].path, FsCondition.EINVAL)
+        return handle.pread(offset, n)
+
+    def pwrite(self, fd: int, data: Any, offset: int) -> int:
+        payload = bytes(data)
+        handle = self._descriptors.file(fd, False, True)
+        if offset < 0:
+            raise fs_error(self._descriptors[fd].path, FsCondition.EINVAL)
+        # Linux appends a positioned write on an O_APPEND descriptor,
+        # whatever the offset, and leaves the position where it was.
+        handle.pwrite(handle.size if handle.append else offset, payload)
+        return len(payload)
+
+    def readv(self, fd: int, buffers: Any) -> int:
+        views = _views(buffers)
+        return _scatter(self.read(fd, sum(map(len, views))), views)
+
+    def preadv(
+        self, fd: int, buffers: Any, offset: int, flags: int = 0
+    ) -> int:
+        """Read into ``buffers`` at ``offset``; -1 reads at the
+        descriptor's position and moves it, as Linux's preadv does.
+
+        Args:
+            fd (int): the descriptor.
+            buffers (Any): the writable buffers to fill, in order.
+            offset (int): where the read starts, or -1.
+            flags (int): the ``RWF_*`` flags, none of which a mount
+                answers, so any refuses rather than being dropped.
+        """
+        self._no_flags(fd, flags)
+        views = _views(buffers)
+        size = sum(map(len, views))
+        if offset == -1:
+            return _scatter(self.read(fd, size), views)
+        return _scatter(self.pread(fd, size, offset), views)
+
+    def writev(self, fd: int, buffers: Any) -> int:
+        return self.write(fd, b"".join(map(bytes, buffers)))
+
+    def pwritev(
+        self, fd: int, buffers: Any, offset: int, flags: int = 0
+    ) -> int:
+        """Write ``buffers`` at ``offset``; -1 writes at the descriptor's
+        position and moves it, as Linux's pwritev does.
+
+        Args:
+            fd (int): the descriptor.
+            buffers (Any): the buffers to write, in order.
+            offset (int): where the write starts, or -1.
+            flags (int): the ``RWF_*`` flags, none of which a mount
+                answers (``RWF_APPEND`` included), so any refuses rather
+                than being dropped.
+        """
+        self._no_flags(fd, flags)
+        payload = b"".join(map(bytes, buffers))
+        if offset == -1:
+            return self.write(fd, payload)
+        return self.pwrite(fd, payload, offset)
+
+    def _no_flags(self, fd: int, flags: int) -> None:
+        """Refuse a vectored call's flags, ENOTSUP as Linux answers one it
+        does not support.
+
+        Args:
+            fd (int): the descriptor.
+            flags (int): the ``RWF_*`` flags.
+        """
+        if flags:
+            raise fs_error(self._descriptors[fd].path, FsCondition.ENOTSUP)
+
+    def lseek(self, fd: int, pos: int, how: int) -> int:
+        desc = self._descriptors[fd]
+        if desc.handle is None:
+            return 0
+        moved = desc.handle.seek(pos, how)
+        if moved is None:
+            raise fs_error(desc.path, FsCondition.EINVAL)
+        return moved
+
+    def fstat(self, fd: int) -> _real_os.stat_result:
+        desc = self._descriptors[fd]
+        st = self._adapter.stat(desc.path)
+        if desc.handle is not None:
+            st = dataclasses.replace(st, size=desc.handle.size)
+        return self._stat_of(desc.path, st)
+
+    def fsync(self, fd: int) -> None:
+        self._descriptors.land(self._descriptors[fd])
+
+    def ftruncate(self, fd: int, length: int) -> None:
+        self._descriptors.file(fd, False, True).truncate(length)
+
+    # A descriptor in a path slot names its file, so these are the path
+    # calls; a mount keeps no metadata apart from the data a sync lands.
+    fchmod = chmod
+    fchown = chown
+    fdatasync = fsync
+
+    def fdopen(self, fd: int, *args: Any, **kwargs: Any) -> Any:
+        """A file object over a mounted descriptor, whose reads and writes
+        go through the handle its ``open`` made.
+
+        Args:
+            fd (int): the descriptor.
+            *args (Any): the rest of ``io.open``'s arguments.
+            **kwargs (Any): the same, by name.
+        """
+        return self._descriptors.stream(fd, *args, **kwargs)
+
+
+# The path argument each ``*dir_fd`` keyword anchors, by position.
+_ANCHORS: tuple[tuple[str, int], ...] = (
+    ("dir_fd", 0),
+    ("src_dir_fd", 0),
+    ("dst_dir_fd", 1),
+)
+
+
+def _anchored(router: HostFs, verb: str) -> Callable[..., Any]:
+    """`verb` through the entry point, a relative path under a mounted
+    directory descriptor first resolved against it, as openat(2) does.
+
+    Args:
+        router (HostFs): the entry point.
+        verb (str): the os name being wrapped.
+    """
+    call = syscall(getattr(router, verb))
+
+    def anchored(*args: Any, **kwargs: Any) -> Any:
+        given = list(args)
+        for key, index in _ANCHORS:
+            # A symlink's dir_fd anchors the link it makes, not its target.
+            at = 1 if verb == "symlink" and key == "dir_fd" else index
+            desc = router.descriptors.get(kwargs.get(key))
+            spelled = _spelled(given[at]) if at < len(given) else None
+            if desc is None or spelled is None or posixpath.isabs(spelled):
+                continue
+            # An empty name is no entry in the directory, not the
+            # directory itself.
+            if not spelled:
+                raise FileNotFoundError(
+                    errno.ENOENT, _real_os.strerror(errno.ENOENT), spelled
+                )
+            # Joined as spelled: the dispatch resolves the dots, and its
+            # walk refuses a missing directory before a `..`, as the
+            # kernel's does.
+            given[at] = posixpath.join(desc.path, spelled)
+            del kwargs[key]
+        return call(*given, **kwargs)
+
+    return anchored
+
+
+def _views(buffers: Any) -> list[memoryview]:
+    """The byte views of the buffers a vectored read fills.
+
+    Args:
+        buffers (Any): the caller's writable buffers.
+    """
+    return [memoryview(buffer).cast("B") for buffer in buffers]
+
+
+def _scatter(data: bytes, views: list[memoryview]) -> int:
+    """Copy ``data`` across ``views`` in order, as readv(2) fills them.
+
+    Args:
+        data (bytes): what the read returned.
+        views (list[memoryview]): the buffers to fill.
+    """
+    at = 0
+    for view in views:
+        chunk = data[at : at + len(view)]
+        view[: len(chunk)] = chunk
+        at += len(chunk)
+    return at
+
+
+def _descriptor_refusal(
+    router: HostFs, verb: str, params: tuple[str, ...]
+) -> Callable[..., Any]:
+    """`verb` refusing ENOTSUP when a descriptor it takes, by position or
+    by name, is one the routed ``open`` handed out, and the host's
+    otherwise.
+
+    Args:
+        router (HostFs): the entry point whose descriptors refuse.
+        verb (str): the os name being wrapped.
+        params (tuple[str, ...]): the names of its descriptor
+            parameters, in order, which lead its signature.
+    """
+    real = getattr(router._host, verb)
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        for at, param in enumerate(params):
+            fd = args[at] if at < len(args) else kwargs.get(param)
+            desc = router.descriptors.get(fd)
+            if desc is not None:
+                raise fs_error(desc.path, FsCondition.ENOTSUP)
+        return real(*args, **kwargs)
+
+    return refuse
+
+
+def _by_descriptor(router: HostFs, verb: str) -> Callable[..., Any]:
+    """`verb` answering for a descriptor the routed ``open`` handed out,
+    and leaving every other number to the host.
+
+    Args:
+        router (HostFs): the entry point whose descriptors answer.
+        verb (str): the os name being wrapped.
+    """
+    mounted = syscall(getattr(router, verb))
+    real = getattr(router._host, verb)
+
+    def call(fd: Any, *args: Any, **kwargs: Any) -> Any:
+        if router.descriptors.get(fd) is None:
+            return real(fd, *args, **kwargs)
+        return mounted(fd, *args, **kwargs)
+
+    return call
 
 
 def _refusal(
@@ -1195,12 +1416,10 @@ def _rebind(
     return copy
 
 
-def os_routing(
-    files: Files, loop: asyncio.AbstractEventLoop | None = None
-) -> dict[str, Callable[..., Any]]:
+def os_routing(router: HostFs) -> dict[str, Callable[..., Any]]:
     """Every `os` name that must not answer from the host, and what does.
 
-    Built from the two tables in ``host/constants``: a routed name gets
+    Built from the tables in ``host/constants``: a routed name gets
     the workspace entry point, a refused name gets that table's errno on a
     mounted path, and every other name is absent here, which the coverage
     test keeps to names that take a program or a string, never a file. A
@@ -1213,21 +1432,30 @@ def os_routing(
     whole family with it, which is how ten patched names left the rest
     of the module answering about paths it has never had.
 
+    The descriptor calls answer for the numbers the routed ``open``
+    hands out, or refuse them where a mount has nothing to answer with,
+    and pass every other number to the host.
+
     Args:
-        files (Files): the workspace's file API.
-        loop (asyncio.AbstractEventLoop | None): shared event loop.
+        router (HostFs): the entry point the names answer through, whose
+            descriptors ``open`` shares.
 
     Returns:
         dict[str, Callable[..., Any]]: os name to replacement function.
     """
-    router = HostFs(files, loop)
     table: dict[str, Callable[..., Any]] = {}
     for verb in ROUTED_CALLS:
         if hasattr(_real_os, verb):
-            table[verb] = syscall(getattr(router, verb))
+            table[verb] = _anchored(router, verb)
+    for verb in DESCRIPTOR_CALLS:
+        if hasattr(_real_os, verb):
+            table[verb] = _by_descriptor(router, verb)
     for verb, condition in REFUSED_CALLS.items():
         if hasattr(_real_os, verb):
             table[verb] = syscall(_refusal(router, verb, condition))
+    for verb, params in REFUSED_DESCRIPTOR_CALLS.items():
+        if hasattr(_real_os, verb):
+            table[verb] = syscall(_descriptor_refusal(router, verb, params))
     return table
 
 
@@ -1255,7 +1483,7 @@ def make_os_module(
     """
     patched = types.ModuleType("os")
     patched.__dict__.update(_real_os.__dict__)
-    patched.__dict__.update(os_routing(files, loop))
+    patched.__dict__.update(os_routing(HostFs(files, loop)))
     generic = _rebind(genericpath, {"os": patched})
     shared = {name: generic.__dict__[name] for name in genericpath.__all__}
     patched.__dict__["path"] = _rebind(posixpath, {"os": patched, **shared})

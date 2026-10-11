@@ -16,6 +16,7 @@ import dataclasses
 from collections.abc import Sequence
 
 from mirage.commands.builtin.find_parse import find_expr_tail
+from mirage.commands.builtin.generic.grep import directories_action
 from mirage.commands.builtin.generic.program import FILE_KEYS
 from mirage.commands.cli.walk import find_child, walk
 from mirage.commands.spec import SPECS, parse_command, parse_to_kwargs
@@ -54,13 +55,16 @@ CWD_DEFAULT_RAW = {
 
 # The path options whose file the handler itself reads or writes through
 # the dispatcher, keyed by command, valued by kwarg name: curl's -o and
-# -D, jq's --rawfile and --slurpfile. Like a program file, such a file is
-# no operand of the mount the line runs on, so it routes nothing: the line
-# runs where its positional operands (or the cwd) put it, and `-o` and
-# `-D` on two mounts, or `--slurpfile` over a process substitution, is not
-# cross-mount.
+# -D, jq's --rawfile and --slurpfile, rg's --ignore-file, and grep's
+# --exclude-from, which the executor reads with the pattern files. Like a
+# program file, such a file is no operand of the mount the line runs on, so
+# it routes nothing: the line runs where its positional operands (or the
+# cwd) put it, and `-o` and `-D` on two mounts, or `--slurpfile` over a
+# process substitution, is not cross-mount.
 DISPATCH_FLAG_KEYS: dict[str, tuple[str, ...]] = {
     "curl": ("output", "dump_header"),
+    "grep": ("exclude_from",),
+    "rg": ("ignore_file",),
     "jq": ("rawfile", "slurpfile"),
 }
 
@@ -109,8 +113,8 @@ def default_cwd_operand(
         # --type-list reads no path, so there is no cwd to walk.
         return None
     if cmd_name == "grep":
-        kwargs = parse_to_kwargs(parsed)
-        if kwargs.get("r") is not True and kwargs.get("R") is not True:
+        fl = FlagView(parse_to_kwargs(parsed), spec=spec)
+        if directories_action(fl) != "recurse":
             return None
     elif (
         cmd_name == "rg"

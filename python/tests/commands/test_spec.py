@@ -244,8 +244,8 @@ def test_grep_spec_recognizes_capital_I_for_ignore_binary():
         grep_spec, ["-RIl", "Base3\\|base3", "/r2/Review"], cwd="/"
     )
     assert parsed.flags.get("-I") is True
-    assert parsed.flags.get("-R") is True
-    assert parsed.flags.get("-l") is True
+    assert parsed.flags.get("--dereference-recursive") is True
+    assert parsed.flags.get("--files-with-matches") is True
     assert parsed.texts() == ["Base3\\|base3"]
     assert parsed.paths() == ["/r2/Review"]
 
@@ -361,9 +361,9 @@ def test_grep_spec_parses_correctly():
     parsed = parse_command(
         spec, ["-rni", "pattern", "/data/file.txt"], cwd="/"
     )
-    assert parsed.flags["-r"] is True
-    assert parsed.flags["-n"] is True
-    assert parsed.flags["-i"] is True
+    assert parsed.flags["--recursive"] is True
+    assert parsed.flags["--line-number"] is True
+    assert parsed.flags["--ignore-case"] is True
     assert parsed.args[0] == ("pattern", "str")
     assert parsed.args[1] == ("/data/file.txt", "path")
 

@@ -193,6 +193,52 @@
           }
         }
       ]
+    },
+    {
+      "id": "one_stat_whichever_runtime_asks",
+      "runtimes": [
+        "pyodide",
+        "quickjs",
+        "host"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {
+              "seed.txt": "seed\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "import os, stat\nos.mkdir('/data/newdir')\nwith open('/data/new.txt', 'w') as f:\n    f.write('x' * 1000)\na, b, d = os.stat('/data/new.txt'), os.stat('/data/seed.txt'), os.stat('/data/newdir')\nprint(a.st_ino != b.st_ino, a.st_ino == os.stat('/data/new.txt').st_ino)\nprint(a.st_nlink, d.st_nlink, a.st_blocks, a.st_blksize)\nprint(oct(stat.S_IMODE(a.st_mode)), oct(stat.S_IMODE(d.st_mode)))",
+            "js": "os.mkdir('/data/newdir')\nconst f = std.open('/data/new.txt', 'w')\nf.puts('x'.repeat(1000))\nf.close()\nconst [a] = os.stat('/data/new.txt')\nconst [b] = os.stat('/data/seed.txt')\nconst [d] = os.stat('/data/newdir')\nconsole.log(a.ino !== b.ino, a.ino === os.stat('/data/new.txt')[0].ino)\nconsole.log(a.nlink, d.nlink, a.blocks)\nconsole.log((a.mode & 0o777).toString(8), (d.mode & 0o777).toString(8))",
+            "node": "const fsp = require('node:fs').promises\nawait fsp.mkdir('/data/newdir')\nawait fsp.writeFile('/data/new.txt', 'x'.repeat(1000))\nconst a = await fsp.stat('/data/new.txt')\nconst b = await fsp.stat('/data/seed.txt')\nconst d = await fsp.stat('/data/newdir')\nconsole.log(a.ino !== b.ino, a.ino === (await fsp.stat('/data/new.txt')).ino)\nconsole.log(a.nlink, d.nlink, a.blocks, a.blksize)\nconsole.log((a.mode & 0o777).toString(8), (d.mode & 0o777).toString(8))"
+          },
+          "expect": {
+            "python": {
+              "exit": 0,
+              "stdout": "True True\n1 2 2 4096\n0o644 0o755\n"
+            },
+            "js": {
+              "exit": 0,
+              "stdout": "true true\n1 2 2\n644 755\n"
+            },
+            "node": {
+              "exit": 0,
+              "stdout": "true true\n1 2 2 4096\n644 755\n"
+            }
+          },
+          "expect_on": {
+            "quickjs@python": {
+              "stdout": "true true\n1 2 0\n0 0\n"
+            }
+          }
+        }
+      ]
     }
   ]
 }

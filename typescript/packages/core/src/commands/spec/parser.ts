@@ -489,20 +489,26 @@ function matchMixedCluster(tok: string, cs: CompiledSpec): MixedCluster | null {
 // A cluster of bool flags and digit options (`-d10`). For a DIGIT_OPTIONS
 // program the digits are option letters too, and getopt hands them over one
 // at a time into one number: every digit of the word joins it, wherever it
-// sits (`-1d0` is ten). Null when a character is neither or no digit is
-// present.
+// sits (`-1d0` is ten). A value option ends the cluster and takes the rest of
+// the word, as getopt reads it (`grep -1m2` is `-1 -m2`): `rest` is that
+// option and what follows it as a token of its own. Null when a character is
+// neither or no digit is present.
 function matchDigitCluster(
   tok: string,
   cs: CompiledSpec,
-): { bools: string[]; digits: string } | null {
+): { bools: string[]; digits: string; rest: string | null } | null {
   const bools: string[] = []
   let digits = ''
-  for (const ch of tok.slice(1)) {
+  const chars = tok.slice(1)
+  for (let idx = 0; idx < chars.length; idx++) {
+    const ch = chars[idx] ?? ''
     if (ch >= '0' && ch <= '9') digits += ch
     else if (cs.boolSpellings.has(`-${ch}`)) bools.push(`-${ch}`)
+    else if (digits !== '' && cs.valueSpellings.includes(`-${ch}`))
+      return { bools, digits, rest: `-${chars.slice(idx)}` }
     else return null
   }
-  return digits === '' ? null : { bools, digits }
+  return digits === '' ? null : { bools, digits, rest: null }
 }
 
 /**
@@ -706,7 +712,7 @@ export function parseCommand(
   }
 
   while (i < scanArgv.length) {
-    const tok = scanArgv[i]
+    let tok = scanArgv[i]
     if (tok === undefined) break
     // Keep option words literal: the shape heuristic would treat
     // `-o/data/out` as a relative path. Synthesized tar flags mark the
@@ -963,8 +969,11 @@ export function parseCommand(
         for (const name of digitCluster.bools) setBoolFlag(flags, cs, name)
         Reflect.deleteProperty(flags, cs.numericDest)
         flags[cs.numericDest] = digitCluster.digits
-        i += 1
-        continue
+        if (digitCluster.rest === null) {
+          i += 1
+          continue
+        }
+        tok = digitCluster.rest
       }
 
       let allBool = true

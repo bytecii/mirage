@@ -108,7 +108,10 @@ class MatchOffsets:
 
 
 def prefix_of(
-    number: int | None, offset: int | None, selected: bool = True
+    number: int | None,
+    offset: int | None,
+    selected: bool = True,
+    width: int = 0,
 ) -> str:
     """grep's line-number and byte-offset fields, in GNU's fixed order.
 
@@ -121,11 +124,12 @@ def prefix_of(
         number (int | None): the line number, None when -n is off.
         offset (int | None): the byte offset, None when -b is off.
         selected (bool): False for a context line.
+        width (int): the width grep -T pads each number to.
     """
     separator = ":" if selected else "-"
     fields = ""
     if number is not None:
-        fields += f"{number}{separator}"
+        fields += f"{number:>{width}}{separator}"
     if offset is not None:
-        fields += f"{offset}{separator}"
+        fields += f"{offset:>{width}}{separator}"
     return fields

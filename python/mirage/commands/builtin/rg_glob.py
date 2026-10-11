@@ -326,6 +326,39 @@ class Overrides:
         return Verdict.NONE
 
 
+class IgnoreRules:
+    """--ignore-file's rules: gitignore lines rooted at the working
+    directory, the last one that matches a walked path deciding it, a
+    plain one ignoring it and a ``!`` one keeping it.
+
+    Args:
+        lines (Sequence[str]): the rules, in the order the files gave them.
+    """
+
+    def __init__(self, lines: Sequence[str] = ()) -> None:
+        parsed = [override_glob(line, False) for line in lines]
+        self._globs = tuple(g for g in parsed if g is not None)
+
+    @property
+    def empty(self) -> bool:
+        """Whether the files held no rule."""
+        return not self._globs
+
+    def verdict(self, path: str, is_dir: bool) -> Verdict:
+        """What the rules say about one walked path.
+
+        Args:
+            path (str): the path as ripgrep matches it (``walk_candidate``).
+            is_dir (bool): whether the path is a directory.
+        """
+        for glob in reversed(self._globs):
+            if glob.dir_only and not is_dir:
+                continue
+            if glob.matcher.fullmatch(path):
+                return Verdict.IGNORE if glob.keep else Verdict.WHITELIST
+        return Verdict.NONE
+
+
 def walk_candidate(shown: str, cwd: str) -> str:
     """The path ripgrep matches a walked entry's globs against.
 

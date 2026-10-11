@@ -84,7 +84,7 @@ async function runGrep(
 
 describe('grepGeneric recursive warnings', () => {
   it('grep -r threads a stderr warning when a file read fails', async () => {
-    const [out, io] = await runGrep({ r: true })
+    const [out, io] = await runGrep({ recursive: true })
     expect(await decode(out)).toBe('/data/a.txt:alice\n')
     expect(io.stderr).not.toBeUndefined()
     expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: Permission denied\n')
@@ -92,7 +92,7 @@ describe('grepGeneric recursive warnings', () => {
   })
 
   it('grep -rl threads a stderr warning when a file read fails', async () => {
-    const [out, io] = await runGrep({ r: true, args_l: true })
+    const [out, io] = await runGrep({ recursive: true, files_with_matches: true })
     expect(await decode(out)).toBe('/data/a.txt\n')
     expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: Permission denied\n')
   })
@@ -100,14 +100,17 @@ describe('grepGeneric recursive warnings', () => {
 
 describe('grepGeneric operand errors', () => {
   it('grep -rq skips errors after its first match', async () => {
-    const [out, io] = await runGrep({ r: true, q: true })
+    const [out, io] = await runGrep({ recursive: true, quiet: true })
     expect(await decode(out)).toBe('')
     expect(await decode(io.stderr)).toBe('')
     expect(io.exitCode).toBe(0)
   })
 
   it('grep -rq lets a match outrank an earlier failed operand', async () => {
-    const [, io] = await runGrep({ r: true, q: true }, [spec('/data/bad.txt'), spec('/data')])
+    const [, io] = await runGrep({ recursive: true, quiet: true }, [
+      spec('/data/bad.txt'),
+      spec('/data'),
+    ])
     expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: Permission denied\n')
     expect(io.exitCode).toBe(0)
   })
@@ -126,7 +129,7 @@ describe('grepGeneric excluded entries', () => {
       'grep',
       [spec('/data')],
       ['alice'],
-      opts({ r: true, exclude_dir: ['0ghost'] }),
+      opts({ recursive: true, exclude_dir: ['0ghost'] }),
       probe,
       listing,
       stream,
@@ -141,18 +144,18 @@ describe('grepGeneric excluded entries', () => {
 
 describe('labelled', () => {
   it.each([
-    [{ r: true }, { r: true, H: true }],
+    [{ recursive: true }, { recursive: true, with_filename: true }],
     [
-      { r: true, h: true },
-      { r: true, h: true },
+      { recursive: true, no_filename: true },
+      { recursive: true, no_filename: true },
     ],
     [
-      { H: true, h: true },
-      { H: true, h: true },
+      { with_filename: true, no_filename: true },
+      { with_filename: true, no_filename: true },
     ],
     [
-      { h: true, H: true },
-      { h: true, H: true },
+      { no_filename: true, with_filename: true },
+      { no_filename: true, with_filename: true },
     ],
   ])('asks for filenames only when the line did not decide: %j', (flags, expected) => {
     const out = labelled(opts(flags))
@@ -184,9 +187,9 @@ describe('grepGeneric failures that are not filesystem errors', () => {
   it.each([false, true])(
     'propagate out of a recursive walk (suppressed=%s)',
     async (noMessages) => {
-      await expect(scanned([spec('/data')], { r: true, no_messages: noMessages })).rejects.toThrow(
-        'token expired',
-      )
+      await expect(
+        scanned([spec('/data')], { recursive: true, no_messages: noMessages }),
+      ).rejects.toThrow('token expired')
     },
   )
 
@@ -206,8 +209,8 @@ describe('grepGeneric no messages', () => {
     [['/data'], {}, '', 2],
     [['/data/bad.txt'], {}, '', 2],
     [['/missing', '/data/a.txt'], {}, '/data/a.txt:alice\n', 2],
-    [['/missing', '/data/a.txt'], { q: true }, '', 0],
-    [['/data'], { r: true }, '/data/a.txt:alice\n', 2],
+    [['/missing', '/data/a.txt'], { quiet: true }, '', 0],
+    [['/data'], { recursive: true }, '/data/a.txt:alice\n', 2],
   ])('suppresses diagnostics for %j, preserving status', async (paths, flags, expected, status) => {
     const probe = (p: PathSpec): Promise<FileStat> =>
       p.virtual === '/missing'
@@ -267,7 +270,7 @@ it.each([['/data/a.txt'], ['/data/a.txt', '/data/b.txt'], ['/data']])(
       'grep',
       paths.map(spec),
       ['alice'],
-      opts({ no_messages: true, r: true }),
+      opts({ no_messages: true, recursive: true }),
       stat,
       readdir,
       broken,
@@ -293,7 +296,7 @@ it.each(['stat', 'readdir', 'read'] as const)(
       'grep',
       [spec('/data')],
       ['alice'],
-      opts({ no_messages: true, r: true }),
+      opts({ no_messages: true, recursive: true }),
       probe,
       listing,
       broken,
@@ -312,7 +315,7 @@ describe('grepGeneric streaming results', () => {
   it.each<[string[], Record<string, boolean>]>([
     [['/data/a.txt'], {}],
     [['/data/a.txt', '/data/b.txt'], {}],
-    [['/data'], { r: true }],
+    [['/data'], { recursive: true }],
   ])('publishes status before yielding and on early close for %j', async (paths, flags) => {
     for (const missing of [false, true]) {
       const closed: string[] = []
@@ -379,7 +382,7 @@ describe('grepGeneric streaming results', () => {
       'grep',
       [spec('/data/bad.txt'), spec('/data/a.txt')],
       ['*alice'],
-      opts({ E: true }),
+      opts({ extended_regexp: true }),
       stat,
       readdir,
       stream,

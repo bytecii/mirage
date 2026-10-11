@@ -35,17 +35,32 @@ import {
 } from '../grep_pattern.ts'
 import { exitCodeFor } from '../grep_scan.ts'
 import { BINARY_EXTENSIONS, getExtension } from '../../../utils/filetype.ts'
-import { grepInput, type FlagSet } from '../grep_binary.ts'
+import { grepInput, nameEnd, type FlagSet } from '../grep_binary.ts'
 import { fileAdmitted, dirAdmitted, parseFileGlobs } from '../grep_select.ts'
 import { resolveSource } from '../utils/stream.ts'
 import { UsageError } from '../../errors.ts'
 import { SYNOPSES } from '../../spec/synopsis.ts'
-import { usageHint } from '../../spec/usage.ts'
+import { argmatchLine, argmatchValidBlock, usageHint } from '../../spec/usage.ts'
+import { argmatch } from '../../spec/argmatch.ts'
 
 const ENC = new TextEncoder()
 // GNU grep with no pattern prints its synopsis and the help hint, exit 2
 // (grep 3.11; the same two lines follow `option requires an argument`).
 const GREP_NO_PATTERN = `Usage: ${SYNOPSES.grep ?? ''}\n${usageHint('grep')}`
+// What --directories takes, an argmatch table: a prefix names one.
+const DIRECTORIES = ['read', 'recurse', 'skip']
+const DEVICES = ['read', 'skip']
+// The types -D skip passes over; stdin is read whatever it is.
+const DEVICE_TYPES: ReadonlySet<FileType> = new Set([
+  FileType.CHAR_DEVICE,
+  FileType.BLOCK_DEVICE,
+  FileType.FIFO,
+  FileType.SOCKET,
+])
+const STDIN_LABEL = '(standard input)'
+const UNIX_BYTE_OFFSETS = 'grep: warning: --unix-byte-offsets (-u) is obsolete\n'
+// What xstrtoimax takes as -m's count: blanks, a sign, then digits.
+const MAX_COUNT = /^[ \t\n\v\f\r]*[+-]?[0-9]+$/
 type Stat = (p: PathSpec) => Promise<FileStat>
 type Readdir = (p: PathSpec) => Promise<string[]>
 type Stream = (p: PathSpec) => AsyncIterable<Uint8Array>
@@ -58,10 +73,88 @@ function binaryMode(fl: FlagView): string {
     else if (name === 'binary_files') {
       mode = fl.asStr('binary_files') ?? 'binary'
       if (!['binary', 'text', 'without-match'].includes(mode))
-        throw new Error('grep: unknown binary-files type')
+        throw new UsageError('grep: unknown binary-files type')
     }
   }
   return mode
+}
+
+/**
+ * What grep does with a directory: read, recurse or skip. -r and -R are
+ * --directories=recurse, so the last of the three on the line wins (grep
+ * 3.11: `grep -r -d skip` skips, `-d skip -r` recurses). A word argmatch names
+ * none of the three by comes back as typed; `checkActions` refuses it.
+ */
+export function directoriesAction(fl: FlagView): string {
+  let action = 'read'
+  for (const name of fl.typedOrder('recursive', 'dereference_recursive', 'directories')) {
+    if (name !== 'directories') {
+      if (fl.asBool(name)) action = 'recurse'
+      continue
+    }
+    const word = fl.asStr(name) ?? ''
+    const match = argmatch(word, DIRECTORIES)
+    action = match.matched ? match.word : word
+  }
+  return action
+}
+
+/**
+ * Refuse a -d or -D word as GNU does, each one typed and not only the last:
+ * its option loop stops at the first bad one. A -d word argmatch names no
+ * action by is gnulib's refusal and grep's usage, exit 1; -D takes only the
+ * exact words, exit 2.
+ */
+function checkActions(fl: FlagView): void {
+  for (const [name, value] of fl.occurrences('directories', 'devices')) {
+    const word = String(value)
+    if (name === 'devices') {
+      if (!DEVICES.includes(word)) throw new UsageError('grep: unknown devices method')
+      continue
+    }
+    const match = argmatch(word, DIRECTORIES)
+    if (!match.matched)
+      throw new UsageError(
+        `${argmatchLine('grep', '--directories', word, match.kind)}\n` +
+          `${argmatchValidBlock(DIRECTORIES)}\n${GREP_NO_PATTERN}`,
+        1,
+      )
+  }
+}
+
+/**
+ * The line between context groups; null under --no-group-separator. The two
+ * options set one variable, so the later one wins.
+ */
+function groupSeparator(fl: FlagView): string | null {
+  let separator: string | null = '--'
+  for (const name of fl.typedOrder('group_separator', 'no_group_separator')) {
+    if (name === 'group_separator') separator = fl.asStr(name) ?? ''
+    else if (fl.asBool(name)) separator = null
+  }
+  return separator
+}
+
+/** -i (or -y) unless a later --no-ignore-case turns it off. */
+function ignoresCase(fl: FlagView): boolean {
+  const names = fl.typedOrder('ignore_case', 'no_ignore_case').filter((name) => fl.asBool(name))
+  return names[names.length - 1] === 'ignore_case'
+}
+
+/**
+ * What grep warns once for the line, before it reads a file: an obsolete -u,
+ * then the pattern's compile-time warnings. Mirrors Python's `line_warnings`.
+ */
+export function lineWarnings(
+  fl: FlagView,
+  f: FlagSet,
+  pattern: string,
+  neverMatch: boolean,
+): string {
+  return (
+    (fl.asBool('unix_byte_offsets') ? UNIX_BYTE_OFFSETS : '') +
+    (neverMatch || f.fixedString ? '' : patternWarnings(pattern, f.syntax))
+  )
 }
 
 /** One -A/-B/-C value, refused the way GNU refuses it. */
@@ -79,6 +172,17 @@ function contextLength(fl: FlagView, name: string): number | undefined {
   return value
 }
 
+/**
+ * -m as GNU reads it (xstrtoimax): leading blanks and a sign are allowed, a
+ * negative count is no limit, and anything else is refused.
+ */
+export function maxCount(fl: FlagView): number | null {
+  const raw = fl.asStr('max_count')
+  if (raw !== undefined && !MAX_COUNT.test(raw)) throw new UsageError('grep: invalid max count')
+  const count = raw === undefined ? fl.asInt('max_count') : Number(raw.trim())
+  return count === undefined || count < 0 ? null : count
+}
+
 /** The winning filename flag: true for -H, false for -h, null for neither. */
 // [-l, -L]: which file-listing mode wins, the later one on the line. GNU's
 // -l and -L set one variable (`list_files`) so the last typed wins: `grep -l
@@ -86,16 +190,16 @@ function contextLength(fl: FlagView, name: string): number | undefined {
 // (measured on grep 3.11).
 export function listingMode(fl: FlagView): [boolean, boolean] {
   let winner: string | null = null
-  for (const name of fl.typedOrder('args_l', 'files_without_match')) {
+  for (const name of fl.typedOrder('files_with_matches', 'files_without_match')) {
     if (fl.asBool(name)) winner = name
   }
-  return [winner === 'args_l', winner === 'files_without_match']
+  return [winner === 'files_with_matches', winner === 'files_without_match']
 }
 
 export function filenameMode(fl: FlagView): boolean | null {
   let mode: boolean | null = null
-  for (const name of fl.typedOrder('H', 'h')) {
-    if (fl.asBool(name)) mode = name === 'H'
+  for (const name of fl.typedOrder('with_filename', 'no_filename')) {
+    if (fl.asBool(name)) mode = name === 'with_filename'
   }
   return mode
 }
@@ -108,7 +212,7 @@ export function filenameMode(fl: FlagView): boolean | null {
  */
 export function labelled(opts: CommandOpts): CommandOpts {
   if (filenameMode(new FlagView(opts.flags, specOf('grep'))) !== null) return opts
-  return { ...opts, flags: { ...opts.flags, H: true } }
+  return { ...opts, flags: { ...opts.flags, with_filename: true } }
 }
 
 function reason(error: unknown): string {
@@ -122,55 +226,50 @@ export function parseFlags(fl: FlagView): FlagSet {
   // GNU checks each context option as it is read, so the first bad one on
   // the line is the one named.
   const contexts = new Map<string, number | undefined>()
-  for (const name of fl.typedOrder('A', 'B', 'C')) contexts.set(name, contextLength(fl, name))
-  const aCtx = contexts.get('A')
-  const bCtx = contexts.get('B')
-  const cCtx = contexts.get('C')
+  for (const name of fl.typedOrder('after_context', 'before_context', 'context'))
+    contexts.set(name, contextLength(fl, name))
+  const aCtx = contexts.get('after_context')
+  const bCtx = contexts.get('before_context')
+  const cCtx = contexts.get('context')
+  checkActions(fl)
+  const directories = directoriesAction(fl)
   return {
     binaryMode: mode,
-    recursive: fl.asBool('r') || fl.asBool('R'),
+    recursive: directories === 'recurse',
+    skipDirectories: directories === 'skip',
+    skipDevices: fl.asStr('devices') === 'skip',
     filters: {
       fileGlobs: parseFileGlobs(fl),
       excludeDir: fl.asList('exclude_dir'),
       text: mode === 'text',
     },
-    ignoreCase: fl.asBool('i'),
-    invert: fl.asBool('v'),
-    lineNumbers: fl.asBool('n'),
+    ignoreCase: ignoresCase(fl),
+    invert: fl.asBool('invert_match'),
+    lineNumbers: fl.asBool('line_number'),
     byteOffsets: fl.asBool('byte_offset'),
-    countOnly: fl.asBool('c'),
+    countOnly: fl.asBool('count'),
     filesOnly,
     filesWithoutMatch,
-    wholeWord: fl.asBool('w'),
+    wholeWord: fl.asBool('word_regexp'),
     lineRegexp: fl.asBool('line_regexp'),
-    fixedString: fl.asBool('F'),
+    fixedString: fl.asBool('fixed_strings'),
     // grep reads a basic expression unless -E or -P says otherwise; -G asks
     // for the default explicitly.
     syntax: matcherSyntax(fl),
-    onlyMatching: fl.asBool('o'),
-    maxCount: fl.asInt('m') ?? null,
-    quiet: fl.asBool('q'),
+    onlyMatching: fl.asBool('only_matching'),
+    maxCount: maxCount(fl),
+    quiet: fl.asBool('quiet'),
     noMessages: fl.asBool('no_messages'),
     withFilename: filename === true,
     noFilename: filename === false,
-    afterContext: aCtx ?? cCtx ?? 0,
-    beforeContext: bCtx ?? cCtx ?? 0,
+    afterContext: aCtx ?? cCtx ?? null,
+    beforeContext: bCtx ?? cCtx ?? null,
+    nullData: fl.asBool('null_data'),
+    null: fl.asBool('null'),
+    initialTab: fl.asBool('initial_tab'),
+    groupSeparator: groupSeparator(fl),
+    label: fl.asStr('label') ?? STDIN_LABEL,
   }
-}
-
-/**
- * Whether grep's output shows -A/-B/-C context. Only printed lines carry it:
- * -c, -l, -L and -q print none, and -o drops it.
- */
-export function printsContext(f: FlagSet): boolean {
-  return (
-    (f.afterContext > 0 || f.beforeContext > 0) &&
-    !f.countOnly &&
-    !f.filesOnly &&
-    !f.filesWithoutMatch &&
-    !f.quiet &&
-    !f.onlyMatching
-  )
 }
 
 export async function grepGeneric(
@@ -186,6 +285,16 @@ export async function grepGeneric(
   const operandStream = stdinStream(stream, opts.stdin)
   stream = (path) => guardInput(operandStream(path), opts)
   const fl = new FlagView(opts.flags, specOf('grep'))
+  // GNU refuses a bad option value in its option loop, before it looks for a
+  // pattern.
+  let f: FlagSet
+  try {
+    f = parseFlags(fl)
+  } catch (error) {
+    if (!(error instanceof Error)) throw error
+    const exitCode = error instanceof UsageError ? error.exitCode : 2
+    return [null, new IOResult({ exitCode, stderr: ENC.encode(error.message + '\n') })]
+  }
   const resolution = await resolvePattern(name, texts, opts.flags, paths, opts.mountPrefix, stream)
   if (resolution.error !== null || resolution.pattern === null)
     return [
@@ -195,13 +304,6 @@ export async function grepGeneric(
         stderr: ENC.encode(resolution.error ?? `${GREP_NO_PATTERN}\n`),
       }),
     ]
-  let f: FlagSet
-  try {
-    f = parseFlags(fl)
-  } catch (error) {
-    if (!(error instanceof Error)) throw error
-    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(error.message + '\n') })]
-  }
   if (resolution.neverMatch) f.fixedString = false
   const utf8 = utf8Locale(opts.env)
   let pat: RegExp
@@ -221,8 +323,7 @@ export async function grepGeneric(
     if (!(error instanceof UsageError)) throw error
     return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(error.message + '\n') })]
   }
-  const warning =
-    resolution.neverMatch || f.fixedString ? '' : patternWarnings(resolution.pattern, f.syntax)
+  const warning = lineWarnings(fl, f, resolution.pattern, resolution.neverMatch)
   const warned = (): IOResult =>
     warning ? new IOResult({ stderr: ENC.encode(warning) }) : new IOResult()
   const io = warned()
@@ -236,7 +337,7 @@ export async function grepGeneric(
           source,
           pat,
           f,
-          '(standard input)',
+          f.label ?? STDIN_LABEL,
           f.withFilename && !f.noFilename,
           io,
           false,
@@ -284,12 +385,13 @@ export async function grepGeneric(
       return
     }
     if (info.type === FileType.DIRECTORY) {
+      if (f.skipDirectories === true) return
       if (!f.recursive) {
         warn(`${name}: ${p.rawPath}: Is a directory`)
         // GNU 3.11 still lists it under -L: nothing was read from it, so
         // nothing in it matched. -q suppresses the row like every other
         // normal output.
-        if (f.filesWithoutMatch && !f.quiet) yield ENC.encode(p.rawPath + '\n')
+        if (f.filesWithoutMatch && !f.quiet) yield ENC.encode(p.rawPath + nameEnd(f))
         return
       }
       for (const entry of entries) {
@@ -316,6 +418,7 @@ export async function grepGeneric(
       return
     }
     if (walked && info.type !== FileType.FILE) return
+    if (f.skipDevices === true && DEVICE_TYPES.has(info.type) && !isStdin(p)) return
     if (walked && !f.filters.text && BINARY_EXTENSIONS.has(getExtension(p.virtual) ?? '')) return
     if (!fileAdmitted(p.virtual, f.filters)) return
     const fileIO = new IOResult({ exitCode: 1 })
@@ -326,12 +429,13 @@ export async function grepGeneric(
           stream(p),
           pat,
           f,
-          operandLabel(p, '(standard input)'),
+          operandLabel(p, f.label ?? STDIN_LABEL),
           show,
           fileIO,
           printed,
           opts.signal,
           utf8,
+          info.type === FileType.FILE ? (info.size ?? null) : null,
         )) {
           updateStatus(fileIO)
           printed = true

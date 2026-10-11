@@ -1,14 +1,17 @@
-import { PATTERN_KEYS, mergePatternList } from '../grep_pattern.ts'
+import { mergePatternList } from '../grep_pattern.ts'
+import { parseFlags as grepFlags } from './grep.ts'
+import { parseFlags as rgFlags } from './rg.ts'
+import { UsageError } from '../../errors.ts'
 import { osErrorText } from '../rg_scan.ts'
 import { dispatchStat } from '../utils/paths.ts'
 import { isStdin, resolveSource } from '../utils/stream.ts'
 import { specOf } from '../../spec/index.ts'
-import { FlagView } from '../../spec/flag_view.ts'
+import { FlagView, flagOccurrences } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
 import { loadFailure } from '../../../core/jq/index.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
-import { decodeText } from '../../../shell/bytes.ts'
+import { decodeText, encodeText } from '../../../shell/bytes.ts'
 import { FileType, type PathSpec } from '../../../types.ts'
 import { eisdir, fsStrerror, isEisdir, isFsError } from '../../../errors/fs.ts'
 import { fsErrorLine } from '../../../errors/render.ts'
@@ -29,7 +32,7 @@ const RG_STDIN_SEARCHED =
 export const FILE_KEYS: Readonly<Record<string, string>> = {
   grep: 'file',
   rg: 'file',
-  zgrep: 'f',
+  zgrep: 'file',
   sed: 'f',
   awk: 'f',
   jq: 'from_file',
@@ -81,9 +84,92 @@ export async function readProgramFile(
   return materialize(data as ByteSource)
 }
 
-/** The invocation's program files, or an empty list for inline programs. */
+/**
+ * The invocation's program files, or an empty list for inline programs.
+ * grep's --exclude-from files count: they are read the same way, once, before
+ * routing.
+ */
 export function programFiles(name: string, bag: Record<string, FlagValue>): PathSpec[] {
-  return new FlagView(bag, specOf(name)).asPaths(FILE_KEYS[name] ?? 'f')
+  const fl = new FlagView(bag, specOf(name))
+  const files = fl.asPaths(FILE_KEYS[name] ?? 'f')
+  return name === 'grep' ? [...files, ...fl.asPaths('exclude_from')] : files
+}
+
+/**
+ * grep's --exclude-from files read into the globs they hold. gnulib's
+ * add_exclude_file takes one glob per line, trailing blanks dropped and blank
+ * lines skipped, and `-` is stdin (`source`, shared with -f). The globs stay
+ * under `exclude_from`, where the option stood among --include and --exclude.
+ * A file grep cannot read stops it before it searches anything, exit 2.
+ * Returns the flags, whether stdin was read, and the refusal. Mirrors
+ * Python's lower_exclude_from.
+ */
+/**
+ * Which of grep's -f and --exclude-from reads stdin: the first of them on the
+ * line to name it; the other then reads nothing.
+ */
+function stdinReader(fl: FlagView): string | null {
+  const paths = new Map<string, IterableIterator<PathSpec>>([
+    ['file', fl.asPaths('file').values()],
+    ['exclude_from', fl.asPaths('exclude_from').values()],
+  ])
+  for (const [name] of fl.occurrences('file', 'exclude_from')) {
+    const next = paths.get(name)?.next()
+    if (next !== undefined && next.done !== true && isStdin(next.value)) return name
+  }
+  return null
+}
+
+async function lowerExcludeFrom(
+  fl: FlagView,
+  bag: Record<string, FlagValue>,
+  source: ByteSource,
+  dispatch: DispatchFn,
+): Promise<[Record<string, FlagValue>, boolean, IOResult | null]> {
+  const globs: string[] = []
+  let consumed = false
+  const reader = stdinReader(fl)
+  for (const path of fl.asPaths('exclude_from')) {
+    let data: Uint8Array
+    try {
+      if (isStdin(path)) {
+        data = reader === 'file' ? new Uint8Array() : await materialize(source)
+        consumed = reader !== 'file'
+      } else {
+        data = await readProgramFile('grep', path, dispatch)
+      }
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      const line = fsErrorLine('grep', path, err)
+      return [bag, consumed, new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(line) })]
+    }
+    for (const line of decodeText(data).split('\n')) {
+      const glob = line.replace(/[ \t\n\v\f\r]+$/, '')
+      if (glob) globs.push(glob)
+    }
+  }
+  const lowered: Record<string, FlagValue> = { ...bag, exclude_from: globs }
+  flagOccurrences(lowered).push(...flagOccurrences(bag))
+  return [lowered, consumed, null]
+}
+
+/**
+ * grep's or rg's refusal of an option value on the line, or null. Both check
+ * every value in their option loop and answer --help and --version only once
+ * it is done (grep 3.11, ripgrep 14.1.1: `grep -D bogus -V` and `rg --sort
+ * bogus --version` are refused). The pattern is not compiled yet, as neither
+ * has by then. Mirrors Python's `value_refusal`.
+ */
+export function valueRefusal(name: string, bag: Record<string, FlagValue>): IOResult | null {
+  const fl = new FlagView(bag, specOf(name))
+  try {
+    if (name === 'grep') grepFlags(fl)
+    else if (name === 'rg') rgFlags(fl)
+  } catch (err) {
+    if (!(err instanceof UsageError)) throw err
+    return new IOResult({ exitCode: err.exitCode, stderr: encodeText(`${err.message}\n`) })
+  }
+  return null
 }
 
 /** Read program files once before input routing or traversal fan-out.
@@ -101,12 +187,19 @@ export async function prepareProgram(
   dispatch: DispatchFn,
   operands: readonly PathSpec[] = [],
 ): Promise<[string[], Record<string, FlagValue>, ByteSource | null, IOResult | null]> {
-  const fl = new FlagView(bag, specOf(name))
-  const key = FILE_KEYS[name] ?? 'f'
-  const files = programFiles(name, bag)
-  if (files.length === 0) return [texts, bag, stdin, null]
+  let fl = new FlagView(bag, specOf(name))
   const source = resolveSource(stdin)
   let consumed = false
+  if (name === 'grep' && fl.asPaths('exclude_from').length > 0) {
+    const [lowered, read, refusal] = await lowerExcludeFrom(fl, bag, source, dispatch)
+    if (refusal !== null) return [texts, bag, stdin, refusal]
+    bag = lowered
+    consumed = read
+    fl = new FlagView(bag, specOf(name))
+  }
+  const key = FILE_KEYS[name] ?? 'f'
+  const files = fl.asPaths(key)
+  if (files.length === 0) return [texts, bag, consumed ? source : stdin, null]
   // Only a literal `-` takes stdin in ripgrep's sense: `-f /dev/stdin` reads
   // the same bytes as a file, so neither refusal follows from it.
   let taken = false
@@ -148,13 +241,12 @@ export async function prepareProgram(
   }
   const out = Object.fromEntries(Object.entries(bag).filter(([name]) => name !== key))
   if (name === 'grep' || name === 'rg' || name === 'zgrep') {
-    const patternKey = PATTERN_KEYS[name] ?? 'e'
-    const expressions = fl.asList(patternKey)
+    const expressions = fl.asList('regexp')
     let pattern = expressions.length > 0 ? expressions.join('\n') : null
     for (const data of pieces) pattern = mergePatternList(pattern, data)
     // An empty pattern-file list preserves grep's zero-pattern sentinel.
     out[key] = []
-    out[patternKey] = pattern === null ? [] : [pattern]
+    out.regexp = pattern === null ? [] : [pattern]
   } else if (name === 'sed') {
     const expressions = fl.asList('e').values()
     const scripts = pieces.map((data) => decodeText(data)).values()

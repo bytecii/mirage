@@ -255,14 +255,14 @@ describe('parseCommand — providedBy frees the positional slot', () => {
 
   it('fixes `grep -e pat file` with the real builtin spec', () => {
     const p = parseCommand(specOf('grep'), ['-e', 'orange', '/data/a.txt'], '/')
-    expect(p.flags['-e']).toEqual(['orange'])
+    expect(p.flags['--regexp']).toEqual(['orange'])
     expect(p.texts()).toEqual([])
     expect(p.paths()).toEqual(['/data/a.txt'])
   })
 
   it('fixes `zgrep -e pat file` with the real builtin spec', () => {
     const p = parseCommand(specOf('zgrep'), ['-e', 'orange', '/data/a.gz'], '/')
-    expect(p.flags['-e']).toEqual(['orange'])
+    expect(p.flags['--regexp']).toEqual(['orange'])
     expect(p.texts()).toEqual([])
     expect(p.paths()).toEqual(['/data/a.gz'])
   })
@@ -273,25 +273,25 @@ describe('parseCommand — multiple value flags accumulate newline-joined', () =
   // newline-separated pattern list, so repeats join with \n.
   it('accumulates repeated -e for grep', () => {
     const p = parseCommand(specOf('grep'), ['-e', 'foo', '-e', 'bar', '/a.txt'], '/')
-    expect(p.flags['-e']).toEqual(['foo', 'bar'])
+    expect(p.flags['--regexp']).toEqual(['foo', 'bar'])
     expect(p.texts()).toEqual([])
     expect(p.paths()).toEqual(['/a.txt'])
   })
 
   it('accumulates attached-value repeats', () => {
     const p = parseCommand(specOf('grep'), ['-e', 'foo', '-ebar', '/a.txt'], '/')
-    expect(p.flags['-e']).toEqual(['foo', 'bar'])
+    expect(p.flags['--regexp']).toEqual(['foo', 'bar'])
   })
 
   it('non-multiple value flags keep the last value', () => {
     const p = parseCommand(specOf('grep'), ['-m', '1', '-m', '2', 'pat'], '/')
-    expect(p.flags['-m']).toBe('2')
+    expect(p.flags['--max-count']).toBe('2')
   })
 
   it('cluster into a multiple flag accumulates', () => {
     const p = parseCommand(specOf('grep'), ['-ne', 'foo', '-e', 'bar', '/a.txt'], '/')
-    expect(p.flags['-n']).toBe(true)
-    expect(p.flags['-e']).toEqual(['foo', 'bar'])
+    expect(p.flags['--line-number']).toBe(true)
+    expect(p.flags['--regexp']).toEqual(['foo', 'bar'])
     expect(p.paths()).toEqual(['/a.txt'])
   })
 
@@ -326,7 +326,7 @@ describe('parseCommand — grep -f pattern file', () => {
 
   it('keeps -e and -f together', () => {
     const p = parseCommand(specOf('grep'), ['-e', 'foo', '-f', '/p.txt', '/a.txt'], '/')
-    expect(p.flags['-e']).toEqual(['foo'])
+    expect(p.flags['--regexp']).toEqual(['foo'])
     expect(p.flags['--file']).toEqual(['/p.txt'])
     expect(p.paths()).toEqual(['/a.txt'])
   })
@@ -510,9 +510,27 @@ describe('parseCommand — unknown dash tokens warn and drop', () => {
   })
 
   it('keeps numeric dash tokens as operands', () => {
-    const p = parseCommand(specOf('grep'), ['-5', 'pat'], '/')
+    const p = parseCommand(specOf('zgrep'), ['-5', 'pat'], '/')
     expect(p.texts()).toEqual(['-5'])
     expect(p.warnings).toEqual([])
+  })
+
+  it.each([
+    [['-5'], '5'],
+    [['-1n'], '1'],
+    [['-n1'], '1'],
+    [['-1', '-2'], '2'],
+  ])('grep reads %j as its context', (argv, context) => {
+    const p = parseCommand(specOf('grep'), [...argv, 'pat'], '/', 'grep')
+    expect(p.flags['--context']).toBe(context)
+    expect(p.texts()).toEqual(['pat'])
+  })
+
+  it.each([[['-1m2']], [['-1m', '2']], [['-1nm2']]])('grep digits end at %j', (argv) => {
+    const p = parseCommand(specOf('grep'), [...argv, 'pat'], '/', 'grep')
+    expect(p.flags['--context']).toBe('1')
+    expect(p.flags['--max-count']).toBe('2')
+    expect(p.texts()).toEqual(['pat'])
   })
 
   it('known flags produce no warnings', () => {
@@ -524,23 +542,23 @@ describe('parseCommand — unknown dash tokens warn and drop', () => {
 describe('parseCommand — clusters ending in a value flag (getopt)', () => {
   it('-ne pat: bools then value flag consuming the next arg', () => {
     const p = parseCommand(specOf('grep'), ['-ne', 'pat', '/a.txt'], '/')
-    expect(p.flags['-n']).toBe(true)
-    expect(p.flags['-e']).toEqual(['pat'])
+    expect(p.flags['--line-number']).toBe(true)
+    expect(p.flags['--regexp']).toEqual(['pat'])
     expect(p.texts()).toEqual([])
     expect(p.paths()).toEqual(['/a.txt'])
   })
 
   it('-nepat: bools then value flag with attached value', () => {
     const p = parseCommand(specOf('grep'), ['-nepat', '/a.txt'], '/')
-    expect(p.flags['-n']).toBe(true)
-    expect(p.flags['-e']).toEqual(['pat'])
+    expect(p.flags['--line-number']).toBe(true)
+    expect(p.flags['--regexp']).toEqual(['pat'])
     expect(p.paths()).toEqual(['/a.txt'])
   })
 
   it('-im1: bool then numeric value attached', () => {
     const p = parseCommand(specOf('grep'), ['-im1', 'pat', '/a.txt'], '/')
-    expect(p.flags['-i']).toBe(true)
-    expect(p.flags['-m']).toBe('1')
+    expect(p.flags['--ignore-case']).toBe(true)
+    expect(p.flags['--max-count']).toBe('1')
     expect(p.texts()).toEqual(['pat'])
   })
 
@@ -610,9 +628,9 @@ describe('parseCommand — repeated values', () => {
       '/',
     )
     const kwargs = parseToKwargs(parsed)
-    expect(kwargs.e).toEqual(['a', 'b'])
-    expect(kwargs.m).toBe('2')
-    expect(Object.keys(kwargs).sort()).toEqual(['e', 'm'])
+    expect(kwargs.regexp).toEqual(['a', 'b'])
+    expect(kwargs.max_count).toBe('2')
+    expect(Object.keys(kwargs).sort()).toEqual(['max_count', 'regexp'])
   })
 })
 

@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -17,19 +18,29 @@ from mirage.commands.builtin.grep_pattern import (
 )
 from mirage.commands.builtin.grep_scan import exit_code_for
 from mirage.commands.builtin.rg_filetypes import FileTypes, type_listing
-from mirage.commands.builtin.rg_glob import Overrides
+from mirage.commands.builtin.rg_glob import (
+    IgnoreRules,
+    Overrides,
+    Verdict,
+    walk_candidate,
+)
 from mirage.commands.builtin.rg_scan import (
     Haystack,
     WalkFilter,
     on_other_mount,
     open_error_line,
+    os_error_text,
     walk_error_line,
     walk_haystacks,
 )
 from mirage.commands.builtin.rg_search import (
     RgFlags,
     Tally,
+    Totals,
+    json_line,
+    json_text,
     prints_context,
+    record_end,
     search_haystack,
     smart_case_folds,
 )
@@ -62,14 +73,31 @@ from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.errors.constants import FS_ERRORS, WALK_ERRORS
 from mirage.errors.fs import walk_refusal
-from mirage.io.types import ByteSource, IOResult
+from mirage.io.types import ByteSource, IOResult, materialize
+from mirage.runtime.types import DispatchFn, ShellFn
 from mirage.shell.bytes import decode_text, encode_text
+from mirage.shell.join import shell_join
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.compress import GzipDataError, gunzip_stream
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.view.types import MountView
 
 logger = logging.getLogger(__name__)
 
+# The names -z searches decompressed, and the rule ripgrep frames gzip's
+# refusal in (14.1.1).
+GZIP_NAMES = (".gz", ".tgz")
+GZIP_RULE = "-" * 79
+# The status a line answers for a command it cannot find, which ripgrep
+# reports as a --pre command that could not start.
+COMMAND_NOT_FOUND = 127
+# ripgrep's refusal of a pattern that holds the line terminator outside
+# multiline mode, exit 2 (14.1.1).
+NEWLINE_REFUSAL = (
+    'rg: the literal "\\n" is not allowed in a regex\n\nConsider enabling '
+    "multiline mode with the --multiline flag (or -U for short).\nWhen "
+    "multiline mode is enabled, new line characters can be matched."
+)
 # ripgrep's own words for a line with no pattern, exit 2 (14.1.1).
 RG_NO_PATTERN = "rg: ripgrep requires at least one pattern to execute a search"
 # What ripgrep says when a line that named no path searched nothing,
@@ -91,6 +119,49 @@ ENGINES = ("default", "pcre2", "auto")
 SIZE = re.compile(r"([0-9]+)([KMG]?)")
 SIZE_UNIT = {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30}
 U64_MAX = (1 << 64) - 1
+# The sizes ripgrep reads as digits and a unit, each named as it is refused.
+SIZE_SPELLINGS = {
+    "max_filesize": "--max-filesize",
+    "dfa_size_limit": "--dfa-size-limit",
+    "regex_size_limit": "--regex-size-limit",
+}
+# What --colors takes (ripgrep 14.1.1 and termcolor): OUT:SPEC[:VALUE].
+COLOR_OUTPUTS = ("path", "line", "column", "match")
+COLOR_SPECS = ("fg", "bg", "style", "none")
+COLOR_NAMES = (
+    "black",
+    "blue",
+    "green",
+    "red",
+    "cyan",
+    "magenta",
+    "yellow",
+    "white",
+)
+COLOR_STYLES = (
+    "nobold",
+    "bold",
+    "nointense",
+    "intense",
+    "nounderline",
+    "underline",
+)
+COLOR_NUMBER = re.compile(r"(0x\+?[0-9A-Fa-f]+|\+?[0-9]+)")
+# What --hyperlink-format takes: an alias or a URL with variables.
+HYPERLINK_ALIASES = (
+    "default",
+    "file",
+    "grep+",
+    "kitty",
+    "macvim",
+    "none",
+    "textmate",
+    "vscode",
+    "vscode-insiders",
+    "vscodium",
+)
+HYPERLINK_VARIABLES = ("path", "line", "column", "host", "wslprefix")
+URL_SCHEME = re.compile(r"[0-9A-Za-z+.-]+:")
 # The numeric options, each named as ripgrep names it in a refusal. The
 # bag keeps no record of which spelling the line typed, so a long one
 # is refused under its short name.
@@ -152,27 +223,219 @@ def number_flag(fl: FlagView, dest: str) -> int | None:
     return int(digits)
 
 
-def filesize_flag(fl: FlagView) -> int | None:
-    """--max-filesize in bytes, refused in ripgrep's words.
+def size_flag(fl: FlagView, dest: str) -> int | None:
+    """A size option in bytes, refused in ripgrep's words. ripgrep parses
+    every occurrence as it reads it, so an earlier bad one is refused too.
+
+    Args:
+        fl (FlagView): the flag view.
+        dest (str): --max-filesize, --dfa-size-limit or --regex-size-limit.
+
+    Raises:
+        UsageError: the size is not digits and an optional K, M or G, or
+            does not fit in 64 bits.
+    """
+    sizes = [size_bytes(str(value), dest) for _, value in fl.occurrences(dest)]
+    return sizes[-1] if sizes else None
+
+
+def size_bytes(value: str, dest: str) -> int:
+    """One size option's value in bytes, refused in ripgrep's words.
+
+    Args:
+        value (str): the value as typed.
+        dest (str): the option it was given to.
+
+    Raises:
+        UsageError: the size is not digits and an optional K, M or G, or
+            does not fit in 64 bits.
+    """
+    size = SIZE.fullmatch(value)
+    reason = None
+    if size is None:
+        reason = (
+            f"invalid format for size '{value}', which should be a "
+            "non-empty sequence of digits followed by an optional 'K', 'M' "
+            "or 'G' suffix"
+        )
+    elif int(size.group(1)) > U64_MAX:
+        reason = (
+            f"invalid integer found in size '{value}': number too large to "
+            "fit in target type"
+        )
+    elif int(size.group(1)) * SIZE_UNIT[size.group(2)] > U64_MAX:
+        reason = f"size too big in '{value}'"
+    if size is None or reason is not None:
+        raise UsageError(
+            f"rg: error parsing flag {SIZE_SPELLINGS[dest]}: invalid size: "
+            f"{reason}"
+        )
+    return int(size.group(1)) * SIZE_UNIT[size.group(2)]
+
+
+def color_refusal(spec: str) -> str | None:
+    """Why ripgrep refuses one --colors spec, or None.
+
+    Args:
+        spec (str): the spec as typed.
+    """
+    pieces = spec.split(":")
+    malformed = (
+        f"invalid color spec format: '{spec}'. Valid format is "
+        "'(path|line|column|match):(fg|bg|style):(value)'."
+    )
+    if not 2 <= len(pieces) <= 3:
+        return malformed
+    if pieces[0].lower() not in COLOR_OUTPUTS:
+        return (
+            f"unrecognized output type '{pieces[0]}'. Choose from: "
+            f"{', '.join(COLOR_OUTPUTS)}."
+        )
+    kind = pieces[1].lower()
+    if kind not in COLOR_SPECS:
+        return (
+            f"unrecognized spec type '{pieces[1]}'. Choose from: "
+            f"{', '.join(COLOR_SPECS)}."
+        )
+    if kind == "none":
+        return None
+    if len(pieces) < 3:
+        return malformed
+    value = pieces[2]
+    if kind == "style":
+        if value.lower() in COLOR_STYLES:
+            return None
+        return (
+            f"unrecognized style attribute '{value}'. Choose from: "
+            f"{', '.join(COLOR_STYLES)}."
+        )
+    return color_value_refusal(value)
+
+
+def color_number(code: str) -> bool:
+    """Whether termcolor reads ``code`` as a color number, decimal or 0x
+    hex, from 0 to 255.
+
+    Args:
+        code (str): one number as typed.
+    """
+    if COLOR_NUMBER.fullmatch(code) is None:
+        return False
+    hexed = code.startswith("0x")
+    return int(code[2:] if hexed else code, 16 if hexed else 10) <= 255
+
+
+def color_value_refusal(value: str) -> str | None:
+    """Why termcolor refuses a color: a name, 0-255 or an r,g,b triple.
+
+    Args:
+        value (str): the color as typed.
+    """
+    codes = value.split(",")
+    if value.lower() in COLOR_NAMES or (
+        len(codes) in (1, 3) and all(color_number(code) for code in codes)
+    ):
+        return None
+    if len(codes) == 1 and all(c in "0123456789abcdefABCDEF" for c in value):
+        return (
+            "unrecognized ansi256 color number, should be '[0-255]' (or a "
+            f"hex number), but is '{value}'"
+        )
+    if "," in value:
+        return (
+            "unrecognized RGB color triple, should be "
+            "'[0-255],[0-255],[0-255]' (or a hex triple), but is "
+            f"'{value}'"
+        )
+    return (
+        f"unrecognized color name '{value}'. Choose from: "
+        f"{', '.join(COLOR_NAMES)}"
+    )
+
+
+def hyperlink_refusal(fmt: str) -> str | None:
+    """Why ripgrep refuses a --hyperlink-format, or None.
+
+    Args:
+        fmt (str): the format as typed.
+    """
+    if not fmt or fmt in HYPERLINK_ALIASES:
+        return None
+    names: list[str] = []
+    head = ""
+    i = 0
+    while i < len(fmt):
+        if fmt.startswith(("{{", "}}"), i):
+            head += "" if names else fmt[i]
+            i += 2
+        elif fmt[i] == "{":
+            end = fmt.find("}", i)
+            if end < 0:
+                return (
+                    "unclosed variable: found '{' without a corresponding "
+                    "'}' following it"
+                )
+            name = fmt[i + 1 : end]
+            if name not in HYPERLINK_VARIABLES:
+                return (
+                    f"invalid hyperlink format variable: '{name}', choose "
+                    f"from: {', '.join(HYPERLINK_VARIABLES)}"
+                )
+            names.append(name)
+            i = end + 1
+        elif fmt[i] == "}":
+            return (
+                "unopened variable: found '}' without a corresponding '{' "
+                "preceding it"
+            )
+        else:
+            head += "" if names else fmt[i]
+            i += 1
+    if not names:
+        return (
+            "at least a {path} variable is required in a hyperlink format, "
+            "or otherwise use a valid alias: "
+            f"{', '.join(HYPERLINK_ALIASES)}"
+        )
+    if "path" not in names:
+        return "the {path} variable is required in a hyperlink format"
+    if "column" in names and "line" not in names:
+        return (
+            "the hyperlink format contains a {column} variable, but no "
+            "{line} variable is present"
+        )
+    if URL_SCHEME.match(head) is None:
+        return (
+            "the hyperlink format must start with a valid URL scheme, i.e., "
+            "[0-9A-Za-z+-.]+:"
+        )
+    return None
+
+
+def check_display_flags(fl: FlagView) -> None:
+    """Refuse what ripgrep refuses in the options mirage accepts and
+    otherwise ignores: --colors, --hyperlink-format and the DFA and regex
+    size limits.
 
     Args:
         fl (FlagView): the flag view.
 
     Raises:
-        UsageError: the size is not digits and an optional K, M or G.
+        UsageError: a value ripgrep refuses, in its words.
     """
-    value = fl.as_str("max_filesize")
-    if value is None:
-        return None
-    size = SIZE.fullmatch(value)
-    if size is None:
-        raise UsageError(
-            "rg: error parsing flag --max-filesize: invalid size: invalid "
-            f"format for size '{value}', which should be a non-empty "
-            "sequence of digits followed by an optional 'K', 'M' or 'G' "
-            "suffix"
-        )
-    return int(size.group(1)) * SIZE_UNIT[size.group(2)]
+    for spec in fl.as_list("colors"):
+        refusal = color_refusal(spec)
+        if refusal is not None:
+            raise UsageError(f"rg: error parsing flag --colors: {refusal}")
+    for _, fmt in fl.occurrences("hyperlink_format"):
+        refusal = hyperlink_refusal(str(fmt))
+        if refusal is not None:
+            raise UsageError(
+                "rg: error parsing flag --hyperlink-format: invalid "
+                f"hyperlink format: {refusal}"
+            )
+    size_flag(fl, "dfa_size_limit")
+    size_flag(fl, "regex_size_limit")
 
 
 def _choice(
@@ -357,6 +620,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
     """
     threads = number_flag(fl, "threads")
     _choice(fl, "color", "--color", COLOR_CHOICES)
+    check_display_flags(fl)
     case = _last(fl, "ignore_case", "case_sensitive", "smart_case")
     bounds = _last(fl, "word_regexp", "line_regexp")
     listing = _last(
@@ -366,11 +630,15 @@ def parse_flags(fl: FlagView) -> RgFlags:
         "files_with_matches",
         "files_without_match",
     )
-    numbers = _last(fl, "line_number", "no_line_number")
+    # -p turns on --heading and -n, each overridden by a later negation.
+    numbers = _last(fl, "line_number", "no_line_number", "pretty")
     vimgrep = fl.as_bool("vimgrep")
     columns = _last(fl, "column", "no_column")
     column = columns == "column" if columns is not None else vimgrep
     passthru, context_before, context_after = _context_of(fl)
+    # --json prints its own records: no heading or separators, and line
+    # numbers unless -N turned them off.
+    json_records = _last(fl, "json", "no_json") == "json"
     unrestricted = fl.as_int("unrestricted") or 0
     binary_mode = _binary_mode_of(fl, unrestricted)
     hidden = False
@@ -420,9 +688,9 @@ def parse_flags(fl: FlagView) -> RgFlags:
         line_regexp=bounds == "line_regexp",
         fixed_string=_last(fl, "fixed_strings", "no_fixed_strings")
         == "fixed_strings",
-        line_numbers=(numbers == "line_number")
+        line_numbers=numbers in ("line_number", "pretty")
         if numbers
-        else column or vimgrep,
+        else column or vimgrep or json_records,
         column=column,
         vimgrep=vimgrep,
         byte_offsets=_last(fl, "byte_offset", "no_byte_offset")
@@ -437,6 +705,19 @@ def parse_flags(fl: FlagView) -> RgFlags:
         == "max_columns_preview",
         null=fl.as_bool("null"),
         null_data=fl.as_bool("null_data"),
+        crlf=_last(fl, "crlf", "no_crlf") == "crlf"
+        and not fl.as_bool("null_data"),
+        multiline=_last(fl, "multiline", "no_multiline") == "multiline",
+        stats=_last(fl, "stats", "no_stats") == "stats",
+        search_zip=_last(fl, "search_zip", "no_search_zip") == "search_zip",
+        # --pre with no command, or after --no-pre, preprocesses nothing.
+        pre=(fl.as_str("pre") or None)
+        if _last(fl, "pre", "no_pre") == "pre"
+        else None,
+        pre_globs=tuple(fl.as_list("pre_glob")),
+        json=json_records,
+        multiline_dotall=_last(fl, "multiline_dotall", "no_multiline_dotall")
+        == "multiline_dotall",
         path_separator=path_separator(fl),
         quiet=fl.as_bool("quiet"),
         count_only=listing == "count",
@@ -450,8 +731,10 @@ def parse_flags(fl: FlagView) -> RgFlags:
         with_filename=filename_flag(fl) == "with_filename",
         no_filename=filename_flag(fl) == "no_filename",
         # --vimgrep prints a location per line, so it never heads a group.
-        heading=_last(fl, "heading", "no_heading") == "heading"
-        and not vimgrep,
+        heading=_last(fl, "heading", "no_heading", "pretty")
+        in ("heading", "pretty")
+        and not vimgrep
+        and not json_records,
         passthru=passthru,
         max_count=number_flag(fl, "max_count"),
         stop_on_nonmatch=fl.as_bool("stop_on_nonmatch"),
@@ -459,7 +742,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         context_before=context_before,
         context_separator=(
             None
-            if separator == "no_context_separator"
+            if separator == "no_context_separator" or json_records
             else unescape(typed_separator)
             if typed_separator is not None
             else "--"
@@ -480,7 +763,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
         type_selections=tuple(selections),
         hidden=hidden,
         max_depth=number_flag(fl, "max_depth"),
-        max_filesize=filesize_flag(fl),
+        max_filesize=size_flag(fl, "max_filesize"),
         follow=_last(fl, "follow", "no_follow") == "follow",
         one_file_system=_last(fl, "one_file_system", "no_one_file_system")
         == "one_file_system",
@@ -555,13 +838,23 @@ def rust_matcher(
     Raises:
         UsageError: regex-syntax refuses the pattern.
     """
+    lines = f.null_data or f.multiline
     try:
-        translated = translate_rust(patterns, fold, f.null_data, f.unicode)
+        translated = translate_rust(
+            patterns,
+            fold,
+            lines,
+            f.unicode,
+            f.multiline and f.multiline_dotall,
+            f.multiline and f.crlf,
+        )
     except RustRegexError as exc:
         raise UsageError(f"rg: {exc}") from exc
+    if translated.newline and not lines:
+        raise UsageError(NEWLINE_REFUSAL)
     source = translated.source
     if f.line_regexp:
-        source = whole_line(source, f.null_data)
+        source = whole_line(source, lines, f.multiline and f.crlf)
     elif f.whole_word:
         source = whole_word(source, f.unicode)
     return re.compile(source, re.IGNORECASE if translated.ignore_case else 0)
@@ -589,7 +882,14 @@ def pcre_matcher(
     elif f.whole_word:
         display = f"(?<!\\w)(?:{display})(?!\\w)"
     try:
-        translated = translate_pcre(display, f.unicode, fold, f.null_data)
+        translated = translate_pcre(
+            display,
+            f.unicode,
+            fold,
+            f.null_data or f.multiline,
+            f.multiline and f.multiline_dotall,
+            f.crlf and f.multiline,
+        )
     except PcreError as exc:
         raise UsageError(
             f"rg: PCRE2: error compiling pattern at offset "
@@ -661,12 +961,17 @@ def folds_case(pattern: str, fixed: bool, f: RgFlags) -> bool:
     return f.ignore_case or (f.smart_case and smart_case_folds(pattern, fixed))
 
 
-def walk_filter(f: RgFlags, types: FileTypes | None = None) -> WalkFilter:
+def walk_filter(
+    f: RgFlags,
+    types: FileTypes | None = None,
+    ignores: IgnoreRules | None = None,
+) -> WalkFilter:
     """What the walk keeps, the globs and types compiled.
 
     Args:
         f (RgFlags): the parsed flags.
         types (FileTypes | None): the type matcher when already built.
+        ignores (IgnoreRules | None): --ignore-file's rules, once read.
 
     Raises:
         UsageError: a glob or a type ripgrep refuses.
@@ -680,7 +985,36 @@ def walk_filter(f: RgFlags, types: FileTypes | None = None) -> WalkFilter:
         f.max_depth,
         f.max_filesize,
         f.binary,
+        ignores if ignores is not None else IgnoreRules(),
     )
+
+
+async def ignore_rules(
+    fl: FlagView, dispatch: DispatchFn | None, notes: list[str]
+) -> IgnoreRules:
+    """--ignore-file's rules, each file read through the dispatcher.
+
+    A file ripgrep cannot read is reported and skipped, the search going
+    on with its exit status untouched (14.1.1); --no-ignore-files drops
+    every one.
+
+    Args:
+        fl (FlagView): the flag view.
+        dispatch (DispatchFn | None): the workspace's dispatcher.
+        notes (list[str]): collects what could not be read.
+    """
+    if _last(fl, "ignore_files", "no_ignore_files") == "no_ignore_files":
+        return IgnoreRules()
+    lines: list[str] = []
+    for path in fl.as_paths("ignore_file"):
+        try:
+            if dispatch is None:
+                raise FileNotFoundError(path.raw_path)
+            data, _ = await dispatch("read", path)
+            lines.extend(decode_text(await materialize(data)).splitlines())
+        except FS_ERRORS as exc:
+            notes.append(f"rg: {path.raw_path}: {os_error_text(exc)}")
+    return IgnoreRules(lines)
 
 
 def needs_every_file(fl: FlagView, f: RgFlags) -> bool:
@@ -851,7 +1185,8 @@ async def rg_generic(
     types = FileTypes(f.type_changes, f.type_selections)
     if f.type_list:
         return format_records(type_listing(types.definitions)), IOResult()
-    walk = walk_filter(f, types)
+    notes: list[str] = []
+    walk = walk_filter(f, types, await ignore_rules(fl, opts.dispatch, notes))
     pat: re.Pattern[str] | None = None
     if not f.list_files:
         pattern, never_match = await resolve_pattern(
@@ -859,8 +1194,6 @@ async def rg_generic(
             fl,
             read_bytes,
             RG_NO_PATTERN,
-            pattern_key="regexp",
-            file_key="file",
         )
         pat = rg_matcher(pattern, never_match, f)
 
@@ -884,12 +1217,16 @@ async def rg_generic(
     )
     rb = partial(call_read_bytes, read_bytes, prefix=mount_prefix)
 
-    if pat is not None and len(paths) == 1:
+    if (
+        pat is not None
+        and len(paths) == 1
+        and not (f.stats or f.json or f.search_zip or f.pre)
+    ):
         single = await _search_single(
             paths[0], pat, f, st, rd, rb, read_stream, operand_stream
         )
         if single is not None:
-            return single
+            return await _noted(single, notes, f)
 
     warnings: list[str] = []
     cwd = opts.cwd.virtual
@@ -918,19 +1255,59 @@ async def rg_generic(
         listed = [h async for h in found]
         found = _replay(sort_haystacks(listed, f))
     if f.list_files:
-        return await _list_files(found, f, warnings)
-    assert pat is not None
-    return await _search_all(
-        found,
-        paths,
-        pat,
-        f,
-        rb,
-        read_stream,
-        operand_stream,
-        warnings,
-        implicit,
-    )
+        out, io = await _list_files(found, f, warnings)
+    else:
+        assert pat is not None
+        out, io = await _search_all(
+            found,
+            paths,
+            pat,
+            f,
+            rb,
+            read_stream,
+            operand_stream,
+            warnings,
+            implicit,
+            cwd,
+            opts.shell,
+        )
+    return await _noted((out, io), notes, f)
+
+
+async def _noted(
+    result: tuple[ByteSource | None, IOResult], notes: list[str], f: RgFlags
+) -> tuple[ByteSource | None, IOResult]:
+    """A search's result with --ignore-file's notes ahead of its stderr,
+    as ripgrep prints them before it searches.
+
+    Args:
+        result (tuple[ByteSource | None, IOResult]): the search's result.
+        notes (list[str]): the ignore files that could not be read.
+        f (RgFlags): the parsed flags.
+    """
+    out, io = result
+    if notes and not f.no_messages:
+        io.stderr = format_records(notes) + (
+            await materialize(io.stderr) if io.stderr is not None else b""
+        )
+    return out, io
+
+
+async def _up_to_damage(
+    source: AsyncIterator[bytes], faults: list[GzipDataError]
+) -> AsyncIterator[bytes]:
+    """gzip's output up to where its input is damaged, the damage kept in
+    ``faults``: ripgrep searches what gzip wrote before it failed.
+
+    Args:
+        source (AsyncIterator[bytes]): the decoded stream.
+        faults (list[GzipDataError]): receives the damage.
+    """
+    try:
+        async for chunk in source:
+            yield chunk
+    except GzipDataError as exc:
+        faults.append(exc)
 
 
 async def _replay(found: list[Haystack]) -> AsyncIterator[Haystack]:
@@ -1038,12 +1415,10 @@ async def _settled(
             if (
                 not printed
                 and label is not None
-                and _headed(f)
+                and headed(f)
                 and not tally.binary
             ):
-                yield encode_text(label) + (
-                    b"\0" if f.null or f.null_data else b"\n"
-                )
+                yield encode_text(label) + (b"\0" if f.null else record_end(f))
             printed = True
             yield chunk
     except FS_ERRORS as exc:
@@ -1061,7 +1436,22 @@ async def _settled(
     io.exit_code = 0 if selected else 1
 
 
-def _headed(f: RgFlags) -> bool:
+def json_summary(f: RgFlags) -> bool:
+    """Whether --json writes its records and the summary: only for the
+    printing modes, -c and -l printing as they do without it.
+
+    Args:
+        f (RgFlags): the parsed flags.
+    """
+    return f.json and not (
+        f.count_only
+        or f.count_matches
+        or f.files_only
+        or f.files_without_match
+    )
+
+
+def headed(f: RgFlags) -> bool:
     """Whether --heading names each file above its lines: only the line
     output has one, never the counts or the listings.
 
@@ -1075,6 +1465,16 @@ def _headed(f: RgFlags) -> bool:
         or f.files_without_match
         or f.quiet
     )
+
+
+def runs_parallel(f: RgFlags) -> bool:
+    """Whether ripgrep searches more than one path on its parallel
+    searcher: -j1 and a sort hold it to one thread.
+
+    Args:
+        f (RgFlags): the parsed flags.
+    """
+    return f.threads != 1 and f.sort in (None, "none")
 
 
 def printed_path(path: str, f: RgFlags) -> str:
@@ -1118,7 +1518,7 @@ def between_files(f: RgFlags) -> bytes:
     Args:
         f (RgFlags): the parsed flags.
     """
-    if _headed(f) and not f.no_filename:
+    if headed(f) and not f.no_filename:
         return b"\n"
     if prints_context(f) and f.context_separator is not None:
         return encode_text(f.context_separator) + b"\n"
@@ -1155,7 +1555,7 @@ async def haystacks(
     """
     # ripgrep holds one path that is not a directory to one thread, as it
     # does -j1 and a sort; every other line runs its parallel walker.
-    parallel = f.threads != 1 and f.sort is None
+    parallel = runs_parallel(f)
     several = parallel and len(paths) > 1
     for p in paths:
         if is_stdin(p):
@@ -1232,6 +1632,37 @@ async def _list_files(
     )
 
 
+async def preprocessed(
+    command: str, path: str, name: str, data: bytes, shell: ShellFn | None
+) -> tuple[bytes, str | None]:
+    """What --pre's command prints for one file, or ripgrep's report of
+    why it failed: it runs ``COMMAND PATH`` with the file's contents on
+    stdin, here as a line in the session.
+
+    Args:
+        command (str): the --pre command.
+        path (str): the file as the line named it.
+        name (str): the file as rg prints it.
+        data (bytes): the file's contents.
+        shell (ShellFn | None): runs a line in the session.
+    """
+    shown = " ".join(f'"{word}"' for word in (command, path))
+    head = f"rg: {name}: preprocessor command"
+    io = await shell(shell_join([command, path]), data) if shell else None
+    if io is None or io.exit_code == COMMAND_NOT_FOUND:
+        return b"", (
+            f"{head} could not start: '{shown}': No such file or directory "
+            "(os error 2)"
+        )
+    if io.exit_code != 0:
+        err = decode_text(await materialize(io.stderr)) if io.stderr else ""
+        body = (
+            f"\n{GZIP_RULE}\n{err}{GZIP_RULE}" if err else "<stderr is empty>"
+        )
+        return b"", f"{head} failed: '{shown}': {body}"
+    return (await materialize(io.stdout) if io.stdout else b""), None
+
+
 async def _search_all(
     found: AsyncIterator[Haystack],
     paths: list[PathSpec],
@@ -1242,6 +1673,8 @@ async def _search_all(
     operand_stream: Callable[[PathSpec], AsyncIterator[bytes]],
     warnings: list[str],
     implicit: bool,
+    cwd: str,
+    shell: ShellFn | None = None,
 ) -> tuple[bytes, IOResult]:
     """Search every haystack in order and put the output together.
 
@@ -1261,17 +1694,26 @@ async def _search_all(
         warnings (list[str]): collects what could not be read.
         implicit (bool): the line named no path, so ripgrep reports a
             search that found nothing to search.
+        cwd (str): the session's working directory, which --pre-glob's
+            globs are rooted at.
+        shell (ShellFn | None): runs --pre's command in the session.
     """
     multi = len(paths) > 1
+    lone = not multi
+    pre_globs = Overrides(f.pre_globs, (), False)
     context = prints_context(f)
     out: list[bytes] = []
     printed = False
     selected = False
     skipped = False
     searched = 0
+    records = json_summary(f)
+    totals = Totals()
+    started = time.perf_counter()
     async for h in found:
         searched += 1
         walked = h.spec is None
+        lone = lone and not walked
         name = printed_path(h.shown, f)
         label = (
             name
@@ -1280,6 +1722,10 @@ async def _search_all(
             else None
         )
         tally = Tally()
+        began = time.perf_counter()
+        chunks: list[bytes] = []
+        damaged = False
+        faults: list[GzipDataError] = []
         try:
             if h.spec is not None and is_stdin(h.spec):
                 source = operand_stream(h.spec)
@@ -1289,40 +1735,105 @@ async def _search_all(
                 source = h.resolver.read(h.virtual)
             else:
                 source = _wrap_bytes(await rb(h.virtual))
-            chunks = [
-                c
-                async for c in search_haystack(
-                    source,
-                    pat,
-                    f,
-                    name,
-                    label,
-                    tally,
-                    not walked,
-                    h.spec is not None and is_stdin(h.spec),
+            stdin = h.spec is not None and is_stdin(h.spec)
+            if (
+                f.pre is not None
+                and not stdin
+                and pre_globs.verdict(walk_candidate(h.shown, cwd), False)
+                is not Verdict.IGNORE
+            ):
+                text, refusal = await preprocessed(
+                    f.pre, h.shown, name, await materialize(source), shell
                 )
-            ]
+                if refusal is not None:
+                    warnings.append(refusal)
+                    continue
+                source = _wrap_bytes(text)
+            elif f.search_zip and h.virtual.endswith(GZIP_NAMES) and not stdin:
+                source = _up_to_damage(gunzip_stream(source), faults)
+            async for c in search_haystack(
+                source,
+                pat,
+                f,
+                name,
+                label,
+                tally,
+                not walked,
+                h.spec is not None and is_stdin(h.spec),
+            ):
+                chunks.append(c)
+            if faults:
+                raise faults[0]
         except FS_ERRORS as exc:
             # ripgrep reports the failed input and keeps searching the rest.
             warnings.append(open_error_line(h.shown, exc))
             continue
+        except GzipDataError as exc:
+            # -z runs gzip, whose refusal ripgrep frames in rules.
+            warnings.append(
+                f"rg: {name}: \n{GZIP_RULE}\n"
+                f"{exc.render(name).lstrip()}{GZIP_RULE}"
+            )
+            # gzip's output streams into the search, so the lines it decoded
+            # before the damage still print, but not what ripgrep writes
+            # once the file is done (a count, --files-without-match), and
+            # the file adds to no total.
+            damaged = True
+            if f.count_only or f.count_matches or f.files_without_match:
+                chunks.clear()
+        elapsed = time.perf_counter() - began
         selected = selected or tally.selected
         skipped = skipped or tally.skipped
-        if chunks:
-            if label is not None and _headed(f):
+        if records:
+            if chunks:
+                begin = json_line(
+                    {"type": "begin", "data": {"path": json_text(name)}}
+                )
+                sent = len(begin) + sum(len(c) for c in chunks)
+                out.extend([begin, *chunks])
+                if not damaged:
+                    totals.add(tally, sent, elapsed)
+                    out.append(totals.end_record(name, tally, sent, elapsed))
+            elif f.quiet and tally.selected and not damaged:
+                totals.add(tally, 0, elapsed)
+        elif chunks:
+            # -c and -l counts and names are not what --stats counts.
+            sent = (
+                0
+                if f.count_only
+                or f.count_matches
+                or f.files_only
+                or f.files_without_match
+                else sum(len(c) for c in chunks)
+            )
+            if label is not None and headed(f):
                 if printed:
                     out.append(b"\n")
                 if not tally.binary:
-                    out.append(
-                        encode_text(label)
-                        + (b"\0" if f.null or f.null_data else b"\n")
+                    heading = encode_text(label) + (
+                        b"\0" if f.null else record_end(f)
                     )
+                    out.append(heading)
+                    sent += len(heading)
             elif context and printed and f.context_separator is not None:
                 out.append(encode_text(f.context_separator) + b"\n")
             out.extend(chunks)
             printed = True
-        if f.quiet and tally.selected:
+            if not damaged:
+                totals.add(tally, sent, elapsed)
+        elif not damaged:
+            totals.add(tally, 0, elapsed)
+        # --stats and --json count every file, -q or not (14.1.1).
+        if f.quiet and tally.selected and not (f.stats or f.json):
             break
+    if records:
+        out.append(totals.summary_record(time.perf_counter() - started))
+    elif f.stats:
+        # ripgrep's parallel searcher gives the last --heading group its
+        # blank line too; one thread, as for a lone file, does not.
+        if printed and headed(f) and runs_parallel(f) and not lone:
+            out.append(b"\n")
+        out.append(totals.stats_block(time.perf_counter() - started))
     if f.files_without_match and not f.quiet:
         # ripgrep's status under --files-without-match follows the
         # listing, not the matching: 0 when a file was listed, 1 when

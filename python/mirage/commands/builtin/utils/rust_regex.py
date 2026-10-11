@@ -78,6 +78,9 @@ FLAG_LETTERS = "imsUuxR"
 # `u`, which turns Unicode folding off. A caseless pattern without one is
 # caseless throughout, and the host engine folds it.
 INLINE_CASE = re.compile(r"\(\?[a-zA-Z-]*[iu]")
+# The line terminator, which a pattern may not hold outside multiline mode.
+NEWLINE_CP = 0x0A
+NEWLINE = CharSet.chars(NEWLINE_CP)
 META_ESCAPES = frozenset("\\.+*?()|[]{}^$#&-~")
 NAME_START = frozenset("_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 NAME_CHARS = NAME_START | frozenset("0123456789.[]")
@@ -201,33 +204,45 @@ def boundary(kind: str, unicode: bool) -> str:
     return table[kind]
 
 
-def line_start(multi_line: bool) -> str:
+def line_start(multi_line: bool, crlf: bool = False) -> str:
     """``^`` as the host reads it.
 
     Args:
         multi_line (bool): also just after a ``\\n``.
+        crlf (bool): CRLF mode, where a ``\\r`` ends a line too but
+            ``^`` never falls between ``\\r`` and ``\\n``.
     """
-    return "(?:^|(?<=\\n))" if multi_line else "^"
+    if not multi_line:
+        return "^"
+    return "(?:^|(?<=\\n)|(?<=\\r)(?!\\n))" if crlf else "(?:^|(?<=\\n))"
 
 
-def line_end(multi_line: bool) -> str:
+def line_end(multi_line: bool, crlf: bool = False) -> str:
     """``$`` as the host reads it; python's own ``$`` also matches
     before a final newline, so the end of input is ``\\Z``.
 
     Args:
         multi_line (bool): also just before a ``\\n``.
+        crlf (bool): CRLF mode, where ``$`` matches before a ``\\r`` too
+            but never between ``\\r`` and ``\\n``.
     """
-    return "(?=\\n|\\Z)" if multi_line else "\\Z"
+    if not multi_line:
+        return "\\Z"
+    return "(?:(?=\\r)|(?<!\\r)(?=\\n)|\\Z)" if crlf else "(?=\\n|\\Z)"
 
 
-def whole_line(source: str, multi_line: bool) -> str:
+def whole_line(source: str, multi_line: bool, crlf: bool = False) -> str:
     """ripgrep's -x: the pattern spans a whole line.
 
     Args:
         source (str): the host source.
         multi_line (bool): lines end at ``\\n`` inside the subject.
+        crlf (bool): CRLF mode.
     """
-    return f"{line_start(multi_line)}(?:{source}){line_end(multi_line)}"
+    return (
+        f"{line_start(multi_line, crlf)}(?:{source})"
+        f"{line_end(multi_line, crlf)}"
+    )
 
 
 def whole_word(source: str, unicode: bool = True) -> str:
@@ -294,6 +309,7 @@ class RustTranslator:
         self.atom_assertion = False
         self.stack: list[Frame] = []
         self.names: dict[str, tuple[int, int]] = {}
+        self.newline = False
 
     def fail(
         self, start: int, end: int, message: str, *more: tuple[int, int]
@@ -361,6 +377,7 @@ class RustTranslator:
             self.atom_start = None
         elif ch == "[":
             cs = self.parse_class()
+            self.newline = self.newline or cs == NEWLINE
             self.atom(host_class(cs))
         elif ch in "*+?":
             self.repetition(ch)
@@ -378,10 +395,10 @@ class RustTranslator:
             self.atom(host_class(ALL if self.flags.s else ALL.minus(excluded)))
         elif ch == "^":
             self.pos += 1
-            self.assertion(line_start(self.flags.m))
+            self.assertion(line_start(self.flags.m, self.flags.R))
         elif ch == "$":
             self.pos += 1
-            self.assertion(line_end(self.flags.m))
+            self.assertion(line_end(self.flags.m, self.flags.R))
         else:
             self.pos += 1
             self.literal(ord(ch))
@@ -413,6 +430,7 @@ class RustTranslator:
         Args:
             cp (int): the code point.
         """
+        self.newline = self.newline or cp == NEWLINE_CP
         if self.flags.i:
             self.atom(host_class(fold(CharSet.chars(cp), not self.flags.u)))
         else:
@@ -424,6 +442,7 @@ class RustTranslator:
         Args:
             cs (CharSet): its members.
         """
+        self.newline = self.newline or cs == NEWLINE
         if self.flags.i:
             cs = fold(cs, not self.flags.u)
         self.atom(host_class(cs))
@@ -901,6 +920,8 @@ def translate_rust(
     ignore_case: bool = False,
     multi_line: bool = False,
     unicode: bool = True,
+    dotall: bool = False,
+    crlf: bool = False,
 ) -> HostRegex:
     """Translate a ripgrep pattern list into this host's regex dialect.
 
@@ -911,6 +932,8 @@ def translate_rust(
             the subject (--null-data).
         unicode (bool): Unicode mode, off under --no-unicode, the way
             a leading ``(?-u)`` turns it off.
+        dotall (bool): ``.`` matches ``\\n`` (--multiline-dotall).
+        crlf (bool): CRLF mode (--crlf with --multiline).
 
     Returns:
         HostRegex: host source matching exactly what ripgrep's default
@@ -922,10 +945,10 @@ def translate_rust(
     display = display_of(patterns)
     # The host folds Unicode letters, so only a Unicode pattern hands it
     # the folding; without Unicode the translator folds ASCII alone.
-    if ignore_case and unicode and not INLINE_CASE.search(display):
-        source = RustTranslator(
-            display, Flags(m=multi_line, u=unicode)
-        ).translate()
-        return HostRegex(source, True)
-    flags = Flags(i=ignore_case, m=multi_line, u=unicode)
-    return HostRegex(RustTranslator(display, flags).translate())
+    folded = ignore_case and unicode and not INLINE_CASE.search(display)
+    flags = Flags(
+        i=ignore_case and not folded, m=multi_line, s=dotall, u=unicode, R=crlf
+    )
+    translator = RustTranslator(display, flags)
+    source = translator.translate()
+    return HostRegex(source, folded, translator.newline)

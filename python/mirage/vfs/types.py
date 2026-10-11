@@ -333,10 +333,12 @@ class ScanReason(StrEnum):
     Unicode, counts as none). EVERY_LINE: -v or rg --passthru prints
     lines that do not match. EVERY_FILE: rg --files-without-match, or
     rg -c or --count-matches with --include-zero, without -q, lists
-    files that do not match, and rg leaves a binary one out. LINKS: rg -L follows
+    files that do not match, and rg leaves a binary one out; rg --stats
+    and --json count them. LINKS: rg -L follows
     links out of the walk. BINARY: -a, --binary-files=text, rg -a,
     --binary or -uuu reads every binary-extension file, which a search
-    that answered does not rule out. UNANSWERED: ``files_containing``
+    that answered does not rule out. TRANSFORMED: rg -z or --pre searches
+    bytes the mount does not store. UNANSWERED: ``files_containing``
     returned None, or ``lines_containing`` returned None for a file.
     """
 
@@ -346,6 +348,7 @@ class ScanReason(StrEnum):
     EVERY_FILE = "the output lists files that do not match"
     LINKS = "links are followed"
     BINARY = "binary files are read"
+    TRANSFORMED = "the bytes searched are not the bytes stored"
     UNANSWERED = "the search could not answer"
 
 

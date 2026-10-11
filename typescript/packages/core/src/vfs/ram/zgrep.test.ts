@@ -84,14 +84,14 @@ describe('zgrep', () => {
     const r = await runZgrep(vfs, [typed], ['hello'], { files_without_match: true })
     expect(r.exitCode).toBe(1)
     expect(r.out).toBe('./o.gz\n')
-    const listed = await runZgrep(vfs, [typed], ['foo'], { args_l: true })
+    const listed = await runZgrep(vfs, [typed], ['foo'], { files_with_matches: true })
     expect(listed.out).toBe('./o.gz\n')
   })
 
   it('labels stdin "(standard input)" under -H', async () => {
     const vfs = new RAMVFS()
     const compressed = await gzip(ENC.encode('foo\nbar\n'))
-    const r = await runZgrep(vfs, [], ['bar'], { H: true }, compressed)
+    const r = await runZgrep(vfs, [], ['bar'], { with_filename: true }, compressed)
     expect(r.exitCode).toBe(0)
     expect(r.out).toBe('(standard input):bar\n')
   })
@@ -101,7 +101,7 @@ describe('zgrep', () => {
     // labels its lines `(standard input)`.
     const vfs = new RAMVFS()
     const compressed = await gzip(ENC.encode('foo\nbar\n'))
-    const listed = await runZgrep(vfs, [], ['bar'], { args_l: true }, compressed)
+    const listed = await runZgrep(vfs, [], ['bar'], { files_with_matches: true }, compressed)
     expect([listed.out, listed.exitCode]).toEqual(['-\n', 0])
     const unlisted = await runZgrep(vfs, [], ['zzz'], { files_without_match: true }, compressed)
     expect([unlisted.out, unlisted.exitCode]).toEqual(['-\n', 1])
@@ -114,10 +114,10 @@ describe('zgrep with stdin operands', () => {
   const DASH = new PathSpec({ virtual: '/-', directory: '/', vfsPath: '-', rawPath: '-' })
   const DEV = new PathSpec({ virtual: '/dev/stdin', directory: '/dev', vfsPath: 'stdin' })
   it.each([
-    [DASH, { H: true }, '(standard input):hello\n'],
-    [DEV, { H: true }, '/dev/stdin:hello\n'],
-    [DASH, { args_l: true }, '-\n'],
-    [DEV, { args_l: true }, '/dev/stdin\n'],
+    [DASH, { with_filename: true }, '(standard input):hello\n'],
+    [DEV, { with_filename: true }, '/dev/stdin:hello\n'],
+    [DASH, { files_with_matches: true }, '-\n'],
+    [DEV, { files_with_matches: true }, '/dev/stdin\n'],
   ] as const)('names %s like GNU', async (operand, flags, want) => {
     const r = await runZgrep(
       new RAMVFS(),
@@ -276,7 +276,7 @@ describe('zgrep opens each operand as gzip -cdfq does', () => {
 
 it.each([
   [{}, '/bad:hello\n/good.gz:hello\n'],
-  [{ c: true }, '/bad:1\n/good.gz:1\n'],
+  [{ count: true }, '/bad:1\n/good.gz:1\n'],
   [{ files_without_match: true }, ''],
 ] as const)('keeps partial matches and continues after read errors: %j', async (flags, out) => {
   const reads: string[] = []

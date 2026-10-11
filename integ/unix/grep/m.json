@@ -378,6 +378,45 @@
         "B",
         "c"
       ]
+    },
+    {
+      "id": "grep_m_reads_counts_as_gnu",
+      "seq": 14490065,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/gfl; printf 'alpha\\nbeta\\nfoo one\\ngamma\\ndelta\\nfoo two\\nepsilon\\n' > /data/gfl/a.txt; printf 'foo\\tbar\\nnone\\n' > /data/gfl/b.txt; grep -m -1 -c foo /data/gfl/a.txt; grep -m ' 1' foo /data/gfl/a.txt; grep -m +1 -c foo /data/gfl/a.txt; grep -m 0 foo /data/gfl/a.txt; echo rc=$?; grep -m 2x foo /data/gfl/a.txt; echo rc=$?; grep -m '' foo /data/gfl/a.txt; echo rc=$?; grep -m nope -V; echo rc=$?; rm -rf /data/gfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\nfoo one\n1\nrc=1\nrc=2\nrc=2\nrc=2\n",
+        "stderr": "grep: invalid max count\ngrep: invalid max count\ngrep: invalid max count\n"
+      },
+      "flags": [
+        "m",
+        "c",
+        "V"
+      ]
     }
   ]
 }

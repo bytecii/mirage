@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import partial
 
 from mirage.commands.builtin.generic.decompress import decompress_inputs
+from mirage.commands.builtin.generic.grep import max_count
 from mirage.commands.builtin.grep_binary import valid_utf8
 from mirage.commands.builtin.grep_offsets import prefix_of
 from mirage.commands.builtin.grep_pattern import (
@@ -160,29 +161,29 @@ def parse_flags(fl: FlagView, never_match: bool) -> ZgrepFlags:
     """
     # -l and -L set one mode in grep, so the later one on the line wins.
     listing: str | None = None
-    for name in fl.typed_order("args_l", "files_without_match"):
+    for name in fl.typed_order("files_with_matches", "files_without_match"):
         if fl.as_bool(name):
             listing = name
     return ZgrepFlags(
-        ignore_case=fl.as_bool("i"),
-        invert=fl.as_bool("v"),
-        count=fl.as_bool("c"),
-        files_only=listing == "args_l",
+        ignore_case=fl.as_bool("ignore_case"),
+        invert=fl.as_bool("invert_match"),
+        count=fl.as_bool("count"),
+        files_only=listing == "files_with_matches",
         files_without_match=listing == "files_without_match",
-        line_numbers=fl.as_bool("n"),
+        line_numbers=fl.as_bool("line_number"),
         byte_offsets=fl.as_bool("byte_offset"),
-        fixed=fl.as_bool("F") and not never_match,
+        fixed=fl.as_bool("fixed_strings") and not never_match,
         # zgrep is grep over decompressed bytes, so it reads a basic
         # expression unless -E or -P says otherwise, and refuses two
         # matchers as grep does; -G asks for the default.
-        syntax=matcher_syntax(fl, "grep", "P"),
-        force_filename=fl.as_bool("H"),
-        suppress_filename=fl.as_bool("h"),
-        only_matching=fl.as_bool("o"),
-        quiet=fl.as_bool("q"),
-        whole_word=fl.as_bool("w"),
+        syntax=matcher_syntax(fl),
+        force_filename=fl.as_bool("with_filename"),
+        suppress_filename=fl.as_bool("no_filename"),
+        only_matching=fl.as_bool("only_matching"),
+        quiet=fl.as_bool("quiet"),
+        whole_word=fl.as_bool("word_regexp"),
         line_regexp=fl.as_bool("line_regexp"),
-        max_count=fl.as_int("m"),
+        max_count=max_count(fl),
     )
 
 

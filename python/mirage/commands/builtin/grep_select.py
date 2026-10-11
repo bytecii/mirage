@@ -49,7 +49,8 @@ class WalkFilters:
 
 
 def parse_file_globs(fl: FlagView) -> tuple[FileGlob, ...]:
-    """The --include/--exclude rules a line typed, in line order.
+    """The --include/--exclude rules a line typed, in line order, an
+    --exclude-from's globs (read by the executor) where it stood.
 
     The bag lists each dest's values in occurrence order and the dests
     themselves in first-typed order, so the rebuilt list is exact
@@ -63,7 +64,7 @@ def parse_file_globs(fl: FlagView) -> tuple[FileGlob, ...]:
         fl (FlagView): spec-bound view of the parsed flag bag.
     """
     rules: list[FileGlob] = []
-    for name in fl.typed_order("include", "exclude"):
+    for name in fl.typed_order("include", "exclude", "exclude_from"):
         admit = name == "include"
         rules.extend(
             FileGlob(glob=glob, admit=admit) for glob in fl.as_list(name)

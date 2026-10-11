@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import cast
@@ -33,12 +34,21 @@ from mirage.commands.builtin.generic.crossmount.utils import (
     run_operands,
     run_separator,
 )
-from mirage.commands.builtin.generic.grep import filename_mode, parse_flags
+from mirage.commands.builtin.generic.grep import (
+    directories_action,
+    filename_mode,
+    line_warnings,
+    parse_flags,
+)
 from mirage.commands.builtin.generic.rg import (
     filters_files,
     haystacks,
+    headed,
+    ignore_rules,
+    json_summary,
     label_flags,
     rg_matcher,
+    runs_parallel,
     sort_haystacks,
     walk_filter,
     walks_descendant_mounts,
@@ -50,14 +60,16 @@ from mirage.commands.builtin.grep_binary import GrepFlags
 from mirage.commands.builtin.grep_pattern import compile_pattern, pattern_arg
 from mirage.commands.builtin.grep_select import dir_admitted, file_admitted
 from mirage.commands.builtin.rg_scan import walk_error_line
+from mirage.commands.builtin.rg_search import RgFlags, Totals, split_footer
 from mirage.commands.builtin.utils.links import LinkResolver
+from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.stream import is_stdin, resolve_source
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.errors.render import fs_error_line
 from mirage.io import IOResult
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, materialize
 from mirage.runtime.types import DispatchFn
 from mirage.shell.bytes import encode_text
 from mirage.types import FileStat, FileType, PathSpec
@@ -107,9 +119,17 @@ async def run_search(
         ns (NamespaceView | None): Namespace ownership and link facts.
         stdin (ByteSource | None): Shared standard input.
     """
+    started = time.perf_counter()
     view = FlagView(flags, spec=SPECS[name])
     grep = parse_flags(view, never_match=False) if name == "grep" else None
     rg = parse_rg_flags(view) if name == "rg" else None
+    # --ignore-file's rules judge every walked file, the ones a nested
+    # mount turns into operands of their own runs too; each run reads
+    # them again, so a file that could not be read is noted once, here.
+    notes: list[str] = []
+    ignores = (
+        await ignore_rules(view, dispatch, notes) if rg is not None else None
+    )
     nested = bool(
         ns
         and ns.mounts
@@ -129,6 +149,7 @@ async def run_search(
                 or rg.follow
                 or rg.one_file_system
                 or filters_files(rg)
+                or not (ignores is None or ignores.empty)
             )
         )
     )
@@ -146,10 +167,12 @@ async def run_search(
                 line_regexp=grep.line_regexp,
             )
     if rg is not None and not rg.list_files:
-        pattern = pattern_arg(texts, view, "regexp")
+        pattern = pattern_arg(texts, view)
         if pattern is not None:
             rg_matcher(pattern, False, rg)
     quiet = grep.quiet if grep is not None else bool(rg and rg.quiet)
+    # -q stops at the first match, but --stats and --json count every file.
+    stops = quiet and not (rg is not None and (rg.stats or rg.json))
 
     input_source = resolve_source(stdin)
     owners = [
@@ -171,7 +194,7 @@ async def run_search(
             stdin=input_source if any(is_stdin(p) for p in operands) else None,
         )
 
-    walk = walk_filter(rg) if rg is not None else None
+    walk = walk_filter(rg, None, ignores) if rg is not None else None
 
     def admit(path: PathSpec, info: FileStat) -> bool:
         if grep is not None:
@@ -254,6 +277,7 @@ async def run_search(
                 yield OwnedScope(path)
 
     results: list[OperandRun] = []
+    walked: set[int] = set()
     async for scope in scopes():
         if scope.error is not None or scope.diagnostic is not None:
             message = scope.diagnostic
@@ -308,10 +332,12 @@ async def run_search(
                     )
                 )
             ):
-                local["H"] = True
+                local["with_filename"] = True
         runs = await run_operands(execute, name, [scope.path], texts, local)
+        if scope.stat is not None and scope.stat.type == FileType.DIRECTORY:
+            walked.add(len(results))
         results.extend(runs)
-        if quiet and runs[-1].io.exit_code == 0:
+        if stops and runs[-1].io.exit_code == 0:
             break
     code = combined_exit(
         name,
@@ -319,8 +345,70 @@ async def run_search(
         [r.io.exit_code != 0 and r.io.stderr is not None for r in results],
         quiet,
     )
-    body = run_separator(name, flags).join(r.data for r in results if r.data)
-    return body, await merge_operand_ios(results, code)
+    parts, footer = (
+        _one_footer(results, rg, walked, started)
+        if rg is not None and (rg.stats or rg.json)
+        else ([r.data for r in results], b"")
+    )
+    body = run_separator(name, flags).join(p for p in parts if p) + footer
+    # Each run says what the line says once, grep's warnings or rg's notes
+    # of the ignore files it could not read; the line keeps one.
+    noted = (
+        line_warnings(view, grep, pattern_arg(texts, view) or "", False)
+        if grep is not None
+        else format_records(notes)
+        if rg is not None and notes and not rg.no_messages
+        else b""
+    )
+    if not noted:
+        return body, await merge_operand_ios(results, code)
+    for r in results:
+        if r.io.stderr is not None:
+            err = await materialize(r.io.stderr)
+            r.io.stderr = err.removeprefix(noted) or None
+    io = await merge_operand_ios(results, code)
+    io.stderr = noted + (
+        await materialize(io.stderr) if io.stderr is not None else b""
+    )
+    return body, io
+
+
+def _one_footer(
+    results: list[OperandRun], f: RgFlags, walked: set[int], started: float
+) -> tuple[list[bytes], bytes]:
+    """The runs' outputs with each --stats block or --json summary cut
+    off, and the one footer that totals them, as a single rg prints it.
+
+    A run that walked a directory on ripgrep's parallel searcher closed
+    its last --heading group with a blank line too; that line goes with
+    its footer.
+
+    Args:
+        results (list[OperandRun]): the runs, in order.
+        f (RgFlags): the parsed flags.
+        walked (set[int]): the runs that walked a directory.
+        started (float): when the line started, for the total time.
+    """
+    summary = json_summary(f)
+    blank = not summary and headed(f) and runs_parallel(f)
+    parts = [r.data for r in results]
+    totals = Totals()
+    found = False
+    for i, data in enumerate(parts):
+        head, part = split_footer(data, summary)
+        if part is None:
+            continue
+        found = True
+        totals.merge(part)
+        parts[i] = head[:-1] if blank and head and i in walked else head
+    if not found:
+        return parts, b""
+    total = time.perf_counter() - started
+    if summary:
+        return parts, totals.summary_record(total)
+    return parts, (
+        b"\n" if blank and any(parts) else b""
+    ) + totals.stats_block(total)
 
 
 def walks_mounts(name: str, flags: dict[str, FlagValue]) -> bool:
@@ -333,6 +421,7 @@ def walks_mounts(name: str, flags: dict[str, FlagValue]) -> bool:
     if name == "rg":
         return walks_descendant_mounts(flags)
     if name == "grep":
-        view = FlagView(flags, spec=SPECS[name])
-        return view.as_bool("r") or view.as_bool("R")
+        return (
+            directories_action(FlagView(flags, spec=SPECS[name])) == "recurse"
+        )
     return False

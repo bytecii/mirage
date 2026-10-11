@@ -30,10 +30,10 @@ import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
 
-import { parseFlags as parseGrepFlags } from '../generic/grep.ts'
+import { directoriesAction, parseFlags as parseGrepFlags } from '../generic/grep.ts'
 import { foldsCase, parseFlags as parseRgFlags, rgMatcher } from '../generic/rg.ts'
 import { searchTerms } from '../grep_pushdown.ts'
-import { PATTERN_KEYS, compilePattern, patternArg } from '../grep_pattern.ts'
+import { compilePattern, patternArg } from '../grep_pattern.ts'
 import type { SearchTerms } from '../types.ts'
 
 type Reads = (p: PathSpec) => AsyncIterable<Uint8Array>
@@ -50,7 +50,7 @@ export function grepTerms(
 ): SearchTerms | ScanReason {
   const fl = new FlagView(bag, specOf('grep'))
   const f = parseGrepFlags(fl)
-  const pattern = patternArg(texts, bag, PATTERN_KEYS.grep)
+  const pattern = patternArg(texts, bag)
   if (f.invert) return ScanReason.EVERY_LINE
   if (pattern === null || fl.raw('file') !== undefined) return ScanReason.NO_TEXT
   const matcher = compilePattern(
@@ -75,7 +75,13 @@ export function grepTerms(
     texts: found[0],
     wholeWord: found[1],
     ignoreCase: f.ignoreCase,
-    lineOutput: !(f.lineNumbers || f.byteOffsets || f.afterContext > 0 || f.beforeContext > 0),
+    lineOutput: !(
+      f.lineNumbers ||
+      f.byteOffsets ||
+      f.afterContext !== null ||
+      f.beforeContext !== null ||
+      f.nullData === true
+    ),
     readsBinary: f.filters.text,
   }
 }
@@ -92,12 +98,14 @@ export function rgTerms(
   const fl = new FlagView(bag, specOf('rg'))
   const f = parseRgFlags(fl)
   if (f.listFiles || f.typeList) return null
-  const pattern = patternArg(texts, bag, PATTERN_KEYS.rg)
+  const pattern = patternArg(texts, bag)
   if (f.invert || f.passthru) return ScanReason.EVERY_LINE
   if (!f.quiet && (f.filesWithoutMatch || (f.includeZero && (f.countOnly || f.countMatches)))) {
     return ScanReason.EVERY_FILE
   }
+  if (f.stats === true || f.json === true) return ScanReason.EVERY_FILE
   if (f.follow) return ScanReason.LINKS
+  if (f.searchZip === true || (f.pre ?? null) !== null) return ScanReason.TRANSFORMED
   if (pattern === null || fl.raw('file') !== undefined) return ScanReason.NO_TEXT
   const ignoreCase = foldsCase(pattern, f.fixedString, f)
   const found = searchTerms(
@@ -108,7 +116,10 @@ export function rgTerms(
     f.lineRegexp,
     ignoreCase,
   )
-  if (found === null) return ScanReason.NO_TEXT
+  // -U matches across lines, so a text with a line break in it is no line's
+  // to find.
+  if (found === null || (f.multiline === true && found[0].some((text) => text.includes('\n'))))
+    return ScanReason.NO_TEXT
   return {
     texts: found[0],
     wholeWord: found[1],
@@ -121,7 +132,8 @@ export function rgTerms(
       f.contextAfter > 0 ||
       f.contextBefore > 0 ||
       f.stopOnNonmatch ||
-      f.nullData
+      f.nullData ||
+      f.multiline === true
     ),
     readsBinary: f.binary,
   }
@@ -238,7 +250,7 @@ export async function searchReads<A extends Accessor>(
   }
   if (terms === null) return stream
   const fl = new FlagView(opts.flags, specOf(name))
-  const walked = name === 'rg' || fl.asBool('r') || fl.asBool('R')
+  const walked = name === 'rg' || directoriesAction(fl) === 'recurse'
   const dirs = walked ? await directories(io, accessor, paths, index) : []
   if (typeof terms === 'string') {
     await fullScan(io, name, accessor, dirs, terms, index)

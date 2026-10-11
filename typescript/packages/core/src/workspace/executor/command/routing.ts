@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { findExprTail } from '../../../commands/builtin/find_parse.ts'
+import { directoriesAction } from '../../../commands/builtin/generic/grep.ts'
 import { FILE_KEYS } from '../../../commands/builtin/generic/program.ts'
 import { findChild, walk } from '../../../commands/cli/walk.ts'
 import { SPECS } from '../../../commands/spec/index.ts'
@@ -52,12 +53,16 @@ export const CWD_DEFAULT_RAW: Record<string, string> = {
 
 // The path options whose file the handler itself reads or writes through
 // the dispatcher, keyed by command, valued by kwarg name: curl's -o and -D,
-// jq's --rawfile and --slurpfile. Like a program file, such a file is no
-// operand of the mount the line runs on, so it routes nothing: the line runs
-// where its positional operands (or the cwd) put it, and `-o` and `-D` on two
-// mounts, or `--slurpfile` over a process substitution, is not cross-mount.
+// jq's --rawfile and --slurpfile, rg's --ignore-file, and grep's
+// --exclude-from, which the executor reads with the pattern files. Like a
+// program file, such a file is no operand of the mount the line runs on, so
+// it routes nothing: the line runs where its positional operands (or the
+// cwd) put it, and `-o` and `-D` on two mounts, or `--slurpfile` over a
+// process substitution, is not cross-mount.
 export const DISPATCH_FLAG_KEYS: Readonly<Record<string, readonly string[]>> = {
   curl: ['output', 'dump_header'],
+  grep: ['exclude_from'],
+  rg: ['ignore_file'],
   jq: ['rawfile', 'slurpfile'],
 }
 
@@ -91,8 +96,7 @@ export function defaultCwdOperand(
     return null
   }
   if (cmdName === 'grep') {
-    const kwargs = parseToKwargs(parsed)
-    if (kwargs.r !== true && kwargs.R !== true) return null
+    if (directoriesAction(new FlagView(parseToKwargs(parsed), spec)) !== 'recurse') return null
   } else if (cmdName === 'rg' && stdin !== null && !(stdin instanceof DeviceInput)) {
     const fl = new FlagView(parseToKwargs(parsed), spec)
     // `-f -` reads the attached stdin for patterns first, and --files lists

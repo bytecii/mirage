@@ -322,6 +322,58 @@
           }
         }
       ]
+    },
+    {
+      "id": "removing_a_link_to_a_directory_leaves_the_directory",
+      "runtimes": [
+        "pyodide",
+        "quickjs",
+        "host"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {
+              "d/f.txt": "f\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "ln -s d /data/lk",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "program": {
+            "python": "import os\nos.remove('/data/lk')",
+            "js": "console.log(os.remove('/data/lk'))",
+            "node": "await require('node:fs').promises.unlink('/data/lk')"
+          },
+          "expect": {
+            "python": {
+              "exit": 0
+            },
+            "js": {
+              "exit": 0,
+              "stdout": "0\n"
+            },
+            "node": {
+              "exit": 0
+            }
+          }
+        },
+        {
+          "command": "ls /data /data/d",
+          "expect": {
+            "exit": 0,
+            "stdout": "/data:\nd\n\n/data/d:\nf.txt\n"
+          }
+        }
+      ]
     }
   ]
 }

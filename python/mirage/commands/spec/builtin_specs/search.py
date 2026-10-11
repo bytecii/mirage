@@ -17,50 +17,70 @@ from mirage.commands.spec.types import Argument, CommandSpec
 SPECS: dict[str, CommandSpec] = {
     "grep": CommandSpec(
         arguments=(
-            Argument("-r", action="store_true"),
-            Argument("-R", action="store_true"),
-            Argument("-i", action="store_true"),
+            Argument("-r", "--recursive", action="store_true"),
+            Argument("-R", "--dereference-recursive", action="store_true"),
+            # -r and -R are --directories=recurse; the last of the three
+            # on the line wins.
+            Argument("-d", "--directories"),
+            # A device is read only when named; a walk never opens one.
+            Argument("-D", "--devices"),
+            # -y is GNU's obsolete spelling of -i.
+            Argument("-i", "-y", "--ignore-case", action="store_true"),
+            Argument("--no-ignore-case", action="store_true"),
             Argument("-I", action="store_true"),
-            Argument("-v", action="store_true"),
-            Argument("-n", action="store_true"),
+            Argument("-v", "--invert-match", action="store_true"),
+            Argument("-n", "--line-number", action="store_true"),
             Argument("--binary-files"),
-            Argument("-c", action="store_true"),
-            Argument("-l", action="store_true"),
+            Argument("-c", "--count", action="store_true"),
+            Argument("-l", "--files-with-matches", action="store_true"),
             Argument("-L", "--files-without-match", action="store_true"),
-            Argument("-w", action="store_true"),
+            Argument("-w", "--word-regexp", action="store_true"),
             Argument("-x", "--line-regexp", action="store_true"),
-            Argument("-F", action="store_true"),
-            Argument("-E", action="store_true"),
+            # --fixed-regexp is GNU's older name for --fixed-strings.
+            Argument(
+                "-F", "--fixed-strings", "--fixed-regexp", action="store_true"
+            ),
+            Argument("-E", "--extended-regexp", action="store_true"),
             # -G asks for the basic expressions grep already reads by
             # default; with -E, -F and -P it is one of the four matchers,
             # two different ones being refused.
-            Argument("-G", action="store_true"),
+            Argument("-G", "--basic-regexp", action="store_true"),
             Argument("-P", "--perl-regexp", action="store_true"),
-            # -E's and -G's long spellings, one option to GNU; mirage keeps
-            # the short dests the matcher check reads next to these.
-            Argument("--extended-regexp", action="store_true"),
-            Argument("--basic-regexp", action="store_true"),
-            Argument("-o", action="store_true"),
-            Argument("-q", action="store_true"),
+            Argument("-z", "--null-data", action="store_true"),
+            Argument("-o", "--only-matching", action="store_true"),
+            Argument("-q", "--quiet", "--silent", action="store_true"),
             Argument("-s", "--no-messages", action="store_true"),
-            Argument("-H", action="store_true"),
-            Argument("-h", action="store_true"),
-            Argument("-m"),
-            Argument("-A"),
-            Argument("-B"),
-            Argument("-C"),
-            Argument("-e", action="append"),
+            Argument("-H", "--with-filename", action="store_true"),
+            Argument("-h", "--no-filename", action="store_true"),
+            Argument("--label"),
+            Argument("-Z", "--null", action="store_true"),
+            Argument("-T", "--initial-tab", action="store_true"),
+            Argument("-m", "--max-count"),
+            Argument("-A", "--after-context"),
+            Argument("-B", "--before-context"),
+            # -NUM is -C NUM.
+            Argument("-C", "--context", numeric_shorthand=True),
+            Argument("--group-separator"),
+            Argument("--no-group-separator", action="store_true"),
+            Argument("-e", "--regexp", action="append"),
             Argument("-f", "--file", type="path", action="append"),
             Argument("-a", "--text", action="store_true"),
             Argument("-b", "--byte-offset", action="store_true"),
             Argument("--include", action="append"),
             Argument("--exclude", action="append"),
+            Argument("--exclude-from", type="path", action="append"),
             Argument("--exclude-dir", action="append"),
+            # The version, like the --version registration supplies.
+            Argument("-V", action="store_true"),
             # Accepted no-ops: output is never a tty, so plain output is
-            # exactly what GNU produces with --color=auto (#471).
+            # exactly what GNU produces with --color=auto (#471); -U only
+            # matters where a line can end in CR LF, and -u is obsolete
+            # (GNU warns and ignores it).
             Argument("--color", nargs="?", attached_only=True),
             Argument("--colour", nargs="?", attached_only=True),
             Argument("--line-buffered", action="store_true"),
+            Argument("-U", "--binary", action="store_true"),
+            Argument("-u", "--unix-byte-offsets", action="store_true"),
             Argument("text", nargs="?", metavar="", provided_by=("-e", "-f")),
             Argument("paths", type="path", nargs="*", metavar=""),
         )
@@ -174,6 +194,9 @@ SPECS: dict[str, CommandSpec] = {
             Argument("--ignore-dot", action="store_true"),
             Argument("--no-ignore-exclude", action="store_true"),
             Argument("--ignore-exclude", action="store_true"),
+            # --ignore-file's gitignore rules apply to the walk; the
+            # negation drops every one of them, wherever it stands.
+            Argument("--ignore-file", type="path", action="append"),
             Argument("--no-ignore-files", action="store_true"),
             Argument("--ignore-files", action="store_true"),
             Argument("--no-ignore-global", action="store_true"),
@@ -198,16 +221,34 @@ SPECS: dict[str, CommandSpec] = {
             Argument("--no-mmap", action="store_true"),
             # -L's negation, the last of the two winning.
             Argument("--no-follow", action="store_true"),
+            # --stats ends the output with ripgrep's counts and timings;
+            # --json prints JSON Lines (begin, match, context, end, summary).
+            Argument("--stats", action="store_true"),
             Argument("--no-stats", action="store_true"),
+            Argument("--json", action="store_true"),
+            # A line may end in CR LF: `$` matches before the CR and every
+            # line rg writes ends in CR LF.
+            Argument("--crlf", action="store_true"),
             Argument("--no-crlf", action="store_true"),
+            # A match may span lines: the whole file is searched at once.
+            Argument("-U", "--multiline", action="store_true"),
             Argument("--no-multiline", action="store_true"),
+            Argument("--multiline-dotall", action="store_true"),
             Argument("--no-multiline-dotall", action="store_true"),
             Argument("-P", "--pcre2", action="store_true"),
             Argument("--no-pcre2", action="store_true"),
             Argument("--engine"),
             Argument("--no-json", action="store_true"),
+            # A .gz or .tgz file is searched decompressed; mirage has gzip
+            # and no other decompressor, which ripgrep leaves raw too when
+            # their programs are missing.
+            Argument("-z", "--search-zip", action="store_true"),
             Argument("--no-search-zip", action="store_true"),
             Argument("--no-encoding", action="store_true"),
+            # --pre runs COMMAND PATH for each file, its contents on stdin,
+            # and searches what it prints; --pre-glob picks the files.
+            Argument("--pre"),
+            Argument("--pre-glob", action="append"),
             Argument("--no-pre", action="store_true"),
             Argument("--unicode", action="store_true"),
             Argument("--no-unicode", action="store_true"),
@@ -218,6 +259,22 @@ SPECS: dict[str, CommandSpec] = {
             # Accepted no-op like grep --color (#471), with ripgrep's
             # required value.
             Argument("--color"),
+            # -p is --heading -n plus colors, which mirage never writes.
+            Argument("-p", "--pretty", action="store_true"),
+            # Accepted no-ops whose values ripgrep checks, refused in its
+            # words: mirage writes no colors or hyperlinks and compiles no
+            # DFA, and logs nothing for --debug and --trace.
+            Argument("--colors", action="append"),
+            Argument("--hyperlink-format"),
+            Argument("--hostname-bin"),
+            Argument("--dfa-size-limit"),
+            Argument("--regex-size-limit"),
+            Argument("--debug", action="store_true"),
+            Argument("--trace", action="store_true"),
+            # The help page and the version, like the --help and --version
+            # the registration supplies.
+            Argument("-h", action="store_true"),
+            Argument("-V", action="store_true"),
             # --files and --type-list search nothing, so the first operand is
             # a path rather than the pattern.
             Argument(
@@ -439,29 +496,31 @@ SPECS: dict[str, CommandSpec] = {
     ),
     "zgrep": CommandSpec(
         arguments=(
-            Argument("-i", action="store_true"),
+            Argument("-i", "--ignore-case", action="store_true"),
             Argument("-b", "--byte-offset", action="store_true"),
-            Argument("-c", action="store_true"),
-            Argument("-l", action="store_true"),
+            Argument("-c", "--count", action="store_true"),
+            Argument("-l", "--files-with-matches", action="store_true"),
             Argument("-L", "--files-without-match", action="store_true"),
-            Argument("-n", action="store_true"),
-            Argument("-v", action="store_true"),
-            Argument("-e", action="append"),
-            Argument("-f", type="path", action="append"),
-            Argument("-E", action="store_true"),
-            Argument("-G", action="store_true"),
-            Argument("-F", action="store_true"),
-            Argument("-P", action="store_true"),
-            Argument("-H", action="store_true"),
-            Argument("-h", action="store_true"),
-            Argument("-m"),
-            Argument("-o", action="store_true"),
-            Argument("-q", action="store_true"),
+            Argument("-n", "--line-number", action="store_true"),
+            Argument("-v", "--invert-match", action="store_true"),
+            Argument("-e", "--regexp", action="append"),
+            Argument("-f", "--file", type="path", action="append"),
+            Argument("-E", "--extended-regexp", action="store_true"),
+            Argument("-G", "--basic-regexp", action="store_true"),
+            Argument(
+                "-F", "--fixed-strings", "--fixed-regexp", action="store_true"
+            ),
+            Argument("-P", "--perl-regexp", action="store_true"),
+            Argument("-H", "--with-filename", action="store_true"),
+            Argument("-h", "--no-filename", action="store_true"),
+            Argument("-m", "--max-count"),
+            Argument("-o", "--only-matching", action="store_true"),
+            Argument("-q", "--quiet", "--silent", action="store_true"),
             # An accepted no-op: zgrep hands -s to grep, which reads a
             # pipe and has no file to complain about, and gzip's own
             # lines are gzip's (gzip 1.13).
-            Argument("-s", action="store_true"),
-            Argument("-w", action="store_true"),
+            Argument("-s", "--no-messages", action="store_true"),
+            Argument("-w", "--word-regexp", action="store_true"),
             Argument("-x", "--line-regexp", action="store_true"),
             Argument("text", nargs="?", metavar="", provided_by=("-e", "-f")),
             Argument("paths", type="path", nargs="*", metavar=""),

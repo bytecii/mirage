@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import errno
+import inspect
 import os
 import shutil
 import stat as stat_mod
@@ -24,7 +25,13 @@ import pytest
 from mirage import MountMode, Workspace
 from mirage.context import set_current_session
 from mirage.errors.posix import posix_errno
-from mirage.runtime.python.host.constants import REFUSED_CALLS, ROUTED_CALLS
+from mirage.policy import Deny, Policy
+from mirage.runtime.python.host.constants import (
+    DESCRIPTOR_CALLS,
+    REFUSED_CALLS,
+    REFUSED_DESCRIPTOR_CALLS,
+    ROUTED_CALLS,
+)
 from mirage.runtime.python.host.fs import HostFs, make_os_module, os_routing
 from mirage.types import HiddenPaths, PathSpec, Visibility
 from mirage.utils.stat_view import DIR_SIZE
@@ -40,6 +47,56 @@ async def _shell(ws, line):
     return result.exit_code, await result.stdout_str()
 
 
+INSTALLED_CALLS = (
+    *ROUTED_CALLS,
+    *REFUSED_CALLS,
+    *DESCRIPTOR_CALLS,
+    *REFUSED_DESCRIPTOR_CALLS,
+)
+
+# The parameter names os gives a descriptor argument.
+FD_PARAMS = frozenset({"fd", "fd2", "fd_low", "in_fd", "out_fd", "src", "dst"})
+
+# The descriptor calls a mounted descriptor leaves to the host: the pipe
+# it holds answers them truly (no terminal, its own flags), and none of
+# them reads or writes a file.
+HOST_FD_CALLS = frozenset(
+    {
+        "closerange",
+        "device_encoding",
+        "eventfd_read",
+        "eventfd_write",
+        "get_blocking",
+        "get_inheritable",
+        "grantpt",
+        "isatty",
+        "login_tty",
+        "ptsname",
+        "set_blocking",
+        "set_inheritable",
+        "setns",
+        "tcgetpgrp",
+        "tcsetpgrp",
+        "timerfd_gettime",
+        "timerfd_gettime_ns",
+        "timerfd_settime",
+        "timerfd_settime_ns",
+        "ttyname",
+        "unlockpt",
+    }
+)
+
+
+class _NoStats(Policy):
+    async def pre_vfs(self, ctx):
+        return Deny("no stat") if ctx.op == "stat" else None
+
+
+class _NoReads(Policy):
+    async def pre_vfs(self, ctx):
+        return Deny("no read") if ctx.op == "read" else None
+
+
 def seeded():
     """An ops facade over /data with one file and one subdirectory."""
     ops, _ = make_ops_with_dir()
@@ -52,7 +109,7 @@ def seeded():
 class TestTableInstall:
     def test_every_routed_verb_the_host_has_is_installed(self):
         ops, patched = seeded()
-        for verb in ROUTED_CALLS:
+        for verb in (*ROUTED_CALLS, *DESCRIPTOR_CALLS):
             if not hasattr(os, verb):
                 continue
             assert getattr(patched, verb) is not getattr(os, verb), verb
@@ -66,7 +123,7 @@ class TestTableInstall:
 
     def test_every_other_name_keeps_the_host_function(self):
         ops, patched = seeded()
-        installed = {*ROUTED_CALLS, *REFUSED_CALLS, "path"}
+        installed = {*INSTALLED_CALLS, "path"}
         for name, value in vars(os).items():
             if name not in installed:
                 assert getattr(patched, name) is value, name
@@ -75,18 +132,46 @@ class TestTableInstall:
         # hasattr(os, ...) has to keep answering what it did, or code
         # that probes for a platform feature gets an OSError instead.
         ops, patched = seeded()
-        for verb in (*ROUTED_CALLS, *REFUSED_CALLS):
+        for verb in INSTALLED_CALLS:
             assert hasattr(patched, verb) is hasattr(os, verb), verb
 
     def test_routing_covers_the_tables(self):
         ops, _ = seeded()
-        routed = os_routing(ops)
-        expected = {
-            verb
-            for verb in (*ROUTED_CALLS, *REFUSED_CALLS)
-            if hasattr(os, verb)
-        }
+        routed = os_routing(HostFs(ops, None))
+        expected = {verb for verb in INSTALLED_CALLS if hasattr(os, verb)}
         assert set(routed) == expected
+
+    def test_every_descriptor_call_is_classified(self):
+        # A call that takes a descriptor and sits in no table reaches the
+        # pipe a mounted one holds, so a Python release that adds one
+        # fails here first; node's call tables have the same test.
+        tables = (
+            DESCRIPTOR_CALLS,
+            set(REFUSED_DESCRIPTOR_CALLS),
+            HOST_FD_CALLS,
+        )
+        for name, value in vars(os).items():
+            if name in ROUTED_CALLS or name in REFUSED_CALLS:
+                continue
+            if not callable(value) or isinstance(value, type):
+                continue
+            try:
+                params = inspect.signature(value).parameters
+            except (TypeError, ValueError):
+                continue
+            if FD_PARAMS.isdisjoint(params):
+                continue
+            assert sum(name in table for table in tables) == 1, name
+
+    def test_refused_descriptor_params_are_the_os_names(self):
+        # A descriptor passed by name is found by these names, so one
+        # that drifted from os's own would let that spelling reach the
+        # pipe a mounted descriptor holds.
+        for verb, params in REFUSED_DESCRIPTOR_CALLS.items():
+            if not hasattr(os, verb):
+                continue
+            names = list(inspect.signature(getattr(os, verb)).parameters)
+            assert names[: len(params)] == list(params), verb
 
 
 class TestStatShape:
@@ -240,6 +325,16 @@ class TestWrites:
         _, patched = seeded()
         with pytest.raises(FileExistsError):
             patched.makedirs("/data/dir/a.txt", exist_ok=True)
+
+    def test_makedirs_raises_what_a_stat_refused(self):
+        # A refused stat is not a missing directory: makedirs used to walk
+        # past it and answer EEXIST from a mkdir it should never have tried.
+        ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
+        run(ws.vfs.mkdir("/data/dir"))
+        ws.policies.add(_NoStats())
+        patched = make_os_module(ws.vfs)
+        with pytest.raises(PermissionError):
+            patched.makedirs("/data/dir/x/y")
 
     def test_removedirs_prunes_the_parents_that_empty(self):
         _, patched = seeded()
@@ -484,8 +579,6 @@ class TestRefusals:
         target = tmp_path / "a.txt"
         target.write_text("host")
         assert patched.statvfs(str(tmp_path)).f_bsize > 0
-        fd = patched.open(str(target), os.O_RDONLY)
-        os.close(fd)
 
     def test_link_refuses_when_either_end_is_mounted(self, tmp_path):
         _, patched = seeded()
@@ -504,8 +597,35 @@ def _extra_args(verb):
         "link": ("/data/dir/hard",),
         "mkfifo": (),
         "mknod": (),
-        "open": (os.O_RDONLY,),
     }.get(verb, ())
+
+
+class TestDescriptors:
+    def test_a_policy_that_refuses_reads_still_lets_an_open_file_go(self):
+        ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE)
+        run(ws.vfs.write("/data/f.txt", b"body"))
+        ws.policies.add(_NoReads())
+        patched = make_os_module(ws.vfs)
+        fd = patched.open("/data/f.txt", os.O_WRONLY)
+        patched.unlink("/data/f.txt")
+        patched.close(fd)
+        assert not patched.path.exists("/data/f.txt")
+
+    def test_a_rename_onto_its_own_name_keeps_the_descriptor(self):
+        ops, patched = seeded()
+        fd = patched.open("/data/dir/a.txt", os.O_RDWR)
+        patched.write(fd, b"J")
+        patched.rename("/data/dir/a.txt", "/data/dir/a.txt")
+        patched.close(fd)
+        assert run(ops.read("/data/dir/a.txt")) == b"Jello"
+
+    def test_a_host_path_keeps_a_host_descriptor(self, tmp_path):
+        _, patched = seeded()
+        target = tmp_path / "a.txt"
+        fd = patched.open(str(target), os.O_WRONLY | os.O_CREAT)
+        patched.write(fd, b"host")
+        patched.close(fd)
+        assert target.read_bytes() == b"host"
 
 
 class TestProcessPatch:

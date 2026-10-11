@@ -1,0 +1,231 @@
+{
+  "cases": [
+    {
+      "id": "rg_U_matches_across_lines",
+      "seq": 14490200,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; rg -U 'foo\\nbar' /data/rgfl/a.txt; rg -U -n 'foo\\nbar' /data/rgfl/a.txt; rg -U -c 'foo\\nbar|baz' /data/rgfl/a.txt; rg -U --count-matches 'o\\n' /data/rgfl/a.txt; rg -U -n -o 'o\\nbar' /data/rgfl/a.txt; rg -U -n -C1 'foo\\nbar' /data/rgfl/a.txt; rg --multiline -b 'foo\\nbar' /data/rgfl/a.txt; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "foo\nbar\n2:foo\n3:bar\n2\n2\n2:o\n3:bar\n1-alpha\n2:foo\n3:bar\n4-baz\n6:foo\n10:bar\n",
+        "stderr": ""
+      },
+      "flags": [
+        "U",
+        "multiline",
+        "n",
+        "c",
+        "count_matches",
+        "o",
+        "C",
+        "b"
+      ]
+    },
+    {
+      "id": "rg_U_regions_merge_and_select",
+      "seq": 14490201,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; rg -U -n --vimgrep 'x2\\nx3|x5' /data/rgfl/c.txt; rg -U -n -r Y 'x2\\nx3' /data/rgfl/c.txt; rg -U -v 'x2\\nx3|x5' /data/rgfl/c.txt; rg -U -n -m1 'x2\\nx3|x5' /data/rgfl/c.txt; rg -j1 -U -l 'x2\\nx3' /data/rgfl/c.txt /data/rgfl/a.txt; rg -U -n -C1 'x2\\nx3|x6' /data/rgfl/c.txt; rg -U -c -v 'foo\\nbar' /data/rgfl/a.txt; echo rc=$?; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/rgfl/c.txt:2:1:x2\n/data/rgfl/c.txt:5:1:x5\n2:Y\nx1\nx4\nx6\nx7\nx8\n2:x2\n3:x3\n/data/rgfl/c.txt\n1-x1\n2:x2\n3:x3\n4-x4\n5-x5\n6:x6\n7-x7\nrc=1\n",
+        "stderr": ""
+      },
+      "flags": [
+        "U",
+        "n",
+        "vimgrep",
+        "r",
+        "v",
+        "m",
+        "l",
+        "C",
+        "c",
+        "j"
+      ]
+    },
+    {
+      "id": "rg_multiline_dotall_lets_dot_match_a_newline",
+      "seq": 14490202,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; rg -U 'foo.bar' /data/rgfl/a.txt; echo rc=$?; rg -U --multiline-dotall 'foo.bar' /data/rgfl/a.txt; rg -U --multiline-dotall --no-multiline-dotall 'foo.bar' /data/rgfl/a.txt; echo rc=$?; rg --multiline-dotall 'x1.x2' /data/rgfl/c.txt; echo rc=$?; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=1\nfoo\nbar\nrc=1\nrc=1\n",
+        "stderr": ""
+      },
+      "flags": [
+        "U",
+        "multiline_dotall",
+        "no_multiline_dotall"
+      ]
+    },
+    {
+      "id": "rg_refuses_a_literal_newline_without_U",
+      "seq": 14490203,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; rg 'foo\\nbar' /data/rgfl/a.txt; echo rc=$?; rg -U --no-multiline 'foo\\nbar' /data/rgfl/a.txt; echo rc=$?; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=2\nrc=2\n",
+        "stderr": "rg: the literal \"\\n\" is not allowed in a regex\n\nConsider enabling multiline mode with the --multiline flag (or -U for short).\nWhen multiline mode is enabled, new line characters can be matched.\nrg: the literal \"\\n\" is not allowed in a regex\n\nConsider enabling multiline mode with the --multiline flag (or -U for short).\nWhen multiline mode is enabled, new line characters can be matched.\n"
+      },
+      "flags": [
+        "U",
+        "no_multiline"
+      ]
+    },
+    {
+      "id": "rg_U_passthru_and_null_data_replacements",
+      "seq": 14490221,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; rg -U --passthru zzz /data/rgfl/b.txt; echo rc=$?; rg -j1 -U --passthru -n zzz /data/rgfl/b.txt /data/rgfl/c.txt; printf 'foo\\nbar\\0baz\\0' > /data/rgfl/n.bin; rg -U --null-data -r X foo /data/rgfl/n.bin | tr '\\0' '@'; echo; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "nothing\nrc=1\n/data/rgfl/b.txt-1-nothing\n/data/rgfl/c.txt-1-x1\n/data/rgfl/c.txt-2-x2\n/data/rgfl/c.txt-3-x3\n/data/rgfl/c.txt-4-x4\n/data/rgfl/c.txt-5-x5\n/data/rgfl/c.txt-6-x6\n/data/rgfl/c.txt-7-x7\n/data/rgfl/c.txt-8-x8\nX\nbar@\n",
+        "stderr": ""
+      },
+      "flags": [
+        "U",
+        "passthru",
+        "n",
+        "null_data",
+        "r"
+      ]
+    },
+    {
+      "id": "rg_U_stop_on_nonmatch",
+      "seq": 14490228,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgfl/sub; printf 'alpha\\nfoo\\nbar\\nbaz\\nfoo\\nqux\\n' > /data/rgfl/a.txt; printf 'nothing\\n' > /data/rgfl/b.txt; printf 'x1\\nx2\\nx3\\nx4\\nx5\\nx6\\nx7\\nx8\\n' > /data/rgfl/c.txt; printf 'a1\\na2\\nb\\na3\\n' > /data/rgfl/s.txt; rg -U --stop-on-nonmatch a /data/rgfl/s.txt; rg -U --stop-on-nonmatch -c a /data/rgfl/s.txt; rg -U --stop-on-nonmatch -n -A1 a /data/rgfl/s.txt; rg -U --stop-on-nonmatch -v b /data/rgfl/s.txt; rg -U --stop-on-nonmatch -B1 a3 /data/rgfl/s.txt; rm -rf /data/rgfl",
+      "expect": {
+        "exit": 0,
+        "stdout": "a1\na2\n2\n1:a1\n2:a2\n3-b\na1\na2\na3\nb\na3\n",
+        "stderr": ""
+      },
+      "flags": [
+        "U",
+        "stop_on_nonmatch",
+        "c",
+        "n",
+        "A",
+        "B",
+        "v"
+      ]
+    }
+  ]
+}

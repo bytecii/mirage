@@ -59,12 +59,12 @@ def test_flag_view_without_spec_is_lenient():
 
 
 def test_flag_view_with_spec_rejects_unknown_names():
-    fl = FlagView({"i": True}, spec=SPECS["grep"])
-    assert fl.as_bool("i") is True
+    fl = FlagView({"ignore_case": True}, spec=SPECS["grep"])
+    assert fl.as_bool("ignore_case") is True
     with pytest.raises(KeyError, match="ignorecase"):
         fl.as_bool("ignorecase")
     with pytest.raises(KeyError):
-        fl.as_int("max_count")
+        fl.as_int("max_depth")
     with pytest.raises(KeyError):
         fl.as_list("patterns")
 

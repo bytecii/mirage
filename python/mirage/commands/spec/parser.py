@@ -500,31 +500,38 @@ def _match_mixed_cluster(
 
 def _match_digit_cluster(
     tok: str, cs: CompiledSpec
-) -> tuple[list[str], str] | None:
+) -> tuple[list[str], str, str | None] | None:
     """Match a cluster of bool flags and digit options (``-d10``).
 
     For a DIGIT_OPTIONS program the digits are option letters too, and
     getopt hands them over one at a time into one number: every digit of
-    the word joins it, wherever it sits (``-1d0`` is ten).
+    the word joins it, wherever it sits (``-1d0`` is ten). A value option
+    ends the cluster and takes the rest of the word, as getopt reads it
+    (``grep -1m2`` is ``-1 -m2``).
 
     Args:
         tok (str): token like "-d10" or "-10d".
         cs (CompiledSpec): compiled spec tables.
 
     Returns:
-        tuple[list[str], str] | None: (bool flag spellings, the digits),
-            or None when a character is neither or no digit is present.
+        tuple[list[str], str, str | None] | None: (bool flag spellings,
+            the digits, the value option and what follows it as a token
+            of its own, None when no value option ends the cluster), or
+            None when a character is neither or no digit is present.
     """
     bools: list[str] = []
     digits: list[str] = []
-    for ch in tok[1:]:
+    chars = tok[1:]
+    for idx, ch in enumerate(chars):
         if "0" <= ch <= "9":
             digits.append(ch)
         elif f"-{ch}" in cs.bool_spellings:
             bools.append(f"-{ch}")
+        elif digits and f"-{ch}" in cs.value_spellings:
+            return bools, "".join(digits), "-" + chars[idx:]
         else:
             return None
-    return (bools, "".join(digits)) if digits else None
+    return (bools, "".join(digits), None) if digits else None
 
 
 def parse_command(
@@ -1023,12 +1030,15 @@ def parse_command(
                 else None
             )
             if count_dest is not None and digit_cluster is not None:
-                for name in digit_cluster[0]:
+                cluster_bools, digits, rest = digit_cluster
+                for name in cluster_bools:
                     _set_bool_flag(flags, cs, name)
                 flags.pop(count_dest, None)
-                flags[count_dest] = digit_cluster[1]
-                i += 1
-                continue
+                flags[count_dest] = digits
+                if rest is None:
+                    i += 1
+                    continue
+                tok = rest
 
             all_bool = True
             for ch in tok[1:]:

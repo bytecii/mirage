@@ -30,7 +30,8 @@ import type { FlagValue } from '../../../spec/types.ts'
 import { readFailExitCode } from '../../../spec/usage.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import { specOf } from '../../../spec/builtins.ts'
-import { parseFlags as parseGrepFlags, printsContext as grepPrintsContext } from '../grep.ts'
+import { parseFlags as parseGrepFlags } from '../grep.ts'
+import { groupLine } from '../../grep_binary.ts'
 import { betweenFiles as rgBetweenFiles, parseFlags as parseRgFlags } from '../rg.ts'
 import { encodeText } from '../../../../shell/bytes.ts'
 
@@ -50,7 +51,7 @@ export function runSeparator(cmdName: string, flagKwargs: Record<string, FlagVal
     return rgBetweenFiles(parseRgFlags(new FlagView(flagKwargs, specOf('rg'))))
   }
   if (cmdName === 'grep') {
-    return grepPrintsContext(parseGrepFlags(new FlagView(flagKwargs, specOf('grep')))) ? '--\n' : ''
+    return groupLine(parseGrepFlags(new FlagView(flagKwargs, specOf('grep'))))
   }
   return ''
 }

@@ -85,7 +85,7 @@ async def test_grep_m1_short_circuits_after_first_match(accessor, _stat_reads):
             CommandOpts(
                 io=io_for(MongoDBVFS, accessor),
                 index=NULL_INDEX,
-                flags={"m": "1"},
+                flags={"max_count": "1"},
             ),
         )
         data = await _drain(source)

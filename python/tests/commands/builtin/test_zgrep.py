@@ -335,7 +335,7 @@ def test_zgrep_opens_each_operand_as_gzip_cdfq_does(line, out, err, code):
     "flags,out",
     [
         ({}, b"/bad:hello\n/good.gz:hello\n"),
-        ({"c": True}, b"/bad:1\n/good.gz:1\n"),
+        ({"count": True}, b"/bad:1\n/good.gz:1\n"),
         ({"files_without_match": True}, b""),
     ],
 )

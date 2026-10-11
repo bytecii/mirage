@@ -101,6 +101,16 @@
             "exit": 0,
             "stdout": "hi"
           }
+        },
+        {
+          "program": {
+            "python": "import errno, os\nos.makedirs('/data/up/in')\nwith open('/data/up/in/../f.txt', 'w') as f:\n    f.write('up')\nprint(open('/data/up/f.txt').read())\ntry:\n    open('/data/up/missing/../f.txt')\nexcept OSError as e:\n    print(errno.errorcode[e.errno])",
+            "node": "const fsp = require('node:fs').promises\nawait fsp.mkdir('/data/up/in', { recursive: true })\nawait fsp.writeFile('/data/up/in/../f.txt', 'up')\nconsole.log(await fsp.readFile('/data/up/f.txt', 'utf8'))\ntry {\n  await fsp.readFile('/data/up/missing/../f.txt')\n} catch (e) {\n  console.log(e.code)\n}"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "up\nENOENT\n"
+          }
         }
       ]
     },
@@ -142,6 +152,181 @@
           "expect": {
             "exit": 0,
             "stdout": "640 1234 5678 1000000000 1700000000\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "descriptors_reach_the_mount",
+      "runtimes": [
+        "host"
+      ],
+      "backends": [
+        "ram",
+        "disk",
+        "ssh",
+        "s3",
+        "redis"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "import errno, os\nfd = os.open('/data/new.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\nprint(os.write(fd, b'hello'), os.fstat(fd).st_size)\nos.fsync(fd)\nprint(open('/data/new.txt').read())\nos.close(fd)\nfd = os.open('/data/new.txt', os.O_RDONLY)\ntry:\n    os.write(fd, b'x')\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nprint(os.read(fd, 9).decode())\nos.close(fd)",
+            "node": "const fsp = require('node:fs').promises\nlet h = await fsp.open('/data/new.txt', 'wx')\nconst { bytesWritten } = await h.write('hello')\nconsole.log(bytesWritten, (await h.stat()).size)\nawait h.sync()\nconsole.log(await fsp.readFile('/data/new.txt', 'utf8'))\nawait h.close()\nh = await fsp.open('/data/new.txt', 'r')\ntry {\n  await h.write('x')\n} catch (e) {\n  console.log(e.code)\n}\nconst { bytesRead, buffer } = await h.read(Buffer.alloc(9), 0, 9, null)\nconsole.log(buffer.toString('utf8', 0, bytesRead))\nawait h.close()"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "5 5\nhello\nEBADF\nhello\n"
+          }
+        },
+        {
+          "command": "cat /data/new.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "hello"
+          }
+        },
+        {
+          "program": {
+            "python": "import os, stat\nfor name, body in (('a', 'hello'), ('c', 'kept')):\n    with open(f'/data/{name}.txt', 'w') as f:\n        f.write(body)\nmoving = os.open('/data/a.txt', os.O_RDWR)\nremoved = os.open('/data/c.txt', os.O_RDONLY)\nos.rename('/data/a.txt', '/data/b.txt')\nwith open('/data/a.txt', 'w') as f:\n    f.write('new file')\nos.unlink('/data/c.txt')\nwith open('/data/c.txt', 'w') as f:\n    f.write('other')\nos.pwrite(moving, b'HE', 0)\nos.fchmod(moving, 0o600)\nos.utime(moving, (981173106, 981173107))\nos.close(moving)\nprint(os.read(removed, 9).decode())\nos.close(removed)\nfor name in 'abc':\n    print(name, open(f'/data/{name}.txt').read())",
+            "node": "const fsp = require('node:fs').promises\nawait fsp.writeFile('/data/a.txt', 'hello')\nawait fsp.writeFile('/data/c.txt', 'kept')\nconst moving = await fsp.open('/data/a.txt', 'r+')\nconst removed = await fsp.open('/data/c.txt', 'r')\nawait fsp.rename('/data/a.txt', '/data/b.txt')\nawait fsp.writeFile('/data/a.txt', 'new file')\nawait fsp.unlink('/data/c.txt')\nawait fsp.writeFile('/data/c.txt', 'other')\nawait moving.write('HE', 0)\nawait moving.chmod(0o600)\nawait moving.utimes(981173106, 981173107)\nawait moving.close()\nconsole.log(await removed.readFile('utf8'))\nawait removed.close()\nfor (const name of 'abc') console.log(name, await fsp.readFile(`/data/${name}.txt`, 'utf8'))"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "kept\na new file\nb HEllo\nc other\n"
+          }
+        },
+        {
+          "command": "stat -c '%a %Y' /data/b.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "600 981173107\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import errno, io, os, tempfile, zipfile\nfrom pathlib import Path\nfd = os.open('/data/z.zip', os.O_RDWR | os.O_CREAT)\nos.rename('/data/z.zip', '/data/archive.zip')\nwith os.fdopen(fd, 'wb') as f, zipfile.ZipFile(f, 'w') as z:\n    z.writestr('inner.txt', 'zipped')\ntry:\n    os.close(fd)\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nwith open('/data/archive.zip', 'rb') as f, zipfile.ZipFile(f) as z:\n    print(z.read('inner.txt').decode(), os.path.exists('/data/z.zip'))\nfd = os.open('/data/raw.bin', os.O_RDWR | os.O_CREAT)\nf = os.fdopen(fd, 'wb', 0)\nf.write(b'raw')\nos.fsync(fd)\nprint(f.fileno() == fd, open('/data/raw.bin', 'rb').read())\nf.close()\nwith open('/data/lines.txt', 'w') as f:\n    f.write('alpha\\nbeta\\n')\nwith open('/data/lines.txt') as f:\n    print(repr(f.readline(3)), f.readlines(1))\nwith open('/data/lines.txt', 'rb') as f:\n    print(repr(io.TextIOWrapper(f, encoding='utf-8').read()))\nPath('/data/touched').touch()\nfd, name = tempfile.mkstemp(dir='/data')\nos.write(fd, b'stemp')\nos.close(fd)\nwith tempfile.NamedTemporaryFile(dir='/data', delete=False) as f:\n    f.write(b'named')\nprint(Path('/data/touched').exists(), Path(name).read_text(), Path(f.name).read_text())"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "EBADF\nzipped False\nTrue b'raw'\n'alp' ['ha\\n']\n'alpha\\nbeta\\n'\nTrue stemp named\n"
+          }
+        },
+        {
+          "program": {
+            "node": "const fs = require('node:fs')\nconst fsp = fs.promises\nconst call = (name, ...args) =>\n  new Promise((resolve, reject) => {\n    fs[name](...args, (err, value) => (err ? reject(err) : resolve(value)))\n  })\nawait fsp.writeFile('/data/f.txt', 'abc')\nconst fd = await call('open', '/data/f.txt', 'r+')\nconst buffer = Buffer.alloc(3)\nconst n = await call('read', fd, buffer, 0, 3, 0)\nawait call('write', fd, 'XY', 0)\nawait call('fsync', fd)\nconsole.log(buffer.toString('utf8', 0, n), await call('readFile', fd, 'utf8'))\nawait call('close', fd)\nconst h = await fsp.open('/data/s.txt', 'w')\nawait fsp.rename('/data/s.txt', '/data/streamed.txt')\nawait new Promise((resolve, reject) => {\n  h.createWriteStream().on('error', reject).on('close', resolve).end('streamed')\n})\nconst chunks = []\nawait new Promise((resolve, reject) => {\n  fs.createReadStream('/data/streamed.txt')\n    .on('data', (chunk) => chunks.push(chunk))\n    .on('error', reject)\n    .on('close', resolve)\n})\nconst old = await fsp.access('/data/s.txt').then(() => 'there', () => 'gone')\nconsole.log(Buffer.concat(chunks).toString(), old)\nconst w = await fsp.open('/data/w.txt', 'w')\nawait fsp.writeFile(w, 'via handle')\nawait w.close()\nconsole.log(await fsp.readFile('/data/w.txt', 'utf8'))"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "abc XYc\nstreamed gone\nvia handle\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import errno, os\nfd = os.open('/data/first.txt', os.O_RDWR | os.O_CREAT)\nf = os.fdopen(fd, 'wb', 0, closefd=False)\nos.close(fd)\nsecond = os.open('/data/second.txt', os.O_RDWR | os.O_CREAT)\nfor call in (lambda: f.write(b'late'), f.tell):\n    try:\n        call()\n    except OSError as e:\n        print(errno.errorcode[e.errno])\nos.close(second)\nprint(len(open('/data/second.txt').read()))",
+            "node": "const fsp = require('node:fs').promises\nconst first = await fsp.open('/data/first.txt', 'w')\nawait first.close()\nconst second = await fsp.open('/data/second.txt', 'w')\nfor (const call of [() => first.write('late'), () => fsp.readFile(first)]) {\n  try {\n    await call()\n  } catch (e) {\n    console.log(e.code)\n  }\n}\nawait second.close()\nconsole.log((await fsp.readFile('/data/second.txt')).length)"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "EBADF\nEBADF\n0\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import errno, os\nd = os.open('/data', os.O_RDONLY | os.O_DIRECTORY)\nfd = os.open('rel.txt', os.O_RDWR | os.O_CREAT, dir_fd=d)\nos.write(fd, b'abc')\nprint(os.stat(fd).st_size, os.fstat(fd).st_size)\nos.truncate(fd, 2)\nprint(os.fstat(fd).st_size)\nos.close(fd)\nos.mkdir('sub', dir_fd=d)\nos.rename('rel.txt', 'sub/moved.txt', src_dir_fd=d, dst_dir_fd=d)\nprint(open('/data/sub/moved.txt').read(), os.stat('sub/moved.txt', dir_fd=d).st_size)\ntry:\n    os.unlink('missing/../sub/moved.txt', dir_fd=d)\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nprint(os.stat('./sub/moved.txt', dir_fd=d).st_size)\nprint(os.stat('sub/../sub/moved.txt', dir_fd=d).st_size, os.stat('.//sub/moved.txt', dir_fd=d).st_size)\nos.close(d)"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "3 3\n2\nab 2\nENOENT\n2\n2 2\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import os\nfor name, body in (('p', 'hello'), ('q', 'kept')):\n    with open(f'/data/{name}.txt', 'w') as f:\n        f.write(body)\nmoving = open('/data/p.txt', 'r+')\nremoved = open('/data/q.txt')\nos.rename('/data/p.txt', '/data/p2.txt')\nos.unlink('/data/q.txt')\nmoving.write('HE')\nmoving.close()\nprint(removed.read(), open('/data/p2.txt').read(), os.path.exists('/data/p.txt'))"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "kept HEllo False\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import errno, os\nfd = os.open('/data/new.txt', os.O_RDONLY)\ncalls = (\n    lambda: os.dup(fd),\n    lambda: os.fstatvfs(fd),\n    lambda: os.dup2(fd=0, fd2=fd),\n    lambda: os.fchdir(fd=fd),\n)\nfor call in calls:\n    try:\n        call()\n        print('ran')\n    except OSError as e:\n        print(e.errno == errno.ENOTSUP)\nos.close(fd)"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "True\nTrue\nTrue\nTrue\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import errno, os\nwith open('/data/v.txt', 'wb') as f:\n    f.write(b'abcdef')\nfd = os.open('/data/v.txt', os.O_RDWR)\nbuf = bytearray(3)\nprint(os.preadv(fd, [buf], -1), buf.decode(), os.pwritev(fd, [b'Y'], -1))\nnames = {errno.EINVAL: 'EINVAL', errno.ENOTSUP: 'ENOTSUP'}\ncalls = (\n    lambda: os.pread(fd, 1, -1),\n    lambda: os.pwrite(fd, b'Z', -2),\n    lambda: os.preadv(fd, [bytearray(1)], 0, 8),\n    lambda: os.pwritev(fd, [b'Z'], 0, 16),\n)\nfor call in calls:\n    try:\n        call()\n        print('ran')\n    except OSError as e:\n        print(names.get(e.errno, e.errno))\nos.close(fd)",
+            "node": "const fsp = require('node:fs').promises\nawait fsp.writeFile('/data/v.txt', 'abcdef')\nconst h = await fsp.open('/data/v.txt', 'r+')\nconst buf = Buffer.alloc(3)\nconst { bytesRead } = await h.readv([buf], -1)\nconst { bytesWritten } = await h.writev([Buffer.from('Y')], -1)\nconsole.log(bytesRead, buf.toString(), bytesWritten)\nawait h.close()"
+          },
+          "expect": {
+            "python": {
+              "exit": 0,
+              "stdout": "3 abc 1\nEINVAL\nEINVAL\nENOTSUP\nENOTSUP\n"
+            },
+            "node": {
+              "exit": 0,
+              "stdout": "3 abc 1\n"
+            }
+          }
+        },
+        {
+          "command": "cat /data/v.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "abcYef"
+          }
+        },
+        {
+          "program": {
+            "python": "import os\nos.makedirs('/data/real/sub')\nfor path, body in (('/data/top.txt', 'top\\n'), ('/data/real/top.txt', 'real\\n')):\n    with open(path, 'w') as f:\n        f.write(body)\nos.symlink('/data/real/sub', '/data/alias')\nfd = os.open('/data/alias/../top.txt', os.O_RDWR | os.O_TRUNC)\nos.write(fd, b'via\\n')\nos.close(fd)\nwith open('/data/alias/../top.txt') as f:\n    print(f.read(), end='')",
+            "node": "const fs = require('node:fs')\nconst fsp = fs.promises\nawait fsp.mkdir('/data/real/sub', { recursive: true })\nawait fsp.writeFile('/data/top.txt', 'top\\n')\nawait fsp.writeFile('/data/real/top.txt', 'real\\n')\nawait fsp.symlink('/data/real/sub', '/data/alias')\nconst h = await fsp.open('/data/alias/../top.txt', fs.constants.O_RDWR | fs.constants.O_TRUNC)\nawait h.write('via\\n')\nawait h.close()\nconst back = await fsp.open('/data/alias/../top.txt', 'r')\nconsole.log((await back.readFile('utf8')).trimEnd())\nawait back.close()"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "via\n"
+          }
+        },
+        {
+          "command": "cat /data/top.txt /data/real/top.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "top\nvia\n"
+          }
+        },
+        {
+          "program": {
+            "python": "import errno, os\nwith open('/data/ap.txt', 'w') as f:\n    f.write('abc')\nfd = os.open('/data/ap.txt', os.O_RDWR | os.O_APPEND)\nos.pwrite(fd, b'X', 0)\nos.pwritev(fd, [b'Y'], 0)\nos.close(fd)\nfirst = os.open('/data/tr.txt', os.O_WRONLY | os.O_CREAT)\nos.write(first, b'A')\nsecond = os.open('/data/tr.txt', os.O_WRONLY | os.O_TRUNC)\nos.write(second, b'B')\nos.close(second)\nos.close(first)\nfd = os.open('/data/cut.txt', os.O_WRONLY | os.O_CREAT)\nos.write(fd, b'AAAA')\nos.truncate('/data/cut.txt', 2)\nos.close(fd)\nos.makedirs('/data/kept')\nd = os.open('/data/kept', os.O_RDONLY)\ntry:\n    os.rmdir('', dir_fd=d)\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nos.close(d)\nprint(os.path.isdir('/data/kept'))",
+            "node": "const fs = require('node:fs')\nconst fsp = fs.promises\nconst call = (name, ...args) =>\n  new Promise((resolve, reject) => fs[name](...args, (err, out) => (err ? reject(err) : resolve(out))))\nawait fsp.writeFile('/data/ap.txt', 'abc')\nconst ap = await fsp.open('/data/ap.txt', 'a+')\nawait ap.write('X', 0)\nawait ap.writev([Buffer.from('Y')], 0)\nawait ap.close()\nconst first = await fsp.open('/data/tr.txt', 'w')\nawait first.write('A')\nconst second = await fsp.open('/data/tr.txt', 'w')\nawait second.write('B')\nawait second.close()\nawait first.close()\nconst cut = await fsp.open('/data/cut.txt', 'w')\nawait cut.write('AAAA')\nawait fsp.truncate('/data/cut.txt', 2)\nawait cut.close()\nconst owed = await fsp.open('/data/wf.txt', 'w')\nawait owed.write('AAAA')\nawait fsp.writeFile('/data/wf.txt', 'zz')\nawait owed.close()\nconst fd = await call('open', '/data/w.txt', 'w')\nawait call('write', fd, 'ab')\nawait call('write', fd, 'x', 'utf8')\nawait call('close', fd)\nconsole.log(await fsp.readFile('/data/w.txt', 'utf8'), await fsp.readFile('/data/wf.txt', 'utf8'))"
+          },
+          "expect": {
+            "python": {
+              "exit": 0,
+              "stdout": "ENOENT\nTrue\n"
+            },
+            "node": {
+              "exit": 0,
+              "stdout": "abx zz\n"
+            }
+          }
+        },
+        {
+          "command": "cat /data/ap.txt /data/tr.txt /data/cut.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "abcXYBAA"
           }
         }
       ]

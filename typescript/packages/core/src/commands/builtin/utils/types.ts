@@ -27,4 +27,7 @@ export type AsyncStatFn = (path: string) => Promise<FileStat>
 export interface HostRegex {
   readonly source: string
   readonly ignoreCase: boolean
+  // The pattern holds a literal newline, or a class of nothing else, which
+  // ripgrep refuses outside multiline mode.
+  readonly newline?: boolean
 }

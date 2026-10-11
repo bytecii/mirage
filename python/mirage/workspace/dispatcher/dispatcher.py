@@ -26,7 +26,11 @@ from typing import Any
 from mirage.cache.file import io as cache_io
 from mirage.cache.lock import KeyLock
 from mirage.cache.manager import CacheManager
-from mirage.commands.builtin.utils.paths import dot_refusal, walk_spelling
+from mirage.commands.builtin.utils.paths import (
+    dot_refusal,
+    hidden_walk,
+    walk_spelling,
+)
 from mirage.context import (
     explaining,
     get_current_session,
@@ -726,12 +730,16 @@ class Dispatcher:
         call.stream = stream
         call.direct = direct
         await self._refuse_rename(call)
+        if report is not None:
+            report.path = call.path.virtual
         if self._table_answers(name, call.path.virtual, kwargs):
             return (
                 await self._table_call(name, call.path, kwargs, report),
                 IOResult(),
             )
         self._follow(call)
+        if report is not None:
+            report.path = call.path.virtual
         await self._walk_operands(call)
         if name in XATTR_OPS:
             return (
@@ -860,9 +868,14 @@ class Dispatcher:
         if name in FILE_CREATE_OPS and (path.dotted or "").endswith("/"):
             raise eisdir(path)
         follow = self._namespace.follow
-        refusal = await dot_refusal(
-            self._walk_stat, path, follow, name in ENTRY_CREATE_OPS
-        )
+        visible = functools.partial(path_visible, vis)
+        refusal = hidden_walk(path, follow, visible)
+        if refusal is None and isinstance(dst, PathSpec):
+            refusal = hidden_walk(dst, follow, visible)
+        if refusal is None:
+            refusal = await dot_refusal(
+                self._walk_stat, path, follow, name in ENTRY_CREATE_OPS
+            )
         if refusal is None and isinstance(dst, PathSpec):
             refusal = await dot_refusal(self._walk_stat, dst, follow)
         if refusal is not None:

@@ -1153,6 +1153,32 @@
         "stdout": "/data/inner/xm_depth/b\n/data/inner/xm_depth/b/c\n/data/xm_depth/a/f\n2\t/data/inner/xm_depth\n1\t/data/xm_depth/a\n1\t/data/xm_depth\n2\t/data/inner/xm_depth\n1\t/data/xm_depth\n3\ttotal\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "nest_rg_stats_print_one_footer_over_mounts",
+      "seq": 950091,
+      "targets": [
+        "ram-nested"
+      ],
+      "command": "mkdir -p /data/rgn /data/inner/rgn && printf 'rgnest a\\n' > /data/rgn/a.txt && printf 'rgnest b\\n' > /data/inner/rgn/b.txt && rg --stats rgnest /data | grep -v -e seconds -e searched; rg --json rgnest /data | grep -c '\"type\":\"summary\"'; rg --stats rgnest /data/rgn /data/inner/rgn | grep -v seconds; rm -rf /data/rgn /data/inner/rgn",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/rgn/a.txt:rgnest a\n/data/inner/rgn/b.txt:rgnest b\n\n2 matches\n2 matched lines\n2 files contained matches\n56 bytes printed\n1\n/data/rgn/a.txt:rgnest a\n/data/inner/rgn/b.txt:rgnest b\n\n2 matches\n2 matched lines\n2 files contained matches\n2 files searched\n56 bytes printed\n18 bytes searched\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "nest_rg_ignore_file_judges_files_beside_a_mount",
+      "seq": 950092,
+      "targets": [
+        "ram-nested"
+      ],
+      "command": "mkdir -p /data/rgn /data/inner/rgn && printf 'rgnest a\\n' > /data/rgn/a.txt && printf 'rgnest b\\n' > /data/inner/rgn/b.log && printf 'rgnest top\\n' > /data/rgnest.txt && printf '*.txt\\n' > /data/rgn/rules && rg --ignore-file /data/rgn/rules rgnest /data; rg --ignore-file /data/rgn/missing rgnest /data/rgn /data/inner/rgn; rm -rf /data/rgn /data/inner/rgn /data/rgnest.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/inner/rgn/b.log:rgnest b\n/data/rgn/a.txt:rgnest a\n/data/inner/rgn/b.log:rgnest b\n",
+        "stderr": "rg: /data/rgn/missing: No such file or directory (os error 2)\n"
+      }
     }
   ]
 }

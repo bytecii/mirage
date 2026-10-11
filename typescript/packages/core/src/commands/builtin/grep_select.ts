@@ -38,7 +38,8 @@ export interface WalkFilters {
 }
 
 /**
- * The --include/--exclude rules a line typed, in line order.
+ * The --include/--exclude rules a line typed, in line order, an
+ * --exclude-from's globs (read by the executor) where it stood.
  *
  * The bag lists each dest's values in occurrence order and the dests
  * themselves in first-typed order, so the rebuilt list is exact unless
@@ -50,7 +51,7 @@ export interface WalkFilters {
  */
 export function parseFileGlobs(fl: FlagView): readonly FileGlob[] {
   const rules: FileGlob[] = []
-  for (const name of fl.typedOrder('include', 'exclude')) {
+  for (const name of fl.typedOrder('include', 'exclude', 'exclude_from')) {
     const admit = name === 'include'
     for (const glob of fl.asList(name)) rules.push({ glob, admit })
   }
