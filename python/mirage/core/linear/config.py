@@ -22,3 +22,7 @@ class LinearConfig(BaseModel):
     workspace: str | None = None
     team_ids: list[str] | None = None
     base_url: str = "https://api.linear.app/graphql"
+    # Let grep -w and rg -w read only the issues Linear's search names, and
+    # those whose other fields hold the word (`files_containing`). Off by
+    # default: Linear indexes a write some time after it lands.
+    content_search: bool = False

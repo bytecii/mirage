@@ -21,6 +21,10 @@ const TrelloConfigSchema = z.object({
   workspaceId: z.string().optional(),
   boardIds: z.array(z.string()).readonly().optional(),
   baseUrl: z.string().optional(),
+  // Let grep -w and rg -w read only the cards Trello's search names, and those
+  // whose other fields hold the word (`filesContaining`). Off by default:
+  // Trello indexes a write some time after it lands.
+  contentSearch: z.boolean().optional(),
 })
 
 export type TrelloConfig = ConfigOf<typeof TrelloConfigSchema>

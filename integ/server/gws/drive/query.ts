@@ -152,7 +152,8 @@ export function matchQuery(st: GwsState, item: DriveItem, query: QueryExpression
 }
 
 // Everything the live index searches for `fullText`: the display name, a
-// Doc's text across every tab, a Sheet's cell values, and an uploaded file's bytes.
+// Doc's text across every tab, a Sheet's cell values, a deck's slide text, and
+// an uploaded file's bytes.
 // Case-insensitive, the way the real search index answers.
 export function fullTextOf(st: GwsState, item: DriveItem): string {
   const parts: string[] = [item.name]
@@ -161,6 +162,10 @@ export function fullTextOf(st: GwsState, item: DriveItem): string {
   const sheet = st.sheets.get(item.id)
   if (sheet !== undefined) {
     for (const tab of sheet.tabs) parts.push([...tab.cells.values()].join(' '))
+  }
+  const deck = st.presentations.get(item.id)
+  if (deck !== undefined) {
+    for (const slide of deck.slides) parts.push([...slide.texts.values()].join(' '))
   }
   if (item.content.length > 0) parts.push(item.content.toString('utf8'))
   return parts.join('\n')

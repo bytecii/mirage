@@ -237,10 +237,15 @@ export async function searchFiles(
   tm: TokenManager,
   text: string,
   parentIds: readonly string[],
+  mimeType: string | null = null,
   pageSize = 1000,
 ): Promise<{ ids: string[]; complete: boolean }> {
-  const parents = parentIds.map((p) => `'${escapeQueryValue(p)}' in parents`).join(' or ')
-  const q = `fullText contains '${escapeQueryValue(text)}' and trashed=false and (${parents})`
+  const parts = [`fullText contains '${escapeQueryValue(text)}'`, 'trashed=false']
+  if (parentIds.length > 0) {
+    parts.push(`(${parentIds.map((p) => `'${escapeQueryValue(p)}' in parents`).join(' or ')})`)
+  }
+  if (mimeType !== null) parts.push(`mimeType='${mimeType}'`)
+  const q = parts.join(' and ')
   const ids: string[] = []
   let complete = true
   let pageToken: string | null = null
