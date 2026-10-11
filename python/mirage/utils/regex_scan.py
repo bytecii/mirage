@@ -33,8 +33,8 @@ def scan(
     text: str,
     all_matches: bool = True,
     restart: bool = False,
-) -> list[Match]:
-    """Copy native matches while the uninterruptible engine stays in a worker.
+) -> list[tuple[tuple[int, int], ...]]:
+    """Each match's group spans, found where the engine cannot block the loop.
 
     Args:
         pattern (re.Pattern[str]): the compiled host pattern.
@@ -60,19 +60,5 @@ def scan(
         if not all_matches and (match := pattern.search(text)) is not None:
             matches.append(match)
     return [
-        Match(
-            pattern,
-            text,
-            tuple(m.span(i) for i in range(pattern.groups + 1)),
-        )
-        for m in matches
+        tuple(m.span(i) for i in range(pattern.groups + 1)) for m in matches
     ]
-
-
-def scan_many(
-    pattern: re.Pattern[str],
-    texts: list[str],
-    all_matches: bool,
-    restart: bool,
-) -> list[list[Match]]:
-    return [scan(pattern, text, all_matches, restart) for text in texts]

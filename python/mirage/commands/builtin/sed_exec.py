@@ -11,6 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
 import re
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from dataclasses import dataclass, field
@@ -357,9 +358,9 @@ class SedMachine:
     ) -> AsyncGenerator[str, None]:
         """Run the program over ``inputs`` as one stream.
 
-        With ``separate`` each file is its own stream. The main output
-        goes to stdout, or, when ``to_stdout`` is False, to a fresh stream
-        whose text is returned (-i's per-file output).
+        With ``separate`` each file is its own stream. The main output is
+        yielded as it is reached: stdout's, or, when ``to_stdout`` is
+        False, a fresh stream's (-i's per-file output).
 
         Args:
             inputs (list[SedInput]): the operands in order.
@@ -652,8 +653,9 @@ class SedMachine:
     async def _execute_program(self) -> AsyncIterator[int]:
         """One cycle of the script.
 
-        Returns -1 to go on to the next line, or the exit status ``q`` or
-        ``Q`` stops with.
+        Yields -1 wherever the output so far may go out (before each
+        command, and before ``n`` or ``N`` reads on), or the exit status
+        ``q`` or ``Q`` stops with.
         """
         commands = self.program.commands
         pc = 0
@@ -677,15 +679,12 @@ class SedMachine:
                     and cmd.text is not None
                 ):
                     self._main.line(cmd.text[:-1], True)
-                yield -1
                 return
             elif c == "d":
-                yield -1
                 return
             elif c == "D":
                 nl = self._pattern.find("\n")
                 if nl < 0:
-                    yield -1
                     return
                 self._pattern = self._pattern[nl + 1 :]
                 pc = 0
@@ -721,7 +720,6 @@ class SedMachine:
                     await self._test_eof()
                     or not await self._read_pattern_space(False)
                 ):
-                    yield -1
                     return
             elif c == "N":
                 self._pattern += "\n"
@@ -735,7 +733,6 @@ class SedMachine:
                     self._pattern = self._pattern[:-1]
                     if not self.no_default_output:
                         self._main.line(self._pattern, self._chomped)
-                    yield -1
                     return
             elif c == "p":
                 self._main.line(self._pattern, self._chomped)
@@ -802,5 +799,3 @@ class SedMachine:
             pc += 1
         if not self.no_default_output:
             self._main.line(self._pattern, self._chomped)
-        yield -1
-        return

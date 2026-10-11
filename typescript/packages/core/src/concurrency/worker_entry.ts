@@ -1,5 +1,4 @@
 const computations: Record<string, () => Promise<unknown>> = {
-  scanMany: async () => (await import('../utils/regex_scan.ts')).scanMany,
   scan: async () => (await import('../utils/regex_scan.ts')).scan,
   jqRunTexts: async () => (await import('../core/jq/eval.ts')).jqRunTexts,
   sortLines: async () => (await import('../commands/builtin/sort_keys.ts')).sortLines,
@@ -25,12 +24,14 @@ async function execute(request: Request): Promise<{ ok: boolean; value: unknown 
   }
 }
 
+// Replies keep arrival order even while a computation's module still loads.
 const node = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node
 if (node !== undefined) {
   const { parentPort } = await import('node:worker_threads')
+  let replies = Promise.resolve()
   parentPort?.on('message', (request: Request) => {
-    void execute(request).then((result) => {
-      parentPort.postMessage(result)
+    replies = replies.then(async () => {
+      parentPort.postMessage(await execute(request))
     })
   })
 } else {
@@ -38,9 +39,10 @@ if (node !== undefined) {
     onmessage: (event: MessageEvent<Request>) => void
     postMessage(data: unknown): void
   }
+  let replies = Promise.resolve()
   scope.onmessage = (event) => {
-    void execute(event.data).then((result) => {
-      scope.postMessage(result)
+    replies = replies.then(async () => {
+      scope.postMessage(await execute(event.data))
     })
   }
 }

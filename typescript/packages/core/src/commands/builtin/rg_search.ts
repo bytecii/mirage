@@ -1663,7 +1663,10 @@ export async function* searchHaystack(
   const pattern = new AsyncRegex(
     pat,
     signal,
-    !((f.quiet || f.filesOnly || f.filesWithoutMatch) && !(f.stats === true || f.json === true)),
+    !(
+      (f.quiet || f.filesOnly || f.filesWithoutMatch) &&
+      !(f.stats === true || f.json === true || (f.multiline === true && f.invert))
+    ),
     worker,
   )
   pat = pattern

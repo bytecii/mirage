@@ -15,6 +15,7 @@
 import codecs
 import math
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
+from contextlib import aclosing
 from dataclasses import dataclass, field
 
 from mirage.accessor.base import Accessor
@@ -2052,10 +2053,28 @@ def line_statements(
 async def parse_input(
     source: ByteSource,
 ) -> AsyncGenerator[list[BcStatement] | str, None]:
-    """Yield logical lines as they arrive, preserving string/comment boundaries.
+    """Read bc's input into statements as it arrives, stripping its comments.
+
+    `#` runs to the end of its line and leaves the newline in place, so
+    the newline still terminates the statement and the line counter still
+    advances -- which is what keeps a later diagnostic on the right line.
+    A `/* */` comment becomes one space, so it separates tokens rather
+    than vanishing (`1/*c*/2` is `1 2`), and the newlines inside one
+    advance the counter without ending the statement. A string is neither:
+    it is copied verbatim, so `"a#b"` keeps its hash and a string carrying
+    a newline keeps the statement open across the line break.
 
     Args:
-        source (ByteSource): input bytes, decoded incrementally as UTF-8.
+        source (ByteSource): the stdin, decoded as UTF-8 as it arrives.
+
+    Yields:
+        list[BcStatement] | str: the statements of each logical line, in
+            order, or last ``EOF_IN_COMMENT`` when a block comment runs to
+            the end of the input, which GNU reports and which discards the
+            statements it was reading. The grouping is what GNU runs as
+            one unit -- a whole `semicolon_list`, however many input lines
+            a block comment stretched it over -- so a parse error anywhere
+            in a group discards the whole group.
     """
     stream = chunks(source)
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -2213,6 +2232,105 @@ def error_line(statement: BcStatement, error: BcParseError) -> int:
     return statement.lines[0]
 
 
+async def run_lines(
+    lines: AsyncIterator[list[BcStatement] | str],
+    state: BcState,
+    folder: OutputColumn,
+    errors: list[str],
+) -> AsyncGenerator[bytes, None]:
+    """Run each logical line as it arrives and yield what it prints.
+
+    Args:
+        lines (AsyncIterator[list[BcStatement] | str]): ``parse_input``'s
+            lines, or its end-of-input diagnostic.
+        state (BcState): the interpreter state, updated in place.
+        folder (OutputColumn): folds the output at the line length.
+        errors (list[str]): receives every diagnostic, in order.
+    """
+    halted = False
+    async for statements in lines:
+        if isinstance(statements, str):
+            errors.append(statements)
+            continue
+        # GNU compiles one whole line and runs it at its newline, so a
+        # parse error anywhere on the line means none of it ever ran: the
+        # values, the runtime errors, the warnings and every write are
+        # buffered here and thrown away if any statement refused to
+        # parse. The parse diagnostics themselves are not buffered --
+        # GNU reports one per bad statement even on a line it discards.
+        saved = snapshot_state(state)
+        saved_col = folder.col
+        line_results: list[str] = []
+        line_errors: list[str] = []
+        parse_errors: list[str] = []
+        # A runtime error is fatal to the rest of its own line and
+        # non-fatal to every later one, so `1/0;2+2` prints nothing and
+        # `1/0\n2+2\n` prints 4. It does not roll the line back the way
+        # a parse error does: `x=5;1/0;y=7` leaves `x` at 5 and `y` unset.
+        aborted = False
+        for statement in statements:
+            # A statement after a `halt`, after a runtime error, or on a
+            # line a `quit` cut short is still parsed -- GNU compiles the
+            # whole line before running any of it, which is where
+            # `1+1;halt;1 2`'s syntax error comes from -- but never runs.
+            runs = statement.execute and not halted and not aborted
+            # A statement that does not run is parsed against a throwaway
+            # copy, so it cannot write: GNU never executes it, and
+            # `x=5;1/0;y=7` has to leave `y` unset while leaving `x` at 5.
+            target = state if runs else snapshot_state(state)
+            # Owned here rather than inside the parser, so that a runtime
+            # error partway down a `print` list keeps the text already
+            # written: `print "x", 1/0` writes the `x`.
+            writes: list[str] = []
+            try:
+                eval_statement(statement.text, target, writes)
+            except BcParseError as exc:
+                parse_errors.append(
+                    parse_error_line(error_line(statement, exc), exc.text)
+                )
+            except BcRuntimeError as exc:
+                # Reported unless the line turns out to be discarded,
+                # which is why it is buffered: `1/0;2+2` reports the
+                # division where `1/0;1 2` reports only the syntax error.
+                if runs:
+                    # Warnings the same statement already raised come
+                    # first: `0^-1.5` warns about the exponent's scale
+                    # and then refuses, in that order.
+                    line_errors.extend(state.warnings)
+                    state.warnings.clear()
+                    line_errors.append(runtime_error_line(str(exc)))
+                    aborted = True
+            except BcHalt:
+                # `halt` ends the run where it is reached, so everything
+                # earlier on its line has already printed.
+                halted = runs
+            if runs:
+                line_errors.extend(state.warnings)
+            state.warnings.clear()
+            if not runs:
+                continue
+            # The one place output is folded. Rendering happened as each
+            # element was reached, in `Parser._emit`, because GNU's `obase`
+            # and `last` can both change partway down a `print` list.
+            for piece in writes:
+                line_results.append(folder.write(piece))
+        if parse_errors:
+            # None of the line ran, so a `halt` on it did not run either,
+            # and the column never moved: GNU compiles the line before it
+            # writes anything, so a later statement's syntax error undoes
+            # an earlier one's `print`.
+            errors.extend(parse_errors)
+            restore_state(state, saved)
+            folder.col = saved_col
+            halted = False
+            continue
+        errors.extend(line_errors)
+        if line_results:
+            yield "".join(line_results).encode()
+        if halted:
+            break
+
+
 @command("bc", vfs=None, spec=SPECS["bc"])
 async def bc(
     accessor: Accessor,
@@ -2232,90 +2350,11 @@ async def bc(
 
     async def output() -> AsyncIterator[bytes]:
         try:
-            halted = False
-            async for statements in lines:
-                if isinstance(statements, str):
-                    errors.append(statements)
-                    continue
-                # GNU compiles one whole line and runs it at its newline, so a
-                # parse error anywhere on the line means none of it ever ran: the
-                # values, the runtime errors, the warnings and every write are
-                # buffered here and thrown away if any statement refused to
-                # parse. The parse diagnostics themselves are not buffered --
-                # GNU reports one per bad statement even on a line it discards.
-                saved = snapshot_state(state)
-                saved_col = folder.col
-                line_results: list[str] = []
-                line_errors: list[str] = []
-                parse_errors: list[str] = []
-                # A runtime error is fatal to the rest of its own line and
-                # non-fatal to every later one, so `1/0;2+2` prints nothing and
-                # `1/0\n2+2\n` prints 4. It does not roll the line back the way
-                # a parse error does: `x=5;1/0;y=7` leaves `x` at 5 and `y` unset.
-                aborted = False
-                for statement in statements:
-                    # A statement after a `halt`, after a runtime error, or on a
-                    # line a `quit` cut short is still parsed -- GNU compiles the
-                    # whole line before running any of it, which is where
-                    # `1+1;halt;1 2`'s syntax error comes from -- but never runs.
-                    runs = statement.execute and not halted and not aborted
-                    # A statement that does not run is parsed against a throwaway
-                    # copy, so it cannot write: GNU never executes it, and
-                    # `x=5;1/0;y=7` has to leave `y` unset while leaving `x` at 5.
-                    target = state if runs else snapshot_state(state)
-                    # Owned here rather than inside the parser, so that a runtime
-                    # error partway down a `print` list keeps the text already
-                    # written: `print "x", 1/0` writes the `x`.
-                    writes: list[str] = []
-                    try:
-                        eval_statement(statement.text, target, writes)
-                    except BcParseError as exc:
-                        parse_errors.append(
-                            parse_error_line(
-                                error_line(statement, exc), exc.text
-                            )
-                        )
-                    except BcRuntimeError as exc:
-                        # Reported unless the line turns out to be discarded,
-                        # which is why it is buffered: `1/0;2+2` reports the
-                        # division where `1/0;1 2` reports only the syntax error.
-                        if runs:
-                            # Warnings the same statement already raised come
-                            # first: `0^-1.5` warns about the exponent's scale
-                            # and then refuses, in that order.
-                            line_errors.extend(state.warnings)
-                            state.warnings.clear()
-                            line_errors.append(runtime_error_line(str(exc)))
-                            aborted = True
-                    except BcHalt:
-                        # `halt` ends the run where it is reached, so everything
-                        # earlier on its line has already printed.
-                        halted = runs
-                    if runs:
-                        line_errors.extend(state.warnings)
-                    state.warnings.clear()
-                    if not runs:
-                        continue
-                    # The one place output is folded. Rendering happened as each
-                    # element was reached, in `Parser._emit`, because GNU's `obase`
-                    # and `last` can both change partway down a `print` list.
-                    for piece in writes:
-                        line_results.append(folder.write(piece))
-                if parse_errors:
-                    # None of the line ran, so a `halt` on it did not run either,
-                    # and the column never moved: GNU compiles the line before it
-                    # writes anything, so a later statement's syntax error undoes
-                    # an earlier one's `print`.
-                    errors.extend(parse_errors)
-                    restore_state(state, saved)
-                    folder.col = saved_col
-                    halted = False
-                    continue
-                errors.extend(line_errors)
-                if line_results:
-                    yield "".join(line_results).encode()
-                if halted:
-                    break
+            async with aclosing(
+                run_lines(lines, state, folder, errors)
+            ) as chunks:
+                async for chunk in chunks:
+                    yield chunk
         finally:
             await lines.aclose()
             io.stderr = ("\n".join(errors) + "\n").encode() if errors else None

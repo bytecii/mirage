@@ -28,13 +28,3 @@ export function scan(
     indices: match.indices,
   }))
 }
-
-export function scanMany(
-  source: string,
-  flags: string,
-  ascii: boolean,
-  texts: string[],
-  allMatches: boolean,
-): Match[][] {
-  return texts.map((text) => scan(source, flags, ascii, text, allMatches))
-}

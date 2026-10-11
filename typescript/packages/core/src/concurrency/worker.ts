@@ -1,4 +1,3 @@
-import { KeyLock } from '../cache/lock.ts'
 import { abortable, makeAbortError } from '../utils/abort.ts'
 
 interface Port {
@@ -6,8 +5,13 @@ interface Port {
   close(): Promise<void>
 }
 
+interface Reply {
+  ok: boolean
+  value: unknown
+}
+
 async function createPort(
-  done: (data: { ok: boolean; value: unknown }) => void,
+  done: (reply: Reply) => void,
   failed: (error: Error) => void,
 ): Promise<Port> {
   const node = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions
@@ -41,7 +45,7 @@ async function createPort(
   const worker = new Worker(new URL('./worker_entry.js', import.meta.url), {
     type: 'module',
   })
-  worker.onmessage = (event: MessageEvent<{ ok: boolean; value: unknown }>) => {
+  worker.onmessage = (event: MessageEvent<Reply>) => {
     done(event.data)
   }
   worker.onerror = (event) => {
@@ -60,41 +64,26 @@ async function createPort(
 
 /** An invocation-owned worker for computations that cannot yield inside their engine. */
 export class Worker {
-  private readonly lock = new KeyLock()
-  private port: Port | undefined
-  private done: ((data: { ok: boolean; value: unknown }) => void) | undefined
-  private failed: ((error: Error) => void) | undefined
+  private port: Promise<Port> | undefined
+  // The calls the live port still owes, oldest first.
+  private waiting: { resolve: (reply: Reply) => void; reject: (error: unknown) => void }[] = []
 
+  /** Calls may overlap; the worker answers them in the order they were made. */
   async call<T>(name: string, args: readonly unknown[], signal?: AbortSignal): Promise<T> {
-    return this.lock.withLock('call', () => this.execute<T>(name, args, signal))
-  }
-
-  private async execute<T>(
-    name: string,
-    args: readonly unknown[],
-    signal?: AbortSignal,
-  ): Promise<T> {
     try {
       signal?.throwIfAborted()
-      this.port ??= await createPort(
-        (data) => this.done?.(data),
-        (error) => this.failed?.(error),
-      )
-      if (signal?.aborted === true) throw makeAbortError(signal)
-      const result = new Promise<T>((resolve, reject) => {
-        this.done = (data) => {
-          if (data.ok) resolve(data.value as T)
-          else
-            reject(
-              data.value instanceof Error
-                ? data.value
-                : new Error('Computation failed', { cause: data.value }),
-            )
-        }
-        this.failed = reject
+      const port = (this.port ??= this.open())
+      const waiting = this.waiting
+      const ready = await abortable(port, signal)
+      if (port !== this.port) throw makeAbortError(signal)
+      const reply = new Promise<Reply>((resolve, reject) => {
+        waiting.push({ resolve, reject })
       })
-      this.port.post({ name, args })
-      return await abortable(result, signal)
+      ready.post({ name, args })
+      const { ok, value } = await abortable(reply, signal)
+      if (!ok)
+        throw value instanceof Error ? value : new Error('Computation failed', { cause: value })
+      return value as T
     } catch (error) {
       await this.close()
       throw error
@@ -104,10 +93,19 @@ export class Worker {
   async close(): Promise<void> {
     const port = this.port
     this.port = undefined
-    this.failed?.(makeAbortError())
-    this.done = undefined
-    this.failed = undefined
-    await port?.close()
+    for (const waiter of this.waiting.splice(0)) waiter.reject(makeAbortError())
+    await (await port)?.close()
+  }
+
+  private open(): Promise<Port> {
+    const waiting: typeof this.waiting = []
+    this.waiting = waiting
+    return createPort(
+      (reply) => waiting.shift()?.resolve(reply),
+      (error) => {
+        for (const waiter of waiting.splice(0)) waiter.reject(error)
+      },
+    )
   }
 }
 

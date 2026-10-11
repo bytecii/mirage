@@ -76,7 +76,8 @@ describe('buildWorkspaceFromConfig', () => {
     expect(await workspace.vfs.cat('/hello.txt')).toBe('hello')
     await workspace.close()
 
-    // Lazy workspace/config imports are charged to the test body;
-    // keep enough time for cold transforms on a busy CI runner.
+    // 30s, not vitest's 5s default: `buildWorkspaceFromConfig` loads the
+    // mirage-node barrel through `await import()`, so that ~4.5s of module
+    // load is charged to this test body instead of the file's import phase.
   }, 30_000)
 })

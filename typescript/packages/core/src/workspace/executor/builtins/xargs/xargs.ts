@@ -536,7 +536,7 @@ interface RunOptions {
 }
 
 /**
- * Run the builder's command lines, at most `procs` at a time.
+ * Run the builder's command lines as they arrive, at most `procs` at a time.
  *
  * Messages keep their place among the runs. A command nobody provides stops
  * xargs with GNU's 127 before it runs, and one exiting 255 stops it with 124
@@ -561,10 +561,13 @@ async function* runLines(
   const registry = opts.registry ?? null
   let stop: number | null = null
   const stopping = new AbortController()
+  // Read through a call: another command may stop the run during an await.
   const stopped = (): boolean => stop !== null
   const forked = procs !== 1 || slotVar !== null
   const taken = new Set<number>()
   const stdin = opts.stdin == null ? new Uint8Array() : new SharedStdin(opts.stdin)
+  // xargs execs its command, so a builtin that is also a program answers
+  // as the program.
   const run = async (words: string[], signal: AbortSignal): Promise<IOResult> => {
     const line = shellJoin(words)
     if (!forked) {

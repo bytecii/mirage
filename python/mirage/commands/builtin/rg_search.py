@@ -11,6 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
 import base64
 import json
 import re
@@ -1942,7 +1943,7 @@ async def search_haystack(
         pat,
         all_matches=not (
             (f.quiet or f.files_only or f.files_without_match)
-            and not (f.stats or f.json)
+            and not (f.stats or f.json or (f.multiline and f.invert))
         ),
         restart=True,
         worker=worker,

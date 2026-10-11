@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from mirage.utils.regex_scan import scan, scan_many
+from mirage.utils.regex_scan import scan
 
 
 @pytest.mark.parametrize(
@@ -14,15 +14,13 @@ from mirage.utils.regex_scan import scan, scan_many
 )
 def test_empty_matches_preserve_the_callers_iteration_rule(restart, spans):
     assert [
-        m.spans[0] for m in scan(re.compile("a*|b+"), "bbb", restart=restart)
+        found[0] for found in scan(re.compile("a*|b+"), "bbb", restart=restart)
     ] == spans
 
 
-def test_batch_preserves_captures_and_first_match_mode():
+def test_first_match_mode_keeps_every_group_span():
     pattern = re.compile(r"(?P<letter>[ab])(x)?")
-    first, empty = scan_many(pattern, ["aab", "none"], False, False)
-    assert len(first) == 1
-    assert first[0].group("letter") == "a"
-    assert first[0].group(2) is None
-    assert first[0].start() == 0
-    assert empty == []
+    assert scan(pattern, "aab", all_matches=False) == [
+        ((0, 1), (0, 1), (-1, -1))
+    ]
+    assert scan(pattern, "none", all_matches=False) == []

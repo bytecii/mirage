@@ -556,7 +556,32 @@ async def _run_lines(
     registry: MountRegistry | None = None,
     stdin: ByteSource | None = None,
 ) -> AsyncGenerator[tuple[list[IOResult], int | None], None]:
-    """Run incrementally in input order, with bounded and owned parallel work."""
+    """Run the builder's command lines as they arrive, at most ``procs`` at
+    a time.
+
+    Messages keep their place among the runs. A command nobody provides
+    stops xargs with GNU's 127 before it runs, and one exiting 255 stops
+    it with 124 once it has run, each after GNU's diagnostic; the
+    commands already running finish. Parallel mode, and a slot variable,
+    give every command a fork of the session, so one cannot see
+    another's variables, and each drains inside its fork, since a stream
+    can still read the ambient session. Each event's results come back
+    in input order, which is the order their output is written in, with
+    the stop status so far.
+
+    Args:
+        execute_fn (Callable): shell evaluator for each line.
+        events (AsyncGenerator[str | list[bytes], None]): messages and
+            command lines, pulled only while a slot is free.
+        context (EvaluationContext): the session the lines run in.
+        procs (int): the -P count; 0 runs every line at once.
+        trace (bool): -t, print each command line before it runs.
+        slot_var (str | None): --process-slot-var, the variable that
+            carries each command's slot number.
+        registry (MountRegistry | None): where a command name is looked
+            up; None runs every name.
+        stdin (ByteSource | None): input shared by all commands (-a).
+    """
     session = context.session
     stop: int | None = None
     stopping = asyncio.Event()

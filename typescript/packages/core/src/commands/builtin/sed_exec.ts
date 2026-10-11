@@ -238,8 +238,8 @@ export class SedMachine {
 
   /**
    * Run the program over `inputs` as one stream (or file by file with
-   * `separate`), writing the main output to stdout or, when `toStdout` is
-   * false, to a fresh stream whose text is returned (-i's per-file output).
+   * `separate`), yielding the main output as it is reached: stdout's or,
+   * when `toStdout` is false, a fresh stream's (-i's per-file output).
    */
   async *process(
     inputs: SedInput[],
@@ -523,7 +523,8 @@ export class SedMachine {
     this.pattern = out
   }
 
-  // One cycle of the script; -1 to go on to the next line, or the exit
+  // One cycle of the script. Yields -1 wherever the output so far may go out
+  // (before each command, and before `n` or `N` reads on), or the exit
   // status `q` or `Q` stops with.
   private async *executeProgram(): AsyncGenerator<number> {
     const commands = this.program.commands
@@ -554,20 +555,12 @@ export class SedMachine {
             ) {
               this.main.line(cmd.text.slice(0, -1), true)
             }
-            {
-              yield -1
-              return
-            }
-          case 'd': {
-            yield -1
             return
-          }
+          case 'd':
+            return
           case 'D': {
             const nl = this.pattern.indexOf('\n')
-            if (nl < 0) {
-              yield -1
-              return
-            }
+            if (nl < 0) return
             this.pattern = this.pattern.slice(nl + 1)
             pc = 0
             continue
@@ -603,10 +596,7 @@ export class SedMachine {
             if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
             if (this.appendQueue.length > 0) this.dumpAppendQueue()
             yield -1
-            if ((await this.testEof()) || !(await this.readPatternSpace(false))) {
-              yield -1
-              return
-            }
+            if ((await this.testEof()) || !(await this.readPatternSpace(false))) return
             break
           case 'N':
             this.pattern += '\n'
@@ -615,10 +605,7 @@ export class SedMachine {
             if ((await this.testEof()) || !(await this.readPatternSpace(true))) {
               this.pattern = this.pattern.slice(0, -1)
               if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
-              {
-                yield -1
-                return
-              }
+              return
             }
             break
           case 'p':
@@ -633,14 +620,11 @@ export class SedMachine {
           case 'q':
             if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
             this.dumpAppendQueue()
-            {
-              yield cmd.intArg === undefined || cmd.intArg === -1 ? 0 : cmd.intArg
-              return
-            }
-          case 'Q': {
             yield cmd.intArg === undefined || cmd.intArg === -1 ? 0 : cmd.intArg
             return
-          }
+          case 'Q':
+            yield cmd.intArg === undefined || cmd.intArg === -1 ? 0 : cmd.intArg
+            return
           case 'r':
             if (cmd.fname !== undefined) {
               if (cmd.prepend === true) {
@@ -709,10 +693,6 @@ export class SedMachine {
       pc += 1
     }
     if (!this.noDefaultOutput) this.main.line(this.pattern, this.chomped)
-    {
-      yield -1
-      return
-    }
   }
 }
 

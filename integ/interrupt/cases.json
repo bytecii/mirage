@@ -96,6 +96,18 @@
       "command": "printf 'bbb\\n' | rg --count-matches 'a*|b+'",
       "stdout": "4\n",
       "exit_code": 0
+    },
+    {
+      "id": "rg-multiline-invert",
+      "command": "printf 'hit\\nhit\\n' | rg -U -v -q hit",
+      "stdout": "",
+      "exit_code": 1
+    },
+    {
+      "id": "grep-match-before-slow-line",
+      "command": "printf 'ok\\n%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!' | grep -E 'ok|^(a+)+$' | head -n1",
+      "stdout": "ok\n",
+      "exit_code": 0
     }
   ],
   "http": [

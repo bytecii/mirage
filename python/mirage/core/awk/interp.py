@@ -1065,12 +1065,12 @@ class Interpreter:
         return run.status
 
     async def exec_stmt(self, node: Stmt) -> None:
-        await self._budget.run()
         """Execute a statement node.
 
         Args:
             node (Stmt): the statement to run.
         """
+        await self._budget.run()
         if isinstance(node, Block):
             for inner in node.body:
                 await self.exec_stmt(inner)

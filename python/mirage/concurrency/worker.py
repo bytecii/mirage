@@ -18,6 +18,7 @@ class Worker:
 
     def __init__(self) -> None:
         self._process: asyncio.subprocess.Process | None = None
+        self._unread = 0
         self._lock = asyncio.Lock()
 
     async def call(self, fn: Callable[..., T], *args: Any) -> T:
@@ -28,9 +29,20 @@ class Worker:
             args (Any): serializable computation inputs.
         """
         async with self._lock:
-            return await self._call(fn, *args)
+            await self.send(fn, *args)
+            return cast(T, await self.receive())
 
-    async def _call(self, fn: Callable[..., T], *args: Any) -> T:
+    async def send(self, fn: Callable[..., Any], *args: Any) -> None:
+        """Queue a call; ``receive`` returns the results in the order sent.
+
+        The write is not drained: the request is already in memory, and
+        waiting for the child to read it while the child waits for an
+        earlier result to be read would deadlock.
+
+        Args:
+            fn (Callable): a module-level function.
+            args (Any): serializable computation inputs.
+        """
         try:
             if self._process is None:
                 starting = asyncio.create_task(
@@ -48,17 +60,38 @@ class Worker:
                     self._process = await settle(starting)
                     raise
             process = self._process
-            assert process.stdin is not None and process.stdout is not None
+            assert process.stdin is not None
             data = pickle.dumps((fn.__module__, fn.__name__, args))
             process.stdin.write(HEADER.pack(len(data)) + data)
-            await process.stdin.drain()
-            size = HEADER.unpack(
-                await process.stdout.readexactly(HEADER.size)
-            )[0]
-            ok, result = pickle.loads(await process.stdout.readexactly(size))
+        except BaseException:
+            await self.close()
+            raise
+
+    def forget(self, count: int) -> None:
+        """Drop the results of ``count`` calls sent but never received.
+
+        Args:
+            count (int): the calls whose results nobody will read.
+        """
+        self._unread += count
+
+    async def receive(self) -> Any:
+        """The result of the oldest call not yet received or forgotten."""
+        try:
+            process = self._process
+            assert process is not None and process.stdout is not None
+            while True:
+                size = HEADER.unpack(
+                    await process.stdout.readexactly(HEADER.size)
+                )[0]
+                data = await process.stdout.readexactly(size)
+                if not self._unread:
+                    break
+                self._unread -= 1
+            ok, result = pickle.loads(data)
             if not ok:
                 raise result
-            return cast(T, result)
+            return result
         except BaseException:
             await self.close()
             raise
@@ -66,6 +99,7 @@ class Worker:
     async def close(self) -> None:
         """Terminate and join this invocation's worker."""
         process, self._process = self._process, None
+        self._unread = 0
         if process is not None:
             if process.returncode is None:
                 try:

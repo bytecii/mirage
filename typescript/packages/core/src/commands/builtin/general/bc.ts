@@ -1506,10 +1506,11 @@ function lineStatements(
   return [out, quits]
 }
 
-// Read bc's input into the statements of each logical line, stripping
-// its comments, and answer whether a block comment ran to the end of the
-// input -- which GNU reports and which discards the statements it was
-// reading. The grouping is what GNU runs as one unit: a whole
+// Read bc's input into the statements of each logical line as it arrives,
+// stripping its comments, and yield last `EOF_IN_COMMENT` when a block
+// comment runs to the end of the input -- which GNU reports and which
+// discards the statements it was reading. The grouping is what GNU runs as
+// one unit: a whole
 // `semicolon_list`, however many input lines a block comment stretched it
 // over, so a parse error anywhere in a group discards the whole group.
 //
@@ -1651,6 +1652,101 @@ function errorLine(statement: BcStatement, error: BcParseError): number {
   return statement.lines[error.pos] ?? statement.lines[0] ?? statement.incompleteLine
 }
 
+// Run each logical line as it arrives and yield what it prints; every
+// diagnostic lands in `errors`, in order.
+async function* runLines(
+  lines: AsyncIterable<BcStatement[] | string>,
+  state: BcState,
+  folder: OutputColumn,
+  errors: string[],
+): AsyncGenerator<Uint8Array> {
+  let halted = false
+  for await (const statements of lines) {
+    if (typeof statements === 'string') {
+      errors.push(statements)
+      continue
+    }
+    // GNU compiles one whole line and runs it at its newline, so a parse
+    // error anywhere on the line means none of it ever ran: the values,
+    // the runtime errors, the warnings and every write are buffered here
+    // and thrown away if any statement refused to parse. The parse
+    // diagnostics themselves are not buffered -- GNU reports one per bad
+    // statement even on a line it discards.
+    const saved = snapshotState(state)
+    const savedCol = folder.col
+    const lineResults: string[] = []
+    const lineErrors: string[] = []
+    const parseErrors: string[] = []
+    // A runtime error is fatal to the rest of its own line and non-fatal
+    // to every later one, so `1/0;2+2` prints nothing and `1/0\n2+2\n`
+    // prints 4. It does not roll the line back the way a parse error
+    // does: `x=5;1/0;y=7` leaves `x` at 5 and `y` unset.
+    let aborted = false
+    for (const statement of statements) {
+      // A statement after a `halt`, after a runtime error, or on a line a
+      // `quit` cut short is still parsed -- GNU compiles the whole line
+      // before running any of it, which is where `1+1;halt;1 2`'s syntax
+      // error comes from -- but never runs.
+      const runs: boolean = statement.execute && !halted && !aborted
+      // One that does not run is parsed against a throwaway copy, so it
+      // cannot write: GNU never executes it, and `x=5;1/0;y=7` has to
+      // leave `y` unset while leaving `x` at 5.
+      const target = runs ? state : snapshotState(state)
+      // Owned here rather than inside the parser, so that a runtime error
+      // partway down a `print` list keeps the text already written:
+      // `print "x", 1/0` writes the `x`.
+      const writes: string[] = []
+      try {
+        evalStatement(statement.text, target, writes)
+      } catch (err) {
+        if (err instanceof BcParseError) {
+          parseErrors.push(parseErrorLine(errorLine(statement, err), err.text))
+        } else if (err instanceof BcRuntimeError) {
+          // Reported unless the line turns out to be discarded, which is
+          // why it is buffered: `1/0;2+2` reports the division where
+          // `1/0;1 2` reports only the syntax error.
+          if (runs) {
+            // Warnings the same statement already raised come first:
+            // `0^-1.5` warns about the exponent's scale and then
+            // refuses, in that order.
+            lineErrors.push(...state.warnings)
+            state.warnings.length = 0
+            lineErrors.push(runtimeErrorLine(err.message))
+            aborted = true
+          }
+        } else if (err instanceof BcHalt) {
+          // `halt` ends the run where it is reached, so everything
+          // earlier on its line has already printed.
+          halted = runs
+        } else {
+          throw err
+        }
+      }
+      if (runs) lineErrors.push(...state.warnings)
+      state.warnings.length = 0
+      if (!runs) continue
+      // The one place output is folded. Rendering happened as each element
+      // was reached, in `Parser.emit`, because GNU's `obase` and `last`
+      // can both change partway down a `print` list.
+      for (const piece of writes) lineResults.push(folder.write(piece))
+    }
+    if (parseErrors.length > 0) {
+      // None of the line ran, so a `halt` on it did not run either, and
+      // the column never moved: GNU compiles the line before it writes
+      // anything, so a later statement's syntax error undoes an earlier
+      // one's `print`.
+      errors.push(...parseErrors)
+      restoreState(state, saved)
+      folder.col = savedCol
+      halted = false
+      continue
+    }
+    errors.push(...lineErrors)
+    if (lineResults.length > 0) yield ENC.encode(lineResults.join(''))
+    if (halted) break
+  }
+}
+
 function bc(
   _accessor: Accessor,
   paths: PathSpec[],
@@ -1676,91 +1772,7 @@ function bc(
   const io = new IOResult()
   async function* output(): AsyncGenerator<Uint8Array> {
     try {
-      let halted = false
-      for await (const statements of lines) {
-        if (typeof statements === 'string') {
-          errors.push(statements)
-          continue
-        }
-        // GNU compiles one whole line and runs it at its newline, so a parse
-        // error anywhere on the line means none of it ever ran: the values,
-        // the runtime errors, the warnings and every write are buffered here
-        // and thrown away if any statement refused to parse. The parse
-        // diagnostics themselves are not buffered -- GNU reports one per bad
-        // statement even on a line it discards.
-        const saved = snapshotState(state)
-        const savedCol = folder.col
-        const lineResults: string[] = []
-        const lineErrors: string[] = []
-        const parseErrors: string[] = []
-        // A runtime error is fatal to the rest of its own line and non-fatal
-        // to every later one, so `1/0;2+2` prints nothing and `1/0\n2+2\n`
-        // prints 4. It does not roll the line back the way a parse error
-        // does: `x=5;1/0;y=7` leaves `x` at 5 and `y` unset.
-        let aborted = false
-        for (const statement of statements) {
-          // A statement after a `halt`, after a runtime error, or on a line a
-          // `quit` cut short is still parsed -- GNU compiles the whole line
-          // before running any of it, which is where `1+1;halt;1 2`'s syntax
-          // error comes from -- but never runs.
-          const runs: boolean = statement.execute && !halted && !aborted
-          // One that does not run is parsed against a throwaway copy, so it
-          // cannot write: GNU never executes it, and `x=5;1/0;y=7` has to
-          // leave `y` unset while leaving `x` at 5.
-          const target = runs ? state : snapshotState(state)
-          // Owned here rather than inside the parser, so that a runtime error
-          // partway down a `print` list keeps the text already written:
-          // `print "x", 1/0` writes the `x`.
-          const writes: string[] = []
-          try {
-            evalStatement(statement.text, target, writes)
-          } catch (err) {
-            if (err instanceof BcParseError) {
-              parseErrors.push(parseErrorLine(errorLine(statement, err), err.text))
-            } else if (err instanceof BcRuntimeError) {
-              // Reported unless the line turns out to be discarded, which is
-              // why it is buffered: `1/0;2+2` reports the division where
-              // `1/0;1 2` reports only the syntax error.
-              if (runs) {
-                // Warnings the same statement already raised come first:
-                // `0^-1.5` warns about the exponent's scale and then
-                // refuses, in that order.
-                lineErrors.push(...state.warnings)
-                state.warnings.length = 0
-                lineErrors.push(runtimeErrorLine(err.message))
-                aborted = true
-              }
-            } else if (err instanceof BcHalt) {
-              // `halt` ends the run where it is reached, so everything
-              // earlier on its line has already printed.
-              halted = runs
-            } else {
-              throw err
-            }
-          }
-          if (runs) lineErrors.push(...state.warnings)
-          state.warnings.length = 0
-          if (!runs) continue
-          // The one place output is folded. Rendering happened as each element
-          // was reached, in `Parser.emit`, because GNU's `obase` and `last`
-          // can both change partway down a `print` list.
-          for (const piece of writes) lineResults.push(folder.write(piece))
-        }
-        if (parseErrors.length > 0) {
-          // None of the line ran, so a `halt` on it did not run either, and
-          // the column never moved: GNU compiles the line before it writes
-          // anything, so a later statement's syntax error undoes an earlier
-          // one's `print`.
-          errors.push(...parseErrors)
-          restoreState(state, saved)
-          folder.col = savedCol
-          halted = false
-          continue
-        }
-        errors.push(...lineErrors)
-        if (lineResults.length > 0) yield ENC.encode(lineResults.join(''))
-        if (halted) break
-      }
+      yield* runLines(lines, state, folder, errors)
     } finally {
       await lines.return(undefined)
       io.stderr = errors.length > 0 ? ENC.encode(errors.join('\n') + '\n') : null
