@@ -13,28 +13,30 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Buffer } from 'node:buffer'
-import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { createRequire } from 'node:module'
 import { posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { classify } from '@struktoai/mirage-core/errors/classify'
-import { isMissingPath } from '@struktoai/mirage-core/errors/fs'
+import { ebadf, isMissingPath } from '@struktoai/mirage-core/errors/fs'
 import { posixErrno, posixPhrase } from '@struktoai/mirage-core/errors/posix'
 import type { FsCondition } from '@struktoai/mirage-core/errors/types'
 import { workspaceBridge } from '@struktoai/mirage-core/runtime/binding'
 import { RuntimeFiles } from '@struktoai/mirage-core/runtime/files'
+import { posixStat } from '@struktoai/mirage-core/runtime/stat'
 import { PrefixResolver } from '@struktoai/mirage-core/runtime/resolver'
 import type { VFSEntry, VFSStat } from '@struktoai/mirage-core/runtime/types'
 import { MountMode, type SetAttrFields } from '@struktoai/mirage-core/types'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import {
+  DESCRIPTOR_CALLS,
   LISTENED_CALLS,
   PATH_ARGS,
   REFUSED_CALLS,
   ROUTED_CALLS,
   type RoutedCall,
 } from './constants.ts'
+import { type Descriptor, Descriptors, openFlags, readAt, readOn } from './descriptors.ts'
 
 type FsObject = Record<string, unknown>
 type Fn = (...args: unknown[]) => unknown
@@ -50,12 +52,6 @@ function spelled(path: unknown): string | null {
   if (typeof path === 'string') return path
   if (path instanceof URL && path.protocol === 'file:') return fileURLToPath(path)
   return null
-}
-
-/** A stable id for one name, so two mounted files never compare as one
- * inode (`dev`/`ino`), mirroring python's `host/stat.ident`. */
-function ident(text: string): number {
-  return createHash('sha256').update(text).digest().readUIntBE(0, 6)
 }
 
 /** A stamp in nanoseconds, as node's BigIntStats spells one. */
@@ -121,6 +117,184 @@ function stampOf(time: unknown): string {
   return new Date(ms).toISOString()
 }
 
+/** A read's buffer, where in it to put the bytes, how many to read and
+ * from where, out of any of node's read spellings: `(buffer, offset,
+ * length, position)`, `(buffer, options)`, `(options)` or nothing, then
+ * the caller's own buffer object, which node hands back. A null position
+ * reads at the descriptor's position and advances it. */
+function readArgs(args: unknown[]): [Uint8Array, number, number, number | null, unknown] {
+  const [first, ...rest] = args
+  const view = ArrayBuffer.isView(first)
+  const options = fieldsOf((view ? rest[0] : first) as Options)
+  const given = view ? first : options.buffer
+  const original = ArrayBuffer.isView(given) ? given : Buffer.alloc(16384)
+  const buffer = new Uint8Array(original.buffer, original.byteOffset, original.byteLength)
+  const positional = view && typeof rest[0] !== 'object'
+  const offset = Number((positional ? rest[0] : options.offset) ?? 0)
+  const length = Number((positional ? rest[1] : options.length) ?? buffer.byteLength - offset)
+  const position = (positional ? rest[2] : options.position) as number | bigint | null | undefined
+  return [buffer, offset, length, positionOf(position), original]
+}
+
+/** A write's bytes and where they go, out of node's write spellings:
+ * `(buffer, offset, length, position)`, `(buffer, options)` and
+ * `(string, position, encoding)`. */
+function writeArgs(data: unknown, rest: unknown[]): [Uint8Array, number | null] {
+  if (typeof data === 'string') {
+    const encoding = (typeof rest[1] === 'string' ? rest[1] : 'utf8') as BufferEncoding
+    return [Buffer.from(data, encoding), positionOf(rest[0])]
+  }
+  const bytes = bytesOf(data, null)
+  const options = typeof rest[0] === 'object' ? fieldsOf(rest[0] as Options) : null
+  const offset = Number((options === null ? rest[0] : options.offset) ?? 0)
+  const length = Number((options === null ? rest[1] : options.length) ?? bytes.byteLength - offset)
+  const position = (options === null ? rest[2] : options.position) as number | null | undefined
+  return [bytes.subarray(offset, offset + length), positionOf(position)]
+}
+
+// The routed calls that take a descriptor or a FileHandle in the path
+// slot as well as a path.
+const FILE_CALLS: ReadonlySet<string> = new Set(['appendFile', 'readFile', 'writeFile'])
+
+/** Answer a node callback from a promise of what follows its error slot. */
+function answer(work: Promise<unknown[]>, done: Fn): void {
+  work.then(
+    (values) => {
+      done(null, ...values)
+    },
+    (err: unknown) => {
+      done(err)
+    },
+  )
+}
+
+/** A position argument as an offset, or null for "at the position": node
+ * reads anything but a number there (`fs.write(fd, 'x', 'utf8', cb)`'s
+ * encoding included) and a negative one as the descriptor's position. */
+function positionOf(position: unknown): number | null {
+  if (typeof position !== 'number' && typeof position !== 'bigint') return null
+  const at = Number(position)
+  return Number.isNaN(at) || at < 0 ? null : at
+}
+
+/**
+ * The `FileHandle` `fs.promises.open` answers a mounted path with: node's
+ * own methods over a descriptor of the patch's, whose writes land at
+ * `close` or `sync`. It holds the descriptor it opened, not just its
+ * number: once that is closed, here or through `fs.close`, every call is
+ * EBADF, even after a later open takes the number.
+ */
+class MountedFileHandle {
+  private closed = false
+
+  constructor(
+    private readonly host: HostFs,
+    readonly fd: number,
+    private readonly desc: Descriptor | undefined,
+  ) {}
+
+  /** Whether the descriptor this handle opened is still open. */
+  live(): boolean {
+    return (
+      !this.closed && this.desc !== undefined && this.host.descriptors.get(this.fd) === this.desc
+    )
+  }
+
+  /** A descriptor call on this handle's descriptor; EBADF once it closed. */
+  private call(name: string, ...args: unknown[]): Promise<unknown[]> {
+    if (!this.live()) return Promise.reject(ebadf(String(this.fd)))
+    return this.host.descriptorCall(name, [this.fd, ...args])
+  }
+
+  async read(...args: unknown[]): Promise<{ bytesRead: number; buffer: unknown }> {
+    const [bytesRead, buffer] = await this.call('read', ...args)
+    return { bytesRead: bytesRead as number, buffer }
+  }
+
+  async readv(
+    buffers: Uint8Array[],
+    position?: number | null,
+  ): Promise<{ bytesRead: number; buffers: Uint8Array[] }> {
+    const [bytesRead] = await this.call('readv', buffers, position)
+    return { bytesRead: bytesRead as number, buffers }
+  }
+
+  async write(...args: unknown[]): Promise<{ bytesWritten: number; buffer: unknown }> {
+    const [bytesWritten, buffer] = await this.call('write', ...args)
+    return { bytesWritten: bytesWritten as number, buffer }
+  }
+
+  async writev(
+    buffers: Uint8Array[],
+    position?: number | null,
+  ): Promise<{ bytesWritten: number; buffers: Uint8Array[] }> {
+    const [bytesWritten] = await this.call('writev', buffers, position)
+    return { bytesWritten: bytesWritten as number, buffers }
+  }
+
+  readFile(options?: Options): Promise<unknown> {
+    return this.host.fileCall('readFile', this, [options])
+  }
+
+  async writeFile(data: unknown, options?: Options): Promise<void> {
+    await this.host.fileCall('writeFile', this, [data, options])
+  }
+
+  appendFile(data: unknown, options?: Options): Promise<void> {
+    return this.writeFile(data, options)
+  }
+
+  async stat(options?: Options): Promise<unknown> {
+    return (await this.call('fstat', options))[0]
+  }
+
+  async truncate(len = 0): Promise<void> {
+    await this.call('ftruncate', len)
+  }
+
+  async sync(): Promise<void> {
+    await this.call('fsync')
+  }
+
+  async datasync(): Promise<void> {
+    await this.call('fdatasync')
+  }
+
+  async chmod(mode: number | string): Promise<void> {
+    await this.call('fchmod', mode)
+  }
+
+  async chown(uid: number, gid: number): Promise<void> {
+    await this.call('fchown', uid, gid)
+  }
+
+  async utimes(atime: unknown, mtime: unknown): Promise<void> {
+    await this.call('futimes', atime, mtime)
+  }
+
+  async close(): Promise<void> {
+    const live = this.live()
+    this.closed = true
+    if (live) await this.host.descriptorCall('close', [this.fd])
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close()
+  }
+
+  // node's streams call back through `fs.read`, `fs.write` and `fs.close`,
+  // which the patch answers for this descriptor.
+  createReadStream(options?: Options): unknown {
+    if (!this.live()) throw ebadf(String(this.fd))
+    return (fs.createReadStream as Fn)(null, { ...fieldsOf(options), fd: this.fd })
+  }
+
+  createWriteStream(options?: Options): unknown {
+    if (!this.live()) throw ebadf(String(this.fd))
+    return (fs.createWriteStream as Fn)(null, { ...fieldsOf(options), fd: this.fd })
+  }
+}
+
 /**
  * Every routed fs call, answered on a mount: python's `HostFs` for
  * node. One method per name in `ROUTED_CALLS`, each taking the call's
@@ -132,6 +306,8 @@ function stampOf(time: unknown): string {
  */
 class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown>> {
   private readonly files: RuntimeFiles
+  // The descriptors `open` hands out for mounted paths (descriptors.ts).
+  readonly descriptors: Descriptors
   // One stamp for the patch's life, the choice python's HostFs makes: a
   // backend that reports no mtime would otherwise answer a new time on
   // every stat, and "did it change?" heuristics fire on that.
@@ -159,6 +335,7 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
         (directory) => ws.namespace.linkNamesUnder(directory),
       ),
     )
+    this.descriptors = new Descriptors(this.files, native, ws.vfs.links)
   }
 
   /** Whether `path` is under a mount the patch answers for. The synthetic
@@ -175,10 +352,16 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
   }
 
   private statsOf(path: string, st: VFSStat, options?: Options): unknown {
-    const kind = st.mode & S_IFMT
-    const mtime = new Date(st.mtimeMs ?? this.born)
-    const atime = st.atimeMs === undefined ? mtime : new Date(st.atimeMs)
-    const prefix = this.ws.registry.tryMountFor(path)?.prefix ?? '/'
+    // The stat every runtime shares; an owner the row lacks is this
+    // process's own.
+    const posix = posixStat(st, path, this.ws.registry.tryMountFor(path)?.prefix ?? '/', {
+      uid: process.getuid?.() ?? 0,
+      gid: process.getgid?.() ?? 0,
+      unknownMs: this.born,
+    })
+    const kind = posix.mode & S_IFMT
+    const mtime = new Date(posix.mtimeMs)
+    const atime = new Date(posix.atimeMs)
     const kinds = {
       isFile: () => kind === S_IFREG,
       isDirectory: () => kind === S_IFDIR,
@@ -190,20 +373,20 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     }
     const dates = { atime, mtime, ctime: mtime, birthtime: mtime }
     const fields: Record<string, number> = {
-      dev: ident(prefix),
-      ino: ident(path),
-      mode: st.mode,
-      nlink: st.isDir ? 2 : 1,
-      uid: st.uid ?? process.getuid?.() ?? 0,
-      gid: st.gid ?? process.getgid?.() ?? 0,
-      rdev: st.rdev ?? 0,
-      size: st.size,
-      blksize: 4096,
-      blocks: Math.ceil(st.size / 512),
-      atimeMs: atime.getTime(),
-      mtimeMs: mtime.getTime(),
-      ctimeMs: mtime.getTime(),
-      birthtimeMs: mtime.getTime(),
+      dev: posix.dev,
+      ino: posix.ino,
+      mode: posix.mode,
+      nlink: posix.nlink,
+      uid: posix.uid,
+      gid: posix.gid,
+      rdev: posix.rdev,
+      size: posix.size,
+      blksize: posix.blksize,
+      blocks: posix.blocks,
+      atimeMs: posix.atimeMs,
+      mtimeMs: posix.mtimeMs,
+      ctimeMs: posix.ctimeMs,
+      birthtimeMs: posix.mtimeMs,
     }
     if (fieldsOf(options).bigint !== true) return { ...kinds, ...fields, ...dates }
     // node's BigIntStats: every number a bigint, plus the stamps in ns.
@@ -385,7 +568,19 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     // A move between a mount and the host is EXDEV, the kernel's answer
     // for two filesystems and the errno a mover retries as copy + delete.
     if (!this.mounted(src) || !this.mounted(dst)) throw refusal('EXDEV', 'rename', src)
+    // A rename onto its own name changes nothing, its descriptors included.
+    const same = this.descriptors.walked(dst, false) === this.descriptors.walked(src, false)
+    const held = same ? [] : await this.descriptors.hold(dst)
     await this.files.rename(src, dst)
+    this.descriptors.keep(held)
+    this.descriptors.moved(src, dst)
+  }
+
+  /** Remove a file, the descriptors open on it keeping the bytes it had. */
+  private async removeFile(path: string): Promise<void> {
+    const held = await this.descriptors.hold(path)
+    await this.files.unlink(path)
+    this.descriptors.keep(held)
   }
 
   async rm(path: string, options?: Options): Promise<void> {
@@ -403,7 +598,7 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
       return
     }
     if (!st.isDir) {
-      await this.files.unlink(path)
+      await this.removeFile(path)
       return
     }
     if (!recursive) throw refusal('EISDIR', 'rm', path)
@@ -415,7 +610,7 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
       this.held(posix.dirname(name), posix.dirname(where))
       try {
         if (isDir) await this.files.rmdir(name)
-        else await this.files.unlink(name)
+        else await this.removeFile(name)
       } catch (err) {
         if (!isMissingPath(err) || name === path) throw err
         console.debug(`rm: ${name} went before its turn: ${String(err)}`)
@@ -486,19 +681,140 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     // truncate(2) names a file that is there; the op creates a missing
     // one, as GNU truncate does without -c.
     await this.files.stat(path)
+    await this.descriptors.landPath(path)
     await this.files.truncate(path, length)
   }
 
   async unlink(path: string): Promise<void> {
-    await this.files.unlink(path)
+    await this.removeFile(path)
   }
 
   async utimes(path: string, atime: unknown, mtime: unknown): Promise<void> {
+    // Writes a descriptor still owes land first, or landing them at its
+    // close would stamp over the times set here.
+    await this.descriptors.landPath(path)
     await this.files.setattr(path, { atime: stampOf(atime), mtime: stampOf(mtime) })
   }
 
   async writeFile(path: string, data: unknown, options?: Options): Promise<void> {
     await this.put(path, data, options, 'w')
+  }
+
+  /** readFile, writeFile or appendFile given a mounted descriptor or
+   * FileHandle: from and at its position, as node's are on a descriptor. */
+  async fileCall(name: string, target: unknown, rest: unknown[]): Promise<unknown> {
+    if (target instanceof MountedFileHandle && !target.live()) throw ebadf(String(target.fd))
+    const fd = target instanceof MountedFileHandle ? target.fd : (target as number)
+    if (name === 'readFile') {
+      const read = () => readOn(this.descriptors.file(fd, true, false), -1)
+      const bytes = Buffer.from(await this.descriptors.serial(fd, read))
+      const encoding = encodingOf(rest[0] as Options)
+      return encoding === undefined ? bytes : bytes.toString(encoding)
+    }
+    await this.fdWrite(fd, bytesOf(rest[0], rest[1] as Options), null)
+    return undefined
+  }
+
+  /** A mounted path's `FileHandle`, as `fs.promises.open` answers. */
+  async open(path: string, flags?: unknown): Promise<MountedFileHandle> {
+    const fd = await this.descriptors.open(path, openFlags(flags))
+    return new MountedFileHandle(this, fd, this.descriptors.get(fd))
+  }
+
+  /** A read into `buffer` at `offset`, at `position` or, when null, at the
+   * descriptor's own position, advancing it. The caller holds its queue. */
+  private async readInto(
+    fd: number,
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number | null,
+  ): Promise<number> {
+    const handle = this.descriptors.file(fd, true, false)
+    const bytes =
+      position === null ? await readOn(handle, length) : await readAt(handle, position, length)
+    buffer.set(bytes, offset)
+    return bytes.byteLength
+  }
+
+  /** A write through a mounted descriptor, in its turn on the descriptor. */
+  private fdWrite(fd: number, bytes: Uint8Array, position: number | null): Promise<number> {
+    return this.descriptors.serial(fd, () => {
+      const handle = this.descriptors.file(fd, false, true)
+      // Linux appends a positioned write on an O_APPEND descriptor,
+      // whatever the position, and leaves the position where it was.
+      if (position === null) handle.write(bytes.slice())
+      else handle.pwrite(handle.append ? handle.size : position, bytes.slice())
+      return Promise.resolve(bytes.byteLength)
+    })
+  }
+
+  /** A descriptor call on a mounted descriptor, answered with what node's
+   * callback gets after its error slot. */
+  async descriptorCall(name: string, args: unknown[]): Promise<unknown[]> {
+    const fd = args[0] as number
+    const rest = args.slice(1)
+    const desc = this.descriptors.get(fd)
+    if (desc === undefined) throw ebadf(String(fd))
+    switch (name) {
+      case 'read': {
+        const [buffer, offset, length, position, original] = readArgs(rest)
+        const read = () => this.readInto(fd, buffer, offset, length, position)
+        return [await this.descriptors.serial(fd, read), original]
+      }
+      case 'write': {
+        const [bytes, position] = writeArgs(rest[0], rest.slice(1))
+        return [await this.fdWrite(fd, bytes, position), rest[0]]
+      }
+      case 'readv':
+        return this.descriptors.serial(fd, async () => {
+          const buffers = rest[0] as Uint8Array[]
+          let at = positionOf(rest[1])
+          let total = 0
+          for (const buffer of buffers) {
+            const got = await this.readInto(fd, buffer, 0, buffer.byteLength, at)
+            total += got
+            if (at !== null) at += got
+            if (got < buffer.byteLength) break
+          }
+          return [total, buffers]
+        })
+      case 'writev': {
+        const buffers = rest[0] as Uint8Array[]
+        const position = positionOf(rest[1])
+        const joined = Buffer.concat(buffers.map((b) => bytesOf(b, null)))
+        return [await this.fdWrite(fd, joined, position), buffers]
+      }
+      case 'fstat': {
+        const st = await this.files.stat(desc.path)
+        const size = desc.handle?.size ?? st.size
+        return [this.statsOf(desc.path, { ...st, size }, rest[0] as Options)]
+      }
+      case 'ftruncate':
+        await this.descriptors.serial(fd, () => {
+          this.descriptors.file(fd, false, true).truncate(Number(rest[0] ?? 0))
+          return Promise.resolve()
+        })
+        return []
+      case 'fsync':
+      case 'fdatasync':
+        await this.descriptors.serial(fd, () => this.descriptors.land(desc))
+        return []
+      case 'close':
+        await this.descriptors.close(fd)
+        return []
+      case 'fchmod':
+        await this.chmod(desc.path, rest[0] as number)
+        return []
+      case 'fchown':
+        await this.chown(desc.path, rest[0] as number, rest[1] as number)
+        return []
+      case 'futimes':
+        await this.utimes(desc.path, rest[0], rest[1])
+        return []
+      default:
+        throw new TypeError(`mirage.patchNodeFs: ${name} is not a descriptor call`)
+    }
   }
 
   /** writeFile and appendFile, which differ only in the flag they default
@@ -516,6 +832,9 @@ class HostFs implements Record<RoutedCall, (...args: never[]) => Promise<unknown
     if (flag.includes('x') && (await this.files.statOrNull(path, true)) !== null) {
       throw refusal('EEXIST', 'open', path)
     }
+    // What descriptors on the file still owe lands first, so their older
+    // writes never land over this one.
+    await this.descriptors.landPath(path)
     if (flag.startsWith('a')) await this.files.append(path, bytes)
     else await this.files.write(path, bytes)
   }
@@ -577,19 +896,28 @@ export function patchNodeFs(ws: Workspace): () => void {
     return args.map((arg, index) => (positions.includes(index) ? (spelled(arg) ?? arg) : arg))
   }
 
+  // readFile, writeFile and appendFile take a descriptor or a FileHandle
+  // where they take a path: a mounted one of the patch's is answered here.
+  const byDescriptor = (name: string, args: unknown[]): boolean =>
+    FILE_CALLS.has(name) &&
+    (host.descriptors.get(args[0]) !== undefined || args[0] instanceof MountedFileHandle)
   for (const name of ROUTED_CALLS) {
     const route = (args: unknown[]): Promise<unknown> =>
       (host[name] as (...a: unknown[]) => Promise<unknown>).call(host, ...spellPaths(name, args))
-    swap(
-      fs.promises,
-      name,
-      (original) =>
-        (...args) =>
-          mountedIn(name, args) === null ? original(...args) : route(args),
-    )
+    swap(fs.promises, name, (original) => (...args) => {
+      if (byDescriptor(name, args)) return host.fileCall(name, args[0], args.slice(1))
+      return mountedIn(name, args) === null ? original(...args) : route(args)
+    })
     swap(fs, name, (original) => (...args) => {
       const done = args.at(-1)
       const rest = args.slice(0, -1)
+      if (typeof done === 'function' && byDescriptor(name, rest)) {
+        answer(
+          host.fileCall(name, rest[0], rest.slice(1)).then((v) => (v === undefined ? [] : [v])),
+          done as Fn,
+        )
+        return undefined
+      }
       if (typeof done !== 'function' || mountedIn(name, rest) === null) return original(...args)
       const callback = done as Callback
       // `exists` is the one callback without an error slot.
@@ -606,8 +934,62 @@ export function patchNodeFs(ws: Workspace): () => void {
       return undefined
     })
     swap(fs, `${name}Sync`, (original) => (...args) => {
+      const desc = host.descriptors.get(args[0])
+      if (desc !== undefined && FILE_CALLS.has(name)) throw syncRefusal(`${name}Sync`, desc.path)
       const path = mountedIn(name, args)
-      if (path !== null) throw syncRefusal(`${name}Sync`, path)
+      if (path === null) return original(...args)
+      // existsSync answers false where it cannot look, as node's does for
+      // any path whose stat fails; a mount's root is the one name it
+      // knows is there without asking.
+      if (name === 'exists') return ws.registry.isMountRoot(path)
+      throw syncRefusal(`${name}Sync`, path)
+    })
+  }
+
+  // open hands a mounted path a descriptor of the patch's own, which the
+  // descriptor calls below answer for; the promise spelling a FileHandle.
+  swap(fs.promises, 'open', (original) => (...args) => {
+    const path = mountedIn('open', args)
+    return path === null ? original(...args) : host.open(path, args[1])
+  })
+  swap(fs, 'open', (original) => (...args) => {
+    const done = args.at(-1)
+    const rest = args.slice(0, -1)
+    const path = mountedIn('open', rest)
+    if (typeof done !== 'function' || path === null) return original(...args)
+    answer(
+      host.descriptors.open(path, openFlags(rest[1])).then((fd) => [fd]),
+      done as Fn,
+    )
+    return undefined
+  })
+  swap(fs, 'openSync', (original) => (...args) => {
+    const path = mountedIn('open', args)
+    if (path !== null) throw syncRefusal('openSync', path)
+    return original(...args)
+  })
+
+  for (const name of DESCRIPTOR_CALLS) {
+    swap(fs, name, (original) => (...args) => {
+      if (host.descriptors.get(args[0]) === undefined) return original(...args)
+      const done = args.at(-1)
+      // fs.close is the one whose callback node lets a caller leave out;
+      // a failure then has nowhere to go but the log.
+      const callback: Fn =
+        typeof done === 'function'
+          ? (done as Fn)
+          : (err: unknown) => {
+              if (err !== null) console.debug(`mirage.patchNodeFs: ${name} failed`, err)
+            }
+      answer(
+        host.descriptorCall(name, typeof done === 'function' ? args.slice(0, -1) : args),
+        callback,
+      )
+      return undefined
+    })
+    swap(fs, `${name}Sync`, (original) => (...args) => {
+      const desc = host.descriptors.get(args[0])
+      if (desc !== undefined) throw syncRefusal(`${name}Sync`, desc.path)
       return original(...args)
     })
   }

@@ -1,0 +1,81 @@
+{
+  "cases": [
+    {
+      "id": "readv_fills_its_buffers_in_order",
+      "runtimes": [
+        "monty",
+        "wasi",
+        "pyodide",
+        "host"
+      ],
+      "backends": [
+        "ram",
+        "disk",
+        "ssh",
+        "s3",
+        "redis"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {
+              "digits.txt": "0123456789"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "import os\nfd = os.open('/data/digits.txt', os.O_RDONLY)\nparts = [bytearray(3), bytearray(4)]\nn = os.readv(fd, parts)\nprint(n, parts[0].decode(), parts[1].decode(), os.read(fd, 1).decode())\nos.close(fd)",
+            "node": "const h = await require('node:fs').promises.open('/data/digits.txt', 'r')\nconst parts = [Buffer.alloc(3), Buffer.alloc(4)]\nconst { bytesRead } = await h.readv(parts)\nconst next = await h.read(Buffer.alloc(1), 0, 1, null)\nconsole.log(bytesRead, parts[0].toString(), parts[1].toString(), next.buffer.toString())\nawait h.close()"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "7 012 3456 7\n"
+          },
+          "expect_on": {
+            "monty": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "'module' object has no attribute 'O_RDONLY'"
+            },
+            "wasi": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "has no attribute 'readv'"
+            }
+          }
+        },
+        {
+          "program": {
+            "python": "import os\nfd = os.open('/data/digits.txt', os.O_RDONLY)\ntail = [bytearray(2), bytearray(5)]\nn = os.preadv(fd, tail, 6)\nprint(n, b''.join(tail)[:n].decode(), os.read(fd, 1).decode())\nos.close(fd)",
+            "node": "const h = await require('node:fs').promises.open('/data/digits.txt', 'r')\nconst tail = [Buffer.alloc(2), Buffer.alloc(5)]\nconst { bytesRead } = await h.readv(tail, 6)\nconst next = await h.read(Buffer.alloc(1), 0, 1, null)\nconsole.log(bytesRead, Buffer.concat(tail).subarray(0, bytesRead).toString(), next.buffer.toString())\nawait h.close()"
+          },
+          "expect": {
+            "exit": 0,
+            "stdout": "4 6789 0\n"
+          },
+          "expect_on": {
+            "monty": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "'module' object has no attribute 'O_RDONLY'"
+            },
+            "pyodide": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "has no attribute 'preadv'"
+            },
+            "wasi": {
+              "exit": 1,
+              "stdout": "",
+              "stderr_contains": "has no attribute 'preadv'"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

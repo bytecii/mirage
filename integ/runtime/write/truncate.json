@@ -142,6 +142,56 @@
           }
         }
       ]
+    },
+    {
+      "id": "ftruncate_cuts_through_a_descriptor",
+      "runtimes": [
+        "wasi",
+        "pyodide",
+        "host"
+      ],
+      "backends": [
+        "ram",
+        "disk",
+        "ssh",
+        "s3",
+        "redis"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {
+              "digits.txt": "0123456789"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "import os\nfd = os.open('/data/digits.txt', os.O_RDWR)\nos.ftruncate(fd, 3)\nprint(os.fstat(fd).st_size, os.pread(fd, 10, 0))\nos.close(fd)",
+            "node": "const h = await require('node:fs').promises.open('/data/digits.txt', 'r+')\nawait h.truncate(3)\nconst { bytesRead, buffer } = await h.read(Buffer.alloc(10), 0, 10, 0)\nconsole.log((await h.stat()).size, buffer.toString('utf8', 0, bytesRead))\nawait h.close()"
+          },
+          "expect": {
+            "python": {
+              "exit": 0,
+              "stdout": "3 b'012'\n"
+            },
+            "node": {
+              "exit": 0,
+              "stdout": "3 012\n"
+            }
+          }
+        },
+        {
+          "command": "cat /data/digits.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "012"
+          }
+        }
+      ]
     }
   ]
 }

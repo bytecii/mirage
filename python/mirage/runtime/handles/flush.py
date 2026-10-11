@@ -30,9 +30,10 @@ def plan_flush(
     A handle keeps what it wrote as byte ranges, so it owes the mount
     those ranges and nothing it only read: another writer's bytes
     between them stay, a file the open created or emptied included. A
-    cut goes first, then the ranges, then any growth past them; a lone
-    range that starts where the file ended, or anything an append-mode
-    handle wrote, goes as an append, which lands at the mount's own end.
+    cut goes first, then the ranges, then any growth past them. What an
+    append-mode handle wrote goes as an append, which lands at the
+    mount's own end; any other range keeps its offset, since another
+    writer may have moved the end since this handle last saw it.
 
     Args:
         base_len (int): the file's length when the handle opened it.
@@ -48,7 +49,7 @@ def plan_flush(
     if cut is not None:
         steps.append(FlushStep("truncate", length=cut))
         end = cut
-    if len(runs) == 1 and runs[0][0] == end and (end > 0 or appending):
+    if appending and len(runs) == 1 and runs[0][0] == end:
         steps.append(FlushStep("append", data=bytes(runs[0][1])))
         end += len(runs[0][1])
     else:

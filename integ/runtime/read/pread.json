@@ -86,7 +86,8 @@
         "monty",
         "wasi",
         "pyodide",
-        "quickjs"
+        "quickjs",
+        "host"
       ],
       "backends": [
         "ram",
@@ -184,11 +185,42 @@
               "exit": 1,
               "stdout": "",
               "stderr_contains": "'module' object has no attribute 'O_RDONLY'"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "a_seek_before_the_start_keeps_the_position",
+      "runtimes": [
+        "pyodide",
+        "quickjs",
+        "host"
+      ],
+      "world": {
+        "mounts": {
+          "/data": {
+            "vfs": "ram",
+            "files": {
+              "f.txt": "hello\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "program": {
+            "python": "import errno\nf = open('/data/f.txt', 'rb')\nf.seek(2)\ntry:\n    f.seek(-5, 1)\nexcept OSError as e:\n    print(errno.errorcode[e.errno])\nprint(f.tell(), f.read(3))",
+            "js": "const f = std.open('/data/f.txt', 'r')\nf.seek(2, std.SEEK_SET)\nconsole.log(f.seek(-5, std.SEEK_CUR), f.tell(), f.readAsString(3))\nf.close()"
+          },
+          "expect": {
+            "python": {
+              "exit": 0,
+              "stdout": "EINVAL\n2 b'llo'\n"
             },
-            "host": {
-              "exit": 1,
-              "stdout": "",
-              "stderr_contains": "Operation not supported"
+            "js": {
+              "exit": 0,
+              "stdout": "-28 2 llo\n"
             }
           }
         }
