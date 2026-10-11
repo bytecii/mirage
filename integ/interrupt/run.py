@@ -1,5 +1,3 @@
-"""Exercise cancellation through real HTTP servers, with an external watchdog."""
-
 import argparse
 import asyncio
 import base64
@@ -460,7 +458,7 @@ async def run(hosts, selected):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "--host", action="append", choices=("python", "typescript")
     )
