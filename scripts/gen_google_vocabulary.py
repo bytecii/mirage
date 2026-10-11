@@ -42,7 +42,7 @@ NOTE = (
     "script and commit both trees' output together."
 )
 
-PER_ROW = 6
+WIDTH = 79
 
 
 def discovery(api: str, version: str) -> Any:
@@ -73,11 +73,16 @@ def words_of(
 
 
 def rows(words: list[str], indent: str, quote: str) -> str:
-    return "\n".join(
-        indent
-        + " ".join(f"{quote}{w}{quote}," for w in words[i : i + PER_ROW])
-        for i in range(0, len(words), PER_ROW)
-    )
+    lines: list[str] = []
+    line = ""
+    for word in words:
+        item = f"{quote}{word}{quote},"
+        if line and len(indent) + len(line) + 1 + len(item) > WIDTH:
+            lines.append(indent + line)
+            line = ""
+        line = f"{line} {item}" if line else item
+    lines.append(indent + line)
+    return "\n".join(lines)
 
 
 def main() -> None:

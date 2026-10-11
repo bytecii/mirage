@@ -40,7 +40,7 @@ import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { DOCS_WORDS } from '../../utils/generated/google_vocabulary.ts'
-import { filesContaining, searchable } from './search.ts'
+import { driveQueries, filesContaining } from './search.ts'
 
 const MIME = 'application/vnd.google-apps.document'
 const CORPORA: Record<string, [string, string][]> = {
@@ -84,18 +84,21 @@ beforeEach(() => {
 
 // Twin of python/tests/core/google/test_search.py.
 describe('google app filesContaining', () => {
-  it.each<[string, boolean]>([
-    ['wombat', true],
-    ['Wombat', true],
-    ['q4', false],
-    ['2024', false],
-    ['paragraph', false],
-    ['TextRun', false],
-    ['NORMAL_TEXT', false],
-    ['arial', false],
-    ['https', false],
-  ])('searchable(%j) is %s', (text, asked) => {
-    expect(searchable(text, DOCS_WORDS)).toBe(asked)
+  it.each<[string, string[] | null]>([
+    ['wombat', ['wombat']],
+    ['Wombat', ['Wombat']],
+    ['notes', ['notes', 'otes']],
+    ['q4', null],
+    ['2024', null],
+    ['paragraph', null],
+    ['TextRun', null],
+    ['NORMAL_TEXT', null],
+    ['false', null],
+    ['arial', null],
+    ['https', null],
+    ['face', null],
+  ])('driveQueries(%j) is %j', (text, queries) => {
+    expect(driveQueries(text, DOCS_WORDS)).toEqual(queries)
   })
 
   it('answers the walked files Drive names', async () => {
@@ -125,5 +128,42 @@ describe('google app filesContaining', () => {
     drive.complete = complete
     drive.fail = fail
     expect(await ask(text, [scope(under)])).toBeNull()
+  })
+
+  it('asks each query and joins the answers', async () => {
+    drive.ids = ['doc-b']
+    const out = await ask('notes', [scope('owned')])
+    expect(out?.map((p) => p.vfsPath)).toEqual(['owned/b.gdoc.json'])
+    expect(drive.asked.map(([query]) => query)).toEqual(['notes', 'otes'])
+  })
+
+  // Drive could not finish the listing, so its entries are cached but not the
+  // directory, and grep's own walk lists it again and may find more.
+  it('reads every file after an unfinished listing', async () => {
+    drive.ids = ['a.gdoc.json']
+    const unfinished = async (
+      accessor: GoogleApiAccessor,
+      path: PathSpec,
+      index?: IndexCacheStore,
+    ): Promise<string[]> => {
+      const listed = await readdir(accessor, path, new RAMIndexCacheStore())
+      for (const name of listed) {
+        const leaf = name.split('/').at(-1) ?? name
+        await index?.put(name, new IndexEntry({ id: leaf, name: leaf, resourceType: 'gdocs/file' }))
+      }
+      return listed
+    }
+    const accessor = { tokenManager: null } as unknown as GoogleApiAccessor
+    expect(
+      await filesContaining(
+        accessor,
+        unfinished,
+        MIME,
+        DOCS_WORDS,
+        'wombat',
+        [scope('owned')],
+        new RAMIndexCacheStore(),
+      ),
+    ).toBeNull()
   })
 })

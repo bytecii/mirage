@@ -38,10 +38,14 @@ export function isCorpus(text: string): boolean {
 export const CORPUS = new Codec({ validate: isCorpus })
 
 // The words every Docs, Sheets or Slides rendering may carry beside its API's
-// own names, whatever the file's text says: the parts of a sheet's
-// spreadsheetUrl and of an image's link, and the font the default styles name.
+// own names, whatever the file's text says: the JSON literals, the parts of a
+// sheet's spreadsheetUrl and of an image's link, and the font the default
+// styles name.
 export const RENDERED_WORDS: ReadonlySet<string> = new Set([
   'arial',
+  'false',
+  'null',
+  'true',
   'com',
   'd',
   'docs',

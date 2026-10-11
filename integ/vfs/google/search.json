@@ -25,6 +25,19 @@
         "stdout": "2\n1\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "gapps_search_leaves_json_literals_to_the_scan",
+      "seq": 943102,
+      "targets": [
+        "gapps-fresh"
+      ],
+      "command": "S=$(gws sheets spreadsheets create --json '{\"properties\": {\"title\": \"Flags\"}}' | jq -r .spreadsheetId) && gws sheets write --spreadsheet $S --range 'Sheet1!A1' --values 'false start' > /dev/null && grep -rlw false /sheets | wc -l",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      }
     }
   ]
 }

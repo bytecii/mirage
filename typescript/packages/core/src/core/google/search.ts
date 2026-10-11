@@ -18,6 +18,7 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { isFsError } from '../../errors/fs.ts'
 import type { PathSpec } from '../../types.ts'
 import { mountedPath } from '../../utils/key_prefix.ts'
+import { recordQueries } from '../../utils/record_search.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import { type ReaddirFn, entriesUnder } from '../hierarchy/probe.ts'
 import { GoogleApiError } from './client.ts'
@@ -29,14 +30,15 @@ function noFolder(_entry: IndexEntry): boolean {
 }
 
 /**
- * Whether Drive's full-text index can stand in for grep on `text` over an app
- * mount's JSON: a word with no digit (the JSON's indices, sizes, colours and
- * ids hold them) that is none of its API's property names or enum values,
- * nor a word every rendering may carry. Mirrors Python's `searchable`.
+ * The whole words Drive is asked for `text` over an app mount's JSON, or null
+ * when its index cannot stand in for grep: the `recordQueries` of the text,
+ * with the app's API names and the words every rendering carries as keys. A
+ * digit, a JSON literal or a word an id can hold is never asked, and a word a
+ * JSON escape can run into is asked without its first letter too. Mirrors
+ * Python's `drive_queries`.
  */
-export function searchable(text: string, vocabulary: ReadonlySet<string>): boolean {
-  const folded = text.toLowerCase()
-  return !/[0-9]/.test(text) && !vocabulary.has(folded) && !RENDERED_WORDS.has(folded)
+export function driveQueries(text: string, vocabulary: ReadonlySet<string>): string[] | null {
+  return recordQueries(text, new Set([...vocabulary, ...RENDERED_WORDS]), true)
 }
 
 /**
@@ -44,8 +46,8 @@ export function searchable(text: string, vocabulary: ReadonlySet<string>): boole
  *
  * One query asks for every file of the app's MIME type holding the word, and
  * the answer is matched by id against the owned and shared listings grep walks
- * next. Null for a word `searchable` turns down, a scope below a corpus, a
- * listing or search that fails or that Drive did not finish, or an empty
+ * next. Null for a word `driveQueries` turns down, a scope below a corpus,
+ * a listing or search that fails or that Drive did not finish, or an empty
  * answer.
  *
  * Drive searches a file's text, so the answer can leave out one whose JSON
@@ -62,7 +64,8 @@ export async function filesContaining<A extends GoogleApiAccessor>(
   under: readonly PathSpec[],
   index?: IndexCacheStore,
 ): Promise<PathSpec[] | null> {
-  if (!searchable(text, vocabulary)) return null
+  const queries = driveQueries(text, vocabulary)
+  if (queries === null) return null
   const corpora: PathSpec[] = []
   for (const directory of under) {
     const key = stripSlash(directory.vfsPath)
@@ -76,12 +79,18 @@ export async function filesContaining<A extends GoogleApiAccessor>(
   }
   const found: PathSpec[] = []
   try {
-    const answer = await searchFiles(accessor.tokenManager, text, [], mime)
-    if (!answer.complete) return null
-    const named = new Set(answer.ids)
+    const named = new Set<string>()
+    for (const query of queries) {
+      const answer = await searchFiles(accessor.tokenManager, query, [], mime)
+      if (!answer.complete) return null
+      for (const id of answer.ids) named.add(id)
+    }
     for (const corpus of corpora) {
       const walked = await entriesUnder(readdir, accessor, corpus, index, noFolder)
-      if (walked === null) return null
+      // An unfinished listing caches its entries but not the directory, and
+      // grep's own walk lists it again.
+      const listing = await index?.listDir(corpus.virtual.replace(/\/+$/, ''))
+      if (walked === null || (listing?.entries ?? null) === null) return null
       for (const [path, entry] of walked) if (named.has(entry.id)) found.push(path)
     }
   } catch (err) {

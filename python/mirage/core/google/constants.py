@@ -43,12 +43,15 @@ def is_corpus(text: str) -> bool:
 CORPUS = Codec(validate=is_corpus)
 
 # The words every Docs, Sheets or Slides rendering may carry beside its
-# API's own names, whatever the file's text says: the parts of a sheet's
-# spreadsheetUrl and of an image's link, and the font the default styles
-# name.
+# API's own names, whatever the file's text says: the JSON literals, the
+# parts of a sheet's spreadsheetUrl and of an image's link, and the font
+# the default styles name.
 RENDERED_WORDS = frozenset(
     {
         "arial",
+        "false",
+        "null",
+        "true",
         "com",
         "d",
         "docs",

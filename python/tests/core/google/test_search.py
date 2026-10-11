@@ -19,7 +19,7 @@ import pytest
 
 import mirage.core.google.search as search_mod
 from mirage.cache.index import IndexCacheStore, IndexEntry, RAMIndexCacheStore
-from mirage.core.google.search import files_containing, searchable
+from mirage.core.google.search import drive_queries, files_containing
 from mirage.types import PathSpec
 from mirage.utils.generated.google_vocabulary import DOCS_WORDS
 
@@ -74,23 +74,28 @@ async def _ask(text: str, under: list[PathSpec]) -> list[PathSpec] | None:
 
 
 # A word the rendered JSON may hold whatever the text says is never asked:
-# one with a digit, one of the API's names, one every rendering carries.
+# one with a digit, one of the API's names, a JSON literal, one every
+# rendering carries, one an id can hold. A word an escape can run into is
+# asked without its first letter too (`\notes` holds "otes").
 @pytest.mark.parametrize(
-    "text, asked",
+    "text, queries",
     [
-        ("wombat", True),
-        ("Wombat", True),
-        ("q4", False),
-        ("2024", False),
-        ("paragraph", False),
-        ("TextRun", False),
-        ("NORMAL_TEXT", False),
-        ("arial", False),
-        ("https", False),
+        ("wombat", ["wombat"]),
+        ("Wombat", ["Wombat"]),
+        ("notes", ["notes", "otes"]),
+        ("q4", None),
+        ("2024", None),
+        ("paragraph", None),
+        ("TextRun", None),
+        ("NORMAL_TEXT", None),
+        ("false", None),
+        ("arial", None),
+        ("https", None),
+        ("face", None),
     ],
 )
-def test_searchable_turns_down_the_rendering_words(text, asked):
-    assert searchable(text, DOCS_WORDS) is asked
+def test_drive_queries_turn_down_the_rendering_words(text, queries):
+    assert drive_queries(text, DOCS_WORDS) == queries
 
 
 @pytest.mark.asyncio
@@ -129,3 +134,40 @@ async def test_an_unsure_answer_reads_every_file(
 ):
     _answer(monkeypatch, ids, complete, fail)
     assert await _ask(text, [_scope(u) for u in under]) is None
+
+
+@pytest.mark.asyncio
+async def test_each_query_is_asked_and_their_answers_joined(monkeypatch):
+    asked = _answer(monkeypatch, ["doc-b"])
+    out = await _ask("notes", [_scope("owned")])
+    assert out is not None
+    assert [p.vfs_path for p in out] == ["owned/b.gdoc.json"]
+    assert [query for query, _, _ in asked] == ["notes", "otes"]
+
+
+async def _unfinished(accessor, path: PathSpec, index: IndexCacheStore):
+    listed = await _readdir(accessor, path, RAMIndexCacheStore())
+    for name in listed:
+        leaf = name.rsplit("/", 1)[-1]
+        await index.put(
+            name, IndexEntry(id=leaf, name=leaf, resource_type="gdocs/file")
+        )
+    return listed
+
+
+# Drive could not finish the listing, so its entries are cached but not the
+# directory, and grep's own walk lists it again and may find more.
+@pytest.mark.asyncio
+async def test_an_unfinished_listing_reads_every_file(monkeypatch):
+    _answer(monkeypatch, ["a.gdoc.json"])
+    accessor = SimpleNamespace(token_manager=None)
+    out = await files_containing(
+        accessor,
+        _unfinished,
+        MIME,
+        DOCS_WORDS,
+        "wombat",
+        [_scope("owned")],
+        RAMIndexCacheStore(),
+    )
+    assert out is None
