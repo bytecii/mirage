@@ -1,3 +1,6 @@
+import errno
+from typing import Any
+
 import pytest
 
 from mirage.policy import Action, Deny, Policy, VfsContext
@@ -16,6 +19,25 @@ def _ws() -> Workspace:
     return Workspace(
         {"/data": (RAMVFS(), MountMode.WRITE)}, mode=MountMode.WRITE
     )
+
+
+def _refusing(ws: Workspace, method: str, path: str) -> None:
+    """Make one namespace write refuse ``path`` with EACCES: the fault a
+    command meets partway through, after it was admitted.
+
+    Args:
+        ws (Workspace): the workspace.
+        method (str): the namespace write (``unlink``, ``symlink``).
+        path (str): the link path it refuses.
+    """
+    real = getattr(ws.namespace, method)
+
+    async def refusing(link: str, *args: Any, **kwargs: Any) -> Any:
+        if link == path:
+            raise PermissionError(errno.EACCES, "Permission denied", path)
+        return await real(link, *args, **kwargs)
+
+    setattr(ws.namespace, method, refusing)
 
 
 @pytest.mark.asyncio
@@ -119,7 +141,7 @@ def test_accepts_line_refuses_what_the_command_layer_would():
 
 class PinLinks(Policy):
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        if ctx.op == "unlink" and ctx.path.virtual.endswith(".pinned"):
+        if ctx.call.name == "unlink" and ctx.path.virtual.endswith(".pinned"):
             return Deny("pinned")
         return None
 
@@ -182,22 +204,22 @@ async def test_ln_backup_refuses_a_directory_destination():
     assert ws.namespace.readlink("/data/lk~") == "/data/d"
 
 
-class SealReads(Policy):
-    async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        if ctx.op == "read" and ctx.path.virtual.endswith(".sealed"):
-            return Deny("sealed")
-        return None
+class SealedReads(RAMVFS):
+    async def read(self, path: PathSpec, *args: Any, **kwargs: Any) -> bytes:
+        if path.virtual.endswith(".sealed"):
+            raise PermissionError(
+                errno.EACCES, "Permission denied", path.virtual
+            )
+        return await super().read(path, *args, **kwargs)
 
 
 @pytest.mark.asyncio
 async def test_ln_keeps_going_after_a_source_it_cannot_read():
     # GNU names the source it cannot reach and links the rest, exit 1.
     # mirage's hard link is a byte copy, so a read the stat did not
-    # foresee (a policy deny here) is that refusal, not an abort.
+    # foresee (the backend's refusal here) is that refusal, not an abort.
     ws = Workspace(
-        {"/data": (RAMVFS(), MountMode.WRITE)},
-        mode=MountMode.WRITE,
-        policies=[SealReads()],
+        {"/data": (SealedReads(), MountMode.WRITE)}, mode=MountMode.WRITE
     )
     await ws.shell(
         "mkdir /data/d; printf a > /data/a.sealed; printf b > /data/b.txt"
@@ -213,11 +235,11 @@ async def test_ln_keeps_going_after_a_source_it_cannot_read():
 
 
 @pytest.mark.asyncio
-async def test_rm_of_a_link_goes_through_the_dispatcher():
-    # The strip used to write the node table directly, so a pre_vfs
-    # policy protecting a link never fired for `rm` while it fired for
-    # every other entry point (the FUSE unlink hole, one tier up). The mount is
-    # writable, so only the policy can be what refuses.
+async def test_unlink_of_a_link_meets_the_op_hooks():
+    # The node table is written through the dispatcher, so a pre_vfs
+    # policy protecting a link fires for an unlink of it as for any
+    # other file call (the FUSE unlink hole). The mount is writable, so
+    # only the policy can be what refuses.
     ws = Workspace(
         {"/data": (RAMVFS(), MountMode.WRITE)},
         mode=MountMode.WRITE,
@@ -225,11 +247,8 @@ async def test_rm_of_a_link_goes_through_the_dispatcher():
     )
     await ws.shell("echo b > /data/f.txt")
     await ws.shell("ln -s f.txt /data/lk.pinned")
-    r = await ws.shell("rm /data/lk.pinned")
-    assert r.exit_code == 1
-    assert r.stderr == (
-        b"rm: cannot remove '/data/lk.pinned': Permission denied\n"
-    )
+    with pytest.raises(PermissionError):
+        await ws.vfs.unlink("/data/lk.pinned")
     assert ws.namespace.is_link("/data/lk.pinned")
 
 
@@ -276,13 +295,10 @@ async def test_a_refused_link_operand_keeps_the_rest_going():
     # GNU rm reports the operand it could not remove and removes the
     # others; the backend half of the line still runs and the exit code
     # says something failed.
-    ws = Workspace(
-        {"/data": (RAMVFS(), MountMode.WRITE)},
-        mode=MountMode.WRITE,
-        policies=[PinLinks()],
-    )
+    ws = _ws()
     await ws.shell("echo b > /data/f.txt")
     await ws.shell("ln -s f.txt /data/lk.pinned; ln -s f.txt /data/lk")
+    _refusing(ws, "unlink", "/data/lk.pinned")
     r = await ws.shell("rm /data/lk.pinned /data/lk /data/f.txt")
     assert r.exit_code == 1
     assert r.stderr == (
@@ -607,31 +623,17 @@ async def test_follow_paths_collapses_a_relative_target_and_keeps_the_name():
     )
 
 
-class RefuseLinkCreation(Policy):
-    async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        if ctx.op == "symlink" and ctx.path.virtual == "/other/tree/loop":
-            return Deny("sealed")
-        return None
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [None, "read", "unlink", "symlink"])
 async def test_crossmount_mv_preserves_tree_links_and_partial_transfers(
     failure,
 ):
-    policies = (
-        [SealReads()]
-        if failure == "read"
-        else [PinLinks()]
-        if failure == "unlink"
-        else [RefuseLinkCreation()]
-        if failure == "symlink"
-        else []
-    )
     ws = Workspace(
-        {"/data": RAMVFS(), "/other": RAMVFS()},
+        {
+            "/data": SealedReads() if failure == "read" else RAMVFS(),
+            "/other": RAMVFS(),
+        },
         mode=MountMode.WRITE,
-        policies=policies,
     )
     setup = await ws.shell(
         "mkdir -p /data/tree/sub; printf kept > /data/tree/sub/file; "
@@ -641,6 +643,10 @@ async def test_crossmount_mv_preserves_tree_links_and_partial_transfers(
         "ln -s sub /data/tree/link.pinned"
     )
     assert setup.exit_code == 0
+    if failure == "unlink":
+        _refusing(ws, "unlink", "/data/tree/link.pinned")
+    if failure == "symlink":
+        _refusing(ws, "symlink", "/other/tree/loop")
     result = await ws.shell("mv /data/tree /other/tree")
     assert result.exit_code == (0 if failure is None else 1)
     expected_error = {
@@ -755,9 +761,7 @@ async def test_cp_backup_replaces_link_without_touching_its_referent(
 @pytest.mark.parametrize("source_link", [False, True])
 async def test_cp_refused_backup_unlink_preserves_destination(source_link):
     ws = Workspace(
-        {"/data": RAMVFS(), "/other": RAMVFS()},
-        mode=MountMode.WRITE,
-        policies=[PinLinks()],
+        {"/data": RAMVFS(), "/other": RAMVFS()}, mode=MountMode.WRITE
     )
     setup = await ws.shell(
         "printf safe > /other/safe; printf old > /other/dst; "
@@ -769,6 +773,7 @@ async def test_cp_refused_backup_unlink_preserves_destination(source_link):
         )
     )
     assert setup.exit_code == 0
+    _refusing(ws, "unlink", "/other/dst.pinned")
     result = await ws.shell("cp -Pb --suffix=.pinned /data/src /other/dst")
     assert result.exit_code == 1
     assert result.stderr == (

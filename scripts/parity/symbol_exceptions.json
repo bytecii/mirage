@@ -1,5 +1,5 @@
 {
-  "baseline": 3863,
+  "baseline": 3861,
  "modules": {
   "fuse/constants": {
    "python_only": {
@@ -28,6 +28,11 @@
   "workspace/abort": {
    "typescript_only": {
     "lineSignal": "TypeScript must pass a line's AbortSignal into fetch to interrupt an outstanding response body read; Python task cancellation interrupts the awaited HTTP read directly."
+   }
+  },
+  "workspace/workspace/workspace": {
+   "typescript_only": {
+    "refuseWrite": "Without async task isolation (the browser fallback) a hook cannot run as a policy deciding, so its session view refuses writes by hand; Python's contextvars always isolate tasks."
    }
   },
   "cli/stream": {

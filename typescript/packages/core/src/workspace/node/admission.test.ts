@@ -23,9 +23,19 @@ import { Workspace } from '../workspace/workspace.ts'
 import { parseSessionProfile, type SessionProfile } from '../../policy/profile.ts'
 import { Admitted, admit, admitLine, policyScopes } from './admission.ts'
 import { PolicyDenied } from '../../policy/index.ts'
-import type { CommandRule, AdmissionRules } from '../../policy/types.ts'
+import type { CommandContext, CommandRule, AdmissionRules } from '../../policy/types.ts'
 
 const DEC = new TextDecoder()
+
+function gateCtx(tokens: string[]): CommandContext {
+  return {
+    command: tokens[0] ?? '',
+    paths: [],
+    argv: tokens.slice(1),
+    cwd: '/',
+    tokens,
+  }
+}
 
 const DOC = parseSessionProfile({
   commands: {
@@ -241,8 +251,8 @@ describe('admission', () => {
       '/data/run.sh: Permission denied\npolicy denied: runs lines the gate cannot read\n',
     ])
     expect(await line("sh -c 'rm /data/x'; sh -c 'sort'")).toEqual([
-      127,
-      'sort: command not found\n',
+      126,
+      'sort: Permission denied\npolicy denied: sort is not allowed\n',
     ])
   })
 
@@ -267,12 +277,12 @@ describe('admission', () => {
     const line = (text: string) =>
       admitLine(parser.parse(text), session, w.registry, w.namespace, '', (t) => parser.parse(t))
     expect(await line('cat /data/a | head -n 1')).toBeNull()
-    // An unlisted word anywhere in the line is 127 before any hook.
+    // An unlisted word anywhere in the line is the allow list's Deny.
     const unlisted = await line('cat /data/a | sort')
     expect(unlisted).not.toBeNull()
     expect([unlisted?.exitCode, DEC.decode(unlisted?.stderr)]).toEqual([
-      127,
-      'sort: command not found\n',
+      126,
+      'sort: Permission denied\n',
     ])
     // A rule reads the literal words, path-shaped ones as paths.
     const sealed = await line('ls /data && cat /data/secret')
@@ -455,7 +465,7 @@ describe('admission', () => {
     const rules: AdmissionRules = { allow: null, ask: [ask], deny: [deny] }
     const gate = new Admitted({
       rules,
-      tokens: ['grep', '-r', 'x', '/data'],
+      ctx: gateCtx(['grep', '-r', 'x', '/data']),
       judged: new Set(['/data']),
       granted: [],
       scoped: true,
@@ -484,7 +494,7 @@ describe('admission', () => {
     // opens its scope to the walk.
     const judged = new Admitted({
       rules,
-      tokens: ['grep', 'x', '/data/asked/a'],
+      ctx: gateCtx(['grep', 'x', '/data/asked/a']),
       judged: new Set(['/data/asked/a']),
       granted: [],
       scoped: true,
@@ -492,7 +502,7 @@ describe('admission', () => {
     judged.check('/data/asked/a')
     const granted = new Admitted({
       rules,
-      tokens: ['grep', '-r', 'x', '/data/asked'],
+      ctx: gateCtx(['grep', '-r', 'x', '/data/asked']),
       judged: new Set(['/data/asked']),
       granted: [ask],
       scoped: true,
@@ -515,7 +525,7 @@ describe('admission', () => {
     }
     const gate = new Admitted({
       rules,
-      tokens: ['find', '/data', '/other'],
+      ctx: gateCtx(['find', '/data', '/other']),
       judged: new Set(['/data', '/other']),
       granted: [],
       scoped: true,
@@ -525,16 +535,6 @@ describe('admission', () => {
       true,
       false,
     ])
-    // A pre_vfs policy judges every op, so every walk is the guard's.
-    const judged = new Admitted({
-      rules,
-      tokens: ['find', '/other'],
-      judged: new Set(['/other']),
-      granted: [],
-      scoped: true,
-      opsJudged: true,
-    })
-    expect(judged.scopes('/other')).toBe(true)
   })
 
   it('admit reports the grant the line runs under and its scope', async () => {
@@ -544,7 +544,7 @@ describe('admission', () => {
     const verdict = await admit('rm', ['/data/x'], words.slice(1), session, w.registry, w.namespace)
     expect(verdict).toBeInstanceOf(Admitted)
     const admitted = verdict as Admitted
-    expect(admitted.tokens).toEqual(['rm', '/data/x'])
+    expect(admitted.ctx.tokens).toEqual(['rm', '/data/x'])
     expect([...admitted.judged]).toEqual(['/data/x'])
     expect(admitted.granted).toEqual([])
     // `rm` is under no path rule in this document; `cat` is.

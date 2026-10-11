@@ -13,7 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { SessionView } from '../../view/types.ts'
-import { PolicyDenied, preSessionGate, type Policies } from '../../policy/index.ts'
+import {
+  PolicyDenied,
+  postSessionGate,
+  preSessionGate,
+  type Policies,
+  type SessionContext,
+} from '../../policy/index.ts'
 import { evaluateArith, plainDecimal } from '../../shell/arith.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import {
@@ -36,6 +42,7 @@ import { encodeText } from '../../shell/bytes.ts'
 import { ArithError, ExitSignal, ReadonlyError } from '../../shell/errors.ts'
 import type { ArithResult, ArithWrite, ElementOps } from '../../shell/types.ts'
 import { varHidden } from '../../utils/hidden.ts'
+import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { ReadonlyVariableError } from './errors.ts'
 import { draw, initialSeed } from './rng.ts'
@@ -802,13 +809,15 @@ async function setVar(
       throw err
     }
   }
-  await preSessionGate(policies, {
+  const written: SessionContext = {
     plane: 'env',
     verb: 'set',
     key: name,
     value: gateRendering(shaped),
     sessionId: session.sessionId,
-  })
+  }
+  await preSessionGate(policies, written)
+  const generator = [session.randomState, session.randomSeed, session.randomLast] as const
   if (name === RANDOM && session.randomSeed !== RANDOM_UNSET && typeof shaped === 'string') {
     // A seed that fails or writes a readonly name seeds nothing: its
     // earlier writes land and the error is reported, but the line goes on,
@@ -860,6 +869,19 @@ async function setVar(
     stored = withAttr(stored, VarAttr.Export)
   }
   setSessionEntry(session.vars, name, stored)
+  try {
+    await postSessionGate(
+      policies,
+      written,
+      existing == null ? null : gateRendering(existing.value),
+    )
+  } catch (err) {
+    // Whatever stops the check, a refusal or a host that failed to
+    // answer, the write does not stand, and neither does a seed.
+    place(session, name, existing ?? null)
+    ;[session.randomState, session.randomSeed, session.randomLast] = generator
+    throw err
+  }
 }
 
 /**
@@ -881,15 +903,29 @@ async function unsetVar(
   if (envIsReadonly(session, name, false)) {
     throw new ReadonlyVariableError(name)
   }
-  await preSessionGate(policies, {
+  const written: SessionContext = {
     plane: 'env',
     verb: 'unset',
     key: name,
     value: null,
     sessionId: session.sessionId,
-  })
+  }
+  await preSessionGate(policies, written)
 
+  const old = sessionEntry(session.vars, name) ?? null
+  const frame = shadowingFrame(session, name)
   drop(session, name)
+  try {
+    await postSessionGate(policies, written, old === null ? null : gateRendering(old.value))
+  } catch (err) {
+    // The unset revealed what an enclosing scope saved; that value goes
+    // back to the scope before the name's own record returns.
+    if (frame !== undefined && !frame.has(name)) {
+      frame.set(name, sessionEntry(session.vars, name) ?? null)
+    }
+    place(session, name, old)
+    throw err
+  }
   // bash: unsetting RANDOM strips its special meaning for good.
   if (name === RANDOM) session.randomSeed = RANDOM_UNSET
 }
@@ -1158,14 +1194,40 @@ async function markVar(
   // nameref attribute always belongs to the reference's own record.
   if (followRef && attr !== VarAttr.Nameref) name = deref(session, name) || name
   ensureVarVisible(session, name)
-  await preSessionGate(policies, {
+  const written: SessionContext = {
     plane: 'env',
     verb: 'set',
     key: name,
     value: null,
     sessionId: session.sessionId,
-  })
+  }
+  await preSessionGate(policies, written)
+  const old = sessionEntry(session.vars, name) ?? null
+  const seed = session.randomSeed
   setAttr(session, name, attr, on)
+  try {
+    await postSessionGate(policies, written, old === null ? null : gateRendering(old.value))
+  } catch (err) {
+    place(session, name, old)
+    session.randomSeed = seed
+    throw err
+  }
+}
+
+/**
+ * A session write as one call, so a ONCE answer to its preSession question
+ * stands until its postSession one is answered too. Without task isolation
+ * a call cannot be told from another task's, so there the write is its
+ * own. Mirrors Python's `_one_call`.
+ */
+function oneCall(
+  session: SessionState,
+  policies: Policies | null,
+  write: () => Promise<void>,
+): Promise<void> {
+  return policies === null || !asyncContextIsolatesTasks
+    ? write()
+    : policies.decisions.withinCall(session.sessionId, write)
 }
 
 export function sessionView(
@@ -1177,12 +1239,16 @@ export function sessionView(
     get: (name) => envGet(session, name),
     snapshot: () => envSnapshot(session),
     set: (name, value, followRef = true, assigned = null, added = null) =>
-      setVar(session, policies, name, value, followRef, diagnostics, assigned, added),
-    unset: (name, followRef = true) => unsetVar(session, policies, name, followRef),
+      oneCall(session, policies, () =>
+        setVar(session, policies, name, value, followRef, diagnostics, assigned, added),
+      ),
+    unset: (name, followRef = true) =>
+      oneCall(session, policies, () => unsetVar(session, policies, name, followRef)),
     mark: (name, attr, on, followRef = true) =>
-      markVar(session, policies, name, attr, on, followRef),
+      oneCall(session, policies, () => markVar(session, policies, name, attr, on, followRef)),
     isReadonly: (name, followRef = true) => envIsReadonly(session, name, followRef),
     profile: () => session.profile,
+    cwd: () => session.cwd,
   }
 }
 

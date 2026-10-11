@@ -21,7 +21,7 @@ from mirage.types import PathSpec
 async def readdir(
     accessor: BinAccessor, path: PathSpec, index: IndexCacheStore = NULL_INDEX
 ) -> list[str]:
-    """List one file per program the session can run.
+    """List one file per program.
 
     Args:
         accessor (BinAccessor): Accessor holding the lookup.

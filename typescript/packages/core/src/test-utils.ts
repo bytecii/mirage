@@ -22,6 +22,8 @@ import type { Accessor } from './accessor/base.ts'
 import { commandIo } from './commands/builtin/generic_bind/adapter.ts'
 import type { CommandIO } from './commands/config.ts'
 import { MountEntry } from './workspace/mount/mount.ts'
+import type { Workspace } from './workspace/workspace/workspace.ts'
+import type { DispatchFn } from './runtime/types.ts'
 import { sha256Hex } from './utils/hash.ts'
 import {
   EUC_CN,
@@ -224,4 +226,25 @@ export function keptVersions(vfs: string): { context: WriteContext; kept: string
     },
   }
   return { context, kept }
+}
+
+/**
+ * Record every call the workspace's dispatcher serves from now on, by op
+ * name and virtual path: where a line's own I/O is judged. `before` runs
+ * ahead of each call, so a test can hold one mid-command. Mirrors the
+ * Python `dispatched` test fixture.
+ */
+export function dispatched(
+  ws: Workspace,
+  before?: (name: string, path: PathSpec) => Promise<void>,
+): [string, string][] {
+  const seen: [string, string][] = []
+  const dispatcher = (ws as unknown as { dispatcher: { dispatchAdmitted: DispatchFn } }).dispatcher
+  const real = dispatcher.dispatchAdmitted
+  dispatcher.dispatchAdmitted = async (name, path, args, kwargs, report) => {
+    seen.push([name, path.virtual])
+    if (before !== undefined) await before(name, path)
+    return real(name, path, args, kwargs, report)
+  }
+  return seen
 }

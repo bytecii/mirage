@@ -288,7 +288,11 @@ class RedactReads(Policy):
         data = (
             ctx.result if isinstance(ctx.result, (bytes, bytearray)) else None
         )
-        if ctx.op == "read" and data is not None and self._marker in data:
+        if (
+            ctx.call.name == "read"
+            and data is not None
+            and self._marker in data
+        ):
             return Deny("redacted")
         return None
 
@@ -303,7 +307,7 @@ class OpReadCap(Policy):
         self._max_bytes = spec["max_bytes"]
 
     def decide(self, ctx: VfsResultContext) -> Limit | None:
-        if ctx.op == "read" and ctx.path.virtual.endswith(self._suffix):
+        if ctx.call.name == "read" and ctx.path.virtual.endswith(self._suffix):
             return Limit(max_bytes=self._max_bytes)
         return None
 

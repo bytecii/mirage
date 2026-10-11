@@ -17,7 +17,6 @@ import { Command } from '../commands/config.ts'
 import { CommandSpec, Argument } from '../commands/spec/types.ts'
 import { IOResult } from '../io/types.ts'
 import { RAMObserverStore } from '../observe/store.ts'
-import type { Action, VfsContext } from '../policy/index.ts'
 import { RAMSessionStore } from './session/ram.ts'
 import type { SessionFields } from './session/store.ts'
 import { RAMVFS } from '../vfs/ram/ram.ts'
@@ -29,6 +28,7 @@ import { Channel, type ConsoleChunk, JobConsole, RAMConsoleStore } from '../shel
 import { getTestParser, stdoutStr } from './fixtures/workspace_fixture.ts'
 import type { ExecuteResult } from './workspace/workspace.ts'
 import { Workspace } from './workspace/workspace.ts'
+import { dispatched } from '../test-utils.ts'
 
 const DEC = new TextDecoder()
 
@@ -554,23 +554,12 @@ describe('execute({ signal }): mid-flight cancellation', () => {
     const first = new Promise<void>((resolve) => {
       held.release = resolve
     })
-    const ws = new Workspace(
-      { '/ram/': ram },
-      {
-        mode: MountMode.WRITE,
-        shellParser: parser,
-        policies: [
-          {
-            preVfs: async (ctx: VfsContext): Promise<Action | null> => {
-              if (!held.armed || ctx.op !== 'unlink') return null
-              seen.push(ctx.path.virtual)
-              if (seen.length === 1) await first
-              return null
-            },
-          },
-        ],
-      },
-    )
+    const ws = new Workspace({ '/ram/': ram }, { mode: MountMode.WRITE, shellParser: parser })
+    dispatched(ws, async (name, path) => {
+      if (!held.armed || name !== 'unlink') return
+      seen.push(path.virtual)
+      if (seen.length === 1) await first
+    })
     await ws.shell('echo a > /ram/a; echo b > /ram/b; ln -s /ram/a /ram/l1; ln -s /ram/b /ram/l2')
     held.armed = true
     const controller = new AbortController()
@@ -587,7 +576,7 @@ describe('execute({ signal }): mid-flight cancellation', () => {
 
   it('starts no further backend write after the release of a mount command', async () => {
     // The same shape for a generic-bound command: `rm a b` on two files,
-    // the first unlink held at the slot's policy gate past the grace.
+    // the first unlink held at the dispatcher past the grace.
     // The handler resumes after the release; the second file must keep
     // its bytes.
     const parser = await getTestParser()
@@ -597,23 +586,12 @@ describe('execute({ signal }): mid-flight cancellation', () => {
     const first = new Promise<void>((resolve) => {
       held.release = resolve
     })
-    const ws = new Workspace(
-      { '/ram/': ram },
-      {
-        mode: MountMode.WRITE,
-        shellParser: parser,
-        policies: [
-          {
-            preVfs: async (ctx: VfsContext): Promise<Action | null> => {
-              if (!held.armed || ctx.op !== 'unlink') return null
-              seen.push(ctx.path.virtual)
-              if (seen.length === 1) await first
-              return null
-            },
-          },
-        ],
-      },
-    )
+    const ws = new Workspace({ '/ram/': ram }, { mode: MountMode.WRITE, shellParser: parser })
+    dispatched(ws, async (name, path) => {
+      if (!held.armed || name !== 'unlink') return
+      seen.push(path.virtual)
+      if (seen.length === 1) await first
+    })
     await ws.shell('echo a > /ram/a; echo b > /ram/b')
     held.armed = true
     const controller = new AbortController()

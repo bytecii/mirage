@@ -22,7 +22,6 @@ import {
   policyDenied,
   refusalOf,
   renderDeny,
-  renderPending,
 } from '../../policy/index.ts'
 import type {
   Ask,
@@ -41,7 +40,7 @@ import { getParts, getRedirects, literalWord, splitEnvPrefix } from '../../shell
 import { NodeType, RedirectKind } from '../../shell/types.ts'
 import type { Redirect, TSNodeLike } from '../../shell/types.ts'
 import { PathSpec, type Refusal } from '../../types.ts'
-import type { EntryGate } from '../../policy/types.ts'
+import { CommandWord, type EntryGate } from '../../policy/types.ts'
 import { isGlob } from '../../utils/hidden.ts'
 import { resolvePath } from '../../utils/path.ts'
 import { makeAbortError } from '../../utils/abort.ts'
@@ -51,7 +50,7 @@ import {
   CWD_DEFAULT_RAW,
   defaultCwdOperand,
   pathFlagScopes,
-  positionalScopes,
+  commandWords,
   programTokens,
 } from '../executor/command/routing.ts'
 import { classifyParts } from '../expand/classify/parts.ts'
@@ -66,7 +65,6 @@ import {
   WordPolicy,
   followsLastComponent,
   isTool,
-  listed,
   readsSubtrees,
   lookup,
   walksMounts,
@@ -84,15 +82,13 @@ import {
   wholeOccurrence,
 } from './occurrence.ts'
 import { rstripSlash } from '../../utils/slash.ts'
-import { encodeText } from '../../shell/bytes.ts'
 
 /**
- * What the command plane prints when a line does not get to run: 127
- * for a word the session cannot see, 126 for a whole-command refusal
- * or an unanswered ask, the operand code (1, tar 2) for an
- * operand-scoped refusal. `refusal` is the record the result carries
- * beside stderr, null on the 127 row, which must not say the word
- * names anything. Mirrors the Python `Refused`.
+ * What the command plane prints when a line does not get to run: 126 for
+ * a whole-command refusal or an unanswered ask, the operand code (1, tar
+ * 2) for a refusal about a path or carrying an error. `refusal` is the
+ * record the result carries beside stderr, null for the filesystem's own
+ * error. Mirrors the Python `Refused`.
  */
 export interface Refused {
   readonly stderr: Uint8Array
@@ -146,33 +142,31 @@ export const UNREADABLE_LINES = 'runs lines the gate cannot read'
  * by `ioRefusal` under the same precedence the gate applied to the line,
  * and a refusal is the dispatcher's `PolicyDenied` (EACCES, the path, the
  * reason on its record), which every command renders as GNU's
- * `Permission denied`. `opsJudged` is whether a coded or scripted preVfs
- * policy speaks for the session, which judges every path.
+ * `Permission denied`.
  * `granted` holds the ask rules the line runs under a grant for: the one
  * the entry point answered for this line, and the session's standing ones.
+ * `ctx` is what `preCommand` judged the command on, which `postCommand`
+ * extends with what came back.
  */
 export class Admitted implements EntryGate {
   readonly rules: AdmissionRules | null
-  readonly tokens: readonly string[]
+  readonly ctx: CommandContext
   readonly judged: ReadonlySet<string>
   readonly granted: readonly CommandRule[]
   readonly scoped: boolean
-  readonly opsJudged: boolean
 
   constructor(init: {
     rules: AdmissionRules | null
-    tokens: readonly string[]
+    ctx: CommandContext
     judged: ReadonlySet<string>
     granted: readonly CommandRule[]
     scoped: boolean
-    opsJudged?: boolean
   }) {
     this.rules = init.rules
-    this.tokens = init.tokens
+    this.ctx = init.ctx
     this.judged = init.judged
     this.granted = init.granted
     this.scoped = init.scoped
-    this.opsJudged = init.opsJudged ?? false
   }
 
   // Throw `PolicyDenied` when a rule in force refuses this entry for the
@@ -185,10 +179,10 @@ export class Admitted implements EntryGate {
   }
 
   // Whether anything at or under this path could be refused for the
-  // running command: a coded or scripted preVfs policy judges every path,
-  // and a rule in force any path its scope could cover.
+  // running command: a rule in force at any path its scope could cover.
+  // No coded preVfs policy judges a command's own I/O.
   scopes(virtual: string): boolean {
-    return this.opsJudged || ioReach(this.rules, this.tokens, virtual)
+    return ioReach(this.rules, this.ctx.tokens ?? [], virtual)
   }
 
   // Whether a rule in force refuses this entry for the running command,
@@ -201,7 +195,7 @@ export class Admitted implements EntryGate {
   // admitted on it or nothing refuses it.
   private refusal(virtual: string): string | null {
     if (this.judged.has(norm(virtual))) return null
-    return ioRefusal(this.rules, this.tokens, virtual, this.granted)
+    return ioRefusal(this.rules, this.ctx.tokens ?? [], virtual, this.granted)
   }
 }
 
@@ -300,13 +294,36 @@ function seen(
 }
 
 /**
- * The command plane's admission of one command: visibility, then the
- * policy chain, then the approval ledger. The one gate every command
- * class passes through, in the tree (`runArgv`, once the words are
- * expanded) and for a line a runtime takes whole (`admitLine`, per
- * parsed command). A word the session's allow lists do not install is
- * bash's "command not found" before any admission hook, so an unlisted
- * tool never leaks a deny reason; a path the session cannot see is
+ * The words a policy is shown, a path `seen` drops taken off the word that
+ * names it, so a policy reads the word and never the path. Mirrors Python's
+ * `_seen_words`.
+ */
+function seenWords(
+  session: SessionState,
+  words: readonly CommandWord[],
+  unread: ReadonlySet<string>,
+): CommandWord[] {
+  const shown = new Set(
+    seen(
+      session,
+      words.flatMap((w) => (w.path !== null ? [w.path] : [])),
+      unread,
+    ).map((p) => p.virtual),
+  )
+  return words.map((w) =>
+    w.path === null || shown.has(w.path.virtual)
+      ? w
+      : new CommandWord(w.text, w.kind, w.option, null),
+  )
+}
+
+/**
+ * The command plane's admission of one command: the policy chain, then
+ * the approval ledger. The one gate every command class passes through,
+ * in the tree (`runArgv`, once the words are expanded) and for a line a
+ * runtime takes whole (`admitLine`, per parsed command). A word the
+ * session's allow list leaves out is the profile's Deny, like any other
+ * rule's; a path the session cannot see is
  * dropped before any hook, so a rule never names it and the dispatcher
  * answers ENOENT; a Deny renders in the outcome table's voice; an Ask
  * is answered by the entry point from the session's grants or the host.
@@ -349,9 +366,8 @@ export function redirectPaths(
 
 /**
  * Everything the gate decides about one command before anything is
- * spent on it: visibility, the classified context, and the policy
- * chain's answer (the first Deny, else the first Ask) with the answers it
- * came from.
+ * spent on it: the classified context, and the policy chain's answer (the
+ * first Deny, else the first Ask) with the answers it came from.
  *
  * Split out of `admit` so a dry run can have the answer without the
  * consequences. Nothing here records a request, consumes a grant or
@@ -365,6 +381,9 @@ export function redirectPaths(
  * could not follow. No policy is shown them; the per-command gate reads
  * the real ones and passes none. `every` asks every policy past a Deny,
  * for `explain`; the gate's own answers end at the first Deny.
+ * `rulesOnly` asks the profile's rules alone, for a pass that judges a line
+ * before it runs; a policy's own `preCommand` is asked once, by the gate
+ * that runs the command.
  */
 export async function gate(
   name: string,
@@ -379,15 +398,9 @@ export async function gate(
   intrinsic = false,
   unread: ReadonlySet<string> = new Set(),
   every = false,
-): Promise<Refused | [CommandContext, Deny | Ask | null, (Deny | Ask)[]]> {
+  rulesOnly = false,
+): Promise<[CommandContext, Deny | Ask | null, (Deny | Ask)[]]> {
   const tool = intrinsic || isTool(name, session)
-  if (tool && !listed(name, session)) {
-    return {
-      stderr: encodeText(`${name}: command not found\n`),
-      exitCode: 127,
-      refusal: null,
-    }
-  }
   const [tokens, program] = programTokens(registry, name, [...args], session.cwd)
   const implied =
     name in CWD_DEFAULT_RAW
@@ -400,18 +413,24 @@ export async function gate(
       policyScopes(name, args, operands, namespace, session.cwd, implied, redirects),
       unread,
     ),
-    operands: seen(session, positionalScopes(name, [...args], session.cwd, [...operands]), unread),
+    words: seenWords(
+      session,
+      commandWords(registry, name, args, operands, redirects, session.cwd),
+      unread,
+    ),
     argv: [...args],
     cwd: session.cwd,
-    registry,
     sessionId: session.sessionId,
     agentId,
     tokens,
     program,
     tool,
     walks: walksMounts(name, [name, ...args]),
+    // The hooks read the session this command is judged in, which for a
+    // line explain walks is the walked one, not the stored one.
+    ...(rulesOnly ? null : registry.policies.views?.(session.sessionId, session)),
   }
-  const answers = (await registry.policies.answers('preCommand', ctx, every)).filter(
+  const answers = (await registry.policies.answers('preCommand', ctx, every, rulesOnly)).filter(
     (a): a is Deny | Ask => a.kind !== 'route',
   )
   return [ctx, answers.find((a) => a.kind === 'deny') ?? answers[0] ?? null, answers]
@@ -444,15 +463,9 @@ export async function admit(
   intrinsic = false,
   // Paths no policy is shown, as `gate` takes them.
   unread: ReadonlySet<string> = new Set(),
+  // Ask the profile's rules alone, as `gate` takes it.
+  rulesOnly = false,
 ): Promise<Refused | Admitted> {
-  // Asked before the gate so the answer is in by the time the gate's is:
-  // admission takes no extra turns, and background jobs launched in order
-  // still finish in order.
-  const opsJudged = registry.policies.wantsFor('preVfs', session.sessionId)
-  // A refused command never awaits it, so a failure is reported here.
-  opsJudged.catch((err: unknown) => {
-    console.warn(`preVfs policy query failed for ${name}: ${String(err)}`)
-  })
   const gated = await gate(
     name,
     args,
@@ -465,8 +478,9 @@ export async function admit(
     redirects,
     intrinsic,
     unread,
+    false,
+    rulesOnly,
   )
-  if (!Array.isArray(gated)) return gated
   const [ctx, asked] = gated
   // An Ask is the chain's answer only after every Deny had its say; the
   // entry point answers it from the session's grants or the host, so a grant
@@ -484,25 +498,23 @@ export async function admit(
     const granted = session.decisions
       .filter((r) => r.scope === Scope.SESSION && r.outcome === Outcome.ALLOW)
       .map((r) => r.rule)
-    if (asked !== null && asked.kind === 'ask') granted.unshift(askRule(ctx, asked))
+    if (asked !== null && asked.kind === 'ask')
+      granted.unshift(...(asked.rules ?? [askRule(ctx, asked)]))
     const rules = session.commands
-    const judged = await opsJudged
     return new Admitted({
       rules,
-      tokens: ctx.tokens ?? [],
+      ctx,
       judged: new Set(ctx.paths.map((p) => norm(p.virtual))),
       granted,
-      scoped: scopesPaths(rules, name) || judged,
-      opsJudged: judged,
+      scoped: scopesPaths(rules, name),
     })
   }
-  const [stderr, exitCode] =
-    action.kind === 'pending' ? renderPending(name, action) : renderDeny(name, action)
+  const [stderr, exitCode] = renderDeny(name, action)
   return { stderr, exitCode, refusal: refusalOf(action) }
 }
 
 function refuse(name: string, reason: string): Refused {
-  const deny: Deny = { kind: 'deny', reason, scope: 'command' }
+  const deny: Deny = { kind: 'deny', reason }
   const [stderr, exitCode] = renderDeny(name, deny)
   return { stderr, exitCode, refusal: refusalOf(deny) }
 }
@@ -728,6 +740,14 @@ export async function admitLine(
     const [, parts] = splitEnvPrefix(getParts(node))
     const words = parts.map((part) => readWord(part, home))
     if (words.length === 0) continue
+    // The runtime runs the commands itself: no command's result comes back
+    // for a postCommand policy to judge.
+    if (registry.policies.wants('postCommand')) {
+      return refuse(
+        words[0]?.raw ?? '',
+        'a post_command policy cannot judge a line a runtime runs whole',
+      )
+    }
     const refusal = await admitWords(
       words,
       open,

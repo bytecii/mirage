@@ -151,6 +151,8 @@ export interface SessionView {
   // %g, find -printf %g) prints in the group column: the profile is the
   // permission set the session acts with, which is what a group is.
   profile(): string | null
+  // The session's working directory, the one an operand resolves against.
+  cwd(): string
 }
 
 // The symlink surface a namespace offers to lower layers. The workspace

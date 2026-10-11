@@ -148,7 +148,7 @@
       "session": "scripted",
       "command": "cat /repo/sealed/k | head -1",
       "expect": {
-        "exit": 126,
+        "exit": 0,
         "stdout": "",
         "stderr": "cat: Permission denied\n"
       }
@@ -162,8 +162,8 @@
       "session": "scripted",
       "command": "echo start $(cat /repo/sealed/k) end",
       "expect": {
-        "exit": 126,
-        "stdout": "",
+        "exit": 0,
+        "stdout": "start end\n",
         "stderr": "cat: Permission denied\n"
       }
     },
@@ -237,104 +237,6 @@
       }
     },
     {
-      "id": "scriptops_write_is_refused_at_the_dispatcher",
-      "seq": 923272,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "echo x > /scratch/cold/f",
-      "expect": {
-        "exit": 1,
-        "stdout": "",
-        "stderr": "/scratch/cold/f: Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptops_unlink_is_refused_at_the_dispatcher",
-      "seq": 923273,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "rm /scratch/cold/k",
-      "expect": {
-        "exit": 1,
-        "stdout": "",
-        "stderr": "rm: cannot remove '/scratch/cold/k': Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptops_the_refused_writes_left_nothing",
-      "seq": 923274,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "ls /scratch/cold",
-      "expect": {
-        "exit": 0,
-        "stdout": "k\n",
-        "stderr": ""
-      }
-    },
-    {
-      "id": "scriptops_drop_descriptor_writes_without_reading",
-      "seq": 923284,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "exec 3>/scratch/drop/f; echo a >&3; echo b >&3; echo XYZ >> /scratch/drop/f; echo c >&3; exec 3>&-; echo rc=$?",
-      "note": "bash on a file with write permission only (debian:stable-slim, chmod 200): a write-only descriptor writes at its own offset, so c lands over the XY the append added, and <> is refused because it opens the file to read.",
-      "expect": {
-        "exit": 0,
-        "stdout": "rc=0\n",
-        "stderr": ""
-      }
-    },
-    {
-      "id": "scriptops_drop_read_is_refused",
-      "seq": 923285,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "cat /scratch/drop/f",
-      "expect": {
-        "exit": 1,
-        "stdout": "",
-        "stderr": "cat: /scratch/drop/f: Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptops_drop_read_write_open_is_refused",
-      "seq": 923286,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "exec 4<>/scratch/drop/f; echo rc=$?",
-      "expect": {
-        "exit": 0,
-        "stdout": "rc=1\n",
-        "stderr": "/scratch/drop/f: Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptops_drop_holds_what_the_descriptor_wrote",
-      "seq": 923287,
-      "targets": [
-        "ram-commands"
-      ],
-      "command": "cat /scratch/drop/f",
-      "expect": {
-        "exit": 0,
-        "stdout": "a\nb\nc\nZ\n",
-        "stderr": ""
-      }
-    },
-    {
       "id": "scriptops_content_deny_at_the_command_gate",
       "seq": 923275,
       "targets": [
@@ -377,50 +279,6 @@
       }
     },
     {
-      "id": "scriptops_find_meets_a_refused_listing",
-      "seq": 923292,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "mkdir -p /scratch/vault && echo SECRET > /scratch/vault/k && find /scratch/vault",
-      "note": "GNU on a mode 0300 dir (debian:stable-slim, uid 1000): the dir prints, its listing is refused, exit 1.",
-      "expect": {
-        "exit": 1,
-        "stdout": "/scratch/vault\n",
-        "stderr": "find: '/scratch/vault': Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptops_du_meets_a_refused_listing",
-      "seq": 923293,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "mkdir -p /scratch/vault && echo SECRET > /scratch/vault/k && du -a /scratch/vault",
-      "note": "GNU (debian:stable-slim, a mode 0300 dir as uid 1000) prints the error, then the dir row, and exits 1; its row is 4 blocks where mirage counts bytes.",
-      "expect": {
-        "exit": 1,
-        "stdout": "0\t/scratch/vault\n",
-        "stderr": "du: cannot read directory '/scratch/vault': Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptops_a_refused_listing_still_reads_a_named_file",
-      "seq": 923294,
-      "targets": [
-        "ram-commands"
-      ],
-      "session": "scriptedops",
-      "command": "mkdir -p /scratch/vault && echo SECRET > /scratch/vault/k && cat /scratch/vault/k",
-      "expect": {
-        "exit": 0,
-        "stdout": "SECRET\n",
-        "stderr": ""
-      }
-    },
-    {
       "id": "scriptopsjs_prep",
       "seq": 923278,
       "targets": [
@@ -448,20 +306,6 @@
       }
     },
     {
-      "id": "scriptopsjs_write_is_refused_at_the_dispatcher",
-      "seq": 923280,
-      "targets": [
-        "ram-scripted"
-      ],
-      "session": "scriptedopsjs",
-      "command": "echo x > /scratch/cold/f",
-      "expect": {
-        "exit": 1,
-        "stdout": "",
-        "stderr": "/scratch/cold/f: Permission denied\n"
-      }
-    },
-    {
       "id": "scriptopsjs_read_passes_the_dispatcher",
       "seq": 923281,
       "targets": [
@@ -472,62 +316,6 @@
       "expect": {
         "exit": 0,
         "stdout": "keep\n",
-        "stderr": ""
-      }
-    },
-    {
-      "id": "scriptopsjs_drop_descriptor_writes_without_reading",
-      "seq": 923288,
-      "targets": [
-        "ram-scripted"
-      ],
-      "session": "scriptedopsjs",
-      "command": "exec 3>/scratch/drop/f; echo a >&3; echo b >&3; echo XYZ >> /scratch/drop/f; echo c >&3; exec 3>&-; echo rc=$?",
-      "note": "bash on a file with write permission only (debian:stable-slim, chmod 200): a write-only descriptor writes at its own offset, so c lands over the XY the append added, and <> is refused because it opens the file to read.",
-      "expect": {
-        "exit": 0,
-        "stdout": "rc=0\n",
-        "stderr": ""
-      }
-    },
-    {
-      "id": "scriptopsjs_drop_read_is_refused",
-      "seq": 923289,
-      "targets": [
-        "ram-scripted"
-      ],
-      "session": "scriptedopsjs",
-      "command": "cat /scratch/drop/f",
-      "expect": {
-        "exit": 1,
-        "stdout": "",
-        "stderr": "cat: /scratch/drop/f: Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptopsjs_drop_read_write_open_is_refused",
-      "seq": 923290,
-      "targets": [
-        "ram-scripted"
-      ],
-      "session": "scriptedopsjs",
-      "command": "exec 4<>/scratch/drop/f; echo rc=$?",
-      "expect": {
-        "exit": 0,
-        "stdout": "rc=1\n",
-        "stderr": "/scratch/drop/f: Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptopsjs_drop_holds_what_the_descriptor_wrote",
-      "seq": 923291,
-      "targets": [
-        "ram-scripted"
-      ],
-      "command": "cat /scratch/drop/f",
-      "expect": {
-        "exit": 0,
-        "stdout": "a\nb\nc\nZ\n",
         "stderr": ""
       }
     },
@@ -560,50 +348,6 @@
       }
     },
     {
-      "id": "scriptopsjs_find_meets_a_refused_listing",
-      "seq": 923295,
-      "targets": [
-        "ram-scripted"
-      ],
-      "session": "scriptedopsjs",
-      "command": "mkdir -p /scratch/vault && echo SECRET > /scratch/vault/k && find /scratch/vault",
-      "note": "GNU on a mode 0300 dir (debian:stable-slim, uid 1000): the dir prints, its listing is refused, exit 1.",
-      "expect": {
-        "exit": 1,
-        "stdout": "/scratch/vault\n",
-        "stderr": "find: '/scratch/vault': Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptopsjs_du_meets_a_refused_listing",
-      "seq": 923296,
-      "targets": [
-        "ram-scripted"
-      ],
-      "session": "scriptedopsjs",
-      "command": "mkdir -p /scratch/vault && echo SECRET > /scratch/vault/k && du -a /scratch/vault",
-      "note": "GNU (debian:stable-slim, a mode 0300 dir as uid 1000) prints the error, then the dir row, and exits 1; its row is 4 blocks where mirage counts bytes.",
-      "expect": {
-        "exit": 1,
-        "stdout": "0\t/scratch/vault\n",
-        "stderr": "du: cannot read directory '/scratch/vault': Permission denied\n"
-      }
-    },
-    {
-      "id": "scriptopsjs_a_refused_listing_still_reads_a_named_file",
-      "seq": 923297,
-      "targets": [
-        "ram-scripted"
-      ],
-      "session": "scriptedopsjs",
-      "command": "mkdir -p /scratch/vault && echo SECRET > /scratch/vault/k && cat /scratch/vault/k",
-      "expect": {
-        "exit": 0,
-        "stdout": "SECRET\n",
-        "stderr": ""
-      }
-    },
-    {
       "id": "script_deny_reaches_input_substitution",
       "seq": 1346040,
       "targets": [
@@ -612,8 +356,8 @@
       "session": "scripted",
       "command": "echo \"$(< /repo/sealed/k)\"",
       "expect": {
-        "exit": 126,
-        "stdout": "",
+        "exit": 0,
+        "stdout": "\n",
         "stderr": "cat: Permission denied\n"
       }
     }

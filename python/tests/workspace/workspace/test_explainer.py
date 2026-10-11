@@ -71,7 +71,7 @@ class _Flag(Policy):
         self.ws = ws
 
     async def pre_vfs(self, ctx: VfsContext) -> Deny | None:
-        if ctx.op != "write" or ctx.path.virtual == "/data/flag":
+        if ctx.call.name != "write" or ctx.path.virtual == "/data/flag":
             return None
         flag = await self.ws.vfs.read("/data/flag")
         return Deny("closed") if flag == b"closed" else None
@@ -107,7 +107,7 @@ class _Busy(Policy):
             self.errors.append(exc.errno)
 
     async def pre_vfs(self, ctx: VfsContext) -> None:
-        if ctx.op == "write" and ctx.path.virtual == "/data/new":
+        if ctx.call.name == "write" and ctx.path.virtual == "/data/new":
             await self._busy()
         return None
 
@@ -161,10 +161,11 @@ async def test_a_line_s_policy_reads_as_the_running_line_does(ws):
     await ws.decisions.answer(asked.id, Outcome.ALLOW, Scope.SESSION)
     busy = _Busy(ws)
     ws.policies.add(busy)
-    # Inside a line an ask refuses like a deny, approved or not.
+    # Inside a line an ask refuses like a deny, approved or not, and a
+    # hook writes nothing there either.
     await Session(ws, "agent").shell("ls /data/new")
-    assert set(busy.errors) == {errno.EACCES}
+    assert set(busy.errors) == {errno.EACCES, errno.EROFS}
+    assert not await ws.vfs.exists("/data/stamp")
     busy.errors.clear()
-    await ws.vfs.unlink("/data/stamp")
     await Session(ws, "agent").explain.shell("ls /data/new")
     assert busy.errors == [errno.EACCES, errno.EROFS]

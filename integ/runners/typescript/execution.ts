@@ -345,20 +345,12 @@ function commandsOf(node: ExplainedNode): ExplainedNode[] {
 /**
  * Where the dry run and the run disagreed, empty when they agree.
  *
- * Three properties, checked against every policy case rather than only
+ * Two properties, checked against every policy case rather than only
  * the unit tests, because each is a promise the whole surface makes and
- * none of them is visible in a golden.
+ * neither is visible in a golden.
  *
  * A dry run must record no question, or a host fields requests for lines
  * nobody typed. A refusal it predicts must be the refusal that arrives.
- * And the harder direction: a refusal that arrives must have been
- * predicted, which is checked by looking for one of the document's own
- * rule reasons on an operand refusal's record, the one a rule naming the
- * line's operand writes (the streams keep bash's words, and a walk's
- * refusal below the operand is the command's). That last one is the
- * direction a prediction cannot check on its own, and it is where the
- * bugs were: reading a line without its redirect target answered ALLOW
- * for a line the run refused.
  *
  * The predicted message is looked for on either stream because the line's
  * own redirections still apply to the run and not to the prediction:
@@ -370,20 +362,12 @@ export function explainNotes(
   exitCode: number,
   out: string,
   err: string,
-  reasons: readonly string[],
-  refused: string,
 ): string[] {
   const notes: string[] = []
   if (recorded !== 0) {
     notes.push(`explain: recorded ${recorded} question(s), must record none`)
   }
-  const spoke = reasons.find((r) => r !== '' && refused.includes(r))
-  if (predicted === null) {
-    if (spoke !== undefined) {
-      notes.push(`explain: said the line runs, but a rule refused it with ${JSON.stringify(spoke)}`)
-    }
-    return notes
-  }
+  if (predicted === null) return notes
   const [code, text] = predicted
   if (code !== exitCode) notes.push(`explain: predicted exit ${code}, run exited ${exitCode}`)
   if (text !== '' && !err.includes(text) && !out.includes(text)) {
@@ -477,17 +461,7 @@ export async function runCase(
     checkOut,
     notes: [
       ...undecodable({ stdout: result.stdout, stderr: result.stderr }),
-      ...(checks
-        ? explainNotes(
-            predicted,
-            recorded,
-            result.exitCode,
-            out,
-            err,
-            reasons,
-            result.refusal?.scope === 'operand' ? result.refusal.reason : '',
-          )
-        : []),
+      ...(checks ? explainNotes(predicted, recorded, result.exitCode, out, err) : []),
     ],
   }
 }

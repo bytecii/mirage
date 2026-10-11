@@ -23,12 +23,12 @@ from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
 from mirage.context import strongest_under_session
 from mirage.io.types import IOResult
 from mirage.policy.decisions import Decisions
+from mirage.policy.match import head_allowed
 from mirage.policy.match.pattern import pattern_matches
 from mirage.types import MOUNT_MODE_RANK, MountMode
 from mirage.utils.hidden import path_visible
 from mirage.utils.path import gnu_dirname
 from mirage.workspace.files import Files
-from mirage.workspace.lookup import command_visible
 from mirage.workspace.mount.registry import DEV_PREFIX, MountEntry
 from mirage.workspace.session.session import SessionState
 from mirage.workspace.tools.file_version import (
@@ -172,15 +172,15 @@ async def missing(vfs: Files, path: str) -> bool:
 
 def runs(name: str, session: SessionState) -> bool:
     """Whether a session can run a command at all: its allow list
-    installs the name and no rule refuses the bare command whole.
+    allows the name and no rule refuses the bare command whole.
 
     Args:
         name (str): the command name.
         session (SessionState): the session.
     """
-    if not command_visible(name, session):
-        return False
     rules = session.commands
+    if not head_allowed(name, rules):
+        return False
     if rules is None:
         return True
     return not any(

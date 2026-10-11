@@ -22,11 +22,8 @@ function line(text: string): RouteContext {
     commands: [],
     command: text.split(' ')[0] ?? '',
     builtin: false,
-    cwd: '/',
-    env: {},
     sessionId: '',
     agentId: '',
-    mounts: [],
   }
 }
 

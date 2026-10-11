@@ -15,24 +15,31 @@
 import { BaseVFS } from '../../vfs/base.ts'
 import { callNames, declaredCalls } from '../../vfs/call.ts'
 import { WRITE_EFFECTS } from '../../vfs/constants.ts'
-import { type Declaration, Effect, Target } from '../../vfs/types.ts'
+import { Effect, Target, type VfsCall } from '../../vfs/types.ts'
 
 // The ops the namespace answers itself, declared the way `vfsCall` declares
 // a VFS function: a link and an extended attribute live on the path's node,
 // never in a backend.
-export const NAMESPACE_CALLS: ReadonlyMap<string, Declaration> = new Map([
-  ['symlink', { effect: Effect.CREATE, target: Target.LINK, creates: false, subtree: false }],
-  ['readlink', { effect: Effect.READ, target: Target.LINK, creates: false, subtree: false }],
-  ['getxattr', { effect: Effect.READ, target: Target.ANY, creates: false, subtree: false }],
-  ['listxattr', { effect: Effect.READ, target: Target.ANY, creates: false, subtree: false }],
-  ['setxattr', { effect: Effect.ATTR, target: Target.ANY, creates: false, subtree: false }],
-  ['removexattr', { effect: Effect.ATTR, target: Target.ANY, creates: false, subtree: false }],
-])
+export const NAMESPACE_CALLS: ReadonlyMap<string, VfsCall> = new Map(
+  (
+    [
+      ['symlink', Effect.CREATE, Target.LINK],
+      ['readlink', Effect.READ, Target.LINK],
+      ['getxattr', Effect.READ, Target.ANY],
+      ['listxattr', Effect.READ, Target.ANY],
+      ['setxattr', Effect.ATTR, Target.ANY],
+      ['removexattr', Effect.ATTR, Target.ANY],
+    ] as const
+  ).map(([name, effect, target]) => [
+    name,
+    { name, effect, target, creates: false, subtree: false },
+  ]),
+)
 
 // The built-in functions every mount answers, as `BaseVFS` declares them;
 // every op class below is read off these and the namespace's.
 const VFS_CALLS = declaredCalls(BaseVFS)
-const CALLS: ReadonlyMap<string, Declaration> = new Map([...VFS_CALLS, ...NAMESPACE_CALLS])
+export const CALLS: ReadonlyMap<string, VfsCall> = new Map([...VFS_CALLS, ...NAMESPACE_CALLS])
 
 // The content reads the warm file cache may answer: a cached whole-file
 // value can serve them (sliced for ranged reads) without touching the

@@ -107,13 +107,14 @@ describe('declarations', () => {
   it('has the built-ins declare what they do', () => {
     const expected = Object.entries(BUILT_INS).map(([name, [effect, target, creates, subtree]]) => [
       name,
-      { effect, target, creates, subtree },
+      { name, effect, target, creates, subtree },
     ])
     expect([...declaredCalls(BaseVFS)]).toEqual(expected)
   })
 
   it('defaults a mark to any entry and no create', () => {
     expect(declaredCalls(Shelf).get('shelve')).toEqual({
+      name: 'shelve',
       effect: Effect.WRITE,
       target: Target.ANY,
       creates: false,
@@ -215,7 +216,7 @@ describe('VFS functions', () => {
     const ws = new Workspace({ '/shelf': new Shelf() }, { mode: MountMode.WRITE })
     ws.policies.add({
       preVfs(ctx: VfsContext): Action | null {
-        seen.push([ctx.op, ctx.write, ctx.path.virtual])
+        seen.push([ctx.call.name, ctx.write, ctx.path.virtual])
         return null
       },
     })

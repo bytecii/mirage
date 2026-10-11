@@ -29,7 +29,7 @@ from mirage.vfs.base import BaseVFS
 class BinViewVFS(BaseVFS):
     """Read-only view VFS backing the /usr/bin mount.
 
-    Lists one executable file per program the session can run, rendered
+    Lists one executable file per program, rendered
     from the workspace's command lookup on every call; holds no storage
     of its own.
 

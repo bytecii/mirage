@@ -15,6 +15,7 @@
 from mirage.context import hidden_refusal, session_visibility
 from mirage.policy.types import Hide, VfsContext
 from mirage.utils.hidden import path_visible
+from mirage.vfs.types import Effect
 
 
 class HiddenPathsPolicy:
@@ -33,4 +34,5 @@ class HiddenPathsPolicy:
         vis = session_visibility()
         if path_visible(vis, ctx.path.virtual):
             return None
-        return Hide(hidden_refusal(vis, ctx.path.virtual, ctx.create))
+        creates = ctx.call.creates or ctx.call.effect is Effect.CREATE
+        return Hide(hidden_refusal(vis, ctx.path.virtual, creates))

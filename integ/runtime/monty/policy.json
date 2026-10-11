@@ -14,15 +14,23 @@
               "in.txt": "hello"
             }
           }
-        },
-        "policies": [
-          {
-            "name": "lock_writes",
-            "prefix": "/data/blocked"
-          }
-        ]
+        }
       },
       "steps": [
+        {
+          "profile": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "blocked",
+                  "paths": [
+                    "/data/blocked"
+                  ]
+                }
+              ]
+            }
+          }
+        },
         {
           "command": "cd /data && python3 -c \"print(open('in.txt').read())\"",
           "expect": {
@@ -38,10 +46,10 @@
           }
         },
         {
-          "command": "python3 -c \"from pathlib import Path; print(Path('blocked').exists())\"",
+          "command": "ls /data",
           "expect": {
             "exit": 0,
-            "stdout": "False\n"
+            "stdout": "in.txt\n"
           }
         }
       ]

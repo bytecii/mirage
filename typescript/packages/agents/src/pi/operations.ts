@@ -153,9 +153,8 @@ export function mirageOperations(
       if (result.stderr.length > 0) {
         options.onData(Buffer.from(result.stderr))
       }
-      // The record, described once, unless what was just streamed
-      // already says why (an operand-scoped refusal's own line).
-      const why = refusalLine(decode(result.stdout) + decode(result.stderr), result.refusal)
+      // The record, described once, after what was just streamed.
+      const why = refusalLine(result.refusal)
       if (why.length > 0) options.onData(Buffer.from(why))
       return { exitCode: result.exitCode }
     },

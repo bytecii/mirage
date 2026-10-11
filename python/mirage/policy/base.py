@@ -15,8 +15,10 @@
 from mirage.policy.types import (
     Action,
     CommandContext,
+    CommandResultContext,
     ExecuteResultContext,
     SessionContext,
+    SessionResultContext,
     VfsContext,
     VfsResultContext,
 )
@@ -31,59 +33,92 @@ class Policy:
     that raises fails closed (the command or op is refused, naming the
     policy). Hooks left un-overridden are detected at the seam and
     never called.
+
+    The hooks come in pairs, one per surface: the line
+    (``pre_execute`` / ``post_execute``), each command or CLI
+    (``pre_command`` / ``post_command``), each ``ws.vfs`` /
+    ``session.vfs`` call (``pre_vfs`` / ``post_vfs``) and each session
+    write (``pre_session`` / ``post_session``). Every hook may answer
+    Deny or Ask; a Limit only where a result comes back to cap
+    (``post_vfs``, ``post_execute``), a Route only at ``pre_execute``.
+    A post hook sees what its pre hook saw, plus what came back, and
+    never undoes a side effect: it holds back what came back. Hides,
+    mount modes and path rules are not hooks: they apply to every
+    caller at the dispatcher. Every hook's context also carries the
+    session (``session``), its namespace (``ns``) and its files
+    (``vfs``), all read only: a hook reads, and a write it makes is
+    refused.
     """
 
+    async def pre_execute(self, ctx: RouteContext) -> Action | None:
+        """Place, hold or refuse one typed line before any of it runs.
+
+        Fires once per line, after the profile's rules clear it (a line
+        they refuse is never placed) and before it runs; a nested line
+        keeps the placement of the line that ran it. A Route names the
+        runtime that serves the line, a Deny refuses it whole (exit 126,
+        ``<command>: Permission denied``) and an Ask holds it until the
+        host approves. The workspace's ``route_policy`` answers here as a
+        built-in, ahead of the policies registered in code.
+
+        Args:
+            ctx (RouteContext): the line and its commands.
+        """
+        return None
+
     async def pre_command(self, ctx: CommandContext) -> Action | None:
-        """Admit or refuse one classified command.
+        """Admit, hold or refuse one command or CLI, once, as it runs.
+
+        A Deny refuses it (``<command>: Permission denied``, exit 126, or
+        the path's own error for a Deny about a path); an Ask holds it
+        until the host approves. Its own file I/O meets the hides, the
+        mount mode and the profile's path rules, never ``pre_vfs``.
 
         Args:
             ctx (CommandContext): the classified command.
         """
         return None
 
-    async def pre_execute(self, ctx: RouteContext) -> Action | None:
-        """Place or refuse one typed line before any of it runs.
+    async def post_command(self, ctx: CommandResultContext) -> Action | None:
+        """Judge one command or CLI once it ran and its output drained.
 
-        Fires once per line, after the line clears admission (a line a
-        rule refuses is never placed) and before it runs, with the
-        payload a ``route_policy`` reads; a nested line keeps the
-        placement of the line that ran it. A Route names the runtime
-        that serves the line, and a Deny refuses it whole, exit 126 and
-        ``<command>: Permission denied``. The workspace's
-        ``route_policy`` answers here as a built-in, ahead of the
-        policies registered in code.
+        A Deny, or an Ask the host has not approved, sets its exit code
+        to 126 and records the refusal, so ``&&`` and ``pipefail`` stop
+        there; output already sent stays sent.
 
         Args:
-            ctx (RouteContext): the line, its commands, cwd and session.
+            ctx (CommandResultContext): what ``pre_command`` saw, plus the
+                exit code, stderr and op records.
         """
         return None
 
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
-        """Admit or refuse one VFS op, at the dispatcher and on the
-        command tier's backend I/O.
+        """Admit, hold or refuse one ``ws.vfs`` / ``session.vfs`` call.
 
-        The entry points are the dispatcher and ``ws.vfs``, which is also
-        how FUSE, the runtime guests, ``find -delete``, the warm cache
-        and a mount command's content reads and mutations arrive; the
-        command's readdir admits through the same hook
-        (``with_command_guards``). stat/exists stay unguarded as
-        presence facts (mode-000 shape: a denied entry lists and stats,
-        the read of it fails). While a coded policy is installed the
-        dispatcher declines a one-call tree op (rm_r, copy, dir_copy,
-        find, du, search), so the command walks and each entry's op is
-        admitted on its own.
-
-        The hot path: fires per op (thousands under one recursive
-        command), so keep the hook cheap; expensive decisions belong at
-        pre_command or precomputed into policy state.
+        Fires at the dispatcher before any backend or cache I/O, for the
+        host's and the agent's file calls (and FUSE): never for a
+        running line's own I/O, which ``pre_command`` judged. A Deny is
+        EACCES; an Ask holds the call until the host approves.
 
         Args:
             ctx (VfsContext): the op about to run.
         """
         return None
 
+    async def post_vfs(self, ctx: VfsResultContext) -> Action | None:
+        """Judge one completed ``ws.vfs`` / ``session.vfs`` call.
+
+        A Deny, or an Ask the host has not approved, drops the result
+        with EACCES (the call itself is not undone); a Limit caps a
+        byte-producing one.
+
+        Args:
+            ctx (VfsResultContext): what ``pre_vfs`` saw, plus the result.
+        """
+        return None
+
     async def pre_session(self, ctx: SessionContext) -> Action | None:
-        """Admit or refuse one session-state mutation (an env write).
+        """Admit, hold or refuse one session write (set, unset, mark).
 
         Fires on the session plane, so an ``export`` from the shell, a
         ``SessionView.set`` from a command, and any later writer clear
@@ -95,29 +130,28 @@ class Policy:
         """
         return None
 
-    async def post_vfs(self, ctx: VfsResultContext) -> Action | None:
-        """Observe one completed VFS op; a Deny suppresses its result,
-        a Limit caps a byte-producing one.
+    async def post_session(self, ctx: SessionResultContext) -> Action | None:
+        """Judge one session write once it landed.
 
-        Narrower than pre_vfs: the dispatcher and facade entry points only.
-        The backend I/O inside a mount command's handler and each
-        ``find -delete`` deletion admit through pre_vfs and report no
-        per-op result here; the command tier's result plane is
-        post_execute, which bounds the finished line's output.
+        A Deny, or an Ask the host has not approved, puts the old value
+        back and refuses the write.
 
         Args:
-            ctx (VfsResultContext): the op and its raw result.
+            ctx (SessionResultContext): what ``pre_session`` saw, plus the
+                value it replaced.
         """
         return None
 
     async def post_execute(self, ctx: ExecuteResultContext) -> Action | None:
-        """Bound one finished execute() line's output.
+        """Judge one finished line's output.
 
-        A Limit returned here merges with every other opining policy's
-        (tightest per field) and caps the line's stdout at the
+        A Deny, or an Ask the host has not approved, drops the output
+        (exit 126, a refusal record); a Limit merges with every other
+        opining policy's (tightest per field) and caps it at the
         workspace boundary.
 
         Args:
-            ctx (ExecuteResultContext): the finished line's facts.
+            ctx (ExecuteResultContext): what ``pre_execute`` saw, plus
+                the exit code, the output and each command's result.
         """
         return None

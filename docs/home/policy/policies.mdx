@@ -1,74 +1,170 @@
 ---
 title: Policies
-description: Write a policy. The hooks, what each can answer, and what the agent gets back.
+description: Mirage provides a powerful, scriptable policy layer that controls every command, CLI and POSIX call in the virtual terminal, and can even choose the underlying runtime.
 icon: gavel
 ---
 
-A policy overrides only the hooks it needs. Each hook returns an answer,
-or `None` for no opinion. Pass policies to the workspace, or add and
-remove them later:
+A policy is a Python or TypeScript class that controls what the agent
+does. Before an action runs, and again once it returns, the policy gets
+the full context: the line, each command with its expanded arguments, the
+paths it touches, the session, and what came back. It then lets the
+action through (`None`), refuses it, holds it until a host approves, caps
+its output, or chooses the underlying runtime.
 
 <CodeGroup>
 
 ```python Python
-ws = Workspace(mounts, policies=[NoForcePush()])
-ws.policies.add(reports)
-ws.policies.remove(reports)
-```
-
-```typescript TypeScript
-const ws = new Workspace(mounts, { policies: [noForcePush] })
-ws.policies.add(reports)
-ws.policies.remove(reports)
-```
-
-</CodeGroup>
-
-Hooks come in two groups. TypeScript spells them in camelCase
-(`preCommand`, `ctx.sessionId`).
-
-## Shell hooks
-
-These fire when an agent runs a line: `ws.shell`, `session.shell`, the
-`shell`, `ls` and `grep` tools, `mirage shell`, HTTP `/shell`, RPC
-`shell` and SSH.
-
-| Hook | Fires | Reads | May answer | [Explain](/home/policy/explain#what-it-asks) asks it |
-| --- | --- | --- | --- | --- |
-| `pre_command` | before each command | `command`, `argv`, `paths`, `operands`, `program`, `cwd`, `session_id` | Deny, Ask | yes |
-| `pre_execute` | once per line, before it runs | `line`, `commands`, `cwd`, `env`, `session_id` | Deny, Route | yes |
-| `post_execute` | after each line | `producer`, `exit_code` | Limit | no |
-| `pre_session` | before each env write (`export`, `X=1`) | `verb`, `key`, `value`, `session_id` | Deny | no |
-
-Every command on a line passes `pre_command` before any of them runs, so
-a line refused whole never runs halfway.
-
-### pre_command
-
-<CodeGroup>
-
-```python Python
+from mirage import Workspace
 from mirage.policy import CommandContext, Deny, Policy
 
 class NoForcePush(Policy):
     async def pre_command(self, ctx: CommandContext) -> Deny | None:
-        if ctx.command == "git" and ctx.argv[:1] == ("push",) and "--force" in ctx.argv:
+        texts = [w.text for w in ctx.words]
+        if texts[:2] == ["git", "push"] and "--force" in texts:
             return Deny("force pushes go through an operator")
         return None
+
+no_force_push = NoForcePush()
+ws = Workspace(mounts, policies=[no_force_push])
+
+r = await ws.shell("git push --force origin main")
+# b'git: Permission denied\n' 126
+print(r.stderr, r.exit_code)
+
+# ws.policies.add(no_force_push) puts it back
+ws.policies.remove(no_force_push)
 ```
 
 ```typescript TypeScript
+import { Workspace, type Policy } from '@struktoai/mirage-node'
+
 const noForcePush: Policy = {
   preCommand(ctx) {
-    const force = ctx.command === 'git' && ctx.argv[0] === 'push' && ctx.argv.includes('--force')
+    const texts = (ctx.words ?? []).map((w) => w.text)
+    const force = texts[0] === 'git' && texts[1] === 'push' && texts.includes('--force')
     return force ? { kind: 'deny', reason: 'force pushes go through an operator' } : null
   },
 }
+
+const ws = new Workspace(mounts, { policies: [noForcePush] })
+
+const r = await ws.shell('git push --force origin main')
+// git: Permission denied 126
+console.log(r.stderrText, r.exitCode)
+
+// ws.policies.add(noForcePush) puts it back
+ws.policies.remove(noForcePush)
 ```
 
 </CodeGroup>
 
-`git push --force origin main` gets `git: Permission denied`, exit 126.
+## Lifecycle
+
+A policy implements any of eight methods, in pairs. The `pre_` one runs
+before an action, the `post_` one after it, with the same context plus
+what came back. A `post_` method never undoes what ran; it holds back
+what came back.
+
+```mermaid
+flowchart LR
+    subgraph line["A line"]
+        direction LR
+        PE["pre_execute"] --> PC["pre_command"] --> Run["command runs"] --> PoC["post_command"] --> PoE["post_execute"]
+        PoC -- "next command" --> PC
+    end
+    subgraph call["A VFS call"]
+        direction LR
+        PV["pre_vfs"] --> Op["call runs"] --> PoV["post_vfs"]
+    end
+    subgraph write["A variable write"]
+        direction LR
+        PS["pre_session"] --> Land["write lands"] --> PoS["post_session"]
+    end
+```
+
+| Python | TypeScript | Runs | May answer |
+| --- | --- | --- | --- |
+| `pre_execute` | `preExecute` | once per line, before any of it runs | Deny, Ask, Route |
+| `pre_command` | `preCommand` | before each command or CLI, once the line is parsed and expanded | Deny, Ask |
+| `post_command` | `postCommand` | after each command, once its output drained | Deny, Ask |
+| `post_execute` | `postExecute` | once per line, after it ends | Deny, Ask, Limit |
+| `pre_vfs` | `preVfs` | before each VFS call, not a command's own reads and writes | Deny, Ask |
+| `post_vfs` | `postVfs` | after each VFS call | Deny, Ask, Limit |
+| `pre_session` | `preSession` | before each variable write | Deny, Ask |
+| `post_session` | `postSession` | after the write lands | Deny, Ask |
+
+| What | Example | Covered by |
+| --- | --- | --- |
+| A line | `cat /data/a.txt && rm /data/b` | `pre_execute`, `post_execute` |
+| A command or CLI | `rm /data/b` | `pre_command`, `post_command` |
+| A VFS call | `session.vfs.read("/data/a.txt")` | `pre_vfs`, `post_vfs` |
+| A variable write | `export X=1`, `X=1`, `unset X` | `pre_session`, `post_session` |
+
+| Entry point | Sends |
+| --- | --- |
+| `ws.shell`, `session.shell` | a line, with its commands and variable writes |
+| the `shell`, `ls` and `grep` tools | a line, with its commands and variable writes |
+| `mirage shell`, HTTP `/shell`, RPC `shell`, SSH | a line, with its commands and variable writes |
+| `session.vfs` | a VFS call |
+| the `read`, `write`, `edit` and `glob` tools | a VFS call |
+| `mirage vfs`, HTTP `/vfs/<call>`, RPC `vfs/<call>` | a VFS call |
+| FUSE, FSKit, SFTP | a VFS call |
+
+## Context
+
+Each method gets one argument, `ctx`. TypeScript spells its fields in
+camelCase (`ctx.sessionId`, `ctx.exitCode`).
+
+| Method | `ctx` holds |
+| --- | --- |
+| `pre_execute` | `line`, `commands`, `agent_id` |
+| `post_execute` | the same, plus `exit_code`, `output`, `results`, `producer` |
+| `pre_command` | `command`, `words`, `paths`, `cwd` |
+| `post_command` | the same, plus `exit_code`, `stderr`, `records` |
+| `pre_vfs` | `call`, `path`, `write` |
+| `post_vfs` | the same, plus `result` |
+| `pre_session` | `verb`, `key`, `value` |
+| `post_session` | the same, plus `old` |
+
+`words` is the command line word by word, after expansion. Each word has
+a `text`, a `kind` (`name`, `subcommand`, `option`, `value`, `operand` or
+`redirect`), the `option` a value belongs to, and the `path` it names.
+For `tar -cf a.tar -C /mnt /data`:
+
+| `text` | `kind` | `option` | `path` |
+| --- | --- | --- | --- |
+| `tar` | `name` | | |
+| `-cf` | `option` | | |
+| `a.tar` | `value` | `-cf` | `/a.tar` |
+| `-C` | `option` | | |
+| `/mnt` | `value` | `-C` | `/mnt` |
+| `/data` | `operand` | | `/data` |
+
+`paths` is every path the command reaches, flat: its words' paths, the
+targets of links it names, and the working directory a bare `ls` reads.
+
+- `results` is the line's execution tree: a node per command with its
+  exit code, stderr and records.
+- `records` are the calls a command made, one dict each: `op`, `path`,
+  `source`, `bytes` and timing.
+- `call` is the function called: its `name`, `effect` (read, write,
+  metadata), `target`, and whether it `creates` or reaches the `subtree`.
+  Every function a VFS marks reaches `pre_vfs` and `post_vfs`: `find`,
+  `du_size`, `search` and `copy` too.
+
+Every `ctx` also carries:
+
+| Field | What it is |
+| --- | --- |
+| `session_id` | the session the action runs as |
+| `session` | the session, read only: `get(name)`, `snapshot()`, `cwd()`, `is_readonly(name)`, `profile()` |
+| `ns` | the session's namespace, as commands get it: mounts, links, the stat overlay, hides applied |
+| `vfs` | the session's files, read only: `read`, `stat`, `readdir`, `exists`; unset on a TypeScript runtime that does not isolate async tasks (the browser fallback) |
+
+A method only reads. A write it makes through Mirage is refused (`EROFS`
+for a file, `EACCES` for a variable), and its reads are not judged again.
+
+## Examples
 
 ### pre_execute
 
@@ -97,7 +193,7 @@ const jobsInDocker: Policy = {
 </CodeGroup>
 
 `python3 /jobs/train.py` runs on the workspace's `docker` runtime. See
-[Route policy](/home/route-policy) for runtimes.
+[Route policy](/home/policy/route-policy) for runtimes.
 
 ### post_execute
 
@@ -123,51 +219,42 @@ const firstHundredLines: Policy = {
 </CodeGroup>
 
 A longer output stops at 100 lines, and stderr says
-`output truncated at limit (100 lines); ...`.
+`output truncated at limit (100 lines); ...`. A Deny here drops the
+output: exit 126 and a refusal record.
 
-### pre_session
+### pre_command
+
+`NoForcePush`, at the top of this page.
+
+### post_command
 
 <CodeGroup>
 
 ```python Python
-from mirage.policy import Deny, Policy, SessionContext
+from mirage.policy import CommandResultContext, Deny, Policy
 
-class NoCredentials(Policy):
-    async def pre_session(self, ctx: SessionContext) -> Deny | None:
-        if ctx.key.startswith("AWS_"):
-            return Deny("credentials are set by the operator")
+class NoSecretsShown(Policy):
+    async def post_command(self, ctx: CommandResultContext) -> Deny | None:
+        if any(r.get("path", "").startswith("/vault/") for r in ctx.records):
+            return Deny("vault reads need an operator")
         return None
 ```
 
 ```typescript TypeScript
-const noCredentials: Policy = {
-  preSession(ctx) {
-    return ctx.key.startsWith('AWS_')
-      ? { kind: 'deny', reason: 'credentials are set by the operator' }
-      : null
+const noSecretsShown: Policy = {
+  postCommand(ctx) {
+    const vault = ctx.records.some((r) => typeof r.path === 'string' && r.path.startsWith('/vault/'))
+    return vault ? { kind: 'deny', reason: 'vault reads need an operator' } : null
   },
 }
 ```
 
 </CodeGroup>
 
-`export AWS_SECRET=x` gets `AWS_SECRET: permission denied`, exit 1.
-
-## VFS hooks
-
-These fire on every VFS call: `session.vfs`, the `read`, `write`, `edit`
-and `glob` tools, `mirage vfs`, HTTP `/vfs/<call>`, RPC `vfs/<call>`,
-FUSE, FSKit and SFTP. `pre_vfs` also fires for every file a shell command
-reads or writes.
-
-| Hook | Fires | Reads | May answer | [Explain](/home/policy/explain#what-it-asks) asks it |
-| --- | --- | --- | --- | --- |
-| `pre_vfs` | before each VFS call, and each file a command touches | `op`, `path`, `write`, `create`, `session_id` | Deny, Ask | for a VFS call, not inside a line |
-| `post_vfs` | after each VFS call | `op`, `path`, `result` | Deny, Limit | no |
-
-`pre_vfs` fires thousands of times under one `grep -r`, so keep it cheap.
-An Ask from it reaches a host only from `session.vfs` or a file tool;
-inside a line it refuses.
+`cat /vault/k && echo next` exits 126 with `cat: Permission denied`, and
+`echo` does not run. Output already sent stays sent. A runtime that takes
+a line whole runs its commands itself, so no result comes back to judge:
+while a `post_command` method is installed, such a line is refused.
 
 ### pre_vfs
 
@@ -195,16 +282,8 @@ const readOnlyReports: Policy = {
 
 </CodeGroup>
 
-Every command gets its own error, exit 1:
-
-```text
-$ echo x > /reports/q3.md
-/reports/q3.md: Permission denied
-$ cp notes.md /reports/
-cp: cannot create regular file '/reports/notes.md': Permission denied
-```
-
-`session.vfs.write("/reports/q3.md", ...)` raises `EACCES`.
+`session.vfs.write("/reports/q3.md", ...)` raises `EACCES`. A
+command's own write (`echo x > /reports/q3.md`) does not reach `pre_vfs`.
 
 ### post_vfs
 
@@ -216,7 +295,7 @@ from mirage.policy import Policy, VfsResultContext
 
 class SmallReads(Policy):
     async def post_vfs(self, ctx: VfsResultContext) -> Limit | None:
-        if ctx.op == "read":
+        if ctx.call.name == "read":
             return Limit(max_bytes=1_000_000)
         return None
 ```
@@ -224,65 +303,93 @@ class SmallReads(Policy):
 ```typescript TypeScript
 const smallReads: Policy = {
   postVfs(ctx) {
-    return ctx.op === 'read' ? new Limit({ maxBytes: 1_000_000 }) : null
+    return ctx.call.name === 'read' ? new Limit({ maxBytes: 1_000_000 }) : null
   },
 }
 ```
 
 </CodeGroup>
 
-`session.vfs.read` returns at most the first 1 MB. `post_vfs` does not
-see the reads inside a command, so `cat` is not cut; bound a line with
-`post_execute`.
+`session.vfs.read` returns at most the first 1 MB. `cat` is not cut;
+bound a line with `post_execute`.
+
+### pre_session
+
+<CodeGroup>
+
+```python Python
+from mirage.policy import Deny, Policy, SessionContext
+
+class NoCredentials(Policy):
+    async def pre_session(self, ctx: SessionContext) -> Deny | None:
+        if ctx.key.startswith("AWS_"):
+            return Deny("credentials are set by the operator")
+        return None
+```
+
+```typescript TypeScript
+const noCredentials: Policy = {
+  preSession(ctx) {
+    return ctx.key.startsWith('AWS_')
+      ? { kind: 'deny', reason: 'credentials are set by the operator' }
+      : null
+  },
+}
+```
+
+</CodeGroup>
+
+`export AWS_SECRET=x` gets `AWS_SECRET: permission denied`, exit 1. A
+Deny at `post_session` gives the same answer and puts the old value back.
 
 ## Answers
 
-| Return | The agent gets |
+| Return | Effect |
 | --- | --- |
-| `None` | nothing changes |
-| `Deny(reason)` | `rm: Permission denied`, exit 126; from a VFS hook, the command's own error or `EACCES` |
-| `Deny(reason, DenyScope.OPERAND, path=p)` | the command's own error for `p`: `cat: /data/k: Permission denied`, exit 1; the rest of the line still runs |
-| `Ask(reason)` | `cp: Permission denied`, exit 126, until a host answers; see [Asks](/home/permissions#asks) |
-| `Route(runtime)` | the line runs on that runtime |
-| `Limit(max_lines=, max_bytes=)` | the output cut at the bound, with a notice on stderr; with `on_exceed=OnExceed.ERROR`, no output and exit 1 |
+| `None` | no opinion |
+| `Deny(reason)` | refuses the action |
+| `Deny(reason, path=p)` | fails the command with `p`'s own error; the rest of the line still runs |
+| `Ask(reason)` | holds the action until a host approves it; see [Asks](#asks) |
+| `Route(runtime)` | chooses the underlying runtime |
+| `Limit(max_lines=, max_bytes=)` | cuts the output at the bound, with a notice on stderr; with `on_exceed` set to error, no output and exit 1 |
 
 TypeScript returns `{ kind: 'deny', reason }`, with
-`scope: 'operand', path` for an operand, `{ kind: 'ask', reason }`,
-`{ kind: 'route', runtime }` and `new Limit({ maxLines })`. A hook that
-raises refuses too.
+`path` for a path, `{ kind: 'ask', reason }`,
+`{ kind: 'route', runtime }` and `new Limit({ maxLines })`. A method that
+raises refuses too. What the agent reads for each is on
+[Explain](/home/policy/explain#what-the-agent-reads).
 
-The reason never goes to stderr. It is on the result's `refusal`:
+## Asks
 
-```python
-r = await ws.shell("git push --force origin main")
-r.refusal
-# Refusal(kind='deny', reason='force pushes go through an operator', policy='NoForcePush', scope='command', ask_id=None)
-```
+An Ask refuses the action as a Deny does and records a question in the
+workspace's ledger. Once a host allows it, the agent's retry runs:
 
-The [agent tools](/python/access/in-app#session-tools) add one line to
-their text: `policy denied: <reason>`, or
-`requires approval: <reason> (ask <id>)`.
+- `allow`, scope `once` (default): the retry runs and spends it.
+- `allow`, scope `session`: everything the ask covers, for the rest of
+  that session.
+- `deny`: the retry is refused; running it again asks again.
 
-## When policies disagree
+A host answers inline with `on_ask` (`onAsk`), or later through
+[`ws.decisions`](/python/access/in-app#ws-decisions),
+[`mirage workspace allow`](/home/access/cli#asks) or
+[`POST /asks/{ask_id}`](/home/access/http#asks). An Ask from a `post_`
+method comes after the action ran, so nothing is undone: what came back is
+held, and the approved retry runs it again.
+
+## When answers disagree
 
 - Any Deny beats any Ask, so answering an ask never reopens a refusal.
-- The first Deny speaks. Built-ins come first, then the session's
-  profile, then `policies=`, then `add()`.
+- The first Deny speaks. The built-ins come first, then the session's
+  profile, then its script, then `policies=`, then `add()`.
+- Every Ask is put to the host, and the action runs once all are
+  approved.
 - Limits merge to the tightest value of each field.
 - Two Routes to different runtimes refuse the line.
 
-## Which entry point enforces what
-
-A line fires every hook; a VFS call fires only the VFS hooks. So a
-[profile](/home/permissions) rule that names a command holds only on a
-line, and a rule that names only paths holds on both.
-`session.tools.names()` lists only the tools the session's profile leaves
-it, and MCP, RPC and the agent adapters offer exactly those.
-
-## Examples
+## Examples on GitHub
 
 [policy.py](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/policy.py)
 and
 [policy.ts](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/policy.ts)
-run a coded policy beside a profile's `policy:` script. Their output is
-pinned in CI.
+run a coded policy beside a profile's script. Their output is pinned in
+CI.

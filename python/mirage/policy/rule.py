@@ -19,7 +19,6 @@ from mirage.policy.types import (
     CommandContext,
     CommandRule,
     Deny,
-    DenyScope,
     VfsContext,
 )
 from mirage.utils.hidden import classify_paths
@@ -50,7 +49,7 @@ class RulePolicy(Policy):
             return None
         if hit.operand is None:
             return Deny(self.rule.reason)
-        return Deny(self.rule.reason, DenyScope.OPERAND, path=hit.operand)
+        return Deny(self.rule.reason, path=hit.operand)
 
     async def pre_vfs(self, ctx: VfsContext) -> Action | None:
         # The op-layer twin: pure path protection (no command scope)

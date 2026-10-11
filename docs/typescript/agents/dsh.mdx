@@ -172,7 +172,7 @@ rm: Permission denied
 
 ```ts
 result.refusal
-// { kind: 'deny', reason: 'no recursive deletes', policy: 'PermissionsPolicy', scope: 'command', askId: null }
+// { kind: 'deny', reason: 'no recursive deletes', policy: 'PermissionsPolicy', askId: null }
 ```
 
 An **ask** is put to the human through dsh's own approval channel, `ctx.approval` — the same prompt dsh already shows for its escalations, so nothing new appears in the UI. The bridge maps dsh's answer onto Mirage's ledger:
@@ -217,7 +217,7 @@ rm: Permission denied
 
 ```ts
 result.refusal
-// { kind: 'pending', reason: 'deletes are reviewed', policy: '', scope: 'command', askId: '0efc4a8f6280' }
+// { kind: 'pending', reason: 'deletes are reviewed', policy: '', askId: '0efc4a8f6280' }
 ```
 
 This is deliberate: the document says `ask`, and silently rewriting that as `deny` would change what the operator wrote. The question is real and answerable, through `ctx.mirage.decisions`:

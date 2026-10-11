@@ -14,12 +14,12 @@
 
 from mirage.commands.spec import SPECS
 from mirage.policy.errors import PolicyError
-from mirage.policy.match import head_visible, split_pattern
+from mirage.policy.match import head_allowed, split_pattern
 from mirage.policy.types import AdmissionRules, CommandRule
 
 UNINSTALLED = (
     "{verb} rule names {command}, which the allow list never "
-    "installs, so the rule can never fire"
+    "allows, so the rule can never fire"
 )
 
 SHADOWED = (
@@ -95,11 +95,11 @@ def _shadowed(ask: CommandRule, deny: CommandRule) -> bool:
 
 
 def _uninstalled(rules: AdmissionRules) -> str | None:
-    """The first rule naming a builtin the allow list never installs.
+    """The first rule naming a builtin the allow list never allows.
 
-    A rule on a command the session cannot see reads as a guard and is
-    not one: the command was never installed, so nothing reaches the
-    rule and the operator is protected only in the document. Only a
+    A rule on a command the allow list leaves out reads as a guard and
+    is not one: the allow list refuses the command first, so nothing
+    reaches the rule and the operator is protected only in the document. Only a
     name this repo ships a spec for is judged, because any other word
     may be a CLI the host registers after the workspace is built, which
     ``unknown_cli_verbs`` checks at ``create_session`` instead.
@@ -115,7 +115,7 @@ def _uninstalled(rules: AdmissionRules) -> str | None:
                 head = _head(pattern)
                 if not head or head not in SPECS:
                     continue
-                if not head_visible(head, rules):
+                if not head_allowed(head, rules):
                     return UNINSTALLED.format(verb=verb, command=head)
     return None
 

@@ -17,7 +17,6 @@ from mirage.commands.spec.types import CommandSpec, UsageStyle
 from mirage.context import effective_path_mode
 from mirage.types import MountMode
 from mirage.utils.hidden import is_glob, path_visible
-from mirage.workspace.lookup.lookup import command_visible, verb_visible
 from mirage.workspace.mount.registry import MountRegistry
 from mirage.workspace.session.session import SessionState
 
@@ -85,30 +84,21 @@ def vfs_md(registry: MountRegistry, session: SessionState) -> str:
                         entry.path, mount.prefix, mount.mode
                     )
                     parts.append(f"- `{entry.path}`: {MODE_LINES[effective]}.")
-    if command_visible("man", session):
-        parts.append(
-            "Use `man` to discover visible commands and registered CLIs, "
-            "and `man <cmd>` or `<cmd> --help` for usage."
-        )
+    parts.append(
+        "Use `man` to discover commands and registered CLIs, "
+        "and `man <cmd>` or `<cmd> --help` for usage."
+    )
     return "\n\n".join(parts) + "\n"
 
 
 def cli_pages(
     head: str,
     node: CommandSpec,
-    session: SessionState,
     style: UsageStyle,
     path: tuple[str, ...] = (),
 ) -> list[str]:
-    if not verb_visible(head, path, session):
-        return []
     name = " ".join((head, *path))
-    help_text = node_help(
-        name,
-        node,
-        style,
-        visible=lambda child: verb_visible(head, (*path, child), session),
-    ).rstrip()
+    help_text = node_help(name, node, style).rstrip()
     fence = "`" * max(
         3,
         max(
@@ -119,18 +109,17 @@ def cli_pages(
     )
     pages = [f"## `{name}`\n\n{fence}text\n{help_text}\n{fence}"]
     for child in node.subcommands:
-        pages.extend(
-            cli_pages(head, child, session, style, (*path, child.name))
-        )
+        pages.extend(cli_pages(head, child, style, (*path, child.name)))
     return pages
 
 
 def skill_md(registry: MountRegistry, session: SessionState) -> str:
-    """Render one self-contained skill from visible registered CLI specs.
+    """Render one self-contained skill from the registered CLI specs.
 
     Args:
         registry (MountRegistry): the workspace's live CLI registry.
-        session (SessionState): the session whose CLI tree is visible.
+        session (SessionState): the session the skill is for; its
+            profile's rules are checked when a command runs, not here.
     """
     parts = [
         "---\nname: mirage\ndescription: Work with data and "
@@ -142,19 +131,13 @@ def skill_md(registry: MountRegistry, session: SessionState) -> str:
         "permissions are checked on every invocation.",
     ]
     for head, install in sorted(registry.clis.items().items()):
-        if command_visible(head, session):
-            pages = cli_pages(
-                head,
-                install.cli.spec,
-                session,
-                install.cli.spec.usage_style,
+        pages = cli_pages(head, install.cli.spec, install.cli.spec.usage_style)
+        parts.extend(pages)
+        if pages and owns_argv(install.cli):
+            parts.append(
+                "This program parses its own arguments; "
+                "only its registered description is available here."
             )
-            parts.extend(pages)
-            if pages and owns_argv(install.cli):
-                parts.append(
-                    "This program parses its own arguments; "
-                    "only its registered description is available here."
-                )
     if len(parts) == 3:
-        parts.append("No registered CLIs are visible in this session.")
+        parts.append("No registered CLIs.")
     return "\n\n".join(parts) + "\n"

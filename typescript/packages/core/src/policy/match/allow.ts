@@ -16,29 +16,15 @@ import type { CommandContext, AdmissionRules } from '../types.ts'
 import { patternMatches, patternReaches } from './pattern.ts'
 
 /**
- * Whether a session can see one node of a program tree.
- *
- * A profile without an allow list hides nothing; a profile with one hides every
- * node no pattern of it reaches. Only a CLI's verbs can be narrowed this
- * way, and only because the walk canonicalizes them (an alias resolved,
- * the global options before the verb dropped) before any pattern is read.
- * A flag has no such normal form, so a pattern never means to speak about
- * one.
+ * Whether a session's allow list has a pattern for a command name. A
+ * profile without an allow list allows everything; a profile with one
+ * allows the names its patterns start with, builtins included. Shell
+ * functions are the caller's exemption, not this one's. Mirrors Python's
+ * `head_allowed`.
  */
-export function nodeVisible(path: readonly string[], rules: AdmissionRules | null): boolean {
+export function headAllowed(name: string, rules: AdmissionRules | null): boolean {
   if (rules?.allow == null) return true
-  return rules.allow.some((p) => patternReaches(p, path))
-}
-
-/**
- * Whether a session can see a command at all. A profile without an allow
- * list hides nothing; a profile with one hides every name none of its
- * patterns start with, builtins included. Shell functions are the
- * caller's exemption, not this one's. The head-word case of
- * `nodeVisible`.
- */
-export function headVisible(name: string, rules: AdmissionRules | null): boolean {
-  return nodeVisible([name], rules)
+  return rules.allow.some((p) => patternReaches(p, [name]))
 }
 
 /**

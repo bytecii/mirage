@@ -20,6 +20,14 @@ import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { MountEntry } from '../../workspace/mount/mount.ts'
 import { Workspace } from '../../workspace/workspace/workspace.ts'
 import { Policies } from '../policies.ts'
+import { CALLS } from '../../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../../vfs/types.ts'
+
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 function entry(prefix: string, mode: MountMode): MountEntry {
   return new MountEntry({ prefix, vfs: new RAMVFS(), mode })
@@ -33,7 +41,7 @@ function path(virtual: string): PathSpec {
 // and mode, an unowned one an empty prefix and full write.
 async function admit(mount: MountEntry | null, target: PathSpec): Promise<void> {
   const boundary = new Boundary(new Policies(), mount?.prefix ?? '', mount?.mode ?? MountMode.WRITE)
-  await boundary.admit('symlink', target, true, { create: true })
+  await boundary.admit(callOf('symlink'), target, true)
 }
 
 describe('MountModePolicy', () => {

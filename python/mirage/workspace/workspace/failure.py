@@ -16,13 +16,19 @@ from mirage.commands.errors import FindParseError, UsageError
 from mirage.errors.render import format_fs_error
 from mirage.errors.types import CommandTimeoutError
 from mirage.io import IOResult
-from mirage.policy import Deny, refusal_of, render_deny
+from mirage.policy import (
+    Deny,
+    Pending,
+    refusal_of,
+    render_deny,
+)
 from mirage.shell.bytes import encode_text
 from mirage.workspace.workspace.utils import command_name
 
 
-def placement_refused(deny: Deny, command: str) -> IOResult:
-    """The line's result when the placement stage refused it.
+def placement_refused(action: Deny | Pending, command: str) -> IOResult:
+    """The line's result when ``pre_execute`` held it back: a policy
+    refused it, or it waits on the host.
 
     A deny is a policy outcome, not a mistake: it folds into the line's
     result through the outcome table admission renders with, never a
@@ -30,11 +36,13 @@ def placement_refused(deny: Deny, command: str) -> IOResult:
     name like every per-command error.
 
     Args:
-        deny (Deny): the stage's answer.
+        action (Deny | Pending): the stage's refusal, or the ledger's
+            open question.
         command (str): the raw command line, for the diagnostic name.
     """
-    err, code = render_deny(command_name(command) or command, deny)
-    return IOResult(exit_code=code, stderr=err, refusal=refusal_of(deny))
+    name = command_name(command) or command
+    err, code = render_deny(name, action)
+    return IOResult(exit_code=code, stderr=err, refusal=refusal_of(action))
 
 
 def failure_result(exc: BaseException, command: str) -> IOResult:

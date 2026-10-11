@@ -21,6 +21,7 @@ from mirage.policy.base import Policy
 from mirage.types import FileStat, FileType, MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from tests.fixtures.vfs_io import dispatched
 
 
 def _ws():
@@ -1331,7 +1332,7 @@ async def test_readlink_does_not_probe_past_a_policy_that_denies_stat():
 
     class NoStat(Policy):
         async def pre_vfs(self, ctx):
-            if ctx.op in ("stat", "readdir"):
+            if ctx.call.name in ("stat", "readdir"):
                 return Deny(reason="no probing")
             return None
 
@@ -1408,32 +1409,23 @@ async def test_ln_sf_replaces_a_regular_file():
 
 
 @pytest.mark.asyncio
-async def test_mv_of_a_link_passes_the_admission_gate():
-    """The link rename is the dispatcher's, so a policy that denies it wins.
+async def test_mv_of_a_link_goes_through_the_dispatcher():
+    """The link rename is the dispatcher's, where every op a line makes
+    is judged.
 
     mv used to move the node itself, which meant the one write in the
-    shell that no admission policy could see.
+    shell that no gate could see.
     """
-
-    class NoRename(Policy):
-        async def pre_vfs(self, ctx):
-            if ctx.op == "rename":
-                return Deny(reason="frozen")
-            return None
-
     ws = Workspace(
-        {"/data": (RAMVFS(), MountMode.WRITE)},
-        mode=MountMode.WRITE,
-        policies=[NoRename()],
+        {"/data": (RAMVFS(), MountMode.WRITE)}, mode=MountMode.WRITE
     )
     await ws.shell("echo hi > /data/a.txt")
     await ws.shell("ln -s /data/a.txt /data/lk")
+    seen = dispatched(ws)
     r = await ws.shell("mv /data/lk /data/lk2")
-    assert r.exit_code == 1
-    assert r.stderr.decode() == (
-        "mv: cannot move '/data/lk' to '/data/lk2': Permission denied\n"
-    )
-    assert (await ws.shell("readlink /data/lk")).stdout == b"/data/a.txt\n"
+    assert r.exit_code == 0
+    assert ("rename", "/data/lk") in seen
+    assert (await ws.shell("readlink /data/lk2")).stdout == b"/data/a.txt\n"
 
 
 # ── ln: GNU operand grammar, backups, and the hard-link tier ──────

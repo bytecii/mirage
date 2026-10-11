@@ -205,7 +205,9 @@ def test_installed_cli_is_discoverable_from_the_shell():
     assert "# clis" in _out(_exec(ws, "man"))
 
 
-def test_man_lists_only_the_cli_verbs_the_profile_can_reach():
+def test_man_lists_every_cli_verb_whatever_the_profile():
+    # The allow list refuses a line when it runs; the manual still
+    # documents the whole tree.
     ws = _cli_ws()
     ws.create_session(
         "narrow",
@@ -213,18 +215,10 @@ def test_man_lists_only_the_cli_verbs_the_profile_can_reach():
     )
     page = _out(_run(ws.shell("man linear", session_id="narrow")))
     assert "issue" in page
-    assert "team" not in page
-    # The head word still routes, because one line of the tree runs.
+    assert "team" in page
     assert (
-        _out(_run(ws.shell("which linear", session_id="narrow")))
-        == "/usr/bin/linear\n"
+        _run(ws.shell("man linear team", session_id="narrow")).exit_code == 0
     )
-    # A verb the list does not reach has no page.
-    io = _run(ws.shell("man linear team", session_id="narrow"))
-    assert io.exit_code == 1
-    assert _err(io) == "man: no entry for linear team\n"
-    # The host's own view is unnarrowed.
-    assert "team" in _out(_exec(ws, "man linear"))
 
 
 def test_which_reports_a_missing_name_through_the_status_only():

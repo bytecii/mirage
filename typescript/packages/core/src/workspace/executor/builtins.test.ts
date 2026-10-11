@@ -95,8 +95,6 @@ function decode(b: Uint8Array | null): string {
   return new TextDecoder().decode(b)
 }
 
-const MAN_SESSION = new SessionState({ sessionId: 'man' })
-
 describe('handleExport / handleUnset / handlePrintenv', () => {
   it('export KEY=VAL sets session env', async () => {
     const s = new SessionState({ sessionId: 'test' })
@@ -1726,7 +1724,7 @@ describe('handleMan', () => {
   it('renders header and description for a known command, no VFS section', async () => {
     const reg = new MountRegistry({ '/ram/': new RAMVFS() }, MountMode.WRITE)
     wireRegistry(reg)
-    const [out, io] = handleMan(['date'], reg, MAN_SESSION)
+    const [out, io] = handleMan(['date'], reg)
     expect(io.exitCode).toBe(0)
     const body = await readBody(out)
     expect(body.startsWith('# date\n\n')).toBe(true)
@@ -1737,7 +1735,7 @@ describe('handleMan', () => {
   it('renders OPTIONS table when the spec has options', async () => {
     const reg = new MountRegistry({ '/ram/': new RAMVFS() }, MountMode.WRITE)
     wireRegistry(reg)
-    const [out, io] = handleMan(['date'], reg, MAN_SESSION)
+    const [out, io] = handleMan(['date'], reg)
     expect(io.exitCode).toBe(0)
     const body = await readBody(out)
     expect(body).toContain('## OPTIONS')
@@ -1750,7 +1748,7 @@ describe('handleMan', () => {
       MountMode.WRITE,
     )
     wireRegistry(reg)
-    const [out, io] = handleMan(['cat'], reg, MAN_SESSION)
+    const [out, io] = handleMan(['cat'], reg)
     expect(io.exitCode).toBe(0)
     const body = await readBody(out)
     expect(body.startsWith('# cat\n\n')).toBe(true)
@@ -1760,20 +1758,20 @@ describe('handleMan', () => {
   it('documents bash and sh from the bash spec', async () => {
     const reg = new MountRegistry({ '/ram/': new RAMVFS() }, MountMode.WRITE)
     wireRegistry(reg)
-    const [out, io] = handleMan(['bash'], reg, MAN_SESSION)
+    const [out, io] = handleMan(['bash'], reg)
     expect(io.exitCode).toBe(0)
     const body = await readBody(out)
     expect(body.startsWith('# bash\n')).toBe(true)
     expect(body).toContain('-c')
     expect(body).not.toContain('RESOURCES')
-    const [sh] = handleMan(['sh'], reg, MAN_SESSION)
+    const [sh] = handleMan(['sh'], reg)
     expect((await readBody(sh)).startsWith('# sh\n')).toBe(true)
   })
 
   it('exits 1 with a clear error for unknown commands', () => {
     const reg = new MountRegistry({ '/ram/': new RAMVFS() }, MountMode.WRITE)
     wireRegistry(reg)
-    const [, io] = handleMan(['definitely-not-a-real-command-xyz'], reg, MAN_SESSION)
+    const [, io] = handleMan(['definitely-not-a-real-command-xyz'], reg)
     expect(io.exitCode).toBe(1)
     const errBytes = io.stderr instanceof Uint8Array ? io.stderr : null
     expect(decode(errBytes)).toContain('no entry for definitely-not-a-real-command-xyz')
@@ -1785,7 +1783,7 @@ describe('handleMan', () => {
       MountMode.WRITE,
     )
     wireRegistry(reg)
-    const [body, io] = handleMan([], reg, MAN_SESSION)
+    const [body, io] = handleMan([], reg)
     const out = await readBody(body)
     expect(io.exitCode).toBe(0)
     expect(out.startsWith('# commands\n\n')).toBe(true)
@@ -1875,7 +1873,7 @@ describe('handleMan for installed CLIs', () => {
   }
 
   it('renders an installed CLI', async () => {
-    const [out, io] = handleMan(['linear'], cliRegistry(), MAN_SESSION)
+    const [out, io] = handleMan(['linear'], cliRegistry())
     expect(io.exitCode).toBe(0)
     const text = await readBody(out)
     expect(text).toContain('usage: linear')
@@ -1884,13 +1882,13 @@ describe('handleMan for installed CLIs', () => {
 
   it('descends a verb path and resolves aliases', async () => {
     const reg = cliRegistry()
-    const text = await readBody(handleMan(['linear', 'issue', 'create'], reg, MAN_SESSION)[0])
+    const text = await readBody(handleMan(['linear', 'issue', 'create'], reg)[0])
     expect(text).toContain('usage: linear issue create')
-    expect(await readBody(handleMan(['linear', 'i', 'create'], reg, MAN_SESSION)[0])).toBe(text)
+    expect(await readBody(handleMan(['linear', 'i', 'create'], reg)[0])).toBe(text)
   })
 
   it('names the whole line for an unknown verb', () => {
-    const [out, io] = handleMan(['linear', 'bogus'], cliRegistry(), MAN_SESSION)
+    const [out, io] = handleMan(['linear', 'bogus'], cliRegistry())
     expect(out).toBeNull()
     expect(io.exitCode).toBe(1)
     const errBytes = io.stderr instanceof Uint8Array ? io.stderr : null
@@ -1899,7 +1897,7 @@ describe('handleMan for installed CLIs', () => {
 
   it('lists installed CLIs in the bare index, after the commands', async () => {
     const reg = cliRegistry()
-    const text = await readBody(handleMan([], reg, MAN_SESSION)[0])
+    const text = await readBody(handleMan([], reg)[0])
     expect(text).toContain('# clis')
     expect(text).toContain('- linear — Linear API client')
     expect(text.indexOf('# commands')).toBeLessThan(text.indexOf('# clis'))

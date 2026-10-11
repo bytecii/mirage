@@ -336,7 +336,7 @@ class RedactReads implements TestPolicy<VfsResultContext> {
   }
   decide(ctx: VfsResultContext): Action | null {
     const data = ctx.result instanceof Uint8Array ? DEC.decode(ctx.result) : null
-    if (ctx.op === 'read' && data !== null && data.includes(this.marker)) {
+    if (ctx.call.name === 'read' && data !== null && data.includes(this.marker)) {
       return { kind: 'deny', reason: 'redacted' }
     }
     return null
@@ -352,7 +352,7 @@ class OpReadCap implements TestPolicy<VfsResultContext> {
     this.maxBytes = spec.max_bytes ?? 0
   }
   decide(ctx: VfsResultContext): Action | null {
-    if (ctx.op === 'read' && ctx.path.virtual.endsWith(this.suffix)) {
+    if (ctx.call.name === 'read' && ctx.path.virtual.endsWith(this.suffix)) {
       return new Limit({ maxBytes: this.maxBytes })
     }
     return null

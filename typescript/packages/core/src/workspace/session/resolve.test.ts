@@ -32,10 +32,18 @@ import {
 } from './resolve.ts'
 import { SessionState } from './session.ts'
 import { VarAttr } from '../../shell/variable.ts'
+import { CALLS } from '../../workspace/dispatcher/constants.ts'
+import type { VfsCall } from '../../vfs/types.ts'
+
+function callOf(name: string): VfsCall {
+  const call = CALLS.get(name)
+  if (call === undefined) throw new Error(`no call ${name}`)
+  return call
+}
 
 function readOp(virtual: string): VfsContext {
   return {
-    op: 'read',
+    call: callOf('read'),
     path: new PathSpec({
       virtual,
       directory: virtual.slice(0, virtual.lastIndexOf('/')) || '/',

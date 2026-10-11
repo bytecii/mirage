@@ -41,6 +41,22 @@ export enum CommandName {
   XXD = 'xxd',
 }
 
+/**
+ * What one word of a command line is. `NAME` is the command word,
+ * `SUBCOMMAND` a CLI verb after it. `OPTION` is a dashed word, `VALUE` the
+ * detached value an option takes, `OPERAND` any other argument. `REDIRECT`
+ * is a redirect target the shell opens for the command. Mirrors Python's
+ * `WordKind`.
+ */
+export enum WordKind {
+  NAME = 'name',
+  SUBCOMMAND = 'subcommand',
+  OPTION = 'option',
+  VALUE = 'value',
+  OPERAND = 'operand',
+  REDIRECT = 'redirect',
+}
+
 // Shared parser value kinds. Argument declarations use str/int/float/path;
 // zero-token actions lower to the internal bool kind.
 export type ValueType = 'bool' | 'str' | 'int' | 'float' | 'path'

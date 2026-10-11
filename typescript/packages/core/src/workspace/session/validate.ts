@@ -14,7 +14,7 @@
 
 import { SPECS } from '../../commands/spec/index.ts'
 import { PolicyError } from '../../policy/errors.ts'
-import { headVisible } from '../../policy/match/allow.ts'
+import { headAllowed } from '../../policy/match/allow.ts'
 import { splitPattern } from '../../policy/match/pattern.ts'
 import type { AdmissionRules, CommandRule } from '../../policy/types.ts'
 
@@ -62,11 +62,11 @@ function shadowed(ask: CommandRule, deny: CommandRule): boolean {
 }
 
 /**
- * The first rule naming a builtin the allow list never installs.
+ * The first rule naming a builtin the allow list never allows.
  *
- * A rule on a command the session cannot see reads as a guard and is not
- * one: the command was never installed, so nothing reaches the rule and
- * the operator is protected only in the document. Only a name this repo
+ * A rule on a command the allow list leaves out reads as a guard and is
+ * not one: the allow list refuses the command first, so nothing reaches
+ * the rule and the operator is protected only in the document. Only a name this repo
  * ships a spec for is judged, because any other word may be a CLI the
  * host registers after the workspace is built, which `checkCliVerbs`
  * checks at `createSession` instead.
@@ -81,8 +81,8 @@ function uninstalled(rules: AdmissionRules): string | null {
       for (const pattern of rule.commands ?? []) {
         const name = head(pattern)
         if (name === '' || !(name in SPECS)) continue
-        if (!headVisible(name, rules)) {
-          return `${verb} rule names ${name}, which the allow list never installs, so the rule can never fire`
+        if (!headAllowed(name, rules)) {
+          return `${verb} rule names ${name}, which the allow list never allows, so the rule can never fire`
         }
       }
     }

@@ -167,24 +167,17 @@ describe('--help and man through the executor', () => {
     expect(stdoutStr(await ws.shell('man'))).toContain('# clis')
   })
 
-  it('man lists only the CLI verbs the profile can reach', async () => {
+  it('man lists every CLI verb whatever the profile', async () => {
+    // The allow list refuses a line when it runs; the manual still
+    // documents the whole tree.
     const ws = await cliWs()
     ws.createSession('narrow', {
       profile: { commands: { allow: ['man', 'linear issue', 'which'], ask: [], deny: [] } },
     })
     const page = stdoutStr(await ws.shell('man linear', { sessionId: 'narrow' }))
     expect(page).toContain('issue')
-    expect(page).not.toContain('team')
-    // The head word still routes, because one line of the tree runs.
-    expect(stdoutStr(await ws.shell('which linear', { sessionId: 'narrow' }))).toBe(
-      '/usr/bin/linear\n',
-    )
-    // A verb the list does not reach has no page.
-    const io = await ws.shell('man linear team', { sessionId: 'narrow' })
-    expect(io.exitCode).toBe(1)
-    expect(stderrStr(io)).toBe('man: no entry for linear team\n')
-    // The host's own view is unnarrowed.
-    expect(stdoutStr(await ws.shell('man linear'))).toContain('team')
+    expect(page).toContain('team')
+    expect((await ws.shell('man linear team', { sessionId: 'narrow' })).exitCode).toBe(0)
   })
 
   it('which reports a missing name through the status only', async () => {

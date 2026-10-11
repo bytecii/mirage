@@ -21,6 +21,8 @@ import { getTestParser } from '../../workspace/fixtures/workspace_fixture.ts'
 import { Workspace } from '../../workspace/workspace/workspace.ts'
 import { RAMVFS } from '../ram/ram.ts'
 import { BinViewVFS } from './bin.ts'
+import { declared } from '../call.ts'
+import { WRITE_EFFECTS } from '../constants.ts'
 
 const DEC = new TextDecoder()
 
@@ -50,7 +52,10 @@ describe('BinViewVFS', () => {
       'truncate',
       'setattr',
     ]) {
-      expect(mount.answers(name) && mount.writes(name)).toBe(true)
+      const effect = declared(BinViewVFS, name)?.effect
+      expect(mount.answers(name) && effect !== undefined && WRITE_EFFECTS.includes(effect)).toBe(
+        true,
+      )
     }
   })
 

@@ -364,12 +364,11 @@ def recording(session: SessionState, recorder: Recorder) -> Iterator[None]:
         recorder (Recorder): where it writes.
     """
     enclosing = ENCLOSING.set(recorder)
-    jobs = session.job_output or session.tty.jobs
-    held, jobs.recorder = jobs.recorder, recorder
+    leave = (session.job_output or session.tty.jobs).record(recorder)
     try:
         yield
     finally:
-        jobs.recorder = held
+        leave()
         ENCLOSING.reset(enclosing)
 
 

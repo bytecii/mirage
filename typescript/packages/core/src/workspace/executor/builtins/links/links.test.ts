@@ -22,25 +22,51 @@ import { Workspace } from '../../../workspace/workspace.ts'
 import { followPaths, prepareMv } from './links.ts'
 import { IOResult } from '../../../../io/types.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
+import type { IndexCacheStore } from '../../../../cache/index/store.ts'
+import { eacces } from '../../../../errors/fs.ts'
 
 const DEC = new TextDecoder()
 
 class PinLinks implements Policy {
   preVfs(ctx: VfsContext): Action | null {
-    if (ctx.op === 'unlink' && ctx.path.virtual.endsWith('.pinned')) {
+    if (ctx.call.name === 'unlink' && ctx.path.virtual.endsWith('.pinned')) {
       return { kind: 'deny', reason: 'pinned' }
     }
     return null
   }
 }
 
-class SealReads implements Policy {
-  preVfs(ctx: VfsContext): Action | null {
-    if (ctx.op === 'read' && ctx.path.virtual.endsWith('.sealed')) {
-      return { kind: 'deny', reason: 'sealed' }
-    }
-    return null
+// A backend that refuses to read `*.sealed`: the fault a command meets
+// partway through, after it was admitted.
+class SealedReads extends RAMVFS {
+  override read(
+    path: PathSpec,
+    index?: IndexCacheStore,
+    offset = 0,
+    size: number | null = null,
+  ): Promise<Uint8Array> {
+    if (path.virtual.endsWith('.sealed')) return Promise.reject(eacces(path))
+    return super.read(path, index, offset, size)
   }
+
+  override readStream(path: PathSpec, index?: IndexCacheStore): AsyncIterable<Uint8Array> {
+    if (path.virtual.endsWith('.sealed')) throw eacces(path)
+    return super.readStream(path, index)
+  }
+}
+
+/**
+ * Make one namespace write refuse `path` with EACCES: the fault a command
+ * meets partway through, after it was admitted.
+ */
+function refusing(ws: Workspace, method: 'unlink' | 'symlink', path: string): void {
+  const ns = ws.namespace as unknown as Record<
+    typeof method,
+    (...args: unknown[]) => Promise<unknown>
+  >
+  const real = ns[method].bind(ws.namespace)
+  ns[method] = (link: unknown, ...rest: unknown[]) =>
+    link === path ? Promise.reject(eacces(path)) : real(link, ...rest)
 }
 
 function dispatchOf(ws: Workspace): DispatchFn {
@@ -213,8 +239,12 @@ describe('ln with a source it cannot read', () => {
   it('names the source and links the rest', async () => {
     // GNU names the source it cannot reach and links the rest, exit 1.
     // mirage's hard link is a byte copy, so a read the stat did not
-    // foresee (a policy deny here) is that refusal, not an abort.
-    const ws = await makeWs([new SealReads()])
+    // foresee (the backend's refusal here) is that refusal, not an abort.
+    const parser = await getTestParser()
+    const ws = new Workspace(
+      { '/data': new SealedReads() },
+      { mode: MountMode.WRITE, shellParserFactory: () => Promise.resolve(parser) },
+    )
     try {
       await ws.shell('mkdir /data/d; printf a > /data/a.sealed; printf b > /data/b.txt')
       const r = await ws.shell('ln /data/a.sealed /data/b.txt /data/d')
@@ -229,18 +259,16 @@ describe('ln with a source it cannot read', () => {
 })
 
 describe('rm and unlink reach a link through the dispatcher', () => {
-  it('rm of a link goes through the dispatcher', async () => {
-    // The strip used to write the node table directly, so a preVfs
-    // policy protecting a link never fired for `rm` while it fired for
-    // every other entry point (the FUSE unlink hole, one tier up). The mount is
-    // writable, so only the policy can be what refuses.
+  it('an unlink of a link meets the op hooks', async () => {
+    // The node table is written through the dispatcher, so a preVfs
+    // policy protecting a link fires for an unlink of it as for any other
+    // file call (the FUSE unlink hole). The mount is writable, so only the
+    // policy can be what refuses.
     const ws = await makeWs([new PinLinks()])
     try {
       await ws.shell('echo b > /data/f.txt')
       await ws.shell('ln -s f.txt /data/lk.pinned')
-      const r = await ws.shell('rm /data/lk.pinned')
-      expect(r.exitCode).toBe(1)
-      expect(err(r)).toBe("rm: cannot remove '/data/lk.pinned': Permission denied\n")
+      await expect(ws.vfs.unlink('/data/lk.pinned')).rejects.toThrow()
       expect(ws.namespace.isLink('/data/lk.pinned')).toBe(true)
     } finally {
       await ws.close()
@@ -290,10 +318,11 @@ describe('rm and unlink reach a link through the dispatcher', () => {
     // GNU rm reports the operand it could not remove and removes the
     // others; the backend half of the line still runs and the exit code
     // says something failed.
-    const ws = await makeWs([new PinLinks()])
+    const ws = await makeWs()
     try {
       await ws.shell('echo b > /data/f.txt')
       await ws.shell('ln -s f.txt /data/lk.pinned; ln -s f.txt /data/lk')
+      refusing(ws, 'unlink', '/data/lk.pinned')
       const r = await ws.shell('rm /data/lk.pinned /data/lk /data/f.txt')
       expect(r.exitCode).toBe(1)
       expect(err(r)).toBe("rm: cannot remove '/data/lk.pinned': Permission denied\n")
@@ -508,32 +537,13 @@ it.each(['missing', 'a.txt', 'loop'])(
   },
 )
 
-class RefuseLinkCreation implements Policy {
-  preVfs(ctx: VfsContext): Action | null {
-    return ctx.op === 'symlink' && ctx.path.virtual === '/other/tree/loop'
-      ? { kind: 'deny', reason: 'sealed' }
-      : null
-  }
-}
-
 it.each([null, 'read', 'unlink', 'symlink'] as const)(
   'cross-mount mv preserves tree links with %s failure',
   async (failure) => {
     const parser = await getTestParser()
     const ws = new Workspace(
-      { '/data': new RAMVFS(), '/other': new RAMVFS() },
-      {
-        mode: MountMode.WRITE,
-        policies:
-          failure === 'read'
-            ? [new SealReads()]
-            : failure === 'unlink'
-              ? [new PinLinks()]
-              : failure === 'symlink'
-                ? [new RefuseLinkCreation()]
-                : [],
-        shellParserFactory: () => Promise.resolve(parser),
-      },
+      { '/data': failure === 'read' ? new SealedReads() : new RAMVFS(), '/other': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParserFactory: () => Promise.resolve(parser) },
     )
     try {
       const setup = await ws.shell(
@@ -544,6 +554,8 @@ it.each([null, 'read', 'unlink', 'symlink'] as const)(
           'ln -s sub /data/tree/link.pinned',
       )
       expect(setup.exitCode).toBe(0)
+      if (failure === 'unlink') refusing(ws, 'unlink', '/data/tree/link.pinned')
+      if (failure === 'symlink') refusing(ws, 'symlink', '/other/tree/loop')
       const result = await ws.shell('mv /data/tree /other/tree')
       expect(result.exitCode).toBe(failure === null ? 0 : 1)
       expect(err(result)).toBe(
@@ -666,11 +678,7 @@ it.each([false, true])(
     const parser = await getTestParser()
     const ws = new Workspace(
       { '/data': new RAMVFS(), '/other': new RAMVFS() },
-      {
-        mode: MountMode.WRITE,
-        policies: [new PinLinks()],
-        shellParserFactory: () => Promise.resolve(parser),
-      },
+      { mode: MountMode.WRITE, shellParserFactory: () => Promise.resolve(parser) },
     )
     try {
       const setup = await ws.shell(
@@ -678,6 +686,7 @@ it.each([false, true])(
           (sourceLink ? 'ln -s absent /data/src' : 'printf new > /data/src'),
       )
       expect(setup.exitCode).toBe(0)
+      refusing(ws, 'unlink', '/other/dst.pinned')
       const result = await ws.shell('cp -Pb --suffix=.pinned /data/src /other/dst')
       expect(result.exitCode).toBe(1)
       expect(err(result)).toBe("cp: cannot backup '/other/dst': Permission denied\n")

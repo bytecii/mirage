@@ -14,10 +14,16 @@
 
 import errno
 import functools
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
+from typing import ParamSpec
 
-from mirage.policy import Policies, PolicyDenied, pre_session_gate
+from mirage.policy import (
+    Policies,
+    PolicyDenied,
+    post_session_gate,
+    pre_session_gate,
+)
 from mirage.policy.types import SessionContext
 from mirage.shell.arith import evaluate_arith, plain_decimal
 from mirage.shell.array import (
@@ -55,6 +61,8 @@ from mirage.view.types import EnvSet, SessionView
 from mirage.workspace.session.errors import ReadonlyVariableError
 from mirage.workspace.session.rng import draw, initial_seed
 from mirage.workspace.session.session import SessionState
+
+P = ParamSpec("P")
 
 
 def env_snapshot(session: SessionState) -> dict[str, str]:
@@ -1096,15 +1104,18 @@ async def set_var(
             # refusal reports.
             await _land_coercion(session, store, coercion)
             raise
-    await pre_session_gate(
-        policies,
-        SessionContext(
-            plane="env",
-            verb="set",
-            key=name,
-            value=gate_rendering(value),
-            session_id=session.session_id,
-        ),
+    written = SessionContext(
+        plane="env",
+        verb="set",
+        key=name,
+        value=gate_rendering(value),
+        session_id=session.session_id,
+    )
+    await pre_session_gate(policies, written)
+    generator = (
+        session._random_state,
+        session._random_seed,
+        session._random_last,
     )
     if (
         name == RANDOM
@@ -1165,6 +1176,22 @@ async def set_var(
     if session.shell_options.get("allexport"):
         stored = with_attr(stored, VarAttr.EXPORT)
     session.vars[name] = stored
+    try:
+        await post_session_gate(
+            policies,
+            written,
+            None if existing is None else gate_rendering(existing.value),
+        )
+    except BaseException:
+        # Whatever stops the check, a refusal or a host that failed to
+        # answer, the write does not stand, and neither does a seed.
+        _place(session, name, existing)
+        (
+            session._random_state,
+            session._random_seed,
+            session._random_last,
+        ) = generator
+        raise
 
 
 async def unset_var(
@@ -1199,17 +1226,30 @@ async def unset_var(
     # branch above has already returned, so the answers match.
     if env_is_readonly(session, name, follow_ref=False):
         raise ReadonlyVariableError(name)
-    await pre_session_gate(
-        policies,
-        SessionContext(
-            plane="env",
-            verb="unset",
-            key=name,
-            value=None,
-            session_id=session.session_id,
-        ),
+    written = SessionContext(
+        plane="env",
+        verb="unset",
+        key=name,
+        value=None,
+        session_id=session.session_id,
     )
+    await pre_session_gate(policies, written)
+    old = session.vars.get(name)
+    frame = _shadowing_frame(session, name)
     _drop(session, name)
+    try:
+        await post_session_gate(
+            policies,
+            written,
+            None if old is None else gate_rendering(old.value),
+        )
+    except BaseException:
+        # The unset revealed what an enclosing scope saved; that value
+        # goes back to the scope before the name's own record returns.
+        if frame is not None and name not in frame:
+            frame[name] = session.vars.get(name)
+        _place(session, name, old)
+        raise
     if name == RANDOM:
         # bash: unsetting RANDOM strips its special meaning for good.
         session._random_seed = RANDOM_UNSET
@@ -1558,17 +1598,27 @@ async def mark_var(
     if follow_ref and attr is not VarAttr.NAMEREF:
         name = deref(session, name) or name
     ensure_var_visible(session, name)
-    await pre_session_gate(
-        policies,
-        SessionContext(
-            plane="env",
-            verb="set",
-            key=name,
-            value=None,
-            session_id=session.session_id,
-        ),
+    written = SessionContext(
+        plane="env",
+        verb="set",
+        key=name,
+        value=None,
+        session_id=session.session_id,
     )
+    await pre_session_gate(policies, written)
+    old = session.vars.get(name)
+    seed = session._random_seed
     set_attr(session, name, attr, on)
+    try:
+        await post_session_gate(
+            policies,
+            written,
+            None if old is None else gate_rendering(old.value),
+        )
+    except BaseException:
+        _place(session, name, old)
+        session._random_seed = seed
+        raise
 
 
 def session_profile(session: SessionState) -> str | None:
@@ -1580,13 +1630,39 @@ def session_profile(session: SessionState) -> str | None:
     return session.profile
 
 
+def _one_call(
+    session: SessionState,
+    policies: Policies | None,
+    write: Callable[P, Awaitable[None]],
+) -> Callable[P, Awaitable[None]]:
+    """A session write as one call, so a ONCE answer to its
+    ``pre_session`` question stands until its ``post_session`` one is
+    answered too.
+
+    Args:
+        session (SessionState): the session written.
+        policies (Policies | None): the workspace's policies; None asks
+            nothing.
+        write (Callable[P, Awaitable[None]]): the write.
+    """
+    if policies is None:
+        return write
+
+    async def call(*args: P.args, **kwargs: P.kwargs) -> None:
+        await policies.decisions.within_call(
+            session.session_id, lambda: write(*args, **kwargs)
+        )
+
+    return call
+
+
 def session_view(
     session: SessionState,
     policies: Policies | None = None,
     *,
     diagnostics: list[str | bytes] | None = None,
 ) -> SessionView:
-    """The session plane's view: seven facts bound to one session.
+    """The session plane's view: eight facts bound to one session.
 
     The one constructor every tier uses — builtins, the command
     dispatcher, a bare unit test — so the gate cannot be skipped by
@@ -1603,11 +1679,20 @@ def session_view(
     return SessionView(
         get=functools.partial(env_get, session),
         snapshot=functools.partial(env_snapshot, session),
-        set=functools.partial(
-            set_var, session, policies, diagnostics=diagnostics
+        set=_one_call(
+            session,
+            policies,
+            functools.partial(
+                set_var, session, policies, diagnostics=diagnostics
+            ),
         ),
-        unset=functools.partial(unset_var, session, policies),
-        mark=functools.partial(mark_var, session, policies),
+        unset=_one_call(
+            session, policies, functools.partial(unset_var, session, policies)
+        ),
+        mark=_one_call(
+            session, policies, functools.partial(mark_var, session, policies)
+        ),
         is_readonly=functools.partial(env_is_readonly, session),
         profile=functools.partial(session_profile, session),
+        cwd=lambda: session.cwd,
     )

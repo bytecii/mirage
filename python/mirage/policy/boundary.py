@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from mirage.commands.builtin.utils.limit import limit_result
 from mirage.policy.policies import Policies, post_vfs_gate, pre_vfs_gate
 from mirage.types import MountMode, PathSpec
+from mirage.vfs.types import VfsCall
 
 if TYPE_CHECKING:
     from mirage.policy.decisions import Decisions
@@ -44,34 +45,38 @@ class Boundary:
 
     async def admit(
         self,
-        op: str,
+        call: VfsCall,
         path: PathSpec,
         write: bool,
         *,
-        create: bool = False,
-        subtree: bool = False,
         check_hidden: bool = True,
         final: bool = True,
     ) -> None:
         await pre_vfs_gate(
             self.policies,
-            op,
+            call,
             path,
             write,
             self.prefix,
             self.session_id,
             mode=self.mode,
-            create=create,
-            subtree=subtree,
             check_hidden=check_hidden,
             decisions=self.decisions,
             final=final,
         )
 
     async def complete(
-        self, op: str, path: PathSpec, write: bool, result: Any
+        self, call: VfsCall, path: PathSpec, write: bool, result: Any
     ) -> Any:
         bound = await post_vfs_gate(
-            self.policies, op, path, write, self.prefix, result
+            self.policies,
+            call,
+            path,
+            write,
+            self.prefix,
+            result,
+            self.session_id,
+            mode=self.mode,
+            decisions=self.decisions,
         )
         return await limit_result(result, bound)
