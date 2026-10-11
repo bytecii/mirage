@@ -34,7 +34,7 @@ import type { TSNodeLike } from '../../shell/types.ts'
 import type { RouteContext } from '../../runtime/routing/types.ts'
 import { ExecutionNode } from '../types.ts'
 import { Admitted, admit } from './admission.ts'
-import { claimantFor, rootFrame, wholeOccurrence } from './occurrence.ts'
+import { claimantFor } from './occurrence.ts'
 import { PathSpec } from '../../types.ts'
 import { executeNode, type ExecuteNodeDeps } from './execute_node.ts'
 import { encodeText } from '../../shell/bytes.ts'
@@ -169,9 +169,7 @@ export async function runCommandTree(
             output: await materialize(materialized),
             results: execNode.toJSON(),
           },
-          handed === undefined
-            ? null
-            : { line: handed, occurrence: wholeOccurrence(rootFrame(node, handed.origin)) },
+          claimantFor(node, handed),
           deps.signal,
         )
   if (refused !== null) {

@@ -15,6 +15,7 @@
 import { createAsyncContext } from '../utils/async_context.ts'
 import { explaining } from '../context/session_context.ts'
 import { sha256Hex } from '../utils/hash.ts'
+import { PolicyDenied } from './errors.ts'
 import { Outcome } from './types.ts'
 import type {
   Abandoned,
@@ -490,20 +491,26 @@ export class Decisions {
   }
 
   /**
-   * Run one call made outside a line (a file tool's) as the unit an
-   * op-level answer covers. A ONCE grant one of its ops is answered by is
-   * claimed for the call, so every op of the call on that path runs on it
-   * (a write tool reads the file back to stamp its version), and the
-   * call's end spends it. A call made inside another runs in the outer
-   * one; a call another ledger runs (a host callback reaching a second
-   * workspace mid-call) is no call of this one's. Mirrors Python's
-   * `within_call`.
+   * Run one call (a file tool's, a session write) as the unit an op-level
+   * answer covers. A ONCE grant one of its ops is answered by is claimed
+   * for the call, so every op of the call on that path runs on it (a write
+   * tool reads the file back to stamp its version), and the call's end
+   * spends it, unless the call is held on a question still waiting: its
+   * retry finds the grants standing, as a held line's does. A call made
+   * inside another runs in the outer one; a call another ledger runs (a
+   * host callback reaching a second workspace mid-call) is no call of this
+   * one's. Mirrors Python's `within_call`.
    */
   async withinCall<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
     if (getOpCall(this) !== null) return run()
     const handed: HandOff = { claimed: [], parent: null, origin: null }
     try {
       return await runWithOpCall(this, handed, run)
+    } catch (err) {
+      if (err instanceof PolicyDenied && err.refusal?.kind === 'pending') {
+        this.release(sessionId, handed)
+      }
+      throw err
     } finally {
       await this.revoke(sessionId, handed)
     }

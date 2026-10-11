@@ -20,6 +20,7 @@ from contextvars import ContextVar, Token
 from typing import TypeVar
 
 from mirage.context import explaining
+from mirage.policy.errors import PolicyDenied
 from mirage.policy.match import Outcome
 from mirage.policy.types import (
     Abandoned,
@@ -536,13 +537,15 @@ class Decisions:
     async def within_call(
         self, session_id: str, run: Callable[[], Awaitable[T]]
     ) -> T:
-        """Run one call made outside a line (a file tool's) as the unit an
+        """Run one call (a file tool's, a session write) as the unit an
         op-level answer covers.
 
         A ONCE grant one of its ops is answered by is claimed for the
         call, so every op of the call on that path runs on it (a write
         tool reads the file back to stamp its version), and the call's
-        end spends it. A call made inside another runs in the outer one;
+        end spends it, unless the call is held on a question still
+        waiting: its retry finds the grants standing, as a held line's
+        does. A call made inside another runs in the outer one;
         a call another ledger runs (a host callback reaching a second
         workspace mid-call) is no call of this one's.
 
@@ -559,6 +562,10 @@ class Decisions:
         token = set_op_call(self, handed)
         try:
             return await run()
+        except PolicyDenied as exc:
+            if exc.refusal is not None and exc.refusal.kind == "pending":
+                self.release(session_id, handed)
+            raise
         finally:
             reset_op_call(token)
             await self.revoke(session_id, handed)

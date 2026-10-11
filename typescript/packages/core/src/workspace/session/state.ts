@@ -1213,6 +1213,19 @@ async function markVar(
   }
 }
 
+/**
+ * A session write as one call, so a ONCE answer to its preSession question
+ * stands until its postSession one is answered too. Mirrors Python's
+ * `_one_call`.
+ */
+function oneCall(
+  session: SessionState,
+  policies: Policies | null,
+  write: () => Promise<void>,
+): Promise<void> {
+  return policies === null ? write() : policies.decisions.withinCall(session.sessionId, write)
+}
+
 export function sessionView(
   session: SessionState,
   policies: Policies | null = null,
@@ -1222,10 +1235,13 @@ export function sessionView(
     get: (name) => envGet(session, name),
     snapshot: () => envSnapshot(session),
     set: (name, value, followRef = true, assigned = null, added = null) =>
-      setVar(session, policies, name, value, followRef, diagnostics, assigned, added),
-    unset: (name, followRef = true) => unsetVar(session, policies, name, followRef),
+      oneCall(session, policies, () =>
+        setVar(session, policies, name, value, followRef, diagnostics, assigned, added),
+      ),
+    unset: (name, followRef = true) =>
+      oneCall(session, policies, () => unsetVar(session, policies, name, followRef)),
     mark: (name, attr, on, followRef = true) =>
-      markVar(session, policies, name, attr, on, followRef),
+      oneCall(session, policies, () => markVar(session, policies, name, attr, on, followRef)),
     isReadonly: (name, followRef = true) => envIsReadonly(session, name, followRef),
     profile: () => session.profile,
     cwd: () => session.cwd,

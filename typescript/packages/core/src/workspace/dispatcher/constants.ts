@@ -20,38 +20,21 @@ import { Effect, Target, type VfsCall } from '../../vfs/types.ts'
 // The ops the namespace answers itself, declared the way `vfsCall` declares
 // a VFS function: a link and an extended attribute live on the path's node,
 // never in a backend.
-export const NAMESPACE_CALLS: ReadonlyMap<string, VfsCall> = new Map([
-  [
-    'symlink',
-    { name: 'symlink', effect: Effect.CREATE, target: Target.LINK, creates: false, subtree: false },
-  ],
-  [
-    'readlink',
-    { name: 'readlink', effect: Effect.READ, target: Target.LINK, creates: false, subtree: false },
-  ],
-  [
-    'getxattr',
-    { name: 'getxattr', effect: Effect.READ, target: Target.ANY, creates: false, subtree: false },
-  ],
-  [
-    'listxattr',
-    { name: 'listxattr', effect: Effect.READ, target: Target.ANY, creates: false, subtree: false },
-  ],
-  [
-    'setxattr',
-    { name: 'setxattr', effect: Effect.ATTR, target: Target.ANY, creates: false, subtree: false },
-  ],
-  [
-    'removexattr',
-    {
-      name: 'removexattr',
-      effect: Effect.ATTR,
-      target: Target.ANY,
-      creates: false,
-      subtree: false,
-    },
-  ],
-])
+export const NAMESPACE_CALLS: ReadonlyMap<string, VfsCall> = new Map(
+  (
+    [
+      ['symlink', Effect.CREATE, Target.LINK],
+      ['readlink', Effect.READ, Target.LINK],
+      ['getxattr', Effect.READ, Target.ANY],
+      ['listxattr', Effect.READ, Target.ANY],
+      ['setxattr', Effect.ATTR, Target.ANY],
+      ['removexattr', Effect.ATTR, Target.ANY],
+    ] as const
+  ).map(([name, effect, target]) => [
+    name,
+    { name, effect, target, creates: false, subtree: false },
+  ]),
+)
 
 // The built-in functions every mount answers, as `BaseVFS` declares them;
 // every op class below is read off these and the namespace's.

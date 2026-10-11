@@ -418,14 +418,16 @@ class Workspace:
             self._session_mgr, on_ask
         )
 
-        # What every hook sees of its session: the one the call is made
-        # under when the hook's is it (a call's cwd and env included),
-        # else the session the id names, the default for none; nothing
-        # for an id this workspace holds no session for.
+        # What every hook sees of its session: the one its context was
+        # built from when given (a line explain walks), else the one the
+        # call is made under when the hook's is it (a call's cwd and env
+        # included), else the session the id names, the default for none;
+        # nothing for an id this workspace holds no session for.
         def views(
-            session_id: str,
+            session_id: str, session: SessionState | None = None
         ) -> tuple[SessionView, NamespaceView, Files] | None:
-            session = get_current_session_unless_foreign(self._session_mgr)
+            if session is None:
+                session = get_current_session_unless_foreign(self._session_mgr)
             if session is None or session_id not in ("", session.session_id):
                 wanted = session_id or self._session_mgr.default_id
                 session = next(

@@ -1777,6 +1777,15 @@ describe('command permissions end to end', () => {
     ])
     expect((await line(ws, 'git status', 'rev'))[0]).toBe(0)
     expect(box.lines).toEqual(['cat /repo/a | wc -l', 'git status'])
+    // No command's result comes back from the runtime, so a postCommand
+    // policy refuses the line it could not judge.
+    ws.policies.add({ postCommand: () => null })
+    expect(await line(ws, 'cat /repo/a')).toEqual([
+      126,
+      '',
+      'cat: Permission denied\npolicy denied: a post_command policy cannot judge a line a runtime runs whole\n',
+    ])
+    expect(box.lines).toEqual(['cat /repo/a | wc -l', 'git status'])
   })
 
   it('a whole-line runtime reads only literal words', async () => {

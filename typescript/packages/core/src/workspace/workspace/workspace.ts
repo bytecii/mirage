@@ -109,7 +109,7 @@ import { pathVisible } from '../../utils/hidden.ts'
 import { namespaceViewOf } from '../mount/namespace/view.ts'
 import { asyncContextIsolatesTasks, createAsyncContext } from '../../utils/async_context.ts'
 import { makeVar, VarAttr } from '../../shell/variable.ts'
-import { enoent } from '../../errors/fs.ts'
+import { eacces, enoent } from '../../errors/fs.ts'
 import { sessionView, envSnapshot } from '../session/state.ts'
 import type { BridgeDispatchFn, EvalResult } from '../../runtime/types.ts'
 import { MontyUnavailableError } from '../../runtime/python/monty/index.ts'
@@ -411,24 +411,30 @@ export class Workspace {
     // the sessions, the host answers through `onAsk` (or just records
     // the question when none is wired) and reads `ws.decisions`.
     this.registry.policies.decisions = new Decisions(this.sessionManager, options.onAsk ?? null)
-    // What every hook sees of its session: the one the call is made under
-    // when the hook's is it (a call's cwd and env included), else the
+    // What every hook sees of its session: the one its context was built
+    // from when given (a line explain walks, a call's cwd and env), else
+    // the one the call is made under when the hook's is it, else the
     // session the id names, the default for none; nothing for an id this
     // workspace holds no session for.
-    this.registry.policies.views = (sessionId) => {
-      let session = asyncContextIsolatesTasks
-        ? getCurrentSessionUnlessForeign(this.sessionManager)
-        : null
+    this.registry.policies.views = (sessionId, given) => {
+      let session =
+        given ??
+        (asyncContextIsolatesTasks ? getCurrentSessionUnlessForeign(this.sessionManager) : null)
       if (session === null || (sessionId !== '' && session.sessionId !== sessionId)) {
         const wanted = sessionId === '' ? this.sessionManager.defaultId : sessionId
         session = this.sessionManager.list().find((s) => s.sessionId === wanted) ?? null
       }
       if (session === null) return null
-      return {
-        session: sessionView(session, this.policies),
-        ns: namespaceViewOf(this.registry, this.namespace, this.dispatcher.dispatch, session),
-        vfs: this.vfs.forSession(session.sessionId),
+      const view = sessionView(session, this.policies)
+      const ns = namespaceViewOf(this.registry, this.namespace, this.dispatcher.dispatch, session)
+      if (asyncContextIsolatesTasks) {
+        return { session: view, ns, vfs: this.vfs.forSession(session.sessionId) }
       }
+      // Without task isolation a hook cannot run as a policy deciding: its
+      // own calls could not be told from the ones it judges. There it gets
+      // no `vfs`, and a session that refuses every write.
+      const refuse = (name: string): Promise<void> => Promise.reject(eacces(name))
+      return { session: { ...view, set: refuse, unset: refuse, mark: refuse }, ns }
     }
     // Installed CLIs, fully separate from mounts: a spec name resolves
     // against the named registry and every entry installs through the

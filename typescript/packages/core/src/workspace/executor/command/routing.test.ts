@@ -23,6 +23,7 @@ import { Workspace } from '../../workspace/workspace.ts'
 import { getTestParser } from '../../fixtures/workspace_fixture.ts'
 import { runResult } from '../../fixtures/integration_fixture.ts'
 import {
+  commandWords,
   defaultCwdOperand,
   optionLoopExits,
   pathFlagScopes,
@@ -139,6 +140,15 @@ describe('programTokens', () => {
       expect(programTokens(reg, 'git', [], '/')).toEqual([['git'], ['git']])
       // Anything else is the name and the raw argv.
       expect(programTokens(reg, 'rm', ['-rf', '/x'], '/')).toEqual([['rm', '-rf', '/x'], ['rm']])
+      // A group option's value is never read as a verb, even one that
+      // spells one (`-C status`, a directory named status).
+      const words = commandWords(reg, 'git', ['-C', 'status', 'log'], [], [], '/')
+      expect(words.map((w) => [w.text, w.kind, w.option])).toEqual([
+        ['git', 'name', null],
+        ['-C', 'option', null],
+        ['status', 'value', '-C'],
+        ['log', 'subcommand', null],
+      ])
     } finally {
       await ws.close()
     }

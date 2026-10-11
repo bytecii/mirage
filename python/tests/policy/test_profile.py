@@ -24,7 +24,15 @@ from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec.types import CommandSpec
 from mirage.context import reset_current_session, set_current_session
 from mirage.io.types import IOResult
-from mirage.policy import Action, Ask, CommandContext, Decision, Policy, Scope
+from mirage.policy import (
+    Action,
+    Ask,
+    CommandContext,
+    CommandResultContext,
+    Decision,
+    Policy,
+    Scope,
+)
 from mirage.policy.constants import DEFAULT_ASK_REASON, DEFAULT_DENY_REASON
 from mirage.policy.errors import PolicyError
 from mirage.policy.match import Outcome
@@ -1287,6 +1295,11 @@ async def test_a_mount_rule_speaks_on_a_walk_from_above():
         await ws.close()
 
 
+class _AfterEach(Policy):
+    async def post_command(self, ctx: CommandResultContext) -> Action | None:
+        return None
+
+
 class _Box(Runtime, LineExecutorMixin):
     """A runtime that takes every line raw, recording what reached it."""
 
@@ -1350,6 +1363,16 @@ async def test_a_whole_line_runtime_is_gated_like_the_tree():
             "git: Permission denied\npolicy denied: git add is not allowed\n",
         )
         assert (await _line(ws, "git status", "rev"))[0] == 0
+        assert box.lines == ["cat /repo/a | wc -l", "git status"]
+        # No command's result comes back from the runtime, so a
+        # post_command policy refuses the line it could not judge.
+        ws.policies.add(_AfterEach())
+        assert await _line(ws, "cat /repo/a") == (
+            126,
+            "",
+            "cat: Permission denied\npolicy denied: a post_command policy "
+            "cannot judge a line a runtime runs whole\n",
+        )
         assert box.lines == ["cat /repo/a | wc -l", "git status"]
     finally:
         await ws.close()

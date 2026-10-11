@@ -426,6 +426,9 @@ export async function gate(
     program,
     tool,
     walks: walksMounts(name, [name, ...args]),
+    // The hooks read the session this command is judged in, which for a
+    // line explain walks is the walked one, not the stored one.
+    ...(rulesOnly ? null : registry.policies.views?.(session.sessionId, session)),
   }
   const answers = (await registry.policies.answers('preCommand', ctx, every, rulesOnly)).filter(
     (a): a is Deny | Ask => a.kind !== 'route',
@@ -737,6 +740,14 @@ export async function admitLine(
     const [, parts] = splitEnvPrefix(getParts(node))
     const words = parts.map((part) => readWord(part, home))
     if (words.length === 0) continue
+    // The runtime runs the commands itself: no command's result comes back
+    // for a postCommand policy to judge.
+    if (registry.policies.wants('postCommand')) {
+      return refuse(
+        words[0]?.raw ?? '',
+        'a post_command policy cannot judge a line a runtime runs whole',
+      )
+    }
     const refusal = await admitWords(
       words,
       open,

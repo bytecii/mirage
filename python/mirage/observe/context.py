@@ -435,6 +435,15 @@ def finish_record(
     )
 
 
+def _charge(op_rec: OpRecord) -> None:
+    held = _command_sink.get()
+    if held is not None:
+        command, mine = held
+        mine.append(op_rec)
+        if command is not None and command is not mine:
+            command.append(op_rec)
+
+
 def record(
     op: str,
     path: str,
@@ -472,12 +481,7 @@ def record(
         revision=revision,
     )
     rec.sink.append(op_rec)
-    held = _command_sink.get()
-    if held is not None:
-        command, mine = held
-        mine.append(op_rec)
-        if command is not None and command is not mine:
-            command.append(op_rec)
+    _charge(op_rec)
 
 
 def record_stream(
@@ -526,12 +530,7 @@ def record_stream(
         execution_id=current_execution_id(),
     )
     rec.sink.append(op_rec)
-    held = _command_sink.get()
-    if held is not None:
-        command, mine = held
-        mine.append(op_rec)
-        if command is not None and command is not mine:
-            command.append(op_rec)
+    _charge(op_rec)
     return op_rec
 
 

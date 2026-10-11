@@ -291,12 +291,7 @@ export async function executeCommand(
       })
     } catch (err) {
       if (!(err instanceof PolicyDenied)) throw err
-      const stderr = encodeText(`bash: ${err.message}\n`)
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr }),
-        new ExecutionNode({ command: name !== '' ? name : k, exitCode: 1, stderr }),
-      ]
+      return writeRefused(err, name !== '' ? name : k)
     }
     if (session.readonlyVars.has(k)) {
       throw new DiscardSignal(encodeText(`bash: ${k}: readonly variable\n`))
@@ -315,6 +310,17 @@ export async function executeCommand(
     }
   }
 
+  const restore = (saved: ReadonlyMap<string, ShellVar | null>): void => {
+    for (const [k, prev] of saved) {
+      if (prev === null) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete session.vars[k]
+      } else {
+        setSessionEntry(session.vars, k, prev)
+      }
+    }
+  }
+
   if (prefixAssignments.length > 0 && name === '') {
     const olds = new Map(prefixAssignments.map(([k]) => [k, sessionEntry(session.vars, k) ?? null]))
     for (const [k, v] of prefixAssignments) seedVar(session, k, v)
@@ -322,20 +328,8 @@ export async function executeCommand(
       await judgeLanded(olds)
     } catch (err) {
       if (!(err instanceof PolicyDenied)) throw err
-      for (const [k, prev] of olds) {
-        if (prev === null) {
-          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-          delete session.vars[k]
-        } else {
-          setSessionEntry(session.vars, k, prev)
-        }
-      }
-      const stderr = encodeText(`bash: ${err.message}\n`)
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr }),
-        new ExecutionNode({ command: name, exitCode: 1, stderr }),
-      ]
+      restore(olds)
+      return writeRefused(err, name)
     }
     const cmdLabel = prefixAssignments.map(([k, v]) => `${k}=${v}`).join(' ')
     return [null, new IOResult(), new ExecutionNode({ command: cmdLabel, exitCode: 0 })]
@@ -402,15 +396,18 @@ export async function executeCommand(
   } finally {
     const frames = session.localFrames
     if (frames[frames.length - 1] === savedEnvOverrides) frames.pop()
-    for (const [k, prev] of savedEnvOverrides) {
-      if (prev === null) {
-        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-        delete session.vars[k]
-      } else {
-        setSessionEntry(session.vars, k, prev)
-      }
-    }
+    restore(savedEnvOverrides)
   }
+}
+
+/** A prefix assignment a session policy refused: bash's line, exit 1. */
+function writeRefused(err: PolicyDenied, command: string): Result {
+  const stderr = encodeText(`bash: ${err.message}\n`)
+  return [
+    null,
+    new IOResult({ exitCode: 1, stderr }),
+    new ExecutionNode({ command, exitCode: 1, stderr }),
+  ]
 }
 
 async function runCommandBody(
@@ -671,12 +668,7 @@ async function runArgv(
       await seedPrefix?.(name)
     } catch (err) {
       if (!(err instanceof PolicyDenied)) throw err
-      const stderr = encodeText(`bash: ${err.message}\n`)
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr }),
-        new ExecutionNode({ command: name, exitCode: 1, stderr }),
-      ]
+      return writeRefused(err, name)
     }
     const refusal = await guard(paths, given)
     if (refusal !== null) return refusal

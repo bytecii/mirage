@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from mirage.commands.builtin.find_parse import find_expr_tail
 from mirage.commands.builtin.generic.grep import directories_action
 from mirage.commands.builtin.generic.program import FILE_KEYS
-from mirage.commands.cli.walk import find_child, walk
+from mirage.commands.cli.walk import walk
 from mirage.commands.spec import SPECS, parse_command, parse_to_kwargs
 from mirage.commands.spec.builtins import is_builtin_grammar
 from mirage.commands.spec.constants import (
@@ -353,30 +353,6 @@ def _parsed_kinds(
     return [role or WordKind.OPERAND for role in parsed.word_roles]
 
 
-def _verb_kinds(spec: CommandSpec, argv: Sequence[str]) -> list[WordKind]:
-    """Each word before a CLI's leaf: a verb names a subcommand of the
-    node it stands under, a dashed word is a group option, anything
-    else that option's value.
-
-    Args:
-        spec (CommandSpec): the root of the CLI's tree.
-        argv (Sequence[str]): the words between the head and the leaf's
-            own words.
-    """
-    node = spec
-    kinds = []
-    for word in argv:
-        child = find_child(node, word)
-        if child is not None:
-            node = child
-            kinds.append(WordKind.SUBCOMMAND)
-        elif word.startswith("-"):
-            kinds.append(WordKind.OPTION)
-        else:
-            kinds.append(WordKind.VALUE)
-    return kinds
-
-
 def command_words(
     registry: MountRegistry,
     name: str,
@@ -411,7 +387,14 @@ def command_words(
     if install is not None and result is not None and result.leaf is not None:
         lead = len(argv) - len(result.argv)
         kinds = [
-            *_verb_kinds(install.cli.spec, argv[:lead]),
+            *(
+                WordKind.SUBCOMMAND
+                if i in result.verb_positions
+                else WordKind.OPTION
+                if word.startswith("-")
+                else WordKind.VALUE
+                for i, word in enumerate(argv[:lead])
+            ),
             *_parsed_kinds(result.leaf, argv[lead:], cwd, name, cli=True),
         ]
     else:

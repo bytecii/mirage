@@ -365,7 +365,7 @@ class Router:
             self._registry.match_command_prefix,
         )
         views = self._registry.policies.views
-        session, ns, vfs = (views(session_id) if views else None) or (
+        session, ns, vfs = (views(session_id, None) if views else None) or (
             None,
             None,
             None,

@@ -627,6 +627,7 @@ export function walk(
   // voice at every level, so a subcommand cannot pick its own.
   const style = spec.usageStyle
   let path: string[] = []
+  let positions: number[] = []
   const flags: WalkFlagBag = {}
   const bases: PathSpec[] = []
   let i = 0
@@ -638,6 +639,7 @@ export function walk(
       return new WalkResult({
         leaf: node,
         path,
+        verbPositions: positions,
         groupFlags: flags,
         operandBases: bases,
         argv: argv.slice(i),
@@ -659,6 +661,7 @@ export function walk(
         if (refused !== null) return refused
         node = alias
         path = [...path, alias.name]
+        positions = [...positions, i]
         i += 1
         descended = true
         break
@@ -823,6 +826,7 @@ export function walk(
       }
       node = child
       path = [...path, child.name]
+      positions = [...positions, i]
       i += 1
       descended = true
       break

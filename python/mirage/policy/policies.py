@@ -71,6 +71,7 @@ from mirage.view.types import NamespaceView, SessionView
 
 if TYPE_CHECKING:
     from mirage.workspace.files import Files
+    from mirage.workspace.session.session import SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -194,14 +195,9 @@ async def pre_vfs_gate(
     call, so a refusal is byte-identical however the mount is reached:
     PermissionError with errno EACCES and the virtual path as filename,
     which the shell renders as "<cmd>: <path>: Permission denied" and
-    FUSE translates to -EACCES. An op a running line makes (a command's,
-    or a program's a runtime runs for it) is the line's own I/O, which
-    ``pre_command`` judged: the hides, the profile's path rules and the
-    mount mode answer for it, and the policies registered in code and a
-    profile's script answer only for a ``ws.vfs`` / ``session.vfs`` call.
-    A hook's own read (``ctx.vfs``) is judged the same way, so no hook
-    runs again for it, and a hook's write is refused.
-    An Ask is a question only where no line is running and the entry
+    FUSE translates to -EACCES. A running line's own I/O, and a hook's
+    own read, meet the hides, path rules and mount mode alone; a hook's
+    write is refused. An Ask is a question only where no line is running and the entry
     point holds the ledger (a file tool, the host's facade): the ledger
     answers it from a standing grant or records it, and an unanswered
     one refuses with the ask id on the record. Inside a line an Ask
@@ -273,19 +269,22 @@ async def pre_vfs_gate(
     )
     if isinstance(answer, Hide):
         raise answer.error
+    await _refuse_op(ctx, answer, None if line_running() else decisions)
+
+
+async def _refuse_op(
+    ctx: VfsContext, answer: Deny | Ask | None, decisions: Decisions | None
+) -> None:
     if isinstance(answer, Ask):
-        if decisions is None or line_running():
-            raise policy_denied(Deny(answer.reason), path.virtual)
-        settled = await decisions.resolve_op(ctx, answer)
-        if settled is None:
-            return
-        if isinstance(settled, Pending):
-            raise policy_denied(settled, path.virtual)
-        answer = settled
-    if answer is not None:
-        if answer.error is not None:
-            raise answer.error
-        raise policy_denied(answer, path.virtual)
+        if decisions is None:
+            raise policy_denied(Deny(answer.reason), ctx.path.virtual)
+        refused = await decisions.resolve_op(ctx, answer)
+    else:
+        refused = answer
+    if isinstance(refused, Deny) and refused.error is not None:
+        raise refused.error
+    if refused is not None:
+        raise policy_denied(refused, ctx.path.virtual)
 
 
 async def _explained_op(
@@ -356,14 +355,8 @@ async def post_vfs_gate(
 
     Returns the merged Limit bound (tightest per field across every
     opining policy) for the entry point to apply to a byte-producing result,
-    or None when no policy bounds this op. Not fired for an op a running
-    line makes: a command's result is ``post_command``'s and its output
-    ``post_execute``'s, so post_vfs sees the ``ws.vfs`` / ``session.vfs``
-    calls alone, and not for a hook's own read. The hook sees what
-    ``pre_vfs`` saw, plus the result. An Ask goes to the ledger as a
-    ``pre_vfs`` one does: a host with ``on_ask`` answers it inline,
-    otherwise the question is recorded, and the approved retry runs the
-    call again.
+    or None when no policy bounds this op. Not fired for a running
+    line's own I/O or a hook's own read.
 
     Args:
         policies (Policies): the workspace's admission policies.
@@ -394,17 +387,7 @@ async def post_vfs_gate(
         result=result,
     )
     answer, bound = await policies.post_vfs(ctx)
-    if isinstance(answer, Ask):
-        if decisions is None:
-            raise policy_denied(Deny(answer.reason), path.virtual)
-        settled = await decisions.resolve_op(ctx, answer)
-        if settled is None:
-            return bound
-        raise policy_denied(settled, path.virtual)
-    if answer is not None:
-        if answer.error is not None:
-            raise answer.error
-        raise policy_denied(answer, path.virtual)
+    await _refuse_op(ctx, answer, decisions)
     return bound
 
 
@@ -418,9 +401,7 @@ async def pre_session_gate(
     is identical however the state is reached: shell builtin, command
     view, or a later tier. None policies (a view constructed outside a
     workspace) gate nothing. An Ask goes to the workspace's ledger
-    (``Policies.decisions``), inside a running line as outside one: a
-    host with ``on_ask`` answers it inline, otherwise the write is
-    refused and the question recorded, and the approved retry writes.
+    (``Policies.decisions``), inside a line too.
 
     Args:
         policies (Policies | None): the workspace's admission policies.
@@ -448,12 +429,9 @@ async def post_execute_gate(
 ) -> tuple[Deny | Pending | None, Limit | None]:
     """Fire post_execute at the workspace boundary.
 
-    Returns what drops the line's output, if anything: a policy's Deny
-    (or the fail-closed one of a policy that raised), or the ledger's
-    refusal or open question for an Ask; and the merged Limit bound for
-    the boundary to enforce on the output otherwise. The line has run
-    by now, so nothing is undone: the output is held back, and the
-    approved retry runs the line again.
+    Returns what drops the line's output (a Deny, or the ledger's
+    answer to an Ask), else the merged Limit bound for the boundary to
+    enforce. Nothing the line did is undone.
 
     Args:
         policies (Policies): the workspace's policies.
@@ -487,12 +465,9 @@ async def post_command_gate(
 ) -> Deny | Pending | None:
     """Fire post_command once a command or CLI ran and its output drained.
 
-    Returns what refuses it after the fact, if anything: a policy's Deny
-    (or the fail-closed one of a policy that raised), or the ledger's
-    refusal or open question for an Ask, keyed and claimed as the
-    command's ``pre_command`` Ask is. The command ran: what it wrote
-    stays written and its output stays sent; the caller turns the
-    refusal into exit 126 and a refusal record.
+    Returns what refuses it after the fact (a Deny, or the ledger's
+    answer to an Ask), which the caller turns into exit 126 and a
+    refusal record. Nothing the command did is undone.
 
     Args:
         policies (Policies): the workspace's policies.
@@ -607,18 +582,9 @@ class Policies:
     or a promise. Without that a plain ``def`` raised inside the
     fail-closed arm and every command read ``policy X failed``.
 
-    The chain holds the workspace's decision ledger too
-    (``decisions``), the one an Ask is put to, so an entry point that
-    reaches the policies reaches the ledger: a session write carries the
-    policies alone. The workspace replaces the in-memory one with one
-    bound to its sessions and its ask handler.
-
-    Every hook is asked with the session, its namespace and its files on
-    the context (``session``, ``ns``, ``vfs``), which ``views`` makes
-    from the context's session id; the workspace sets it, and without it,
-    or for a session it holds none of, the three stay None. A hook runs
-    as a policy deciding (``DryRun.DECIDING``): it reads through them,
-    and a write refuses.
+    The chain holds the decision ledger an Ask is put to
+    (``decisions``), and ``views``, which the workspace sets to fill a
+    hook's read-only ``session``, ``ns`` and ``vfs``.
 
     Args:
         policies (list[Policy] | None): initial policies, consulted in
@@ -634,7 +600,10 @@ class Policies:
         self._mode = MountModePolicy()
         self.decisions = Decisions()
         self.views: (
-            Callable[[str], tuple[SessionView, NamespaceView, "Files"] | None]
+            Callable[
+                [str, "SessionState | None"],
+                tuple[SessionView, NamespaceView, "Files"] | None,
+            ]
             | None
         ) = None
 
@@ -786,13 +755,9 @@ class Policies:
         """The one loop every stage runs: each policy's answer, named and
         checked against what the hook may carry. A later Ask's rules are
         appended to the first Ask's, so the first Ask carries every
-        question the stage raised and the host grants each.
-
-        The context gets the session, its namespace and its files before
-        the first hook that is asked, unless the profile's rules alone
-        are (``rules_only``): those read none of them, and they judge
-        every op a command makes. Each hook runs as a policy deciding,
-        so what it reads through them runs and a write refuses.
+        question the stage raised and the host grants each. Each hook
+        runs as a policy deciding, with its views filled unless the
+        profile's rules alone are asked.
 
         The entry point stops at the first Deny, since nothing after it can
         change the outcome; ``every`` goes on, so ``explain`` shows the
@@ -820,7 +785,7 @@ class Policies:
                 continue
             name = type(policy).__name__
             handles = (
-                self.views(ctx.session_id)
+                self.views(ctx.session_id, None)
                 if not rules_only
                 and self.views is not None
                 and ctx.session is None

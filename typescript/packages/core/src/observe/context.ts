@@ -328,6 +328,14 @@ export function finishRecord(
   })
 }
 
+function charge(rec: OpRecord): void {
+  const held = commandSink.getStore()
+  if (held !== undefined) {
+    held[1].push(rec)
+    if (held[0] !== null && held[0] !== held[1]) held[0].push(rec)
+  }
+}
+
 /**
  * Append a finished record to the active recording, if any.
  *
@@ -345,11 +353,7 @@ export function record(
   if (state === undefined) return
   const rec = finishRecord(op, path, source, nbytes, timer, options)
   state.records.push(rec)
-  const held = commandSink.getStore()
-  if (held !== undefined) {
-    held[1].push(rec)
-    if (held[0] !== null && held[0] !== held[1]) held[0].push(rec)
-  }
+  charge(rec)
 }
 
 /**
@@ -378,11 +382,7 @@ export function recordStream(
     executionId: currentExecutionId(),
   })
   state.records.push(rec)
-  const held = commandSink.getStore()
-  if (held !== undefined) {
-    held[1].push(rec)
-    if (held[0] !== null && held[0] !== held[1]) held[0].push(rec)
-  }
+  charge(rec)
   return rec
 }
 

@@ -31,7 +31,7 @@ from mirage.io.types import ByteSource
 from mirage.observe.context import RecordingScope, active_records
 from mirage.observe.observer import Observer
 from mirage.observe.record import OpRecord
-from mirage.policy import Claimant, Deny, HandOff, Pending
+from mirage.policy import Deny, HandOff, Pending
 from mirage.process.supervisor import ProcessSupervisor
 from mirage.runtime.base import Runtime
 from mirage.runtime.routing import RouteDecision, RouteError
@@ -79,9 +79,8 @@ from mirage.workspace.node.explain import (
     unrefused_nodes,
 )
 from mirage.workspace.node.occurrence import (
+    claimant_for,
     evaluated_from,
-    root_frame,
-    whole_occurrence,
 )
 from mirage.workspace.node.run_tree import run_command_tree
 from mirage.workspace.session import (
@@ -795,10 +794,7 @@ async def run_prepared_line(
                 agent or "",
                 routing_decision,
                 admission_holds,
-                Claimant(
-                    line_handed,
-                    whole_occurrence(root_frame(ast, line_handed.origin)),
-                ),
+                claimant_for(ast, line_handed),
                 cancel,
             )
             if isinstance(placed, (Deny, Pending)):
@@ -882,10 +878,7 @@ async def run_prepared_line(
                     ws.registry.policies,
                     ws.dispatcher.invalidate_all_after_remote,
                     ws.registry.command_limits,
-                    Claimant(
-                        handed,
-                        whole_occurrence(root_frame(ast, handed.origin)),
-                    ),
+                    claimant_for(ast, handed),
                     cancel,
                     ws.router.context(ast, command, session_id, agent or "")
                     if ws.registry.policies.wants("post_execute")

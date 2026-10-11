@@ -741,6 +741,7 @@ def walk(
     # one voice at every level, so a subcommand cannot pick its own.
     style = spec.usage_style
     path: tuple[str, ...] = ()
+    positions: tuple[int, ...] = ()
     flags: WalkFlagBag = WalkFlagBag()
     bases: list[PathSpec] = []
     i = 0
@@ -753,6 +754,7 @@ def walk(
             return WalkResult(
                 leaf=node,
                 path=path,
+                verb_positions=positions,
                 group_flags=flags,
                 operand_bases=tuple(bases),
                 argv=tuple(argv[i:]),
@@ -781,6 +783,7 @@ def walk(
                     return refused
                 node = alias
                 path = path + (alias.name,)
+                positions = positions + (i,)
                 i += 1
                 descended = True
                 break
@@ -1003,6 +1006,7 @@ def walk(
                 return _unknown_verb(head, name, token)
             node = child
             path = path + (child.name,)
+            positions = positions + (i,)
             i += 1
             descended = True
             break

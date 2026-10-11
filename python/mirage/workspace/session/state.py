@@ -14,8 +14,9 @@
 
 import errno
 import functools
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
+from typing import ParamSpec
 
 from mirage.policy import (
     Policies,
@@ -60,6 +61,8 @@ from mirage.view.types import EnvSet, SessionView
 from mirage.workspace.session.errors import ReadonlyVariableError
 from mirage.workspace.session.rng import draw, initial_seed
 from mirage.workspace.session.session import SessionState
+
+P = ParamSpec("P")
 
 
 def env_snapshot(session: SessionState) -> dict[str, str]:
@@ -1627,6 +1630,32 @@ def session_profile(session: SessionState) -> str | None:
     return session.profile
 
 
+def _one_call(
+    session: SessionState,
+    policies: Policies | None,
+    write: Callable[P, Awaitable[None]],
+) -> Callable[P, Awaitable[None]]:
+    """A session write as one call, so a ONCE answer to its
+    ``pre_session`` question stands until its ``post_session`` one is
+    answered too.
+
+    Args:
+        session (SessionState): the session written.
+        policies (Policies | None): the workspace's policies; None asks
+            nothing.
+        write (Callable[P, Awaitable[None]]): the write.
+    """
+    if policies is None:
+        return write
+
+    async def call(*args: P.args, **kwargs: P.kwargs) -> None:
+        await policies.decisions.within_call(
+            session.session_id, lambda: write(*args, **kwargs)
+        )
+
+    return call
+
+
 def session_view(
     session: SessionState,
     policies: Policies | None = None,
@@ -1650,11 +1679,19 @@ def session_view(
     return SessionView(
         get=functools.partial(env_get, session),
         snapshot=functools.partial(env_snapshot, session),
-        set=functools.partial(
-            set_var, session, policies, diagnostics=diagnostics
+        set=_one_call(
+            session,
+            policies,
+            functools.partial(
+                set_var, session, policies, diagnostics=diagnostics
+            ),
         ),
-        unset=functools.partial(unset_var, session, policies),
-        mark=functools.partial(mark_var, session, policies),
+        unset=_one_call(
+            session, policies, functools.partial(unset_var, session, policies)
+        ),
+        mark=_one_call(
+            session, policies, functools.partial(mark_var, session, policies)
+        ),
         is_readonly=functools.partial(env_is_readonly, session),
         profile=functools.partial(session_profile, session),
         cwd=lambda: session.cwd,

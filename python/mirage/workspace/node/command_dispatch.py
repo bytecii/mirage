@@ -315,12 +315,7 @@ async def execute_command(
                 ),
             )
         except PolicyDenied as exc:
-            err = encode_text(f"bash: {exc.strerror}\n")
-            return (
-                None,
-                IOResult(exit_code=1, stderr=err),
-                ExecutionNode(command=name or k, exit_code=1, stderr=err),
-            )
+            return _write_refused(exc, name or k)
         if k in session.readonly_vars:
             raise DiscardSignal(encode_text(f"bash: {k}: readonly variable\n"))
 
@@ -340,6 +335,13 @@ async def execute_command(
                 None if old is None else gate_rendering(old.value),
             )
 
+    def restore(saved: Mapping[str, Any]) -> None:
+        for k, prev in saved.items():
+            if prev is None:
+                session.vars.pop(k, None)
+            else:
+                session.vars[k] = prev
+
     if prefix_assignments and not name:
         olds = {k: session.vars.get(k) for k, _ in prefix_assignments}
         for k, v in prefix_assignments:
@@ -347,17 +349,8 @@ async def execute_command(
         try:
             await judge_landed(olds)
         except PolicyDenied as exc:
-            for k, prev in olds.items():
-                if prev is None:
-                    session.vars.pop(k, None)
-                else:
-                    session.vars[k] = prev
-            err = encode_text(f"bash: {exc.strerror}\n")
-            return (
-                None,
-                IOResult(exit_code=1, stderr=err),
-                ExecutionNode(command=name, exit_code=1, stderr=err),
-            )
+            restore(olds)
+            return _write_refused(exc, name)
         return (
             None,
             IOResult(),
@@ -426,11 +419,24 @@ async def execute_command(
         frames = session._local_frames
         if frames and frames[-1] is saved_env_overrides:
             frames.pop()
-        for k, prev in saved_env_overrides.items():
-            if prev is None:
-                session.vars.pop(k, None)
-            else:
-                session.vars[k] = prev
+        restore(saved_env_overrides)
+
+
+def _write_refused(
+    exc: PolicyDenied, command: str
+) -> tuple[None, IOResult, ExecutionNode]:
+    """A prefix assignment a session policy refused: bash's line, exit 1.
+
+    Args:
+        exc (PolicyDenied): the refusal.
+        command (str): the command the assignment prefixed.
+    """
+    err = encode_text(f"bash: {exc.strerror}\n")
+    return (
+        None,
+        IOResult(exit_code=1, stderr=err),
+        ExecutionNode(command=command, exit_code=1, stderr=err),
+    )
 
 
 async def _dispatch_command_body(
@@ -681,12 +687,7 @@ async def _run_argv(
             try:
                 await seed_prefix(name)
             except PolicyDenied as exc:
-                err = encode_text(f"bash: {exc.strerror}\n")
-                return (
-                    None,
-                    IOResult(exit_code=1, stderr=err),
-                    ExecutionNode(command=name, exit_code=1, stderr=err),
-                )
+                return _write_refused(exc, name)
         refusal = await guard(paths, given)
         if refusal is not None:
             return refusal

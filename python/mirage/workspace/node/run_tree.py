@@ -22,7 +22,6 @@ from mirage.context import reset_admission, set_admission
 from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.policy import (
-    Claimant,
     ExecuteResultContext,
     HandOff,
     post_execute_gate,
@@ -47,11 +46,7 @@ from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.node.admission import Refused, admit
 from mirage.workspace.node.execute_node import execute_node
-from mirage.workspace.node.occurrence import (
-    claimant_for,
-    root_frame,
-    whole_occurrence,
-)
+from mirage.workspace.node.occurrence import claimant_for
 from mirage.workspace.session import session_view
 from mirage.workspace.types import ExecutionNode
 
@@ -228,9 +223,7 @@ async def run_command_tree(
                 output=stdout or b"",
                 results=exec_node.to_dict(),
             ),
-            Claimant(handed, whole_occurrence(root_frame(ast, handed.origin)))
-            if handed is not None
-            else None,
+            claimant_for(ast, handed),
             cancel,
         )
     if refused is not None:

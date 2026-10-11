@@ -92,7 +92,7 @@ import { expandingAliases } from '../executor/builtins/alias/index.ts'
 import type { ResolvedSource } from '../../secrets/types.ts'
 import { cliEnvNames, fillEnv, fillNames, guestBound, lineNodes } from './fill.ts'
 import { admitLine, isPending, isPendingRefusal } from '../node/admission.ts'
-import { evaluatedFrom, rootFrame, wholeOccurrence } from '../node/occurrence.ts'
+import { claimantFor, evaluatedFrom } from '../node/occurrence.ts'
 import { runWholeLine } from './line.ts'
 import type { WorkspaceMeta } from './meta.ts'
 import type { Router } from './routing.ts'
@@ -531,7 +531,7 @@ async function runPreparedLine(
                 options,
                 effectiveSession,
                 held,
-                { line: handed, occurrence: wholeOccurrence(rootFrame(rootNode, handed.origin)) },
+                claimantFor(rootNode, handed),
                 mergeSignals(options.signal, context.frame.abortSignal),
               )
             placed = await abortable(
@@ -984,7 +984,7 @@ async function runParsedLine(
             () => env.invalidateAllAfterRemote(),
             killed,
             env.registry.commandLimits,
-            { line: handed, occurrence: wholeOccurrence(rootFrame(rootNode, handed.origin)) },
+            claimantFor(rootNode, handed),
             env.registry.policies.wants('postExecute')
               ? env.router.context(rootNode, command, options, effectiveSession)
               : null,

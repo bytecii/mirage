@@ -1464,6 +1464,32 @@ async def test_a_pre_session_ask_a_host_answers_inline_writes():
         await ws.close()
 
 
+class AskAround(Policy):
+    async def pre_session(self, ctx: SessionContext) -> Action | None:
+        return Ask("before")
+
+    async def post_session(self, ctx: SessionResultContext) -> Action | None:
+        return Ask("after")
+
+
+@pytest.mark.asyncio
+async def test_a_write_asked_before_and_after_asks_each_once():
+    # The nod to the first question stands while the second waits.
+    ws = Workspace({"/data/": RAMVFS()}, policies=[AskAround()])
+    try:
+        reasons = []
+        for _ in range(2):
+            held = await ws.shell("export B=1")
+            assert held.refusal is not None and held.refusal.kind == "pending"
+            (record,) = ws.decisions.pending()
+            reasons.append(record.reason)
+            await ws.decisions.answer(record.id, Outcome.ALLOW)
+        assert reasons == ["before", "after"]
+        assert (await ws.shell("export B=1")).exit_code == 0
+    finally:
+        await ws.close()
+
+
 class AskReads(Policy):
     def __init__(self) -> None:
         self.seen: list[tuple[VfsContext, VfsContext]] = []
@@ -1673,6 +1699,9 @@ async def test_a_hook_reads_the_session_and_its_files_and_writes_nothing():
         assert recorder.asked == []
         assert await ws.vfs.read("/data/owner.txt") == b"core\n"
         assert (await ws.shell("echo $TEAM")).stdout == b"core\n"
+        # explain walks the `cd` on a copy, and the hook reads that copy.
+        await ws.explain("cd /; echo hi")
+        assert reader.seen[-1][0] == "/"
     finally:
         await ws.close()
 

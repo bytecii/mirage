@@ -973,6 +973,36 @@ describe('every hook answers Deny and Ask', () => {
     }
   })
 
+  class AskAround implements Policy {
+    preSession(): Action | null {
+      return { kind: 'ask', reason: 'before' }
+    }
+
+    postSession(): Action | null {
+      return { kind: 'ask', reason: 'after' }
+    }
+  }
+
+  it('a write asked before and after asks each once', async () => {
+    // The nod to the first question stands while the second waits.
+    const ws = executableWorkspace(undefined, [new AskAround()])
+    try {
+      const reasons: string[] = []
+      for (let i = 0; i < 2; i++) {
+        const held = await ws.shell('export B=1')
+        expect(held.refusal?.kind).toBe('pending')
+        const pending = ws.decisions.pending()
+        expect(pending).toHaveLength(1)
+        reasons.push(pending[0]?.reason ?? '')
+        await ws.decisions.answer(pending[0]?.id ?? '', Outcome.ALLOW)
+      }
+      expect(reasons).toEqual(['before', 'after'])
+      expect((await ws.shell('export B=1')).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
+  })
+
   class AskReads implements Policy {
     readonly seen: [VfsContext, VfsResultContext][] = []
     private readonly pre: VfsContext[] = []
@@ -1189,6 +1219,9 @@ describe('what a hook sees', () => {
       expect(recorder.asked).toEqual([])
       expect(new TextDecoder().decode(await ws.vfs.read('/data/owner.txt'))).toBe('core\n')
       expect((await ws.shell('echo $TEAM')).stdoutText).toBe('core\n')
+      // explain walks the `cd` on a copy, and the hook reads that copy.
+      await ws.explain('cd /; echo hi')
+      expect(reader.seen.at(-1)?.[0]).toBe('/')
     } finally {
       await ws.close()
     }

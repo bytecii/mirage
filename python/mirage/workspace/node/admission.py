@@ -412,6 +412,15 @@ async def gate(
         if name in CWD_DEFAULT_RAW
         else None
     )
+    # The hooks read the session this command is judged in, which for a
+    # line explain walks is the walked one, not the stored one.
+    views = registry.policies.views
+    handles = (
+        views(session.session_id, session)
+        if views is not None and not rules_only
+        else None
+    )
+    view, ns, vfs = handles or (None, None, None)
     ctx = CommandContext(
         command=name,
         paths=_seen(
@@ -442,6 +451,9 @@ async def gate(
         program=program,
         tool=tool,
         walks=walks_mounts(name, [name, *args]),
+        session=view,
+        ns=ns,
+        vfs=vfs,
     )
     said = await registry.policies.answers(
         "pre_command", ctx, every, rules_only
@@ -898,6 +910,13 @@ async def admit_line(
         words = [read_word(part, home) for part in parts]
         if not words:
             continue
+        if registry.policies.wants("post_command"):
+            # The runtime runs the commands itself: no command's result
+            # comes back for a post_command policy to judge.
+            return _refuse(
+                words[0].raw,
+                "a post_command policy cannot judge a line a runtime runs whole",
+            )
         refusal = await _admit_words(
             words,
             open_,

@@ -252,7 +252,9 @@ const noSecretsShown: Policy = {
 </CodeGroup>
 
 `cat /vault/k && echo next` exits 126 with `cat: Permission denied`, and
-`echo` does not run. Output already sent stays sent.
+`echo` does not run. Output already sent stays sent. A runtime that takes
+a line whole runs its commands itself, so no result comes back to judge:
+while a `post_command` method is installed, such a line is refused.
 
 ### pre_vfs
 

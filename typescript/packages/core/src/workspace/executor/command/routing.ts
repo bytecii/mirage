@@ -15,7 +15,7 @@
 import { findExprTail } from '../../../commands/builtin/find_parse.ts'
 import { directoriesAction } from '../../../commands/builtin/generic/grep.ts'
 import { FILE_KEYS } from '../../../commands/builtin/generic/program.ts'
-import { findChild, walk } from '../../../commands/cli/walk.ts'
+import { walk } from '../../../commands/cli/walk.ts'
 import { SPECS } from '../../../commands/spec/index.ts'
 import { isBuiltinGrammar } from '../../../commands/spec/builtins.ts'
 import {
@@ -292,23 +292,6 @@ function parsedKinds(
 }
 
 /**
- * Each word before a CLI's leaf: a verb names a subcommand of the node it
- * stands under, a dashed word is a group option, anything else that
- * option's value. Mirrors Python's `_verb_kinds`.
- */
-function verbKinds(spec: CommandSpec, argv: readonly string[]): WordKind[] {
-  let node = spec
-  return argv.map((word) => {
-    const child = findChild(node, word)
-    if (child !== null) {
-      node = child
-      return WordKind.SUBCOMMAND
-    }
-    return word.startsWith('-') ? WordKind.OPTION : WordKind.VALUE
-  })
-}
-
-/**
  * The command line word by word, each with its kind and the path it names.
  * The name comes first and the redirect targets last. An installed CLI's
  * verbs are read off its tree and its leaf's words off the leaf's grammar;
@@ -329,7 +312,15 @@ export function commandWords(
   if (install !== null && result !== null && result.leaf !== null) {
     const lead = argv.length - result.argv.length
     kinds = [
-      ...verbKinds(install.cli.spec, argv.slice(0, lead)),
+      ...argv
+        .slice(0, lead)
+        .map((word, i) =>
+          result.verbPositions.includes(i)
+            ? WordKind.SUBCOMMAND
+            : word.startsWith('-')
+              ? WordKind.OPTION
+              : WordKind.VALUE,
+        ),
       ...parsedKinds(result.leaf, argv.slice(lead), cwd, name, true),
     ]
   } else {
