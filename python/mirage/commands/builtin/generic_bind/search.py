@@ -42,6 +42,7 @@ from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.io.stream import close_quietly, ensure_stream
 from mirage.io.types import ByteSource, materialize
+from mirage.observe.context import revision_for
 from mirage.shell.bytes import byte_view, utf8_locale
 from mirage.types import FileType, PathSpec
 from mirage.utils.filetype import BINARY_EXTENSIONS, get_extension
@@ -273,7 +274,8 @@ async def search_reads(
     ``lines_containing`` hands a file's matching lines in its place when
     the output shows nothing else, or tells whether it is worth reading.
     An operand named on the line is never ruled out by a search asked
-    about directories. Neither is asked when a hide, a path rule or a
+    about directories, nor is a path pinned to a revision, since a
+    search sees the current content. Neither is asked when a hide, a path rule or a
     pre_vfs policy judges a path, since a search sees the raw tree. When
     neither can stand in for a walk, ``before_full_scan`` may refuse it.
 
@@ -368,6 +370,7 @@ async def search_reads(
         if (
             hits is not None
             and path.virtual not in named
+            and revision_for(path.virtual) is None
             and not (
                 terms.reads_binary
                 and get_extension(path.virtual) in BINARY_EXTENSIONS

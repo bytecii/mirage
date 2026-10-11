@@ -670,11 +670,12 @@ export async function readdirItems(
               size_bytes: asNumber(child.size),
               child_count: folderChildCount(child),
             }
-          : { ctag: child.cTag, etag: child.eTag },
+          : { ctag: child.cTag, etag: child.eTag, id: child.id },
       }),
     ])
   }
   names.sort(compareCodePoints)
+  entries.sort((a, b) => compareCodePoints(a[0], b[0]))
   if (index !== undefined) await index.setDir(virtualKey, entries)
   return names.map((name) => (prefix !== '' ? prefix + name : name))
 }

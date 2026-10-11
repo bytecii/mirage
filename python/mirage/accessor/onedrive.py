@@ -30,6 +30,11 @@ class OneDriveConfig(MsGraphConfig):
     group_id: str | None = None
     user_id: str | None = None
     key_prefix: str | None = None
+    # Let grep -w and rg -w read only the files Graph search names
+    # (`files_containing`). Off by default: Graph indexes a write some time
+    # after it lands, and searches the text it extracted rather than the
+    # bytes grep reads.
+    content_search: bool = False
 
     @model_validator(mode="after")
     def _one_drive_target(self) -> "OneDriveConfig":

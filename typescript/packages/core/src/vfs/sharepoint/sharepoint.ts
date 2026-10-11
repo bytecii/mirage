@@ -30,6 +30,7 @@ import { rmR } from '../../core/sharepoint/rm.ts'
 import { rename } from '../../core/sharepoint/rename.ts'
 import { copy } from '../../core/sharepoint/copy.ts'
 import { truncate } from '../../core/sharepoint/truncate.ts'
+import { filesContaining } from '../../core/sharepoint/search.ts'
 
 const du = makeWalkedDu(stat, readdir)
 
@@ -138,6 +139,16 @@ export class SharePointVFS extends BaseVFS {
 
   override truncate(path: PathSpec, length: number, noCreate = false): Promise<void> {
     return truncate(this.accessor, path, length, noCreate)
+  }
+
+  override filesContaining(
+    text: string,
+    under: PathSpec[],
+    opts: { wholeWord: boolean; ignoreCase: boolean },
+    index?: IndexCacheStore,
+  ): Promise<PathSpec[] | null> {
+    if (!opts.wholeWord || this.config.contentSearch !== true) return Promise.resolve(null)
+    return filesContaining(this.accessor, text, under, index)
   }
 
   override deltaHook(): DeltaHook {

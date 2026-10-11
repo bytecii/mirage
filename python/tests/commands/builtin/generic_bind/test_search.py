@@ -126,12 +126,16 @@ def _holds(data: bytes, text: str, ignore_case: bool) -> bool:
 
 
 def _run(
-    vfs: RAMVFS, line: str, hide: tuple[str, ...] = ()
+    vfs: RAMVFS,
+    line: str,
+    hide: tuple[str, ...] = (),
+    pins: dict[str, str] | None = None,
 ) -> tuple[bytes, bytes, int]:
     async def run() -> tuple[bytes, bytes, int]:
         vfs._store.dirs.update({"/d", "/d/sub"})
         vfs._store.files.update(TREE)
         ws = Workspace({"/": vfs})
+        ws.mount("/").revisions = pins or {}
         try:
             session = None
             if hide:
@@ -278,6 +282,15 @@ def test_a_file_the_search_does_not_cover_is_always_read(searchable, reads):
     line = "grep -r ada /d"
     assert _run(vfs, line) == _run(RAMVFS(), line)
     assert sorted(vfs.reads) == reads
+
+
+def test_a_path_pinned_to_a_revision_is_always_read():
+    # A search sees the current content, so a pinned file is read
+    # whatever it answers: its saved bytes may hold the text.
+    vfs = SearchRAM(lines=None)
+    line = "grep -r ada /d"
+    assert _run(vfs, line, pins={"/d/c.txt": "r1"}) == _run(RAMVFS(), line)
+    assert sorted(vfs.reads) == ["d/a.txt", "d/c.txt", "d/sub/d.txt"]
 
 
 def test_a_hidden_path_is_walked_without_the_search():

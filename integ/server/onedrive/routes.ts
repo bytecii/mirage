@@ -300,6 +300,41 @@ async function versionContent(
   return rangeReply(ctx.headers, row.content)
 }
 
+const DEC = new TextDecoder()
+
+function wholeWordHit(query: string, text: string): boolean {
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`).test(text)
+}
+
+// Graph's driveItem search over a folder's subtree: an item whose name holds
+// the text, or whose content holds it as a whole word, case-insensitively, as
+// the Box and Dropbox fakes match.
+async function searchItems(
+  ctx: Ctx<C>,
+  drive: string,
+  item: string,
+  action: string,
+): Promise<Reply> {
+  const p = norm(item)
+  if (p !== '' && !(await dirAt(ctx.db, ctx.tenant, drive, p))) return notFound()
+  const quoted = /^search\(q='(.*)'\)$/s.exec(action)?.[1]
+  if (quoted === undefined) {
+    return { status: 400, body: { error: { code: 'invalidRequest', message: 'bad search' } } }
+  }
+  const text = quoted.replaceAll("''", "'").toLowerCase()
+  const rows = await ctx.db.graphFile.findMany({ where: { tenant: ctx.tenant, drive } })
+  const value: JsonValue[] = []
+  for (const row of rows) {
+    if (p !== '' && !row.path.startsWith(`${p}/`)) continue
+    const name = baseName(row.path)
+    const hit =
+      name.toLowerCase().includes(text) || wholeWordHit(text, DEC.decode(row.content).toLowerCase())
+    if (hit) value.push({ id: row.ctag, name, file: {} })
+  }
+  return { status: 200, body: { value } }
+}
+
 // One dispatcher for every drive URL shape. Graph reaches the same items
 // through /me/drive, /sites/{id}/drive and /drives/{key}, so the shapes differ
 // only in which drive they name and are resolved to (drive, rest) before this.
@@ -318,6 +353,7 @@ async function driveOp(ctx: Ctx<C>, method: string, drive: string, rest: string)
     if (row === null) return notFound()
     return rangeReply(ctx.headers, row.content)
   }
+  if (action.startsWith('search(')) return searchItems(ctx, drive, item, action)
   if (action === 'createUploadSession') return createUpload(ctx, drive, item)
   if (action === 'copy') return copyItem(ctx, drive, item)
   if (action.startsWith('versions/') && action.endsWith('/content')) {

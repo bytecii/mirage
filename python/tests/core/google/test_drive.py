@@ -25,6 +25,7 @@ from mirage.core.google.drive import (
     list_all_files,
     list_files,
     list_shared_drives,
+    search_files,
 )
 
 
@@ -347,3 +348,30 @@ async def test_get_file_asks_for_both_content_tokens_unwrapped(token_manager):
     assert "files(" not in fields
     assert "owners" in fields
     assert "trashed" in fields
+
+
+@pytest.mark.asyncio
+async def test_search_files_asks_full_text_under_the_parents(token_manager):
+    pages = [
+        {"files": [{"id": "f1"}], "nextPageToken": "p2"},
+        {"files": [{"id": "f2"}], "incompleteSearch": True},
+    ]
+    seen: list[dict] = []
+
+    async def fake_get(tm, url, params=None):
+        seen.append(dict(params or {}))
+        return pages[len(seen) - 1]
+
+    with patch("mirage.core.google.drive.google_get", new=fake_get):
+        ids, complete = await search_files(
+            token_manager, "it's", ["root", "f9"]
+        )
+    assert ids == ["f1", "f2"]
+    assert complete is False
+    assert seen[0]["q"] == (
+        "fullText contains 'it\\'s' and trashed=false"
+        " and ('root' in parents or 'f9' in parents)"
+    )
+    assert seen[0]["corpora"] == "allDrives"
+    assert "orderBy" not in seen[0]
+    assert seen[1]["pageToken"] == "p2"
