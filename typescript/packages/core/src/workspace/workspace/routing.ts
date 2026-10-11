@@ -34,6 +34,7 @@ import type { SessionState } from '../session/session.ts'
 import type { ExecuteOptions } from './types.ts'
 import type { Runtimes } from './runtimes.ts'
 import { makeAbortError } from '../../utils/abort.ts'
+import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
 
 /**
  * The policy ladder for one typed line: runtime argument, the placement
@@ -236,6 +237,12 @@ export class Router {
       this.registry.matchCommandPrefix(words),
     )
     const handles = this.registry.policies.views?.(session.sessionId) ?? null
+    // As `Policies` hands them to every hook: no `vfs` where async tasks
+    // are not isolated.
+    const given =
+      handles === null || asyncContextIsolatesTasks
+        ? handles
+        : { session: handles.session, ns: handles.ns }
     return {
       line: command,
       commands,
@@ -243,7 +250,7 @@ export class Router {
       builtin: commands[0]?.builtin ?? false,
       sessionId: session.sessionId,
       agentId: options.agentId ?? this.agentId ?? '',
-      ...handles,
+      ...given,
     }
   }
 }

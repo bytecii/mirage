@@ -1236,6 +1236,25 @@ describe('postCommand and postSession', () => {
     }
   })
 
+  class SafeMode implements Policy {
+    postSession(ctx: SessionResultContext): Action | null {
+      return ctx.session?.get(ctx.key) === 'unsafe'
+        ? { kind: 'deny', reason: 'mode stays safe' }
+        : null
+    }
+  }
+
+  it('postSession reads a prefix write once it landed', async () => {
+    const ws = executableWorkspace(undefined, [new SafeMode()])
+    try {
+      const out = await ws.shell('MODE=unsafe printenv MODE')
+      expect([out.exitCode, out.stdoutText]).toEqual([1, ''])
+      expect((await ws.shell('echo ${MODE:-unset}')).stdoutText).toBe('unset\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('a postCommand deny stops the chain and keeps what was sent', async () => {
     const ws = executableWorkspace()
     try {
@@ -1403,6 +1422,26 @@ describe('what a hook sees', () => {
       const ran = leaves(ctx?.results ?? {})
       expect(ran.map(([name]) => name.split(' ')[0])).toEqual(['cd', 'echo', 'cat', 'false'])
       expect(ran.at(-1)?.[1]).toBe(1)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  function recordPaths(node: Record<string, unknown>): unknown[] {
+    const mine = ((node.records ?? []) as Record<string, unknown>[]).map((r) => r.path)
+    const children = (node.children ?? []) as Record<string, unknown>[]
+    return [...mine, ...children.flatMap(recordPaths)]
+  }
+
+  it("postExecute results keep a function's command records", async () => {
+    // A function hands back its last command's node: the read that command
+    // made stays on it.
+    const spy = new SeeLine()
+    const ws = executableWorkspace(undefined, [spy])
+    try {
+      await ws.shell('echo hit > /data/x')
+      await ws.shell('f() { cat /data/x; }; f')
+      expect(recordPaths(spy.seen.at(-1)?.results ?? {})).toContain('/data/x')
     } finally {
       await ws.close()
     }

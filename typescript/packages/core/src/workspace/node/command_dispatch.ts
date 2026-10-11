@@ -15,7 +15,7 @@
 import type { EvaluationContext } from '../evaluation.ts'
 import { sessionEntry, setSessionEntry } from '../session/session.ts'
 import { seedVar, setAttr } from '../session/state.ts'
-import { TempEnv, VarAttr } from '../../shell/variable.ts'
+import { type ShellVar, TempEnv, VarAttr } from '../../shell/variable.ts'
 import {
   type RedirectRunner,
   noteRefusal,
@@ -290,17 +290,6 @@ export async function executeCommand(
         value: v,
         sessionId: session.sessionId,
       })
-      // `postSession` judges it too, before the command can read it:
-      // nothing is seeded yet, so a refusal has nothing to put back.
-      const old = sessionEntry(session.vars, k)
-      await postSessionGate(registry.policies, {
-        plane: 'env',
-        verb: 'set',
-        key: k,
-        value: v,
-        sessionId: session.sessionId,
-        old: old == null ? null : gateRendering(old.value),
-      })
     } catch (err) {
       if (!(err instanceof PolicyDenied)) throw err
       const stderr = encodeText(`bash: ${err.message}\n`)
@@ -315,8 +304,39 @@ export async function executeCommand(
     }
   }
 
+  // `postSession` asks about each prefix write once it landed.
+  const judgeLanded = async (olds: ReadonlyMap<string, ShellVar | null>): Promise<void> => {
+    for (const [k, v] of prefixAssignments) {
+      const old = olds.get(k) ?? null
+      await postSessionGate(registry.policies, {
+        plane: 'env',
+        verb: 'set',
+        key: k,
+        value: v,
+        sessionId: session.sessionId,
+        old: old === null ? null : gateRendering(old.value),
+      })
+    }
+  }
+
   if (prefixAssignments.length > 0 && name === '') {
+    const olds = new Map(prefixAssignments.map(([k]) => [k, sessionEntry(session.vars, k) ?? null]))
     for (const [k, v] of prefixAssignments) seedVar(session, k, v)
+    try {
+      await judgeLanded(olds)
+    } catch (err) {
+      if (!(err instanceof PolicyDenied)) throw err
+      for (const [k, prev] of olds) {
+        if (prev === null) {
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete session.vars[k]
+        } else {
+          setSessionEntry(session.vars, k, prev)
+        }
+      }
+      const stderr = encodeText(`bash: ${err.message}\n`)
+      return [null, new IOResult({ exitCode: 1, stderr }), new ExecutionNode({ command: name, exitCode: 1, stderr })]
+    }
     const cmdLabel = prefixAssignments.map(([k, v]) => `${k}=${v}`).join(' ')
     return [null, new IOResult(), new ExecutionNode({ command: cmdLabel, exitCode: 0 })]
   }
@@ -325,7 +345,7 @@ export async function executeCommand(
   // Seeded once the command's words are expanded, since bash expands them
   // with the values from before the assignment: `x=new echo $x` prints the
   // old x and `IFS=, cmd $v` splits on the old IFS.
-  const seedPrefix = (command: string): void => {
+  const seedPrefix = async (command: string): Promise<void> => {
     for (const [k, v] of prefixAssignments) {
       if (!savedEnvOverrides.has(k)) {
         savedEnvOverrides.set(k, sessionEntry(session.vars, k) ?? null)
@@ -345,6 +365,9 @@ export async function executeCommand(
     // scope under its own locals: `unset` inside reveals the caller's
     // value and `export` keeps the name.
     if (session.functions[command] !== undefined) session.localFrames.push(savedEnvOverrides)
+    // Judged before the command reads them; on a refusal the restore
+    // below puts the old values back.
+    await judgeLanded(savedEnvOverrides)
   }
 
   if (refused !== '' && sink !== undefined) {
@@ -413,7 +436,7 @@ async function runCommandBody(
   signalIn?: AbortSignal,
   agentId = '',
   handed?: HandOff,
-  seedPrefix?: (command: string) => void,
+  seedPrefix?: (command: string) => Promise<void>,
   sink?: JobConsole,
   parser?: ParseScope,
 ): Promise<Result> {
@@ -560,7 +583,7 @@ async function runArgv(
   // Applies ordered redirects after command word expansion.
   runner: RedirectRunner | null = null,
   parser?: ParseScope,
-  seedPrefix?: (name: string) => void,
+  seedPrefix?: (name: string) => Promise<void>,
 ): Promise<Result> {
   const session = context.session
   const name = argv.name
@@ -644,7 +667,13 @@ async function runArgv(
     output: JobConsole | undefined,
     paths: readonly PathSpec[],
   ): Promise<Result> => {
-    seedPrefix?.(name)
+    try {
+      await seedPrefix?.(name)
+    } catch (err) {
+      if (!(err instanceof PolicyDenied)) throw err
+      const stderr = encodeText(`bash: ${err.message}\n`)
+      return [null, new IOResult({ exitCode: 1, stderr }), new ExecutionNode({ command: name, exitCode: 1, stderr })]
+    }
     const refusal = await guard(paths, given)
     if (refusal !== null) return refusal
     // The admitted command's gate is bound for its run and handed back
@@ -690,24 +719,20 @@ async function runArgv(
     )
     if (!watched) return result
     const [stdout, io, node] = result
-    node.records = mine
     // postCommand judges the command once its result is final: a streamed
     // output settles its exit code as it drains, so the hook is asked when
     // the stream ends or its reader stops, and at once for output already
     // whole. A refusal leaves what was sent as sent: exit 126, the refusal
     // line on stderr, the refusal record.
     const settle = async (): Promise<void> => {
-      // A node with children keeps the stderr they wrote; a leaf's is the
-      // command's own.
+      // A function hands back its last command's node, which keeps the
+      // records that command made.
       node.exitCode = io.exitCode
-      if (!judging) {
-        if (node.children.length === 0 && io.stderr instanceof Uint8Array) node.stderr = io.stderr
-        return
-      }
+      node.records.push(...mine)
+      if (!judging) return
       const ctx = gated.ctx
       const stderr = await materialize(io.stderr)
       io.stderr = stderr
-      if (node.children.length === 0) node.stderr = stderr
       const action = await postCommandGate(
         policies,
         {

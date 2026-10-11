@@ -1753,6 +1753,25 @@ async def test_post_command_reads_the_files_its_command_read():
         await ws.close()
 
 
+class SafeMode(Policy):
+    async def post_session(self, ctx: SessionResultContext) -> Action | None:
+        landed = ctx.session.get(ctx.key) if ctx.session else None
+        return Deny("mode stays safe") if landed == "unsafe" else None
+
+
+@pytest.mark.asyncio
+async def test_post_session_reads_a_prefix_write_once_it_landed():
+    ws = Workspace(
+        {"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[SafeMode()]
+    )
+    try:
+        out = await ws.shell("MODE=unsafe printenv MODE")
+        assert (out.exit_code, out.stdout) == (1, b"")
+        assert (await ws.shell("echo ${MODE:-unset}")).stdout == b"unset\n"
+    finally:
+        await ws.close()
+
+
 class GuardVars(Policy):
     def __init__(self) -> None:
         self.seen: list[SessionResultContext] = []
@@ -1896,6 +1915,25 @@ async def test_post_execute_sees_the_line_its_output_and_each_result():
             "false",
         ]
         assert _leaves(ctx.results)[-1][1] == 1
+    finally:
+        await ws.close()
+
+
+def _records(node: dict) -> list[str]:
+    mine = [r["path"] for r in node.get("records", [])]
+    return mine + [p for c in node.get("children", []) for p in _records(c)]
+
+
+@pytest.mark.asyncio
+async def test_post_execute_results_keep_a_functions_command_records():
+    # A function hands back its last command's node: the read that
+    # command made stays on it.
+    spy = SeeLine()
+    ws = Workspace({"/data/": RAMVFS()}, mode=MountMode.WRITE, policies=[spy])
+    try:
+        await ws.shell("echo hit > /data/x")
+        await ws.shell("f() { cat /data/x; }; f")
+        assert "/data/x" in _records(spy.seen[-1].results)
     finally:
         await ws.close()
 

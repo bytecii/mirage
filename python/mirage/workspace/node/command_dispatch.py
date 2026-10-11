@@ -14,7 +14,7 @@
 
 import asyncio
 import dataclasses
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from functools import partial
 from itertools import accumulate
 from typing import Any, TypeVar
@@ -321,10 +321,20 @@ async def execute_command(
                     session_id=session.session_id,
                 ),
             )
-            # `post_session` judges it too, before the command can read
-            # it: nothing is seeded yet, so a refusal has nothing to put
-            # back.
-            old = session.vars.get(k)
+        except PolicyDenied as exc:
+            err = encode_text(f"bash: {exc.strerror}\n")
+            return (
+                None,
+                IOResult(exit_code=1, stderr=err),
+                ExecutionNode(command=name or k, exit_code=1, stderr=err),
+            )
+        if k in session.readonly_vars:
+            raise DiscardSignal(encode_text(f"bash: {k}: readonly variable\n"))
+
+    async def judge_landed(olds: Mapping[str, Any]) -> None:
+        # `post_session` asks about each prefix write once it landed.
+        for k, v in prefix_assignments:
+            old = olds.get(k)
             await post_session_gate(
                 registry.policies,
                 SessionResultContext(
@@ -336,19 +346,25 @@ async def execute_command(
                     old=None if old is None else gate_rendering(old.value),
                 ),
             )
+
+    if prefix_assignments and not name:
+        olds = {k: session.vars.get(k) for k, _ in prefix_assignments}
+        for k, v in prefix_assignments:
+            seed_var(session, k, v)
+        try:
+            await judge_landed(olds)
         except PolicyDenied as exc:
+            for k, prev in olds.items():
+                if prev is None:
+                    session.vars.pop(k, None)
+                else:
+                    session.vars[k] = prev
             err = encode_text(f"bash: {exc.strerror}\n")
             return (
                 None,
                 IOResult(exit_code=1, stderr=err),
-                ExecutionNode(command=name or k, exit_code=1, stderr=err),
+                ExecutionNode(command=name, exit_code=1, stderr=err),
             )
-        if k in session.readonly_vars:
-            raise DiscardSignal(encode_text(f"bash: {k}: readonly variable\n"))
-
-    if prefix_assignments and not name:
-        for k, v in prefix_assignments:
-            seed_var(session, k, v)
         return (
             None,
             IOResult(),
@@ -360,7 +376,7 @@ async def execute_command(
 
     saved_env_overrides = TempEnv()
 
-    def seed_prefix(command: str) -> None:
+    async def seed_prefix(command: str) -> None:
         # Seeded once the command's words are expanded, since bash
         # expands them with the values from before the assignment:
         # `x=new echo $x` prints the old x and `IFS=, cmd $v` splits on
@@ -382,6 +398,9 @@ async def execute_command(
             # environment, a scope under its own locals: `unset` inside
             # reveals the caller's value and `export` keeps the name.
             session._local_frames.append(saved_env_overrides)
+        # Judged before the command reads them; on a refusal the
+        # restore below puts the old values back.
+        await judge_landed(saved_env_overrides)
 
     if refused and sink is not None:
         await sink.emit(Channel.STDERR, refused)
@@ -434,7 +453,7 @@ async def _dispatch_command_body(
     stdin,
     call_stack,
     job_table,
-    seed_prefix: Callable[[str], None],
+    seed_prefix: Callable[[str], Awaitable[None]],
     cancel: asyncio.Event | None = None,
     routing_decision: RouteDecision[Runtime] | None = None,
     agent_id: str = "",
@@ -560,7 +579,7 @@ async def _run_argv(
     agent_id: str = "",
     redirects: tuple[PathSpec, ...] = (),
     runner: RedirectRunner | None = None,
-    seed_prefix: Callable[[str], None] | None = None,
+    seed_prefix: Callable[[str], Awaitable[None]] | None = None,
     claimant: Claimant | None = None,
     sink: JobConsole | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
@@ -666,7 +685,15 @@ async def _run_argv(
         paths: tuple[PathSpec, ...],
     ) -> RedirectResult:
         if seed_prefix is not None:
-            seed_prefix(name)
+            try:
+                await seed_prefix(name)
+            except PolicyDenied as exc:
+                err = encode_text(f"bash: {exc.strerror}\n")
+                return (
+                    None,
+                    IOResult(exit_code=1, stderr=err),
+                    ExecutionNode(command=name, exit_code=1, stderr=err),
+                )
         refusal = await guard(paths, given)
         if refusal is not None:
             return refusal
@@ -712,7 +739,6 @@ async def _run_argv(
         if not watched:
             return result
         stdout, io, node = result
-        node.records = mine
 
         # post_command judges the command once its result is final: a
         # streamed output settles its exit code as it drains, so the hook
@@ -720,19 +746,16 @@ async def _run_argv(
         # for output already whole. A refusal leaves what was sent as
         # sent: exit 126, the refusal line on stderr, the refusal record.
         async def settle() -> None:
-            # A node with children keeps the stderr they wrote; a leaf's
-            # is the command's own.
+            # A function hands back its last command's node, which keeps
+            # the records that command made.
             node.exit_code = io.exit_code
+            node.records.extend(mine)
             if not judging:
-                if not node.children and isinstance(io.stderr, bytes):
-                    node.stderr = io.stderr
                 return
             assert admitted is not None
             ctx = admitted.ctx
             stderr = await materialize(io.stderr)
             io.stderr = stderr
-            if not node.children:
-                node.stderr = stderr
             facts = {
                 f.name: getattr(ctx, f.name) for f in dataclasses.fields(ctx)
             }
@@ -766,6 +789,7 @@ async def _run_argv(
         pulled = aiter(stdout)
 
         async def drained() -> AsyncIterator[bytes]:
+            done = False
             try:
                 while True:
                     # Each pull runs the command's lazy reads; they are
@@ -776,9 +800,14 @@ async def _run_argv(
                         finally:
                             mine.extend(more)
                     if chunk is None:
+                        done = True
                         return
                     yield chunk
             finally:
+                # A reader that stops early closes the producer too.
+                close = getattr(pulled, "aclose", None)
+                if not done and close is not None:
+                    await close()
                 await settle()
 
         return drained(), io, node
