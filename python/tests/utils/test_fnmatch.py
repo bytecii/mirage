@@ -14,7 +14,12 @@
 
 import pytest
 
-from mirage.utils.fnmatch import _normalize_negation, fnmatch, fnmatchcase
+from mirage.utils.fnmatch import (
+    Matcher,
+    _normalize_negation,
+    fnmatch,
+    fnmatchcase,
+)
 
 
 @pytest.mark.parametrize(
@@ -240,6 +245,14 @@ def test_a_star_hands_a_group_every_tail():
 )
 def test_long_subjects_match_in_linear_time(pattern, tail, expected):
     assert fnmatch("a" * 16000 + tail, pattern, extglob=True) is expected
+
+
+def test_matcher_end_reads_every_offset_in_linear_time():
+    match = Matcher("abcab", "*b", extglob=False)
+    assert (match.end(0), match.end(0, longest=False)) == (5, 2)
+    assert (match.end(2), match.end(5)) == (5, None)
+    blank = Matcher(" " * 16000, "*b", extglob=False)
+    assert all(blank.end(i) is None for i in range(16001))
 
 
 @pytest.mark.parametrize("operator", ["@", "?", "+", "*"])

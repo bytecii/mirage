@@ -435,10 +435,10 @@
         "gdrive",
         "gdrive-folder"
       ],
-      "command": "pr2=hello; echo ${pr2//l/L}",
+      "command": "pr2=hello; echo ${pr2//l/L} ${pr2//[z-al]/L}; printf -v x '%10000s' ''; y=${x// /a}; echo ${#y} ${y:9997}",
       "expect": {
         "exit": 0,
-        "stdout": "heLLo\n",
+        "stdout": "heLLo heLLo\n10000 aaa\n",
         "stderr": ""
       }
     },

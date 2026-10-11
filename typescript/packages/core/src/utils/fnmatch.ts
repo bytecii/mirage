@@ -20,8 +20,7 @@
 // pair), so returning to the last * on a mismatch is enough, and a match
 // costs at most name length times pattern length. Deliberate divergences
 // from CPython: always case-sensitive (no normcase, so this equals Python
-// fnmatchcase), an invalid class range like [z-a] never matches instead of
-// raising, and a leading ^ negates a class like ! does (bash/glibc
+// fnmatchcase), and a leading ^ negates a class like ! does (bash/glibc
 // semantics; CPython keeps ^ literal, as `fnmatchcase` below does). Mirrors
 // the Python mirage.utils.fnmatch wrapper.
 import { POSIX_CLASSES } from './posix.ts'
@@ -155,7 +154,7 @@ function scan(
  * some tails and not others there: `[[ a == *!(a) ]]` and
  * `[[ '' == *@(|b) ]]` fail, and `[[ '' == *!(a)x ]]` succeeds.
  */
-class Matcher {
+export class Matcher {
   private readonly name: readonly string[]
   private readonly pattern: readonly string[]
   private readonly classes: Map<number, number>
@@ -191,6 +190,19 @@ class Matcher {
       return fnmatch(this.name.join(''), pattern, false, this.period)
     }
     return this.ends(0, this.pattern.length, 0).contains(this.name.length)
+  }
+
+  /**
+   * Where the farthest or nearest match from a character offset ends, or
+   * null. Every end comes out of one forward run, and runs from later
+   * offsets share their tails with earlier ones, so asking for each offset
+   * of a subject in turn stays linear for a wildcard pattern.
+   */
+  end(start: number, longest = true): number | null {
+    const spans = this.ends(0, this.pattern.length, start).spans
+    const span = longest ? spans.at(-1) : spans[0]
+    if (!span) return null
+    return longest ? span[1] - 1 : span[0]
   }
 
   private ends(lo: number, hi: number, start: number): Positions {
@@ -481,8 +493,8 @@ function classEnd(pattern: Characters, open: number, caret: boolean, posix = fal
 
 // Whether one character is in a class body. Members are literal (a
 // backslash is a member too), a-z is a range over code points, a - at
-// either end is literal, and a class holding a range whose ends are out of
-// order matches nothing. A body of just its negation matches any character.
+// either end is literal, and a range whose ends are out of order holds
+// nothing. A body of just its negation matches any character.
 function classMatches(body: Characters, ch: string, caret: boolean): boolean {
   const negate = negates(body[0], caret)
   const members = negate ? body.slice(1) : body
@@ -494,7 +506,6 @@ function classMatches(body: Characters, ch: string, caret: boolean): boolean {
     if (members[i + 1] === '-' && i + 2 < members.length) {
       const low = lo.codePointAt(0) ?? 0
       const high = (members[i + 2] ?? '').codePointAt(0) ?? 0
-      if (low > high) return false
       if (low <= code && code <= high) found = true
       i += 3
     } else {

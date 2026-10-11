@@ -140,7 +140,7 @@ def _scan(
     return classes, groups
 
 
-class _Matcher:
+class Matcher:
     """Match extended groups by reachable character positions.
 
     Positive groups compile to epsilon transitions, so the active states
@@ -200,6 +200,22 @@ class _Matcher:
         ):
             return fnmatch(self.name, self.pattern, period=self.period)
         return self.ends(0, len(self.pattern), 0).contains(len(self.name))
+
+    def end(self, start: int, longest: bool = True) -> int | None:
+        """Where the farthest or nearest match from an offset ends.
+
+        Every end comes out of one forward run, and runs from later
+        offsets share their tails with earlier ones, so asking for each
+        offset of a subject in turn stays linear for a wildcard pattern.
+
+        Args:
+            start (int): offset in the subject where the match begins.
+            longest (bool): the farthest end rather than the nearest.
+        """
+        spans = self.ends(0, len(self.pattern), start).spans
+        if not spans:
+            return None
+        return spans[-1][1] - 1 if longest else spans[0][0]
 
     def ends(self, lo: int, hi: int, start: int) -> _Positions:
         """Every end position at which a pattern slice matches.
@@ -442,7 +458,7 @@ def fnmatch(
         or QUOTED_RE.search(pattern)
         or (extglob and EXTGLOB_RE.search(pattern))
     ):
-        return _Matcher(name, pattern, period, extglob).matches()
+        return Matcher(name, pattern, period, extglob).matches()
     if period and name.startswith(".") and not pattern.startswith("."):
         return False
     return _stdlib_fnmatch.fnmatchcase(name, _normalize_negation(pattern))

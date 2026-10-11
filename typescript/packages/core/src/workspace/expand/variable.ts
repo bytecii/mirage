@@ -57,7 +57,7 @@ import {
 import { homeDir } from '../session/shell_dirs.ts'
 import { decodeAnsiC } from '../../shell/escapes.ts'
 import { sourceParts } from '../../shell/helpers.ts'
-import { fnmatch } from '../../utils/fnmatch.ts'
+import { Matcher, fnmatch } from '../../utils/fnmatch.ts'
 import { escapeGlob, markGlobs } from '../../utils/glob_walk.ts'
 import { expandTilde } from '../../utils/path.ts'
 import { OPERAND_DQUOTE_ESCAPES } from './constants.ts'
@@ -662,10 +662,15 @@ function globStrip(
   if (pattern === '') return value
   const cuts = [0]
   for (const char of value) cuts.push((cuts.at(-1) ?? 0) + char.length)
-  if (greedy === prefix) cuts.reverse()
-  for (const i of cuts) {
-    const candidate = prefix ? value.slice(0, i) : value.slice(i)
-    if (fnmatch(candidate, pattern, extglob)) return prefix ? value.slice(i) : value.slice(0, i)
+  const match = new Matcher(value, pattern, false, extglob)
+  if (prefix) {
+    const end = match.end(0, greedy)
+    return end === null ? value : value.slice(cuts[end])
+  }
+  const size = cuts.length - 1
+  for (let k = 0; k <= size; k++) {
+    const i = greedy ? k : size - k
+    if (match.end(i) === size) return value.slice(0, cuts[i])
   }
   return value
 }
@@ -683,41 +688,31 @@ function globReplace(
   if (pattern === '') return value
   const cuts = [0]
   for (const char of value) cuts.push((cuts.at(-1) ?? 0) + char.length)
+  const match = new Matcher(value, pattern, false, extglob)
+  const size = cuts.length - 1
   if (anchor === '#') {
-    for (const j of [...cuts].reverse()) {
-      if (fnmatch(value.slice(0, j), pattern, extglob)) return replacement + value.slice(j)
-    }
-    return value
+    const end = match.end(0)
+    return end === null ? value : replacement + value.slice(cuts[end])
   }
   if (anchor === '%') {
-    for (const i of cuts) {
-      if (fnmatch(value.slice(i), pattern, extglob)) return value.slice(0, i) + replacement
+    for (let i = 0; i <= size; i++) {
+      if (match.end(i) === size) return value.slice(0, cuts[i]) + replacement
     }
     return value
   }
-  if (value === '') {
-    return fnmatch('', pattern, extglob) ? replacement : value
-  }
+  if (value === '') return match.end(0) === null ? value : replacement
   const out: string[] = []
   let k = 0
-  const n = cuts.length - 1
-  while (k < n) {
-    const i = cuts[k] ?? 0
-    let matchEnd = -1
-    for (let m = n; m >= k; m--) {
-      if (fnmatch(value.slice(i, cuts[m]), pattern, extglob)) {
-        matchEnd = m
-        break
-      }
-    }
-    if (matchEnd <= k) {
+  while (k < size) {
+    const end = match.end(k)
+    if (end === null || end === k) {
       // No match here (or an empty one, which bash skips over).
-      out.push(value.slice(i, cuts[k + 1]))
+      out.push(value.slice(cuts[k], cuts[k + 1]))
       k += 1
       continue
     }
     out.push(replacement)
-    k = matchEnd
+    k = end
     if (!replaceAll) {
       out.push(value.slice(cuts[k]))
       return out.join('')
