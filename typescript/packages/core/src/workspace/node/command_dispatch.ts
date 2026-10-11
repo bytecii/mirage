@@ -335,7 +335,11 @@ export async function executeCommand(
         }
       }
       const stderr = encodeText(`bash: ${err.message}\n`)
-      return [null, new IOResult({ exitCode: 1, stderr }), new ExecutionNode({ command: name, exitCode: 1, stderr })]
+      return [
+        null,
+        new IOResult({ exitCode: 1, stderr }),
+        new ExecutionNode({ command: name, exitCode: 1, stderr }),
+      ]
     }
     const cmdLabel = prefixAssignments.map(([k, v]) => `${k}=${v}`).join(' ')
     return [null, new IOResult(), new ExecutionNode({ command: cmdLabel, exitCode: 0 })]
@@ -672,7 +676,11 @@ async function runArgv(
     } catch (err) {
       if (!(err instanceof PolicyDenied)) throw err
       const stderr = encodeText(`bash: ${err.message}\n`)
-      return [null, new IOResult({ exitCode: 1, stderr }), new ExecutionNode({ command: name, exitCode: 1, stderr })]
+      return [
+        null,
+        new IOResult({ exitCode: 1, stderr }),
+        new ExecutionNode({ command: name, exitCode: 1, stderr }),
+      ]
     }
     const refusal = await guard(paths, given)
     if (refusal !== null) return refusal
